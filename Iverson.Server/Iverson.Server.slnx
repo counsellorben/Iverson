@@ -1,0 +1,15 @@
+<Solution>
+  <Project Path="Iverson.Api.Tests/Iverson.Api.Tests.csproj" />
+  <Project Path="Iverson.Api/Iverson.Api.csproj" />
+  <Project Path="Iverson.Elasticsearch.Tests/Iverson.Elasticsearch.Tests.csproj" />
+  <Project Path="Iverson.Elasticsearch/Iverson.Elasticsearch.csproj" />
+  <Project Path="Iverson.Embeddings.Tests/Iverson.Embeddings.Tests.csproj" />
+  <Project Path="Iverson.Embeddings/Iverson.Embeddings.csproj" />
+  <Project Path="Iverson.Events.Tests/Iverson.Events.Tests.csproj" />
+  <Project Path="Iverson.Events/Iverson.Events.csproj" />
+  <Project Path="Iverson.Launcher/Iverson.Launcher.csproj" />
+  <Project Path="Iverson.Sql.Tests/Iverson.Sql.Tests.csproj" />
+  <Project Path="Iverson.Sql/Iverson.Sql.csproj" />
+  <Project Path="Iverson.Vector.Tests/Iverson.Vector.Tests.csproj" />
+  <Project Path="Iverson.Vector/Iverson.Vector.csproj" />
+</Solution>

@@ -1,0 +1,8 @@
+<Solution>
+  <Project Path="Iverson.Client.Attributes/Iverson.Client.Attributes.csproj" />
+  <Project Path="Iverson.Client.Contracts/Iverson.Client.Contracts.csproj" />
+  <Project Path="Iverson.Client.Core/Iverson.Client.Core.csproj" />
+  <Project Path="Iverson.Client.Sample/Iverson.Client.Sample.csproj" />
+  <Project Path="Iverson.Client.Search/Iverson.Client.Search.csproj" />
+  <Project Path="Iverson.Client.Search.Tests/Iverson.Client.Search.Tests.csproj" />
+</Solution>

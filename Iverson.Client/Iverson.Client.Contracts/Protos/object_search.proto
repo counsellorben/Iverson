@@ -1,0 +1,175 @@
+syntax = "proto3";
+option csharp_namespace = "Iverson.Client.Contracts";
+package iverson;
+
+import "google/protobuf/struct.proto";
+import "google/protobuf/wrappers.proto";
+
+// DSL-driven search. The server streams back matching results with relevance scores.
+service ObjectSearchService {
+    rpc Search         (SearchRequest)        returns (stream SearchResponse);
+    rpc SearchSimilar  (SearchSimilarRequest) returns (stream SearchResponse);
+    rpc SearchChunks   (SearchChunksRequest)  returns (stream ChunkSearchResponse);
+    rpc Aggregate      (AggregateRequest)     returns (AggregateResponse);
+}
+
+message SearchRequest {
+    string      type_name = 1;
+    SearchQuery query     = 2;
+    int32       page      = 3;
+    int32       page_size = 4;
+    string      trace_id  = 5;
+}
+
+message SearchQuery {
+    repeated SearchClause clauses = 1;
+    SearchLogic           logic   = 2;
+    repeated SearchSort   sort    = 3;
+}
+
+message SearchClause {
+    string            property    = 1;
+    SearchOperator    operator    = 2;
+    SearchValue       value       = 3;
+    SearchClauseType  clause_type = 4;
+}
+
+// Typed union covering all scalar and vector values the DSL can produce.
+message SearchValue {
+    oneof kind {
+        string              string_val  = 1;
+        double              number_val  = 2;
+        bool                bool_val    = 3;
+        RepeatedString      string_list = 4;  // used with IN operator
+        RepeatedFloat       float_list  = 5;  // used with VECTOR_SIMILAR operator
+    }
+}
+
+message RepeatedString { repeated string values = 1; }
+message RepeatedFloat  { repeated float  values = 1; }
+
+message SearchSort {
+    string property   = 1;
+    bool   descending = 2;
+}
+
+enum SearchOperator {
+    EQUALS                 = 0;
+    NOT_EQUALS             = 1;
+    CONTAINS               = 2;
+    STARTS_WITH            = 3;
+    GREATER_THAN           = 4;
+    LESS_THAN              = 5;
+    GREATER_THAN_OR_EQUALS = 6;
+    LESS_THAN_OR_EQUALS    = 7;
+    IN                     = 8;
+    VECTOR_SIMILAR         = 9;
+}
+
+enum SearchLogic {
+    AND = 0;
+    OR  = 1;
+}
+
+enum SearchClauseType {
+    FILTER   = 0;
+    MUST     = 1;
+    SHOULD   = 2;
+    MUST_NOT = 3;
+}
+
+message SearchResponse {
+    google.protobuf.Struct data     = 1;
+    float                  score    = 2;
+    string                 trace_id = 3;
+}
+
+// ── Semantic (vector) search ───────────────────────────────────────────────────
+
+// Searches by embedding similarity on a property annotated with [IversonEmbedding].
+// The server embeds `query` with the same model and searches the Qdrant collection.
+message SearchSimilarRequest {
+    string type_name = 1;  // registered entity type
+    string property  = 2;  // property with [IversonEmbedding]
+    string query     = 3;  // text to embed and compare
+    uint32 top_k     = 4;
+    string trace_id  = 5;
+}
+
+// Searches by chunk embedding similarity on a property annotated with [IversonChunk].
+// Returns individual passage chunks with the parent entity key and relevance score.
+message SearchChunksRequest {
+    string type_name = 1;  // registered entity type
+    string property  = 2;  // property with [IversonChunk]
+    string query     = 3;  // text to embed and compare
+    uint32 top_k     = 4;
+    string trace_id  = 5;
+}
+
+message ChunkSearchResponse {
+    string parent_key  = 1;  // key of the parent entity that owns this chunk
+    string chunk_text  = 2;  // the matching passage text
+    float  score       = 3;
+    string trace_id    = 4;
+}
+
+// ── Aggregations ───────────────────────────────────────────────────────────────
+
+message AggregateRequest {
+    string      type_name    = 1;
+    SearchQuery query        = 2;  // optional filter applied before aggregating
+    repeated AggregationSpec aggregations = 3;
+    string      trace_id     = 4;
+}
+
+message AggregateResponse {
+    repeated AggregationResult results  = 1;
+    int64                      total    = 2;  // total matching docs
+    string                     trace_id = 3;
+}
+
+// Specifies one aggregation to run.
+message AggregationSpec {
+    string          name              = 1;  // result key — must be unique within the request
+    AggregationType type              = 2;
+    string          field             = 3;  // ES field to aggregate on
+
+    // TERMS options
+    int32           size              = 4;  // max buckets (default 10)
+
+    // DATE_HISTOGRAM options
+    string          calendar_interval = 5;  // "minute"|"hour"|"day"|"week"|"month"|"quarter"|"year"
+    string          time_zone         = 6;  // IANA tz, e.g. "America/New_York" (default UTC)
+
+    // RANGE options
+    repeated RangeBucket range_buckets = 7;
+}
+
+message RangeBucket {
+    string                      key  = 1;  // optional label for the bucket
+    google.protobuf.DoubleValue from = 2;  // null = unbounded lower
+    google.protobuf.DoubleValue to   = 3;  // null = unbounded upper
+}
+
+message AggregationResult {
+    string          name         = 1;
+    AggregationType type         = 2;
+    repeated AggregationBucket buckets      = 3;  // TERMS / DATE_HISTOGRAM / RANGE
+    double          metric_value = 4;              // AVG / SUM / MIN / MAX / CARDINALITY
+}
+
+message AggregationBucket {
+    string key       = 1;
+    int64  doc_count = 2;
+}
+
+enum AggregationType {
+    TERMS          = 0;
+    DATE_HISTOGRAM = 1;
+    RANGE          = 2;
+    AVG            = 3;
+    SUM            = 4;
+    MIN            = 5;
+    MAX            = 6;
+    CARDINALITY    = 7;
+}

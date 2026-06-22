@@ -1,0 +1,30 @@
+syntax = "proto3";
+option csharp_namespace = "Iverson.Client.Contracts";
+package iverson;
+
+import "google/protobuf/struct.proto";
+
+// Key-based fetch. Returns raw entity data; the client assembles the object
+// graph locally using relationship attribute metadata.
+service ObjectRetrievalService {
+    rpc Get     (RetrievalRequest)     returns (RetrievalResponse);
+    rpc GetMany (RetrievalManyRequest) returns (stream RetrievalResponse);
+}
+
+message RetrievalRequest {
+    string type_name = 1;
+    string key       = 2;
+    string trace_id  = 3;
+}
+
+message RetrievalManyRequest {
+    string          type_name = 1;
+    repeated string keys      = 2;
+    string          trace_id  = 3;
+}
+
+message RetrievalResponse {
+    bool                   found    = 1;
+    google.protobuf.Struct data     = 2;
+    string                 trace_id = 3;
+}

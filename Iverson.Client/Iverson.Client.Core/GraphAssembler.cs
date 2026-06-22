@@ -1,0 +1,127 @@
+using System.Collections;
+using System.Reflection;
+using Google.Protobuf.WellKnownTypes;
+using Grpc.Core;
+using Iverson.Client.Contracts;
+using Microsoft.Extensions.Logging;
+
+namespace Iverson.Client.Core;
+
+/// <summary>
+/// Populates navigation properties on a POCO by issuing follow-up retrieval
+/// calls based on relationship metadata from the EntityRegistry.
+/// </summary>
+public sealed class GraphAssembler(
+    ObjectRetrievalService.ObjectRetrievalServiceClient retrieval,
+    EntityRegistry registry,
+    ILogger<GraphAssembler> logger)
+{
+    // Cached reflection reference to StructConverter.FromStruct<T>
+    private static readonly MethodInfo _fromStructMethod =
+        typeof(StructConverter).GetMethod(nameof(StructConverter.FromStruct),
+            BindingFlags.Public | BindingFlags.Static)!;
+
+    public async Task AssembleAsync<T>(T entity, CancellationToken ct = default) where T : class
+        => await AssembleAsync(entity, registry.Get<T>(), ct);
+
+    private async Task AssembleAsync(object entity, EntityDescriptor descriptor, CancellationToken ct)
+    {
+        foreach (var relation in descriptor.Relations)
+        {
+            try
+            {
+                switch (relation.Kind)
+                {
+                    case RelationKind.OneToOne:
+                    case RelationKind.ManyToOne:
+                        await AssembleSingle(entity, descriptor, relation, ct);
+                        break;
+                    case RelationKind.OneToMany:
+                    case RelationKind.ManyToMany:
+                        await AssembleCollection(entity, descriptor, relation, ct);
+                        break;
+                }
+            }
+            catch (Exception ex)
+            {
+                logger.LogWarning(ex,
+                    "Failed to assemble {Kind} relation {Property} on {Entity}",
+                    relation.Kind, relation.Property.Name, descriptor.EntityName);
+            }
+        }
+    }
+
+    // OneToOne / ManyToOne: read FK from this entity, fetch one related entity
+    private async Task AssembleSingle(object entity, EntityDescriptor descriptor,
+        RelationDescriptor relation, CancellationToken ct)
+    {
+        var fkName = relation.ForeignKey ?? $"{relation.RelatedType.Name}Id";
+        var fkProp = descriptor.EntityType
+            .GetProperty(fkName, BindingFlags.Public | BindingFlags.Instance);
+
+        if (fkProp is null)
+        {
+            logger.LogDebug("FK property '{Fk}' not found on {Type}, skipping", fkName, descriptor.EntityName);
+            return;
+        }
+
+        var fkValue = fkProp.GetValue(entity)?.ToString();
+        if (string.IsNullOrEmpty(fkValue)) return;
+
+        var relatedDescriptor = registry.Get(relation.RelatedType);
+        var response = await retrieval.GetAsync(new RetrievalRequest
+        {
+            TypeName = relatedDescriptor.EntityName,
+            Key      = fkValue
+        }, cancellationToken: ct);
+
+        if (!response.Found) return;
+
+        var related = DeserializeStruct(response.Data, relation.RelatedType);
+        if (related is not null)
+            relation.Property.SetValue(entity, related);
+    }
+
+    // OneToMany / ManyToMany: fetch a collection of related entities using ids from the payload
+    private async Task AssembleCollection(object entity, EntityDescriptor descriptor,
+        RelationDescriptor relation, CancellationToken ct)
+    {
+        var relatedDescriptor = registry.Get(relation.RelatedType);
+        var payloadStruct     = StructConverter.ToStruct(entity);
+
+        var joinKey = relation.Kind == RelationKind.ManyToMany
+            ? (relation.ForeignKey ?? $"{relation.RelatedType.Name}Ids")
+            : (relation.ForeignKey ?? $"{descriptor.EntityName}Ids");
+
+        var keys = StructConverter.GetStringList(payloadStruct, joinKey);
+        if (keys.Count == 0)
+        {
+            logger.LogDebug("No '{Key}' ids in payload for {Kind} {Prop}, skipping",
+                joinKey, relation.Kind, relation.Property.Name);
+            return;
+        }
+
+        var request = new RetrievalManyRequest { TypeName = relatedDescriptor.EntityName };
+        request.Keys.AddRange(keys);
+
+        var collectionType = typeof(List<>).MakeGenericType(relation.RelatedType);
+        var collection     = (IList)Activator.CreateInstance(collectionType)!;
+
+        var stream = retrieval.GetMany(request, cancellationToken: ct);
+        await foreach (var response in stream.ResponseStream.ReadAllAsync(ct))
+        {
+            if (!response.Found) continue;
+            var item = DeserializeStruct(response.Data, relation.RelatedType);
+            if (item is not null) collection.Add(item);
+        }
+
+        relation.Property.SetValue(entity, collection);
+    }
+
+    // Calls StructConverter.FromStruct<T> via reflection when T is only known at runtime
+    private static object? DeserializeStruct(Struct? data, System.Type targetType)
+    {
+        if (data is null) return null;
+        return _fromStructMethod.MakeGenericMethod(targetType).Invoke(null, [data]);
+    }
+}

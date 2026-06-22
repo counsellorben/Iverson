@@ -1,0 +1,24 @@
+syntax = "proto3";
+option csharp_namespace = "Iverson.Client.Contracts";
+package iverson;
+
+import "google/protobuf/struct.proto";
+
+// Lightweight write path — persists entity fields only, no relation traversal.
+service ObjectPersistenceService {
+    rpc Post   (PersistRequest) returns (PersistResponse);
+    rpc Update (PersistRequest) returns (PersistResponse);
+}
+
+message PersistRequest {
+    string                 type_name = 1;
+    google.protobuf.Struct payload   = 2;
+    string                 trace_id  = 3;
+}
+
+message PersistResponse {
+    bool   success  = 1;
+    string key      = 2;   // the assigned or existing entity key
+    string trace_id = 3;
+    string error    = 4;
+}

@@ -1,0 +1,51 @@
+# Build output
+bin/
+obj/
+
+# User-specific files
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+.vs/
+
+# NuGet
+*.nupkg
+*.snupkg
+packages/
+project.lock.json
+project.fragment.lock.json
+artifacts/
+
+# .NET Core
+*.userprefs
+
+# Logs
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Rider / JetBrains
+.idea/
+*.sln.iml
+
+# VS Code
+.vscode/
+
+# Test results
+TestResults/
+coverage/
+*.coverage
+*.coveragexml
+
+# Claude Code local settings
+.claude/
+
+# Secrets / local config
+appsettings.*.json
+!appsettings.json
+secrets.json
+*.pfx
+*.p12

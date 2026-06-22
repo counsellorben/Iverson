@@ -1,0 +1,6 @@
+@Iverson.Api_HostAddress = http://localhost:5021
+
+GET {{Iverson.Api_HostAddress}}/weatherforecast/
+Accept: application/json
+
+###

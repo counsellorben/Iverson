@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Google.Protobuf" Version="3.35.1" />
+    <PackageReference Include="Grpc.Core.Api" Version="2.80.0" />
+    <PackageReference Include="Grpc.Tools" Version="2.81.1" PrivateAssets="All" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- GrpcServices="Both" generates server base classes AND client stubs -->
+    <Protobuf Include="Protos\*.proto" GrpcServices="Both" />
+  </ItemGroup>
+
+</Project>

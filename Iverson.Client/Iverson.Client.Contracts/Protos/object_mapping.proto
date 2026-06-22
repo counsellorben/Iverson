@@ -1,0 +1,119 @@
+syntax = "proto3";
+option csharp_namespace = "Iverson.Client.Contracts";
+package iverson;
+
+import "google/protobuf/struct.proto";
+
+// Full CRUD with server-side relationship resolution.
+// The server traverses relations up to `depth` levels before returning.
+service ObjectMappingService {
+    rpc Get            (MappingGetRequest)    returns (MappingResponse);
+    rpc Post           (MappingWriteRequest)  returns (MappingResponse);
+    rpc Update         (MappingWriteRequest)  returns (MappingResponse);
+    rpc Delete         (MappingDeleteRequest) returns (MappingDeleteResponse);
+    rpc RegisterSchema (SchemaRequest)        returns (SchemaResponse);
+}
+
+// ---------------------------------------------------------------------------
+// Schema registration — sent once per entity type at startup or on first use.
+// The server uses this to create/update SQL tables, ES indices, and Qdrant
+// collections. Only entities with no ManyToOne/ManyToMany attributes are
+// accepted as root registrations; dependent types are carried in `relations`.
+// ---------------------------------------------------------------------------
+
+enum RelationKind {
+    ONE_TO_ONE   = 0;
+    ONE_TO_MANY  = 1;
+    MANY_TO_ONE  = 2;
+    MANY_TO_MANY = 3;
+}
+
+enum ClrType {
+    CLR_STRING   = 0;
+    CLR_GUID     = 1;
+    CLR_INT32    = 2;
+    CLR_INT64    = 3;
+    CLR_DOUBLE   = 4;
+    CLR_FLOAT    = 5;
+    CLR_BOOL     = 6;
+    CLR_DATETIME = 7;
+    CLR_BYTES    = 8;
+}
+
+message PropertyDescriptor {
+    string  name          = 1;
+    ClrType clr_type      = 2;
+    bool    is_key        = 3;   // [IversonKey]
+    bool    is_nullable   = 4;
+    bool    is_array      = 5;   // float[], Guid[], etc.
+    bool    is_embedding  = 6;   // [IversonEmbedding] present
+    int32   vector_dim    = 7;   // dimension when is_embedding = true
+    string  model_id      = 8;   // e.g. "text-embedding-3-small"
+    bool    is_chunk      = 9;   // [IversonChunk] present
+    int32   chunk_max_tokens = 10;
+    int32   chunk_overlap    = 11;
+    string  chunk_model_id   = 12;  // embedding model for [IversonChunk]
+    int32   chunk_vector_dim = 13;  // vector dimension for chunk embeddings
+}
+
+message RelationDescriptor {
+    string       property_name    = 1;  // nav property name on this type
+    RelationKind kind             = 2;
+    string       related_type     = 3;  // simple type name of the related entity
+    string       foreign_key      = 4;  // resolved FK column (convention or explicit)
+}
+
+message TypeDescriptor {
+    string                    type_name   = 1;
+    repeated PropertyDescriptor properties = 2;
+    repeated RelationDescriptor relations  = 3;
+}
+
+message SchemaRequest {
+    TypeDescriptor            root_type    = 1;   // the entity being registered
+    repeated TypeDescriptor   dependents   = 2;   // types referenced by OneToOne/OneToMany
+    string                    trace_id     = 3;
+}
+
+message SchemaResponse {
+    bool            success     = 1;
+    string          trace_id    = 2;
+    string          error       = 3;
+    repeated string registered  = 4;  // type names that were created or updated
+}
+
+// ---------------------------------------------------------------------------
+// CRUD
+// ---------------------------------------------------------------------------
+
+message MappingGetRequest {
+    string type_name = 1;
+    string key       = 2;
+    int32  depth     = 3;   // relation traversal depth; 0 = entity fields only
+    string trace_id  = 4;
+}
+
+message MappingWriteRequest {
+    string                  type_name = 1;
+    google.protobuf.Struct  payload   = 2;
+    string                  trace_id  = 3;
+}
+
+message MappingDeleteRequest {
+    string type_name = 1;
+    string key       = 2;
+    string trace_id  = 3;
+}
+
+message MappingResponse {
+    bool                   success  = 1;
+    google.protobuf.Struct data     = 2;
+    string                 trace_id = 3;
+    string                 error    = 4;
+}
+
+message MappingDeleteResponse {
+    bool   success  = 1;
+    string trace_id = 2;
+    string error    = 3;
+}
