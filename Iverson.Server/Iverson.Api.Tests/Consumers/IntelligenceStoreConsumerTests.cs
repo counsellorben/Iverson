@@ -207,6 +207,39 @@ public class IntelligenceStoreConsumerTests
     }
 
     [Fact]
+    public async Task HandleCreated_PointPayload_ContainsKeyAndCamelCaseFields()
+    {
+        await _registry.RegisterAsync(SchemaFixtures.ArticleSchema());
+
+        var entityKey = Guid.NewGuid().ToString();
+        var titleText = "My Test Title";
+        var payload   = $$$"""{"Title":"{{{titleText}}}","Body":"Some body text","AuthorId":"00000000-0000-0000-0000-000000000001"}""";
+        var ev = new EntityEvent(
+            TypeName:      "Article",
+            Key:           entityKey,
+            PayloadJson:   payload,
+            TraceId:       "trace-payload",
+            SchemaVersion: "1",
+            OccurredAt:    DateTimeOffset.UtcNow,
+            TargetStores:  StoreTarget.Record | StoreTarget.Intelligence);
+
+        IReadOnlyDictionary<string, string>? capturedPayload = null;
+        _vector.UpsertNamedAsync(
+            "articles",
+            Arg.Any<ulong>(),
+            Arg.Any<IReadOnlyDictionary<string, float[]>>(),
+            Arg.Do<IReadOnlyDictionary<string, string>?>(p => capturedPayload = p))
+            .Returns(Task.CompletedTask);
+
+        var sut = BuildSut();
+        await sut.HandleAsync(ev.Key, Serialize(ev), CancellationToken.None);
+
+        capturedPayload.Should().NotBeNull();
+        capturedPayload!["key"].Should().Be(entityKey);
+        capturedPayload["title"].Should().Be(titleText);
+    }
+
+    [Fact]
     public async Task ChunkSplitting_ProducesMultipleChunks_ForLongText()
     {
         // Custom schema: maxTokens=50 (200 chars), overlap=10 (40 chars) → step=160 chars
