@@ -7,27 +7,8 @@ namespace Iverson.Client.Attributes;
 /// enabling passage-level RAG retrieval.
 /// </summary>
 [AttributeUsage(AttributeTargets.Property, Inherited = false)]
-public sealed class IversonChunkAttribute : Attribute
+public sealed class IversonChunkAttribute(int maxTokens = 512, int overlap = 64) : Attribute
 {
-    public EmbeddingModel Model     { get; }
-    public int            Dimension { get; }
-    public int            MaxTokens { get; }
-    public int            Overlap   { get; }
-
-    public IversonChunkAttribute(
-        EmbeddingModel model,
-        int maxTokens = 512,
-        int overlap   = 64,
-        int dimension = 0)
-    {
-        Model     = model;
-        MaxTokens = maxTokens;
-        Overlap   = overlap;
-        Dimension = model == EmbeddingModel.Custom
-            ? (dimension > 0
-                ? dimension
-                : throw new ArgumentException(
-                    "A positive dimension is required when using EmbeddingModel.Custom.", nameof(dimension)))
-            : model.GetDimension();
-    }
+    public int MaxTokens { get; } = maxTokens;
+    public int Overlap   { get; } = overlap;
 }

@@ -30,7 +30,7 @@ internal sealed class SchemaTestArticle
     public string Title { get; set; } = string.Empty;
     public Guid AuthorId { get; set; }
 
-    [IversonEmbedding(EmbeddingModel.AllMiniLmL6V2)]
+    [IversonEmbedding]
     public string Body { get; set; } = string.Empty;
 
     [ManyToOne(typeof(SchemaTestAuthor))]
@@ -215,7 +215,8 @@ public class SchemaRegistrarTests
         var bodyProp = articleRequest!.RootType!.Properties.SingleOrDefault(p => p.Name == "Body");
         bodyProp.Should().NotBeNull();
         bodyProp!.IsEmbedding.Should().BeTrue();
-        bodyProp.VectorDim.Should().BeGreaterThan(0);
+        bodyProp.VectorDim.Should().Be(0);
+        bodyProp.ModelId.Should().BeEmpty();
     }
 
     [Fact]

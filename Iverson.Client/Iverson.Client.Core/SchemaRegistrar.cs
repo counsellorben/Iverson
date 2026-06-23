@@ -108,11 +108,11 @@ public sealed class SchemaRegistrar(
 
     private static void AddAnnotations(PropertyDescriptor pd, PropertyInfo prop)
     {
-        if (prop.GetCustomAttribute<IversonEmbeddingAttribute>() is { } emb)
+        if (prop.GetCustomAttribute<IversonEmbeddingAttribute>() is not null)
         {
             pd.IsEmbedding = true;
-            pd.VectorDim   = emb.Dimension;
-            pd.ModelId     = emb.Model.GetModelId();
+            pd.VectorDim   = 0;
+            pd.ModelId     = string.Empty;
         }
 
         if (prop.GetCustomAttribute<IversonChunkAttribute>() is { } chunk)
@@ -120,8 +120,8 @@ public sealed class SchemaRegistrar(
             pd.IsChunk        = true;
             pd.ChunkMaxTokens = chunk.MaxTokens;
             pd.ChunkOverlap   = chunk.Overlap;
-            pd.ChunkModelId   = chunk.Model.GetModelId();
-            pd.ChunkVectorDim = chunk.Dimension;
+            pd.ChunkModelId   = string.Empty;
+            pd.ChunkVectorDim = 0;
         }
     }
 

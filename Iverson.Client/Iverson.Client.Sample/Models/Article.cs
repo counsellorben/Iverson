@@ -8,10 +8,10 @@ public class Article
     [IversonKey]
     public Guid Id { get; set; }
 
-    [IversonEmbedding(EmbeddingModel.OpenAiTextEmbedding3Small)]
+    [IversonEmbedding]
     public string    Title       { get; set; } = string.Empty;
 
-    [IversonChunk(EmbeddingModel.OpenAiTextEmbedding3Small, maxTokens: 512, overlap: 64)]
+    [IversonChunk(maxTokens: 512, overlap: 64)]
     public string    Body        { get; set; } = string.Empty;
 
     public DateTime  PublishedAt { get; set; }
