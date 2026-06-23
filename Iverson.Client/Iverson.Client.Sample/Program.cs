@@ -9,9 +9,11 @@ using static Iverson.Client.Search.SearchOperators;
 var services = new ServiceCollection()
     .AddLogging(b => b.AddConsole().SetMinimumLevel(LogLevel.Debug))
     .AddIversonClient(
-        grpcEndpoint: "https://localhost:5001",
+        grpcEndpoint: "https://localhost:7142",
         typeof(Article).Assembly)
     .BuildServiceProvider();
+
+await services.GetRequiredService<SchemaRegistrar>().RegisterAllAsync();
 
 var articles = services.GetRequiredService<EntityCoordinator<Article>>();
 var authors  = services.GetRequiredService<EntityCoordinator<Author>>();

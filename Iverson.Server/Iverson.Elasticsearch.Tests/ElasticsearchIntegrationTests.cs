@@ -249,7 +249,7 @@ public sealed class ElasticsearchIntegrationTests(ElasticsearchContainerFixture 
 
         var specs = new List<AggregationSpec>
         {
-            new("position_terms", AggregationKind.Terms, "Position", Size: 10)
+            new("position_terms", AggregationKind.Terms, "position.keyword", Size: 10)
         };
 
         var results = await _svc.AggregateAsync(index, string.Empty, specs);
@@ -276,7 +276,7 @@ public sealed class ElasticsearchIntegrationTests(ElasticsearchContainerFixture 
 
         var specs = new List<AggregationSpec>
         {
-            new("jersey_avg", AggregationKind.Avg, "JerseyNumber")
+            new("jersey_avg", AggregationKind.Avg, "jerseyNumber")
         };
 
         var results = await _svc.AggregateAsync(index, string.Empty, specs);
@@ -296,10 +296,10 @@ public sealed class ElasticsearchIntegrationTests(ElasticsearchContainerFixture 
 
         var specs = new List<AggregationSpec>
         {
-            new("position_terms", AggregationKind.Terms,  "Position",     Size: 5),
-            new("jersey_min",     AggregationKind.Min,    "JerseyNumber"),
-            new("jersey_max",     AggregationKind.Max,    "JerseyNumber"),
-            new("jersey_sum",     AggregationKind.Sum,    "JerseyNumber"),
+            new("position_terms", AggregationKind.Terms,  "position.keyword", Size: 5),
+            new("jersey_min",     AggregationKind.Min,    "jerseyNumber"),
+            new("jersey_max",     AggregationKind.Max,    "jerseyNumber"),
+            new("jersey_sum",     AggregationKind.Sum,    "jerseyNumber"),
         };
 
         var results = await _svc.AggregateAsync(index, string.Empty, specs);
@@ -323,11 +323,11 @@ public sealed class ElasticsearchIntegrationTests(ElasticsearchContainerFixture 
 
         var specs = new List<AggregationSpec>
         {
-            new("jersey_sum", AggregationKind.Sum, "JerseyNumber")
+            new("jersey_sum", AggregationKind.Sum, "jerseyNumber")
         };
 
         // Filter to only PG players (jersey 3 + 20 = 23)
-        var results = await _svc.AggregateAsync(index, "Position:PG", specs);
+        var results = await _svc.AggregateAsync(index, "position.keyword:PG", specs);
 
         results.Should().HaveCount(1);
         results[0].MetricValue.Should().BeApproximately(23.0, 0.01);
@@ -345,7 +345,7 @@ public sealed class ElasticsearchIntegrationTests(ElasticsearchContainerFixture 
 
         var specs = new List<AggregationSpec>
         {
-            new("jersey_range", AggregationKind.Range, "JerseyNumber",
+            new("jersey_range", AggregationKind.Range, "jerseyNumber",
                 RangeBuckets:
                 [
                     new RangeBucketSpec("low",  null, 10.0),

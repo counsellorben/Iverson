@@ -1,15 +1,18 @@
 using System.Diagnostics;
 using System.Net.Sockets;
+using System.Runtime.InteropServices;
 
-const string solutionRoot = ".";
+// Navigate from bin/Debug/net10.0/ up to Iverson.Server/ where docker-compose.yml lives
+var solutionRoot = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "../../../../"));
 
 var cts = new CancellationTokenSource();
 Console.CancelKeyPress += (_, e) => { e.Cancel = true; cts.Cancel(); };
+PosixSignalRegistration.Create(PosixSignal.SIGTERM, _ => cts.Cancel());
 
 Console.WriteLine("[Launcher] Starting Iverson infrastructure...");
 
-// Step 1: bring up Docker infrastructure
-await RunCommandAsync("docker", "compose up -d", solutionRoot, cts.Token);
+// Step 1: bring up Docker infrastructure (not iverson-api — that runs locally via dotnet run below)
+await RunCommandAsync("docker", "compose up -d postgres elasticsearch qdrant kafka zookeeper jaeger", solutionRoot, cts.Token);
 Console.WriteLine("[Launcher] Docker Compose up — waiting for services to be ready...");
 
 // Step 2: wait for each service port
@@ -21,9 +24,17 @@ await WaitForPortAsync("localhost", 4317, "Jaeger (OTLP)", cts.Token);
 
 Console.WriteLine("[Launcher] All infrastructure ready. Starting Iverson.Api...");
 
-// Step 3: launch the API
+// Step 3: launch the API over HTTPS using the developer certificate
 var apiPath = Path.Combine(solutionRoot, "Iverson.Api");
-var apiProcess = StartProcess("dotnet", "run --no-build", apiPath);
+var certPath = Path.Combine(
+    Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+    ".aspnet", "https", "Iverson.Api.pfx");
+var apiEnv = new Dictionary<string, string>
+{
+    ["ASPNETCORE_Kestrel__Certificates__Default__Path"]     = certPath,
+    ["ASPNETCORE_Kestrel__Certificates__Default__Password"] = "devcert",
+};
+var apiProcess = StartProcess("dotnet", "run --launch-profile https", apiPath, apiEnv);
 
 Console.WriteLine("[Launcher] Iverson.Api started (PID {0}). Press Ctrl+C to stop.", apiProcess.Id);
 
@@ -69,27 +80,30 @@ static async Task RunCommandAsync(string cmd, string args, string workingDir, Ca
     var psi = new ProcessStartInfo(cmd, args)
     {
         WorkingDirectory = workingDir,
-        RedirectStandardOutput = true,
         RedirectStandardError = true,
         UseShellExecute = false
     };
 
     var proc = Process.Start(psi) ?? throw new InvalidOperationException($"Failed to start {cmd}");
+    // Drain stderr concurrently — reading after WaitForExitAsync deadlocks when the buffer fills.
+    var stderrTask = proc.StandardError.ReadToEndAsync(ct);
     await proc.WaitForExitAsync(ct);
+    var err = await stderrTask;
 
     if (proc.ExitCode != 0)
-    {
-        var err = await proc.StandardError.ReadToEndAsync(ct);
         Console.Error.WriteLine($"[Launcher] {cmd} exited {proc.ExitCode}: {err}");
-    }
 }
 
-static Process StartProcess(string cmd, string args, string workingDir)
+static Process StartProcess(string cmd, string args, string workingDir,
+    Dictionary<string, string>? env = null)
 {
     var psi = new ProcessStartInfo(cmd, args)
     {
         WorkingDirectory = workingDir,
         UseShellExecute = false
     };
+    if (env is not null)
+        foreach (var (k, v) in env)
+            psi.Environment[k] = v;
     return Process.Start(psi) ?? throw new InvalidOperationException($"Failed to start {cmd}");
 }

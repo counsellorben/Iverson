@@ -65,6 +65,8 @@ public sealed class EntityRegistry
         return relations;
     }
 
+    public IEnumerable<EntityDescriptor> All => _byType.Values;
+
     public EntityDescriptor Get<T>()          => Get(typeof(T));
     public EntityDescriptor Get(Type type)    => _byType.TryGetValue(type,  out var d) ? d : Throw(type.Name);
     public EntityDescriptor GetByName(string name) => _byName.TryGetValue(name, out var d) ? d : Throw(name);

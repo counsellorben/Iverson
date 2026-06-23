@@ -72,7 +72,7 @@ builder.Services.AddEmbeddings(cfg);
 
 builder.Services.AddHostedService<RecordStoreConsumer>();
 builder.Services.AddHostedService<EngagementStoreConsumer>();
-builder.Services.AddHostedService<IntelligenceConsumer>();
+builder.Services.AddHostedService<IntelligenceStoreConsumer>();
 
 // ── Middleware ─────────────────────────────────────────────────────────────────
 var app = builder.Build();
@@ -85,9 +85,13 @@ app.UseHttpsRedirection();
 // Expose the W3C trace-id on every response so callers can correlate logs
 app.Use(async (context, next) =>
 {
+    context.Response.OnStarting(() =>
+    {
+        if (Activity.Current?.TraceId is { } traceId)
+            context.Response.Headers["X-Trace-Id"] = traceId.ToString();
+        return Task.CompletedTask;
+    });
     await next();
-    if (Activity.Current?.TraceId is { } traceId)
-        context.Response.Headers["X-Trace-Id"] = traceId.ToString();
 });
 
 // ── Endpoints ──────────────────────────────────────────────────────────────────
@@ -119,10 +123,16 @@ app.MapPost("/probe/kafka", async (IEventProducer producer) =>
     return Results.Ok(new { produced = true, topic = "iverson-probe", traceId });
 }).WithName("ProbeKafka");
 
+// ── Schema hydration ───────────────────────────────────────────────────────────
+await app.Services.GetRequiredService<SchemaRegistry>().LoadAsync();
+
 // ── gRPC endpoints ─────────────────────────────────────────────────────────────
 app.MapGrpcService<ObjectMappingGrpcService>();
 app.MapGrpcService<ObjectPersistenceGrpcService>();
 app.MapGrpcService<ObjectRetrievalGrpcService>();
 app.MapGrpcService<ObjectSearchGrpcService>();
+
+app.Lifetime.ApplicationStarted.Register(() =>
+    app.Logger.LogInformation("Iverson.Api is available — all Kafka topic subscriptions initiated"));
 
 app.Run();

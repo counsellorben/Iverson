@@ -41,6 +41,8 @@ public static class ServiceCollectionExtensions
 
         services.AddTransient(typeof(EntityCoordinator<>));
 
+        services.AddSingleton<SchemaRegistrar>();
+
         return services;
     }
 }

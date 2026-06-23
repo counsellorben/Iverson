@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using Confluent.Kafka;
+using Confluent.Kafka.Admin;
 using Microsoft.Extensions.Logging;
 
 namespace Iverson.Events;
@@ -8,6 +9,8 @@ public class KafkaConsumer(string bootstrapServers, ILogger<KafkaConsumer> logge
 {
     public async Task ConsumeAsync(string topic, string groupId, Func<string, string, CancellationToken, Task> handler, CancellationToken cancellationToken)
     {
+        await EnsureTopicExistsAsync(topic, cancellationToken);
+
         var config = new ConsumerConfig
         {
             BootstrapServers = bootstrapServers,
@@ -69,6 +72,29 @@ public class KafkaConsumer(string bootstrapServers, ILogger<KafkaConsumer> logge
         }
 
         consumer.Close();
+    }
+
+    private async Task EnsureTopicExistsAsync(string topic, CancellationToken ct)
+    {
+        using var admin = new AdminClientBuilder(new AdminClientConfig { BootstrapServers = bootstrapServers }).Build();
+        while (!ct.IsCancellationRequested)
+        {
+            try
+            {
+                await admin.CreateTopicsAsync([new TopicSpecification { Name = topic, NumPartitions = 1, ReplicationFactor = 1 }]);
+                logger.LogInformation("Created Kafka topic {Topic}", topic);
+                return;
+            }
+            catch (CreateTopicsException ex) when (ex.Results.All(r => r.Error.Code == ErrorCode.TopicAlreadyExists))
+            {
+                return;
+            }
+            catch (Exception ex)
+            {
+                logger.LogWarning("Kafka not ready for topic {Topic}, retrying: {Message}", topic, ex.Message);
+                await Task.Delay(2000, ct);
+            }
+        }
     }
 
     private static ActivityContext ExtractTraceContext(Headers headers)

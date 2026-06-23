@@ -1,3 +1,7 @@
+using System.Diagnostics;
+using System.Text.Json;
+using Google.Protobuf;
+using Google.Protobuf.WellKnownTypes;
 using Grpc.Core;
 using Iverson.Api.Schema;
 using Iverson.Client.Contracts;
@@ -26,6 +30,8 @@ public sealed class ObjectMappingGrpcService(
     ILogger<ObjectMappingGrpcService> logger)
     : ObjectMappingService.ObjectMappingServiceBase
 {
+    private const string SchemaVersion = "1";
+
     // ── Schema registration ────────────────────────────────────────────────────
 
     public override async Task<SchemaResponse> RegisterSchema(
@@ -36,18 +42,6 @@ public sealed class ObjectMappingGrpcService(
 
         if (request.RootType is null)
             throw new RpcException(new Status(StatusCode.InvalidArgument, "root_type is required."));
-
-        // Eligibility: root must have no ManyToOne or ManyToMany relations
-        var ineligible = request.RootType.Relations
-            .Where(r => r.Kind is ContractsRelKind.ManyToOne or ContractsRelKind.ManyToMany)
-            .Select(r => r.PropertyName)
-            .ToList();
-
-        if (ineligible.Count > 0)
-            throw new RpcException(new Status(StatusCode.InvalidArgument,
-                $"'{request.RootType.TypeName}' cannot be registered as a root type — " +
-                $"it carries ManyToOne/ManyToMany relations on: {string.Join(", ", ineligible)}. " +
-                $"Register the owning entity instead."));
 
         var registered = new List<string>();
 
@@ -84,13 +78,23 @@ public sealed class ObjectMappingGrpcService(
         logger.LogInformation("[Mapping.Get] type={Type} key={Key} depth={Depth}",
             request.TypeName, request.Key, request.Depth);
 
-        // TODO: resolve schema, fan out to backing stores, traverse relations to depth
-        return await Task.FromResult(new MappingResponse
-        {
-            Success = false,
-            Error   = $"Schema for '{request.TypeName}' not yet registered on the server.",
-            TraceId = request.TraceId
-        });
+        var schema = RequireSchema(request.TypeName);
+
+        var rowJson = await FetchByKeyAsync(schema, request.Key);
+        if (rowJson is null)
+            return new MappingResponse
+            {
+                Success = false,
+                Error   = $"'{request.TypeName}:{request.Key}' not found.",
+                TraceId = request.TraceId
+            };
+
+        var entityStruct = JsonParser.Default.Parse<Struct>(rowJson);
+
+        if (request.Depth > 0)
+            await ResolveRelationsAsync(entityStruct, schema, request.Depth, context.CancellationToken);
+
+        return new MappingResponse { Success = true, Data = entityStruct, TraceId = request.TraceId };
     }
 
     public override async Task<MappingResponse> Post(
@@ -98,14 +102,39 @@ public sealed class ObjectMappingGrpcService(
     {
         logger.LogInformation("[Mapping.Post] type={Type}", request.TypeName);
 
-        // TODO: deserialise payload, write to all annotated stores, emit OnCreate event.
-        await events.ProduceAsync($"{request.TypeName}.created", request.TypeName,
-            new { type = request.TypeName, traceId = request.TraceId });
+        var schema = RequireSchema(request.TypeName);
 
+        ValidateRelations(request.Payload, schema);
+
+        var key = ExtractKey(request.Payload, schema.KeyColumn.Name);
+        if (string.IsNullOrWhiteSpace(key) || key == Guid.Empty.ToString())
+        {
+            key = Guid.CreateVersion7().ToString();
+            StampKey(request.Payload, schema.KeyColumn.Name, key);
+        }
+
+        var payloadJson = SerializePayload(request.Payload);
+
+        await UpsertAsync(schema, payloadJson);
+
+        var targetStores = DetermineTargetStores(request.TypeName, schema);
+        await events.ProduceAsync(
+            EntityTopics.Created,
+            key,
+            new EntityEvent(
+                request.TypeName,
+                key,
+                payloadJson,
+                request.TraceId.NullIfEmpty() ?? Activity.Current?.TraceId.ToString() ?? string.Empty,
+                SchemaVersion,
+                DateTimeOffset.UtcNow,
+                targetStores));
+
+        var rowJson = await FetchByKeyAsync(schema, key);
         return new MappingResponse
         {
-            Success = false,
-            Error   = $"Schema for '{request.TypeName}' not yet registered on the server.",
+            Success = true,
+            Data    = rowJson is not null ? JsonParser.Default.Parse<Struct>(rowJson) : request.Payload,
             TraceId = request.TraceId
         };
     }
@@ -115,13 +144,37 @@ public sealed class ObjectMappingGrpcService(
     {
         logger.LogInformation("[Mapping.Update] type={Type}", request.TypeName);
 
-        await events.ProduceAsync($"{request.TypeName}.updated", request.TypeName,
-            new { type = request.TypeName, traceId = request.TraceId });
+        var schema = RequireSchema(request.TypeName);
 
+        var key = ExtractKey(request.Payload, schema.KeyColumn.Name);
+        if (string.IsNullOrWhiteSpace(key) || key == Guid.Empty.ToString())
+            throw new RpcException(new Status(StatusCode.InvalidArgument,
+                $"Update requires a non-empty '{schema.KeyColumn.Name}' in the payload."));
+
+        ValidateRelations(request.Payload, schema);
+
+        var payloadJson = SerializePayload(request.Payload);
+
+        await UpsertAsync(schema, payloadJson);
+
+        var targetStores = DetermineTargetStores(request.TypeName, schema);
+        await events.ProduceAsync(
+            EntityTopics.Updated,
+            key,
+            new EntityEvent(
+                request.TypeName,
+                key,
+                payloadJson,
+                request.TraceId.NullIfEmpty() ?? Activity.Current?.TraceId.ToString() ?? string.Empty,
+                SchemaVersion,
+                DateTimeOffset.UtcNow,
+                targetStores));
+
+        var rowJson = await FetchByKeyAsync(schema, key);
         return new MappingResponse
         {
-            Success = false,
-            Error   = $"Schema for '{request.TypeName}' not yet registered on the server.",
+            Success = true,
+            Data    = rowJson is not null ? JsonParser.Default.Parse<Struct>(rowJson) : request.Payload,
             TraceId = request.TraceId
         };
     }
@@ -131,18 +184,364 @@ public sealed class ObjectMappingGrpcService(
     {
         logger.LogInformation("[Mapping.Delete] type={Type} key={Key}", request.TypeName, request.Key);
 
-        await events.ProduceAsync($"{request.TypeName}.deleted", request.Key,
-            new { type = request.TypeName, key = request.Key, traceId = request.TraceId });
+        var schema = RequireSchema(request.TypeName);
 
-        return new MappingDeleteResponse
-        {
-            Success = false,
-            Error   = $"Schema for '{request.TypeName}' not yet registered on the server.",
-            TraceId = request.TraceId
-        };
+        var rowJson = await FetchByKeyAsync(schema, request.Key);
+        if (rowJson is null)
+            return new MappingDeleteResponse
+            {
+                Success = false,
+                Error   = $"'{request.TypeName}:{request.Key}' not found.",
+                TraceId = request.TraceId
+            };
+
+        await _sql.ExecuteAsync(
+            $"DELETE FROM \"{schema.TableName}\" WHERE \"{schema.KeyColumn.Name}\" = @Key::uuid",
+            new { Key = request.Key });
+
+        await events.ProduceAsync(
+            EntityTopics.Deleted,
+            request.Key,
+            new EntityEvent(
+                request.TypeName,
+                request.Key,
+                rowJson,
+                request.TraceId.NullIfEmpty() ?? Activity.Current?.TraceId.ToString() ?? string.Empty,
+                SchemaVersion,
+                DateTimeOffset.UtcNow,
+                StoreTarget.Record | StoreTarget.Engagement | StoreTarget.Intelligence));
+
+        return new MappingDeleteResponse { Success = true, TraceId = request.TraceId };
     }
 
-    // ── Private helpers ────────────────────────────────────────────────────────
+    // ── SQL helpers ───────────────────────────────────────────────────────────
+
+    private SchemaDescriptor RequireSchema(string typeName) =>
+        registry.Get(typeName) ?? throw new RpcException(new Status(StatusCode.FailedPrecondition,
+            $"No schema registered for '{typeName}'. Call RegisterSchema first."));
+
+    private async Task<string?> FetchByKeyAsync(SchemaDescriptor schema, string key) =>
+        await _sql.QuerySingleOrDefaultAsync<string>(
+            $"SELECT row_to_json(t)::text FROM \"{schema.TableName}\" t WHERE \"{schema.KeyColumn.Name}\" = @Key::uuid",
+            new { Key = key });
+
+    private async Task UpsertAsync(SchemaDescriptor schema, string payloadJson)
+    {
+        var allCols   = schema.ScalarColumns.Select(c => c.Name).ToList();
+        var updateSet = allCols.Count > 0
+            ? string.Join(", ", allCols.Select(c => $"\"{c}\" = EXCLUDED.\"{c}\""))
+            : $"\"{schema.KeyColumn.Name}\" = EXCLUDED.\"{schema.KeyColumn.Name}\"";
+
+        await _sql.ExecuteAsync(
+            $"""
+            INSERT INTO "{schema.TableName}"
+            SELECT * FROM json_populate_record(null::"{schema.TableName}", @Json::json)
+            ON CONFLICT ("{schema.KeyColumn.Name}") DO UPDATE SET {updateSet}
+            """,
+            new { Json = payloadJson });
+    }
+
+    private StoreTarget DetermineTargetStores(string typeName, SchemaDescriptor schema)
+    {
+        var stores = StoreTarget.Record;
+        if (IsCompleteForIngestion(schema))               stores |= StoreTarget.Engagement;
+        if (HasVectorOrChunkFields(schema))               stores |= StoreTarget.Intelligence;
+        if (registry.HasEngagementDependents(typeName))  stores |= StoreTarget.EngagementFanout;
+        return stores;
+    }
+
+    // ── Relation resolution ───────────────────────────────────────────────────
+
+    private async Task ResolveRelationsAsync(
+        Struct entityStruct, SchemaDescriptor schema, int depth, CancellationToken ct)
+    {
+        foreach (var relation in schema.Relations)
+        {
+            switch (relation.Kind)
+            {
+                case SchemaRelKind.ManyToOne:
+                case SchemaRelKind.OneToOne:
+                    await ResolveSingleRelationAsync(entityStruct, relation, depth, ct);
+                    break;
+
+                case SchemaRelKind.ManyToMany:
+                    await ResolveManyToManyAsync(entityStruct, relation, depth, ct);
+                    break;
+
+                case SchemaRelKind.OneToMany:
+                    await ResolveOneToManyAsync(entityStruct, schema, relation, depth, ct);
+                    break;
+            }
+        }
+    }
+
+    private async Task ResolveSingleRelationAsync(
+        Struct entityStruct, RelationEntry relation, int depth, CancellationToken ct)
+    {
+        var fkValue = FieldString(entityStruct, relation.ForeignKey);
+        if (string.IsNullOrWhiteSpace(fkValue)) return;
+
+        var relatedSchema = registry.Get(relation.RelatedTypeName);
+        if (relatedSchema is null) return;
+
+        var rowJson = await FetchByKeyAsync(relatedSchema, fkValue);
+        if (rowJson is null) return;
+
+        var relatedStruct = JsonParser.Default.Parse<Struct>(rowJson);
+        if (depth > 1)
+            await ResolveRelationsAsync(relatedStruct, relatedSchema, depth - 1, ct);
+
+        entityStruct.Fields[relation.PropertyName] = Value.ForStruct(relatedStruct);
+    }
+
+    private async Task ResolveManyToManyAsync(
+        Struct entityStruct, RelationEntry relation, int depth, CancellationToken ct)
+    {
+        var ids = FieldStringList(entityStruct, relation.ForeignKey);
+        if (ids.Count == 0) return;
+
+        var relatedSchema = registry.Get(relation.RelatedTypeName);
+        if (relatedSchema is null) return;
+
+        var items = new List<Value>();
+        foreach (var id in ids)
+        {
+            if (ct.IsCancellationRequested) break;
+            var rowJson = await FetchByKeyAsync(relatedSchema, id);
+            if (rowJson is null) continue;
+            var relatedStruct = JsonParser.Default.Parse<Struct>(rowJson);
+            if (depth > 1)
+                await ResolveRelationsAsync(relatedStruct, relatedSchema, depth - 1, ct);
+            items.Add(Value.ForStruct(relatedStruct));
+        }
+
+        entityStruct.Fields[relation.PropertyName] = Value.ForList(items.ToArray());
+    }
+
+    private async Task ResolveOneToManyAsync(
+        Struct entityStruct, SchemaDescriptor schema, RelationEntry relation, int depth, CancellationToken ct)
+    {
+        var keyValue = FieldString(entityStruct, schema.KeyColumn.Name);
+        if (string.IsNullOrWhiteSpace(keyValue)) return;
+
+        var relatedSchema = registry.Get(relation.RelatedTypeName);
+        if (relatedSchema is null) return;
+
+        var rows = await _sql.QueryAsync<string>(
+            $"SELECT row_to_json(t)::text FROM \"{relatedSchema.TableName}\" t WHERE \"{relation.ForeignKey}\" = @Key::uuid",
+            new { Key = keyValue });
+
+        var items = new List<Value>();
+        foreach (var rowJson in rows)
+        {
+            if (ct.IsCancellationRequested) break;
+            var relatedStruct = JsonParser.Default.Parse<Struct>(rowJson);
+            if (depth > 1)
+                await ResolveRelationsAsync(relatedStruct, relatedSchema, depth - 1, ct);
+            items.Add(Value.ForStruct(relatedStruct));
+        }
+
+        entityStruct.Fields[relation.PropertyName] = Value.ForList(items.ToArray());
+    }
+
+    // ── Struct field helpers ──────────────────────────────────────────────────
+
+    private static string? FieldString(Struct s, string fieldName)
+    {
+        foreach (var name in Candidates(fieldName))
+            if (s.Fields.TryGetValue(name, out var v))
+                return v.StringValue;
+        return null;
+    }
+
+    private static IReadOnlyList<string> FieldStringList(Struct s, string fieldName)
+    {
+        foreach (var name in Candidates(fieldName))
+            if (s.Fields.TryGetValue(name, out var v) && v.ListValue is not null)
+                return v.ListValue.Values
+                    .Select(x => x.StringValue)
+                    .Where(x => !string.IsNullOrEmpty(x))
+                    .ToList();
+        return [];
+    }
+
+    private static Value? FieldValue(Struct s, string fieldName)
+    {
+        foreach (var name in Candidates(fieldName))
+            if (s.Fields.TryGetValue(name, out var v))
+                return v;
+        return null;
+    }
+
+    private static IEnumerable<string> Candidates(string name)
+    {
+        yield return name;
+        if (name.Length > 0)
+            yield return char.ToLowerInvariant(name[0]) + name[1..];
+    }
+
+    // ── Payload serialization ─────────────────────────────────────────────────
+
+    private static string SerializePayload(Struct payload) =>
+        JsonSerializer.Serialize(
+            payload.Fields.ToDictionary(kv => kv.Key, kv => ProtoValueToNative(kv.Value)));
+
+    private static object? ProtoValueToNative(Value v) => v.KindCase switch
+    {
+        Value.KindOneofCase.StringValue  => v.StringValue,
+        Value.KindOneofCase.NumberValue  => v.NumberValue,
+        Value.KindOneofCase.BoolValue    => v.BoolValue,
+        Value.KindOneofCase.NullValue    => null,
+        Value.KindOneofCase.ListValue    => v.ListValue.Values.Select(ProtoValueToNative).ToList(),
+        Value.KindOneofCase.StructValue  => v.StructValue.Fields
+                                            .ToDictionary(kv => kv.Key, kv => ProtoValueToNative(kv.Value)),
+        _                                => null
+    };
+
+    // ── Key helpers ───────────────────────────────────────────────────────────
+
+    private static string ExtractKey(Struct payload, string keyColumn)
+    {
+        foreach (var candidate in Candidates(keyColumn))
+            if (payload.Fields.TryGetValue(candidate, out var v))
+                return v.StringValue;
+        return string.Empty;
+    }
+
+    private static void StampKey(Struct payload, string keyColumn, string key)
+    {
+        foreach (var candidate in Candidates(keyColumn))
+            if (payload.Fields.ContainsKey(candidate))
+            {
+                payload.Fields[candidate] = Value.ForString(key);
+                return;
+            }
+        payload.Fields[keyColumn] = Value.ForString(key);
+    }
+
+    // ── Relation validation ───────────────────────────────────────────────────
+
+    private void ValidateRelations(Struct payload, SchemaDescriptor schema)
+    {
+        var errors = new List<string>();
+
+        foreach (var relation in schema.Relations)
+        {
+            switch (relation.Kind)
+            {
+                case SchemaRelKind.ManyToOne:
+                case SchemaRelKind.OneToOne:
+                    ValidateSingleRelation(payload, relation, schema, errors);
+                    break;
+
+                case SchemaRelKind.ManyToMany:
+                    ValidateCollectionRelation(payload, relation, errors);
+                    break;
+
+                case SchemaRelKind.OneToMany:
+                    break; // FK lives on the related entity
+            }
+        }
+
+        if (errors.Count > 0)
+            throw new RpcException(new Status(StatusCode.InvalidArgument,
+                string.Join(" | ", errors)));
+    }
+
+    private void ValidateSingleRelation(
+        Struct payload, RelationEntry relation, SchemaDescriptor schema, List<string> errors)
+    {
+        var fkValue = FieldValue(payload, relation.ForeignKey);
+        if (fkValue is not null)
+        {
+            if (!Guid.TryParse(fkValue.StringValue, out var g) || g == Guid.Empty)
+                errors.Add($"'{relation.ForeignKey}': must be a valid non-empty GUID.");
+            return;
+        }
+
+        var navValue = FieldValue(payload, relation.PropertyName);
+        if (navValue?.StructValue is { } nested)
+        {
+            ValidateNestedObject(nested, relation.PropertyName, relation.RelatedTypeName, errors);
+            return;
+        }
+
+        var fkCol = schema.ScalarColumns.FirstOrDefault(c =>
+            string.Equals(c.Name, relation.ForeignKey, StringComparison.OrdinalIgnoreCase));
+
+        if (fkCol is null || !fkCol.IsNullable)
+            errors.Add(
+                $"Relation '{relation.PropertyName}' ({relation.Kind}) is required. " +
+                $"Provide '{relation.ForeignKey}' (GUID reference) or " +
+                $"'{relation.PropertyName}' (embedded object).");
+    }
+
+    private void ValidateCollectionRelation(
+        Struct payload, RelationEntry relation, List<string> errors)
+    {
+        var fkValue = FieldValue(payload, relation.ForeignKey);
+        if (fkValue?.ListValue is { } fkList)
+        {
+            for (var i = 0; i < fkList.Values.Count; i++)
+            {
+                var str = fkList.Values[i].StringValue;
+                if (!Guid.TryParse(str, out var g) || g == Guid.Empty)
+                    errors.Add($"'{relation.ForeignKey}[{i}]': invalid GUID '{str}'.");
+            }
+            return;
+        }
+
+        var navValue = FieldValue(payload, relation.PropertyName);
+        if (navValue?.ListValue is { } navList)
+        {
+            for (var i = 0; i < navList.Values.Count; i++)
+            {
+                var item = navList.Values[i].StructValue;
+                if (item is null)
+                {
+                    errors.Add($"'{relation.PropertyName}[{i}]': expected an object, got a scalar.");
+                    continue;
+                }
+                ValidateNestedObject(item, $"{relation.PropertyName}[{i}]", relation.RelatedTypeName, errors);
+            }
+        }
+        // empty collection is valid
+    }
+
+    private void ValidateNestedObject(Struct nested, string path, string relatedTypeName, List<string> errors)
+    {
+        var relatedSchema  = registry.Get(relatedTypeName);
+        var keyColumnName  = relatedSchema?.KeyColumn.Name ?? "Id";
+        var nestedKeyValue = FieldValue(nested, keyColumnName);
+        var nestedKey      = nestedKeyValue?.StringValue;
+
+        var isExistingEntity = !string.IsNullOrWhiteSpace(nestedKey)
+                            && nestedKey != Guid.Empty.ToString()
+                            && Guid.TryParse(nestedKey, out _);
+
+        if (isExistingEntity && nested.Fields.Count > 1)
+            errors.Add(
+                $"'{path}': existing entity (key='{nestedKey}') must only include " +
+                $"the key field '{keyColumnName}' — remove extra properties.");
+    }
+
+    // ── Static schema predicates ──────────────────────────────────────────────
+
+    private static bool HasVectorOrChunkFields(SchemaDescriptor schema) =>
+        schema.VectorFields.Count > 0 || schema.ChunkFields.Count > 0;
+
+    private static bool IsCompleteForIngestion(SchemaDescriptor schema) =>
+        schema.Relations.All(r => r.Kind switch
+        {
+            SchemaRelKind.ManyToOne  => true,
+            SchemaRelKind.OneToOne   => true,
+            SchemaRelKind.OneToMany  => false,
+            SchemaRelKind.ManyToMany => schema.FkColumns.Any(fk =>
+                string.Equals(fk.ColumnName, r.ForeignKey, StringComparison.OrdinalIgnoreCase)),
+            _                        => false
+        });
+
+    // ── Schema builder helpers (unchanged from original) ──────────────────────
 
     private static SchemaDescriptor BuildDescriptor(TypeDescriptor typeDesc)
     {
@@ -161,8 +560,6 @@ public sealed class ObjectMappingGrpcService(
             var sqlType = ClrTypeToSql(prop.ClrType, prop.IsArray);
             scalars.Add(new ColumnDescriptor(prop.Name, sqlType, prop.IsNullable));
 
-            // Embedding and chunk annotations are additive — the field remains a scalar column
-            // in SQL/ES and additionally drives Qdrant vector/chunk ingestion.
             if (prop.IsEmbedding)
                 vectors.Add(new VectorDescriptor(prop.Name, prop.VectorDim, prop.ModelId));
 
@@ -223,8 +620,6 @@ public sealed class ObjectMappingGrpcService(
         foreach (var col in d.ScalarColumns)
             fields.Add(new FieldMapping(col.Name, SqlTypeToEsType(col.SqlType)));
 
-        // Embedding fields are already stored as text scalars above.
-        // Add a companion dense_vector field named {property}_vector for kNN retrieval.
         foreach (var v in d.VectorFields)
             fields.Add(new FieldMapping($"{ToSnakeCase(v.PropertyName)}_vector", EsFieldType.DenseVector, v.Dimension));
 
@@ -299,4 +694,10 @@ public sealed class ObjectMappingGrpcService(
         }
         return sb.ToString();
     }
+}
+
+file static class StringExtensions
+{
+    internal static string? NullIfEmpty(this string? s) =>
+        string.IsNullOrWhiteSpace(s) ? null : s;
 }

@@ -21,12 +21,12 @@ namespace Iverson.Api.Consumers;
 /// Routing is gated on StoreTarget.Intelligence only — relation completeness does not
 /// affect whether an entity goes to Qdrant.
 /// </summary>
-public sealed class IntelligenceConsumer(
+public sealed class IntelligenceStoreConsumer(
     IEventConsumer consumer,
     IVectorService vector,
     IEmbeddingService embedding,
     SchemaRegistry registry,
-    ILogger<IntelligenceConsumer> logger) : BackgroundService
+    ILogger<IntelligenceStoreConsumer> logger) : BackgroundService
 {
     private const string GroupId = "iverson.consumer.intelligence";
 

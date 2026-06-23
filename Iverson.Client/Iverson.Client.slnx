@@ -5,4 +5,5 @@
   <Project Path="Iverson.Client.Sample/Iverson.Client.Sample.csproj" />
   <Project Path="Iverson.Client.Search/Iverson.Client.Search.csproj" />
   <Project Path="Iverson.Client.Search.Tests/Iverson.Client.Search.Tests.csproj" />
+  <Project Path="Iverson.Client.Core.Tests/Iverson.Client.Core.Tests.csproj" />
 </Solution>

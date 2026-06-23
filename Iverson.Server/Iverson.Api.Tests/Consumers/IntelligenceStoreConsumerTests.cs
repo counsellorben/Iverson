@@ -13,7 +13,7 @@ using Xunit;
 
 namespace Iverson.Api.Tests.Consumers;
 
-public class IntelligenceConsumerTests
+public class IntelligenceStoreConsumerTests
 {
     private readonly IEventConsumer _consumer;
     private readonly IVectorService _vector;
@@ -27,7 +27,7 @@ public class IntelligenceConsumerTests
         PropertyNameCaseInsensitive = true
     };
 
-    public IntelligenceConsumerTests()
+    public IntelligenceStoreConsumerTests()
     {
         _consumer  = Substitute.For<IEventConsumer>();
         _vector    = Substitute.For<IVectorService>();
@@ -51,8 +51,8 @@ public class IntelligenceConsumerTests
 
     private string Serialize(EntityEvent ev) => JsonSerializer.Serialize(ev, JsonOptions);
 
-    private IntelligenceConsumer BuildSut() =>
-        new(_consumer, _vector, _embedding, _registry, NullLogger<IntelligenceConsumer>.Instance);
+    private IntelligenceStoreConsumer BuildSut() =>
+        new(_consumer, _vector, _embedding, _registry, NullLogger<IntelligenceStoreConsumer>.Instance);
 
     [Fact]
     public async Task HandleCreated_WithVectorField_CallsEmbedAndUpsertNamed()
