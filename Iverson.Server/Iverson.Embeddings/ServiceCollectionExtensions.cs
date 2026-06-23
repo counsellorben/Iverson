@@ -11,11 +11,12 @@ public static class ServiceCollectionExtensions
 
         services.AddHttpClient(Telemetry.HttpClientName, (sp, client) =>
         {
-            var opts = sp.GetRequiredService<Microsoft.Extensions.Options.IOptions<EmbeddingServiceOptions>>().Value;
+            var opts = sp.GetRequiredService<
+                Microsoft.Extensions.Options.IOptions<EmbeddingServiceOptions>>().Value;
             client.BaseAddress = new Uri(opts.BaseUrl);
         });
 
-        services.AddSingleton<IEmbeddingService, OpenAiEmbeddingService>();
+        services.AddSingleton<IEmbeddingService, EmbeddingService>();
         return services;
     }
 }

@@ -148,8 +148,8 @@ public class ObjectSearchGrpcServiceTests
     {
         await _registry.RegisterAsync(SchemaFixtures.ArticleSchema());
 
-        var fakeVector = new float[1536];
-        _embedding.EmbedAsync("test query", "text-embedding-3-small", Arg.Any<CancellationToken>())
+        var fakeVector = new float[768];
+        _embedding.EmbedAsync("test query", Arg.Any<CancellationToken>())
                   .Returns(fakeVector);
 
         var vectorResult = new VectorSearchResult(
@@ -208,8 +208,8 @@ public class ObjectSearchGrpcServiceTests
     {
         await _registry.RegisterAsync(SchemaFixtures.ArticleSchema());
 
-        var fakeVector = new float[1536];
-        _embedding.EmbedAsync("test query", "text-embedding-3-small", Arg.Any<CancellationToken>())
+        var fakeVector = new float[768];
+        _embedding.EmbedAsync("test query", Arg.Any<CancellationToken>())
                   .Returns(fakeVector);
 
         var chunkResult = new VectorSearchResult(
@@ -245,8 +245,8 @@ public class ObjectSearchGrpcServiceTests
     {
         await _registry.RegisterAsync(SchemaFixtures.ArticleSchema());
 
-        var fakeVector = new float[1536];
-        _embedding.EmbedAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<CancellationToken>())
+        var fakeVector = new float[768];
+        _embedding.EmbedAsync(Arg.Any<string>(), Arg.Any<CancellationToken>())
                   .Returns(fakeVector);
 
         var chunkResult = new VectorSearchResult(

@@ -82,8 +82,17 @@ public sealed class ObjectSearchGrpcService(
         logger.LogInformation("[SearchSimilar] type={Type} property={Prop} topK={K}",
             request.TypeName, request.Property, request.TopK);
 
-        var queryVector = await embedding.EmbedAsync(
-            request.Query, vectorDesc.ModelId, context.CancellationToken);
+        float[] queryVector;
+        try
+        {
+            queryVector = await embedding.EmbedAsync(
+                request.Query, context.CancellationToken);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            throw new RpcException(new Status(StatusCode.Unavailable,
+                $"Embedding service unavailable: {ex.Message}"));
+        }
 
         var vectorName = ToSnakeCase(vectorDesc.PropertyName) + "_vector";
         var topK       = (ulong)Math.Max(1, (int)request.TopK);
@@ -126,8 +135,17 @@ public sealed class ObjectSearchGrpcService(
         logger.LogInformation("[SearchChunks] type={Type} property={Prop} topK={K}",
             request.TypeName, request.Property, request.TopK);
 
-        var queryVector = await embedding.EmbedAsync(
-            request.Query, chunkDesc.ModelId, context.CancellationToken);
+        float[] queryVector;
+        try
+        {
+            queryVector = await embedding.EmbedAsync(
+                request.Query, context.CancellationToken);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            throw new RpcException(new Status(StatusCode.Unavailable,
+                $"Embedding service unavailable: {ex.Message}"));
+        }
 
         var vectorName       = ToSnakeCase(chunkDesc.PropertyName) + "_vector";
         var chunksCollection = schema.CollectionName + "_chunks";

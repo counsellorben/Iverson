@@ -78,7 +78,7 @@ public sealed class IntelligenceStoreConsumer(
                 try
                 {
                     namedVectors[$"{ToSnakeCase(vf.PropertyName)}_vector"] =
-                        await embedding.EmbedAsync(text, vf.ModelId, ct);
+                        await embedding.EmbedAsync(text, ct);
                 }
                 catch (Exception ex)
                 {
@@ -88,7 +88,14 @@ public sealed class IntelligenceStoreConsumer(
 
             if (namedVectors.Count > 0)
             {
-                await vector.UpsertNamedAsync(schema.CollectionName, pointId, namedVectors);
+                var pointPayload = new Dictionary<string, string> { ["key"] = ev.Key };
+                foreach (var vf in schema.VectorFields)
+                {
+                    var fieldText = ExtractString(payload, vf.PropertyName);
+                    if (!string.IsNullOrWhiteSpace(fieldText))
+                        pointPayload[char.ToLowerInvariant(vf.PropertyName[0]) + vf.PropertyName[1..]] = fieldText;
+                }
+                await vector.UpsertNamedAsync(schema.CollectionName, pointId, namedVectors, pointPayload);
                 logger.LogInformation("[Intelligence] Upserted {Count} vector(s) for {Type}:{Key}",
                     namedVectors.Count, ev.TypeName, ev.Key);
             }
@@ -114,7 +121,7 @@ public sealed class IntelligenceStoreConsumer(
 
                     try
                     {
-                        var chunkVector = await embedding.EmbedAsync(chunkText, cf.ModelId, ct);
+                        var chunkVector = await embedding.EmbedAsync(chunkText, ct);
                         var chunkId     = ChunkPointId(pointId, cf.PropertyName, chunkIndex);
 
                         await vector.UpsertNamedAsync(

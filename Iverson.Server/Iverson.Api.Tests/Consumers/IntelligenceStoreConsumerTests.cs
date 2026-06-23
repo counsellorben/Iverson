@@ -43,8 +43,8 @@ public class IntelligenceStoreConsumerTests
             Arg.Any<IReadOnlyDictionary<string, string>?>())
             .Returns(Task.CompletedTask);
         _vector.DeleteAsync(Arg.Any<string>(), Arg.Any<ulong>()).Returns(Task.CompletedTask);
-        _embedding.EmbedAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<CancellationToken>())
-                  .Returns(new float[1536]);
+        _embedding.EmbedAsync(Arg.Any<string>(), Arg.Any<CancellationToken>())
+                  .Returns(new float[768]);
 
         _registry = new Api.Schema.SchemaRegistry(_sql, NullLogger<Api.Schema.SchemaRegistry>.Instance);
     }
@@ -59,8 +59,8 @@ public class IntelligenceStoreConsumerTests
     {
         await _registry.RegisterAsync(SchemaFixtures.ArticleSchema());
 
-        var fakeVector = new float[1536];
-        _embedding.EmbedAsync("Great Title", "text-embedding-3-small", Arg.Any<CancellationToken>())
+        var fakeVector = new float[768];
+        _embedding.EmbedAsync("Great Title", Arg.Any<CancellationToken>())
                   .Returns(fakeVector);
 
         var payload = """{"Title":"Great Title","Body":"Some body text","AuthorId":"00000000-0000-0000-0000-000000000001"}""";
@@ -76,9 +76,8 @@ public class IntelligenceStoreConsumerTests
         var sut = BuildSut();
         await sut.HandleAsync(ev.Key, Serialize(ev), CancellationToken.None);
 
-        await _embedding.Received().EmbedAsync(
+        _ = _embedding.Received().EmbedAsync(
             "Great Title",
-            "text-embedding-3-small",
             Arg.Any<CancellationToken>());
 
         await _vector.Received().UpsertNamedAsync(
@@ -153,7 +152,7 @@ public class IntelligenceStoreConsumerTests
         var sut = BuildSut();
         await sut.HandleAsync(ev.Key, Serialize(ev), CancellationToken.None);
 
-        await _embedding.DidNotReceive().EmbedAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<CancellationToken>());
+        _ = _embedding.DidNotReceive().EmbedAsync(Arg.Any<string>(), Arg.Any<CancellationToken>());
         await _vector.DidNotReceive().UpsertNamedAsync(
             Arg.Any<string>(),
             Arg.Any<ulong>(),
@@ -180,10 +179,7 @@ public class IntelligenceStoreConsumerTests
         var sut = BuildSut();
         await sut.HandleAsync(ev.Key, Serialize(ev), CancellationToken.None);
 
-        await _embedding.DidNotReceive().EmbedAsync(
-            "",
-            "text-embedding-3-small",
-            Arg.Any<CancellationToken>());
+        _ = _embedding.DidNotReceive().EmbedAsync("", Arg.Any<CancellationToken>());
     }
 
     [Fact]
@@ -191,8 +187,8 @@ public class IntelligenceStoreConsumerTests
     {
         await _registry.RegisterAsync(SchemaFixtures.ArticleSchema());
 
-        _embedding.EmbedAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<CancellationToken>())
-                  .Returns<float[]>(_ => throw new Exception("OpenAI timeout"));
+        _embedding.EmbedAsync(Arg.Any<string>(), Arg.Any<CancellationToken>())
+                  .Returns<float[]>(_ => throw new Exception("Ollama timeout"));
 
         var payload = """{"Title":"Test Title","Body":"Some body","AuthorId":"00000000-0000-0000-0000-000000000001"}""";
         var ev = new EntityEvent(
