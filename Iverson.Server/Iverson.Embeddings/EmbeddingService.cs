@@ -8,7 +8,7 @@ namespace Iverson.Embeddings;
 
 public sealed class EmbeddingService(
     IHttpClientFactory httpClientFactory,
-    IOptions<EmbeddingServiceOptions> opts,
+    IOptions<EmbeddingServiceOptions> options,
     ILogger<EmbeddingService> logger) : IEmbeddingService
 {
     private static readonly JsonSerializerOptions _jsonOpts =
@@ -21,7 +21,7 @@ public sealed class EmbeddingService(
         : throw new InvalidOperationException(
             "EmbeddingService not initialized — call InitializeAsync first.");
 
-    public string ModelId => opts.Value.ModelId;
+    public string ModelId => options.Value.ModelId;
 
     public async Task InitializeAsync(CancellationToken ct = default)
     {
@@ -40,16 +40,16 @@ public sealed class EmbeddingService(
 
         try
         {
-            using var http = httpClientFactory.CreateClient(Telemetry.HttpClientName);
+            using var client = httpClientFactory.CreateClient(Telemetry.HttpClientName);
 
             var body = JsonSerializer.Serialize(
                 new { model = ModelId, input = text }, _jsonOpts);
-            using var msg = new HttpRequestMessage(HttpMethod.Post, "/v1/embeddings")
+            using var request = new HttpRequestMessage(HttpMethod.Post, "/v1/embeddings")
             {
                 Content = new StringContent(body, Encoding.UTF8, "application/json")
             };
 
-            var response = await http.SendAsync(msg, ct);
+            var response = await client.SendAsync(request, ct);
             response.EnsureSuccessStatusCode();
 
             var responseJson = await response.Content.ReadAsStringAsync(ct);

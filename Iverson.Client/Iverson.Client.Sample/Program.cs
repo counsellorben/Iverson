@@ -1,3 +1,5 @@
+using Grpc.Core;
+using Iverson.Client.Contracts;
 using Iverson.Client.Core;
 using Iverson.Client.Sample.Models;
 using Iverson.Client.Search;
@@ -7,7 +9,7 @@ using static Iverson.Client.Search.SearchOperators;
 
 // ── DI Setup ───────────────────────────────────────────────────────────────────
 var services = new ServiceCollection()
-    .AddLogging(b => b.AddConsole().SetMinimumLevel(LogLevel.Debug))
+    .AddLogging(b => b.AddConsole().SetMinimumLevel(LogLevel.Warning))
     .AddIversonClient(
         grpcEndpoint: "https://localhost:7142",
         typeof(Article).Assembly)
@@ -15,108 +17,278 @@ var services = new ServiceCollection()
 
 await services.GetRequiredService<SchemaRegistrar>().RegisterAllAsync();
 
-var articles = services.GetRequiredService<EntityCoordinator<Article>>();
-var authors  = services.GetRequiredService<EntityCoordinator<Author>>();
-var tags     = services.GetRequiredService<EntityCoordinator<Tag>>();
+var authors      = services.GetRequiredService<EntityCoordinator<Author>>();
+var articles     = services.GetRequiredService<EntityCoordinator<Article>>();
+var tags         = services.GetRequiredService<EntityCoordinator<Tag>>();
+var users        = services.GetRequiredService<EntityCoordinator<User>>();
+var userArticles = services.GetRequiredService<EntityCoordinator<UserArticle>>();
 
-// ── Object Mapping — full CRUD with server-side graph resolution ───────────────
+// Direct search client for Qdrant paths (SearchSimilar / SearchChunks are
+// separate RPCs not yet surfaced on EntityCoordinator).
+var searchClient = services.GetRequiredService<ObjectSearchService.ObjectSearchServiceClient>();
 
-Console.WriteLine("\n=== Object Mapping ===");
+// ── Seed Data ─────────────────────────────────────────────────────────────────
 
-var newArticle = new Article
+Console.WriteLine("\n=== Seed Data ===");
+
+// Authors
+var authorAiId   = Guid.NewGuid();
+var authorKobeId = Guid.NewGuid();
+
+await authors.PersistAsync(new Author
 {
-    Id          = Guid.NewGuid(),
-    AuthorId    = Guid.Parse("11111111-0000-0000-0000-000000000001"),
-    Title       = "The Original AI",
-    Body        = "Before LLMs, Allen Iverson was already doing the impossible.",
-    PublishedAt = DateTime.UtcNow,
-    IsPublished = true
-};
-
-var created = await articles.PostMappedAsync(newArticle);
-Console.WriteLine($"Created: {created?.Title} by {created?.Author?.Name}");
-
-// GET with depth=1 so the server also returns the Author inline
-var fetched = await articles.GetMappedAsync(newArticle.Id.ToString(), depth: 1);
-Console.WriteLine($"Fetched: {fetched?.Title}, author={fetched?.Author?.Name}, tags={fetched?.Tags.Count}");
-
-// UPDATE
-if (fetched is not null)
-{
-    fetched.Title = "The Original AI (Updated)";
-    var updated = await articles.UpdateMappedAsync(fetched);
-    Console.WriteLine($"Updated title: {updated?.Title}");
-}
-
-// DELETE
-var deleted = await articles.DeleteAsync(newArticle.Id.ToString());
-Console.WriteLine($"Deleted: {deleted}");
-
-// ── Object Persistence — lightweight write, no graph traversal ─────────────────
-
-Console.WriteLine("\n=== Object Persistence ===");
-
-var author = new Author
-{
-    Id    = Guid.NewGuid(),
+    Id    = authorAiId,
     Name  = "Allen Iverson",
     Email = "ai@iverson.dev",
-    Bio   = "The original AI."
-};
+    Bio   = "The original AI. Point guard. Hall of Famer."
+});
+await authors.PersistAsync(new Author
+{
+    Id    = authorKobeId,
+    Name  = "Kobe Bryant",
+    Email = "kb@iverson.dev",
+    Bio   = "The Black Mamba. Five-time NBA champion."
+});
+Console.WriteLine($"Created authors: {authorAiId}, {authorKobeId}");
 
-var key = await authors.PersistAsync(author);
-Console.WriteLine($"Persisted author, key={key}");
+// Tags
+var tagBballId  = Guid.NewGuid();
+var tagCultureId = Guid.NewGuid();
+var tagLegacyId  = Guid.NewGuid();
 
-// Update with a modified copy (class — must assign to a local)
-author.Bio = "Point guard. Hall of Famer.";
-var updatedKey = await authors.UpdateAsync(author);
-Console.WriteLine($"Updated author, key={updatedKey}");
+await tags.PersistAsync(new Tag { Id = tagBballId,   Label = "Basketball",   Slug = "basketball"   });
+await tags.PersistAsync(new Tag { Id = tagCultureId, Label = "Culture",      Slug = "culture"      });
+await tags.PersistAsync(new Tag { Id = tagLegacyId,  Label = "Legacy",       Slug = "legacy"       });
+Console.WriteLine($"Created tags: basketball, culture, legacy");
 
-// ── Object Retrieval — key-based fetch, client assembles the graph ─────────────
+// Articles (PostMappedAsync so the server resolves Author and Tags and the full
+// hydrated document is emitted to Kafka for ES/Qdrant indexing).
+var article1Id = Guid.NewGuid();
+var article2Id = Guid.NewGuid();
 
-Console.WriteLine("\n=== Object Retrieval ===");
+var article1 = await articles.PostMappedAsync(new Article
+{
+    Id          = article1Id,
+    AuthorId    = authorAiId,
+    TagIds      = [tagBballId, tagCultureId],
+    Title       = "The Original AI: Allen Iverson's Legacy",
+    Body        = "Before large language models, Allen Iverson was already doing the impossible on the hardwood.",
+    PublishedAt = DateTime.UtcNow.AddDays(-7),
+    IsPublished = true
+});
+var article2 = await articles.PostMappedAsync(new Article
+{
+    Id          = article2Id,
+    AuthorId    = authorKobeId,
+    TagIds      = [tagBballId, tagLegacyId],
+    Title       = "The Black Mamba Mentality",
+    Body        = "Kobe Bryant's relentless work ethic and Mamba Mentality redefined what dedication to the game looks like.",
+    PublishedAt = DateTime.UtcNow.AddDays(-3),
+    IsPublished = true
+});
+Console.WriteLine($"Created articles: '{article1?.Title}', '{article2?.Title}'");
 
-var retrieved = await articles.GetAsync(newArticle.Id.ToString());
-Console.WriteLine($"Retrieved: {retrieved?.Title}, author={retrieved?.Author?.Name}");
+// User
+var userId = Guid.NewGuid();
+await users.PersistAsync(new User
+{
+    Id        = userId,
+    Name      = "Test User",
+    Email     = "test@example.com",
+    Username  = "testuser",
+    CreatedAt = DateTime.UtcNow
+});
+Console.WriteLine($"Created user: {userId}");
 
-var ids = new[] { Guid.NewGuid().ToString(), Guid.NewGuid().ToString() };
-await foreach (var article in articles.GetManyAsync(ids))
-    Console.WriteLine($"  Got: {article.Title}");
+// UserArticles — PostMappedAsync so the server emits a fully hydrated document
+// (User + Article data) to Kafka for ES indexing. UserArticle is the primary
+// entity to search in ES because it carries a rich, denormalized view.
+var ua1Id = Guid.NewGuid();
+var ua2Id = Guid.NewGuid();
 
-// ── Object Search — DSL ────────────────────────────────────────────────────────
+await userArticles.PostMappedAsync(new UserArticle
+{
+    Id        = ua1Id,
+    UserId    = userId,
+    ArticleId = article1Id,
+    CreatedAt = DateTime.UtcNow
+});
+await userArticles.PostMappedAsync(new UserArticle
+{
+    Id        = ua2Id,
+    UserId    = userId,
+    ArticleId = article2Id,
+    CreatedAt = DateTime.UtcNow
+});
+Console.WriteLine($"Created user-articles: {ua1Id}, {ua2Id}");
 
-Console.WriteLine("\n=== Object Search ===");
+// ── Object Mapping — PostgreSQL CRUD with server-side graph resolution ─────────
 
-// Full-text + date filter (EqualTo avoids collision with object.Equals)
-var textQuery = Query.For<Article>()
-    .Where(a => a.Title,       Contains,    "AI")
+Console.WriteLine("\n=== Object Mapping (PostgreSQL) ===");
+
+// Author: GetMapped with depth=1 returns the Author with inline Articles list.
+var fetchedAuthor = await authors.GetMappedAsync(authorAiId.ToString(), depth: 1);
+Console.WriteLine($"Author: {fetchedAuthor?.Name} ({fetchedAuthor?.Articles.Count} articles)");
+
+// Article: GetMapped with depth=1 returns Author + Tags resolved.
+var fetchedArticle = await articles.GetMappedAsync(article1Id.ToString(), depth: 1);
+Console.WriteLine($"Article: '{fetchedArticle?.Title}' by {fetchedArticle?.Author?.Name} [{fetchedArticle?.Tags.Count} tags]");
+
+// Article: depth=2 also recurses into Author's Articles.
+var deepArticle = await articles.GetMappedAsync(article1Id.ToString(), depth: 2);
+Console.WriteLine($"Article (depth=2): author has {deepArticle?.Author?.Articles.Count} article(s)");
+
+// UserArticle: GetMapped with depth=1 returns both ManyToOne relations resolved.
+var fetchedUa = await userArticles.GetMappedAsync(ua1Id.ToString(), depth: 1);
+Console.WriteLine($"UserArticle: user='{fetchedUa?.User?.Name}' article='{fetchedUa?.Article?.Title}'");
+
+// Update an article title.
+if (fetchedArticle is not null)
+{
+    fetchedArticle.Title = "The Original AI: Allen Iverson's Enduring Legacy";
+    var updated = await articles.UpdateMappedAsync(fetchedArticle);
+    Console.WriteLine($"Updated article: '{updated?.Title}'");
+}
+
+// Tag: GetMapped (no relations to resolve, just demonstrates the mapping path).
+var fetchedTag = await tags.GetMappedAsync(tagBballId.ToString());
+Console.WriteLine($"Tag: {fetchedTag?.Label} (slug: {fetchedTag?.Slug})");
+
+// ── Object Retrieval — PostgreSQL key-based, client assembles the graph ────────
+
+Console.WriteLine("\n=== Object Retrieval (PostgreSQL) ===");
+
+// Author — client side graph assembly via GraphAssembler.
+var retrievedAuthor = await authors.GetAsync(authorKobeId.ToString());
+Console.WriteLine($"Retrieved author: {retrievedAuthor?.Name}, articles={retrievedAuthor?.Articles.Count}");
+
+// Tags — streaming via GetManyAsync.
+Console.WriteLine("Tags (GetMany):");
+var tagIds = new[] { tagBballId.ToString(), tagCultureId.ToString(), tagLegacyId.ToString() };
+await foreach (var tag in tags.GetManyAsync(tagIds))
+    Console.WriteLine($"  - {tag.Label} ({tag.Slug})");
+
+// User — simple key lookup.
+var retrievedUser = await users.GetAsync(userId.ToString());
+Console.WriteLine($"Retrieved user: {retrievedUser?.Name} ({retrievedUser?.Email})");
+
+// UserArticle — key lookup with both ManyToOne relations assembled client-side.
+var retrievedUa = await userArticles.GetAsync(ua2Id.ToString());
+Console.WriteLine($"Retrieved user-article: user={retrievedUa?.User?.Name}, article='{retrievedUa?.Article?.Title}'");
+
+// ── Object Search — Elasticsearch ─────────────────────────────────────────────
+
+// Kafka consumers need time to process events and index documents.
+// In a production test harness, await an index-refresh signal instead.
+Console.WriteLine("\n=== Object Search — Elasticsearch ===");
+Console.WriteLine("(Waiting 3 s for Kafka consumers to index documents...)");
+await Task.Delay(TimeSpan.FromSeconds(3));
+
+// UserArticle is the fully hydrated model: the ES document carries User + Article
+// data denormalized into a single record, making it the richest search surface.
+
+// Find all UserArticles for a specific user (EqualTo on the Guid FK).
+// In ES the document is fully hydrated: User + Article data is denormalized,
+// so the index is also searchable by the nested text fields at query time.
+var uaUserQuery = Query.For<UserArticle>()
+    .Where(ua => ua.UserId, EqualTo, userId)
+    .OrderBy(ua => ua.CreatedAt, descending: true)
+    .Page(1, size: 10);
+
+Console.WriteLine($"UserArticles for user {userId}:");
+await foreach (var result in userArticles.SearchAsync(uaUserQuery))
+    Console.WriteLine($"  [{result.Score:F2}] user={result.Entity.User?.Name} article='{result.Entity.Article?.Title}'");
+
+// Search Articles by title keyword.
+var articleTextQuery = Query.For<Article>()
+    .Where(a => a.Title,       Contains,    "Mamba")
     .And(a   => a.IsPublished, EqualTo,     true)
-    .And(a   => a.PublishedAt, GreaterThan, DateTime.UtcNow.AddDays(-30))
     .OrderBy(a => a.PublishedAt, descending: true)
     .Page(1, size: 10);
 
-await foreach (var result in articles.SearchAsync(textQuery))
-    Console.WriteLine($"  [{result.Score:F2}] {result.Entity.Title}");
+Console.WriteLine("Articles — title contains 'Mamba', IsPublished=true:");
+await foreach (var result in articles.SearchAsync(articleTextQuery))
+    Console.WriteLine($"  [{result.Score:F2}] '{result.Entity.Title}'");
 
-// Vector similarity search
-float[] queryEmbedding = [0.1f, 0.2f, 0.3f, 0.4f];
-
-var vectorQuery = Query.For<Article>()
-    .OrVectorSimilar(a => a.Title, queryEmbedding)
+// Search Authors by name.
+var authorTextQuery = Query.For<Author>()
+    .Where(a => a.Name, Contains, "Allen")
     .Page(1, size: 5);
 
-await foreach (var result in articles.SearchAsync(vectorQuery))
-    Console.WriteLine($"  [score={result.Score:F4}] {result.Entity.Title}");
+Console.WriteLine("Authors — name contains 'Allen':");
+await foreach (var result in authors.SearchAsync(authorTextQuery))
+    Console.WriteLine($"  [{result.Score:F2}] {result.Entity.Name}");
 
-// Tag search using Contains across multiple slugs
+// Tag search by slug using OR logic.
 var tagQuery = Query.For<Tag>()
     .Where(t => t.Slug, Contains, "basketball")
-    .Or(t   => t.Slug, Contains,  "ai")
-    .Or(t   => t.Slug, Contains,  "culture")
-    .WithLogic(Iverson.Client.Contracts.SearchLogic.Or)
+    .Or(t   => t.Slug, Contains, "culture")
+    .Or(t   => t.Slug, Contains, "legacy")
+    .WithLogic(SearchLogic.Or)
     .OrderBy(t => t.Label);
 
+Console.WriteLine("Tags — slug basketball|culture|legacy:");
 await foreach (var result in tags.SearchAsync(tagQuery))
-    Console.WriteLine($"  Tag: {result.Entity.Label}");
+    Console.WriteLine($"  {result.Entity.Label} ({result.Entity.Slug})");
 
+// ── Object Search — Qdrant Vector ─────────────────────────────────────────────
+
+// Article has [IversonEmbedding] on Title → "title_vector" named vector in Qdrant.
+// Article has [IversonChunk] on Body    → stored chunked in the "article_chunks" collection.
+//
+// SearchSimilar and SearchChunks are separate gRPC RPCs. EntityCoordinator.SearchAsync
+// routes to the ES DSL path only; call the gRPC client directly for Qdrant.
+
+Console.WriteLine("\n=== Object Search — Qdrant (vector similarity) ===");
+
+try
+{
+    var similarStream = searchClient.SearchSimilar(new SearchSimilarRequest
+    {
+        TypeName = "Article",
+        Property = "Title",
+        Query    = "AI basketball legend",
+        TopK     = 5,
+        TraceId  = Guid.NewGuid().ToString()
+    });
+
+    Console.WriteLine("Articles similar to 'AI basketball legend' (Title vector):");
+    await foreach (var response in similarStream.ResponseStream.ReadAllAsync())
+        Console.WriteLine($"  [score={response.Score:F4}] {response.Data?.Fields.GetValueOrDefault("title")?.StringValue}");
+}
+catch (RpcException ex)
+{
+    Console.WriteLine($"  (Vector search unavailable: {ex.Status.Detail})");
+}
+
+try
+{
+    var chunkStream = searchClient.SearchChunks(new SearchChunksRequest
+    {
+        TypeName = "Article",
+        Property = "Body",
+        Query    = "dedication work ethic basketball",
+        TopK     = 3,
+        TraceId  = Guid.NewGuid().ToString()
+    });
+
+    Console.WriteLine("Article body chunks similar to 'dedication work ethic basketball':");
+    await foreach (var response in chunkStream.ResponseStream.ReadAllAsync())
+        Console.WriteLine($"  [score={response.Score:F4}] parent={response.ParentKey} | \"{response.ChunkText[..Math.Min(80, response.ChunkText.Length)]}...\"");
+}
+catch (RpcException ex)
+{
+    Console.WriteLine($"  (Chunk search unavailable: {ex.Status.Detail})");
+}
+
+// ── Cleanup ────────────────────────────────────────────────────────────────────
+
+Console.WriteLine("\n=== Cleanup ===");
+
+await userArticles.DeleteAsync(ua1Id.ToString());
+await userArticles.DeleteAsync(ua2Id.ToString());
+await articles.DeleteAsync(article1Id.ToString());
+await articles.DeleteAsync(article2Id.ToString());
+
+Console.WriteLine("Deleted user-articles and articles. Authors, tags, and user left in place.");
 Console.WriteLine("\nDone.");

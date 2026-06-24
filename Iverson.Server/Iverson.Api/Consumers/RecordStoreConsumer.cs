@@ -31,7 +31,7 @@ public sealed class RecordStoreConsumer(
         EntityEvent? entityEvent;
         try
         {
-            entityEvent = JsonSerializer.Deserialize<EntityEvent>(value, JsonOptions);
+            entityEvent = JsonSerializer.Deserialize<EntityEvent>(value, s_jsonOptions);
         }
         catch (Exception ex)
         {
@@ -63,7 +63,7 @@ public sealed class RecordStoreConsumer(
         EntityEvent? entityEvent;
         try
         {
-            entityEvent = JsonSerializer.Deserialize<EntityEvent>(value, JsonOptions);
+            entityEvent = JsonSerializer.Deserialize<EntityEvent>(value, s_jsonOptions);
         }
         catch (Exception ex)
         {
@@ -110,7 +110,7 @@ public sealed class RecordStoreConsumer(
         logger.LogInformation("[Record] Upserted {Type}", schema.TypeName);
     }
 
-    private static readonly JsonSerializerOptions JsonOptions = new()
+    private static readonly JsonSerializerOptions s_jsonOptions = new()
     {
         PropertyNamingPolicy        = JsonNamingPolicy.CamelCase,
         PropertyNameCaseInsensitive = true

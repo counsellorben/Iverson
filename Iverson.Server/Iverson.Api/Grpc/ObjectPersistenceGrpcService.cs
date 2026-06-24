@@ -4,7 +4,8 @@ using Google.Protobuf.WellKnownTypes;
 using Grpc.Core;
 using Iverson.Api.Schema;
 using Iverson.Client.Contracts;
-using SchemaRelKind = Iverson.Api.Schema.RelationKind;
+using SchemaRelKind       = Iverson.Api.Schema.RelationKind;
+using SchemaRelDescriptor = Iverson.Api.Schema.RelationDescriptor;
 using Iverson.Events;
 using Microsoft.Extensions.Logging;
 
@@ -41,10 +42,10 @@ public sealed class ObjectPersistenceGrpcService(
         if (string.IsNullOrWhiteSpace(key) || key == Guid.Empty.ToString())
         {
             key = Guid.CreateVersion7().ToString();
-            StampKey(request.Payload, schema.KeyColumn.Name, key);
+            SetKey(request.Payload, schema.KeyColumn.Name, key);
         }
 
-        var payloadJson = SerializePayload(request.Payload);
+        var payloadJson = StructSerializer.SerializePayload(request.Payload);
 
         if (logger.IsEnabled(LogLevel.Information))
             logger.LogInformation("[Persistence.Post] type={Type} key={Key} stores={Stores}",
@@ -87,7 +88,7 @@ public sealed class ObjectPersistenceGrpcService(
         if (HasVectorOrChunkFields(schema))              targetStores |= StoreTarget.Intelligence;
         if (registry.HasEngagementDependents(request.TypeName)) targetStores |= StoreTarget.EngagementFanout;
 
-        var payloadJson = SerializePayload(request.Payload);
+        var payloadJson = StructSerializer.SerializePayload(request.Payload);
 
         if (logger.IsEnabled(LogLevel.Information))
             logger.LogInformation("[Persistence.Update] type={Type} key={Key} stores={Stores}",
@@ -144,10 +145,10 @@ public sealed class ObjectPersistenceGrpcService(
     }
 
     private void ValidateSingleRelation(
-        Struct payload, RelationEntry relation, SchemaDescriptor schema, List<string> errors)
+        Struct payload, SchemaRelDescriptor relation, SchemaDescriptor schema, List<string> errors)
     {
         // Check FK field first (e.g. "AuthorId" / "authorId")
-        var fkValue = FieldValue(payload, relation.ForeignKey);
+        var fkValue = GetFieldValue(payload, relation.ForeignKey);
         if (fkValue is not null)
         {
             if (!Guid.TryParse(fkValue.StringValue, out var g) || g == Guid.Empty)
@@ -156,7 +157,7 @@ public sealed class ObjectPersistenceGrpcService(
         }
 
         // Check nav property as embedded Struct (e.g. "Author" / "author")
-        var navValue = FieldValue(payload, relation.PropertyName);
+        var navValue = GetFieldValue(payload, relation.PropertyName);
         if (navValue?.StructValue is { } nested)
         {
             ValidateNestedObject(nested, relation.PropertyName, relation.RelatedTypeName, errors);
@@ -175,10 +176,10 @@ public sealed class ObjectPersistenceGrpcService(
     }
 
     private void ValidateCollectionRelation(
-        Struct payload, RelationEntry relation, List<string> errors)
+        Struct payload, SchemaRelDescriptor relation, List<string> errors)
     {
         // FK array field (e.g. "TagIds" / "tagIds")
-        var fkValue = FieldValue(payload, relation.ForeignKey);
+        var fkValue = GetFieldValue(payload, relation.ForeignKey);
         if (fkValue?.ListValue is { } fkList)
         {
             for (var i = 0; i < fkList.Values.Count; i++)
@@ -191,7 +192,7 @@ public sealed class ObjectPersistenceGrpcService(
         }
 
         // Nav property as array of Structs (e.g. "Tags": [...])
-        var navValue = FieldValue(payload, relation.PropertyName);
+        var navValue = GetFieldValue(payload, relation.PropertyName);
         if (navValue?.ListValue is { } navList)
         {
             for (var i = 0; i < navList.Values.Count; i++)
@@ -217,7 +218,7 @@ public sealed class ObjectPersistenceGrpcService(
     {
         var relatedSchema  = registry.Get(relatedTypeName);
         var keyColumnName  = relatedSchema?.KeyColumn.Name ?? "Id";
-        var nestedKeyValue = FieldValue(nested, keyColumnName);
+        var nestedKeyValue = GetFieldValue(nested, keyColumnName);
         var nestedKey      = nestedKeyValue?.StringValue;
 
         var isExistingEntity = !string.IsNullOrWhiteSpace(nestedKey)
@@ -240,7 +241,7 @@ public sealed class ObjectPersistenceGrpcService(
         return string.Empty;
     }
 
-    private static void StampKey(Struct payload, string keyColumn, string key)
+    private static void SetKey(Struct payload, string keyColumn, string key)
     {
         foreach (var candidate in Candidates(keyColumn))
             if (payload.Fields.ContainsKey(candidate))
@@ -251,33 +252,13 @@ public sealed class ObjectPersistenceGrpcService(
         payload.Fields[keyColumn] = Value.ForString(key);
     }
 
-    private static Value? FieldValue(Struct s, string fieldName)
+    private static Value? GetFieldValue(Struct s, string fieldName)
     {
         foreach (var candidate in Candidates(fieldName))
             if (s.Fields.TryGetValue(candidate, out var v))
                 return v;
         return null;
     }
-
-    // ── Payload serialization ──────────────────────────────────────────────────
-
-    // Converts a proto Struct to JSON with native types (not all-string) so that
-    // Postgres json_populate_record and Elasticsearch can handle the values correctly.
-    private static string SerializePayload(Struct payload) =>
-        JsonSerializer.Serialize(
-            payload.Fields.ToDictionary(kv => kv.Key, kv => ProtoValueToNative(kv.Value)));
-
-    private static object? ProtoValueToNative(Value v) => v.KindCase switch
-    {
-        Value.KindOneofCase.StringValue  => v.StringValue,
-        Value.KindOneofCase.NumberValue  => v.NumberValue,
-        Value.KindOneofCase.BoolValue    => v.BoolValue,
-        Value.KindOneofCase.NullValue    => null,
-        Value.KindOneofCase.ListValue    => v.ListValue.Values.Select(ProtoValueToNative).ToList(),
-        Value.KindOneofCase.StructValue  => v.StructValue.Fields
-                                            .ToDictionary(kv => kv.Key, kv => ProtoValueToNative(kv.Value)),
-        _                                => null
-    };
 
     // Tries both the canonical casing and camelCase (client sends camelCase)
     private static IEnumerable<string> Candidates(string name)

@@ -14,5 +14,5 @@ public interface IElasticsearchService
     Task<IReadOnlyList<AggregationResult>> AggregateAsync(
         string indexName,
         string queryText,
-        IReadOnlyList<AggregationSpec> specs);
+        IReadOnlyList<AggregationDescriptor> specs);
 }

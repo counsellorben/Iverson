@@ -16,7 +16,7 @@ public class SchemaRegistryTests
     public SchemaRegistryTests()
     {
         _sql = Substitute.For<IPostgresRepository>();
-        // ExecuteAsync is used for EnsureMetaTableAsync and SQL operations — default to no-op
+        // ExecuteAsync is used for EnsureMetadataTableAsync and SQL operations — default to no-op
         _sql.ExecuteAsync(Arg.Any<string>(), Arg.Any<object?>()).Returns(0);
         _sut = new SchemaRegistry(_sql, NullLogger<SchemaRegistry>.Instance);
     }
@@ -81,23 +81,23 @@ public class SchemaRegistryTests
     }
 
     [Fact]
-    public async Task DeregisterAsync_RemovesSchema()
+    public async Task UnregisterAsync_RemovesSchema()
     {
         await _sut.RegisterAsync(SchemaFixtures.AuthorSchema());
 
-        await _sut.DeregisterAsync("Author");
+        await _sut.UnregisterAsync("Author");
 
         _sut.IsRegistered("Author").Should().BeFalse();
         _sut.Get("Author").Should().BeNull();
     }
 
     [Fact]
-    public async Task DeregisterAsync_UpdatesInverseIndex()
+    public async Task UnregisterAsync_UpdatesInverseIndex()
     {
         await _sut.RegisterAsync(SchemaFixtures.ArticleSchema());
         _sut.HasEngagementDependents("Author").Should().BeTrue();
 
-        await _sut.DeregisterAsync("Article");
+        await _sut.UnregisterAsync("Article");
 
         _sut.HasEngagementDependents("Author").Should().BeFalse();
     }

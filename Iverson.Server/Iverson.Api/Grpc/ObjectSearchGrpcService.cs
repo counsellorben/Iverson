@@ -7,10 +7,11 @@ using Iverson.Elasticsearch;
 using Iverson.Embeddings;
 using Iverson.Vector;
 using Microsoft.Extensions.Logging;
+using Iverson.Api;
 using EsAggKind      = Iverson.Elasticsearch.AggregationKind;
 using EsAggResult    = Iverson.Elasticsearch.AggregationResult;
-using EsAggSpec      = Iverson.Elasticsearch.AggregationSpec;
-using EsRangeSpec    = Iverson.Elasticsearch.RangeBucketSpec;
+using EsAggSpec      = Iverson.Elasticsearch.AggregationDescriptor;
+using EsRangeSpec    = Iverson.Elasticsearch.RangeBucketDescriptor;
 using ProtoAggBucket = Iverson.Client.Contracts.AggregationBucket;
 using ProtoAggResult = Iverson.Client.Contracts.AggregationResult;
 using ProtoAggSpec   = Iverson.Client.Contracts.AggregationSpec;
@@ -94,7 +95,7 @@ public sealed class ObjectSearchGrpcService(
                 $"Embedding service unavailable: {ex.Message}"));
         }
 
-        var vectorName = ToSnakeCase(vectorDesc.PropertyName) + "_vector";
+        var vectorName = vectorDesc.PropertyName.ToSnakeCase() + "_vector";
         var topK       = (ulong)Math.Max(1, (int)request.TopK);
 
         var results = await vector.SearchNamedAsync(schema.CollectionName, vectorName, queryVector, topK);
@@ -147,7 +148,7 @@ public sealed class ObjectSearchGrpcService(
                 $"Embedding service unavailable: {ex.Message}"));
         }
 
-        var vectorName       = ToSnakeCase(chunkDesc.PropertyName) + "_vector";
+        var vectorName       = chunkDesc.PropertyName.ToSnakeCase() + "_vector";
         var chunksCollection = schema.CollectionName + "_chunks";
         var topK             = (ulong)Math.Max(1, (int)request.TopK);
 
@@ -306,14 +307,4 @@ public sealed class ObjectSearchGrpcService(
         _                     => Value.ForString(je.ToString())
     };
 
-    private static string ToSnakeCase(string name)
-    {
-        var sb = new System.Text.StringBuilder();
-        for (var i = 0; i < name.Length; i++)
-        {
-            if (char.IsUpper(name[i]) && i > 0) sb.Append('_');
-            sb.Append(char.ToLowerInvariant(name[i]));
-        }
-        return sb.ToString();
-    }
 }

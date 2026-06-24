@@ -122,7 +122,7 @@ public sealed class EngagementStoreConsumer(
 
     private async Task IndexDocumentAsync(string indexName, string docKey, string payloadJson)
     {
-        var doc = JsonSerializer.Deserialize<Dictionary<string, object>>(payloadJson, JsonOptions);
+        var doc = JsonSerializer.Deserialize<Dictionary<string, object>>(payloadJson, s_jsonOptions);
         if (doc is null) return;
         await es.IndexDocumentAsync(indexName, docKey, doc);
     }
@@ -131,7 +131,7 @@ public sealed class EngagementStoreConsumer(
     {
         try
         {
-            return JsonSerializer.Deserialize<EntityEvent>(value, JsonOptions);
+            return JsonSerializer.Deserialize<EntityEvent>(value, s_jsonOptions);
         }
         catch (Exception ex)
         {
@@ -148,7 +148,7 @@ public sealed class EngagementStoreConsumer(
         return null;
     }
 
-    private static readonly JsonSerializerOptions JsonOptions = new()
+    private static readonly JsonSerializerOptions s_jsonOptions = new()
     {
         PropertyNamingPolicy        = JsonNamingPolicy.CamelCase,
         PropertyNameCaseInsensitive = true

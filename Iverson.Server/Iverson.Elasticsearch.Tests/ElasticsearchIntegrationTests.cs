@@ -166,8 +166,8 @@ public sealed class ElasticsearchIntegrationTests(ElasticsearchContainerFixture 
     {
         var schema = new IndexSchema(UniqueIndex(), new List<FieldMapping>
         {
-            new("name",     EsFieldType.Text),
-            new("position", EsFieldType.Keyword),
+            new("Name",     EsFieldType.Text),
+            new("Position", EsFieldType.Keyword),
         });
 
         await _svc.ApplyMappingAsync(schema);
@@ -183,21 +183,21 @@ public sealed class ElasticsearchIntegrationTests(ElasticsearchContainerFixture 
 
         var v1 = new IndexSchema(indexName, new List<FieldMapping>
         {
-            new("name", EsFieldType.Text),
+            new("Name", EsFieldType.Text),
         });
         await _svc.ApplyMappingAsync(v1);
 
         var v2 = new IndexSchema(indexName, new List<FieldMapping>
         {
-            new("name",          EsFieldType.Text),
-            new("jersey_number", EsFieldType.Integer),
+            new("Name",         EsFieldType.Text),
+            new("JerseyNumber", EsFieldType.Integer),
         });
 
         var act = async () => await _svc.ApplyMappingAsync(v2);
         await act.Should().NotThrowAsync();
 
         // Verify the new field is usable
-        await _svc.IndexDocumentAsync(indexName, "p1", new { name = "Allen", jersey_number = 3 });
+        await _svc.IndexDocumentAsync(indexName, "p1", new { Name = "Allen", JerseyNumber = 3 });
         await RefreshAsync(indexName);
         var results = await _svc.SearchAsync<object>(indexName, "Allen");
         results.Should().NotBeEmpty();
@@ -210,17 +210,17 @@ public sealed class ElasticsearchIntegrationTests(ElasticsearchContainerFixture 
 
         var v1 = new IndexSchema(indexName, new List<FieldMapping>
         {
-            new("name",     EsFieldType.Text),
-            new("nickname", EsFieldType.Keyword),
+            new("Name",     EsFieldType.Text),
+            new("Nickname", EsFieldType.Keyword),
         });
         await _svc.ApplyMappingAsync(v1);
-        await _svc.IndexDocumentAsync(indexName, "p1", new { name = "Allen Iverson", nickname = "The Answer" });
+        await _svc.IndexDocumentAsync(indexName, "p1", new { Name = "Allen Iverson", Nickname = "The Answer" });
         await RefreshAsync(indexName);
 
-        // Remove "nickname" — triggers reindex
+        // Remove "Nickname" — triggers reindex
         var v2 = new IndexSchema(indexName, new List<FieldMapping>
         {
-            new("name", EsFieldType.Text),
+            new("Name", EsFieldType.Text),
         });
 
         var act = async () => await _svc.ApplyMappingAsync(v2);
@@ -247,7 +247,7 @@ public sealed class ElasticsearchIntegrationTests(ElasticsearchContainerFixture 
         await _svc.IndexDocumentAsync(index, "p3", new PlayerDoc("Gary Payton",   "PG", 20));
         await RefreshAsync(index);
 
-        var specs = new List<AggregationSpec>
+        var specs = new List<AggregationDescriptor>
         {
             new("position_terms", AggregationKind.Terms, "position.keyword", Size: 10)
         };
@@ -274,7 +274,7 @@ public sealed class ElasticsearchIntegrationTests(ElasticsearchContainerFixture 
         await _svc.IndexDocumentAsync(index, "p3", new PlayerDoc("Gary Payton",   "PG", 20));
         await RefreshAsync(index);
 
-        var specs = new List<AggregationSpec>
+        var specs = new List<AggregationDescriptor>
         {
             new("jersey_avg", AggregationKind.Avg, "jerseyNumber")
         };
@@ -294,7 +294,7 @@ public sealed class ElasticsearchIntegrationTests(ElasticsearchContainerFixture 
         await _svc.IndexDocumentAsync(index, "p2", new PlayerDoc("Kobe Bryant",   "SG", 8));
         await RefreshAsync(index);
 
-        var specs = new List<AggregationSpec>
+        var specs = new List<AggregationDescriptor>
         {
             new("position_terms", AggregationKind.Terms,  "position.keyword", Size: 5),
             new("jersey_min",     AggregationKind.Min,    "jerseyNumber"),
@@ -321,7 +321,7 @@ public sealed class ElasticsearchIntegrationTests(ElasticsearchContainerFixture 
         await _svc.IndexDocumentAsync(index, "p3", new PlayerDoc("Gary Payton",   "PG", 20));
         await RefreshAsync(index);
 
-        var specs = new List<AggregationSpec>
+        var specs = new List<AggregationDescriptor>
         {
             new("jersey_sum", AggregationKind.Sum, "jerseyNumber")
         };
@@ -343,13 +343,13 @@ public sealed class ElasticsearchIntegrationTests(ElasticsearchContainerFixture 
         await _svc.IndexDocumentAsync(index, "p3", new PlayerDoc("Player C", "PG", 20));
         await RefreshAsync(index);
 
-        var specs = new List<AggregationSpec>
+        var specs = new List<AggregationDescriptor>
         {
             new("jersey_range", AggregationKind.Range, "jerseyNumber",
                 RangeBuckets:
                 [
-                    new RangeBucketSpec("low",  null, 10.0),
-                    new RangeBucketSpec("high",  10.0, null)
+                    new RangeBucketDescriptor("low",  null, 10.0),
+                    new RangeBucketDescriptor("high",  10.0, null)
                 ])
         };
 

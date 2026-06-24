@@ -19,7 +19,18 @@ public class ElasticsearchService(ElasticsearchClient client, ILogger<Elasticsea
         activity?.SetTag("elasticsearch.index", indexName);
         activity?.SetTag("elasticsearch.document_id", id);
 
-        var response = await client.IndexAsync(document, i => i.Index(indexName).Id(id));
+        // The Elastic client camelCases C# type property names automatically.
+        // Dictionary keys are not transformed, so normalize them explicitly.
+        IndexResponse response;
+        if (document is IDictionary<string, object> dict)
+        {
+            var normalized = dict.ToDictionary(kv => ToElasticsearchFieldName(kv.Key), kv => kv.Value);
+            response = await client.IndexAsync(normalized, i => i.Index(indexName).Id(id));
+        }
+        else
+        {
+            response = await client.IndexAsync(document, i => i.Index(indexName).Id(id));
+        }
 
         if (!response.IsValidResponse)
         {
@@ -141,15 +152,17 @@ public class ElasticsearchService(ElasticsearchClient client, ILogger<Elasticsea
                 // First registration: create versioned physical index + alias
                 var physical = VersionedName(schema.IndexName);
                 await CreatePhysicalIndexAsync(physical, properties);
-                await client.Indices.PutAliasAsync(new PutAliasRequest(physical, schema.IndexName));
+                await PutAliasAsync(physical, schema.IndexName);
                 logger.LogInformation("Created ES index {Physical} with alias {Alias}", physical, schema.IndexName);
                 activity?.SetStatus(ActivityStatusCode.Ok);
                 return;
             }
 
-            // Index or alias already exists — detect field removals
+            // Index or alias already exists — detect field removals.
+            // Use OrdinalIgnoreCase throughout so camelCase/PascalCase variants of the
+            // same field name never trigger a spurious reindex after a field-naming change.
             var existingFields = await GetExistingFieldNamesAsync(schema.IndexName);
-            var schemaFields   = schema.Fields.Select(f => f.Name).ToHashSet(StringComparer.OrdinalIgnoreCase);
+            var schemaFields   = schema.Fields.Select(f => ToElasticsearchFieldName(f.Name)).ToHashSet(StringComparer.OrdinalIgnoreCase);
             var removed        = existingFields.Except(schemaFields).ToList();
 
             if (removed.Count == 0)
@@ -183,14 +196,14 @@ public class ElasticsearchService(ElasticsearchClient client, ILogger<Elasticsea
             {
                 // Swap alias: remove from old physical, add to new physical
                 await client.Indices.DeleteAliasAsync(new DeleteAliasRequest(currentPhysical, schema.IndexName));
-                await client.Indices.PutAliasAsync(new PutAliasRequest(newPhysical, schema.IndexName));
+                await PutAliasAsync(newPhysical, schema.IndexName);
                 await client.Indices.DeleteAsync(new DeleteIndexRequest(currentPhysical));
             }
             else
             {
                 // Convert from bare real index to versioned physical + alias
                 await client.Indices.DeleteAsync(new DeleteIndexRequest(schema.IndexName));
-                await client.Indices.PutAliasAsync(new PutAliasRequest(newPhysical, schema.IndexName));
+                await PutAliasAsync(newPhysical, schema.IndexName);
             }
 
             logger.LogInformation("Migrated ES index {Alias}: {Old} → {New}",
@@ -208,7 +221,7 @@ public class ElasticsearchService(ElasticsearchClient client, ILogger<Elasticsea
     public async Task<IReadOnlyList<AggregationResult>> AggregateAsync(
         string indexName,
         string queryText,
-        IReadOnlyList<AggregationSpec> specs)
+        IReadOnlyList<AggregationDescriptor> specs)
     {
         using var activity = Telemetry.Source.StartActivity("es.aggregate", ActivityKind.Client);
         activity?.SetTag("db.system", "elasticsearch");
@@ -245,38 +258,42 @@ public class ElasticsearchService(ElasticsearchClient client, ILogger<Elasticsea
         return results;
     }
 
-    private static Aggregation BuildAggregation(AggregationSpec spec) => spec.Kind switch
+    private static Aggregation BuildAggregation(AggregationDescriptor spec)
     {
-        AggregationKind.Terms => new TermsAggregation { Field = spec.Field, Size = spec.Size },
-
-        AggregationKind.DateHistogram => new DateHistogramAggregation
+        var field = ToElasticsearchFieldName(spec.Field);
+        return spec.Kind switch
         {
-            Field            = spec.Field,
-            CalendarInterval = ParseCalendarInterval(spec.CalendarInterval),
-            TimeZone         = spec.TimeZone
-        },
+            AggregationKind.Terms => new TermsAggregation { Field = field, Size = spec.Size },
 
-        AggregationKind.Range => new RangeAggregation
-        {
-            Field  = spec.Field,
-            Ranges = spec.RangeBuckets?.Select(b => new AggregationRange
+            AggregationKind.DateHistogram => new DateHistogramAggregation
             {
-                Key  = string.IsNullOrEmpty(b.Key) ? null : b.Key,
-                From = b.From,
-                To   = b.To
-            }).ToList()
-        },
+                Field            = field,
+                CalendarInterval = ParseCalendarInterval(spec.CalendarInterval),
+                TimeZone         = spec.TimeZone
+            },
 
-        AggregationKind.Avg         => new AverageAggregation    { Field = spec.Field },
-        AggregationKind.Sum         => new SumAggregation         { Field = spec.Field },
-        AggregationKind.Min         => new MinAggregation         { Field = spec.Field },
-        AggregationKind.Max         => new MaxAggregation         { Field = spec.Field },
-        AggregationKind.Cardinality => new CardinalityAggregation { Field = spec.Field },
+            AggregationKind.Range => new RangeAggregation
+            {
+                Field  = field,
+                Ranges = spec.RangeBuckets?.Select(b => new AggregationRange
+                {
+                    Key  = string.IsNullOrEmpty(b.Key) ? null : b.Key,
+                    From = b.From,
+                    To   = b.To
+                }).ToList()
+            },
 
-        _ => throw new ArgumentOutOfRangeException(nameof(spec.Kind), spec.Kind, null)
-    };
+            AggregationKind.Avg         => new AverageAggregation    { Field = field },
+            AggregationKind.Sum         => new SumAggregation         { Field = field },
+            AggregationKind.Min         => new MinAggregation         { Field = field },
+            AggregationKind.Max         => new MaxAggregation         { Field = field },
+            AggregationKind.Cardinality => new CardinalityAggregation { Field = field },
 
-    private static AggregationResult? ExtractResult(AggregationSpec spec, AggregateDictionary aggs) =>
+            _ => throw new ArgumentOutOfRangeException(nameof(spec.Kind), spec.Kind, null)
+        };
+    }
+
+    private static AggregationResult? ExtractResult(AggregationDescriptor spec, AggregateDictionary aggs) =>
         spec.Kind switch
         {
             AggregationKind.Terms         => ExtractTerms(spec, aggs),
@@ -306,7 +323,7 @@ public class ElasticsearchService(ElasticsearchClient client, ILogger<Elasticsea
             _ => null
         };
 
-    private static AggregationResult? ExtractTerms(AggregationSpec spec, AggregateDictionary aggs)
+    private static AggregationResult? ExtractTerms(AggregationDescriptor spec, AggregateDictionary aggs)
     {
         List<AggregationBucket>? buckets = null;
 
@@ -367,8 +384,13 @@ public class ElasticsearchService(ElasticsearchClient client, ILogger<Elasticsea
             Mappings = new TypeMapping { Properties = properties }
         });
         if (!resp.IsValidResponse)
+        {
+            var detail = resp.ElasticsearchServerError?.ToString()
+                      ?? resp.DebugInformation
+                      ?? "no detail available";
             throw new InvalidOperationException(
-                $"Failed to create ES index '{physicalName}': {resp.ElasticsearchServerError}");
+                $"Failed to create ES index '{physicalName}': {detail}");
+        }
     }
 
     private async Task ReindexAsync(string source, string dest)
@@ -392,7 +414,15 @@ public class ElasticsearchService(ElasticsearchClient client, ILogger<Elasticsea
     }
 
     private static string VersionedName(string logicalName) =>
-        $"{logicalName}_{DateTimeOffset.UtcNow:yyyyMMddHHmmss}";
+        $"{logicalName}_{DateTimeOffset.UtcNow:yyyyMMddHHmmssfff}";
+
+    private async Task PutAliasAsync(string physicalName, string aliasName)
+    {
+        var resp = await client.Indices.PutAliasAsync(new PutAliasRequest(physicalName, aliasName));
+        if (!resp.IsValidResponse)
+            throw new InvalidOperationException(
+                $"Failed to create alias '{aliasName}' → '{physicalName}': {resp.DebugInformation}");
+    }
 
     private static void AddProperty(Properties properties, FieldMapping field)
     {
@@ -419,6 +449,51 @@ public class ElasticsearchService(ElasticsearchClient client, ILogger<Elasticsea
                                        },
             _                       => new KeywordProperty()
         };
-        properties.Add(field.Name, prop);
+        properties.Add(ToElasticsearchFieldName(field.Name), prop);
+    }
+
+    // Converts a property name to the ES field name convention:
+    // camelCase, with non-alphanumeric characters acting as word separators.
+    // The ".keyword" sub-field qualifier is preserved as-is.
+    // Examples: "JerseyNumber" → "jerseyNumber", "iso_code" → "isoCode",
+    //           "Position.keyword" → "position.keyword"
+    internal static string ToElasticsearchFieldName(string name)
+    {
+        if (string.IsNullOrEmpty(name)) return name;
+
+        const string kwSuffix = ".keyword";
+        var hasSuffix = name.EndsWith(kwSuffix, StringComparison.OrdinalIgnoreCase);
+        var baseName  = hasSuffix ? name[..^kwSuffix.Length] : name;
+
+        var sb             = new System.Text.StringBuilder(baseName.Length);
+        var capitalizeNext = false;
+        var isFirst        = true;
+
+        foreach (var c in baseName)
+        {
+            if (!char.IsLetterOrDigit(c))
+            {
+                capitalizeNext = true;
+                continue;
+            }
+
+            if (isFirst)
+            {
+                sb.Append(char.ToLowerInvariant(c));
+                isFirst = false;
+            }
+            else if (capitalizeNext)
+            {
+                sb.Append(char.ToUpperInvariant(c));
+                capitalizeNext = false;
+            }
+            else
+            {
+                sb.Append(c);
+            }
+        }
+
+        if (sb.Length == 0) return hasSuffix ? kwSuffix : string.Empty;
+        return hasSuffix ? sb + kwSuffix : sb.ToString();
     }
 }

@@ -42,14 +42,14 @@ public sealed class SchemaRegistry(IPostgresRepository sql, ILogger<SchemaRegist
 
     public async Task LoadAsync(CancellationToken ct = default)
     {
-        await EnsureMetaTableAsync();
+        await EnsureMetadataTableAsync();
 
         var rows = await sql.QueryAsync<(string type_name, string schema_json)>(
             "SELECT type_name, schema_json FROM _iverson_schema");
 
         foreach (var (typeName, json) in rows)
         {
-            var descriptor = JsonSerializer.Deserialize<SchemaDescriptor>(json, JsonOptions);
+            var descriptor = JsonSerializer.Deserialize<SchemaDescriptor>(json, s_jsonOptions);
             if (descriptor is not null)
                 _schemas[typeName] = descriptor;
         }
@@ -60,9 +60,9 @@ public sealed class SchemaRegistry(IPostgresRepository sql, ILogger<SchemaRegist
 
     public async Task RegisterAsync(SchemaDescriptor descriptor)
     {
-        await EnsureMetaTableAsync();
+        await EnsureMetadataTableAsync();
 
-        var json = JsonSerializer.Serialize(descriptor, JsonOptions);
+        var json = JsonSerializer.Serialize(descriptor, s_jsonOptions);
 
         await sql.ExecuteAsync(
             """
@@ -79,7 +79,7 @@ public sealed class SchemaRegistry(IPostgresRepository sql, ILogger<SchemaRegist
         logger.LogInformation("Registered schema for {TypeName}", descriptor.TypeName);
     }
 
-    public async Task DeregisterAsync(string typeName)
+    public async Task UnregisterAsync(string typeName)
     {
         await sql.ExecuteAsync(
             "DELETE FROM _iverson_schema WHERE type_name = @TypeName",
@@ -87,7 +87,7 @@ public sealed class SchemaRegistry(IPostgresRepository sql, ILogger<SchemaRegist
 
         _schemas.TryRemove(typeName, out _);
         RebuildInverseIndex();
-        logger.LogInformation("Deregistered schema for {TypeName}", typeName);
+        logger.LogInformation("Unregistered schema for {TypeName}", typeName);
     }
 
     // Rebuilds the full inverse index from current schema state.
@@ -141,7 +141,7 @@ public sealed class SchemaRegistry(IPostgresRepository sql, ILogger<SchemaRegist
             _                       => false
         });
 
-    private async Task EnsureMetaTableAsync()
+    private async Task EnsureMetadataTableAsync()
     {
         await sql.ExecuteAsync(
             """
@@ -153,7 +153,7 @@ public sealed class SchemaRegistry(IPostgresRepository sql, ILogger<SchemaRegist
             """);
     }
 
-    private static readonly JsonSerializerOptions JsonOptions = new()
+    private static readonly JsonSerializerOptions s_jsonOptions = new()
     {
         PropertyNamingPolicy        = JsonNamingPolicy.CamelCase,
         WriteIndented               = false

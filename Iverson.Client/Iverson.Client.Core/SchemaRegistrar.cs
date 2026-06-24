@@ -55,8 +55,8 @@ public sealed class SchemaRegistrar(
             if (prop == descriptor.KeyProperty) continue;
             if (navProps.Contains(prop.Name)) continue;
 
-            var pd = TryBuildPropertyDescriptor(prop);
-            if (pd is not null) typeDesc.Properties.Add(pd);
+            var propDescriptor = TryBuildPropertyDescriptor(prop);
+            if (propDescriptor is not null) typeDesc.Properties.Add(propDescriptor);
         }
 
         foreach (var relation in descriptor.Relations)
@@ -77,7 +77,7 @@ public sealed class SchemaRegistrar(
     private static PropertyDescriptor BuildKeyDescriptor(PropertyInfo prop)
     {
         var (clrType, isArray, _, _) = DetectType(prop.PropertyType);
-        var pd = new PropertyDescriptor
+        var descriptor = new PropertyDescriptor
         {
             Name       = prop.Name,
             ClrType    = clrType,
@@ -85,8 +85,8 @@ public sealed class SchemaRegistrar(
             IsNullable = false,
             IsArray    = isArray
         };
-        AddAnnotations(pd, prop);
-        return pd;
+        AddAnnotations(descriptor, prop);
+        return descriptor;
     }
 
     private static PropertyDescriptor? TryBuildPropertyDescriptor(PropertyInfo prop)
@@ -94,7 +94,7 @@ public sealed class SchemaRegistrar(
         var (clrType, isArray, isNullable, ok) = DetectType(prop.PropertyType);
         if (!ok) return null;
 
-        var pd = new PropertyDescriptor
+        var descriptor = new PropertyDescriptor
         {
             Name       = prop.Name,
             ClrType    = clrType,
@@ -102,26 +102,26 @@ public sealed class SchemaRegistrar(
             IsNullable = isNullable,
             IsArray    = isArray
         };
-        AddAnnotations(pd, prop);
-        return pd;
+        AddAnnotations(descriptor, prop);
+        return descriptor;
     }
 
-    private static void AddAnnotations(PropertyDescriptor pd, PropertyInfo prop)
+    private static void AddAnnotations(PropertyDescriptor descriptor, PropertyInfo prop)
     {
         if (prop.GetCustomAttribute<IversonEmbeddingAttribute>() is not null)
         {
-            pd.IsEmbedding = true;
-            pd.VectorDim   = 0;
-            pd.ModelId     = string.Empty;
+            descriptor.IsEmbedding = true;
+            descriptor.VectorDim   = 0;
+            descriptor.ModelId     = string.Empty;
         }
 
         if (prop.GetCustomAttribute<IversonChunkAttribute>() is { } chunk)
         {
-            pd.IsChunk        = true;
-            pd.ChunkMaxTokens = chunk.MaxTokens;
-            pd.ChunkOverlap   = chunk.Overlap;
-            pd.ChunkModelId   = string.Empty;
-            pd.ChunkVectorDim = 0;
+            descriptor.IsChunk        = true;
+            descriptor.ChunkMaxTokens = chunk.MaxTokens;
+            descriptor.ChunkOverlap   = chunk.Overlap;
+            descriptor.ChunkModelId   = string.Empty;
+            descriptor.ChunkVectorDim = 0;
         }
     }
 

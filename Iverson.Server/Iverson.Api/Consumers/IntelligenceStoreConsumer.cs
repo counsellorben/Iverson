@@ -1,4 +1,5 @@
 using System.Text.Json;
+using Iverson.Api;
 using Iverson.Api.Schema;
 using Iverson.Embeddings;
 using Iverson.Events;
@@ -77,7 +78,7 @@ public sealed class IntelligenceStoreConsumer(
 
                 try
                 {
-                    namedVectors[$"{ToSnakeCase(vf.PropertyName)}_vector"] =
+                    namedVectors[$"{vf.PropertyName.ToSnakeCase()}_vector"] =
                         await embedding.EmbedAsync(text, ct);
                 }
                 catch (Exception ex)
@@ -112,7 +113,7 @@ public sealed class IntelligenceStoreConsumer(
                 var text = ExtractString(payload, cf.PropertyName);
                 if (string.IsNullOrWhiteSpace(text)) continue;
 
-                var vectorName = $"{ToSnakeCase(cf.PropertyName)}_vector";
+                var vectorName = $"{cf.PropertyName.ToSnakeCase()}_vector";
                 var chunks     = SplitIntoChunks(text, cf.MaxTokens, cf.Overlap).ToList();
 
                 for (var i = 0; i < chunks.Count; i++)
@@ -122,7 +123,7 @@ public sealed class IntelligenceStoreConsumer(
                     try
                     {
                         var chunkVector = await embedding.EmbedAsync(chunkText, ct);
-                        var chunkId     = ChunkPointId(pointId, cf.PropertyName, chunkIndex);
+                        var chunkId     = ComputeChunkPointId(pointId, cf.PropertyName, chunkIndex);
 
                         await vector.UpsertNamedAsync(
                             chunksCollection,
@@ -181,7 +182,7 @@ public sealed class IntelligenceStoreConsumer(
         var collectionSchema = new CollectionSchema(
             name,
             schema.ChunkFields
-                .Select(c => new NamedVector($"{ToSnakeCase(c.PropertyName)}_vector", c.Dimension))
+                .Select(c => new NamedVector($"{c.PropertyName.ToSnakeCase()}_vector", c.Dimension))
                 .ToList(),
             [new PayloadIndex("parent_id", PayloadIndexKind.Keyword)]);
 
@@ -227,7 +228,7 @@ public sealed class IntelligenceStoreConsumer(
     }
 
     // Combines parent ID + field name + chunk index into a collision-resistant ulong
-    private static ulong ChunkPointId(ulong parentId, string fieldName, int chunkIndex) =>
+    private static ulong ComputeChunkPointId(ulong parentId, string fieldName, int chunkIndex) =>
         parentId ^ ((ulong)(fieldName.GetHashCode() * 1000003L + chunkIndex) * 0x9E3779B97F4A7C15UL);
 
     private static string? ExtractString(JsonElement payload, string propertyName)
@@ -243,22 +244,11 @@ public sealed class IntelligenceStoreConsumer(
         return null;
     }
 
-    private static string ToSnakeCase(string name)
-    {
-        var sb = new System.Text.StringBuilder();
-        for (var i = 0; i < name.Length; i++)
-        {
-            if (char.IsUpper(name[i]) && i > 0) sb.Append('_');
-            sb.Append(char.ToLowerInvariant(name[i]));
-        }
-        return sb.ToString();
-    }
-
     private EntityEvent? Deserialize(string key, string value)
     {
         try
         {
-            return JsonSerializer.Deserialize<EntityEvent>(value, JsonOptions);
+            return JsonSerializer.Deserialize<EntityEvent>(value, s_jsonOptions);
         }
         catch (Exception ex)
         {
@@ -267,7 +257,7 @@ public sealed class IntelligenceStoreConsumer(
         }
     }
 
-    private static readonly JsonSerializerOptions JsonOptions = new()
+    private static readonly JsonSerializerOptions s_jsonOptions = new()
     {
         PropertyNamingPolicy        = JsonNamingPolicy.CamelCase,
         PropertyNameCaseInsensitive = true

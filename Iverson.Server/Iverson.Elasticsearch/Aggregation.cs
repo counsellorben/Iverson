@@ -12,16 +12,16 @@ public enum AggregationKind
     Cardinality
 }
 
-public sealed record AggregationSpec(
+public sealed record AggregationDescriptor(
     string Name,
     AggregationKind Kind,
     string Field,
     int Size = 10,
     string? CalendarInterval = null,
     string? TimeZone = null,
-    IReadOnlyList<RangeBucketSpec>? RangeBuckets = null);
+    IReadOnlyList<RangeBucketDescriptor>? RangeBuckets = null);
 
-public sealed record RangeBucketSpec(string Key, double? From, double? To);
+public sealed record RangeBucketDescriptor(string Key, double? From, double? To);
 
 public sealed record AggregationResult(
     string Name,

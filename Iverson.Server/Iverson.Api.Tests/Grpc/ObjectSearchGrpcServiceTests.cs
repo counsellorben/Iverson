@@ -12,7 +12,7 @@ using Microsoft.Extensions.Logging.Abstractions;
 using NSubstitute;
 using Xunit;
 using EsAggResult = Iverson.Elasticsearch.AggregationResult;
-using EsAggSpec   = Iverson.Elasticsearch.AggregationSpec;
+using EsAggSpec   = Iverson.Elasticsearch.AggregationDescriptor;
 using EsAggBucket = Iverson.Elasticsearch.AggregationBucket;
 using EsAggKind   = Iverson.Elasticsearch.AggregationKind;
 using ProtoAggSpec = Iverson.Client.Contracts.AggregationSpec;
@@ -432,7 +432,7 @@ public class ObjectSearchGrpcServiceTests
         await _es.Received(1).AggregateAsync(
             "authors",
             Arg.Any<string>(),
-            Arg.Is<IReadOnlyList<Iverson.Elasticsearch.AggregationSpec>>(
+            Arg.Is<IReadOnlyList<Iverson.Elasticsearch.AggregationDescriptor>>(
                 specs => specs.Count == 1 && specs[0].Name == "name_terms" && specs[0].Kind == Iverson.Elasticsearch.AggregationKind.Terms));
     }
 
@@ -450,7 +450,7 @@ public class ObjectSearchGrpcServiceTests
                 new("Bob",   5)
             });
 
-        _es.AggregateAsync("authors", Arg.Any<string>(), Arg.Any<IReadOnlyList<Iverson.Elasticsearch.AggregationSpec>>())
+        _es.AggregateAsync("authors", Arg.Any<string>(), Arg.Any<IReadOnlyList<Iverson.Elasticsearch.AggregationDescriptor>>())
            .Returns(new List<Iverson.Elasticsearch.AggregationResult> { esResult }.AsReadOnly());
 
         var request = new AggregateRequest { TypeName = "Author" };
@@ -476,7 +476,7 @@ public class ObjectSearchGrpcServiceTests
             Kind:        Iverson.Elasticsearch.AggregationKind.Avg,
             MetricValue: 42.5);
 
-        _es.AggregateAsync("authors", Arg.Any<string>(), Arg.Any<IReadOnlyList<Iverson.Elasticsearch.AggregationSpec>>())
+        _es.AggregateAsync("authors", Arg.Any<string>(), Arg.Any<IReadOnlyList<Iverson.Elasticsearch.AggregationDescriptor>>())
            .Returns(new List<Iverson.Elasticsearch.AggregationResult> { esResult }.AsReadOnly());
 
         var request = new AggregateRequest { TypeName = "Author" };
@@ -495,7 +495,7 @@ public class ObjectSearchGrpcServiceTests
         await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
 
         string? capturedQuery = null;
-        _es.AggregateAsync("authors", Arg.Do<string>(q => capturedQuery = q), Arg.Any<IReadOnlyList<Iverson.Elasticsearch.AggregationSpec>>())
+        _es.AggregateAsync("authors", Arg.Do<string>(q => capturedQuery = q), Arg.Any<IReadOnlyList<Iverson.Elasticsearch.AggregationDescriptor>>())
            .Returns(new List<Iverson.Elasticsearch.AggregationResult>().AsReadOnly());
 
         var request = new AggregateRequest { TypeName = "Author" };

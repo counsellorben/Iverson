@@ -59,12 +59,12 @@ Console.WriteLine("[Launcher] Shutdown complete.");
 static async Task WaitForOllamaAsync(string url, CancellationToken ct)
 {
     Console.Write($"[Launcher] Waiting for Ollama at {url}");
-    using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(3) };
+    using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(3) };
     while (!ct.IsCancellationRequested)
     {
         try
         {
-            var response = await http.GetAsync(url, ct);
+            var response = await client.GetAsync(url, ct);
             if (response.IsSuccessStatusCode)
             {
                 Console.WriteLine(" ready.");
@@ -82,12 +82,12 @@ static async Task WaitForOllamaAsync(string url, CancellationToken ct)
 static async Task WaitForElasticsearchAsync(string baseUrl, CancellationToken ct)
 {
     Console.Write($"[Launcher] Waiting for Elasticsearch at {baseUrl}");
-    using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(3) };
+    using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(3) };
     while (!ct.IsCancellationRequested)
     {
         try
         {
-            var body = await http.GetStringAsync($"{baseUrl}/_cluster/health", ct);
+            var body = await client.GetStringAsync($"{baseUrl}/_cluster/health", ct);
             using var doc    = System.Text.Json.JsonDocument.Parse(body);
             var clusterStatus = doc.RootElement.GetProperty("status").GetString();
             if (clusterStatus is "green" or "yellow")

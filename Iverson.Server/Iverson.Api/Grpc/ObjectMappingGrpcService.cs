@@ -11,9 +11,11 @@ using Iverson.Events;
 using Iverson.Sql;
 using Iverson.Vector;
 using Microsoft.Extensions.Logging;
-using EsFieldType      = Iverson.Elasticsearch.EsFieldType;
-using SchemaRelKind    = Iverson.Api.Schema.RelationKind;
-using ContractsRelKind = Iverson.Client.Contracts.RelationKind;
+using Iverson.Api;
+using EsFieldType         = Iverson.Elasticsearch.EsFieldType;
+using SchemaRelKind       = Iverson.Api.Schema.RelationKind;
+using SchemaRelDescriptor = Iverson.Api.Schema.RelationDescriptor;
+using ContractsRelKind    = Iverson.Client.Contracts.RelationKind;
 
 namespace Iverson.Api.Grpc;
 
@@ -24,12 +26,12 @@ namespace Iverson.Api.Grpc;
 /// </summary>
 public sealed class ObjectMappingGrpcService(
     IPostgresRepository _sql,
-    IElasticsearchService _es,
+    IElasticsearchService _elasticsearchService,
     IVectorService _vector,
-    IEventProducer events,
-    SchemaRegistry registry,
+    IEventProducer _events,
+    SchemaRegistry _registry,
     IEmbeddingService _embedding,
-    ILogger<ObjectMappingGrpcService> logger)
+    ILogger<ObjectMappingGrpcService> _logger)
     : ObjectMappingService.ObjectMappingServiceBase
 {
     private const string SchemaVersion = "1";
@@ -39,7 +41,7 @@ public sealed class ObjectMappingGrpcService(
     public override async Task<SchemaResponse> RegisterSchema(
         SchemaRequest request, ServerCallContext context)
     {
-        logger.LogInformation("[RegisterSchema] root={Type} dependents={Deps}",
+        _logger.LogInformation("[RegisterSchema] root={Type} dependents={Deps}",
             request.RootType?.TypeName, request.Dependents.Count);
 
         if (request.RootType is null)
@@ -52,7 +54,7 @@ public sealed class ObjectMappingGrpcService(
             var descriptor = BuildDescriptor(typeDesc, _embedding);
 
             await _sql.ApplySchemaAsync(ToTableSchema(descriptor));
-            await _es.ApplyMappingAsync(ToIndexSchema(descriptor));
+            await _elasticsearchService.ApplyMappingAsync(ToIndexSchema(descriptor));
 
             if (descriptor.VectorFields.Count > 0)
                 await _vector.ApplyCollectionAsync(ToCollectionSchema(descriptor));
@@ -60,7 +62,7 @@ public sealed class ObjectMappingGrpcService(
             if (descriptor.ChunkFields.Count > 0)
                 await _vector.ApplyCollectionAsync(ToChunkCollectionSchema(descriptor));
 
-            await registry.RegisterAsync(descriptor);
+            await _registry.RegisterAsync(descriptor);
             registered.Add(descriptor.TypeName);
         }
 
@@ -77,7 +79,7 @@ public sealed class ObjectMappingGrpcService(
     public override async Task<MappingResponse> Get(
         MappingGetRequest request, ServerCallContext context)
     {
-        logger.LogInformation("[Mapping.Get] type={Type} key={Key} depth={Depth}",
+        _logger.LogInformation("[Mapping.Get] type={Type} key={Key} depth={Depth}",
             request.TypeName, request.Key, request.Depth);
 
         var schema = RequireSchema(request.TypeName);
@@ -102,7 +104,7 @@ public sealed class ObjectMappingGrpcService(
     public override async Task<MappingResponse> Post(
         MappingWriteRequest request, ServerCallContext context)
     {
-        logger.LogInformation("[Mapping.Post] type={Type}", request.TypeName);
+        _logger.LogInformation("[Mapping.Post] type={Type}", request.TypeName);
 
         var schema = RequireSchema(request.TypeName);
 
@@ -112,15 +114,15 @@ public sealed class ObjectMappingGrpcService(
         if (string.IsNullOrWhiteSpace(key) || key == Guid.Empty.ToString())
         {
             key = Guid.CreateVersion7().ToString();
-            StampKey(request.Payload, schema.KeyColumn.Name, key);
+            SetKey(request.Payload, schema.KeyColumn.Name, key);
         }
 
-        var payloadJson = ProtoPayloadHelper.SerializePayload(request.Payload);
+        var payloadJson = StructSerializer.SerializePayload(request.Payload);
 
         await UpsertAsync(schema, payloadJson);
 
         var targetStores = DetermineTargetStores(request.TypeName, schema);
-        await events.ProduceAsync(
+        await _events.ProduceAsync(
             EntityTopics.Created,
             key,
             new EntityEvent(
@@ -144,7 +146,7 @@ public sealed class ObjectMappingGrpcService(
     public override async Task<MappingResponse> Update(
         MappingWriteRequest request, ServerCallContext context)
     {
-        logger.LogInformation("[Mapping.Update] type={Type}", request.TypeName);
+        _logger.LogInformation("[Mapping.Update] type={Type}", request.TypeName);
 
         var schema = RequireSchema(request.TypeName);
 
@@ -155,12 +157,12 @@ public sealed class ObjectMappingGrpcService(
 
         ValidateRelations(request.Payload, schema);
 
-        var payloadJson = ProtoPayloadHelper.SerializePayload(request.Payload);
+        var payloadJson = StructSerializer.SerializePayload(request.Payload);
 
         await UpsertAsync(schema, payloadJson);
 
         var targetStores = DetermineTargetStores(request.TypeName, schema);
-        await events.ProduceAsync(
+        await _events.ProduceAsync(
             EntityTopics.Updated,
             key,
             new EntityEvent(
@@ -184,7 +186,7 @@ public sealed class ObjectMappingGrpcService(
     public override async Task<MappingDeleteResponse> Delete(
         MappingDeleteRequest request, ServerCallContext context)
     {
-        logger.LogInformation("[Mapping.Delete] type={Type} key={Key}", request.TypeName, request.Key);
+        _logger.LogInformation("[Mapping.Delete] type={Type} key={Key}", request.TypeName, request.Key);
 
         var schema = RequireSchema(request.TypeName);
 
@@ -201,7 +203,7 @@ public sealed class ObjectMappingGrpcService(
             $"DELETE FROM \"{schema.TableName}\" WHERE \"{schema.KeyColumn.Name}\" = @Key::uuid",
             new { Key = request.Key });
 
-        await events.ProduceAsync(
+        await _events.ProduceAsync(
             EntityTopics.Deleted,
             request.Key,
             new EntityEvent(
@@ -219,7 +221,7 @@ public sealed class ObjectMappingGrpcService(
     // ── SQL helpers ───────────────────────────────────────────────────────────
 
     private SchemaDescriptor RequireSchema(string typeName) =>
-        registry.Get(typeName) ?? throw new RpcException(new Status(StatusCode.FailedPrecondition,
+        _registry.Get(typeName) ?? throw new RpcException(new Status(StatusCode.FailedPrecondition,
             $"No schema registered for '{typeName}'. Call RegisterSchema first."));
 
     private async Task<string?> FetchByKeyAsync(SchemaDescriptor schema, string key) =>
@@ -248,7 +250,7 @@ public sealed class ObjectMappingGrpcService(
         var stores = StoreTarget.Record;
         if (IsCompleteForIngestion(schema))               stores |= StoreTarget.Engagement;
         if (HasVectorOrChunkFields(schema))               stores |= StoreTarget.Intelligence;
-        if (registry.HasEngagementDependents(typeName))  stores |= StoreTarget.EngagementFanout;
+        if (_registry.HasEngagementDependents(typeName))  stores |= StoreTarget.EngagementFanout;
         return stores;
     }
 
@@ -278,12 +280,12 @@ public sealed class ObjectMappingGrpcService(
     }
 
     private async Task ResolveSingleRelationAsync(
-        Struct entityStruct, RelationEntry relation, int depth, CancellationToken ct)
+        Struct entityStruct, SchemaRelDescriptor relation, int depth, CancellationToken ct)
     {
-        var fkValue = FieldString(entityStruct, relation.ForeignKey);
+        var fkValue = GetFieldString(entityStruct, relation.ForeignKey);
         if (string.IsNullOrWhiteSpace(fkValue)) return;
 
-        var relatedSchema = registry.Get(relation.RelatedTypeName);
+        var relatedSchema = _registry.Get(relation.RelatedTypeName);
         if (relatedSchema is null) return;
 
         var rowJson = await FetchByKeyAsync(relatedSchema, fkValue);
@@ -297,12 +299,12 @@ public sealed class ObjectMappingGrpcService(
     }
 
     private async Task ResolveManyToManyAsync(
-        Struct entityStruct, RelationEntry relation, int depth, CancellationToken ct)
+        Struct entityStruct, SchemaRelDescriptor relation, int depth, CancellationToken ct)
     {
-        var ids = FieldStringList(entityStruct, relation.ForeignKey);
+        var ids = GetGetFieldStringList(entityStruct, relation.ForeignKey);
         if (ids.Count == 0) return;
 
-        var relatedSchema = registry.Get(relation.RelatedTypeName);
+        var relatedSchema = _registry.Get(relation.RelatedTypeName);
         if (relatedSchema is null) return;
 
         var items = new List<Value>();
@@ -321,12 +323,12 @@ public sealed class ObjectMappingGrpcService(
     }
 
     private async Task ResolveOneToManyAsync(
-        Struct entityStruct, SchemaDescriptor schema, RelationEntry relation, int depth, CancellationToken ct)
+        Struct entityStruct, SchemaDescriptor schema, SchemaRelDescriptor relation, int depth, CancellationToken ct)
     {
-        var keyValue = FieldString(entityStruct, schema.KeyColumn.Name);
+        var keyValue = GetFieldString(entityStruct, schema.KeyColumn.Name);
         if (string.IsNullOrWhiteSpace(keyValue)) return;
 
-        var relatedSchema = registry.Get(relation.RelatedTypeName);
+        var relatedSchema = _registry.Get(relation.RelatedTypeName);
         if (relatedSchema is null) return;
 
         var rows = await _sql.QueryAsync<string>(
@@ -348,7 +350,7 @@ public sealed class ObjectMappingGrpcService(
 
     // ── Struct field helpers ──────────────────────────────────────────────────
 
-    private static string? FieldString(Struct s, string fieldName)
+    private static string? GetFieldString(Struct s, string fieldName)
     {
         foreach (var name in Candidates(fieldName))
             if (s.Fields.TryGetValue(name, out var v))
@@ -356,7 +358,7 @@ public sealed class ObjectMappingGrpcService(
         return null;
     }
 
-    private static IReadOnlyList<string> FieldStringList(Struct s, string fieldName)
+    private static IReadOnlyList<string> GetGetFieldStringList(Struct s, string fieldName)
     {
         foreach (var name in Candidates(fieldName))
             if (s.Fields.TryGetValue(name, out var v) && v.ListValue is not null)
@@ -367,7 +369,7 @@ public sealed class ObjectMappingGrpcService(
         return [];
     }
 
-    private static Value? FieldValue(Struct s, string fieldName)
+    private static Value? GetFieldValue(Struct s, string fieldName)
     {
         foreach (var name in Candidates(fieldName))
             if (s.Fields.TryGetValue(name, out var v))
@@ -392,7 +394,7 @@ public sealed class ObjectMappingGrpcService(
         return string.Empty;
     }
 
-    private static void StampKey(Struct payload, string keyColumn, string key)
+    private static void SetKey(Struct payload, string keyColumn, string key)
     {
         foreach (var candidate in Candidates(keyColumn))
             if (payload.Fields.ContainsKey(candidate))
@@ -433,9 +435,9 @@ public sealed class ObjectMappingGrpcService(
     }
 
     private void ValidateSingleRelation(
-        Struct payload, RelationEntry relation, SchemaDescriptor schema, List<string> errors)
+        Struct payload, SchemaRelDescriptor relation, SchemaDescriptor schema, List<string> errors)
     {
-        var fkValue = FieldValue(payload, relation.ForeignKey);
+        var fkValue = GetFieldValue(payload, relation.ForeignKey);
         if (fkValue is not null)
         {
             if (!Guid.TryParse(fkValue.StringValue, out var g) || g == Guid.Empty)
@@ -443,7 +445,7 @@ public sealed class ObjectMappingGrpcService(
             return;
         }
 
-        var navValue = FieldValue(payload, relation.PropertyName);
+        var navValue = GetFieldValue(payload, relation.PropertyName);
         if (navValue?.StructValue is { } nested)
         {
             ValidateNestedObject(nested, relation.PropertyName, relation.RelatedTypeName, errors);
@@ -461,9 +463,9 @@ public sealed class ObjectMappingGrpcService(
     }
 
     private void ValidateCollectionRelation(
-        Struct payload, RelationEntry relation, List<string> errors)
+        Struct payload, SchemaRelDescriptor relation, List<string> errors)
     {
-        var fkValue = FieldValue(payload, relation.ForeignKey);
+        var fkValue = GetFieldValue(payload, relation.ForeignKey);
         if (fkValue?.ListValue is { } fkList)
         {
             for (var i = 0; i < fkList.Values.Count; i++)
@@ -475,7 +477,7 @@ public sealed class ObjectMappingGrpcService(
             return;
         }
 
-        var navValue = FieldValue(payload, relation.PropertyName);
+        var navValue = GetFieldValue(payload, relation.PropertyName);
         if (navValue?.ListValue is { } navList)
         {
             for (var i = 0; i < navList.Values.Count; i++)
@@ -494,9 +496,9 @@ public sealed class ObjectMappingGrpcService(
 
     private void ValidateNestedObject(Struct nested, string path, string relatedTypeName, List<string> errors)
     {
-        var relatedSchema  = registry.Get(relatedTypeName);
+        var relatedSchema  = _registry.Get(relatedTypeName);
         var keyColumnName  = relatedSchema?.KeyColumn.Name ?? "Id";
-        var nestedKeyValue = FieldValue(nested, keyColumnName);
+        var nestedKeyValue = GetFieldValue(nested, keyColumnName);
         var nestedKey      = nestedKeyValue?.StringValue;
 
         var isExistingEntity = !string.IsNullOrWhiteSpace(nestedKey)
@@ -529,13 +531,13 @@ public sealed class ObjectMappingGrpcService(
 
     private static SchemaDescriptor BuildDescriptor(TypeDescriptor typeDesc, IEmbeddingService embedding)
     {
-        var tableName = ToSnakeCase(typeDesc.TypeName) + "s";
+        var tableName = typeDesc.TypeName.ToSnakeCase() + "s";
 
         var keyProp = typeDesc.Properties.FirstOrDefault(p => p.IsKey)
             ?? throw new InvalidOperationException($"No key property on '{typeDesc.TypeName}'.");
 
         var scalars = new List<ColumnDescriptor>();
-        var fks     = new List<FkDescriptor>();
+        var fks     = new List<ForeignKeyDescriptor>();
         var vectors = new List<VectorDescriptor>();
         var chunks  = new List<ChunkDescriptor>();
 
@@ -555,11 +557,11 @@ public sealed class ObjectMappingGrpcService(
             {
                 var relatedType = typeDesc.Relations
                     .FirstOrDefault(r => r.ForeignKey == prop.Name)?.RelatedType ?? string.Empty;
-                fks.Add(new FkDescriptor(prop.Name, relatedType));
+                fks.Add(new ForeignKeyDescriptor(prop.Name, relatedType));
             }
         }
 
-        var relations = typeDesc.Relations.Select(r => new RelationEntry(
+        var relations = typeDesc.Relations.Select(r => new SchemaRelDescriptor(
             r.PropertyName,
             r.Kind switch
             {
@@ -605,19 +607,19 @@ public sealed class ObjectMappingGrpcService(
             fields.Add(new FieldMapping(col.Name, SqlTypeToEsType(col.SqlType)));
 
         foreach (var v in d.VectorFields)
-            fields.Add(new FieldMapping($"{ToSnakeCase(v.PropertyName)}_vector", EsFieldType.DenseVector, v.Dimension));
+            fields.Add(new FieldMapping($"{v.PropertyName.ToSnakeCase()}_vector", EsFieldType.DenseVector, v.Dimension));
 
         return new IndexSchema(d.IndexName, fields);
     }
 
     private static CollectionSchema ToChunkCollectionSchema(SchemaDescriptor d) => new(
         d.CollectionName! + "_chunks",
-        d.ChunkFields.Select(c => new NamedVector($"{ToSnakeCase(c.PropertyName)}_vector", c.Dimension)).ToList(),
+        d.ChunkFields.Select(c => new NamedVector($"{c.PropertyName.ToSnakeCase()}_vector", c.Dimension)).ToList(),
         [new PayloadIndex("parent_id", PayloadIndexKind.Keyword)]);
 
     private static CollectionSchema ToCollectionSchema(SchemaDescriptor d) => new(
         d.CollectionName!,
-        d.VectorFields.Select(v => new NamedVector($"{ToSnakeCase(v.PropertyName)}_vector", v.Dimension)).ToList(),
+        d.VectorFields.Select(v => new NamedVector($"{v.PropertyName.ToSnakeCase()}_vector", v.Dimension)).ToList(),
         d.ScalarColumns
             .Select(c => new PayloadIndex(c.Name, SqlTypeToPayloadKind(c.SqlType)))
             .Concat(d.FkColumns.Select(fk => new PayloadIndex(fk.ColumnName, PayloadIndexKind.Keyword)))
@@ -668,16 +670,6 @@ public sealed class ObjectMappingGrpcService(
         _                  => PayloadIndexKind.Keyword
     };
 
-    private static string ToSnakeCase(string name)
-    {
-        var sb = new System.Text.StringBuilder();
-        for (var i = 0; i < name.Length; i++)
-        {
-            if (char.IsUpper(name[i]) && i > 0) sb.Append('_');
-            sb.Append(char.ToLowerInvariant(name[i]));
-        }
-        return sb.ToString();
-    }
 }
 
 file static class StringExtensions

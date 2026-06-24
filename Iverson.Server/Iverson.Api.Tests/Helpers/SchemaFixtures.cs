@@ -28,10 +28,10 @@ public static class SchemaFixtures
         CollectionName = "articles",
         KeyColumn      = new ColumnDescriptor("Id", "uuid", false),
         ScalarColumns  = [new ColumnDescriptor("Title", "text", false), new ColumnDescriptor("Body", "text", false)],
-        FkColumns      = [new FkDescriptor("AuthorId", "Author")],
+        FkColumns      = [new ForeignKeyDescriptor("AuthorId", "Author")],
         VectorFields   = [new VectorDescriptor("Title", 768, "nomic-embed-text")],
         ChunkFields    = [new ChunkDescriptor("Body", 512, 64, "nomic-embed-text", 768)],
-        Relations      = [new RelationEntry("Author", RelationKind.ManyToOne, "Author", "AuthorId")]
+        Relations      = [new RelationDescriptor("Author", RelationKind.ManyToOne, "Author", "AuthorId")]
     };
 
     // Article with a OneToMany — makes it NOT Engagement-eligible
@@ -43,12 +43,12 @@ public static class SchemaFixtures
         CollectionName = "articles",
         KeyColumn      = new ColumnDescriptor("Id", "uuid", false),
         ScalarColumns  = [new ColumnDescriptor("Title", "text", false)],
-        FkColumns      = [new FkDescriptor("AuthorId", "Author")],
+        FkColumns      = [new ForeignKeyDescriptor("AuthorId", "Author")],
         VectorFields   = [],
         ChunkFields    = [],
         Relations      = [
-            new RelationEntry("Author",      RelationKind.ManyToOne, "Author",      "AuthorId"),
-            new RelationEntry("UserArticles", RelationKind.OneToMany, "UserArticle", "ArticleId")
+            new RelationDescriptor("Author",      RelationKind.ManyToOne, "Author",      "AuthorId"),
+            new RelationDescriptor("UserArticles", RelationKind.OneToMany, "UserArticle", "ArticleId")
         ]
     };
 
@@ -61,12 +61,12 @@ public static class SchemaFixtures
         CollectionName = null,
         KeyColumn      = new ColumnDescriptor("Id", "uuid", false),
         ScalarColumns  = [],
-        FkColumns      = [new FkDescriptor("UserId", "User"), new FkDescriptor("ArticleId", "Article")],
+        FkColumns      = [new ForeignKeyDescriptor("UserId", "User"), new ForeignKeyDescriptor("ArticleId", "Article")],
         VectorFields   = [],
         ChunkFields    = [],
         Relations      = [
-            new RelationEntry("User",    RelationKind.ManyToOne, "User",    "UserId"),
-            new RelationEntry("Article", RelationKind.ManyToOne, "Article", "ArticleId")
+            new RelationDescriptor("User",    RelationKind.ManyToOne, "User",    "UserId"),
+            new RelationDescriptor("Article", RelationKind.ManyToOne, "Article", "ArticleId")
         ]
     };
 }
