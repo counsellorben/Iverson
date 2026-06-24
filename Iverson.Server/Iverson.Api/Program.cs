@@ -124,6 +124,7 @@ app.MapPost("/probe/kafka", async (IEventProducer producer) =>
 }).WithName("ProbeKafka");
 
 // ── Schema hydration ───────────────────────────────────────────────────────────
+await app.Services.GetRequiredService<IEmbeddingService>().InitializeAsync();
 await app.Services.GetRequiredService<SchemaRegistry>().LoadAsync();
 
 // ── gRPC endpoints ─────────────────────────────────────────────────────────────
