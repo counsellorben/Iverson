@@ -17,11 +17,11 @@ Console.WriteLine("[Launcher] Docker Compose up — waiting for services to be r
 
 // Step 2: wait for each service port
 await WaitForPortAsync("localhost", 5432, "PostgreSQL", cts.Token);
-await WaitForElasticsearchAsync("http://localhost:9200", cts.Token);
 await WaitForPortAsync("localhost", 6333, "Qdrant", cts.Token);
 await WaitForOllamaAsync("http://localhost:11434/api/tags", cts.Token);
 await WaitForPortAsync("localhost", 9092, "Kafka", cts.Token);
 await WaitForPortAsync("localhost", 4317, "Jaeger (OTLP)", cts.Token);
+await WaitForElasticsearchAsync("http://localhost:9200", cts.Token);
 
 Console.WriteLine("[Launcher] All infrastructure ready. Starting Iverson.Api...");
 
@@ -129,18 +129,14 @@ static async Task RunCommandAsync(string cmd, string args, string workingDir, Ca
     var psi = new ProcessStartInfo(cmd, args)
     {
         WorkingDirectory = workingDir,
-        RedirectStandardError = true,
         UseShellExecute = false
     };
 
     var proc = Process.Start(psi) ?? throw new InvalidOperationException($"Failed to start {cmd}");
-    // Drain stderr concurrently — reading after WaitForExitAsync deadlocks when the buffer fills.
-    var stderrTask = proc.StandardError.ReadToEndAsync(ct);
     await proc.WaitForExitAsync(ct);
-    var err = await stderrTask;
 
     if (proc.ExitCode != 0)
-        Console.Error.WriteLine($"[Launcher] {cmd} exited {proc.ExitCode}: {err}");
+        Console.Error.WriteLine($"[Launcher] {cmd} exited with code {proc.ExitCode}");
 }
 
 static Process StartProcess(string cmd, string args, string workingDir,

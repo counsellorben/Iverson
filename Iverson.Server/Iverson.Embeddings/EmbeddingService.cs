@@ -44,7 +44,7 @@ public sealed class EmbeddingService(
 
             var body = JsonSerializer.Serialize(
                 new { model = ModelId, input = text }, _jsonOpts);
-            using var request = new HttpRequestMessage(HttpMethod.Post, "/v1/embeddings")
+            using var request = new HttpRequestMessage(HttpMethod.Post, "/api/embed")
             {
                 Content = new StringContent(body, Encoding.UTF8, "application/json")
             };
@@ -55,9 +55,9 @@ public sealed class EmbeddingService(
             var responseJson = await response.Content.ReadAsStringAsync(ct);
             using var doc    = JsonDocument.Parse(responseJson);
 
+            // /api/embed returns { "embeddings": [[...]] }
             var embedding = doc.RootElement
-                .GetProperty("data")[0]
-                .GetProperty("embedding")
+                .GetProperty("embeddings")[0]
                 .EnumerateArray()
                 .Select(e => (float)e.GetDouble())
                 .ToArray();
