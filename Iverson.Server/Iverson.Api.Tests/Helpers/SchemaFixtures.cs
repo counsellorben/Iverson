@@ -29,8 +29,8 @@ public static class SchemaFixtures
         KeyColumn      = new ColumnDescriptor("Id", "uuid", false),
         ScalarColumns  = [new ColumnDescriptor("Title", "text", false), new ColumnDescriptor("Body", "text", false)],
         FkColumns      = [new FkDescriptor("AuthorId", "Author")],
-        VectorFields   = [new VectorDescriptor("Title", 1536, "text-embedding-3-small")],
-        ChunkFields    = [new ChunkDescriptor("Body", 512, 64, "text-embedding-3-small", 1536)],
+        VectorFields   = [new VectorDescriptor("Title", 768, "nomic-embed-text")],
+        ChunkFields    = [new ChunkDescriptor("Body", 512, 64, "nomic-embed-text", 768)],
         Relations      = [new RelationEntry("Author", RelationKind.ManyToOne, "Author", "AuthorId")]
     };
 

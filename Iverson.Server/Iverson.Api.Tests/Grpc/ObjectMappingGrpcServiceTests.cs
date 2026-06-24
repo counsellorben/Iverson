@@ -6,6 +6,7 @@ using Iverson.Api.Schema;
 using Iverson.Api.Tests.Helpers;
 using Iverson.Client.Contracts;
 using Iverson.Elasticsearch;
+using Iverson.Embeddings;
 using Iverson.Events;
 using Iverson.Sql;
 using Iverson.Vector;
@@ -22,6 +23,7 @@ public class ObjectMappingGrpcServiceTests
     private readonly IVectorService _vector;
     private readonly IEventProducer _events;
     private readonly SchemaRegistry _registry;
+    private readonly IEmbeddingService _embedding;
     private readonly ObjectMappingGrpcService _sut;
 
     private static readonly string AuthorId  = "11111111-0000-0000-0000-000000000001";
@@ -42,9 +44,13 @@ public class ObjectMappingGrpcServiceTests
         _events.ProduceAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<EntityEvent>())
                .Returns(Task.CompletedTask);
 
+        _embedding = Substitute.For<IEmbeddingService>();
+        _embedding.Dimension.Returns(768);
+        _embedding.ModelId.Returns("nomic-embed-text");
+
         _registry = new SchemaRegistry(_sql, NullLogger<SchemaRegistry>.Instance);
         _sut = new ObjectMappingGrpcService(
-            _sql, _es, _vector, _events, _registry,
+            _sql, _es, _vector, _events, _registry, _embedding,
             NullLogger<ObjectMappingGrpcService>.Instance);
     }
 
@@ -151,6 +157,33 @@ public class ObjectMappingGrpcServiceTests
         var response = await _sut.RegisterSchema(request, TestServerCallContext.Create());
 
         response.Registered.Should().Contain("Article").And.Contain("Author");
+    }
+
+    [Fact]
+    public async Task RegisterSchema_SetsVectorDimAndModelId_FromEmbeddingService()
+    {
+        var typeDesc = new TypeDescriptor { TypeName = "EmbeddableDoc" };
+        typeDesc.Properties.Add(new PropertyDescriptor
+        {
+            Name = "Id", ClrType = ClrType.ClrGuid, IsKey = true
+        });
+        typeDesc.Properties.Add(new PropertyDescriptor
+        {
+            Name    = "Content",
+            ClrType = ClrType.ClrString,
+            IsEmbedding = true,
+            VectorDim   = 0,
+            ModelId     = string.Empty
+        });
+
+        var request  = new SchemaRequest { RootType = typeDesc };
+        var response = await _sut.RegisterSchema(request, Substitute.For<ServerCallContext>());
+
+        response.Success.Should().BeTrue();
+        var schema = _registry.Get("EmbeddableDoc")!;
+        schema.VectorFields.Should().ContainSingle();
+        schema.VectorFields[0].Dimension.Should().Be(768);
+        schema.VectorFields[0].ModelId.Should().Be("nomic-embed-text");
     }
 
     // ── Post ──────────────────────────────────────────────────────────────────

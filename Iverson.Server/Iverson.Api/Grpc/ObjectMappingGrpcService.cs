@@ -6,6 +6,7 @@ using Grpc.Core;
 using Iverson.Api.Schema;
 using Iverson.Client.Contracts;
 using Iverson.Elasticsearch;
+using Iverson.Embeddings;
 using Iverson.Events;
 using Iverson.Sql;
 using Iverson.Vector;
@@ -27,6 +28,7 @@ public sealed class ObjectMappingGrpcService(
     IVectorService _vector,
     IEventProducer events,
     SchemaRegistry registry,
+    IEmbeddingService _embedding,
     ILogger<ObjectMappingGrpcService> logger)
     : ObjectMappingService.ObjectMappingServiceBase
 {
@@ -47,7 +49,7 @@ public sealed class ObjectMappingGrpcService(
 
         foreach (var typeDesc in new[] { request.RootType }.Concat(request.Dependents))
         {
-            var descriptor = BuildDescriptor(typeDesc);
+            var descriptor = BuildDescriptor(typeDesc, _embedding);
 
             await _sql.ApplySchemaAsync(ToTableSchema(descriptor));
             await _es.ApplyMappingAsync(ToIndexSchema(descriptor));
@@ -113,7 +115,7 @@ public sealed class ObjectMappingGrpcService(
             StampKey(request.Payload, schema.KeyColumn.Name, key);
         }
 
-        var payloadJson = SerializePayload(request.Payload);
+        var payloadJson = ProtoPayloadHelper.SerializePayload(request.Payload);
 
         await UpsertAsync(schema, payloadJson);
 
@@ -153,7 +155,7 @@ public sealed class ObjectMappingGrpcService(
 
         ValidateRelations(request.Payload, schema);
 
-        var payloadJson = SerializePayload(request.Payload);
+        var payloadJson = ProtoPayloadHelper.SerializePayload(request.Payload);
 
         await UpsertAsync(schema, payloadJson);
 
@@ -380,24 +382,6 @@ public sealed class ObjectMappingGrpcService(
             yield return char.ToLowerInvariant(name[0]) + name[1..];
     }
 
-    // ── Payload serialization ─────────────────────────────────────────────────
-
-    private static string SerializePayload(Struct payload) =>
-        JsonSerializer.Serialize(
-            payload.Fields.ToDictionary(kv => kv.Key, kv => ProtoValueToNative(kv.Value)));
-
-    private static object? ProtoValueToNative(Value v) => v.KindCase switch
-    {
-        Value.KindOneofCase.StringValue  => v.StringValue,
-        Value.KindOneofCase.NumberValue  => v.NumberValue,
-        Value.KindOneofCase.BoolValue    => v.BoolValue,
-        Value.KindOneofCase.NullValue    => null,
-        Value.KindOneofCase.ListValue    => v.ListValue.Values.Select(ProtoValueToNative).ToList(),
-        Value.KindOneofCase.StructValue  => v.StructValue.Fields
-                                            .ToDictionary(kv => kv.Key, kv => ProtoValueToNative(kv.Value)),
-        _                                => null
-    };
-
     // ── Key helpers ───────────────────────────────────────────────────────────
 
     private static string ExtractKey(Struct payload, string keyColumn)
@@ -543,7 +527,7 @@ public sealed class ObjectMappingGrpcService(
 
     // ── Schema builder helpers (unchanged from original) ──────────────────────
 
-    private static SchemaDescriptor BuildDescriptor(TypeDescriptor typeDesc)
+    private static SchemaDescriptor BuildDescriptor(TypeDescriptor typeDesc, IEmbeddingService embedding)
     {
         var tableName = ToSnakeCase(typeDesc.TypeName) + "s";
 
@@ -561,10 +545,10 @@ public sealed class ObjectMappingGrpcService(
             scalars.Add(new ColumnDescriptor(prop.Name, sqlType, prop.IsNullable));
 
             if (prop.IsEmbedding)
-                vectors.Add(new VectorDescriptor(prop.Name, prop.VectorDim, prop.ModelId));
+                vectors.Add(new VectorDescriptor(prop.Name, embedding.Dimension, embedding.ModelId));
 
             if (prop.IsChunk)
-                chunks.Add(new ChunkDescriptor(prop.Name, prop.ChunkMaxTokens, prop.ChunkOverlap, prop.ChunkModelId, prop.ChunkVectorDim));
+                chunks.Add(new ChunkDescriptor(prop.Name, prop.ChunkMaxTokens, prop.ChunkOverlap, embedding.ModelId, embedding.Dimension));
 
             if (prop.Name.EndsWith("Id",  StringComparison.OrdinalIgnoreCase) ||
                 prop.Name.EndsWith("Ids", StringComparison.OrdinalIgnoreCase))
