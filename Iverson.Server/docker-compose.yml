@@ -54,6 +54,29 @@ services:
       timeout: 5s
       retries: 5
 
+  ollama:
+    image: ollama/ollama:latest
+    container_name: iverson-ollama
+    restart: unless-stopped
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:11434/api/tags || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  ollama-init:
+    image: curlimages/curl:latest
+    container_name: iverson-ollama-init
+    depends_on:
+      ollama:
+        condition: service_healthy
+    command: ["-X", "POST", "http://ollama:11434/api/pull", "-d", "{\"name\":\"nomic-embed-text\"}"]
+    restart: "no"
+
   zookeeper:
     image: confluentinc/cp-zookeeper:7.6.0
     container_name: iverson-zookeeper
@@ -121,6 +144,8 @@ services:
       - ASPNETCORE_ENVIRONMENT=Production
       - ASPNETCORE_URLS=http://+:8080
       - Otel__Endpoint=http://jaeger:4317
+      - Embeddings__BaseUrl=http://ollama:11434
+      - Embeddings__ModelId=nomic-embed-text
     depends_on:
       postgres:
         condition: service_healthy
@@ -132,6 +157,8 @@ services:
         condition: service_healthy
       jaeger:
         condition: service_healthy
+      ollama-init:
+        condition: service_completed_successfully
 
 volumes:
   postgres_data:
@@ -140,3 +167,4 @@ volumes:
   zookeeper_data:
   zookeeper_logs:
   kafka_data:
+  ollama_data:
