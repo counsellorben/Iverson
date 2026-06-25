@@ -44,7 +44,7 @@ public sealed class EngagementStoreConsumer(
                 logger.LogError(
                     "[Engagement] Dropped event — no schema registered for type={Type} key={Key}.",
                     ev.TypeName, ev.Key);
-                Activity.Current?.SetTag("dropped_event", true)
+                Activity.Current?.SetTag("dropped_event.direct_index", true)
                                  .SetTag("dropped_event.reason", "schema_not_found")
                                  .SetTag("dropped_event.type", ev.TypeName);
             }

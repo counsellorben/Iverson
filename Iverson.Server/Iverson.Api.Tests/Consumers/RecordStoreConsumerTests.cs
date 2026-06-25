@@ -160,6 +160,33 @@ public class RecordStoreConsumerTests
     }
 
     [Fact]
+    public async Task HandleDeleteAsync_UnknownType_LogsError()
+    {
+        // Arrange — registry with no schemas; "Ghost" type is unknown
+        var logger = Substitute.For<ILogger<RecordStoreConsumer>>();
+        var sql = Substitute.For<IPostgresRepository>();
+        var registry = new Api.Schema.SchemaRegistry(sql, NullLogger<Api.Schema.SchemaRegistry>.Instance);
+
+        var sut = new RecordStoreConsumer(_consumer, sql, registry, logger);
+
+        var ev = new EntityEvent("Ghost", Guid.NewGuid().ToString(), "{}", "", "1",
+            DateTimeOffset.UtcNow, StoreTarget.Record);
+        var value = JsonSerializer.Serialize(ev, new JsonSerializerOptions
+            { PropertyNamingPolicy = JsonNamingPolicy.CamelCase });
+
+        // Act
+        await sut.HandleDeleteAsync("key", value, CancellationToken.None);
+
+        // Assert
+        logger.Received(1).Log(
+            LogLevel.Error,
+            Arg.Any<EventId>(),
+            Arg.Is<object>(o => o.ToString()!.Contains("Ghost")),
+            null,
+            Arg.Any<Func<object, Exception?, string>>());
+    }
+
+    [Fact]
     public async Task HandlesMalformedJson_WithoutThrowing()
     {
         await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
