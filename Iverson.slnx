@@ -11,8 +11,6 @@
   <Folder Name="/Iverson.Server/">
     <Project Path="Iverson.Server/Iverson.Api.Tests/Iverson.Api.Tests.csproj" />
     <Project Path="Iverson.Server/Iverson.Api/Iverson.Api.csproj" />
-    <Project Path="Iverson.Server/Iverson.Elasticsearch.Tests/Iverson.Elasticsearch.Tests.csproj" />
-    <Project Path="Iverson.Server/Iverson.Elasticsearch/Iverson.Elasticsearch.csproj" />
     <Project Path="Iverson.Server/Iverson.Embeddings.Tests/Iverson.Embeddings.Tests.csproj" />
     <Project Path="Iverson.Server/Iverson.Embeddings/Iverson.Embeddings.csproj" />
     <Project Path="Iverson.Server/Iverson.Events.Tests/Iverson.Events.Tests.csproj" />
