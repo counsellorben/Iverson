@@ -186,6 +186,58 @@ public class ObjectSearchGrpcServiceTests
         response.Results[0].MetricValue.Should().BeApproximately(42.5, 0.001);
     }
 
+    [Fact]
+    public async Task Aggregate_Terms_ResponseTypeRoundTrips()
+    {
+        await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
+
+        var row = new Dictionary<string, object> { ["bucket_key"] = "Alice", ["doc_count"] = 3L };
+        _sr.QueryAsync<dynamic>(Arg.Any<string>(), Arg.Any<object?>())
+           .Returns(new[] { (dynamic)row }.AsEnumerable());
+
+        var request = new AggregateRequest { TypeName = "Author" };
+        request.Aggregations.Add(new AggregationSpec
+        {
+            Name = "name_terms", Type = AggregationType.Terms, Field = "Name", Size = 5
+        });
+
+        var response = await _sut.Aggregate(request, TestServerCallContext.Create());
+
+        response.Results.Should().HaveCount(1);
+        response.Results[0].Type.Should().Be(AggregationType.Terms);
+    }
+
+    [Fact]
+    public async Task Aggregate_WithFilterQuery_PropagatesFilterIntoSql()
+    {
+        await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
+
+        string? capturedSql = null;
+        _sr.QueryAsync<dynamic>(Arg.Do<string>(s => capturedSql = s), Arg.Any<object?>())
+           .Returns(Enumerable.Empty<dynamic>());
+
+        var query = new SearchQuery();
+        query.Clauses.Add(new SearchClause
+        {
+            Property   = "Name",
+            Operator   = SearchOperator.Equals,
+            Value      = new SearchValue { StringVal = "Alice" },
+            ClauseType = SearchClauseType.Filter
+        });
+
+        var request = new AggregateRequest { TypeName = "Author", Query = query };
+        request.Aggregations.Add(new AggregationSpec
+        {
+            Name = "name_terms", Type = AggregationType.Terms, Field = "Name", Size = 5
+        });
+
+        await _sut.Aggregate(request, TestServerCallContext.Create());
+
+        capturedSql.Should().NotBeNull();
+        capturedSql.Should().Contain("WHERE");
+        capturedSql.Should().Contain("`Name`");
+    }
+
     // ── SearchSimilar / SearchChunks — Qdrant paths unchanged ─────────────────
 
     [Fact]

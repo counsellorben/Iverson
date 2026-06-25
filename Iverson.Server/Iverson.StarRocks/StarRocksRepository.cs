@@ -80,6 +80,14 @@ public sealed class StarRocksRepository(string connectionString, ILogger<StarRoc
 
         var colList   = string.Join(", ", entries.Select(e => $"`{e.Key}`"));
         var paramList = string.Join(", ", entries.Select((_, i) => $"@p{i}"));
+
+        // StarRocks Primary Key model treats INSERT of an existing key as a FULL-ROW REPLACE:
+        // any column absent from the INSERT list is reset to its default/null.
+        // This is safe here because both ObjectPersistenceGrpcService.Update and
+        // ObjectMappingGrpcService.Update call StructSerializer.SerializePayload on
+        // request.Payload — which serialises the ENTIRE Struct the client sent —
+        // and the API contract requires clients to supply the complete entity on Update.
+        // If a partial-payload Update is ever introduced the producer must be changed first.
         var sql       = $"INSERT INTO `{schema.TableName}` ({colList}) VALUES ({paramList})";
 
         var param = new DynamicParameters();
@@ -130,6 +138,8 @@ public sealed class StarRocksRepository(string connectionString, ILogger<StarRoc
         }
         else
         {
+            // Only ADDS columns that are missing. Type widening, column removal, and
+            // primary-key changes are not handled — those require manual DDL migration.
             var existingCols = (await conn.QueryAsync<string>(
                 "SELECT column_name FROM information_schema.columns WHERE table_schema = @db AND table_name = @tbl",
                 new { db = _dbName, tbl = schema.TableName }

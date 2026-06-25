@@ -7,6 +7,7 @@ using Iverson.Client.Contracts;
 using Iverson.Embeddings;
 using Iverson.Events;
 using Iverson.Sql;
+using Iverson.StarRocks;
 using Iverson.Vector;
 using Microsoft.Extensions.Logging;
 using Iverson.Api;
@@ -26,6 +27,7 @@ public sealed class ObjectMappingGrpcService(
     IEventProducer _events,
     SchemaRegistry _registry,
     IEmbeddingService _embedding,
+    IStarRocksRepository _starRocks,
     ILogger<ObjectMappingGrpcService> _logger)
     : ObjectMappingService.ObjectMappingServiceBase
 {
@@ -49,6 +51,7 @@ public sealed class ObjectMappingGrpcService(
             var descriptor = SchemaBuilder.BuildDescriptor(typeDesc, _embedding);
 
             await _sql.ApplySchemaAsync(SchemaBuilder.ToTableSchema(descriptor));
+            await _starRocks.ApplyTableAsync(SchemaBuilder.ToStarRocksTableSchema(descriptor));
 
             if (descriptor.VectorFields.Count > 0)
                 await _vector.ApplyCollectionAsync(SchemaBuilder.ToCollectionSchema(descriptor));

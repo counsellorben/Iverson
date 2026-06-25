@@ -8,6 +8,7 @@ using Iverson.Client.Contracts;
 using Iverson.Embeddings;
 using Iverson.Events;
 using Iverson.Sql;
+using Iverson.StarRocks;
 using Iverson.Vector;
 using Microsoft.Extensions.Logging.Abstractions;
 using NSubstitute;
@@ -22,6 +23,7 @@ public class ObjectMappingGrpcServiceTests
     private readonly IEventProducer _events;
     private readonly SchemaRegistry _registry;
     private readonly IEmbeddingService _embedding;
+    private readonly IStarRocksRepository _starRocks;
     private readonly ObjectMappingGrpcService _sut;
 
     private static readonly string AuthorId  = "11111111-0000-0000-0000-000000000001";
@@ -45,9 +47,12 @@ public class ObjectMappingGrpcServiceTests
         _embedding.Dimension.Returns(768);
         _embedding.ModelId.Returns("nomic-embed-text");
 
+        _starRocks = Substitute.For<IStarRocksRepository>();
+        _starRocks.ApplyTableAsync(Arg.Any<StarRocksTableSchema>()).Returns(Task.CompletedTask);
+
         _registry = new SchemaRegistry(_sql, NullLogger<SchemaRegistry>.Instance);
         _sut = new ObjectMappingGrpcService(
-            _sql, _vector, _events, _registry, _embedding,
+            _sql, _vector, _events, _registry, _embedding, _starRocks,
             NullLogger<ObjectMappingGrpcService>.Instance);
     }
 
@@ -110,6 +115,17 @@ public class ObjectMappingGrpcServiceTests
 
         var ex = await act.Should().ThrowAsync<RpcException>();
         ex.Which.StatusCode.Should().Be(StatusCode.InvalidArgument);
+    }
+
+    [Fact]
+    public async Task RegisterSchema_CallsApplyTableAsync_WithMatchingTableName()
+    {
+        var request = new SchemaRequest { RootType = SimpleType("Author", "Name") };
+
+        await _sut.RegisterSchema(request, TestServerCallContext.Create());
+
+        await _starRocks.Received(1).ApplyTableAsync(
+            Arg.Is<StarRocksTableSchema>(s => s.TableName == "authors"));
     }
 
     [Fact]
