@@ -1,17 +1,18 @@
-using System.Text.Json;
 using Google.Protobuf.WellKnownTypes;
 using Grpc.Core;
 using Iverson.Api.Schema;
+using Iverson.Api.StarRocks;
 using Iverson.Client.Contracts;
-using Iverson.Elasticsearch;
 using Iverson.Embeddings;
+using Iverson.StarRocks;
 using Iverson.Vector;
 using Microsoft.Extensions.Logging;
-using Iverson.Api;
-using EsAggKind      = Iverson.Elasticsearch.AggregationKind;
-using EsAggResult    = Iverson.Elasticsearch.AggregationResult;
-using EsAggSpec      = Iverson.Elasticsearch.AggregationDescriptor;
-using EsRangeSpec    = Iverson.Elasticsearch.RangeBucketDescriptor;
+
+using SrAggKind   = Iverson.StarRocks.AggregationKind;
+using SrAggSpec   = Iverson.StarRocks.AggregationDescriptor;
+using SrAggResult = Iverson.StarRocks.AggregationResult;
+using SrAggBucket = Iverson.StarRocks.AggregationBucket;
+using SrRangeSpec = Iverson.StarRocks.RangeBucketDescriptor;
 using ProtoAggBucket = Iverson.Client.Contracts.AggregationBucket;
 using ProtoAggResult = Iverson.Client.Contracts.AggregationResult;
 using ProtoAggSpec   = Iverson.Client.Contracts.AggregationSpec;
@@ -20,20 +21,19 @@ namespace Iverson.Api.Grpc;
 
 /// <summary>
 /// Three search paths:
-///   Search        — ES DSL query (text/scalar/filter clauses).
+///   Search        — StarRocks SQL WHERE query.
 ///   SearchSimilar — Embeds the query text and searches the entity's Qdrant named vector collection.
-///   SearchChunks  — Embeds the query text and searches the {collection}_chunks Qdrant collection,
-///                   returning passage text for RAG context assembly.
+///   SearchChunks  — Embeds the query text and searches the {collection}_chunks Qdrant collection.
 /// </summary>
 public sealed class ObjectSearchGrpcService(
     SchemaRegistry registry,
-    IElasticsearchService es,
+    IStarRocksRepository sr,
     IVectorService vector,
     IEmbeddingService embedding,
     ILogger<ObjectSearchGrpcService> logger)
     : ObjectSearchService.ObjectSearchServiceBase
 {
-    // ── ES DSL Search ──────────────────────────────────────────────────────────
+    // ── SQL Search ─────────────────────────────────────────────────────────────
 
     public override async Task Search(
         SearchRequest request,
@@ -46,16 +46,18 @@ public sealed class ObjectSearchGrpcService(
             logger.LogInformation("[Search] type={Type} clauses={Clauses} page={Page}/{Size}",
                 request.TypeName, request.Query?.Clauses.Count ?? 0, request.Page, request.PageSize);
 
-        // Build a query string from CONTAINS / EQUALS clauses; route VECTOR_SIMILAR to SearchSimilar.
-        var queryText = BuildQueryText(request.Query);
+        var (sql, param) = StarRocksQueryBuilder.BuildSearch(
+            schema.TableName, schema, request.Query, request.Page, request.PageSize);
 
-        var docs = await es.SearchAsync<Dictionary<string, object?>>(schema.TableName, queryText);
+        var rows = await sr.QueryAsync<dynamic>(sql, param);
 
-        foreach (var doc in docs)
+        foreach (var row in rows)
         {
+            var dict = ((IDictionary<string, object>)row)
+                .ToDictionary(kv => kv.Key, kv => (object?)kv.Value);
             await responseStream.WriteAsync(new SearchResponse
             {
-                Data    = DictToProtoStruct(doc),
+                Data    = DictToProtoStruct(dict),
                 Score   = 1.0f,
                 TraceId = request.TraceId
             }, context.CancellationToken);
@@ -86,8 +88,7 @@ public sealed class ObjectSearchGrpcService(
         float[] queryVector;
         try
         {
-            queryVector = await embedding.EmbedAsync(
-                request.Query, context.CancellationToken);
+            queryVector = await embedding.EmbedAsync(request.Query, context.CancellationToken);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -97,8 +98,7 @@ public sealed class ObjectSearchGrpcService(
 
         var vectorName = vectorDesc.PropertyName.ToSnakeCase() + "_vector";
         var topK       = (ulong)Math.Max(1, (int)request.TopK);
-
-        var results = await vector.SearchNamedAsync(schema.CollectionName, vectorName, queryVector, topK);
+        var results    = await vector.SearchNamedAsync(schema.CollectionName, vectorName, queryVector, topK);
 
         foreach (var r in results)
         {
@@ -139,8 +139,7 @@ public sealed class ObjectSearchGrpcService(
         float[] queryVector;
         try
         {
-            queryVector = await embedding.EmbedAsync(
-                request.Query, context.CancellationToken);
+            queryVector = await embedding.EmbedAsync(request.Query, context.CancellationToken);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -151,8 +150,7 @@ public sealed class ObjectSearchGrpcService(
         var vectorName       = chunkDesc.PropertyName.ToSnakeCase() + "_vector";
         var chunksCollection = schema.CollectionName + "_chunks";
         var topK             = (ulong)Math.Max(1, (int)request.TopK);
-
-        var results = await vector.SearchNamedAsync(chunksCollection, vectorName, queryVector, topK);
+        var results          = await vector.SearchNamedAsync(chunksCollection, vectorName, queryVector, topK);
 
         foreach (var r in results)
         {
@@ -184,95 +182,108 @@ public sealed class ObjectSearchGrpcService(
         if (logger.IsEnabled(LogLevel.Information))
             logger.LogInformation("[Aggregate] type={Type} aggs={Count}", request.TypeName, request.Aggregations.Count);
 
-        var queryText = BuildQueryText(request.Query);
-        var specs     = request.Aggregations.Select(ProtoToEsSpec).ToList();
-
-        var results = await es.AggregateAsync(schema.TableName, queryText, specs);
-
         var response = new AggregateResponse { TraceId = request.TraceId };
-        foreach (var r in results)
-            response.Results.Add(EsResultToProto(r));
+
+        foreach (var spec in request.Aggregations)
+        {
+            var srSpec = ProtoToSrSpec(spec);
+            var result = await RunAggregationAsync(schema, request.Query, srSpec);
+            if (result is not null) response.Results.Add(SrResultToProto(result));
+        }
 
         return response;
     }
 
-    // ── Private helpers ────────────────────────────────────────────────────────
+    private async Task<SrAggResult?> RunAggregationAsync(
+        SchemaDescriptor schema, SearchQuery? query, SrAggSpec spec)
+    {
+        var (sql, param) = StarRocksQueryBuilder.BuildAggregate(schema.TableName, schema, query, spec);
+        var rows = (await sr.QueryAsync<dynamic>(sql, param)).ToList();
+
+        switch (spec.Kind)
+        {
+            case SrAggKind.Terms:
+            case SrAggKind.DateHistogram:
+            case SrAggKind.Range:
+            {
+                var buckets = rows
+                    .Select(r => (IDictionary<string, object>)r)
+                    .Where(r => r.TryGetValue("bucket_key", out var k) && k is not null)
+                    .Select(r => new SrAggBucket(
+                        r["bucket_key"]?.ToString() ?? string.Empty,
+                        Convert.ToInt64(r["doc_count"])))
+                    .ToList();
+                return new SrAggResult(spec.Name, spec.Kind, Buckets: buckets);
+            }
+
+            default:
+            {
+                if (rows.Count == 0) return new SrAggResult(spec.Name, spec.Kind, MetricValue: null);
+                var row0 = (IDictionary<string, object>)rows[0];
+                row0.TryGetValue("metric_val", out var val);
+                return new SrAggResult(spec.Name, spec.Kind,
+                    MetricValue: val is null ? null : Convert.ToDouble(val));
+            }
+        }
+    }
+
+    // ── Helpers ────────────────────────────────────────────────────────────────
 
     private SchemaDescriptor RequireSchema(string typeName) =>
         registry.Get(typeName) ?? throw new RpcException(new Status(StatusCode.FailedPrecondition,
             $"No schema registered for '{typeName}'. Call RegisterSchema first."));
 
-    // Extracts a query string from text-oriented clauses; ignores VECTOR_SIMILAR
-    // (those belong in SearchSimilar, not here).
-    private static EsAggSpec ProtoToEsSpec(ProtoAggSpec proto) =>
+    private static SrAggSpec ProtoToSrSpec(ProtoAggSpec proto) =>
         new(
             Name:             proto.Name,
-            Kind:             ProtoKindToEs(proto.Type),
+            Kind:             ProtoKindToSr(proto.Type),
             Field:            proto.Field,
             Size:             proto.Size > 0 ? proto.Size : 10,
             CalendarInterval: string.IsNullOrEmpty(proto.CalendarInterval) ? null : proto.CalendarInterval,
             TimeZone:         string.IsNullOrEmpty(proto.TimeZone)         ? null : proto.TimeZone,
             RangeBuckets:     proto.RangeBuckets.Count > 0
-                ? proto.RangeBuckets
-                    .Select(b => new EsRangeSpec(b.Key, b.From, b.To))
-                    .ToList()
+                ? proto.RangeBuckets.Select(b => new SrRangeSpec(b.Key, b.From, b.To)).ToList()
                 : null);
 
-    private static ProtoAggResult EsResultToProto(EsAggResult result)
+    private static SrAggKind ProtoKindToSr(AggregationType type) => type switch
+    {
+        AggregationType.Terms         => SrAggKind.Terms,
+        AggregationType.DateHistogram => SrAggKind.DateHistogram,
+        AggregationType.Range         => SrAggKind.Range,
+        AggregationType.Avg           => SrAggKind.Avg,
+        AggregationType.Sum           => SrAggKind.Sum,
+        AggregationType.Min           => SrAggKind.Min,
+        AggregationType.Max           => SrAggKind.Max,
+        AggregationType.Cardinality   => SrAggKind.Count,
+        _                             => throw new ArgumentOutOfRangeException(nameof(type), type, null)
+    };
+
+    private static ProtoAggResult SrResultToProto(SrAggResult result)
     {
         var proto = new ProtoAggResult
         {
             Name        = result.Name,
-            Type        = EsKindToProto(result.Kind),
+            Type        = SrKindToProto(result.Kind),
             MetricValue = result.MetricValue ?? 0.0
         };
-
         if (result.Buckets is not null)
             foreach (var b in result.Buckets)
                 proto.Buckets.Add(new ProtoAggBucket { Key = b.Key, DocCount = b.DocCount });
-
         return proto;
     }
 
-    private static EsAggKind ProtoKindToEs(AggregationType type) => type switch
+    private static AggregationType SrKindToProto(SrAggKind kind) => kind switch
     {
-        AggregationType.Terms         => EsAggKind.Terms,
-        AggregationType.DateHistogram => EsAggKind.DateHistogram,
-        AggregationType.Range         => EsAggKind.Range,
-        AggregationType.Avg           => EsAggKind.Avg,
-        AggregationType.Sum           => EsAggKind.Sum,
-        AggregationType.Min           => EsAggKind.Min,
-        AggregationType.Max           => EsAggKind.Max,
-        AggregationType.Cardinality   => EsAggKind.Cardinality,
-        _                             => throw new ArgumentOutOfRangeException(nameof(type), type, null)
-    };
-
-    private static AggregationType EsKindToProto(EsAggKind kind) => kind switch
-    {
-        EsAggKind.Terms         => AggregationType.Terms,
-        EsAggKind.DateHistogram => AggregationType.DateHistogram,
-        EsAggKind.Range         => AggregationType.Range,
-        EsAggKind.Avg           => AggregationType.Avg,
-        EsAggKind.Sum           => AggregationType.Sum,
-        EsAggKind.Min           => AggregationType.Min,
-        EsAggKind.Max           => AggregationType.Max,
-        EsAggKind.Cardinality   => AggregationType.Cardinality,
+        SrAggKind.Terms         => AggregationType.Terms,
+        SrAggKind.DateHistogram => AggregationType.DateHistogram,
+        SrAggKind.Range         => AggregationType.Range,
+        SrAggKind.Avg           => AggregationType.Avg,
+        SrAggKind.Sum           => AggregationType.Sum,
+        SrAggKind.Min           => AggregationType.Min,
+        SrAggKind.Max           => AggregationType.Max,
+        SrAggKind.Count         => AggregationType.Cardinality,
         _                       => throw new ArgumentOutOfRangeException(nameof(kind), kind, null)
     };
-
-    private static string BuildQueryText(SearchQuery? query)
-    {
-        if (query is null || query.Clauses.Count == 0) return string.Empty;
-
-        var textParts = query.Clauses
-            .Where(c => c.Operator is SearchOperator.Contains or SearchOperator.Equals
-                                   or SearchOperator.StartsWith)
-            .Select(c => c.Value?.StringVal)
-            .Where(v => !string.IsNullOrWhiteSpace(v))
-            .ToList();
-
-        return string.Join(" ", textParts!);
-    }
 
     private static Struct DictToProtoStruct(Dictionary<string, object?> doc)
     {
@@ -291,20 +302,6 @@ public sealed class ObjectSearchGrpcService(
         float f        => Value.ForNumber(f),
         int i          => Value.ForNumber(i),
         long l         => Value.ForNumber(l),
-        JsonElement je => JsonElementToProtoValue(je),
         _              => Value.ForString(v.ToString()!)
     };
-
-    private static Value JsonElementToProtoValue(JsonElement je) => je.ValueKind switch
-    {
-        JsonValueKind.String  => Value.ForString(je.GetString()!),
-        JsonValueKind.Number  => Value.ForNumber(je.GetDouble()),
-        JsonValueKind.True    => Value.ForBool(true),
-        JsonValueKind.False   => Value.ForBool(false),
-        JsonValueKind.Null    => Value.ForNull(),
-        JsonValueKind.Array   => Value.ForList(je.EnumerateArray()
-                                    .Select(JsonElementToProtoValue).ToArray()),
-        _                     => Value.ForString(je.ToString())
-    };
-
 }
