@@ -169,22 +169,6 @@ public class ObjectPersistenceGrpcServiceTests
     }
 
     [Fact]
-    public async Task Post_IncludesEngagementFanout_WhenDependentsExist()
-    {
-        await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
-        await _registry.RegisterAsync(SchemaFixtures.ArticleSchema());
-
-        EntityEvent? captured = null;
-        _events.ProduceAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Do<EntityEvent>(e => captured = e))
-               .Returns(Task.CompletedTask);
-
-        var payload = MakePayload(new() { ["Name"] = Value.ForString("Alice") });
-        await _sut.Post(new PersistRequest { TypeName = "Author", Payload = payload }, TestServerCallContext.Create());
-
-        captured!.TargetStores.HasFlag(StoreTarget.EngagementFanout).Should().BeTrue();
-    }
-
-    [Fact]
     public async Task Post_ThrowsRpcException_WhenSchemaNotRegistered()
     {
         var payload = MakePayload(new() { ["Name"] = Value.ForString("Alice") });

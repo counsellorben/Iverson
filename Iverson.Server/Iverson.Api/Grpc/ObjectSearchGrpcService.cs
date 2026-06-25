@@ -49,7 +49,7 @@ public sealed class ObjectSearchGrpcService(
         // Build a query string from CONTAINS / EQUALS clauses; route VECTOR_SIMILAR to SearchSimilar.
         var queryText = BuildQueryText(request.Query);
 
-        var docs = await es.SearchAsync<Dictionary<string, object?>>(schema.IndexName, queryText);
+        var docs = await es.SearchAsync<Dictionary<string, object?>>(schema.TableName, queryText);
 
         foreach (var doc in docs)
         {
@@ -187,7 +187,7 @@ public sealed class ObjectSearchGrpcService(
         var queryText = BuildQueryText(request.Query);
         var specs     = request.Aggregations.Select(ProtoToEsSpec).ToList();
 
-        var results = await es.AggregateAsync(schema.IndexName, queryText, specs);
+        var results = await es.AggregateAsync(schema.TableName, queryText, specs);
 
         var response = new AggregateResponse { TraceId = request.TraceId };
         foreach (var r in results)

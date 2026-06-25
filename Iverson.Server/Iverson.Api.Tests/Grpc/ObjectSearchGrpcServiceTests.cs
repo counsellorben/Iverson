@@ -123,7 +123,6 @@ public class ObjectSearchGrpcServiceTests
         {
             TypeName       = "VecNoCollection",
             TableName      = "vec_no_collection",
-            IndexName      = "vec_no_collection",
             CollectionName = null,
             KeyColumn      = new ColumnDescriptor("Id", "uuid", false),
             ScalarColumns  = [],

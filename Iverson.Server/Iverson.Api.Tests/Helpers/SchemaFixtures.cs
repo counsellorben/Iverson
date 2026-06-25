@@ -9,7 +9,6 @@ public static class SchemaFixtures
     {
         TypeName       = "Author",
         TableName      = "authors",
-        IndexName      = "authors",
         CollectionName = null,
         KeyColumn      = new ColumnDescriptor("Id", "uuid", false),
         ScalarColumns  = [new ColumnDescriptor("Name", "text", false), new ColumnDescriptor("Bio", "text", true)],
@@ -24,7 +23,6 @@ public static class SchemaFixtures
     {
         TypeName       = "Article",
         TableName      = "articles",
-        IndexName      = "articles",
         CollectionName = "articles",
         KeyColumn      = new ColumnDescriptor("Id", "uuid", false),
         ScalarColumns  = [new ColumnDescriptor("Title", "text", false), new ColumnDescriptor("Body", "text", false)],
@@ -39,7 +37,6 @@ public static class SchemaFixtures
     {
         TypeName       = "Article",
         TableName      = "articles",
-        IndexName      = "articles",
         CollectionName = "articles",
         KeyColumn      = new ColumnDescriptor("Id", "uuid", false),
         ScalarColumns  = [new ColumnDescriptor("Title", "text", false)],
@@ -57,7 +54,6 @@ public static class SchemaFixtures
     {
         TypeName       = "UserArticle",
         TableName      = "user_articles",
-        IndexName      = "user_articles",
         CollectionName = null,
         KeyColumn      = new ColumnDescriptor("Id", "uuid", false),
         ScalarColumns  = [],

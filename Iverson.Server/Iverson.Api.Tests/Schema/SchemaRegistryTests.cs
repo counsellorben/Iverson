@@ -55,32 +55,6 @@ public class SchemaRegistryTests
     }
 
     [Fact]
-    public async Task RegisterAsync_BuildsInverseIndex_ForManyToOne_Relations()
-    {
-        await _sut.RegisterAsync(SchemaFixtures.ArticleSchema());
-
-        _sut.HasEngagementDependents("Author").Should().BeTrue();
-    }
-
-    [Fact]
-    public async Task HasEngagementDependents_ReturnsFalse_ForLeafType()
-    {
-        await _sut.RegisterAsync(SchemaFixtures.AuthorSchema());
-
-        _sut.HasEngagementDependents("Author").Should().BeFalse();
-    }
-
-    [Fact]
-    public async Task GetDirectEngagementDependents_ReturnsArticle_ForAuthor()
-    {
-        await _sut.RegisterAsync(SchemaFixtures.ArticleSchema());
-
-        var dependents = _sut.GetDirectEngagementDependents("Author");
-
-        dependents.Should().ContainSingle(s => s.TypeName == "Article");
-    }
-
-    [Fact]
     public async Task UnregisterAsync_RemovesSchema()
     {
         await _sut.RegisterAsync(SchemaFixtures.AuthorSchema());
@@ -91,14 +65,4 @@ public class SchemaRegistryTests
         _sut.Get("Author").Should().BeNull();
     }
 
-    [Fact]
-    public async Task UnregisterAsync_UpdatesInverseIndex()
-    {
-        await _sut.RegisterAsync(SchemaFixtures.ArticleSchema());
-        _sut.HasEngagementDependents("Author").Should().BeTrue();
-
-        await _sut.UnregisterAsync("Article");
-
-        _sut.HasEngagementDependents("Author").Should().BeFalse();
-    }
 }

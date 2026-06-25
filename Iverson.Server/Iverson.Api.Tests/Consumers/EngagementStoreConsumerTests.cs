@@ -42,7 +42,7 @@ public class EngagementStoreConsumerTests
     private string Serialize(EntityEvent ev) => JsonSerializer.Serialize(ev, JsonOptions);
 
     private EngagementStoreConsumer BuildSut() =>
-        new(_consumer, _es, _sql, _registry, NullLogger<EngagementStoreConsumer>.Instance);
+        new(_consumer, _es, _registry, NullLogger<EngagementStoreConsumer>.Instance);
 
     [Fact]
     public async Task HandleCreated_WithEngagementFlag_CallsIndexDocument()
@@ -112,60 +112,6 @@ public class EngagementStoreConsumerTests
     }
 
     [Fact]
-    public async Task FanoutFlag_ReIndexesDependents()
-    {
-        await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
-        await _registry.RegisterAsync(SchemaFixtures.ArticleSchema());
-
-        var authorKey  = Guid.NewGuid().ToString();
-        var articleKey = Guid.NewGuid().ToString();
-
-        // SQL returns a FanOutRow for the dependent article: (Key, Data)
-        var articleJson = $$$"""{"Id":"{{{articleKey}}}","Title":"Great Article","AuthorId":"{{{authorKey}}}"}""";
-        _sql.QueryAsync<EngagementStoreConsumer.FanOutRow>(Arg.Any<string>(), Arg.Any<object?>())
-            .Returns(new List<EngagementStoreConsumer.FanOutRow> { new(articleKey, articleJson) });
-
-        var ev = new EntityEvent(
-            TypeName:      "Author",
-            Key:           authorKey,
-            PayloadJson:   """{"name":"Alice"}""",
-            TraceId:       "trace-4",
-            SchemaVersion: "1",
-            OccurredAt:    DateTimeOffset.UtcNow,
-            TargetStores:  StoreTarget.Record | StoreTarget.Engagement | StoreTarget.EngagementFanout);
-
-        var sut = BuildSut();
-        await sut.HandleUpsertAsync(ev.Key, Serialize(ev), CancellationToken.None);
-
-        // Should index Author directly AND re-index Article via fanout
-        await _es.Received().IndexDocumentAsync(
-            "articles",
-            Arg.Any<string>(),
-            Arg.Any<Dictionary<string, object>>());
-    }
-
-    [Fact]
-    public async Task FanOut_IsNoOp_WhenNoDependentSchemas()
-    {
-        await _registry.RegisterAsync(SchemaFixtures.AuthorSchema()); // no dependents registered
-
-        var ev = new EntityEvent(
-            TypeName:      "Author",
-            Key:           Guid.NewGuid().ToString(),
-            PayloadJson:   """{"name":"Alice"}""",
-            TraceId:       "trace-5",
-            SchemaVersion: "1",
-            OccurredAt:    DateTimeOffset.UtcNow,
-            TargetStores:  StoreTarget.Record | StoreTarget.Engagement | StoreTarget.EngagementFanout);
-
-        var sut = BuildSut();
-        await sut.HandleUpsertAsync(ev.Key, Serialize(ev), CancellationToken.None);
-
-        // Only the author's own direct index; no fanout SQL calls
-        await _sql.DidNotReceive().QueryAsync<EngagementStoreConsumer.FanOutRow>(Arg.Any<string>(), Arg.Any<object?>());
-    }
-
-    [Fact]
     public async Task HandlesMalformedJson_WithoutThrowing()
     {
         await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
@@ -176,40 +122,4 @@ public class EngagementStoreConsumerTests
         await act.Should().NotThrowAsync();
     }
 
-    [Fact]
-    public async Task FanOut_ExtractsKeyFromExplicitColumn_NotCaseGuessing()
-    {
-        // Arrange: Article depends on Author via AuthorId (ManyToOne, FK column name does NOT end with "Ids")
-        await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
-        await _registry.RegisterAsync(SchemaFixtures.ArticleSchema());
-
-        var authorKey  = Guid.NewGuid().ToString();
-        var articleKey = Guid.NewGuid().ToString();
-
-        // The SQL mock returns a tuple where 'key' is the explicit PK column value.
-        // The PK column is "Id" (PascalCase) — FindKey would have had to guess the casing.
-        // With the fix, the consumer uses QueryAsync<(string key, string data)> and reads
-        // the key directly from the tuple's first element, with no JSON parsing needed.
-        var articleJson = $$$"""{"Id":"{{{articleKey}}}","Title":"Great Article","AuthorId":"{{{authorKey}}}"}""";
-        _sql.QueryAsync<EngagementStoreConsumer.FanOutRow>(Arg.Any<string>(), Arg.Any<object?>())
-            .Returns(new List<EngagementStoreConsumer.FanOutRow> { new(articleKey, articleJson) });
-
-        var ev = new EntityEvent(
-            TypeName:      "Author",
-            Key:           authorKey,
-            PayloadJson:   """{"name":"Alice"}""",
-            TraceId:       "trace-explicit-key",
-            SchemaVersion: "1",
-            OccurredAt:    DateTimeOffset.UtcNow,
-            TargetStores:  StoreTarget.Record | StoreTarget.Engagement | StoreTarget.EngagementFanout);
-
-        var sut = BuildSut();
-        await sut.HandleUpsertAsync(ev.Key, Serialize(ev), CancellationToken.None);
-
-        // The article should be indexed with the exact key from the explicit SELECT column
-        await _es.Received(1).IndexDocumentAsync(
-            "articles",
-            articleKey,
-            Arg.Any<Dictionary<string, object>>());
-    }
 }

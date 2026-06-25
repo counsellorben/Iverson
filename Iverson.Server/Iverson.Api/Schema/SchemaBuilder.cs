@@ -1,11 +1,10 @@
 using Iverson.Api;
 using Iverson.Client.Contracts;
-using Iverson.Elasticsearch;
 using Iverson.Embeddings;
 using Iverson.Sql;
+using Iverson.StarRocks;
 using Iverson.Vector;
 using ContractsRelKind = Iverson.Client.Contracts.RelationKind;
-using EsFieldType      = Iverson.Elasticsearch.EsFieldType;
 using SchemaRelKind    = Iverson.Api.Schema.RelationKind;
 
 namespace Iverson.Api.Schema;
@@ -61,7 +60,6 @@ internal static class SchemaBuilder
         {
             TypeName       = typeDesc.TypeName,
             TableName      = tableName,
-            IndexName      = tableName,
             CollectionName = (vectors.Count > 0 || chunks.Count > 0) ? tableName : null,
             KeyColumn      = new ColumnDescriptor(keyProp.Name, ClrTypeToSql(keyProp.ClrType, false), false),
             ScalarColumns  = scalars,
@@ -80,20 +78,26 @@ internal static class SchemaBuilder
     internal static ColumnSchema ToColumnSchema(ColumnDescriptor c) =>
         new(c.Name, c.SqlType, c.IsNullable);
 
-    internal static IndexSchema ToIndexSchema(SchemaDescriptor d)
+    internal static StarRocksTableSchema ToStarRocksTableSchema(SchemaDescriptor d) => new(
+        d.TableName,
+        new StarRocksColumnSchema(d.KeyColumn.Name, ClrTypeToStarRocksType(d.KeyColumn.SqlType), false),
+        d.ScalarColumns.Select(c => new StarRocksColumnSchema(c.Name, ClrTypeToStarRocksType(c.SqlType), c.IsNullable)).ToList());
+
+    internal static string ClrTypeToStarRocksType(string sqlType) => sqlType.ToUpperInvariant() switch
     {
-        var fields = new List<FieldMapping>
-        {
-            new(d.KeyColumn.Name, EsFieldType.Keyword)
-        };
-        foreach (var col in d.ScalarColumns)
-            fields.Add(new FieldMapping(col.Name, SqlTypeToEsType(col.SqlType)));
-
-        foreach (var v in d.VectorFields)
-            fields.Add(new FieldMapping($"{v.PropertyName.ToSnakeCase()}_vector", EsFieldType.DenseVector, v.Dimension));
-
-        return new IndexSchema(d.IndexName, fields);
-    }
+        "UUID"             => "VARCHAR(36)",
+        "UUID[]"           => "STRING",
+        "TEXT"             => "STRING",
+        "INTEGER"          => "INT",
+        "BIGINT"           => "BIGINT",
+        "REAL"             => "FLOAT",
+        "REAL[]"           => "STRING",
+        "DOUBLE PRECISION" => "DOUBLE",
+        "BOOLEAN"          => "BOOLEAN",
+        "TIMESTAMPTZ"      => "DATETIME",
+        "BYTEA"            => "VARBINARY",
+        _                  => "STRING"
+    };
 
     internal static CollectionSchema ToChunkCollectionSchema(SchemaDescriptor d) => new(
         d.CollectionName! + "_chunks",
@@ -122,21 +126,6 @@ internal static class SchemaBuilder
         (ClrType.ClrDatetime, _)     => "TIMESTAMPTZ",
         (ClrType.ClrBytes,    _)     => "BYTEA",
         _                            => "TEXT"
-    };
-
-    internal static EsFieldType SqlTypeToEsType(string sqlType) => sqlType.ToUpperInvariant() switch
-    {
-        "UUID"             => EsFieldType.Keyword,
-        "UUID[]"           => EsFieldType.Keyword,
-        "TEXT"             => EsFieldType.Text,
-        "INTEGER"          => EsFieldType.Integer,
-        "BIGINT"           => EsFieldType.Long,
-        "REAL"             => EsFieldType.Float,
-        "REAL[]"           => EsFieldType.Float,
-        "DOUBLE PRECISION" => EsFieldType.Double,
-        "BOOLEAN"          => EsFieldType.Boolean,
-        "TIMESTAMPTZ"      => EsFieldType.Date,
-        _                  => EsFieldType.Text
     };
 
     internal static PayloadIndexKind SqlTypeToPayloadKind(string sqlType) => sqlType.ToUpperInvariant() switch

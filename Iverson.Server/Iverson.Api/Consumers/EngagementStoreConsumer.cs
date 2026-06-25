@@ -3,7 +3,6 @@ using System.Text.Json;
 using Iverson.Api.Schema;
 using Iverson.Elasticsearch;
 using Iverson.Events;
-using Iverson.Sql;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 
@@ -11,14 +10,11 @@ namespace Iverson.Api.Consumers;
 
 /// <summary>
 /// Subscribes to entity events and keeps Elasticsearch in sync.
-/// Handles two flag cases:
-///   Engagement       — index this entity's own document.
-///   EngagementFanout — re-index all ES-eligible documents that embed this entity as a relation.
+/// Handles Engagement flag — index this entity's own document.
 /// </summary>
 public sealed class EngagementStoreConsumer(
     IEventConsumer consumer,
     IElasticsearchService es,
-    IPostgresRepository sql,
     SchemaRegistry registry,
     ILogger<EngagementStoreConsumer> logger) : BackgroundService
 {
@@ -50,13 +46,9 @@ public sealed class EngagementStoreConsumer(
             }
             else
             {
-                await IndexDocumentAsync(schema.IndexName, ev.Key, ev.PayloadJson);
+                await IndexDocumentAsync(schema.TableName, ev.Key, ev.PayloadJson);
             }
         }
-
-        // Fan-out: re-index dependent documents that embed this entity
-        if (ev.TargetStores.HasFlag(StoreTarget.EngagementFanout))
-            await FanOutAsync(ev, ct);
     }
 
     internal async Task HandleDeleteAsync(string key, string value, CancellationToken ct)
@@ -64,8 +56,7 @@ public sealed class EngagementStoreConsumer(
         var ev = Deserialize(key, value);
         if (ev is null) return;
 
-        if (!ev.TargetStores.HasFlag(StoreTarget.Engagement) &&
-            !ev.TargetStores.HasFlag(StoreTarget.EngagementFanout)) return;
+        if (!ev.TargetStores.HasFlag(StoreTarget.Engagement)) return;
 
         var schema = registry.Get(ev.TypeName);
         if (schema is null)
@@ -79,53 +70,8 @@ public sealed class EngagementStoreConsumer(
             return;
         }
 
-        await es.DeleteDocumentAsync(schema.IndexName, ev.Key);
+        await es.DeleteDocumentAsync(schema.TableName, ev.Key);
         logger.LogInformation("[Engagement] Deleted {Type}:{Key}", ev.TypeName, ev.Key);
-    }
-
-    private async Task FanOutAsync(EntityEvent ev, CancellationToken ct)
-    {
-        var dependents = registry.GetDirectEngagementDependents(ev.TypeName);
-        if (dependents.Count == 0) return;
-
-        foreach (var depSchema in dependents)
-        {
-            // Find the relation that links from depSchema to the changed entity
-            var relation = depSchema.Relations.FirstOrDefault(r =>
-                string.Equals(r.RelatedTypeName, ev.TypeName, StringComparison.OrdinalIgnoreCase));
-
-            if (relation is null) continue;
-
-            try
-            {
-                // Select the PK column explicitly alongside row_to_json so that key
-                // extraction does not depend on the casing of row_to_json output.
-                var querySql = relation.ForeignKey.EndsWith("Ids", StringComparison.OrdinalIgnoreCase)
-                    ? $"""
-                      SELECT t."{depSchema.KeyColumn.Name}" AS key, row_to_json(t)::text AS data
-                      FROM "{depSchema.TableName}" t
-                      WHERE @Key::uuid = ANY("{relation.ForeignKey}")
-                      """
-                    : $"""
-                      SELECT t."{depSchema.KeyColumn.Name}" AS key, row_to_json(t)::text AS data
-                      FROM "{depSchema.TableName}" t
-                      WHERE "{relation.ForeignKey}" = @Key::uuid
-                      """;
-
-                var rows = await sql.QueryAsync<FanOutRow>(querySql, new { Key = ev.Key });
-
-                foreach (var row in rows)
-                    await IndexDocumentAsync(depSchema.IndexName, row.Key, row.Data);
-
-                logger.LogInformation("[Engagement] Fan-out {DepType} for {SrcType}:{Key}",
-                    depSchema.TypeName, ev.TypeName, ev.Key);
-            }
-            catch (Exception ex)
-            {
-                logger.LogError(ex, "[Engagement] Fan-out failed for {DepType} triggered by {SrcType}:{Key}",
-                    depSchema.TypeName, ev.TypeName, ev.Key);
-            }
-        }
     }
 
     private async Task IndexDocumentAsync(string indexName, string docKey, string payloadJson)
@@ -153,7 +99,4 @@ public sealed class EngagementStoreConsumer(
         PropertyNamingPolicy        = JsonNamingPolicy.CamelCase,
         PropertyNameCaseInsensitive = true
     };
-
-    // Dapper cannot deserialize to ValueTuple; use a named POCO so column→property mapping works.
-    internal sealed record FanOutRow(string Key, string Data);
 }

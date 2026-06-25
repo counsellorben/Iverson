@@ -44,21 +44,6 @@ public sealed class EntityEventTests
     }
 
     [Fact]
-    public void StoreTarget_All_ExcludesEngagementFanout()
-    {
-        StoreTarget.All.HasFlag(StoreTarget.EngagementFanout).Should().BeFalse();
-    }
-
-    [Fact]
-    public void StoreTarget_FlagsCanBeCombined()
-    {
-        var combined = StoreTarget.Record | StoreTarget.EngagementFanout;
-        combined.HasFlag(StoreTarget.Record).Should().BeTrue();
-        combined.HasFlag(StoreTarget.EngagementFanout).Should().BeTrue();
-        combined.HasFlag(StoreTarget.Engagement).Should().BeFalse();
-    }
-
-    [Fact]
     public void EntityTopics_Created_HasExpectedValue()
     {
         EntityTopics.Created.Should().Be("iverson.entity.created");

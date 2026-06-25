@@ -51,7 +51,6 @@ public sealed class ObjectMappingGrpcService(
             var descriptor = SchemaBuilder.BuildDescriptor(typeDesc, _embedding);
 
             await _sql.ApplySchemaAsync(SchemaBuilder.ToTableSchema(descriptor));
-            await _elasticsearchService.ApplyMappingAsync(SchemaBuilder.ToIndexSchema(descriptor));
 
             if (descriptor.VectorFields.Count > 0)
                 await _vector.ApplyCollectionAsync(SchemaBuilder.ToCollectionSchema(descriptor));
@@ -215,7 +214,6 @@ public sealed class ObjectMappingGrpcService(
         var stores = StoreTarget.Record;
         if (IsCompleteForIngestion(schema))               stores |= StoreTarget.Engagement;
         if (HasVectorOrChunkFields(schema))               stores |= StoreTarget.Intelligence;
-        if (_registry.HasEngagementDependents(typeName))  stores |= StoreTarget.EngagementFanout;
         return stores;
     }
 

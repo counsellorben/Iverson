@@ -4,7 +4,6 @@ public sealed record SchemaDescriptor
 {
     public required string TypeName       { get; init; }
     public required string TableName      { get; init; }   // SQL
-    public required string IndexName      { get; init; }   // Elasticsearch
     public string?         CollectionName { get; init; }   // Qdrant — null if no [IversonEmbedding]
 
     public required ColumnDescriptor                   KeyColumn     { get; init; }

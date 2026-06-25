@@ -35,7 +35,6 @@ public sealed class ObjectPersistenceGrpcService(
         var targetStores = StoreTarget.Record;
         if (IsCompleteForIngestion(schema))              targetStores |= StoreTarget.Engagement;
         if (HasVectorOrChunkFields(schema))              targetStores |= StoreTarget.Intelligence;
-        if (registry.HasEngagementDependents(request.TypeName)) targetStores |= StoreTarget.EngagementFanout;
 
         // Resolve key: honour client-supplied key; generate UUID v7 when absent/empty
         var key = ExtractKey(request.Payload, schema.KeyColumn.Name);
@@ -86,7 +85,6 @@ public sealed class ObjectPersistenceGrpcService(
         var targetStores = StoreTarget.Record;
         if (IsCompleteForIngestion(schema))              targetStores |= StoreTarget.Engagement;
         if (HasVectorOrChunkFields(schema))              targetStores |= StoreTarget.Intelligence;
-        if (registry.HasEngagementDependents(request.TypeName)) targetStores |= StoreTarget.EngagementFanout;
 
         var payloadJson = StructSerializer.SerializePayload(request.Payload);
 

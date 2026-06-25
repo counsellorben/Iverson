@@ -248,7 +248,6 @@ public class IntelligenceStoreConsumerTests
         {
             TypeName       = "Doc",
             TableName      = "docs",
-            IndexName      = "docs",
             CollectionName = "docs",
             KeyColumn      = new ColumnDescriptor("Id", "uuid", false),
             ScalarColumns  = [new ColumnDescriptor("Body", "text", false)],

@@ -3,11 +3,10 @@ namespace Iverson.Events;
 [Flags]
 public enum StoreTarget
 {
-    None             = 0,
-    Record           = 1 << 0,  // PostgreSQL — system of record
-    Engagement       = 1 << 1,  // Elasticsearch — index this entity's own document
-    Intelligence     = 1 << 2,  // Qdrant — ingest vector/chunk fields
-    EngagementFanout = 1 << 3,  // Elasticsearch — re-index dependent documents that embed this entity
+    None         = 0,
+    Record       = 1 << 0,  // PostgreSQL — system of record
+    Engagement   = 1 << 1,  // StarRocks — engagement read store
+    Intelligence = 1 << 2,  // Qdrant — vector/chunk fields
 
     All = Record | Engagement | Intelligence
 }

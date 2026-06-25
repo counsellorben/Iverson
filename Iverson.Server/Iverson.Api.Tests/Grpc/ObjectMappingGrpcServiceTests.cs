@@ -67,7 +67,6 @@ public class ObjectMappingGrpcServiceTests
     {
         TypeName      = typeName,
         TableName     = typeName.ToLower() + "s",
-        IndexName     = typeName.ToLower() + "s",
         KeyColumn     = new ColumnDescriptor("Id", "uuid", false),
         ScalarColumns = [new ColumnDescriptor("Name", "text", true)],
         FkColumns     = [],
