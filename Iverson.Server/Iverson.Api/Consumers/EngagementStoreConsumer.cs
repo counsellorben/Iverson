@@ -24,7 +24,7 @@ public sealed class EngagementStoreConsumer(
     internal async Task HandleUpsertAsync(string key, string value, CancellationToken ct)
     {
         var ev = Deserialize(key, value);
-        if (ev is null || !ev.TargetStores.HasFlag(StoreTarget.Engagement)) return;
+        if (!ev.TargetStores.HasFlag(StoreTarget.Engagement)) return;
 
         var schema = registry.Get(ev.TypeName);
         if (schema is null)
@@ -41,7 +41,7 @@ public sealed class EngagementStoreConsumer(
     internal async Task HandleDeleteAsync(string key, string value, CancellationToken ct)
     {
         var ev = Deserialize(key, value);
-        if (ev is null || !ev.TargetStores.HasFlag(StoreTarget.Engagement)) return;
+        if (!ev.TargetStores.HasFlag(StoreTarget.Engagement)) return;
 
         var schema = registry.Get(ev.TypeName);
         if (schema is null)
@@ -54,17 +54,19 @@ public sealed class EngagementStoreConsumer(
         logger.LogInformation("[Engagement] Deleted {Type}:{Key}", ev.TypeName, key);
     }
 
-    private EntityEvent? Deserialize(string key, string value)
+    private static EntityEvent Deserialize(string key, string value)
     {
+        EntityEvent? ev;
         try
         {
-            return JsonSerializer.Deserialize<EntityEvent>(value, s_jsonOptions);
+            ev = JsonSerializer.Deserialize<EntityEvent>(value, s_jsonOptions);
         }
-        catch (Exception ex)
+        catch (JsonException ex)
         {
-            logger.LogError(ex, "[Engagement] Failed to deserialize event key={Key}", key);
-            return null;
+            throw new PoisonMessageException($"[Engagement] Malformed event JSON key={key}", ex);
         }
+
+        return ev ?? throw new PoisonMessageException($"[Engagement] Event deserialized to null key={key}");
     }
 
     private static readonly JsonSerializerOptions s_jsonOptions = new()

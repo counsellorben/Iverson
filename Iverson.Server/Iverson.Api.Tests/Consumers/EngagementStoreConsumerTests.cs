@@ -105,14 +105,14 @@ public class EngagementStoreConsumerTests
     }
 
     [Fact]
-    public async Task HandlesMalformedJson_WithoutThrowing()
+    public async Task HandlesMalformedJson_ThrowsPoisonMessageException()
     {
         await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
 
         var act = async () =>
             await BuildSut().HandleUpsertAsync("some-key", "NOT_VALID_JSON{{{", CancellationToken.None);
 
-        await act.Should().NotThrowAsync();
+        await act.Should().ThrowAsync<PoisonMessageException>();
     }
 
     [Fact]
