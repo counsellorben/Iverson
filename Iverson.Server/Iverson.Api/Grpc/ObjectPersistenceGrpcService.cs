@@ -14,7 +14,7 @@ namespace Iverson.Api.Grpc;
 /// <summary>
 /// Lightweight write path. Stamps a server-generated UUID v7 key when the
 /// client sends an empty key, then publishes an EntityEvent to Kafka.
-/// The three backing stores (Postgres, Elasticsearch, Qdrant) consume
+/// The three backing stores (Postgres, StarRocks, Qdrant) consume
 /// the event independently via their own consumer groups.
 /// </summary>
 public sealed class ObjectPersistenceGrpcService(

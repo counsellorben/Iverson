@@ -1,8 +1,6 @@
 <Solution>
   <Project Path="Iverson.Api.Tests/Iverson.Api.Tests.csproj" />
   <Project Path="Iverson.Api/Iverson.Api.csproj" />
-  <Project Path="Iverson.Elasticsearch.Tests/Iverson.Elasticsearch.Tests.csproj" />
-  <Project Path="Iverson.Elasticsearch/Iverson.Elasticsearch.csproj" />
   <Project Path="Iverson.Embeddings.Tests/Iverson.Embeddings.Tests.csproj" />
   <Project Path="Iverson.Embeddings/Iverson.Embeddings.csproj" />
   <Project Path="Iverson.Events.Tests/Iverson.Events.Tests.csproj" />

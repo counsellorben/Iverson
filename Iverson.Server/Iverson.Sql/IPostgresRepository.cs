@@ -14,3 +14,4 @@ public sealed record TableSchema(
     IReadOnlyList<ColumnSchema> Columns);
 
 public sealed record ColumnSchema(string Name, string SqlType, bool IsNullable);
+

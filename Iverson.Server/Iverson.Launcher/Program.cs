@@ -12,7 +12,7 @@ PosixSignalRegistration.Create(PosixSignal.SIGTERM, _ => cts.Cancel());
 Console.WriteLine("[Launcher] Starting Iverson infrastructure...");
 
 // Step 1: bring up Docker infrastructure (not iverson-api — that runs locally via dotnet run below)
-await RunCommandAsync("docker", "compose up -d postgres elasticsearch qdrant kafka zookeeper jaeger ollama ollama-init", solutionRoot, cts.Token);
+await RunCommandAsync("docker", "compose up -d postgres starrocks qdrant kafka zookeeper jaeger ollama ollama-init", solutionRoot, cts.Token);
 Console.WriteLine("[Launcher] Docker Compose up — waiting for services to be ready...");
 
 // Step 2: wait for each service port
@@ -21,7 +21,7 @@ await WaitForPortAsync("localhost", 6333, "Qdrant", cts.Token);
 await WaitForOllamaAsync("http://localhost:11434/api/tags", "nomic-embed-text", cts.Token);
 await WaitForPortAsync("localhost", 9092, "Kafka", cts.Token);
 await WaitForPortAsync("localhost", 4317, "Jaeger (OTLP)", cts.Token);
-await WaitForElasticsearchAsync("http://localhost:9200", cts.Token);
+await WaitForPortAsync("localhost", 9030, "StarRocks", cts.Token);
 
 Console.WriteLine("[Launcher] All infrastructure ready. Starting Iverson.Api...");
 
@@ -85,31 +85,6 @@ static async Task WaitForOllamaAsync(string url, string modelName, CancellationT
         catch { }
         Console.Write(".");
         try { await Task.Delay(3000, ct); }
-        catch (OperationCanceledException) { return; }
-    }
-}
-
-static async Task WaitForElasticsearchAsync(string baseUrl, CancellationToken ct)
-{
-    Console.Write($"[Launcher] Waiting for Elasticsearch at {baseUrl}");
-    using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(3) };
-    while (!ct.IsCancellationRequested)
-    {
-        try
-        {
-            var body = await client.GetStringAsync($"{baseUrl}/_cluster/health", ct);
-            using var doc    = System.Text.Json.JsonDocument.Parse(body);
-            var clusterStatus = doc.RootElement.GetProperty("status").GetString();
-            if (clusterStatus is "green" or "yellow")
-            {
-                Console.WriteLine(" ready.");
-                return;
-            }
-        }
-        catch (OperationCanceledException) { return; }
-        catch { }
-        Console.Write(".");
-        try { await Task.Delay(2000, ct); }
         catch (OperationCanceledException) { return; }
     }
 }
