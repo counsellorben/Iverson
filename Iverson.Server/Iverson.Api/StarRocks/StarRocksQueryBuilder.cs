@@ -55,7 +55,7 @@ internal static class StarRocksQueryBuilder
                 $"LIMIT {(spec.Size > 0 ? spec.Size : 10)}",
 
             SrAggKind.DateHistogram =>
-                $"SELECT DATE_FORMAT(`{col}`, '{DateFormatFor(spec.CalendarInterval)}') AS bucket_key, " +
+                $"SELECT {DateBucketExpr(col, spec.CalendarInterval)} AS bucket_key, " +
                 $"COUNT(*) AS doc_count " +
                 $"FROM `{tableName}`{wc} " +
                 $"GROUP BY bucket_key ORDER BY bucket_key",
@@ -155,12 +155,13 @@ internal static class StarRocksQueryBuilder
 
         var cases = buckets.Select(b =>
         {
+            var key = EscapeSqlString(b.Key);
             if (b.From is null && b.To is not null)
-                return $"WHEN `{col}` < {b.To.Value} THEN '{b.Key}'";
+                return $"WHEN `{col}` < {b.To.Value} THEN '{key}'";
             if (b.From is not null && b.To is null)
-                return $"WHEN `{col}` >= {b.From.Value} THEN '{b.Key}'";
+                return $"WHEN `{col}` >= {b.From.Value} THEN '{key}'";
             if (b.From is not null && b.To is not null)
-                return $"WHEN `{col}` >= {b.From.Value} AND `{col}` < {b.To.Value} THEN '{b.Key}'";
+                return $"WHEN `{col}` >= {b.From.Value} AND `{col}` < {b.To.Value} THEN '{key}'";
             return null;
         }).OfType<string>();
 
@@ -196,14 +197,23 @@ internal static class StarRocksQueryBuilder
         _                                   => null
     };
 
+    // StarRocks DATE_FORMAT has no quarter directive, so quarter is composed
+    // explicitly via QUARTER(); all other intervals map to a DATE_FORMAT pattern.
+    private static string DateBucketExpr(string col, string? interval) =>
+        interval?.ToLowerInvariant() == "quarter"
+            ? $"CONCAT(YEAR(`{col}`), '-Q', QUARTER(`{col}`))"
+            : $"DATE_FORMAT(`{col}`, '{DateFormatFor(interval)}')";
+
     private static string DateFormatFor(string? interval) => interval?.ToLowerInvariant() switch
     {
         "minute"  => "%Y-%m-%d %H:%i",
         "hour"    => "%Y-%m-%d %H",
         "day"     => "%Y-%m-%d",
         "week"    => "%Y-%u",
-        "quarter" => "%Y-%m",
+        "month"   => "%Y-%m",
         "year"    => "%Y",
         _         => "%Y-%m"
     };
+
+    private static string EscapeSqlString(string value) => value.Replace("'", "''");
 }
