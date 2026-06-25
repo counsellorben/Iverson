@@ -2,7 +2,6 @@ using System.Diagnostics;
 using Iverson.Api.Consumers;
 using Iverson.Api.Grpc;
 using Iverson.Api.Schema;
-using Iverson.Elasticsearch;
 using Iverson.Embeddings;
 using Iverson.Events;
 using Iverson.Sql;
@@ -29,7 +28,6 @@ builder.Services.AddOpenTelemetry()
         .SetResourceBuilder(resource)
         .AddSource(
             "Iverson.Sql",
-            "Iverson.Elasticsearch",
             "Iverson.Vector",
             "Iverson.Events",
             "Iverson.Embeddings")
@@ -55,9 +53,6 @@ builder.Services.AddGrpc();
 
 builder.Services.AddPostgres(cfg.GetConnectionString("Postgres")
     ?? "Host=localhost;Port=5432;Database=iverson;Username=iverson;Password=iverson");
-
-builder.Services.AddElasticsearch(
-    cfg["Elasticsearch:Url"] ?? "http://localhost:9200");
 
 builder.Services.AddQdrant(
     cfg["Qdrant:Host"] ?? "localhost",
@@ -97,27 +92,24 @@ app.Use(async (context, next) =>
 // ── Endpoints ──────────────────────────────────────────────────────────────────
 app.MapGet("/health", async (
     IPostgresRepository db,
-    IElasticsearchService es,
     IVectorService vector,
     IEventProducer kafka) =>
 {
     var pgTask     = db.QuerySingleOrDefaultAsync<int>("SELECT 1").ContinueWith(t => t.IsCompletedSuccessfully && t.Result == 1);
-    var esTask     = es.IndexExistsAsync("iverson-probe").ContinueWith(t => t.IsCompletedSuccessfully);
     var vectorTask = vector.EnsureCollectionAsync("iverson-probe", 4).ContinueWith(t => t.IsCompletedSuccessfully);
     var kafkaTask  = kafka.ProduceAsync("iverson-health-probe", "probe", new { ts = DateTime.UtcNow })
                          .ContinueWith(t => t.IsCompletedSuccessfully);
 
-    await Task.WhenAll(pgTask, esTask, vectorTask, kafkaTask);
+    await Task.WhenAll(pgTask, vectorTask, kafkaTask);
 
     var checks = new
     {
-        postgres      = pgTask.Result,
-        elasticsearch = esTask.Result,
-        qdrant        = vectorTask.Result,
-        kafka         = kafkaTask.Result
+        postgres = pgTask.Result,
+        qdrant   = vectorTask.Result,
+        kafka    = kafkaTask.Result
     };
 
-    var allHealthy = checks.postgres && checks.elasticsearch && checks.qdrant && checks.kafka;
+    var allHealthy = checks.postgres && checks.qdrant && checks.kafka;
 
     return allHealthy
         ? Results.Ok(new { status = "healthy", checks })
@@ -130,12 +122,6 @@ app.MapGet("/probe/sql", async (IPostgresRepository db) =>
     var result = await db.QuerySingleOrDefaultAsync<int>("SELECT 1");
     return Results.Ok(new { connected = result == 1, traceId = Activity.Current?.TraceId.ToString() });
 }).WithName("ProbeSql");
-
-app.MapGet("/probe/elasticsearch", async (IElasticsearchService es) =>
-{
-    var exists = await es.IndexExistsAsync("iverson-probe");
-    return Results.Ok(new { connected = true, probeIndexExists = exists, traceId = Activity.Current?.TraceId.ToString() });
-}).WithName("ProbeElasticsearch");
 
 app.MapGet("/probe/vector", async (IVectorService vector) =>
 {

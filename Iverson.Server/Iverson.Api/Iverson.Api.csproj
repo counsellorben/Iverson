@@ -27,8 +27,7 @@
   <ItemGroup>
     <ProjectReference Include="..\Iverson.Embeddings\Iverson.Embeddings.csproj" />
     <ProjectReference Include="..\Iverson.Sql\Iverson.Sql.csproj" />
-    <ProjectReference Include="..\Iverson.Elasticsearch\Iverson.Elasticsearch.csproj" />
-    <ProjectReference Include="..\Iverson.StarRocks\Iverson.StarRocks.csproj" />
+<ProjectReference Include="..\Iverson.StarRocks\Iverson.StarRocks.csproj" />
     <ProjectReference Include="..\Iverson.Vector\Iverson.Vector.csproj" />
     <ProjectReference Include="..\Iverson.Events\Iverson.Events.csproj" />
     <ProjectReference Include="..\..\Iverson.Client\Iverson.Client.Contracts\Iverson.Client.Contracts.csproj" />

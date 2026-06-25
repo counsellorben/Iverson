@@ -5,7 +5,6 @@ using Iverson.Api.Grpc;
 using Iverson.Api.Schema;
 using Iverson.Api.Tests.Helpers;
 using Iverson.Client.Contracts;
-using Iverson.Elasticsearch;
 using Iverson.Embeddings;
 using Iverson.Events;
 using Iverson.Sql;
@@ -19,7 +18,6 @@ namespace Iverson.Api.Tests.Grpc;
 public class ObjectMappingGrpcServiceTests
 {
     private readonly IPostgresRepository _sql;
-    private readonly IElasticsearchService _es;
     private readonly IVectorService _vector;
     private readonly IEventProducer _events;
     private readonly SchemaRegistry _registry;
@@ -34,7 +32,6 @@ public class ObjectMappingGrpcServiceTests
     public ObjectMappingGrpcServiceTests()
     {
         _sql    = Substitute.For<IPostgresRepository>();
-        _es     = Substitute.For<IElasticsearchService>();
         _vector = Substitute.For<IVectorService>();
         _events = Substitute.For<IEventProducer>();
 
@@ -50,7 +47,7 @@ public class ObjectMappingGrpcServiceTests
 
         _registry = new SchemaRegistry(_sql, NullLogger<SchemaRegistry>.Instance);
         _sut = new ObjectMappingGrpcService(
-            _sql, _es, _vector, _events, _registry, _embedding,
+            _sql, _vector, _events, _registry, _embedding,
             NullLogger<ObjectMappingGrpcService>.Instance);
     }
 

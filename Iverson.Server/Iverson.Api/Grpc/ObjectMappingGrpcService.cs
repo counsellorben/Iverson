@@ -4,7 +4,6 @@ using Google.Protobuf.WellKnownTypes;
 using Grpc.Core;
 using Iverson.Api.Schema;
 using Iverson.Client.Contracts;
-using Iverson.Elasticsearch;
 using Iverson.Embeddings;
 using Iverson.Events;
 using Iverson.Sql;
@@ -23,7 +22,6 @@ namespace Iverson.Api.Grpc;
 /// </summary>
 public sealed class ObjectMappingGrpcService(
     IPostgresRepository _sql,
-    IElasticsearchService _elasticsearchService,
     IVectorService _vector,
     IEventProducer _events,
     SchemaRegistry _registry,
