@@ -115,7 +115,7 @@ public sealed class ObjectMappingGrpcService(
         }
 
         var payloadJson = StructSerializer.SerializePayload(request.Payload);
-        var targetStores = DetermineTargetStores(request.TypeName, schema);
+        var targetStores = StoreTargeting.DetermineTargetStores(schema);
 
         await _events.ProduceAsync(
             EntityTopics.Created,
@@ -147,7 +147,7 @@ public sealed class ObjectMappingGrpcService(
         ValidateRelations(request.Payload, schema);
 
         var payloadJson = StructSerializer.SerializePayload(request.Payload);
-        var targetStores = DetermineTargetStores(request.TypeName, schema);
+        var targetStores = StoreTargeting.DetermineTargetStores(schema);
 
         await _events.ProduceAsync(
             EntityTopics.Updated,
@@ -209,14 +209,6 @@ public sealed class ObjectMappingGrpcService(
         await _sql.QuerySingleOrDefaultAsync<string>(
             $"SELECT row_to_json(t)::text FROM \"{schema.TableName}\" t WHERE \"{schema.KeyColumn.Name}\" = @Key::uuid",
             new { Key = key });
-
-    private StoreTarget DetermineTargetStores(string typeName, SchemaDescriptor schema)
-    {
-        var stores = StoreTarget.Record;
-        if (IsCompleteForIngestion(schema))               stores |= StoreTarget.Engagement;
-        if (HasVectorOrChunkFields(schema))               stores |= StoreTarget.Intelligence;
-        return stores;
-    }
 
     // ── Relation resolution ───────────────────────────────────────────────────
 
@@ -474,23 +466,6 @@ public sealed class ObjectMappingGrpcService(
                 $"'{path}': existing entity (key='{nestedKey}') must only include " +
                 $"the key field '{keyColumnName}' — remove extra properties.");
     }
-
-    // ── Static schema predicates ──────────────────────────────────────────────
-
-    private static bool HasVectorOrChunkFields(SchemaDescriptor schema) =>
-        schema.VectorFields.Count > 0 || schema.ChunkFields.Count > 0;
-
-    private static bool IsCompleteForIngestion(SchemaDescriptor schema) =>
-        schema.Relations.All(r => r.Kind switch
-        {
-            SchemaRelKind.ManyToOne  => true,
-            SchemaRelKind.OneToOne   => true,
-            SchemaRelKind.OneToMany  => false,
-            SchemaRelKind.ManyToMany => schema.FkColumns.Any(fk =>
-                string.Equals(fk.ColumnName, r.ForeignKey, StringComparison.OrdinalIgnoreCase)),
-            _                        => false
-        });
-
 }
 
 file static class StringExtensions

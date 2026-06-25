@@ -32,9 +32,7 @@ public sealed class ObjectPersistenceGrpcService(
 
         ValidateRelations(request.Payload, schema);
 
-        var targetStores = StoreTarget.Record;
-        if (IsCompleteForIngestion(schema))              targetStores |= StoreTarget.Engagement;
-        if (HasVectorOrChunkFields(schema))              targetStores |= StoreTarget.Intelligence;
+        var targetStores = StoreTargeting.DetermineTargetStores(schema);
 
         // Resolve key: honour client-supplied key; generate UUID v7 when absent/empty
         var key = ExtractKey(request.Payload, schema.KeyColumn.Name);
@@ -82,9 +80,7 @@ public sealed class ObjectPersistenceGrpcService(
 
         ValidateRelations(request.Payload, schema);
 
-        var targetStores = StoreTarget.Record;
-        if (IsCompleteForIngestion(schema))              targetStores |= StoreTarget.Engagement;
-        if (HasVectorOrChunkFields(schema))              targetStores |= StoreTarget.Intelligence;
+        var targetStores = StoreTargeting.DetermineTargetStores(schema);
 
         var payloadJson = StructSerializer.SerializePayload(request.Payload);
 
@@ -264,20 +260,6 @@ public sealed class ObjectPersistenceGrpcService(
         yield return name;
         yield return char.ToLowerInvariant(name[0]) + name[1..];
     }
-
-    private static bool HasVectorOrChunkFields(SchemaDescriptor schema) =>
-        schema.VectorFields.Count > 0 || schema.ChunkFields.Count > 0;
-
-    private static bool IsCompleteForIngestion(SchemaDescriptor schema) =>
-        schema.Relations.All(r => r.Kind switch
-        {
-            SchemaRelKind.ManyToOne  => true,
-            SchemaRelKind.OneToOne   => true,
-            SchemaRelKind.OneToMany  => false,
-            SchemaRelKind.ManyToMany => schema.FkColumns.Any(fk =>
-                string.Equals(fk.ColumnName, r.ForeignKey, StringComparison.OrdinalIgnoreCase)),
-            _                        => false
-        });
 
     private SchemaDescriptor RequireSchema(string typeName) =>
         registry.Get(typeName) ?? throw new RpcException(new Status(StatusCode.FailedPrecondition,
