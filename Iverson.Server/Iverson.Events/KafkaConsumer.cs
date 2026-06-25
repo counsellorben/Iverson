@@ -70,7 +70,7 @@ public class KafkaConsumer(
                     activity?.RecordException(ex);
                     logger.LogCritical(ex,
                         "[Consumer] Halting topic={Topic} group={Group} — offset not committed", topic, groupId);
-                    break;
+                    throw;
                 }
             }
             catch (OperationCanceledException)
