@@ -98,35 +98,24 @@ public sealed class EngagementStoreConsumer(
 
             try
             {
-                string querySql;
+                // Select the PK column explicitly alongside row_to_json so that key
+                // extraction does not depend on the casing of row_to_json output.
+                var querySql = relation.ForeignKey.EndsWith("Ids", StringComparison.OrdinalIgnoreCase)
+                    ? $"""
+                      SELECT t."{depSchema.KeyColumn.Name}" AS key, row_to_json(t)::text AS data
+                      FROM "{depSchema.TableName}" t
+                      WHERE @Key::uuid = ANY("{relation.ForeignKey}")
+                      """
+                    : $"""
+                      SELECT t."{depSchema.KeyColumn.Name}" AS key, row_to_json(t)::text AS data
+                      FROM "{depSchema.TableName}" t
+                      WHERE "{relation.ForeignKey}" = @Key::uuid
+                      """;
 
-                // ManyToMany: FK is an array column (e.g. TagIds UUID[])
-                if (relation.ForeignKey.EndsWith("Ids", StringComparison.OrdinalIgnoreCase))
+                var rows = await sql.QueryAsync<(string key, string data)>(querySql, new { Key = ev.Key });
+
+                foreach (var (depKeyValue, rowJson) in rows)
                 {
-                    querySql = $"""
-                        SELECT row_to_json(t)::text
-                        FROM "{depSchema.TableName}" t
-                        WHERE @Key::uuid = ANY("{relation.ForeignKey}")
-                        """;
-                }
-                else
-                {
-                    querySql = $"""
-                        SELECT row_to_json(t)::text
-                        FROM "{depSchema.TableName}" t
-                        WHERE "{relation.ForeignKey}" = @Key::uuid
-                        """;
-                }
-
-                var rows = await sql.QueryAsync<string>(querySql, new { Key = ev.Key });
-
-                foreach (var rowJson in rows)
-                {
-                    // Extract the primary key from the row JSON
-                    using var doc    = JsonDocument.Parse(rowJson);
-                    var depKeyValue  = FindKey(doc.RootElement, depSchema.KeyColumn.Name);
-                    if (depKeyValue is null) continue;
-
                     await IndexDocumentAsync(depSchema.IndexName, depKeyValue, rowJson);
                 }
 
@@ -159,14 +148,6 @@ public sealed class EngagementStoreConsumer(
             logger.LogError(ex, "[Engagement] Failed to deserialize event key={Key}", key);
             return null;
         }
-    }
-
-    // Postgres row_to_json uses lowercase column names; try both casings.
-    private static string? FindKey(JsonElement root, string keyName)
-    {
-        if (root.TryGetProperty(keyName, out var v)) return v.ToString();
-        if (root.TryGetProperty(keyName.ToLowerInvariant(), out var vl)) return vl.ToString();
-        return null;
     }
 
     private static readonly JsonSerializerOptions s_jsonOptions = new()

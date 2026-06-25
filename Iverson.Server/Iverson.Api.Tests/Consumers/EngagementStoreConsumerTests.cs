@@ -120,10 +120,10 @@ public class EngagementStoreConsumerTests
         var authorKey  = Guid.NewGuid().ToString();
         var articleKey = Guid.NewGuid().ToString();
 
-        // SQL returns a JSON row for the dependent article
+        // SQL returns a tuple row for the dependent article: (key, json)
         var articleJson = $$$"""{"Id":"{{{articleKey}}}","Title":"Great Article","AuthorId":"{{{authorKey}}}"}""";
-        _sql.QueryAsync<string>(Arg.Any<string>(), Arg.Any<object?>())
-            .Returns(new List<string> { articleJson });
+        _sql.QueryAsync<(string key, string data)>(Arg.Any<string>(), Arg.Any<object?>())
+            .Returns(new List<(string, string)> { (articleKey, articleJson) });
 
         var ev = new EntityEvent(
             TypeName:      "Author",
@@ -162,7 +162,7 @@ public class EngagementStoreConsumerTests
         await sut.HandleUpsertAsync(ev.Key, Serialize(ev), CancellationToken.None);
 
         // Only the author's own direct index; no fanout SQL calls
-        await _sql.DidNotReceive().QueryAsync<string>(Arg.Any<string>(), Arg.Any<object?>());
+        await _sql.DidNotReceive().QueryAsync<(string key, string data)>(Arg.Any<string>(), Arg.Any<object?>());
     }
 
     [Fact]
@@ -174,5 +174,42 @@ public class EngagementStoreConsumerTests
         var act = async () => await sut.HandleUpsertAsync("some-key", "NOT_VALID_JSON{{{{", CancellationToken.None);
 
         await act.Should().NotThrowAsync();
+    }
+
+    [Fact]
+    public async Task FanOut_ExtractsKeyFromExplicitColumn_NotCaseGuessing()
+    {
+        // Arrange: Article depends on Author via AuthorId (ManyToOne, FK column name does NOT end with "Ids")
+        await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
+        await _registry.RegisterAsync(SchemaFixtures.ArticleSchema());
+
+        var authorKey  = Guid.NewGuid().ToString();
+        var articleKey = Guid.NewGuid().ToString();
+
+        // The SQL mock returns a tuple where 'key' is the explicit PK column value.
+        // The PK column is "Id" (PascalCase) — FindKey would have had to guess the casing.
+        // With the fix, the consumer uses QueryAsync<(string key, string data)> and reads
+        // the key directly from the tuple's first element, with no JSON parsing needed.
+        var articleJson = $$$"""{"Id":"{{{articleKey}}}","Title":"Great Article","AuthorId":"{{{authorKey}}}"}""";
+        _sql.QueryAsync<(string key, string data)>(Arg.Any<string>(), Arg.Any<object?>())
+            .Returns(new List<(string, string)> { (articleKey, articleJson) });
+
+        var ev = new EntityEvent(
+            TypeName:      "Author",
+            Key:           authorKey,
+            PayloadJson:   """{"name":"Alice"}""",
+            TraceId:       "trace-explicit-key",
+            SchemaVersion: "1",
+            OccurredAt:    DateTimeOffset.UtcNow,
+            TargetStores:  StoreTarget.Record | StoreTarget.Engagement | StoreTarget.EngagementFanout);
+
+        var sut = BuildSut();
+        await sut.HandleUpsertAsync(ev.Key, Serialize(ev), CancellationToken.None);
+
+        // The article should be indexed with the exact key from the explicit SELECT column
+        await _es.Received(1).IndexDocumentAsync(
+            "articles",
+            articleKey,
+            Arg.Any<Dictionary<string, object>>());
     }
 }
