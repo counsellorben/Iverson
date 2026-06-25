@@ -146,15 +146,22 @@ public sealed class EntityCoordinator<T>(
 
         logger.LogDebug("ObjectRetrieval.GetMany {Entity} ({Count} keys)", _descriptor.EntityName, request.Keys.Count);
 
-        var stream = retrieval.GetMany(request, cancellationToken: ct);
+        // Buffer all results so we can batch-assemble relations in one pass
+        var buffer = new List<T>();
+        var stream  = retrieval.GetMany(request, cancellationToken: ct);
         await foreach (var response in stream.ResponseStream.ReadAllAsync(ct))
         {
             if (!response.Found) continue;
             var entity = StructConverter.FromStruct<T>(response.Data);
             if (entity is null) continue;
-            if (assembleGraph) await assembler.AssembleAsync(entity, ct);
-            yield return entity;
+            buffer.Add(entity);
         }
+
+        if (assembleGraph && buffer.Count > 0)
+            await assembler.AssembleManyAsync(buffer, ct);
+
+        foreach (var entity in buffer)
+            yield return entity;
     }
 
     // ── Object Search ──────────────────────────────────────────────────────────
