@@ -4,6 +4,7 @@ using Iverson.Api.Consumers;
 using Iverson.Api.Tests.Helpers;
 using Iverson.Events;
 using Iverson.Sql;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using NSubstitute;
 
@@ -129,6 +130,33 @@ public class RecordStoreConsumerTests
         await _sql.DidNotReceive().ExecuteAsync(
             Arg.Is<string>(s => s.Contains("json_populate_record")),
             Arg.Any<object?>());
+    }
+
+    [Fact]
+    public async Task HandleAsync_UnknownType_LogsError()
+    {
+        // Arrange — use a real registry with no schemas registered so Get("Ghost") returns null
+        var logger = Substitute.For<ILogger<RecordStoreConsumer>>();
+        var sql = Substitute.For<IPostgresRepository>();
+        var registry = new Api.Schema.SchemaRegistry(sql, NullLogger<Api.Schema.SchemaRegistry>.Instance);
+
+        var sut = new RecordStoreConsumer(_consumer, sql, registry, logger);
+
+        var ev = new EntityEvent("Ghost", Guid.NewGuid().ToString(), "{}", "", "1",
+            DateTimeOffset.UtcNow, StoreTarget.Record);
+        var value = JsonSerializer.Serialize(ev, new JsonSerializerOptions
+            { PropertyNamingPolicy = JsonNamingPolicy.CamelCase });
+
+        // Act
+        await sut.HandleAsync("key", value, CancellationToken.None);
+
+        // Assert — must be Error, not Warning
+        logger.Received(1).Log(
+            LogLevel.Error,
+            Arg.Any<EventId>(),
+            Arg.Is<object>(o => o.ToString()!.Contains("Ghost")),
+            null,
+            Arg.Any<Func<object, Exception?, string>>());
     }
 
     [Fact]

@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Text.Json;
 using Iverson.Api.Schema;
 using Iverson.Events;
@@ -44,7 +45,13 @@ public sealed class RecordStoreConsumer(
         var schema = registry.Get(entityEvent.TypeName);
         if (schema is null)
         {
-            logger.LogWarning("[Record] No schema for type={Type}", entityEvent.TypeName);
+            logger.LogError(
+                "[Record] Dropped event — no schema registered for type={Type} key={Key}. " +
+                "Call RegisterSchema before producing events for this type.",
+                entityEvent.TypeName, key);
+            Activity.Current?.SetTag("dropped_event", true)
+                             .SetTag("dropped_event.reason", "schema_not_found")
+                             .SetTag("dropped_event.type", entityEvent.TypeName);
             return;
         }
 

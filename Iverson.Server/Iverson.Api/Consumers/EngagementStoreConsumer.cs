@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Text.Json;
 using Iverson.Api.Schema;
 using Iverson.Elasticsearch;
@@ -38,8 +39,19 @@ public sealed class EngagementStoreConsumer(
         if (ev.TargetStores.HasFlag(StoreTarget.Engagement))
         {
             var schema = registry.Get(ev.TypeName);
-            if (schema is not null)
+            if (schema is null)
+            {
+                logger.LogError(
+                    "[Engagement] Dropped event — no schema registered for type={Type} key={Key}.",
+                    ev.TypeName, ev.Key);
+                Activity.Current?.SetTag("dropped_event", true)
+                                 .SetTag("dropped_event.reason", "schema_not_found")
+                                 .SetTag("dropped_event.type", ev.TypeName);
+            }
+            else
+            {
                 await IndexDocumentAsync(schema.IndexName, ev.Key, ev.PayloadJson);
+            }
         }
 
         // Fan-out: re-index dependent documents that embed this entity
@@ -56,7 +68,16 @@ public sealed class EngagementStoreConsumer(
             !ev.TargetStores.HasFlag(StoreTarget.EngagementFanout)) return;
 
         var schema = registry.Get(ev.TypeName);
-        if (schema is null) return;
+        if (schema is null)
+        {
+            logger.LogError(
+                "[Engagement] Dropped event — no schema registered for type={Type} key={Key}.",
+                ev.TypeName, ev.Key);
+            Activity.Current?.SetTag("dropped_event", true)
+                             .SetTag("dropped_event.reason", "schema_not_found")
+                             .SetTag("dropped_event.type", ev.TypeName);
+            return;
+        }
 
         await es.DeleteDocumentAsync(schema.IndexName, ev.Key);
         logger.LogInformation("[Engagement] Deleted {Type}:{Key}", ev.TypeName, ev.Key);

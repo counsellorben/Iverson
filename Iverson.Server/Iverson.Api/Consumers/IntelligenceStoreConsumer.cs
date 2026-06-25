@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Text.Json;
 using Iverson.Api;
 using Iverson.Api.Schema;
@@ -48,7 +49,12 @@ public sealed class IntelligenceStoreConsumer(
         var schema = registry.Get(ev.TypeName);
         if (schema is null || schema.CollectionName is null)
         {
-            logger.LogWarning("[Intelligence] No schema/collection for type={Type}", ev.TypeName);
+            logger.LogError(
+                "[Intelligence] Dropped event — no schema registered for type={Type} key={Key}.",
+                ev.TypeName, key);
+            Activity.Current?.SetTag("dropped_event", true)
+                             .SetTag("dropped_event.reason", "schema_not_found")
+                             .SetTag("dropped_event.type", ev.TypeName);
             return;
         }
 
@@ -155,7 +161,16 @@ public sealed class IntelligenceStoreConsumer(
         if (ev is null || !ev.TargetStores.HasFlag(StoreTarget.Intelligence)) return;
 
         var schema = registry.Get(ev.TypeName);
-        if (schema?.CollectionName is null) return;
+        if (schema?.CollectionName is null)
+        {
+            logger.LogError(
+                "[Intelligence] Dropped event — no schema registered for type={Type} key={Key}.",
+                ev.TypeName, ev.Key);
+            Activity.Current?.SetTag("dropped_event", true)
+                             .SetTag("dropped_event.reason", "schema_not_found")
+                             .SetTag("dropped_event.type", ev.TypeName);
+            return;
+        }
 
         var pointId = KeyToUlong(ev.Key);
 
