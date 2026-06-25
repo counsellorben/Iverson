@@ -44,7 +44,7 @@ public sealed class IntelligenceStoreConsumer(
     internal async Task HandleAsync(string key, string value, CancellationToken ct)
     {
         var ev = Deserialize(key, value);
-        if (ev is null || !ev.TargetStores.HasFlag(StoreTarget.Intelligence)) return;
+        if (!ev.TargetStores.HasFlag(StoreTarget.Intelligence)) return;
 
         var schema = registry.Get(ev.TypeName);
         if (schema is null || schema.CollectionName is null)
@@ -64,10 +64,9 @@ public sealed class IntelligenceStoreConsumer(
             using var doc = JsonDocument.Parse(ev.PayloadJson);
             payload = doc.RootElement.Clone();
         }
-        catch (Exception ex)
+        catch (JsonException ex)
         {
-            logger.LogError(ex, "[Intelligence] Failed to parse payload for type={Type} key={Key}", ev.TypeName, key);
-            return;
+            throw new PoisonMessageException($"[Intelligence] Malformed payload JSON type={ev.TypeName} key={key}", ex);
         }
 
         var pointId = KeyToUlong(ev.Key);
@@ -82,15 +81,8 @@ public sealed class IntelligenceStoreConsumer(
                 var text = ExtractString(payload, vf.PropertyName);
                 if (string.IsNullOrWhiteSpace(text)) continue;
 
-                try
-                {
-                    namedVectors[$"{vf.PropertyName.ToSnakeCase()}_vector"] =
-                        await embedding.EmbedAsync(text, ct);
-                }
-                catch (Exception ex)
-                {
-                    logger.LogError(ex, "[Intelligence] Embed failed field={Field} type={Type}", vf.PropertyName, ev.TypeName);
-                }
+                namedVectors[$"{vf.PropertyName.ToSnakeCase()}_vector"] =
+                    await embedding.EmbedAsync(text, ct);
             }
 
             if (namedVectors.Count > 0)
@@ -126,27 +118,20 @@ public sealed class IntelligenceStoreConsumer(
                 {
                     var (chunkText, chunkIndex) = chunks[i];
 
-                    try
-                    {
-                        var chunkVector = await embedding.EmbedAsync(chunkText, ct);
-                        var chunkId     = ComputeChunkPointId(pointId, cf.PropertyName, chunkIndex);
+                    var chunkVector = await embedding.EmbedAsync(chunkText, ct);
+                    var chunkId     = ComputeChunkPointId(pointId, cf.PropertyName, chunkIndex);
 
-                        await vector.UpsertNamedAsync(
-                            chunksCollection,
-                            chunkId,
-                            new Dictionary<string, float[]> { [vectorName] = chunkVector },
-                            new Dictionary<string, string>
-                            {
-                                ["text"]        = chunkText,
-                                ["parent_id"]   = ev.Key,
-                                ["field"]       = cf.PropertyName,
-                                ["chunk_index"] = chunkIndex.ToString()
-                            });
-                    }
-                    catch (Exception ex)
-                    {
-                        logger.LogError(ex, "[Intelligence] Chunk embed failed field={Field} chunk={Index}", cf.PropertyName, i);
-                    }
+                    await vector.UpsertNamedAsync(
+                        chunksCollection,
+                        chunkId,
+                        new Dictionary<string, float[]> { [vectorName] = chunkVector },
+                        new Dictionary<string, string>
+                        {
+                            ["text"]        = chunkText,
+                            ["parent_id"]   = ev.Key,
+                            ["field"]       = cf.PropertyName,
+                            ["chunk_index"] = chunkIndex.ToString()
+                        });
                 }
 
                 logger.LogInformation("[Intelligence] Ingested {Count} chunk(s) for {Type}:{Key} field={Field}",
@@ -158,7 +143,7 @@ public sealed class IntelligenceStoreConsumer(
     internal async Task HandleDeleteAsync(string key, string value, CancellationToken ct)
     {
         var ev = Deserialize(key, value);
-        if (ev is null || !ev.TargetStores.HasFlag(StoreTarget.Intelligence)) return;
+        if (!ev.TargetStores.HasFlag(StoreTarget.Intelligence)) return;
 
         var schema = registry.Get(ev.TypeName);
         if (schema?.CollectionName is null)
@@ -174,14 +159,7 @@ public sealed class IntelligenceStoreConsumer(
 
         var pointId = KeyToUlong(ev.Key);
 
-        try
-        {
-            await vector.DeleteAsync(schema.CollectionName, pointId);
-        }
-        catch (Exception ex)
-        {
-            logger.LogWarning(ex, "[Intelligence] Delete from main collection failed {Type}:{Key}", ev.TypeName, ev.Key);
-        }
+        await vector.DeleteAsync(schema.CollectionName, pointId);
 
         // Best-effort: delete chunk points (no scroll-delete API; skip for now — orphaned chunks
         // are harmless for search correctness since parent_id lookups won't match live documents)
@@ -259,17 +237,19 @@ public sealed class IntelligenceStoreConsumer(
         return null;
     }
 
-    private EntityEvent? Deserialize(string key, string value)
+    private static EntityEvent Deserialize(string key, string value)
     {
+        EntityEvent? ev;
         try
         {
-            return JsonSerializer.Deserialize<EntityEvent>(value, s_jsonOptions);
+            ev = JsonSerializer.Deserialize<EntityEvent>(value, s_jsonOptions);
         }
-        catch (Exception ex)
+        catch (JsonException ex)
         {
-            logger.LogError(ex, "[Intelligence] Failed to deserialize event key={Key}", key);
-            return null;
+            throw new PoisonMessageException($"[Intelligence] Malformed event JSON key={key}", ex);
         }
+
+        return ev ?? throw new PoisonMessageException($"[Intelligence] Event deserialized to null key={key}");
     }
 
     private static readonly JsonSerializerOptions s_jsonOptions = new()

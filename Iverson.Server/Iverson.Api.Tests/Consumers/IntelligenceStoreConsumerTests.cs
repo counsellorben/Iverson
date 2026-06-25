@@ -183,7 +183,7 @@ public class IntelligenceStoreConsumerTests
     }
 
     [Fact]
-    public async Task EmbedFailure_DoesNotPropagate()
+    public async Task EmbedFailure_Propagates()
     {
         await _registry.RegisterAsync(SchemaFixtures.ArticleSchema());
 
@@ -203,7 +203,7 @@ public class IntelligenceStoreConsumerTests
         var sut = BuildSut();
         var act = async () => await sut.HandleAsync(ev.Key, Serialize(ev), CancellationToken.None);
 
-        await act.Should().NotThrowAsync();
+        await act.Should().ThrowAsync<Exception>().WithMessage("Ollama timeout");
     }
 
     [Fact]
