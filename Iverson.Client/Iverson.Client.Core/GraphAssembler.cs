@@ -178,7 +178,11 @@ public sealed class GraphAssembler(
             if (relatedKey is null || !fkToEntities.TryGetValue(relatedKey, out var ents)) continue;
 
             foreach (var ent in ents)
-                relation.Property.SetValue(ent, related);
+            {
+                var perEntityRelated = DeserializeStruct(response.Data, relation.RelatedType);
+                if (perEntityRelated is not null)
+                    relation.Property.SetValue(ent, perEntityRelated);
+            }
         }
     }
 
@@ -193,8 +197,8 @@ public sealed class GraphAssembler(
             ? (relation.ForeignKey ?? $"{relation.RelatedType.Name}Ids")
             : (relation.ForeignKey ?? $"{descriptor.EntityName}Ids");
 
-        // Collect all FK keys across all entities; track which entity owns each key
-        var keyToEntityIndex = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        // Collect all FK keys across all entities; track which entities own each key
+        var keyToEntityIndices = new Dictionary<string, List<int>>(StringComparer.OrdinalIgnoreCase);
         var allKeys = new List<string>();
 
         for (var i = 0; i < entities.Count; i++)
@@ -203,11 +207,12 @@ public sealed class GraphAssembler(
             var keys    = StructConverter.GetStringList(payload, joinKey);
             foreach (var k in keys)
             {
-                if (!keyToEntityIndex.ContainsKey(k))
+                if (!keyToEntityIndices.TryGetValue(k, out var idxList))
                 {
-                    keyToEntityIndex[k] = i;
+                    keyToEntityIndices[k] = idxList = new List<int>();
                     allKeys.Add(k);
                 }
+                idxList.Add(i);
             }
         }
 
@@ -225,12 +230,12 @@ public sealed class GraphAssembler(
         await foreach (var response in stream.ResponseStream.ReadAllAsync(ct))
         {
             if (!response.Found) continue;
-            var item = DeserializeStruct(response.Data, relation.RelatedType);
-            if (item is null) continue;
 
-            var itemKey = relatedDescriptor.KeyProperty.GetValue(item)?.ToString();
-            if (itemKey is null || !keyToEntityIndex.TryGetValue(itemKey, out var idx)) continue;
-            buckets[idx].Add(item);
+            var itemKey = relatedDescriptor.KeyProperty.GetValue(
+                DeserializeStruct(response.Data, relation.RelatedType))?.ToString();
+            if (itemKey is null || !keyToEntityIndices.TryGetValue(itemKey, out var ownerIndices)) continue;
+            foreach (var idx in ownerIndices)
+                buckets[idx].Add(DeserializeStruct(response.Data, relation.RelatedType)!);
         }
 
         // Set collection properties
