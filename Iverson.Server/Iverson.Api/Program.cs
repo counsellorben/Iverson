@@ -95,8 +95,35 @@ app.Use(async (context, next) =>
 });
 
 // ── Endpoints ──────────────────────────────────────────────────────────────────
-app.MapGet("/health", () => Results.Ok(new { status = "healthy", timestamp = DateTime.UtcNow }))
-   .WithName("Health");
+app.MapGet("/health", async (
+    IPostgresRepository db,
+    IElasticsearchService es,
+    IVectorService vector,
+    IEventProducer kafka) =>
+{
+    var pgTask     = db.QuerySingleOrDefaultAsync<int>("SELECT 1").ContinueWith(t => t.IsCompletedSuccessfully && t.Result == 1);
+    var esTask     = es.IndexExistsAsync("iverson-probe").ContinueWith(t => t.IsCompletedSuccessfully);
+    var vectorTask = vector.EnsureCollectionAsync("iverson-probe", 4).ContinueWith(t => t.IsCompletedSuccessfully);
+    var kafkaTask  = kafka.ProduceAsync("iverson-health-probe", "probe", new { ts = DateTime.UtcNow })
+                         .ContinueWith(t => t.IsCompletedSuccessfully);
+
+    await Task.WhenAll(pgTask, esTask, vectorTask, kafkaTask);
+
+    var checks = new
+    {
+        postgres      = pgTask.Result,
+        elasticsearch = esTask.Result,
+        qdrant        = vectorTask.Result,
+        kafka         = kafkaTask.Result
+    };
+
+    var allHealthy = checks.postgres && checks.elasticsearch && checks.qdrant && checks.kafka;
+
+    return allHealthy
+        ? Results.Ok(new { status = "healthy", checks })
+        : Results.Json(new { status = "degraded", checks }, statusCode: 503);
+})
+.WithName("Health");
 
 app.MapGet("/probe/sql", async (IPostgresRepository db) =>
 {
