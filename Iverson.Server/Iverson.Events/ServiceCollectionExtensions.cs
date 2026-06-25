@@ -1,5 +1,6 @@
 using Confluent.Kafka;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 
 namespace Iverson.Events;
 
@@ -14,8 +15,13 @@ public static class ServiceCollectionExtensions
 
         services.AddSingleton<IEventConsumer>(sp =>
         {
-            var logger = sp.GetRequiredService<Microsoft.Extensions.Logging.ILogger<KafkaConsumer>>();
-            return new KafkaConsumer(bootstrapServers, logger);
+            var dispatcher = new MessageDispatcher(
+                sp.GetRequiredService<IProducer<string, string>>(),
+                sp.GetRequiredService<ILogger<MessageDispatcher>>());
+            return new KafkaConsumer(
+                bootstrapServers,
+                sp.GetRequiredService<ILogger<KafkaConsumer>>(),
+                dispatcher);
         });
 
         return services;

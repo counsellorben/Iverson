@@ -5,7 +5,10 @@ using Microsoft.Extensions.Logging;
 
 namespace Iverson.Events;
 
-public class KafkaConsumer(string bootstrapServers, ILogger<KafkaConsumer> logger) : IEventConsumer
+public class KafkaConsumer(
+    string bootstrapServers,
+    ILogger<KafkaConsumer> logger,
+    MessageDispatcher dispatcher) : IEventConsumer
 {
     public async Task ConsumeAsync(string topic, string groupId, Func<string, string, CancellationToken, Task> handler, CancellationToken cancellationToken)
     {
@@ -30,7 +33,6 @@ public class KafkaConsumer(string bootstrapServers, ILogger<KafkaConsumer> logge
                 var result = consumer.Consume(cancellationToken);
                 if (result is null) continue;
 
-                // Restore trace context from message headers if present
                 ActivityContext parentContext = ExtractTraceContext(result.Message.Headers);
 
                 using var activity = Telemetry.Source.StartActivity(
@@ -47,17 +49,28 @@ public class KafkaConsumer(string bootstrapServers, ILogger<KafkaConsumer> logge
                 activity?.SetTag("messaging.kafka.offset", result.Offset.Value);
                 activity?.SetTag("messaging.operation", "receive");
 
+                var ctx = new DispatchContext(
+                    topic, groupId, result.Message.Key, result.Message.Value, result.Message.Headers);
+
                 try
                 {
-                    await handler(result.Message.Key, result.Message.Value, cancellationToken);
+                    await dispatcher.DispatchAsync(ctx, handler, cancellationToken);
                     consumer.Commit(result);
                     activity?.SetStatus(ActivityStatusCode.Ok);
                 }
+                catch (OperationCanceledException)
+                {
+                    throw;
+                }
                 catch (Exception ex)
                 {
+                    // The DLQ write itself failed — do not commit. Halt this consumer
+                    // so we never advance past an uncommitted message (block rather than lose).
                     activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
                     activity?.RecordException(ex);
-                    throw;
+                    logger.LogCritical(ex,
+                        "[Consumer] Halting topic={Topic} group={Group} — offset not committed", topic, groupId);
+                    break;
                 }
             }
             catch (OperationCanceledException)
@@ -108,7 +121,6 @@ public class KafkaConsumer(string bootstrapServers, ILogger<KafkaConsumer> logge
             var parts = traceparent.Split('-');
             if (parts.Length < 4) return default;
 
-            // CreateFromString throws if the hex string is invalid — fall through to default
             var traceId = ActivityTraceId.CreateFromString(parts[1].AsSpan());
             var spanId = ActivitySpanId.CreateFromString(parts[2].AsSpan());
             var flags = parts[3] == "01" ? ActivityTraceFlags.Recorded : ActivityTraceFlags.None;
