@@ -42,6 +42,8 @@ coverage/
 
 # Claude Code local settings
 .claude/
+.superpowers/
+docs/superpowers/
 
 # Secrets / local config
 appsettings.*.json

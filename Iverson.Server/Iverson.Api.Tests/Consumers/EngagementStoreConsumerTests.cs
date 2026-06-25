@@ -120,10 +120,10 @@ public class EngagementStoreConsumerTests
         var authorKey  = Guid.NewGuid().ToString();
         var articleKey = Guid.NewGuid().ToString();
 
-        // SQL returns a tuple row for the dependent article: (key, json)
+        // SQL returns a FanOutRow for the dependent article: (Key, Data)
         var articleJson = $$$"""{"Id":"{{{articleKey}}}","Title":"Great Article","AuthorId":"{{{authorKey}}}"}""";
-        _sql.QueryAsync<(string key, string data)>(Arg.Any<string>(), Arg.Any<object?>())
-            .Returns(new List<(string, string)> { (articleKey, articleJson) });
+        _sql.QueryAsync<EngagementStoreConsumer.FanOutRow>(Arg.Any<string>(), Arg.Any<object?>())
+            .Returns(new List<EngagementStoreConsumer.FanOutRow> { new(articleKey, articleJson) });
 
         var ev = new EntityEvent(
             TypeName:      "Author",
@@ -162,7 +162,7 @@ public class EngagementStoreConsumerTests
         await sut.HandleUpsertAsync(ev.Key, Serialize(ev), CancellationToken.None);
 
         // Only the author's own direct index; no fanout SQL calls
-        await _sql.DidNotReceive().QueryAsync<(string key, string data)>(Arg.Any<string>(), Arg.Any<object?>());
+        await _sql.DidNotReceive().QueryAsync<EngagementStoreConsumer.FanOutRow>(Arg.Any<string>(), Arg.Any<object?>());
     }
 
     [Fact]
@@ -191,8 +191,8 @@ public class EngagementStoreConsumerTests
         // With the fix, the consumer uses QueryAsync<(string key, string data)> and reads
         // the key directly from the tuple's first element, with no JSON parsing needed.
         var articleJson = $$$"""{"Id":"{{{articleKey}}}","Title":"Great Article","AuthorId":"{{{authorKey}}}"}""";
-        _sql.QueryAsync<(string key, string data)>(Arg.Any<string>(), Arg.Any<object?>())
-            .Returns(new List<(string, string)> { (articleKey, articleJson) });
+        _sql.QueryAsync<EngagementStoreConsumer.FanOutRow>(Arg.Any<string>(), Arg.Any<object?>())
+            .Returns(new List<EngagementStoreConsumer.FanOutRow> { new(articleKey, articleJson) });
 
         var ev = new EntityEvent(
             TypeName:      "Author",

@@ -112,12 +112,10 @@ public sealed class EngagementStoreConsumer(
                       WHERE "{relation.ForeignKey}" = @Key::uuid
                       """;
 
-                var rows = await sql.QueryAsync<(string key, string data)>(querySql, new { Key = ev.Key });
+                var rows = await sql.QueryAsync<FanOutRow>(querySql, new { Key = ev.Key });
 
-                foreach (var (depKeyValue, rowJson) in rows)
-                {
-                    await IndexDocumentAsync(depSchema.IndexName, depKeyValue, rowJson);
-                }
+                foreach (var row in rows)
+                    await IndexDocumentAsync(depSchema.IndexName, row.Key, row.Data);
 
                 logger.LogInformation("[Engagement] Fan-out {DepType} for {SrcType}:{Key}",
                     depSchema.TypeName, ev.TypeName, ev.Key);
@@ -155,4 +153,7 @@ public sealed class EngagementStoreConsumer(
         PropertyNamingPolicy        = JsonNamingPolicy.CamelCase,
         PropertyNameCaseInsensitive = true
     };
+
+    // Dapper cannot deserialize to ValueTuple; use a named POCO so column→property mapping works.
+    internal sealed record FanOutRow(string Key, string Data);
 }

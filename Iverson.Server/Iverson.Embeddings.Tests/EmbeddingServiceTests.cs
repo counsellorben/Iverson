@@ -42,7 +42,7 @@ public sealed class EmbeddingServiceTests
         new(HttpStatusCode.OK)
         {
             Content = new StringContent(
-                $$"""{"data":[{"embedding":[{{string.Join(",", embedding)}}]}]}""",
+                $$"""{"embeddings":[[{{string.Join(",", embedding)}}]]}""",
                 Encoding.UTF8,
                 "application/json")
         };
