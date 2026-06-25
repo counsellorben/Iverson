@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Text.Json;
 using Iverson.Api.Consumers;
 using Iverson.Api.Grpc;
 using Iverson.Api.Schema;
@@ -150,6 +151,52 @@ app.MapPost("/probe/kafka", async (IEventProducer producer) =>
     await producer.ProduceAsync("iverson-probe", "probe", new { timestamp = DateTime.UtcNow, traceId });
     return Results.Ok(new { produced = true, topic = "iverson-probe", traceId });
 }).WithName("ProbeKafka");
+
+app.MapPost("/admin/reconcile/{typeName}", async (
+    string typeName,
+    SchemaRegistry registry,
+    IPostgresRepository db,
+    IEventProducer events,
+    ILogger<Program> logger,
+    CancellationToken ct) =>
+{
+    var schema = registry.Get(typeName);
+    if (schema is null)
+        return Results.NotFound(new { error = $"No schema registered for '{typeName}'" });
+
+    var rowJsons = await db.QueryAsync<string>(
+        $"""SELECT row_to_json(t)::text FROM "{schema.TableName}" t""", null);
+
+    var targetStores = StoreTargeting.DetermineTargetStores(schema);
+    var traceId = Activity.Current?.TraceId.ToString() ?? string.Empty;
+    var count = 0;
+
+    foreach (var rowJson in rowJsons)
+    {
+        using var doc = JsonDocument.Parse(rowJson);
+        // PostgreSQL returns columns in their declared casing; try both PascalCase and camelCase
+        string? key = null;
+        if (doc.RootElement.TryGetProperty(schema.KeyColumn.Name, out var keyEl))
+            key = keyEl.GetString();
+        else
+        {
+            var camel = char.ToLowerInvariant(schema.KeyColumn.Name[0]) + schema.KeyColumn.Name[1..];
+            if (doc.RootElement.TryGetProperty(camel, out var camelEl))
+                key = camelEl.GetString();
+        }
+
+        if (string.IsNullOrEmpty(key)) continue;
+
+        await events.ProduceAsync(
+            EntityTopics.Updated,
+            key,
+            new EntityEvent(typeName, key, rowJson, traceId, "1", DateTimeOffset.UtcNow, targetStores));
+        count++;
+    }
+
+    logger.LogInformation("[Reconcile] Re-projected {Count} {Type} records to Kafka", count, typeName);
+    return Results.Ok(new { reconciledCount = count, typeName });
+}).WithName("Reconcile");
 
 // ── Schema hydration ───────────────────────────────────────────────────────────
 await app.Services.GetRequiredService<IEmbeddingService>().InitializeAsync();
