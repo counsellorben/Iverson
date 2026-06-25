@@ -12,4 +12,6 @@
   <Project Path="Iverson.Sql/Iverson.Sql.csproj" />
   <Project Path="Iverson.Vector.Tests/Iverson.Vector.Tests.csproj" />
   <Project Path="Iverson.Vector/Iverson.Vector.csproj" />
+  <Project Path="Iverson.StarRocks/Iverson.StarRocks.csproj" />
+  <Project Path="Iverson.StarRocks.Tests/Iverson.StarRocks.Tests.csproj" />
 </Solution>
