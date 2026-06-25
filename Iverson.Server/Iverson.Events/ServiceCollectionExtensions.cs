@@ -6,7 +6,7 @@ namespace Iverson.Events;
 
 public static class ServiceCollectionExtensions
 {
-    public static IServiceCollection AddKafka(this IServiceCollection services, string bootstrapServers)
+    public static IServiceCollection AddKafka(this IServiceCollection services, string bootstrapServers, int numPartitions = 12)
     {
         services.AddSingleton<IProducer<string, string>>(_ =>
             new ProducerBuilder<string, string>(new ProducerConfig { BootstrapServers = bootstrapServers }).Build());
@@ -21,7 +21,8 @@ public static class ServiceCollectionExtensions
             return new KafkaConsumer(
                 bootstrapServers,
                 sp.GetRequiredService<ILogger<KafkaConsumer>>(),
-                dispatcher);
+                dispatcher,
+                numPartitions);
         });
 
         return services;

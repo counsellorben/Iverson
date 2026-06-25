@@ -8,7 +8,8 @@ namespace Iverson.Events;
 public class KafkaConsumer(
     string bootstrapServers,
     ILogger<KafkaConsumer> logger,
-    MessageDispatcher dispatcher) : IEventConsumer
+    MessageDispatcher dispatcher,
+    int numPartitions = 12) : IEventConsumer
 {
     public async Task ConsumeAsync(string topic, string groupId, Func<string, string, CancellationToken, Task> handler, CancellationToken cancellationToken)
     {
@@ -94,7 +95,7 @@ public class KafkaConsumer(
         {
             try
             {
-                await admin.CreateTopicsAsync([new TopicSpecification { Name = topic, NumPartitions = 1, ReplicationFactor = 1 }]);
+                await admin.CreateTopicsAsync([new TopicSpecification { Name = topic, NumPartitions = numPartitions, ReplicationFactor = 1 }]);
                 logger.LogInformation("Created Kafka topic {Topic}", topic);
                 return;
             }
