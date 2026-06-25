@@ -63,6 +63,28 @@ public class ObjectMappingGrpcServiceTests
         return s;
     }
 
+    private static SchemaDescriptor MakeSchema(string typeName) => new()
+    {
+        TypeName      = typeName,
+        TableName     = typeName.ToLower() + "s",
+        IndexName     = typeName.ToLower() + "s",
+        KeyColumn     = new ColumnDescriptor("Id", "uuid", false),
+        ScalarColumns = [new ColumnDescriptor("Name", "text", true)],
+        FkColumns     = [],
+        VectorFields  = [],
+        ChunkFields   = [],
+        Relations     = []
+    };
+
+    private static Struct MakePayload(string keyColumnName, string keyValue)
+    {
+        var s = new Struct();
+        s.Fields[keyColumnName] = Value.ForString(keyValue);
+        return s;
+    }
+
+    private static TestServerCallContext MakeContext() => TestServerCallContext.Create();
+
     private static TypeDescriptor SimpleType(string name, params string[] extraScalars)
     {
         var td = new TypeDescriptor { TypeName = name };
@@ -233,11 +255,9 @@ public class ObjectMappingGrpcServiceTests
     }
 
     [Fact]
-    public async Task Post_ExecutesUpsertSqlWithJsonPopulateRecord()
+    public async Task Post_DoesNotExecuteUpsertSql()
     {
         await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
-        _sql.QuerySingleOrDefaultAsync<string>(Arg.Any<string>(), Arg.Any<object?>())
-            .Returns(AuthorJson);
 
         var payload = MakePayload(new()
         {
@@ -248,7 +268,7 @@ public class ObjectMappingGrpcServiceTests
             new MappingWriteRequest { TypeName = "Author", Payload = payload },
             TestServerCallContext.Create());
 
-        await _sql.Received().ExecuteAsync(
+        _ = _sql.DidNotReceive().ExecuteAsync(
             Arg.Is<string>(s => s.Contains("json_populate_record")),
             Arg.Any<object?>());
     }
@@ -288,6 +308,59 @@ public class ObjectMappingGrpcServiceTests
 
         var ex = await act.Should().ThrowAsync<RpcException>();
         ex.Which.StatusCode.Should().Be(StatusCode.FailedPrecondition);
+    }
+
+    [Fact]
+    public async Task Post_DoesNotWriteDirectlyToSql()
+    {
+        // Arrange
+        var schema = MakeSchema("Player");
+        await _registry.RegisterAsync(schema);
+        var payload = MakePayload(schema.KeyColumn.Name, Guid.Empty.ToString());
+        var request = new MappingWriteRequest { TypeName = "Player", Payload = payload };
+
+        // Act
+        await _sut.Post(request, MakeContext());
+
+        // Assert — no INSERT or UPDATE to the entity table should reach SQL directly
+        _ = _sql.DidNotReceive().ExecuteAsync(
+            Arg.Is<string>(s => s.Contains("json_populate_record")), Arg.Any<object>());
+    }
+
+    [Fact]
+    public async Task Post_ReturnsPayloadAsData_NotDbRefetch()
+    {
+        // Arrange
+        var schema = MakeSchema("Player");
+        await _registry.RegisterAsync(schema);
+        var sentKey = Guid.NewGuid().ToString();
+        var payload = MakePayload(schema.KeyColumn.Name, sentKey);
+        var request = new MappingWriteRequest { TypeName = "Player", Payload = payload, TraceId = "t1" };
+
+        // Act
+        var response = await _sut.Post(request, MakeContext());
+
+        // Assert — response Data is the payload we sent, not a DB re-read
+        response.Success.Should().BeTrue();
+        response.Data.Should().BeSameAs(request.Payload);
+        response.TraceId.Should().Be("t1");
+        // SQL should not have been called for a SELECT either
+        _ = _sql.DidNotReceive().QuerySingleOrDefaultAsync<string>(
+            Arg.Any<string>(), Arg.Any<object>());
+    }
+
+    [Fact]
+    public async Task Update_DoesNotWriteDirectlyToSql()
+    {
+        var schema = MakeSchema("Player");
+        await _registry.RegisterAsync(schema);
+        var payload = MakePayload(schema.KeyColumn.Name, Guid.NewGuid().ToString());
+        var request = new MappingWriteRequest { TypeName = "Player", Payload = payload };
+
+        await _sut.Update(request, MakeContext());
+
+        _ = _sql.DidNotReceive().ExecuteAsync(
+            Arg.Is<string>(s => s.Contains("json_populate_record")), Arg.Any<object>());
     }
 
     [Fact]
@@ -399,11 +472,9 @@ public class ObjectMappingGrpcServiceTests
     // ── Update ────────────────────────────────────────────────────────────────
 
     [Fact]
-    public async Task Update_WithValidKey_UpsertsSqlAndEmitsUpdatedEvent()
+    public async Task Update_WithValidKey_EmitsUpdatedEvent()
     {
         await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
-        _sql.QuerySingleOrDefaultAsync<string>(Arg.Any<string>(), Arg.Any<object?>())
-            .Returns(AuthorJson);
 
         EntityEvent? evt = null;
         _events.ProduceAsync(EntityTopics.Updated, Arg.Any<string>(), Arg.Do<EntityEvent>(e => evt = e))
@@ -419,9 +490,6 @@ public class ObjectMappingGrpcServiceTests
             TestServerCallContext.Create());
 
         response.Success.Should().BeTrue();
-        await _sql.Received().ExecuteAsync(
-            Arg.Is<string>(s => s.Contains("json_populate_record")),
-            Arg.Any<object?>());
         evt!.Key.Should().Be(AuthorId);
     }
 

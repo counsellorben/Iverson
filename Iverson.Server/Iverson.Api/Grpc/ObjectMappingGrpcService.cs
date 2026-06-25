@@ -118,10 +118,8 @@ public sealed class ObjectMappingGrpcService(
         }
 
         var payloadJson = StructSerializer.SerializePayload(request.Payload);
-
-        await UpsertAsync(schema, payloadJson);
-
         var targetStores = DetermineTargetStores(request.TypeName, schema);
+
         await _events.ProduceAsync(
             EntityTopics.Created,
             key,
@@ -134,13 +132,7 @@ public sealed class ObjectMappingGrpcService(
                 DateTimeOffset.UtcNow,
                 targetStores));
 
-        var rowJson = await FetchByKeyAsync(schema, key);
-        return new MappingResponse
-        {
-            Success = true,
-            Data    = rowJson is not null ? JsonParser.Default.Parse<Struct>(rowJson) : request.Payload,
-            TraceId = request.TraceId
-        };
+        return new MappingResponse { Success = true, Data = request.Payload, TraceId = request.TraceId };
     }
 
     public override async Task<MappingResponse> Update(
@@ -158,10 +150,8 @@ public sealed class ObjectMappingGrpcService(
         ValidateRelations(request.Payload, schema);
 
         var payloadJson = StructSerializer.SerializePayload(request.Payload);
-
-        await UpsertAsync(schema, payloadJson);
-
         var targetStores = DetermineTargetStores(request.TypeName, schema);
+
         await _events.ProduceAsync(
             EntityTopics.Updated,
             key,
@@ -174,13 +164,7 @@ public sealed class ObjectMappingGrpcService(
                 DateTimeOffset.UtcNow,
                 targetStores));
 
-        var rowJson = await FetchByKeyAsync(schema, key);
-        return new MappingResponse
-        {
-            Success = true,
-            Data    = rowJson is not null ? JsonParser.Default.Parse<Struct>(rowJson) : request.Payload,
-            TraceId = request.TraceId
-        };
+        return new MappingResponse { Success = true, Data = request.Payload, TraceId = request.TraceId };
     }
 
     public override async Task<MappingDeleteResponse> Delete(
@@ -228,22 +212,6 @@ public sealed class ObjectMappingGrpcService(
         await _sql.QuerySingleOrDefaultAsync<string>(
             $"SELECT row_to_json(t)::text FROM \"{schema.TableName}\" t WHERE \"{schema.KeyColumn.Name}\" = @Key::uuid",
             new { Key = key });
-
-    private async Task UpsertAsync(SchemaDescriptor schema, string payloadJson)
-    {
-        var allCols   = schema.ScalarColumns.Select(c => c.Name).ToList();
-        var updateSet = allCols.Count > 0
-            ? string.Join(", ", allCols.Select(c => $"\"{c}\" = EXCLUDED.\"{c}\""))
-            : $"\"{schema.KeyColumn.Name}\" = EXCLUDED.\"{schema.KeyColumn.Name}\"";
-
-        await _sql.ExecuteAsync(
-            $"""
-            INSERT INTO "{schema.TableName}"
-            SELECT * FROM json_populate_record(null::"{schema.TableName}", @Json::json)
-            ON CONFLICT ("{schema.KeyColumn.Name}") DO UPDATE SET {updateSet}
-            """,
-            new { Json = payloadJson });
-    }
 
     private StoreTarget DetermineTargetStores(string typeName, SchemaDescriptor schema)
     {
