@@ -5,6 +5,7 @@ using Iverson.Api.Schema;
 using Iverson.Embeddings;
 using Iverson.Events;
 using Iverson.Sql;
+using Iverson.StarRocks;
 using Iverson.Vector;
 using OpenTelemetry.Logs;
 using OpenTelemetry.Resources;
@@ -28,6 +29,7 @@ builder.Services.AddOpenTelemetry()
         .SetResourceBuilder(resource)
         .AddSource(
             "Iverson.Sql",
+            "Iverson.StarRocks",
             "Iverson.Vector",
             "Iverson.Events",
             "Iverson.Embeddings")
@@ -53,6 +55,10 @@ builder.Services.AddGrpc();
 
 builder.Services.AddPostgres(cfg.GetConnectionString("Postgres")
     ?? "Host=localhost;Port=5432;Database=iverson;Username=iverson;Password=iverson");
+
+builder.Services.AddStarRocks(
+    cfg.GetConnectionString("StarRocks")
+    ?? "Server=localhost;Port=9030;Database=iverson;User Id=root;Password=;AllowPublicKeyRetrieval=true;");
 
 builder.Services.AddQdrant(
     cfg["Qdrant:Host"] ?? "localhost",
@@ -92,24 +98,27 @@ app.Use(async (context, next) =>
 // ── Endpoints ──────────────────────────────────────────────────────────────────
 app.MapGet("/health", async (
     IPostgresRepository db,
+    IStarRocksRepository sr,
     IVectorService vector,
     IEventProducer kafka) =>
 {
     var pgTask     = db.QuerySingleOrDefaultAsync<int>("SELECT 1").ContinueWith(t => t.IsCompletedSuccessfully && t.Result == 1);
+    var srTask     = sr.IsHealthyAsync();
     var vectorTask = vector.EnsureCollectionAsync("iverson-probe", 4).ContinueWith(t => t.IsCompletedSuccessfully);
     var kafkaTask  = kafka.ProduceAsync("iverson-health-probe", "probe", new { ts = DateTime.UtcNow })
                          .ContinueWith(t => t.IsCompletedSuccessfully);
 
-    await Task.WhenAll(pgTask, vectorTask, kafkaTask);
+    await Task.WhenAll(pgTask, srTask, vectorTask, kafkaTask);
 
     var checks = new
     {
-        postgres = pgTask.Result,
-        qdrant   = vectorTask.Result,
-        kafka    = kafkaTask.Result
+        postgres  = pgTask.Result,
+        starrocks = await srTask,
+        qdrant    = vectorTask.Result,
+        kafka     = kafkaTask.Result
     };
 
-    var allHealthy = checks.postgres && checks.qdrant && checks.kafka;
+    var allHealthy = checks.postgres && checks.starrocks && checks.qdrant && checks.kafka;
 
     return allHealthy
         ? Results.Ok(new { status = "healthy", checks })
@@ -122,6 +131,12 @@ app.MapGet("/probe/sql", async (IPostgresRepository db) =>
     var result = await db.QuerySingleOrDefaultAsync<int>("SELECT 1");
     return Results.Ok(new { connected = result == 1, traceId = Activity.Current?.TraceId.ToString() });
 }).WithName("ProbeSql");
+
+app.MapGet("/probe/starrocks", async (IStarRocksRepository sr) =>
+{
+    var healthy = await sr.IsHealthyAsync();
+    return Results.Ok(new { connected = healthy, traceId = Activity.Current?.TraceId.ToString() });
+}).WithName("ProbeStarRocks");
 
 app.MapGet("/probe/vector", async (IVectorService vector) =>
 {
