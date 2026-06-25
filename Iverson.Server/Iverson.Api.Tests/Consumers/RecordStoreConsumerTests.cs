@@ -187,18 +187,18 @@ public class RecordStoreConsumerTests
     }
 
     [Fact]
-    public async Task HandlesMalformedJson_WithoutThrowing()
+    public async Task HandlesMalformedJson_ThrowsPoisonMessageException()
     {
         await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
 
         var sut = BuildSut();
         var act = async () => await sut.HandleAsync("some-key", "NOT_VALID_JSON{{{{", CancellationToken.None);
 
-        await act.Should().NotThrowAsync();
+        await act.Should().ThrowAsync<PoisonMessageException>();
     }
 
     [Fact]
-    public async Task HandlesSqlException_DoesNotPropagate()
+    public async Task SqlException_Propagates()
     {
         await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
 
@@ -219,6 +219,6 @@ public class RecordStoreConsumerTests
         var sut = BuildSut();
         var act = async () => await sut.HandleAsync(ev.Key, Serialize(ev), CancellationToken.None);
 
-        await act.Should().NotThrowAsync();
+        await act.Should().ThrowAsync<Exception>().WithMessage("DB connection failed");
     }
 }

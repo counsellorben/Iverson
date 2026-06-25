@@ -29,18 +29,8 @@ public sealed class RecordStoreConsumer(
 
     internal async Task HandleAsync(string key, string value, CancellationToken ct)
     {
-        EntityEvent? entityEvent;
-        try
-        {
-            entityEvent = JsonSerializer.Deserialize<EntityEvent>(value, s_jsonOptions);
-        }
-        catch (Exception ex)
-        {
-            logger.LogError(ex, "[Record] Failed to deserialize event key={Key}", key);
-            return;
-        }
-
-        if (entityEvent is null || !entityEvent.TargetStores.HasFlag(StoreTarget.Record)) return;
+        var entityEvent = Deserialize(key, value);
+        if (!entityEvent.TargetStores.HasFlag(StoreTarget.Record)) return;
 
         var schema = registry.Get(entityEvent.TypeName);
         if (schema is null)
@@ -55,30 +45,13 @@ public sealed class RecordStoreConsumer(
             return;
         }
 
-        try
-        {
-            await UpsertAsync(schema, entityEvent.PayloadJson);
-        }
-        catch (Exception ex)
-        {
-            logger.LogError(ex, "[Record] Upsert failed type={Type} key={Key}", entityEvent.TypeName, key);
-        }
+        await UpsertAsync(schema, entityEvent.PayloadJson);
     }
 
     internal async Task HandleDeleteAsync(string key, string value, CancellationToken ct)
     {
-        EntityEvent? entityEvent;
-        try
-        {
-            entityEvent = JsonSerializer.Deserialize<EntityEvent>(value, s_jsonOptions);
-        }
-        catch (Exception ex)
-        {
-            logger.LogError(ex, "[Record] Failed to deserialize delete event key={Key}", key);
-            return;
-        }
-
-        if (entityEvent is null || !entityEvent.TargetStores.HasFlag(StoreTarget.Record)) return;
+        var entityEvent = Deserialize(key, value);
+        if (!entityEvent.TargetStores.HasFlag(StoreTarget.Record)) return;
 
         var schema = registry.Get(entityEvent.TypeName);
         if (schema is null)
@@ -93,18 +66,11 @@ public sealed class RecordStoreConsumer(
             return;
         }
 
-        try
-        {
-            await sql.ExecuteAsync(
-                $"DELETE FROM \"{schema.TableName}\" WHERE \"{schema.KeyColumn.Name}\" = @Key::uuid",
-                new { Key = entityEvent.Key });
+        await sql.ExecuteAsync(
+            $"DELETE FROM \"{schema.TableName}\" WHERE \"{schema.KeyColumn.Name}\" = @Key::uuid",
+            new { Key = entityEvent.Key });
 
-            logger.LogInformation("[Record] Deleted {Type}:{Key}", entityEvent.TypeName, entityEvent.Key);
-        }
-        catch (Exception ex)
-        {
-            logger.LogError(ex, "[Record] Delete failed type={Type} key={Key}", entityEvent.TypeName, entityEvent.Key);
-        }
+        logger.LogInformation("[Record] Deleted {Type}:{Key}", entityEvent.TypeName, entityEvent.Key);
     }
 
     private async Task UpsertAsync(SchemaDescriptor schema, string payloadJson)
@@ -125,6 +91,21 @@ public sealed class RecordStoreConsumer(
         await sql.ExecuteAsync(upsertSql, new { Json = payloadJson });
 
         logger.LogInformation("[Record] Upserted {Type}", schema.TypeName);
+    }
+
+    private static EntityEvent Deserialize(string key, string value)
+    {
+        EntityEvent? entityEvent;
+        try
+        {
+            entityEvent = JsonSerializer.Deserialize<EntityEvent>(value, s_jsonOptions);
+        }
+        catch (JsonException ex)
+        {
+            throw new PoisonMessageException($"[Record] Malformed event JSON key={key}", ex);
+        }
+
+        return entityEvent ?? throw new PoisonMessageException($"[Record] Event deserialized to null key={key}");
     }
 
     private static readonly JsonSerializerOptions s_jsonOptions = new()
