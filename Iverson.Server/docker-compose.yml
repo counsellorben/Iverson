@@ -20,24 +20,21 @@ services:
       timeout: 5s
       retries: 5
 
-  elasticsearch:
-    image: elasticsearch:9.0.1
-    container_name: iverson-elasticsearch
+  starrocks:
+    image: starrocks/allin1-ubuntu:latest
+    container_name: iverson-starrocks
     restart: unless-stopped
-    environment:
-      - discovery.type=single-node
-      - xpack.security.enabled=false
-      - ES_JAVA_OPTS=-Xms512m -Xmx512m
     ports:
-      - "9200:9200"
-      - "9300:9300"
+      - "8030:8030"   # FE HTTP / admin
+      - "9030:9030"   # FE MySQL query port
     volumes:
-      - elasticsearch_data:/usr/share/elasticsearch/data
+      - starrocks_data:/data/deploy
     healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://localhost:9200/_cluster/health || exit 1"]
-      interval: 15s
+      test: ["CMD-SHELL", "mysql -h 127.0.0.1 -P 9030 -u root --connect-timeout=3 -e 'SELECT 1' 2>/dev/null || exit 1"]
+      interval: 20s
       timeout: 10s
-      retries: 10
+      retries: 15
+      start_period: 60s
 
   qdrant:
     image: qdrant/qdrant:latest
@@ -149,7 +146,7 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-      elasticsearch:
+      starrocks:
         condition: service_healthy
       qdrant:
         condition: service_healthy
@@ -162,7 +159,7 @@ services:
 
 volumes:
   postgres_data:
-  elasticsearch_data:
+  starrocks_data:
   qdrant_data:
   zookeeper_data:
   zookeeper_logs:
