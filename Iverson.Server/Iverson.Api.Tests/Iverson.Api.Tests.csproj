@@ -25,6 +25,7 @@
     <ProjectReference Include="../Iverson.Events/Iverson.Events.csproj" />
     <ProjectReference Include="../Iverson.Sql/Iverson.Sql.csproj" />
     <ProjectReference Include="../Iverson.Elasticsearch/Iverson.Elasticsearch.csproj" />
+    <ProjectReference Include="../Iverson.StarRocks/Iverson.StarRocks.csproj" />
     <ProjectReference Include="../Iverson.Vector/Iverson.Vector.csproj" />
     <ProjectReference Include="../Iverson.Embeddings/Iverson.Embeddings.csproj" />
   </ItemGroup>
