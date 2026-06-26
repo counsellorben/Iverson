@@ -1,4 +1,5 @@
 using System.Collections;
+using System.Collections.Concurrent;
 using System.Reflection;
 using Google.Protobuf.WellKnownTypes;
 using Grpc.Core;
@@ -20,6 +21,8 @@ public sealed class GraphAssembler(
     private static readonly MethodInfo _fromStructMethod =
         typeof(StructConverter).GetMethod(nameof(StructConverter.FromStruct),
             BindingFlags.Public | BindingFlags.Static)!;
+
+    private static readonly ConcurrentDictionary<System.Type, MethodInfo> _fromStructCache = new();
 
     public async Task AssembleAsync<T>(T entity, CancellationToken ct = default) where T : class
         => await AssembleAsync(entity, registry.Get<T>(), ct);
@@ -253,6 +256,8 @@ public sealed class GraphAssembler(
     private static object? DeserializeStruct(Struct? data, System.Type targetType)
     {
         if (data is null) return null;
-        return _fromStructMethod.MakeGenericMethod(targetType).Invoke(null, [data]);
+        var method = _fromStructCache.GetOrAdd(targetType,
+            static t => _fromStructMethod.MakeGenericMethod(t));
+        return method.Invoke(null, [data]);
     }
 }
