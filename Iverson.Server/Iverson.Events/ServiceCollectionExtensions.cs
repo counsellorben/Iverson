@@ -9,7 +9,13 @@ public static class ServiceCollectionExtensions
     public static IServiceCollection AddKafka(this IServiceCollection services, string bootstrapServers, int numPartitions = 12)
     {
         services.AddSingleton<IProducer<string, string>>(_ =>
-            new ProducerBuilder<string, string>(new ProducerConfig { BootstrapServers = bootstrapServers }).Build());
+            new ProducerBuilder<string, string>(new ProducerConfig
+            {
+                BootstrapServers = bootstrapServers,
+                LingerMs         = 5,
+                BatchSize        = 65536,
+                CompressionType  = CompressionType.Lz4
+            }).Build());
 
         services.AddSingleton<IEventProducer, KafkaProducer>();
 
