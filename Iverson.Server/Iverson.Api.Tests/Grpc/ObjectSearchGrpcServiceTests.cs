@@ -243,7 +243,6 @@ public class ObjectSearchGrpcServiceTests
     {
         await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
 
-        var callOrder = new System.Collections.Concurrent.ConcurrentBag<int>();
         var callCount = 0;
 
         _sr.QueryAsync<dynamic>(Arg.Any<string>(), Arg.Any<object?>())

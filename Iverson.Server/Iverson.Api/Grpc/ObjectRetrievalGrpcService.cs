@@ -60,7 +60,7 @@ public sealed class ObjectRetrievalGrpcService(
             return;
         }
 
-        var keys = request.Keys.ToArray();
+        var keys = request.Keys.Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
         var rows = await _sql.QueryAsync<KeyedRow>(
             $"SELECT \"{schema.KeyColumn.Name}\"::text AS key, row_to_json(t)::text AS data " +
             $"FROM \"{schema.TableName}\" t " +

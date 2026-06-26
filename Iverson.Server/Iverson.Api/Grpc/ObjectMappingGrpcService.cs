@@ -257,7 +257,9 @@ public sealed class ObjectMappingGrpcService(
     private async Task ResolveManyToManyAsync(
         Struct entityStruct, SchemaRelDescriptor relation, int depth, CancellationToken ct)
     {
-        var ids = GetGetFieldStringList(entityStruct, relation.ForeignKey);
+        var ids = GetGetFieldStringList(entityStruct, relation.ForeignKey)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
         if (ids.Count == 0) return;
 
         var relatedSchema = _registry.Get(relation.RelatedTypeName);
