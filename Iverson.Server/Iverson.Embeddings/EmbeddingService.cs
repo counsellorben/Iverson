@@ -52,8 +52,8 @@ public sealed class EmbeddingService(
             var response = await client.SendAsync(request, ct);
             response.EnsureSuccessStatusCode();
 
-            var responseJson = await response.Content.ReadAsStringAsync(ct);
-            using var doc    = JsonDocument.Parse(responseJson);
+            await using var responseStream = await response.Content.ReadAsStreamAsync(ct);
+            using var doc                  = await JsonDocument.ParseAsync(responseStream, default, ct);
 
             // /api/embed returns { "embeddings": [[...]] }
             var embedding = doc.RootElement
