@@ -24,17 +24,20 @@ var services = new ServiceCollection()
     .AddSingleton<ReadPathScenario>()
     .BuildServiceProvider();
 
-Console.WriteLine("Registering schemas...");
-try
+if (command is "seed" or "write-path" or "read-path" or "all")
 {
-    await services.GetRequiredService<SchemaRegistrar>().RegisterAllAsync();
-    Console.WriteLine("Schemas registered.\n");
-}
-catch (Exception ex)
-{
-    Console.Error.WriteLine($"Schema registration failed: {ex.Message}");
-    Console.Error.WriteLine("Is the Iverson API running? (dotnet run in Iverson.Api, or docker compose up iverson-api)");
-    return 1;
+    Console.WriteLine("Registering schemas...");
+    try
+    {
+        await services.GetRequiredService<SchemaRegistrar>().RegisterAllAsync();
+        Console.WriteLine("Schemas registered.\n");
+    }
+    catch (Exception ex)
+    {
+        Console.Error.WriteLine($"Schema registration failed: {ex.Message}");
+        Console.Error.WriteLine("Is the Iverson API running? (dotnet run in Iverson.Api, or docker compose up iverson-api)");
+        return 1;
+    }
 }
 
 switch (command)

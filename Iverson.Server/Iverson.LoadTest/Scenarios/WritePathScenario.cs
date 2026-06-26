@@ -7,6 +7,7 @@ using Grpc.Core;
 using Iverson.Client.Core;
 using Iverson.LoadTest.Entities;
 using Iverson.LoadTest.Reporting;
+using Iverson.LoadTest.Seeding;
 using Microsoft.Extensions.Logging;
 using Npgsql;
 
@@ -25,6 +26,21 @@ public sealed class WritePathScenario(
     public async Task RunAsync(CommandFlags flags, CancellationToken ct = default)
     {
         Console.WriteLine($"[write-path] concurrency={flags.Concurrency} count={flags.Count} type={flags.Type}\n");
+
+        // Pre-load user IDs so Article posts have a valid AuthorId
+        Guid[] userIds = [];
+        if (flags.Type is "Article" or "article")
+        {
+            await using var pgForUsers = new NpgsqlConnection(config.PostgresCs);
+            await pgForUsers.OpenAsync(ct);
+            userIds = await DirectSeeder.LoadUserIdsAsync(pgForUsers);
+            if (userIds.Length == 0)
+            {
+                Console.Error.WriteLine("No seeded users found. Run 'dotnet run -- seed' first.");
+                return;
+            }
+            Console.WriteLine($"Loaded {userIds.Length:N0} user IDs for AuthorId assignment.\n");
+        }
 
         var report     = new BenchmarkReport();
         var postedKeys = new System.Collections.Concurrent.ConcurrentBag<string>();
@@ -76,6 +92,7 @@ public sealed class WritePathScenario(
                                 Id          = Guid.NewGuid(),
                                 Title       = $"WP Article {seed}",
                                 Body        = GenerateBody(seed),
+                                AuthorId    = userIds.Length > 0 ? userIds[seed % userIds.Length] : Guid.NewGuid(),
                                 Category    = Categories[seed % Categories.Length],
                                 WordCount   = seed % 1000,
                                 PublishedAt = DateTimeOffset.UtcNow,
