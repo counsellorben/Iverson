@@ -3,6 +3,7 @@ using System.Text;
 using Confluent.Kafka;
 using Confluent.Kafka.Admin;
 using Dapper;
+using Grpc.Core;
 using Iverson.Client.Core;
 using Iverson.LoadTest.Entities;
 using Iverson.LoadTest.Reporting;
@@ -87,7 +88,7 @@ public sealed class WritePathScenario(
                     report.Record(BenchmarkReport.NowMicros() - t0);
                     postedKeys.Add(key);
                 }
-                catch (Exception ex)
+                catch (RpcException ex)
                 {
                     report.RecordError();
                     logger.LogDebug(ex, "Post failed at seed={Seed}", seed);
