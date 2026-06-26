@@ -17,4 +17,9 @@ public sealed class RelationDescriptor
     /// Null triggers inference logic in GraphAssembler.
     /// </summary>
     public string? ForeignKey { get; init; }
+
+    /// <summary>
+    /// Resolved at startup for OneToOne / ManyToOne. Null for OneToMany / ManyToMany.
+    /// </summary>
+    public PropertyInfo? ForeignKeyProperty { get; init; }
 }

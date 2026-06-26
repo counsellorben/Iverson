@@ -50,20 +50,51 @@ public sealed class EntityRegistry
         foreach (var prop in type.GetProperties(BindingFlags.Public | BindingFlags.Instance))
         {
             if (prop.GetCustomAttribute<OneToOneAttribute>() is { } oto)
-                relations.Add(new RelationDescriptor { Property = prop, RelatedType = oto.Related,  Kind = RelationKind.OneToOne,  ForeignKey = oto.ForeignKey });
+                relations.Add(new RelationDescriptor
+                {
+                    Property           = prop,
+                    RelatedType        = oto.Related,
+                    Kind               = RelationKind.OneToOne,
+                    ForeignKey         = oto.ForeignKey,
+                    ForeignKeyProperty = ResolveFkProperty(type, oto.Related, oto.ForeignKey)
+                });
 
             else if (prop.GetCustomAttribute<OneToManyAttribute>() is { } otm)
-                relations.Add(new RelationDescriptor { Property = prop, RelatedType = otm.Related,  Kind = RelationKind.OneToMany,  ForeignKey = otm.ForeignKey });
+                relations.Add(new RelationDescriptor
+                {
+                    Property    = prop,
+                    RelatedType = otm.Related,
+                    Kind        = RelationKind.OneToMany,
+                    ForeignKey  = otm.ForeignKey
+                });
 
             else if (prop.GetCustomAttribute<ManyToOneAttribute>() is { } mto)
-                relations.Add(new RelationDescriptor { Property = prop, RelatedType = mto.Related,  Kind = RelationKind.ManyToOne,  ForeignKey = mto.ForeignKey });
+                relations.Add(new RelationDescriptor
+                {
+                    Property           = prop,
+                    RelatedType        = mto.Related,
+                    Kind               = RelationKind.ManyToOne,
+                    ForeignKey         = mto.ForeignKey,
+                    ForeignKeyProperty = ResolveFkProperty(type, mto.Related, mto.ForeignKey)
+                });
 
             else if (prop.GetCustomAttribute<ManyToManyAttribute>() is { } mtm)
-                relations.Add(new RelationDescriptor { Property = prop, RelatedType = mtm.Related,  Kind = RelationKind.ManyToMany, ForeignKey = mtm.JoinKey });
+                relations.Add(new RelationDescriptor
+                {
+                    Property    = prop,
+                    RelatedType = mtm.Related,
+                    Kind        = RelationKind.ManyToMany,
+                    ForeignKey  = mtm.JoinKey
+                });
         }
 
         return relations;
     }
+
+    private static PropertyInfo? ResolveFkProperty(Type type, Type relatedType, string? explicitFk) =>
+        type.GetProperty(
+            explicitFk ?? $"{relatedType.Name}Id",
+            BindingFlags.Public | BindingFlags.Instance);
 
     public IEnumerable<EntityDescriptor> All => _byType.Values;
 

@@ -58,13 +58,11 @@ public sealed class GraphAssembler(
     private async Task AssembleSingle(object entity, EntityDescriptor descriptor,
         RelationDescriptor relation, CancellationToken ct)
     {
-        var fkName = relation.ForeignKey ?? $"{relation.RelatedType.Name}Id";
-        var fkProp = descriptor.EntityType
-            .GetProperty(fkName, BindingFlags.Public | BindingFlags.Instance);
-
+        var fkProp = relation.ForeignKeyProperty;
         if (fkProp is null)
         {
-            logger.LogDebug("FK property '{Fk}' not found on {Type}, skipping", fkName, descriptor.EntityName);
+            logger.LogDebug("FK property not found on {Type} for relation {Relation}, skipping",
+                descriptor.EntityName, relation.Property.Name);
             return;
         }
 
@@ -148,8 +146,7 @@ public sealed class GraphAssembler(
         RelationDescriptor relation,
         CancellationToken ct) where T : class
     {
-        var fkName = relation.ForeignKey ?? $"{relation.RelatedType.Name}Id";
-        var fkProp = descriptor.EntityType.GetProperty(fkName, BindingFlags.Public | BindingFlags.Instance);
+        var fkProp = relation.ForeignKeyProperty;
         if (fkProp is null) return;
 
         // Collect FK values, remembering which entities need each value
