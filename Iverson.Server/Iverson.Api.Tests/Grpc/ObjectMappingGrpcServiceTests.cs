@@ -481,6 +481,40 @@ public class ObjectMappingGrpcServiceTests
         await _sql.Received(1).QuerySingleOrDefaultAsync<string>(Arg.Any<string>(), Arg.Any<object?>());
     }
 
+    // ── ResolveManyToMany ─────────────────────────────────────────────────────
+
+    [Fact]
+    public async Task Get_WithManyToManyRelation_IssuesSingleBatchQuery()
+    {
+        var postId = "33333333-0000-0000-0000-000000000003";
+        var tagId1 = "44444444-0000-0000-0000-000000000004";
+        var tagId2 = "44444444-0000-0000-0000-000000000005";
+
+        await _registry.RegisterAsync(SchemaFixtures.PostWithTagsSchema());
+        await _registry.RegisterAsync(SchemaFixtures.TagSchema());
+
+        var postJson = $$"""{"Id":"{{postId}}","Title":"Hello","TagIds":["{{tagId1}}","{{tagId2}}"]}""";
+        _sql.QuerySingleOrDefaultAsync<string>(
+                Arg.Is<string>(s => s.Contains("\"posts\"")), Arg.Any<object?>())
+            .Returns(postJson);
+
+        var tag1Json = $$"""{"Id":"{{tagId1}}","Label":"dotnet"}""";
+        var tag2Json = $$"""{"Id":"{{tagId2}}","Label":"csharp"}""";
+        _sql.QueryAsync<KeyedRow>(Arg.Any<string>(), Arg.Any<object?>())
+            .Returns(new[] { new KeyedRow(tagId1, tag1Json), new KeyedRow(tagId2, tag2Json) });
+
+        var response = await _sut.Get(
+            new MappingGetRequest { TypeName = "Post", Key = postId, Depth = 1 },
+            MakeContext());
+
+        await _sql.Received(1).QueryAsync<KeyedRow>(
+            Arg.Is<string>(s => s.Contains("= ANY(")),
+            Arg.Any<object?>());
+
+        response.Success.Should().BeTrue();
+        response.Data.Fields["Tags"].ListValue.Values.Should().HaveCount(2);
+    }
+
     // ── Update ────────────────────────────────────────────────────────────────
 
     [Fact]

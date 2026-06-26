@@ -263,13 +263,21 @@ public sealed class ObjectMappingGrpcService(
         var relatedSchema = _registry.Get(relation.RelatedTypeName);
         if (relatedSchema is null) return;
 
+        var rows = await _sql.QueryAsync<KeyedRow>(
+            $"SELECT \"{relatedSchema.KeyColumn.Name}\"::text AS key, " +
+            $"row_to_json(t)::text AS data " +
+            $"FROM \"{relatedSchema.TableName}\" t " +
+            $"WHERE \"{relatedSchema.KeyColumn.Name}\" = ANY(@ids::uuid[])",
+            new { ids = ids.ToArray() });
+
+        var rowsByKey = rows.ToDictionary(r => r.Key, StringComparer.OrdinalIgnoreCase);
+
         var items = new List<Value>();
         foreach (var id in ids)
         {
             if (ct.IsCancellationRequested) break;
-            var rowJson = await FetchByKeyAsync(relatedSchema, id);
-            if (rowJson is null) continue;
-            var relatedStruct = JsonParser.Default.Parse<Struct>(rowJson);
+            if (!rowsByKey.TryGetValue(id, out var row)) continue;
+            var relatedStruct = JsonParser.Default.Parse<Struct>(row.Data);
             if (depth > 1)
                 await ResolveRelationsAsync(relatedStruct, relatedSchema, depth - 1, ct);
             items.Add(Value.ForStruct(relatedStruct));

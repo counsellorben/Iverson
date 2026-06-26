@@ -65,4 +65,31 @@ public static class SchemaFixtures
             new RelationDescriptor("Article", RelationKind.ManyToOne, "Article", "ArticleId")
         ]
     };
+
+    // Post with ManyToMany → Tags (for ResolveManyToManyAsync tests)
+    public static SchemaDescriptor PostWithTagsSchema() => new()
+    {
+        TypeName       = "Post",
+        TableName      = "posts",
+        CollectionName = null,
+        KeyColumn      = new ColumnDescriptor("Id",     "uuid", false),
+        ScalarColumns  = [new ColumnDescriptor("Title", "text", false)],
+        FkColumns      = [new ForeignKeyDescriptor("TagIds", "Tag")],
+        VectorFields   = [],
+        ChunkFields    = [],
+        Relations      = [new RelationDescriptor("Tags", RelationKind.ManyToMany, "Tag", "TagIds")]
+    };
+
+    public static SchemaDescriptor TagSchema() => new()
+    {
+        TypeName       = "Tag",
+        TableName      = "tags",
+        CollectionName = null,
+        KeyColumn      = new ColumnDescriptor("Id",      "uuid", false),
+        ScalarColumns  = [new ColumnDescriptor("Label",  "text", false)],
+        FkColumns      = [],
+        VectorFields   = [],
+        ChunkFields    = [],
+        Relations      = []
+    };
 }
