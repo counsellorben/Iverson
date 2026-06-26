@@ -184,14 +184,14 @@ public sealed class ObjectSearchGrpcService(
 
         var response = new AggregateResponse { TraceId = request.TraceId };
 
-        // TODO: N+1 round-trips — one SQL query per aggregation spec. Acceptable for v1;
-        // a future optimisation could combine compatible aggregations into a single query.
-        foreach (var spec in request.Aggregations)
-        {
-            var srSpec = ProtoToSrSpec(spec);
-            var result = await RunAggregationAsync(schema, request.Query, srSpec);
+        var aggTasks = request.Aggregations
+            .Select(spec => RunAggregationAsync(schema, request.Query, ProtoToSrSpec(spec)))
+            .ToList();
+
+        var aggResults = await Task.WhenAll(aggTasks);
+
+        foreach (var result in aggResults)
             if (result is not null) response.Results.Add(SrResultToProto(result));
-        }
 
         return response;
     }

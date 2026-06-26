@@ -238,6 +238,38 @@ public class ObjectSearchGrpcServiceTests
         capturedSql.Should().Contain("`Name`");
     }
 
+    [Fact]
+    public async Task Aggregate_WithMultipleSpecs_QueriesAllConcurrently()
+    {
+        await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
+
+        var callOrder = new System.Collections.Concurrent.ConcurrentBag<int>();
+        var callCount = 0;
+
+        _sr.QueryAsync<dynamic>(Arg.Any<string>(), Arg.Any<object?>())
+           .Returns(_ =>
+           {
+               System.Threading.Interlocked.Increment(ref callCount);
+               return Task.FromResult(Enumerable.Empty<dynamic>());
+           });
+
+        var request = new AggregateRequest
+        {
+            TypeName = "Author",
+            Aggregations =
+            {
+                new AggregationSpec { Name = "a1", Field = "Name", Type = AggregationType.Terms },
+                new AggregationSpec { Name = "a2", Field = "Name", Type = AggregationType.Terms },
+                new AggregationSpec { Name = "a3", Field = "Name", Type = AggregationType.Terms }
+            }
+        };
+
+        var response = await _sut.Aggregate(request, TestServerCallContext.Create());
+
+        callCount.Should().Be(3);
+        response.Results.Should().HaveCount(3);
+    }
+
     // ── SearchSimilar / SearchChunks — Qdrant paths unchanged ─────────────────
 
     [Fact]
