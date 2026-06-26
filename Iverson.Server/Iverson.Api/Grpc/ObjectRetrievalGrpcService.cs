@@ -52,28 +52,35 @@ public sealed class ObjectRetrievalGrpcService(
 
         var schema = registry.Get(request.TypeName);
 
-        foreach (var key in request.Keys)
+        if (schema is null)
+        {
+            foreach (var _ in request.Keys)
+                await responseStream.WriteAsync(
+                    new RetrievalResponse { Found = false, TraceId = request.TraceId });
+            return;
+        }
+
+        var keys = request.Keys.ToArray();
+        var rows = await _sql.QueryAsync<KeyedRow>(
+            $"SELECT \"{schema.KeyColumn.Name}\"::text AS key, row_to_json(t)::text AS data " +
+            $"FROM \"{schema.TableName}\" t " +
+            $"WHERE \"{schema.KeyColumn.Name}\" = ANY(@Keys::uuid[])",
+            new { Keys = keys });
+
+        var rowsByKey = rows.ToDictionary(r => r.Key, StringComparer.OrdinalIgnoreCase);
+
+        foreach (var key in keys)
         {
             if (context.CancellationToken.IsCancellationRequested) break;
-
-            if (schema is null)
-            {
-                await responseStream.WriteAsync(new RetrievalResponse { Found = false, TraceId = request.TraceId });
-                continue;
-            }
-
-            var rowJson = await _sql.QuerySingleOrDefaultAsync<string>(
-                $"SELECT row_to_json(t)::text FROM \"{schema.TableName}\" t WHERE \"{schema.KeyColumn.Name}\" = @Key::uuid",
-                new { Key = key });
-
-            await responseStream.WriteAsync(rowJson is null
-                ? new RetrievalResponse { Found = false, TraceId = request.TraceId }
-                : new RetrievalResponse
-                {
-                    Found   = true,
-                    Data    = JsonParser.Default.Parse<Struct>(rowJson),
-                    TraceId = request.TraceId
-                });
+            await responseStream.WriteAsync(
+                rowsByKey.TryGetValue(key, out var row)
+                    ? new RetrievalResponse
+                      {
+                          Found   = true,
+                          Data    = JsonParser.Default.Parse<Struct>(row.Data),
+                          TraceId = request.TraceId
+                      }
+                    : new RetrievalResponse { Found = false, TraceId = request.TraceId });
         }
     }
 }
