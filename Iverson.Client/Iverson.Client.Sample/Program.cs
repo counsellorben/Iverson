@@ -62,7 +62,7 @@ await tags.PersistAsync(new Tag { Id = tagLegacyId,  Label = "Legacy",       Slu
 Console.WriteLine($"Created tags: basketball, culture, legacy");
 
 // Articles (PostMappedAsync so the server resolves Author and Tags and the full
-// hydrated document is emitted to Kafka for ES/Qdrant indexing).
+// hydrated document is emitted to Kafka for StarRocks/Qdrant indexing).
 var article1Id = Guid.NewGuid();
 var article2Id = Guid.NewGuid();
 
@@ -101,8 +101,8 @@ await users.PersistAsync(new User
 Console.WriteLine($"Created user: {userId}");
 
 // UserArticles — PostMappedAsync so the server emits a fully hydrated document
-// (User + Article data) to Kafka for ES indexing. UserArticle is the primary
-// entity to search in ES because it carries a rich, denormalized view.
+// (User + Article data) to Kafka for StarRocks indexing. UserArticle is the
+// primary entity to search because it carries a rich, denormalized view.
 var ua1Id = Guid.NewGuid();
 var ua2Id = Guid.NewGuid();
 
@@ -176,20 +176,20 @@ Console.WriteLine($"Retrieved user: {retrievedUser?.Name} ({retrievedUser?.Email
 var retrievedUa = await userArticles.GetAsync(ua2Id.ToString());
 Console.WriteLine($"Retrieved user-article: user={retrievedUa?.User?.Name}, article='{retrievedUa?.Article?.Title}'");
 
-// ── Object Search — Elasticsearch ─────────────────────────────────────────────
+// ── Object Search — StarRocks ─────────────────────────────────────────────────
 
-// Kafka consumers need time to process events and index documents.
-// In a production test harness, await an index-refresh signal instead.
-Console.WriteLine("\n=== Object Search — Elasticsearch ===");
-Console.WriteLine("(Waiting 3 s for Kafka consumers to index documents...)");
+// Kafka consumers need time to process events and project rows into StarRocks.
+// In a production test harness, await a projection-complete signal instead.
+Console.WriteLine("\n=== Object Search — StarRocks ===");
+Console.WriteLine("(Waiting 3 s for Kafka consumers to project rows into StarRocks...)");
 await Task.Delay(TimeSpan.FromSeconds(3));
 
-// UserArticle is the fully hydrated model: the ES document carries User + Article
+// UserArticle is the fully hydrated model: the StarRocks row carries User + Article
 // data denormalized into a single record, making it the richest search surface.
 
 // Find all UserArticles for a specific user (EqualTo on the Guid FK).
-// In ES the document is fully hydrated: User + Article data is denormalized,
-// so the index is also searchable by the nested text fields at query time.
+// The StarRocks row is fully denormalized: User + Article data is stored flat,
+// so it is searchable by any column at query time.
 var uaUserQuery = Query.For<UserArticle>()
     .Where(ua => ua.UserId, EqualTo, userId)
     .OrderBy(ua => ua.CreatedAt, descending: true)
@@ -237,7 +237,8 @@ await foreach (var result in tags.SearchAsync(tagQuery))
 // Article has [IversonChunk] on Body    → stored chunked in the "article_chunks" collection.
 //
 // SearchSimilar and SearchChunks are separate gRPC RPCs. EntityCoordinator.SearchAsync
-// routes to the ES DSL path only; call the gRPC client directly for Qdrant.
+// routes to StarRocks via ObjectSearchService.Search; call the gRPC client
+// directly for Qdrant vector operations (SearchSimilar / SearchChunks).
 
 Console.WriteLine("\n=== Object Search — Qdrant (vector similarity) ===");
 
