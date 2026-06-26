@@ -76,14 +76,18 @@ public sealed class IntelligenceStoreConsumer(
         {
             var namedVectors = new Dictionary<string, float[]>(schema.VectorFields.Count);
 
-            foreach (var vf in schema.VectorFields)
-            {
-                var text = ExtractString(payload, vf.PropertyName);
-                if (string.IsNullOrWhiteSpace(text)) continue;
+            var embedTasks = schema.VectorFields
+                .Select(vf => (vf, text: ExtractString(payload, vf.PropertyName)))
+                .Where(x => !string.IsNullOrWhiteSpace(x.text))
+                .Select(async x => (
+                    vectorKey: $"{x.vf.PropertyName.ToSnakeCase()}_vector",
+                    vector: await embedding.EmbedAsync(x.text!, ct)
+                ))
+                .ToList();
 
-                namedVectors[$"{vf.PropertyName.ToSnakeCase()}_vector"] =
-                    await embedding.EmbedAsync(text, ct);
-            }
+            var embedded = await Task.WhenAll(embedTasks);
+            foreach (var (vectorKey, vec) in embedded)
+                namedVectors[vectorKey] = vec;
 
             if (namedVectors.Count > 0)
             {
@@ -114,13 +118,18 @@ public sealed class IntelligenceStoreConsumer(
                 var vectorName = $"{cf.PropertyName.ToSnakeCase()}_vector";
                 var chunks     = SplitIntoChunks(text, cf.MaxTokens, cf.Overlap).ToList();
 
-                for (var i = 0; i < chunks.Count; i++)
+                var chunkTasks = chunks.Select(async chunk =>
                 {
-                    var (chunkText, chunkIndex) = chunks[i];
-
+                    var (chunkText, chunkIndex) = chunk;
                     var chunkVector = await embedding.EmbedAsync(chunkText, ct);
                     var chunkId     = ComputeChunkPointId(pointId, cf.PropertyName, chunkIndex);
+                    return (chunkVector, chunkId, chunkText, chunkIndex);
+                }).ToList();
 
+                var chunkResults = await Task.WhenAll(chunkTasks);
+
+                foreach (var (chunkVector, chunkId, chunkText, chunkIndex) in chunkResults)
+                {
                     await vector.UpsertNamedAsync(
                         chunksCollection,
                         chunkId,

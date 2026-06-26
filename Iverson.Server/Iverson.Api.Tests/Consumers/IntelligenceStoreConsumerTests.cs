@@ -240,6 +240,49 @@ public class IntelligenceStoreConsumerTests
     }
 
     [Fact]
+    public async Task HandleCreated_WithMultipleVectorFields_EmbedsAllFields()
+    {
+        // Schema with two vector fields — verifies both EmbedAsync calls fire
+        var twoVectorSchema = new SchemaDescriptor
+        {
+            TypeName       = "Doc",
+            TableName      = "docs",
+            CollectionName = "docs",
+            KeyColumn      = new ColumnDescriptor("Id",    "uuid", false),
+            ScalarColumns  = [new ColumnDescriptor("Title", "text", false),
+                              new ColumnDescriptor("Summary", "text", false)],
+            FkColumns      = [],
+            VectorFields   = [
+                new VectorDescriptor("Title",   768, "nomic-embed-text"),
+                new VectorDescriptor("Summary", 768, "nomic-embed-text")
+            ],
+            ChunkFields    = [],
+            Relations      = []
+        };
+        await _registry.RegisterAsync(twoVectorSchema);
+
+        _embedding.EmbedAsync(Arg.Any<string>(), Arg.Any<CancellationToken>())
+                  .Returns(new float[768]);
+
+        var payload = """{"Title":"Hello","Summary":"World","Id":"00000000-0000-0000-0000-000000000001"}""";
+        var ev = new EntityEvent(
+            TypeName:      "Doc",
+            Key:           Guid.NewGuid().ToString(),
+            PayloadJson:   payload,
+            TraceId:       "t-parallel",
+            SchemaVersion: "1",
+            OccurredAt:    DateTimeOffset.UtcNow,
+            TargetStores:  StoreTarget.Record | StoreTarget.Intelligence);
+
+        var sut = BuildSut();
+        await sut.HandleAsync(ev.Key, Serialize(ev), CancellationToken.None);
+
+        _ = _embedding.Received(1).EmbedAsync("Hello",  Arg.Any<CancellationToken>());
+        _ = _embedding.Received(1).EmbedAsync("World",  Arg.Any<CancellationToken>());
+        _ = _embedding.Received(2).EmbedAsync(Arg.Any<string>(), Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
     public async Task ChunkSplitting_ProducesMultipleChunks_ForLongText()
     {
         // Custom schema: maxTokens=50 (200 chars), overlap=10 (40 chars) → step=160 chars
