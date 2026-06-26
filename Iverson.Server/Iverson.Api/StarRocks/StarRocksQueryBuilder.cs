@@ -1,3 +1,4 @@
+using System.Runtime.CompilerServices;
 using System.Text;
 using Dapper;
 using Iverson.Api.Schema;
@@ -12,6 +13,9 @@ namespace Iverson.Api.StarRocks;
 
 internal static class StarRocksQueryBuilder
 {
+    private static readonly ConditionalWeakTable<
+        SchemaDescriptor,
+        Dictionary<string, string>> _columnCache = new();
     internal static (string Sql, DynamicParameters Param) BuildSearch(
         string tableName,
         SchemaDescriptor schema,
@@ -132,8 +136,13 @@ internal static class StarRocksQueryBuilder
 
     internal static string? ResolveColumn(SchemaDescriptor schema, string property)
     {
-        var candidates = schema.ScalarColumns.Select(c => c.Name).Append(schema.KeyColumn.Name);
-        return candidates.FirstOrDefault(c => string.Equals(c, property, StringComparison.OrdinalIgnoreCase));
+        var index = _columnCache.GetValue(schema, static s =>
+            s.ScalarColumns
+                .Select(c => c.Name)
+                .Append(s.KeyColumn.Name)
+                .ToDictionary(n => n, n => n, StringComparer.OrdinalIgnoreCase));
+
+        return index.TryGetValue(property, out var col) ? col : null;
     }
 
     private static string BuildOrder(SchemaDescriptor schema, IEnumerable<SearchSort>? sorts)
