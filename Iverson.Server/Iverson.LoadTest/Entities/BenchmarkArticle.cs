@@ -8,7 +8,7 @@ public sealed class BenchmarkArticle
     [IversonKey] public Guid            Id          { get; set; }
     public string                       Title       { get; set; } = "";
     public string                       Body        { get; set; } = "";
-    public Guid                         AuthorId    { get; set; }
+    public Guid                         BenchmarkUserId { get; set; }
     public string                       Category    { get; set; } = "";
     public int                          WordCount   { get; set; }
     public DateTimeOffset               PublishedAt { get; set; }

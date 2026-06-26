@@ -162,7 +162,7 @@ public sealed class DirectSeeder(LoadTestConfig config, ILogger<DirectSeeder> lo
 
         await using var writer = await pg.BeginBinaryImportAsync(
             "COPY benchmark_articles " +
-            "(\"Id\", \"Title\", \"Body\", \"AuthorId\", \"Category\", \"WordCount\", \"PublishedAt\") " +
+            "(\"Id\", \"Title\", \"Body\", \"BenchmarkUserId\", \"Category\", \"WordCount\", \"PublishedAt\") " +
             "FROM STDIN (FORMAT BINARY)",
             ct);
 
@@ -189,7 +189,7 @@ public sealed class DirectSeeder(LoadTestConfig config, ILogger<DirectSeeder> lo
 
         var srSw = Stopwatch.StartNew();
         await SrBatchInsertAsync(sr, "benchmark_articles",
-            ["Id", "Title", "Body", "AuthorId", "Category", "WordCount", "PublishedAt"],
+            ["Id", "Title", "Body", "BenchmarkUserId", "Category", "WordCount", "PublishedAt"],
             ids.Select((id, i) =>
             {
                 var cat  = Categories[i % Categories.Length];

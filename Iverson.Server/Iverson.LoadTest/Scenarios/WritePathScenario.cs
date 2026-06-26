@@ -92,7 +92,7 @@ public sealed class WritePathScenario(
                                 Id          = Guid.NewGuid(),
                                 Title       = $"WP Article {seed}",
                                 Body        = GenerateBody(seed),
-                                AuthorId    = userIds.Length > 0 ? userIds[seed % userIds.Length] : Guid.NewGuid(),
+                                BenchmarkUserId = userIds.Length > 0 ? userIds[seed % userIds.Length] : Guid.NewGuid(),
                                 Category    = Categories[seed % Categories.Length],
                                 WordCount   = seed % 1000,
                                 PublishedAt = DateTimeOffset.UtcNow,

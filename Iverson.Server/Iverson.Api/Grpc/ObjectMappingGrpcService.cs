@@ -194,7 +194,7 @@ public sealed class ObjectMappingGrpcService(
                 request.TraceId.NullIfEmpty() ?? Activity.Current?.TraceId.ToString() ?? string.Empty,
                 SchemaVersion,
                 DateTimeOffset.UtcNow,
-                StoreTarget.Record | StoreTarget.Engagement | StoreTarget.Intelligence));
+                StoreTargeting.DetermineTargetStores(schema)));
 
         return new MappingDeleteResponse { Success = true, TraceId = request.TraceId };
     }

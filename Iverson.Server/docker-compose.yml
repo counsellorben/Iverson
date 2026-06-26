@@ -132,18 +132,18 @@ services:
 
   iverson-api:
     build:
-      context: .
-      dockerfile: Iverson.Api/Dockerfile
+      context: ..
+      dockerfile: Iverson.Server/Iverson.Api/Dockerfile
     container_name: iverson-api
     restart: unless-stopped
     ports:
       - "8080:8080"
     environment:
       - ASPNETCORE_ENVIRONMENT=Production
-      - ASPNETCORE_URLS=http://+:8080
       - Otel__Endpoint=http://jaeger:4317
       - Embeddings__BaseUrl=http://ollama:11434
       - Embeddings__ModelId=nomic-embed-text
+      - Kafka__BootstrapServers=kafka:29092
     depends_on:
       postgres:
         condition: service_healthy

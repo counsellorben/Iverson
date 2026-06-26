@@ -24,31 +24,45 @@ public sealed class BenchmarkReport
 
     public void Print(string label, TextWriter? file = null)
     {
-        long p50, p95, p99, p999, max, count;
-        lock (_lock)
-        {
-            p50   = _histogram.GetValueAtPercentile(50.0);
-            p95   = _histogram.GetValueAtPercentile(95.0);
-            p99   = _histogram.GetValueAtPercentile(99.0);
-            p999  = _histogram.GetValueAtPercentile(99.9);
-            max   = _histogram.GetMaxValue();
-            count = _count;
-        }
+        long count;
+        lock (_lock) { count = _count; }
 
         var elapsed = _wall.Elapsed.TotalSeconds;
         var rps     = elapsed > 0 ? count / elapsed : 0;
 
-        var lines = new[]
+        string[] lines;
+        if (count == 0)
         {
-            $"=== {label} ===",
-            $"  p50    : {p50  / 1000.0,8:F1} ms",
-            $"  p95    : {p95  / 1000.0,8:F1} ms",
-            $"  p99    : {p99  / 1000.0,8:F1} ms",
-            $"  p999   : {p999 / 1000.0,8:F1} ms",
-            $"  max    : {max  / 1000.0,8:F1} ms",
-            $"  RPS    : {rps,8:F0} ops/sec",
-            $"  errors : {_errors,8}",
-        };
+            lines =
+            [
+                $"=== {label} ===",
+                $"  (no successful samples — {_errors} errors)",
+            ];
+        }
+        else
+        {
+            long p50, p95, p99, p999, max;
+            lock (_lock)
+            {
+                p50  = _histogram.GetValueAtPercentile(50.0);
+                p95  = _histogram.GetValueAtPercentile(95.0);
+                p99  = _histogram.GetValueAtPercentile(99.0);
+                p999 = _histogram.GetValueAtPercentile(99.9);
+                max  = _histogram.GetMaxValue();
+            }
+
+            lines =
+            [
+                $"=== {label} ===",
+                $"  p50    : {p50  / 1000.0,8:F1} ms",
+                $"  p95    : {p95  / 1000.0,8:F1} ms",
+                $"  p99    : {p99  / 1000.0,8:F1} ms",
+                $"  p999   : {p999 / 1000.0,8:F1} ms",
+                $"  max    : {max  / 1000.0,8:F1} ms",
+                $"  RPS    : {rps,8:F0} ops/sec",
+                $"  errors : {_errors,8}",
+            ];
+        }
 
         foreach (var line in lines)
         {

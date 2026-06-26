@@ -121,7 +121,7 @@ public class PostgresRepository(string connectionString, ILogger<PostgresReposit
                 {
                     var alterSql = $"""
                         ALTER TABLE "{schema.TableName}"
-                        ADD COLUMN IF NOT EXISTS "{col.Name}" {col.SqlType}{(col.IsNullable ? "" : " NOT NULL DEFAULT ('{GetDefaultForType(col.SqlType)}')")}
+                        ADD COLUMN IF NOT EXISTS "{col.Name}" {col.SqlType}{(col.IsNullable ? "" : $" NOT NULL DEFAULT ('{GetDefaultForType(col.SqlType)}')")}
                         """;
 
                     logger.LogInformation("Adding column {Column} to {Table}", col.Name, schema.TableName);
