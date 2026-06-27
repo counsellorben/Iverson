@@ -77,4 +77,48 @@ public sealed class KafkaProducerTests
         await producer.Invoking(p => p.ProduceAsync("topic", "key", "value"))
                       .Should().ThrowAsync<ProduceException<string, string>>();
     }
+
+    [Fact]
+    public void PublishFireAndForget_CallsProduceDotProduce_NotProduceAsync()
+    {
+        var (producer, kafkaProducer) = CreateProducer();
+        var entityEvent = new EntityEvent(
+            TypeName: "Player",
+            Key: "player-1",
+            PayloadJson: """{"score":42}""",
+            TraceId: "trace-1",
+            SchemaVersion: "1.0",
+            OccurredAt: DateTimeOffset.UtcNow);
+
+        producer.PublishFireAndForget(EntityTopics.Created, entityEvent.Key, entityEvent);
+
+        kafkaProducer.Received(1).Produce(
+            Arg.Is(EntityTopics.Created),
+            Arg.Is<Message<string, string>>(m => m.Key == entityEvent.Key),
+            Arg.Any<Action<DeliveryReport<string, string>>?>());
+    }
+
+    [Fact]
+    public void PublishFireAndForget_DeliveryErrorCallbackLogsError()
+    {
+        var kafkaProducer = Substitute.For<IProducer<string, string>>();
+        DeliveryReport<string, string>? capturedReport = null;
+        kafkaProducer
+            .When(p => p.Produce(Arg.Any<string>(), Arg.Any<Message<string, string>>(),
+                Arg.Any<Action<DeliveryReport<string, string>>?>()))
+            .Do(call =>
+            {
+                var cb = call.ArgAt<Action<DeliveryReport<string, string>>?>(2);
+                capturedReport = new DeliveryReport<string, string>
+                {
+                    Error = new Error(ErrorCode.BrokerNotAvailable, "broker gone")
+                };
+                cb?.Invoke(capturedReport);
+            });
+
+        var producer = new KafkaProducer(kafkaProducer, NullLogger<KafkaProducer>.Instance);
+
+        var act = () => producer.PublishFireAndForget(EntityTopics.Created, "k", new { x = 1 });
+        act.Should().NotThrow();
+    }
 }

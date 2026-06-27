@@ -53,5 +53,23 @@ public class KafkaProducer(IProducer<string, string> producer, ILogger<KafkaProd
         }
     }
 
+    public void PublishFireAndForget<T>(string topic, string key, T message) where T : class
+    {
+        var json = JsonSerializer.Serialize(message);
+
+        var headers = new Headers();
+        if (Activity.Current is { } current)
+            headers.Add("traceparent", System.Text.Encoding.UTF8.GetBytes(
+                $"00-{current.TraceId}-{current.SpanId}-{(current.ActivityTraceFlags.HasFlag(ActivityTraceFlags.Recorded) ? "01" : "00")}"));
+
+        producer.Produce(topic, new Message<string, string> { Key = key, Value = json, Headers = headers },
+            report =>
+            {
+                if (report.Error.IsError)
+                    logger.LogError("Kafka delivery failed topic={Topic} key={Key}: {Error}",
+                        topic, key, report.Error.Reason);
+            });
+    }
+
     public void Dispose() => producer.Dispose();
 }
