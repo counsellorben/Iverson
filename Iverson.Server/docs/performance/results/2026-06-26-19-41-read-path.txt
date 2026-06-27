@@ -1,0 +1,90 @@
+=== GetMany | batch=1 | iterations=1000 ===
+  p50    :      5.2 ms
+  p95    :     14.4 ms
+  p99    :     29.0 ms
+  p999   :    303.4 ms
+  max    :    970.8 ms
+  RPS    :      129 ops/sec
+  errors :        0
+
+=== GetMany | batch=10 | iterations=1000 ===
+  p50    :     21.8 ms
+  p95    :     37.0 ms
+  p99    :     52.5 ms
+  p999   :    880.1 ms
+  max    :   1033.7 ms
+  RPS    :       39 ops/sec
+  errors :        0
+
+=== GetMany | batch=100 | iterations=1000 ===
+  p50    :    101.4 ms
+  p95    :    160.0 ms
+  p99    :    235.4 ms
+  p999   :   1024.0 ms
+  max    :   1076.2 ms
+  RPS    :        9 ops/sec
+  errors :        0
+
+=== GetMany | batch=500 | iterations=1000 ===
+  p50    :    486.1 ms
+  p95    :   1019.9 ms
+  p99    :   1411.1 ms
+  p999   :   1501.2 ms
+  max    :   1658.9 ms
+  RPS    :        2 ops/sec
+  errors :        0
+
+=== Search | Simple (1 clause) ===
+  p50    :     51.6 ms
+  p95    :    105.3 ms
+  p99    :    699.4 ms
+  p999   :   1022.5 ms
+  max    :   2109.4 ms
+  RPS    :       15 ops/sec
+  errors :        0
+
+=== Search | Medium (2 clauses + sort) ===
+  p50    :    664.6 ms
+  p95    :   1078.3 ms
+  p99    :   1553.4 ms
+  p999   :   2084.9 ms
+  max    :   2168.8 ms
+  RPS    :        1 ops/sec
+  errors :        0
+
+=== Search | Complex (2 clauses + sort + LIKE) ===
+  p50    :     35.1 ms
+  p95    :     92.0 ms
+  p99    :    148.7 ms
+  p999   :    948.2 ms
+  max    :   1048.1 ms
+  RPS    :       22 ops/sec
+  errors :        0
+
+=== Aggregate | specs=1 | iterations=1000 ===
+  p50    :     31.1 ms
+  p95    :     53.5 ms
+  p99    :     63.9 ms
+  p999   :    165.4 ms
+  max    :    931.8 ms
+  RPS    :       29 ops/sec
+  errors :        0
+
+=== Aggregate | specs=3 | iterations=1000 ===
+  p50    :     78.5 ms
+  p95    :    138.9 ms
+  p99    :    224.4 ms
+  p999   :    974.8 ms
+  max    :   1066.0 ms
+  RPS    :       11 ops/sec
+  errors :        0
+
+=== Aggregate | specs=6 | iterations=1000 ===
+  p50    :    155.5 ms
+  p95    :    267.8 ms
+  p99    :    371.5 ms
+  p999   :    800.3 ms
+  max    :    808.4 ms
+  RPS    :        6 ops/sec
+  errors :        0
+

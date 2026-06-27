@@ -1,0 +1,14 @@
+=== gRPC Post | type=Article | concurrency=16 | count=10000 ===
+  p50    :     25.2 ms
+  p95    :     89.2 ms
+  p99    :    205.3 ms
+  p999   :    769.0 ms
+  max    :   1054.7 ms
+  RPS    :      421 ops/sec
+  errors :        0
+
+=== End-to-end (Post → Postgres visible) ===
+  (no successful samples — 100 errors)
+
+  Kafka lag: 0 messages (07:38:45)
+  Kafka lag: 0 messages (07:38:47)

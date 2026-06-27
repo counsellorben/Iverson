@@ -1,0 +1,48 @@
+=== gRPC Post | type=Article | concurrency=16 | count=10000 ===
+  p50    :     16.1 ms
+  p95    :     54.5 ms
+  p99    :    490.0 ms
+  p999   :   1127.4 ms
+  max    :   1468.4 ms
+  RPS    :      511 ops/sec
+  errors :        0
+
+=== End-to-end (Post → Postgres visible) ===
+  p50    :      0.5 ms
+  p95    :      1.1 ms
+  p99    :      2.3 ms
+  p999   :  17563.6 ms
+  max    :  17563.6 ms
+  RPS    :        2 ops/sec
+  errors :        1
+
+  Kafka lag: 9,616 messages (15:37:15)
+  Kafka lag: 9,605 messages (15:37:17)
+  Kafka lag: 9,585 messages (15:37:19)
+  Kafka lag: 9,566 messages (15:37:21)
+  Kafka lag: 9,548 messages (15:37:23)
+  Kafka lag: 9,528 messages (15:37:25)
+  Kafka lag: 9,509 messages (15:37:27)
+  Kafka lag: 9,491 messages (15:37:29)
+  Kafka lag: 9,471 messages (15:37:31)
+  Kafka lag: 9,454 messages (15:37:33)
+  Kafka lag: 9,434 messages (15:37:35)
+  Kafka lag: 9,414 messages (15:37:37)
+  Kafka lag: 9,393 messages (15:37:39)
+  Kafka lag: 9,375 messages (15:37:41)
+  Kafka lag: 9,357 messages (15:37:43)
+  Kafka lag: 9,341 messages (15:37:45)
+  Kafka lag: 9,321 messages (15:37:47)
+  Kafka lag: 9,303 messages (15:37:49)
+  Kafka lag: 9,286 messages (15:37:51)
+  Kafka lag: 9,271 messages (15:37:53)
+  Kafka lag: 9,252 messages (15:37:55)
+  Kafka lag: 9,233 messages (15:37:57)
+  Kafka lag: 9,214 messages (15:37:59)
+  Kafka lag: 9,194 messages (15:38:01)
+  Kafka lag: 9,176 messages (15:38:03)
+  Kafka lag: 9,158 messages (15:38:05)
+  Kafka lag: 9,140 messages (15:38:07)
+  Kafka lag: 9,123 messages (15:38:09)
+  Kafka lag: 9,105 messages (15:38:11)
+  Kafka lag: 9,087 messages (15:38:13)
