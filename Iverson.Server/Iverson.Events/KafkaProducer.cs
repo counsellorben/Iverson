@@ -62,14 +62,25 @@ public class KafkaProducer(IProducer<string, string> producer, ILogger<KafkaProd
             headers.Add("traceparent", System.Text.Encoding.UTF8.GetBytes(
                 $"00-{current.TraceId}-{current.SpanId}-{(current.ActivityTraceFlags.HasFlag(ActivityTraceFlags.Recorded) ? "01" : "00")}"));
 
-        producer.Produce(topic, new Message<string, string> { Key = key, Value = json, Headers = headers },
-            report =>
-            {
-                if (report.Error.IsError)
-                    logger.LogError("Kafka delivery failed topic={Topic} key={Key}: {Error}",
-                        topic, key, report.Error.Reason);
-            });
+        try
+        {
+            producer.Produce(topic, new Message<string, string> { Key = key, Value = json, Headers = headers },
+                report =>
+                {
+                    if (report.Error.IsError)
+                        logger.LogError("Kafka delivery failed topic={Topic} key={Key}: {Error}",
+                            topic, key, report.Error.Reason);
+                });
+        }
+        catch (KafkaException ex)
+        {
+            logger.LogError(ex, "Kafka enqueue failed topic={Topic} key={Key}", topic, key);
+        }
     }
 
-    public void Dispose() => producer.Dispose();
+    public void Dispose()
+    {
+        producer.Flush(TimeSpan.FromSeconds(10));
+        producer.Dispose();
+    }
 }
