@@ -19,7 +19,7 @@ Five changes, all within `Iverson.Server` and `Iverson.Client`:
 
 1. Change StarRocks table model from `PRIMARY KEY` to `UNIQUE KEY`
 2. Create a sync MV per entity at registration time
-3. Add `[IversonSearchKey(order)]` and `[IversonLargeField]` attributes to control the MV
+3. Add `[IversonSearchKey(order)]` and `[IversonLargeField]` attributes to control the MV; auto-exclude `[IversonEmbedding]`/`[IversonChunk]` fields from the MV
 4. Change `BuildSearch` to emit an explicit column list
 5. Add `fields` include-list to `SearchRequest`; add `reset-starrocks` command to LoadTest
 
@@ -29,9 +29,18 @@ Two new attributes in `Iverson.Client.Attributes`, consistent with `[IversonKey]
 
 **`[IversonSearchKey(int order)]`** — marks a property as part of the MV sort key. Properties are sorted by `order` ascending when building the `ORDER BY` clause. An entity with no `[IversonSearchKey]` properties gets no MV.
 
-**`[IversonLargeField]`** — marks a property as excluded from the MV column list. The base table still stores the column; the MV does not. Queries that request only MV-covered columns are routed to the MV by the StarRocks optimizer automatically.
+**`[IversonLargeField]`** — explicitly marks a property as excluded from the MV column list. The base table still stores the column; the MV does not. This is the fallback for entities whose large fields carry no `[IversonEmbedding]` or `[IversonChunk]` annotation.
 
-Applied to `BenchmarkArticle`:
+### MV exclusion rule (hybrid)
+
+A column is excluded from the MV if **any** of the following is true:
+- It carries `[IversonLargeField]`
+- It carries `[IversonEmbedding]` — embedding-source fields are large text by definition; semantic search for them goes through Qdrant, not StarRocks
+- It carries `[IversonChunk]` — same reasoning as `[IversonEmbedding]`
+
+This means production entities whose large text fields are already annotated with `[IversonEmbedding]` or `[IversonChunk]` need no extra annotation for correct MV exclusion. `[IversonLargeField]` exists for large fields that are never vectorized.
+
+**`BenchmarkArticle`** — `Body` is large but has no embeddings, so `[IversonLargeField]` is required:
 
 ```csharp
 [IversonSearchKey(0)] public string          Category    { get; set; }
@@ -39,7 +48,15 @@ Applied to `BenchmarkArticle`:
 [IversonLargeField]   public string          Body        { get; set; }
 ```
 
-This produces an MV sorted by `(Category, PublishedAt)` covering all columns except `Body`.
+**Typical production entity** — `Body` carries `[IversonEmbedding]`, so no additional annotation is needed:
+
+```csharp
+[IversonSearchKey(0)]  public string         Category    { get; set; }
+[IversonSearchKey(1)]  public DateTimeOffset PublishedAt { get; set; }
+[IversonEmbedding]     public string         Body        { get; set; }  // excluded from MV automatically
+```
+
+Both produce an MV sorted by `(Category, PublishedAt)` covering all columns except `Body`.
 
 ## Schema Layer
 
@@ -48,7 +65,7 @@ This produces an MV sorted by `(Category, PublishedAt)` covering all columns exc
 Two new collections populated by `SchemaBuilder.Build()`:
 
 - `SearchKeyColumns: IReadOnlyList<(string Name, int Order)>` — from `[IversonSearchKey]`, sorted by `Order`
-- `LargeFieldColumns: IReadOnlySet<string>` — from `[IversonLargeField]`
+- `LargeFieldColumns: IReadOnlySet<string>` — union of columns carrying `[IversonLargeField]`, `[IversonEmbedding]`, or `[IversonChunk]`
 
 ### `StarRocksTableSchema`
 
@@ -111,7 +128,7 @@ internal static (string Sql, DynamicParameters Param) BuildSearch(
 ### Column list behavior
 
 - **`fields` is null or empty** → `SELECT \`{keyCol}\`, \`{col1}\`, \`{col2}\`, ...` — key column first, then all scalar columns from `SchemaDescriptor`. Identical to current `SELECT *` behavior but explicit. Optimizer uses base table.
-- **`fields` is non-empty** → key column always included, then only the requested columns that resolve via `ResolveColumn` (OrdinalIgnoreCase). Unknown field names are silently ignored, consistent with how unknown filter clause properties are handled today. When the field list excludes all `[IversonLargeField]` columns, the StarRocks optimizer rewrites the query to use the MV automatically.
+- **`fields` is non-empty** → key column always included, then only the requested columns that resolve via `ResolveColumn` (OrdinalIgnoreCase). Unknown field names are silently ignored, consistent with how unknown filter clause properties are handled today. When the field list excludes all MV-excluded columns (those carrying `[IversonLargeField]`, `[IversonEmbedding]`, or `[IversonChunk]`), the StarRocks optimizer rewrites the query to use the MV automatically.
 
 `BuildAggregate` is unchanged — aggregation queries use explicit column expressions already.
 
