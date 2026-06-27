@@ -467,7 +467,7 @@ public class ObjectMappingGrpcServiceTests
             MakeContext());
 
         await _sql.Received(1).QueryAsync<KeyedRow>(
-            Arg.Is<string>(s => s.Contains("= ANY(")),
+            Arg.Is<string>(s => s.Contains("= ANY(") && !s.Contains("::uuid[]")),
             Arg.Any<object?>());
 
         response.Success.Should().BeTrue();

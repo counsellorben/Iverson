@@ -269,12 +269,13 @@ public sealed class ObjectMappingGrpcService(
         var relatedSchema = _registry.Get(relation.RelatedTypeName);
         if (relatedSchema is null) return;
 
+        var idGuids = ids.Select(Guid.Parse).ToArray();
         var rows = await _sql.QueryAsync<KeyedRow>(
             $"SELECT \"{relatedSchema.KeyColumn.Name}\"::text AS key, " +
             $"row_to_json(t)::text AS data " +
             $"FROM \"{relatedSchema.TableName}\" t " +
-            $"WHERE \"{relatedSchema.KeyColumn.Name}\" = ANY(@ids::uuid[])",
-            new { ids = ids.ToArray() });
+            $"WHERE \"{relatedSchema.KeyColumn.Name}\" = ANY(@ids)",
+            new { ids = idGuids });
 
         var rowsByKey = rows.ToDictionary(r => r.Key, StringComparer.OrdinalIgnoreCase);
 

@@ -61,11 +61,12 @@ public sealed class ObjectRetrievalGrpcService(
         }
 
         var keys = request.Keys.Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+        var keyGuids = keys.Select(Guid.Parse).ToArray();
         var rows = await _sql.QueryAsync<KeyedRow>(
             $"SELECT \"{schema.KeyColumn.Name}\"::text AS key, row_to_json(t)::text AS data " +
             $"FROM \"{schema.TableName}\" t " +
-            $"WHERE \"{schema.KeyColumn.Name}\" = ANY(@Keys::uuid[])",
-            new { Keys = keys });
+            $"WHERE \"{schema.KeyColumn.Name}\" = ANY(@Keys)",
+            new { Keys = keyGuids });
 
         var rowsByKey = rows.ToDictionary(r => r.Key, StringComparer.OrdinalIgnoreCase);
 

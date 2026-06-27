@@ -182,17 +182,11 @@ public class ObjectRetrievalGrpcServiceTests
             stream, TestServerCallContext.Create());
 
         await _sql.Received(1).QueryAsync<KeyedRow>(
-            Arg.Is<string>(s => s.Contains("= ANY(")),
+            Arg.Is<string>(s => s.Contains("= ANY(") && !s.Contains("::uuid[]")),
             Arg.Any<object?>());
     }
 
     // ── stream helper ────────────────────────────────────────────────────────
-
-    private static bool Contains(object param, string value)
-    {
-        var json = System.Text.Json.JsonSerializer.Serialize(param);
-        return json.Contains(value);
-    }
 
     private static FakeStream<T> MakeStream<T>() => new();
 
