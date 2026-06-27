@@ -5,7 +5,9 @@ namespace Iverson.StarRocks;
 
 public static class ServiceCollectionExtensions
 {
-    public static IServiceCollection AddStarRocks(this IServiceCollection services, string connectionString)
+    public static IServiceCollection AddStarRocks(
+        this IServiceCollection services,
+        string connectionString)
     {
         services.AddSingleton<IStarRocksRepository>(sp =>
         {

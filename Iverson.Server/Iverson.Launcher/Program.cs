@@ -3,16 +3,23 @@ using System.Net.Sockets;
 using System.Runtime.InteropServices;
 
 // Navigate from bin/Debug/net10.0/ up to Iverson.Server/ where docker-compose.yml lives
-var solutionRoot = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "../../../../"));
+var solutionRoot = Path.GetFullPath(
+    Path.Combine(AppContext.BaseDirectory, "../../../../"));
 
 var cts = new CancellationTokenSource();
 Console.CancelKeyPress += (_, e) => { e.Cancel = true; cts.Cancel(); };
-PosixSignalRegistration.Create(PosixSignal.SIGTERM, _ => cts.Cancel());
+PosixSignalRegistration.Create(
+    PosixSignal.SIGTERM,
+    _ => cts.Cancel());
 
 Console.WriteLine("[Launcher] Starting Iverson infrastructure...");
 
 // Step 1: bring up Docker infrastructure (not iverson-api — that runs locally via dotnet run below)
-await RunCommandAsync("docker", "compose up -d postgres starrocks qdrant kafka zookeeper jaeger ollama ollama-init", solutionRoot, cts.Token);
+await RunCommandAsync(
+    "docker",
+    "compose up -d postgres starrocks qdrant kafka zookeeper jaeger ollama ollama-init",
+    solutionRoot,
+    cts.Token);
 Console.WriteLine("[Launcher] Docker Compose up — waiting for services to be ready...");
 
 // Step 2: wait for each service port
@@ -29,7 +36,9 @@ Console.WriteLine("[Launcher] All infrastructure ready. Starting Iverson.Api..."
 var apiPath = Path.Combine(solutionRoot, "Iverson.Api");
 var certPath = Path.Combine(
     Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
-    ".aspnet", "https", "Iverson.Api.pfx");
+    ".aspnet",
+    "https",
+    "Iverson.Api.pfx");
 var apiEnv = new Dictionary<string, string>
 {
     ["ASPNETCORE_Kestrel__Certificates__Default__Path"]     = certPath,
@@ -53,7 +62,11 @@ if (!apiProcess.HasExited)
     await apiProcess.WaitForExitAsync();
 }
 
-await RunCommandAsync("docker", "compose down", solutionRoot, CancellationToken.None);
+await RunCommandAsync(
+    "docker",
+    "compose down",
+    solutionRoot,
+    CancellationToken.None);
 Console.WriteLine("[Launcher] Shutdown complete.");
 
 static async Task WaitForOllamaAsync(string url, string modelName, CancellationToken ct)
@@ -89,7 +102,11 @@ static async Task WaitForOllamaAsync(string url, string modelName, CancellationT
     }
 }
 
-static async Task WaitForPortAsync(string host, int port, string serviceName, CancellationToken ct)
+static async Task WaitForPortAsync(
+    string host,
+    int port,
+    string serviceName,
+    CancellationToken ct)
 {
     Console.Write($"[Launcher] Waiting for {serviceName} on {host}:{port}");
     while (!ct.IsCancellationRequested)
@@ -109,7 +126,11 @@ static async Task WaitForPortAsync(string host, int port, string serviceName, Ca
     }
 }
 
-static async Task RunCommandAsync(string cmd, string args, string workingDir, CancellationToken ct)
+static async Task RunCommandAsync(
+    string cmd,
+    string args,
+    string workingDir,
+    CancellationToken ct)
 {
     var psi = new ProcessStartInfo(cmd, args)
     {

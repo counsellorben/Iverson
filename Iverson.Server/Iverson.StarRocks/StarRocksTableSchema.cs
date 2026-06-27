@@ -5,4 +5,7 @@ public sealed record StarRocksTableSchema(
     StarRocksColumnSchema KeyColumn,
     IReadOnlyList<StarRocksColumnSchema> Columns);
 
-public sealed record StarRocksColumnSchema(string Name, string SrType, bool IsNullable);
+public sealed record StarRocksColumnSchema(
+    string Name,
+    string SrType,
+    bool IsNullable);

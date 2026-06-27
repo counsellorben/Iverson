@@ -1,5 +1,4 @@
 using System.Diagnostics;
-using System.Text.Json;
 using Google.Protobuf.WellKnownTypes;
 using Grpc.Core;
 using Iverson.Api.Schema;
@@ -8,7 +7,6 @@ using SchemaRelKind       = Iverson.Api.Schema.RelationKind;
 using SchemaRelDescriptor = Iverson.Api.Schema.RelationDescriptor;
 using Iverson.Events;
 using Iverson.Sql;
-using Microsoft.Extensions.Logging;
 
 namespace Iverson.Api.Grpc;
 

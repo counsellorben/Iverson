@@ -5,7 +5,9 @@ using Microsoft.Extensions.Logging;
 
 namespace Iverson.Events;
 
-public class KafkaProducer(IProducer<string, string> producer, ILogger<KafkaProducer> logger) : IEventProducer, IDisposable
+public class KafkaProducer(
+    IProducer<string, string> producer,
+    ILogger<KafkaProducer> logger) : IEventProducer, IDisposable
 {
     public async Task ProduceAsync<T>(string topic, string key, T message) where T : class
     {
@@ -59,17 +61,24 @@ public class KafkaProducer(IProducer<string, string> producer, ILogger<KafkaProd
 
         var headers = new Headers();
         if (Activity.Current is { } current)
-            headers.Add("traceparent", System.Text.Encoding.UTF8.GetBytes(
-                $"00-{current.TraceId}-{current.SpanId}-{(current.ActivityTraceFlags.HasFlag(ActivityTraceFlags.Recorded) ? "01" : "00")}"));
+            headers.Add(
+                "traceparent",
+                System.Text.Encoding.UTF8.GetBytes(
+                    $"00-{current.TraceId}-{current.SpanId}-{(current.ActivityTraceFlags.HasFlag(ActivityTraceFlags.Recorded) ? "01" : "00")}"));
 
         try
         {
-            producer.Produce(topic, new Message<string, string> { Key = key, Value = json, Headers = headers },
+            producer.Produce(
+                topic,
+                new Message<string, string> { Key = key, Value = json, Headers = headers },
                 report =>
                 {
                     if (report.Error.IsError)
-                        logger.LogError("Kafka delivery failed topic={Topic} key={Key}: {Error}",
-                            topic, key, report.Error.Reason);
+                        logger.LogError(
+                            "Kafka delivery failed topic={Topic} key={Key}: {Error}",
+                            topic,
+                            key,
+                            report.Error.Reason);
                 });
         }
         catch (KafkaException ex)

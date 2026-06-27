@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Runtime.CompilerServices;
 using Grpc.Core;
 using Iverson.Client.Contracts;
 using Iverson.Client.Search;
@@ -14,10 +15,10 @@ namespace Iverson.Client.Core;
 public sealed class EntityCoordinator<T>(
     EntityRegistry registry,
     GraphAssembler assembler,
-    ObjectMappingService.ObjectMappingServiceClient     mapping,
+    ObjectMappingService.ObjectMappingServiceClient mapping,
     ObjectPersistenceService.ObjectPersistenceServiceClient persistence,
     ObjectRetrievalService.ObjectRetrievalServiceClient retrieval,
-    ObjectSearchService.ObjectSearchServiceClient       search,
+    ObjectSearchService.ObjectSearchServiceClient search,
     ILogger<EntityCoordinator<T>> logger)
     where T : class
 {
@@ -29,13 +30,15 @@ public sealed class EntityCoordinator<T>(
     public async Task<T?> GetMappedAsync(string key, int depth = 1, CancellationToken ct = default)
     {
         logger.LogDebug("ObjectMapping.Get {Entity}:{Key} depth={Depth}", _descriptor.EntityName, key, depth);
-        var response = await mapping.GetAsync(new MappingGetRequest
-        {
-            TypeName = _descriptor.EntityName,
-            Key      = key,
-            Depth    = depth,
-            TraceId  = CurrentTraceId()
-        }, cancellationToken: ct);
+        var response = await mapping.GetAsync(
+            new MappingGetRequest
+            {
+                TypeName = _descriptor.EntityName,
+                Key      = key,
+                Depth    = depth,
+                TraceId  = CurrentTraceId()
+            },
+            cancellationToken: ct);
 
         if (!response.Success) { LogError(response.Error); return null; }
         return StructConverter.FromStruct<T>(response.Data);
@@ -44,12 +47,14 @@ public sealed class EntityCoordinator<T>(
     public async Task<T?> PostMappedAsync(T entity, CancellationToken ct = default)
     {
         logger.LogDebug("ObjectMapping.Post {Entity}", _descriptor.EntityName);
-        var response = await mapping.PostAsync(new MappingWriteRequest
-        {
-            TypeName = _descriptor.EntityName,
-            Payload  = StructConverter.ToStruct(entity),
-            TraceId  = CurrentTraceId()
-        }, cancellationToken: ct);
+        var response = await mapping.PostAsync(
+            new MappingWriteRequest
+            {
+                TypeName = _descriptor.EntityName,
+                Payload  = StructConverter.ToStruct(entity),
+                TraceId  = CurrentTraceId()
+            },
+            cancellationToken: ct);
 
         if (!response.Success) { LogError(response.Error); return null; }
         return StructConverter.FromStruct<T>(response.Data);
@@ -58,12 +63,14 @@ public sealed class EntityCoordinator<T>(
     public async Task<T?> UpdateMappedAsync(T entity, CancellationToken ct = default)
     {
         logger.LogDebug("ObjectMapping.Update {Entity}", _descriptor.EntityName);
-        var response = await mapping.UpdateAsync(new MappingWriteRequest
-        {
-            TypeName = _descriptor.EntityName,
-            Payload  = StructConverter.ToStruct(entity),
-            TraceId  = CurrentTraceId()
-        }, cancellationToken: ct);
+        var response = await mapping.UpdateAsync(
+            new MappingWriteRequest
+            {
+                TypeName = _descriptor.EntityName,
+                Payload  = StructConverter.ToStruct(entity),
+                TraceId  = CurrentTraceId()
+            },
+            cancellationToken: ct);
 
         if (!response.Success) { LogError(response.Error); return null; }
         return StructConverter.FromStruct<T>(response.Data);
@@ -72,12 +79,14 @@ public sealed class EntityCoordinator<T>(
     public async Task<bool> DeleteAsync(string key, CancellationToken ct = default)
     {
         logger.LogDebug("ObjectMapping.Delete {Entity}:{Key}", _descriptor.EntityName, key);
-        var response = await mapping.DeleteAsync(new MappingDeleteRequest
-        {
-            TypeName = _descriptor.EntityName,
-            Key      = key,
-            TraceId  = CurrentTraceId()
-        }, cancellationToken: ct);
+        var response = await mapping.DeleteAsync(
+            new MappingDeleteRequest
+            {
+                TypeName = _descriptor.EntityName,
+                Key      = key,
+                TraceId  = CurrentTraceId()
+            },
+            cancellationToken: ct);
 
         if (!response.Success) LogError(response.Error);
         return response.Success;
@@ -89,12 +98,14 @@ public sealed class EntityCoordinator<T>(
     public async Task<string?> PersistAsync(T entity, CancellationToken ct = default)
     {
         logger.LogDebug("ObjectPersistence.Post {Entity}", _descriptor.EntityName);
-        var response = await persistence.PostAsync(new PersistRequest
-        {
-            TypeName = _descriptor.EntityName,
-            Payload  = StructConverter.ToStruct(entity),
-            TraceId  = CurrentTraceId()
-        }, cancellationToken: ct);
+        var response = await persistence.PostAsync(
+            new PersistRequest
+            {
+                TypeName = _descriptor.EntityName,
+                Payload  = StructConverter.ToStruct(entity),
+                TraceId  = CurrentTraceId()
+            },
+            cancellationToken: ct);
 
         if (!response.Success) { LogError(response.Error); return null; }
         return response.Key;
@@ -103,12 +114,14 @@ public sealed class EntityCoordinator<T>(
     public async Task<string?> UpdateAsync(T entity, CancellationToken ct = default)
     {
         logger.LogDebug("ObjectPersistence.Update {Entity}", _descriptor.EntityName);
-        var response = await persistence.UpdateAsync(new PersistRequest
-        {
-            TypeName = _descriptor.EntityName,
-            Payload  = StructConverter.ToStruct(entity),
-            TraceId  = CurrentTraceId()
-        }, cancellationToken: ct);
+        var response = await persistence.UpdateAsync(
+            new PersistRequest
+            {
+                TypeName = _descriptor.EntityName,
+                Payload  = StructConverter.ToStruct(entity),
+                TraceId  = CurrentTraceId()
+            },
+            cancellationToken: ct);
 
         if (!response.Success) { LogError(response.Error); return null; }
         return response.Key;
@@ -120,12 +133,14 @@ public sealed class EntityCoordinator<T>(
     public async Task<T?> GetAsync(string key, bool assembleGraph = true, CancellationToken ct = default)
     {
         logger.LogDebug("ObjectRetrieval.Get {Entity}:{Key}", _descriptor.EntityName, key);
-        var response = await retrieval.GetAsync(new RetrievalRequest
-        {
-            TypeName = _descriptor.EntityName,
-            Key      = key,
-            TraceId  = CurrentTraceId()
-        }, cancellationToken: ct);
+        var response = await retrieval.GetAsync(
+            new RetrievalRequest
+            {
+                TypeName = _descriptor.EntityName,
+                Key      = key,
+                TraceId  = CurrentTraceId()
+            },
+            cancellationToken: ct);
 
         if (!response.Found) return null;
 
@@ -139,7 +154,7 @@ public sealed class EntityCoordinator<T>(
     public async IAsyncEnumerable<T> GetManyAsync(
         IEnumerable<string> keys,
         bool assembleGraph = true,
-        [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct = default)
+        [EnumeratorCancellation] CancellationToken ct = default)
     {
         var request = new RetrievalManyRequest { TypeName = _descriptor.EntityName, TraceId = CurrentTraceId() };
         request.Keys.AddRange(keys);
@@ -169,7 +184,7 @@ public sealed class EntityCoordinator<T>(
 
     public async IAsyncEnumerable<SearchResult<T>> SearchAsync(
         QueryBuilder<T> query,
-        [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct = default)
+        [EnumeratorCancellation] CancellationToken ct = default)
     {
         var request     = query.Build();
         request.TraceId = CurrentTraceId();

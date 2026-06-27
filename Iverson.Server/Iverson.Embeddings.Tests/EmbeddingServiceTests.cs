@@ -17,7 +17,8 @@ public sealed class EmbeddingServiceTests
         public string?             LastRequestBody { get; private set; }
 
         protected override async Task<HttpResponseMessage> SendAsync(
-            HttpRequestMessage request, CancellationToken ct)
+            HttpRequestMessage request,
+            CancellationToken ct)
         {
             LastRequest     = request;
             LastRequestBody = request.Content is not null

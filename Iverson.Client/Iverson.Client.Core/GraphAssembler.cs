@@ -70,11 +70,13 @@ public sealed class GraphAssembler(
         if (string.IsNullOrEmpty(fkValue)) return;
 
         var relatedDescriptor = registry.Get(relation.RelatedType);
-        var response = await retrieval.GetAsync(new RetrievalRequest
-        {
-            TypeName = relatedDescriptor.EntityName,
-            Key      = fkValue
-        }, cancellationToken: ct);
+        var response = await retrieval.GetAsync(
+            new RetrievalRequest
+            {
+                TypeName = relatedDescriptor.EntityName,
+                Key      = fkValue
+            },
+            cancellationToken: ct);
 
         if (!response.Found) return;
 
@@ -231,8 +233,10 @@ public sealed class GraphAssembler(
         {
             if (!response.Found) continue;
 
-            var itemKey = relatedDescriptor.KeyProperty.GetValue(
-                DeserializeStruct(response.Data, relation.RelatedType))?.ToString();
+            var itemKey = relatedDescriptor.KeyProperty
+                .GetValue(
+                    DeserializeStruct(response.Data, relation.RelatedType))?
+                .ToString();
             if (itemKey is null || !keyToEntityIndices.TryGetValue(itemKey, out var ownerIndices)) continue;
             foreach (var idx in ownerIndices)
                 buckets[idx].Add(DeserializeStruct(response.Data, relation.RelatedType)!);
@@ -253,7 +257,8 @@ public sealed class GraphAssembler(
     private static object? DeserializeStruct(Struct? data, System.Type targetType)
     {
         if (data is null) return null;
-        var method = _fromStructCache.GetOrAdd(targetType,
+        var method = _fromStructCache.GetOrAdd(
+            targetType,
             static t => _fromStructMethod.MakeGenericMethod(t));
         return method.Invoke(null, [data]);
     }

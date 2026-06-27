@@ -3,7 +3,6 @@ using FluentAssertions;
 using Iverson.Api.Schema;
 using Iverson.Api.StarRocks;
 using Iverson.Client.Contracts;
-using Iverson.StarRocks;
 using Xunit;
 
 using SrAggKind  = Iverson.StarRocks.AggregationKind;

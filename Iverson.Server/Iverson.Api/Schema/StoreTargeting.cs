@@ -26,8 +26,11 @@ internal static class StoreTargeting
             RelationKind.ManyToOne  => true,
             RelationKind.OneToOne   => true,
             RelationKind.OneToMany  => false,
-            RelationKind.ManyToMany => schema.FkColumns.Any(fk =>
-                string.Equals(fk.ColumnName, r.ForeignKey, StringComparison.OrdinalIgnoreCase)),
+            RelationKind.ManyToMany => schema.FkColumns
+                .Any(fk => string.Equals(
+                    fk.ColumnName,
+                    r.ForeignKey,
+                    StringComparison.OrdinalIgnoreCase)),
             _                       => false
         });
 

@@ -1,11 +1,10 @@
-using Iverson.Api;
 using Iverson.Client.Contracts;
 using Iverson.Embeddings;
 using Iverson.Sql;
 using Iverson.StarRocks;
 using Iverson.Vector;
-using ContractsRelKind = Iverson.Client.Contracts.RelationKind;
-using SchemaRelKind    = Iverson.Api.Schema.RelationKind;
+using ContractsRelationKind = Iverson.Client.Contracts.RelationKind;
+using SchemaRelationKind    = Iverson.Api.Schema.RelationKind;
 
 namespace Iverson.Api.Schema;
 
@@ -47,10 +46,10 @@ internal static class SchemaBuilder
             r.PropertyName,
             r.Kind switch
             {
-                ContractsRelKind.OneToOne  => SchemaRelKind.OneToOne,
-                ContractsRelKind.OneToMany => SchemaRelKind.OneToMany,
-                ContractsRelKind.ManyToOne => SchemaRelKind.ManyToOne,
-                _                          => SchemaRelKind.ManyToMany
+                ContractsRelationKind.OneToOne  => SchemaRelationKind.OneToOne,
+                ContractsRelationKind.OneToMany => SchemaRelationKind.OneToMany,
+                ContractsRelationKind.ManyToOne => SchemaRelationKind.ManyToOne,
+                _                               => SchemaRelationKind.ManyToMany
             },
             r.RelatedType,
             r.ForeignKey

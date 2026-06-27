@@ -3,7 +3,6 @@ using System.Text;
 using Dapper;
 using Iverson.Api.Schema;
 using Iverson.Client.Contracts;
-using Iverson.StarRocks;
 
 using SrAggKind  = Iverson.StarRocks.AggregationKind;
 using SrAggSpec  = Iverson.StarRocks.AggregationDescriptor;
@@ -65,11 +64,10 @@ internal static class StarRocksQueryBuilder
                 $"GROUP BY bucket_key ORDER BY bucket_key",
 
             SrAggKind.Range => BuildRangeSql(tableName, col, spec.RangeBuckets, wc),
-
-            SrAggKind.Avg         => $"SELECT AVG(`{col}`) AS metric_val FROM `{tableName}`{wc}",
-            SrAggKind.Sum         => $"SELECT SUM(`{col}`) AS metric_val FROM `{tableName}`{wc}",
-            SrAggKind.Min         => $"SELECT MIN(`{col}`) AS metric_val FROM `{tableName}`{wc}",
-            SrAggKind.Max         => $"SELECT MAX(`{col}`) AS metric_val FROM `{tableName}`{wc}",
+            SrAggKind.Avg   => $"SELECT AVG(`{col}`) AS metric_val FROM `{tableName}`{wc}",
+            SrAggKind.Sum   => $"SELECT SUM(`{col}`) AS metric_val FROM `{tableName}`{wc}",
+            SrAggKind.Min   => $"SELECT MIN(`{col}`) AS metric_val FROM `{tableName}`{wc}",
+            SrAggKind.Max   => $"SELECT MAX(`{col}`) AS metric_val FROM `{tableName}`{wc}",
             SrAggKind.Count => $"SELECT COUNT(DISTINCT `{col}`) AS metric_val FROM `{tableName}`{wc}",
 
             _ => throw new ArgumentOutOfRangeException(nameof(spec.Kind))

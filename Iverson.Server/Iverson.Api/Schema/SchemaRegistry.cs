@@ -1,18 +1,19 @@
 using System.Collections.Concurrent;
 using System.Text.Json;
 using Iverson.Sql;
-using Microsoft.Extensions.Logging;
 
 namespace Iverson.Api.Schema;
 
-public sealed class SchemaRegistry(IPostgresRepository sql, ILogger<SchemaRegistry> logger)
+public sealed class SchemaRegistry(
+    IPostgresRepository sql,
+    ILogger<SchemaRegistry> logger)
 {
     private readonly ConcurrentDictionary<string, SchemaDescriptor> _schemas = new(StringComparer.OrdinalIgnoreCase);
 
     public IReadOnlyDictionary<string, SchemaDescriptor> All => _schemas;
 
-    public SchemaDescriptor? Get(string typeName)
-        => _schemas.TryGetValue(typeName, out var s) ? s : null;
+    public SchemaDescriptor? Get(string typeName) =>
+        _schemas.TryGetValue(typeName, out var s) ? s : null;
 
     public bool IsRegistered(string typeName) => _schemas.ContainsKey(typeName);
 

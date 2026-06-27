@@ -11,7 +11,11 @@ public class KafkaConsumer(
     MessageDispatcher dispatcher,
     int numPartitions = 12) : IEventConsumer
 {
-    public async Task ConsumeAsync(string topic, string groupId, Func<string, string, CancellationToken, Task> handler, CancellationToken cancellationToken)
+    public async Task ConsumeAsync(
+        string topic,
+        string groupId,
+        Func<string, string, CancellationToken, Task> handler,
+        CancellationToken cancellationToken)
     {
         await EnsureTopicExistsAsync(topic, cancellationToken);
 
@@ -34,7 +38,7 @@ public class KafkaConsumer(
                 var result = consumer.Consume(cancellationToken);
                 if (result is null) continue;
 
-                ActivityContext parentContext = ExtractTraceContext(result.Message.Headers);
+                var parentContext = ExtractTraceContext(result.Message.Headers);
 
                 using var activity = Telemetry.Source.StartActivity(
                     "kafka.consume",
@@ -95,7 +99,13 @@ public class KafkaConsumer(
         {
             try
             {
-                await admin.CreateTopicsAsync([new TopicSpecification { Name = topic, NumPartitions = numPartitions, ReplicationFactor = 1 }]);
+                await admin.CreateTopicsAsync(
+                    [new TopicSpecification
+                    {
+                        Name = topic,
+                        NumPartitions = numPartitions,
+                        ReplicationFactor = 1
+                    }]);
                 logger.LogInformation("Created Kafka topic {Topic}", topic);
                 return;
             }

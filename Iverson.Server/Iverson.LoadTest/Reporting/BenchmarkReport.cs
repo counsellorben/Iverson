@@ -76,9 +76,15 @@ public sealed class BenchmarkReport
     public static string ResultsPath(string scenario)
     {
         var dir = Path.GetFullPath(
-            Path.Combine(Directory.GetCurrentDirectory(), "..", "docs", "performance", "results"));
+            Path.Combine(Directory.GetCurrentDirectory(),
+            "..",
+            "docs",
+            "performance",
+            "results"));
         Directory.CreateDirectory(dir);
-        return Path.Combine(dir, $"{DateTime.UtcNow:yyyy-MM-dd-HH-mm}-{scenario}.txt");
+        return Path.Combine(
+            dir,
+            $"{DateTime.UtcNow:yyyy-MM-dd-HH-mm}-{scenario}.txt");
     }
 
     public static long NowMicros() =>

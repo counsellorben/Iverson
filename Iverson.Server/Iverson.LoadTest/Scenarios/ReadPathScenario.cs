@@ -9,10 +9,10 @@ using Npgsql;
 namespace Iverson.LoadTest.Scenarios;
 
 public sealed class ReadPathScenario(
-    LoadTestConfig                               config,
+    LoadTestConfig                                      config,
     ObjectRetrievalService.ObjectRetrievalServiceClient retrieval,
-    ObjectSearchService.ObjectSearchServiceClient        search,
-    ILogger<ReadPathScenario>                    logger)
+    ObjectSearchService.ObjectSearchServiceClient       search,
+    ILogger<ReadPathScenario>                           logger)
 {
     private static readonly int[] GetManyBatches    = [1, 10, 100, 500];
     private static readonly int[] AggregateCounts   = [1, 3, 6];
@@ -204,8 +204,16 @@ public sealed class ReadPathScenario(
         var baseQuery = new SearchQuery
         {
             Logic = SearchLogic.And,
-            Clauses = { new SearchClause { Property = "Category", Operator = SearchOperator.Equals, Value = new SearchValue { StringVal = "sports" } } },
-        };
+            Clauses =
+            {
+                new SearchClause
+                {
+                    Property = "Category",
+                    Operator = SearchOperator.Equals,
+                    Value = new SearchValue
+                    { StringVal = "sports" }
+                }
+            }};
 
         foreach (var specCount in AggregateCounts)
         {

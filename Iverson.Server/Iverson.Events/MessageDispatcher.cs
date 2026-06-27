@@ -50,7 +50,8 @@ public sealed class MessageDispatcher(
             }
             catch (PoisonMessageException ex)
             {
-                logger.LogCritical(ex,
+                logger.LogCritical(
+                    ex,
                     "[Dispatch] Poison message topic={Topic} key={Key} — routing to DLQ",
                     ctx.SourceTopic, ctx.Key);
                 await DeadLetterAsync(ctx, ex, attempt + 1, ct);
@@ -65,7 +66,8 @@ public sealed class MessageDispatcher(
                 attempt++;
                 if (attempt >= _options.MaxAttempts)
                 {
-                    logger.LogCritical(ex,
+                    logger.LogCritical(
+                        ex,
                         "[Dispatch] Exhausted {Max} attempts topic={Topic} key={Key} — routing to DLQ",
                         _options.MaxAttempts, ctx.SourceTopic, ctx.Key);
                     await DeadLetterAsync(ctx, ex, attempt, ct);
@@ -74,7 +76,8 @@ public sealed class MessageDispatcher(
 
                 Telemetry.ConsumerRetries.Add(1);
                 Activity.Current?.SetTag("messaging.retry_count", attempt);
-                logger.LogWarning(ex,
+                logger.LogWarning(
+                    ex,
                     "[Dispatch] Transient failure attempt {Attempt}/{Max} topic={Topic} key={Key}",
                     attempt, _options.MaxAttempts, ctx.SourceTopic, ctx.Key);
                 await Task.Delay(_options.Backoff(attempt), ct);
@@ -107,15 +110,17 @@ public sealed class MessageDispatcher(
         }
         catch (Exception produceEx)
         {
-            logger.LogCritical(produceEx,
+            logger.LogCritical(
+                produceEx,
                 "[Dispatch] FAILED to write to DLQ topic={Topic} key={Key} — offset will NOT be committed",
                 ctx.SourceTopic, ctx.Key);
             throw;
         }
 
         Telemetry.ConsumerDlqRouted.Add(1);
-        Activity.Current?.SetTag("messaging.dlq", true)
-                         .SetTag("messaging.dlq.reason", ex.GetType().Name);
+        Activity.Current?
+            .SetTag("messaging.dlq", true)
+            .SetTag("messaging.dlq.reason", ex.GetType().Name);
     }
 
     private static string Truncate(string s, int max) => s.Length <= max ? s : s[..max];

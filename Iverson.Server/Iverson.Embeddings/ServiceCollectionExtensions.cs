@@ -9,12 +9,14 @@ public static class ServiceCollectionExtensions
     {
         services.Configure<EmbeddingServiceOptions>(config.GetSection(EmbeddingServiceOptions.Section));
 
-        services.AddHttpClient(Telemetry.HttpClientName, (sp, client) =>
-        {
-            var opts = sp.GetRequiredService<
-                Microsoft.Extensions.Options.IOptions<EmbeddingServiceOptions>>().Value;
-            client.BaseAddress = new Uri(opts.BaseUrl);
-        });
+        services.AddHttpClient(
+            Telemetry.HttpClientName,
+            (sp, client) =>
+            {
+                var opts = sp.GetRequiredService<
+                    Microsoft.Extensions.Options.IOptions<EmbeddingServiceOptions>>().Value;
+                client.BaseAddress = new Uri(opts.BaseUrl);
+            });
 
         services.AddSingleton<IEmbeddingService, EmbeddingService>();
         return services;

@@ -50,42 +50,46 @@ public sealed class EntityRegistry
         foreach (var prop in type.GetProperties(BindingFlags.Public | BindingFlags.Instance))
         {
             if (prop.GetCustomAttribute<OneToOneAttribute>() is { } oto)
-                relations.Add(new RelationDescriptor
-                {
-                    Property           = prop,
-                    RelatedType        = oto.Related,
-                    Kind               = RelationKind.OneToOne,
-                    ForeignKey         = oto.ForeignKey,
-                    ForeignKeyProperty = ResolveFkProperty(type, oto.Related, oto.ForeignKey)
-                });
+                relations.Add(
+                    new RelationDescriptor
+                    {
+                        Property           = prop,
+                        RelatedType        = oto.Related,
+                        Kind               = RelationKind.OneToOne,
+                        ForeignKey         = oto.ForeignKey,
+                        ForeignKeyProperty = ResolveFkProperty(type, oto.Related, oto.ForeignKey)
+                    });
 
             else if (prop.GetCustomAttribute<OneToManyAttribute>() is { } otm)
-                relations.Add(new RelationDescriptor
-                {
-                    Property    = prop,
-                    RelatedType = otm.Related,
-                    Kind        = RelationKind.OneToMany,
-                    ForeignKey  = otm.ForeignKey
-                });
+                relations.Add(
+                    new RelationDescriptor
+                    {
+                        Property    = prop,
+                        RelatedType = otm.Related,
+                        Kind        = RelationKind.OneToMany,
+                        ForeignKey  = otm.ForeignKey
+                    });
 
             else if (prop.GetCustomAttribute<ManyToOneAttribute>() is { } mto)
-                relations.Add(new RelationDescriptor
-                {
-                    Property           = prop,
-                    RelatedType        = mto.Related,
-                    Kind               = RelationKind.ManyToOne,
-                    ForeignKey         = mto.ForeignKey,
-                    ForeignKeyProperty = ResolveFkProperty(type, mto.Related, mto.ForeignKey)
-                });
+                relations.Add(
+                    new RelationDescriptor
+                    {
+                        Property           = prop,
+                        RelatedType        = mto.Related,
+                        Kind               = RelationKind.ManyToOne,
+                        ForeignKey         = mto.ForeignKey,
+                        ForeignKeyProperty = ResolveFkProperty(type, mto.Related, mto.ForeignKey)
+                    });
 
             else if (prop.GetCustomAttribute<ManyToManyAttribute>() is { } mtm)
-                relations.Add(new RelationDescriptor
-                {
-                    Property    = prop,
-                    RelatedType = mtm.Related,
-                    Kind        = RelationKind.ManyToMany,
-                    ForeignKey  = mtm.JoinKey
-                });
+                relations.Add(
+                    new RelationDescriptor
+                    {
+                        Property    = prop,
+                        RelatedType = mtm.Related,
+                        Kind        = RelationKind.ManyToMany,
+                        ForeignKey  = mtm.JoinKey
+                    });
         }
 
         return relations;
@@ -98,8 +102,8 @@ public sealed class EntityRegistry
 
     public IEnumerable<EntityDescriptor> All => _byType.Values;
 
-    public EntityDescriptor Get<T>()          => Get(typeof(T));
-    public EntityDescriptor Get(Type type)    => _byType.TryGetValue(type,  out var d) ? d : Throw(type.Name);
+    public EntityDescriptor Get<T>()               => Get(typeof(T));
+    public EntityDescriptor Get(Type type)         => _byType.TryGetValue(type,  out var d) ? d : Throw(type.Name);
     public EntityDescriptor GetByName(string name) => _byName.TryGetValue(name, out var d) ? d : Throw(name);
 
     private static EntityDescriptor Throw(string name) =>

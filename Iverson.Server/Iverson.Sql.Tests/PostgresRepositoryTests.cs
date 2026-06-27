@@ -1,5 +1,4 @@
 using FluentAssertions;
-using Iverson.Sql;
 using NSubstitute;
 using NSubstitute.ReturnsExtensions;
 using Xunit;

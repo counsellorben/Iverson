@@ -5,7 +5,9 @@ using Npgsql;
 
 namespace Iverson.Sql;
 
-public class PostgresRepository(string connectionString, ILogger<PostgresRepository> logger) : IPostgresRepository
+public class PostgresRepository(
+    string connectionString,
+    ILogger<PostgresRepository> logger) : IPostgresRepository
 {
     private NpgsqlConnection CreateConnection() => new(connectionString);
 
@@ -143,8 +145,11 @@ public class PostgresRepository(string connectionString, ILogger<PostgresReposit
             }
 
             // Ensure BTREE index on each FK column (idempotent via IF NOT EXISTS)
-            foreach (var col in schema.Columns.Where(c => c.Name.EndsWith("Id", StringComparison.OrdinalIgnoreCase)
-                                                        || c.Name.EndsWith("Ids", StringComparison.OrdinalIgnoreCase)))
+            foreach (var col in schema
+                .Columns
+                .Where(c =>
+                    c.Name.EndsWith("Id", StringComparison.OrdinalIgnoreCase) ||
+                    c.Name.EndsWith("Ids", StringComparison.OrdinalIgnoreCase)))
             {
                 var idxName = $"ix_{schema.TableName}_{col.Name}".ToLowerInvariant();
                 await conn.ExecuteAsync($"""

@@ -4,7 +4,6 @@ using Grpc.Core;
 using Iverson.Api.Schema;
 using Iverson.Client.Contracts;
 using Iverson.Sql;
-using Microsoft.Extensions.Logging;
 
 namespace Iverson.Api.Grpc;
 
@@ -29,7 +28,7 @@ public sealed class ObjectRetrievalGrpcService(
 
         var rowJson = await _sql.QuerySingleOrDefaultAsync<string>(
             $"SELECT row_to_json(t)::text FROM \"{schema.TableName}\" t WHERE \"{schema.KeyColumn.Name}\" = @Key::uuid",
-            new { Key = request.Key });
+            new { request.Key });
 
         if (rowJson is null)
             return new RetrievalResponse { Found = false, TraceId = request.TraceId };

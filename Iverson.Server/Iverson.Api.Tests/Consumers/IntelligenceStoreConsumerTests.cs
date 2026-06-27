@@ -19,7 +19,7 @@ public class IntelligenceStoreConsumerTests
     private readonly IVectorService _vector;
     private readonly IEmbeddingService _embedding;
     private readonly IPostgresRepository _sql;
-    private readonly Api.Schema.SchemaRegistry _registry;
+    private readonly SchemaRegistry _registry;
 
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
@@ -46,7 +46,7 @@ public class IntelligenceStoreConsumerTests
         _embedding.EmbedAsync(Arg.Any<string>(), Arg.Any<CancellationToken>())
                   .Returns(new float[768]);
 
-        _registry = new Api.Schema.SchemaRegistry(_sql, NullLogger<Api.Schema.SchemaRegistry>.Instance);
+        _registry = new SchemaRegistry(_sql, NullLogger<SchemaRegistry>.Instance);
     }
 
     private string Serialize(EntityEvent ev) => JsonSerializer.Serialize(ev, JsonOptions);

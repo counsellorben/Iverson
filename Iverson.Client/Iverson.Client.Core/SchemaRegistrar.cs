@@ -23,11 +23,13 @@ public sealed class SchemaRegistrar(
             var typeDesc = BuildTypeDescriptor(descriptor);
             try
             {
-                var response = await mapping.RegisterSchemaAsync(new SchemaRequest
-                {
-                    RootType = typeDesc,
-                    TraceId  = Activity.Current?.TraceId.ToString() ?? string.Empty
-                }, cancellationToken: ct);
+                var response = await mapping.RegisterSchemaAsync(
+                    new SchemaRequest
+                    {
+                        RootType = typeDesc,
+                        TraceId  = Activity.Current?.TraceId.ToString() ?? string.Empty
+                    },
+                    cancellationToken: ct);
 
                 logger.LogInformation("Schema registered: {Types}",
                     string.Join(", ", response.Registered));
@@ -62,13 +64,14 @@ public sealed class SchemaRegistrar(
         foreach (var relation in descriptor.Relations)
         {
             var fk = relation.ForeignKey ?? InferForeignKey(relation, descriptor.EntityName);
-            typeDesc.Relations.Add(new Iverson.Client.Contracts.RelationDescriptor
-            {
-                PropertyName = relation.Property.Name,
-                Kind         = ToProtoKind(relation.Kind),
-                RelatedType  = relation.RelatedType.Name,
-                ForeignKey   = fk ?? string.Empty
-            });
+            typeDesc.Relations.Add(
+                new Contracts.RelationDescriptor
+                {
+                    PropertyName = relation.Property.Name,
+                    Kind         = ToProtoKind(relation.Kind),
+                    RelatedType  = relation.RelatedType.Name,
+                    ForeignKey   = fk ?? string.Empty
+                });
         }
 
         return typeDesc;
@@ -132,7 +135,7 @@ public sealed class SchemaRegistrar(
 
         if (Nullable.GetUnderlyingType(type) is { } nn)
         {
-            type      = nn;
+            type       = nn;
             isNullable = true;
         }
 
@@ -175,12 +178,12 @@ public sealed class SchemaRegistrar(
             _                       => null
         };
 
-    private static Iverson.Client.Contracts.RelationKind ToProtoKind(RelationKind kind) => kind switch
+    private static Contracts.RelationKind ToProtoKind(RelationKind kind) => kind switch
     {
-        RelationKind.OneToOne   => Iverson.Client.Contracts.RelationKind.OneToOne,
-        RelationKind.OneToMany  => Iverson.Client.Contracts.RelationKind.OneToMany,
-        RelationKind.ManyToOne  => Iverson.Client.Contracts.RelationKind.ManyToOne,
-        RelationKind.ManyToMany => Iverson.Client.Contracts.RelationKind.ManyToMany,
-        _                       => Iverson.Client.Contracts.RelationKind.OneToOne
+        RelationKind.OneToOne   => Contracts.RelationKind.OneToOne,
+        RelationKind.OneToMany  => Contracts.RelationKind.OneToMany,
+        RelationKind.ManyToOne  => Contracts.RelationKind.ManyToOne,
+        RelationKind.ManyToMany => Contracts.RelationKind.ManyToMany,
+        _                       => Contracts.RelationKind.OneToOne
     };
 }

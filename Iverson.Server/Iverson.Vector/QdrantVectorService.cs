@@ -6,7 +6,9 @@ using QdrantVector = Qdrant.Client.Grpc.Vector;
 
 namespace Iverson.Vector;
 
-public class QdrantVectorService(QdrantClient client, ILogger<QdrantVectorService> logger) : IVectorService
+public class QdrantVectorService(
+    QdrantClient client,
+    ILogger<QdrantVectorService> logger) : IVectorService
 {
     public async Task EnsureCollectionAsync(string collectionName, ulong vectorSize)
     {
@@ -34,7 +36,11 @@ public class QdrantVectorService(QdrantClient client, ILogger<QdrantVectorServic
         activity?.SetStatus(ActivityStatusCode.Ok);
     }
 
-    public async Task UpsertAsync(string collectionName, ulong id, float[] vector, Dictionary<string, string>? payload = null)
+    public async Task UpsertAsync(
+        string collectionName,
+        ulong id,
+        float[] vector,
+        Dictionary<string, string>? payload = null)
     {
         using var activity = Telemetry.Source.StartActivity("qdrant.upsert", ActivityKind.Client);
         activity?.SetTag("db.system", "qdrant");
@@ -82,7 +88,10 @@ public class QdrantVectorService(QdrantClient client, ILogger<QdrantVectorServic
         activity?.SetStatus(ActivityStatusCode.Ok);
     }
 
-    public async Task<IReadOnlyList<VectorSearchResult>> SearchAsync(string collectionName, float[] queryVector, ulong limit = 10)
+    public async Task<IReadOnlyList<VectorSearchResult>> SearchAsync(
+        string collectionName,
+        float[] queryVector,
+        ulong limit = 10)
     {
         using var activity = Telemetry.Source.StartActivity("qdrant.search", ActivityKind.Client);
         activity?.SetTag("db.system", "qdrant");
@@ -103,7 +112,10 @@ public class QdrantVectorService(QdrantClient client, ILogger<QdrantVectorServic
     }
 
     public async Task<IReadOnlyList<VectorSearchResult>> SearchNamedAsync(
-        string collectionName, string vectorName, float[] queryVector, ulong limit = 10)
+        string collectionName,
+        string vectorName,
+        float[] queryVector,
+        ulong limit = 10)
     {
         using var activity = Telemetry.Source.StartActivity("qdrant.search_named", ActivityKind.Client);
         activity?.SetTag("db.system", "qdrant");
@@ -206,7 +218,9 @@ public class QdrantVectorService(QdrantClient client, ILogger<QdrantVectorServic
 
     // ── Private helpers ────────────────────────────────────────────────────────
 
-    private async Task MigrateCollectionAsync(CollectionSchema schema, VectorsConfig? existingCfg)
+    private async Task MigrateCollectionAsync(
+        CollectionSchema schema,
+        VectorsConfig? existingCfg)
     {
         var (isAlias, currentPhysical) = await ResolvePhysicalCollectionAsync(schema.CollectionName);
         var newPhysical = VersionedName(schema.CollectionName);
@@ -238,8 +252,10 @@ public class QdrantVectorService(QdrantClient client, ILogger<QdrantVectorServic
     }
 
     private async Task CopyPointsAsync(
-        string source, string dest,
-        VectorsConfig? sourceCfg, IReadOnlyList<NamedVector> schemaVectors)
+        string source,
+        string dest,
+        VectorsConfig? sourceCfg,
+        IReadOnlyList<NamedVector> schemaVectors)
     {
         PointId? nextOffset = null;
         var isSourceUnnamed = sourceCfg?.ConfigCase == VectorsConfig.ConfigOneofCase.Params;
@@ -267,7 +283,9 @@ public class QdrantVectorService(QdrantClient client, ILogger<QdrantVectorServic
                 ps.Vectors = ConvertVectors(
                     p.Vectors,
                     isSourceUnnamed,
-                    schemaVectors.Count > 0 ? schemaVectors[0].Name : null);
+                    schemaVectors.Count > 0
+                        ? schemaVectors[0].Name
+                        : null);
 
                 return ps;
             }).ToList();
@@ -275,7 +293,9 @@ public class QdrantVectorService(QdrantClient client, ILogger<QdrantVectorServic
             await client.UpsertAsync(dest, structs);
 
             var offset = scroll.NextPageOffset;
-            nextOffset = (offset is not null && (offset.HasNum || offset.HasUuid)) ? offset : null;
+            nextOffset = (offset is not null && (offset.HasNum || offset.HasUuid))
+                ? offset
+                : null;
         } while (nextOffset is not null);
     }
 
@@ -283,7 +303,9 @@ public class QdrantVectorService(QdrantClient client, ILogger<QdrantVectorServic
     // When the source collection used a single unnamed vector and the destination uses named vectors,
     // wraps the unnamed vector data under the first schema vector name.
     private static Vectors? ConvertVectors(
-        VectorsOutput? source, bool isSourceUnnamed, string? firstVectorName)
+        VectorsOutput? source,
+        bool isSourceUnnamed,
+        string? firstVectorName)
     {
         if (source is null || source.VectorsOptionsCase == VectorsOutput.VectorsOptionsOneofCase.None)
             return null;

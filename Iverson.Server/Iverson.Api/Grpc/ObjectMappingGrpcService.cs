@@ -9,16 +9,14 @@ using Iverson.Events;
 using Iverson.Sql;
 using Iverson.StarRocks;
 using Iverson.Vector;
-using Microsoft.Extensions.Logging;
-using Iverson.Api;
-using SchemaRelKind       = Iverson.Api.Schema.RelationKind;
-using SchemaRelDescriptor = Iverson.Api.Schema.RelationDescriptor;
+using SchemaRelationKind       = Iverson.Api.Schema.RelationKind;
+using SchemaRelationDescriptor = Iverson.Api.Schema.RelationDescriptor;
 
 namespace Iverson.Api.Grpc;
 
 /// <summary>
 /// Implements full entity CRUD with server-side relationship resolution.
-/// Routing to backing stores (SQL / ES / Qdrant / Kafka) is determined by
+/// Routing to backing stores (SQL / StarRocks / Qdrant / Kafka) is determined by
 /// the server's entity schema — the client is ignorant of this mapping.
 /// </summary>
 public sealed class ObjectMappingGrpcService(
@@ -36,7 +34,8 @@ public sealed class ObjectMappingGrpcService(
     // ── Schema registration ────────────────────────────────────────────────────
 
     public override async Task<SchemaResponse> RegisterSchema(
-        SchemaRequest request, ServerCallContext context)
+        SchemaRequest request,
+        ServerCallContext context)
     {
         _logger.LogInformation("[RegisterSchema] root={Type} dependents={Deps}",
             request.RootType?.TypeName, request.Dependents.Count);
@@ -74,7 +73,8 @@ public sealed class ObjectMappingGrpcService(
     // ── CRUD ──────────────────────────────────────────────────────────────────
 
     public override async Task<MappingResponse> Get(
-        MappingGetRequest request, ServerCallContext context)
+        MappingGetRequest request,
+        ServerCallContext context)
     {
         _logger.LogInformation("[Mapping.Get] type={Type} key={Key} depth={Depth}",
             request.TypeName, request.Key, request.Depth);
@@ -99,7 +99,8 @@ public sealed class ObjectMappingGrpcService(
     }
 
     public override async Task<MappingResponse> Post(
-        MappingWriteRequest request, ServerCallContext context)
+        MappingWriteRequest request,
+        ServerCallContext context)
     {
         _logger.LogInformation("[Mapping.Post] type={Type}", request.TypeName);
 
@@ -135,7 +136,8 @@ public sealed class ObjectMappingGrpcService(
     }
 
     public override async Task<MappingResponse> Update(
-        MappingWriteRequest request, ServerCallContext context)
+        MappingWriteRequest request,
+        ServerCallContext context)
     {
         _logger.LogInformation("[Mapping.Update] type={Type}", request.TypeName);
 
@@ -223,16 +225,16 @@ public sealed class ObjectMappingGrpcService(
         {
             switch (relation.Kind)
             {
-                case SchemaRelKind.ManyToOne:
-                case SchemaRelKind.OneToOne:
+                case SchemaRelationKind.ManyToOne:
+                case SchemaRelationKind.OneToOne:
                     await ResolveSingleRelationAsync(entityStruct, relation, depth, ct);
                     break;
 
-                case SchemaRelKind.ManyToMany:
+                case SchemaRelationKind.ManyToMany:
                     await ResolveManyToManyAsync(entityStruct, relation, depth, ct);
                     break;
 
-                case SchemaRelKind.OneToMany:
+                case SchemaRelationKind.OneToMany:
                     await ResolveOneToManyAsync(entityStruct, schema, relation, depth, ct);
                     break;
             }
@@ -240,7 +242,7 @@ public sealed class ObjectMappingGrpcService(
     }
 
     private async Task ResolveSingleRelationAsync(
-        Struct entityStruct, SchemaRelDescriptor relation, int depth, CancellationToken ct)
+        Struct entityStruct, SchemaRelationDescriptor relation, int depth, CancellationToken ct)
     {
         var fkValue = GetFieldString(entityStruct, relation.ForeignKey);
         if (string.IsNullOrWhiteSpace(fkValue)) return;
@@ -259,7 +261,7 @@ public sealed class ObjectMappingGrpcService(
     }
 
     private async Task ResolveManyToManyAsync(
-        Struct entityStruct, SchemaRelDescriptor relation, int depth, CancellationToken ct)
+        Struct entityStruct, SchemaRelationDescriptor relation, int depth, CancellationToken ct)
     {
         var ids = GetGetFieldStringList(entityStruct, relation.ForeignKey)
             .Distinct(StringComparer.OrdinalIgnoreCase)
@@ -294,7 +296,7 @@ public sealed class ObjectMappingGrpcService(
     }
 
     private async Task ResolveOneToManyAsync(
-        Struct entityStruct, SchemaDescriptor schema, SchemaRelDescriptor relation, int depth, CancellationToken ct)
+        Struct entityStruct, SchemaDescriptor schema, SchemaRelationDescriptor relation, int depth, CancellationToken ct)
     {
         var keyValue = GetFieldString(entityStruct, schema.KeyColumn.Name);
         if (string.IsNullOrWhiteSpace(keyValue)) return;
@@ -386,16 +388,16 @@ public sealed class ObjectMappingGrpcService(
         {
             switch (relation.Kind)
             {
-                case SchemaRelKind.ManyToOne:
-                case SchemaRelKind.OneToOne:
+                case SchemaRelationKind.ManyToOne:
+                case SchemaRelationKind.OneToOne:
                     ValidateSingleRelation(payload, relation, schema, errors);
                     break;
 
-                case SchemaRelKind.ManyToMany:
+                case SchemaRelationKind.ManyToMany:
                     ValidateCollectionRelation(payload, relation, errors);
                     break;
 
-                case SchemaRelKind.OneToMany:
+                case SchemaRelationKind.OneToMany:
                     break; // FK lives on the related entity
             }
         }
@@ -406,7 +408,7 @@ public sealed class ObjectMappingGrpcService(
     }
 
     private void ValidateSingleRelation(
-        Struct payload, SchemaRelDescriptor relation, SchemaDescriptor schema, List<string> errors)
+        Struct payload, SchemaRelationDescriptor relation, SchemaDescriptor schema, List<string> errors)
     {
         var fkValue = GetFieldValue(payload, relation.ForeignKey);
         if (fkValue is not null)
@@ -434,7 +436,7 @@ public sealed class ObjectMappingGrpcService(
     }
 
     private void ValidateCollectionRelation(
-        Struct payload, SchemaRelDescriptor relation, List<string> errors)
+        Struct payload, SchemaRelationDescriptor relation, List<string> errors)
     {
         var fkValue = GetFieldValue(payload, relation.ForeignKey);
         if (fkValue?.ListValue is { } fkList)

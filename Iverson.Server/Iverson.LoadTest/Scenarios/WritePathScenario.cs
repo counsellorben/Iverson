@@ -16,7 +16,7 @@ namespace Iverson.LoadTest.Scenarios;
 public sealed class WritePathScenario(
     LoadTestConfig config,
     EntityCoordinator<BenchmarkArticle> articles,
-    EntityCoordinator<BenchmarkUser>    users,
+    EntityCoordinator<BenchmarkAuthor>  authors,
     EntityCoordinator<BenchmarkTag>     tags,
     ILogger<WritePathScenario>          logger)
 {
@@ -64,14 +64,14 @@ public sealed class WritePathScenario(
                     switch (flags.Type)
                     {
                         case "User":
-                            var u = new BenchmarkUser
+                            var u = new BenchmarkAuthor
                             {
                                 Id    = Guid.NewGuid(),
                                 Name  = $"WPUser {seed}",
                                 Email = $"wp{seed}@benchmark.dev",
                                 Bio   = new string('x', 200),
                             };
-                            await users.PersistAsync(u, ct);
+                            await authors.PersistAsync(u, ct);
                             key = u.Id.ToString();
                             break;
 
@@ -89,13 +89,15 @@ public sealed class WritePathScenario(
                         default: // Article
                             var a = new BenchmarkArticle
                             {
-                                Id          = Guid.NewGuid(),
-                                Title       = $"WP Article {seed}",
-                                Body        = GenerateBody(seed),
-                                BenchmarkUserId = userIds.Length > 0 ? userIds[seed % userIds.Length] : Guid.NewGuid(),
-                                Category    = Categories[seed % Categories.Length],
-                                WordCount   = seed % 1000,
-                                PublishedAt = DateTimeOffset.UtcNow,
+                                Id                = Guid.NewGuid(),
+                                Title             = $"WP Article {seed}",
+                                Body              = GenerateBody(seed),
+                                BenchmarkAuthorId = userIds.Length > 0
+                                    ? userIds[seed % userIds.Length]
+                                    : Guid.NewGuid(),
+                                Category          = Categories[seed % Categories.Length],
+                                WordCount         = seed % 1000,
+                                PublishedAt       = DateTimeOffset.UtcNow,
                             };
                             await articles.PersistAsync(a, ct);
                             key = a.Id.ToString();

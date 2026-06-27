@@ -6,7 +6,6 @@ using Iverson.Client.Contracts;
 using Iverson.Embeddings;
 using Iverson.StarRocks;
 using Iverson.Vector;
-using Microsoft.Extensions.Logging;
 
 using SrAggKind   = Iverson.StarRocks.AggregationKind;
 using SrAggSpec   = Iverson.StarRocks.AggregationDescriptor;
@@ -47,7 +46,11 @@ public sealed class ObjectSearchGrpcService(
                 request.TypeName, request.Query?.Clauses.Count ?? 0, request.Page, request.PageSize);
 
         var (sql, param) = StarRocksQueryBuilder.BuildSearch(
-            schema.TableName, schema, request.Query, request.Page, request.PageSize);
+            schema.TableName,
+            schema,
+            request.Query,
+            request.Page,
+            request.PageSize);
 
         var rows = await sr.QueryAsync<dynamic>(sql, param);
 
@@ -55,12 +58,14 @@ public sealed class ObjectSearchGrpcService(
         {
             var dict = ((IDictionary<string, object>)row)
                 .ToDictionary(kv => kv.Key, kv => (object?)kv.Value);
-            await responseStream.WriteAsync(new SearchResponse
-            {
-                Data    = DictToProtoStruct(dict),
-                Score   = 1.0f,
-                TraceId = request.TraceId
-            }, context.CancellationToken);
+            await responseStream.WriteAsync(
+                new SearchResponse
+                {
+                    Data    = DictToProtoStruct(dict),
+                    Score   = 1.0f,
+                    TraceId = request.TraceId
+                },
+                context.CancellationToken);
         }
     }
 
@@ -106,12 +111,14 @@ public sealed class ObjectSearchGrpcService(
             foreach (var kvp in r.Payload)
                 protoStruct.Fields[kvp.Key] = Value.ForString(kvp.Value);
 
-            await responseStream.WriteAsync(new SearchResponse
-            {
-                Data    = protoStruct,
-                Score   = (float)r.Score,
-                TraceId = request.TraceId
-            }, context.CancellationToken);
+            await responseStream.WriteAsync(
+                new SearchResponse
+                {
+                    Data    = protoStruct,
+                    Score   = (float)r.Score,
+                    TraceId = request.TraceId
+                },
+                context.CancellationToken);
         }
     }
 
@@ -157,13 +164,15 @@ public sealed class ObjectSearchGrpcService(
             r.Payload.TryGetValue("text",      out var chunkText);
             r.Payload.TryGetValue("parent_id", out var parentId);
 
-            await responseStream.WriteAsync(new ChunkSearchResponse
-            {
-                ParentKey = parentId  ?? string.Empty,
-                ChunkText = chunkText ?? string.Empty,
-                Score     = (float)r.Score,
-                TraceId   = request.TraceId
-            }, context.CancellationToken);
+            await responseStream.WriteAsync(
+                new ChunkSearchResponse
+                {
+                    ParentKey = parentId  ?? string.Empty,
+                    ChunkText = chunkText ?? string.Empty,
+                    Score     = (float)r.Score,
+                    TraceId   = request.TraceId
+                },
+                context.CancellationToken);
         }
     }
 

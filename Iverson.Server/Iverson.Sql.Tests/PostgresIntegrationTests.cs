@@ -1,5 +1,4 @@
 using FluentAssertions;
-using Iverson.Sql;
 using Microsoft.Extensions.Logging.Abstractions;
 using Testcontainers.PostgreSql;
 using Xunit;
@@ -42,8 +41,8 @@ public sealed class PostgresIntegrationTests(PostgresContainerFixture fixture)
         var table = UniqueTable();
         var schema = new TableSchema(
             table,
-            new ColumnSchema("id",   "uuid",    IsNullable: false),
-            [new ColumnSchema("name", "text",   IsNullable: false)]);
+            new ColumnSchema("id",    "uuid", IsNullable: false),
+            [new ColumnSchema("name", "text", IsNullable: false)]);
 
         await _repo.ApplySchemaAsync(schema);
 
@@ -59,7 +58,7 @@ public sealed class PostgresIntegrationTests(PostgresContainerFixture fixture)
         var table  = UniqueTable();
         var schema = new TableSchema(
             table,
-            new ColumnSchema("id",   "uuid", IsNullable: false),
+            new ColumnSchema("id",    "uuid", IsNullable: false),
             [new ColumnSchema("name", "text", IsNullable: false)]);
 
         await _repo.ApplySchemaAsync(schema);
@@ -75,16 +74,16 @@ public sealed class PostgresIntegrationTests(PostgresContainerFixture fixture)
 
         var v1 = new TableSchema(
             table,
-            new ColumnSchema("id",   "uuid", IsNullable: false),
+            new ColumnSchema("id",    "uuid", IsNullable: false),
             [new ColumnSchema("name", "text", IsNullable: false)]);
         await _repo.ApplySchemaAsync(v1);
 
         var v2 = new TableSchema(
             table,
-            new ColumnSchema("id",       "uuid",    IsNullable: false),
+            new ColumnSchema("id",       "uuid", IsNullable: false),
             [
-                new ColumnSchema("name",    "text",    IsNullable: false),
-                new ColumnSchema("bio",     "text",    IsNullable: true),
+                new ColumnSchema("name", "text", IsNullable: false),
+                new ColumnSchema("bio",  "text", IsNullable: true),
             ]);
         await _repo.ApplySchemaAsync(v2);
 
@@ -102,16 +101,16 @@ public sealed class PostgresIntegrationTests(PostgresContainerFixture fixture)
 
         var v1 = new TableSchema(
             table,
-            new ColumnSchema("id",      "uuid", IsNullable: false),
+            new ColumnSchema("id",       "uuid", IsNullable: false),
             [
-                new ColumnSchema("name",   "text", IsNullable: false),
-                new ColumnSchema("bio",    "text", IsNullable: true),
+                new ColumnSchema("name", "text", IsNullable: false),
+                new ColumnSchema("bio",  "text", IsNullable: true),
             ]);
         await _repo.ApplySchemaAsync(v1);
 
         var v2 = new TableSchema(
             table,
-            new ColumnSchema("id",   "uuid", IsNullable: false),
+            new ColumnSchema("id",    "uuid", IsNullable: false),
             [new ColumnSchema("name", "text", IsNullable: false)]);
         await _repo.ApplySchemaAsync(v2);
 
@@ -130,7 +129,7 @@ public sealed class PostgresIntegrationTests(PostgresContainerFixture fixture)
         var table = UniqueTable();
         await _repo.ApplySchemaAsync(new TableSchema(
             table,
-            new ColumnSchema("id",   "uuid", IsNullable: false),
+            new ColumnSchema("id",    "uuid", IsNullable: false),
             [new ColumnSchema("name", "text", IsNullable: false)]));
 
         var id = Guid.NewGuid();
@@ -153,7 +152,7 @@ public sealed class PostgresIntegrationTests(PostgresContainerFixture fixture)
         var table = UniqueTable();
         await _repo.ApplySchemaAsync(new TableSchema(
             table,
-            new ColumnSchema("id",   "uuid", IsNullable: false),
+            new ColumnSchema("id",    "uuid", IsNullable: false),
             [new ColumnSchema("name", "text", IsNullable: false)]));
 
         var result = await _repo.QuerySingleOrDefaultAsync<string>(
@@ -170,7 +169,7 @@ public sealed class PostgresIntegrationTests(PostgresContainerFixture fixture)
         var table = UniqueTable();
         await _repo.ApplySchemaAsync(new TableSchema(
             table,
-            new ColumnSchema("id",   "uuid", IsNullable: false),
+            new ColumnSchema("id",    "uuid", IsNullable: false),
             [new ColumnSchema("name", "text", IsNullable: false)]));
 
         var id  = Guid.NewGuid();
@@ -197,7 +196,7 @@ public sealed class PostgresIntegrationTests(PostgresContainerFixture fixture)
         var table = UniqueTable();
         await _repo.ApplySchemaAsync(new TableSchema(
             table,
-            new ColumnSchema("id",   "uuid", IsNullable: false),
+            new ColumnSchema("id",    "uuid", IsNullable: false),
             [new ColumnSchema("name", "text", IsNullable: false)]));
 
         var id  = Guid.NewGuid();
@@ -222,7 +221,7 @@ public sealed class PostgresIntegrationTests(PostgresContainerFixture fixture)
         var table = UniqueTable();
         await _repo.ApplySchemaAsync(new TableSchema(
             table,
-            new ColumnSchema("id",       "uuid", IsNullable: false),
+            new ColumnSchema("id",        "uuid", IsNullable: false),
             [new ColumnSchema("authorId", "uuid", IsNullable: false)]));
 
         var indexes = (await _repo.QueryAsync<string>(

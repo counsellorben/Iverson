@@ -9,8 +9,8 @@ namespace Iverson.Client.Search;
 public static class SearchOperators
 {
     /// <summary>Use <c>EqualTo</c> to avoid collision with <c>object.Equals</c>.</summary>
-    public new static readonly SearchOperator Equals  = SearchOperator.Equals;
-    public static readonly SearchOperator EqualTo     = SearchOperator.Equals;
+    public new static readonly SearchOperator Equals           = SearchOperator.Equals;
+    public static readonly SearchOperator EqualTo              = SearchOperator.Equals;
     public static readonly SearchOperator NotEquals            = SearchOperator.NotEquals;
     public static readonly SearchOperator Contains             = SearchOperator.Contains;
     public static readonly SearchOperator StartsWith           = SearchOperator.StartsWith;

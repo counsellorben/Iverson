@@ -102,6 +102,25 @@ public sealed class CommandFlags
         Type        = StrFlag(args, "--type",        "Article"),
     };
 
-    private static int    IntFlag(string[] a, string f, int    d) { var i = Array.IndexOf(a, f); return i >= 0 && i + 1 < a.Length && int.TryParse(a[i + 1], out var v) ? v : d; }
-    private static string StrFlag(string[] a, string f, string d) { var i = Array.IndexOf(a, f); return i >= 0 && i + 1 < a.Length ? a[i + 1] : d; }
+    private static int    IntFlag(
+        string[] a,
+        string f,
+        int    d)
+    {
+        var i = Array.IndexOf(a, f);
+        return i >= 0 && i + 1 < a.Length && int.TryParse(a[i + 1], out var v)
+            ? v
+            : d;
+    }
+    
+    private static string StrFlag(
+        string[] a,
+        string f,
+        string d)
+    {
+        var i = Array.IndexOf(a, f);
+        return i >= 0 && i + 1 < a.Length
+            ? a[i + 1] 
+            : d;
+    }
 }

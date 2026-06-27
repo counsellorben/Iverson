@@ -1,12 +1,9 @@
 using System.Diagnostics;
 using System.Text.Json;
-using Iverson.Api;
 using Iverson.Api.Schema;
 using Iverson.Embeddings;
 using Iverson.Events;
 using Iverson.Vector;
-using Microsoft.Extensions.Hosting;
-using Microsoft.Extensions.Logging;
 
 namespace Iverson.Api.Consumers;
 
@@ -52,9 +49,10 @@ public sealed class IntelligenceStoreConsumer(
             logger.LogError(
                 "[Intelligence] Dropped event — no schema registered for type={Type} key={Key}.",
                 ev.TypeName, key);
-            Activity.Current?.SetTag("dropped_event", true)
-                             .SetTag("dropped_event.reason", "schema_not_found")
-                             .SetTag("dropped_event.type", ev.TypeName);
+            Activity.Current?
+                .SetTag("dropped_event", true)
+                .SetTag("dropped_event.reason", "schema_not_found")
+                .SetTag("dropped_event.type", ev.TypeName);
             return;
         }
 
@@ -160,9 +158,10 @@ public sealed class IntelligenceStoreConsumer(
             logger.LogError(
                 "[Intelligence] Dropped event — no schema registered for type={Type} key={Key}.",
                 ev.TypeName, ev.Key);
-            Activity.Current?.SetTag("dropped_event", true)
-                             .SetTag("dropped_event.reason", "schema_not_found")
-                             .SetTag("dropped_event.type", ev.TypeName);
+            Activity.Current?
+                .SetTag("dropped_event", true)
+                .SetTag("dropped_event.reason", "schema_not_found")
+                .SetTag("dropped_event.type", ev.TypeName);
             return;
         }
 

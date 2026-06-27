@@ -139,10 +139,10 @@ public class ObjectMappingGrpcServiceTests
     public async Task RegisterSchema_WithManyToOneRelation_DoesNotThrow()
     {
         var td = SimpleType("Comment", "Body", "ArticleId");
-        td.Relations.Add(new Iverson.Client.Contracts.RelationDescriptor
+        td.Relations.Add(new Client.Contracts.RelationDescriptor
         {
             PropertyName = "Article",
-            Kind         = Iverson.Client.Contracts.RelationKind.ManyToOne,
+            Kind         = Client.Contracts.RelationKind.ManyToOne,
             RelatedType  = "Article",
             ForeignKey   = "ArticleId"
         });
@@ -160,10 +160,10 @@ public class ObjectMappingGrpcServiceTests
         var td = new TypeDescriptor { TypeName = "Post" };
         td.Properties.Add(new PropertyDescriptor { Name = "Id",     ClrType = ClrType.ClrGuid,   IsKey = true });
         td.Properties.Add(new PropertyDescriptor { Name = "TagIds", ClrType = ClrType.ClrGuid,   IsArray = true });
-        td.Relations.Add(new Iverson.Client.Contracts.RelationDescriptor
+        td.Relations.Add(new Client.Contracts.RelationDescriptor
         {
             PropertyName = "Tags",
-            Kind         = Iverson.Client.Contracts.RelationKind.ManyToMany,
+            Kind         = Client.Contracts.RelationKind.ManyToMany,
             RelatedType  = "Tag",
             ForeignKey   = "TagIds"
         });

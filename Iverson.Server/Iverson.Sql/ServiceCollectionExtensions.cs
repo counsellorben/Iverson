@@ -1,4 +1,5 @@
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 
 namespace Iverson.Sql;
 
@@ -8,7 +9,7 @@ public static class ServiceCollectionExtensions
     {
         services.AddSingleton<IPostgresRepository>(sp =>
         {
-            var logger = sp.GetRequiredService<Microsoft.Extensions.Logging.ILogger<PostgresRepository>>();
+            var logger = sp.GetRequiredService<ILogger<PostgresRepository>>();
             return new PostgresRepository(connectionString, logger);
         });
         return services;

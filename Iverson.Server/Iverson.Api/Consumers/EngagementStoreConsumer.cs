@@ -2,8 +2,6 @@ using System.Text.Json;
 using Iverson.Api.Schema;
 using Iverson.Events;
 using Iverson.StarRocks;
-using Microsoft.Extensions.Hosting;
-using Microsoft.Extensions.Logging;
 
 namespace Iverson.Api.Consumers;
 

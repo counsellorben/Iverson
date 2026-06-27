@@ -1,5 +1,4 @@
 using FluentAssertions;
-using Iverson.Vector;
 using NSubstitute;
 using Xunit;
 
