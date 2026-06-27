@@ -4,11 +4,10 @@ namespace Iverson.Events;
 public enum StoreTarget
 {
     None         = 0,
-    Record       = 1 << 0,  // PostgreSQL — system of record
     Engagement   = 1 << 1,  // StarRocks — engagement read store
     Intelligence = 1 << 2,  // Qdrant — vector/chunk fields
 
-    All = Record | Engagement | Intelligence
+    All = Engagement | Intelligence
 }
 
 public sealed record EntityEvent(

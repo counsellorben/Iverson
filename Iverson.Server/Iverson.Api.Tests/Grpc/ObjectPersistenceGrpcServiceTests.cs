@@ -24,14 +24,12 @@ public class ObjectPersistenceGrpcServiceTests
     public ObjectPersistenceGrpcServiceTests()
     {
         _events = Substitute.For<IEventProducer>();
-        _events.ProduceAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<EntityEvent>())
-               .Returns(Task.CompletedTask);
 
         _sql = Substitute.For<IPostgresRepository>();
         _sql.ExecuteAsync(Arg.Any<string>(), Arg.Any<object?>()).Returns(0);
 
         _registry = new SchemaRegistry(_sql, NullLogger<SchemaRegistry>.Instance);
-        _sut = new ObjectPersistenceGrpcService(_events, _registry, NullLogger<ObjectPersistenceGrpcService>.Instance);
+        _sut = new ObjectPersistenceGrpcService(_events, _sql, _registry, NullLogger<ObjectPersistenceGrpcService>.Instance);
     }
 
     private static Struct MakePayload(Dictionary<string, Value> fields)
@@ -41,15 +39,12 @@ public class ObjectPersistenceGrpcServiceTests
         return s;
     }
 
-    private EntityEvent CaptureEntityEvent()
+    private EntityEvent? CaptureFireAndForgetEvent(string topic)
     {
         EntityEvent? captured = null;
-        _events.ProduceAsync(
-            Arg.Any<string>(),
-            Arg.Any<string>(),
-            Arg.Do<EntityEvent>(e => captured = e))
-            .Returns(Task.CompletedTask);
-        return captured!; // will be populated after the call
+        _events.When(e => e.PublishFireAndForget(topic, Arg.Any<string>(), Arg.Any<EntityEvent>()))
+               .Do(call => captured = call.ArgAt<EntityEvent>(2));
+        return captured; // populated after sut call — caller must read after invoking sut
     }
 
     [Fact]
@@ -83,19 +78,32 @@ public class ObjectPersistenceGrpcServiceTests
     }
 
     [Fact]
-    public async Task Post_AlwaysIncludesRecord_InTargetStores()
+    public async Task Post_ExecutesSqlUpsert_WithPayloadJson()
+    {
+        await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
+        var payload = MakePayload(new() { ["Name"] = Value.ForString("Alice") });
+
+        await _sut.Post(new PersistRequest { TypeName = "Author", Payload = payload }, TestServerCallContext.Create());
+
+        await _sql.Received(1).ExecuteAsync(
+            Arg.Is<string>(s => s.Contains("json_populate_record")),
+            Arg.Any<object?>());
+    }
+
+    [Fact]
+    public async Task Post_PublishesFireAndForget_WithEngagementTarget()
     {
         await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
 
         EntityEvent? captured = null;
-        _events.ProduceAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Do<EntityEvent>(e => captured = e))
-               .Returns(Task.CompletedTask);
+        _events.When(e => e.PublishFireAndForget(EntityTopics.Created, Arg.Any<string>(), Arg.Any<EntityEvent>()))
+               .Do(call => captured = call.ArgAt<EntityEvent>(2));
 
         var payload = MakePayload(new() { ["Name"] = Value.ForString("Alice") });
         await _sut.Post(new PersistRequest { TypeName = "Author", Payload = payload }, TestServerCallContext.Create());
 
         captured.Should().NotBeNull();
-        captured!.TargetStores.HasFlag(StoreTarget.Record).Should().BeTrue();
+        captured!.TargetStores.Should().Be(StoreTarget.Engagement);
     }
 
     [Fact]
@@ -104,8 +112,8 @@ public class ObjectPersistenceGrpcServiceTests
         await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
 
         EntityEvent? captured = null;
-        _events.ProduceAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Do<EntityEvent>(e => captured = e))
-               .Returns(Task.CompletedTask);
+        _events.When(e => e.PublishFireAndForget(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<EntityEvent>()))
+               .Do(call => captured = call.ArgAt<EntityEvent>(2));
 
         var payload = MakePayload(new() { ["Name"] = Value.ForString("Alice") });
         await _sut.Post(new PersistRequest { TypeName = "Author", Payload = payload }, TestServerCallContext.Create());
@@ -119,10 +127,9 @@ public class ObjectPersistenceGrpcServiceTests
         await _registry.RegisterAsync(SchemaFixtures.ArticleWithOneToManySchema());
 
         EntityEvent? captured = null;
-        _events.ProduceAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Do<EntityEvent>(e => captured = e))
-               .Returns(Task.CompletedTask);
+        _events.When(e => e.PublishFireAndForget(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<EntityEvent>()))
+               .Do(call => captured = call.ArgAt<EntityEvent>(2));
 
-        // Provide the required AuthorId FK so validation passes
         var payload = MakePayload(new()
         {
             ["Title"]    = Value.ForString("My Article"),
@@ -139,8 +146,8 @@ public class ObjectPersistenceGrpcServiceTests
         await _registry.RegisterAsync(SchemaFixtures.ArticleSchema());
 
         EntityEvent? captured = null;
-        _events.ProduceAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Do<EntityEvent>(e => captured = e))
-               .Returns(Task.CompletedTask);
+        _events.When(e => e.PublishFireAndForget(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<EntityEvent>()))
+               .Do(call => captured = call.ArgAt<EntityEvent>(2));
 
         var payload = MakePayload(new()
         {
@@ -159,8 +166,8 @@ public class ObjectPersistenceGrpcServiceTests
         await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
 
         EntityEvent? captured = null;
-        _events.ProduceAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Do<EntityEvent>(e => captured = e))
-               .Returns(Task.CompletedTask);
+        _events.When(e => e.PublishFireAndForget(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<EntityEvent>()))
+               .Do(call => captured = call.ArgAt<EntityEvent>(2));
 
         var payload = MakePayload(new() { ["Name"] = Value.ForString("Alice") });
         await _sut.Post(new PersistRequest { TypeName = "Author", Payload = payload }, TestServerCallContext.Create());
@@ -181,10 +188,26 @@ public class ObjectPersistenceGrpcServiceTests
     }
 
     [Fact]
+    public async Task Update_ExecutesSqlUpsert_WithPayloadJson()
+    {
+        await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
+        var payload = MakePayload(new()
+        {
+            ["Id"]   = Value.ForString(Guid.NewGuid().ToString()),
+            ["Name"] = Value.ForString("Alice")
+        });
+
+        await _sut.Update(new PersistRequest { TypeName = "Author", Payload = payload }, TestServerCallContext.Create());
+
+        await _sql.Received(1).ExecuteAsync(
+            Arg.Is<string>(s => s.Contains("json_populate_record")),
+            Arg.Any<object?>());
+    }
+
+    [Fact]
     public async Task Update_ThrowsRpcException_WhenKeyMissing()
     {
         await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
-        // No Id in payload
         var payload = MakePayload(new() { ["Name"] = Value.ForString("Alice") });
         var request = new PersistRequest { TypeName = "Author", Payload = payload };
 
@@ -216,8 +239,8 @@ public class ObjectPersistenceGrpcServiceTests
         await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
 
         EntityEvent? captured = null;
-        _events.ProduceAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Do<EntityEvent>(e => captured = e))
-               .Returns(Task.CompletedTask);
+        _events.When(e => e.PublishFireAndForget(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<EntityEvent>()))
+               .Do(call => captured = call.ArgAt<EntityEvent>(2));
 
         var payload = MakePayload(new()
         {

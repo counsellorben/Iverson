@@ -4,17 +4,17 @@ namespace Iverson.Api.Schema;
 
 /// <summary>
 /// Decides which backing stores an entity's events should target, based purely on
-/// its schema shape (not per-instance graph state). Record (Postgres) is always
-/// targeted. Engagement (StarRocks) is added only when the entity can be
-/// represented as a single flat row — every relation is ManyToOne/OneToOne, or a
-/// ManyToMany whose foreign key lives on this row; a OneToMany disqualifies it.
-/// Intelligence (Qdrant) is added when the schema has vector or chunk fields.
+/// its schema shape (not per-instance graph state). Engagement (StarRocks) is added
+/// only when the entity can be represented as a single flat row — every relation is
+/// ManyToOne/OneToOne, or a ManyToMany whose foreign key lives on this row; a
+/// OneToMany disqualifies it. Intelligence (Qdrant) is added when the schema has
+/// vector or chunk fields.
 /// </summary>
 internal static class StoreTargeting
 {
     internal static StoreTarget DetermineTargetStores(SchemaDescriptor schema)
     {
-        var stores = StoreTarget.Record;
+        var stores = StoreTarget.None;
         if (IsCompleteForIngestion(schema)) stores |= StoreTarget.Engagement;
         if (HasVectorOrChunkFields(schema)) stores |= StoreTarget.Intelligence;
         return stores;

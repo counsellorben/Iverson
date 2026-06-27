@@ -56,7 +56,7 @@ public class EngagementStoreConsumerTests
             TraceId:       "trace-1",
             SchemaVersion: "1",
             OccurredAt:    DateTimeOffset.UtcNow,
-            TargetStores:  StoreTarget.Record | StoreTarget.Engagement);
+            TargetStores:  StoreTarget.Engagement);
 
         await BuildSut().HandleUpsertAsync(ev.Key, Serialize(ev), CancellationToken.None);
 
@@ -78,7 +78,7 @@ public class EngagementStoreConsumerTests
             TraceId:       "trace-2",
             SchemaVersion: "1",
             OccurredAt:    DateTimeOffset.UtcNow,
-            TargetStores:  StoreTarget.Record | StoreTarget.Engagement);
+            TargetStores:  StoreTarget.Engagement);
 
         await BuildSut().HandleDeleteAsync(ev.Key, Serialize(ev), CancellationToken.None);
 
@@ -97,7 +97,7 @@ public class EngagementStoreConsumerTests
             TraceId:       "trace-3",
             SchemaVersion: "1",
             OccurredAt:    DateTimeOffset.UtcNow,
-            TargetStores:  StoreTarget.Record);
+            TargetStores:  StoreTarget.Intelligence);
 
         await BuildSut().HandleUpsertAsync(ev.Key, Serialize(ev), CancellationToken.None);
 

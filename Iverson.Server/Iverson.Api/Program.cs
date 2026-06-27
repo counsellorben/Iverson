@@ -72,7 +72,6 @@ builder.Services.AddSingleton<SchemaRegistry>();
 
 builder.Services.AddEmbeddings(cfg);
 
-builder.Services.AddHostedService<RecordStoreConsumer>();
 builder.Services.AddHostedService<EngagementStoreConsumer>();
 builder.Services.AddHostedService<IntelligenceStoreConsumer>();
 

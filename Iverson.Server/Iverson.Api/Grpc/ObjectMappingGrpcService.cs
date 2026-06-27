@@ -115,9 +115,11 @@ public sealed class ObjectMappingGrpcService(
         }
 
         var payloadJson = StructSerializer.SerializePayload(request.Payload);
+
+        await UpsertAsync(schema, payloadJson);
         var targetStores = StoreTargeting.DetermineTargetStores(schema);
 
-        await _events.ProduceAsync(
+        _events.PublishFireAndForget(
             EntityTopics.Created,
             key,
             new EntityEvent(
@@ -147,9 +149,11 @@ public sealed class ObjectMappingGrpcService(
         ValidateRelations(request.Payload, schema);
 
         var payloadJson = StructSerializer.SerializePayload(request.Payload);
+
+        await UpsertAsync(schema, payloadJson);
         var targetStores = StoreTargeting.DetermineTargetStores(schema);
 
-        await _events.ProduceAsync(
+        _events.PublishFireAndForget(
             EntityTopics.Updated,
             key,
             new EntityEvent(
@@ -184,7 +188,7 @@ public sealed class ObjectMappingGrpcService(
             $"DELETE FROM \"{schema.TableName}\" WHERE \"{schema.KeyColumn.Name}\" = @Key::uuid",
             new { Key = request.Key });
 
-        await _events.ProduceAsync(
+        _events.PublishFireAndForget(
             EntityTopics.Deleted,
             request.Key,
             new EntityEvent(
@@ -475,6 +479,22 @@ public sealed class ObjectMappingGrpcService(
             errors.Add(
                 $"'{path}': existing entity (key='{nestedKey}') must only include " +
                 $"the key field '{keyColumnName}' — remove extra properties.");
+    }
+
+    private async Task UpsertAsync(SchemaDescriptor schema, string payloadJson)
+    {
+        var allCols   = schema.ScalarColumns.Select(c => c.Name).ToList();
+        var updateSet = allCols.Count > 0
+            ? string.Join(", ", allCols.Select(c => $"\"{c}\" = EXCLUDED.\"{c}\""))
+            : $"\"{schema.KeyColumn.Name}\" = EXCLUDED.\"{schema.KeyColumn.Name}\"";
+
+        await _sql.ExecuteAsync(
+            $"""
+            INSERT INTO "{schema.TableName}"
+            SELECT * FROM json_populate_record(null::"{schema.TableName}", @Json::json)
+            ON CONFLICT ("{schema.KeyColumn.Name}") DO UPDATE SET {updateSet}
+            """,
+            new { Json = payloadJson });
     }
 }
 

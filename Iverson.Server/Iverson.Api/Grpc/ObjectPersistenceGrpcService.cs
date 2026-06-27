@@ -7,6 +7,7 @@ using Iverson.Client.Contracts;
 using SchemaRelKind       = Iverson.Api.Schema.RelationKind;
 using SchemaRelDescriptor = Iverson.Api.Schema.RelationDescriptor;
 using Iverson.Events;
+using Iverson.Sql;
 using Microsoft.Extensions.Logging;
 
 namespace Iverson.Api.Grpc;
@@ -19,6 +20,7 @@ namespace Iverson.Api.Grpc;
 /// </summary>
 public sealed class ObjectPersistenceGrpcService(
     IEventProducer events,
+    IPostgresRepository sql,
     SchemaRegistry registry,
     ILogger<ObjectPersistenceGrpcService> logger)
     : ObjectPersistenceService.ObjectPersistenceServiceBase
@@ -48,7 +50,9 @@ public sealed class ObjectPersistenceGrpcService(
             logger.LogInformation("[Persistence.Post] type={Type} key={Key} stores={Stores}",
                 request.TypeName, key, targetStores);
 
-        await events.ProduceAsync(
+        await UpsertAsync(schema, payloadJson);
+
+        events.PublishFireAndForget(
             EntityTopics.Created,
             key,
             new EntityEvent(
@@ -88,7 +92,9 @@ public sealed class ObjectPersistenceGrpcService(
             logger.LogInformation("[Persistence.Update] type={Type} key={Key} stores={Stores}",
                 request.TypeName, key, targetStores);
 
-        await events.ProduceAsync(
+        await UpsertAsync(schema, payloadJson);
+
+        events.PublishFireAndForget(
             EntityTopics.Updated,
             key,
             new EntityEvent(
@@ -264,6 +270,22 @@ public sealed class ObjectPersistenceGrpcService(
     private SchemaDescriptor RequireSchema(string typeName) =>
         registry.Get(typeName) ?? throw new RpcException(new Status(StatusCode.FailedPrecondition,
             $"No schema registered for '{typeName}'. Call RegisterSchema first."));
+
+    private async Task UpsertAsync(SchemaDescriptor schema, string payloadJson)
+    {
+        var allCols   = schema.ScalarColumns.Select(c => c.Name).ToList();
+        var updateSet = allCols.Count > 0
+            ? string.Join(", ", allCols.Select(c => $"\"{c}\" = EXCLUDED.\"{c}\""))
+            : $"\"{schema.KeyColumn.Name}\" = EXCLUDED.\"{schema.KeyColumn.Name}\"";
+
+        await sql.ExecuteAsync(
+            $"""
+            INSERT INTO "{schema.TableName}"
+            SELECT * FROM json_populate_record(null::"{schema.TableName}", @Json::json)
+            ON CONFLICT ("{schema.KeyColumn.Name}") DO UPDATE SET {updateSet}
+            """,
+            new { Json = payloadJson });
+    }
 }
 
 file static class StringExtensions

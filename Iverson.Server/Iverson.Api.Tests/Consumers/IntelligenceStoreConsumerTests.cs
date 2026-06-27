@@ -71,7 +71,7 @@ public class IntelligenceStoreConsumerTests
             TraceId:       "trace-1",
             SchemaVersion: "1",
             OccurredAt:    DateTimeOffset.UtcNow,
-            TargetStores:  StoreTarget.Record | StoreTarget.Intelligence);
+            TargetStores:  StoreTarget.Intelligence);
 
         var sut = BuildSut();
         await sut.HandleAsync(ev.Key, Serialize(ev), CancellationToken.None);
@@ -101,7 +101,7 @@ public class IntelligenceStoreConsumerTests
             TraceId:       "trace-2",
             SchemaVersion: "1",
             OccurredAt:    DateTimeOffset.UtcNow,
-            TargetStores:  StoreTarget.Record | StoreTarget.Intelligence);
+            TargetStores:  StoreTarget.Intelligence);
 
         var sut = BuildSut();
         await sut.HandleAsync(ev.Key, Serialize(ev), CancellationToken.None);
@@ -127,7 +127,7 @@ public class IntelligenceStoreConsumerTests
             TraceId:       "trace-3",
             SchemaVersion: "1",
             OccurredAt:    DateTimeOffset.UtcNow,
-            TargetStores:  StoreTarget.Record | StoreTarget.Intelligence);
+            TargetStores:  StoreTarget.Intelligence);
 
         var sut = BuildSut();
         await sut.HandleDeleteAsync(ev.Key, Serialize(ev), CancellationToken.None);
@@ -147,7 +147,7 @@ public class IntelligenceStoreConsumerTests
             TraceId:       "trace-4",
             SchemaVersion: "1",
             OccurredAt:    DateTimeOffset.UtcNow,
-            TargetStores:  StoreTarget.Record); // no Intelligence
+            TargetStores:  StoreTarget.Engagement); // no Intelligence
 
         var sut = BuildSut();
         await sut.HandleAsync(ev.Key, Serialize(ev), CancellationToken.None);
@@ -174,7 +174,7 @@ public class IntelligenceStoreConsumerTests
             TraceId:       "trace-5",
             SchemaVersion: "1",
             OccurredAt:    DateTimeOffset.UtcNow,
-            TargetStores:  StoreTarget.Record | StoreTarget.Intelligence);
+            TargetStores:  StoreTarget.Intelligence);
 
         var sut = BuildSut();
         await sut.HandleAsync(ev.Key, Serialize(ev), CancellationToken.None);
@@ -198,7 +198,7 @@ public class IntelligenceStoreConsumerTests
             TraceId:       "trace-6",
             SchemaVersion: "1",
             OccurredAt:    DateTimeOffset.UtcNow,
-            TargetStores:  StoreTarget.Record | StoreTarget.Intelligence);
+            TargetStores:  StoreTarget.Intelligence);
 
         var sut = BuildSut();
         var act = async () => await sut.HandleAsync(ev.Key, Serialize(ev), CancellationToken.None);
@@ -221,7 +221,7 @@ public class IntelligenceStoreConsumerTests
             TraceId:       "trace-payload",
             SchemaVersion: "1",
             OccurredAt:    DateTimeOffset.UtcNow,
-            TargetStores:  StoreTarget.Record | StoreTarget.Intelligence);
+            TargetStores:  StoreTarget.Intelligence);
 
         IReadOnlyDictionary<string, string>? capturedPayload = null;
         _vector.UpsertNamedAsync(
@@ -272,7 +272,7 @@ public class IntelligenceStoreConsumerTests
             TraceId:       "t-parallel",
             SchemaVersion: "1",
             OccurredAt:    DateTimeOffset.UtcNow,
-            TargetStores:  StoreTarget.Record | StoreTarget.Intelligence);
+            TargetStores:  StoreTarget.Intelligence);
 
         var sut = BuildSut();
         await sut.HandleAsync(ev.Key, Serialize(ev), CancellationToken.None);
@@ -310,7 +310,7 @@ public class IntelligenceStoreConsumerTests
             TraceId:       "trace-7",
             SchemaVersion: "1",
             OccurredAt:    DateTimeOffset.UtcNow,
-            TargetStores:  StoreTarget.Record | StoreTarget.Intelligence);
+            TargetStores:  StoreTarget.Intelligence);
 
         var upsertCount = 0;
         _vector.UpsertNamedAsync(

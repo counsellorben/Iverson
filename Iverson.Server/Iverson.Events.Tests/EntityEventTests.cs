@@ -26,12 +26,6 @@ public sealed class EntityEventTests
     }
 
     [Fact]
-    public void StoreTarget_All_IncludesRecord()
-    {
-        (StoreTarget.All & StoreTarget.Record).Should().Be(StoreTarget.Record);
-    }
-
-    [Fact]
     public void StoreTarget_All_IncludesEngagement()
     {
         (StoreTarget.All & StoreTarget.Engagement).Should().Be(StoreTarget.Engagement);
