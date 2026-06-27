@@ -8,7 +8,7 @@ using NpgsqlTypes;
 
 namespace Iverson.LoadTest.Seeding;
 
-public sealed class DirectSeeder(LoadTestConfig config, ILogger<DirectSeeder> logger)
+public sealed class DirectSeeder(LoadTestConfig config)
 {
     private const int ArticleTarget = 400_000;
     private const int UserTarget    =  50_000;

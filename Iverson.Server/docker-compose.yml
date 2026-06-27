@@ -134,6 +134,7 @@ services:
     build:
       context: ..
       dockerfile: Iverson.Server/Iverson.Api/Dockerfile
+    image: iverson-api
     container_name: iverson-api
     restart: unless-stopped
     ports:

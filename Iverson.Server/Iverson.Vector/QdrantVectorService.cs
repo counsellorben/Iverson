@@ -66,11 +66,7 @@ public class QdrantVectorService(QdrantClient client, ILogger<QdrantVectorServic
 
         var named = new NamedVectors();
         foreach (var (name, data) in namedVectors)
-        {
-            var v = new QdrantVector();
-            v.Data.AddRange(data);
-            named.Vectors[name] = v;
-        }
+            named.Vectors[name] = data;
 
         var point = new PointStruct
         {
@@ -298,25 +294,17 @@ public class QdrantVectorService(QdrantClient client, ILogger<QdrantVectorServic
             {
                 // Unnamed single-vector → named for new collection layout
                 var namedVecs = new NamedVectors();
-                var v = new QdrantVector();
-                v.Data.AddRange(source.Vector.Data);
-                namedVecs.Vectors[firstVectorName] = v;
+                namedVecs.Vectors[firstVectorName] = new QdrantVector { Dense = source.Vector.Dense };
                 return new Vectors { Vectors_ = namedVecs };
             }
 
-            var sv = new QdrantVector();
-            sv.Data.AddRange(source.Vector.Data);
-            return new Vectors { Vector = sv };
+            return new Vectors { Vector = new QdrantVector { Dense = source.Vector.Dense } };
         }
 
         // VectorsOutput.VectorsOptionsOneofCase.Vectors — named vectors
         var named = new NamedVectors();
         foreach (var kvp in source.Vectors.Vectors)
-        {
-            var v = new QdrantVector();
-            v.Data.AddRange(kvp.Value.Data);
-            named.Vectors[kvp.Key] = v;
-        }
+            named.Vectors[kvp.Key] = new QdrantVector { Dense = kvp.Value.Dense };
         return new Vectors { Vectors_ = named };
     }
 
