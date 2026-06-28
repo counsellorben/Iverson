@@ -113,6 +113,10 @@ static async Task ResetStarRocksAsync(string starRocksCs, string postgresCs)
     await pg.ExecuteAsync(
         "TRUNCATE benchmark_articles, benchmark_authors, benchmark_tags RESTART IDENTITY CASCADE");
     Console.WriteLine("Postgres: truncated benchmark_articles, benchmark_authors, benchmark_tags.");
+
+    await pg.ExecuteAsync(
+        "DO $$ BEGIN IF EXISTS (SELECT 1 FROM pg_tables WHERE tablename = 'benchmark_users') THEN TRUNCATE benchmark_users CASCADE; END IF; END $$");
+    Console.WriteLine("Postgres: cleared benchmark_users (legacy).");
 }
 
 // ── Supporting types ──────────────────────────────────────────────────────────

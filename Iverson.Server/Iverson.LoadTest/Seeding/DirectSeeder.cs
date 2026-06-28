@@ -11,7 +11,7 @@ namespace Iverson.LoadTest.Seeding;
 public sealed class DirectSeeder(LoadTestConfig config)
 {
     private const int ArticleTarget = 400_000;
-    private const int UserTarget    =  50_000;
+    private const int AuthorTarget  =  50_000;
     private const int TagTarget     =  10_000;
     private const int SrBatchSize   =   1_000;
 
@@ -25,66 +25,66 @@ public sealed class DirectSeeder(LoadTestConfig config)
         await using var sr = new MySqlConnection(config.StarRocksCs);
         await sr.OpenAsync(ct);
 
-        var userIds = await SeedUsersAsync(pg, sr, flags.ForceReseed, ct);
+        var authorIds = await SeedAuthorsAsync(pg, sr, flags.ForceReseed, ct);
         await SeedTagsAsync(pg, sr, flags.ForceReseed, ct);
-        await SeedArticlesAsync(pg, sr, userIds, flags.ForceReseed, ct);
+        await SeedArticlesAsync(pg, sr, authorIds, flags.ForceReseed, ct);
 
         Console.WriteLine("\nSeeding complete.");
     }
 
-    internal static async Task<Guid[]> LoadUserIdsAsync(NpgsqlConnection pg) =>
-        [.. (await pg.QueryAsync<Guid>("SELECT \"Id\" FROM benchmark_users"))];
+    internal static async Task<Guid[]> LoadAuthorIdsAsync(NpgsqlConnection pg) =>
+        [.. (await pg.QueryAsync<Guid>("SELECT \"Id\" FROM benchmark_authors"))];
 
-    // ── Users ──────────────────────────────────────────────────────────────────
+    // ── Authors ───────────────────────────────────────────────────────────────
 
-    private async Task<Guid[]> SeedUsersAsync(
+    private async Task<Guid[]> SeedAuthorsAsync(
         NpgsqlConnection pg, MySqlConnection sr, bool force, CancellationToken ct)
     {
         var existing = await pg.QuerySingleAsync<int>(
-            "SELECT COUNT(*) FROM benchmark_users");
+            "SELECT COUNT(*) FROM benchmark_authors");
 
-        if (!force && existing >= UserTarget * 0.95)
+        if (!force && existing >= AuthorTarget * 0.95)
         {
-            Console.WriteLine($"[Users] {existing:N0} rows already present. Skipping.");
-            return await LoadUserIdsAsync(pg);
+            Console.WriteLine($"[Authors] {existing:N0} rows already present. Skipping.");
+            return await LoadAuthorIdsAsync(pg);
         }
 
         if (force)
         {
-            await pg.ExecuteAsync("TRUNCATE TABLE benchmark_users CASCADE");
-            await sr.ExecuteAsync("DELETE FROM `benchmark_users` WHERE 1=1");
+            await pg.ExecuteAsync("TRUNCATE TABLE benchmark_authors CASCADE");
+            await sr.ExecuteAsync("DELETE FROM `benchmark_authors` WHERE 1=1");
         }
 
-        var ids = new Guid[UserTarget];
+        var ids = new Guid[AuthorTarget];
         var sw  = Stopwatch.StartNew();
 
         // ── Postgres COPY ──
         await using var writer = await pg.BeginBinaryImportAsync(
-            "COPY benchmark_users (\"Id\", \"Name\", \"Email\", \"Bio\") FROM STDIN (FORMAT BINARY)",
+            "COPY benchmark_authors (\"Id\", \"Name\", \"Email\", \"Bio\") FROM STDIN (FORMAT BINARY)",
             ct);
 
-        for (var i = 0; i < UserTarget; i++)
+        for (var i = 0; i < AuthorTarget; i++)
         {
             ids[i] = Guid.NewGuid();
             await writer.StartRowAsync(ct);
-            await writer.WriteAsync(ids[i],                    NpgsqlDbType.Uuid,    ct);
-            await writer.WriteAsync($"User {i}",               NpgsqlDbType.Text,    ct);
-            await writer.WriteAsync($"user{i}@benchmark.dev",  NpgsqlDbType.Text,    ct);
-            await writer.WriteAsync(new string('x', 200),      NpgsqlDbType.Text,    ct);
-            if (i % 5_000 == 0) PrintProgress("Users", i, UserTarget, sw);
+            await writer.WriteAsync(ids[i],                      NpgsqlDbType.Uuid, ct);
+            await writer.WriteAsync($"Author {i}",               NpgsqlDbType.Text, ct);
+            await writer.WriteAsync($"author{i}@benchmark.dev",  NpgsqlDbType.Text, ct);
+            await writer.WriteAsync(new string('x', 200),        NpgsqlDbType.Text, ct);
+            if (i % 5_000 == 0) PrintProgress("Authors", i, AuthorTarget, sw);
         }
         await writer.CompleteAsync(ct);
 
         // ── StarRocks batch INSERT ──
-        await SrBatchInsertAsync(sr, "benchmark_users",
+        await SrBatchInsertAsync(sr, "benchmark_authors",
             ["Id", "Name", "Email", "Bio"],
             ids.Select((id, i) => new object[]
             {
-                id.ToString(), $"User {i}", $"user{i}@benchmark.dev", new string('x', 200)
+                id.ToString(), $"Author {i}", $"author{i}@benchmark.dev", new string('x', 200)
             }),
             sw, ct);
 
-        Console.WriteLine($"\n[Users] Seeded {UserTarget:N0} rows — {sw.Elapsed.TotalSeconds:F1}s");
+        Console.WriteLine($"\n[Authors] Seeded {AuthorTarget:N0} rows — {sw.Elapsed.TotalSeconds:F1}s");
         return ids;
     }
 
@@ -139,7 +139,7 @@ public sealed class DirectSeeder(LoadTestConfig config)
     // ── Articles ──────────────────────────────────────────────────────────────
 
     private async Task SeedArticlesAsync(
-        NpgsqlConnection pg, MySqlConnection sr, Guid[] userIds, bool force, CancellationToken ct)
+        NpgsqlConnection pg, MySqlConnection sr, Guid[] authorIds, bool force, CancellationToken ct)
     {
         var existing = await pg.QuerySingleAsync<int>(
             "SELECT COUNT(*) FROM benchmark_articles");
@@ -162,7 +162,7 @@ public sealed class DirectSeeder(LoadTestConfig config)
 
         await using var writer = await pg.BeginBinaryImportAsync(
             "COPY benchmark_articles " +
-            "(\"Id\", \"Title\", \"Body\", \"BenchmarkUserId\", \"Category\", \"WordCount\", \"PublishedAt\") " +
+            "(\"Id\", \"Title\", \"Body\", \"BenchmarkAuthorId\", \"Category\", \"WordCount\", \"PublishedAt\") " +
             "FROM STDIN (FORMAT BINARY)",
             ct);
 
@@ -176,7 +176,7 @@ public sealed class DirectSeeder(LoadTestConfig config)
             await writer.WriteAsync(ids[i],                           NpgsqlDbType.Uuid,        ct);
             await writer.WriteAsync($"Benchmark Article {i}: {cat}",  NpgsqlDbType.Text,        ct);
             await writer.WriteAsync(body,                             NpgsqlDbType.Text,        ct);
-            await writer.WriteAsync(userIds[i % userIds.Length],      NpgsqlDbType.Uuid,        ct);
+            await writer.WriteAsync(authorIds[i % authorIds.Length],  NpgsqlDbType.Uuid,        ct);
             await writer.WriteAsync(cat,                              NpgsqlDbType.Text,        ct);
             await writer.WriteAsync(body.Length / 5,                  NpgsqlDbType.Integer,     ct);
             await writer.WriteAsync(baseDate.AddDays(i % 2190),       NpgsqlDbType.TimestampTz, ct);
@@ -189,7 +189,7 @@ public sealed class DirectSeeder(LoadTestConfig config)
 
         var srSw = Stopwatch.StartNew();
         await SrBatchInsertAsync(sr, "benchmark_articles",
-            ["Id", "Title", "Body", "BenchmarkUserId", "Category", "WordCount", "PublishedAt"],
+            ["Id", "Title", "Body", "BenchmarkAuthorId", "Category", "WordCount", "PublishedAt"],
             ids.Select((id, i) =>
             {
                 var cat  = Categories[i % Categories.Length];
@@ -199,7 +199,7 @@ public sealed class DirectSeeder(LoadTestConfig config)
                     id.ToString(),
                     $"Benchmark Article {i}: {cat}",
                     body,
-                    userIds[i % userIds.Length].ToString(),
+                    authorIds[i % authorIds.Length].ToString(),
                     cat,
                     body.Length / 5,
                     baseDate.AddDays(i % 2190).ToString("yyyy-MM-dd HH:mm:ss"),

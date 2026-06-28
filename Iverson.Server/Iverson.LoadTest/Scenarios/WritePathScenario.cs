@@ -33,7 +33,7 @@ public sealed class WritePathScenario(
         {
             await using var pgForUsers = new NpgsqlConnection(config.PostgresCs);
             await pgForUsers.OpenAsync(ct);
-            userIds = await DirectSeeder.LoadUserIdsAsync(pgForUsers);
+            userIds = await DirectSeeder.LoadAuthorIdsAsync(pgForUsers);
             if (userIds.Length == 0)
             {
                 Console.Error.WriteLine("No seeded users found. Run 'dotnet run -- seed' first.");
@@ -136,7 +136,7 @@ public sealed class WritePathScenario(
 
             var typeName = flags.Type switch
             {
-                "User" => "benchmark_users",
+                "User" => "benchmark_authors",
                 "Tag"  => "benchmark_tags",
                 _      => "benchmark_articles",
             };
