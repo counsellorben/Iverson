@@ -70,7 +70,7 @@ public class StarRocksRepositoryTests
     }
 
     [Fact]
-    public void BuildCreateMvDdl_ReturnsDdl_WhenMvSortKeyIsPopulated()
+    public void BuildCreateTableDdl_EmitsOrderBy_WhenMvSortKeyIsPopulated()
     {
         var schema = new StarRocksTableSchema(
             "articles",
@@ -78,34 +78,27 @@ public class StarRocksRepositoryTests
             [
                 new StarRocksColumnSchema("Category",    "STRING",   false),
                 new StarRocksColumnSchema("PublishedAt", "DATETIME", false),
-                new StarRocksColumnSchema("Body",        "STRING",   false),
             ])
         {
-            MvSortKey         = ["Category", "PublishedAt"],
-            MvExcludedColumns = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "Body" }
+            MvSortKey = ["Category", "PublishedAt"]
         };
 
-        var ddl = StarRocksRepository.BuildCreateMvDdl(schema);
+        var ddl = StarRocksRepository.BuildCreateTableDdl(schema);
 
-        ddl.Should().NotBeNull();
-        ddl!.Should().Contain("CREATE MATERIALIZED VIEW IF NOT EXISTS `articles_search_mv`");
-        ddl.Should().Contain("`Id`");
-        ddl.Should().Contain("`Category`");
-        ddl.Should().Contain("`PublishedAt`");
-        ddl.Should().NotContain("`Body`");
-        ddl.Should().Contain("GROUP BY `Category`, `PublishedAt`");
+        ddl.Should().Contain("ORDER BY (`Category`, `PublishedAt`)");
+        ddl.Should().Contain("UNIQUE KEY(`Id`)");
     }
 
     [Fact]
-    public void BuildCreateMvDdl_ReturnsNull_WhenNoMvSortKey()
+    public void BuildCreateTableDdl_OmitsOrderBy_WhenNoMvSortKey()
     {
         var schema = new StarRocksTableSchema(
             "authors",
             new StarRocksColumnSchema("Id", "VARCHAR(36)", false),
             [new StarRocksColumnSchema("Name", "STRING", false)]);
 
-        var ddl = StarRocksRepository.BuildCreateMvDdl(schema);
+        var ddl = StarRocksRepository.BuildCreateTableDdl(schema);
 
-        ddl.Should().BeNull();
+        ddl.Should().NotContain("ORDER BY");
     }
 }

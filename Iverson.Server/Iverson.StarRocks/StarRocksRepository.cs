@@ -109,39 +109,19 @@ public sealed class StarRocksRepository(string connectionString, ILogger<StarRoc
         var colsSql = schema.Columns.Select(c =>
             $"`{c.Name}` {c.SrType}{(c.IsNullable ? "" : " NOT NULL")}");
 
+        var orderBy = schema.MvSortKey.Count > 0
+            ? $"\nORDER BY ({string.Join(", ", schema.MvSortKey.Select(k => $"`{k}`"))})"
+            : "";
+
         return $"""
             CREATE TABLE IF NOT EXISTS `{schema.TableName}` (
                 {keySql},
                 {string.Join(",\n    ", colsSql)}
             ) ENGINE=OLAP
-            UNIQUE KEY(`{schema.KeyColumn.Name}`)
+            UNIQUE KEY(`{schema.KeyColumn.Name}`){orderBy}
             DISTRIBUTED BY HASH(`{schema.KeyColumn.Name}`) BUCKETS 4
             PROPERTIES ("replication_num" = "1")
             """;
-    }
-
-    internal static string? BuildCreateMvDdl(StarRocksTableSchema schema)
-    {
-        if (schema.MvSortKey.Count == 0) return null;
-
-        var otherCols = schema.Columns
-            .Where(c => !schema.MvExcludedColumns.Contains(c.Name)
-                     && !schema.MvSortKey.Contains(c.Name, StringComparer.OrdinalIgnoreCase)
-                     && !c.Name.Equals(schema.KeyColumn.Name, StringComparison.OrdinalIgnoreCase))
-            .Select(c => c.Name);
-
-        // Sort key columns first — StarRocks sync MV uses GROUP BY column order as sort key
-        var groupByCols = schema.MvSortKey
-            .Append(schema.KeyColumn.Name)
-            .Concat(otherCols)
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .ToList();
-
-        var colList = string.Join(", ", groupByCols.Select(c => $"`{c}`"));
-
-        return $"CREATE MATERIALIZED VIEW IF NOT EXISTS `{schema.TableName}_search_mv` " +
-               $"AS SELECT {colList} FROM `{schema.TableName}` " +
-               $"GROUP BY {colList}";
     }
 
     public async Task ApplyTableAsync(StarRocksTableSchema schema)
@@ -162,13 +142,6 @@ public sealed class StarRocksRepository(string connectionString, ILogger<StarRoc
         {
             await conn.ExecuteAsync(BuildCreateTableDdl(schema));
             logger.LogInformation("Created StarRocks table {Table}", schema.TableName);
-
-            var mvDdl = BuildCreateMvDdl(schema);
-            if (mvDdl is not null)
-            {
-                await conn.ExecuteAsync(mvDdl);
-                logger.LogInformation("Created materialized view {Table}_search_mv", schema.TableName);
-            }
         }
         else
         {
