@@ -58,6 +58,11 @@ internal static class SchemaBuilder
 
         searchKeys.Sort((a, b) => a.Order.CompareTo(b.Order));
 
+        var conflicts = searchKeys.Where(sk => largeFields.Contains(sk.Name)).Select(sk => sk.Name).ToList();
+        if (conflicts.Count > 0)
+            throw new InvalidOperationException(
+                $"'{typeDesc.TypeName}': {string.Join(", ", conflicts.Select(n => $"'{n}'"))} cannot carry both [IversonSearchKey] and a large-field attribute ([IversonLargeField], [IversonEmbedding], or [IversonChunk]) — the column would be excluded from the MV SELECT but still referenced in ORDER BY.");
+
         var relations = typeDesc.Relations.Select(r => new RelationDescriptor(
             r.PropertyName,
             r.Kind switch

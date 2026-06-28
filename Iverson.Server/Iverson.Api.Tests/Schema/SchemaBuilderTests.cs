@@ -99,4 +99,21 @@ public class SchemaBuilderTests
         schema.MvExcludedColumns.Should().Contain("Body");
         schema.MvExcludedColumns.Should().NotContain("Category");
     }
+
+    [Fact]
+    public void BuildDescriptor_Throws_WhenPropertyHasBothSearchKeyAndLargeField()
+    {
+        var embedding = Substitute.For<IEmbeddingService>();
+        embedding.Dimension.Returns(768);
+        embedding.ModelId.Returns("nomic-embed-text");
+
+        var typeDesc = new TypeDescriptor { TypeName = "Bad" };
+        typeDesc.Properties.Add(new PropertyDescriptor { Name = "Id",       ClrType = ClrType.ClrGuid,   IsKey = true });
+        typeDesc.Properties.Add(new PropertyDescriptor { Name = "Category", ClrType = ClrType.ClrString, IsSearchKey = true, SearchKeyOrder = 0, IsLargeField = true });
+
+        var act = () => SchemaBuilder.BuildDescriptor(typeDesc, embedding);
+
+        act.Should().Throw<InvalidOperationException>()
+           .WithMessage("*Category*");
+    }
 }
