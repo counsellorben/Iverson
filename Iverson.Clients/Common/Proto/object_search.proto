@@ -156,7 +156,7 @@ message AggregationResult {
     string          name         = 1;
     AggregationType type         = 2;
     repeated AggregationBucket buckets      = 3;  // TERMS / DATE_HISTOGRAM / RANGE
-    double          metric_value = 4;              // AVG / SUM / MIN / MAX / CARDINALITY
+    double          metric_value = 4;              // AVG / SUM / MIN / MAX / COUNT
 }
 
 message AggregationBucket {
@@ -172,5 +172,5 @@ enum AggregationType {
     SUM            = 4;
     MIN            = 5;
     MAX            = 6;
-    CARDINALITY    = 7;
+    COUNT          = 7;
 }

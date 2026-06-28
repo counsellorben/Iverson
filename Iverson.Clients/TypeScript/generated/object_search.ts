@@ -192,7 +192,7 @@ export enum AggregationType {
   SUM = 4,
   MIN = 5,
   MAX = 6,
-  CARDINALITY = 7,
+  COUNT = 7,
   UNRECOGNIZED = -1,
 }
 
@@ -220,8 +220,8 @@ export function aggregationTypeFromJSON(object: any): AggregationType {
     case "MAX":
       return AggregationType.MAX;
     case 7:
-    case "CARDINALITY":
-      return AggregationType.CARDINALITY;
+    case "COUNT":
+      return AggregationType.COUNT;
     case -1:
     case "UNRECOGNIZED":
     default:
@@ -245,8 +245,8 @@ export function aggregationTypeToJSON(object: AggregationType): string {
       return "MIN";
     case AggregationType.MAX:
       return "MAX";
-    case AggregationType.CARDINALITY:
-      return "CARDINALITY";
+    case AggregationType.COUNT:
+      return "COUNT";
     case AggregationType.UNRECOGNIZED:
     default:
       return "UNRECOGNIZED";
@@ -397,7 +397,7 @@ export interface AggregationResult {
   type: AggregationType;
   /** TERMS / DATE_HISTOGRAM / RANGE */
   buckets: AggregationBucket[];
-  /** AVG / SUM / MIN / MAX / CARDINALITY */
+  /** AVG / SUM / MIN / MAX / COUNT */
   metricValue: number;
 }
 

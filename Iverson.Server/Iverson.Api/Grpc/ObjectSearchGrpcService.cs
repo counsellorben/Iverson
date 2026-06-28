@@ -262,7 +262,7 @@ public sealed class ObjectSearchGrpcService(
         AggregationType.Sum           => SrAggKind.Sum,
         AggregationType.Min           => SrAggKind.Min,
         AggregationType.Max           => SrAggKind.Max,
-        AggregationType.Cardinality   => SrAggKind.Count,
+        AggregationType.Count         => SrAggKind.Count,
         _                             => throw new ArgumentOutOfRangeException(nameof(type), type, null)
     };
 
@@ -289,7 +289,7 @@ public sealed class ObjectSearchGrpcService(
         SrAggKind.Sum           => AggregationType.Sum,
         SrAggKind.Min           => AggregationType.Min,
         SrAggKind.Max           => AggregationType.Max,
-        SrAggKind.Count         => AggregationType.Cardinality,
+        SrAggKind.Count         => AggregationType.Count,
         _                       => throw new ArgumentOutOfRangeException(nameof(kind), kind, null)
     };
 
