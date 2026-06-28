@@ -153,9 +153,9 @@ public sealed class QueryBuilder<T> where T : class
     public QueryBuilder<T> Max<TValue>(Expression<Func<T, TValue>> property)
         => AddMetricAgg(property, AggregationType.Max);
 
-    /// <summary>Count distinct values of a field (cardinality).</summary>
+    /// <summary>Count distinct values of a field.</summary>
     public QueryBuilder<T> CountDistinct<TValue>(Expression<Func<T, TValue>> property)
-        => AddMetricAgg(property, AggregationType.Cardinality);
+        => AddMetricAgg(property, AggregationType.Count);
 
     // ── Build ──────────────────────────────────────────────────────────────────
 

@@ -1,5 +1,6 @@
 using System.Collections;
 using System.Collections.Concurrent;
+using System.Linq.Expressions;
 using System.Reflection;
 using Google.Protobuf.WellKnownTypes;
 using Grpc.Core;
@@ -22,7 +23,8 @@ public sealed class GraphAssembler(
         typeof(StructConverter).GetMethod(nameof(StructConverter.FromStruct),
             BindingFlags.Public | BindingFlags.Static)!;
 
-    private static readonly ConcurrentDictionary<System.Type, MethodInfo> _fromStructCache = new();
+    private static readonly ConcurrentDictionary<System.Type, MethodInfo>  _fromStructCache   = new();
+    private static readonly ConcurrentDictionary<System.Type, Func<IList>> _listFactoryCache  = new();
 
     public async Task AssembleAsync<T>(T entity, CancellationToken ct = default) where T : class
         => await AssembleAsync(entity, registry.Get<T>(), ct);
@@ -107,8 +109,7 @@ public sealed class GraphAssembler(
         var request = new RetrievalManyRequest { TypeName = relatedDescriptor.EntityName };
         request.Keys.AddRange(keys);
 
-        var collectionType = typeof(List<>).MakeGenericType(relation.RelatedType);
-        var collection     = (IList)Activator.CreateInstance(collectionType)!;
+        var collection = CreateList(relation.RelatedType);;
 
         var stream = retrieval.GetMany(request, cancellationToken: ct);
         await foreach (var response in stream.ResponseStream.ReadAllAsync(ct))
@@ -243,15 +244,22 @@ public sealed class GraphAssembler(
         }
 
         // Set collection properties
-        var collectionType = typeof(List<>).MakeGenericType(relation.RelatedType);
         for (var i = 0; i < entities.Count; i++)
         {
             if (buckets[i].Count == 0) continue;
-            var collection = (IList)Activator.CreateInstance(collectionType)!;
+            var collection = CreateList(relation.RelatedType);;
             foreach (var item in buckets[i]) collection.Add(item);
             relation.Property.SetValue(entities[i], collection);
         }
     }
+
+    private static IList CreateList(System.Type elementType) =>
+        _listFactoryCache.GetOrAdd(elementType, static t =>
+        {
+            var ctor  = typeof(List<>).MakeGenericType(t).GetConstructor(System.Type.EmptyTypes)!;
+            var body  = Expression.Convert(Expression.New(ctor), typeof(IList));
+            return Expression.Lambda<Func<IList>>(body).Compile();
+        })();
 
     // Calls StructConverter.FromStruct<T> via reflection when T is only known at runtime
     private static object? DeserializeStruct(Struct? data, System.Type targetType)

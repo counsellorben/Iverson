@@ -360,16 +360,16 @@ public sealed class QueryBuilderTests
     [InlineData("Sum",         AggregationType.Sum)]
     [InlineData("Min",         AggregationType.Min)]
     [InlineData("Max",         AggregationType.Max)]
-    [InlineData("Cardinality", AggregationType.Cardinality)]
+    [InlineData("CountDistinct", AggregationType.Count)]
     public void MetricMethods_AddCorrectAggType(string method, AggregationType expectedType)
     {
         var req = method switch
         {
-            "Avg"         => Query.For<Article>().Avg(x => x.Rating).BuildAggregate(),
-            "Sum"         => Query.For<Article>().Sum(x => x.PageCount).BuildAggregate(),
-            "Min"         => Query.For<Article>().Min(x => x.Rating).BuildAggregate(),
-            "Max"         => Query.For<Article>().Max(x => x.Rating).BuildAggregate(),
-            "Cardinality" => Query.For<Article>().CountDistinct(x => x.Author).BuildAggregate(),
+            "Avg"          => Query.For<Article>().Avg(x => x.Rating).BuildAggregate(),
+            "Sum"          => Query.For<Article>().Sum(x => x.PageCount).BuildAggregate(),
+            "Min"          => Query.For<Article>().Min(x => x.Rating).BuildAggregate(),
+            "Max"          => Query.For<Article>().Max(x => x.Rating).BuildAggregate(),
+            "CountDistinct" => Query.For<Article>().CountDistinct(x => x.Author).BuildAggregate(),
             _             => throw new InvalidOperationException()
         };
 
