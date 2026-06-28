@@ -1,0 +1,23 @@
+{
+  "name": "@iverson/client",
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "test": "vitest run",
+    "generate": "bash scripts/generate_protos.sh"
+  },
+  "dependencies": {
+    "@grpc/grpc-js": "^1.12.0",
+    "long": "^5.2.3",
+    "reflect-metadata": "^0.2.2"
+  },
+  "devDependencies": {
+    "@grpc/proto-loader": "^0.7.15",
+    "ts-proto": "^2.7.0",
+    "typescript": "^5.8.0",
+    "vitest": "^3.2.0"
+  },
+  "vitest": {
+    "environment": "node"
+  }
+}
