@@ -1,9 +1,11 @@
+using Dapper;
 using Iverson.Client.Core;
 using Iverson.LoadTest.Entities;
 using Iverson.LoadTest.Seeding;
 using Iverson.LoadTest.Scenarios;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
+using MySqlConnector;
 
 var command = args.Length > 0 ? args[0] : "--help";
 var flags   = CommandFlags.Parse(args.Length > 1 ? args[1..] : []);
@@ -56,15 +58,19 @@ switch (command)
         await services.GetRequiredService<WritePathScenario>().RunAsync(flags);
         await services.GetRequiredService<ReadPathScenario>().RunAsync(flags);
         break;
+    case "reset-starrocks":
+        await ResetStarRocksAsync(config.StarRocksCs);
+        break;
     default:
         Console.WriteLine("""
             Usage: dotnet run -- <command> [options]
 
             Commands:
-              seed        Seed benchmark data directly into Postgres and StarRocks
-              write-path  Benchmark gRPC Post → Kafka → consumer pipeline
-              read-path   Benchmark GetMany / Search / Aggregate via gRPC
-              all         Run seed → write-path → read-path in sequence
+              seed           Seed benchmark data directly into Postgres and StarRocks
+              write-path     Benchmark gRPC Post → Kafka → consumer pipeline
+              read-path      Benchmark GetMany / Search / Aggregate via gRPC
+              all            Run seed → write-path → read-path in sequence
+              reset-starrocks  Drop all StarRocks tables (and their MVs) for greenfield re-registration
 
             Options:
               --force-reseed         Truncate and re-seed even if data already present
@@ -80,6 +86,28 @@ return 0;
 
 static string Env(string key, string def) =>
     Environment.GetEnvironmentVariable(key) ?? def;
+
+static async Task ResetStarRocksAsync(string connectionString)
+{
+    await using var conn = new MySqlConnection(connectionString);
+    await conn.OpenAsync();
+
+    var tables = (await conn.QueryAsync<string>("SHOW TABLES")).ToList();
+
+    if (tables.Count == 0)
+    {
+        Console.WriteLine("No tables found — nothing to drop.");
+        return;
+    }
+
+    foreach (var table in tables)
+    {
+        await conn.ExecuteAsync($"DROP TABLE IF EXISTS `{table}`");
+        Console.WriteLine($"Dropped: {table}");
+    }
+
+    Console.WriteLine($"\nDropped {tables.Count} table(s).");
+}
 
 // ── Supporting types ──────────────────────────────────────────────────────────
 
