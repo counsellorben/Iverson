@@ -1,12 +1,12 @@
 <Solution>
-  <Folder Name="/Iverson.Client/">
-    <Project Path="Iverson.Client/Iverson.Client.Attributes/Iverson.Client.Attributes.csproj" />
-    <Project Path="Iverson.Client/Iverson.Client.Contracts/Iverson.Client.Contracts.csproj" />
-    <Project Path="Iverson.Client/Iverson.Client.Core.Tests/Iverson.Client.Core.Tests.csproj" />
-    <Project Path="Iverson.Client/Iverson.Client.Core/Iverson.Client.Core.csproj" />
-    <Project Path="Iverson.Client/Iverson.Client.Sample/Iverson.Client.Sample.csproj" />
-    <Project Path="Iverson.Client/Iverson.Client.Search.Tests/Iverson.Client.Search.Tests.csproj" />
-    <Project Path="Iverson.Client/Iverson.Client.Search/Iverson.Client.Search.csproj" />
+  <Folder Name="/Iverson.Clients/DotNet/">
+    <Project Path="Iverson.Clients/DotNet/Iverson.Client.Attributes/Iverson.Client.Attributes.csproj" />
+    <Project Path="Iverson.Clients/DotNet/Iverson.Client.Contracts/Iverson.Client.Contracts.csproj" />
+    <Project Path="Iverson.Clients/DotNet/Iverson.Client.Core.Tests/Iverson.Client.Core.Tests.csproj" />
+    <Project Path="Iverson.Clients/DotNet/Iverson.Client.Core/Iverson.Client.Core.csproj" />
+    <Project Path="Iverson.Clients/DotNet/Iverson.Client.Sample/Iverson.Client.Sample.csproj" />
+    <Project Path="Iverson.Clients/DotNet/Iverson.Client.Search.Tests/Iverson.Client.Search.Tests.csproj" />
+    <Project Path="Iverson.Clients/DotNet/Iverson.Client.Search/Iverson.Client.Search.csproj" />
   </Folder>
   <Folder Name="/Iverson.Server/">
     <Project Path="Iverson.Server/Iverson.Api.Tests/Iverson.Api.Tests.csproj" />

@@ -14,7 +14,7 @@
 
   <ItemGroup>
     <!-- GrpcServices="Both" generates server base classes AND client stubs -->
-    <Protobuf Include="Protos\*.proto" GrpcServices="Both" />
+    <Protobuf Include="../../Proto/*.proto" GrpcServices="Both" />
   </ItemGroup>
 
 </Project>
