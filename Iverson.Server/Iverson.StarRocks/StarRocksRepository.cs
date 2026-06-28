@@ -103,6 +103,39 @@ public sealed class StarRocksRepository(string connectionString, ILogger<StarRoc
             $"DELETE FROM `{tableName}` WHERE `{keyColumn}` = @key",
             new { key = keyValue });
 
+    internal static string BuildCreateTableDdl(StarRocksTableSchema schema)
+    {
+        var keySql  = $"`{schema.KeyColumn.Name}` {schema.KeyColumn.SrType} NOT NULL";
+        var colsSql = schema.Columns.Select(c =>
+            $"`{c.Name}` {c.SrType}{(c.IsNullable ? "" : " NOT NULL")}");
+
+        return $"""
+            CREATE TABLE IF NOT EXISTS `{schema.TableName}` (
+                {keySql},
+                {string.Join(",\n    ", colsSql)}
+            ) ENGINE=OLAP
+            UNIQUE KEY(`{schema.KeyColumn.Name}`)
+            DISTRIBUTED BY HASH(`{schema.KeyColumn.Name}`) BUCKETS 4
+            PROPERTIES ("replication_num" = "1")
+            """;
+    }
+
+    internal static string? BuildCreateMvDdl(StarRocksTableSchema schema)
+    {
+        if (schema.MvSortKey.Count == 0) return null;
+
+        var mvCols = schema.Columns
+            .Where(c => !schema.MvExcludedColumns.Contains(c.Name))
+            .Select(c => $"`{c.Name}`")
+            .Prepend($"`{schema.KeyColumn.Name}`");
+
+        var colList = string.Join(", ", mvCols);
+        var sortKey = string.Join(", ", schema.MvSortKey.Select(k => $"`{k}`"));
+
+        return $"CREATE MATERIALIZED VIEW IF NOT EXISTS `{schema.TableName}_search_mv` " +
+               $"AS SELECT {colList} FROM `{schema.TableName}` ORDER BY {sortKey}";
+    }
+
     public async Task ApplyTableAsync(StarRocksTableSchema schema)
     {
         using var activity = Telemetry.Source.StartActivity("sr.apply_table", ActivityKind.Client);
@@ -119,22 +152,15 @@ public sealed class StarRocksRepository(string connectionString, ILogger<StarRoc
 
         if (exists == 0)
         {
-            var keySql  = $"`{schema.KeyColumn.Name}` {schema.KeyColumn.SrType} NOT NULL";
-            var colsSql = schema.Columns.Select(c =>
-                $"`{c.Name}` {c.SrType}{(c.IsNullable ? "" : " NOT NULL")}");
-
-            var ddl = $"""
-                CREATE TABLE IF NOT EXISTS `{schema.TableName}` (
-                    {keySql},
-                    {string.Join(",\n    ", colsSql)}
-                ) ENGINE=OLAP
-                PRIMARY KEY(`{schema.KeyColumn.Name}`)
-                DISTRIBUTED BY HASH(`{schema.KeyColumn.Name}`) BUCKETS 4
-                PROPERTIES ("replication_num" = "1")
-                """;
-
-            await conn.ExecuteAsync(ddl);
+            await conn.ExecuteAsync(BuildCreateTableDdl(schema));
             logger.LogInformation("Created StarRocks table {Table}", schema.TableName);
+
+            var mvDdl = BuildCreateMvDdl(schema);
+            if (mvDdl is not null)
+            {
+                await conn.ExecuteAsync(mvDdl);
+                logger.LogInformation("Created materialized view {Table}_search_mv", schema.TableName);
+            }
         }
         else
         {

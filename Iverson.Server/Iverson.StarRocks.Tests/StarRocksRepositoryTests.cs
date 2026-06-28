@@ -37,4 +37,75 @@ public class StarRocksRepositoryTests
         var spec = new AggregationDescriptor("n", AggregationKind.Terms, "Name");
         spec.Size.Should().Be(10);
     }
+
+    [Fact]
+    public void BuildCreateTableDdl_EmitsUniqueKey_NotPrimaryKey()
+    {
+        var schema = new StarRocksTableSchema(
+            "articles",
+            new StarRocksColumnSchema("Id", "VARCHAR(36)", false),
+            [new StarRocksColumnSchema("Title", "STRING", false)]);
+
+        var ddl = StarRocksRepository.BuildCreateTableDdl(schema);
+
+        ddl.Should().Contain("UNIQUE KEY(`Id`)");
+        ddl.Should().NotContain("PRIMARY KEY");
+        ddl.Should().Contain("CREATE TABLE IF NOT EXISTS `articles`");
+        ddl.Should().Contain("`Id` VARCHAR(36) NOT NULL");
+        ddl.Should().Contain("`Title` STRING NOT NULL");
+    }
+
+    [Fact]
+    public void BuildCreateTableDdl_NullableColumn_OmitsNotNull()
+    {
+        var schema = new StarRocksTableSchema(
+            "authors",
+            new StarRocksColumnSchema("Id",  "VARCHAR(36)", false),
+            [new StarRocksColumnSchema("Bio", "STRING",     true)]);
+
+        var ddl = StarRocksRepository.BuildCreateTableDdl(schema);
+
+        ddl.Should().Contain("`Bio` STRING\n");
+        ddl.Should().NotContain("`Bio` STRING NOT NULL");
+    }
+
+    [Fact]
+    public void BuildCreateMvDdl_ReturnsDdl_WhenMvSortKeyIsPopulated()
+    {
+        var schema = new StarRocksTableSchema(
+            "articles",
+            new StarRocksColumnSchema("Id", "VARCHAR(36)", false),
+            [
+                new StarRocksColumnSchema("Category",    "STRING",   false),
+                new StarRocksColumnSchema("PublishedAt", "DATETIME", false),
+                new StarRocksColumnSchema("Body",        "STRING",   false),
+            ])
+        {
+            MvSortKey         = ["Category", "PublishedAt"],
+            MvExcludedColumns = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "Body" }
+        };
+
+        var ddl = StarRocksRepository.BuildCreateMvDdl(schema);
+
+        ddl.Should().NotBeNull();
+        ddl!.Should().Contain("CREATE MATERIALIZED VIEW IF NOT EXISTS `articles_search_mv`");
+        ddl.Should().Contain("`Id`");
+        ddl.Should().Contain("`Category`");
+        ddl.Should().Contain("`PublishedAt`");
+        ddl.Should().NotContain("`Body`");
+        ddl.Should().Contain("ORDER BY `Category`, `PublishedAt`");
+    }
+
+    [Fact]
+    public void BuildCreateMvDdl_ReturnsNull_WhenNoMvSortKey()
+    {
+        var schema = new StarRocksTableSchema(
+            "authors",
+            new StarRocksColumnSchema("Id", "VARCHAR(36)", false),
+            [new StarRocksColumnSchema("Name", "STRING", false)]);
+
+        var ddl = StarRocksRepository.BuildCreateMvDdl(schema);
+
+        ddl.Should().BeNull();
+    }
 }
