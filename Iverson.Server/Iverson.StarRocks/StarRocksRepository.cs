@@ -124,16 +124,24 @@ public sealed class StarRocksRepository(string connectionString, ILogger<StarRoc
     {
         if (schema.MvSortKey.Count == 0) return null;
 
-        var mvCols = schema.Columns
-            .Where(c => !schema.MvExcludedColumns.Contains(c.Name))
-            .Select(c => $"`{c.Name}`")
-            .Prepend($"`{schema.KeyColumn.Name}`");
+        var otherCols = schema.Columns
+            .Where(c => !schema.MvExcludedColumns.Contains(c.Name)
+                     && !schema.MvSortKey.Contains(c.Name, StringComparer.OrdinalIgnoreCase)
+                     && !c.Name.Equals(schema.KeyColumn.Name, StringComparison.OrdinalIgnoreCase))
+            .Select(c => c.Name);
 
-        var colList = string.Join(", ", mvCols);
-        var sortKey = string.Join(", ", schema.MvSortKey.Select(k => $"`{k}`"));
+        // Sort key columns first — StarRocks sync MV uses GROUP BY column order as sort key
+        var groupByCols = schema.MvSortKey
+            .Append(schema.KeyColumn.Name)
+            .Concat(otherCols)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        var colList = string.Join(", ", groupByCols.Select(c => $"`{c}`"));
 
         return $"CREATE MATERIALIZED VIEW IF NOT EXISTS `{schema.TableName}_search_mv` " +
-               $"AS SELECT {colList} FROM `{schema.TableName}` ORDER BY {sortKey}";
+               $"AS SELECT {colList} FROM `{schema.TableName}` " +
+               $"GROUP BY {colList}";
     }
 
     public async Task ApplyTableAsync(StarRocksTableSchema schema)

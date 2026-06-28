@@ -93,7 +93,7 @@ public class StarRocksRepositoryTests
         ddl.Should().Contain("`Category`");
         ddl.Should().Contain("`PublishedAt`");
         ddl.Should().NotContain("`Body`");
-        ddl.Should().Contain("ORDER BY `Category`, `PublishedAt`");
+        ddl.Should().Contain("GROUP BY `Category`, `PublishedAt`");
     }
 
     [Fact]
