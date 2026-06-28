@@ -39,7 +39,7 @@ public class StarRocksRepositoryTests
     }
 
     [Fact]
-    public void BuildCreateTableDdl_EmitsUniqueKey_NotPrimaryKey()
+    public void BuildCreateTableDdl_EmitsPrimaryKey()
     {
         var schema = new StarRocksTableSchema(
             "articles",
@@ -48,8 +48,8 @@ public class StarRocksRepositoryTests
 
         var ddl = StarRocksRepository.BuildCreateTableDdl(schema);
 
-        ddl.Should().Contain("UNIQUE KEY(`Id`)");
-        ddl.Should().NotContain("PRIMARY KEY");
+        ddl.Should().Contain("PRIMARY KEY(`Id`)");
+        ddl.Should().NotContain("UNIQUE KEY");
         ddl.Should().Contain("CREATE TABLE IF NOT EXISTS `articles`");
         ddl.Should().Contain("`Id` VARCHAR(36) NOT NULL");
         ddl.Should().Contain("`Title` STRING NOT NULL");
@@ -86,7 +86,7 @@ public class StarRocksRepositoryTests
         var ddl = StarRocksRepository.BuildCreateTableDdl(schema);
 
         ddl.Should().Contain("ORDER BY (`Category`, `PublishedAt`)");
-        ddl.Should().Contain("UNIQUE KEY(`Id`)");
+        ddl.Should().Contain("PRIMARY KEY(`Id`)");
     }
 
     [Fact]
