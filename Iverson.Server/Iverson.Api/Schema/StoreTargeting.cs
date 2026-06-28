@@ -4,23 +4,27 @@ namespace Iverson.Api.Schema;
 
 /// <summary>
 /// Decides which backing stores an entity's events should target, based purely on
-/// its schema shape (not per-instance graph state). Engagement (StarRocks) is added
-/// only when the entity can be represented as a single flat row — every relation is
-/// ManyToOne/OneToOne, or a ManyToMany whose foreign key lives on this row; a
-/// OneToMany disqualifies it. Intelligence (Qdrant) is added when the schema has
-/// vector or chunk fields.
+/// its schema shape (not per-instance graph state).
+///
+/// Engagement (StarRocks): eligible when every relation is ManyToOne/OneToOne, or a
+/// ManyToMany whose FK lives on this row. A OneToMany disqualifies the entity because
+/// it logically owns a collection with no representation in a single flat row. Note
+/// that large-field columns (Body, embeddings) are excluded from the StarRocks schema
+/// separately in ToStarRocksTableSchema — that is an orthogonal concern.
+///
+/// Intelligence (Qdrant): eligible when the schema declares vector or chunk fields.
 /// </summary>
 internal static class StoreTargeting
 {
     internal static StoreTarget DetermineTargetStores(SchemaDescriptor schema)
     {
         var stores = StoreTarget.None;
-        if (IsCompleteForIngestion(schema)) stores |= StoreTarget.Engagement;
+        if (IsEngagementEligible(schema)) stores |= StoreTarget.Engagement;
         if (HasVectorOrChunkFields(schema)) stores |= StoreTarget.Intelligence;
         return stores;
     }
 
-    internal static bool IsCompleteForIngestion(SchemaDescriptor schema) =>
+    internal static bool IsEngagementEligible(SchemaDescriptor schema) =>
         schema.Relations.All(r => r.Kind switch
         {
             RelationKind.ManyToOne  => true,
