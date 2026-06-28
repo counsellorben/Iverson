@@ -60,8 +60,9 @@ internal static class SchemaBuilder
 
         var conflicts = searchKeys.Where(sk => largeFields.Contains(sk.Name)).Select(sk => sk.Name).ToList();
         if (conflicts.Count > 0)
-            throw new InvalidOperationException(
-                $"'{typeDesc.TypeName}': {string.Join(", ", conflicts.Select(n => $"'{n}'"))} cannot carry both [IversonSearchKey] and a large-field attribute ([IversonLargeField], [IversonEmbedding], or [IversonChunk]) — the column would be excluded from the MV SELECT but still referenced in ORDER BY.");
+            throw new InvalidOperationException(conflicts.Count == 1
+                ? $"Property '{conflicts[0]}' cannot have both [IversonSearchKey] and a large-field annotation."
+                : $"Properties {string.Join(", ", conflicts.Select(n => $"'{n}'"))} cannot have both [IversonSearchKey] and a large-field annotation.");
 
         var relations = typeDesc.Relations.Select(r => new RelationDescriptor(
             r.PropertyName,
