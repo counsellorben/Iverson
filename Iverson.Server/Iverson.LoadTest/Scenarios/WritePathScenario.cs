@@ -27,19 +27,19 @@ public sealed class WritePathScenario(
     {
         Console.WriteLine($"[write-path] concurrency={flags.Concurrency} count={flags.Count} type={flags.Type}\n");
 
-        // Pre-load user IDs so Article posts have a valid AuthorId
-        Guid[] userIds = [];
+        // Pre-load author IDs so Article posts have a valid AuthorId
+        Guid[] authorIds = [];
         if (flags.Type is "Article" or "article")
         {
-            await using var pgForUsers = new NpgsqlConnection(config.PostgresCs);
-            await pgForUsers.OpenAsync(ct);
-            userIds = await DirectSeeder.LoadAuthorIdsAsync(pgForUsers);
-            if (userIds.Length == 0)
+            await using var pgForAuthors = new NpgsqlConnection(config.PostgresCs);
+            await pgForAuthors.OpenAsync(ct);
+            authorIds = await DirectSeeder.LoadAuthorIdsAsync(pgForAuthors);
+            if (authorIds.Length == 0)
             {
-                Console.Error.WriteLine("No seeded users found. Run 'dotnet run -- seed' first.");
+                Console.Error.WriteLine("No seeded authors found. Run 'dotnet run -- seed' first.");
                 return;
             }
-            Console.WriteLine($"Loaded {userIds.Length:N0} user IDs for AuthorId assignment.\n");
+            Console.WriteLine($"Loaded {authorIds.Length:N0} author IDs for AuthorId assignment.\n");
         }
 
         var report     = new BenchmarkReport();
@@ -63,12 +63,12 @@ public sealed class WritePathScenario(
 
                     switch (flags.Type)
                     {
-                        case "User":
+                        case "Author":
                             var u = new BenchmarkAuthor
                             {
                                 Id    = Guid.NewGuid(),
-                                Name  = $"WPUser {seed}",
-                                Email = $"wp{seed}@benchmark.dev",
+                                Name  = $"WPAuthor {seed}",
+                                Email = $"wpauthor{seed}@benchmark.dev",
                                 Bio   = new string('x', 200),
                             };
                             await authors.PersistAsync(u, ct);
@@ -92,8 +92,8 @@ public sealed class WritePathScenario(
                                 Id                = Guid.NewGuid(),
                                 Title             = $"WP Article {seed}",
                                 Body              = GenerateBody(seed),
-                                BenchmarkAuthorId = userIds.Length > 0
-                                    ? userIds[seed % userIds.Length]
+                                BenchmarkAuthorId = authorIds.Length > 0
+                                    ? authorIds[seed % authorIds.Length]
                                     : Guid.NewGuid(),
                                 Category          = Categories[seed % Categories.Length],
                                 WordCount         = seed % 1000,
@@ -131,14 +131,12 @@ public sealed class WritePathScenario(
         {
             Console.WriteLine($"\n[write-path] Probing end-to-end visibility for {sample.Length} keys...");
             var e2eReport = new BenchmarkReport();
-            await using var pg = new NpgsqlConnection(config.PostgresCs);
-            await pg.OpenAsync(ct);
 
             var typeName = flags.Type switch
             {
-                "User" => "benchmark_authors",
-                "Tag"  => "benchmark_tags",
-                _      => "benchmark_articles",
+                "Author" => "benchmark_authors",
+                "Tag"    => "benchmark_tags",
+                _        => "benchmark_articles",
             };
 
             foreach (var key in sample)
@@ -149,6 +147,8 @@ public sealed class WritePathScenario(
 
                 while (!found && DateTime.UtcNow < deadline)
                 {
+                    await using var pg = new NpgsqlConnection(config.PostgresCs);
+                    await pg.OpenAsync(ct);
                     var count = await pg.ExecuteScalarAsync<int>(
                         $"SELECT COUNT(*) FROM {typeName} WHERE \"Id\" = @id::uuid",
                         new { id = key });

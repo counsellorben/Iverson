@@ -78,7 +78,7 @@ switch (command)
               --concurrency <N>      Parallel tasks (default: 16)
               --count <N>            Records to post in write-path (default: 10000)
               --iterations <N>       Iterations per sub-scenario in read-path (default: 1000)
-              --type <name>          Entity type for write-path: Article|User|Tag (default: Article)
+              --type <name>          Entity type for write-path: Article|Author|Tag (default: Article)
             """);
         break;
 }
