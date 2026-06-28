@@ -118,8 +118,8 @@ public sealed class StarRocksRepository(string connectionString, ILogger<StarRoc
                 {keySql},
                 {string.Join(",\n    ", colsSql)}
             ) ENGINE=OLAP
-            UNIQUE KEY(`{schema.KeyColumn.Name}`){orderBy}
-            DISTRIBUTED BY HASH(`{schema.KeyColumn.Name}`) BUCKETS 4
+            UNIQUE KEY(`{schema.KeyColumn.Name}`)
+            DISTRIBUTED BY HASH(`{schema.KeyColumn.Name}`) BUCKETS 4{orderBy}
             PROPERTIES ("replication_num" = "1")
             """;
     }
