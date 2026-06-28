@@ -3,15 +3,18 @@ namespace Iverson.Api.Schema;
 public sealed record SchemaDescriptor
 {
     public required string TypeName       { get; init; }
-    public required string TableName      { get; init; }   // SQL
-    public string?         CollectionName { get; init; }   // Qdrant — null if no [IversonEmbedding]
+    public required string TableName      { get; init; }
+    public string?         CollectionName { get; init; }
 
     public required ColumnDescriptor                    KeyColumn     { get; init; }
     public required IReadOnlyList<ColumnDescriptor>     ScalarColumns { get; init; }
-    public required IReadOnlyList<ForeignKeyDescriptor> FkColumns    { get; init; }
+    public required IReadOnlyList<ForeignKeyDescriptor> FkColumns     { get; init; }
     public required IReadOnlyList<VectorDescriptor>     VectorFields  { get; init; }
     public required IReadOnlyList<ChunkDescriptor>      ChunkFields   { get; init; }
     public required IReadOnlyList<RelationDescriptor>   Relations     { get; init; }
+
+    public IReadOnlyList<(string Name, int Order)> SearchKeyColumns  { get; init; } = [];
+    public IReadOnlySet<string>                    LargeFieldColumns { get; init; } = new HashSet<string>();
 }
 
 public sealed record ColumnDescriptor(string Name, string SqlType, bool IsNullable);

@@ -17,10 +17,12 @@ internal static class SchemaBuilder
         var keyProp = typeDesc.Properties.FirstOrDefault(p => p.IsKey)
             ?? throw new InvalidOperationException($"No key property on '{typeDesc.TypeName}'.");
 
-        var scalars = new List<ColumnDescriptor>();
-        var fks     = new List<ForeignKeyDescriptor>();
-        var vectors = new List<VectorDescriptor>();
-        var chunks  = new List<ChunkDescriptor>();
+        var scalars     = new List<ColumnDescriptor>();
+        var fks         = new List<ForeignKeyDescriptor>();
+        var vectors     = new List<VectorDescriptor>();
+        var chunks      = new List<ChunkDescriptor>();
+        var searchKeys  = new List<(string Name, int Order)>();
+        var largeFields = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
         foreach (var prop in typeDesc.Properties.Where(p => !p.IsKey))
         {
@@ -28,10 +30,22 @@ internal static class SchemaBuilder
             scalars.Add(new ColumnDescriptor(prop.Name, sqlType, prop.IsNullable));
 
             if (prop.IsEmbedding)
+            {
                 vectors.Add(new VectorDescriptor(prop.Name, embedding.Dimension, embedding.ModelId));
+                largeFields.Add(prop.Name);
+            }
 
             if (prop.IsChunk)
+            {
                 chunks.Add(new ChunkDescriptor(prop.Name, prop.ChunkMaxTokens, prop.ChunkOverlap, embedding.ModelId, embedding.Dimension));
+                largeFields.Add(prop.Name);
+            }
+
+            if (prop.IsLargeField)
+                largeFields.Add(prop.Name);
+
+            if (prop.IsSearchKey)
+                searchKeys.Add((prop.Name, prop.SearchKeyOrder));
 
             if (prop.Name.EndsWith("Id",  StringComparison.OrdinalIgnoreCase) ||
                 prop.Name.EndsWith("Ids", StringComparison.OrdinalIgnoreCase))
@@ -41,6 +55,8 @@ internal static class SchemaBuilder
                 fks.Add(new ForeignKeyDescriptor(prop.Name, relatedType));
             }
         }
+
+        searchKeys.Sort((a, b) => a.Order.CompareTo(b.Order));
 
         var relations = typeDesc.Relations.Select(r => new RelationDescriptor(
             r.PropertyName,
@@ -57,15 +73,17 @@ internal static class SchemaBuilder
 
         return new SchemaDescriptor
         {
-            TypeName       = typeDesc.TypeName,
-            TableName      = tableName,
-            CollectionName = (vectors.Count > 0 || chunks.Count > 0) ? tableName : null,
-            KeyColumn      = new ColumnDescriptor(keyProp.Name, ClrTypeToSql(keyProp.ClrType, false), false),
-            ScalarColumns  = scalars,
-            FkColumns      = fks,
-            VectorFields   = vectors,
-            ChunkFields    = chunks,
-            Relations      = relations
+            TypeName          = typeDesc.TypeName,
+            TableName         = tableName,
+            CollectionName    = (vectors.Count > 0 || chunks.Count > 0) ? tableName : null,
+            KeyColumn         = new ColumnDescriptor(keyProp.Name, ClrTypeToSql(keyProp.ClrType, false), false),
+            ScalarColumns     = scalars,
+            FkColumns         = fks,
+            VectorFields      = vectors,
+            ChunkFields       = chunks,
+            Relations         = relations,
+            SearchKeyColumns  = searchKeys,
+            LargeFieldColumns = largeFields
         };
     }
 
@@ -80,7 +98,11 @@ internal static class SchemaBuilder
     internal static StarRocksTableSchema ToStarRocksTableSchema(SchemaDescriptor d) => new(
         d.TableName,
         new StarRocksColumnSchema(d.KeyColumn.Name, ClrTypeToStarRocksType(d.KeyColumn.SqlType), false),
-        d.ScalarColumns.Select(c => new StarRocksColumnSchema(c.Name, ClrTypeToStarRocksType(c.SqlType), c.IsNullable)).ToList());
+        d.ScalarColumns.Select(c => new StarRocksColumnSchema(c.Name, ClrTypeToStarRocksType(c.SqlType), c.IsNullable)).ToList())
+    {
+        MvSortKey         = d.SearchKeyColumns.Select(sk => sk.Name).ToList(),
+        MvExcludedColumns = d.LargeFieldColumns
+    };
 
     internal static string ClrTypeToStarRocksType(string sqlType) => sqlType.ToUpperInvariant() switch
     {
