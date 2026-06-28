@@ -2,6 +2,7 @@ using Dapper;
 using FluentAssertions;
 using Iverson.Api.Schema;
 using Iverson.Api.StarRocks;
+using Iverson.Api.Tests.Helpers;
 using Iverson.Client.Contracts;
 using Xunit;
 
@@ -188,5 +189,68 @@ public class StarRocksQueryBuilderTests
         var (sql, _) = StarRocksQueryBuilder.BuildSearch("authors", AuthorSchema(), query, 0, 10);
 
         sql.Should().Contain("`Name` IN @p0");
+    }
+
+    // ── BuildSearch — explicit SELECT columns ─────────────────────────────────────
+
+    [Fact]
+    public void BuildSearch_NoFields_SelectsAllColumnsExplicitly()
+    {
+        var schema = SchemaFixtures.ArticleWithProjectionSchema();
+
+        var (sql, _) = StarRocksQueryBuilder.BuildSearch("articles", schema, null, 0, 10);
+
+        sql.Should().StartWith("SELECT ");
+        sql.Should().NotContain("SELECT *");
+        sql.Should().Contain("`Id`");
+        sql.Should().Contain("`Title`");
+        sql.Should().Contain("`Body`");
+        sql.Should().Contain("`Category`");
+        sql.Should().Contain("`PublishedAt`");
+    }
+
+    [Fact]
+    public void BuildSearch_WithFields_SelectsOnlyRequestedColumnsAndKey()
+    {
+        var schema = SchemaFixtures.ArticleWithProjectionSchema();
+
+        var (sql, _) = StarRocksQueryBuilder.BuildSearch(
+            "articles", schema, null, 0, 10,
+            fields: ["Category", "PublishedAt", "Title"]);
+
+        sql.Should().Contain("`Id`");
+        sql.Should().Contain("`Category`");
+        sql.Should().Contain("`PublishedAt`");
+        sql.Should().Contain("`Title`");
+        sql.Should().NotContain("`Body`");
+        sql.Should().NotContain("`WordCount`");
+    }
+
+    [Fact]
+    public void BuildSearch_WithFields_KeyAlwaysIncludedEvenIfNotRequested()
+    {
+        var schema = SchemaFixtures.ArticleWithProjectionSchema();
+
+        var (sql, _) = StarRocksQueryBuilder.BuildSearch(
+            "articles", schema, null, 0, 10,
+            fields: ["Category"]);
+
+        sql.Should().Contain("`Id`");
+        sql.Should().Contain("`Category`");
+        sql.Should().NotContain("`Body`");
+    }
+
+    [Fact]
+    public void BuildSearch_WithFields_UnknownFieldNamesAreIgnored()
+    {
+        var schema = SchemaFixtures.ArticleWithProjectionSchema();
+
+        var (sql, _) = StarRocksQueryBuilder.BuildSearch(
+            "articles", schema, null, 0, 10,
+            fields: ["Category", "NonExistentField"]);
+
+        sql.Should().Contain("`Id`");
+        sql.Should().Contain("`Category`");
+        sql.Should().NotContain("NonExistentField");
     }
 }

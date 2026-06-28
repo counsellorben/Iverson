@@ -92,4 +92,26 @@ public static class SchemaFixtures
         ChunkFields    = [],
         Relations      = []
     };
+
+    public static SchemaDescriptor ArticleWithProjectionSchema() => new()
+    {
+        TypeName       = "Article",
+        TableName      = "articles",
+        CollectionName = null,
+        KeyColumn      = new ColumnDescriptor("Id",          "uuid",        false),
+        ScalarColumns  =
+        [
+            new ColumnDescriptor("Title",       "text",        false),
+            new ColumnDescriptor("Category",    "text",        false),
+            new ColumnDescriptor("WordCount",   "integer",     false),
+            new ColumnDescriptor("PublishedAt", "timestamptz", false),
+            new ColumnDescriptor("Body",        "text",        false),
+        ],
+        FkColumns    = [],
+        VectorFields = [],
+        ChunkFields  = [],
+        Relations    = [],
+        SearchKeyColumns  = [("Category", 0), ("PublishedAt", 1)],
+        LargeFieldColumns = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "Body" }
+    };
 }

@@ -20,7 +20,8 @@ internal static class StarRocksQueryBuilder
         SchemaDescriptor schema,
         SearchQuery? query,
         int page,
-        int pageSize)
+        int pageSize,
+        IReadOnlyList<string>? fields = null)
     {
         var param = new DynamicParameters();
         var where = BuildWhere(schema, query?.Clauses, query?.Logic ?? SearchLogic.And, param, out _);
@@ -29,12 +30,33 @@ internal static class StarRocksQueryBuilder
         var limit  = pageSize > 0 ? pageSize : 50;
         var offset = page > 0 ? page * limit : 0;
 
-        var sb = new StringBuilder($"SELECT * FROM `{tableName}`");
+        var selectCols = BuildSelectColumns(schema, fields);
+        var sb = new StringBuilder($"SELECT {selectCols} FROM `{tableName}`");
         if (where.Length > 0) sb.Append($" WHERE {where}");
         if (order.Length > 0) sb.Append($" ORDER BY {order}");
         sb.Append($" LIMIT {limit} OFFSET {offset}");
 
         return (sb.ToString(), param);
+    }
+
+    private static string BuildSelectColumns(SchemaDescriptor schema, IReadOnlyList<string>? fields)
+    {
+        if (fields is null || fields.Count == 0)
+        {
+            var all = schema.ScalarColumns
+                .Select(c => $"`{c.Name}`")
+                .Prepend($"`{schema.KeyColumn.Name}`");
+            return string.Join(", ", all);
+        }
+
+        var resolved = new List<string> { schema.KeyColumn.Name };
+        foreach (var f in fields)
+        {
+            var col = ResolveColumn(schema, f);
+            if (col is not null && !col.Equals(schema.KeyColumn.Name, StringComparison.OrdinalIgnoreCase))
+                resolved.Add(col);
+        }
+        return string.Join(", ", resolved.Select(c => $"`{c}`"));
     }
 
     internal static (string Sql, DynamicParameters Param) BuildAggregate(
