@@ -162,7 +162,7 @@ public class ObjectSearchGrpcServiceTests
         response.Results[0].Name.Should().Be("name_terms");
         response.Results[0].Buckets.Should().HaveCount(2);
         response.Results[0].Buckets[0].Key.Should().Be("Alice");
-        response.Results[0].Buckets[0].DocCount.Should().Be(10);
+        response.Results[0].Buckets[0].Count.Should().Be(10);
     }
 
     [Fact]

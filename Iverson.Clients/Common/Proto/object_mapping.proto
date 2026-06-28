@@ -16,9 +16,9 @@ service ObjectMappingService {
 
 // ---------------------------------------------------------------------------
 // Schema registration — sent once per entity type at startup or on first use.
-// The server uses this to create/update SQL tables, ES indices, and Qdrant
-// collections. Only entities with no ManyToOne/ManyToMany attributes are
-// accepted as root registrations; dependent types are carried in `relations`.
+// The server provisions backing stores for the entity type. Only entities with
+// no ManyToOne/ManyToMany attributes are accepted as root registrations;
+// dependent types are carried in `relations`.
 // ---------------------------------------------------------------------------
 
 enum RelationKind {
@@ -56,7 +56,7 @@ message PropertyDescriptor {
     int32   chunk_vector_dim = 13;  // vector dimension for chunk embeddings
     bool   is_search_key    = 14;  // [IversonSearchKey] present
     int32  search_key_order = 15;  // sort position when is_search_key = true
-    bool   is_large_field   = 16;  // [IversonLargeField] present — excluded from MV
+    bool   is_large_field   = 16;  // [IversonLargeField] present — excluded from fast-path indices
 }
 
 message RelationDescriptor {

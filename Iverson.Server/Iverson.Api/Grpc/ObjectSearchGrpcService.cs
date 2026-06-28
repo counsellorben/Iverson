@@ -276,7 +276,7 @@ public sealed class ObjectSearchGrpcService(
         };
         if (result.Buckets is not null)
             foreach (var b in result.Buckets)
-                proto.Buckets.Add(new ProtoAggBucket { Key = b.Key, DocCount = b.DocCount });
+                proto.Buckets.Add(new ProtoAggBucket { Key = b.Key, Count = b.DocCount });
         return proto;
     }
 
