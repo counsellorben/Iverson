@@ -3,7 +3,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TS_DIR="$(dirname "$SCRIPT_DIR")"
-PROTO_DIR="$(dirname "$(dirname "$TS_DIR")")/Iverson.Clients/Proto"
+PROTO_DIR="$(dirname "$(dirname "$TS_DIR")")/Iverson.Clients/Common/Proto"
 
 cd "$TS_DIR"
 

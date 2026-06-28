@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -e
 cd "$(dirname "$0")/.."
-PROTO_DIR="../Proto"
+PROTO_DIR="../Common/Proto"
 OUT_DIR="iverson_client/generated"
 mkdir -p "$OUT_DIR"
 touch "$OUT_DIR/__init__.py"

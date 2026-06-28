@@ -6,7 +6,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 GO_DIR="$(dirname "$SCRIPT_DIR")"
-PROTO_DIR="$GO_DIR/../../Proto"
+PROTO_DIR="$GO_DIR/../Common/Proto"
 
 export PATH=~/sdk/go1.22/bin:~/go/bin:$PATH
 export GOPATH=~/go
