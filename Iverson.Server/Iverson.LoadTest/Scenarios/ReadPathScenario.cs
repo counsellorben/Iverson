@@ -149,6 +149,9 @@ public sealed class ReadPathScenario(
             ),
         };
 
+        // Exclude Body so StarRocks can route through the search MV (sorted by Category, PublishedAt)
+        string[] searchFields = ["Title", "BenchmarkAuthorId", "Category", "WordCount", "PublishedAt"];
+
         foreach (var (label, query) in searchProfiles)
         {
             var report = new BenchmarkReport();
@@ -165,6 +168,7 @@ public sealed class ReadPathScenario(
                     PageSize = 50,
                     TraceId  = Guid.NewGuid().ToString(),
                 };
+                req.Fields.AddRange(searchFields);
 
                 var t0 = BenchmarkReport.NowMicros();
                 try
