@@ -312,7 +312,7 @@ export interface SearchResponse {
 
 /**
  * Searches by embedding similarity on a property annotated with [IversonEmbedding].
- * The server embeds `query` with the same model and searches the Qdrant collection.
+ * The server embeds `query` with the same model and searches the vector index.
  */
 export interface SearchSimilarRequest {
   /** registered entity type */
@@ -369,7 +369,7 @@ export interface AggregationSpec {
   /** result key — must be unique within the request */
   name: string;
   type: AggregationType;
-  /** ES field to aggregate on */
+  /** field to aggregate on */
   field: string;
   /** TERMS options */
   size: number;
@@ -403,7 +403,7 @@ export interface AggregationResult {
 
 export interface AggregationBucket {
   key: string;
-  docCount: number;
+  count: number;
 }
 
 function createBaseSearchRequest(): SearchRequest {
@@ -2213,7 +2213,7 @@ export const AggregationResult: MessageFns<AggregationResult> = {
 };
 
 function createBaseAggregationBucket(): AggregationBucket {
-  return { key: "", docCount: 0 };
+  return { key: "", count: 0 };
 }
 
 export const AggregationBucket: MessageFns<AggregationBucket> = {
@@ -2221,8 +2221,8 @@ export const AggregationBucket: MessageFns<AggregationBucket> = {
     if (message.key !== "") {
       writer.uint32(10).string(message.key);
     }
-    if (message.docCount !== 0) {
-      writer.uint32(16).int64(message.docCount);
+    if (message.count !== 0) {
+      writer.uint32(16).int64(message.count);
     }
     return writer;
   },
@@ -2247,7 +2247,7 @@ export const AggregationBucket: MessageFns<AggregationBucket> = {
             break;
           }
 
-          message.docCount = longToNumber(reader.int64());
+          message.count = longToNumber(reader.int64());
           continue;
         }
       }
@@ -2262,11 +2262,7 @@ export const AggregationBucket: MessageFns<AggregationBucket> = {
   fromJSON(object: any): AggregationBucket {
     return {
       key: isSet(object.key) ? globalThis.String(object.key) : "",
-      docCount: isSet(object.docCount)
-        ? globalThis.Number(object.docCount)
-        : isSet(object.doc_count)
-        ? globalThis.Number(object.doc_count)
-        : 0,
+      count: isSet(object.count) ? globalThis.Number(object.count) : 0,
     };
   },
 
@@ -2275,8 +2271,8 @@ export const AggregationBucket: MessageFns<AggregationBucket> = {
     if (message.key !== "") {
       obj.key = message.key;
     }
-    if (message.docCount !== 0) {
-      obj.docCount = Math.round(message.docCount);
+    if (message.count !== 0) {
+      obj.count = Math.round(message.count);
     }
     return obj;
   },
@@ -2287,7 +2283,7 @@ export const AggregationBucket: MessageFns<AggregationBucket> = {
   fromPartial<I extends Exact<DeepPartial<AggregationBucket>, I>>(object: I): AggregationBucket {
     const message = createBaseAggregationBucket();
     message.key = object.key ?? "";
-    message.docCount = object.docCount ?? 0;
+    message.count = object.count ?? 0;
     return message;
   },
 };

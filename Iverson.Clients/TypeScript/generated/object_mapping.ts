@@ -168,7 +168,7 @@ export interface PropertyDescriptor {
   isSearchKey: boolean;
   /** sort position when is_search_key = true */
   searchKeyOrder: number;
-  /** [IversonLargeField] present — excluded from MV */
+  /** [IversonLargeField] present — excluded from fast-path indices */
   isLargeField: boolean;
 }
 

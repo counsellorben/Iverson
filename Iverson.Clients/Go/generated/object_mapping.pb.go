@@ -158,7 +158,7 @@ type PropertyDescriptor struct {
 	ChunkVectorDim int32                  `protobuf:"varint,13,opt,name=chunk_vector_dim,json=chunkVectorDim,proto3" json:"chunk_vector_dim,omitempty"` // vector dimension for chunk embeddings
 	IsSearchKey    bool                   `protobuf:"varint,14,opt,name=is_search_key,json=isSearchKey,proto3" json:"is_search_key,omitempty"`          // [IversonSearchKey] present
 	SearchKeyOrder int32                  `protobuf:"varint,15,opt,name=search_key_order,json=searchKeyOrder,proto3" json:"search_key_order,omitempty"` // sort position when is_search_key = true
-	IsLargeField   bool                   `protobuf:"varint,16,opt,name=is_large_field,json=isLargeField,proto3" json:"is_large_field,omitempty"`       // [IversonLargeField] present — excluded from MV
+	IsLargeField   bool                   `protobuf:"varint,16,opt,name=is_large_field,json=isLargeField,proto3" json:"is_large_field,omitempty"`       // [IversonLargeField] present — excluded from fast-path indices
 	unknownFields  protoimpl.UnknownFields
 	sizeCache      protoimpl.SizeCache
 }
