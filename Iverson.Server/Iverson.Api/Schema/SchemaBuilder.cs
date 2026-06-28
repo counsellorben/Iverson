@@ -104,10 +104,12 @@ internal static class SchemaBuilder
     internal static StarRocksTableSchema ToStarRocksTableSchema(SchemaDescriptor d) => new(
         d.TableName,
         new StarRocksColumnSchema(d.KeyColumn.Name, ClrTypeToStarRocksType(d.KeyColumn.SqlType), false),
-        d.ScalarColumns.Select(c => new StarRocksColumnSchema(c.Name, ClrTypeToStarRocksType(c.SqlType), c.IsNullable)).ToList())
+        d.ScalarColumns
+            .Where(c => !d.LargeFieldColumns.Contains(c.Name))
+            .Select(c => new StarRocksColumnSchema(c.Name, ClrTypeToStarRocksType(c.SqlType), c.IsNullable))
+            .ToList())
     {
-        MvSortKey         = d.SearchKeyColumns,
-        MvExcludedColumns = d.LargeFieldColumns
+        SortKey = d.SearchKeyColumns
     };
 
     internal static string ClrTypeToStarRocksType(string sqlType) => sqlType.ToUpperInvariant() switch

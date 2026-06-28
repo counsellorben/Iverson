@@ -5,8 +5,7 @@ public sealed record StarRocksTableSchema(
     StarRocksColumnSchema KeyColumn,
     IReadOnlyList<StarRocksColumnSchema> Columns)
 {
-    public IReadOnlyList<string> MvSortKey         { get; init; } = [];
-    public IReadOnlySet<string>  MvExcludedColumns { get; init; } = new HashSet<string>();
+    public IReadOnlyList<string> SortKey { get; init; } = [];
 }
 
 public sealed record StarRocksColumnSchema(

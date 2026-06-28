@@ -189,19 +189,17 @@ public sealed class DirectSeeder(LoadTestConfig config)
 
         var srSw = Stopwatch.StartNew();
         await SrBatchInsertAsync(sr, "benchmark_articles",
-            ["Id", "Title", "Body", "BenchmarkAuthorId", "Category", "WordCount", "PublishedAt"],
+            ["Id", "Title", "BenchmarkAuthorId", "Category", "WordCount", "PublishedAt"],
             ids.Select((id, i) =>
             {
-                var cat  = Categories[i % Categories.Length];
-                var body = GenerateBody(i);
+                var cat = Categories[i % Categories.Length];
                 return new object[]
                 {
                     id.ToString(),
                     $"Benchmark Article {i}: {cat}",
-                    body,
                     authorIds[i % authorIds.Length].ToString(),
                     cat,
-                    body.Length / 5,
+                    GenerateBody(i).Length / 5,
                     baseDate.AddDays(i % 2190).ToString("yyyy-MM-dd HH:mm:ss"),
                 };
             }),

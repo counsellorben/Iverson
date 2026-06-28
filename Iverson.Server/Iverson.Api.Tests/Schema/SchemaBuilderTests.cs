@@ -70,7 +70,7 @@ public class SchemaBuilderTests
     }
 
     [Fact]
-    public void ToStarRocksTableSchema_PopulatesMvSortKey_AndMvExcludedColumns()
+    public void ToStarRocksTableSchema_PopulatesSortKey_AndExcludesLargeFieldColumns()
     {
         var descriptor = new SchemaDescriptor
         {
@@ -93,9 +93,9 @@ public class SchemaBuilderTests
 
         var schema = SchemaBuilder.ToStarRocksTableSchema(descriptor);
 
-        schema.MvSortKey.Should().Equal("Category", "PublishedAt");
-        schema.MvExcludedColumns.Should().Contain("Body");
-        schema.MvExcludedColumns.Should().NotContain("Category");
+        schema.SortKey.Should().Equal("Category", "PublishedAt");
+        schema.Columns.Should().NotContain(c => c.Name == "Body");
+        schema.Columns.Select(c => c.Name).Should().Contain("Category");
     }
 
     [Fact]

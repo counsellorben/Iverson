@@ -70,7 +70,7 @@ public class StarRocksRepositoryTests
     }
 
     [Fact]
-    public void BuildCreateTableDdl_EmitsOrderBy_WhenMvSortKeyIsPopulated()
+    public void BuildCreateTableDdl_EmitsOrderBy_WhenSortKeyIsPopulated()
     {
         var schema = new StarRocksTableSchema(
             "articles",
@@ -80,7 +80,7 @@ public class StarRocksRepositoryTests
                 new StarRocksColumnSchema("PublishedAt", "DATETIME", false),
             ])
         {
-            MvSortKey = ["Category", "PublishedAt"]
+            SortKey = ["Category", "PublishedAt"]
         };
 
         var ddl = StarRocksRepository.BuildCreateTableDdl(schema);
@@ -90,7 +90,7 @@ public class StarRocksRepositoryTests
     }
 
     [Fact]
-    public void BuildCreateTableDdl_OmitsOrderBy_WhenNoMvSortKey()
+    public void BuildCreateTableDdl_OmitsOrderBy_WhenNoSortKey()
     {
         var schema = new StarRocksTableSchema(
             "authors",

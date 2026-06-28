@@ -109,8 +109,8 @@ public sealed class StarRocksRepository(string connectionString, ILogger<StarRoc
         var colsSql = schema.Columns.Select(c =>
             $"`{c.Name}` {c.SrType}{(c.IsNullable ? "" : " NOT NULL")}");
 
-        var orderBy = schema.MvSortKey.Count > 0
-            ? $"\nORDER BY ({string.Join(", ", schema.MvSortKey.Select(k => $"`{k}`"))})"
+        var orderBy = schema.SortKey.Count > 0
+            ? $"\nORDER BY ({string.Join(", ", schema.SortKey.Select(k => $"`{k}`"))})"
             : "";
 
         return $"""
