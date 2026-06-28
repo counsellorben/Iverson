@@ -32,7 +32,7 @@ func NewQuery(typeName string) *QueryBuilder {
 	return &QueryBuilder{
 		typeName: typeName,
 		logic:    pb.SearchLogic_AND,
-		pageSize: 10,
+		pageSize: 20,
 	}
 }
 

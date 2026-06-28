@@ -145,12 +145,6 @@ class QueryBuilderTest {
     }
 
     @Test
-    void like_producesContainsOperator() {
-        SearchRequest req = Query.of(Article.class).where("title").like("sport").build();
-        assertEquals(SearchOperator.CONTAINS, req.getQuery().getClauses(0).getOperator());
-    }
-
-    @Test
     void contains_producesContainsOperator() {
         SearchRequest req = Query.of(Article.class).where("tags").contains("nba").build();
         assertEquals(SearchOperator.CONTAINS, req.getQuery().getClauses(0).getOperator());
@@ -286,7 +280,6 @@ class QueryBuilderTest {
         assertEquals(SearchOperator.GREATER_THAN_OR_EQUALS,  SearchOperators.GTE);
         assertEquals(SearchOperator.LESS_THAN,               SearchOperators.LT);
         assertEquals(SearchOperator.LESS_THAN_OR_EQUALS,     SearchOperators.LTE);
-        assertEquals(SearchOperator.CONTAINS,                SearchOperators.LIKE);
         assertEquals(SearchOperator.CONTAINS,                SearchOperators.CONTAINS);
         assertEquals(SearchOperator.IN,                      SearchOperators.IN);
         assertEquals(SearchOperator.STARTS_WITH,             SearchOperators.STARTS_WITH);

@@ -182,11 +182,6 @@ public final class QueryBuilder<T> {
             return addOp(SearchOperator.LESS_THAN_OR_EQUALS, value);
         }
 
-        /** LIKE / CONTAINS — substring match. */
-        public QueryBuilder<T> like(String value) {
-            return addOp(SearchOperator.CONTAINS, value);
-        }
-
         /** CONTAINS — array contains value. */
         public QueryBuilder<T> contains(Object value) {
             return addOp(SearchOperator.CONTAINS, value);
@@ -204,34 +199,6 @@ public final class QueryBuilder<T> {
         /** IN — varargs overload for convenience. */
         public QueryBuilder<T> in(String... values) {
             return in(Arrays.asList(values));
-        }
-
-        /** NOT_IN — field value is not one of the supplied list. */
-        public QueryBuilder<T> notIn(List<String> values) {
-            SearchValue sv = SearchValue.newBuilder()
-                .setStringList(RepeatedString.newBuilder().addAllValues(values).build())
-                .build();
-            parent.addClause(field, SearchOperator.NOT_EQUALS, sv, clauseType);
-            return parent;
-        }
-
-        /** Field exists (not null). */
-        public QueryBuilder<T> exists() {
-            SearchValue sv = SearchValue.newBuilder().setBoolVal(true).build();
-            parent.addClause(field, SearchOperator.EQUALS, sv, clauseType);
-            return parent;
-        }
-
-        /** Field does not exist (is null). */
-        public QueryBuilder<T> notExists() {
-            SearchValue sv = SearchValue.newBuilder().setBoolVal(false).build();
-            parent.addClause(field, SearchOperator.NOT_EQUALS, sv, clauseType);
-            return parent;
-        }
-
-        /** CARDINALITY — array field cardinality comparison. */
-        public QueryBuilder<T> cardinality(int value) {
-            return addOp(SearchOperator.EQUALS, value);
         }
 
         /** Vector similarity search with a pre-computed embedding. */

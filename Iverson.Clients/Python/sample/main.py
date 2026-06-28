@@ -11,17 +11,17 @@ import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 from iverson_client import IversonClient, QueryBuilder
-from sample.models import Article, Author
+from sample.models import Article, Author, Tag
 
 
 def demo_query_builder() -> None:
     """Show how to construct a SearchRequest with QueryBuilder."""
     request = (
         QueryBuilder("Article")
-        .where("category").eq("technology")
-        .where("word_count").gte(500)
-        .where("body").contains("machine learning")
-        .order_by("published_at", descending=True)
+        .where("Category").eq("technology")
+        .where("WordCount").gte(500)
+        .where("Body").contains("machine learning")
+        .order_by("PublishedAt", descending=True)
         .limit(10)
         .build()
     )
@@ -50,7 +50,7 @@ def demo_in_operator() -> None:
     """Show the IN operator with a string list."""
     request = (
         QueryBuilder("Article")
-        .where("category").in_(["technology", "science", "ai"])
+        .where("Category").in_(["technology", "science", "ai"])
         .build()
     )
     print(f"\nIN operator values: "
@@ -65,7 +65,8 @@ if __name__ == "__main__":
 
     print("\n=== Entity metadata ===")
     for name, meta in [("Article", Article._iverson_meta),
-                       ("Author", Author._iverson_meta)]:
+                       ("Author", Author._iverson_meta),
+                       ("Tag", Tag._iverson_meta)]:
         print(f"{name}: key={meta['key_field']}, "
               f"search_keys={meta['search_keys']}, "
               f"large_fields={meta['large_fields']}, "

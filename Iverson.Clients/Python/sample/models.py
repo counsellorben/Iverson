@@ -14,6 +14,12 @@ from iverson_client.annotations import (
 
 
 @iverson_entity
+class Tag:
+    id: str = iverson_key()
+    name: str = None
+
+
+@iverson_entity
 class Author:
     id: str = iverson_key()
     name: str = None

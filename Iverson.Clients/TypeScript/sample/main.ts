@@ -17,8 +17,8 @@ async function main() {
 
     // Build a query
     const req = new QueryBuilder('Article')
-        .where('category').eq('tech')
-        .orderByDesc('publishedAt')
+        .where('Category').eq('tech')
+        .orderByDesc('PublishedAt')
         .limit(20)
         .offset(0)
         .build();

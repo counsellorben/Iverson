@@ -65,9 +65,9 @@ public class Main {
 
             // ── Search with QueryBuilder ───────────────────────────────────────
             SearchRequest searchRequest = Query.of(Article.class)
-                .where("category").eq("technology")
-                .and("wordCount").gt(500)
-                .orderByDesc("publishedAt")
+                .where("Category").eq("technology")
+                .and("WordCount").gt(500)
+                .orderByDesc("PublishedAt")
                 .limit(10)
                 .build();
 
@@ -78,8 +78,8 @@ public class Main {
             // Execute search (streams results from server)
             var results = articleCoordinator.search(
                 Query.of(Article.class)
-                    .where("category").eq("technology")
-                    .orderByDesc("publishedAt")
+                    .where("Category").eq("technology")
+                    .orderByDesc("PublishedAt")
                     .limit(5)
             );
 

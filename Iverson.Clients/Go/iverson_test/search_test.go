@@ -24,8 +24,8 @@ func TestNewQuery_DefaultPageSize(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
-	if req.PageSize != 10 {
-		t.Errorf("expected default PageSize=10, got %d", req.PageSize)
+	if req.PageSize != 20 {
+		t.Errorf("expected default PageSize=20, got %d", req.PageSize)
 	}
 }
 

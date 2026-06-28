@@ -190,24 +190,24 @@ func (c *EntityCoordinator[T]) Delete(ctx context.Context, id string) error {
 	return nil
 }
 
-// Get retrieves an entity by key. Returns a zero value and false if not found.
-func (c *EntityCoordinator[T]) Get(ctx context.Context, id string) (T, bool, error) {
+// Get retrieves an entity by key. Returns an error if not found.
+func (c *EntityCoordinator[T]) Get(ctx context.Context, id string) (T, error) {
 	var zero T
 	resp, err := c.deps.retrieval.Get(ctx, &pb.RetrievalRequest{
 		TypeName: c.typeName,
 		Key:      id,
 	})
 	if err != nil {
-		return zero, false, fmt.Errorf("Get: %w", err)
+		return zero, fmt.Errorf("Get: %w", err)
 	}
 	if !resp.Found {
-		return zero, false, nil
+		return zero, fmt.Errorf("entity not found: %s", id)
 	}
 	entity, err := structToEntity[T](resp.Data)
 	if err != nil {
-		return zero, false, err
+		return zero, err
 	}
-	return entity, true, nil
+	return entity, nil
 }
 
 // GetMany retrieves multiple entities by key. Entities not found are omitted.
@@ -261,8 +261,6 @@ func entityToStruct(entity interface{}) (*structpb.Struct, error) {
 		// Skip relation fields
 		tag := sf.Tag.Get(TagKey)
 		if tag != "" {
-			parts := len(tag)
-			_ = parts
 			fm, _ := ParseTag(sf.Name, tag)
 			switch fm.Kind {
 			case KindManyToOne, KindManyToMany, KindOneToMany, KindOneToOne:
