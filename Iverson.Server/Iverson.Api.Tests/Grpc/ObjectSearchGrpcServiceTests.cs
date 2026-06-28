@@ -269,6 +269,33 @@ public class ObjectSearchGrpcServiceTests
         response.Results.Should().HaveCount(3);
     }
 
+    [Fact]
+    public async Task Search_WithFieldsProjection_PassesFieldsToQueryBuilder()
+    {
+        await _registry.RegisterAsync(SchemaFixtures.ArticleWithProjectionSchema());
+
+        string? capturedSql = null;
+        _sr.QueryAsync<dynamic>(Arg.Do<string>(sql => capturedSql = sql), Arg.Any<object?>())
+           .Returns(Enumerable.Empty<dynamic>());
+
+        var req = new SearchRequest
+        {
+            TypeName = "Article",
+            PageSize = 10,
+        };
+        req.Fields.Add("Category");
+        req.Fields.Add("PublishedAt");
+
+        var (writer, _) = MakeStream<SearchResponse>();
+        await _sut.Search(req, writer, TestServerCallContext.Create());
+
+        capturedSql.Should().NotBeNull();
+        capturedSql!.Should().Contain("`Category`");
+        capturedSql!.Should().Contain("`PublishedAt`");
+        capturedSql!.Should().NotContain("`Body`");
+        capturedSql!.Should().Contain("`Id`");
+    }
+
     // ── SearchSimilar / SearchChunks — Qdrant paths unchanged ─────────────────
 
     [Fact]

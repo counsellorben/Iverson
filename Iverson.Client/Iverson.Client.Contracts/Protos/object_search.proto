@@ -19,6 +19,7 @@ message SearchRequest {
     int32       page      = 3;
     int32       page_size = 4;
     string      trace_id  = 5;
+    repeated string fields = 6;  // property names to include; empty = all fields
 }
 
 message SearchQuery {
