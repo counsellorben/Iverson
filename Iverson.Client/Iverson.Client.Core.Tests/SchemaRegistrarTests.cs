@@ -14,6 +14,15 @@ namespace Iverson.Client.Core.Tests;
 // Defined here so EntityRegistry only scans this assembly in tests.
 
 [IversonEntity]
+internal sealed class SearchAnnotationTestEntity
+{
+    [IversonKey]          public Guid            Id          { get; set; }
+    [IversonSearchKey(0)] public string          Category    { get; set; } = "";
+    [IversonSearchKey(1)] public DateTimeOffset  PublishedAt { get; set; }
+    [IversonLargeField]   public string          Body        { get; set; } = "";
+}
+
+[IversonEntity]
 internal sealed class SchemaTestAuthor
 {
     [IversonKey]
@@ -281,6 +290,64 @@ public class SchemaRegistrarTests
         var bioProp = authorRequest!.RootType!.Properties.SingleOrDefault(p => p.Name == "Bio");
         bioProp.Should().NotBeNull();
         bioProp!.IsNullable.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task RegisterAllAsync_SetsIsSearchKey_AndSearchKeyOrder_OnAnnotatedProperties()
+    {
+        SchemaRequest? req = null;
+        _mappingClient
+            .RegisterSchemaAsync(
+                Arg.Do<SchemaRequest>(r =>
+                {
+                    if (r.RootType?.TypeName == "SearchAnnotationTestEntity") req = r;
+                }),
+                Arg.Any<Metadata>(),
+                Arg.Any<DateTime?>(),
+                Arg.Any<CancellationToken>())
+            .Returns(new AsyncUnaryCall<SchemaResponse>(
+                Task.FromResult(new SchemaResponse { Success = true }),
+                Task.FromResult(new Metadata()),
+                () => Status.DefaultSuccess,
+                () => new Metadata(),
+                () => { }));
+
+        await _sut.RegisterAllAsync();
+
+        req.Should().NotBeNull();
+        var category    = req!.RootType!.Properties.Single(p => p.Name == "Category");
+        var publishedAt = req!.RootType!.Properties.Single(p => p.Name == "PublishedAt");
+        category.IsSearchKey.Should().BeTrue();
+        category.SearchKeyOrder.Should().Be(0);
+        publishedAt.IsSearchKey.Should().BeTrue();
+        publishedAt.SearchKeyOrder.Should().Be(1);
+    }
+
+    [Fact]
+    public async Task RegisterAllAsync_SetsIsLargeField_OnAnnotatedProperty()
+    {
+        SchemaRequest? req = null;
+        _mappingClient
+            .RegisterSchemaAsync(
+                Arg.Do<SchemaRequest>(r =>
+                {
+                    if (r.RootType?.TypeName == "SearchAnnotationTestEntity") req = r;
+                }),
+                Arg.Any<Metadata>(),
+                Arg.Any<DateTime?>(),
+                Arg.Any<CancellationToken>())
+            .Returns(new AsyncUnaryCall<SchemaResponse>(
+                Task.FromResult(new SchemaResponse { Success = true }),
+                Task.FromResult(new Metadata()),
+                () => Status.DefaultSuccess,
+                () => new Metadata(),
+                () => { }));
+
+        await _sut.RegisterAllAsync();
+
+        req.Should().NotBeNull();
+        var body = req!.RootType!.Properties.Single(p => p.Name == "Body");
+        body.IsLargeField.Should().BeTrue();
     }
 
     [Fact]

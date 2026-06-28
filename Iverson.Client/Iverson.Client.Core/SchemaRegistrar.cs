@@ -126,6 +126,15 @@ public sealed class SchemaRegistrar(
             descriptor.ChunkModelId   = string.Empty;
             descriptor.ChunkVectorDim = 0;
         }
+
+        if (prop.GetCustomAttribute<IversonSearchKeyAttribute>() is { } sk)
+        {
+            descriptor.IsSearchKey    = true;
+            descriptor.SearchKeyOrder = sk.Order;
+        }
+
+        if (prop.GetCustomAttribute<IversonLargeFieldAttribute>() is not null)
+            descriptor.IsLargeField = true;
     }
 
     // Returns (clrType, isArray, isNullable, isSupported)

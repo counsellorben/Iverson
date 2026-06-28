@@ -54,6 +54,9 @@ message PropertyDescriptor {
     int32   chunk_overlap    = 11;
     string  chunk_model_id   = 12;  // embedding model for [IversonChunk]
     int32   chunk_vector_dim = 13;  // vector dimension for chunk embeddings
+    bool   is_search_key    = 14;  // [IversonSearchKey] present
+    int32  search_key_order = 15;  // sort position when is_search_key = true
+    bool   is_large_field   = 16;  // [IversonLargeField] present — excluded from MV
 }
 
 message RelationDescriptor {
