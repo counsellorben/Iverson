@@ -111,7 +111,7 @@ public static class SchemaFixtures
         VectorFields = [],
         ChunkFields  = [],
         Relations    = [],
-        SearchKeyColumns  = [("Category", 0), ("PublishedAt", 1)],
-        LargeFieldColumns = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "Body" }
+        SearchKeyColumns  = ["Category", "PublishedAt"],
+        LargeFieldColumns = ["Body"]
     };
 }

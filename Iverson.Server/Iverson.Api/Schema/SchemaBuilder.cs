@@ -21,8 +21,8 @@ internal static class SchemaBuilder
         var fks         = new List<ForeignKeyDescriptor>();
         var vectors     = new List<VectorDescriptor>();
         var chunks      = new List<ChunkDescriptor>();
-        var searchKeys  = new List<(string Name, int Order)>();
-        var largeFields = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var searchKeysSorted = new List<(string Name, int Order)>();
+        var largeFields      = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
         foreach (var prop in typeDesc.Properties.Where(p => !p.IsKey))
         {
@@ -45,7 +45,7 @@ internal static class SchemaBuilder
                 largeFields.Add(prop.Name);
 
             if (prop.IsSearchKey)
-                searchKeys.Add((prop.Name, prop.SearchKeyOrder));
+                searchKeysSorted.Add((prop.Name, prop.SearchKeyOrder));
 
             if (prop.Name.EndsWith("Id",  StringComparison.OrdinalIgnoreCase) ||
                 prop.Name.EndsWith("Ids", StringComparison.OrdinalIgnoreCase))
@@ -56,9 +56,9 @@ internal static class SchemaBuilder
             }
         }
 
-        searchKeys.Sort((a, b) => a.Order.CompareTo(b.Order));
+        searchKeysSorted.Sort((a, b) => a.Order.CompareTo(b.Order));
 
-        var conflicts = searchKeys.Where(sk => largeFields.Contains(sk.Name)).Select(sk => sk.Name).ToList();
+        var conflicts = searchKeysSorted.Where(sk => largeFields.Contains(sk.Name)).Select(sk => sk.Name).ToList();
         if (conflicts.Count > 0)
             throw new InvalidOperationException(conflicts.Count == 1
                 ? $"Property '{conflicts[0]}' cannot have both [IversonSearchKey] and a large-field annotation."
@@ -88,7 +88,7 @@ internal static class SchemaBuilder
             VectorFields      = vectors,
             ChunkFields       = chunks,
             Relations         = relations,
-            SearchKeyColumns  = searchKeys,
+            SearchKeyColumns  = searchKeysSorted.ConvertAll(sk => sk.Name),
             LargeFieldColumns = largeFields
         };
     }
@@ -106,7 +106,7 @@ internal static class SchemaBuilder
         new StarRocksColumnSchema(d.KeyColumn.Name, ClrTypeToStarRocksType(d.KeyColumn.SqlType), false),
         d.ScalarColumns.Select(c => new StarRocksColumnSchema(c.Name, ClrTypeToStarRocksType(c.SqlType), c.IsNullable)).ToList())
     {
-        MvSortKey         = d.SearchKeyColumns.Select(sk => sk.Name).ToList(),
+        MvSortKey         = d.SearchKeyColumns,
         MvExcludedColumns = d.LargeFieldColumns
     };
 

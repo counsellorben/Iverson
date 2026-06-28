@@ -44,9 +44,7 @@ public class SchemaBuilderTests
 
         var descriptor = SchemaBuilder.BuildDescriptor(typeDesc, embedding);
 
-        descriptor.SearchKeyColumns.Should().HaveCount(2);
-        descriptor.SearchKeyColumns[0].Should().Be(("Category", 0));
-        descriptor.SearchKeyColumns[1].Should().Be(("PublishedAt", 1));
+        descriptor.SearchKeyColumns.Should().Equal("Category", "PublishedAt");
     }
 
     [Fact]
@@ -89,8 +87,8 @@ public class SchemaBuilderTests
             VectorFields = [],
             ChunkFields  = [],
             Relations    = [],
-            SearchKeyColumns = [("Category", 0), ("PublishedAt", 1)],
-            LargeFieldColumns = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "Body" }
+            SearchKeyColumns  = ["Category", "PublishedAt"],
+            LargeFieldColumns = ["Body"]
         };
 
         var schema = SchemaBuilder.ToStarRocksTableSchema(descriptor);

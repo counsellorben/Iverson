@@ -13,8 +13,8 @@ public sealed record SchemaDescriptor
     public required IReadOnlyList<ChunkDescriptor>      ChunkFields   { get; init; }
     public required IReadOnlyList<RelationDescriptor>   Relations     { get; init; }
 
-    public IReadOnlyList<(string Name, int Order)> SearchKeyColumns  { get; init; } = [];
-    public IReadOnlySet<string>                    LargeFieldColumns { get; init; } = new HashSet<string>();
+    public List<string>      SearchKeyColumns  { get; init; } = [];
+    public HashSet<string>   LargeFieldColumns { get; init; } = [];
 }
 
 public sealed record ColumnDescriptor(string Name, string SqlType, bool IsNullable);
