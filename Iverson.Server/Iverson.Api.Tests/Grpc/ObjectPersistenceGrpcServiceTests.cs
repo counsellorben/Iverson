@@ -61,20 +61,21 @@ public class ObjectPersistenceGrpcServiceTests
     }
 
     [Fact]
-    public async Task Post_UsesClientProvidedKey_WhenPresent()
+    public async Task Post_IgnoresClientProvidedKey_AndAssignsServerKey()
     {
         await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
-        var knownGuid = Guid.NewGuid().ToString();
+        var clientGuid = Guid.NewGuid().ToString();
         var payload = MakePayload(new()
         {
-            ["Id"]   = Value.ForString(knownGuid),
+            ["Id"]   = Value.ForString(clientGuid),
             ["Name"] = Value.ForString("Bob")
         });
         var request = new PersistRequest { TypeName = "Author", Payload = payload };
 
         var response = await _sut.Post(request, TestServerCallContext.Create());
 
-        response.Key.Should().Be(knownGuid);
+        response.Key.Should().NotBe(clientGuid);
+        Guid.TryParse(response.Key, out _).Should().BeTrue();
     }
 
     [Fact]

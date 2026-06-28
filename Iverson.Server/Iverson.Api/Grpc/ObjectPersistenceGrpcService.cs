@@ -33,13 +33,9 @@ public sealed class ObjectPersistenceGrpcService(
 
         var targetStores = StoreTargeting.DetermineTargetStores(schema);
 
-        // Resolve key: honour client-supplied key; generate UUID v7 when absent/empty
-        var key = ExtractKey(request.Payload, schema.KeyColumn.Name);
-        if (string.IsNullOrWhiteSpace(key) || key == Guid.Empty.ToString())
-        {
-            key = Guid.CreateVersion7().ToString();
-            SetKey(request.Payload, schema.KeyColumn.Name, key);
-        }
+        // Always assign a server-generated UUID v7; client-supplied Id is ignored
+        var key = Guid.CreateVersion7().ToString();
+        SetKey(request.Payload, schema.KeyColumn.Name, key);
 
         var payloadJson = StructSerializer.SerializePayload(request.Payload);
 
