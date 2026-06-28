@@ -6,6 +6,7 @@ using Iverson.LoadTest.Scenarios;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using MySqlConnector;
+using Npgsql;
 
 var command = args.Length > 0 ? args[0] : "--help";
 var flags   = CommandFlags.Parse(args.Length > 1 ? args[1..] : []);
@@ -59,7 +60,7 @@ switch (command)
         await services.GetRequiredService<ReadPathScenario>().RunAsync(flags);
         break;
     case "reset-starrocks":
-        await ResetStarRocksAsync(config.StarRocksCs);
+        await ResetStarRocksAsync(config.StarRocksCs, config.PostgresCs);
         break;
     default:
         Console.WriteLine("""
@@ -70,7 +71,7 @@ switch (command)
               write-path     Benchmark gRPC Post → Kafka → consumer pipeline
               read-path      Benchmark GetMany / Search / Aggregate via gRPC
               all            Run seed → write-path → read-path in sequence
-              reset-starrocks  Drop all StarRocks tables (and their MVs) for greenfield re-registration
+              reset-starrocks  Drop all StarRocks tables and truncate Postgres benchmark tables for greenfield re-registration
 
             Options:
               --force-reseed         Truncate and re-seed even if data already present
@@ -87,26 +88,31 @@ return 0;
 static string Env(string key, string def) =>
     Environment.GetEnvironmentVariable(key) ?? def;
 
-static async Task ResetStarRocksAsync(string connectionString)
+static async Task ResetStarRocksAsync(string starRocksCs, string postgresCs)
 {
-    await using var conn = new MySqlConnection(connectionString);
-    await conn.OpenAsync();
+    await using var sr = new MySqlConnection(starRocksCs);
+    await sr.OpenAsync();
 
-    var tables = (await conn.QueryAsync<string>("SHOW TABLES")).ToList();
+    var tables = (await sr.QueryAsync<string>("SHOW TABLES")).ToList();
 
     if (tables.Count == 0)
+        Console.WriteLine("StarRocks: no tables found — nothing to drop.");
+    else
     {
-        Console.WriteLine("No tables found — nothing to drop.");
-        return;
+        foreach (var table in tables)
+        {
+            await sr.ExecuteAsync($"DROP TABLE IF EXISTS `{table}`");
+            Console.WriteLine($"StarRocks dropped: {table}");
+        }
+        Console.WriteLine($"StarRocks: dropped {tables.Count} table(s).\n");
     }
 
-    foreach (var table in tables)
-    {
-        await conn.ExecuteAsync($"DROP TABLE IF EXISTS `{table}`");
-        Console.WriteLine($"Dropped: {table}");
-    }
+    await using var pg = new NpgsqlConnection(postgresCs);
+    await pg.OpenAsync();
 
-    Console.WriteLine($"\nDropped {tables.Count} table(s).");
+    await pg.ExecuteAsync(
+        "TRUNCATE benchmark_articles, benchmark_authors, benchmark_tags RESTART IDENTITY CASCADE");
+    Console.WriteLine("Postgres: truncated benchmark_articles, benchmark_authors, benchmark_tags.");
 }
 
 // ── Supporting types ──────────────────────────────────────────────────────────
