@@ -145,6 +145,7 @@ class QueryBuilder:
         self._type_name = type_name
         self._clauses: list[_pb.SearchClause] = []
         self._sorts: list[_pb.SearchSort] = []
+        self._fields: list[str] = []
         self._logic: int = _pb.AND
         self._page: int = 1
         self._page_size: int = 20
@@ -166,6 +167,11 @@ class QueryBuilder:
     def must_not(self, field: str) -> FieldCondition:
         """Start a MUST_NOT clause (excludes matches)."""
         return FieldCondition(self, field, _pb.MUST_NOT)
+
+    def fields(self, *names: str) -> "QueryBuilder":
+        """Restrict the response to only the named fields. Empty (default) returns all fields."""
+        self._fields.extend(names)
+        return self
 
     # ── Sorting and paging ─────────────────────────────────────────────────────
 
@@ -207,4 +213,5 @@ class QueryBuilder:
             query=query,
             page=self._page,
             page_size=self._page_size,
+            fields=self._fields,
         )

@@ -39,6 +39,7 @@ public final class QueryBuilder<T> {
     private final String typeName;
     private final List<SearchClause> clauses    = new ArrayList<>();
     private final List<SearchSort>   sorts      = new ArrayList<>();
+    private final List<String>       fields     = new ArrayList<>();
     private SearchLogic logic    = SearchLogic.AND;
     private int         page     = 1;
     private int         pageSize = 20;
@@ -70,6 +71,12 @@ public final class QueryBuilder<T> {
     /** Begins a MUST_NOT clause. */
     public FieldCondition not(String field) {
         return new FieldCondition(this, field, SearchClauseType.MUST_NOT);
+    }
+
+    /** Restricts the response to only the named fields. Empty (default) returns all fields. */
+    public QueryBuilder<T> fields(String... names) {
+        fields.addAll(Arrays.asList(names));
+        return this;
     }
 
     // ── Sorting ────────────────────────────────────────────────────────────────
@@ -121,6 +128,7 @@ public final class QueryBuilder<T> {
             .setQuery(query)
             .setPage(page)
             .setPageSize(pageSize)
+            .addAllFields(fields)
             .build();
     }
 

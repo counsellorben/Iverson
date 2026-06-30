@@ -141,6 +141,7 @@ export class FieldCondition {
 export class QueryBuilder {
     private readonly _clauses: SearchClause[] = [];
     private readonly _sorts: SearchSort[] = [];
+    private readonly _fields: string[] = [];
     private _logic: SearchLogic = SearchLogic.AND;
     private _page: number = 1;
     private _pageSize: number = 20;
@@ -176,6 +177,12 @@ export class QueryBuilder {
     /** Start a MUST_NOT clause (excludes matches). */
     mustNot(field: string): FieldCondition {
         return new FieldCondition(this, field, SearchClauseType.MUST_NOT);
+    }
+
+    /** Restrict the response to only the named fields. Empty (default) returns all fields. */
+    fields(...names: string[]): QueryBuilder {
+        this._fields.push(...names);
+        return this;
     }
 
     // ── Sorting and paging ────────────────────────────────────────────────────
@@ -236,7 +243,7 @@ export class QueryBuilder {
             page: this._page,
             pageSize: this._pageSize,
             traceId: this._traceId,
-            fields: [],
+            fields: [...this._fields],
         };
     }
 }
