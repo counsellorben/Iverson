@@ -29,12 +29,14 @@ var resource = ResourceBuilder.CreateDefault()
 builder.Services.AddOpenTelemetry()
     .WithTracing(tracing => tracing
         .SetResourceBuilder(resource)
+        .SetSampler(new AlwaysOnSampler())
         .AddSource(
             "Iverson.Sql",
             "Iverson.StarRocks",
             "Iverson.Vector",
             "Iverson.Events",
-            "Iverson.Embeddings")
+            "Iverson.Embeddings",
+            "Grpc.Net.Server")
         .AddAspNetCoreInstrumentation(o =>
         {
             o.RecordException = true;
