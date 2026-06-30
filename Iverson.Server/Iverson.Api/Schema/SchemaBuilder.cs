@@ -105,7 +105,6 @@ internal static class SchemaBuilder
         d.TableName,
         new StarRocksColumnSchema(d.KeyColumn.Name, ClrTypeToStarRocksType(d.KeyColumn.SqlType), false),
         d.ScalarColumns
-            .Where(c => !d.LargeFieldColumns.Contains(c.Name))
             .Select(c => new StarRocksColumnSchema(c.Name, ClrTypeToStarRocksType(c.SqlType), c.IsNullable))
             .ToList())
     {

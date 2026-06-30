@@ -303,13 +303,15 @@ public sealed class ObjectSearchGrpcService(
 
     private static Value ToProtoValue(object? v) => v switch
     {
-        null           => Value.ForNull(),
-        string s       => Value.ForString(s),
-        bool b         => Value.ForBool(b),
-        double d       => Value.ForNumber(d),
-        float f        => Value.ForNumber(f),
-        int i          => Value.ForNumber(i),
-        long l         => Value.ForNumber(l),
-        _              => Value.ForString(v.ToString()!)
+        null             => Value.ForNull(),
+        string s         => Value.ForString(s),
+        bool b           => Value.ForBool(b),
+        double d         => Value.ForNumber(d),
+        float f          => Value.ForNumber(f),
+        int i            => Value.ForNumber(i),
+        long l           => Value.ForNumber(l),
+        DateTime dt      => Value.ForString(dt.ToString("o")),
+        DateTimeOffset o => Value.ForString(o.ToString("o")),
+        _                => Value.ForString(v.ToString()!)
     };
 }

@@ -88,6 +88,7 @@ services:
   kafka:
     image: confluentinc/cp-kafka:7.6.0
     container_name: iverson-kafka
+    init: true
     restart: unless-stopped
     depends_on:
       - zookeeper
@@ -139,6 +140,7 @@ services:
     restart: unless-stopped
     ports:
       - "8080:8080"
+      - "8081:8081"
     environment:
       - ASPNETCORE_ENVIRONMENT=Production
       - Otel__Endpoint=http://jaeger:4317

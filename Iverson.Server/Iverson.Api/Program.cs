@@ -8,6 +8,7 @@ using Iverson.Events;
 using Iverson.Sql;
 using Iverson.StarRocks;
 using Iverson.Vector;
+using OpenTelemetry.Exporter;
 using OpenTelemetry.Logs;
 using OpenTelemetry.Resources;
 using OpenTelemetry.Trace;
@@ -40,14 +41,22 @@ builder.Services.AddOpenTelemetry()
             o.Filter = ctx => ctx.Request.Path != "/health";  // skip noisy health checks
         })
         .AddHttpClientInstrumentation(o => o.RecordException = true)
-        .AddOtlpExporter(o => o.Endpoint = new Uri(otelEndpoint)));
+        .AddOtlpExporter(o =>
+        {
+            o.Endpoint = new Uri(otelEndpoint);
+            o.Protocol = OtlpExportProtocol.Grpc;
+        }));
 
 builder.Logging.AddOpenTelemetry(o =>
 {
     o.SetResourceBuilder(resource);
     o.IncludeScopes = true;
     o.IncludeFormattedMessage = true;
-    o.AddOtlpExporter(x => x.Endpoint = new Uri(otelEndpoint));
+    o.AddOtlpExporter(x =>
+    {
+        x.Endpoint = new Uri(otelEndpoint);
+        x.Protocol = OtlpExportProtocol.Grpc;
+    });
 });
 
 // ── Application services ───────────────────────────────────────────────────────
@@ -208,6 +217,9 @@ app.MapGrpcService<ObjectRetrievalGrpcService>();
 app.MapGrpcService<ObjectSearchGrpcService>();
 
 app.Lifetime.ApplicationStarted.Register(() =>
-    app.Logger.LogInformation("Iverson.Api is available — all Kafka topic subscriptions initiated"));
+{
+    app.Logger.LogInformation("Iverson.Api is available — all Kafka topic subscriptions initiated");
+    app.Logger.LogInformation("OTel OTLP endpoint: {Endpoint}", otelEndpoint);
+});
 
 app.Run();

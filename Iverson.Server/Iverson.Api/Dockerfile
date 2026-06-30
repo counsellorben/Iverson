@@ -7,7 +7,7 @@ COPY ["Iverson.Server/Iverson.StarRocks/Iverson.StarRocks.csproj",              
 COPY ["Iverson.Server/Iverson.Embeddings/Iverson.Embeddings.csproj",                                 "Iverson.Server/Iverson.Embeddings/"]
 COPY ["Iverson.Server/Iverson.Vector/Iverson.Vector.csproj",                                         "Iverson.Server/Iverson.Vector/"]
 COPY ["Iverson.Server/Iverson.Events/Iverson.Events.csproj",                                         "Iverson.Server/Iverson.Events/"]
-COPY ["Iverson.Client/Iverson.Client.Contracts/Iverson.Client.Contracts.csproj",                     "Iverson.Client/Iverson.Client.Contracts/"]
+COPY ["Iverson.Clients/DotNet/Iverson.Client.Contracts/Iverson.Client.Contracts.csproj",             "Iverson.Clients/DotNet/Iverson.Client.Contracts/"]
 RUN dotnet restore "Iverson.Server/Iverson.Api/Iverson.Api.csproj"
 
 COPY . .
