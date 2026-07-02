@@ -3,7 +3,8 @@ from __future__ import annotations
 
 import pytest
 
-from iverson_client.search import QueryBuilder
+from iverson_client.search import QueryBuilder, group_by
+from iverson_client.group_by import GroupByBuilder
 from iverson_client.generated import object_search_pb2 as pb
 
 
@@ -124,6 +125,13 @@ class TestOperatorStartsWith:
         assert req.query.clauses[0].value.string_val == "How to"
 
 
+class TestOperatorEndsWith:
+    def test_ends_with_produces_ends_with_operator(self):
+        req = QueryBuilder("Article").where("title").ends_with("Guide").build()
+        assert req.query.clauses[0].operator == pb.ENDS_WITH
+        assert req.query.clauses[0].value.string_val == "Guide"
+
+
 class TestOperatorIn:
     def test_in(self):
         req = QueryBuilder("Article").where("category").in_(["tech", "science"]).build()
@@ -213,3 +221,117 @@ class TestChaining:
         assert len(req.query.sort) == 2
         assert req.query.sort[0].property == "score"
         assert req.query.sort[1].property == "published_at"
+
+
+class TestJoin:
+    def test_join_adds_join_spec_to_search_request(self):
+        req = (
+            QueryBuilder("LineItem")
+            .join("order_id", "Order", "id")
+            .build()
+        )
+        assert len(req.joins) == 1
+        join = req.joins[0]
+        assert join.left_type == "LineItem"
+        assert join.right_type == "Order"
+        assert join.left_field == "order_id"
+        assert join.right_field == "id"
+        assert join.kind == pb.JoinKind.INNER
+
+    def test_join_with_explicit_kind(self):
+        req = (
+            QueryBuilder("LineItem")
+            .join("order_id", "Order", "id", kind=pb.JoinKind.LEFT)
+            .build()
+        )
+        assert req.joins[0].kind == pb.JoinKind.LEFT
+
+
+class TestGroupByBuilder:
+    def test_keys_adds_group_by_fields(self):
+        req = group_by("LineItem").keys("return_flag", "line_status").build()
+        assert list(req.keys) == ["return_flag", "line_status"]
+
+    def test_sum_adds_metric_with_auto_alias(self):
+        req = group_by("LineItem").sum("quantity").build()
+        assert len(req.metrics) == 1
+        metric = req.metrics[0]
+        assert metric.name == "quantity_sum"
+        assert metric.type == pb.SUM
+        assert metric.field == "quantity"
+
+    def test_sum_expr_adds_raw_expression(self):
+        req = group_by("LineItem").sum_expr("price * (1 - discount)", "revenue").build()
+        assert len(req.metrics) == 1
+        metric = req.metrics[0]
+        assert metric.name == "revenue"
+        assert metric.type == pb.SUM
+        assert metric.expression == "price * (1 - discount)"
+        assert metric.field == ""
+
+    def test_count_all_produces_empty_field_metric(self):
+        req = group_by("LineItem").count_all().build()
+        assert len(req.metrics) == 1
+        metric = req.metrics[0]
+        assert metric.name == "count"
+        assert metric.type == pb.COUNT
+        assert metric.field == ""
+        assert metric.expression == ""
+
+    def test_having_adds_having_clause(self):
+        req = (
+            group_by("LineItem")
+            .sum("quantity", "total_qty")
+            .having("total_qty", pb.GREATER_THAN, 100)
+            .build()
+        )
+        assert len(req.having.clauses) == 1
+        clause = req.having.clauses[0]
+        assert clause.property == "total_qty"
+        assert clause.operator == pb.GREATER_THAN
+        assert clause.clause_type == pb.FILTER
+        assert clause.value.number_val == pytest.approx(100.0)
+
+    def test_join_adds_join_spec(self):
+        req = group_by("LineItem").join("order_id", "Order", "id").build()
+        assert len(req.joins) == 1
+        join = req.joins[0]
+        assert join.left_type == "LineItem"
+        assert join.right_type == "Order"
+        assert join.left_field == "order_id"
+        assert join.right_field == "id"
+        assert join.kind == pb.JoinKind.INNER
+
+    def test_build_sets_trace_id(self):
+        req = group_by("LineItem").build(trace_id="trace-123")
+        assert req.trace_id == "trace-123"
+
+    def test_q1_style_all_fields_present(self):
+        req = (
+            group_by("LineItem")
+            .where("ship_date", pb.LESS_THAN_OR_EQUALS, "1998-12-01")
+            .keys("return_flag", "line_status")
+            .sum("quantity", "sum_qty")
+            .sum("extended_price", "sum_base_price")
+            .sum_expr("extended_price * (1 - discount)", "sum_disc_price")
+            .avg("quantity", "avg_qty")
+            .count_all("count_order")
+            .having("sum_qty", pb.GREATER_THAN, 0)
+            .order_by("return_flag")
+            .order_by_desc("line_status")
+            .limit(500)
+            .build(trace_id="q1-trace")
+        )
+        assert req.type_name == "LineItem"
+        assert len(req.query.clauses) == 1
+        assert req.query.clauses[0].property == "ship_date"
+        assert len(req.keys) == 2
+        assert len(req.metrics) == 5
+        assert len(req.having.clauses) == 1
+        assert len(req.order_by) == 2
+        assert req.order_by[0].property == "return_flag"
+        assert req.order_by[0].descending is False
+        assert req.order_by[1].property == "line_status"
+        assert req.order_by[1].descending is True
+        assert req.limit == 500
+        assert req.trace_id == "q1-trace"

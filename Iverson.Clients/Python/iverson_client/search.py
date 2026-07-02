@@ -25,6 +25,7 @@ class SearchOperator:
     NOT_EQUALS             = _pb.NOT_EQUALS
     CONTAINS               = _pb.CONTAINS
     STARTS_WITH            = _pb.STARTS_WITH
+    ENDS_WITH              = _pb.ENDS_WITH
     GREATER_THAN           = _pb.GREATER_THAN
     LESS_THAN              = _pb.LESS_THAN
     GREATER_THAN_OR_EQUALS = _pb.GREATER_THAN_OR_EQUALS
@@ -109,6 +110,10 @@ class FieldCondition:
         """STARTS_WITH"""
         return self._add(_pb.STARTS_WITH, value)
 
+    def ends_with(self, value: str) -> "QueryBuilder":
+        """ENDS_WITH"""
+        return self._add(_pb.ENDS_WITH, value)
+
     def in_(self, values: List[str]) -> "QueryBuilder":
         """IN — accepts a list of strings."""
         clause = _pb.SearchClause(
@@ -138,7 +143,7 @@ class QueryBuilder:
     """Fluent DSL builder that compiles to a ``SearchRequest`` proto.
 
     Operators supported (matching ``SearchOperator`` enum exactly):
-        eq, neq, contains, starts_with, gt, lt, gte, lte, in_, vector_similar
+        eq, neq, contains, starts_with, ends_with, gt, lt, gte, lte, in_, vector_similar
     """
 
     def __init__(self, type_name: str) -> None:
@@ -146,6 +151,7 @@ class QueryBuilder:
         self._clauses: list[_pb.SearchClause] = []
         self._sorts: list[_pb.SearchSort] = []
         self._fields: list[str] = []
+        self._joins: list[_pb.JoinSpec] = []
         self._logic: int = _pb.AND
         self._page: int = 1
         self._page_size: int = 20
@@ -171,6 +177,20 @@ class QueryBuilder:
     def fields(self, *names: str) -> "QueryBuilder":
         """Restrict the response to only the named fields. Empty (default) returns all fields."""
         self._fields.extend(names)
+        return self
+
+    # ── Joins ──────────────────────────────────────────────────────────────────
+
+    def join(self, left_field: str, right_type: str, right_field: str,
+              kind: int = _pb.JoinKind.INNER) -> "QueryBuilder":
+        """Add a join from this type to ``right_type`` on the given fields."""
+        self._joins.append(_pb.JoinSpec(
+            left_type=self._type_name,
+            right_type=right_type,
+            left_field=left_field,
+            right_field=right_field,
+            kind=kind,
+        ))
         return self
 
     # ── Sorting and paging ─────────────────────────────────────────────────────
@@ -214,4 +234,13 @@ class QueryBuilder:
             page=self._page,
             page_size=self._page_size,
             fields=self._fields,
+            joins=self._joins,
         )
+
+
+# ── GroupByBuilder factory ──────────────────────────────────────────────────────
+
+def group_by(type_name: str) -> "GroupByBuilder":
+    """Start a ``GroupByBuilder`` for the given entity type."""
+    from iverson_client.group_by import GroupByBuilder
+    return GroupByBuilder(type_name)

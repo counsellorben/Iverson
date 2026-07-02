@@ -12,7 +12,9 @@ from iverson_client.annotations import (
     FieldMeta,
 )
 from iverson_client.core import IversonClient, EntityCoordinator, SchemaRegistrar
+from iverson_client.group_by import GroupByBuilder
 from iverson_client.search import QueryBuilder
+from iverson_client.search import group_by as group_by
 
 __all__ = [
     "iverson_entity",
@@ -28,4 +30,6 @@ __all__ = [
     "EntityCoordinator",
     "SchemaRegistrar",
     "QueryBuilder",
+    "GroupByBuilder",
+    "group_by",
 ]
