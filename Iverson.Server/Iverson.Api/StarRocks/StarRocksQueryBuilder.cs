@@ -375,7 +375,7 @@ internal static class StarRocksQueryBuilder
         IReadOnlyList<SrRangeSpec>? buckets, string wc, string hc = "")
     {
         if (buckets is null || buckets.Count == 0)
-            return $"SELECT NULL AS bucket_key, COUNT(*) AS doc_count FROM `{tableName}`{wc}";
+            return $"SELECT NULL AS bucket_key, COUNT(*) AS doc_count FROM `{tableName}`{wc}{hc}";
 
         var cases = buckets.Select(b =>
         {

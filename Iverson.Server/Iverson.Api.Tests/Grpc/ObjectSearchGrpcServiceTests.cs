@@ -141,6 +141,24 @@ public class ObjectSearchGrpcServiceTests
     }
 
     [Fact]
+    public async Task Aggregate_ThrowsRpcException_WhenGroupByFieldsHasMultipleEntries()
+    {
+        await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
+
+        var request = new AggregateRequest { TypeName = "Author" };
+        request.Aggregations.Add(new AggregationSpec
+        {
+            Name = "by_name_rating", Type = AggregationType.Terms, Field = "Name",
+            GroupByFields = { "Name", "Rating" }
+        });
+
+        var act = async () => await _sut.Aggregate(request, TestServerCallContext.Create());
+
+        await act.Should().ThrowAsync<RpcException>()
+            .Where(e => e.Status.StatusCode == StatusCode.InvalidArgument);
+    }
+
+    [Fact]
     public async Task Aggregate_Terms_ReturnsBuckets()
     {
         await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());

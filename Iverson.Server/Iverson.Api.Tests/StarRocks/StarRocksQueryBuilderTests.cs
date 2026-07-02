@@ -90,6 +90,29 @@ public class StarRocksQueryBuilderTests
         sql.Should().Contain("it''s high");
     }
 
+    [Fact]
+    public void BuildAggregate_Range_NoBuckets_AppendsHavingClause()
+    {
+        var spec = new SrAggSpec("rating_ranges", SrAggKind.Range, "Rating", RangeBuckets: null);
+
+        var having = new SearchQuery();
+        having.Clauses.Add(new SearchClause
+        {
+            Property   = "doc_count",
+            Operator   = SearchOperator.GreaterThan,
+            Value      = new SearchValue { NumberVal = 10 },
+            ClauseType = SearchClauseType.Filter
+        });
+
+        var (sql, param) = StarRocksQueryBuilder.BuildAggregate("authors", AuthorSchema(), null, spec, having);
+
+        sql.Should().Contain("SELECT NULL AS bucket_key, COUNT(*) AS doc_count FROM `authors`");
+        sql.Should().Contain("HAVING `doc_count` > @h0");
+
+        var lookup = (SqlMapper.IParameterLookup)param;
+        lookup["h0"].Should().Be(10.0);
+    }
+
     // ── BuildAggregate — multi-key GROUP BY ────────────────────────────────────
 
     [Fact]

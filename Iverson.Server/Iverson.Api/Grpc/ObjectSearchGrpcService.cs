@@ -207,6 +207,10 @@ public sealed class ObjectSearchGrpcService(
     private async Task<SrAggResult?> RunAggregationAsync(
         SchemaDescriptor schema, SearchQuery? query, SrAggSpec spec, SearchQuery? having = null)
     {
+        if (spec.GroupByFields is { Count: > 1 })
+            throw new RpcException(new Status(StatusCode.InvalidArgument,
+                "Multi-key GROUP BY (group_by_fields with more than one entry) is not yet supported via the Aggregate RPC's result decoding; use a single field or wait for the GroupByRequest RPC."));
+
         var (sql, param) = StarRocksQueryBuilder.BuildAggregate(schema.TableName, schema, query, spec, having);
         var rows = (await sr.QueryAsync<dynamic>(sql, param)).ToList();
 
