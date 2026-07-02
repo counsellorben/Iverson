@@ -124,6 +124,106 @@ internal static class StarRocksQueryBuilder
         return (sql, param);
     }
 
+    /// <summary>
+    /// Builds a single compound SELECT that computes multiple metrics over one GROUP BY in a
+    /// single SQL round-trip (e.g. TPC-H Q1: several SUM/AVG/COUNT columns, grouped by 2 keys,
+    /// ordered, HAVING-filtered). Unlike <see cref="BuildAggregate"/>, which issues one SQL
+    /// query per <see cref="SrAggSpec"/>, this emits one query for the whole
+    /// <see cref="GroupByRequest"/>.
+    /// </summary>
+    internal static (string Sql, DynamicParameters Param) BuildGroupBy(
+        string primaryTable,
+        SchemaDescriptor schema,
+        GroupByRequest request,
+        SchemaRegistry registry)
+    {
+        var from = BuildFromWithJoins(primaryTable, request.Joins, registry, out var tableMap);
+
+        // BuildFromWithJoins only populates tableMap when joins are present (it's keyed off
+        // the join chain). For the common no-join case, resolve columns against the primary
+        // schema directly instead of requiring a fabricated single-entry tableMap.
+        string? ResolveGroupByColumn(string property) =>
+            tableMap.Count > 0 ? ResolveColumn(tableMap, property) : ResolveColumn(schema, property);
+
+        var param = new DynamicParameters();
+        var where = BuildWhere(schema, request.Query?.Clauses, request.Query?.Logic ?? SearchLogic.And, param, out _);
+        var wc = where.Length > 0 ? $" WHERE {where}" : "";
+
+        var keyCols = request.Keys
+            .Select(k => ResolveGroupByColumn(k)
+                ?? throw new RpcException(new Status(StatusCode.InvalidArgument,
+                    $"Unknown or ambiguous GROUP BY key '{k}'.")))
+            .ToList();
+
+        var metricExprs = request.Metrics.Select(m => BuildMetricExpr(m, tableMap, schema)).ToList();
+
+        var selectCols = keyCols.Select(c => $"`{c}`")
+            .Concat(metricExprs)
+            .ToList();
+
+        var havingSql = BuildHaving(request.Having?.Clauses, request.Having?.Logic ?? SearchLogic.And, param);
+        var hc = havingSql.Length > 0 ? $" HAVING {havingSql}" : "";
+
+        var orderSql = request.OrderBy
+            .Select(s => (col: ResolveGroupByColumn(s.Property) ?? s.Property, s.Descending))
+            .Select(x => $"`{x.col}` {(x.Descending ? "DESC" : "ASC")}")
+            .ToList();
+        var oc = orderSql.Count > 0 ? $" ORDER BY {string.Join(", ", orderSql)}" : "";
+
+        var limit = request.Limit > 0 ? request.Limit : 10_000;
+
+        var sql = $"SELECT {string.Join(", ", selectCols)} {from}{wc} " +
+                   $"GROUP BY {string.Join(", ", keyCols.Select(c => $"`{c}`"))}{hc}{oc} " +
+                   $"LIMIT {limit}";
+
+        return (sql, param);
+    }
+
+    // metric.expression, when set, is raw StarRocks SQL supplied by a trusted server-side
+    // caller (e.g. TPC-H DSL translation) and is spliced directly into the aggregate
+    // function — NOT user input, no escaping is performed.
+    private static string BuildMetricExpr(
+        MetricSpec metric,
+        IReadOnlyDictionary<string, JoinContext> tableMap,
+        SchemaDescriptor primarySchema)
+    {
+        var isCountAll = metric.Type == AggregationType.Count
+            && string.IsNullOrEmpty(metric.Field)
+            && string.IsNullOrEmpty(metric.Expression);
+
+        if (isCountAll)
+            return $"COUNT(*) AS `{metric.Name}`";
+
+        var fn = metric.Type switch
+        {
+            AggregationType.Avg   => "AVG",
+            AggregationType.Sum   => "SUM",
+            AggregationType.Min   => "MIN",
+            AggregationType.Max   => "MAX",
+            AggregationType.Count => "COUNT",
+            _ => throw new RpcException(new Status(StatusCode.InvalidArgument,
+                $"Metric '{metric.Name}' has unsupported type '{metric.Type}'; GroupBy metrics must be AVG, SUM, MIN, MAX, or COUNT."))
+        };
+
+        if (!string.IsNullOrEmpty(metric.Expression))
+            return $"{fn}({metric.Expression}) AS `{metric.Name}`";
+
+        if (!string.IsNullOrEmpty(metric.Field))
+        {
+            var col = (tableMap.Count > 0 ? ResolveColumn(tableMap, metric.Field) : ResolveColumn(primarySchema, metric.Field))
+                ?? throw new RpcException(new Status(StatusCode.InvalidArgument,
+                    $"Unknown or ambiguous field '{metric.Field}' referenced by metric '{metric.Name}'."));
+            return $"{fn}(`{col}`) AS `{metric.Name}`";
+        }
+
+        // Both Field and Expression are empty/null. COUNT(*) is the one legitimate case for
+        // this (handled above via isCountAll); every other metric kind requires a column
+        // argument, so emitting the naive fallback here would produce invalid SQL like
+        // "SUM(``)" — fail loudly instead.
+        throw new RpcException(new Status(StatusCode.InvalidArgument,
+            $"metric '{metric.Name}' requires a field or expression"));
+    }
+
     internal static string BuildWhere(
         SchemaDescriptor schema,
         IEnumerable<SearchClause>? clauses,

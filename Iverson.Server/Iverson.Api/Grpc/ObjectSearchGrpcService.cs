@@ -241,6 +241,37 @@ public sealed class ObjectSearchGrpcService(
         }
     }
 
+    // ── Compound GROUP BY ──────────────────────────────────────────────────────
+
+    public override async Task GroupBy(
+        GroupByRequest request,
+        IServerStreamWriter<SearchResponse> responseStream,
+        ServerCallContext context)
+    {
+        var schema = RequireSchema(request.TypeName);
+
+        if (logger.IsEnabled(LogLevel.Information))
+            logger.LogInformation("[GroupBy] type={Type} keys={Keys} metrics={Metrics}",
+                request.TypeName, request.Keys.Count, request.Metrics.Count);
+
+        var (sql, param) = StarRocksQueryBuilder.BuildGroupBy(schema.TableName, schema, request, registry);
+
+        var rows = await sr.QueryAsync<dynamic>(sql, param);
+
+        foreach (var row in rows)
+        {
+            var dict = ((IDictionary<string, object>)row)
+                .ToDictionary(kv => kv.Key, kv => (object?)kv.Value);
+            await responseStream.WriteAsync(
+                new SearchResponse
+                {
+                    Data    = DictToProtoStruct(dict),
+                    TraceId = request.TraceId
+                },
+                context.CancellationToken);
+        }
+    }
+
     // ── Helpers ────────────────────────────────────────────────────────────────
 
     private SchemaDescriptor RequireSchema(string typeName) =>

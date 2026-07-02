@@ -479,4 +479,171 @@ public class StarRocksQueryBuilderTests
 
         col.Should().Be("articles.Title");
     }
+
+    // ── BuildGroupBy ───────────────────────────────────────────────────────────
+
+    private static GroupByRequest Q1StyleRequest()
+    {
+        var request = new GroupByRequest
+        {
+            TypeName = "Author",
+            Keys     = { "Name", "Rating" },
+            Limit    = 100
+        };
+        request.Metrics.Add(new MetricSpec { Name = "sum_rating",   Type = AggregationType.Sum,   Field = "Rating" });
+        request.Metrics.Add(new MetricSpec { Name = "avg_rating",   Type = AggregationType.Avg,   Field = "Rating" });
+        request.Metrics.Add(new MetricSpec { Name = "min_rating",   Type = AggregationType.Min,   Field = "Rating" });
+        request.Metrics.Add(new MetricSpec { Name = "max_rating",   Type = AggregationType.Max,   Field = "Rating" });
+        request.Metrics.Add(new MetricSpec { Name = "count_rating", Type = AggregationType.Count, Field = "Rating" });
+        request.Metrics.Add(new MetricSpec { Name = "count_star",   Type = AggregationType.Count });
+        request.Metrics.Add(new MetricSpec { Name = "net_rating",   Type = AggregationType.Sum,   Expression = "Rating * (1 - 0)" });
+        request.Metrics.Add(new MetricSpec { Name = "charge",       Type = AggregationType.Sum,   Expression = "Rating * (1 - 0) * (1 + 0)" });
+        request.Metrics.Add(new MetricSpec { Name = "avg_name_len", Type = AggregationType.Avg,   Expression = "LENGTH(Name)" });
+        request.OrderBy.Add(new SearchSort { Property = "Name" });
+        request.OrderBy.Add(new SearchSort { Property = "Rating", Descending = true });
+        return request;
+    }
+
+    [Fact]
+    public void BuildGroupBy_SingleTable_ProducesCompoundSelect()
+    {
+        var registry = BuildRegistry(AuthorSchema());
+        var request  = Q1StyleRequest();
+
+        var (sql, _) = StarRocksQueryBuilder.BuildGroupBy("authors", AuthorSchema(), request, registry);
+
+        sql.Should().Contain("SELECT `Name`, `Rating`");
+        sql.Should().Contain("SUM(`Rating`) AS `sum_rating`");
+        sql.Should().Contain("AVG(`Rating`) AS `avg_rating`");
+        sql.Should().Contain("MIN(`Rating`) AS `min_rating`");
+        sql.Should().Contain("MAX(`Rating`) AS `max_rating`");
+        sql.Should().Contain("COUNT(`Rating`) AS `count_rating`");
+        sql.Should().Contain("COUNT(*) AS `count_star`");
+        sql.Should().Contain("SUM(Rating * (1 - 0)) AS `net_rating`");
+        sql.Should().Contain("SUM(Rating * (1 - 0) * (1 + 0)) AS `charge`");
+        sql.Should().Contain("AVG(LENGTH(Name)) AS `avg_name_len`");
+        sql.Should().Contain("FROM `authors`");
+        sql.Should().Contain("GROUP BY `Name`, `Rating`");
+        sql.Should().Contain("ORDER BY `Name` ASC, `Rating` DESC");
+        sql.Should().Contain("LIMIT 100");
+    }
+
+    [Fact]
+    public void BuildGroupBy_WithJoin_ProducesJoinClause()
+    {
+        var registry = BuildRegistry(AuthorSchema(), SchemaFixtures.ArticleSchema());
+
+        var request = new GroupByRequest
+        {
+            TypeName = "Author",
+            Keys     = { "Article.Title" },
+            Limit    = 50,
+            Joins =
+            {
+                new JoinSpec
+                {
+                    LeftType   = "Author",
+                    RightType  = "Article",
+                    LeftField  = "Id",
+                    RightField = "Id",
+                    Kind       = JoinKind.Inner
+                }
+            }
+        };
+        request.Metrics.Add(new MetricSpec { Name = "cnt", Type = AggregationType.Count });
+
+        var (sql, _) = StarRocksQueryBuilder.BuildGroupBy("authors", AuthorSchema(), request, registry);
+
+        sql.Should().Contain("FROM `authors` INNER JOIN `articles` ON `authors`.`Id` = `articles`.`Id`");
+        sql.Should().Contain("SELECT `articles.Title`");
+        sql.Should().Contain("GROUP BY `articles.Title`");
+    }
+
+    [Fact]
+    public void BuildGroupBy_ExpressionMetric_PassesRawExpression()
+    {
+        var registry = BuildRegistry(AuthorSchema());
+
+        var request = new GroupByRequest
+        {
+            TypeName = "Author",
+            Keys     = { "Name" },
+        };
+        request.Metrics.Add(new MetricSpec
+        {
+            Name       = "revenue",
+            Type       = AggregationType.Sum,
+            Expression = "Rating * 2"
+        });
+
+        var (sql, _) = StarRocksQueryBuilder.BuildGroupBy("authors", AuthorSchema(), request, registry);
+
+        sql.Should().Contain("SUM(Rating * 2) AS `revenue`");
+        sql.Should().NotContain("SUM(`Rating`)");
+    }
+
+    [Fact]
+    public void BuildGroupBy_Having_AppendsHavingClause()
+    {
+        var registry = BuildRegistry(AuthorSchema());
+
+        var request = new GroupByRequest
+        {
+            TypeName = "Author",
+            Keys     = { "Name" },
+        };
+        request.Metrics.Add(new MetricSpec { Name = "cnt", Type = AggregationType.Count });
+        request.Having = new SearchQuery();
+        request.Having.Clauses.Add(new SearchClause
+        {
+            Property   = "cnt",
+            Operator   = SearchOperator.GreaterThan,
+            Value      = new SearchValue { NumberVal = 300 },
+            ClauseType = SearchClauseType.Filter
+        });
+
+        var (sql, param) = StarRocksQueryBuilder.BuildGroupBy("authors", AuthorSchema(), request, registry);
+
+        sql.Should().Contain("HAVING `cnt` > @h0");
+        sql.IndexOf("GROUP BY", StringComparison.Ordinal)
+            .Should().BeLessThan(sql.IndexOf("HAVING", StringComparison.Ordinal));
+
+        var lookup = (SqlMapper.IParameterLookup)param;
+        lookup["h0"].Should().Be(300.0);
+    }
+
+    [Fact]
+    public void BuildGroupBy_CountAll_EmitsCountStar()
+    {
+        var registry = BuildRegistry(AuthorSchema());
+
+        var request = new GroupByRequest
+        {
+            TypeName = "Author",
+            Keys     = { "Name" },
+        };
+        request.Metrics.Add(new MetricSpec { Name = "cnt", Type = AggregationType.Count });
+
+        var (sql, _) = StarRocksQueryBuilder.BuildGroupBy("authors", AuthorSchema(), request, registry);
+
+        sql.Should().Contain("COUNT(*) AS `cnt`");
+    }
+
+    [Fact]
+    public void BuildGroupBy_NonCountMetricWithNoFieldOrExpression_ThrowsInvalidArgument()
+    {
+        var registry = BuildRegistry(AuthorSchema());
+
+        var request = new GroupByRequest
+        {
+            TypeName = "Author",
+            Keys     = { "Name" },
+        };
+        request.Metrics.Add(new MetricSpec { Name = "bad_sum", Type = AggregationType.Sum });
+
+        var act = () => StarRocksQueryBuilder.BuildGroupBy("authors", AuthorSchema(), request, registry);
+
+        act.Should().Throw<RpcException>()
+            .Which.StatusCode.Should().Be(StatusCode.InvalidArgument);
+    }
 }

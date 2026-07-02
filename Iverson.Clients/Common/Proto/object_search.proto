@@ -11,6 +11,7 @@ service ObjectSearchService {
     rpc SearchSimilar  (SearchSimilarRequest) returns (stream SearchResponse);
     rpc SearchChunks   (SearchChunksRequest)  returns (stream ChunkSearchResponse);
     rpc Aggregate      (AggregateRequest)     returns (AggregateResponse);
+    rpc GroupBy        (GroupByRequest)       returns (stream SearchResponse);
 }
 
 message SearchRequest {
@@ -196,4 +197,32 @@ enum AggregationType {
     MIN            = 5;
     MAX            = 6;
     COUNT          = 7;
+}
+
+// ── Compound GROUP BY ────────────────────────────────────────────────────────
+//
+// Runs multiple metrics over the same GROUP BY in a single SQL round-trip
+// (e.g. TPC-H Q1: several SUM/AVG/COUNT columns, grouped by 2 keys, ordered,
+// HAVING-filtered). Unlike AggregateRequest (one SQL query per AggregationSpec),
+// GroupByRequest emits one compound SELECT with all metrics as columns.
+
+message MetricSpec {
+    string          name       = 1;  // SELECT alias
+    AggregationType type       = 2;  // AVG | SUM | MIN | MAX | COUNT
+    string          field      = 3;  // bare column name (used when expression is empty)
+    string          expression = 4;  // raw SQL expr overrides field (e.g. "price * (1 - discount)")
+}
+
+// COUNT with both field and expression empty means COUNT(*) — no field or expression needed.
+
+message GroupByRequest {
+    string              type_name = 1;
+    SearchQuery         query     = 2;   // WHERE filter
+    repeated string     keys      = 3;   // GROUP BY columns (qualified with TypeName. for joins)
+    repeated MetricSpec metrics   = 4;
+    SearchQuery         having    = 5;   // HAVING filter; clause.property = output alias
+    repeated SearchSort order_by  = 6;
+    int32               limit     = 7;   // default 10000
+    repeated JoinSpec   joins     = 8;
+    string              trace_id  = 9;
 }
