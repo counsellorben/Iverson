@@ -70,34 +70,53 @@ internal static class StarRocksQueryBuilder
         string tableName,
         SchemaDescriptor schema,
         SearchQuery? query,
-        SrAggSpec spec)
+        SrAggSpec spec,
+        SearchQuery? having = null)
     {
         var param = new DynamicParameters();
         var where = BuildWhere(schema, query?.Clauses, query?.Logic ?? SearchLogic.And, param, out _);
         var col   = ResolveColumn(schema, spec.Field) ?? spec.Field;
         var wc    = where.Length > 0 ? $" WHERE {where}" : "";
 
+        var havingSql = BuildHaving(having?.Clauses, having?.Logic ?? SearchLogic.And, param);
+        var hc = havingSql.Length > 0 ? $" HAVING {havingSql}" : "";
+
+        // Multi-key GROUP BY: spec.GroupByFields, when present with more than one entry,
+        // overrides spec.Field for TERMS and selects/groups by all listed columns.
+        var groupCols = spec.GroupByFields is { Count: > 1 }
+            ? spec.GroupByFields.Select(f => ResolveColumn(schema, f) ?? f).ToList()
+            : null;
+
         var sql = spec.Kind switch
         {
-            SrAggKind.Terms =>
-                $"SELECT `{col}` AS bucket_key, COUNT(*) AS doc_count " +
-                $"FROM `{tableName}`{wc} " +
-                $"GROUP BY `{col}` " +
-                $"ORDER BY doc_count DESC " +
-                $"LIMIT {(spec.Size > 0 ? spec.Size : 10)}",
+            SrAggKind.Terms => groupCols is not null
+                ? $"SELECT {string.Join(", ", groupCols.Select(c => $"`{c}`"))}, COUNT(*) AS doc_count " +
+                  $"FROM `{tableName}`{wc} " +
+                  $"GROUP BY {string.Join(", ", groupCols.Select(c => $"`{c}`"))}{hc} " +
+                  $"ORDER BY doc_count DESC " +
+                  $"LIMIT {(spec.Size > 0 ? spec.Size : 10)}"
+                : $"SELECT `{col}` AS bucket_key, COUNT(*) AS doc_count " +
+                  $"FROM `{tableName}`{wc} " +
+                  $"GROUP BY `{col}`{hc} " +
+                  $"ORDER BY doc_count DESC " +
+                  $"LIMIT {(spec.Size > 0 ? spec.Size : 10)}",
 
             SrAggKind.DateHistogram =>
                 $"SELECT {DateBucketExpr(col, spec.CalendarInterval)} AS bucket_key, " +
                 $"COUNT(*) AS doc_count " +
                 $"FROM `{tableName}`{wc} " +
-                $"GROUP BY bucket_key ORDER BY bucket_key",
+                $"GROUP BY bucket_key{hc} ORDER BY bucket_key",
 
-            SrAggKind.Range => BuildRangeSql(tableName, col, spec.RangeBuckets, wc),
-            SrAggKind.Avg   => $"SELECT AVG(`{col}`) AS metric_val FROM `{tableName}`{wc}",
-            SrAggKind.Sum   => $"SELECT SUM(`{col}`) AS metric_val FROM `{tableName}`{wc}",
-            SrAggKind.Min   => $"SELECT MIN(`{col}`) AS metric_val FROM `{tableName}`{wc}",
-            SrAggKind.Max   => $"SELECT MAX(`{col}`) AS metric_val FROM `{tableName}`{wc}",
-            SrAggKind.Count => $"SELECT COUNT(DISTINCT `{col}`) AS metric_val FROM `{tableName}`{wc}",
+            SrAggKind.Range => BuildRangeSql(tableName, col, spec.RangeBuckets, wc, hc),
+
+            // spec.Expression, when set, is raw StarRocks SQL supplied by a trusted
+            // server-side caller (e.g. TPC-H DSL translation) and is spliced directly
+            // into the aggregate function — NOT user input, no escaping is performed.
+            SrAggKind.Avg   => $"SELECT AVG({spec.Expression ?? $"`{col}`"}) AS metric_val FROM `{tableName}`{wc}{hc}",
+            SrAggKind.Sum   => $"SELECT SUM({spec.Expression ?? $"`{col}`"}) AS metric_val FROM `{tableName}`{wc}{hc}",
+            SrAggKind.Min   => $"SELECT MIN({spec.Expression ?? $"`{col}`"}) AS metric_val FROM `{tableName}`{wc}{hc}",
+            SrAggKind.Max   => $"SELECT MAX({spec.Expression ?? $"`{col}`"}) AS metric_val FROM `{tableName}`{wc}{hc}",
+            SrAggKind.Count => $"SELECT COUNT(DISTINCT {spec.Expression ?? $"`{col}`"}) AS metric_val FROM `{tableName}`{wc}{hc}",
 
             _ => throw new ArgumentOutOfRangeException(nameof(spec.Kind))
         };
@@ -125,6 +144,70 @@ internal static class StarRocksQueryBuilder
             if (col is null) continue;
 
             var pName = $"p{nextIdx++}";
+
+            var condition = clause.Operator switch
+            {
+                SearchOperator.Equals => BuildEq(col, pName, clause.Value, param),
+                SearchOperator.NotEquals =>
+                    Condition($"`{col}` <> @{pName}", pName, GetScalarValue(clause.Value), param),
+                SearchOperator.Contains =>
+                    Condition($"`{col}` LIKE @{pName}", pName, $"%{clause.Value?.StringVal}%", param),
+                SearchOperator.StartsWith =>
+                    Condition($"`{col}` LIKE @{pName}", pName, $"{clause.Value?.StringVal}%", param),
+                SearchOperator.EndsWith =>
+                    Condition($"`{col}` LIKE @{pName}", pName, $"%{clause.Value?.StringVal}", param),
+                SearchOperator.GreaterThan =>
+                    Condition($"`{col}` > @{pName}", pName, GetScalarValue(clause.Value), param),
+                SearchOperator.GreaterThanOrEquals =>
+                    Condition($"`{col}` >= @{pName}", pName, GetScalarValue(clause.Value), param),
+                SearchOperator.LessThan =>
+                    Condition($"`{col}` < @{pName}", pName, GetScalarValue(clause.Value), param),
+                SearchOperator.LessThanOrEquals =>
+                    Condition($"`{col}` <= @{pName}", pName, GetScalarValue(clause.Value), param),
+                SearchOperator.In => BuildIn(col, pName, clause.Value, param),
+                _ => null
+            };
+
+            if (condition is null) continue;
+
+            var wrapped = clause.ClauseType == SearchClauseType.MustNot
+                ? $"NOT ({condition})"
+                : condition;
+
+            parts.Add(wrapped);
+        }
+
+        if (parts.Count == 0) return "";
+        var sep = logic == SearchLogic.Or ? " OR " : " AND ";
+        return string.Join(sep, parts);
+    }
+
+    /// <summary>
+    /// Builds a HAVING clause from the same clause-matching logic as <see cref="BuildWhere"/>,
+    /// but without the schema-backed <see cref="ResolveColumn(SchemaDescriptor, string)"/> guard —
+    /// HAVING clauses reference SQL output aliases (e.g. "doc_count", "metric_val") which are not
+    /// schema columns, so the clause's Property is used verbatim as the column name. Uses an
+    /// "h{n}" parameter prefix (vs. "p{n}" for WHERE) so both can share one DynamicParameters
+    /// instance without name collisions when a query has both a filter and a HAVING clause.
+    /// </summary>
+    internal static string BuildHaving(
+        IEnumerable<SearchClause>? clauses,
+        SearchLogic logic,
+        DynamicParameters param)
+    {
+        if (clauses is null) return "";
+
+        var parts = new List<string>();
+        var nextIdx = 0;
+
+        foreach (var clause in clauses)
+        {
+            if (clause.Operator == SearchOperator.VectorSimilar) continue;
+
+            var col = clause.Property;
+            if (string.IsNullOrEmpty(col)) continue;
+
+            var pName = $"h{nextIdx++}";
 
             var condition = clause.Operator switch
             {
@@ -289,7 +372,7 @@ internal static class StarRocksQueryBuilder
 
     private static string BuildRangeSql(
         string tableName, string col,
-        IReadOnlyList<SrRangeSpec>? buckets, string wc)
+        IReadOnlyList<SrRangeSpec>? buckets, string wc, string hc = "")
     {
         if (buckets is null || buckets.Count == 0)
             return $"SELECT NULL AS bucket_key, COUNT(*) AS doc_count FROM `{tableName}`{wc}";
@@ -307,7 +390,7 @@ internal static class StarRocksQueryBuilder
         }).OfType<string>();
 
         return $"SELECT CASE {string.Join(" ", cases)} END AS bucket_key, " +
-               $"COUNT(*) AS doc_count FROM `{tableName}`{wc} GROUP BY bucket_key";
+               $"COUNT(*) AS doc_count FROM `{tableName}`{wc} GROUP BY bucket_key{hc}";
     }
 
     private static string? BuildEq(string col, string pName, SearchValue? val, DynamicParameters param)

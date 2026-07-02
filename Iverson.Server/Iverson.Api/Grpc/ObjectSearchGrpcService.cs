@@ -190,8 +190,10 @@ public sealed class ObjectSearchGrpcService(
 
         var response = new AggregateResponse { TraceId = request.TraceId };
 
+        var having = request.Having;
+
         var aggTasks = request.Aggregations
-            .Select(spec => RunAggregationAsync(schema, request.Query, ProtoToSrSpec(spec)))
+            .Select(spec => RunAggregationAsync(schema, request.Query, ProtoToSrSpec(spec), having))
             .ToList();
 
         var aggResults = await Task.WhenAll(aggTasks);
@@ -203,9 +205,9 @@ public sealed class ObjectSearchGrpcService(
     }
 
     private async Task<SrAggResult?> RunAggregationAsync(
-        SchemaDescriptor schema, SearchQuery? query, SrAggSpec spec)
+        SchemaDescriptor schema, SearchQuery? query, SrAggSpec spec, SearchQuery? having = null)
     {
-        var (sql, param) = StarRocksQueryBuilder.BuildAggregate(schema.TableName, schema, query, spec);
+        var (sql, param) = StarRocksQueryBuilder.BuildAggregate(schema.TableName, schema, query, spec, having);
         var rows = (await sr.QueryAsync<dynamic>(sql, param)).ToList();
 
         switch (spec.Kind)
@@ -251,7 +253,9 @@ public sealed class ObjectSearchGrpcService(
             TimeZone:         string.IsNullOrEmpty(proto.TimeZone)         ? null : proto.TimeZone,
             RangeBuckets:     proto.RangeBuckets.Count > 0
                 ? proto.RangeBuckets.Select(b => new SrRangeSpec(b.Key, b.From, b.To)).ToList()
-                : null);
+                : null,
+            GroupByFields:    proto.GroupByFields.Count > 0 ? proto.GroupByFields.ToList() : null,
+            Expression:       string.IsNullOrEmpty(proto.Expression) ? null : proto.Expression);
 
     private static SrAggKind ProtoKindToSr(AggregationType type) => type switch
     {

@@ -19,7 +19,9 @@ public sealed record AggregationDescriptor(
     int Size = 10,
     string? CalendarInterval = null,
     string? TimeZone = null,
-    IReadOnlyList<RangeBucketDescriptor>? RangeBuckets = null);
+    IReadOnlyList<RangeBucketDescriptor>? RangeBuckets = null,
+    IReadOnlyList<string>? GroupByFields = null,
+    string? Expression = null);
 
 public sealed record RangeBucketDescriptor(string Key, double? From, double? To);
 

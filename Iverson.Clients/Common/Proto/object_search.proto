@@ -139,6 +139,7 @@ message AggregateRequest {
     SearchQuery query        = 2;  // optional filter applied before aggregating
     repeated AggregationSpec aggregations = 3;
     string      trace_id     = 4;
+    SearchQuery having       = 5;  // applied after GROUP BY; clauses reference aliased output columns
     repeated JoinSpec joins  = 7;
 }
 
@@ -163,6 +164,9 @@ message AggregationSpec {
 
     // RANGE options
     repeated RangeBucket range_buckets = 7;
+
+    repeated string group_by_fields = 8;   // multi-key GROUP BY; overrides field for TERMS if set
+    string          expression      = 9;   // raw SQL expr in aggregate fn; overrides field if set
 }
 
 message RangeBucket {

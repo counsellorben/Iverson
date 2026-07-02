@@ -90,6 +90,99 @@ public class StarRocksQueryBuilderTests
         sql.Should().Contain("it''s high");
     }
 
+    // ── BuildAggregate — multi-key GROUP BY ────────────────────────────────────
+
+    [Fact]
+    public void BuildAggregate_MultiKeyGroupBy_ProducesMultiColumnGroupBy()
+    {
+        var spec = new SrAggSpec(
+            "by_name_rating", SrAggKind.Terms, "Name",
+            GroupByFields: ["Name", "Rating"]);
+
+        var (sql, _) = StarRocksQueryBuilder.BuildAggregate("authors", AuthorSchema(), null, spec);
+
+        sql.Should().Contain("SELECT `Name`, `Rating`, COUNT(*) AS doc_count");
+        sql.Should().Contain("GROUP BY `Name`, `Rating`");
+        sql.Should().Contain("doc_count");
+    }
+
+    // ── BuildAggregate — raw expression metric ─────────────────────────────────
+
+    [Fact]
+    public void BuildAggregate_ExpressionMetric_UsesRawExpressionInAggFn()
+    {
+        var spec = new SrAggSpec(
+            "revenue", SrAggKind.Sum, "Rating",
+            Expression: "Rating * 2");
+
+        var (sql, _) = StarRocksQueryBuilder.BuildAggregate("authors", AuthorSchema(), null, spec);
+
+        sql.Should().Contain("SUM(Rating * 2)");
+        sql.Should().NotContain("SUM(`Rating`)");
+    }
+
+    // ── BuildAggregate — HAVING ─────────────────────────────────────────────────
+
+    [Fact]
+    public void BuildAggregate_Having_AppendsHavingClause()
+    {
+        var spec = new SrAggSpec("by_name", SrAggKind.Terms, "Name", Size: 5);
+
+        var having = new SearchQuery();
+        having.Clauses.Add(new SearchClause
+        {
+            Property   = "doc_count",
+            Operator   = SearchOperator.GreaterThan,
+            Value      = new SearchValue { NumberVal = 10 },
+            ClauseType = SearchClauseType.Filter
+        });
+
+        var (sql, param) = StarRocksQueryBuilder.BuildAggregate("authors", AuthorSchema(), null, spec, having);
+
+        sql.Should().Contain("HAVING `doc_count` > @h0");
+        // HAVING must land between GROUP BY and ORDER BY/LIMIT, not after them.
+        sql.IndexOf("GROUP BY", StringComparison.Ordinal)
+            .Should().BeLessThan(sql.IndexOf("HAVING", StringComparison.Ordinal));
+        sql.IndexOf("HAVING", StringComparison.Ordinal)
+            .Should().BeLessThan(sql.IndexOf("ORDER BY", StringComparison.Ordinal));
+
+        var lookup = (SqlMapper.IParameterLookup)param;
+        lookup["h0"].Should().Be(10.0);
+    }
+
+    [Fact]
+    public void BuildAggregate_WhereAndHaving_UseDistinctParameterPrefixes()
+    {
+        var query = new SearchQuery();
+        query.Clauses.Add(new SearchClause
+        {
+            Property   = "Name",
+            Operator   = SearchOperator.Equals,
+            Value      = new SearchValue { StringVal = "Alice" },
+            ClauseType = SearchClauseType.Filter
+        });
+
+        var spec = new SrAggSpec("by_name", SrAggKind.Terms, "Name", Size: 5);
+
+        var having = new SearchQuery();
+        having.Clauses.Add(new SearchClause
+        {
+            Property   = "doc_count",
+            Operator   = SearchOperator.GreaterThan,
+            Value      = new SearchValue { NumberVal = 10 },
+            ClauseType = SearchClauseType.Filter
+        });
+
+        var (sql, param) = StarRocksQueryBuilder.BuildAggregate("authors", AuthorSchema(), query, spec, having);
+
+        sql.Should().Contain("WHERE `Name` = @p0");
+        sql.Should().Contain("HAVING `doc_count` > @h0");
+
+        var lookup = (SqlMapper.IParameterLookup)param;
+        lookup["p0"].Should().Be("Alice");
+        lookup["h0"].Should().Be(10.0);
+    }
+
     // ── BuildAggregate — DateHistogram "quarter" ───────────────────────────────
 
     [Fact]
