@@ -137,25 +137,19 @@ internal static class StarRocksQueryBuilder
         GroupByRequest request,
         SchemaRegistry registry)
     {
-        var from = BuildFromWithJoins(primaryTable, request.Joins, registry, out var tableMap);
-
-        // BuildFromWithJoins only populates tableMap when joins are present (it's keyed off
-        // the join chain). For the common no-join case, resolve columns against the primary
-        // schema directly instead of requiring a fabricated single-entry tableMap.
-        string? ResolveGroupByColumn(string property) =>
-            tableMap.Count > 0 ? ResolveColumn(tableMap, property) : ResolveColumn(schema, property);
+        var from = BuildFromWithJoins(schema, request.Joins, registry, out var tableMap);
 
         var param = new DynamicParameters();
         var where = BuildWhere(schema, request.Query?.Clauses, request.Query?.Logic ?? SearchLogic.And, param, out _);
         var wc = where.Length > 0 ? $" WHERE {where}" : "";
 
         var keyCols = request.Keys
-            .Select(k => ResolveGroupByColumn(k)
+            .Select(k => ResolveColumn(tableMap, k)
                 ?? throw new RpcException(new Status(StatusCode.InvalidArgument,
                     $"Unknown or ambiguous GROUP BY key '{k}'.")))
             .ToList();
 
-        var metricExprs = request.Metrics.Select(m => BuildMetricExpr(m, tableMap, schema)).ToList();
+        var metricExprs = request.Metrics.Select(m => BuildMetricExpr(m, tableMap)).ToList();
 
         var selectCols = keyCols.Select(c => $"`{c}`")
             .Concat(metricExprs)
@@ -165,7 +159,7 @@ internal static class StarRocksQueryBuilder
         var hc = havingSql.Length > 0 ? $" HAVING {havingSql}" : "";
 
         var orderSql = request.OrderBy
-            .Select(s => (col: ResolveGroupByColumn(s.Property) ?? s.Property, s.Descending))
+            .Select(s => (col: ResolveColumn(tableMap, s.Property) ?? s.Property, s.Descending))
             .Select(x => $"`{x.col}` {(x.Descending ? "DESC" : "ASC")}")
             .ToList();
         var oc = orderSql.Count > 0 ? $" ORDER BY {string.Join(", ", orderSql)}" : "";
@@ -184,8 +178,7 @@ internal static class StarRocksQueryBuilder
     // function — NOT user input, no escaping is performed.
     private static string BuildMetricExpr(
         MetricSpec metric,
-        IReadOnlyDictionary<string, JoinContext> tableMap,
-        SchemaDescriptor primarySchema)
+        IReadOnlyDictionary<string, JoinContext> tableMap)
     {
         var isCountAll = metric.Type == AggregationType.Count
             && string.IsNullOrEmpty(metric.Field)
@@ -210,7 +203,7 @@ internal static class StarRocksQueryBuilder
 
         if (!string.IsNullOrEmpty(metric.Field))
         {
-            var col = (tableMap.Count > 0 ? ResolveColumn(tableMap, metric.Field) : ResolveColumn(primarySchema, metric.Field))
+            var col = ResolveColumn(tableMap, metric.Field)
                 ?? throw new RpcException(new Status(StatusCode.InvalidArgument,
                     $"Unknown or ambiguous field '{metric.Field}' referenced by metric '{metric.Name}'."));
             return $"{fn}(`{col}`) AS `{metric.Name}`";
@@ -392,32 +385,31 @@ internal static class StarRocksQueryBuilder
     }
 
     /// <summary>
-    /// Builds a FROM clause with one or more JOINs from a list of <see cref="JoinSpec"/>s,
-    /// resolving each side's type against the <see cref="SchemaRegistry"/>. Populates
-    /// <paramref name="tableMap"/> with every type name (primary + joined) mapped to its
-    /// resolved <see cref="JoinContext"/> so callers can later qualify columns per-table.
+    /// Builds a FROM clause with zero or more JOINs from a list of <see cref="JoinSpec"/>s,
+    /// resolving each side's type against the <see cref="SchemaRegistry"/>. Always populates
+    /// <paramref name="tableMap"/> with at least the primary table (keyed by
+    /// <paramref name="primarySchema"/>'s <c>TypeName</c>), plus every joined type name, each
+    /// mapped to its resolved <see cref="JoinContext"/> so callers can later qualify columns
+    /// per-table — including in the no-join case.
     /// </summary>
     internal static string BuildFromWithJoins(
-        string primaryTable,
+        SchemaDescriptor primarySchema,
         IReadOnlyList<JoinSpec> joins,
         SchemaRegistry registry,
         out IReadOnlyDictionary<string, JoinContext> tableMap)
     {
         var map = new Dictionary<string, JoinContext>(StringComparer.OrdinalIgnoreCase);
-        var sb = new StringBuilder($"FROM `{primaryTable}`");
+        var sb = new StringBuilder($"FROM `{primarySchema.TableName}`");
+
+        // Always seed the map with the primary table's own schema, regardless of whether
+        // there are any joins, so callers can resolve columns against tableMap unconditionally.
+        map[primarySchema.TypeName] = new JoinContext(primarySchema.TableName, primarySchema, primarySchema.TableName);
 
         if (joins.Count == 0)
         {
             tableMap = map;
             return sb.ToString();
         }
-
-        // Seed the map with the primary table's schema, keyed by left_type of the
-        // first join (the primary table is always the left side of the join chain).
-        var primarySchema = registry.Get(joins[0].LeftType)
-            ?? throw new RpcException(new Status(StatusCode.InvalidArgument,
-                $"Unknown type '{joins[0].LeftType}' referenced in join."));
-        map[joins[0].LeftType] = new JoinContext(primaryTable, primarySchema, primaryTable);
 
         foreach (var join in joins)
         {

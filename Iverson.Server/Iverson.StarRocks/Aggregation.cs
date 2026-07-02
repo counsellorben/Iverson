@@ -32,20 +32,3 @@ public sealed record AggregationResult(
     double? MetricValue = null);
 
 public sealed record AggregationBucket(string Key, long DocCount);
-
-// ── Compound GROUP BY (GroupByRequest) ──────────────────────────────────────
-
-public sealed record GroupByDescriptor(
-    IReadOnlyList<string>           Keys,
-    IReadOnlyList<MetricDescriptor> Metrics,
-    IReadOnlyList<SortDescriptor>?  OrderBy  = null,
-    int                             Limit    = 10_000,
-    string?                         Having   = null);   // pre-built HAVING SQL fragment
-
-public sealed record MetricDescriptor(
-    string          Name,
-    AggregationKind Kind,
-    string?         Field      = null,
-    string?         Expression = null);
-
-public sealed record SortDescriptor(string Column, bool Descending = false);

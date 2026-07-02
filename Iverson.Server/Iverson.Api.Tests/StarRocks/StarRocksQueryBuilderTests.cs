@@ -424,7 +424,7 @@ public class StarRocksQueryBuilderTests
             }
         };
 
-        var from = StarRocksQueryBuilder.BuildFromWithJoins("authors", joins, registry, out var tableMap);
+        var from = StarRocksQueryBuilder.BuildFromWithJoins(AuthorSchema(), joins, registry, out var tableMap);
 
         from.Should().Be("FROM `authors` INNER JOIN `articles` ON `authors`.`Id` = `articles`.`Id`");
         tableMap.Should().ContainKey("Author");
@@ -450,10 +450,23 @@ public class StarRocksQueryBuilderTests
             }
         };
 
-        var act = () => StarRocksQueryBuilder.BuildFromWithJoins("authors", joins, registry, out _);
+        var act = () => StarRocksQueryBuilder.BuildFromWithJoins(AuthorSchema(), joins, registry, out _);
 
         act.Should().Throw<RpcException>()
             .Which.StatusCode.Should().Be(StatusCode.InvalidArgument);
+    }
+
+    [Fact]
+    public void BuildFromWithJoins_NoJoins_StillPopulatesTableMapWithPrimaryTable()
+    {
+        var registry = BuildRegistry(AuthorSchema());
+
+        var from = StarRocksQueryBuilder.BuildFromWithJoins(AuthorSchema(), [], registry, out var tableMap);
+
+        from.Should().Be("FROM `authors`");
+        tableMap.Should().ContainKey("Author");
+        tableMap["Author"].TableName.Should().Be("authors");
+        tableMap["Author"].Alias.Should().Be("authors");
     }
 
     [Fact]
@@ -473,7 +486,7 @@ public class StarRocksQueryBuilderTests
             }
         };
 
-        StarRocksQueryBuilder.BuildFromWithJoins("authors", joins, registry, out var tableMap);
+        StarRocksQueryBuilder.BuildFromWithJoins(AuthorSchema(), joins, registry, out var tableMap);
 
         var col = StarRocksQueryBuilder.ResolveColumn(tableMap, "Article.Title");
 
@@ -512,19 +525,22 @@ public class StarRocksQueryBuilderTests
 
         var (sql, _) = StarRocksQueryBuilder.BuildGroupBy("authors", AuthorSchema(), request, registry);
 
-        sql.Should().Contain("SELECT `Name`, `Rating`");
-        sql.Should().Contain("SUM(`Rating`) AS `sum_rating`");
-        sql.Should().Contain("AVG(`Rating`) AS `avg_rating`");
-        sql.Should().Contain("MIN(`Rating`) AS `min_rating`");
-        sql.Should().Contain("MAX(`Rating`) AS `max_rating`");
-        sql.Should().Contain("COUNT(`Rating`) AS `count_rating`");
+        // Columns now resolve via the multi-schema tableMap path (always populated, even with
+        // no joins), so they're consistently alias-qualified as `authors.Field` — matching the
+        // convention already used by BuildWhere/BuildFromWithJoins for joined columns.
+        sql.Should().Contain("SELECT `authors.Name`, `authors.Rating`");
+        sql.Should().Contain("SUM(`authors.Rating`) AS `sum_rating`");
+        sql.Should().Contain("AVG(`authors.Rating`) AS `avg_rating`");
+        sql.Should().Contain("MIN(`authors.Rating`) AS `min_rating`");
+        sql.Should().Contain("MAX(`authors.Rating`) AS `max_rating`");
+        sql.Should().Contain("COUNT(`authors.Rating`) AS `count_rating`");
         sql.Should().Contain("COUNT(*) AS `count_star`");
         sql.Should().Contain("SUM(Rating * (1 - 0)) AS `net_rating`");
         sql.Should().Contain("SUM(Rating * (1 - 0) * (1 + 0)) AS `charge`");
         sql.Should().Contain("AVG(LENGTH(Name)) AS `avg_name_len`");
         sql.Should().Contain("FROM `authors`");
-        sql.Should().Contain("GROUP BY `Name`, `Rating`");
-        sql.Should().Contain("ORDER BY `Name` ASC, `Rating` DESC");
+        sql.Should().Contain("GROUP BY `authors.Name`, `authors.Rating`");
+        sql.Should().Contain("ORDER BY `authors.Name` ASC, `authors.Rating` DESC");
         sql.Should().Contain("LIMIT 100");
     }
 
