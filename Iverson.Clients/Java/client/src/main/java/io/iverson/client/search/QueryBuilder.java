@@ -1,6 +1,8 @@
 package io.iverson.client.search;
 
 import iverson.ObjectSearch;
+import iverson.ObjectSearch.JoinKind;
+import iverson.ObjectSearch.JoinSpec;
 import iverson.ObjectSearch.RepeatedFloat;
 import iverson.ObjectSearch.RepeatedString;
 import iverson.ObjectSearch.SearchClause;
@@ -12,8 +14,6 @@ import iverson.ObjectSearch.SearchRequest;
 import iverson.ObjectSearch.SearchSort;
 import iverson.ObjectSearch.SearchValue;
 
-import java.time.OffsetDateTime;
-import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
@@ -40,6 +40,7 @@ public final class QueryBuilder<T> {
     private final List<SearchClause> clauses    = new ArrayList<>();
     private final List<SearchSort>   sorts      = new ArrayList<>();
     private final List<String>       fields     = new ArrayList<>();
+    private final List<JoinSpec>     joins      = new ArrayList<>();
     private SearchLogic logic    = SearchLogic.AND;
     private int         page     = 1;
     private int         pageSize = 20;
@@ -76,6 +77,25 @@ public final class QueryBuilder<T> {
     /** Restricts the response to only the named fields. Empty (default) returns all fields. */
     public QueryBuilder<T> fields(String... names) {
         fields.addAll(Arrays.asList(names));
+        return this;
+    }
+
+    // ── Joins ─────────────────────────────────────────────────────────────────
+
+    /** Adds an INNER join from this type to {@code rightType} on the given fields. */
+    public QueryBuilder<T> join(String leftField, String rightType, String rightField) {
+        return join(leftField, rightType, rightField, JoinKind.INNER);
+    }
+
+    /** Adds a join of the given {@link JoinKind} from this type to {@code rightType}. */
+    public QueryBuilder<T> join(String leftField, String rightType, String rightField, JoinKind kind) {
+        joins.add(JoinSpec.newBuilder()
+            .setLeftType(typeName)
+            .setRightType(rightType)
+            .setLeftField(leftField)
+            .setRightField(rightField)
+            .setKind(kind)
+            .build());
         return this;
     }
 
@@ -129,6 +149,7 @@ public final class QueryBuilder<T> {
             .setPage(page)
             .setPageSize(pageSize)
             .addAllFields(fields)
+            .addAllJoins(joins)
             .build();
     }
 
@@ -195,6 +216,11 @@ public final class QueryBuilder<T> {
             return addOp(SearchOperator.CONTAINS, value);
         }
 
+        /** ENDS_WITH — string field ends with value. */
+        public QueryBuilder<T> endsWith(String value) {
+            return addOp(SearchOperator.ENDS_WITH, value);
+        }
+
         /** IN — field value is one of the supplied list. */
         public QueryBuilder<T> in(List<String> values) {
             SearchValue sv = SearchValue.newBuilder()
@@ -220,29 +246,8 @@ public final class QueryBuilder<T> {
         }
 
         private QueryBuilder<T> addOp(SearchOperator op, Object value) {
-            parent.addClause(field, op, toSearchValue(value), clauseType);
+            parent.addClause(field, op, SearchValues.toSearchValue(value), clauseType);
             return parent;
-        }
-
-        private static SearchValue toSearchValue(Object value) {
-            if (value == null)
-                return SearchValue.newBuilder().build();
-            if (value instanceof String s)
-                return SearchValue.newBuilder().setStringVal(s).build();
-            if (value instanceof Boolean b)
-                return SearchValue.newBuilder().setBoolVal(b).build();
-            if (value instanceof Number n)
-                return SearchValue.newBuilder().setNumberVal(n.doubleValue()).build();
-            if (value instanceof OffsetDateTime dt)
-                return SearchValue.newBuilder()
-                    .setStringVal(dt.format(DateTimeFormatter.ISO_OFFSET_DATE_TIME))
-                    .build();
-            if (value instanceof java.time.LocalDateTime ldt)
-                return SearchValue.newBuilder()
-                    .setStringVal(ldt.format(DateTimeFormatter.ISO_LOCAL_DATE_TIME))
-                    .build();
-            // Fallback
-            return SearchValue.newBuilder().setStringVal(value.toString()).build();
         }
 
         private static List<Float> floatArrayToList(float[] arr) {

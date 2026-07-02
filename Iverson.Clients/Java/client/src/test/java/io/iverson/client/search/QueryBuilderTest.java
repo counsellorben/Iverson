@@ -1,5 +1,7 @@
 package io.iverson.client.search;
 
+import iverson.ObjectSearch.JoinKind;
+import iverson.ObjectSearch.JoinSpec;
 import iverson.ObjectSearch.SearchClause;
 import iverson.ObjectSearch.SearchClauseType;
 import iverson.ObjectSearch.SearchLogic;
@@ -151,6 +153,14 @@ class QueryBuilderTest {
     }
 
     @Test
+    void endsWith_producesEndsWithOperator() {
+        SearchRequest req = Query.of(Article.class).where("title").endsWith("recap").build();
+        SearchClause clause = req.getQuery().getClauses(0);
+        assertEquals(SearchOperator.ENDS_WITH, clause.getOperator());
+        assertEquals("recap", clause.getValue().getStringVal());
+    }
+
+    @Test
     void in_producesInOperator_withStringList() {
         SearchRequest req = Query.of(Article.class)
             .where("category").in("sports", "news")
@@ -268,6 +278,30 @@ class QueryBuilderTest {
         assertEquals("category",  req.getQuery().getClauses(0).getProperty());
         assertEquals("wordCount", req.getQuery().getClauses(1).getProperty());
         assertEquals("draft",     req.getQuery().getClauses(2).getProperty());
+    }
+
+    // ── Joins ─────────────────────────────────────────────────────────────────
+
+    @Test
+    void join_addsJoinSpec_toSearchRequest() {
+        SearchRequest req = Query.of(Article.class)
+            .join("authorId", "Author", "id")
+            .build();
+        assertEquals(1, req.getJoinsCount());
+        JoinSpec join = req.getJoins(0);
+        assertEquals("Article", join.getLeftType());
+        assertEquals("Author", join.getRightType());
+        assertEquals("authorId", join.getLeftField());
+        assertEquals("id", join.getRightField());
+        assertEquals(JoinKind.INNER, join.getKind());
+    }
+
+    @Test
+    void join_withExplicitKind_setsKind() {
+        SearchRequest req = Query.of(Article.class)
+            .join("authorId", "Author", "id", JoinKind.LEFT)
+            .build();
+        assertEquals(JoinKind.LEFT, req.getJoins(0).getKind());
     }
 
     // ── SearchOperators constants ─────────────────────────────────────────────

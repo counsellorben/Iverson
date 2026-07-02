@@ -30,4 +30,13 @@ public final class Query {
     public static <T> QueryBuilder<T> ofType(String typeName) {
         return new QueryBuilder<>(typeName);
     }
+
+    /**
+     * Creates a {@link GroupByBuilder} scoped to the given type name string.
+     * Use for compound GROUP BY queries (multiple metrics, HAVING, joins) via
+     * {@link GroupByBuilder#build()}.
+     */
+    public static GroupByBuilder groupBy(String typeName) {
+        return new GroupByBuilder(typeName);
+    }
 }
