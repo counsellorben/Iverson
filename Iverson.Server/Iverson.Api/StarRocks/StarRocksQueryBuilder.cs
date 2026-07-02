@@ -151,7 +151,7 @@ internal static class StarRocksQueryBuilder
 
         var metricExprs = request.Metrics.Select(m => BuildMetricExpr(m, tableMap)).ToList();
 
-        var selectCols = keyCols.Select(c => $"`{c}`")
+        var selectCols = keyCols.Select(QuoteQualified)
             .Concat(metricExprs)
             .ToList();
 
@@ -160,14 +160,14 @@ internal static class StarRocksQueryBuilder
 
         var orderSql = request.OrderBy
             .Select(s => (col: ResolveColumn(tableMap, s.Property) ?? s.Property, s.Descending))
-            .Select(x => $"`{x.col}` {(x.Descending ? "DESC" : "ASC")}")
+            .Select(x => $"{QuoteQualified(x.col)} {(x.Descending ? "DESC" : "ASC")}")
             .ToList();
         var oc = orderSql.Count > 0 ? $" ORDER BY {string.Join(", ", orderSql)}" : "";
 
         var limit = request.Limit > 0 ? request.Limit : 10_000;
 
         var sql = $"SELECT {string.Join(", ", selectCols)} {from}{wc} " +
-                   $"GROUP BY {string.Join(", ", keyCols.Select(c => $"`{c}`"))}{hc}{oc} " +
+                   $"GROUP BY {string.Join(", ", keyCols.Select(QuoteQualified))}{hc}{oc} " +
                    $"LIMIT {limit}";
 
         return (sql, param);
@@ -206,7 +206,7 @@ internal static class StarRocksQueryBuilder
             var col = ResolveColumn(tableMap, metric.Field)
                 ?? throw new RpcException(new Status(StatusCode.InvalidArgument,
                     $"Unknown or ambiguous field '{metric.Field}' referenced by metric '{metric.Name}'."));
-            return $"{fn}(`{col}`) AS `{metric.Name}`";
+            return $"{fn}({QuoteQualified(col)}) AS `{metric.Name}`";
         }
 
         // Both Field and Expression are empty/null. COUNT(*) is the one legitimate case for
@@ -382,6 +382,25 @@ internal static class StarRocksQueryBuilder
         }
 
         return match;
+    }
+
+    /// <summary>
+    /// Quotes an "alias.field" string (as returned by <see cref="ResolveColumn(IReadOnlyDictionary{string, JoinContext}, string)"/>)
+    /// as a proper table-qualified SQL identifier: two separately-backtick-quoted parts joined
+    /// by an unquoted dot, e.g. <c>`authors`.`Name`</c>. A single backtick pair around the whole
+    /// string (e.g. <c>`authors.Name`</c>) is WRONG — in MySQL-wire SQL a backtick-quoted token
+    /// does not split on '.', so that form is parsed as one identifier literally named
+    /// "authors.Name", which does not exist. Splits on the LAST '.' rather than the first, since
+    /// the alias itself never contains a dot but a field name theoretically could.
+    /// </summary>
+    private static string QuoteQualified(string aliasDotColumn)
+    {
+        var dotIdx = aliasDotColumn.LastIndexOf('.');
+        if (dotIdx < 0) return $"`{aliasDotColumn}`";
+
+        var alias = aliasDotColumn[..dotIdx];
+        var field = aliasDotColumn[(dotIdx + 1)..];
+        return $"`{alias}`.`{field}`";
     }
 
     /// <summary>

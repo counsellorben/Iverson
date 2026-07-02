@@ -526,21 +526,23 @@ public class StarRocksQueryBuilderTests
         var (sql, _) = StarRocksQueryBuilder.BuildGroupBy("authors", AuthorSchema(), request, registry);
 
         // Columns now resolve via the multi-schema tableMap path (always populated, even with
-        // no joins), so they're consistently alias-qualified as `authors.Field` — matching the
-        // convention already used by BuildWhere/BuildFromWithJoins for joined columns.
-        sql.Should().Contain("SELECT `authors.Name`, `authors.Rating`");
-        sql.Should().Contain("SUM(`authors.Rating`) AS `sum_rating`");
-        sql.Should().Contain("AVG(`authors.Rating`) AS `avg_rating`");
-        sql.Should().Contain("MIN(`authors.Rating`) AS `min_rating`");
-        sql.Should().Contain("MAX(`authors.Rating`) AS `max_rating`");
-        sql.Should().Contain("COUNT(`authors.Rating`) AS `count_rating`");
+        // no joins), so they're consistently alias-qualified as `authors`.`Field` — matching the
+        // convention already used by BuildWhere/BuildFromWithJoins for joined columns. Each part
+        // is separately backtick-quoted (not one backtick pair around "authors.Field") since a
+        // backtick-quoted token does not split on '.' in MySQL-wire SQL.
+        sql.Should().Contain("SELECT `authors`.`Name`, `authors`.`Rating`");
+        sql.Should().Contain("SUM(`authors`.`Rating`) AS `sum_rating`");
+        sql.Should().Contain("AVG(`authors`.`Rating`) AS `avg_rating`");
+        sql.Should().Contain("MIN(`authors`.`Rating`) AS `min_rating`");
+        sql.Should().Contain("MAX(`authors`.`Rating`) AS `max_rating`");
+        sql.Should().Contain("COUNT(`authors`.`Rating`) AS `count_rating`");
         sql.Should().Contain("COUNT(*) AS `count_star`");
         sql.Should().Contain("SUM(Rating * (1 - 0)) AS `net_rating`");
         sql.Should().Contain("SUM(Rating * (1 - 0) * (1 + 0)) AS `charge`");
         sql.Should().Contain("AVG(LENGTH(Name)) AS `avg_name_len`");
         sql.Should().Contain("FROM `authors`");
-        sql.Should().Contain("GROUP BY `authors.Name`, `authors.Rating`");
-        sql.Should().Contain("ORDER BY `authors.Name` ASC, `authors.Rating` DESC");
+        sql.Should().Contain("GROUP BY `authors`.`Name`, `authors`.`Rating`");
+        sql.Should().Contain("ORDER BY `authors`.`Name` ASC, `authors`.`Rating` DESC");
         sql.Should().Contain("LIMIT 100");
     }
 
@@ -571,8 +573,8 @@ public class StarRocksQueryBuilderTests
         var (sql, _) = StarRocksQueryBuilder.BuildGroupBy("authors", AuthorSchema(), request, registry);
 
         sql.Should().Contain("FROM `authors` INNER JOIN `articles` ON `authors`.`Id` = `articles`.`Id`");
-        sql.Should().Contain("SELECT `articles.Title`");
-        sql.Should().Contain("GROUP BY `articles.Title`");
+        sql.Should().Contain("SELECT `articles`.`Title`");
+        sql.Should().Contain("GROUP BY `articles`.`Title`");
     }
 
     [Fact]
