@@ -55,14 +55,21 @@ public sealed class GroupByBuilder
 
     // ── JOIN ────────────────────────────────────────────────────────────────────
 
+    /// <summary>
+    /// Adds a join from this builder's own type (<see cref="_typeName"/>) to
+    /// <paramref name="rightType"/> via the given fields. Matches the
+    /// leftField/rightType/rightField ordering used by the Java, Python, TypeScript, and
+    /// Go clients — leftType is inferred rather than passed explicitly, which intentionally
+    /// drops the ability to express a join from a non-primary already-joined table (multi-hop)
+    /// in this builder, matching those clients' scope.
+    /// </summary>
     public GroupByBuilder Join(
-        string leftType, string rightType,
-        string leftField, string rightField,
+        string leftField, string rightType, string rightField,
         JoinKind kind = JoinKind.Inner)
     {
         _joins.Add(new JoinSpec
         {
-            LeftType   = leftType,
+            LeftType   = _typeName,
             RightType  = rightType,
             LeftField  = leftField,
             RightField = rightField,

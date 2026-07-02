@@ -48,7 +48,7 @@ public sealed class ObjectSearchGrpcService(
         var (sql, param) = StarRocksQueryBuilder.BuildSearch(
             schema.TableName, schema, request.Query, request.Page, request.PageSize,
             fields: request.Fields.Count > 0 ? request.Fields : null,
-            joins: request.Joins.Count > 0 ? request.Joins : null,
+            joins: request.Joins,
             registry: registry);
 
         var rows = await sr.QueryAsync<dynamic>(sql, param);
@@ -195,7 +195,7 @@ public sealed class ObjectSearchGrpcService(
         var having = request.Having;
 
         var aggTasks = request.Aggregations
-            .Select(spec => RunAggregationAsync(schema, request.Query, ProtoToSrSpec(spec), having))
+            .Select(spec => RunAggregationAsync(schema, request.Query, ProtoToSrSpec(spec), having, request.Joins))
             .ToList();
 
         var aggResults = await Task.WhenAll(aggTasks);
@@ -207,13 +207,15 @@ public sealed class ObjectSearchGrpcService(
     }
 
     private async Task<SrAggResult?> RunAggregationAsync(
-        SchemaDescriptor schema, SearchQuery? query, SrAggSpec spec, SearchQuery? having = null)
+        SchemaDescriptor schema, SearchQuery? query, SrAggSpec spec, SearchQuery? having = null,
+        IReadOnlyList<JoinSpec>? joins = null)
     {
         if (spec.GroupByFields is { Count: > 1 })
             throw new RpcException(new Status(StatusCode.InvalidArgument,
                 "Multi-key GROUP BY (group_by_fields with more than one entry) is not yet supported via the Aggregate RPC's result decoding; use a single field or wait for the GroupByRequest RPC."));
 
-        var (sql, param) = StarRocksQueryBuilder.BuildAggregate(schema.TableName, schema, query, spec, having);
+        var (sql, param) = StarRocksQueryBuilder.BuildAggregate(
+            schema.TableName, schema, query, spec, having, joins, registry);
         var rows = (await sr.QueryAsync<dynamic>(sql, param)).ToList();
 
         switch (spec.Kind)

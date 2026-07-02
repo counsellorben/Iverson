@@ -222,6 +222,73 @@ public class StarRocksQueryBuilderTests
         sql.Should().Contain("bucket_key");
     }
 
+    // ── BuildAggregate — joins ─────────────────────────────────────────────────
+
+    [Fact]
+    public void BuildAggregate_WithJoin_ProducesJoinAndQuotesJoinedColumn()
+    {
+        var registry = BuildRegistry(AuthorSchema(), SchemaFixtures.ArticleSchema());
+
+        var joins = new List<JoinSpec>
+        {
+            new()
+            {
+                LeftType   = "Author",
+                RightType  = "Article",
+                LeftField  = "Id",
+                RightField = "Id",
+                Kind       = JoinKind.Inner
+            }
+        };
+
+        var spec = new SrAggSpec("by_title", SrAggKind.Terms, "Article.Title", Size: 5);
+
+        var (sql, _) = StarRocksQueryBuilder.BuildAggregate(
+            "authors", AuthorSchema(), null, spec, joins: joins, registry: registry);
+
+        sql.Should().Contain("FROM `authors` INNER JOIN `articles` ON `authors`.`Id` = `articles`.`Id`");
+        sql.Should().Contain("SELECT `articles`.`Title` AS bucket_key");
+        sql.Should().Contain("GROUP BY `articles`.`Title`");
+    }
+
+    [Fact]
+    public void BuildAggregate_WithJoin_WhereOnJoinedTableColumn_QuotesAliasAndFieldSeparately()
+    {
+        var registry = BuildRegistry(AuthorSchema(), SchemaFixtures.ArticleSchema());
+
+        var joins = new List<JoinSpec>
+        {
+            new()
+            {
+                LeftType   = "Author",
+                RightType  = "Article",
+                LeftField  = "Id",
+                RightField = "Id",
+                Kind       = JoinKind.Inner
+            }
+        };
+
+        var query = new SearchQuery();
+        query.Clauses.Add(new SearchClause
+        {
+            Property   = "Article.Title",
+            Operator   = SearchOperator.Equals,
+            Value      = new SearchValue { StringVal = "Foo" },
+            ClauseType = SearchClauseType.Filter
+        });
+
+        var spec = new SrAggSpec("avg_rating", SrAggKind.Avg, "Rating");
+
+        var (sql, param) = StarRocksQueryBuilder.BuildAggregate(
+            "authors", AuthorSchema(), query, spec, joins: joins, registry: registry);
+
+        sql.Should().Contain("WHERE `articles`.`Title` = @p0");
+        sql.Should().Contain("AVG(`authors`.`Rating`)");
+
+        var lookup = (SqlMapper.IParameterLookup)param;
+        lookup["p0"].Should().Be("Foo");
+    }
+
     // ── BuildSearch — Equals clause (parameterization) ─────────────────────────
 
     [Fact]
@@ -735,6 +802,50 @@ public class StarRocksQueryBuilderTests
     }
 
     [Fact]
+    public void BuildGroupBy_MetricNameWithBacktick_EscapesEmbeddedBacktick()
+    {
+        var registry = BuildRegistry(AuthorSchema());
+
+        var request = new GroupByRequest
+        {
+            TypeName = "Author",
+            Keys     = { "Name" },
+        };
+        request.Metrics.Add(new MetricSpec { Name = "evil`name", Type = AggregationType.Count });
+
+        var (sql, _) = StarRocksQueryBuilder.BuildGroupBy("authors", AuthorSchema(), request, registry);
+
+        // An embedded backtick in a developer-supplied metric name must be escaped
+        // (doubled), not spliced in raw — otherwise it breaks out of the identifier.
+        sql.Should().Contain("AS `evil``name`");
+    }
+
+    [Fact]
+    public void BuildGroupBy_HavingPropertyWithBacktick_EscapesEmbeddedBacktick()
+    {
+        var registry = BuildRegistry(AuthorSchema());
+
+        var request = new GroupByRequest
+        {
+            TypeName = "Author",
+            Keys     = { "Name" },
+        };
+        request.Metrics.Add(new MetricSpec { Name = "cnt", Type = AggregationType.Count });
+        request.Having = new SearchQuery();
+        request.Having.Clauses.Add(new SearchClause
+        {
+            Property   = "evil`alias",
+            Operator   = SearchOperator.GreaterThan,
+            Value      = new SearchValue { NumberVal = 1 },
+            ClauseType = SearchClauseType.Filter
+        });
+
+        var (sql, _) = StarRocksQueryBuilder.BuildGroupBy("authors", AuthorSchema(), request, registry);
+
+        sql.Should().Contain("HAVING `evil``alias` > @h0");
+    }
+
+    [Fact]
     public void BuildGroupBy_NonCountMetricWithNoFieldOrExpression_ThrowsInvalidArgument()
     {
         var registry = BuildRegistry(AuthorSchema());
@@ -750,5 +861,50 @@ public class StarRocksQueryBuilderTests
 
         act.Should().Throw<RpcException>()
             .Which.StatusCode.Should().Be(StatusCode.InvalidArgument);
+    }
+
+    [Fact]
+    public void BuildGroupBy_WithJoin_WhereOnJoinedTableColumn_QuotesAliasAndFieldSeparately()
+    {
+        var registry = BuildRegistry(AuthorSchema(), SchemaFixtures.ArticleSchema());
+
+        var request = new GroupByRequest
+        {
+            TypeName = "Author",
+            Keys     = { "Name" },
+            Limit    = 50,
+            Query    = new SearchQuery(),
+            Joins =
+            {
+                new JoinSpec
+                {
+                    LeftType   = "Author",
+                    RightType  = "Article",
+                    LeftField  = "Id",
+                    RightField = "Id",
+                    Kind       = JoinKind.Inner
+                }
+            }
+        };
+        request.Query.Clauses.Add(new SearchClause
+        {
+            Property   = "Article.Title",
+            Operator   = SearchOperator.Equals,
+            Value      = new SearchValue { StringVal = "Foo" },
+            ClauseType = SearchClauseType.Filter
+        });
+        request.Metrics.Add(new MetricSpec { Name = "cnt", Type = AggregationType.Count });
+
+        var (sql, param) = StarRocksQueryBuilder.BuildGroupBy("authors", AuthorSchema(), request, registry);
+
+        // Regression test: BuildGroupBy must pass tableMap into BuildWhere so joined-table
+        // WHERE filters aren't silently dropped, and the resulting fragment must be two
+        // separately-quoted identifiers, never one backtick pair around "articles.Title".
+        sql.Should().Contain("WHERE");
+        sql.Should().Contain("`articles`.`Title` = @p0");
+        sql.Should().NotContain("`articles.Title`");
+
+        var lookup = (SqlMapper.IParameterLookup)param;
+        lookup["p0"].Should().Be("Foo");
     }
 }

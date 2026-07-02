@@ -85,11 +85,40 @@ internal static class StarRocksQueryBuilder
         SchemaDescriptor schema,
         SearchQuery? query,
         SrAggSpec spec,
-        SearchQuery? having = null)
+        SearchQuery? having = null,
+        IReadOnlyList<JoinSpec>? joins = null,
+        SchemaRegistry? registry = null)
     {
         var param = new DynamicParameters();
-        var where = BuildWhere(schema, query?.Clauses, query?.Logic ?? SearchLogic.And, param, out _);
-        var col   = ResolveColumn(schema, spec.Field) ?? spec.Field;
+
+        string from;
+        IReadOnlyDictionary<string, JoinContext>? tableMap;
+        if (joins is { Count: > 0 })
+        {
+            from = BuildFromWithJoins(schema, joins, registry!, out var tm);
+            tableMap = tm;
+        }
+        else
+        {
+            from = $"FROM `{tableName}`";
+            tableMap = null;
+        }
+
+        // Resolves a field against the joined tableMap when joins are present, otherwise
+        // against the primary schema alone — mirroring the same tableMap-or-not split used
+        // throughout BuildSearch/BuildGroupBy.
+        string Resolve(string f) =>
+            (tableMap is not null ? ResolveColumn(tableMap, f) : ResolveColumn(schema, f)) ?? f;
+
+        // Quotes an already-resolved column: two separately-backtick-quoted "alias"."field"
+        // parts when joined (see QuoteQualified's doc comment for why a single backtick pair
+        // around "alias.field" is invalid SQL), or a bare single-backtick pair otherwise.
+        string Quote(string c) => tableMap is not null ? QuoteQualified(c) : $"`{c}`";
+
+        var where = tableMap is not null
+            ? BuildWhere(schema, query?.Clauses, query?.Logic ?? SearchLogic.And, param, out _, tableMap)
+            : BuildWhere(schema, query?.Clauses, query?.Logic ?? SearchLogic.And, param, out _);
+        var col = Resolve(spec.Field);
         var wc    = where.Length > 0 ? $" WHERE {where}" : "";
 
         var havingSql = BuildHaving(having?.Clauses, having?.Logic ?? SearchLogic.And, param);
@@ -98,39 +127,39 @@ internal static class StarRocksQueryBuilder
         // Multi-key GROUP BY: spec.GroupByFields, when present with more than one entry,
         // overrides spec.Field for TERMS and selects/groups by all listed columns.
         var groupCols = spec.GroupByFields is { Count: > 1 }
-            ? spec.GroupByFields.Select(f => ResolveColumn(schema, f) ?? f).ToList()
+            ? spec.GroupByFields.Select(Resolve).ToList()
             : null;
 
         var sql = spec.Kind switch
         {
             SrAggKind.Terms => groupCols is not null
-                ? $"SELECT {string.Join(", ", groupCols.Select(c => $"`{c}`"))}, COUNT(*) AS doc_count " +
-                  $"FROM `{tableName}`{wc} " +
-                  $"GROUP BY {string.Join(", ", groupCols.Select(c => $"`{c}`"))}{hc} " +
+                ? $"SELECT {string.Join(", ", groupCols.Select(Quote))}, COUNT(*) AS doc_count " +
+                  $"{from}{wc} " +
+                  $"GROUP BY {string.Join(", ", groupCols.Select(Quote))}{hc} " +
                   $"ORDER BY doc_count DESC " +
                   $"LIMIT {(spec.Size > 0 ? spec.Size : 10)}"
-                : $"SELECT `{col}` AS bucket_key, COUNT(*) AS doc_count " +
-                  $"FROM `{tableName}`{wc} " +
-                  $"GROUP BY `{col}`{hc} " +
+                : $"SELECT {Quote(col)} AS bucket_key, COUNT(*) AS doc_count " +
+                  $"{from}{wc} " +
+                  $"GROUP BY {Quote(col)}{hc} " +
                   $"ORDER BY doc_count DESC " +
                   $"LIMIT {(spec.Size > 0 ? spec.Size : 10)}",
 
             SrAggKind.DateHistogram =>
-                $"SELECT {DateBucketExpr(col, spec.CalendarInterval)} AS bucket_key, " +
+                $"SELECT {DateBucketExpr(Quote(col), spec.CalendarInterval)} AS bucket_key, " +
                 $"COUNT(*) AS doc_count " +
-                $"FROM `{tableName}`{wc} " +
+                $"{from}{wc} " +
                 $"GROUP BY bucket_key{hc} ORDER BY bucket_key",
 
-            SrAggKind.Range => BuildRangeSql(tableName, col, spec.RangeBuckets, wc, hc),
+            SrAggKind.Range => BuildRangeSql(from, Quote(col), spec.RangeBuckets, wc, hc),
 
             // spec.Expression, when set, is raw StarRocks SQL supplied by a trusted
             // server-side caller (e.g. TPC-H DSL translation) and is spliced directly
             // into the aggregate function — NOT user input, no escaping is performed.
-            SrAggKind.Avg   => $"SELECT AVG({spec.Expression ?? $"`{col}`"}) AS metric_val FROM `{tableName}`{wc}{hc}",
-            SrAggKind.Sum   => $"SELECT SUM({spec.Expression ?? $"`{col}`"}) AS metric_val FROM `{tableName}`{wc}{hc}",
-            SrAggKind.Min   => $"SELECT MIN({spec.Expression ?? $"`{col}`"}) AS metric_val FROM `{tableName}`{wc}{hc}",
-            SrAggKind.Max   => $"SELECT MAX({spec.Expression ?? $"`{col}`"}) AS metric_val FROM `{tableName}`{wc}{hc}",
-            SrAggKind.Count => $"SELECT COUNT(DISTINCT {spec.Expression ?? $"`{col}`"}) AS metric_val FROM `{tableName}`{wc}{hc}",
+            SrAggKind.Avg   => $"SELECT AVG({spec.Expression ?? Quote(col)}) AS metric_val {from}{wc}{hc}",
+            SrAggKind.Sum   => $"SELECT SUM({spec.Expression ?? Quote(col)}) AS metric_val {from}{wc}{hc}",
+            SrAggKind.Min   => $"SELECT MIN({spec.Expression ?? Quote(col)}) AS metric_val {from}{wc}{hc}",
+            SrAggKind.Max   => $"SELECT MAX({spec.Expression ?? Quote(col)}) AS metric_val {from}{wc}{hc}",
+            SrAggKind.Count => $"SELECT COUNT(DISTINCT {spec.Expression ?? Quote(col)}) AS metric_val {from}{wc}{hc}",
 
             _ => throw new ArgumentOutOfRangeException(nameof(spec.Kind))
         };
@@ -154,7 +183,7 @@ internal static class StarRocksQueryBuilder
         var from = BuildFromWithJoins(schema, request.Joins, registry, out var tableMap);
 
         var param = new DynamicParameters();
-        var where = BuildWhere(schema, request.Query?.Clauses, request.Query?.Logic ?? SearchLogic.And, param, out _);
+        var where = BuildWhere(schema, request.Query?.Clauses, request.Query?.Logic ?? SearchLogic.And, param, out _, tableMap);
         var wc = where.Length > 0 ? $" WHERE {where}" : "";
 
         var keyCols = request.Keys
@@ -198,8 +227,10 @@ internal static class StarRocksQueryBuilder
             && string.IsNullOrEmpty(metric.Field)
             && string.IsNullOrEmpty(metric.Expression);
 
+        var quotedName = $"`{EscapeIdentifier(metric.Name)}`";
+
         if (isCountAll)
-            return $"COUNT(*) AS `{metric.Name}`";
+            return $"COUNT(*) AS {quotedName}";
 
         var fn = metric.Type switch
         {
@@ -213,14 +244,14 @@ internal static class StarRocksQueryBuilder
         };
 
         if (!string.IsNullOrEmpty(metric.Expression))
-            return $"{fn}({metric.Expression}) AS `{metric.Name}`";
+            return $"{fn}({metric.Expression}) AS {quotedName}";
 
         if (!string.IsNullOrEmpty(metric.Field))
         {
             var col = ResolveColumn(tableMap, metric.Field)
                 ?? throw new RpcException(new Status(StatusCode.InvalidArgument,
                     $"Unknown or ambiguous field '{metric.Field}' referenced by metric '{metric.Name}'."));
-            return $"{fn}({QuoteQualified(col)}) AS `{metric.Name}`";
+            return $"{fn}({QuoteQualified(col)}) AS {quotedName}";
         }
 
         // Both Field and Expression are empty/null. COUNT(*) is the one legitimate case for
@@ -323,7 +354,7 @@ internal static class StarRocksQueryBuilder
 
             var col = clause.Property;
             if (string.IsNullOrEmpty(col)) continue;
-            var quotedCol = $"`{col}`";
+            var quotedCol = $"`{EscapeIdentifier(col)}`";
 
             var pName = $"h{nextIdx++}";
 
@@ -506,27 +537,33 @@ internal static class StarRocksQueryBuilder
         return string.Join(", ", parts);
     }
 
+    /// <summary>
+    /// <paramref name="from"/> must be a complete, ready-to-embed FROM clause (e.g.
+    /// <c>FROM `authors`</c> or the multi-table form emitted by <see cref="BuildFromWithJoins"/>),
+    /// and <paramref name="quotedCol"/> must already be fully quoted — see <see cref="BuildEq"/>
+    /// for the equivalent contract on WHERE-clause columns.
+    /// </summary>
     private static string BuildRangeSql(
-        string tableName, string col,
+        string from, string quotedCol,
         IReadOnlyList<SrRangeSpec>? buckets, string wc, string hc = "")
     {
         if (buckets is null || buckets.Count == 0)
-            return $"SELECT NULL AS bucket_key, COUNT(*) AS doc_count FROM `{tableName}`{wc}{hc}";
+            return $"SELECT NULL AS bucket_key, COUNT(*) AS doc_count {from}{wc}{hc}";
 
         var cases = buckets.Select(b =>
         {
             var key = EscapeSqlString(b.Key);
             if (b.From is null && b.To is not null)
-                return $"WHEN `{col}` < {b.To.Value} THEN '{key}'";
+                return $"WHEN {quotedCol} < {b.To.Value} THEN '{key}'";
             if (b.From is not null && b.To is null)
-                return $"WHEN `{col}` >= {b.From.Value} THEN '{key}'";
+                return $"WHEN {quotedCol} >= {b.From.Value} THEN '{key}'";
             if (b.From is not null && b.To is not null)
-                return $"WHEN `{col}` >= {b.From.Value} AND `{col}` < {b.To.Value} THEN '{key}'";
+                return $"WHEN {quotedCol} >= {b.From.Value} AND {quotedCol} < {b.To.Value} THEN '{key}'";
             return null;
         }).OfType<string>();
 
         return $"SELECT CASE {string.Join(" ", cases)} END AS bucket_key, " +
-               $"COUNT(*) AS doc_count FROM `{tableName}`{wc} GROUP BY bucket_key{hc}";
+               $"COUNT(*) AS doc_count {from}{wc} GROUP BY bucket_key{hc}";
     }
 
     /// <summary>
@@ -569,10 +606,12 @@ internal static class StarRocksQueryBuilder
 
     // StarRocks DATE_FORMAT has no quarter directive, so quarter is composed
     // explicitly via QUARTER(); all other intervals map to a DATE_FORMAT pattern.
-    private static string DateBucketExpr(string col, string? interval) =>
+    // quotedCol must already be fully quoted (e.g. `Col` or `alias`.`Col`) — see BuildEq's
+    // contract for the same convention.
+    private static string DateBucketExpr(string quotedCol, string? interval) =>
         interval?.ToLowerInvariant() == "quarter"
-            ? $"CONCAT(YEAR(`{col}`), '-Q', QUARTER(`{col}`))"
-            : $"DATE_FORMAT(`{col}`, '{DateFormatFor(interval)}')";
+            ? $"CONCAT(YEAR({quotedCol}), '-Q', QUARTER({quotedCol}))"
+            : $"DATE_FORMAT({quotedCol}, '{DateFormatFor(interval)}')";
 
     private static string DateFormatFor(string? interval) => interval?.ToLowerInvariant() switch
     {
@@ -586,4 +625,11 @@ internal static class StarRocksQueryBuilder
     };
 
     private static string EscapeSqlString(string value) => value.Replace("'", "''");
+
+    // Escapes an embedded backtick in a developer-supplied identifier (metric alias / HAVING
+    // property) before it is wrapped in backticks — otherwise a literal backtick would close
+    // the identifier early and corrupt the generated SQL. Scope is intentionally limited to
+    // BuildMetricExpr and BuildHaving; other identifier sites (e.g. schema column names) are
+    // not developer-supplied free text and don't need this.
+    private static string EscapeIdentifier(string value) => value.Replace("`", "``");
 }

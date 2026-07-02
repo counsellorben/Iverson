@@ -85,7 +85,7 @@ public sealed class GroupByBuilderTests
     public void Join_AddsJoinSpec()
     {
         var req = Query.GroupBy("LineItem")
-            .Join("LineItem", "Orders", "OrderId", "OrderId", JoinKind.Left)
+            .Join("OrderId", "Orders", "OrderId", JoinKind.Left)
             .Build();
 
         var join = req.Joins.Should().ContainSingle().Subject;
@@ -100,7 +100,7 @@ public sealed class GroupByBuilderTests
     public void Join_WithoutExplicitKind_DefaultsToInner()
     {
         var req = Query.GroupBy("LineItem")
-            .Join("LineItem", "Orders", "OrderId", "OrderId")
+            .Join("OrderId", "Orders", "OrderId")
             .Build();
 
         var join = req.Joins.Should().ContainSingle().Subject;

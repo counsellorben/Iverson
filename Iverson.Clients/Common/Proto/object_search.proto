@@ -141,6 +141,7 @@ message AggregateRequest {
     repeated AggregationSpec aggregations = 3;
     string      trace_id     = 4;
     SearchQuery having       = 5;  // applied after GROUP BY; clauses reference aliased output columns
+    reserved 6;                    // never assigned; not a removed field, just a numbering gap
     repeated JoinSpec joins  = 7;
 }
 
