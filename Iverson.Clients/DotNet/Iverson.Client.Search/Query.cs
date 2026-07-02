@@ -7,4 +7,10 @@ namespace Iverson.Client.Search;
 public static class Query
 {
     public static QueryBuilder<T> For<T>() where T : class => new(typeof(T).Name);
+
+    /// <summary>
+    /// Entry point for the GROUP BY DSL. Not generic on a single type, since joins bring
+    /// multiple registered types into scope.
+    /// </summary>
+    public static GroupByBuilder GroupBy(string typeName) => new(typeName);
 }

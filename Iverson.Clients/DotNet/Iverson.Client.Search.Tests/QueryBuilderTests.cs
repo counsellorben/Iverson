@@ -17,6 +17,12 @@ public sealed class QueryBuilderTests
         public DateTime PublishedAt { get; set; }
     }
 
+    private sealed class AuthorProfile
+    {
+        public int    AuthorProfileId { get; set; }
+        public string Name            { get; set; } = "";
+    }
+
     // ── Build: TypeName ───────────────────────────────────────────────────────
 
     [Fact]
@@ -110,6 +116,21 @@ public sealed class QueryBuilderTests
             .Build();
 
         req.Query.Clauses.Single().Operator.Should().Be(op);
+    }
+
+    // ── Build: EndsWith operator ──────────────────────────────────────────────
+
+    [Fact]
+    public void Where_WithEndsWith_RoundTripsThroughBuild()
+    {
+        var req = Query.For<Article>()
+            .Where(x => x.Title, SearchOperator.EndsWith, "chapter")
+            .Build();
+
+        var clause = req.Query.Clauses.Should().ContainSingle().Subject;
+        clause.Property.Should().Be("Title");
+        clause.Operator.Should().Be(SearchOperator.EndsWith);
+        clause.Value.StringVal.Should().Be("chapter");
     }
 
     // ── Build: value encoding ─────────────────────────────────────────────────
@@ -426,5 +447,37 @@ public sealed class QueryBuilderTests
             .BuildAggregate(traceId: "trace-123");
 
         req.TraceId.Should().Be("trace-123");
+    }
+
+    // ── Build: joins ───────────────────────────────────────────────────────────
+
+    [Fact]
+    public void Join_AddsJoinSpec_ToSearchRequest()
+    {
+        var req = Query.For<Article>()
+            .Join<AuthorProfile>(x => x.PageCount, a => a.AuthorProfileId)
+            .Build();
+
+        var join = req.Joins.Should().ContainSingle().Subject;
+        join.LeftType.Should().Be("Article");
+        join.RightType.Should().Be("AuthorProfile");
+        join.LeftField.Should().Be("PageCount");
+        join.RightField.Should().Be("AuthorProfileId");
+        join.Kind.Should().Be(JoinKind.Inner);
+    }
+
+    [Fact]
+    public void Join_AddsJoinSpec_ToAggregateRequest()
+    {
+        var req = Query.For<Article>()
+            .Join<AuthorProfile>(x => x.Author, a => a.Name, JoinKind.Left)
+            .BuildAggregate();
+
+        var join = req.Joins.Should().ContainSingle().Subject;
+        join.LeftType.Should().Be("Article");
+        join.RightType.Should().Be("AuthorProfile");
+        join.LeftField.Should().Be("Author");
+        join.RightField.Should().Be("Name");
+        join.Kind.Should().Be(JoinKind.Left);
     }
 }

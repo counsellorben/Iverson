@@ -12,6 +12,7 @@ public sealed class QueryBuilder<T> where T : class
     private readonly List<SearchClause>    _clauses      = [];
     private readonly List<SearchSort>      _sorts        = [];
     private readonly List<AggregationSpec> _aggregations = [];
+    private readonly List<JoinSpec>        _joins        = [];
     private SearchLogic _logic    = SearchLogic.And;
     private int         _page     = 1;
     private int         _pageSize = 20;
@@ -95,6 +96,26 @@ public sealed class QueryBuilder<T> where T : class
         return this;
     }
 
+    // ── Joins ───────────────────────────────────────────────────────────────────
+
+    /// <summary>Joins another registered type via matching fields.</summary>
+    public QueryBuilder<T> Join<TRight>(
+        Expression<Func<T, object>> leftField,
+        Expression<Func<TRight, object>> rightField,
+        JoinKind kind = JoinKind.Inner)
+        where TRight : class
+    {
+        _joins.Add(new JoinSpec
+        {
+            LeftType   = typeof(T).Name,
+            RightType  = typeof(TRight).Name,
+            LeftField  = PropertyNameObj(leftField),
+            RightField = PropertyNameObj(rightField),
+            Kind       = kind
+        });
+        return this;
+    }
+
     // ── Aggregations ───────────────────────────────────────────────────────────
 
     /// <summary>Bucket documents by distinct values of a field.</summary>
@@ -165,13 +186,15 @@ public sealed class QueryBuilder<T> where T : class
         query.Clauses.AddRange(_clauses);
         query.Sort.AddRange(_sorts);
 
-        return new SearchRequest
+        var request = new SearchRequest
         {
             TypeName = _typeName,
             Page     = _page,
             PageSize = _pageSize,
             Query    = query
         };
+        request.Joins.AddRange(_joins);
+        return request;
     }
 
     /// <summary>Builds an <see cref="AggregateRequest"/> using any clauses as the filter.</summary>
@@ -187,6 +210,7 @@ public sealed class QueryBuilder<T> where T : class
             TraceId  = traceId ?? string.Empty
         };
         request.Aggregations.AddRange(_aggregations);
+        request.Joins.AddRange(_joins);
         return request;
     }
 
@@ -240,6 +264,22 @@ public sealed class QueryBuilder<T> where T : class
         expr.Body is MemberExpression member
             ? member.Member.Name
             : throw new ArgumentException("Expression must be a direct property access, e.g. x => x.Title");
+
+    /// <summary>
+    /// Extracts a property name from an expression typed as <c>Func&lt;TSource, object&gt;</c>.
+    /// Value-type properties (e.g. <c>int</c>, <c>double</c>) are implicitly boxed when assigned
+    /// to <c>object</c>, which wraps the <see cref="MemberExpression"/> in a <see cref="UnaryExpression"/>
+    /// (a <see cref="ExpressionType.Convert"/> node). Reference-type properties (e.g. <c>string</c>)
+    /// are not boxed and appear as a direct <see cref="MemberExpression"/>.
+    /// </summary>
+    private static string PropertyNameObj<TSource>(Expression<Func<TSource, object>> expr) =>
+        expr.Body switch
+        {
+            MemberExpression member => member.Member.Name,
+            UnaryExpression { NodeType: ExpressionType.Convert or ExpressionType.ConvertChecked } unary
+                when unary.Operand is MemberExpression innerMember => innerMember.Member.Name,
+            _ => throw new ArgumentException("Expression must be a direct property access, e.g. x => x.Title")
+        };
 
     private static SearchValue ToSearchValue(object? value) => value switch
     {
