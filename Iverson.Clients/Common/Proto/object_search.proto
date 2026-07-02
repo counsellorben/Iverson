@@ -20,6 +20,7 @@ message SearchRequest {
     int32       page_size = 4;
     string      trace_id  = 5;
     repeated string fields = 6;  // property names to include; empty = all fields
+    repeated JoinSpec joins = 7;
 }
 
 message SearchQuery {
@@ -115,6 +116,22 @@ message ChunkSearchResponse {
     string trace_id    = 4;
 }
 
+// ── Joins ──────────────────────────────────────────────────────────────────────
+
+enum JoinKind {
+    INNER = 0;
+    LEFT  = 1;
+    RIGHT = 2;
+}
+
+message JoinSpec {
+    string   left_type   = 1;  // registered Iverson type name for the left table
+    string   right_type  = 2;  // registered Iverson type name for the right table
+    string   left_field  = 3;  // field on left type used in the ON condition
+    string   right_field = 4;  // field on right type used in the ON condition
+    JoinKind kind        = 5;
+}
+
 // ── Aggregations ───────────────────────────────────────────────────────────────
 
 message AggregateRequest {
@@ -122,6 +139,7 @@ message AggregateRequest {
     SearchQuery query        = 2;  // optional filter applied before aggregating
     repeated AggregationSpec aggregations = 3;
     string      trace_id     = 4;
+    repeated JoinSpec joins  = 7;
 }
 
 message AggregateResponse {

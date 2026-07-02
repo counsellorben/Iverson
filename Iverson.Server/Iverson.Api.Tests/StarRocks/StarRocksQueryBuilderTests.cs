@@ -1,9 +1,13 @@
 using Dapper;
 using FluentAssertions;
+using Grpc.Core;
 using Iverson.Api.Schema;
 using Iverson.Api.StarRocks;
 using Iverson.Api.Tests.Helpers;
 using Iverson.Client.Contracts;
+using Iverson.Sql;
+using Microsoft.Extensions.Logging.Abstractions;
+using NSubstitute;
 using Xunit;
 
 using SrAggKind  = Iverson.StarRocks.AggregationKind;
@@ -273,5 +277,90 @@ public class StarRocksQueryBuilderTests
         sql.Should().Contain("`Id`");
         sql.Should().Contain("`Category`");
         sql.Should().NotContain("NonExistentField");
+    }
+
+    // ── BuildFromWithJoins ─────────────────────────────────────────────────────
+
+    private static SchemaRegistry BuildRegistry(params SchemaDescriptor[] schemas)
+    {
+        var sql = Substitute.For<IPostgresRepository>();
+        sql.ExecuteAsync(Arg.Any<string>(), Arg.Any<object?>()).Returns(0);
+        var registry = new SchemaRegistry(sql, NullLogger<SchemaRegistry>.Instance);
+        foreach (var schema in schemas)
+            registry.RegisterAsync(schema).GetAwaiter().GetResult();
+        return registry;
+    }
+
+    [Fact]
+    public void BuildFromWithJoins_InnerJoin_ProducesJoinClause()
+    {
+        var registry = BuildRegistry(AuthorSchema(), SchemaFixtures.ArticleSchema());
+
+        var joins = new List<JoinSpec>
+        {
+            new()
+            {
+                LeftType   = "Author",
+                RightType  = "Article",
+                LeftField  = "Id",
+                RightField = "Id",
+                Kind       = JoinKind.Inner
+            }
+        };
+
+        var from = StarRocksQueryBuilder.BuildFromWithJoins("authors", joins, registry, out var tableMap);
+
+        from.Should().Be("FROM `authors` INNER JOIN `articles` ON `authors`.`Id` = `articles`.`Id`");
+        tableMap.Should().ContainKey("Author");
+        tableMap.Should().ContainKey("Article");
+        tableMap["Author"].TableName.Should().Be("authors");
+        tableMap["Article"].TableName.Should().Be("articles");
+    }
+
+    [Fact]
+    public void BuildFromWithJoins_UnknownType_ThrowsInvalidArgument()
+    {
+        var registry = BuildRegistry(AuthorSchema());
+
+        var joins = new List<JoinSpec>
+        {
+            new()
+            {
+                LeftType   = "Author",
+                RightType  = "NoSuchType",
+                LeftField  = "Id",
+                RightField = "AuthorId",
+                Kind       = JoinKind.Inner
+            }
+        };
+
+        var act = () => StarRocksQueryBuilder.BuildFromWithJoins("authors", joins, registry, out _);
+
+        act.Should().Throw<RpcException>()
+            .Which.StatusCode.Should().Be(StatusCode.InvalidArgument);
+    }
+
+    [Fact]
+    public void ResolveColumn_JoinContext_DotNotationResolves()
+    {
+        var registry = BuildRegistry(AuthorSchema(), SchemaFixtures.ArticleSchema());
+
+        var joins = new List<JoinSpec>
+        {
+            new()
+            {
+                LeftType   = "Author",
+                RightType  = "Article",
+                LeftField  = "Id",
+                RightField = "Id",
+                Kind       = JoinKind.Inner
+            }
+        };
+
+        StarRocksQueryBuilder.BuildFromWithJoins("authors", joins, registry, out var tableMap);
+
+        var col = StarRocksQueryBuilder.ResolveColumn(tableMap, "Article.Title");
+
+        col.Should().Be("articles.Title");
     }
 }
