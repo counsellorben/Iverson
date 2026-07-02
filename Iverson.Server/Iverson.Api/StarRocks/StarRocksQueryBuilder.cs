@@ -28,17 +28,31 @@ internal static class StarRocksQueryBuilder
         SearchQuery? query,
         int page,
         int pageSize,
-        IReadOnlyList<string>? fields = null)
+        IReadOnlyList<string>? fields = null,
+        IReadOnlyList<JoinSpec>? joins = null,
+        SchemaRegistry? registry = null)
     {
         var param = new DynamicParameters();
-        var where = BuildWhere(schema, query?.Clauses, query?.Logic ?? SearchLogic.And, param, out _);
-        var order = BuildOrder(schema, query?.Sort);
 
         var limit  = pageSize > 0 ? pageSize : 50;
         var offset = page > 0 ? page * limit : 0;
-
         var selectCols = BuildSelectColumns(schema, fields);
-        var sb = new StringBuilder($"SELECT {selectCols} FROM `{tableName}`");
+        var order = BuildOrder(schema, query?.Sort);
+
+        string from;
+        string where;
+        if (joins is { Count: > 0 })
+        {
+            from = BuildFromWithJoins(schema, joins, registry!, out var tableMap);
+            where = BuildWhere(schema, query?.Clauses, query?.Logic ?? SearchLogic.And, param, out _, tableMap);
+        }
+        else
+        {
+            from = $"FROM `{tableName}`";
+            where = BuildWhere(schema, query?.Clauses, query?.Logic ?? SearchLogic.And, param, out _);
+        }
+
+        var sb = new StringBuilder($"SELECT {selectCols} {from}");
         if (where.Length > 0) sb.Append($" WHERE {where}");
         if (order.Length > 0) sb.Append($" ORDER BY {order}");
         sb.Append($" LIMIT {limit} OFFSET {offset}");
@@ -222,7 +236,8 @@ internal static class StarRocksQueryBuilder
         IEnumerable<SearchClause>? clauses,
         SearchLogic logic,
         DynamicParameters param,
-        out int nextIdx)
+        out int nextIdx,
+        IReadOnlyDictionary<string, JoinContext>? tableMap = null)
     {
         nextIdx = 0;
         if (clauses is null) return "";
@@ -233,31 +248,40 @@ internal static class StarRocksQueryBuilder
         {
             if (clause.Operator == SearchOperator.VectorSimilar) continue;
 
-            var col = ResolveColumn(schema, clause.Property);
-            if (col is null) continue;
+            // Single quoting decision point: resolve + fully quote the column into one
+            // ready-to-embed SQL identifier here, once per clause, before the switch below.
+            // Cross-schema (tableMap present) columns are "alias.field" and MUST go through
+            // QuoteQualified (two separately-backtick-quoted parts) — a single backtick pair
+            // around "alias.field" is invalid SQL (see QuoteQualified's doc comment). Every
+            // switch branch and BuildEq/BuildIn below embed this string as-is, with no further
+            // backtick-wrapping.
+            string? quotedCol = tableMap is not null
+                ? ResolveColumn(tableMap, clause.Property) is { } qc ? QuoteQualified(qc) : null
+                : ResolveColumn(schema, clause.Property) is { } c ? $"`{c}`" : null;
+            if (quotedCol is null) continue;
 
             var pName = $"p{nextIdx++}";
 
             var condition = clause.Operator switch
             {
-                SearchOperator.Equals => BuildEq(col, pName, clause.Value, param),
+                SearchOperator.Equals => BuildEq(quotedCol, pName, clause.Value, param),
                 SearchOperator.NotEquals =>
-                    Condition($"`{col}` <> @{pName}", pName, GetScalarValue(clause.Value), param),
+                    Condition($"{quotedCol} <> @{pName}", pName, GetScalarValue(clause.Value), param),
                 SearchOperator.Contains =>
-                    Condition($"`{col}` LIKE @{pName}", pName, $"%{clause.Value?.StringVal}%", param),
+                    Condition($"{quotedCol} LIKE @{pName}", pName, $"%{clause.Value?.StringVal}%", param),
                 SearchOperator.StartsWith =>
-                    Condition($"`{col}` LIKE @{pName}", pName, $"{clause.Value?.StringVal}%", param),
+                    Condition($"{quotedCol} LIKE @{pName}", pName, $"{clause.Value?.StringVal}%", param),
                 SearchOperator.EndsWith =>
-                    Condition($"`{col}` LIKE @{pName}", pName, $"%{clause.Value?.StringVal}", param),
+                    Condition($"{quotedCol} LIKE @{pName}", pName, $"%{clause.Value?.StringVal}", param),
                 SearchOperator.GreaterThan =>
-                    Condition($"`{col}` > @{pName}", pName, GetScalarValue(clause.Value), param),
+                    Condition($"{quotedCol} > @{pName}", pName, GetScalarValue(clause.Value), param),
                 SearchOperator.GreaterThanOrEquals =>
-                    Condition($"`{col}` >= @{pName}", pName, GetScalarValue(clause.Value), param),
+                    Condition($"{quotedCol} >= @{pName}", pName, GetScalarValue(clause.Value), param),
                 SearchOperator.LessThan =>
-                    Condition($"`{col}` < @{pName}", pName, GetScalarValue(clause.Value), param),
+                    Condition($"{quotedCol} < @{pName}", pName, GetScalarValue(clause.Value), param),
                 SearchOperator.LessThanOrEquals =>
-                    Condition($"`{col}` <= @{pName}", pName, GetScalarValue(clause.Value), param),
-                SearchOperator.In => BuildIn(col, pName, clause.Value, param),
+                    Condition($"{quotedCol} <= @{pName}", pName, GetScalarValue(clause.Value), param),
+                SearchOperator.In => BuildIn(quotedCol, pName, clause.Value, param),
                 _ => null
             };
 
@@ -299,29 +323,30 @@ internal static class StarRocksQueryBuilder
 
             var col = clause.Property;
             if (string.IsNullOrEmpty(col)) continue;
+            var quotedCol = $"`{col}`";
 
             var pName = $"h{nextIdx++}";
 
             var condition = clause.Operator switch
             {
-                SearchOperator.Equals => BuildEq(col, pName, clause.Value, param),
+                SearchOperator.Equals => BuildEq(quotedCol, pName, clause.Value, param),
                 SearchOperator.NotEquals =>
-                    Condition($"`{col}` <> @{pName}", pName, GetScalarValue(clause.Value), param),
+                    Condition($"{quotedCol} <> @{pName}", pName, GetScalarValue(clause.Value), param),
                 SearchOperator.Contains =>
-                    Condition($"`{col}` LIKE @{pName}", pName, $"%{clause.Value?.StringVal}%", param),
+                    Condition($"{quotedCol} LIKE @{pName}", pName, $"%{clause.Value?.StringVal}%", param),
                 SearchOperator.StartsWith =>
-                    Condition($"`{col}` LIKE @{pName}", pName, $"{clause.Value?.StringVal}%", param),
+                    Condition($"{quotedCol} LIKE @{pName}", pName, $"{clause.Value?.StringVal}%", param),
                 SearchOperator.EndsWith =>
-                    Condition($"`{col}` LIKE @{pName}", pName, $"%{clause.Value?.StringVal}", param),
+                    Condition($"{quotedCol} LIKE @{pName}", pName, $"%{clause.Value?.StringVal}", param),
                 SearchOperator.GreaterThan =>
-                    Condition($"`{col}` > @{pName}", pName, GetScalarValue(clause.Value), param),
+                    Condition($"{quotedCol} > @{pName}", pName, GetScalarValue(clause.Value), param),
                 SearchOperator.GreaterThanOrEquals =>
-                    Condition($"`{col}` >= @{pName}", pName, GetScalarValue(clause.Value), param),
+                    Condition($"{quotedCol} >= @{pName}", pName, GetScalarValue(clause.Value), param),
                 SearchOperator.LessThan =>
-                    Condition($"`{col}` < @{pName}", pName, GetScalarValue(clause.Value), param),
+                    Condition($"{quotedCol} < @{pName}", pName, GetScalarValue(clause.Value), param),
                 SearchOperator.LessThanOrEquals =>
-                    Condition($"`{col}` <= @{pName}", pName, GetScalarValue(clause.Value), param),
-                SearchOperator.In => BuildIn(col, pName, clause.Value, param),
+                    Condition($"{quotedCol} <= @{pName}", pName, GetScalarValue(clause.Value), param),
+                SearchOperator.In => BuildIn(quotedCol, pName, clause.Value, param),
                 _ => null
             };
 
@@ -504,18 +529,28 @@ internal static class StarRocksQueryBuilder
                $"COUNT(*) AS doc_count FROM `{tableName}`{wc} GROUP BY bucket_key{hc}";
     }
 
-    private static string? BuildEq(string col, string pName, SearchValue? val, DynamicParameters param)
+    /// <summary>
+    /// <paramref name="quotedCol"/> must already be a fully-quoted, ready-to-embed SQL
+    /// identifier (e.g. <c>`Name`</c> or <c>`authors`.`Name`</c>) — callers resolve and quote
+    /// once up front (see <see cref="BuildWhere"/>/<see cref="BuildHaving"/>); this method does
+    /// no further backtick-wrapping.
+    /// </summary>
+    private static string? BuildEq(string quotedCol, string pName, SearchValue? val, DynamicParameters param)
     {
         param.Add(pName, GetScalarValue(val));
-        return $"`{col}` = @{pName}";
+        return $"{quotedCol} = @{pName}";
     }
 
-    private static string? BuildIn(string col, string pName, SearchValue? val, DynamicParameters param)
+    /// <summary>
+    /// <paramref name="quotedCol"/> must already be a fully-quoted, ready-to-embed SQL
+    /// identifier — see <see cref="BuildEq"/> for the contract.
+    /// </summary>
+    private static string? BuildIn(string quotedCol, string pName, SearchValue? val, DynamicParameters param)
     {
         var list = val?.StringList?.Values.ToList() ?? [];
         if (list.Count == 0) return null;
         param.Add(pName, list);
-        return $"`{col}` IN @{pName}";
+        return $"{quotedCol} IN @{pName}";
     }
 
     private static string Condition(string expr, string pName, object? value, DynamicParameters param)

@@ -395,6 +395,93 @@ public class StarRocksQueryBuilderTests
         sql.Should().NotContain("NonExistentField");
     }
 
+    // ── BuildSearch — joins ────────────────────────────────────────────────────
+
+    [Fact]
+    public void BuildSearch_WithJoin_ProducesInnerJoin()
+    {
+        var registry = BuildRegistry(AuthorSchema(), SchemaFixtures.ArticleSchema());
+
+        var joins = new List<JoinSpec>
+        {
+            new()
+            {
+                LeftType   = "Author",
+                RightType  = "Article",
+                LeftField  = "Id",
+                RightField = "Id",
+                Kind       = JoinKind.Inner
+            }
+        };
+
+        var (sql, _) = StarRocksQueryBuilder.BuildSearch(
+            "authors", AuthorSchema(), null, 0, 10,
+            joins: joins, registry: registry);
+
+        sql.Should().Contain("FROM `authors` INNER JOIN `articles` ON `authors`.`Id` = `articles`.`Id`");
+    }
+
+    [Fact]
+    public void BuildSearch_WithJoin_WhereOnJoinedTableColumn_QuotesAliasAndFieldSeparately()
+    {
+        var registry = BuildRegistry(AuthorSchema(), SchemaFixtures.ArticleSchema());
+
+        var joins = new List<JoinSpec>
+        {
+            new()
+            {
+                LeftType   = "Author",
+                RightType  = "Article",
+                LeftField  = "Id",
+                RightField = "Id",
+                Kind       = JoinKind.Inner
+            }
+        };
+
+        var query = new SearchQuery();
+        query.Clauses.Add(new SearchClause
+        {
+            Property   = "Article.Title",
+            Operator   = SearchOperator.Equals,
+            Value      = new SearchValue { StringVal = "Foo" },
+            ClauseType = SearchClauseType.Filter
+        });
+
+        var (sql, param) = StarRocksQueryBuilder.BuildSearch(
+            "authors", AuthorSchema(), query, 0, 10,
+            joins: joins, registry: registry);
+
+        // Regression test: the joined-column WHERE fragment must be two separately-quoted
+        // identifiers ("`articles`.`Title`"), never one backtick pair around the whole
+        // "articles.Title" string — the latter is invalid SQL in the MySQL-wire dialect
+        // (see QuoteQualified's doc comment / Task 4 history).
+        sql.Should().Contain("`articles`.`Title` = @p0");
+        sql.Should().NotContain("`articles.Title`");
+
+        var lookup = (SqlMapper.IParameterLookup)param;
+        lookup["p0"].Should().Be("Foo");
+    }
+
+    [Fact]
+    public void BuildSearch_NoJoins_WhereClauseUsesSingleBacktickColumn()
+    {
+        var query = new SearchQuery();
+        query.Clauses.Add(new SearchClause
+        {
+            Property   = "Name",
+            Operator   = SearchOperator.Equals,
+            Value      = new SearchValue { StringVal = "Alice" },
+            ClauseType = SearchClauseType.Filter
+        });
+
+        var (sql, _) = StarRocksQueryBuilder.BuildSearch("authors", AuthorSchema(), query, 0, 10);
+
+        // No-join path is unchanged: bare single-backtick column, no alias qualification.
+        sql.Should().Contain("`Name` = @p0");
+        sql.Should().Contain("FROM `authors`");
+        sql.Should().NotContain("`authors`.`Name`");
+    }
+
     // ── BuildFromWithJoins ─────────────────────────────────────────────────────
 
     private static SchemaRegistry BuildRegistry(params SchemaDescriptor[] schemas)

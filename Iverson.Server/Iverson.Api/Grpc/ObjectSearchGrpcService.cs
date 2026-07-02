@@ -47,7 +47,9 @@ public sealed class ObjectSearchGrpcService(
 
         var (sql, param) = StarRocksQueryBuilder.BuildSearch(
             schema.TableName, schema, request.Query, request.Page, request.PageSize,
-            fields: request.Fields.Count > 0 ? request.Fields : null);
+            fields: request.Fields.Count > 0 ? request.Fields : null,
+            joins: request.Joins.Count > 0 ? request.Joins : null,
+            registry: registry);
 
         var rows = await sr.QueryAsync<dynamic>(sql, param);
 
