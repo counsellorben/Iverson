@@ -24,6 +24,7 @@ type QueryBuilder struct {
 	page     int32
 	pageSize int32
 	fields   []string
+	joins    []*pb.JoinSpec
 	err      error
 }
 
@@ -93,6 +94,23 @@ func (q *QueryBuilder) MustNot(field string) *FieldCondition {
 	return &FieldCondition{qb: q, field: field, clauseType: pb.SearchClauseType_MUST_NOT}
 }
 
+// Join adds a join from this type to rightType on the given fields.
+// The join kind defaults to INNER; pass an explicit pb.JoinKind to override.
+func (q *QueryBuilder) Join(leftField, rightType, rightField string, opts ...pb.JoinKind) *QueryBuilder {
+	kind := pb.JoinKind_INNER
+	if len(opts) > 0 {
+		kind = opts[0]
+	}
+	q.joins = append(q.joins, &pb.JoinSpec{
+		LeftType:   q.typeName,
+		RightType:  rightType,
+		LeftField:  leftField,
+		RightField: rightField,
+		Kind:       kind,
+	})
+	return q
+}
+
 // Build constructs the SearchRequest proto.
 func (q *QueryBuilder) Build() (*pb.SearchRequest, error) {
 	if q.err != nil {
@@ -108,6 +126,7 @@ func (q *QueryBuilder) Build() (*pb.SearchRequest, error) {
 		Page:     q.page,
 		PageSize: q.pageSize,
 		Fields:   q.fields,
+		Joins:    q.joins,
 	}, nil
 }
 
@@ -145,6 +164,11 @@ func (f *FieldCondition) Contains(value string) *QueryBuilder {
 // StartsWith adds a STARTS_WITH clause.
 func (f *FieldCondition) StartsWith(value string) *QueryBuilder {
 	return f.addClause(pb.SearchOperator_STARTS_WITH, stringValue(value))
+}
+
+// EndsWith adds an ENDS_WITH clause.
+func (f *FieldCondition) EndsWith(value string) *QueryBuilder {
+	return f.addClause(pb.SearchOperator_ENDS_WITH, stringValue(value))
 }
 
 // Gt adds a GREATER_THAN clause.

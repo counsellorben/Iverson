@@ -151,6 +151,46 @@ func TestWhere_StartsWith(t *testing.T) {
 	assertSingleClause(t, req, "Title", pb.SearchOperator_STARTS_WITH)
 }
 
+func TestEndsWith_ProducesEndsWithOperator(t *testing.T) {
+	req, err := iverson.NewQuery("Article").Where("Title").EndsWith(" Guide").Build()
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	assertSingleClause(t, req, "Title", pb.SearchOperator_ENDS_WITH)
+	sv := req.Query.Clauses[0].Value.GetStringVal()
+	if sv != " Guide" {
+		t.Errorf("expected string_val=%q, got %q", " Guide", sv)
+	}
+}
+
+func TestJoin_AddsJoinSpec_ToSearchRequest(t *testing.T) {
+	req, err := iverson.NewQuery("Order").
+		Join("CustomerId", "Customer", "Id").
+		Build()
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if len(req.Joins) != 1 {
+		t.Fatalf("expected 1 join, got %d", len(req.Joins))
+	}
+	j := req.Joins[0]
+	if j.LeftType != "Order" {
+		t.Errorf("expected LeftType=Order, got %q", j.LeftType)
+	}
+	if j.RightType != "Customer" {
+		t.Errorf("expected RightType=Customer, got %q", j.RightType)
+	}
+	if j.LeftField != "CustomerId" {
+		t.Errorf("expected LeftField=CustomerId, got %q", j.LeftField)
+	}
+	if j.RightField != "Id" {
+		t.Errorf("expected RightField=Id, got %q", j.RightField)
+	}
+	if j.Kind != pb.JoinKind_INNER {
+		t.Errorf("expected default JoinKind=INNER, got %v", j.Kind)
+	}
+}
+
 func TestWhere_Gt(t *testing.T) {
 	req, err := iverson.NewQuery("Article").Where("WordCount").Gt(500).Build()
 	if err != nil {
@@ -313,7 +353,225 @@ func TestQueryBuilder_NoClauses(t *testing.T) {
 	}
 }
 
+// ── GroupByBuilder tests ─────────────────────────────────────────────────────
+
+func TestGroupBy_KeyAddsGroupByField(t *testing.T) {
+	req, err := iverson.NewGroupBy("LineItem").Key("ReturnFlag").Build()
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if len(req.Keys) != 1 {
+		t.Fatalf("expected 1 key, got %d", len(req.Keys))
+	}
+	if req.Keys[0] != "ReturnFlag" {
+		t.Errorf("expected key=ReturnFlag, got %q", req.Keys[0])
+	}
+}
+
+func TestGroupBy_SumAddsMetricWithAutoAlias(t *testing.T) {
+	req, err := iverson.NewGroupBy("LineItem").Sum("Quantity").Build()
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if len(req.Metrics) != 1 {
+		t.Fatalf("expected 1 metric, got %d", len(req.Metrics))
+	}
+	m := req.Metrics[0]
+	if m.Name != "Quantity_sum" {
+		t.Errorf("expected auto alias=Quantity_sum, got %q", m.Name)
+	}
+	if m.Type != pb.AggregationType_SUM {
+		t.Errorf("expected SUM, got %v", m.Type)
+	}
+	if m.Field != "Quantity" {
+		t.Errorf("expected Field=Quantity, got %q", m.Field)
+	}
+}
+
+func TestGroupBy_SumExprAddsRawExpression(t *testing.T) {
+	req, err := iverson.NewGroupBy("LineItem").
+		SumExpr("Price * (1 - Discount)", "Revenue").
+		Build()
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if len(req.Metrics) != 1 {
+		t.Fatalf("expected 1 metric, got %d", len(req.Metrics))
+	}
+	m := req.Metrics[0]
+	if m.Name != "Revenue" {
+		t.Errorf("expected alias=Revenue, got %q", m.Name)
+	}
+	if m.Type != pb.AggregationType_SUM {
+		t.Errorf("expected SUM, got %v", m.Type)
+	}
+	if m.Expression != "Price * (1 - Discount)" {
+		t.Errorf("expected raw expression, got %q", m.Expression)
+	}
+	if m.Field != "" {
+		t.Errorf("expected empty Field for expression metric, got %q", m.Field)
+	}
+}
+
+func TestGroupBy_CountAllProducesEmptyFieldMetric(t *testing.T) {
+	req, err := iverson.NewGroupBy("LineItem").CountAll("CountOrder").Build()
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if len(req.Metrics) != 1 {
+		t.Fatalf("expected 1 metric, got %d", len(req.Metrics))
+	}
+	m := req.Metrics[0]
+	if m.Name != "CountOrder" {
+		t.Errorf("expected alias=CountOrder, got %q", m.Name)
+	}
+	if m.Type != pb.AggregationType_COUNT {
+		t.Errorf("expected COUNT, got %v", m.Type)
+	}
+	if m.Field != "" {
+		t.Errorf("expected empty Field for COUNT(*), got %q", m.Field)
+	}
+}
+
+func TestGroupBy_CountAllDefaultAlias(t *testing.T) {
+	req, err := iverson.NewGroupBy("LineItem").CountAll().Build()
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if req.Metrics[0].Name != "count" {
+		t.Errorf("expected default alias=count, got %q", req.Metrics[0].Name)
+	}
+}
+
+func TestGroupBy_HavingAddsHavingClause(t *testing.T) {
+	req, err := iverson.NewGroupBy("LineItem").
+		Sum("Quantity", "SumQty").
+		Having("SumQty", pb.SearchOperator_GREATER_THAN, iversonNumberValue(0)).
+		Build()
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if req.Having == nil {
+		t.Fatal("expected non-nil Having")
+	}
+	if len(req.Having.Clauses) != 1 {
+		t.Fatalf("expected 1 having clause, got %d", len(req.Having.Clauses))
+	}
+	c := req.Having.Clauses[0]
+	if c.Property != "SumQty" {
+		t.Errorf("expected Property=SumQty, got %q", c.Property)
+	}
+	if c.Operator != pb.SearchOperator_GREATER_THAN {
+		t.Errorf("expected GREATER_THAN, got %v", c.Operator)
+	}
+	if c.Value.GetNumberVal() != 0 {
+		t.Errorf("expected number_val=0, got %f", c.Value.GetNumberVal())
+	}
+}
+
+func TestGroupBy_JoinAddsJoinSpec(t *testing.T) {
+	req, err := iverson.NewGroupBy("Order").
+		Join("CustomerId", "Customer", "Id").
+		Build()
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if len(req.Joins) != 1 {
+		t.Fatalf("expected 1 join, got %d", len(req.Joins))
+	}
+	j := req.Joins[0]
+	if j.LeftType != "Order" {
+		t.Errorf("expected LeftType=Order, got %q", j.LeftType)
+	}
+	if j.RightType != "Customer" {
+		t.Errorf("expected RightType=Customer, got %q", j.RightType)
+	}
+	if j.Kind != pb.JoinKind_INNER {
+		t.Errorf("expected default JoinKind=INNER, got %v", j.Kind)
+	}
+}
+
+func TestGroupBy_BuildSetsTraceId(t *testing.T) {
+	req, err := iverson.NewGroupBy("LineItem").Build("trace-123")
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if req.TraceId != "trace-123" {
+		t.Errorf("expected TraceId=trace-123, got %q", req.TraceId)
+	}
+}
+
+func TestGroupBy_BuildDefaultTraceId(t *testing.T) {
+	req, err := iverson.NewGroupBy("LineItem").Build()
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if req.TraceId != "" {
+		t.Errorf("expected empty TraceId, got %q", req.TraceId)
+	}
+}
+
+func TestGroupBy_Q1StyleAllFieldsPresent(t *testing.T) {
+	req, err := iverson.NewGroupBy("LineItem").
+		Keys("ReturnFlag", "LineStatus").
+		Where("ShipDate", pb.SearchOperator_LESS_THAN_OR_EQUALS, iversonStringValue("1998-12-01")).
+		Sum("Quantity", "SumQty").
+		Sum("ExtendedPrice", "SumBasePrice").
+		SumExpr("ExtendedPrice * (1 - Discount)", "SumDiscPrice").
+		Avg("Quantity", "AvgQty").
+		CountAll("CountOrder").
+		Having("SumQty", pb.SearchOperator_GREATER_THAN, iversonNumberValue(0)).
+		OrderBy("ReturnFlag").
+		OrderByDesc("LineStatus").
+		Limit(100).
+		Build("trace-q1")
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if req.TypeName != "LineItem" {
+		t.Errorf("expected TypeName=LineItem, got %q", req.TypeName)
+	}
+	if len(req.Keys) != 2 {
+		t.Errorf("expected 2 keys, got %d", len(req.Keys))
+	}
+	if req.Query == nil || len(req.Query.Clauses) != 1 {
+		t.Fatalf("expected 1 where clause, got %v", req.Query)
+	}
+	if len(req.Metrics) != 5 {
+		t.Errorf("expected 5 metrics, got %d", len(req.Metrics))
+	}
+	if req.Having == nil || len(req.Having.Clauses) != 1 {
+		t.Fatalf("expected 1 having clause, got %v", req.Having)
+	}
+	if len(req.OrderBy) != 2 {
+		t.Errorf("expected 2 order-by clauses, got %d", len(req.OrderBy))
+	}
+	if req.Limit != 100 {
+		t.Errorf("expected Limit=100, got %d", req.Limit)
+	}
+	if req.TraceId != "trace-q1" {
+		t.Errorf("expected TraceId=trace-q1, got %q", req.TraceId)
+	}
+}
+
+func TestGroupBy_WhereNilValueSetsError(t *testing.T) {
+	_, err := iverson.NewGroupBy("LineItem").
+		Where("ShipDate", pb.SearchOperator_LESS_THAN_OR_EQUALS, nil).
+		Build()
+	if err == nil {
+		t.Fatal("expected error for nil search value, got nil")
+	}
+}
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
+
+func iversonNumberValue(n float64) *pb.SearchValue {
+	return &pb.SearchValue{Kind: &pb.SearchValue_NumberVal{NumberVal: n}}
+}
+
+func iversonStringValue(s string) *pb.SearchValue {
+	return &pb.SearchValue{Kind: &pb.SearchValue_StringVal{StringVal: s}}
+}
 
 func assertSingleClause(t *testing.T, req *pb.SearchRequest, property string, op pb.SearchOperator) {
 	t.Helper()
