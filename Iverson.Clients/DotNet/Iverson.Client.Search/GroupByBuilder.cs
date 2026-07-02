@@ -153,7 +153,7 @@ public sealed class GroupByBuilder
         {
             Property   = field,
             Operator   = op,
-            Value      = ToSearchValue(value),
+            Value      = SearchValueConverter.ToSearchValue(value),
             ClauseType = clauseType
         });
         return this;
@@ -165,31 +165,9 @@ public sealed class GroupByBuilder
         {
             Property   = alias,
             Operator   = op,
-            Value      = ToSearchValue(value),
+            Value      = SearchValueConverter.ToSearchValue(value),
             ClauseType = SearchClauseType.Filter
         });
         return this;
     }
-
-    private static SearchValue ToSearchValue(object? value) => value switch
-    {
-        null          => new SearchValue(),
-        string s      => new SearchValue { StringVal  = s },
-        bool b        => new SearchValue { BoolVal    = b },
-        float f       => new SearchValue { NumberVal  = f },
-        double d      => new SearchValue { NumberVal  = d },
-        int i         => new SearchValue { NumberVal  = i },
-        long l        => new SearchValue { NumberVal  = l },
-        DateTime dt   => new SearchValue { StringVal  = dt.ToString("o") },
-        DateTimeOffset dto => new SearchValue { StringVal = dto.ToString("o") },
-
-        // IN operator: IEnumerable<string>
-        IEnumerable<string> strings => new SearchValue
-        {
-            StringList = new RepeatedString { Values = { strings } }
-        },
-
-        // Fallback: toString
-        _ => new SearchValue { StringVal = value.ToString() ?? string.Empty }
-    };
 }

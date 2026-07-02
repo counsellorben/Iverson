@@ -96,6 +96,17 @@ public sealed class GroupByBuilderTests
         join.Kind.Should().Be(JoinKind.Left);
     }
 
+    [Fact]
+    public void Join_WithoutExplicitKind_DefaultsToInner()
+    {
+        var req = Query.GroupBy("LineItem")
+            .Join("LineItem", "Orders", "OrderId", "OrderId")
+            .Build();
+
+        var join = req.Joins.Should().ContainSingle().Subject;
+        join.Kind.Should().Be(JoinKind.Inner);
+    }
+
     // ── Build metadata ──────────────────────────────────────────────────────────
 
     [Fact]
