@@ -11,6 +11,8 @@
  */
 
 import {
+    JoinKind,
+    JoinSpec,
     SearchClause,
     SearchClauseType,
     SearchLogic,
@@ -24,11 +26,11 @@ import {
 } from '../generated/object_search.js';
 
 // Re-export for consumers
-export { SearchOperator, SearchLogic, SearchClauseType };
+export { SearchOperator, SearchLogic, SearchClauseType, JoinKind };
 
 // ── Value conversion helper ───────────────────────────────────────────────────
 
-function toSearchValue(value: unknown): SearchValue {
+export function toSearchValue(value: unknown): SearchValue {
     if (value === null || value === undefined) {
         return {};
     }
@@ -117,6 +119,11 @@ export class FieldCondition {
         return this._add(SearchOperator.STARTS_WITH, toSearchValue(value));
     }
 
+    /** ENDS_WITH */
+    endsWith(value: string): QueryBuilder {
+        return this._add(SearchOperator.ENDS_WITH, toSearchValue(value));
+    }
+
     /** IN — accepts a list of strings */
     in(values: string[]): QueryBuilder {
         const sv: SearchValue = { stringList: { values } };
@@ -142,6 +149,7 @@ export class QueryBuilder {
     private readonly _clauses: SearchClause[] = [];
     private readonly _sorts: SearchSort[] = [];
     private readonly _fields: string[] = [];
+    private readonly _joins: JoinSpec[] = [];
     private _logic: SearchLogic = SearchLogic.AND;
     private _page: number = 1;
     private _pageSize: number = 20;
@@ -228,6 +236,18 @@ export class QueryBuilder {
         return this;
     }
 
+    /** Add an inner/left/right join to another registered type. */
+    join(leftField: string, rightType: string, rightField: string, kind: JoinKind = JoinKind.INNER): QueryBuilder {
+        this._joins.push({
+            leftType: this._typeName,
+            rightType,
+            leftField,
+            rightField,
+            kind,
+        });
+        return this;
+    }
+
     // ── Build ─────────────────────────────────────────────────────────────────
 
     /** Compile to a SearchRequest proto message. */
@@ -244,6 +264,7 @@ export class QueryBuilder {
             pageSize: this._pageSize,
             traceId: this._traceId,
             fields: [...this._fields],
+            joins: [...this._joins],
         };
     }
 }

@@ -3,7 +3,8 @@
  */
 import { describe, it, expect } from 'vitest';
 import { QueryBuilder } from '../src/search.js';
-import { SearchOperator, SearchLogic, SearchClauseType } from '../generated/object_search.js';
+import { GroupByBuilder, groupBy } from '../src/group-by.js';
+import { SearchOperator, SearchLogic, SearchClauseType, JoinKind, AggregationType } from '../generated/object_search.js';
 
 describe('QueryBuilder', () => {
     describe('build() defaults', () => {
@@ -83,6 +84,13 @@ describe('QueryBuilder', () => {
             const clause = req.query!.clauses[0];
             expect(clause.operator).toBe(SearchOperator.STARTS_WITH);
             expect(clause.value!.stringVal).toBe('How');
+        });
+
+        it('endsWith builds ENDS_WITH clause', () => {
+            const req = new QueryBuilder('Article').where('title').endsWith('Guide').build();
+            const clause = req.query!.clauses[0];
+            expect(clause.operator).toBe(SearchOperator.ENDS_WITH);
+            expect(clause.value!.stringVal).toBe('Guide');
         });
 
         it('in builds IN clause with string list', () => {
@@ -181,5 +189,148 @@ describe('QueryBuilder', () => {
             const req = new QueryBuilder('Article').withLogic(SearchLogic.OR).build();
             expect(req.query!.logic).toBe(SearchLogic.OR);
         });
+    });
+
+    describe('join', () => {
+        it('join adds JoinSpec to SearchRequest', () => {
+            const req = new QueryBuilder('Order')
+                .join('customerId', 'Customer', 'id')
+                .build();
+            expect(req.joins).toHaveLength(1);
+            const join = req.joins[0];
+            expect(join.leftType).toBe('Order');
+            expect(join.rightType).toBe('Customer');
+            expect(join.leftField).toBe('customerId');
+            expect(join.rightField).toBe('id');
+            expect(join.kind).toBe(JoinKind.INNER);
+        });
+
+        it('join accepts an explicit JoinKind', () => {
+            const req = new QueryBuilder('Order')
+                .join('customerId', 'Customer', 'id', JoinKind.LEFT)
+                .build();
+            expect(req.joins[0].kind).toBe(JoinKind.LEFT);
+        });
+    });
+});
+
+describe('GroupByBuilder', () => {
+    it('key() adds group-by field', () => {
+        const req = groupBy('LineItem').key('orderStatus').build();
+        expect(req.keys).toEqual(['orderStatus']);
+    });
+
+    it('keys() adds multiple group-by fields', () => {
+        const req = groupBy('LineItem').keys('returnFlag', 'lineStatus').build();
+        expect(req.keys).toEqual(['returnFlag', 'lineStatus']);
+    });
+
+    it('sum() adds metric with auto alias', () => {
+        const req = groupBy('LineItem').sum('quantity').build();
+        expect(req.metrics).toHaveLength(1);
+        expect(req.metrics[0]).toMatchObject({
+            name: 'quantity_sum',
+            type: AggregationType.SUM,
+            field: 'quantity',
+            expression: '',
+        });
+    });
+
+    it('sum() honors an explicit alias', () => {
+        const req = groupBy('LineItem').sum('quantity', 'total_qty').build();
+        expect(req.metrics[0].name).toBe('total_qty');
+    });
+
+    it('sumExpr() adds raw expression', () => {
+        const req = groupBy('LineItem')
+            .sumExpr('extendedPrice * (1 - discount)', 'disc_price')
+            .build();
+        expect(req.metrics).toHaveLength(1);
+        expect(req.metrics[0]).toMatchObject({
+            name: 'disc_price',
+            type: AggregationType.SUM,
+            field: '',
+            expression: 'extendedPrice * (1 - discount)',
+        });
+    });
+
+    it('countAll() produces empty-field metric', () => {
+        const req = groupBy('LineItem').countAll().build();
+        expect(req.metrics).toHaveLength(1);
+        expect(req.metrics[0]).toMatchObject({
+            name: 'count',
+            type: AggregationType.COUNT,
+            field: '',
+            expression: '',
+        });
+    });
+
+    it('having() adds having clause', () => {
+        const req = groupBy('LineItem')
+            .key('orderStatus')
+            .sum('quantity')
+            .having('quantity_sum', SearchOperator.GREATER_THAN, 100)
+            .build();
+        expect(req.having!.clauses).toHaveLength(1);
+        const clause = req.having!.clauses[0];
+        expect(clause.property).toBe('quantity_sum');
+        expect(clause.operator).toBe(SearchOperator.GREATER_THAN);
+        expect(clause.value!.numberVal).toBe(100);
+    });
+
+    it('join() adds JoinSpec', () => {
+        const req = groupBy('Order')
+            .join('customerId', 'Customer', 'id')
+            .build();
+        expect(req.joins).toHaveLength(1);
+        const join = req.joins[0];
+        expect(join.leftType).toBe('Order');
+        expect(join.rightType).toBe('Customer');
+        expect(join.leftField).toBe('customerId');
+        expect(join.rightField).toBe('id');
+        expect(join.kind).toBe(JoinKind.INNER);
+    });
+
+    it('build() sets trace ID', () => {
+        const req = groupBy('LineItem').build('trace-123');
+        expect(req.traceId).toBe('trace-123');
+    });
+
+    it('build() defaults limit to 10000', () => {
+        const req = groupBy('LineItem').build();
+        expect(req.limit).toBe(10_000);
+    });
+
+    it('limit() overrides the default', () => {
+        const req = groupBy('LineItem').limit(50).build();
+        expect(req.limit).toBe(50);
+    });
+
+    it('groupBy() factory returns a GroupByBuilder', () => {
+        expect(groupBy('LineItem')).toBeInstanceOf(GroupByBuilder);
+    });
+
+    it('Q1-style build has 2 keys and 9 metrics', () => {
+        // Mirrors TPC-H Q1 (pricing summary report): group by two flags,
+        // aggregate 9 metrics (sums, avgs, and a count).
+        const req = groupBy('LineItem')
+            .where('shipDate', SearchOperator.LESS_THAN_OR_EQUALS, '1998-12-01')
+            .key('returnFlag')
+            .key('lineStatus')
+            .sum('quantity')
+            .sum('extendedPrice')
+            .sumExpr('extendedPrice * (1 - discount)', 'disc_price')
+            .sumExpr('extendedPrice * (1 - discount) * (1 + tax)', 'charge')
+            .avg('quantity')
+            .avg('extendedPrice')
+            .avg('discount')
+            .countAll()
+            .count('quantity', 'order_count')
+            .orderBy('returnFlag')
+            .orderBy('lineStatus')
+            .build();
+
+        expect(req.keys).toHaveLength(2);
+        expect(req.metrics).toHaveLength(9);
     });
 });

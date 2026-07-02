@@ -21,4 +21,6 @@ export type { RelationMeta, SearchKeyMeta, RelationKindString } from './annotati
 
 export { IversonClient, EntityCoordinator, SchemaRegistrar } from './core.js';
 
-export { QueryBuilder, FieldCondition, SearchOperator, SearchLogic, SearchClauseType } from './search.js';
+export { QueryBuilder, FieldCondition, SearchOperator, SearchLogic, SearchClauseType, JoinKind } from './search.js';
+
+export { GroupByBuilder, groupBy } from './group-by.js';

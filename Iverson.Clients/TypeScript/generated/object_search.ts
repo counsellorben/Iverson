@@ -36,6 +36,7 @@ export enum SearchOperator {
   LESS_THAN_OR_EQUALS = 7,
   IN = 8,
   VECTOR_SIMILAR = 9,
+  ENDS_WITH = 10,
   UNRECOGNIZED = -1,
 }
 
@@ -71,6 +72,9 @@ export function searchOperatorFromJSON(object: any): SearchOperator {
     case 9:
     case "VECTOR_SIMILAR":
       return SearchOperator.VECTOR_SIMILAR;
+    case 10:
+    case "ENDS_WITH":
+      return SearchOperator.ENDS_WITH;
     case -1:
     case "UNRECOGNIZED":
     default:
@@ -100,6 +104,8 @@ export function searchOperatorToJSON(object: SearchOperator): string {
       return "IN";
     case SearchOperator.VECTOR_SIMILAR:
       return "VECTOR_SIMILAR";
+    case SearchOperator.ENDS_WITH:
+      return "ENDS_WITH";
     case SearchOperator.UNRECOGNIZED:
     default:
       return "UNRECOGNIZED";
@@ -184,6 +190,45 @@ export function searchClauseTypeToJSON(object: SearchClauseType): string {
   }
 }
 
+export enum JoinKind {
+  INNER = 0,
+  LEFT = 1,
+  RIGHT = 2,
+  UNRECOGNIZED = -1,
+}
+
+export function joinKindFromJSON(object: any): JoinKind {
+  switch (object) {
+    case 0:
+    case "INNER":
+      return JoinKind.INNER;
+    case 1:
+    case "LEFT":
+      return JoinKind.LEFT;
+    case 2:
+    case "RIGHT":
+      return JoinKind.RIGHT;
+    case -1:
+    case "UNRECOGNIZED":
+    default:
+      return JoinKind.UNRECOGNIZED;
+  }
+}
+
+export function joinKindToJSON(object: JoinKind): string {
+  switch (object) {
+    case JoinKind.INNER:
+      return "INNER";
+    case JoinKind.LEFT:
+      return "LEFT";
+    case JoinKind.RIGHT:
+      return "RIGHT";
+    case JoinKind.UNRECOGNIZED:
+    default:
+      return "UNRECOGNIZED";
+  }
+}
+
 export enum AggregationType {
   TERMS = 0,
   DATE_HISTOGRAM = 1,
@@ -261,6 +306,7 @@ export interface SearchRequest {
   traceId: string;
   /** property names to include; empty = all fields */
   fields: string[];
+  joins: JoinSpec[];
 }
 
 export interface SearchQuery {
@@ -349,12 +395,27 @@ export interface ChunkSearchResponse {
   traceId: string;
 }
 
+export interface JoinSpec {
+  /** registered Iverson type name for the left table */
+  leftType: string;
+  /** registered Iverson type name for the right table */
+  rightType: string;
+  /** field on left type used in the ON condition */
+  leftField: string;
+  /** field on right type used in the ON condition */
+  rightField: string;
+  kind: JoinKind;
+}
+
 export interface AggregateRequest {
   typeName: string;
   /** optional filter applied before aggregating */
   query: SearchQuery | undefined;
   aggregations: AggregationSpec[];
   traceId: string;
+  /** applied after GROUP BY; clauses reference aliased output columns */
+  having: SearchQuery | undefined;
+  joins: JoinSpec[];
 }
 
 export interface AggregateResponse {
@@ -379,6 +440,10 @@ export interface AggregationSpec {
   timeZone: string;
   /** RANGE options */
   rangeBuckets: RangeBucket[];
+  /** multi-key GROUP BY; overrides field for TERMS if set */
+  groupByFields: string[];
+  /** raw SQL expr in aggregate fn; overrides field if set */
+  expression: string;
 }
 
 export interface RangeBucket {
@@ -406,8 +471,37 @@ export interface AggregationBucket {
   count: number;
 }
 
+export interface MetricSpec {
+  /** SELECT alias */
+  name: string;
+  /** AVG | SUM | MIN | MAX | COUNT */
+  type: AggregationType;
+  /** bare column name (used when expression is empty) */
+  field: string;
+  /** raw SQL expr overrides field (e.g. "price * (1 - discount)") */
+  expression: string;
+}
+
+export interface GroupByRequest {
+  typeName: string;
+  /** WHERE filter */
+  query:
+    | SearchQuery
+    | undefined;
+  /** GROUP BY columns (qualified with TypeName. for joins) */
+  keys: string[];
+  metrics: MetricSpec[];
+  /** HAVING filter; clause.property = output alias */
+  having: SearchQuery | undefined;
+  orderBy: SearchSort[];
+  /** default 10000 */
+  limit: number;
+  joins: JoinSpec[];
+  traceId: string;
+}
+
 function createBaseSearchRequest(): SearchRequest {
-  return { typeName: "", query: undefined, page: 0, pageSize: 0, traceId: "", fields: [] };
+  return { typeName: "", query: undefined, page: 0, pageSize: 0, traceId: "", fields: [], joins: [] };
 }
 
 export const SearchRequest: MessageFns<SearchRequest> = {
@@ -429,6 +523,9 @@ export const SearchRequest: MessageFns<SearchRequest> = {
     }
     for (const v of message.fields) {
       writer.uint32(50).string(v!);
+    }
+    for (const v of message.joins) {
+      JoinSpec.encode(v!, writer.uint32(58).fork()).join();
     }
     return writer;
   },
@@ -488,6 +585,14 @@ export const SearchRequest: MessageFns<SearchRequest> = {
           message.fields.push(reader.string());
           continue;
         }
+        case 7: {
+          if (tag !== 58) {
+            break;
+          }
+
+          message.joins.push(JoinSpec.decode(reader, reader.uint32()));
+          continue;
+        }
       }
       if ((tag & 7) === 4 || tag === 0) {
         break;
@@ -519,6 +624,7 @@ export const SearchRequest: MessageFns<SearchRequest> = {
       fields: globalThis.Array.isArray(object?.fields)
         ? object.fields.map((e: any) => globalThis.String(e))
         : [],
+      joins: globalThis.Array.isArray(object?.joins) ? object.joins.map((e: any) => JoinSpec.fromJSON(e)) : [],
     };
   },
 
@@ -542,6 +648,9 @@ export const SearchRequest: MessageFns<SearchRequest> = {
     if (message.fields?.length) {
       obj.fields = message.fields;
     }
+    if (message.joins?.length) {
+      obj.joins = message.joins.map((e) => JoinSpec.toJSON(e));
+    }
     return obj;
   },
 
@@ -558,6 +667,7 @@ export const SearchRequest: MessageFns<SearchRequest> = {
     message.pageSize = object.pageSize ?? 0;
     message.traceId = object.traceId ?? "";
     message.fields = object.fields?.map((e) => e) || [];
+    message.joins = object.joins?.map((e) => JoinSpec.fromPartial(e)) || [];
     return message;
   },
 };
@@ -1620,8 +1730,148 @@ export const ChunkSearchResponse: MessageFns<ChunkSearchResponse> = {
   },
 };
 
+function createBaseJoinSpec(): JoinSpec {
+  return { leftType: "", rightType: "", leftField: "", rightField: "", kind: 0 };
+}
+
+export const JoinSpec: MessageFns<JoinSpec> = {
+  encode(message: JoinSpec, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.leftType !== "") {
+      writer.uint32(10).string(message.leftType);
+    }
+    if (message.rightType !== "") {
+      writer.uint32(18).string(message.rightType);
+    }
+    if (message.leftField !== "") {
+      writer.uint32(26).string(message.leftField);
+    }
+    if (message.rightField !== "") {
+      writer.uint32(34).string(message.rightField);
+    }
+    if (message.kind !== 0) {
+      writer.uint32(40).int32(message.kind);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): JoinSpec {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseJoinSpec();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.leftType = reader.string();
+          continue;
+        }
+        case 2: {
+          if (tag !== 18) {
+            break;
+          }
+
+          message.rightType = reader.string();
+          continue;
+        }
+        case 3: {
+          if (tag !== 26) {
+            break;
+          }
+
+          message.leftField = reader.string();
+          continue;
+        }
+        case 4: {
+          if (tag !== 34) {
+            break;
+          }
+
+          message.rightField = reader.string();
+          continue;
+        }
+        case 5: {
+          if (tag !== 40) {
+            break;
+          }
+
+          message.kind = reader.int32() as any;
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): JoinSpec {
+    return {
+      leftType: isSet(object.leftType)
+        ? globalThis.String(object.leftType)
+        : isSet(object.left_type)
+        ? globalThis.String(object.left_type)
+        : "",
+      rightType: isSet(object.rightType)
+        ? globalThis.String(object.rightType)
+        : isSet(object.right_type)
+        ? globalThis.String(object.right_type)
+        : "",
+      leftField: isSet(object.leftField)
+        ? globalThis.String(object.leftField)
+        : isSet(object.left_field)
+        ? globalThis.String(object.left_field)
+        : "",
+      rightField: isSet(object.rightField)
+        ? globalThis.String(object.rightField)
+        : isSet(object.right_field)
+        ? globalThis.String(object.right_field)
+        : "",
+      kind: isSet(object.kind) ? joinKindFromJSON(object.kind) : 0,
+    };
+  },
+
+  toJSON(message: JoinSpec): unknown {
+    const obj: any = {};
+    if (message.leftType !== "") {
+      obj.leftType = message.leftType;
+    }
+    if (message.rightType !== "") {
+      obj.rightType = message.rightType;
+    }
+    if (message.leftField !== "") {
+      obj.leftField = message.leftField;
+    }
+    if (message.rightField !== "") {
+      obj.rightField = message.rightField;
+    }
+    if (message.kind !== 0) {
+      obj.kind = joinKindToJSON(message.kind);
+    }
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<JoinSpec>, I>>(base?: I): JoinSpec {
+    return JoinSpec.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<JoinSpec>, I>>(object: I): JoinSpec {
+    const message = createBaseJoinSpec();
+    message.leftType = object.leftType ?? "";
+    message.rightType = object.rightType ?? "";
+    message.leftField = object.leftField ?? "";
+    message.rightField = object.rightField ?? "";
+    message.kind = object.kind ?? 0;
+    return message;
+  },
+};
+
 function createBaseAggregateRequest(): AggregateRequest {
-  return { typeName: "", query: undefined, aggregations: [], traceId: "" };
+  return { typeName: "", query: undefined, aggregations: [], traceId: "", having: undefined, joins: [] };
 }
 
 export const AggregateRequest: MessageFns<AggregateRequest> = {
@@ -1637,6 +1887,12 @@ export const AggregateRequest: MessageFns<AggregateRequest> = {
     }
     if (message.traceId !== "") {
       writer.uint32(34).string(message.traceId);
+    }
+    if (message.having !== undefined) {
+      SearchQuery.encode(message.having, writer.uint32(42).fork()).join();
+    }
+    for (const v of message.joins) {
+      JoinSpec.encode(v!, writer.uint32(58).fork()).join();
     }
     return writer;
   },
@@ -1680,6 +1936,22 @@ export const AggregateRequest: MessageFns<AggregateRequest> = {
           message.traceId = reader.string();
           continue;
         }
+        case 5: {
+          if (tag !== 42) {
+            break;
+          }
+
+          message.having = SearchQuery.decode(reader, reader.uint32());
+          continue;
+        }
+        case 7: {
+          if (tag !== 58) {
+            break;
+          }
+
+          message.joins.push(JoinSpec.decode(reader, reader.uint32()));
+          continue;
+        }
       }
       if ((tag & 7) === 4 || tag === 0) {
         break;
@@ -1705,6 +1977,8 @@ export const AggregateRequest: MessageFns<AggregateRequest> = {
         : isSet(object.trace_id)
         ? globalThis.String(object.trace_id)
         : "",
+      having: isSet(object.having) ? SearchQuery.fromJSON(object.having) : undefined,
+      joins: globalThis.Array.isArray(object?.joins) ? object.joins.map((e: any) => JoinSpec.fromJSON(e)) : [],
     };
   },
 
@@ -1722,6 +1996,12 @@ export const AggregateRequest: MessageFns<AggregateRequest> = {
     if (message.traceId !== "") {
       obj.traceId = message.traceId;
     }
+    if (message.having !== undefined) {
+      obj.having = SearchQuery.toJSON(message.having);
+    }
+    if (message.joins?.length) {
+      obj.joins = message.joins.map((e) => JoinSpec.toJSON(e));
+    }
     return obj;
   },
 
@@ -1736,6 +2016,10 @@ export const AggregateRequest: MessageFns<AggregateRequest> = {
       : undefined;
     message.aggregations = object.aggregations?.map((e) => AggregationSpec.fromPartial(e)) || [];
     message.traceId = object.traceId ?? "";
+    message.having = (object.having !== undefined && object.having !== null)
+      ? SearchQuery.fromPartial(object.having)
+      : undefined;
+    message.joins = object.joins?.map((e) => JoinSpec.fromPartial(e)) || [];
     return message;
   },
 };
@@ -1839,7 +2123,17 @@ export const AggregateResponse: MessageFns<AggregateResponse> = {
 };
 
 function createBaseAggregationSpec(): AggregationSpec {
-  return { name: "", type: 0, field: "", size: 0, calendarInterval: "", timeZone: "", rangeBuckets: [] };
+  return {
+    name: "",
+    type: 0,
+    field: "",
+    size: 0,
+    calendarInterval: "",
+    timeZone: "",
+    rangeBuckets: [],
+    groupByFields: [],
+    expression: "",
+  };
 }
 
 export const AggregationSpec: MessageFns<AggregationSpec> = {
@@ -1864,6 +2158,12 @@ export const AggregationSpec: MessageFns<AggregationSpec> = {
     }
     for (const v of message.rangeBuckets) {
       RangeBucket.encode(v!, writer.uint32(58).fork()).join();
+    }
+    for (const v of message.groupByFields) {
+      writer.uint32(66).string(v!);
+    }
+    if (message.expression !== "") {
+      writer.uint32(74).string(message.expression);
     }
     return writer;
   },
@@ -1931,6 +2231,22 @@ export const AggregationSpec: MessageFns<AggregationSpec> = {
           message.rangeBuckets.push(RangeBucket.decode(reader, reader.uint32()));
           continue;
         }
+        case 8: {
+          if (tag !== 66) {
+            break;
+          }
+
+          message.groupByFields.push(reader.string());
+          continue;
+        }
+        case 9: {
+          if (tag !== 74) {
+            break;
+          }
+
+          message.expression = reader.string();
+          continue;
+        }
       }
       if ((tag & 7) === 4 || tag === 0) {
         break;
@@ -1961,6 +2277,12 @@ export const AggregationSpec: MessageFns<AggregationSpec> = {
         : globalThis.Array.isArray(object?.range_buckets)
         ? object.range_buckets.map((e: any) => RangeBucket.fromJSON(e))
         : [],
+      groupByFields: globalThis.Array.isArray(object?.groupByFields)
+        ? object.groupByFields.map((e: any) => globalThis.String(e))
+        : globalThis.Array.isArray(object?.group_by_fields)
+        ? object.group_by_fields.map((e: any) => globalThis.String(e))
+        : [],
+      expression: isSet(object.expression) ? globalThis.String(object.expression) : "",
     };
   },
 
@@ -1987,6 +2309,12 @@ export const AggregationSpec: MessageFns<AggregationSpec> = {
     if (message.rangeBuckets?.length) {
       obj.rangeBuckets = message.rangeBuckets.map((e) => RangeBucket.toJSON(e));
     }
+    if (message.groupByFields?.length) {
+      obj.groupByFields = message.groupByFields;
+    }
+    if (message.expression !== "") {
+      obj.expression = message.expression;
+    }
     return obj;
   },
 
@@ -2002,6 +2330,8 @@ export const AggregationSpec: MessageFns<AggregationSpec> = {
     message.calendarInterval = object.calendarInterval ?? "";
     message.timeZone = object.timeZone ?? "";
     message.rangeBuckets = object.rangeBuckets?.map((e) => RangeBucket.fromPartial(e)) || [];
+    message.groupByFields = object.groupByFields?.map((e) => e) || [];
+    message.expression = object.expression ?? "";
     return message;
   },
 };
@@ -2288,6 +2618,328 @@ export const AggregationBucket: MessageFns<AggregationBucket> = {
   },
 };
 
+function createBaseMetricSpec(): MetricSpec {
+  return { name: "", type: 0, field: "", expression: "" };
+}
+
+export const MetricSpec: MessageFns<MetricSpec> = {
+  encode(message: MetricSpec, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.name !== "") {
+      writer.uint32(10).string(message.name);
+    }
+    if (message.type !== 0) {
+      writer.uint32(16).int32(message.type);
+    }
+    if (message.field !== "") {
+      writer.uint32(26).string(message.field);
+    }
+    if (message.expression !== "") {
+      writer.uint32(34).string(message.expression);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): MetricSpec {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseMetricSpec();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.name = reader.string();
+          continue;
+        }
+        case 2: {
+          if (tag !== 16) {
+            break;
+          }
+
+          message.type = reader.int32() as any;
+          continue;
+        }
+        case 3: {
+          if (tag !== 26) {
+            break;
+          }
+
+          message.field = reader.string();
+          continue;
+        }
+        case 4: {
+          if (tag !== 34) {
+            break;
+          }
+
+          message.expression = reader.string();
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): MetricSpec {
+    return {
+      name: isSet(object.name) ? globalThis.String(object.name) : "",
+      type: isSet(object.type) ? aggregationTypeFromJSON(object.type) : 0,
+      field: isSet(object.field) ? globalThis.String(object.field) : "",
+      expression: isSet(object.expression) ? globalThis.String(object.expression) : "",
+    };
+  },
+
+  toJSON(message: MetricSpec): unknown {
+    const obj: any = {};
+    if (message.name !== "") {
+      obj.name = message.name;
+    }
+    if (message.type !== 0) {
+      obj.type = aggregationTypeToJSON(message.type);
+    }
+    if (message.field !== "") {
+      obj.field = message.field;
+    }
+    if (message.expression !== "") {
+      obj.expression = message.expression;
+    }
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<MetricSpec>, I>>(base?: I): MetricSpec {
+    return MetricSpec.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<MetricSpec>, I>>(object: I): MetricSpec {
+    const message = createBaseMetricSpec();
+    message.name = object.name ?? "";
+    message.type = object.type ?? 0;
+    message.field = object.field ?? "";
+    message.expression = object.expression ?? "";
+    return message;
+  },
+};
+
+function createBaseGroupByRequest(): GroupByRequest {
+  return {
+    typeName: "",
+    query: undefined,
+    keys: [],
+    metrics: [],
+    having: undefined,
+    orderBy: [],
+    limit: 0,
+    joins: [],
+    traceId: "",
+  };
+}
+
+export const GroupByRequest: MessageFns<GroupByRequest> = {
+  encode(message: GroupByRequest, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.typeName !== "") {
+      writer.uint32(10).string(message.typeName);
+    }
+    if (message.query !== undefined) {
+      SearchQuery.encode(message.query, writer.uint32(18).fork()).join();
+    }
+    for (const v of message.keys) {
+      writer.uint32(26).string(v!);
+    }
+    for (const v of message.metrics) {
+      MetricSpec.encode(v!, writer.uint32(34).fork()).join();
+    }
+    if (message.having !== undefined) {
+      SearchQuery.encode(message.having, writer.uint32(42).fork()).join();
+    }
+    for (const v of message.orderBy) {
+      SearchSort.encode(v!, writer.uint32(50).fork()).join();
+    }
+    if (message.limit !== 0) {
+      writer.uint32(56).int32(message.limit);
+    }
+    for (const v of message.joins) {
+      JoinSpec.encode(v!, writer.uint32(66).fork()).join();
+    }
+    if (message.traceId !== "") {
+      writer.uint32(74).string(message.traceId);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): GroupByRequest {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseGroupByRequest();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.typeName = reader.string();
+          continue;
+        }
+        case 2: {
+          if (tag !== 18) {
+            break;
+          }
+
+          message.query = SearchQuery.decode(reader, reader.uint32());
+          continue;
+        }
+        case 3: {
+          if (tag !== 26) {
+            break;
+          }
+
+          message.keys.push(reader.string());
+          continue;
+        }
+        case 4: {
+          if (tag !== 34) {
+            break;
+          }
+
+          message.metrics.push(MetricSpec.decode(reader, reader.uint32()));
+          continue;
+        }
+        case 5: {
+          if (tag !== 42) {
+            break;
+          }
+
+          message.having = SearchQuery.decode(reader, reader.uint32());
+          continue;
+        }
+        case 6: {
+          if (tag !== 50) {
+            break;
+          }
+
+          message.orderBy.push(SearchSort.decode(reader, reader.uint32()));
+          continue;
+        }
+        case 7: {
+          if (tag !== 56) {
+            break;
+          }
+
+          message.limit = reader.int32();
+          continue;
+        }
+        case 8: {
+          if (tag !== 66) {
+            break;
+          }
+
+          message.joins.push(JoinSpec.decode(reader, reader.uint32()));
+          continue;
+        }
+        case 9: {
+          if (tag !== 74) {
+            break;
+          }
+
+          message.traceId = reader.string();
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): GroupByRequest {
+    return {
+      typeName: isSet(object.typeName)
+        ? globalThis.String(object.typeName)
+        : isSet(object.type_name)
+        ? globalThis.String(object.type_name)
+        : "",
+      query: isSet(object.query) ? SearchQuery.fromJSON(object.query) : undefined,
+      keys: globalThis.Array.isArray(object?.keys) ? object.keys.map((e: any) => globalThis.String(e)) : [],
+      metrics: globalThis.Array.isArray(object?.metrics) ? object.metrics.map((e: any) => MetricSpec.fromJSON(e)) : [],
+      having: isSet(object.having) ? SearchQuery.fromJSON(object.having) : undefined,
+      orderBy: globalThis.Array.isArray(object?.orderBy)
+        ? object.orderBy.map((e: any) => SearchSort.fromJSON(e))
+        : globalThis.Array.isArray(object?.order_by)
+        ? object.order_by.map((e: any) => SearchSort.fromJSON(e))
+        : [],
+      limit: isSet(object.limit) ? globalThis.Number(object.limit) : 0,
+      joins: globalThis.Array.isArray(object?.joins) ? object.joins.map((e: any) => JoinSpec.fromJSON(e)) : [],
+      traceId: isSet(object.traceId)
+        ? globalThis.String(object.traceId)
+        : isSet(object.trace_id)
+        ? globalThis.String(object.trace_id)
+        : "",
+    };
+  },
+
+  toJSON(message: GroupByRequest): unknown {
+    const obj: any = {};
+    if (message.typeName !== "") {
+      obj.typeName = message.typeName;
+    }
+    if (message.query !== undefined) {
+      obj.query = SearchQuery.toJSON(message.query);
+    }
+    if (message.keys?.length) {
+      obj.keys = message.keys;
+    }
+    if (message.metrics?.length) {
+      obj.metrics = message.metrics.map((e) => MetricSpec.toJSON(e));
+    }
+    if (message.having !== undefined) {
+      obj.having = SearchQuery.toJSON(message.having);
+    }
+    if (message.orderBy?.length) {
+      obj.orderBy = message.orderBy.map((e) => SearchSort.toJSON(e));
+    }
+    if (message.limit !== 0) {
+      obj.limit = Math.round(message.limit);
+    }
+    if (message.joins?.length) {
+      obj.joins = message.joins.map((e) => JoinSpec.toJSON(e));
+    }
+    if (message.traceId !== "") {
+      obj.traceId = message.traceId;
+    }
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<GroupByRequest>, I>>(base?: I): GroupByRequest {
+    return GroupByRequest.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<GroupByRequest>, I>>(object: I): GroupByRequest {
+    const message = createBaseGroupByRequest();
+    message.typeName = object.typeName ?? "";
+    message.query = (object.query !== undefined && object.query !== null)
+      ? SearchQuery.fromPartial(object.query)
+      : undefined;
+    message.keys = object.keys?.map((e) => e) || [];
+    message.metrics = object.metrics?.map((e) => MetricSpec.fromPartial(e)) || [];
+    message.having = (object.having !== undefined && object.having !== null)
+      ? SearchQuery.fromPartial(object.having)
+      : undefined;
+    message.orderBy = object.orderBy?.map((e) => SearchSort.fromPartial(e)) || [];
+    message.limit = object.limit ?? 0;
+    message.joins = object.joins?.map((e) => JoinSpec.fromPartial(e)) || [];
+    message.traceId = object.traceId ?? "";
+    return message;
+  },
+};
+
 /** DSL-driven search. The server streams back matching results with relevance scores. */
 export type ObjectSearchServiceService = typeof ObjectSearchServiceService;
 export const ObjectSearchServiceService = {
@@ -2327,6 +2979,15 @@ export const ObjectSearchServiceService = {
     responseSerialize: (value: AggregateResponse): Buffer => Buffer.from(AggregateResponse.encode(value).finish()),
     responseDeserialize: (value: Buffer): AggregateResponse => AggregateResponse.decode(value),
   },
+  groupBy: {
+    path: "/iverson.ObjectSearchService/GroupBy" as const,
+    requestStream: false as const,
+    responseStream: true as const,
+    requestSerialize: (value: GroupByRequest): Buffer => Buffer.from(GroupByRequest.encode(value).finish()),
+    requestDeserialize: (value: Buffer): GroupByRequest => GroupByRequest.decode(value),
+    responseSerialize: (value: SearchResponse): Buffer => Buffer.from(SearchResponse.encode(value).finish()),
+    responseDeserialize: (value: Buffer): SearchResponse => SearchResponse.decode(value),
+  },
 } as const;
 
 export interface ObjectSearchServiceServer extends UntypedServiceImplementation {
@@ -2334,6 +2995,7 @@ export interface ObjectSearchServiceServer extends UntypedServiceImplementation 
   searchSimilar: handleServerStreamingCall<SearchSimilarRequest, SearchResponse>;
   searchChunks: handleServerStreamingCall<SearchChunksRequest, ChunkSearchResponse>;
   aggregate: handleUnaryCall<AggregateRequest, AggregateResponse>;
+  groupBy: handleServerStreamingCall<GroupByRequest, SearchResponse>;
 }
 
 export interface ObjectSearchServiceClient extends Client {
@@ -2370,6 +3032,12 @@ export interface ObjectSearchServiceClient extends Client {
     options: Partial<CallOptions>,
     callback: (error: ServiceError | null, response: AggregateResponse) => void,
   ): ClientUnaryCall;
+  groupBy(request: GroupByRequest, options?: Partial<CallOptions>): ClientReadableStream<SearchResponse>;
+  groupBy(
+    request: GroupByRequest,
+    metadata?: Metadata,
+    options?: Partial<CallOptions>,
+  ): ClientReadableStream<SearchResponse>;
 }
 
 export const ObjectSearchServiceClient = makeGenericClientConstructor(
