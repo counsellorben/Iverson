@@ -65,6 +65,7 @@ enum SearchOperator {
     LESS_THAN_OR_EQUALS    = 7;
     IN                     = 8;
     VECTOR_SIMILAR         = 9;
+    ENDS_WITH              = 10;
 }
 
 enum SearchLogic {

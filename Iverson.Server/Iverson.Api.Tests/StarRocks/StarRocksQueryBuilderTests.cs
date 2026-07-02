@@ -148,6 +148,27 @@ public class StarRocksQueryBuilderTests
         lookup["p0"].Should().Be("%fiction%");
     }
 
+    // ── BuildSearch — EndsWith clause ────────────────────────────────────────
+
+    [Fact]
+    public void BuildSearch_EndsWithClause_ProducesLikeWithLeadingWildcard()
+    {
+        var query = new SearchQuery();
+        query.Clauses.Add(new SearchClause
+        {
+            Property   = "Bio",
+            Operator   = SearchOperator.EndsWith,
+            Value      = new SearchValue { StringVal = "BRASS" },
+            ClauseType = SearchClauseType.Filter
+        });
+
+        var (sql, param) = StarRocksQueryBuilder.BuildSearch("authors", AuthorSchema(), query, 0, 10);
+
+        sql.Should().Contain("LIKE @p0");
+        var lookup = (SqlMapper.IParameterLookup)param;
+        lookup["p0"].Should().Be("%BRASS");
+    }
+
     // ── BuildSearch — MustNot wraps with NOT ──────────────────────────────────
 
     [Fact]

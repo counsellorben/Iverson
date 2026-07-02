@@ -128,6 +128,8 @@ internal static class StarRocksQueryBuilder
                     Condition($"`{col}` LIKE @{pName}", pName, $"%{clause.Value?.StringVal}%", param),
                 SearchOperator.StartsWith =>
                     Condition($"`{col}` LIKE @{pName}", pName, $"{clause.Value?.StringVal}%", param),
+                SearchOperator.EndsWith =>
+                    Condition($"`{col}` LIKE @{pName}", pName, $"%{clause.Value?.StringVal}", param),
                 SearchOperator.GreaterThan =>
                     Condition($"`{col}` > @{pName}", pName, GetScalarValue(clause.Value), param),
                 SearchOperator.GreaterThanOrEquals =>
