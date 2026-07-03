@@ -194,6 +194,7 @@ export enum JoinKind {
   INNER = 0,
   LEFT = 1,
   RIGHT = 2,
+  FULL = 3,
   UNRECOGNIZED = -1,
 }
 
@@ -208,6 +209,9 @@ export function joinKindFromJSON(object: any): JoinKind {
     case 2:
     case "RIGHT":
       return JoinKind.RIGHT;
+    case 3:
+    case "FULL":
+      return JoinKind.FULL;
     case -1:
     case "UNRECOGNIZED":
     default:
@@ -223,6 +227,8 @@ export function joinKindToJSON(object: JoinKind): string {
       return "LEFT";
     case JoinKind.RIGHT:
       return "RIGHT";
+    case JoinKind.FULL:
+      return "FULL";
     case JoinKind.UNRECOGNIZED:
     default:
       return "UNRECOGNIZED";

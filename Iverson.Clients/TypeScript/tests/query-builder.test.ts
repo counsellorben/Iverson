@@ -211,6 +211,13 @@ describe('QueryBuilder', () => {
                 .build();
             expect(req.joins[0].kind).toBe(JoinKind.LEFT);
         });
+
+        it('join accepts FULL kind', () => {
+            const req = new QueryBuilder('Order')
+                .join('customerId', 'Customer', 'id', JoinKind.FULL)
+                .build();
+            expect(req.joins[0].kind).toBe(JoinKind.FULL);
+        });
     });
 });
 
@@ -289,6 +296,13 @@ describe('GroupByBuilder', () => {
         expect(join.leftField).toBe('customerId');
         expect(join.rightField).toBe('id');
         expect(join.kind).toBe(JoinKind.INNER);
+    });
+
+    it('join() accepts FULL kind', () => {
+        const req = groupBy('Order')
+            .join('customerId', 'Customer', 'id', JoinKind.FULL)
+            .build();
+        expect(req.joins[0].kind).toBe(JoinKind.FULL);
     });
 
     it('build() sets trace ID', () => {
