@@ -191,6 +191,18 @@ func TestJoin_AddsJoinSpec_ToSearchRequest(t *testing.T) {
 	}
 }
 
+func TestJoin_WithFullKind_SetsKind(t *testing.T) {
+	req, err := iverson.NewQuery("Order").
+		Join("CustomerId", "Customer", "Id", pb.JoinKind_FULL).
+		Build()
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if req.Joins[0].Kind != pb.JoinKind_FULL {
+		t.Errorf("expected JoinKind=FULL, got %v", req.Joins[0].Kind)
+	}
+}
+
 func TestWhere_Gt(t *testing.T) {
 	req, err := iverson.NewQuery("Article").Where("WordCount").Gt(500).Build()
 	if err != nil {
@@ -488,6 +500,18 @@ func TestGroupBy_JoinAddsJoinSpec(t *testing.T) {
 	}
 	if j.Kind != pb.JoinKind_INNER {
 		t.Errorf("expected default JoinKind=INNER, got %v", j.Kind)
+	}
+}
+
+func TestGroupBy_JoinWithFullKind_SetsKind(t *testing.T) {
+	req, err := iverson.NewGroupBy("Order").
+		Join("CustomerId", "Customer", "Id", pb.JoinKind_FULL).
+		Build()
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if req.Joins[0].Kind != pb.JoinKind_FULL {
+		t.Errorf("expected JoinKind=FULL, got %v", req.Joins[0].Kind)
 	}
 }
 
