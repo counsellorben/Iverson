@@ -11,5 +11,8 @@ dependencies:
 - name: qdrant
   repository: file://charts/qdrant
   version: 0.1.0
-digest: sha256:d41826ca8c6501c0c9aa4fed1733ce7ff5fe0c1863ad8bd5d319ec65649b69b6
-generated: "2026-07-03T19:17:11.368201103-04:00"
+- name: ollama
+  repository: file://charts/ollama
+  version: 0.1.0
+digest: sha256:fd2f5dd7b8b572fba188787249c7f2bae05cfbd1f7ab99caf253d93dcfdfc81d
+generated: "2026-07-03T19:21:27.701748404-04:00"

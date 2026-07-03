@@ -1,0 +1,82 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ .Release.Name }}-ollama
+automountServiceAccountToken: false
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}-ollama
+spec:
+  replicas: {{ .Values.replicas }}
+  selector:
+    matchLabels:
+      app: {{ .Release.Name }}-ollama
+  template:
+    metadata:
+      labels:
+        app: {{ .Release.Name }}-ollama
+    spec:
+      serviceAccountName: {{ .Release.Name }}-ollama
+      automountServiceAccountToken: false
+      nodeSelector:
+        {{- toYaml .Values.nodeSelector | nindent 8 }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile: { type: RuntimeDefault }
+      initContainers:
+        - name: pull-model
+          image: "ollama/ollama:{{ .Values.imageTag }}"
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
+          env:
+            - { name: OLLAMA_MODELS, value: "/data" }
+            - { name: HOME, value: "/data" }
+          command:
+            - sh
+            - -c
+            - |
+              ollama serve &
+              sleep 5
+              ollama pull nomic-embed-text
+          volumeMounts:
+            - name: ollama-data
+              mountPath: /data
+            - name: tmp
+              mountPath: /tmp
+      containers:
+        - name: ollama
+          image: "ollama/ollama:{{ .Values.imageTag }}"
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
+          ports:
+            - containerPort: 11434
+          env:
+            - { name: OLLAMA_MODELS, value: "/data" }
+            - { name: HOME, value: "/data" }
+          resources:
+            requests:
+              cpu: {{ .Values.resources.requests.cpu | quote }}
+              memory: {{ .Values.resources.requests.memory | quote }}
+            limits:
+              cpu: {{ .Values.resources.limits.cpu | quote }}
+              memory: {{ .Values.resources.limits.memory | quote }}
+          volumeMounts:
+            - name: ollama-data
+              mountPath: /data
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: ollama-data
+          persistentVolumeClaim:
+            claimName: {{ .Release.Name }}-ollama-data
+        - name: tmp
+          emptyDir: {}

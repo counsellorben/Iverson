@@ -1,0 +1,8 @@
+replicas: 2
+storageSize: 20Gi
+storageClassName: ""
+imageTag: "0.5.0"
+resources:
+  requests: { cpu: "8", memory: "16Gi" }
+  limits: { cpu: "8", memory: "16Gi" }
+nodeSelector: {}

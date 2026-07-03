@@ -17,3 +17,6 @@ dependencies:
   - name: qdrant
     version: "0.1.0"
     repository: "file://charts/qdrant"
+  - name: ollama
+    version: "0.1.0"
+    repository: "file://charts/ollama"
