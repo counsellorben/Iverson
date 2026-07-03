@@ -1,0 +1,5 @@
+imageTag: "1.62"
+resources:
+  requests: { cpu: "2", memory: "4Gi" }
+  limits: { cpu: "2", memory: "4Gi" }
+nodeSelector: {}

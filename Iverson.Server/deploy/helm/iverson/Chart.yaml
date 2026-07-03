@@ -23,3 +23,6 @@ dependencies:
   - name: api
     version: "0.1.0"
     repository: "file://charts/api"
+  - name: jaeger
+    version: "0.1.0"
+    repository: "file://charts/jaeger"
