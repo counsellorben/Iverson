@@ -263,7 +263,7 @@ Available as `fields(...)` in Java/Python/TypeScript and `Fields(...)` in Go. C#
 Any registered type can join to another on matching fields — the server resolves the physical tables and emits real SQL joins. All string-based builders share the same shape:
 
 ```
-join(leftField, rightType, rightField [, kind])     // kind: INNER (default) | LEFT | RIGHT
+join(leftField, rightType, rightField [, kind])     // kind: INNER (default) | LEFT | RIGHT | FULL
 ```
 
 ```typescript
