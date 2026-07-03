@@ -30,12 +30,13 @@ func (m *mockMappingClient) RegisterSchema(_ context.Context, req *pb.SchemaRequ
 
 type registrarArticle struct {
 	Id          string    `iverson:"key"`
-	Title       string
+	Title       string    `iverson:"embedding"`
 	Body        string    `iverson:"large_field"`
 	Category    string    `iverson:"search_key:0"`
 	WordCount   int
 	PublishedAt time.Time `iverson:"search_key:1"`
 	AuthorId    string    `iverson:"many_to_one:Author"`
+	Summary     string    `iverson:"chunk:256:32"`
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -80,9 +81,9 @@ func TestSchemaRegistrar_RegisterAll_Properties(t *testing.T) {
 	_ = registrar.RegisterAll(context.Background(), "")
 
 	props := mock.capturedReq.RootType.Properties
-	// Should have 6 properties (Id, Title, Body, Category, WordCount, PublishedAt)
-	if len(props) != 6 {
-		t.Errorf("expected 6 properties, got %d", len(props))
+	// Should have 7 properties (Id, Title, Body, Category, WordCount, PublishedAt, Summary)
+	if len(props) != 7 {
+		t.Errorf("expected 7 properties, got %d", len(props))
 	}
 }
 
@@ -144,6 +145,50 @@ func TestSchemaRegistrar_RegisterAll_LargeField(t *testing.T) {
 	}
 	if !found {
 		t.Error("Body property not found")
+	}
+}
+
+func TestSchemaRegistrar_RegisterAll_Embedding(t *testing.T) {
+	mock := &mockMappingClient{response: &pb.SchemaResponse{Success: true}}
+	registrar := iverson.NewSchemaRegistrar(mock, registrarArticle{})
+	_ = registrar.RegisterAll(context.Background(), "")
+
+	found := false
+	for _, p := range mock.capturedReq.RootType.Properties {
+		if p.Name == "Title" {
+			found = true
+			if !p.IsEmbedding {
+				t.Error("Title.IsEmbedding should be true")
+			}
+		}
+	}
+	if !found {
+		t.Error("Title property not found")
+	}
+}
+
+func TestSchemaRegistrar_RegisterAll_Chunk(t *testing.T) {
+	mock := &mockMappingClient{response: &pb.SchemaResponse{Success: true}}
+	registrar := iverson.NewSchemaRegistrar(mock, registrarArticle{})
+	_ = registrar.RegisterAll(context.Background(), "")
+
+	found := false
+	for _, p := range mock.capturedReq.RootType.Properties {
+		if p.Name == "Summary" {
+			found = true
+			if !p.IsChunk {
+				t.Error("Summary.IsChunk should be true")
+			}
+			if p.ChunkMaxTokens != 256 {
+				t.Errorf("expected ChunkMaxTokens=256, got %d", p.ChunkMaxTokens)
+			}
+			if p.ChunkOverlap != 32 {
+				t.Errorf("expected ChunkOverlap=32, got %d", p.ChunkOverlap)
+			}
+		}
+	}
+	if !found {
+		t.Error("Summary property not found")
 	}
 }
 

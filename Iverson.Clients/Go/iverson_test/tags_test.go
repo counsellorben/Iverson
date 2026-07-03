@@ -63,6 +63,45 @@ func TestParseTag_LargeField(t *testing.T) {
 	}
 }
 
+func TestParseTag_Embedding(t *testing.T) {
+	fm, err := iverson.ParseTag("Title", "embedding")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if fm.Kind != iverson.KindEmbedding {
+		t.Errorf("expected kind=%q, got %q", iverson.KindEmbedding, fm.Kind)
+	}
+}
+
+func TestParseTag_Chunk_Defaults(t *testing.T) {
+	fm, err := iverson.ParseTag("Summary", "chunk")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if fm.Kind != iverson.KindChunk {
+		t.Errorf("expected kind=%q, got %q", iverson.KindChunk, fm.Kind)
+	}
+	if fm.ChunkMaxTokens != 512 {
+		t.Errorf("expected default ChunkMaxTokens=512, got %d", fm.ChunkMaxTokens)
+	}
+	if fm.ChunkOverlap != 64 {
+		t.Errorf("expected default ChunkOverlap=64, got %d", fm.ChunkOverlap)
+	}
+}
+
+func TestParseTag_Chunk_CustomParams(t *testing.T) {
+	fm, err := iverson.ParseTag("Summary", "chunk:256:32")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if fm.ChunkMaxTokens != 256 {
+		t.Errorf("expected ChunkMaxTokens=256, got %d", fm.ChunkMaxTokens)
+	}
+	if fm.ChunkOverlap != 32 {
+		t.Errorf("expected ChunkOverlap=32, got %d", fm.ChunkOverlap)
+	}
+}
+
 func TestParseTag_ManyToOne(t *testing.T) {
 	fm, err := iverson.ParseTag("AuthorId", "many_to_one:Author")
 	if err != nil {

@@ -27,6 +27,8 @@ const (
 	KindKey        = "key"
 	KindSearchKey  = "search_key"
 	KindLargeField = "large_field"
+	KindEmbedding  = "embedding"
+	KindChunk      = "chunk"
 	KindManyToOne  = "many_to_one"
 	KindManyToMany = "many_to_many"
 	KindOneToMany  = "one_to_many"
@@ -41,6 +43,10 @@ type FieldMeta struct {
 	Kind string
 	// SearchKeyOrder is the sort position when Kind == KindSearchKey.
 	SearchKeyOrder int
+	// ChunkMaxTokens is the window size in tokens when Kind == KindChunk. Default 512.
+	ChunkMaxTokens int
+	// ChunkOverlap is the tokens shared between adjacent windows when Kind == KindChunk. Default 64.
+	ChunkOverlap int
 	// RelatedType is the target type name for relation kinds.
 	RelatedType string
 }
@@ -73,6 +79,29 @@ func ParseTag(fieldName, tagValue string) (FieldMeta, error) {
 
 	case KindLargeField:
 		meta.Kind = KindLargeField
+
+	case KindEmbedding:
+		meta.Kind = KindEmbedding
+
+	case KindChunk:
+		meta.Kind = KindChunk
+		meta.ChunkMaxTokens = 512
+		meta.ChunkOverlap = 64
+		if len(parts) == 2 {
+			chunkParts := strings.SplitN(parts[1], ":", 2)
+			maxTokens, err := strconv.Atoi(chunkParts[0])
+			if err != nil {
+				return meta, fmt.Errorf("iverson tag %q: chunk maxTokens %q is not an integer", tagValue, chunkParts[0])
+			}
+			meta.ChunkMaxTokens = maxTokens
+			if len(chunkParts) == 2 {
+				overlap, err := strconv.Atoi(chunkParts[1])
+				if err != nil {
+					return meta, fmt.Errorf("iverson tag %q: chunk overlap %q is not an integer", tagValue, chunkParts[1])
+				}
+				meta.ChunkOverlap = overlap
+			}
+		}
 
 	case KindManyToOne, KindManyToMany, KindOneToMany, KindOneToOne:
 		meta.Kind = kind

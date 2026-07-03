@@ -74,6 +74,10 @@ func (r *SchemaRegistrar) buildRequest(e interface{}, traceID string) (*pb.Schem
 			IsSearchKey:    fm.Kind == KindSearchKey,
 			SearchKeyOrder: int32(fm.SearchKeyOrder),
 			IsLargeField:   fm.Kind == KindLargeField,
+			IsEmbedding:    fm.Kind == KindEmbedding,
+			IsChunk:        fm.Kind == KindChunk,
+			ChunkMaxTokens: int32(fm.ChunkMaxTokens),
+			ChunkOverlap:   int32(fm.ChunkOverlap),
 		}
 		properties = append(properties, prop)
 	}
