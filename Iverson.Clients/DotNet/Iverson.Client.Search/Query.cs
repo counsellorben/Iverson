@@ -2,7 +2,7 @@ namespace Iverson.Client.Search;
 
 /// <summary>
 /// Entry point for the Iverson search DSL.
-/// Usage: <c>Query.For&lt;Article&gt;().Where(...).OrderBy(...).Page(1).Build()</c>
+/// Usage: <c>Query.For&lt;Article&gt;().Where(...).OrderBy(...).Page(0).Build()</c>
 /// </summary>
 public static class Query
 {

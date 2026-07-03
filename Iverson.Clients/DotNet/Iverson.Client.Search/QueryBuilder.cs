@@ -14,7 +14,7 @@ public sealed class QueryBuilder<T> where T : class
     private readonly List<AggregationSpec> _aggregations = [];
     private readonly List<JoinSpec>        _joins        = [];
     private SearchLogic _logic    = SearchLogic.And;
-    private int         _page     = 1;
+    private int         _page     = 0;
     private int         _pageSize = 20;
 
     internal QueryBuilder(string typeName) => _typeName = typeName;

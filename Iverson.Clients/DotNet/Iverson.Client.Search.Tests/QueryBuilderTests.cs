@@ -262,11 +262,11 @@ public sealed class QueryBuilderTests
     // ── Build: paging ─────────────────────────────────────────────────────────
 
     [Fact]
-    public void Build_DefaultsToPage1Size20()
+    public void Build_DefaultsToPage0Size20()
     {
         var req = Query.For<Article>().Build();
 
-        req.Page.Should().Be(1);
+        req.Page.Should().Be(0);
         req.PageSize.Should().Be(20);
     }
 

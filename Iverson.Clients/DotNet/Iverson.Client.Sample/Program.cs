@@ -193,7 +193,7 @@ await Task.Delay(TimeSpan.FromSeconds(3));
 var uaUserQuery = Query.For<UserArticle>()
     .Where(ua => ua.UserId, EqualTo, userId)
     .OrderBy(ua => ua.CreatedAt, descending: true)
-    .Page(1, size: 10);
+    .Page(0, size: 10);
 
 Console.WriteLine($"UserArticles for user {userId}:");
 await foreach (var result in userArticles.SearchAsync(uaUserQuery))
@@ -204,7 +204,7 @@ var articleTextQuery = Query.For<Article>()
     .Where(a => a.Title,       Contains,    "Mamba")
     .And(a   => a.IsPublished, EqualTo,     true)
     .OrderBy(a => a.PublishedAt, descending: true)
-    .Page(1, size: 10);
+    .Page(0, size: 10);
 
 Console.WriteLine("Articles — title contains 'Mamba', IsPublished=true:");
 await foreach (var result in articles.SearchAsync(articleTextQuery))
@@ -213,7 +213,7 @@ await foreach (var result in articles.SearchAsync(articleTextQuery))
 // Search Authors by name.
 var authorTextQuery = Query.For<Author>()
     .Where(a => a.Name, Contains, "Allen")
-    .Page(1, size: 5);
+    .Page(0, size: 5);
 
 Console.WriteLine("Authors — name contains 'Allen':");
 await foreach (var result in authors.SearchAsync(authorTextQuery))
