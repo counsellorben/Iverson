@@ -14,3 +14,6 @@ dependencies:
   - name: starrocks
     version: "0.1.0"
     repository: "file://charts/starrocks"
+  - name: qdrant
+    version: "0.1.0"
+    repository: "file://charts/qdrant"

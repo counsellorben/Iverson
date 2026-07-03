@@ -8,5 +8,8 @@ dependencies:
 - name: starrocks
   repository: file://charts/starrocks
   version: 0.1.0
-digest: sha256:1051c35a775b6d489c4b1918d8eeeee1e1f94c521ff03e14d2a174f786f0f6bf
-generated: "2026-07-03T19:07:41.209512738-04:00"
+- name: qdrant
+  repository: file://charts/qdrant
+  version: 0.1.0
+digest: sha256:d41826ca8c6501c0c9aa4fed1733ce7ff5fe0c1863ad8bd5d319ec65649b69b6
+generated: "2026-07-03T19:17:11.368201103-04:00"
