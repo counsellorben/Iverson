@@ -11,3 +11,6 @@ dependencies:
   - name: kafka
     version: "0.1.0"
     repository: "file://charts/kafka"
+  - name: starrocks
+    version: "0.1.0"
+    repository: "file://charts/starrocks"

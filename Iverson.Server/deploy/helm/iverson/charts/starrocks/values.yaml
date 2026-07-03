@@ -1,0 +1,15 @@
+storageClassName: ""
+fe:
+  replicas: 1
+  storageSize: 50Gi
+  resources:
+    requests: { cpu: "4", memory: "32Gi" }
+    limits: { cpu: "4", memory: "32Gi" }
+  nodeSelector: {}
+be:
+  replicas: 2
+  storageSize: 500Gi
+  resources:
+    requests: { cpu: "8", memory: "64Gi" }
+    limits: { cpu: "8", memory: "64Gi" }
+  nodeSelector: {}

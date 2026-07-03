@@ -5,5 +5,8 @@ dependencies:
 - name: kafka
   repository: file://charts/kafka
   version: 0.1.0
-digest: sha256:eb9e5aeaf44401d29ea9fa020872680d249b0d961436ddfacd2c84518b2179fb
-generated: "2026-07-03T19:01:21.020642338-04:00"
+- name: starrocks
+  repository: file://charts/starrocks
+  version: 0.1.0
+digest: sha256:1051c35a775b6d489c4b1918d8eeeee1e1f94c521ff03e14d2a174f786f0f6bf
+generated: "2026-07-03T19:07:41.209512738-04:00"

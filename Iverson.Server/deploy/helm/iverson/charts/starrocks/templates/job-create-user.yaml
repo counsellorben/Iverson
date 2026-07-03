@@ -1,0 +1,60 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ .Release.Name }}-starrocks-create-user
+  annotations:
+    "helm.sh/hook": post-install,post-upgrade
+    "helm.sh/hook-weight": "0"
+    "helm.sh/hook-delete-policy": before-hook-creation
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ .Release.Name }}-starrocks-create-user
+  annotations:
+    "helm.sh/hook": post-install,post-upgrade
+    "helm.sh/hook-weight": "1"
+    "helm.sh/hook-delete-policy": before-hook-creation
+spec:
+  backoffLimit: 6
+  template:
+    spec:
+      restartPolicy: Never
+      serviceAccountName: {{ .Release.Name }}-starrocks-create-user
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: create-user
+          image: "mysql:8.0"
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
+          env:
+            - name: ROOT_PW
+              valueFrom: { secretKeyRef: { name: {{ .Release.Name }}-starrocks-app, key: root-password } }
+            - name: APP_PW
+              valueFrom: { secretKeyRef: { name: {{ .Release.Name }}-starrocks-app, key: app-password } }
+          command: ["sh", "-c"]
+          args:
+            - |
+              set -e
+              FE_HOST="{{ .Release.Name }}-starrocks-fe-service"
+              until mysql -h "$FE_HOST" -P 9030 -u root -e "SELECT 1" >/dev/null 2>&1 \
+                 || mysql -h "$FE_HOST" -P 9030 -u root -p"$ROOT_PW" -e "SELECT 1" >/dev/null 2>&1; do
+                echo "waiting for FE..."; sleep 5
+              done
+              if mysql -h "$FE_HOST" -P 9030 -u root -p"$ROOT_PW" -e "SELECT 1" >/dev/null 2>&1; then
+                AUTH="-p$ROOT_PW"
+              else
+                AUTH=""
+              fi
+              mysql -h "$FE_HOST" -P 9030 -u root $AUTH -e "
+                SET PASSWORD FOR 'root' = PASSWORD('$ROOT_PW');
+                CREATE USER IF NOT EXISTS 'iverson_app'@'%' IDENTIFIED BY '$APP_PW';
+                CREATE DATABASE IF NOT EXISTS iverson;
+                GRANT SELECT, INSERT, UPDATE, DELETE, CREATE, DROP, ALTER ON iverson.* TO 'iverson_app'@'%';
+              "
