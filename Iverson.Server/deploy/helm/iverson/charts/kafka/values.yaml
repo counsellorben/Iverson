@@ -1,0 +1,6 @@
+replicas: 3
+storageSize: 200Gi
+storageClassName: ""
+resources:
+  requests: { cpu: "2", memory: "8Gi" }
+nodeSelector: {}

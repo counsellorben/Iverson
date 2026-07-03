@@ -1,0 +1,16 @@
+apiVersion: kafka.strimzi.io/v1beta2
+kind: KafkaUser
+metadata:
+  name: {{ .Release.Name }}-api
+  labels:
+    strimzi.io/cluster: {{ .Release.Name }}-kafka
+spec:
+  authentication:
+    type: scram-sha-512
+  authorization:
+    type: simple
+    acls:
+      - resource: { type: topic, name: "iverson.", patternType: prefix }
+        operations: ["Read", "Write", "Describe", "Create"]
+      - resource: { type: group, name: "iverson-api", patternType: prefix }
+        operations: ["Read"]

@@ -1,0 +1,55 @@
+apiVersion: kafka.strimzi.io/v1beta2
+kind: Kafka
+metadata:
+  name: {{ .Release.Name }}-kafka
+  annotations:
+    strimzi.io/kraft: enabled
+    strimzi.io/node-pools: enabled
+spec:
+  kafka:
+    version: 3.8.0
+    listeners:
+      - name: tls
+        port: 9093
+        type: internal
+        tls: true
+        authentication:
+          type: scram-sha-512
+    authorization:
+      type: simple
+    config:
+      offsets.topic.replication.factor: {{ min .Values.replicas 3 }}
+      transaction.state.log.replication.factor: {{ min .Values.replicas 3 }}
+      transaction.state.log.min.isr: 1
+      default.replication.factor: {{ min .Values.replicas 3 }}
+      min.insync.replicas: 1
+  entityOperator:
+    topicOperator: {}
+    userOperator: {}
+---
+apiVersion: kafka.strimzi.io/v1beta2
+kind: KafkaNodePool
+metadata:
+  name: {{ .Release.Name }}-kafka-pool
+  labels:
+    strimzi.io/cluster: {{ .Release.Name }}-kafka
+spec:
+  replicas: {{ .Values.replicas }}
+  roles:
+    - controller
+    - broker
+  resources:
+    requests:
+      cpu: {{ .Values.resources.requests.cpu | quote }}
+      memory: {{ .Values.resources.requests.memory | quote }}
+    limits:
+      cpu: {{ .Values.resources.limits.cpu | quote }}
+      memory: {{ .Values.resources.limits.memory | quote }}
+  storage:
+    type: persistent-claim
+    size: {{ .Values.storageSize }}
+    class: {{ .Values.storageClassName | quote }}
+  template:
+    pod:
+      nodeSelector:
+        {{- toYaml .Values.nodeSelector | nindent 8 }}
