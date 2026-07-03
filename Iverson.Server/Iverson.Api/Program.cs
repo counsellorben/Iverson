@@ -83,6 +83,13 @@ builder.Services.AddSingleton<SchemaRegistry>();
 
 builder.Services.AddEmbeddings(cfg);
 
+// Defense-in-depth: ConsumerResilience.RunWithRestartAsync already catches and retries
+// every exception these hosted services can throw, but if something ever escapes that
+// wrapper (e.g. a bug in the wrapper itself), StopHost's default behavior would take down
+// the entire API. Ignore means only the faulted hosted service stops — not the whole process.
+builder.Services.Configure<Microsoft.Extensions.Hosting.HostOptions>(o =>
+    o.BackgroundServiceExceptionBehavior = Microsoft.Extensions.Hosting.BackgroundServiceExceptionBehavior.Ignore);
+
 builder.Services.AddHostedService<EngagementStoreConsumer>();
 builder.Services.AddHostedService<IntelligenceStoreConsumer>();
 

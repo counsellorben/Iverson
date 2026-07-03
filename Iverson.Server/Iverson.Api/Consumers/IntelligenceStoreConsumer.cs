@@ -33,10 +33,14 @@ public sealed class IntelligenceStoreConsumer(
     private readonly HashSet<string> _ensuredChunkCollections = [];
 
     protected override Task ExecuteAsync(CancellationToken ct) =>
-        Task.WhenAll(
-            consumer.ConsumeAsync(EntityTopics.Created, GroupId, HandleAsync, ct),
-            consumer.ConsumeAsync(EntityTopics.Updated, GroupId, HandleAsync, ct),
-            consumer.ConsumeAsync(EntityTopics.Deleted, GroupId + ".delete", HandleDeleteAsync, ct));
+        ConsumerResilience.RunWithRestartAsync(
+            () => Task.WhenAll(
+                consumer.ConsumeAsync(EntityTopics.Created, GroupId, HandleAsync, ct),
+                consumer.ConsumeAsync(EntityTopics.Updated, GroupId, HandleAsync, ct),
+                consumer.ConsumeAsync(EntityTopics.Deleted, GroupId + ".delete", HandleDeleteAsync, ct)),
+            logger,
+            "Intelligence",
+            ct);
 
     internal async Task HandleAsync(string key, string value, CancellationToken ct)
     {

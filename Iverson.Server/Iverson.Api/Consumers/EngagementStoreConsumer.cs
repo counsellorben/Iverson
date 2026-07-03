@@ -14,10 +14,14 @@ public sealed class EngagementStoreConsumer(
     private const string GroupId = "iverson.consumer.engagement";
 
     protected override Task ExecuteAsync(CancellationToken ct) =>
-        Task.WhenAll(
-            consumer.ConsumeAsync(EntityTopics.Created, GroupId, HandleUpsertAsync, ct),
-            consumer.ConsumeAsync(EntityTopics.Updated, GroupId, HandleUpsertAsync, ct),
-            consumer.ConsumeAsync(EntityTopics.Deleted, GroupId + ".delete", HandleDeleteAsync, ct));
+        ConsumerResilience.RunWithRestartAsync(
+            () => Task.WhenAll(
+                consumer.ConsumeAsync(EntityTopics.Created, GroupId, HandleUpsertAsync, ct),
+                consumer.ConsumeAsync(EntityTopics.Updated, GroupId, HandleUpsertAsync, ct),
+                consumer.ConsumeAsync(EntityTopics.Deleted, GroupId + ".delete", HandleDeleteAsync, ct)),
+            logger,
+            "Engagement",
+            ct);
 
     internal async Task HandleUpsertAsync(string key, string value, CancellationToken ct)
     {
