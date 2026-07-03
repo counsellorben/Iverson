@@ -1,0 +1,18 @@
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+networking:
+  # kindnet (the default CNI) does not enforce NetworkPolicy at all — every
+  # NetworkPolicy this chart renders would silently be a no-op under it.
+  # Disable it here so setup.sh/setup.ps1 can install Calico instead, which
+  # does enforce NetworkPolicy, matching the network-policy engine each
+  # cloud profile enables in the companion Terraform plan.
+  disableDefaultCNI: true
+nodes:
+  - role: control-plane
+    extraPortMappings:
+      - containerPort: 80
+        hostPort: 8080
+        protocol: TCP
+      - containerPort: 443
+        hostPort: 8443
+        protocol: TCP

@@ -1,0 +1,132 @@
+# Default-deny: nothing in the namespace can talk to anything else unless a
+# more specific policy below explicitly allows it.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ .Release.Name }}-default-deny
+spec:
+  podSelector: {}
+  policyTypes: ["Ingress", "Egress"]
+{{- if .Values.networkPolicy.enabled }}
+---
+# api is the only component allowed in from outside the namespace (via
+# ingress-nginx), and the only component allowed to reach every datastore.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ .Release.Name }}-api-ingress
+spec:
+  podSelector:
+    matchLabels: { app: {{ .Release.Name }}-api }
+  policyTypes: ["Ingress"]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels: { kubernetes.io/metadata.name: ingress-nginx }
+      ports:
+        - { protocol: TCP, port: 8080 }
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ .Release.Name }}-api-egress
+spec:
+  podSelector:
+    matchLabels: { app: {{ .Release.Name }}-api }
+  policyTypes: ["Egress"]
+  egress:
+    - to: [{ podSelector: { matchLabels: { cnpg.io/cluster: {{ .Release.Name }}-postgres } } }]
+      ports: [{ protocol: TCP, port: 5432 }]
+    - to: [{ podSelector: { matchLabels: { strimzi.io/cluster: {{ .Release.Name }}-kafka } } }]
+      ports: [{ protocol: TCP, port: 9093 }]
+    - to: [{ podSelector: { matchLabels: { app.starrocks.io/cluster: {{ .Release.Name }}-starrocks } } }]
+      ports: [{ protocol: TCP, port: 9030 }]
+    - to: [{ podSelector: { matchLabels: { app: {{ .Release.Name }}-qdrant } } }]
+      ports: [{ protocol: TCP, port: 6334 }]
+    - to: [{ podSelector: { matchLabels: { app: {{ .Release.Name }}-ollama } } }]
+      ports: [{ protocol: TCP, port: 11434 }]
+    - to: [{ podSelector: { matchLabels: { app: {{ .Release.Name }}-jaeger } } }]
+      ports: [{ protocol: TCP, port: 4317 }]
+    - to: []   # DNS — every egress policy needs this or in-cluster name resolution breaks
+      ports: [{ protocol: UDP, port: 53 }, { protocol: TCP, port: 53 }]
+---
+# Every datastore/backing-service component: ingress only from api, on its
+# own port. None of them need to initiate egress beyond DNS + their own
+# operator/peer traffic, which the operator's own NetworkPolicy (if any) or
+# a component-specific rule below already covers.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ .Release.Name }}-postgres-ingress
+spec:
+  podSelector:
+    matchLabels: { cnpg.io/cluster: {{ .Release.Name }}-postgres }
+  policyTypes: ["Ingress"]
+  ingress:
+    - from: [{ podSelector: { matchLabels: { app: {{ .Release.Name }}-api } } }]
+      ports: [{ protocol: TCP, port: 5432 }]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ .Release.Name }}-kafka-ingress
+spec:
+  podSelector:
+    matchLabels: { strimzi.io/cluster: {{ .Release.Name }}-kafka }
+  policyTypes: ["Ingress"]
+  ingress:
+    - from: [{ podSelector: { matchLabels: { app: {{ .Release.Name }}-api } } }]
+      ports: [{ protocol: TCP, port: 9093 }]
+    - from: [{ podSelector: { matchLabels: { strimzi.io/cluster: {{ .Release.Name }}-kafka } } }]   # broker/controller peers
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ .Release.Name }}-starrocks-ingress
+spec:
+  podSelector:
+    matchLabels: { app.starrocks.io/cluster: {{ .Release.Name }}-starrocks }
+  policyTypes: ["Ingress"]
+  ingress:
+    - from: [{ podSelector: { matchLabels: { app: {{ .Release.Name }}-api } } }]
+      ports: [{ protocol: TCP, port: 9030 }]
+    - from: [{ podSelector: { matchLabels: { app.starrocks.io/cluster: {{ .Release.Name }}-starrocks } } }]   # FE/BE peers
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ .Release.Name }}-qdrant-ingress
+spec:
+  podSelector:
+    matchLabels: { app: {{ .Release.Name }}-qdrant }
+  policyTypes: ["Ingress"]
+  ingress:
+    - from: [{ podSelector: { matchLabels: { app: {{ .Release.Name }}-api } } }]
+      ports: [{ protocol: TCP, port: 6334 }]
+    - from: [{ podSelector: { matchLabels: { app: {{ .Release.Name }}-qdrant } } }]   # Raft peers
+      ports: [{ protocol: TCP, port: 6335 }]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ .Release.Name }}-ollama-ingress
+spec:
+  podSelector:
+    matchLabels: { app: {{ .Release.Name }}-ollama }
+  policyTypes: ["Ingress"]
+  ingress:
+    - from: [{ podSelector: { matchLabels: { app: {{ .Release.Name }}-api } } }]
+      ports: [{ protocol: TCP, port: 11434 }]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ .Release.Name }}-jaeger-ingress
+spec:
+  podSelector:
+    matchLabels: { app: {{ .Release.Name }}-jaeger }
+  policyTypes: ["Ingress"]
+  ingress:
+    - from: [{ podSelector: { matchLabels: { app: {{ .Release.Name }}-api } } }]
+      ports: [{ protocol: TCP, port: 4317 }]
+{{- end }}

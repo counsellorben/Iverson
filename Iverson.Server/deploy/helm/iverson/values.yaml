@@ -1,0 +1,95 @@
+# Cloud-agnostic defaults. Cloud/environment identity (StorageClass names,
+# ingress class/annotations, node-selector labels) is intentionally left
+# empty/unset here — it is supplied by values-local.yaml (this plan) or
+# values-{aws,azure,gcp}.yaml (companion Terraform plan), never hardcoded
+# in a subchart template.
+#
+# networkPolicy.enabled gates the default-deny NetworkPolicy baseline
+# (templates/networkpolicies.yaml) plus every per-component allow rule in
+# the subcharts below. Leave this true unless the target cluster's CNI
+# cannot enforce NetworkPolicy at all — disabling it removes network
+# segmentation entirely rather than degrading gracefully, so treat "false"
+# as an explicit, logged exception, not a default anyone should ship with.
+networkPolicy:
+  enabled: true
+
+postgres:
+  instances: 2
+  storageSize: 1500Gi
+  storageClassName: ""
+  resources:
+    requests: { cpu: "8", memory: "64Gi" }
+    limits: { cpu: "8", memory: "64Gi" }
+  nodeSelector: {}
+
+kafka:
+  replicas: 3
+  storageSize: 200Gi
+  storageClassName: ""
+  resources:
+    requests: { cpu: "2", memory: "8Gi" }
+    limits: { cpu: "2", memory: "8Gi" }
+  nodeSelector: {}
+
+starrocks:
+  storageClassName: ""
+  fe:
+    replicas: 1
+    storageSize: 50Gi
+    resources:
+      requests: { cpu: "4", memory: "32Gi" }
+      limits: { cpu: "4", memory: "32Gi" }
+    nodeSelector: {}
+  be:
+    replicas: 2
+    storageSize: 500Gi
+    resources:
+      requests: { cpu: "8", memory: "64Gi" }
+      limits: { cpu: "8", memory: "64Gi" }
+    nodeSelector: {}
+
+qdrant:
+  replicas: 2
+  storageSize: 500Gi
+  storageClassName: ""
+  imageTag: "v1.12.0"
+  resources:
+    requests: { cpu: "8", memory: "64Gi" }
+    limits: { cpu: "8", memory: "64Gi" }
+  nodeSelector: {}
+
+ollama:
+  replicas: 2
+  storageSize: 20Gi
+  storageClassName: ""
+  imageTag: "0.5.0"
+  resources:
+    requests: { cpu: "8", memory: "16Gi" }
+    limits: { cpu: "8", memory: "16Gi" }
+  nodeSelector: {}
+
+api:
+  replicas: 2
+  image:
+    repository: "iverson-api"
+    tag: "0.1.0"   # never "latest" — CI/the image-build pipeline must supply a real, immutable tag
+    pullPolicy: IfNotPresent
+  resources:
+    requests: { cpu: "2", memory: "4Gi" }
+    limits: { cpu: "2", memory: "4Gi" }
+  hpa:
+    minReplicas: 2
+    maxReplicas: 5
+    targetCPUUtilization: 70
+  ingress:
+    className: ""
+    annotations: {}
+    host: "iverson.local"
+    tlsSecretName: ""   # set per-environment; empty disables the tls: block (kind only — see values-local.yaml)
+
+jaeger:
+  imageTag: "1.62"
+  resources:
+    requests: { cpu: "2", memory: "4Gi" }
+    limits: { cpu: "2", memory: "4Gi" }
+  nodeSelector: {}
