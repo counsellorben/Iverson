@@ -17,13 +17,15 @@ public class PostgresFailedPublishSinkTests
 
         await sut.RecordAsync("Author", "author-1", "broker unavailable");
 
-        object? capturedParams = null;
-        await sql.Received(1).ExecuteAsync(
-            Arg.Is<string>(s => s.Contains(ReconciliationSchema.TableName) && s.Contains("INSERT INTO")),
-            Arg.Do<object?>(p => capturedParams = p));
+        // NSubstitute's Arg.Do callback does not fire when used inside a Received()
+        // verification for this Task<int>-returning method (observed on this project's
+        // NSubstitute version) — pull the recorded call's arguments directly instead.
+        var call = sql.ReceivedCalls().Should().ContainSingle().Subject;
+        var sqlText = (string)call.GetArguments()[0]!;
+        sqlText.Should().Contain(ReconciliationSchema.TableName);
+        sqlText.Should().Contain("INSERT INTO");
 
-        capturedParams.Should().NotBeNull();
-        var dynamicParams = (dynamic)capturedParams!;
+        var dynamicParams = (dynamic)call.GetArguments()[1]!;
         ((string)dynamicParams.TypeName).Should().Be("Author");
         ((string)dynamicParams.EntityKey).Should().Be("author-1");
         ((string)dynamicParams.LastError).Should().Be("broker unavailable");
