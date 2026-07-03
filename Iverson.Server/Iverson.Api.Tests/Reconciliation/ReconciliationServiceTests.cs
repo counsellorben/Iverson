@@ -58,7 +58,7 @@ public class ReconciliationServiceTests
     public async Task ProcessQueuedFailuresAsync_RepublishesRow_AndDeletesQueueEntry_OnSuccess()
     {
         await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
-        var queueId = Guid.NewGuid().ToString();
+        var queueId = Guid.NewGuid();
         _sql.QueryAsync<ReconciliationQueueRow>(
                 Arg.Is<string>(s => s.Contains(ReconciliationSchema.TableName)), Arg.Any<object?>())
             .Returns(new[] { new ReconciliationQueueRow(queueId, "Author", "author-1", 0) });
@@ -82,7 +82,7 @@ public class ReconciliationServiceTests
     public async Task ProcessQueuedFailuresAsync_RowNoLongerExistsInPostgres_DeletesQueueEntry_WithoutPublishing()
     {
         await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
-        var queueId = Guid.NewGuid().ToString();
+        var queueId = Guid.NewGuid();
         _sql.QueryAsync<ReconciliationQueueRow>(
                 Arg.Is<string>(s => s.Contains(ReconciliationSchema.TableName)), Arg.Any<object?>())
             .Returns(new[] { new ReconciliationQueueRow(queueId, "Author", "author-missing", 0) });
@@ -101,7 +101,7 @@ public class ReconciliationServiceTests
     public async Task ProcessQueuedFailuresAsync_ProduceAsyncThrows_IncrementsAttempts_AndKeepsQueueEntry()
     {
         await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
-        var queueId = Guid.NewGuid().ToString();
+        var queueId = Guid.NewGuid();
         _sql.QueryAsync<ReconciliationQueueRow>(
                 Arg.Is<string>(s => s.Contains(ReconciliationSchema.TableName)), Arg.Any<object?>())
             .Returns(new[] { new ReconciliationQueueRow(queueId, "Author", "author-1", 3) });
@@ -124,5 +124,31 @@ public class ReconciliationServiceTests
         capturedUpdateParams.Should().NotBeNull();
         var dynamicParams = (dynamic)capturedUpdateParams!;
         ((int)dynamicParams.Attempts).Should().Be(4);
+    }
+
+    [Fact]
+    public async Task ProcessQueuedFailuresAsync_QueriesExhaustedCount_WhenRowsHaveReachedMaxAttempts()
+    {
+        // No precedent in this codebase for substituting ILogger to assert log calls (all existing
+        // tests use NullLogger for ReconciliationService), so — per this suite's established pattern
+        // in PostgresFailedPublishSinkTests — prove the observability behavior by asserting the
+        // exhausted-count query actually executes with the expected SQL/params, rather than
+        // intercepting the logger.
+        await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
+        _sql.QueryAsync<ReconciliationQueueRow>(
+                Arg.Is<string>(s => s.Contains(ReconciliationSchema.TableName)), Arg.Any<object?>())
+            .Returns(Array.Empty<ReconciliationQueueRow>());
+        _sql.QuerySingleOrDefaultAsync<int>(
+                Arg.Is<string>(s => s.Contains("COUNT(*)") && s.Contains(ReconciliationSchema.TableName)),
+                Arg.Any<object?>())
+            .Returns(3);
+
+        await _sut.ProcessQueuedFailuresAsync(CancellationToken.None);
+
+        var call = _sql.ReceivedCalls().Should().Contain(c =>
+            c.GetMethodInfo().Name == nameof(IPostgresRepository.QuerySingleOrDefaultAsync) &&
+            ((string)c.GetArguments()[0]!).Contains("COUNT(*)")).Subject;
+        var dynamicParams = (dynamic)call.GetArguments()[1]!;
+        ((int)dynamicParams.MaxAttempts).Should().Be(ReconciliationService.MaxAttempts);
     }
 }

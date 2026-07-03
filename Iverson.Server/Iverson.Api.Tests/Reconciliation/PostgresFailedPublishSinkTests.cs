@@ -29,6 +29,6 @@ public class PostgresFailedPublishSinkTests
         ((string)dynamicParams.TypeName).Should().Be("Author");
         ((string)dynamicParams.EntityKey).Should().Be("author-1");
         ((string)dynamicParams.LastError).Should().Be("broker unavailable");
-        Guid.TryParse((string)dynamicParams.Id, out _).Should().BeTrue();
+        ((Guid)dynamicParams.Id).Should().NotBeEmpty();
     }
 }

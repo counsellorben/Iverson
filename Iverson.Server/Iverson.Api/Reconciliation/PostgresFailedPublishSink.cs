@@ -15,7 +15,7 @@ internal sealed class PostgresFailedPublishSink(IPostgresRepository sql) : IFail
             """,
             new
             {
-                Id = Guid.CreateVersion7().ToString(),
+                Id = Guid.CreateVersion7(),
                 TypeName = typeName,
                 EntityKey = key,
                 EnqueuedAt = DateTimeOffset.UtcNow,

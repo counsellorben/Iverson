@@ -6,7 +6,7 @@ using Iverson.Sql;
 
 namespace Iverson.Api.Reconciliation;
 
-internal sealed record ReconciliationQueueRow(string Id, string TypeName, string EntityKey, int Attempts);
+internal sealed record ReconciliationQueueRow(Guid Id, string TypeName, string EntityKey, int Attempts);
 
 /// <summary>
 /// Two ways to re-project entities from Postgres (the system of record) back through the
@@ -64,6 +64,16 @@ internal sealed class ReconciliationService(
             """,
             new { MaxAttempts, BatchSize })).ToList();
 
+        var exhaustedCount = await db.QuerySingleOrDefaultAsync<int>(
+            $"""SELECT COUNT(*) FROM "{ReconciliationSchema.TableName}" WHERE "Attempts" >= @MaxAttempts""",
+            new { MaxAttempts });
+
+        if (exhaustedCount > 0)
+            logger.LogWarning(
+                "[Reconciliation] {Count} queued entr{Suffix} exhausted MaxAttempts ({MaxAttempts}) and " +
+                "require(s) manual reconciliation via the admin reconcile endpoint",
+                exhaustedCount, exhaustedCount == 1 ? "y" : "ies", MaxAttempts);
+
         foreach (var row in rows)
         {
             if (ct.IsCancellationRequested) break;
@@ -84,7 +94,7 @@ internal sealed class ReconciliationService(
         }
 
         var rowJson = await db.QuerySingleOrDefaultAsync<string>(
-            $"""SELECT row_to_json(t)::text FROM "{schema.TableName}" t WHERE "{schema.KeyColumn.Name}" = @Key""",
+            $"""SELECT row_to_json(t)::text FROM "{schema.TableName}" t WHERE "{schema.KeyColumn.Name}" = @Key::uuid""",
             new { Key = row.EntityKey });
 
         if (rowJson is null)
@@ -127,7 +137,7 @@ internal sealed class ReconciliationService(
         }
     }
 
-    private Task DeleteQueueRowAsync(string id) =>
+    private Task DeleteQueueRowAsync(Guid id) =>
         db.ExecuteAsync($"""DELETE FROM "{ReconciliationSchema.TableName}" WHERE "Id" = @Id""", new { Id = id });
 
     private static string? ExtractKey(string rowJson, string keyColumn)
