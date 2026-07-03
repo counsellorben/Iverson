@@ -14,5 +14,8 @@ dependencies:
 - name: ollama
   repository: file://charts/ollama
   version: 0.1.0
-digest: sha256:fd2f5dd7b8b572fba188787249c7f2bae05cfbd1f7ab99caf253d93dcfdfc81d
-generated: "2026-07-03T19:21:27.701748404-04:00"
+- name: api
+  repository: file://charts/api
+  version: 0.1.0
+digest: sha256:48182839bc5bdfc2efea9a0256b1ce0a9fdf4133fedf8db61815803197bfed26
+generated: "2026-07-03T19:36:07.084876351-04:00"

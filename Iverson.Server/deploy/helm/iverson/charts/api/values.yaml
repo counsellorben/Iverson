@@ -1,0 +1,17 @@
+replicas: 2
+image:
+  repository: "iverson-api"
+  tag: "0.1.0"   # never "latest" — see Global Constraints
+  pullPolicy: IfNotPresent
+resources:
+  requests: { cpu: "2", memory: "4Gi" }
+  limits: { cpu: "2", memory: "4Gi" }
+hpa:
+  minReplicas: 2
+  maxReplicas: 5
+  targetCPUUtilization: 70
+ingress:
+  className: ""
+  annotations: {}
+  host: "iverson.local"
+  tlsSecretName: ""
