@@ -25,9 +25,11 @@ class FieldMeta:
     ``FieldMeta`` default with ``None`` so the attribute behaves normally
     at runtime while preserving the metadata on ``cls._iverson_meta``.
     """
-    kind: str                     # 'key' | 'search_key' | 'large_field' | relation kinds
+    kind: str                     # 'key' | 'search_key' | 'large_field' | 'embedding' | 'chunk' | relation kinds
     order: int = 0                # for search_key
     related_type: str | None = None  # for relation kinds
+    max_tokens: int = 512         # for chunk
+    overlap: int = 64             # for chunk
 
 
 # ── Public factory helpers ─────────────────────────────────────────────────────
@@ -49,6 +51,21 @@ def iverson_search_key(order: int = 0) -> FieldMeta:
 def iverson_large_field() -> FieldMeta:
     """Mark a field as large (excluded from materialized views)."""
     return FieldMeta(kind="large_field")
+
+
+def iverson_embedding() -> FieldMeta:
+    """Mark a string field as a source for a whole-field vector embedding."""
+    return FieldMeta(kind="embedding")
+
+
+def iverson_chunk(max_tokens: int = 512, overlap: int = 64) -> FieldMeta:
+    """Mark a string field as a source for chunk-level vector embeddings.
+
+    Args:
+        max_tokens: approximate window size in tokens (1 token ~ 4 chars).
+        overlap: tokens shared between adjacent windows.
+    """
+    return FieldMeta(kind="chunk", max_tokens=max_tokens, overlap=overlap)
 
 
 def many_to_one(type_name: str) -> FieldMeta:
@@ -100,6 +117,8 @@ def iverson_entity(cls: type) -> type:
     key_field: str | None = None
     search_keys: list[tuple[str, int]] = []
     large_fields: list[str] = []
+    embedding_fields: list[str] = []
+    chunk_fields: list[tuple[str, int, int]] = []
     relations: list[dict] = []
     plain_fields: list[str] = []
 
@@ -119,6 +138,12 @@ def iverson_entity(cls: type) -> type:
             elif meta.kind == "large_field":
                 large_fields.append(field_name)
                 plain_fields.append(field_name)
+            elif meta.kind == "embedding":
+                embedding_fields.append(field_name)
+                plain_fields.append(field_name)
+            elif meta.kind == "chunk":
+                chunk_fields.append((field_name, meta.max_tokens, meta.overlap))
+                plain_fields.append(field_name)
             elif meta.kind in _RELATION_KINDS:
                 relations.append({
                     "field": field_name,
@@ -137,6 +162,8 @@ def iverson_entity(cls: type) -> type:
         "key_field": key_field,
         "search_keys": search_keys,
         "large_fields": large_fields,
+        "embedding_fields": embedding_fields,
+        "chunk_fields": chunk_fields,
         "relations": relations,
         "fields": plain_fields,
     }

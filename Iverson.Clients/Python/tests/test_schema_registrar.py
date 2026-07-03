@@ -11,6 +11,8 @@ from iverson_client.annotations import (
     iverson_key,
     iverson_search_key,
     iverson_large_field,
+    iverson_embedding,
+    iverson_chunk,
     many_to_one,
     one_to_many,
 )
@@ -26,12 +28,13 @@ from iverson_client.generated import (
 @iverson_entity
 class RegArticle:
     id: str = iverson_key()
-    title: str = None
+    title: str = iverson_embedding()
     body: str = iverson_large_field()
     category: str = iverson_search_key(order=0)
     word_count: int = None
     published_at: datetime = iverson_search_key(order=1)
     author_id: str = many_to_one("RegAuthor")
+    summary: str = iverson_chunk(max_tokens=256, overlap=32)
 
 
 @iverson_entity
@@ -92,6 +95,30 @@ class TestSchemaRegistrar:
         props = {p.name: p for p in request.root_type.properties}
         assert "Body" in props
         assert props["Body"].is_large_field is True
+
+    def test_embedding_flagged(self):
+        stub = make_stub()
+        stub.RegisterSchema.return_value = mapping_pb.SchemaResponse(success=True)
+        registrar = SchemaRegistrar(stub, RegArticle)
+        registrar.register_all()
+
+        request: mapping_pb.SchemaRequest = stub.RegisterSchema.call_args[0][0]
+        props = {p.name: p for p in request.root_type.properties}
+        assert "Title" in props
+        assert props["Title"].is_embedding is True
+
+    def test_chunk_flagged_with_params(self):
+        stub = make_stub()
+        stub.RegisterSchema.return_value = mapping_pb.SchemaResponse(success=True)
+        registrar = SchemaRegistrar(stub, RegArticle)
+        registrar.register_all()
+
+        request: mapping_pb.SchemaRequest = stub.RegisterSchema.call_args[0][0]
+        props = {p.name: p for p in request.root_type.properties}
+        assert "Summary" in props
+        assert props["Summary"].is_chunk is True
+        assert props["Summary"].chunk_max_tokens == 256
+        assert props["Summary"].chunk_overlap == 32
 
     def test_search_key_flagged_with_order(self):
         stub = make_stub()

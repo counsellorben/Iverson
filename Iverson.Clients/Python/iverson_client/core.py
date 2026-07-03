@@ -126,6 +126,8 @@ class SchemaRegistrar:
         key_field = meta["key_field"]
         search_keys_by_field = {f: o for f, o in meta["search_keys"]}
         large_fields_set = set(meta["large_fields"])
+        embedding_fields_set = set(meta["embedding_fields"])
+        chunk_fields_by_name = {f: (mt, ov) for f, mt, ov in meta["chunk_fields"]}
         relation_fields = {r["field"] for r in meta["relations"]}
 
         properties: list[mapping_pb.PropertyDescriptor] = []
@@ -134,6 +136,8 @@ class SchemaRegistrar:
                 continue
             type_hint = annotations.get(field_name)
             clr_type = _python_type_to_clr(type_hint)
+            is_chunk = field_name in chunk_fields_by_name
+            chunk_max_tokens, chunk_overlap = chunk_fields_by_name.get(field_name, (0, 0))
             prop = mapping_pb.PropertyDescriptor(
                 name=_to_pascal_case(field_name),
                 clr_type=clr_type,
@@ -143,6 +147,14 @@ class SchemaRegistrar:
                 is_search_key=(field_name in search_keys_by_field),
                 search_key_order=search_keys_by_field.get(field_name, 0),
                 is_large_field=(field_name in large_fields_set),
+                is_embedding=(field_name in embedding_fields_set),
+                vector_dim=0,
+                model_id="",
+                is_chunk=is_chunk,
+                chunk_max_tokens=chunk_max_tokens,
+                chunk_overlap=chunk_overlap,
+                chunk_model_id="",
+                chunk_vector_dim=0,
             )
             properties.append(prop)
 
