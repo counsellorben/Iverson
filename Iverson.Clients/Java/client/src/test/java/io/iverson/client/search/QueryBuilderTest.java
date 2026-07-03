@@ -161,6 +161,17 @@ class QueryBuilderTest {
     }
 
     @Test
+    void startsWith_addsStartsWithClause() {
+        SearchRequest req = Query.of(Article.class)
+            .where("title").startsWith("The")
+            .build();
+
+        SearchClause clause = req.getQuery().getClauses(0);
+        assertEquals(SearchOperator.STARTS_WITH, clause.getOperator());
+        assertEquals("The", clause.getValue().getStringVal());
+    }
+
+    @Test
     void in_producesInOperator_withStringList() {
         SearchRequest req = Query.of(Article.class)
             .where("category").in("sports", "news")

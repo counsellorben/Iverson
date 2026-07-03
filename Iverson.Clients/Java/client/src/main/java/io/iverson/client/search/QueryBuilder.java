@@ -216,6 +216,11 @@ public final class QueryBuilder<T> {
             return addOp(SearchOperator.CONTAINS, value);
         }
 
+        /** STARTS_WITH — string field starts with value. */
+        public QueryBuilder<T> startsWith(String value) {
+            return addOp(SearchOperator.STARTS_WITH, value);
+        }
+
         /** ENDS_WITH — string field ends with value. */
         public QueryBuilder<T> endsWith(String value) {
             return addOp(SearchOperator.ENDS_WITH, value);
