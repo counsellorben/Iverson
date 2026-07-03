@@ -151,7 +151,7 @@ export class QueryBuilder {
     private readonly _fields: string[] = [];
     private readonly _joins: JoinSpec[] = [];
     private _logic: SearchLogic = SearchLogic.AND;
-    private _page: number = 1;
+    private _page: number = 0;
     private _pageSize: number = 20;
     private _typeName: string = '';
     private _traceId: string = '';
@@ -212,9 +212,9 @@ export class QueryBuilder {
         return this;
     }
 
-    /** Set the page offset (0-based: offset(0) = page 1). */
+    /** Set the zero-based page offset (offset(0) = first page). */
     offset(page: number): QueryBuilder {
-        this._page = page + 1;
+        this._page = page;
         return this;
     }
 

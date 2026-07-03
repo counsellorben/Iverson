@@ -11,7 +11,7 @@ describe('QueryBuilder', () => {
         it('returns a SearchRequest with default values', () => {
             const req = new QueryBuilder('Article').build();
             expect(req.typeName).toBe('Article');
-            expect(req.page).toBe(1);
+            expect(req.page).toBe(0);
             expect(req.pageSize).toBe(20);
             expect(req.query).toBeDefined();
             expect(req.query!.clauses).toHaveLength(0);
@@ -156,14 +156,14 @@ describe('QueryBuilder', () => {
             expect(req.pageSize).toBe(50);
         });
 
-        it('offset(0) sets page to 1', () => {
+        it('offset(0) sets page to 0', () => {
             const req = new QueryBuilder('Article').offset(0).build();
-            expect(req.page).toBe(1);
+            expect(req.page).toBe(0);
         });
 
-        it('offset(1) sets page to 2', () => {
+        it('offset(1) sets page to 1', () => {
             const req = new QueryBuilder('Article').offset(1).build();
-            expect(req.page).toBe(2);
+            expect(req.page).toBe(1);
         });
     });
 
@@ -180,7 +180,7 @@ describe('QueryBuilder', () => {
             expect(req.query!.clauses).toHaveLength(2);
             expect(req.query!.sort).toHaveLength(1);
             expect(req.pageSize).toBe(20);
-            expect(req.page).toBe(1);
+            expect(req.page).toBe(0);
         });
     });
 
