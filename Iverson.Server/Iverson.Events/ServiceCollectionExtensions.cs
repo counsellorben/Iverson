@@ -21,6 +21,8 @@ public static class ServiceCollectionExtensions
             })
             .Build());
 
+        services.AddSingleton<IFailedPublishSink, NullFailedPublishSink>();
+
         services.AddSingleton<IEventProducer, KafkaProducer>();
 
         services.AddSingleton<IEventConsumer>(sp =>
