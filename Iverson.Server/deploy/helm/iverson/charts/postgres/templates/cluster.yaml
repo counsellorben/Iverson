@@ -26,5 +26,3 @@ spec:
     parameters:
       max_connections: "200"
       ssl: "on"   # CloudNativePG auto-generates and mounts the server cert/key this refers to; no extra template config needed
-  backup:
-    retentionPolicy: "7d"

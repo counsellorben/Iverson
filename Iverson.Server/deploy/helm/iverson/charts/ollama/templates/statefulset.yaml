@@ -5,10 +5,11 @@ metadata:
 automountServiceAccountToken: false
 ---
 apiVersion: apps/v1
-kind: Deployment
+kind: StatefulSet
 metadata:
   name: {{ .Release.Name }}-ollama
 spec:
+  serviceName: {{ .Release.Name }}-ollama
   replicas: {{ .Values.replicas }}
   selector:
     matchLabels:
@@ -75,8 +76,14 @@ spec:
             - name: tmp
               mountPath: /tmp
       volumes:
-        - name: ollama-data
-          persistentVolumeClaim:
-            claimName: {{ .Release.Name }}-ollama-data
         - name: tmp
           emptyDir: {}
+  volumeClaimTemplates:
+    - metadata:
+        name: ollama-data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        storageClassName: {{ .Values.storageClassName | quote }}
+        resources:
+          requests:
+            storage: {{ .Values.storageSize }}

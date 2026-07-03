@@ -69,6 +69,20 @@ spec:
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
+  name: {{ .Release.Name }}-postgres-egress
+spec:
+  podSelector:
+    matchLabels: { cnpg.io/cluster: {{ .Release.Name }}-postgres }
+  policyTypes: ["Egress"]
+  egress:
+    - to: []   # DNS
+      ports: [{ protocol: UDP, port: 53 }, { protocol: TCP, port: 53 }]
+    - to: [{ podSelector: { matchLabels: { cnpg.io/cluster: {{ .Release.Name }}-postgres } } }]   # streaming replication
+      ports: [{ protocol: TCP, port: 5432 }]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
   name: {{ .Release.Name }}-kafka-ingress
 spec:
   podSelector:
@@ -82,6 +96,20 @@ spec:
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
+  name: {{ .Release.Name }}-kafka-egress
+spec:
+  podSelector:
+    matchLabels: { strimzi.io/cluster: {{ .Release.Name }}-kafka }
+  policyTypes: ["Egress"]
+  egress:
+    - to: []   # DNS
+      ports: [{ protocol: UDP, port: 53 }, { protocol: TCP, port: 53 }]
+    - to: [{ podSelector: { matchLabels: { strimzi.io/cluster: {{ .Release.Name }}-kafka } } }]   # broker/controller peers
+      ports: [{ protocol: TCP, port: 9093 }]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
   name: {{ .Release.Name }}-starrocks-ingress
 spec:
   podSelector:
@@ -91,6 +119,20 @@ spec:
     - from: [{ podSelector: { matchLabels: { app: {{ .Release.Name }}-api } } }]
       ports: [{ protocol: TCP, port: 9030 }]
     - from: [{ podSelector: { matchLabels: { app.starrocks.io/cluster: {{ .Release.Name }}-starrocks } } }]   # FE/BE peers
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ .Release.Name }}-starrocks-egress
+spec:
+  podSelector:
+    matchLabels: { app.starrocks.io/cluster: {{ .Release.Name }}-starrocks }
+  policyTypes: ["Egress"]
+  egress:
+    - to: []   # DNS
+      ports: [{ protocol: UDP, port: 53 }, { protocol: TCP, port: 53 }]
+    - to: [{ podSelector: { matchLabels: { app.starrocks.io/cluster: {{ .Release.Name }}-starrocks } } }]   # FE/BE peers
+      ports: [{ protocol: TCP, port: 9030 }]
 ---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
@@ -109,6 +151,20 @@ spec:
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
+  name: {{ .Release.Name }}-qdrant-egress
+spec:
+  podSelector:
+    matchLabels: { app: {{ .Release.Name }}-qdrant }
+  policyTypes: ["Egress"]
+  egress:
+    - to: []   # DNS
+      ports: [{ protocol: UDP, port: 53 }, { protocol: TCP, port: 53 }]
+    - to: [{ podSelector: { matchLabels: { app: {{ .Release.Name }}-qdrant } } }]   # Raft peers
+      ports: [{ protocol: TCP, port: 6335 }]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
   name: {{ .Release.Name }}-ollama-ingress
 spec:
   podSelector:
@@ -121,6 +177,18 @@ spec:
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
+  name: {{ .Release.Name }}-ollama-egress
+spec:
+  podSelector:
+    matchLabels: { app: {{ .Release.Name }}-ollama }
+  policyTypes: ["Egress"]
+  egress:
+    - to: []   # DNS
+      ports: [{ protocol: UDP, port: 53 }, { protocol: TCP, port: 53 }]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
   name: {{ .Release.Name }}-jaeger-ingress
 spec:
   podSelector:
@@ -129,4 +197,16 @@ spec:
   ingress:
     - from: [{ podSelector: { matchLabels: { app: {{ .Release.Name }}-api } } }]
       ports: [{ protocol: TCP, port: 4317 }]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ .Release.Name }}-jaeger-egress
+spec:
+  podSelector:
+    matchLabels: { app: {{ .Release.Name }}-jaeger }
+  policyTypes: ["Egress"]
+  egress:
+    - to: []   # DNS
+      ports: [{ protocol: UDP, port: 53 }, { protocol: TCP, port: 53 }]
 {{- end }}

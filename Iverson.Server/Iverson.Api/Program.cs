@@ -129,7 +129,7 @@ app.MapGet("/health", async (
     var pgTask     = db.QuerySingleOrDefaultAsync<int>("SELECT 1").ContinueWith(t => t.IsCompletedSuccessfully && t.Result == 1);
     var srTask     = sr.IsHealthyAsync();
     var vectorTask = vector.EnsureCollectionAsync("iverson-probe", 4).ContinueWith(t => t.IsCompletedSuccessfully);
-    var kafkaTask  = kafka.ProduceAsync("iverson-health-probe", "probe", new { ts = DateTime.UtcNow })
+    var kafkaTask  = kafka.ProduceAsync("iverson.health.probe", "probe", new { ts = DateTime.UtcNow })
                          .ContinueWith(t => t.IsCompletedSuccessfully);
 
     await Task.WhenAll(pgTask, srTask, vectorTask, kafkaTask);
@@ -171,8 +171,8 @@ app.MapGet("/probe/vector", async (IVectorService vector) =>
 app.MapPost("/probe/kafka", async (IEventProducer producer) =>
 {
     var traceId = Activity.Current?.TraceId.ToString();
-    await producer.ProduceAsync("iverson-probe", "probe", new { timestamp = DateTime.UtcNow, traceId });
-    return Results.Ok(new { produced = true, topic = "iverson-probe", traceId });
+    await producer.ProduceAsync("iverson.probe", "probe", new { timestamp = DateTime.UtcNow, traceId });
+    return Results.Ok(new { produced = true, topic = "iverson.probe", traceId });
 }).WithName("ProbeKafka");
 
 app.MapPost("/admin/reconcile/{typeName}", async (

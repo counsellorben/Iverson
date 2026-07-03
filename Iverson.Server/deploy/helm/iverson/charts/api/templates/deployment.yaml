@@ -9,7 +9,6 @@ kind: Deployment
 metadata:
   name: {{ .Release.Name }}-api
 spec:
-  replicas: {{ .Values.replicas }}
   selector:
     matchLabels:
       app: {{ .Release.Name }}-api
@@ -69,7 +68,7 @@ spec:
                   key: password
             - name: Kafka__SslCaLocation
               value: "/etc/kafka-ca/ca.crt"
-            - name: Ollama__Host
+            - name: Embeddings__BaseUrl
               value: "http://{{ .Release.Name }}-ollama:11434"
             - name: Otel__Endpoint
               value: "http://{{ .Release.Name }}-jaeger:4317"
