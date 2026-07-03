@@ -42,7 +42,7 @@ public final class QueryBuilder<T> {
     private final List<String>       fields     = new ArrayList<>();
     private final List<JoinSpec>     joins      = new ArrayList<>();
     private SearchLogic logic    = SearchLogic.AND;
-    private int         page     = 1;
+    private int         page     = 0;
     private int         pageSize = 20;
 
     QueryBuilder(String typeName) {

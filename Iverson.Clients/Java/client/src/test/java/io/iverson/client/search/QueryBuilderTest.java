@@ -40,9 +40,9 @@ class QueryBuilderTest {
     // ── Defaults ──────────────────────────────────────────────────────────────
 
     @Test
-    void build_defaultsToPage1Size20() {
+    void build_defaultsToPage0Size20() {
         SearchRequest req = Query.of(Article.class).build();
-        assertEquals(1, req.getPage());
+        assertEquals(0, req.getPage());
         assertEquals(20, req.getPageSize());
     }
 
