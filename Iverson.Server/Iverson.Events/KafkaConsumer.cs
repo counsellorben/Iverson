@@ -6,7 +6,7 @@ using Microsoft.Extensions.Logging;
 namespace Iverson.Events;
 
 public class KafkaConsumer(
-    string bootstrapServers,
+    KafkaOptions options,
     ILogger<KafkaConsumer> logger,
     MessageDispatcher dispatcher,
     int numPartitions = 12) : IEventConsumer
@@ -21,11 +21,12 @@ public class KafkaConsumer(
 
         var config = new ConsumerConfig
         {
-            BootstrapServers = bootstrapServers,
+            BootstrapServers = options.BootstrapServers,
             GroupId = groupId,
             AutoOffsetReset = AutoOffsetReset.Earliest,
             EnableAutoCommit = false
         };
+        KafkaClientConfigFactory.ApplySecurity(config, options);
 
         using var consumer = new ConsumerBuilder<string, string>(config).Build();
         consumer.Subscribe(topic);
@@ -94,7 +95,9 @@ public class KafkaConsumer(
 
     private async Task EnsureTopicExistsAsync(string topic, CancellationToken ct)
     {
-        using var admin = new AdminClientBuilder(new AdminClientConfig { BootstrapServers = bootstrapServers }).Build();
+        var adminConfig = new AdminClientConfig { BootstrapServers = options.BootstrapServers };
+        KafkaClientConfigFactory.ApplySecurity(adminConfig, options);
+        using var admin = new AdminClientBuilder(adminConfig).Build();
         while (!ct.IsCancellationRequested)
         {
             try

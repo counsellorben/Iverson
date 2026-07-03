@@ -76,8 +76,7 @@ builder.Services.AddQdrant(
     cfg["Qdrant:Host"] ?? "localhost",
     int.Parse(cfg["Qdrant:Port"] ?? "6334"));
 
-builder.Services.AddKafka(
-    cfg["Kafka:BootstrapServers"] ?? "localhost:9092");
+builder.Services.AddKafka(cfg);
 
 builder.Services.AddSingleton<SchemaRegistry>();
 builder.Services.AddSingleton<Iverson.Api.Reconciliation.ReconciliationService>();

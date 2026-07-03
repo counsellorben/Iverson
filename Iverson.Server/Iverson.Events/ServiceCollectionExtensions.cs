@@ -1,6 +1,8 @@
 using Confluent.Kafka;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 
 namespace Iverson.Events;
 
@@ -8,18 +10,24 @@ public static class ServiceCollectionExtensions
 {
     public static IServiceCollection AddKafka(
         this IServiceCollection services,
-        string bootstrapServers,
+        IConfiguration config,
         int numPartitions = 12)
     {
-        services.AddSingleton(_ =>
-            new ProducerBuilder<string, string>(new ProducerConfig
+        services.Configure<KafkaOptions>(config.GetSection(KafkaOptions.Section));
+
+        services.AddSingleton(sp =>
+        {
+            var options = sp.GetRequiredService<IOptions<KafkaOptions>>().Value;
+            var producerConfig = new ProducerConfig
             {
-                BootstrapServers = bootstrapServers,
+                BootstrapServers = options.BootstrapServers,
                 LingerMs         = 5,
                 BatchSize        = 65536,
                 CompressionType  = CompressionType.Lz4
-            })
-            .Build());
+            };
+            KafkaClientConfigFactory.ApplySecurity(producerConfig, options);
+            return new ProducerBuilder<string, string>(producerConfig).Build();
+        });
 
         services.AddSingleton<IFailedPublishSink, NullFailedPublishSink>();
 
@@ -27,11 +35,12 @@ public static class ServiceCollectionExtensions
 
         services.AddSingleton<IEventConsumer>(sp =>
         {
+            var options = sp.GetRequiredService<IOptions<KafkaOptions>>().Value;
             var dispatcher = new MessageDispatcher(
                 sp.GetRequiredService<IProducer<string, string>>(),
                 sp.GetRequiredService<ILogger<MessageDispatcher>>());
             return new KafkaConsumer(
-                bootstrapServers,
+                options,
                 sp.GetRequiredService<ILogger<KafkaConsumer>>(),
                 dispatcher,
                 numPartitions);
