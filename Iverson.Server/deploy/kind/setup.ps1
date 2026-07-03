@@ -29,7 +29,7 @@ Write-Host "Installing Strimzi operator..."
 helm upgrade --install strimzi strimzi-kafka-operator `
   --repo https://strimzi.io/charts/ `
   --namespace kafka --create-namespace `
-  --set featureGates="+KafkaNodePools,+UseKRaft" `
+  --set featureGates="+KafkaNodePools\,+UseKRaft" `
   --wait
 
 Write-Host "Installing StarRocks operator..."
