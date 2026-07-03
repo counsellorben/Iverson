@@ -148,6 +148,22 @@ public final class SchemaRegistrar {
         if (lf != null) {
             b.setIsLargeField(true);
         }
+
+        IversonEmbedding emb = field.getAnnotation(IversonEmbedding.class);
+        if (emb != null) {
+            b.setIsEmbedding(true);
+            b.setVectorDim(0);
+            b.setModelId("");
+        }
+
+        IversonChunk chunk = field.getAnnotation(IversonChunk.class);
+        if (chunk != null) {
+            b.setIsChunk(true);
+            b.setChunkMaxTokens(chunk.maxTokens());
+            b.setChunkOverlap(chunk.overlap());
+            b.setChunkModelId("");
+            b.setChunkVectorDim(0);
+        }
     }
 
     private RelationDescriptor buildRelationDescriptor(Field field, String ownerTypeName) {

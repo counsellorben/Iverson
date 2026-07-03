@@ -48,6 +48,12 @@ class SchemaRegistrarTest {
 
         @IversonLargeField
         private String body;
+
+        @IversonEmbedding
+        private String title;
+
+        @IversonChunk(maxTokens = 256, overlap = 32)
+        private String summary;
     }
 
     @IversonEntity
@@ -220,6 +226,40 @@ class SchemaRegistrarTest {
             .filter(p -> p.getName().equals("Body"))
             .findFirst().orElseThrow();
         assertTrue(body.getIsLargeField());
+    }
+
+    // ── registerAll: @IversonEmbedding / @IversonChunk ────────────────────────
+
+    @Test
+    void registerAll_setsIsEmbedding_onAnnotatedProperty() {
+        ArgumentCaptor<SchemaRequest> captor = ArgumentCaptor.forClass(SchemaRequest.class);
+
+        sut.registerAll(SearchAnnotationTestEntity.class);
+
+        verify(mockStub).registerSchema(captor.capture());
+        TypeDescriptor typeDesc = captor.getValue().getRootType();
+
+        PropertyDescriptor title = typeDesc.getPropertiesList().stream()
+            .filter(p -> p.getName().equals("Title"))
+            .findFirst().orElseThrow();
+        assertTrue(title.getIsEmbedding());
+    }
+
+    @Test
+    void registerAll_setsIsChunk_andChunkParams_onAnnotatedProperty() {
+        ArgumentCaptor<SchemaRequest> captor = ArgumentCaptor.forClass(SchemaRequest.class);
+
+        sut.registerAll(SearchAnnotationTestEntity.class);
+
+        verify(mockStub).registerSchema(captor.capture());
+        TypeDescriptor typeDesc = captor.getValue().getRootType();
+
+        PropertyDescriptor summary = typeDesc.getPropertiesList().stream()
+            .filter(p -> p.getName().equals("Summary"))
+            .findFirst().orElseThrow();
+        assertTrue(summary.getIsChunk());
+        assertEquals(256, summary.getChunkMaxTokens());
+        assertEquals(32, summary.getChunkOverlap());
     }
 
     // ── registerAll: relations ─────────────────────────────────────────────────
