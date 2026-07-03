@@ -19,7 +19,7 @@ class TestQueryBuilderBasics:
 
     def test_defaults(self):
         req = QueryBuilder("Article").build()
-        assert req.page == 1
+        assert req.page == 0
         assert req.page_size == 20
 
     def test_limit(self):

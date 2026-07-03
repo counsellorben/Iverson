@@ -153,7 +153,7 @@ class QueryBuilder:
         self._fields: list[str] = []
         self._joins: list[_pb.JoinSpec] = []
         self._logic: int = _pb.AND
-        self._page: int = 1
+        self._page: int = 0
         self._page_size: int = 20
 
     # ── Clause entry points ────────────────────────────────────────────────────
@@ -210,7 +210,7 @@ class QueryBuilder:
         return self
 
     def offset(self, page: int) -> "QueryBuilder":
-        """Set the 1-based page number."""
+        """Set the zero-based page number (0 = first page)."""
         self._page = page
         return self
 
