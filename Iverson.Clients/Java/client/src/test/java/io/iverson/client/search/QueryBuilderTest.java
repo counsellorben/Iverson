@@ -315,6 +315,14 @@ class QueryBuilderTest {
         assertEquals(JoinKind.LEFT, req.getJoins(0).getKind());
     }
 
+    @Test
+    void join_withFullKind_setsKind() {
+        SearchRequest req = Query.of(Article.class)
+            .join("authorId", "Author", "id", JoinKind.FULL)
+            .build();
+        assertEquals(JoinKind.FULL, req.getJoins(0).getKind());
+    }
+
     // ── SearchOperators constants ─────────────────────────────────────────────
 
     @Test

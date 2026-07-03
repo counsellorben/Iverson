@@ -103,6 +103,14 @@ class GroupByBuilderTest {
     }
 
     @Test
+    void join_withFullKind_setsKind() {
+        GroupByRequest req = Query.groupBy("LineItem")
+            .join("orderId", "Order", "id", JoinKind.FULL)
+            .build();
+        assertEquals(JoinKind.FULL, req.getJoins(0).getKind());
+    }
+
+    @Test
     void build_setsTraceId() {
         GroupByRequest req = Query.groupBy("LineItem")
             .build("trace-123");
