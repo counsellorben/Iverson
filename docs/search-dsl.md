@@ -1,333 +1,571 @@
 # Iverson Search DSL
 
-The search DSL is a fluent C# API that compiles to a `SearchRequest` protobuf message and is routed by `ObjectSearchGrpcService` to the appropriate backend store. Three separate query surfaces exist depending on whether you want structured field queries, server-side semantic search, or passage-level RAG retrieval.
+**One query model. Five languages. Two engines.**
+
+Every Iverson client — C#, Java, Python, TypeScript, and Go — ships a fluent query builder that compiles to the same protobuf contract ([`object_search.proto`](../Iverson.Clients/Common/Proto/object_search.proto)). The server routes each RPC to the engine best suited for the job:
+
+- **StarRocks** answers everything SQL-shaped: filters, sorting, paging, joins, and analytics — sub-second even over hundreds of millions of rows.
+- **Qdrant** answers everything meaning-shaped: semantic entity search and passage-level RAG retrieval, with embeddings computed **server-side** so your client never touches a model.
+
+Because the DSL compiles to a proto message, `build()` never needs a live server — you can construct, inspect, and unit-test queries offline in any language.
+
+## Choosing your entry point
+
+| You want | Call | Engine | Returns |
+|----------|------|--------|---------|
+| Rows matching filters, sorted and paged | `Search` | StarRocks | stream of entities |
+| Multiple metrics per group, one round trip | `GroupBy` | StarRocks | stream of result rows |
+| Bucketed facets (terms, date histogram, ranges) | `Aggregate` | StarRocks | buckets + metrics |
+| "Find articles *about* this" from raw text | `SearchSimilar` | Qdrant | stream of entities + scores |
+| The best *passages* for a RAG prompt | `SearchChunks` | Qdrant | stream of chunks + scores |
+
+## The sample model
+
+Examples below use a small blog domain. Field names are shown PascalCase; the server resolves them **case-insensitively**, so each language can follow its own conventions.
+
+```
+Article:  Id, Title, Body, Category, WordCount, PublishedAt, IsPublished, AuthorId
+Author:   Id, Name, Email, Bio
+```
 
 ---
 
-## Quick-start
+## The same query, five ways
+
+*Published articles in the technology category with at least 500 words, newest first, first 10.*
+
+### C#
+
+Strongly typed, expression-based — typos become compile errors. `EntityCoordinator<T>.SearchAsync` executes the query and streams typed entities back.
 
 ```csharp
 using Iverson.Client.Search;
 using static Iverson.Client.Search.SearchOperators;
 
-var results = articles.SearchAsync(
-    Query.For<Article>()
-        .Where(a => a.IsPublished, EqualTo, true)
-        .And(a  => a.Title,       Contains, "Iverson")
-        .OrderBy(a => a.PublishedAt, descending: true)
-        .Page(1, size: 10));
+var query = Query.For<Article>()
+    .Where(a => a.IsPublished, EqualTo,     true)
+    .Where(a => a.Category,    EqualTo,     "technology")
+    .Where(a => a.WordCount,   GreaterThanOrEquals, 500)
+    .OrderBy(a => a.PublishedAt, descending: true)
+    .Page(0, size: 10);
 
-await foreach (var r in results)
-    Console.WriteLine($"[{r.Score:F2}] {r.Entity.Title}");
+await foreach (var r in articles.SearchAsync(query))   // EntityCoordinator<Article> from DI
+    Console.WriteLine(r.Entity.Title);
 ```
 
-Import `using static Iverson.Client.Search.SearchOperators;` to use operator names without the `SearchOperator.` prefix.
+### Java
+
+Field-name strings with a fluent condition step. `EntityCoordinator.search` executes and returns typed results.
+
+```java
+import io.iverson.client.search.Query;
+
+var results = articleCoordinator.search(
+    Query.of(Article.class)
+        .where("IsPublished").eq(true)
+        .where("Category").eq("technology")
+        .where("WordCount").gte(500)
+        .orderByDesc("PublishedAt")
+        .limit(10));
+
+results.forEach(r -> System.out.println(r.entity().getTitle()));
+```
+
+### Python
+
+```python
+import grpc
+from iverson_client import QueryBuilder
+from iverson_client.generated import object_search_pb2_grpc as search_grpc
+
+request = (
+    QueryBuilder("Article")
+    .where("IsPublished").eq(True)
+    .where("Category").eq("technology")
+    .where("WordCount").gte(500)
+    .order_by_desc("PublishedAt")
+    .limit(10)
+    .build()
+)
+
+channel = grpc.insecure_channel("localhost:5000")
+search = search_grpc.ObjectSearchServiceStub(channel)
+for response in search.Search(request):        # streams SearchResponse
+    print(response.data)                       # google.protobuf.Struct
+```
+
+### TypeScript
+
+Builders come from the package barrel (`src/index.ts`); the gRPC service client is in the generated code (`generated/object_search.ts`) — adjust import paths to your build setup.
+
+```typescript
+import { credentials } from '@grpc/grpc-js';
+import { QueryBuilder } from '@iverson/client';
+import { ObjectSearchServiceClient } from '@iverson/client/generated/object_search.js';
+
+const request = new QueryBuilder('Article')
+    .where('IsPublished').eq(true)
+    .where('Category').eq('technology')
+    .where('WordCount').gte(500)
+    .orderByDesc('PublishedAt')
+    .limit(10)
+    .build();
+
+const search = new ObjectSearchServiceClient('localhost:5000', credentials.createInsecure());
+for await (const response of search.search(request)) {
+    console.log(response.data);
+}
+```
+
+### Go
+
+The builder collects errors internally and surfaces them once at `Build()` — no error handling mid-chain.
+
+```go
+import (
+    "github.com/iverson/clients/go/iverson"
+    pb "github.com/iverson/clients/go/generated"
+)
+
+req, err := iverson.NewQuery("Article").
+    Where("IsPublished").Eq(true).
+    Where("Category").Eq("technology").
+    Where("WordCount").Gte(500).
+    OrderByDesc("PublishedAt").
+    Limit(10).
+    Build()
+if err != nil { /* handle */ }
+
+stream, err := client.SearchStub.Search(ctx, req)   // *iverson.IversonClient
+for {
+    resp, err := stream.Recv()
+    if err == io.EOF { break }
+    if err != nil { /* handle */ }
+    fmt.Println(resp.Data)
+}
+```
 
 ---
 
-## 1. Structured search — `Search`
+## Clauses: filtering the result set
 
-### Entry point
+Every clause has a **field**, an **operator**, and a **value**. Clauses also carry a *clause type*, a holdover from the DSL's boolean-search heritage:
 
-```csharp
-Query.For<T>()        // scopes the query to a registered entity type
-    ...               // add clauses
-    .Build()          // → SearchRequest proto (sent by EntityCoordinator)
-```
+| Proto | C# | Java | Python | TypeScript | Go |
+|-------|----|------|--------|------------|----|
+| `FILTER` | `.Where(...)` | `.where(f)` | `.where(f)` | `.where(f)` | `.Where(f)` |
+| `MUST` | `.And(...)` | `.and(f)` | `.must(f)` | `.must(f)` | `.Must(f)` |
+| `SHOULD` | `.Or(...)` | `.or(f)` | `.should(f)` | `.should(f)` | `.Should(f)` |
+| `MUST_NOT` | `.Not(...)` | `.not(f)` | `.must_not(f)` | `.mustNot(f)` | `.MustNot(f)` |
 
-`EntityCoordinator<T>.SearchAsync(QueryBuilder<T>)` sends the compiled request to `ObjectSearchGrpcService.Search`, which routes it to Elasticsearch.
+> **On StarRocks, clause types are simpler than they look.** `FILTER`, `MUST`, and `SHOULD` all compile to ordinary `WHERE` predicates; `MUST_NOT` wraps its predicate in `NOT (...)`. There is no relevance boosting — `Search` returns a constant score of `1.0` for every row, and result order is controlled entirely by `OrderBy`. To make clauses alternatives instead of requirements, switch the combination logic to OR (below).
 
----
+### Combination logic
 
-### Clause types
-
-Every clause takes a strongly-typed property expression, an operator, and a value. Clause type controls how the clause participates in Elasticsearch's Boolean query.
-
-| Method | ES role | Effect |
-|--------|---------|--------|
-| `.Where(p, op, val)` | `filter` | Must match; **does not affect relevance score** |
-| `.And(p, op, val)` | `must` | Must match; **contributes to score** |
-| `.Or(p, op, val)` | `should` | Optional; **boosts score when matched** |
-| `.Not(p, op, val)` | `must_not` | Must not match; excluded from results |
+By default all clauses are ANDed. `withLogic` flips the top level to OR:
 
 ```csharp
+// C# — match any of three categories
 Query.For<Article>()
-    .Where(a => a.IsPublished, EqualTo, true)          // hard filter, no score cost
-    .And(a  => a.Title,       Contains, "crossover")   // scored full-text match
-    .Or(a   => a.Body,        Contains, "Philadelphia") // optional boost
-    .Not(a  => a.AuthorId,   EqualTo,  bannedAuthorId)
+    .Where(a => a.Category, EqualTo, "basketball")
+    .Or(a   => a.Category, EqualTo, "culture")
+    .Or(a   => a.Category, EqualTo, "legacy")
+    .WithLogic(SearchLogic.Or);
 ```
 
----
+```python
+# Python
+from iverson_client.generated import object_search_pb2 as search_pb
+
+QueryBuilder("Article") \
+    .where("Category").eq("basketball") \
+    .where("Category").eq("culture") \
+    .with_logic(search_pb.OR)
+```
+
+(For a "match any of a fixed set" query, the `IN` operator is usually the cleaner tool.)
 
 ### Operators
 
-| Constant | Alias | Value type | ES mapping |
-|----------|-------|------------|------------|
-| `EqualTo` | `Equals`¹ | string, number, bool, DateTime | `term` |
-| `NotEquals` | | same | `must_not term` |
-| `Contains` | | string | `match` (analyzed) |
-| `StartsWith` | | string | `prefix` |
-| `GreaterThan` | | number, DateTime | `range.gt` |
-| `LessThan` | | number, DateTime | `range.lt` |
-| `GreaterThanOrEquals` | | number, DateTime | `range.gte` |
-| `LessThanOrEquals` | | number, DateTime | `range.lte` |
-| `In` | | `IEnumerable<string>` | `terms` |
-| `VectorSimilar` | | `float[]` | Qdrant ANN / ES kNN |
+| Operation | SQL emitted | C# constant | Java | Python | TypeScript | Go |
+|-----------|-------------|-------------|------|--------|------------|----|
+| Equals | `=` | `EqualTo` | `.eq(v)` | `.eq(v)` | `.eq(v)` | `.Eq(v)` |
+| Not equals | `<>` | `NotEquals` | `.neq(v)` | `.neq(v)` | `.neq(v)` | `.NotEq(v)` |
+| Substring | `LIKE '%v%'` | `Contains` | `.contains(v)` | `.contains(v)` | `.contains(v)` | `.Contains(v)` |
+| Prefix | `LIKE 'v%'` | `StartsWith` | `.startsWith(v)` | `.starts_with(v)` | `.startsWith(v)` | `.StartsWith(v)` |
+| Suffix | `LIKE '%v'` | `SearchOperator.EndsWith` ¹ | `.endsWith(v)` | `.ends_with(v)` | `.endsWith(v)` | `.EndsWith(v)` |
+| Greater than | `>` | `GreaterThan` | `.gt(v)` | `.gt(v)` | `.gt(v)` | `.Gt(v)` |
+| Less than | `<` | `LessThan` | `.lt(v)` | `.lt(v)` | `.lt(v)` | `.Lt(v)` |
+| At least | `>=` | `GreaterThanOrEquals` | `.gte(v)` | `.gte(v)` | `.gte(v)` | `.Gte(v)` |
+| At most | `<=` | `LessThanOrEquals` | `.lte(v)` | `.lte(v)` | `.lte(v)` | `.Lte(v)` |
+| One of a set | `IN (...)` | `In` | `.in(v...)` | `.in_(list)` | `.in(list)` | `.In(v...)` |
 
-¹ `Equals` is available but prefer `EqualTo` to avoid shadowing `object.Equals`.
+¹ The proto enum has `ENDS_WITH` and the C# builder accepts it (`.Where(a => a.Title, SearchOperator.EndsWith, "era")`), but `SearchOperators` has no static `EndsWith` alias yet.
 
-**DateTime values** are serialized as ISO 8601 strings (`"o"` format) and matched against Elasticsearch `date` fields.
+**Values.** Strings, numbers, and booleans map to the typed proto union. **Dates travel as ISO 8601 strings** (C# serializes `DateTime` with the round-trip `"o"` format automatically; other languages pass strings like `"2026-06-01T00:00:00Z"`). `IN` accepts a list of strings.
 
 ```csharp
-// Date range
+// C# — date range
 Query.For<Article>()
-    .Where(a => a.PublishedAt, GreaterThan,       DateTime.UtcNow.AddDays(-30))
-    .Where(a => a.PublishedAt, LessThanOrEquals,  DateTime.UtcNow)
+    .Where(a => a.PublishedAt, GreaterThan,      DateTime.UtcNow.AddDays(-30))
+    .Where(a => a.PublishedAt, LessThanOrEquals, DateTime.UtcNow)
 
-// IN — match any of a set of values
-var tagIds = new[] { "tag-uuid-1", "tag-uuid-2" };
+// C# — IN
 Query.For<Article>()
-    .Where(a => a.AuthorId, In, tagIds)
+    .Where(a => a.Category, In, new[] { "technology", "science", "ai" })
+```
+
+```go
+// Go — IN is variadic
+iverson.NewQuery("Article").Where("Category").In("technology", "science", "ai")
 ```
 
 ---
+
+## Sorting, paging, and projection
 
 ### Sorting
 
-```csharp
-Query.For<Article>()
-    .OrderBy(a => a.PublishedAt, descending: true)   // primary sort
-    .OrderBy(a => a.Title)                            // secondary sort (ascending)
+Multiple sorts stack in the order added, in every language:
+
+```typescript
+new QueryBuilder('Article')
+    .orderByDesc('PublishedAt')   // primary
+    .orderBy('Title')             // secondary, ascending
 ```
-
-Multiple `.OrderBy` calls stack in the order they are added.
-
----
 
 ### Paging
 
-```csharp
-Query.For<Article>()
-    .Page(page: 2, size: 25)   // defaults: page=1, size=20
+Page size defaults to 20 everywhere. Every client's page parameter is **0-based** — `page`/`offset` of `0` is the first page — matching the server's `OFFSET page × size` computation:
+
+| Language | Call | Convention |
+|----------|------|------------|
+| C# | `.Page(page, size)` | 0-based page |
+| Java | `.limit(n).offset(page)` | 0-based page |
+| Python | `.limit(n).offset(page)` | 0-based page |
+| TypeScript | `.limit(n).offset(page)` | 0-based page |
+| Go | `.Limit(n).Offset(page)` | 0-based page |
+
+### Field projection
+
+Trim the payload to just the columns you need — the server emits an explicit `SELECT` list:
+
+```python
+QueryBuilder("Article").fields("Title", "PublishedAt").limit(50)
 ```
+
+Available as `fields(...)` in Java/Python/TypeScript and `Fields(...)` in Go. C#'s `QueryBuilder<T>` has a typed equivalent: `.Fields(a => a.Title, a => a.PublishedAt)`.
 
 ---
 
-### Top-level clause logic
+## Joins
 
-By default, all clauses are evaluated independently within their type bucket (`must`, `should`, etc.). `.WithLogic` changes how the server interprets top-level `should` clauses:
+Any registered type can join to another on matching fields — the server resolves the physical tables and emits real SQL joins. All string-based builders share the same shape:
 
-```csharp
-// OR semantics: any tag slug matches
-Query.For<Tag>()
-    .Or(t => t.Slug, Contains, "basketball")
-    .Or(t => t.Slug, Contains, "culture")
-    .Or(t => t.Slug, Contains, "nba")
-    .WithLogic(SearchLogic.Or)
-    .OrderBy(t => t.Label)
+```
+join(leftField, rightType, rightField [, kind])     // kind: INNER (default) | LEFT | RIGHT
 ```
 
-| Value | Behaviour |
-|-------|-----------|
-| `SearchLogic.And` | All `must` clauses required; `should` boosts (default) |
-| `SearchLogic.Or` | At least one top-level clause must match |
+```typescript
+// TypeScript — articles with their authors
+new QueryBuilder('Article')
+    .join('AuthorId', 'Author', 'Id')
+    .where('Author.Name').contains('Iverson')
+    .fields('Title', 'Author.Name')
+```
+
+C# gets a typed variant on `QueryBuilder<T>`:
+
+```csharp
+Query.For<Article>()
+    .Join<Author>(a => a.AuthorId, au => au.Id)         // JoinKind.Inner by default
+    .Where(a => a.Title, Contains, "crossover");
+```
+
+**Disambiguation:** once a join is in play, reference fields as `TypeName.FieldName` (`"Author.Name"`). Bare names still work when they're unambiguous across the joined schemas; ambiguous bare names are rejected rather than guessed.
 
 ---
 
-### Vector similarity within a structured query
+## GroupBy: analytics in one round trip
 
-When you already have a pre-computed embedding, you can include it as a clause. Use the dedicated `*VectorSimilar` overloads — the property expression targets the annotated `string` property, but the value is a `float[]`.
+The `GroupBy` RPC is the DSL's analytics workhorse: several metrics over the same grouping, plus WHERE, HAVING, JOIN, ORDER BY, and LIMIT — compiled to **one compound SELECT**. (This is the shape of TPC-H Q1.) It's available in all five clients via `GroupByBuilder`, which is string-based everywhere — joins bring multiple types into scope, so fields are addressed by name.
 
-| Method | ES role |
-|--------|---------|
-| `.WhereVectorSimilar(p, float[])` | filter |
-| `.AndVectorSimilar(p, float[])` | must |
-| `.OrVectorSimilar(p, float[])` | should |
-| `.NotVectorSimilar(p, float[])` | must_not |
+*Top authors by published-article count, with their latest publish date — at least 3 articles, top 10:*
+
+### C#
 
 ```csharp
-float[] precomputedEmbedding = myLocalModel.Encode("point guard era");
+using Iverson.Client.Contracts;
+using Iverson.Client.Search;
+using static Iverson.Client.Search.SearchOperators;
 
-Query.For<Article>()
+var request = Query.GroupBy("Article")
+    .Join("AuthorId", "Author", "Id")
+    .Keys("Author.Name")
+    .CountAll("articles")
+    .Max("PublishedAt", "latest")
+    .Where("IsPublished", EqualTo, true)
+    .Having("articles", GreaterThanOrEquals, 3)
+    .OrderBy("articles", descending: true)
+    .Limit(10)
+    .Build();
+
+// ObjectSearchService.ObjectSearchServiceClient from DI
+using var call = searchClient.GroupBy(request);
+await foreach (var row in call.ResponseStream.ReadAllAsync())
+    Console.WriteLine(row.Data);          // Struct: { Name, articles, latest }
+```
+
+### Java
+
+```java
+import io.iverson.client.search.Query;
+import iverson.ObjectSearch.SearchOperator;
+
+var request = Query.groupBy("Article")
+    .join("AuthorId", "Author", "Id")
+    .keys("Author.Name")
+    .countAll("articles")
+    .max("PublishedAt", "latest")
+    .where("IsPublished", SearchOperator.EQUALS, true)
+    .having("articles", SearchOperator.GREATER_THAN_OR_EQUALS, 3)
+    .orderByDesc("articles")
+    .limit(10)
+    .build();
+
+// Build your own stub on the same channel used by IversonClient
+var search = ObjectSearchServiceGrpc.newBlockingStub(channel);
+search.groupBy(request).forEachRemaining(row -> System.out.println(row.getData()));
+```
+
+### Python
+
+```python
+from iverson_client import group_by
+from iverson_client.search import SearchOperator
+
+request = (
+    group_by("Article")
+    .join("AuthorId", "Author", "Id")
+    .keys("Author.Name")
+    .count_all("articles")
+    .max("PublishedAt", "latest")
+    .where("IsPublished", SearchOperator.EQUALS, True)
+    .having("articles", SearchOperator.GREATER_THAN_OR_EQUALS, 3)
+    .order_by_desc("articles")
+    .limit(10)
+    .build()
+)
+
+for row in search.GroupBy(request):
+    print(row.data)
+```
+
+### TypeScript
+
+```typescript
+import { groupBy, SearchOperator } from '@iverson/client';
+
+const request = groupBy('Article')
+    .join('AuthorId', 'Author', 'Id')
+    .keys('Author.Name')
+    .countAll('articles')
+    .max('PublishedAt', 'latest')
+    .where('IsPublished', SearchOperator.EQUALS, true)
+    .having('articles', SearchOperator.GREATER_THAN_OR_EQUALS, 3)
+    .orderByDesc('articles')
+    .limit(10)
+    .build();
+
+for await (const row of search.groupBy(request)) {
+    console.log(row.data);
+}
+```
+
+### Go
+
+Go's `Where`/`Having` take raw `*pb.SearchValue` — construct the proto union directly:
+
+```go
+req, err := iverson.NewGroupBy("Article").
+    Join("AuthorId", "Author", "Id").
+    Keys("Author.Name").
+    CountAll("articles").
+    Max("PublishedAt", "latest").
+    Where("IsPublished", pb.SearchOperator_EQUALS,
+        &pb.SearchValue{Kind: &pb.SearchValue_BoolVal{BoolVal: true}}).
+    Having("articles", pb.SearchOperator_GREATER_THAN_OR_EQUALS,
+        &pb.SearchValue{Kind: &pb.SearchValue_NumberVal{NumberVal: 3}}).
+    OrderByDesc("articles").
+    Limit(10).
+    Build()
+
+stream, err := client.SearchStub.GroupBy(ctx, req)
+```
+
+### Metrics reference
+
+| Builder method | SQL | Default alias |
+|----------------|-----|---------------|
+| `sum(field)` / `avg` / `min` / `max` | `SUM(field)` … | `{field}_sum` … |
+| `count(field)` | `COUNT(field)` | `{field}_count` |
+| `countAll()` | `COUNT(*)` | `count` |
+| `sumExpr(expr, alias)` / `avgExpr(expr, alias)` | `SUM(expr)` | required |
+
+Every metric takes an optional alias; **HAVING and ORDER BY reference aliases**, so name metrics you intend to filter or sort on. Expression metrics accept raw SQL over joined columns — the TPC-H revenue classic:
+
+```csharp
+Query.GroupBy("LineItem")
+    .Keys("ReturnFlag", "LineStatus")
+    .Sum("Quantity", "sum_qty")
+    .SumExpr("ExtendedPrice * (1 - Discount)", "revenue")
+    .CountAll("order_count")
+    .OrderBy("ReturnFlag")
+```
+
+Results stream back as `SearchResponse` rows whose `Data` struct holds the group keys plus one entry per metric alias. Default row limit: 10,000.
+
+---
+
+## Aggregate: bucketed facets
+
+Where `GroupBy` returns *rows*, `Aggregate` returns *shaped facets*: terms buckets, calendar histograms, and explicit numeric ranges, each with document counts — plus single-value metrics. Each `AggregationSpec` runs as its own SQL query, so prefer `GroupBy` when you want many metrics over one grouping.
+
+The C# `QueryBuilder<T>` doubles as the aggregate builder — clauses become the pre-aggregation filter:
+
+```csharp
+var request = Query.For<Article>()
     .Where(a => a.IsPublished, EqualTo, true)
-    .OrVectorSimilar(a => a.Title, precomputedEmbedding)
-    .Page(1, size: 5)
+    .GroupBy(a => a.Category, size: 20)                          // terms buckets
+    .ByDateInterval(a => a.PublishedAt, "month",
+        timeZone: "America/New_York")                            // calendar histogram
+    .ByRange(a => a.WordCount,
+        ("short",  null,  500),
+        ("medium", 500,   2000),
+        ("long",   2000,  null))                                 // explicit ranges
+    .Avg(a => a.WordCount)                                       // single metric
+    .BuildAggregate();
+
+var response = await searchClient.AggregateAsync(request);
+foreach (var result in response.Results)
+{
+    if (result.Buckets.Count > 0)
+        foreach (var b in result.Buckets)
+            Console.WriteLine($"{result.Name}: {b.Key} = {b.Count}");
+    else
+        Console.WriteLine($"{result.Name} = {result.MetricValue}");
+}
 ```
 
-> **When to use this vs `SearchSimilar`:** Use `*VectorSimilar` when you have already computed the query embedding on the client (e.g. from a local model). Use `SearchSimilar` (below) when you want the server to embed a raw text query using the same model that was used during ingestion.
+Calendar intervals: `minute`, `hour`, `day`, `week`, `month`, `quarter`, `year`. Range bounds are half-open (`from` inclusive, `to` exclusive); `null` means unbounded.
+
+Other languages construct `AggregateRequest` directly from generated protos — the fields mirror the builder one-for-one (`aggregations[]` with `type`, `field`, `size`, `calendar_interval`, `range_buckets`, plus `having` and `joins`).
 
 ---
 
-## 2. Server-side semantic search — `SearchSimilar`
+## Semantic search: Qdrant surfaces
 
-`SearchSimilar` accepts a plain text query. The server embeds it using the same `EmbeddingModel` declared on the `[IversonEmbedding]` property and searches the entity's Qdrant named-vector collection.
+### How content gets vectorized
 
-**Requirement:** the target property must be annotated with `[IversonEmbedding]`.
+Annotate properties at schema registration — every language has an equivalent mechanism (C# attributes, Java/TypeScript decorators, Python field metadata, Go struct tags); schemas registered once serve every client:
 
 ```csharp
-var request = new SearchSimilarRequest
+public class Article
+{
+    [IversonEmbedding]                          // whole-field vector → entity collection
+    public string Title { get; set; } = "";
+
+    [IversonChunk(maxTokens: 512, overlap: 64)] // windowed vectors → {collection}_chunks
+    public string Body { get; set; } = "";
+}
+```
+
+The server embeds at ingestion time using its configured model (Ollama `nomic-embed-text`, 768 dimensions, in the docker-compose stack) — and embeds your *query text* with the same model at search time. No API keys, no client-side models, no drift between ingest and query.
+
+`[IversonChunk]` splits long fields into overlapping windows (≈4 chars per token) so relevant content near a window boundary is still retrievable, and stores each window as its own point with `text` and `parent_id` payload.
+
+### SearchSimilar — entity-level semantic search
+
+Send raw text; get back whole entities ranked by vector similarity:
+
+```csharp
+var stream = searchClient.SearchSimilar(new SearchSimilarRequest
 {
     TypeName = "Article",
-    Property = "Title",            // [IversonEmbedding(EmbeddingModel.OpenAiTextEmbedding3Small)]
-    Query    = "point guard era",  // embedded server-side
-    TopK     = 10,
-    TraceId  = traceId
-};
+    Property = "Title",              // the [IversonEmbedding] property
+    Query    = "the crossover that changed basketball",
+    TopK     = 5
+});
 
-var stream = searchClient.SearchSimilar(request);
 await foreach (var r in stream.ResponseStream.ReadAllAsync())
     Console.WriteLine($"[{r.Score:F4}] {r.Data}");
 ```
 
-Returns `SearchResponse` (same type as `Search`): `{ Data: Struct, Score: float, TraceId }`.
+```python
+from iverson_client.generated import object_search_pb2 as search_pb
 
-### How it works
+request = search_pb.SearchSimilarRequest(
+    type_name="Article", property="Title",
+    query="the crossover that changed basketball", top_k=5)
 
-1. Server looks up the `VectorDescriptor` for the requested property.
-2. Calls `IEmbeddingService.EmbedAsync(query, vectorDesc.ModelId)`.
-3. Searches Qdrant collection `{tableName}` using the named vector `{property_snake_case}_vector`.
-4. Returns Qdrant payload fields as proto `Struct` values with ANN scores.
+for r in search.SearchSimilar(request):
+    print(f"[{r.score:.4f}] {r.data}")
+```
 
----
+Unlike `Search`, these scores are real: Qdrant ANN similarity, higher is closer.
 
-## 3. Passage retrieval (RAG) — `SearchChunks`
+### SearchChunks — passage retrieval for RAG
 
-`SearchChunks` targets properties annotated with `[IversonChunk]`. At ingestion time the server split each field value into overlapping windows, embedded each window, and stored it in a separate `{collection}_chunks` Qdrant collection with `text` and `parent_id` in the payload.
+`SearchChunks` returns the most relevant *passages*, not documents — exactly what an LLM prompt wants:
 
-`SearchChunks` retrieves the most relevant passages — not full documents — making it the correct entry point for building RAG context.
+```typescript
+const stream = search.searchChunks({
+    typeName: 'Article',
+    property: 'Body',                 // the [IversonChunk] property
+    query: 'how did Iverson change defensive rules in the NBA?',
+    topK: 3,
+    traceId: '',
+});
 
-**Requirement:** the target property must be annotated with `[IversonChunk]`.
-
-```csharp
-var request = new SearchChunksRequest
-{
-    TypeName = "Article",
-    Property = "Body",              // [IversonChunk(EmbeddingModel.OpenAiTextEmbedding3Small, maxTokens: 512, overlap: 64)]
-    Query    = "crossover dribble", // embedded server-side
-    TopK     = 5,
-    TraceId  = traceId
-};
-
-var stream = searchClient.SearchChunks(request);
-await foreach (var r in stream.ResponseStream.ReadAllAsync())
-{
-    Console.WriteLine($"Parent: {r.ParentKey}");
-    Console.WriteLine($"Score:  {r.Score:F4}");
-    Console.WriteLine($"Text:   {r.ChunkText}");
+const passages: string[] = [];
+for await (const chunk of stream) {
+    passages.push(chunk.chunkText);   // also: chunk.parentKey, chunk.score
 }
+
+const prompt = `Answer using only the passages below.\n\n` +
+    passages.map((t, i) => `[${i + 1}] ${t}`).join('\n\n') +
+    `\n\nQuestion: How did Iverson change defensive rules in the NBA?`;
 ```
 
-Returns `ChunkSearchResponse`: `{ ParentKey: string, ChunkText: string, Score: float, TraceId }`.
+Each hit carries `parentKey` — feed it to your coordinator's `get` to pull the full document alongside the passage.
 
-Use `ParentKey` to fetch the full entity with `EntityCoordinator<T>.GetAsync(parentKey)` if you need the surrounding document alongside the retrieved passage.
-
-### How it works
-
-1. Server looks up the `ChunkDescriptor` for the requested property.
-2. Calls `IEmbeddingService.EmbedAsync(query, chunkDesc.ModelId)`.
-3. Searches Qdrant collection `{tableName}_chunks` using named vector `{property_snake_case}_vector`.
-4. Each Qdrant point carries payload `{ text, parent_id, field, chunk_index }`.
-5. Returns `text` and `parent_id` per hit.
-
-### Chunking parameters
-
-Chunking behaviour is controlled by the attribute on the model:
-
-```csharp
-[IversonChunk(
-    EmbeddingModel.OpenAiTextEmbedding3Small,
-    maxTokens: 512,    // approximate window size (1 token ≈ 4 chars)
-    overlap: 64)]      // tokens shared between adjacent windows
-public string Body { get; set; } = string.Empty;
-```
-
-Overlapping windows ensure that relevant content near a window boundary is still retrievable.
+> **Heads-up:** the query builders still expose a `vectorSimilar` clause (a pre-computed `float[]` inside a structured query). The StarRocks `Search` path **ignores** these clauses today — use `SearchSimilar` / `SearchChunks` for vector work.
 
 ---
 
-## Routing summary
+## Capability matrix
 
-| Surface | Client API | Who embeds | Backend |
-|---------|-----------|------------|---------|
-| `Search` — scalar/text | `QueryBuilder<T>` | client (no embedding) | Elasticsearch |
-| `Search` — `*VectorSimilar` | `QueryBuilder<T>` | **client** (pre-computed `float[]`) | Elasticsearch / Qdrant |
-| `SearchSimilar` | `SearchSimilarRequest` | **server** | Qdrant (entity collection) |
-| `SearchChunks` | `SearchChunksRequest` | **server** | Qdrant (`_chunks` collection) |
+| | C# | Java | Python | TypeScript | Go |
+|---|---|---|---|---|---|
+| Typed property expressions | ✅ | — | — | — | — |
+| Core operators (eq, neq, gt/gte/lt/lte, contains, in) | ✅ | ✅ | ✅ | ✅ | ✅ |
+| `startsWith` | ✅ | ✅ | ✅ | ✅ | ✅ |
+| `endsWith` | ✅ ¹ | ✅ | ✅ | ✅ | ✅ |
+| Field projection (`fields`) | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Joins on `Search` | ✅ | ✅ | ✅ | ✅ | ✅ |
+| `GroupByBuilder` | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Aggregate DSL builder | ✅ | proto ² | proto ² | proto ² | proto ² |
+| Typed search execution helper | `SearchAsync` | `search()` | raw stub | raw stub | raw stub |
+| Embedding/chunk schema annotations | ✅ | ✅ | ✅ | ✅ | ✅ |
 
----
+¹ Via `SearchOperator.EndsWith`; no `SearchOperators` static alias yet.
+² Construct `AggregateRequest` from generated protos.
 
-## Full examples
+## Gotchas worth knowing
 
-### Text search with filters and sorting
-
-```csharp
-var query = Query.For<Article>()
-    .Where(a => a.IsPublished, EqualTo,      true)
-    .Where(a => a.PublishedAt, GreaterThan,  DateTime.UtcNow.AddDays(-90))
-    .And(a  => a.Title,       Contains,     "AI")
-    .Or(a   => a.Body,        Contains,     "machine learning")
-    .OrderBy(a => a.PublishedAt, descending: true)
-    .Page(1, size: 20);
-
-await foreach (var r in articles.SearchAsync(query))
-    Console.WriteLine($"[{r.Score:F2}] {r.Entity.Title}");
-```
-
-### Multi-field OR across tags
-
-```csharp
-var query = Query.For<Tag>()
-    .Or(t => t.Slug, Contains, "basketball")
-    .Or(t => t.Slug, Contains, "nba")
-    .Or(t => t.Slug, Contains, "sixers")
-    .WithLogic(SearchLogic.Or)
-    .OrderBy(t => t.Label);
-
-await foreach (var r in tags.SearchAsync(query))
-    Console.WriteLine(r.Entity.Label);
-```
-
-### Server-side semantic entity search
-
-```csharp
-// No embedding needed on the client — the server uses the same model
-// as [IversonEmbedding] on Article.Title
-var request = new SearchSimilarRequest
-{
-    TypeName = "Article",
-    Property = "Title",
-    Query    = "the crossover that changed basketball",
-    TopK     = 5
-};
-
-await foreach (var r in searchClient.SearchSimilar(request).ResponseStream.ReadAllAsync())
-    Console.WriteLine($"[{r.Score:F4}] {r.Data.Fields["Title"].StringValue}");
-```
-
-### RAG passage retrieval
-
-```csharp
-// Retrieve the most relevant passages from Article.Body,
-// then use them as context for an LLM prompt
-var request = new SearchChunksRequest
-{
-    TypeName = "Article",
-    Property = "Body",
-    Query    = "how did Iverson change defensive rules in the NBA?",
-    TopK     = 3
-};
-
-var context = new List<string>();
-await foreach (var r in searchClient.SearchChunks(request).ResponseStream.ReadAllAsync())
-    context.Add(r.ChunkText);
-
-var prompt = $"""
-    Answer the question using only the passages below.
-
-    Passages:
-    {string.Join("\n\n", context.Select((t, i) => $"[{i + 1}] {t}"))}
-
-    Question: How did Iverson change defensive rules in the NBA?
-    """;
-```
+- **`Search` scores are constant (`1.0`).** StarRocks has no relevance concept; order results with `orderBy`. Real scores come from `SearchSimilar` / `SearchChunks`.
+- **`SHOULD` doesn't boost.** Under default AND logic, "should" clauses are just as required as "must" — switch to OR logic for alternatives.
+- **Dates are ISO 8601 strings** on the wire; `IN` lists are strings.
+- **Field names are case-insensitive**; with joins, qualify ambiguous fields as `TypeName.FieldName`.
+- **Go's `GroupByBuilder.Where`/`Having` take raw `*pb.SearchValue`**, unlike its `QueryBuilder` which converts scalars for you.
+- **StarRocks `STRING` columns cap at 64 KB.** Oversized text belongs in `[IversonLargeField]` / chunked properties, not filterable columns.
