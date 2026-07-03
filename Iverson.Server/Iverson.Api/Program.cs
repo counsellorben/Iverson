@@ -82,6 +82,12 @@ builder.Services.AddKafka(
 builder.Services.AddSingleton<SchemaRegistry>();
 builder.Services.AddSingleton<Iverson.Api.Reconciliation.ReconciliationService>();
 
+// Overrides AddKafka's default NullFailedPublishSink registration above — the container
+// resolves the last registration for a single-implementation constructor injection, so this
+// real sink (persists to the reconciliation queue table) is what IFailedPublishSink resolves to.
+builder.Services.AddSingleton<Iverson.Events.IFailedPublishSink, Iverson.Api.Reconciliation.PostgresFailedPublishSink>();
+builder.Services.AddHostedService<Iverson.Api.Reconciliation.ReconciliationQueueWorker>();
+
 builder.Services.AddEmbeddings(cfg);
 
 // Defense-in-depth: ConsumerResilience.RunWithRestartAsync already catches and retries
@@ -183,6 +189,7 @@ app.MapPost("/admin/reconcile/{typeName}", async (
 // ── Schema hydration ───────────────────────────────────────────────────────────
 await app.Services.GetRequiredService<IEmbeddingService>().InitializeAsync();
 await app.Services.GetRequiredService<SchemaRegistry>().LoadAsync();
+await app.Services.GetRequiredService<IPostgresRepository>().ApplySchemaAsync(Iverson.Api.Reconciliation.ReconciliationSchema.Table);
 
 // ── gRPC endpoints ─────────────────────────────────────────────────────────────
 app.MapGrpcService<ObjectMappingGrpcService>();
