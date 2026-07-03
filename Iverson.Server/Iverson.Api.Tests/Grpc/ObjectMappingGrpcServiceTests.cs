@@ -96,8 +96,8 @@ public class ObjectMappingGrpcServiceTests
     private EntityEvent? CaptureKafkaEvent(string topic)
     {
         EntityEvent? captured = null;
-        _events.When(e => e.PublishFireAndForget(topic, Arg.Any<string>(), Arg.Any<EntityEvent>()))
-               .Do(call => captured = call.ArgAt<EntityEvent>(2));
+        _events.When(e => e.PublishFireAndForget(topic, Arg.Any<string>(), Arg.Any<string>(), Arg.Any<EntityEvent>()))
+               .Do(call => captured = call.ArgAt<EntityEvent>(3));
         return captured; // populated after sut call
     }
 
@@ -225,8 +225,8 @@ public class ObjectMappingGrpcServiceTests
             .Returns(AuthorJson);
 
         EntityEvent? evt = null;
-        _events.When(e => e.PublishFireAndForget(EntityTopics.Created, Arg.Any<string>(), Arg.Any<EntityEvent>()))
-               .Do(call => evt = call.ArgAt<EntityEvent>(2));
+        _events.When(e => e.PublishFireAndForget(EntityTopics.Created, Arg.Any<string>(), Arg.Any<string>(), Arg.Any<EntityEvent>()))
+               .Do(call => evt = call.ArgAt<EntityEvent>(3));
 
         var payload = MakePayload(new() { ["Name"] = Value.ForString("Alice") });
         var response = await _sut.Post(
@@ -246,8 +246,8 @@ public class ObjectMappingGrpcServiceTests
             .Returns(AuthorJson);
 
         EntityEvent? evt = null;
-        _events.When(e => e.PublishFireAndForget(EntityTopics.Created, Arg.Any<string>(), Arg.Any<EntityEvent>()))
-               .Do(call => evt = call.ArgAt<EntityEvent>(2));
+        _events.When(e => e.PublishFireAndForget(EntityTopics.Created, Arg.Any<string>(), Arg.Any<string>(), Arg.Any<EntityEvent>()))
+               .Do(call => evt = call.ArgAt<EntityEvent>(3));
 
         var payload = MakePayload(new()
         {
@@ -288,8 +288,8 @@ public class ObjectMappingGrpcServiceTests
             .Returns(AuthorJson);
 
         EntityEvent? evt = null;
-        _events.When(e => e.PublishFireAndForget(EntityTopics.Created, Arg.Any<string>(), Arg.Any<EntityEvent>()))
-               .Do(call => evt = call.ArgAt<EntityEvent>(2));
+        _events.When(e => e.PublishFireAndForget(EntityTopics.Created, Arg.Any<string>(), Arg.Any<string>(), Arg.Any<EntityEvent>()))
+               .Do(call => evt = call.ArgAt<EntityEvent>(3));
 
         var payload = MakePayload(new()
         {
@@ -482,8 +482,8 @@ public class ObjectMappingGrpcServiceTests
         await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
 
         EntityEvent? evt = null;
-        _events.When(e => e.PublishFireAndForget(EntityTopics.Updated, Arg.Any<string>(), Arg.Any<EntityEvent>()))
-               .Do(call => evt = call.ArgAt<EntityEvent>(2));
+        _events.When(e => e.PublishFireAndForget(EntityTopics.Updated, Arg.Any<string>(), Arg.Any<string>(), Arg.Any<EntityEvent>()))
+               .Do(call => evt = call.ArgAt<EntityEvent>(3));
 
         var payload = MakePayload(new()
         {
@@ -535,8 +535,8 @@ public class ObjectMappingGrpcServiceTests
             .Returns(AuthorJson);
 
         EntityEvent? evt = null;
-        _events.When(e => e.PublishFireAndForget(EntityTopics.Deleted, Arg.Any<string>(), Arg.Any<EntityEvent>()))
-               .Do(call => evt = call.ArgAt<EntityEvent>(2));
+        _events.When(e => e.PublishFireAndForget(EntityTopics.Deleted, Arg.Any<string>(), Arg.Any<string>(), Arg.Any<EntityEvent>()))
+               .Do(call => evt = call.ArgAt<EntityEvent>(3));
 
         var response = await _sut.Delete(
             new MappingDeleteRequest { TypeName = "Author", Key = AuthorId },
@@ -564,7 +564,7 @@ public class ObjectMappingGrpcServiceTests
         response.Success.Should().BeFalse();
         response.Error.Should().Contain("not found");
         _events.DidNotReceive().PublishFireAndForget(
-            EntityTopics.Deleted, Arg.Any<string>(), Arg.Any<EntityEvent>());
+            EntityTopics.Deleted, Arg.Any<string>(), Arg.Any<string>(), Arg.Any<EntityEvent>());
     }
 
     [Fact]

@@ -42,8 +42,8 @@ public class ObjectPersistenceGrpcServiceTests
     private EntityEvent? CaptureFireAndForgetEvent(string topic)
     {
         EntityEvent? captured = null;
-        _events.When(e => e.PublishFireAndForget(topic, Arg.Any<string>(), Arg.Any<EntityEvent>()))
-               .Do(call => captured = call.ArgAt<EntityEvent>(2));
+        _events.When(e => e.PublishFireAndForget(topic, Arg.Any<string>(), Arg.Any<string>(), Arg.Any<EntityEvent>()))
+               .Do(call => captured = call.ArgAt<EntityEvent>(3));
         return captured; // populated after sut call — caller must read after invoking sut
     }
 
@@ -97,8 +97,8 @@ public class ObjectPersistenceGrpcServiceTests
         await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
 
         EntityEvent? captured = null;
-        _events.When(e => e.PublishFireAndForget(EntityTopics.Created, Arg.Any<string>(), Arg.Any<EntityEvent>()))
-               .Do(call => captured = call.ArgAt<EntityEvent>(2));
+        _events.When(e => e.PublishFireAndForget(EntityTopics.Created, Arg.Any<string>(), Arg.Any<string>(), Arg.Any<EntityEvent>()))
+               .Do(call => captured = call.ArgAt<EntityEvent>(3));
 
         var payload = MakePayload(new() { ["Name"] = Value.ForString("Alice") });
         await _sut.Post(new PersistRequest { TypeName = "Author", Payload = payload }, TestServerCallContext.Create());
@@ -113,8 +113,8 @@ public class ObjectPersistenceGrpcServiceTests
         await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
 
         EntityEvent? captured = null;
-        _events.When(e => e.PublishFireAndForget(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<EntityEvent>()))
-               .Do(call => captured = call.ArgAt<EntityEvent>(2));
+        _events.When(e => e.PublishFireAndForget(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<string>(), Arg.Any<EntityEvent>()))
+               .Do(call => captured = call.ArgAt<EntityEvent>(3));
 
         var payload = MakePayload(new() { ["Name"] = Value.ForString("Alice") });
         await _sut.Post(new PersistRequest { TypeName = "Author", Payload = payload }, TestServerCallContext.Create());
@@ -128,8 +128,8 @@ public class ObjectPersistenceGrpcServiceTests
         await _registry.RegisterAsync(SchemaFixtures.ArticleWithOneToManySchema());
 
         EntityEvent? captured = null;
-        _events.When(e => e.PublishFireAndForget(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<EntityEvent>()))
-               .Do(call => captured = call.ArgAt<EntityEvent>(2));
+        _events.When(e => e.PublishFireAndForget(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<string>(), Arg.Any<EntityEvent>()))
+               .Do(call => captured = call.ArgAt<EntityEvent>(3));
 
         var payload = MakePayload(new()
         {
@@ -147,8 +147,8 @@ public class ObjectPersistenceGrpcServiceTests
         await _registry.RegisterAsync(SchemaFixtures.ArticleSchema());
 
         EntityEvent? captured = null;
-        _events.When(e => e.PublishFireAndForget(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<EntityEvent>()))
-               .Do(call => captured = call.ArgAt<EntityEvent>(2));
+        _events.When(e => e.PublishFireAndForget(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<string>(), Arg.Any<EntityEvent>()))
+               .Do(call => captured = call.ArgAt<EntityEvent>(3));
 
         var payload = MakePayload(new()
         {
@@ -167,8 +167,8 @@ public class ObjectPersistenceGrpcServiceTests
         await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
 
         EntityEvent? captured = null;
-        _events.When(e => e.PublishFireAndForget(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<EntityEvent>()))
-               .Do(call => captured = call.ArgAt<EntityEvent>(2));
+        _events.When(e => e.PublishFireAndForget(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<string>(), Arg.Any<EntityEvent>()))
+               .Do(call => captured = call.ArgAt<EntityEvent>(3));
 
         var payload = MakePayload(new() { ["Name"] = Value.ForString("Alice") });
         await _sut.Post(new PersistRequest { TypeName = "Author", Payload = payload }, TestServerCallContext.Create());
@@ -240,8 +240,8 @@ public class ObjectPersistenceGrpcServiceTests
         await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
 
         EntityEvent? captured = null;
-        _events.When(e => e.PublishFireAndForget(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<EntityEvent>()))
-               .Do(call => captured = call.ArgAt<EntityEvent>(2));
+        _events.When(e => e.PublishFireAndForget(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<string>(), Arg.Any<EntityEvent>()))
+               .Do(call => captured = call.ArgAt<EntityEvent>(3));
 
         var payload = MakePayload(new()
         {

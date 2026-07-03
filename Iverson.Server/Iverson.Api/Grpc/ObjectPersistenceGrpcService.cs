@@ -47,6 +47,7 @@ public sealed class ObjectPersistenceGrpcService(
 
         events.PublishFireAndForget(
             EntityTopics.Created,
+            request.TypeName,
             key,
             new EntityEvent(
                 request.TypeName,
@@ -89,6 +90,7 @@ public sealed class ObjectPersistenceGrpcService(
 
         events.PublishFireAndForget(
             EntityTopics.Updated,
+            request.TypeName,
             key,
             new EntityEvent(
                 request.TypeName,

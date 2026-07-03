@@ -122,6 +122,7 @@ public sealed class ObjectMappingGrpcService(
 
         _events.PublishFireAndForget(
             EntityTopics.Created,
+            request.TypeName,
             key,
             new EntityEvent(
                 request.TypeName,
@@ -157,6 +158,7 @@ public sealed class ObjectMappingGrpcService(
 
         _events.PublishFireAndForget(
             EntityTopics.Updated,
+            request.TypeName,
             key,
             new EntityEvent(
                 request.TypeName,
@@ -192,6 +194,7 @@ public sealed class ObjectMappingGrpcService(
 
         _events.PublishFireAndForget(
             EntityTopics.Deleted,
+            request.TypeName,
             request.Key,
             new EntityEvent(
                 request.TypeName,
