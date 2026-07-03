@@ -246,6 +246,14 @@ class TestJoin:
         )
         assert req.joins[0].kind == pb.JoinKind.LEFT
 
+    def test_join_with_full_kind(self):
+        req = (
+            QueryBuilder("LineItem")
+            .join("order_id", "Order", "id", kind=pb.JoinKind.FULL)
+            .build()
+        )
+        assert req.joins[0].kind == pb.JoinKind.FULL
+
 
 class TestGroupByBuilder:
     def test_keys_adds_group_by_fields(self):
@@ -301,6 +309,10 @@ class TestGroupByBuilder:
         assert join.left_field == "order_id"
         assert join.right_field == "id"
         assert join.kind == pb.JoinKind.INNER
+
+    def test_join_with_full_kind(self):
+        req = group_by("LineItem").join("order_id", "Order", "id", kind=pb.JoinKind.FULL).build()
+        assert req.joins[0].kind == pb.JoinKind.FULL
 
     def test_build_sets_trace_id(self):
         req = group_by("LineItem").build(trace_id="trace-123")
