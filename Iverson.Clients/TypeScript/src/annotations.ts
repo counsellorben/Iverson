@@ -25,6 +25,8 @@ const IVERSON_ENTITY_KEY   = Symbol('iverson:entity');
 const IVERSON_KEY_KEY      = Symbol('iverson:key');
 const IVERSON_SEARCH_KEYS  = Symbol('iverson:search_keys');
 const IVERSON_LARGE_FIELDS = Symbol('iverson:large_fields');
+const IVERSON_EMBEDDING_FIELDS = Symbol('iverson:embedding_fields');
+const IVERSON_CHUNK_FIELDS     = Symbol('iverson:chunk_fields');
 const IVERSON_RELATIONS    = Symbol('iverson:relations');
 
 // ── Public relation kind constants ─────────────────────────────────────────────
@@ -95,6 +97,42 @@ export function IversonLargeField(): PropertyDecorator {
 
 export function getLargeFields(target: Function): string[] {
     return Reflect.getMetadata(IVERSON_LARGE_FIELDS, target) ?? [];
+}
+
+// ── @IversonEmbedding() ──────────────────────────────────────────────────────
+
+export function IversonEmbedding(): PropertyDecorator {
+    return (target, propertyKey) => {
+        const existing: string[] =
+            Reflect.getMetadata(IVERSON_EMBEDDING_FIELDS, target.constructor) ?? [];
+        existing.push(String(propertyKey));
+        Reflect.defineMetadata(IVERSON_EMBEDDING_FIELDS, existing, target.constructor);
+    };
+}
+
+export function getEmbeddingFields(target: Function): string[] {
+    return Reflect.getMetadata(IVERSON_EMBEDDING_FIELDS, target) ?? [];
+}
+
+// ── @IversonChunk(maxTokens, overlap) ────────────────────────────────────────
+
+export interface ChunkMeta {
+    field: string;
+    maxTokens: number;
+    overlap: number;
+}
+
+export function IversonChunk(maxTokens: number = 512, overlap: number = 64): PropertyDecorator {
+    return (target, propertyKey) => {
+        const existing: ChunkMeta[] =
+            Reflect.getMetadata(IVERSON_CHUNK_FIELDS, target.constructor) ?? [];
+        existing.push({ field: String(propertyKey), maxTokens, overlap });
+        Reflect.defineMetadata(IVERSON_CHUNK_FIELDS, existing, target.constructor);
+    };
+}
+
+export function getChunkFields(target: Function): ChunkMeta[] {
+    return Reflect.getMetadata(IVERSON_CHUNK_FIELDS, target) ?? [];
 }
 
 // ── Relation decorators ────────────────────────────────────────────────────────

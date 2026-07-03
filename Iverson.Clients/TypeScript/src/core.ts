@@ -31,6 +31,8 @@ import {
 } from '../generated/object_retrieval.js';
 
 import {
+    getChunkFields,
+    getEmbeddingFields,
     getKeyField,
     getLargeFields,
     getRelations,
@@ -132,6 +134,8 @@ export class SchemaRegistrar {
         const searchKeys = getSearchKeys(cls);
         const searchKeysByField = new Map(searchKeys.map(sk => [sk.field, sk.order]));
         const largeFields = new Set(getLargeFields(cls));
+        const embeddingFields = new Set(getEmbeddingFields(cls));
+        const chunkFieldsByName = new Map(getChunkFields(cls).map(c => [c.field, c]));
         const relations = getRelations(cls);
         const relationFields = new Set(relations.map(r => r.field));
 
@@ -153,6 +157,8 @@ export class SchemaRegistrar {
             const isKey = fieldName === keyField;
             const isSearchKey = searchKeysByField.has(fieldName);
             const isLargeField = largeFields.has(fieldName);
+            const isEmbedding = embeddingFields.has(fieldName);
+            const chunkMeta = chunkFieldsByName.get(fieldName);
 
             properties.push({
                 name: toPascalCase(fieldName),
@@ -160,12 +166,12 @@ export class SchemaRegistrar {
                 isKey,
                 isNullable: !isKey,
                 isArray: false,
-                isEmbedding: false,
+                isEmbedding,
                 vectorDim: 0,
                 modelId: '',
-                isChunk: false,
-                chunkMaxTokens: 0,
-                chunkOverlap: 0,
+                isChunk: chunkMeta !== undefined,
+                chunkMaxTokens: chunkMeta?.maxTokens ?? 0,
+                chunkOverlap: chunkMeta?.overlap ?? 0,
                 chunkModelId: '',
                 chunkVectorDim: 0,
                 isSearchKey,

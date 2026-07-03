@@ -6,6 +6,8 @@ export {
     IversonKey,
     IversonSearchKey,
     IversonLargeField,
+    IversonEmbedding,
+    IversonChunk,
     ManyToOne,
     ManyToMany,
     OneToMany,
@@ -13,11 +15,13 @@ export {
     getKeyField,
     getSearchKeys,
     getLargeFields,
+    getEmbeddingFields,
+    getChunkFields,
     getRelations,
     isIversonEntity,
 } from './annotations.js';
 
-export type { RelationMeta, SearchKeyMeta, RelationKindString } from './annotations.js';
+export type { RelationMeta, SearchKeyMeta, RelationKindString, ChunkMeta } from './annotations.js';
 
 export { IversonClient, EntityCoordinator, SchemaRegistrar } from './core.js';
 

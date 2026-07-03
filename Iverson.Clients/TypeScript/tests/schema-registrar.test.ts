@@ -9,6 +9,8 @@ import {
     IversonKey,
     IversonSearchKey,
     IversonLargeField,
+    IversonEmbedding,
+    IversonChunk,
     ManyToOne,
     OneToMany,
 } from '../src/annotations.js';
@@ -36,7 +38,11 @@ class RegArticle {
     @IversonKey()
     id: string = '';
 
+    @IversonEmbedding()
     title: string = '';
+
+    @IversonChunk(256, 32)
+    summary: string = '';
 
     @IversonLargeField()
     body: string = '';
@@ -153,6 +159,28 @@ describe('SchemaRegistrar', () => {
 
             expect(props['Body']).toBeDefined();
             expect(props['Body'].isLargeField).toBe(true);
+        });
+
+        it('marks title as isEmbedding', () => {
+            const stub = makeStub();
+            const registrar = new SchemaRegistrar(stub, [RegArticle]);
+            const request = registrar._buildRequest(RegArticle);
+            const props = Object.fromEntries(
+                request.rootType!.properties.map(p => [p.name, p]),
+            );
+            expect(props['Title'].isEmbedding).toBe(true);
+        });
+
+        it('marks summary as isChunk with maxTokens/overlap', () => {
+            const stub = makeStub();
+            const registrar = new SchemaRegistrar(stub, [RegArticle]);
+            const request = registrar._buildRequest(RegArticle);
+            const props = Object.fromEntries(
+                request.rootType!.properties.map(p => [p.name, p]),
+            );
+            expect(props['Summary'].isChunk).toBe(true);
+            expect(props['Summary'].chunkMaxTokens).toBe(256);
+            expect(props['Summary'].chunkOverlap).toBe(32);
         });
 
         it('marks category as isSearchKey with order 0', () => {
