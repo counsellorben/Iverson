@@ -1,0 +1,30 @@
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: {{ .Release.Name }}-postgres
+spec:
+  instances: {{ .Values.instances }}
+  enableSuperuserAccess: false   # least privilege — api never authenticates as `postgres`, only the app user below
+  storage:
+    size: {{ .Values.storageSize }}
+    storageClass: {{ .Values.storageClassName | quote }}
+  resources:
+    requests:
+      cpu: {{ .Values.resources.requests.cpu | quote }}
+      memory: {{ .Values.resources.requests.memory | quote }}
+    limits:
+      cpu: {{ .Values.resources.limits.cpu | quote }}
+      memory: {{ .Values.resources.limits.memory | quote }}
+  affinity:
+    nodeSelector:
+      {{- toYaml .Values.nodeSelector | nindent 6 }}
+  bootstrap:
+    initdb:
+      database: iverson
+      owner: iverson
+  postgresql:
+    parameters:
+      max_connections: "200"
+      ssl: "on"   # CloudNativePG auto-generates and mounts the server cert/key this refers to; no extra template config needed
+  backup:
+    retentionPolicy: "7d"

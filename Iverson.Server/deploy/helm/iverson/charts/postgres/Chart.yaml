@@ -1,0 +1,6 @@
+apiVersion: v2
+name: postgres
+description: CloudNativePG Cluster for Iverson's PostgreSQL system of record
+type: application
+version: 0.1.0
+appVersion: "1.0.0"

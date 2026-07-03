@@ -1,0 +1,7 @@
+instances: 2
+storageSize: 1500Gi
+storageClassName: ""
+resources:
+  requests: { cpu: "8", memory: "64Gi" }
+  limits: { cpu: "8", memory: "64Gi" }
+nodeSelector: {}
