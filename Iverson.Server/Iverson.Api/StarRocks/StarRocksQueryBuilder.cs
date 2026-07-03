@@ -513,6 +513,7 @@ internal static class StarRocksQueryBuilder
             {
                 JoinKind.Left  => "LEFT",
                 JoinKind.Right => "RIGHT",
+                JoinKind.Full  => "FULL",
                 _              => "INNER"
             };
 

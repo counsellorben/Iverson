@@ -588,6 +588,30 @@ public class StarRocksQueryBuilderTests
     }
 
     [Fact]
+    public void BuildFromWithJoins_FullJoin_ProducesJoinClause()
+    {
+        var registry = BuildRegistry(AuthorSchema(), SchemaFixtures.ArticleSchema());
+
+        var joins = new List<JoinSpec>
+        {
+            new()
+            {
+                LeftType   = "Author",
+                RightType  = "Article",
+                LeftField  = "Id",
+                RightField = "Id",
+                Kind       = JoinKind.Full
+            }
+        };
+
+        var from = StarRocksQueryBuilder.BuildFromWithJoins(AuthorSchema(), joins, registry, out var tableMap);
+
+        from.Should().Be("FROM `authors` FULL JOIN `articles` ON `authors`.`Id` = `articles`.`Id`");
+        tableMap.Should().ContainKey("Author");
+        tableMap.Should().ContainKey("Article");
+    }
+
+    [Fact]
     public void BuildFromWithJoins_UnknownType_ThrowsInvalidArgument()
     {
         var registry = BuildRegistry(AuthorSchema());
