@@ -490,4 +490,15 @@ public sealed class QueryBuilderTests
         join.RightField.Should().Be("Name");
         join.Kind.Should().Be(JoinKind.Left);
     }
+
+    [Fact]
+    public void Join_AddsJoinSpec_WithFullKind()
+    {
+        var req = Query.For<Article>()
+            .Join<AuthorProfile>(x => x.Author, a => a.Name, JoinKind.Full)
+            .BuildAggregate();
+
+        var join = req.Joins.Should().ContainSingle().Subject;
+        join.Kind.Should().Be(JoinKind.Full);
+    }
 }

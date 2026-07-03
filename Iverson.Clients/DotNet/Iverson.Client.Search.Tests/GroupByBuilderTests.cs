@@ -97,6 +97,17 @@ public sealed class GroupByBuilderTests
     }
 
     [Fact]
+    public void Join_WithFullKind_SetsKind()
+    {
+        var req = Query.GroupBy("LineItem")
+            .Join("OrderId", "Orders", "OrderId", JoinKind.Full)
+            .Build();
+
+        var join = req.Joins.Should().ContainSingle().Subject;
+        join.Kind.Should().Be(JoinKind.Full);
+    }
+
+    [Fact]
     public void Join_WithoutExplicitKind_DefaultsToInner()
     {
         var req = Query.GroupBy("LineItem")
