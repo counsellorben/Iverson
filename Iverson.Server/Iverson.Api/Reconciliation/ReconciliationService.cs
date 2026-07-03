@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Text.Json;
 using Iverson.Api.Schema;
 using Iverson.Events;
@@ -32,6 +33,7 @@ internal sealed class ReconciliationService(
             $"""SELECT row_to_json(t)::text FROM "{schema.TableName}" t""", null);
 
         var targetStores = StoreTargeting.DetermineTargetStores(schema);
+        var traceId = Activity.Current?.TraceId.ToString() ?? string.Empty;
         var count = 0;
 
         foreach (var rowJson in rowJsons)
@@ -42,7 +44,7 @@ internal sealed class ReconciliationService(
             await events.ProduceAsync(
                 EntityTopics.Updated,
                 key,
-                new EntityEvent(typeName, key, rowJson, string.Empty, "1", DateTimeOffset.UtcNow, targetStores));
+                new EntityEvent(typeName, key, rowJson, traceId, "1", DateTimeOffset.UtcNow, targetStores));
             count++;
         }
 
