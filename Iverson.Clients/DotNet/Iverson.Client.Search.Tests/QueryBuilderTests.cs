@@ -279,6 +279,16 @@ public sealed class QueryBuilderTests
         req.PageSize.Should().Be(50);
     }
 
+    [Fact]
+    public void Fields_RestrictsResponseToNamedProperties()
+    {
+        var req = Query.For<Article>()
+            .Fields(a => a.Title, a => a.PublishedAt)
+            .Build();
+
+        req.Fields.Should().Equal("Title", "PublishedAt");
+    }
+
     // ── Build: logic ──────────────────────────────────────────────────────────
 
     [Fact]

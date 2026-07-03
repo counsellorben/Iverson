@@ -13,6 +13,7 @@ public sealed class QueryBuilder<T> where T : class
     private readonly List<SearchSort>      _sorts        = [];
     private readonly List<AggregationSpec> _aggregations = [];
     private readonly List<JoinSpec>        _joins        = [];
+    private readonly List<string>          _fields       = [];
     private SearchLogic _logic    = SearchLogic.And;
     private int         _page     = 0;
     private int         _pageSize = 20;
@@ -83,6 +84,13 @@ public sealed class QueryBuilder<T> where T : class
     {
         _page     = page;
         _pageSize = size;
+        return this;
+    }
+
+    /// <summary>Restricts the response to only the named properties. Empty (default) returns all fields.</summary>
+    public QueryBuilder<T> Fields(params Expression<Func<T, object>>[] properties)
+    {
+        _fields.AddRange(properties.Select(PropertyNameObj));
         return this;
     }
 
@@ -194,6 +202,7 @@ public sealed class QueryBuilder<T> where T : class
             Query    = query
         };
         request.Joins.AddRange(_joins);
+        request.Fields.AddRange(_fields);
         return request;
     }
 
