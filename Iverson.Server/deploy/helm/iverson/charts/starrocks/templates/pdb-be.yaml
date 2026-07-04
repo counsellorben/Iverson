@@ -1,0 +1,12 @@
+{{- if gt (.Values.be.replicas | int) 1 }}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ .Release.Name }}-starrocks-be
+spec:
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      app.starrocks.ownerreference/name: {{ .Release.Name }}-starrocks-be
+      app.kubernetes.io/component: be
+{{- end }}
