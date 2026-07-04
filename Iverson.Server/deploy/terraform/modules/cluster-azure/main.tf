@@ -32,9 +32,11 @@ resource "azurerm_kubernetes_cluster" "this" {
   sku_tier            = "Standard"
 
   default_node_pool {
-    name                = "general"
-    vm_size             = var.general_vm_size
-    vnet_subnet_id      = azurerm_subnet.aks.id
+    name           = "general"
+    vm_size        = var.general_vm_size
+    vnet_subnet_id = azurerm_subnet.aks.id
+    # enable_auto_scaling is the azurerm ~> 3.90 (v3.x) attribute name; a future
+    # bump to azurerm ~> 4.x must rename this back to auto_scaling_enabled.
     enable_auto_scaling = true
     min_count           = var.general_min_count
     max_count           = var.general_max_count
