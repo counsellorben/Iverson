@@ -4,3 +4,4 @@ storageClassName: ""
 resources:
   requests: { cpu: "2", memory: "8Gi" }
 nodeSelector: {}
+tolerations: []

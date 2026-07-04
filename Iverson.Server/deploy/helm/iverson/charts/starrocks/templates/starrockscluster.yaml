@@ -18,6 +18,8 @@ spec:
         storageSize: {{ .Values.fe.storageSize | quote }}
     nodeSelector:
       {{- toYaml .Values.fe.nodeSelector | nindent 6 }}
+    tolerations:
+      {{- toYaml .Values.fe.tolerations | nindent 6 }}
   starRocksBeSpec:
     replicas: {{ .Values.be.replicas }}
     resourceRequirements:
@@ -33,3 +35,5 @@ spec:
         storageSize: {{ .Values.be.storageSize | quote }}
     nodeSelector:
       {{- toYaml .Values.be.nodeSelector | nindent 6 }}
+    tolerations:
+      {{- toYaml .Values.be.tolerations | nindent 6 }}

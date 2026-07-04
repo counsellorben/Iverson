@@ -23,6 +23,8 @@ spec:
       automountServiceAccountToken: false
       nodeSelector:
         {{- toYaml .Values.nodeSelector | nindent 8 }}
+      tolerations:
+        {{- toYaml .Values.tolerations | nindent 8 }}
       securityContext:
         runAsNonRoot: true
         runAsUser: 1000

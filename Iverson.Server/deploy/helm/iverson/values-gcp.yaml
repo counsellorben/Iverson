@@ -6,30 +6,60 @@ postgres:
   storageClassName: "iverson-postgres"
   nodeSelector:
     iverson.io/node-pool: postgres
+  tolerations:
+    - key: "iverson.io/node-pool"
+      operator: "Equal"
+      value: "postgres"
+      effect: "NoSchedule"
 
 kafka:
   storageClassName: "iverson-kafka"
   nodeSelector:
     iverson.io/node-pool: kafka
+  tolerations:
+    - key: "iverson.io/node-pool"
+      operator: "Equal"
+      value: "kafka"
+      effect: "NoSchedule"
 
 starrocks:
   storageClassName: "iverson-starrocks"
   fe:
     nodeSelector:
       iverson.io/node-pool: starrocks-fe
+    tolerations:
+      - key: "iverson.io/node-pool"
+        operator: "Equal"
+        value: "starrocks-fe"
+        effect: "NoSchedule"
   be:
     nodeSelector:
       iverson.io/node-pool: starrocks-be
+    tolerations:
+      - key: "iverson.io/node-pool"
+        operator: "Equal"
+        value: "starrocks-be"
+        effect: "NoSchedule"
 
 qdrant:
   storageClassName: "iverson-qdrant"
   nodeSelector:
     iverson.io/node-pool: qdrant
+  tolerations:
+    - key: "iverson.io/node-pool"
+      operator: "Equal"
+      value: "qdrant"
+      effect: "NoSchedule"
 
 ollama:
   storageClassName: "iverson-ollama"
   nodeSelector:
     iverson.io/node-pool: ollama
+  tolerations:
+    - key: "iverson.io/node-pool"
+      operator: "Equal"
+      value: "ollama"
+      effect: "NoSchedule"
 
 api:
   ingress:

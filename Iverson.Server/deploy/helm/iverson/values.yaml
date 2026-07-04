@@ -21,6 +21,7 @@ postgres:
     requests: { cpu: "8", memory: "64Gi" }
     limits: { cpu: "8", memory: "64Gi" }
   nodeSelector: {}
+  tolerations: []
 
 kafka:
   replicas: 3
@@ -30,6 +31,7 @@ kafka:
     requests: { cpu: "2", memory: "8Gi" }
     limits: { cpu: "2", memory: "8Gi" }
   nodeSelector: {}
+  tolerations: []
 
 starrocks:
   storageClassName: ""
@@ -40,6 +42,7 @@ starrocks:
       requests: { cpu: "4", memory: "32Gi" }
       limits: { cpu: "4", memory: "32Gi" }
     nodeSelector: {}
+    tolerations: []
   be:
     replicas: 2
     storageSize: 500Gi
@@ -47,6 +50,7 @@ starrocks:
       requests: { cpu: "8", memory: "64Gi" }
       limits: { cpu: "8", memory: "64Gi" }
     nodeSelector: {}
+    tolerations: []
 
 qdrant:
   replicas: 2
@@ -57,6 +61,7 @@ qdrant:
     requests: { cpu: "8", memory: "64Gi" }
     limits: { cpu: "8", memory: "64Gi" }
   nodeSelector: {}
+  tolerations: []
 
 ollama:
   replicas: 2
@@ -67,6 +72,7 @@ ollama:
     requests: { cpu: "8", memory: "16Gi" }
     limits: { cpu: "8", memory: "16Gi" }
   nodeSelector: {}
+  tolerations: []
 
 api:
   replicas: 2

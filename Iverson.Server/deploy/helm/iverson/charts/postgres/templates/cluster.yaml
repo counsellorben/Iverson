@@ -18,6 +18,8 @@ spec:
   affinity:
     nodeSelector:
       {{- toYaml .Values.nodeSelector | nindent 6 }}
+    tolerations:
+      {{- toYaml .Values.tolerations | nindent 6 }}
   bootstrap:
     initdb:
       database: iverson

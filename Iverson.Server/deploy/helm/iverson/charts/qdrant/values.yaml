@@ -6,3 +6,4 @@ resources:
   requests: { cpu: "8", memory: "64Gi" }
   limits: { cpu: "8", memory: "64Gi" }
 nodeSelector: {}
+tolerations: []

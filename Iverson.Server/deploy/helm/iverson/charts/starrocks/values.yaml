@@ -6,6 +6,7 @@ fe:
     requests: { cpu: "4", memory: "32Gi" }
     limits: { cpu: "4", memory: "32Gi" }
   nodeSelector: {}
+  tolerations: []
 be:
   replicas: 2
   storageSize: 500Gi
@@ -13,3 +14,4 @@ be:
     requests: { cpu: "8", memory: "64Gi" }
     limits: { cpu: "8", memory: "64Gi" }
   nodeSelector: {}
+  tolerations: []
