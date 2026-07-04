@@ -79,16 +79,6 @@ func (q *QueryBuilder) Where(field string) *FieldCondition {
 	return &FieldCondition{qb: q, field: field, clauseType: pb.SearchClauseType_FILTER}
 }
 
-// Must begins a MUST clause (for Qdrant-style boolean queries).
-func (q *QueryBuilder) Must(field string) *FieldCondition {
-	return &FieldCondition{qb: q, field: field, clauseType: pb.SearchClauseType_MUST}
-}
-
-// Should begins a SHOULD clause.
-func (q *QueryBuilder) Should(field string) *FieldCondition {
-	return &FieldCondition{qb: q, field: field, clauseType: pb.SearchClauseType_SHOULD}
-}
-
 // MustNot begins a MUST_NOT clause.
 func (q *QueryBuilder) MustNot(field string) *FieldCondition {
 	return &FieldCondition{qb: q, field: field, clauseType: pb.SearchClauseType_MUST_NOT}

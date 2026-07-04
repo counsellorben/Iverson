@@ -312,26 +312,6 @@ func TestQueryBuilder_ClauseType_FILTER(t *testing.T) {
 	}
 }
 
-func TestQueryBuilder_Must(t *testing.T) {
-	req, err := iverson.NewQuery("Article").Must("Category").Eq("tech").Build()
-	if err != nil {
-		t.Fatalf("Build: %v", err)
-	}
-	if req.Query.Clauses[0].ClauseType != pb.SearchClauseType_MUST {
-		t.Errorf("expected MUST clause type, got %v", req.Query.Clauses[0].ClauseType)
-	}
-}
-
-func TestQueryBuilder_Should(t *testing.T) {
-	req, err := iverson.NewQuery("Article").Should("Category").Eq("tech").Build()
-	if err != nil {
-		t.Fatalf("Build: %v", err)
-	}
-	if req.Query.Clauses[0].ClauseType != pb.SearchClauseType_SHOULD {
-		t.Errorf("expected SHOULD clause type, got %v", req.Query.Clauses[0].ClauseType)
-	}
-}
-
 func TestQueryBuilder_MustNot(t *testing.T) {
 	req, err := iverson.NewQuery("Article").MustNot("Category").Eq("spam").Build()
 	if err != nil {
