@@ -172,16 +172,6 @@ export class QueryBuilder {
         return new FieldCondition(this, field, SearchClauseType.FILTER);
     }
 
-    /** Start a MUST clause (required for a match). */
-    must(field: string): FieldCondition {
-        return new FieldCondition(this, field, SearchClauseType.MUST);
-    }
-
-    /** Start a SHOULD clause (boosts score but not required). */
-    should(field: string): FieldCondition {
-        return new FieldCondition(this, field, SearchClauseType.SHOULD);
-    }
-
     /** Start a MUST_NOT clause (excludes matches). */
     mustNot(field: string): FieldCondition {
         return new FieldCondition(this, field, SearchClauseType.MUST_NOT);

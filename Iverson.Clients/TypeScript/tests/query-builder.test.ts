@@ -112,16 +112,6 @@ describe('QueryBuilder', () => {
     });
 
     describe('clause types', () => {
-        it('must() sets MUST clause type', () => {
-            const req = new QueryBuilder('Article').must('category').eq('tech').build();
-            expect(req.query!.clauses[0].clauseType).toBe(SearchClauseType.MUST);
-        });
-
-        it('should() sets SHOULD clause type', () => {
-            const req = new QueryBuilder('Article').should('category').eq('tech').build();
-            expect(req.query!.clauses[0].clauseType).toBe(SearchClauseType.SHOULD);
-        });
-
         it('mustNot() sets MUST_NOT clause type', () => {
             const req = new QueryBuilder('Article').mustNot('category').eq('spam').build();
             expect(req.query!.clauses[0].clauseType).toBe(SearchClauseType.MUST_NOT);
