@@ -407,4 +407,102 @@ public sealed class StarRocksIntegrationTests(StarRocksContainerFixture fixture)
         // (as in StarRocksQueryBuilderTests.cs) cannot prove this, only live execution can.
         rows.Should().HaveCount(2);
     }
+
+    [Fact]
+    public async Task BuildAggregate_Terms_ExecutesAndReturnsBucketCounts()
+    {
+        var table = UniqueTable();
+        await CreateAndSeedAuthorsAsync(_repo, table,
+            ("11111111-1111-1111-1111-111111111111", "Alice", null, null, null),
+            ("22222222-2222-2222-2222-222222222222", "Alice", null, null, null),
+            ("33333333-3333-3333-3333-333333333333", "Bob",   null, null, null));
+
+        var spec = new AggregationDescriptor("by_name", AggregationKind.Terms, "Name", Size: 10);
+        var (sql, param) = StarRocksQueryBuilder.BuildAggregate(table, AuthorSchema(table), null, spec);
+        var rows = (await _repo.QueryAsync<dynamic>(sql, param)).ToList();
+
+        rows.Should().HaveCount(2);
+        var aliceBucket = rows.Single(r => (string)r.bucket_key == "Alice");
+        ((long)aliceBucket.doc_count).Should().Be(2);
+    }
+
+    [Fact]
+    public async Task BuildAggregate_Range_ExecutesAndReturnsCorrectBuckets()
+    {
+        var table = UniqueTable();
+        await CreateAndSeedAuthorsAsync(_repo, table,
+            ("11111111-1111-1111-1111-111111111111", "Alice", null, 2, null),
+            ("22222222-2222-2222-2222-222222222222", "Bob",   null, 5, null),
+            ("33333333-3333-3333-3333-333333333333", "Carl",  null, 9, null));
+
+        var spec = new AggregationDescriptor(
+            "rating_ranges", AggregationKind.Range, "Rating",
+            RangeBuckets:
+            [
+                new RangeBucketDescriptor("low",  null, 3),
+                new RangeBucketDescriptor("mid",  3,    7),
+                new RangeBucketDescriptor("high", 7,    null),
+            ]);
+        var (sql, param) = StarRocksQueryBuilder.BuildAggregate(table, AuthorSchema(table), null, spec);
+        var rows = (await _repo.QueryAsync<dynamic>(sql, param)).ToList();
+
+        rows.Should().HaveCount(3);
+        // Casting to (long) before .Should() is required here: rows.Single(...) and its
+        // .doc_count member access are both `dynamic`, and the C# runtime binder does not
+        // resolve extension methods (like FluentAssertions' .Should()) against a dynamic
+        // receiver — it only looks for real instance members on the runtime type, so an
+        // uncast dynamic.Should() throws RuntimeBinderException: "'long' does not contain a
+        // definition for 'Should'". The Terms test above already worked around this with an
+        // explicit (long) cast; the brief's Range/DateHistogram examples omitted it.
+        ((long)rows.Single(r => (string)r.bucket_key == "low").doc_count).Should().Be(1L);
+        ((long)rows.Single(r => (string)r.bucket_key == "mid").doc_count).Should().Be(1L);
+        ((long)rows.Single(r => (string)r.bucket_key == "high").doc_count).Should().Be(1L);
+    }
+
+    [Fact]
+    public async Task BuildAggregate_DateHistogram_Month_ExecutesAndGroupsCorrectly()
+    {
+        var table = UniqueTable();
+        await CreateAndSeedAuthorsAsync(_repo, table,
+            ("11111111-1111-1111-1111-111111111111", "Alice", null, null, "2026-01-15 00:00:00"),
+            ("22222222-2222-2222-2222-222222222222", "Bob",   null, null, "2026-01-20 00:00:00"),
+            ("33333333-3333-3333-3333-333333333333", "Carl",  null, null, "2026-02-01 00:00:00"));
+
+        var spec = new AggregationDescriptor(
+            "by_month", AggregationKind.DateHistogram, "PublishedAt",
+            CalendarInterval: "month");
+        var (sql, param) = StarRocksQueryBuilder.BuildAggregate(table, AuthorSchema(table), null, spec);
+        var rows = (await _repo.QueryAsync<dynamic>(sql, param)).ToList();
+
+        rows.Should().HaveCount(2);
+        // See the (long) cast comment in BuildAggregate_Range_ExecutesAndReturnsCorrectBuckets
+        // above — an uncast dynamic .doc_count.Should() throws RuntimeBinderException.
+        ((long)rows.Single(r => (string)r.bucket_key == "2026-01").doc_count).Should().Be(2L);
+        ((long)rows.Single(r => (string)r.bucket_key == "2026-02").doc_count).Should().Be(1L);
+    }
+
+    [Fact]
+    public async Task BuildAggregate_Having_ExecutesAndFiltersAggregatedResults()
+    {
+        var table = UniqueTable();
+        await CreateAndSeedAuthorsAsync(_repo, table,
+            ("11111111-1111-1111-1111-111111111111", "Alice", null, null, null),
+            ("22222222-2222-2222-2222-222222222222", "Alice", null, null, null),
+            ("33333333-3333-3333-3333-333333333333", "Bob",   null, null, null));
+
+        var spec = new AggregationDescriptor("by_name", AggregationKind.Terms, "Name", Size: 10);
+        var having = new SearchQuery();
+        having.Clauses.Add(new SearchClause
+        {
+            Property = "doc_count", Operator = SearchOperator.GreaterThan,
+            Value = new SearchValue { NumberVal = 1 }, ClauseType = SearchClauseType.Filter
+        });
+
+        var (sql, param) = StarRocksQueryBuilder.BuildAggregate(table, AuthorSchema(table), null, spec, having);
+        var rows = (await _repo.QueryAsync<dynamic>(sql, param)).ToList();
+
+        // Only "Alice" (count=2) clears the HAVING doc_count > 1 bar; "Bob" (count=1) doesn't.
+        rows.Should().ContainSingle();
+        ((string)rows[0].bucket_key).Should().Be("Alice");
+    }
 }
