@@ -33,6 +33,9 @@ spec:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
             capabilities: { drop: ["ALL"] }
+          resources:
+            requests: { cpu: "100m", memory: "128Mi", ephemeral-storage: "256Mi" }
+            limits: { cpu: "250m", memory: "256Mi", ephemeral-storage: "512Mi" }
           env:
             - name: ROOT_PW
               valueFrom: { secretKeyRef: { name: {{ .Release.Name }}-starrocks-app, key: root-password } }

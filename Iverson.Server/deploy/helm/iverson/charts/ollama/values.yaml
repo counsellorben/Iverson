@@ -3,7 +3,7 @@ storageSize: 20Gi
 storageClassName: ""
 imageTag: "0.5.0"
 resources:
-  requests: { cpu: "8", memory: "16Gi" }
-  limits: { cpu: "8", memory: "16Gi" }
+  requests: { cpu: "8", memory: "16Gi", ephemeral-storage: "2Gi" }
+  limits: { cpu: "8", memory: "16Gi", ephemeral-storage: "4Gi" }
 nodeSelector: {}
 tolerations: []

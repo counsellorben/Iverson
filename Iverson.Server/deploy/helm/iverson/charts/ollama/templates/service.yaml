@@ -3,6 +3,7 @@ kind: Service
 metadata:
   name: {{ .Release.Name }}-ollama
 spec:
+  clusterIP: None
   selector:
     app: {{ .Release.Name }}-ollama
   ports:

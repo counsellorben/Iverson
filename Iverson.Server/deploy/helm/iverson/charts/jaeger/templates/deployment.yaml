@@ -40,13 +40,22 @@ spec:
               name: ui
             - containerPort: 4317
               name: otlp-grpc
+            - containerPort: 14269
+              name: admin
           resources:
             requests:
               cpu: {{ .Values.resources.requests.cpu | quote }}
               memory: {{ .Values.resources.requests.memory | quote }}
+              ephemeral-storage: {{ index .Values.resources.requests "ephemeral-storage" | quote }}
             limits:
               cpu: {{ .Values.resources.limits.cpu | quote }}
               memory: {{ .Values.resources.limits.memory | quote }}
+              ephemeral-storage: {{ index .Values.resources.limits "ephemeral-storage" | quote }}
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 14269
+            initialDelaySeconds: 5
           volumeMounts:
             - name: tmp
               mountPath: /tmp

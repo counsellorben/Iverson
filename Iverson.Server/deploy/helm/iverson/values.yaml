@@ -58,8 +58,8 @@ qdrant:
   storageClassName: ""
   imageTag: "v1.12.0"
   resources:
-    requests: { cpu: "8", memory: "64Gi" }
-    limits: { cpu: "8", memory: "64Gi" }
+    requests: { cpu: "8", memory: "64Gi", ephemeral-storage: "2Gi" }
+    limits: { cpu: "8", memory: "64Gi", ephemeral-storage: "4Gi" }
   nodeSelector: {}
   tolerations: []
 
@@ -69,8 +69,8 @@ ollama:
   storageClassName: ""
   imageTag: "0.5.0"
   resources:
-    requests: { cpu: "8", memory: "16Gi" }
-    limits: { cpu: "8", memory: "16Gi" }
+    requests: { cpu: "8", memory: "16Gi", ephemeral-storage: "2Gi" }
+    limits: { cpu: "8", memory: "16Gi", ephemeral-storage: "4Gi" }
   nodeSelector: {}
   tolerations: []
 
@@ -81,8 +81,8 @@ api:
     tag: "0.1.0"   # never "latest" — CI/the image-build pipeline must supply a real, immutable tag
     pullPolicy: IfNotPresent
   resources:
-    requests: { cpu: "2", memory: "4Gi" }
-    limits: { cpu: "2", memory: "4Gi" }
+    requests: { cpu: "2", memory: "4Gi", ephemeral-storage: "1Gi" }
+    limits: { cpu: "2", memory: "4Gi", ephemeral-storage: "2Gi" }
   hpa:
     minReplicas: 2
     maxReplicas: 5
@@ -96,6 +96,6 @@ api:
 jaeger:
   imageTag: "1.62"
   resources:
-    requests: { cpu: "2", memory: "4Gi" }
-    limits: { cpu: "2", memory: "4Gi" }
+    requests: { cpu: "2", memory: "4Gi", ephemeral-storage: "1Gi" }
+    limits: { cpu: "2", memory: "4Gi", ephemeral-storage: "2Gi" }
   nodeSelector: {}

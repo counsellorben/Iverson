@@ -40,7 +40,7 @@ builder.Services.AddOpenTelemetry()
         .AddAspNetCoreInstrumentation(o =>
         {
             o.RecordException = true;
-            o.Filter = ctx => ctx.Request.Path != "/health";  // skip noisy health checks
+            o.Filter = ctx => ctx.Request.Path != "/health" && ctx.Request.Path != "/health/live";  // skip noisy health checks
         })
         .AddHttpClientInstrumentation(o => o.RecordException = true)
         .AddOtlpExporter(o =>
@@ -120,6 +120,8 @@ app.Use(async (context, next) =>
 });
 
 // ── Endpoints ──────────────────────────────────────────────────────────────────
+app.MapGet("/health/live", () => Results.Ok(new { status = "alive" })).WithName("HealthLive");
+
 app.MapGet("/health", async (
     IPostgresRepository db,
     IStarRocksRepository sr,

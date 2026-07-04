@@ -9,6 +9,21 @@ kind: Deployment
 metadata:
   name: {{ .Release.Name }}-api
 spec:
+  # No static `replicas:` field here on purpose — this Deployment is HPA-controlled
+  # (templates/hpa.yaml). Setting a static replica count on an HPA-targeted
+  # Deployment causes Helm upgrades to reset the replica count to that static
+  # value on every apply, fighting the autoscaler, and kube-score itself flags
+  # that combination as CRITICAL ("Deployment targeted by HPA does not have
+  # replicas configured"). One side effect: because `Spec.Replicas` is therefore
+  # always nil, kube-score's "Deployment has PodDisruptionBudget" check can never
+  # take the <2-replicas skip path it uses for StatefulSets with a static replica
+  # count — so on the values-local overlay (hpa.minReplicas: 1, no PDB rendered
+  # per templates/pdb.yaml's gate) that check still reports CRITICAL even though
+  # a PDB would be a no-op at a true floor of 1. This is an inherent conflict
+  # between kube-score's HPA-replicas check and its PDB check for any
+  # HPA-controlled Deployment at minReplicas=1 — there is no single Deployment
+  # shape that satisfies both checks simultaneously. Left as-is; see
+  # helm-hardening-fix-report.md for the trade-off writeup.
   selector:
     matchLabels:
       app: {{ .Release.Name }}-api
@@ -19,6 +34,15 @@ spec:
     spec:
       serviceAccountName: {{ .Release.Name }}-api
       automountServiceAccountToken: false
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    app: {{ .Release.Name }}-api
+                topologyKey: kubernetes.io/hostname
       securityContext:
         runAsNonRoot: true
         runAsUser: 1000
@@ -76,9 +100,11 @@ spec:
             requests:
               cpu: {{ .Values.resources.requests.cpu | quote }}
               memory: {{ .Values.resources.requests.memory | quote }}
+              ephemeral-storage: {{ index .Values.resources.requests "ephemeral-storage" | quote }}
             limits:
               cpu: {{ .Values.resources.limits.cpu | quote }}
               memory: {{ .Values.resources.limits.memory | quote }}
+              ephemeral-storage: {{ index .Values.resources.limits "ephemeral-storage" | quote }}
           readinessProbe:
             httpGet:
               path: /health
@@ -86,7 +112,7 @@ spec:
             initialDelaySeconds: 10
           livenessProbe:
             httpGet:
-              path: /health
+              path: /health/live
               port: 8080
             initialDelaySeconds: 30
             periodSeconds: 15

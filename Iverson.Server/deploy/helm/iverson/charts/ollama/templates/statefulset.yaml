@@ -25,6 +25,15 @@ spec:
         {{- toYaml .Values.nodeSelector | nindent 8 }}
       tolerations:
         {{- toYaml .Values.tolerations | nindent 8 }}
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    app: {{ .Release.Name }}-ollama
+                topologyKey: kubernetes.io/hostname
       securityContext:
         runAsNonRoot: true
         runAsUser: 1000
@@ -48,6 +57,9 @@ spec:
               ollama serve &
               sleep 5
               ollama pull nomic-embed-text
+          resources:
+            requests: { cpu: "500m", memory: "512Mi", ephemeral-storage: "1Gi" }
+            limits: { cpu: "1", memory: "1Gi", ephemeral-storage: "2Gi" }
           volumeMounts:
             - name: ollama-data
               mountPath: /data
@@ -69,9 +81,16 @@ spec:
             requests:
               cpu: {{ .Values.resources.requests.cpu | quote }}
               memory: {{ .Values.resources.requests.memory | quote }}
+              ephemeral-storage: {{ index .Values.resources.requests "ephemeral-storage" | quote }}
             limits:
               cpu: {{ .Values.resources.limits.cpu | quote }}
               memory: {{ .Values.resources.limits.memory | quote }}
+              ephemeral-storage: {{ index .Values.resources.limits "ephemeral-storage" | quote }}
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 11434
+            initialDelaySeconds: 10
           volumeMounts:
             - name: ollama-data
               mountPath: /data
