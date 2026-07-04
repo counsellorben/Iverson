@@ -51,7 +51,15 @@ public sealed class ObjectSearchGrpcService(
             joins: request.Joins,
             registry: registry);
 
-        var rows = await sr.QueryAsync<dynamic>(sql, param);
+        IEnumerable<dynamic> rows;
+        try
+        {
+            rows = await sr.QueryAsync<dynamic>(sql, param);
+        }
+        catch (StarRocksNotReadyException ex)
+        {
+            throw new RpcException(new Status(StatusCode.Unavailable, $"StarRocks is not ready: {ex.Message}"));
+        }
 
         foreach (var row in rows)
         {
@@ -216,7 +224,16 @@ public sealed class ObjectSearchGrpcService(
 
         var (sql, param) = StarRocksQueryBuilder.BuildAggregate(
             schema.TableName, schema, query, spec, having, joins, registry);
-        var rows = (await sr.QueryAsync<dynamic>(sql, param)).ToList();
+
+        List<dynamic> rows;
+        try
+        {
+            rows = (await sr.QueryAsync<dynamic>(sql, param)).ToList();
+        }
+        catch (StarRocksNotReadyException ex)
+        {
+            throw new RpcException(new Status(StatusCode.Unavailable, $"StarRocks is not ready: {ex.Message}"));
+        }
 
         switch (spec.Kind)
         {
@@ -260,7 +277,15 @@ public sealed class ObjectSearchGrpcService(
 
         var (sql, param) = StarRocksQueryBuilder.BuildGroupBy(schema.TableName, schema, request, registry);
 
-        var rows = await sr.QueryAsync<dynamic>(sql, param);
+        IEnumerable<dynamic> rows;
+        try
+        {
+            rows = await sr.QueryAsync<dynamic>(sql, param);
+        }
+        catch (StarRocksNotReadyException ex)
+        {
+            throw new RpcException(new Status(StatusCode.Unavailable, $"StarRocks is not ready: {ex.Message}"));
+        }
 
         foreach (var row in rows)
         {

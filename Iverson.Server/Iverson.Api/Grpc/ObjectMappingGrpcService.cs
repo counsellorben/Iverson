@@ -50,7 +50,16 @@ public sealed class ObjectMappingGrpcService(
             var descriptor = SchemaBuilder.BuildDescriptor(typeDesc, _embedding);
 
             await _sql.ApplySchemaAsync(SchemaBuilder.ToTableSchema(descriptor));
-            await _starRocks.ApplyTableAsync(SchemaBuilder.ToStarRocksTableSchema(descriptor));
+
+            try
+            {
+                await _starRocks.ApplyTableAsync(SchemaBuilder.ToStarRocksTableSchema(descriptor));
+            }
+            catch (StarRocksNotReadyException ex)
+            {
+                throw new RpcException(new Status(StatusCode.Unavailable,
+                    $"StarRocks is not ready: {ex.Message}"));
+            }
 
             if (descriptor.VectorFields.Count > 0)
                 await _vector.ApplyCollectionAsync(SchemaBuilder.ToCollectionSchema(descriptor));
