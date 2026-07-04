@@ -66,7 +66,7 @@ public class Main {
             // ── Search with QueryBuilder ───────────────────────────────────────
             SearchRequest searchRequest = Query.of(Article.class)
                 .where("Category").eq("technology")
-                .and("WordCount").gt(500)
+                .where("WordCount").gt(500)
                 .orderByDesc("PublishedAt")
                 .limit(10)
                 .build();

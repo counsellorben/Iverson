@@ -85,22 +85,6 @@ class QueryBuilderTest {
     }
 
     @Test
-    void and_producesMustClause() {
-        SearchRequest req = Query.of(Article.class)
-            .and("title").eq("test")
-            .build();
-        assertEquals(SearchClauseType.MUST, req.getQuery().getClauses(0).getClauseType());
-    }
-
-    @Test
-    void or_producesShouldClause() {
-        SearchRequest req = Query.of(Article.class)
-            .or("title").eq("test")
-            .build();
-        assertEquals(SearchClauseType.SHOULD, req.getQuery().getClauses(0).getClauseType());
-    }
-
-    @Test
     void not_producesMustNotClause() {
         SearchRequest req = Query.of(Article.class)
             .not("title").eq("test")
@@ -282,7 +266,7 @@ class QueryBuilderTest {
     void multipleClauses_arePreservedInOrder() {
         SearchRequest req = Query.of(Article.class)
             .where("category").eq("sports")
-            .and("wordCount").gt(500)
+            .where("wordCount").gt(500)
             .not("draft").eq(true)
             .build();
         assertEquals(3, req.getQuery().getClausesCount());

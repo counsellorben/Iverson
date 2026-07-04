@@ -59,16 +59,6 @@ public final class QueryBuilder<T> {
         return new FieldCondition(this, field, SearchClauseType.FILTER);
     }
 
-    /** Begins a MUST clause. */
-    public FieldCondition and(String field) {
-        return new FieldCondition(this, field, SearchClauseType.MUST);
-    }
-
-    /** Begins a SHOULD clause. */
-    public FieldCondition or(String field) {
-        return new FieldCondition(this, field, SearchClauseType.SHOULD);
-    }
-
     /** Begins a MUST_NOT clause. */
     public FieldCondition not(String field) {
         return new FieldCondition(this, field, SearchClauseType.MUST_NOT);
