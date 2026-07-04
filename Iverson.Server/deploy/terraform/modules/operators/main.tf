@@ -48,15 +48,12 @@ resource "helm_release" "strimzi" {
 resource "helm_release" "starrocks_operator" {
   name       = "starrocks-operator"
   repository = "https://starrocks.github.io/starrocks-kubernetes-operator"
-  chart      = "kube-starrocks-operator"
+  # The chart is published under the key "operator" in this repo's
+  # index.yaml, not "kube-starrocks-operator" — confirmed live against
+  # https://starrocks.github.io/starrocks-kubernetes-operator/index.yaml.
   # Pinned deliberately — bump by hand, don't let this float to whatever is
-  # newest at apply time. NOTE: at the time of this fix pass, this
-  # repository's index.yaml does not actually publish a chart under the key
-  # "kube-starrocks-operator" (only "operator", "kube-starrocks", and
-  # "warehouse") — that's a pre-existing chart-name discrepancy from the
-  # original plan, out of scope for this review pass to rename. This
-  # version corresponds to the "operator" chart's current release so it's
-  # ready to use if/when the chart reference is corrected.
+  # newest at apply time.
+  chart            = "operator"
   version          = "1.11.5"
   namespace        = "starrocks"
   create_namespace = true
