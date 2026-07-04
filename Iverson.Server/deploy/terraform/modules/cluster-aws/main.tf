@@ -47,6 +47,10 @@ resource "aws_iam_role" "vpc_flow_logs" {
 # rather than "*" — unlike cluster_autoscaler's policy below, the destination ARN is
 # known to Terraform, so the delivery role never needs CreateLogGroup/DescribeLogGroups
 # (Terraform itself creates the group) and the stream-level actions can be scoped to it.
+# tfsec's wildcard detector still flags this: it treats any bare "*" path segment as
+# unscoped, even the CloudWatch-required ":*" stream suffix on an otherwise fully
+# resolved, single-log-group ARN. Confirmed false positive, not a real gap.
+#tfsec:ignore:aws-iam-no-policy-wildcards
 resource "aws_iam_policy" "vpc_flow_logs" {
   name = "${var.cluster_name}-vpc-flow-logs-policy"
   policy = jsonencode({
@@ -170,6 +174,12 @@ resource "aws_kms_key" "eks_secrets" {
   enable_key_rotation     = true
 }
 
+# tfsec's aws-eks-no-public-cluster-access check can't resolve var.api_public_access_cidrs
+# statically, so it treats any endpoint_public_access = true as unrestricted. This module
+# requires that variable with no default specifically to force an explicit, real CIDR
+# allow-list at apply time (see variables.tf) — same accepted pattern as Azure's
+# api_authorized_ip_ranges. Confirmed false positive, not an open 0.0.0.0/0 endpoint.
+#tfsec:ignore:aws-eks-no-public-cluster-access
 resource "aws_eks_cluster" "this" {
   name     = var.cluster_name
   role_arn = aws_iam_role.cluster.arn
