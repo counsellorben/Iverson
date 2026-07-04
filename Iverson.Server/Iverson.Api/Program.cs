@@ -70,7 +70,18 @@ builder.Services.AddPostgres(cfg.GetConnectionString("Postgres")
 
 builder.Services.AddStarRocks(
     cfg.GetConnectionString("StarRocks")
-    ?? "Server=localhost;Port=9030;Database=iverson;User Id=root;Password=;AllowPublicKeyRetrieval=true;");
+    ?? "Server=localhost;Port=9030;Database=iverson;User Id=root;Password=;AllowPublicKeyRetrieval=true;",
+    new StarRocksResilienceOptions
+    {
+        BackendReadyTimeout = TimeSpan.FromSeconds(cfg.GetValue("StarRocks:BackendReadyTimeoutSeconds", 120)),
+        CircuitBreaker = new StarRocksCircuitBreakerOptions
+        {
+            FailureRatio      = cfg.GetValue("StarRocks:CircuitBreaker:FailureRatio", 0.5),
+            MinimumThroughput = cfg.GetValue("StarRocks:CircuitBreaker:MinimumThroughput", 4),
+            SamplingDuration  = TimeSpan.FromSeconds(cfg.GetValue("StarRocks:CircuitBreaker:SamplingDurationSeconds", 30)),
+            BreakDuration     = TimeSpan.FromSeconds(cfg.GetValue("StarRocks:CircuitBreaker:BreakDurationSeconds", 15))
+        }
+    });
 
 builder.Services.AddQdrant(
     cfg["Qdrant:Host"] ?? "localhost",
