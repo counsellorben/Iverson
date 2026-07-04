@@ -1,4 +1,5 @@
 using Microsoft.Extensions.Logging;
+using MySqlConnector;
 using Polly;
 using Polly.CircuitBreaker;
 using Polly.Retry;
@@ -15,7 +16,7 @@ internal static class StarRocksResiliencePipelineFactory
                 MinimumThroughput = options.MinimumThroughput,
                 SamplingDuration  = options.SamplingDuration,
                 BreakDuration     = options.BreakDuration,
-                ShouldHandle      = new PredicateBuilder().Handle<Exception>(ex => ex is not OperationCanceledException),
+                ShouldHandle      = new PredicateBuilder().Handle<MySqlException>(ex => ex.IsTransient),
                 OnOpened = args =>
                 {
                     logger.LogWarning(
@@ -33,7 +34,7 @@ internal static class StarRocksResiliencePipelineFactory
                 MaxRetryAttempts = 2,
                 Delay            = TimeSpan.FromMilliseconds(200),
                 BackoffType      = DelayBackoffType.Constant,
-                ShouldHandle     = new PredicateBuilder().Handle<Exception>(ex => ex is not OperationCanceledException)
+                ShouldHandle     = new PredicateBuilder().Handle<MySqlException>(ex => ex.IsTransient)
             })
             .Build();
 }
