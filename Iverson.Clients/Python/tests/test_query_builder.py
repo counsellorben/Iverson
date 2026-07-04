@@ -163,14 +163,6 @@ class TestClauseTypes:
         req = QueryBuilder("Article").where("category").eq("tech").build()
         assert req.query.clauses[0].clause_type == pb.FILTER
 
-    def test_must_clause(self):
-        req = QueryBuilder("Article").must("category").eq("tech").build()
-        assert req.query.clauses[0].clause_type == pb.MUST
-
-    def test_should_clause(self):
-        req = QueryBuilder("Article").should("category").eq("tech").build()
-        assert req.query.clauses[0].clause_type == pb.SHOULD
-
     def test_must_not_clause(self):
         req = QueryBuilder("Article").must_not("category").eq("spam").build()
         assert req.query.clauses[0].clause_type == pb.MUST_NOT

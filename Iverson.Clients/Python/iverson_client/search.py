@@ -162,14 +162,6 @@ class QueryBuilder:
         """Start a FILTER clause for the given field."""
         return FieldCondition(self, field, _pb.FILTER)
 
-    def must(self, field: str) -> FieldCondition:
-        """Start a MUST clause (required for a match)."""
-        return FieldCondition(self, field, _pb.MUST)
-
-    def should(self, field: str) -> FieldCondition:
-        """Start a SHOULD clause (boosts score but not required)."""
-        return FieldCondition(self, field, _pb.SHOULD)
-
     def must_not(self, field: str) -> FieldCondition:
         """Start a MUST_NOT clause (excludes matches)."""
         return FieldCondition(self, field, _pb.MUST_NOT)
