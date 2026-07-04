@@ -202,7 +202,7 @@ await foreach (var result in userArticles.SearchAsync(uaUserQuery))
 // Search Articles by title keyword.
 var articleTextQuery = Query.For<Article>()
     .Where(a => a.Title,       Contains,    "Mamba")
-    .And(a   => a.IsPublished, EqualTo,     true)
+    .Where(a => a.IsPublished, EqualTo,     true)
     .OrderBy(a => a.PublishedAt, descending: true)
     .Page(0, size: 10);
 
@@ -222,8 +222,8 @@ await foreach (var result in authors.SearchAsync(authorTextQuery))
 // Tag search by slug using OR logic.
 var tagQuery = Query.For<Tag>()
     .Where(t => t.Slug, Contains, "basketball")
-    .Or(t   => t.Slug, Contains, "culture")
-    .Or(t   => t.Slug, Contains, "legacy")
+    .Where(t => t.Slug, Contains, "culture")
+    .Where(t => t.Slug, Contains, "legacy")
     .WithLogic(SearchLogic.Or)
     .OrderBy(t => t.Label);
 

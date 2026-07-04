@@ -29,20 +29,6 @@ public sealed class QueryBuilder<T> where T : class
         TValue value)
         => AddClause(property, op, value, SearchClauseType.Filter);
 
-    /// <summary>Adds a MUST clause (required for a match).</summary>
-    public QueryBuilder<T> And<TValue>(
-        Expression<Func<T, TValue>> property,
-        SearchOperator op,
-        TValue value)
-        => AddClause(property, op, value, SearchClauseType.Must);
-
-    /// <summary>Adds a SHOULD clause (boosts score but not required).</summary>
-    public QueryBuilder<T> Or<TValue>(
-        Expression<Func<T, TValue>> property,
-        SearchOperator op,
-        TValue value)
-        => AddClause(property, op, value, SearchClauseType.Should);
-
     /// <summary>Adds a MUST_NOT clause (excludes matches).</summary>
     public QueryBuilder<T> Not<TValue>(
         Expression<Func<T, TValue>> property,
@@ -57,14 +43,6 @@ public sealed class QueryBuilder<T> where T : class
     public QueryBuilder<T> WhereVectorSimilar<TValue>(
         Expression<Func<T, TValue>> property, float[] queryVector)
         => AddVectorClause(property, queryVector, SearchClauseType.Filter);
-
-    public QueryBuilder<T> AndVectorSimilar<TValue>(
-        Expression<Func<T, TValue>> property, float[] queryVector)
-        => AddVectorClause(property, queryVector, SearchClauseType.Must);
-
-    public QueryBuilder<T> OrVectorSimilar<TValue>(
-        Expression<Func<T, TValue>> property, float[] queryVector)
-        => AddVectorClause(property, queryVector, SearchClauseType.Should);
 
     public QueryBuilder<T> NotVectorSimilar<TValue>(
         Expression<Func<T, TValue>> property, float[] queryVector)

@@ -69,26 +69,6 @@ public sealed class QueryBuilderTests
     }
 
     [Fact]
-    public void And_ProducesMustClause()
-    {
-        var req = Query.For<Article>()
-            .And(x => x.Title, SearchOperator.Contains, "x")
-            .Build();
-
-        req.Query.Clauses.Single().ClauseType.Should().Be(SearchClauseType.Must);
-    }
-
-    [Fact]
-    public void Or_ProducesShouldClause()
-    {
-        var req = Query.For<Article>()
-            .Or(x => x.Title, SearchOperator.Contains, "x")
-            .Build();
-
-        req.Query.Clauses.Single().ClauseType.Should().Be(SearchClauseType.Should);
-    }
-
-    [Fact]
     public void Not_ProducesMustNotClause()
     {
         var req = Query.For<Article>()
@@ -212,16 +192,6 @@ public sealed class QueryBuilderTests
         clause.Value.FloatList.Values.Should().BeEquivalentTo(vec);
     }
 
-    [Fact]
-    public void AndVectorSimilar_ProducesMustClause()
-    {
-        var req = Query.For<Article>()
-            .AndVectorSimilar(x => x.Title, [0.1f])
-            .Build();
-
-        req.Query.Clauses.Single().ClauseType.Should().Be(SearchClauseType.Must);
-    }
-
     // ── Build: sorting ────────────────────────────────────────────────────────
 
     [Fact]
@@ -314,7 +284,7 @@ public sealed class QueryBuilderTests
     {
         var req = Query.For<Article>()
             .Where(x => x.Author,    SearchOperator.Equals,   "Alice")
-            .And(x => x.PageCount,   SearchOperator.GreaterThan, 100)
+            .Where(x => x.PageCount, SearchOperator.GreaterThan, 100)
             .Not(x => x.Published,   SearchOperator.Equals,   false)
             .Build();
 
