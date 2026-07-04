@@ -505,4 +505,103 @@ public sealed class StarRocksIntegrationTests(StarRocksContainerFixture fixture)
         rows.Should().ContainSingle();
         ((string)rows[0].bucket_key).Should().Be("Alice");
     }
+
+    [Fact]
+    public async Task BuildGroupBy_CompoundMultiMetric_ExecutesAndReturnsAllMetrics()
+    {
+        var table = UniqueTable();
+        await CreateAndSeedAuthorsAsync(_repo, table,
+            ("11111111-1111-1111-1111-111111111111", "Alice", null, 3, null),
+            ("22222222-2222-2222-2222-222222222222", "Alice", null, 5, null),
+            ("33333333-3333-3333-3333-333333333333", "Bob",   null, 2, null));
+
+        var request = new GroupByRequest
+        {
+            TypeName = "Author",
+            Keys     = { "Name" },
+            Limit    = 100,
+        };
+        request.Metrics.Add(new MetricSpec { Name = "sum_rating", Type = AggregationType.Sum, Field = "Rating" });
+        request.Metrics.Add(new MetricSpec { Name = "cnt",        Type = AggregationType.Count });
+        request.OrderBy.Add(new SearchSort { Property = "Name" });
+
+        var registry = BuildRegistry(AuthorSchema(table));
+        var (sql, param) = StarRocksQueryBuilder.BuildGroupBy(table, AuthorSchema(table), request, registry);
+        var rows = (await _repo.QueryAsync<dynamic>(sql, param)).ToList();
+
+        rows.Should().HaveCount(2);
+        var alice = rows.Single(r => (string)r.Name == "Alice");
+        ((long)alice.sum_rating).Should().Be(8);
+        ((long)alice.cnt).Should().Be(2);
+        var bob = rows.Single(r => (string)r.Name == "Bob");
+        ((long)bob.sum_rating).Should().Be(2);
+        ((long)bob.cnt).Should().Be(1);
+    }
+
+    [Fact]
+    public async Task BuildGroupBy_WithJoin_WhereOnJoinedColumn_ExecutesAndActuallyFilters()
+    {
+        var authorsTable  = UniqueTable();
+        var articlesTable = UniqueTable();
+
+        await CreateAndSeedAuthorsAsync(_repo, authorsTable,
+            ("11111111-1111-1111-1111-111111111111", "Alice", null, 3, null),
+            ("22222222-2222-2222-2222-222222222222", "Bob",   null, 5, null));
+
+        var articleSchema = new StarRocksTableSchema(
+            articlesTable,
+            new StarRocksColumnSchema("Id", "VARCHAR(36)", false),
+            [
+                new StarRocksColumnSchema("AuthorId", "VARCHAR(36)", false),
+                new StarRocksColumnSchema("Title",    "STRING",      false),
+            ]);
+        await _repo.ApplyTableAsync(articleSchema);
+        await _repo.ExecuteAsync(
+            $"INSERT INTO `{articlesTable}` VALUES " +
+            $"('aaaaaaaa-1111-1111-1111-111111111111', '11111111-1111-1111-1111-111111111111', 'Wanted Title'), " +
+            $"('bbbbbbbb-2222-2222-2222-222222222222', '22222222-2222-2222-2222-222222222222', 'Other Title')");
+
+        var authorApiSchema = AuthorSchema(authorsTable);
+        var articleApiSchema = new SchemaDescriptor
+        {
+            TypeName      = "Article",
+            TableName     = articlesTable,
+            KeyColumn     = new ColumnDescriptor("Id", "uuid", false),
+            // AuthorId must be a ScalarColumn (not just an FkColumn) for BuildGroupBy's join
+            // resolution (ResolveColumn) to find it — this mirrors real registered schemas,
+            // where SchemaBuilder.BuildDescriptor adds every non-key property (including
+            // Id-suffixed FK properties) to ScalarColumns as well as FkColumns
+            // (SchemaBuilder.cs:27-56). See the identical fix in the Task 5 join tests above.
+            ScalarColumns = [new ColumnDescriptor("Title", "text", false), new ColumnDescriptor("AuthorId", "uuid", false)],
+            FkColumns     = [new ForeignKeyDescriptor("AuthorId", "Author")],
+            VectorFields  = [],
+            ChunkFields   = [],
+            Relations     = [new Iverson.Api.Schema.RelationDescriptor("Author", Iverson.Api.Schema.RelationKind.ManyToOne, "Author", "AuthorId")]
+        };
+        var registry = BuildRegistry(authorApiSchema, articleApiSchema);
+
+        var request = new GroupByRequest
+        {
+            TypeName = "Author",
+            Keys     = { "Name" },
+            Limit    = 100,
+            Query    = new SearchQuery(),
+            Joins    = { new JoinSpec { LeftType = "Author", RightType = "Article", LeftField = "Id", RightField = "AuthorId", Kind = JoinKind.Inner } }
+        };
+        request.Query.Clauses.Add(new SearchClause
+        {
+            Property = "Article.Title", Operator = SearchOperator.Equals,
+            Value = new SearchValue { StringVal = "Wanted Title" }, ClauseType = SearchClauseType.Filter
+        });
+        request.Metrics.Add(new MetricSpec { Name = "cnt", Type = AggregationType.Count });
+
+        var (sql, param) = StarRocksQueryBuilder.BuildGroupBy(authorsTable, authorApiSchema, request, registry);
+        var rows = (await _repo.QueryAsync<dynamic>(sql, param)).ToList();
+
+        // Only Alice's row (whose article matches "Wanted Title") should survive the
+        // join-aware WHERE filter — if the tableMap-to-BuildWhere wiring regressed, this
+        // filter would silently vanish and both Alice and Bob would come back.
+        rows.Should().ContainSingle();
+        ((string)rows[0].Name).Should().Be("Alice");
+    }
 }
