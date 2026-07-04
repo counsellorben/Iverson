@@ -3,15 +3,53 @@ using System.Text.Json;
 using Dapper;
 using Microsoft.Extensions.Logging;
 using MySqlConnector;
+using Polly;
+using Polly.CircuitBreaker;
 
 namespace Iverson.StarRocks;
 
-public sealed class StarRocksRepository(string connectionString, ILogger<StarRocksRepository> logger)
+public sealed class StarRocksRepository(
+    string connectionString,
+    ILogger<StarRocksRepository> logger,
+    StarRocksResilienceOptions? resilienceOptions = null)
     : IStarRocksRepository
 {
     private readonly string _dbName = new MySqlConnectionStringBuilder(connectionString).Database;
+    private readonly StarRocksResilienceOptions _resilience = resilienceOptions ?? StarRocksResilienceOptions.Default;
+
+    private readonly StarRocksReadinessGate _readinessGate = new(
+        ct => CheckBackendAliveAsync(connectionString, ct),
+        (resilienceOptions ?? StarRocksResilienceOptions.Default).BackendReadyTimeout);
+
+    private readonly ResiliencePipeline _pipeline =
+        StarRocksResiliencePipelineFactory.Build(
+            (resilienceOptions ?? StarRocksResilienceOptions.Default).CircuitBreaker, logger);
 
     private MySqlConnection CreateConnection() => new(connectionString);
+
+    // ── Resilience chokepoint ───────────────────────────────────────────────────
+    // Every real StarRocks operation routes through here: first the one-time cold-start
+    // gate (near-instant no-op after the first success), then the circuit-breaker+retry
+    // pipeline for ongoing protection against a backend that later goes unhealthy.
+    private async Task<T> RunAsync<T>(Func<Task<T>> operation)
+    {
+        await _readinessGate.EnsureReadyAsync().ConfigureAwait(false);
+
+        try
+        {
+            return await _pipeline
+                .ExecuteAsync(async _ => await operation().ConfigureAwait(false))
+                .ConfigureAwait(false);
+        }
+        catch (BrokenCircuitException ex)
+        {
+            throw new StarRocksNotReadyException(
+                "StarRocks is currently unavailable (circuit breaker open).", ex);
+        }
+    }
+
+    private Task RunAsync(Func<Task> operation) =>
+        RunAsync(async () => { await operation().ConfigureAwait(false); return true; });
 
     public async Task<IEnumerable<T>> QueryAsync<T>(string sql, object? param = null)
     {
@@ -19,10 +57,13 @@ public sealed class StarRocksRepository(string connectionString, ILogger<StarRoc
         activity?.SetTag("db.system", "starrocks");
         activity?.SetTag("db.statement", sql);
 
-        await using var conn = CreateConnection();
         try
         {
-            var results = await conn.QueryAsync<T>(sql, param);
+            var results = await RunAsync(async () =>
+            {
+                await using var conn = CreateConnection();
+                return await conn.QueryAsync<T>(sql, param);
+            });
             activity?.SetStatus(ActivityStatusCode.Ok);
             return results;
         }
@@ -40,10 +81,13 @@ public sealed class StarRocksRepository(string connectionString, ILogger<StarRoc
         activity?.SetTag("db.system", "starrocks");
         activity?.SetTag("db.statement", sql);
 
-        await using var conn = CreateConnection();
         try
         {
-            var rows = await conn.ExecuteAsync(sql, param);
+            var rows = await RunAsync(async () =>
+            {
+                await using var conn = CreateConnection();
+                return await conn.ExecuteAsync(sql, param);
+            });
             activity?.SetTag("db.rows_affected", rows);
             activity?.SetStatus(ActivityStatusCode.Ok);
             return rows;
@@ -130,45 +174,56 @@ public sealed class StarRocksRepository(string connectionString, ILogger<StarRoc
         activity?.SetTag("db.system", "starrocks");
         activity?.SetTag("db.table", schema.TableName);
 
-        await EnsureDatabaseAsync();
-
-        await using var conn = CreateConnection();
-
-        var exists = await conn.QuerySingleOrDefaultAsync<int>(
-            "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = @db AND table_name = @tbl",
-            new { db = _dbName, tbl = schema.TableName });
-
-        if (exists == 0)
+        await RunAsync(async () =>
         {
-            await conn.ExecuteAsync(BuildCreateTableDdl(schema));
-            logger.LogInformation("Created StarRocks table {Table}", schema.TableName);
-        }
-        else
-        {
-            // Only ADDS columns that are missing. Type widening, column removal, and
-            // primary-key changes are not handled — those require manual DDL migration.
-            var existingCols = (await conn.QueryAsync<string>(
-                "SELECT column_name FROM information_schema.columns WHERE table_schema = @db AND table_name = @tbl",
-                new { db = _dbName, tbl = schema.TableName }
-            )).ToHashSet(StringComparer.OrdinalIgnoreCase);
+            await EnsureDatabaseAsync();
 
-            foreach (var col in schema.Columns.Where(c => !existingCols.Contains(c.Name)))
+            await using var conn = CreateConnection();
+
+            var exists = await conn.QuerySingleOrDefaultAsync<int>(
+                "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = @db AND table_name = @tbl",
+                new { db = _dbName, tbl = schema.TableName });
+
+            if (exists == 0)
             {
-                await conn.ExecuteAsync(
-                    $"ALTER TABLE `{schema.TableName}` ADD COLUMN `{col.Name}` {col.SrType}");
-                logger.LogInformation("Added column {Col} to StarRocks table {Table}", col.Name, schema.TableName);
+                await conn.ExecuteAsync(BuildCreateTableDdl(schema));
+                logger.LogInformation("Created StarRocks table {Table}", schema.TableName);
             }
-        }
+            else
+            {
+                // Only ADDS columns that are missing. Type widening, column removal, and
+                // primary-key changes are not handled — those require manual DDL migration.
+                var existingCols = (await conn.QueryAsync<string>(
+                    "SELECT column_name FROM information_schema.columns WHERE table_schema = @db AND table_name = @tbl",
+                    new { db = _dbName, tbl = schema.TableName }
+                )).ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+                foreach (var col in schema.Columns.Where(c => !existingCols.Contains(c.Name)))
+                {
+                    await conn.ExecuteAsync(
+                        $"ALTER TABLE `{schema.TableName}` ADD COLUMN `{col.Name}` {col.SrType}");
+                    logger.LogInformation("Added column {Col} to StarRocks table {Table}", col.Name, schema.TableName);
+                }
+            }
+        });
 
         activity?.SetStatus(ActivityStatusCode.Ok);
     }
 
     public async Task<bool> IsHealthyAsync()
     {
+        // Deliberately NOT routed through RunAsync: this backs the k8s readiness probe
+        // (via /health), which must return quickly and let k8s re-poll on its own cadence
+        // rather than block for the gate's multi-minute cold-start budget.
         try
         {
-            var result = await QueryAsync<int>("SELECT 1");
-            return result.Any();
+            await using var conn = CreateConnection();
+            await conn.OpenAsync();
+
+            await using (var cmd = new MySqlCommand("SELECT 1", conn))
+                await cmd.ExecuteScalarAsync();
+
+            return await AnyBackendAliveAsync(conn);
         }
         catch
         {
@@ -181,6 +236,31 @@ public sealed class StarRocksRepository(string connectionString, ILogger<StarRoc
         var builder = new MySqlConnectionStringBuilder(connectionString) { Database = string.Empty };
         await using var conn = new MySqlConnection(builder.ToString());
         await conn.ExecuteAsync($"CREATE DATABASE IF NOT EXISTS `{_dbName}`");
+    }
+
+    private static async Task<bool> CheckBackendAliveAsync(string connectionString, CancellationToken ct)
+    {
+        var probeConnectionString = new MySqlConnectionStringBuilder(connectionString) { Database = "" }.ToString();
+        await using var conn = new MySqlConnection(probeConnectionString);
+        await conn.OpenAsync(ct);
+        return await AnyBackendAliveAsync(conn, ct);
+    }
+
+    private static async Task<bool> AnyBackendAliveAsync(MySqlConnection conn, CancellationToken ct = default)
+    {
+        await using var cmd = new MySqlCommand("SHOW BACKENDS", conn);
+        await using var reader = await cmd.ExecuteReaderAsync(ct);
+        var aliveOrdinal = -1;
+        while (await reader.ReadAsync(ct))
+        {
+            if (aliveOrdinal < 0)
+                aliveOrdinal = reader.GetOrdinal("Alive");
+
+            if (string.Equals(reader.GetString(aliveOrdinal), "true", StringComparison.OrdinalIgnoreCase))
+                return true;
+        }
+
+        return false;
     }
 
     private static object? JsonElementToObject(JsonElement el) => el.ValueKind switch
