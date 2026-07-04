@@ -14,6 +14,12 @@ resource "google_compute_subnetwork" "this" {
   network       = google_compute_network.this.id
   region        = var.region
   ip_cidr_range = "10.2.0.0/20"
+
+  log_config {
+    aggregation_interval = "INTERVAL_5_SEC"
+    flow_sampling        = 0.5
+    metadata             = "INCLUDE_ALL_METADATA"
+  }
 }
 
 # private_cluster_config below gives nodes no public IPs, so they need a
@@ -57,6 +63,38 @@ resource "google_kms_crypto_key_iam_binding" "gke_secrets" {
   members = [
     "serviceAccount:service-${data.google_project.this.number}@container-engine-robot.iam.gserviceaccount.com",
   ]
+}
+
+# Dedicated node service account, in place of the broad-permission default
+# Compute Engine SA — one shared account for all pools is sufficient since
+# this project doesn't need per-pool identity separation.
+resource "google_service_account" "gke_nodes" {
+  account_id   = "${var.cluster_name}-gke-nodes"
+  display_name = "GKE nodes for ${var.cluster_name}"
+}
+
+resource "google_project_iam_member" "gke_nodes_logging" {
+  project = var.project_id
+  role    = "roles/logging.logWriter"
+  member  = "serviceAccount:${google_service_account.gke_nodes.email}"
+}
+
+resource "google_project_iam_member" "gke_nodes_monitoring_writer" {
+  project = var.project_id
+  role    = "roles/monitoring.metricWriter"
+  member  = "serviceAccount:${google_service_account.gke_nodes.email}"
+}
+
+resource "google_project_iam_member" "gke_nodes_monitoring_viewer" {
+  project = var.project_id
+  role    = "roles/monitoring.viewer"
+  member  = "serviceAccount:${google_service_account.gke_nodes.email}"
+}
+
+resource "google_project_iam_member" "gke_nodes_stackdriver_resource_metadata" {
+  project = var.project_id
+  role    = "roles/stackdriver.resourceMetadata.writer"
+  member  = "serviceAccount:${google_service_account.gke_nodes.email}"
 }
 
 resource "google_container_cluster" "this" {
@@ -119,6 +157,10 @@ resource "google_container_cluster" "this" {
       }
     }
   }
+
+  resource_labels = {
+    app = "iverson"
+  }
 }
 
 resource "google_container_node_pool" "general" {
@@ -132,8 +174,15 @@ resource "google_container_node_pool" "general" {
     max_node_count = var.general_max_count
   }
 
+  management {
+    auto_repair  = true
+    auto_upgrade = true
+  }
+
   node_config {
-    machine_type = var.general_machine_type
+    machine_type    = var.general_machine_type
+    image_type      = "COS_CONTAINERD"
+    service_account = google_service_account.gke_nodes.email
     workload_metadata_config {
       mode = "GKE_METADATA"
     }
@@ -158,8 +207,15 @@ resource "google_container_node_pool" "pools" {
   location   = var.region
   node_count = each.value.count
 
+  management {
+    auto_repair  = true
+    auto_upgrade = true
+  }
+
   node_config {
-    machine_type = each.value.machine_type
+    machine_type    = each.value.machine_type
+    image_type      = "COS_CONTAINERD"
+    service_account = google_service_account.gke_nodes.email
 
     labels = {
       "iverson.io/node-pool" = each.key
