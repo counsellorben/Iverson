@@ -32,12 +32,12 @@ resource "azurerm_kubernetes_cluster" "this" {
   sku_tier            = "Standard"
 
   default_node_pool {
-    name                 = "general"
-    vm_size              = var.general_vm_size
-    vnet_subnet_id       = azurerm_subnet.aks.id
-    auto_scaling_enabled = true
-    min_count            = var.general_min_count
-    max_count            = var.general_max_count
+    name                = "general"
+    vm_size             = var.general_vm_size
+    vnet_subnet_id      = azurerm_subnet.aks.id
+    enable_auto_scaling = true
+    min_count           = var.general_min_count
+    max_count           = var.general_max_count
   }
 
   identity {
