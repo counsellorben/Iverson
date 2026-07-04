@@ -2,6 +2,10 @@ apiVersion: autoscaling/v2
 kind: HorizontalPodAutoscaler
 metadata:
   name: {{ .Release.Name }}-api
+  annotations:
+    # values-local sets hpa.minReplicas: 1 (accepted, dev-only overlay) — harmless
+    # on values-aws/azure/gcp, where minReplicas: 2 never triggers this check anyway.
+    kube-score/ignore: horizontalpodautoscaler-replicas
 spec:
   scaleTargetRef:
     apiVersion: apps/v1

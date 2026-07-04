@@ -21,6 +21,10 @@ resource "aws_vpc" "this" {
 # deliberate, explicit retention/deletion windows, e.g. aws_kms_key.eks_secrets's
 # deletion_window_in_days above and the companion Helm chart's Postgres backup
 # retentionPolicy).
+#
+# No customer-managed KMS key on this log group (accepted follow-up — adding a
+# CMK is extra cost/rotation surface not currently justified for flow logs).
+#tfsec:ignore:aws-cloudwatch-log-group-customer-key
 resource "aws_cloudwatch_log_group" "vpc_flow_logs" {
   name              = "/aws/vpc/${var.cluster_name}-flow-logs"
   retention_in_days = 90
@@ -38,7 +42,11 @@ resource "aws_iam_role" "vpc_flow_logs" {
   })
 }
 
-# Standard AWS-documented policy for VPC Flow Logs delivery to CloudWatch Logs.
+# Standard AWS-documented policy for VPC Flow Logs delivery to CloudWatch Logs,
+# scoped to the log group this module creates (aws_cloudwatch_log_group.vpc_flow_logs)
+# rather than "*" — unlike cluster_autoscaler's policy below, the destination ARN is
+# known to Terraform, so the delivery role never needs CreateLogGroup/DescribeLogGroups
+# (Terraform itself creates the group) and the stream-level actions can be scoped to it.
 resource "aws_iam_policy" "vpc_flow_logs" {
   name = "${var.cluster_name}-vpc-flow-logs-policy"
   policy = jsonencode({
@@ -46,13 +54,13 @@ resource "aws_iam_policy" "vpc_flow_logs" {
     Statement = [{
       Effect = "Allow"
       Action = [
-        "logs:CreateLogGroup",
         "logs:CreateLogStream",
         "logs:PutLogEvents",
-        "logs:DescribeLogGroups",
         "logs:DescribeLogStreams",
       ]
-      Resource = "*"
+      # Trailing ":*" is required — CloudWatch Logs stream ARNs are one path
+      # segment deeper than the log group ARN itself.
+      Resource = "${aws_cloudwatch_log_group.vpc_flow_logs.arn}:*"
     }]
   })
 }
@@ -82,6 +90,10 @@ resource "aws_subnet" "private" {
   }
 }
 
+# These are the module's designated public subnets (NAT gateway + internet
+# gateway route, ELB placement) — map_public_ip_on_launch = true is the
+# definition of a public subnet here, not an oversight.
+#tfsec:ignore:aws-ec2-no-public-ip-subnet
 resource "aws_subnet" "public" {
   count                   = 2
   vpc_id                  = aws_vpc.this.id
@@ -283,6 +295,7 @@ resource "aws_iam_role" "cluster_autoscaler_irsa" {
 # Standard AWS-documented cluster-autoscaler policy. Resource = "*" is
 # intentional (not a scoping oversight) — ASG ARNs aren't known until node
 # groups exist, so scoping further would be a functional regression.
+#tfsec:ignore:aws-iam-no-policy-wildcards
 resource "aws_iam_policy" "cluster_autoscaler" {
   name = "${var.cluster_name}-cluster-autoscaler-policy"
   policy = jsonencode({

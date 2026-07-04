@@ -8,6 +8,10 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: {{ .Release.Name }}-jaeger
+  annotations:
+    # jaeger uses the `all-in-one` image, which is inherently single-instance —
+    # not a real HA gap, a deliberate architectural choice.
+    kube-score/ignore: deployment-replicas
 spec:
   replicas: 1
   selector:

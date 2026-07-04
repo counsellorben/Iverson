@@ -8,6 +8,14 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: {{ .Release.Name }}-api
+  annotations:
+    # kube-score's "Deployment has PodDisruptionBudget" check can never take its
+    # <2-replicas skip path here (Spec.Replicas is always nil on this
+    # HPA-controlled Deployment — see comment below), so it still reports
+    # CRITICAL on values-local (hpa.minReplicas: 1, no PDB rendered) even though
+    # a PDB would be a no-op at a true floor of 1. Harmless on values-aws/azure/gcp,
+    # where a real PDB renders and this check passes anyway.
+    kube-score/ignore: deployment-has-poddisruptionbudget
 spec:
   # No static `replicas:` field here on purpose — this Deployment is HPA-controlled
   # (templates/hpa.yaml). Setting a static replica count on an HPA-targeted

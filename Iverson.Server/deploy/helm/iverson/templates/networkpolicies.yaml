@@ -58,6 +58,11 @@ apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
   name: {{ .Release.Name }}-postgres-ingress
+  annotations:
+    # postgres is a CloudNativePG-operator-managed CR; kube-score can't see the
+    # runtime pod labels the operator applies, so it can't match this policy's
+    # podSelector to any pod it renders — confirmed false positive.
+    kube-score/ignore: networkpolicy-targets-pod
 spec:
   podSelector:
     matchLabels: { cnpg.io/cluster: {{ .Release.Name }}-postgres }
@@ -70,6 +75,11 @@ apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
   name: {{ .Release.Name }}-postgres-egress
+  annotations:
+    # postgres is a CloudNativePG-operator-managed CR; kube-score can't see the
+    # runtime pod labels the operator applies, so it can't match this policy's
+    # podSelector to any pod it renders — confirmed false positive.
+    kube-score/ignore: networkpolicy-targets-pod
 spec:
   podSelector:
     matchLabels: { cnpg.io/cluster: {{ .Release.Name }}-postgres }
@@ -84,6 +94,11 @@ apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
   name: {{ .Release.Name }}-kafka-ingress
+  annotations:
+    # kafka is a Strimzi-operator-managed CR; kube-score can't see the runtime
+    # pod labels the operator applies, so it can't match this policy's
+    # podSelector to any pod it renders — confirmed false positive.
+    kube-score/ignore: networkpolicy-targets-pod
 spec:
   podSelector:
     matchLabels: { strimzi.io/cluster: {{ .Release.Name }}-kafka }
@@ -97,6 +112,11 @@ apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
   name: {{ .Release.Name }}-kafka-egress
+  annotations:
+    # kafka is a Strimzi-operator-managed CR; kube-score can't see the runtime
+    # pod labels the operator applies, so it can't match this policy's
+    # podSelector to any pod it renders — confirmed false positive.
+    kube-score/ignore: networkpolicy-targets-pod
 spec:
   podSelector:
     matchLabels: { strimzi.io/cluster: {{ .Release.Name }}-kafka }
@@ -111,6 +131,11 @@ apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
   name: {{ .Release.Name }}-starrocks-ingress
+  annotations:
+    # starrocks is a StarRocks-operator-managed CR; kube-score can't see the
+    # runtime pod labels the operator applies, so it can't match this policy's
+    # podSelector to any pod it renders — confirmed false positive.
+    kube-score/ignore: networkpolicy-targets-pod
 spec:
   podSelector:
     matchLabels: { app.starrocks.io/cluster: {{ .Release.Name }}-starrocks }
@@ -124,6 +149,11 @@ apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
   name: {{ .Release.Name }}-starrocks-egress
+  annotations:
+    # starrocks is a StarRocks-operator-managed CR; kube-score can't see the
+    # runtime pod labels the operator applies, so it can't match this policy's
+    # podSelector to any pod it renders — confirmed false positive.
+    kube-score/ignore: networkpolicy-targets-pod
 spec:
   podSelector:
     matchLabels: { app.starrocks.io/cluster: {{ .Release.Name }}-starrocks }

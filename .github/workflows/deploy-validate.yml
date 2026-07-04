@@ -80,7 +80,13 @@ jobs:
           for values in values-local values-aws values-azure values-gcp; do
             echo "::group::kube-score ($values.yaml)"
             helm template iverson Iverson.Server/deploy/helm/iverson -f "Iverson.Server/deploy/helm/iverson/$values.yaml" \
-              | kube-score score --ignore-test pod-networkpolicy -   # NetworkPolicy coverage is asserted structurally by templates/networkpolicies.yaml, not per-manifest by kube-score's heuristic
+              | kube-score score \
+                  --ignore-test pod-networkpolicy \
+                  --ignore-test container-image-pull-policy \
+                  --ignore-test container-security-context-user-group-id \
+                  -   # pod-networkpolicy: NetworkPolicy coverage is asserted structurally by templates/networkpolicies.yaml, not per-manifest by kube-score's heuristic.
+                      # container-image-pull-policy: repo-wide convention — every image is pinned by tag + imagePullPolicy: IfNotPresent, never Always.
+                      # container-security-context-user-group-id: repo-wide convention — every hardened container runs as UID/GID 1000, which satisfies Pod Security Admission's "restricted" profile; kube-score's >=10000 preference is house style, not a real risk here.
             echo "::endgroup::"
           done
 

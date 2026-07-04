@@ -97,6 +97,16 @@ resource "google_project_iam_member" "gke_nodes_stackdriver_resource_metadata" {
   member  = "serviceAccount:${google_service_account.gke_nodes.email}"
 }
 
+# PodSecurityPolicy was removed from Kubernetes entirely at 1.25 and cannot be
+# enabled on any GKE version this module targets — a stale tfsec check.
+#
+# Dataplane V2 (datapath_provider = "ADVANCED_DATAPATH" below) gives NetworkPolicy
+# enforcement natively; tfsec only recognizes the legacy network_policy{} block,
+# not datapath_provider, so it can't see that this is already covered. Don't also
+# set network_policy{} alongside Dataplane V2 — they're redundant/conflicting
+# per GKE's own docs.
+#tfsec:ignore:google-gke-enforce-pod-security-policy
+#tfsec:ignore:google-gke-enable-network-policy
 resource "google_container_cluster" "this" {
   name       = var.cluster_name
   location   = var.region
@@ -133,7 +143,8 @@ resource "google_container_cluster" "this" {
   # NetworkPolicy objects actually take effect; the original plan had neither
   # this nor the older network_policy{} add-on, so every NetworkPolicy would
   # have silently done nothing. Don't also set network_policy{} alongside
-  # Dataplane V2 — they're redundant/conflicting per GKE's own docs.
+  # Dataplane V2 — they're redundant/conflicting per GKE's own docs. See the
+  # google-gke-enable-network-policy tfsec:ignore above the resource block.
   datapath_provider = "ADVANCED_DATAPATH"
 
   # Nodes get no public IPs (egress via the Cloud NAT above). The control
@@ -179,6 +190,11 @@ resource "google_container_node_pool" "general" {
     auto_upgrade = true
   }
 
+  # workload_metadata_config already sets mode = "GKE_METADATA" — tfsec's own
+  # recommended remediation for metadata-endpoints-disabled — but the rule
+  # still flags this block; confirmed tfsec rule bug (it flags code that
+  # already contains the fix).
+  #tfsec:ignore:google-gke-metadata-endpoints-disabled
   node_config {
     machine_type    = var.general_machine_type
     image_type      = "COS_CONTAINERD"
@@ -212,6 +228,11 @@ resource "google_container_node_pool" "pools" {
     auto_upgrade = true
   }
 
+  # workload_metadata_config already sets mode = "GKE_METADATA" — tfsec's own
+  # recommended remediation for metadata-endpoints-disabled — but the rule
+  # still flags this block; confirmed tfsec rule bug (it flags code that
+  # already contains the fix).
+  #tfsec:ignore:google-gke-metadata-endpoints-disabled
   node_config {
     machine_type    = each.value.machine_type
     image_type      = "COS_CONTAINERD"

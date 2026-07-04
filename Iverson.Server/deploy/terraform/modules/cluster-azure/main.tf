@@ -31,6 +31,11 @@ resource "azurerm_log_analytics_workspace" "this" {
   retention_in_days   = 90
 }
 
+# api_server_access_profile below sets authorized_ip_ranges = var.api_authorized_ip_ranges,
+# a required variable with no default specifically to force an explicit choice;
+# tfsec can't resolve variable values statically, so it can't tell the allow-list
+# is actually populated at apply time.
+#tfsec:ignore:azure-container-limit-authorized-ips
 resource "azurerm_kubernetes_cluster" "this" {
   name                = var.cluster_name
   location            = azurerm_resource_group.this.location
