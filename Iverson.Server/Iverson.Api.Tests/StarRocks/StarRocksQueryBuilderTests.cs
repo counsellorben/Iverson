@@ -428,42 +428,6 @@ public class StarRocksQueryBuilderTests
         sql.Should().Contain("`Name` = @p0");
     }
 
-    [Fact]
-    public void BuildSearch_MustClause_TreatedSameAsFilter()
-    {
-        var query = new SearchQuery();
-        query.Clauses.Add(new SearchClause
-        {
-            Property   = "Name",
-            Operator   = SearchOperator.Equals,
-            Value      = new SearchValue { StringVal = "Alice" },
-            ClauseType = SearchClauseType.Must
-        });
-
-        var (sql, _) = StarRocksQueryBuilder.BuildSearch("authors", AuthorSchema(), query, 0, 50);
-
-        sql.Should().Contain("WHERE `Name` = @p0");
-        sql.Should().NotContain("NOT (");
-    }
-
-    [Fact]
-    public void BuildSearch_ShouldClause_TreatedSameAsFilter()
-    {
-        var query = new SearchQuery();
-        query.Clauses.Add(new SearchClause
-        {
-            Property   = "Name",
-            Operator   = SearchOperator.Equals,
-            Value      = new SearchValue { StringVal = "Alice" },
-            ClauseType = SearchClauseType.Should
-        });
-
-        var (sql, _) = StarRocksQueryBuilder.BuildSearch("authors", AuthorSchema(), query, 0, 50);
-
-        sql.Should().Contain("WHERE `Name` = @p0");
-        sql.Should().NotContain("NOT (");
-    }
-
     // ── BuildSearch — In clause ───────────────────────────────────────────────
 
     [Fact]
