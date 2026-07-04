@@ -147,9 +147,7 @@ export function searchLogicToJSON(object: SearchLogic): string {
 
 export enum SearchClauseType {
   FILTER = 0,
-  MUST = 1,
-  SHOULD = 2,
-  MUST_NOT = 3,
+  MUST_NOT = 1,
   UNRECOGNIZED = -1,
 }
 
@@ -159,12 +157,6 @@ export function searchClauseTypeFromJSON(object: any): SearchClauseType {
     case "FILTER":
       return SearchClauseType.FILTER;
     case 1:
-    case "MUST":
-      return SearchClauseType.MUST;
-    case 2:
-    case "SHOULD":
-      return SearchClauseType.SHOULD;
-    case 3:
     case "MUST_NOT":
       return SearchClauseType.MUST_NOT;
     case -1:
@@ -178,10 +170,6 @@ export function searchClauseTypeToJSON(object: SearchClauseType): string {
   switch (object) {
     case SearchClauseType.FILTER:
       return "FILTER";
-    case SearchClauseType.MUST:
-      return "MUST";
-    case SearchClauseType.SHOULD:
-      return "SHOULD";
     case SearchClauseType.MUST_NOT:
       return "MUST_NOT";
     case SearchClauseType.UNRECOGNIZED:

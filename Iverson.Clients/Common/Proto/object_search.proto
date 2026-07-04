@@ -77,9 +77,7 @@ enum SearchLogic {
 
 enum SearchClauseType {
     FILTER   = 0;
-    MUST     = 1;
-    SHOULD   = 2;
-    MUST_NOT = 3;
+    MUST_NOT = 1;
 }
 
 message SearchResponse {
