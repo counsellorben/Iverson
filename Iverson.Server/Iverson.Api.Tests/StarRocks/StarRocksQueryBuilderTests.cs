@@ -399,6 +399,132 @@ public class StarRocksQueryBuilderTests
         sql.Should().Contain("`Name` IN @p0");
     }
 
+    // ── BuildSearch — NotEquals clause ─────────────────────────────────────────
+
+    [Fact]
+    public void BuildSearch_NotEqualsClause_ProducesNotEqualsCondition()
+    {
+        var query = new SearchQuery();
+        query.Clauses.Add(new SearchClause
+        {
+            Property   = "Name",
+            Operator   = SearchOperator.NotEquals,
+            Value      = new SearchValue { StringVal = "Alice" },
+            ClauseType = SearchClauseType.Filter
+        });
+
+        var (sql, param) = StarRocksQueryBuilder.BuildSearch("authors", AuthorSchema(), query, 0, 50);
+
+        sql.Should().Contain("WHERE `Name` <> @p0");
+        var lookup = (SqlMapper.IParameterLookup)param;
+        lookup["p0"].Should().Be("Alice");
+    }
+
+    // ── BuildSearch — StartsWith clause ────────────────────────────────────────
+
+    [Fact]
+    public void BuildSearch_StartsWithClause_ProducesLikeWithTrailingWildcard()
+    {
+        var query = new SearchQuery();
+        query.Clauses.Add(new SearchClause
+        {
+            Property   = "Name",
+            Operator   = SearchOperator.StartsWith,
+            Value      = new SearchValue { StringVal = "Al" },
+            ClauseType = SearchClauseType.Filter
+        });
+
+        var (sql, param) = StarRocksQueryBuilder.BuildSearch("authors", AuthorSchema(), query, 0, 50);
+
+        sql.Should().Contain("WHERE `Name` LIKE @p0");
+        var lookup = (SqlMapper.IParameterLookup)param;
+        lookup["p0"].Should().Be("Al%");
+    }
+
+    // ── BuildSearch — GreaterThanOrEquals clause ───────────────────────────────
+
+    [Fact]
+    public void BuildSearch_GreaterThanOrEqualsClause_ProducesGteCondition()
+    {
+        var query = new SearchQuery();
+        query.Clauses.Add(new SearchClause
+        {
+            Property   = "Rating",
+            Operator   = SearchOperator.GreaterThanOrEquals,
+            Value      = new SearchValue { NumberVal = 4 },
+            ClauseType = SearchClauseType.Filter
+        });
+
+        var (sql, param) = StarRocksQueryBuilder.BuildSearch("authors", AuthorSchema(), query, 0, 50);
+
+        sql.Should().Contain("WHERE `Rating` >= @p0");
+        var lookup = (SqlMapper.IParameterLookup)param;
+        lookup["p0"].Should().Be(4.0);
+    }
+
+    // ── BuildSearch — LessThan clause ──────────────────────────────────────────
+
+    [Fact]
+    public void BuildSearch_LessThanClause_ProducesLtCondition()
+    {
+        var query = new SearchQuery();
+        query.Clauses.Add(new SearchClause
+        {
+            Property   = "Rating",
+            Operator   = SearchOperator.LessThan,
+            Value      = new SearchValue { NumberVal = 3 },
+            ClauseType = SearchClauseType.Filter
+        });
+
+        var (sql, param) = StarRocksQueryBuilder.BuildSearch("authors", AuthorSchema(), query, 0, 50);
+
+        sql.Should().Contain("WHERE `Rating` < @p0");
+        var lookup = (SqlMapper.IParameterLookup)param;
+        lookup["p0"].Should().Be(3.0);
+    }
+
+    // ── BuildSearch — LessThanOrEquals clause ──────────────────────────────────
+
+    [Fact]
+    public void BuildSearch_LessThanOrEqualsClause_ProducesLteCondition()
+    {
+        var query = new SearchQuery();
+        query.Clauses.Add(new SearchClause
+        {
+            Property   = "Rating",
+            Operator   = SearchOperator.LessThanOrEquals,
+            Value      = new SearchValue { NumberVal = 3 },
+            ClauseType = SearchClauseType.Filter
+        });
+
+        var (sql, param) = StarRocksQueryBuilder.BuildSearch("authors", AuthorSchema(), query, 0, 50);
+
+        sql.Should().Contain("WHERE `Rating` <= @p0");
+        var lookup = (SqlMapper.IParameterLookup)param;
+        lookup["p0"].Should().Be(3.0);
+    }
+
+    // ── BuildSearch — VectorSimilar behavior ───────────────────────────────────
+
+    [Fact]
+    public void BuildSearch_VectorSimilarClause_IsSkippedInWhereClause()
+    {
+        var query = new SearchQuery();
+        query.Clauses.Add(new SearchClause
+        {
+            Property   = "Bio",
+            Operator   = SearchOperator.VectorSimilar,
+            Value      = new SearchValue { StringVal = "some query text" },
+            ClauseType = SearchClauseType.Filter
+        });
+
+        var (sql, _) = StarRocksQueryBuilder.BuildSearch("authors", AuthorSchema(), query, 0, 50);
+
+        // VECTOR_SIMILAR is Qdrant's job, not StarRocks's — BuildWhere must silently drop it,
+        // not error and not emit a bogus WHERE clause.
+        sql.Should().NotContain("WHERE");
+    }
+
     // ── BuildSearch — explicit SELECT columns ─────────────────────────────────────
 
     [Fact]
