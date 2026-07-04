@@ -1,0 +1,75 @@
+stages:
+  - validate
+
+.rules-deploy-changes:
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+      changes:
+        - Iverson.Server/deploy/**/*
+
+helm-lint:
+  stage: validate
+  image: alpine/helm:3.15.0
+  extends: .rules-deploy-changes
+  script:
+    - helm dependency build Iverson.Server/deploy/helm/iverson
+    - |
+      for values in values-local values-aws values-azure values-gcp; do
+        echo "helm lint ($values.yaml)"
+        helm lint Iverson.Server/deploy/helm/iverson -f "Iverson.Server/deploy/helm/iverson/$values.yaml"
+      done
+
+helm-template-kubeconform:
+  stage: validate
+  image: alpine/helm:3.15.0
+  extends: .rules-deploy-changes
+  before_script:
+    - apk add --no-cache curl
+    - curl -sSL https://github.com/yannh/kubeconform/releases/download/v0.6.7/kubeconform-linux-amd64.tar.gz | tar xz
+    - mv kubeconform /usr/local/bin/
+  script:
+    - helm dependency build Iverson.Server/deploy/helm/iverson
+    - |
+      for values in values-local values-aws values-azure values-gcp; do
+        echo "kubeconform ($values.yaml)"
+        helm template iverson Iverson.Server/deploy/helm/iverson -f "Iverson.Server/deploy/helm/iverson/$values.yaml" \
+          | kubeconform -kubernetes-version 1.30.0 -summary -ignore-missing-schemas
+      done
+
+security-audit:
+  stage: validate
+  image: alpine/helm:3.15.0
+  extends: .rules-deploy-changes
+  before_script:
+    - apk add --no-cache curl
+    - curl -sSL https://github.com/zegl/kube-score/releases/download/v1.19.0/kube-score_1.19.0_linux_amd64.tar.gz | tar xz
+    - mv kube-score /usr/local/bin/
+    - curl -sSL https://github.com/aquasecurity/tfsec/releases/download/v1.28.6/tfsec-linux-amd64 -o /usr/local/bin/tfsec
+    - chmod +x /usr/local/bin/tfsec
+  script:
+    - helm dependency build Iverson.Server/deploy/helm/iverson
+    - |
+      for values in values-local values-aws values-azure values-gcp; do
+        echo "kube-score ($values.yaml)"
+        helm template iverson Iverson.Server/deploy/helm/iverson -f "Iverson.Server/deploy/helm/iverson/$values.yaml" \
+          | kube-score score \
+              --ignore-test pod-networkpolicy \
+              --ignore-test container-image-pull-policy \
+              --ignore-test container-security-context-user-group-id \
+              -   # pod-networkpolicy: NetworkPolicy coverage is asserted structurally by templates/networkpolicies.yaml, not per-manifest by kube-score's heuristic.
+                  # container-image-pull-policy: repo-wide convention — every image is pinned by tag + imagePullPolicy: IfNotPresent, never Always.
+                  # container-security-context-user-group-id: repo-wide convention — every hardened container runs as UID/GID 1000, which satisfies Pod Security Admission's "restricted" profile; kube-score's >=10000 preference is house style, not a real risk here.
+      done
+    - tfsec Iverson.Server/deploy/terraform/
+
+terraform-validate:
+  stage: validate
+  image: hashicorp/terraform:1.7.5
+  extends: .rules-deploy-changes
+  parallel:
+    matrix:
+      - CLOUD: [aws, azure, gcp]
+  script:
+    - terraform -chdir="Iverson.Server/deploy/terraform/$CLOUD" fmt -check
+    - terraform -chdir="Iverson.Server/deploy/terraform/$CLOUD" init -backend=false
+    - terraform -chdir="Iverson.Server/deploy/terraform/$CLOUD" validate
