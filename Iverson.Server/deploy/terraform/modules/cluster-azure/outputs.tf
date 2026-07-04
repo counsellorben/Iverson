@@ -6,5 +6,5 @@ output "kube_config" {
 }
 
 output "node_pool_labels" {
-  value = { for k, v in local.extra_pools : k => "iverson.io/node-pool=${v.label}" }
+  value = { for k, v in local.extra_pools : v.label => "iverson.io/node-pool=${v.label}" }
 }

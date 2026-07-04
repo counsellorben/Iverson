@@ -203,6 +203,58 @@ resource "aws_iam_role_policy_attachment" "lb_controller_irsa" {
   policy_arn = aws_iam_policy.lb_controller.arn
 }
 
+# cluster-autoscaler was previously deployed (in modules/operators) with no
+# AWS credentials path at all — no IRSA role, and the shared node role only
+# carries worker/CNI/ECR policies. Without this, the autoscaler pods cannot
+# call the AWS Auto Scaling / EC2 APIs. Same IRSA pattern as ebs_csi_irsa/
+# lb_controller_irsa above; "cluster-autoscaler" is the Helm chart's default
+# ServiceAccount name.
+resource "aws_iam_role" "cluster_autoscaler_irsa" {
+  name = "${var.cluster_name}-cluster-autoscaler-irsa"
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Action    = "sts:AssumeRoleWithWebIdentity"
+      Effect    = "Allow"
+      Principal = { Federated = aws_iam_openid_connect_provider.eks.arn }
+      Condition = {
+        StringEquals = {
+          "${replace(aws_iam_openid_connect_provider.eks.url, "https://", "")}:sub" = "system:serviceaccount:kube-system:cluster-autoscaler"
+        }
+      }
+    }]
+  })
+}
+
+# Standard AWS-documented cluster-autoscaler policy. Resource = "*" is
+# intentional (not a scoping oversight) — ASG ARNs aren't known until node
+# groups exist, so scoping further would be a functional regression.
+resource "aws_iam_policy" "cluster_autoscaler" {
+  name = "${var.cluster_name}-cluster-autoscaler-policy"
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect = "Allow"
+      Action = [
+        "autoscaling:DescribeAutoScalingGroups",
+        "autoscaling:DescribeAutoScalingInstances",
+        "autoscaling:DescribeLaunchConfigurations",
+        "autoscaling:DescribeTags",
+        "autoscaling:SetDesiredCapacity",
+        "autoscaling:TerminateInstanceInAutoScalingGroup",
+        "ec2:DescribeInstanceTypes",
+        "ec2:DescribeLaunchTemplateVersions",
+      ]
+      Resource = "*"
+    }]
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "cluster_autoscaler_irsa" {
+  role       = aws_iam_role.cluster_autoscaler_irsa.name
+  policy_arn = aws_iam_policy.cluster_autoscaler.arn
+}
+
 resource "aws_iam_role" "node" {
   name = "${var.cluster_name}-eks-node-role"
   assume_role_policy = jsonencode({
@@ -236,9 +288,19 @@ resource "aws_iam_role_policy_attachment" "node_ecr" {
 resource "aws_eks_addon" "vpc_cni" {
   cluster_name = aws_eks_cluster.this.name
   addon_name   = "vpc-cni"
+  # Must stay compatible with the pinned var.kubernetes_version (currently
+  # "1.30") — bump deliberately alongside that variable, don't let it float.
+  addon_version = "v1.18.5-eksbuild.1"
   configuration_values = jsonencode({
     enableNetworkPolicy = "true"
   })
+
+  # VPC CNI is pre-installed as a self-managed default on a fresh EKS
+  # cluster. Declaring it here as an EKS-managed add-on with different
+  # config (enableNetworkPolicy) than that pre-installed default fails at
+  # create with a conflict error unless conflict resolution is explicit.
+  resolve_conflicts_on_create = "OVERWRITE"
+  resolve_conflicts_on_update = "OVERWRITE"
 }
 
 # The original plan attached the EBS CSI driver's IAM policy to the node
@@ -248,10 +310,15 @@ resource "aws_eks_addon" "vpc_cni" {
 # EKS-managed add-on with its IRSA role attached directly is both the fix
 # for that gap and the least-privilege wiring from the IRSA setup above.
 resource "aws_eks_addon" "ebs_csi" {
-  cluster_name             = aws_eks_cluster.this.name
-  addon_name               = "aws-ebs-csi-driver"
-  service_account_role_arn = aws_iam_role.ebs_csi_irsa.arn
-  depends_on               = [aws_iam_role_policy_attachment.ebs_csi_irsa]
+  cluster_name = aws_eks_cluster.this.name
+  addon_name   = "aws-ebs-csi-driver"
+  # Must stay compatible with the pinned var.kubernetes_version (currently
+  # "1.30") — bump deliberately alongside that variable, don't let it float.
+  addon_version               = "v1.37.0-eksbuild.1"
+  service_account_role_arn    = aws_iam_role.ebs_csi_irsa.arn
+  depends_on                  = [aws_iam_role_policy_attachment.ebs_csi_irsa]
+  resolve_conflicts_on_create = "OVERWRITE"
+  resolve_conflicts_on_update = "OVERWRITE"
 }
 
 locals {
@@ -299,4 +366,36 @@ resource "aws_eks_node_group" "pools" {
     aws_iam_role_policy_attachment.node_ecr,
     aws_eks_addon.vpc_cni,
   ]
+}
+
+# Only the "general" pool needs cluster-autoscaler's ASG discovery tags —
+# it's the only pool with min_size != max_size; every stateful pool is
+# fixed-size (min=max=count) so cluster-autoscaler has nothing to do there.
+#
+# aws_eks_node_group's own `tags` argument tags the EKS NodeGroup API
+# resource itself, not the underlying Auto Scaling Group — it does not
+# propagate to the ASG (or its instances via propagate_at_launch), which is
+# what the autoscaler chart's default autoDiscovery.clusterName config
+# actually scans for. aws_autoscaling_group_tag is the mechanism that
+# attaches tags to the ASG created by an EKS managed node group under AWS
+# provider ~> 5.0; its name is only known via the node group's computed
+# `resources[0].autoscaling_groups[0].name`.
+resource "aws_autoscaling_group_tag" "cluster_autoscaler_enabled" {
+  autoscaling_group_name = aws_eks_node_group.pools["general"].resources[0].autoscaling_groups[0].name
+
+  tag {
+    key                 = "k8s.io/cluster-autoscaler/enabled"
+    value               = "true"
+    propagate_at_launch = false
+  }
+}
+
+resource "aws_autoscaling_group_tag" "cluster_autoscaler_name" {
+  autoscaling_group_name = aws_eks_node_group.pools["general"].resources[0].autoscaling_groups[0].name
+
+  tag {
+    key                 = "k8s.io/cluster-autoscaler/${var.cluster_name}"
+    value               = "owned"
+    propagate_at_launch = false
+  }
 }

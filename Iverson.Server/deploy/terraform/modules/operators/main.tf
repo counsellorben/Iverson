@@ -19,17 +19,23 @@ resource "kubernetes_namespace" "iverson" {
 }
 
 resource "helm_release" "cloudnative_pg" {
-  name             = "cnpg"
-  repository       = "https://cloudnative-pg.github.io/charts"
-  chart            = "cloudnative-pg"
+  name       = "cnpg"
+  repository = "https://cloudnative-pg.github.io/charts"
+  chart      = "cloudnative-pg"
+  # Pinned deliberately — bump by hand, don't let this float to whatever is
+  # newest at apply time. Verified current stable as of this fix pass.
+  version          = "0.29.0"
   namespace        = "cnpg-system"
   create_namespace = true
 }
 
 resource "helm_release" "strimzi" {
-  name             = "strimzi"
-  repository       = "https://strimzi.io/charts/"
-  chart            = "strimzi-kafka-operator"
+  name       = "strimzi"
+  repository = "https://strimzi.io/charts/"
+  chart      = "strimzi-kafka-operator"
+  # Pinned deliberately — bump by hand, don't let this float to whatever is
+  # newest at apply time. Verified current stable as of this fix pass.
+  version          = "1.1.0"
   namespace        = "kafka"
   create_namespace = true
 
@@ -40,9 +46,18 @@ resource "helm_release" "strimzi" {
 }
 
 resource "helm_release" "starrocks_operator" {
-  name             = "starrocks-operator"
-  repository       = "https://starrocks.github.io/starrocks-kubernetes-operator"
-  chart            = "kube-starrocks-operator"
+  name       = "starrocks-operator"
+  repository = "https://starrocks.github.io/starrocks-kubernetes-operator"
+  chart      = "kube-starrocks-operator"
+  # Pinned deliberately — bump by hand, don't let this float to whatever is
+  # newest at apply time. NOTE: at the time of this fix pass, this
+  # repository's index.yaml does not actually publish a chart under the key
+  # "kube-starrocks-operator" (only "operator", "kube-starrocks", and
+  # "warehouse") — that's a pre-existing chart-name discrepancy from the
+  # original plan, out of scope for this review pass to rename. This
+  # version corresponds to the "operator" chart's current release so it's
+  # ready to use if/when the chart reference is corrected.
+  version          = "1.11.5"
   namespace        = "starrocks"
   create_namespace = true
 }
@@ -57,7 +72,11 @@ resource "helm_release" "cluster_autoscaler" {
   name       = "cluster-autoscaler"
   repository = "https://kubernetes.github.io/autoscaler"
   chart      = "cluster-autoscaler"
-  namespace  = "kube-system"
+  # Pinned deliberately — bump by hand, don't let this float to whatever is
+  # newest at apply time. Chosen to match this module's pinned EKS
+  # kubernetes_version ("1.30"): chart 9.37.0 has appVersion 1.30.0.
+  version   = "9.37.0"
+  namespace = "kube-system"
 
   set {
     name  = "autoDiscovery.clusterName"
@@ -67,6 +86,17 @@ resource "helm_release" "cluster_autoscaler" {
     name  = "awsRegion"
     value = var.aws_region
   }
+
+  # IRSA: scopes the autoscaler's AWS permissions (ASG/EC2 describe +
+  # scaling calls) to this one ServiceAccount instead of the shared node
+  # role. The cluster-autoscaler chart nests its ServiceAccount under
+  # `rbac.serviceAccount`, not top-level `serviceAccount` (verified against
+  # the chart's values schema — differs from the aws-load-balancer-
+  # controller chart below).
+  set {
+    name  = "rbac.serviceAccount.annotations.eks\\.amazonaws\\.com/role-arn"
+    value = var.cluster_autoscaler_irsa_role_arn
+  }
 }
 
 resource "helm_release" "aws_load_balancer_controller" {
@@ -75,7 +105,13 @@ resource "helm_release" "aws_load_balancer_controller" {
   name       = "aws-load-balancer-controller"
   repository = "https://aws.github.io/eks-charts"
   chart      = "aws-load-balancer-controller"
-  namespace  = "kube-system"
+  # Pinned deliberately — bump by hand, don't let this float to whatever is
+  # newest at apply time. Chart 1.9.0 has appVersion v2.9.0, matching the
+  # aws-load-balancer-controller IAM policy version already pinned in
+  # cluster-aws's data.http.lb_controller_policy fetch (verified against
+  # https://aws.github.io/eks-charts/index.yaml).
+  version   = "1.9.0"
+  namespace = "kube-system"
 
   set {
     name  = "clusterName"

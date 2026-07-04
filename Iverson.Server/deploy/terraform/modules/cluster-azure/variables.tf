@@ -15,7 +15,13 @@ variable "kubernetes_version" {
 
 # No default — same rationale as cluster-aws's api_public_access_cidrs:
 # forces an explicit choice of which networks may reach the AKS API server.
-variable "api_authorized_ip_ranges" { type = list(string) }
+variable "api_authorized_ip_ranges" {
+  type = list(string)
+  validation {
+    condition     = length(var.api_authorized_ip_ranges) > 0
+    error_message = "api_authorized_ip_ranges must contain at least one CIDR — an empty list can be interpreted as unrestricted public access rather than no access."
+  }
+}
 
 variable "postgres_vm_size" {
   type    = string

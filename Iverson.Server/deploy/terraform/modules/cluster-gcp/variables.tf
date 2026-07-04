@@ -19,6 +19,10 @@ variable "kubernetes_version" {
 # explicit choice of which networks may reach the GKE control plane.
 variable "master_authorized_networks" {
   type = list(object({ cidr_block = string, display_name = string }))
+  validation {
+    condition     = length(var.master_authorized_networks) > 0
+    error_message = "master_authorized_networks must contain at least one CIDR — an empty list can be interpreted as unrestricted public access rather than no access."
+  }
 }
 
 variable "postgres_machine_type" {

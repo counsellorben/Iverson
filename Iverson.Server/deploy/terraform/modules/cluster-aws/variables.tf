@@ -23,7 +23,13 @@ variable "vpc_cidr" {
 # internet" (the AWS provider's own default for endpoint_public_access).
 # Pass your office/VPN egress CIDR(s), or ["10.0.0.0/16"] plus
 # endpoint_private_access to go private-only (see main.tf).
-variable "api_public_access_cidrs" { type = list(string) }
+variable "api_public_access_cidrs" {
+  type = list(string)
+  validation {
+    condition     = length(var.api_public_access_cidrs) > 0
+    error_message = "api_public_access_cidrs must contain at least one CIDR — an empty list can be interpreted as unrestricted public access rather than no access."
+  }
+}
 
 variable "postgres_instance_type" {
   type    = string

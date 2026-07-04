@@ -67,6 +67,14 @@ resource "google_container_cluster" "this" {
 
   min_master_version = var.kubernetes_version
 
+  # Private nodes (private_cluster_config below) require a VPC-native
+  # (alias-IP) cluster — a routes-based cluster can be rejected by the GKE
+  # API when enable_private_nodes = true. An empty ip_allocation_policy
+  # block is valid and tells GKE to auto-allocate secondary ranges for
+  # pods/services.
+  networking_mode = "VPC_NATIVE"
+  ip_allocation_policy {}
+
   # GKE requires a default pool at creation time even though we remove it
   # immediately and create explicit, taint-able pools below instead (Standard
   # mode, not Autopilot — Autopilot doesn't support per-pool machine types/taints).

@@ -20,6 +20,11 @@ variable "lb_controller_irsa_role_arn" {
   default = "" # only meaningful when cloud == "aws"
 }
 
+variable "cluster_autoscaler_irsa_role_arn" {
+  type    = string
+  default = "" # only meaningful when cloud == "aws"
+}
+
 variable "storage_class_config" {
   type = object({
     provisioner = string
