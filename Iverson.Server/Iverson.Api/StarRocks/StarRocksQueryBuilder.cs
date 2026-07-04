@@ -36,20 +36,30 @@ internal static class StarRocksQueryBuilder
 
         var limit  = pageSize > 0 ? pageSize : 50;
         var offset = page > 0 ? page * limit : 0;
-        var selectCols = BuildSelectColumns(schema, fields);
         var order = BuildOrder(schema, query?.Sort);
 
         string from;
         string where;
+        string selectCols;
         if (joins is { Count: > 0 })
         {
             from = BuildFromWithJoins(schema, joins, registry!, out var tableMap);
             where = BuildWhere(schema, query?.Clauses, query?.Logic ?? SearchLogic.And, param, out _, tableMap);
+
+            // The primary table's own columns must be qualified with its alias once a JOIN is
+            // in play — an unqualified `Id` (or any other column name shared with a joined
+            // table, e.g. every table's key column) is ambiguous SQL and StarRocks rejects the
+            // query at analysis time. BuildAggregate already qualifies its SELECT expressions
+            // this way (see its local Quote/Resolve helpers above); BuildSelectColumns needs the
+            // same treatment for BuildSearch's plain column list.
+            var primaryAlias = tableMap[schema.TypeName].Alias;
+            selectCols = BuildSelectColumns(schema, fields, primaryAlias);
         }
         else
         {
             from = $"FROM `{tableName}`";
             where = BuildWhere(schema, query?.Clauses, query?.Logic ?? SearchLogic.And, param, out _);
+            selectCols = BuildSelectColumns(schema, fields);
         }
 
         var sb = new StringBuilder($"SELECT {selectCols} {from}");
@@ -60,13 +70,15 @@ internal static class StarRocksQueryBuilder
         return (sb.ToString(), param);
     }
 
-    private static string BuildSelectColumns(SchemaDescriptor schema, IReadOnlyList<string>? fields)
+    private static string BuildSelectColumns(SchemaDescriptor schema, IReadOnlyList<string>? fields, string? primaryAlias = null)
     {
+        string Quote(string name) => primaryAlias is null ? $"`{name}`" : $"`{primaryAlias}`.`{name}`";
+
         if (fields is null || fields.Count == 0)
         {
             var all = schema.ScalarColumns
-                .Select(c => $"`{c.Name}`")
-                .Prepend($"`{schema.KeyColumn.Name}`");
+                .Select(c => Quote(c.Name))
+                .Prepend(Quote(schema.KeyColumn.Name));
             return string.Join(", ", all);
         }
 
@@ -77,7 +89,7 @@ internal static class StarRocksQueryBuilder
             if (col is not null && !col.Equals(schema.KeyColumn.Name, StringComparison.OrdinalIgnoreCase))
                 resolved.Add(col);
         }
-        return string.Join(", ", resolved.Select(c => $"`{c}`"));
+        return string.Join(", ", resolved.Select(Quote));
     }
 
     internal static (string Sql, DynamicParameters Param) BuildAggregate(

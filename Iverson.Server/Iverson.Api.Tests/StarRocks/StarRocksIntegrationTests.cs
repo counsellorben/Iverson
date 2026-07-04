@@ -46,7 +46,7 @@ public sealed class StarRocksContainerFixture : IAsyncLifetime
         // The MySQL port accepts TCP connections well before StarRocks's FE/BE bootstrap
         // finishes and the engine is actually ready to execute queries — a bare port-open
         // wait strategy is not sufficient. Retry a real query until it succeeds or we give up.
-        await WaitUntilQueryReadyAsync(TimeSpan.FromMinutes(2));
+        await WaitUntilQueryReadyAsync(TimeSpan.FromMinutes(3));
 
         Repository = new StarRocksRepository(ConnectionString, NullLogger<StarRocksRepository>.Instance);
     }
@@ -77,6 +77,22 @@ public sealed class StarRocksContainerFixture : IAsyncLifetime
                 // not it goes through ApplyTableAsync first) can query against a real schema.
                 await using var createCmd = new MySqlCommand($"CREATE DATABASE IF NOT EXISTS `{dbName}`", conn);
                 await createCmd.ExecuteNonQueryAsync();
+
+                // SELECT 1 (and DDL like CREATE DATABASE) only exercise the FE — StarRocks's
+                // FE metadata service comes up and starts accepting the MySQL wire protocol well
+                // before the BE (backend) process has finished starting and registered itself
+                // with the FE. Any query that actually touches table data (CREATE TABLE, INSERT,
+                // SELECT against a real table) fails with "Backend node not found" until the BE
+                // is alive, which — observed directly against this image — can take noticeably
+                // longer than FE readiness. Task 4's smoke test never hit this because it only
+                // runs SELECT 1; Task 5 is the first set of tests to do real DDL/DML, so it's the
+                // first to surface the gap. Gate readiness on BE aliveness too, not just FE.
+                if (!await IsBackendAliveAsync(conn))
+                {
+                    await Task.Delay(TimeSpan.FromSeconds(3));
+                    continue;
+                }
+
                 return;
             }
             catch (Exception ex)
@@ -88,6 +104,23 @@ public sealed class StarRocksContainerFixture : IAsyncLifetime
 
         throw new TimeoutException(
             $"StarRocks did not become query-ready within {timeout}.", lastError);
+    }
+
+    private static async Task<bool> IsBackendAliveAsync(MySqlConnection conn)
+    {
+        await using var cmd = new MySqlCommand("SHOW BACKENDS", conn);
+        await using var reader = await cmd.ExecuteReaderAsync();
+        var aliveOrdinal = -1;
+        while (await reader.ReadAsync())
+        {
+            if (aliveOrdinal < 0)
+                aliveOrdinal = reader.GetOrdinal("Alive");
+
+            if (string.Equals(reader.GetString(aliveOrdinal), "true", StringComparison.OrdinalIgnoreCase))
+                return true;
+        }
+
+        return false;
     }
 
     public async Task DisposeAsync() => await _container.DisposeAsync();
@@ -162,5 +195,216 @@ public sealed class StarRocksIntegrationTests(StarRocksContainerFixture fixture)
     {
         var result = await _repo.QueryAsync<int>("SELECT 1");
         result.Should().ContainSingle().Which.Should().Be(1);
+    }
+
+    [Fact]
+    public async Task BuildSearch_EqualsClause_ExecutesAndReturnsMatchingRow()
+    {
+        var table = UniqueTable();
+        await CreateAndSeedAuthorsAsync(_repo, table,
+            ("11111111-1111-1111-1111-111111111111", "Alice", null, 4, null),
+            ("22222222-2222-2222-2222-222222222222", "Bob",   null, 2, null));
+
+        var query = new SearchQuery();
+        query.Clauses.Add(new SearchClause
+        {
+            Property = "Name", Operator = SearchOperator.Equals,
+            Value = new SearchValue { StringVal = "Alice" }, ClauseType = SearchClauseType.Filter
+        });
+
+        var (sql, param) = StarRocksQueryBuilder.BuildSearch(table, AuthorSchema(table), query, 0, 50);
+        var rows = (await _repo.QueryAsync<dynamic>(sql, param)).ToList();
+
+        rows.Should().ContainSingle();
+        ((string)rows[0].Name).Should().Be("Alice");
+    }
+
+    [Fact]
+    public async Task BuildSearch_StartsWithAndEndsWithClauses_ExecuteAndFilterCorrectly()
+    {
+        var table = UniqueTable();
+        await CreateAndSeedAuthorsAsync(_repo, table,
+            ("11111111-1111-1111-1111-111111111111", "Alexander", null, null, null),
+            ("22222222-2222-2222-2222-222222222222", "Alice",     null, null, null),
+            ("33333333-3333-3333-3333-333333333333", "Bob",       null, null, null));
+
+        var startsWithQuery = new SearchQuery();
+        startsWithQuery.Clauses.Add(new SearchClause
+        {
+            Property = "Name", Operator = SearchOperator.StartsWith,
+            Value = new SearchValue { StringVal = "Al" }, ClauseType = SearchClauseType.Filter
+        });
+        var (startsSql, startsParam) = StarRocksQueryBuilder.BuildSearch(table, AuthorSchema(table), startsWithQuery, 0, 50);
+        var startsRows = (await _repo.QueryAsync<dynamic>(startsSql, startsParam)).ToList();
+        startsRows.Should().HaveCount(2);
+
+        var endsWithQuery = new SearchQuery();
+        endsWithQuery.Clauses.Add(new SearchClause
+        {
+            Property = "Name", Operator = SearchOperator.EndsWith,
+            Value = new SearchValue { StringVal = "ce" }, ClauseType = SearchClauseType.Filter
+        });
+        var (endsSql, endsParam) = StarRocksQueryBuilder.BuildSearch(table, AuthorSchema(table), endsWithQuery, 0, 50);
+        var endsRows = (await _repo.QueryAsync<dynamic>(endsSql, endsParam)).ToList();
+        endsRows.Should().ContainSingle();
+        ((string)endsRows[0].Name).Should().Be("Alice");
+    }
+
+    [Fact]
+    public async Task BuildSearch_ComparisonOperators_ExecuteAndFilterByRating()
+    {
+        var table = UniqueTable();
+        await CreateAndSeedAuthorsAsync(_repo, table,
+            ("11111111-1111-1111-1111-111111111111", "Alice", null, 5, null),
+            ("22222222-2222-2222-2222-222222222222", "Bob",   null, 3, null),
+            ("33333333-3333-3333-3333-333333333333", "Carl",  null, 1, null));
+
+        var query = new SearchQuery();
+        query.Clauses.Add(new SearchClause
+        {
+            Property = "Rating", Operator = SearchOperator.GreaterThanOrEquals,
+            Value = new SearchValue { NumberVal = 3 }, ClauseType = SearchClauseType.Filter
+        });
+
+        var (sql, param) = StarRocksQueryBuilder.BuildSearch(table, AuthorSchema(table), query, 0, 50);
+        var rows = (await _repo.QueryAsync<dynamic>(sql, param)).ToList();
+
+        rows.Should().HaveCount(2);
+        ((IEnumerable<dynamic>)rows).Select(r => (string)r.Name).Should().BeEquivalentTo(["Alice", "Bob"]);
+    }
+
+    [Fact]
+    public async Task BuildSearch_InClause_ExecutesAndReturnsAllMatches()
+    {
+        var table = UniqueTable();
+        await CreateAndSeedAuthorsAsync(_repo, table,
+            ("11111111-1111-1111-1111-111111111111", "Alice", null, null, null),
+            ("22222222-2222-2222-2222-222222222222", "Bob",   null, null, null),
+            ("33333333-3333-3333-3333-333333333333", "Carl",  null, null, null));
+
+        var query = new SearchQuery();
+        var strList = new RepeatedString();
+        strList.Values.Add("Alice");
+        strList.Values.Add("Carl");
+        query.Clauses.Add(new SearchClause
+        {
+            Property = "Name", Operator = SearchOperator.In,
+            Value = new SearchValue { StringList = strList }, ClauseType = SearchClauseType.Filter
+        });
+
+        var (sql, param) = StarRocksQueryBuilder.BuildSearch(table, AuthorSchema(table), query, 0, 50);
+        var rows = (await _repo.QueryAsync<dynamic>(sql, param)).ToList();
+
+        rows.Should().HaveCount(2);
+        ((IEnumerable<dynamic>)rows).Select(r => (string)r.Name).Should().BeEquivalentTo(["Alice", "Carl"]);
+    }
+
+    [Fact]
+    public async Task BuildSearch_WithInnerJoin_ExecutesAndReturnsOnlyMatchedRows()
+    {
+        var authorsTable  = UniqueTable();
+        var articlesTable = UniqueTable();
+
+        await CreateAndSeedAuthorsAsync(_repo, authorsTable,
+            ("11111111-1111-1111-1111-111111111111", "Alice", null, null, null),
+            ("22222222-2222-2222-2222-222222222222", "Bob",   null, null, null));
+
+        var articleSchema = new StarRocksTableSchema(
+            articlesTable,
+            new StarRocksColumnSchema("Id", "VARCHAR(36)", false),
+            [
+                new StarRocksColumnSchema("AuthorId", "VARCHAR(36)", false),
+                new StarRocksColumnSchema("Title",    "STRING",      false),
+            ]);
+        await _repo.ApplyTableAsync(articleSchema);
+        await _repo.ExecuteAsync(
+            $"INSERT INTO `{articlesTable}` VALUES " +
+            $"('aaaaaaaa-1111-1111-1111-111111111111', '11111111-1111-1111-1111-111111111111', 'Alice''s First Post')");
+        // Bob has no articles — an INNER JOIN must exclude him.
+
+        var authorApiSchema = AuthorSchema(authorsTable);
+        var articleApiSchema = new SchemaDescriptor
+        {
+            TypeName      = "Article",
+            TableName     = articlesTable,
+            KeyColumn     = new ColumnDescriptor("Id", "uuid", false),
+            // AuthorId must be a ScalarColumn (not just an FkColumn) for BuildFromWithJoins'
+            // ResolveColumn to find it — this mirrors real registered schemas, where
+            // SchemaBuilder.BuildDescriptor adds every non-key property (including Id-suffixed
+            // FK properties) to ScalarColumns as well as FkColumns (SchemaBuilder.cs:27-56).
+            ScalarColumns = [new ColumnDescriptor("Title", "text", false), new ColumnDescriptor("AuthorId", "uuid", false)],
+            FkColumns     = [new ForeignKeyDescriptor("AuthorId", "Author")],
+            VectorFields  = [],
+            ChunkFields   = [],
+            Relations     = [new Iverson.Api.Schema.RelationDescriptor("Author", Iverson.Api.Schema.RelationKind.ManyToOne, "Author", "AuthorId")]
+        };
+        var registry = BuildRegistry(authorApiSchema, articleApiSchema);
+
+        var joins = new List<JoinSpec>
+        {
+            new() { LeftType = "Author", RightType = "Article", LeftField = "Id", RightField = "AuthorId", Kind = JoinKind.Inner }
+        };
+
+        var (sql, param) = StarRocksQueryBuilder.BuildSearch(
+            authorsTable, authorApiSchema, null, 0, 50, joins: joins, registry: registry);
+        var rows = (await _repo.QueryAsync<dynamic>(sql, param)).ToList();
+
+        rows.Should().ContainSingle();
+    }
+
+    [Fact]
+    public async Task BuildSearch_WithLeftJoin_ExecutesAndIncludesUnmatchedLeftRows()
+    {
+        var authorsTable  = UniqueTable();
+        var articlesTable = UniqueTable();
+
+        await CreateAndSeedAuthorsAsync(_repo, authorsTable,
+            ("11111111-1111-1111-1111-111111111111", "Alice", null, null, null),
+            ("22222222-2222-2222-2222-222222222222", "Bob",   null, null, null));
+
+        var articleSchema = new StarRocksTableSchema(
+            articlesTable,
+            new StarRocksColumnSchema("Id", "VARCHAR(36)", false),
+            [
+                new StarRocksColumnSchema("AuthorId", "VARCHAR(36)", false),
+                new StarRocksColumnSchema("Title",    "STRING",      false),
+            ]);
+        await _repo.ApplyTableAsync(articleSchema);
+        await _repo.ExecuteAsync(
+            $"INSERT INTO `{articlesTable}` VALUES " +
+            $"('aaaaaaaa-1111-1111-1111-111111111111', '11111111-1111-1111-1111-111111111111', 'Alice''s First Post')");
+        // Bob has no articles — a LEFT JOIN must still include him, unlike the INNER JOIN test above.
+
+        var authorApiSchema = AuthorSchema(authorsTable);
+        var articleApiSchema = new SchemaDescriptor
+        {
+            TypeName      = "Article",
+            TableName     = articlesTable,
+            KeyColumn     = new ColumnDescriptor("Id", "uuid", false),
+            // AuthorId must be a ScalarColumn (not just an FkColumn) for BuildFromWithJoins'
+            // ResolveColumn to find it — this mirrors real registered schemas, where
+            // SchemaBuilder.BuildDescriptor adds every non-key property (including Id-suffixed
+            // FK properties) to ScalarColumns as well as FkColumns (SchemaBuilder.cs:27-56).
+            ScalarColumns = [new ColumnDescriptor("Title", "text", false), new ColumnDescriptor("AuthorId", "uuid", false)],
+            FkColumns     = [new ForeignKeyDescriptor("AuthorId", "Author")],
+            VectorFields  = [],
+            ChunkFields   = [],
+            Relations     = [new Iverson.Api.Schema.RelationDescriptor("Author", Iverson.Api.Schema.RelationKind.ManyToOne, "Author", "AuthorId")]
+        };
+        var registry = BuildRegistry(authorApiSchema, articleApiSchema);
+
+        var joins = new List<JoinSpec>
+        {
+            new() { LeftType = "Author", RightType = "Article", LeftField = "Id", RightField = "AuthorId", Kind = JoinKind.Left }
+        };
+
+        var (sql, param) = StarRocksQueryBuilder.BuildSearch(
+            authorsTable, authorApiSchema, null, 0, 50, joins: joins, registry: registry);
+        var rows = (await _repo.QueryAsync<dynamic>(sql, param)).ToList();
+
+        // Both Alice (matched) and Bob (unmatched) must appear — this is what actually
+        // distinguishes a real LEFT JOIN from an INNER JOIN; a string-shape assertion
+        // (as in StarRocksQueryBuilderTests.cs) cannot prove this, only live execution can.
+        rows.Should().HaveCount(2);
     }
 }
