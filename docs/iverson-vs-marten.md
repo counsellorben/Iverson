@@ -123,7 +123,7 @@ var articles = coordinator.GetManyAsync(ids);
 var results = coordinator.SearchAsync(
     Query.For<Article>()
         .Where(a => a.IsPublished, EqualTo, true)
-        .And(a => a.Title, Contains, "performance")
+        .Where(a => a.Title, Contains, "performance")
         .OrderBy(a => a.PublishedAt, descending: true));
 
 // Aggregation (StarRocks):
@@ -383,7 +383,7 @@ var a = await coordinator.GetAsync(id);
 var results = coordinator.SearchAsync(
     Query.For<Article>()
         .Where(a => a.IsPublished, EqualTo, true)
-        .And(a => a.Title, Contains, "CQRS"));
+        .Where(a => a.Title, Contains, "CQRS"));
 
 // Semantic search (routes to Qdrant)
 var hits = await coordinator.SearchSimilarAsync("what is event sourcing?");
