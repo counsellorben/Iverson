@@ -1,0 +1,115 @@
+name: Deploy Validate
+
+on:
+  pull_request:
+    paths:
+      - "Iverson.Server/deploy/**"
+
+jobs:
+  helm-lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: v3.15.0
+
+      - name: helm dependency build
+        run: helm dependency build Iverson.Server/deploy/helm/iverson
+
+      - name: helm lint against all 4 values overlays
+        run: |
+          set -e
+          for values in values-local values-aws values-azure values-gcp; do
+            echo "::group::helm lint ($values.yaml)"
+            helm lint Iverson.Server/deploy/helm/iverson -f "Iverson.Server/deploy/helm/iverson/$values.yaml"
+            echo "::endgroup::"
+          done
+
+  helm-template-kubeconform:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: v3.15.0
+
+      - name: Install kubeconform
+        run: |
+          curl -sSL https://github.com/yannh/kubeconform/releases/download/v0.6.7/kubeconform-linux-amd64.tar.gz | tar xz
+          sudo mv kubeconform /usr/local/bin/
+
+      - name: helm dependency build
+        run: helm dependency build Iverson.Server/deploy/helm/iverson
+
+      - name: helm template | kubeconform against all 4 values overlays
+        run: |
+          set -e
+          for values in values-local values-aws values-azure values-gcp; do
+            echo "::group::kubeconform ($values.yaml)"
+            helm template iverson Iverson.Server/deploy/helm/iverson -f "Iverson.Server/deploy/helm/iverson/$values.yaml" \
+              | kubeconform -kubernetes-version 1.30.0 -summary -ignore-missing-schemas
+            echo "::endgroup::"
+          done
+
+  security-audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: v3.15.0
+
+      - name: Install kube-score
+        run: |
+          curl -sSL https://github.com/zegl/kube-score/releases/download/v1.19.0/kube-score_1.19.0_linux_amd64.tar.gz | tar xz
+          sudo mv kube-score /usr/local/bin/
+
+      - name: helm dependency build
+        run: helm dependency build Iverson.Server/deploy/helm/iverson
+
+      - name: kube-score against all 4 values overlays
+        run: |
+          set -e
+          for values in values-local values-aws values-azure values-gcp; do
+            echo "::group::kube-score ($values.yaml)"
+            helm template iverson Iverson.Server/deploy/helm/iverson -f "Iverson.Server/deploy/helm/iverson/$values.yaml" \
+              | kube-score score --ignore-test pod-networkpolicy -   # NetworkPolicy coverage is asserted structurally by templates/networkpolicies.yaml, not per-manifest by kube-score's heuristic
+            echo "::endgroup::"
+          done
+
+      - name: Install tfsec
+        run: |
+          curl -sSL https://github.com/aquasecurity/tfsec/releases/download/v1.28.6/tfsec-linux-amd64 -o tfsec
+          chmod +x tfsec && sudo mv tfsec /usr/local/bin/
+
+      - name: tfsec against all 3 cloud Terraform modules
+        run: tfsec Iverson.Server/deploy/terraform/
+
+  terraform-validate:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        cloud: [aws, azure, gcp]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.7.5"
+
+      - name: terraform fmt -check
+        run: terraform -chdir=Iverson.Server/deploy/terraform/${{ matrix.cloud }} fmt -check
+
+      - name: terraform init (no backend)
+        run: terraform -chdir=Iverson.Server/deploy/terraform/${{ matrix.cloud }} init -backend=false
+
+      - name: terraform validate
+        run: terraform -chdir=Iverson.Server/deploy/terraform/${{ matrix.cloud }} validate
