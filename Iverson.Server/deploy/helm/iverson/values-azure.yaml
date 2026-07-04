@@ -1,0 +1,45 @@
+# Azure AKS overlay — StorageClass names and node-pool labels match modules/operators
+# and modules/cluster-azure's fixed naming exactly (see Tasks 2 and 4 of this plan).
+
+postgres:
+  storageClassName: "iverson-postgres"
+  nodeSelector:
+    iverson.io/node-pool: postgres
+
+kafka:
+  storageClassName: "iverson-kafka"
+  nodeSelector:
+    iverson.io/node-pool: kafka
+
+starrocks:
+  storageClassName: "iverson-starrocks"
+  fe:
+    nodeSelector:
+      iverson.io/node-pool: starrocks-fe
+  be:
+    nodeSelector:
+      iverson.io/node-pool: starrocks-be
+
+qdrant:
+  storageClassName: "iverson-qdrant"
+  nodeSelector:
+    iverson.io/node-pool: qdrant
+
+ollama:
+  storageClassName: "iverson-ollama"
+  nodeSelector:
+    iverson.io/node-pool: ollama
+
+api:
+  ingress:
+    className: "azure-application-gateway"
+    annotations: {}
+    host: "iverson.example.com"
+    # AGIC terminates TLS from a standard Kubernetes Secret referenced via
+    # the Ingress's tls: block (the api subchart's Ingress template already
+    # renders one whenever tlsSecretName is set) — replace with a real
+    # cert-manager-issued Secret name for the real host before applying.
+    tlsSecretName: "iverson-api-tls"
+
+jaeger:
+  nodeSelector: {}

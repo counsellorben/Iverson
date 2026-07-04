@@ -1,0 +1,52 @@
+# AWS EKS overlay — StorageClass names and node-pool labels match modules/operators
+# and modules/cluster-aws's fixed naming exactly (see Tasks 2 and 3 of this plan).
+
+postgres:
+  storageClassName: "iverson-postgres"
+  nodeSelector:
+    iverson.io/node-pool: postgres
+
+kafka:
+  storageClassName: "iverson-kafka"
+  nodeSelector:
+    iverson.io/node-pool: kafka
+
+starrocks:
+  storageClassName: "iverson-starrocks"
+  fe:
+    nodeSelector:
+      iverson.io/node-pool: starrocks-fe
+  be:
+    nodeSelector:
+      iverson.io/node-pool: starrocks-be
+
+qdrant:
+  storageClassName: "iverson-qdrant"
+  nodeSelector:
+    iverson.io/node-pool: qdrant
+
+ollama:
+  storageClassName: "iverson-ollama"
+  nodeSelector:
+    iverson.io/node-pool: ollama
+
+api:
+  ingress:
+    className: "alb"
+    annotations:
+      alb.ingress.kubernetes.io/scheme: internet-facing
+      alb.ingress.kubernetes.io/target-type: ip
+      alb.ingress.kubernetes.io/backend-protocol-version: GRPC
+      # ALB terminates TLS using an ACM certificate referenced by ARN, not a
+      # Kubernetes Secret — tlsSecretName stays empty here on purpose (the
+      # Ingress template's tls: block is for Secret-based termination, which
+      # ALB doesn't use). Replace <ACM_CERT_ARN> with a real certificate
+      # provisioned for the real host before applying — without it ALB will
+      # only serve HTTP.
+      alb.ingress.kubernetes.io/certificate-arn: "<ACM_CERT_ARN>"
+      alb.ingress.kubernetes.io/listen-ports: '[{"HTTPS":443}, {"HTTP":80}]'
+      alb.ingress.kubernetes.io/ssl-redirect: "443"
+    host: "iverson.example.com"
+
+jaeger:
+  nodeSelector: {}
