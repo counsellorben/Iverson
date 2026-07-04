@@ -20,6 +20,7 @@
     </PackageReference>
     <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.9" />
     <PackageReference Include="Testcontainers.PostgreSql" Version="3.9.0" />
+    <PackageReference Include="Testcontainers" Version="3.9.0" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="../Iverson.Api/Iverson.Api.csproj" />
