@@ -222,6 +222,26 @@ public class StarRocksQueryBuilderTests
         sql.Should().Contain("bucket_key");
     }
 
+    [Theory]
+    [InlineData("minute", "%Y-%m-%d %H:%i")]
+    [InlineData("hour",   "%Y-%m-%d %H")]
+    [InlineData("day",    "%Y-%m-%d")]
+    [InlineData("week",   "%Y-%u")]
+    [InlineData("month",  "%Y-%m")]
+    [InlineData("year",   "%Y")]
+    [InlineData("bogus-unrecognized-interval", "%Y-%m")]  // falls back to month's format
+    public void BuildAggregate_DateHistogram_EachCalendarInterval_UsesExpectedDateFormat(
+        string interval, string expectedFormat)
+    {
+        var spec = new SrAggSpec(
+            "by_interval", SrAggKind.DateHistogram, "PublishedAt",
+            CalendarInterval: interval);
+
+        var (sql, _) = StarRocksQueryBuilder.BuildAggregate("authors", AuthorSchema(), null, spec);
+
+        sql.Should().Contain($"DATE_FORMAT(`PublishedAt`, '{expectedFormat}')");
+    }
+
     // ── BuildAggregate — joins ─────────────────────────────────────────────────
 
     [Fact]
@@ -287,6 +307,38 @@ public class StarRocksQueryBuilderTests
 
         var lookup = (SqlMapper.IParameterLookup)param;
         lookup["p0"].Should().Be("Foo");
+    }
+
+    [Fact]
+    public void BuildAggregate_Min_BareField_ProducesMinFunction()
+    {
+        var spec = new SrAggSpec("lowest_rating", SrAggKind.Min, "Rating");
+
+        var (sql, _) = StarRocksQueryBuilder.BuildAggregate("authors", AuthorSchema(), null, spec);
+
+        sql.Should().Contain("MIN(`Rating`)");
+    }
+
+    [Fact]
+    public void BuildAggregate_Max_BareField_ProducesMaxFunction()
+    {
+        var spec = new SrAggSpec("highest_rating", SrAggKind.Max, "Rating");
+
+        var (sql, _) = StarRocksQueryBuilder.BuildAggregate("authors", AuthorSchema(), null, spec);
+
+        sql.Should().Contain("MAX(`Rating`)");
+    }
+
+    [Fact]
+    public void BuildAggregate_Count_BareField_ProducesCountDistinctFunction()
+    {
+        var spec = new SrAggSpec("distinct_ratings", SrAggKind.Count, "Rating");
+
+        var (sql, _) = StarRocksQueryBuilder.BuildAggregate("authors", AuthorSchema(), null, spec);
+
+        // BuildAggregate's bare-field Count path emits COUNT(DISTINCT ...), not plain COUNT(...) —
+        // a real, non-obvious detail worth locking in with a test (StarRocksQueryBuilder.cs:162).
+        sql.Should().Contain("COUNT(DISTINCT `Rating`)");
     }
 
     // ── BuildSearch — Equals clause (parameterization) ─────────────────────────
