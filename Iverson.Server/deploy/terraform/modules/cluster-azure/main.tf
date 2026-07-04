@@ -23,6 +23,14 @@ resource "azurerm_subnet" "aks" {
   address_prefixes     = ["10.1.0.0/20"]
 }
 
+resource "azurerm_log_analytics_workspace" "this" {
+  name                = "${var.cluster_name}-logs"
+  resource_group_name = azurerm_resource_group.this.name
+  location            = azurerm_resource_group.this.location
+  sku                 = "PerGB2018"
+  retention_in_days   = 90
+}
+
 resource "azurerm_kubernetes_cluster" "this" {
   name                = var.cluster_name
   location            = azurerm_resource_group.this.location
@@ -30,6 +38,8 @@ resource "azurerm_kubernetes_cluster" "this" {
   dns_prefix          = var.cluster_name
   kubernetes_version  = var.kubernetes_version
   sku_tier            = "Standard"
+
+  role_based_access_control_enabled = true
 
   default_node_pool {
     name           = "general"
@@ -63,6 +73,10 @@ resource "azurerm_kubernetes_cluster" "this" {
 
   ingress_application_gateway {
     subnet_cidr = "10.1.16.0/24"
+  }
+
+  oms_agent {
+    log_analytics_workspace_id = azurerm_log_analytics_workspace.this.id
   }
 }
 
