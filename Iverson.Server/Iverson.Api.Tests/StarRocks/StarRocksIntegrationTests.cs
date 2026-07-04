@@ -17,12 +17,10 @@ namespace Iverson.Api.Tests.StarRocks;
 public sealed class StarRocksContainerFixture : IAsyncLifetime
 {
     private const int MysqlPort = 9030;
-    private const int HttpPort  = 8030;
 
     private readonly IContainer _container = new ContainerBuilder()
         .WithImage("starrocks/allin1-ubuntu:latest")
         .WithPortBinding(MysqlPort, true)
-        .WithPortBinding(HttpPort, true)
         .WithWaitStrategy(Wait.ForUnixContainer().UntilPortIsAvailable(MysqlPort))
         .Build();
 
@@ -89,6 +87,7 @@ public sealed class StarRocksContainerFixture : IAsyncLifetime
                 // first to surface the gap. Gate readiness on BE aliveness too, not just FE.
                 if (!await IsBackendAliveAsync(conn))
                 {
+                    lastError = new Exception("StarRocks backend was never reported alive (SHOW BACKENDS Alive=false)");
                     await Task.Delay(TimeSpan.FromSeconds(3));
                     continue;
                 }
@@ -479,6 +478,34 @@ public sealed class StarRocksIntegrationTests(StarRocksContainerFixture fixture)
         // above — an uncast dynamic .doc_count.Should() throws RuntimeBinderException.
         ((long)rows.Single(r => (string)r.bucket_key == "2026-01").doc_count).Should().Be(2L);
         ((long)rows.Single(r => (string)r.bucket_key == "2026-02").doc_count).Should().Be(1L);
+    }
+
+    [Fact]
+    public async Task BuildAggregate_DateHistogram_Quarter_ExecutesAndGroupsCorrectly()
+    {
+        var table = UniqueTable();
+        await CreateAndSeedAuthorsAsync(_repo, table,
+            ("11111111-1111-1111-1111-111111111111", "Alice", null, null, "2026-01-15 00:00:00"),
+            ("22222222-2222-2222-2222-222222222222", "Bob",   null, null, "2026-02-20 00:00:00"),
+            ("33333333-3333-3333-3333-333333333333", "Carl",  null, null, "2026-04-10 00:00:00"));
+
+        var spec = new AggregationDescriptor(
+            "by_quarter", AggregationKind.DateHistogram, "PublishedAt",
+            CalendarInterval: "quarter");
+        var (sql, param) = StarRocksQueryBuilder.BuildAggregate(table, AuthorSchema(table), null, spec);
+        var rows = (await _repo.QueryAsync<dynamic>(sql, param)).ToList();
+
+        rows.Should().HaveCount(2);
+        // DateBucketExpr special-cases "quarter" as CONCAT(YEAR(col), '-Q', QUARTER(col)) —
+        // StarRocks's DATE_FORMAT has no quarter directive, so unlike every other interval
+        // (which formats via DATE_FORMAT) the bucket key here is "<year>-Q<quarter>", e.g.
+        // "2026-Q1", not a DATE_FORMAT pattern. This is the single most dialect-risky
+        // expression in the date-bucketing code, so it gets its own live-execution proof
+        // (StarRocksQueryBuilderTests.cs only asserts the SQL string shape).
+        // See the (long) cast comment in BuildAggregate_Range_ExecutesAndReturnsCorrectBuckets
+        // above — an uncast dynamic .doc_count.Should() throws RuntimeBinderException.
+        ((long)rows.Single(r => (string)r.bucket_key == "2026-Q1").doc_count).Should().Be(2L);
+        ((long)rows.Single(r => (string)r.bucket_key == "2026-Q2").doc_count).Should().Be(1L);
     }
 
     [Fact]
