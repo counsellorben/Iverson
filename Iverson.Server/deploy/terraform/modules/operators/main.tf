@@ -35,14 +35,14 @@ resource "helm_release" "strimzi" {
   chart      = "strimzi-kafka-operator"
   # Pinned deliberately — bump by hand, don't let this float to whatever is
   # newest at apply time. Verified current stable as of this fix pass.
+  #
+  # No featureGates set: KafkaNodePools and UseKRaft graduated to GA in this
+  # pinned operator version and their feature-gate flags were removed
+  # entirely — setting them crashes the operator with "Unknown feature gate".
+  # Both behaviors are already the default.
   version          = "1.1.0"
   namespace        = "kafka"
   create_namespace = true
-
-  set {
-    name  = "featureGates"
-    value = "+KafkaNodePools\\,+UseKRaft"
-  }
 }
 
 resource "helm_release" "starrocks_operator" {
