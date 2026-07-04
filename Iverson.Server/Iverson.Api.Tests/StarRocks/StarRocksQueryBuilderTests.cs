@@ -376,6 +376,42 @@ public class StarRocksQueryBuilderTests
         sql.Should().Contain("`Name` = @p0");
     }
 
+    [Fact]
+    public void BuildSearch_MustClause_TreatedSameAsFilter()
+    {
+        var query = new SearchQuery();
+        query.Clauses.Add(new SearchClause
+        {
+            Property   = "Name",
+            Operator   = SearchOperator.Equals,
+            Value      = new SearchValue { StringVal = "Alice" },
+            ClauseType = SearchClauseType.Must
+        });
+
+        var (sql, _) = StarRocksQueryBuilder.BuildSearch("authors", AuthorSchema(), query, 0, 50);
+
+        sql.Should().Contain("WHERE `Name` = @p0");
+        sql.Should().NotContain("NOT (");
+    }
+
+    [Fact]
+    public void BuildSearch_ShouldClause_TreatedSameAsFilter()
+    {
+        var query = new SearchQuery();
+        query.Clauses.Add(new SearchClause
+        {
+            Property   = "Name",
+            Operator   = SearchOperator.Equals,
+            Value      = new SearchValue { StringVal = "Alice" },
+            ClauseType = SearchClauseType.Should
+        });
+
+        var (sql, _) = StarRocksQueryBuilder.BuildSearch("authors", AuthorSchema(), query, 0, 50);
+
+        sql.Should().Contain("WHERE `Name` = @p0");
+        sql.Should().NotContain("NOT (");
+    }
+
     // ── BuildSearch — In clause ───────────────────────────────────────────────
 
     [Fact]
@@ -711,6 +747,52 @@ public class StarRocksQueryBuilderTests
         tableMap.Should().ContainKey("Article");
         tableMap["Author"].TableName.Should().Be("authors");
         tableMap["Article"].TableName.Should().Be("articles");
+    }
+
+    [Fact]
+    public void BuildFromWithJoins_LeftJoin_ProducesLeftJoinClause()
+    {
+        var registry = BuildRegistry(AuthorSchema(), SchemaFixtures.ArticleSchema());
+
+        var joins = new List<JoinSpec>
+        {
+            new()
+            {
+                LeftType   = "Author",
+                RightType  = "Article",
+                LeftField  = "Id",
+                RightField = "Id",
+                Kind       = JoinKind.Left
+            }
+        };
+
+        var from = StarRocksQueryBuilder.BuildFromWithJoins(AuthorSchema(), joins, registry, out _);
+
+        from.Should().Contain("LEFT JOIN `articles`");
+        from.Should().NotContain("INNER JOIN");
+    }
+
+    [Fact]
+    public void BuildFromWithJoins_RightJoin_ProducesRightJoinClause()
+    {
+        var registry = BuildRegistry(AuthorSchema(), SchemaFixtures.ArticleSchema());
+
+        var joins = new List<JoinSpec>
+        {
+            new()
+            {
+                LeftType   = "Author",
+                RightType  = "Article",
+                LeftField  = "Id",
+                RightField = "Id",
+                Kind       = JoinKind.Right
+            }
+        };
+
+        var from = StarRocksQueryBuilder.BuildFromWithJoins(AuthorSchema(), joins, registry, out _);
+
+        from.Should().Contain("RIGHT JOIN `articles`");
+        from.Should().NotContain("INNER JOIN");
     }
 
     [Fact]
