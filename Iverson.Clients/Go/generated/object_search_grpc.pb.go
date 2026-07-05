@@ -24,6 +24,7 @@ const (
 	ObjectSearchService_SearchChunks_FullMethodName  = "/iverson.ObjectSearchService/SearchChunks"
 	ObjectSearchService_Aggregate_FullMethodName     = "/iverson.ObjectSearchService/Aggregate"
 	ObjectSearchService_GroupBy_FullMethodName       = "/iverson.ObjectSearchService/GroupBy"
+	ObjectSearchService_Pipeline_FullMethodName      = "/iverson.ObjectSearchService/Pipeline"
 )
 
 // ObjectSearchServiceClient is the client API for ObjectSearchService service.
@@ -37,6 +38,7 @@ type ObjectSearchServiceClient interface {
 	SearchChunks(ctx context.Context, in *SearchChunksRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[ChunkSearchResponse], error)
 	Aggregate(ctx context.Context, in *AggregateRequest, opts ...grpc.CallOption) (*AggregateResponse, error)
 	GroupBy(ctx context.Context, in *GroupByRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[SearchResponse], error)
+	Pipeline(ctx context.Context, in *PipelineRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[SearchResponse], error)
 }
 
 type objectSearchServiceClient struct {
@@ -133,6 +135,25 @@ func (c *objectSearchServiceClient) GroupBy(ctx context.Context, in *GroupByRequ
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
 type ObjectSearchService_GroupByClient = grpc.ServerStreamingClient[SearchResponse]
 
+func (c *objectSearchServiceClient) Pipeline(ctx context.Context, in *PipelineRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[SearchResponse], error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	stream, err := c.cc.NewStream(ctx, &ObjectSearchService_ServiceDesc.Streams[4], ObjectSearchService_Pipeline_FullMethodName, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	x := &grpc.GenericClientStream[PipelineRequest, SearchResponse]{ClientStream: stream}
+	if err := x.ClientStream.SendMsg(in); err != nil {
+		return nil, err
+	}
+	if err := x.ClientStream.CloseSend(); err != nil {
+		return nil, err
+	}
+	return x, nil
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type ObjectSearchService_PipelineClient = grpc.ServerStreamingClient[SearchResponse]
+
 // ObjectSearchServiceServer is the server API for ObjectSearchService service.
 // All implementations must embed UnimplementedObjectSearchServiceServer
 // for forward compatibility.
@@ -144,6 +165,7 @@ type ObjectSearchServiceServer interface {
 	SearchChunks(*SearchChunksRequest, grpc.ServerStreamingServer[ChunkSearchResponse]) error
 	Aggregate(context.Context, *AggregateRequest) (*AggregateResponse, error)
 	GroupBy(*GroupByRequest, grpc.ServerStreamingServer[SearchResponse]) error
+	Pipeline(*PipelineRequest, grpc.ServerStreamingServer[SearchResponse]) error
 	mustEmbedUnimplementedObjectSearchServiceServer()
 }
 
@@ -168,6 +190,9 @@ func (UnimplementedObjectSearchServiceServer) Aggregate(context.Context, *Aggreg
 }
 func (UnimplementedObjectSearchServiceServer) GroupBy(*GroupByRequest, grpc.ServerStreamingServer[SearchResponse]) error {
 	return status.Errorf(codes.Unimplemented, "method GroupBy not implemented")
+}
+func (UnimplementedObjectSearchServiceServer) Pipeline(*PipelineRequest, grpc.ServerStreamingServer[SearchResponse]) error {
+	return status.Errorf(codes.Unimplemented, "method Pipeline not implemented")
 }
 func (UnimplementedObjectSearchServiceServer) mustEmbedUnimplementedObjectSearchServiceServer() {}
 func (UnimplementedObjectSearchServiceServer) testEmbeddedByValue()                             {}
@@ -252,6 +277,17 @@ func _ObjectSearchService_GroupBy_Handler(srv interface{}, stream grpc.ServerStr
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
 type ObjectSearchService_GroupByServer = grpc.ServerStreamingServer[SearchResponse]
 
+func _ObjectSearchService_Pipeline_Handler(srv interface{}, stream grpc.ServerStream) error {
+	m := new(PipelineRequest)
+	if err := stream.RecvMsg(m); err != nil {
+		return err
+	}
+	return srv.(ObjectSearchServiceServer).Pipeline(m, &grpc.GenericServerStream[PipelineRequest, SearchResponse]{ServerStream: stream})
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type ObjectSearchService_PipelineServer = grpc.ServerStreamingServer[SearchResponse]
+
 // ObjectSearchService_ServiceDesc is the grpc.ServiceDesc for ObjectSearchService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -283,6 +319,11 @@ var ObjectSearchService_ServiceDesc = grpc.ServiceDesc{
 		{
 			StreamName:    "GroupBy",
 			Handler:       _ObjectSearchService_GroupBy_Handler,
+			ServerStreams: true,
+		},
+		{
+			StreamName:    "Pipeline",
+			Handler:       _ObjectSearchService_Pipeline_Handler,
 			ServerStreams: true,
 		},
 	},
