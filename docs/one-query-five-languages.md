@@ -16,6 +16,7 @@ Because the DSL compiles to a proto message, `build()` never needs a live server
 | Rows matching filters, sorted and paged | `Search` | StarRocks | stream of entities |
 | Multiple metrics per group, one round trip | `GroupBy` | StarRocks | stream of result rows |
 | Bucketed facets (terms, date histogram, ranges) | `Aggregate` | StarRocks | buckets + metrics |
+| Multi-step analytics: top-N per group, running totals, ratios | `Pipeline` | StarRocks | stream of result rows |
 | "Find articles *about* this" from raw text | `SearchSimilar` | Qdrant | stream of entities + scores |
 | The best *passages* for a RAG prompt | `SearchChunks` | Qdrant | stream of chunks + scores |
 
@@ -463,6 +464,170 @@ Other languages construct `AggregateRequest` directly from generated protos — 
 
 ---
 
+## Pipelines: CTE chains
+
+Where `GroupBy` is one SELECT, `Pipeline` is a *chain* of them — each named step is exactly
+one CTE in a single StarRocks query. Steps read the previous step by default, any earlier
+step via `reads`, and can JOIN earlier steps' outputs or other registered types. This is the
+tool for top-N per group, running totals, derived ratios, and filter-then-aggregate — one
+round trip, no client-side stitching.
+
+*Authors with more than 5 published articles, ranked by article count, with names attached:*
+
+### C#
+
+```csharp
+using Iverson.Client.Search;
+using static Iverson.Client.Search.SearchOperators;
+
+var pipeline = Pipeline.For("Article")
+    .Where("IsPublished", EqualTo, true)                    // base CTE
+    .Step("by_author", s => s
+        .GroupBy("AuthorId")
+        .CountAll("articles")
+        .Having("articles", GreaterThan, 5))
+    .Step("ranked", s => s
+        .RowNumber("rank", orderBy: "articles", descending: true))
+    .Step("named", s => s
+        .Join("Author", ("AuthorId", "Id"))
+        .Select(p => p.AllFrom("ranked").Pick("Author", "Name", "author_name")))
+    .SortOn("rank")
+    .Limit(10);
+
+await foreach (var row in articles.PipelineAsync(pipeline))   // EntityCoordinator<Article>
+    Console.WriteLine($"{row["author_name"]}: {row["articles"]}");
+```
+
+### Java
+
+```java
+import io.iverson.client.search.Query;
+import iverson.ObjectSearch.SearchOperator;
+
+var request = Query.pipeline("Article")
+    .where("IsPublished", SearchOperator.EQUALS, true)
+    .step("by_author", s -> s
+        .groupBy("AuthorId")
+        .countAll("articles")
+        .having("articles", SearchOperator.GREATER_THAN, 5))
+    .step("ranked", s -> s.rowNumber("rank", "articles", true))
+    .step("named", s -> s
+        .join("Author", "AuthorId", "Id")
+        .select(sel -> sel.allFrom("ranked").pick("Author", "Name", "author_name")))
+    .sortOnDesc("rank")
+    .limit(10)
+    .build();
+
+var search = ObjectSearchServiceGrpc.newBlockingStub(channel);
+search.pipeline(request).forEachRemaining(row -> System.out.println(row.getData()));
+```
+
+### Python
+
+```python
+from iverson_client import pipeline
+from iverson_client.search import SearchOperator
+
+request = (
+    pipeline("Article")
+    .where("IsPublished", SearchOperator.EQUALS, True)
+    .step("by_author", lambda s: s
+          .group_by("AuthorId")
+          .count_all("articles")
+          .having("articles", SearchOperator.GREATER_THAN, 5))
+    .step("ranked", lambda s: s.row_number("rank", order_by="articles", descending=True))
+    .step("named", lambda s: s
+          .join("Author", "AuthorId", "Id")
+          .select(lambda sel: sel.all_from("ranked").pick("Author", "Name", "author_name")))
+    .sort_on_desc("rank")
+    .limit(10)
+    .build()
+)
+
+for row in search.Pipeline(request):
+    print(row.data)
+```
+
+### TypeScript
+
+```typescript
+import { pipeline, SearchOperator } from '@iverson/client';
+
+const request = pipeline('Article')
+    .where('IsPublished', SearchOperator.EQUALS, true)
+    .step('by_author', s => s
+        .groupBy('AuthorId')
+        .countAll('articles')
+        .having('articles', SearchOperator.GREATER_THAN, 5))
+    .step('ranked', s => s.rowNumber('rank', { orderBy: 'articles', descending: true }))
+    .step('named', s => s
+        .join('Author', 'AuthorId', 'Id')
+        .select(sel => sel.allFrom('ranked').pick('Author', 'Name', 'author_name')))
+    .sortOnDesc('rank')
+    .limit(10)
+    .build();
+
+for await (const row of search.pipeline(request)) {
+    console.log(row.data);
+}
+```
+
+### Go
+
+```go
+req, err := iverson.NewPipeline("Article").
+    Where("IsPublished", pb.SearchOperator_EQUALS,
+        &pb.SearchValue{Kind: &pb.SearchValue_BoolVal{BoolVal: true}}).
+    Step("by_author", func(s *iverson.PipelineStepBuilder) {
+        s.GroupBy("AuthorId").
+            CountAll("articles").
+            Having("articles", pb.SearchOperator_GREATER_THAN,
+                &pb.SearchValue{Kind: &pb.SearchValue_NumberVal{NumberVal: 5}})
+    }).
+    Step("ranked", func(s *iverson.PipelineStepBuilder) {
+        s.RowNumber("rank", "", "articles", true)
+    }).
+    Step("named", func(s *iverson.PipelineStepBuilder) {
+        s.Join("Author", "AuthorId", "Id").
+            SelectAllFrom("ranked").
+            SelectPick("Author", "Name", "author_name")
+    }).
+    SortOnDesc("rank").
+    Limit(10).
+    Build()
+
+stream, err := client.SearchStub.Pipeline(ctx, req)
+```
+
+### The step toolbox
+
+| Call | SQL | Notes |
+|------|-----|-------|
+| `where` / `not` | `WHERE` in this CTE | May reference prior-step aliases |
+| `rowNumber` / `rank` / `denseRank` | `ROW_NUMBER()/RANK()/DENSE_RANK() OVER (...)` | XOR with `groupBy` in the same step |
+| `runningSum` / `runningAvg` | `SUM/AVG(f) OVER (ORDER BY ...)` | |
+| `lag` / `lead` | `LAG/LEAD(f, offset) OVER (...)` | offset defaults to 1 |
+| `groupBy(field, dateTrunc?)` | `GROUP BY` (+ `DATE_TRUNC`) | truncated keys output as `{field}_{interval}` |
+| `sum/avg/min/max/count/countAll/sumExpr/avgExpr` | aggregate metrics | same shapes as GroupBy |
+| `having` | `HAVING` | references this step's metric aliases |
+| `derive(alias, expr)` | scalar expression column | validated: no subqueries, quotes, or semicolons |
+| `reads(step)` | `FROM step` | default is the previous step |
+| `join(source, left, right, kind?)` | `JOIN ... ON` | source = earlier step OR registered type; joined steps **require** a `select` |
+| `select` → `allFrom(src)` / `pick(src, col, alias?)` | projection | resolves join column collisions |
+
+Pipeline gotchas:
+
+- **One step = one CTE.** Filter + aggregate + having fit in a single step; a window over
+  the aggregate's output is the *next* step.
+- **No per-step LIMIT** — top-N inside the chain is `rowNumber` + a `where` on the alias.
+  The request-level `limit` (default 10,000) applies to the final SELECT.
+- **Validation is two-layered:** builders reject structural mistakes offline (duplicate
+  step names, forward `reads`, windows+groupBy in one step, joins without `select`);
+  the server validates every column/alias reference against tracked per-step column sets
+  and rejects with `INVALID_ARGUMENT` — never a raw SQL error.
+
+---
+
 ## Semantic search: Qdrant surfaces
 
 ### How content gets vectorized
@@ -554,6 +719,7 @@ Each hit carries `parentKey` — feed it to your coordinator's `get` to pull the
 | Field projection (`fields`) | ✅ | ✅ | ✅ | ✅ | ✅ |
 | Joins on `Search` | ✅ | ✅ | ✅ | ✅ | ✅ |
 | `GroupByBuilder` | ✅ | ✅ | ✅ | ✅ | ✅ |
+| `PipelineBuilder` (CTE chains) | ✅ | ✅ | ✅ | ✅ | ✅ |
 | Aggregate DSL builder | ✅ | proto ² | proto ² | proto ² | proto ² |
 | Typed search execution helper | `SearchAsync` | `search()` | raw stub | raw stub | raw stub |
 | Embedding/chunk schema annotations | ✅ | ✅ | ✅ | ✅ | ✅ |

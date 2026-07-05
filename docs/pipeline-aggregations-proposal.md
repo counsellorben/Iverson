@@ -1,7 +1,7 @@
 # Pipeline Aggregations: Design Proposal
 
 **Date:** 2026-06-27  
-**Status:** Proposal
+**Status:** Superseded by `docs/superpowers/specs/2026-07-05-pipeline-cte-dsl-design.md` (implemented)
 
 ---
 
