@@ -292,6 +292,138 @@ export function aggregationTypeToJSON(object: AggregationType): string {
   }
 }
 
+export enum WindowFunctionKind {
+  ROW_NUMBER = 0,
+  RANK = 1,
+  DENSE_RANK = 2,
+  RUNNING_SUM = 3,
+  RUNNING_AVG = 4,
+  LAG = 5,
+  LEAD = 6,
+  UNRECOGNIZED = -1,
+}
+
+export function windowFunctionKindFromJSON(object: any): WindowFunctionKind {
+  switch (object) {
+    case 0:
+    case "ROW_NUMBER":
+      return WindowFunctionKind.ROW_NUMBER;
+    case 1:
+    case "RANK":
+      return WindowFunctionKind.RANK;
+    case 2:
+    case "DENSE_RANK":
+      return WindowFunctionKind.DENSE_RANK;
+    case 3:
+    case "RUNNING_SUM":
+      return WindowFunctionKind.RUNNING_SUM;
+    case 4:
+    case "RUNNING_AVG":
+      return WindowFunctionKind.RUNNING_AVG;
+    case 5:
+    case "LAG":
+      return WindowFunctionKind.LAG;
+    case 6:
+    case "LEAD":
+      return WindowFunctionKind.LEAD;
+    case -1:
+    case "UNRECOGNIZED":
+    default:
+      return WindowFunctionKind.UNRECOGNIZED;
+  }
+}
+
+export function windowFunctionKindToJSON(object: WindowFunctionKind): string {
+  switch (object) {
+    case WindowFunctionKind.ROW_NUMBER:
+      return "ROW_NUMBER";
+    case WindowFunctionKind.RANK:
+      return "RANK";
+    case WindowFunctionKind.DENSE_RANK:
+      return "DENSE_RANK";
+    case WindowFunctionKind.RUNNING_SUM:
+      return "RUNNING_SUM";
+    case WindowFunctionKind.RUNNING_AVG:
+      return "RUNNING_AVG";
+    case WindowFunctionKind.LAG:
+      return "LAG";
+    case WindowFunctionKind.LEAD:
+      return "LEAD";
+    case WindowFunctionKind.UNRECOGNIZED:
+    default:
+      return "UNRECOGNIZED";
+  }
+}
+
+export enum DateTrunc {
+  NONE = 0,
+  MINUTE = 1,
+  HOUR = 2,
+  DAY = 3,
+  WEEK = 4,
+  MONTH = 5,
+  QUARTER = 6,
+  YEAR = 7,
+  UNRECOGNIZED = -1,
+}
+
+export function dateTruncFromJSON(object: any): DateTrunc {
+  switch (object) {
+    case 0:
+    case "NONE":
+      return DateTrunc.NONE;
+    case 1:
+    case "MINUTE":
+      return DateTrunc.MINUTE;
+    case 2:
+    case "HOUR":
+      return DateTrunc.HOUR;
+    case 3:
+    case "DAY":
+      return DateTrunc.DAY;
+    case 4:
+    case "WEEK":
+      return DateTrunc.WEEK;
+    case 5:
+    case "MONTH":
+      return DateTrunc.MONTH;
+    case 6:
+    case "QUARTER":
+      return DateTrunc.QUARTER;
+    case 7:
+    case "YEAR":
+      return DateTrunc.YEAR;
+    case -1:
+    case "UNRECOGNIZED":
+    default:
+      return DateTrunc.UNRECOGNIZED;
+  }
+}
+
+export function dateTruncToJSON(object: DateTrunc): string {
+  switch (object) {
+    case DateTrunc.NONE:
+      return "NONE";
+    case DateTrunc.MINUTE:
+      return "MINUTE";
+    case DateTrunc.HOUR:
+      return "HOUR";
+    case DateTrunc.DAY:
+      return "DAY";
+    case DateTrunc.WEEK:
+      return "WEEK";
+    case DateTrunc.MONTH:
+      return "MONTH";
+    case DateTrunc.QUARTER:
+      return "QUARTER";
+    case DateTrunc.YEAR:
+      return "YEAR";
+    case DateTrunc.UNRECOGNIZED:
+    default:
+      return "UNRECOGNIZED";
+  }
+}
+
 export interface SearchRequest {
   typeName: string;
   query: SearchQuery | undefined;
@@ -492,6 +624,92 @@ export interface GroupByRequest {
   limit: number;
   joins: JoinSpec[];
   traceId: string;
+}
+
+export interface PipelineRequest {
+  typeName: string;
+  /** WHERE on the implicit "base" step */
+  baseWhere: SearchClause[];
+  baseLogic: SearchLogic;
+  steps: PipelineStep[];
+  /** final ORDER BY (last step's columns/aliases) */
+  orderBy: SearchSort[];
+  /** 0 = default 10000 */
+  limit: number;
+  traceId: string;
+}
+
+export interface PipelineStep {
+  /** CTE name; required, unique, valid identifier */
+  name: string;
+  /** input step name; empty = previous step */
+  reads: string;
+  where: SearchClause[];
+  whereLogic: SearchLogic;
+  /** XOR with group_by/metrics/having */
+  windows: WindowFunction[];
+  groupBy: GroupKey[];
+  /** reuses existing MetricSpec */
+  metrics: MetricSpec[];
+  /** property = metric alias from this step */
+  having: SearchClause[];
+  derive: DeriveColumn[];
+  joins: PipelineJoin[];
+  /** required when joins present; else optional */
+  select: SelectItem[];
+}
+
+export interface PipelineJoin {
+  /** prior step name OR registered type name */
+  source: string;
+  /** reuses existing enum */
+  kind: JoinKind;
+  /** equality pairs, AND-ed */
+  on: JoinCondition[];
+}
+
+export interface JoinCondition {
+  /** column in the step's input */
+  left: string;
+  /** column in the join source */
+  right: string;
+}
+
+export interface SelectItem {
+  /** step name or type name; empty = the step's input */
+  source: string;
+  /** empty when all = true */
+  column: string;
+  /** emit source.* (expands the source's full column set) */
+  all: boolean;
+  /** optional output alias for a single column */
+  alias: string;
+}
+
+export interface GroupKey {
+  field: string;
+  /** NONE = group by the raw column */
+  dateTrunc: DateTrunc;
+}
+
+export interface DeriveColumn {
+  alias: string;
+  /** validated scalar expression over input columns / step aliases */
+  expr: string;
+}
+
+export interface WindowFunction {
+  alias: string;
+  kind: WindowFunctionKind;
+  /** source column (empty for ROW_NUMBER/RANK/DENSE_RANK) */
+  field: string;
+  /** optional */
+  partitionBy: string;
+  /** required for every kind */
+  orderBy: string;
+  descending: boolean;
+  /** LAG/LEAD only; 0 = default 1 */
+  offset: number;
 }
 
 function createBaseSearchRequest(): SearchRequest {
@@ -2934,6 +3152,1020 @@ export const GroupByRequest: MessageFns<GroupByRequest> = {
   },
 };
 
+function createBasePipelineRequest(): PipelineRequest {
+  return { typeName: "", baseWhere: [], baseLogic: 0, steps: [], orderBy: [], limit: 0, traceId: "" };
+}
+
+export const PipelineRequest: MessageFns<PipelineRequest> = {
+  encode(message: PipelineRequest, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.typeName !== "") {
+      writer.uint32(10).string(message.typeName);
+    }
+    for (const v of message.baseWhere) {
+      SearchClause.encode(v!, writer.uint32(18).fork()).join();
+    }
+    if (message.baseLogic !== 0) {
+      writer.uint32(24).int32(message.baseLogic);
+    }
+    for (const v of message.steps) {
+      PipelineStep.encode(v!, writer.uint32(34).fork()).join();
+    }
+    for (const v of message.orderBy) {
+      SearchSort.encode(v!, writer.uint32(42).fork()).join();
+    }
+    if (message.limit !== 0) {
+      writer.uint32(48).int32(message.limit);
+    }
+    if (message.traceId !== "") {
+      writer.uint32(58).string(message.traceId);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): PipelineRequest {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBasePipelineRequest();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.typeName = reader.string();
+          continue;
+        }
+        case 2: {
+          if (tag !== 18) {
+            break;
+          }
+
+          message.baseWhere.push(SearchClause.decode(reader, reader.uint32()));
+          continue;
+        }
+        case 3: {
+          if (tag !== 24) {
+            break;
+          }
+
+          message.baseLogic = reader.int32() as any;
+          continue;
+        }
+        case 4: {
+          if (tag !== 34) {
+            break;
+          }
+
+          message.steps.push(PipelineStep.decode(reader, reader.uint32()));
+          continue;
+        }
+        case 5: {
+          if (tag !== 42) {
+            break;
+          }
+
+          message.orderBy.push(SearchSort.decode(reader, reader.uint32()));
+          continue;
+        }
+        case 6: {
+          if (tag !== 48) {
+            break;
+          }
+
+          message.limit = reader.int32();
+          continue;
+        }
+        case 7: {
+          if (tag !== 58) {
+            break;
+          }
+
+          message.traceId = reader.string();
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): PipelineRequest {
+    return {
+      typeName: isSet(object.typeName)
+        ? globalThis.String(object.typeName)
+        : isSet(object.type_name)
+        ? globalThis.String(object.type_name)
+        : "",
+      baseWhere: globalThis.Array.isArray(object?.baseWhere)
+        ? object.baseWhere.map((e: any) => SearchClause.fromJSON(e))
+        : globalThis.Array.isArray(object?.base_where)
+        ? object.base_where.map((e: any) => SearchClause.fromJSON(e))
+        : [],
+      baseLogic: isSet(object.baseLogic)
+        ? searchLogicFromJSON(object.baseLogic)
+        : isSet(object.base_logic)
+        ? searchLogicFromJSON(object.base_logic)
+        : 0,
+      steps: globalThis.Array.isArray(object?.steps) ? object.steps.map((e: any) => PipelineStep.fromJSON(e)) : [],
+      orderBy: globalThis.Array.isArray(object?.orderBy)
+        ? object.orderBy.map((e: any) => SearchSort.fromJSON(e))
+        : globalThis.Array.isArray(object?.order_by)
+        ? object.order_by.map((e: any) => SearchSort.fromJSON(e))
+        : [],
+      limit: isSet(object.limit) ? globalThis.Number(object.limit) : 0,
+      traceId: isSet(object.traceId)
+        ? globalThis.String(object.traceId)
+        : isSet(object.trace_id)
+        ? globalThis.String(object.trace_id)
+        : "",
+    };
+  },
+
+  toJSON(message: PipelineRequest): unknown {
+    const obj: any = {};
+    if (message.typeName !== "") {
+      obj.typeName = message.typeName;
+    }
+    if (message.baseWhere?.length) {
+      obj.baseWhere = message.baseWhere.map((e) => SearchClause.toJSON(e));
+    }
+    if (message.baseLogic !== 0) {
+      obj.baseLogic = searchLogicToJSON(message.baseLogic);
+    }
+    if (message.steps?.length) {
+      obj.steps = message.steps.map((e) => PipelineStep.toJSON(e));
+    }
+    if (message.orderBy?.length) {
+      obj.orderBy = message.orderBy.map((e) => SearchSort.toJSON(e));
+    }
+    if (message.limit !== 0) {
+      obj.limit = Math.round(message.limit);
+    }
+    if (message.traceId !== "") {
+      obj.traceId = message.traceId;
+    }
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<PipelineRequest>, I>>(base?: I): PipelineRequest {
+    return PipelineRequest.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<PipelineRequest>, I>>(object: I): PipelineRequest {
+    const message = createBasePipelineRequest();
+    message.typeName = object.typeName ?? "";
+    message.baseWhere = object.baseWhere?.map((e) => SearchClause.fromPartial(e)) || [];
+    message.baseLogic = object.baseLogic ?? 0;
+    message.steps = object.steps?.map((e) => PipelineStep.fromPartial(e)) || [];
+    message.orderBy = object.orderBy?.map((e) => SearchSort.fromPartial(e)) || [];
+    message.limit = object.limit ?? 0;
+    message.traceId = object.traceId ?? "";
+    return message;
+  },
+};
+
+function createBasePipelineStep(): PipelineStep {
+  return {
+    name: "",
+    reads: "",
+    where: [],
+    whereLogic: 0,
+    windows: [],
+    groupBy: [],
+    metrics: [],
+    having: [],
+    derive: [],
+    joins: [],
+    select: [],
+  };
+}
+
+export const PipelineStep: MessageFns<PipelineStep> = {
+  encode(message: PipelineStep, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.name !== "") {
+      writer.uint32(10).string(message.name);
+    }
+    if (message.reads !== "") {
+      writer.uint32(18).string(message.reads);
+    }
+    for (const v of message.where) {
+      SearchClause.encode(v!, writer.uint32(26).fork()).join();
+    }
+    if (message.whereLogic !== 0) {
+      writer.uint32(32).int32(message.whereLogic);
+    }
+    for (const v of message.windows) {
+      WindowFunction.encode(v!, writer.uint32(42).fork()).join();
+    }
+    for (const v of message.groupBy) {
+      GroupKey.encode(v!, writer.uint32(50).fork()).join();
+    }
+    for (const v of message.metrics) {
+      MetricSpec.encode(v!, writer.uint32(58).fork()).join();
+    }
+    for (const v of message.having) {
+      SearchClause.encode(v!, writer.uint32(66).fork()).join();
+    }
+    for (const v of message.derive) {
+      DeriveColumn.encode(v!, writer.uint32(74).fork()).join();
+    }
+    for (const v of message.joins) {
+      PipelineJoin.encode(v!, writer.uint32(82).fork()).join();
+    }
+    for (const v of message.select) {
+      SelectItem.encode(v!, writer.uint32(90).fork()).join();
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): PipelineStep {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBasePipelineStep();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.name = reader.string();
+          continue;
+        }
+        case 2: {
+          if (tag !== 18) {
+            break;
+          }
+
+          message.reads = reader.string();
+          continue;
+        }
+        case 3: {
+          if (tag !== 26) {
+            break;
+          }
+
+          message.where.push(SearchClause.decode(reader, reader.uint32()));
+          continue;
+        }
+        case 4: {
+          if (tag !== 32) {
+            break;
+          }
+
+          message.whereLogic = reader.int32() as any;
+          continue;
+        }
+        case 5: {
+          if (tag !== 42) {
+            break;
+          }
+
+          message.windows.push(WindowFunction.decode(reader, reader.uint32()));
+          continue;
+        }
+        case 6: {
+          if (tag !== 50) {
+            break;
+          }
+
+          message.groupBy.push(GroupKey.decode(reader, reader.uint32()));
+          continue;
+        }
+        case 7: {
+          if (tag !== 58) {
+            break;
+          }
+
+          message.metrics.push(MetricSpec.decode(reader, reader.uint32()));
+          continue;
+        }
+        case 8: {
+          if (tag !== 66) {
+            break;
+          }
+
+          message.having.push(SearchClause.decode(reader, reader.uint32()));
+          continue;
+        }
+        case 9: {
+          if (tag !== 74) {
+            break;
+          }
+
+          message.derive.push(DeriveColumn.decode(reader, reader.uint32()));
+          continue;
+        }
+        case 10: {
+          if (tag !== 82) {
+            break;
+          }
+
+          message.joins.push(PipelineJoin.decode(reader, reader.uint32()));
+          continue;
+        }
+        case 11: {
+          if (tag !== 90) {
+            break;
+          }
+
+          message.select.push(SelectItem.decode(reader, reader.uint32()));
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): PipelineStep {
+    return {
+      name: isSet(object.name) ? globalThis.String(object.name) : "",
+      reads: isSet(object.reads) ? globalThis.String(object.reads) : "",
+      where: globalThis.Array.isArray(object?.where) ? object.where.map((e: any) => SearchClause.fromJSON(e)) : [],
+      whereLogic: isSet(object.whereLogic)
+        ? searchLogicFromJSON(object.whereLogic)
+        : isSet(object.where_logic)
+        ? searchLogicFromJSON(object.where_logic)
+        : 0,
+      windows: globalThis.Array.isArray(object?.windows)
+        ? object.windows.map((e: any) => WindowFunction.fromJSON(e))
+        : [],
+      groupBy: globalThis.Array.isArray(object?.groupBy)
+        ? object.groupBy.map((e: any) => GroupKey.fromJSON(e))
+        : globalThis.Array.isArray(object?.group_by)
+        ? object.group_by.map((e: any) => GroupKey.fromJSON(e))
+        : [],
+      metrics: globalThis.Array.isArray(object?.metrics) ? object.metrics.map((e: any) => MetricSpec.fromJSON(e)) : [],
+      having: globalThis.Array.isArray(object?.having) ? object.having.map((e: any) => SearchClause.fromJSON(e)) : [],
+      derive: globalThis.Array.isArray(object?.derive) ? object.derive.map((e: any) => DeriveColumn.fromJSON(e)) : [],
+      joins: globalThis.Array.isArray(object?.joins) ? object.joins.map((e: any) => PipelineJoin.fromJSON(e)) : [],
+      select: globalThis.Array.isArray(object?.select) ? object.select.map((e: any) => SelectItem.fromJSON(e)) : [],
+    };
+  },
+
+  toJSON(message: PipelineStep): unknown {
+    const obj: any = {};
+    if (message.name !== "") {
+      obj.name = message.name;
+    }
+    if (message.reads !== "") {
+      obj.reads = message.reads;
+    }
+    if (message.where?.length) {
+      obj.where = message.where.map((e) => SearchClause.toJSON(e));
+    }
+    if (message.whereLogic !== 0) {
+      obj.whereLogic = searchLogicToJSON(message.whereLogic);
+    }
+    if (message.windows?.length) {
+      obj.windows = message.windows.map((e) => WindowFunction.toJSON(e));
+    }
+    if (message.groupBy?.length) {
+      obj.groupBy = message.groupBy.map((e) => GroupKey.toJSON(e));
+    }
+    if (message.metrics?.length) {
+      obj.metrics = message.metrics.map((e) => MetricSpec.toJSON(e));
+    }
+    if (message.having?.length) {
+      obj.having = message.having.map((e) => SearchClause.toJSON(e));
+    }
+    if (message.derive?.length) {
+      obj.derive = message.derive.map((e) => DeriveColumn.toJSON(e));
+    }
+    if (message.joins?.length) {
+      obj.joins = message.joins.map((e) => PipelineJoin.toJSON(e));
+    }
+    if (message.select?.length) {
+      obj.select = message.select.map((e) => SelectItem.toJSON(e));
+    }
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<PipelineStep>, I>>(base?: I): PipelineStep {
+    return PipelineStep.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<PipelineStep>, I>>(object: I): PipelineStep {
+    const message = createBasePipelineStep();
+    message.name = object.name ?? "";
+    message.reads = object.reads ?? "";
+    message.where = object.where?.map((e) => SearchClause.fromPartial(e)) || [];
+    message.whereLogic = object.whereLogic ?? 0;
+    message.windows = object.windows?.map((e) => WindowFunction.fromPartial(e)) || [];
+    message.groupBy = object.groupBy?.map((e) => GroupKey.fromPartial(e)) || [];
+    message.metrics = object.metrics?.map((e) => MetricSpec.fromPartial(e)) || [];
+    message.having = object.having?.map((e) => SearchClause.fromPartial(e)) || [];
+    message.derive = object.derive?.map((e) => DeriveColumn.fromPartial(e)) || [];
+    message.joins = object.joins?.map((e) => PipelineJoin.fromPartial(e)) || [];
+    message.select = object.select?.map((e) => SelectItem.fromPartial(e)) || [];
+    return message;
+  },
+};
+
+function createBasePipelineJoin(): PipelineJoin {
+  return { source: "", kind: 0, on: [] };
+}
+
+export const PipelineJoin: MessageFns<PipelineJoin> = {
+  encode(message: PipelineJoin, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.source !== "") {
+      writer.uint32(10).string(message.source);
+    }
+    if (message.kind !== 0) {
+      writer.uint32(16).int32(message.kind);
+    }
+    for (const v of message.on) {
+      JoinCondition.encode(v!, writer.uint32(26).fork()).join();
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): PipelineJoin {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBasePipelineJoin();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.source = reader.string();
+          continue;
+        }
+        case 2: {
+          if (tag !== 16) {
+            break;
+          }
+
+          message.kind = reader.int32() as any;
+          continue;
+        }
+        case 3: {
+          if (tag !== 26) {
+            break;
+          }
+
+          message.on.push(JoinCondition.decode(reader, reader.uint32()));
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): PipelineJoin {
+    return {
+      source: isSet(object.source) ? globalThis.String(object.source) : "",
+      kind: isSet(object.kind) ? joinKindFromJSON(object.kind) : 0,
+      on: globalThis.Array.isArray(object?.on) ? object.on.map((e: any) => JoinCondition.fromJSON(e)) : [],
+    };
+  },
+
+  toJSON(message: PipelineJoin): unknown {
+    const obj: any = {};
+    if (message.source !== "") {
+      obj.source = message.source;
+    }
+    if (message.kind !== 0) {
+      obj.kind = joinKindToJSON(message.kind);
+    }
+    if (message.on?.length) {
+      obj.on = message.on.map((e) => JoinCondition.toJSON(e));
+    }
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<PipelineJoin>, I>>(base?: I): PipelineJoin {
+    return PipelineJoin.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<PipelineJoin>, I>>(object: I): PipelineJoin {
+    const message = createBasePipelineJoin();
+    message.source = object.source ?? "";
+    message.kind = object.kind ?? 0;
+    message.on = object.on?.map((e) => JoinCondition.fromPartial(e)) || [];
+    return message;
+  },
+};
+
+function createBaseJoinCondition(): JoinCondition {
+  return { left: "", right: "" };
+}
+
+export const JoinCondition: MessageFns<JoinCondition> = {
+  encode(message: JoinCondition, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.left !== "") {
+      writer.uint32(10).string(message.left);
+    }
+    if (message.right !== "") {
+      writer.uint32(18).string(message.right);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): JoinCondition {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseJoinCondition();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.left = reader.string();
+          continue;
+        }
+        case 2: {
+          if (tag !== 18) {
+            break;
+          }
+
+          message.right = reader.string();
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): JoinCondition {
+    return {
+      left: isSet(object.left) ? globalThis.String(object.left) : "",
+      right: isSet(object.right) ? globalThis.String(object.right) : "",
+    };
+  },
+
+  toJSON(message: JoinCondition): unknown {
+    const obj: any = {};
+    if (message.left !== "") {
+      obj.left = message.left;
+    }
+    if (message.right !== "") {
+      obj.right = message.right;
+    }
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<JoinCondition>, I>>(base?: I): JoinCondition {
+    return JoinCondition.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<JoinCondition>, I>>(object: I): JoinCondition {
+    const message = createBaseJoinCondition();
+    message.left = object.left ?? "";
+    message.right = object.right ?? "";
+    return message;
+  },
+};
+
+function createBaseSelectItem(): SelectItem {
+  return { source: "", column: "", all: false, alias: "" };
+}
+
+export const SelectItem: MessageFns<SelectItem> = {
+  encode(message: SelectItem, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.source !== "") {
+      writer.uint32(10).string(message.source);
+    }
+    if (message.column !== "") {
+      writer.uint32(18).string(message.column);
+    }
+    if (message.all !== false) {
+      writer.uint32(24).bool(message.all);
+    }
+    if (message.alias !== "") {
+      writer.uint32(34).string(message.alias);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): SelectItem {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseSelectItem();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.source = reader.string();
+          continue;
+        }
+        case 2: {
+          if (tag !== 18) {
+            break;
+          }
+
+          message.column = reader.string();
+          continue;
+        }
+        case 3: {
+          if (tag !== 24) {
+            break;
+          }
+
+          message.all = reader.bool();
+          continue;
+        }
+        case 4: {
+          if (tag !== 34) {
+            break;
+          }
+
+          message.alias = reader.string();
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): SelectItem {
+    return {
+      source: isSet(object.source) ? globalThis.String(object.source) : "",
+      column: isSet(object.column) ? globalThis.String(object.column) : "",
+      all: isSet(object.all) ? globalThis.Boolean(object.all) : false,
+      alias: isSet(object.alias) ? globalThis.String(object.alias) : "",
+    };
+  },
+
+  toJSON(message: SelectItem): unknown {
+    const obj: any = {};
+    if (message.source !== "") {
+      obj.source = message.source;
+    }
+    if (message.column !== "") {
+      obj.column = message.column;
+    }
+    if (message.all !== false) {
+      obj.all = message.all;
+    }
+    if (message.alias !== "") {
+      obj.alias = message.alias;
+    }
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<SelectItem>, I>>(base?: I): SelectItem {
+    return SelectItem.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<SelectItem>, I>>(object: I): SelectItem {
+    const message = createBaseSelectItem();
+    message.source = object.source ?? "";
+    message.column = object.column ?? "";
+    message.all = object.all ?? false;
+    message.alias = object.alias ?? "";
+    return message;
+  },
+};
+
+function createBaseGroupKey(): GroupKey {
+  return { field: "", dateTrunc: 0 };
+}
+
+export const GroupKey: MessageFns<GroupKey> = {
+  encode(message: GroupKey, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.field !== "") {
+      writer.uint32(10).string(message.field);
+    }
+    if (message.dateTrunc !== 0) {
+      writer.uint32(16).int32(message.dateTrunc);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): GroupKey {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseGroupKey();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.field = reader.string();
+          continue;
+        }
+        case 2: {
+          if (tag !== 16) {
+            break;
+          }
+
+          message.dateTrunc = reader.int32() as any;
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): GroupKey {
+    return {
+      field: isSet(object.field) ? globalThis.String(object.field) : "",
+      dateTrunc: isSet(object.dateTrunc)
+        ? dateTruncFromJSON(object.dateTrunc)
+        : isSet(object.date_trunc)
+        ? dateTruncFromJSON(object.date_trunc)
+        : 0,
+    };
+  },
+
+  toJSON(message: GroupKey): unknown {
+    const obj: any = {};
+    if (message.field !== "") {
+      obj.field = message.field;
+    }
+    if (message.dateTrunc !== 0) {
+      obj.dateTrunc = dateTruncToJSON(message.dateTrunc);
+    }
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<GroupKey>, I>>(base?: I): GroupKey {
+    return GroupKey.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<GroupKey>, I>>(object: I): GroupKey {
+    const message = createBaseGroupKey();
+    message.field = object.field ?? "";
+    message.dateTrunc = object.dateTrunc ?? 0;
+    return message;
+  },
+};
+
+function createBaseDeriveColumn(): DeriveColumn {
+  return { alias: "", expr: "" };
+}
+
+export const DeriveColumn: MessageFns<DeriveColumn> = {
+  encode(message: DeriveColumn, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.alias !== "") {
+      writer.uint32(10).string(message.alias);
+    }
+    if (message.expr !== "") {
+      writer.uint32(18).string(message.expr);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): DeriveColumn {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseDeriveColumn();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.alias = reader.string();
+          continue;
+        }
+        case 2: {
+          if (tag !== 18) {
+            break;
+          }
+
+          message.expr = reader.string();
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): DeriveColumn {
+    return {
+      alias: isSet(object.alias) ? globalThis.String(object.alias) : "",
+      expr: isSet(object.expr) ? globalThis.String(object.expr) : "",
+    };
+  },
+
+  toJSON(message: DeriveColumn): unknown {
+    const obj: any = {};
+    if (message.alias !== "") {
+      obj.alias = message.alias;
+    }
+    if (message.expr !== "") {
+      obj.expr = message.expr;
+    }
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<DeriveColumn>, I>>(base?: I): DeriveColumn {
+    return DeriveColumn.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<DeriveColumn>, I>>(object: I): DeriveColumn {
+    const message = createBaseDeriveColumn();
+    message.alias = object.alias ?? "";
+    message.expr = object.expr ?? "";
+    return message;
+  },
+};
+
+function createBaseWindowFunction(): WindowFunction {
+  return { alias: "", kind: 0, field: "", partitionBy: "", orderBy: "", descending: false, offset: 0 };
+}
+
+export const WindowFunction: MessageFns<WindowFunction> = {
+  encode(message: WindowFunction, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.alias !== "") {
+      writer.uint32(10).string(message.alias);
+    }
+    if (message.kind !== 0) {
+      writer.uint32(16).int32(message.kind);
+    }
+    if (message.field !== "") {
+      writer.uint32(26).string(message.field);
+    }
+    if (message.partitionBy !== "") {
+      writer.uint32(34).string(message.partitionBy);
+    }
+    if (message.orderBy !== "") {
+      writer.uint32(42).string(message.orderBy);
+    }
+    if (message.descending !== false) {
+      writer.uint32(48).bool(message.descending);
+    }
+    if (message.offset !== 0) {
+      writer.uint32(56).int32(message.offset);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): WindowFunction {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseWindowFunction();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.alias = reader.string();
+          continue;
+        }
+        case 2: {
+          if (tag !== 16) {
+            break;
+          }
+
+          message.kind = reader.int32() as any;
+          continue;
+        }
+        case 3: {
+          if (tag !== 26) {
+            break;
+          }
+
+          message.field = reader.string();
+          continue;
+        }
+        case 4: {
+          if (tag !== 34) {
+            break;
+          }
+
+          message.partitionBy = reader.string();
+          continue;
+        }
+        case 5: {
+          if (tag !== 42) {
+            break;
+          }
+
+          message.orderBy = reader.string();
+          continue;
+        }
+        case 6: {
+          if (tag !== 48) {
+            break;
+          }
+
+          message.descending = reader.bool();
+          continue;
+        }
+        case 7: {
+          if (tag !== 56) {
+            break;
+          }
+
+          message.offset = reader.int32();
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): WindowFunction {
+    return {
+      alias: isSet(object.alias) ? globalThis.String(object.alias) : "",
+      kind: isSet(object.kind) ? windowFunctionKindFromJSON(object.kind) : 0,
+      field: isSet(object.field) ? globalThis.String(object.field) : "",
+      partitionBy: isSet(object.partitionBy)
+        ? globalThis.String(object.partitionBy)
+        : isSet(object.partition_by)
+        ? globalThis.String(object.partition_by)
+        : "",
+      orderBy: isSet(object.orderBy)
+        ? globalThis.String(object.orderBy)
+        : isSet(object.order_by)
+        ? globalThis.String(object.order_by)
+        : "",
+      descending: isSet(object.descending) ? globalThis.Boolean(object.descending) : false,
+      offset: isSet(object.offset) ? globalThis.Number(object.offset) : 0,
+    };
+  },
+
+  toJSON(message: WindowFunction): unknown {
+    const obj: any = {};
+    if (message.alias !== "") {
+      obj.alias = message.alias;
+    }
+    if (message.kind !== 0) {
+      obj.kind = windowFunctionKindToJSON(message.kind);
+    }
+    if (message.field !== "") {
+      obj.field = message.field;
+    }
+    if (message.partitionBy !== "") {
+      obj.partitionBy = message.partitionBy;
+    }
+    if (message.orderBy !== "") {
+      obj.orderBy = message.orderBy;
+    }
+    if (message.descending !== false) {
+      obj.descending = message.descending;
+    }
+    if (message.offset !== 0) {
+      obj.offset = Math.round(message.offset);
+    }
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<WindowFunction>, I>>(base?: I): WindowFunction {
+    return WindowFunction.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<WindowFunction>, I>>(object: I): WindowFunction {
+    const message = createBaseWindowFunction();
+    message.alias = object.alias ?? "";
+    message.kind = object.kind ?? 0;
+    message.field = object.field ?? "";
+    message.partitionBy = object.partitionBy ?? "";
+    message.orderBy = object.orderBy ?? "";
+    message.descending = object.descending ?? false;
+    message.offset = object.offset ?? 0;
+    return message;
+  },
+};
+
 /** DSL-driven search. The server streams back matching results with relevance scores. */
 export type ObjectSearchServiceService = typeof ObjectSearchServiceService;
 export const ObjectSearchServiceService = {
@@ -2982,6 +4214,15 @@ export const ObjectSearchServiceService = {
     responseSerialize: (value: SearchResponse): Buffer => Buffer.from(SearchResponse.encode(value).finish()),
     responseDeserialize: (value: Buffer): SearchResponse => SearchResponse.decode(value),
   },
+  pipeline: {
+    path: "/iverson.ObjectSearchService/Pipeline" as const,
+    requestStream: false as const,
+    responseStream: true as const,
+    requestSerialize: (value: PipelineRequest): Buffer => Buffer.from(PipelineRequest.encode(value).finish()),
+    requestDeserialize: (value: Buffer): PipelineRequest => PipelineRequest.decode(value),
+    responseSerialize: (value: SearchResponse): Buffer => Buffer.from(SearchResponse.encode(value).finish()),
+    responseDeserialize: (value: Buffer): SearchResponse => SearchResponse.decode(value),
+  },
 } as const;
 
 export interface ObjectSearchServiceServer extends UntypedServiceImplementation {
@@ -2990,6 +4231,7 @@ export interface ObjectSearchServiceServer extends UntypedServiceImplementation 
   searchChunks: handleServerStreamingCall<SearchChunksRequest, ChunkSearchResponse>;
   aggregate: handleUnaryCall<AggregateRequest, AggregateResponse>;
   groupBy: handleServerStreamingCall<GroupByRequest, SearchResponse>;
+  pipeline: handleServerStreamingCall<PipelineRequest, SearchResponse>;
 }
 
 export interface ObjectSearchServiceClient extends Client {
@@ -3029,6 +4271,12 @@ export interface ObjectSearchServiceClient extends Client {
   groupBy(request: GroupByRequest, options?: Partial<CallOptions>): ClientReadableStream<SearchResponse>;
   groupBy(
     request: GroupByRequest,
+    metadata?: Metadata,
+    options?: Partial<CallOptions>,
+  ): ClientReadableStream<SearchResponse>;
+  pipeline(request: PipelineRequest, options?: Partial<CallOptions>): ClientReadableStream<SearchResponse>;
+  pipeline(
+    request: PipelineRequest,
     metadata?: Metadata,
     options?: Partial<CallOptions>,
   ): ClientReadableStream<SearchResponse>;
