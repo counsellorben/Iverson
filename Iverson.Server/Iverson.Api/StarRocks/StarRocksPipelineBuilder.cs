@@ -109,6 +109,10 @@ internal static class StarRocksPipelineBuilder
         if (step.Joins.Count > 0 && step.Select.Count == 0)
             throw Invalid($"Step '{step.Name}': a step with joins requires an explicit select " +
                           "projection to resolve column collisions.");
+        if (step.Joins.Count > 0 && (step.Windows.Count > 0 || step.Derive.Count > 0))
+            throw Invalid($"Step '{step.Name}': joins cannot be combined with window functions " +
+                          "or derive expressions in the same step; window/derive expressions " +
+                          "can only reference input-step columns, so put them in a following step.");
         if (isAggregate && step.GroupBy.Count == 0)
             throw Invalid($"Step '{step.Name}': metrics/HAVING require at least one GROUP BY key.");
 

@@ -592,4 +592,25 @@ public class StarRocksPipelineBuilderTests
         AssertInvalid(() => StarRocksPipelineBuilder.TrackAndValidate(
             ArticleSchema(), Request(joined, later), EmptyRegistry()), "later");
     }
+
+    [Fact]
+    public void Validate_JoinWithWindow_Throws()
+    {
+        var step = JoinedStep();
+        step.Windows.Add(new WindowFunction
+            { Alias = "rn", Kind = WindowFunctionKind.RowNumber, OrderBy = "Id" });
+
+        AssertInvalid(() => StarRocksPipelineBuilder.TrackAndValidate(
+            ArticleSchema(), Request(step), RegistryWithAuthor()), "named");
+    }
+
+    [Fact]
+    public void Validate_JoinWithDerive_Throws()
+    {
+        var step = JoinedStep();
+        step.Derive.Add(new DeriveColumn { Alias = "wc2", Expr = "WordCount * 2" });
+
+        AssertInvalid(() => StarRocksPipelineBuilder.TrackAndValidate(
+            ArticleSchema(), Request(step), RegistryWithAuthor()), "named");
+    }
 }
