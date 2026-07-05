@@ -59,5 +59,10 @@ spec:
                 SET PASSWORD FOR 'root' = PASSWORD('$ROOT_PW');
                 CREATE USER IF NOT EXISTS 'iverson_app'@'%' IDENTIFIED BY '$APP_PW';
                 CREATE DATABASE IF NOT EXISTS iverson;
-                GRANT SELECT, INSERT, UPDATE, DELETE, CREATE, DROP, ALTER ON iverson.* TO 'iverson_app'@'%';
+                GRANT SELECT, INSERT, UPDATE, DELETE ON iverson.* TO 'iverson_app'@'%';
+                GRANT CREATE TABLE, DROP, ALTER ON DATABASE iverson TO 'iverson_app'@'%';
               "
+              # StarRocks' GRANT dialect isn't MySQL's: DDL privileges (CREATE TABLE/DROP/ALTER)
+              # are scoped ON DATABASE, not ON db.*, and CREATE must be written as the two-word
+              # "CREATE TABLE" — a bare "CREATE" in the combined list used to fail with "No
+              # viable statement", confirmed empirically against a live FE (4.1.1).
