@@ -13,6 +13,12 @@
 
 ## Global Constraints
 
+**Model assignment (overrides subagent-driven-development's default per-task judgment):** use
+**Opus** for the pre-flight plan review, every per-task reviewer subagent, and the final
+whole-branch code reviewer subagent. Use **Sonnet** for every implementer subagent (every
+task's Steps 1–6) regardless of that task's apparent complexity. Always pass the model
+explicitly when dispatching — never let it inherit the session default.
+
 - Builders never require a live server: `build()`/`Build()` returns the compiled proto.
 - Default final limit 10,000; step `reads` empty string means "previous step"; base step is named `base` and its name is reserved.
 - Client-side validation failures throw the language's conventional argument error (`ArgumentException` C#, `IllegalArgumentException` Java, `ValueError` Python, `Error` TS) — except Go, which accumulates into the builder's `err` and surfaces it at `Build()`, matching its existing `GroupByBuilder`.
