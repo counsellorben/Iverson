@@ -13,4 +13,11 @@ public static class Query
     /// multiple registered types into scope.
     /// </summary>
     public static GroupByBuilder GroupBy(string typeName) => new(typeName);
+
+    /// <summary>
+    /// Entry point for the pipeline (CTE chain) DSL. String-based like GroupBy —
+    /// steps and joins bring multiple sources into scope. Equivalent to
+    /// <see cref="Iverson.Client.Search.Pipeline.For(string)"/>.
+    /// </summary>
+    public static PipelineBuilder Pipeline(string typeName) => new(typeName);
 }
