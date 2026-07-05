@@ -39,4 +39,12 @@ public final class Query {
     public static GroupByBuilder groupBy(String typeName) {
         return new GroupByBuilder(typeName);
     }
+
+    /**
+     * Creates a {@link PipelineBuilder} scoped to the given type name. Pipelines compile
+     * fluent step chains into one server-side CTE-chain query.
+     */
+    public static PipelineBuilder pipeline(String typeName) {
+        return new PipelineBuilder(typeName);
+    }
 }
