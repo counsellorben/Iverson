@@ -43,6 +43,17 @@ resource "helm_release" "strimzi" {
   version          = "1.1.0"
   namespace        = "kafka"
   create_namespace = true
+
+  # By default the operator only watches its own release namespace ("kafka"),
+  # but the app chart's Kafka/KafkaNodePool/KafkaUser CRs are installed into
+  # the "iverson" namespace — without this, the operator never sees them and
+  # the KafkaNodePool sits at 0 broker pods forever, no error, no event.
+  set {
+    name  = "watchNamespaces[0]"
+    value = kubernetes_namespace.iverson.metadata[0].name
+  }
+
+  depends_on = [kubernetes_namespace.iverson]
 }
 
 resource "helm_release" "starrocks_operator" {

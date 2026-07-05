@@ -50,9 +50,16 @@ echo "Installing Strimzi operator..."
 # currently pulls (v1.1.0+), and their feature-gate flags were removed
 # entirely — setting them now fails with "Unknown feature gate". Both
 # behaviors are already the default, so no --set is needed.
+#
+# watchNamespaces: by default the operator only watches its own release
+# namespace ("kafka"), but the app chart's Kafka/KafkaNodePool/KafkaUser CRs
+# are installed into the "iverson" namespace (wherever the app release goes)
+# — without this, the operator never sees them and the KafkaNodePool sits at
+# 0 broker pods forever, no error, no event, nothing to grep for.
 helm upgrade --install strimzi strimzi-kafka-operator \
   --repo https://strimzi.io/charts/ \
   --namespace kafka --create-namespace \
+  --set watchNamespaces="{iverson}" \
   --wait
 
 echo "Installing StarRocks operator..."
