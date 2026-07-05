@@ -277,6 +277,36 @@ public class StarRocksPipelineBuilderTests
             ArticleSchema(), Request(step), EmptyRegistry()), "agg");
     }
 
+    [Fact]
+    public void Validate_SelectAliasWithBacktick_Throws()
+    {
+        var step = new PipelineStep { Name = "s" };
+        step.Select.Add(new SelectItem { Column = "AuthorId", Alias = "bad`alias" });
+        AssertInvalid(() => StarRocksPipelineBuilder.TrackAndValidate(
+            ArticleSchema(), Request(step), EmptyRegistry()), "bad`alias");
+    }
+
+    [Fact]
+    public void Validate_SelectAliasStartingWithDigit_Throws()
+    {
+        var step = new PipelineStep { Name = "s" };
+        step.Select.Add(new SelectItem { Column = "AuthorId", Alias = "1bad" });
+        AssertInvalid(() => StarRocksPipelineBuilder.TrackAndValidate(
+            ArticleSchema(), Request(step), EmptyRegistry()), "1bad");
+    }
+
+    [Fact]
+    public void Validate_SelectAliasValid_AppearsInTrackedOutput()
+    {
+        var step = new PipelineStep { Name = "s" };
+        step.Select.Add(new SelectItem { Column = "AuthorId", Alias = "author_name" });
+
+        var cols = StarRocksPipelineBuilder.TrackAndValidate(
+            ArticleSchema(), Request(step), EmptyRegistry());
+
+        cols[1].Columns.Keys.Should().Contain("author_name");
+    }
+
     // ── SQL emission ──────────────────────────────────────────────────────────
 
     private static string NormalizeWs(string sql) =>

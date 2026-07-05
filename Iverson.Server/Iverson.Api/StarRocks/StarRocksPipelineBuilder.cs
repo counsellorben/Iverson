@@ -161,6 +161,8 @@ internal static class StarRocksPipelineBuilder
                 else
                 {
                     RequireColumn(step.Name, source.Columns, item.Column);
+                    if (!string.IsNullOrEmpty(item.Alias) && !IdentifierRx.IsMatch(item.Alias))
+                        throw Invalid($"Step '{step.Name}': select alias '{item.Alias}' is not a valid identifier.");
                     AddOutput(string.IsNullOrEmpty(item.Alias) ? source.Columns[item.Column] : item.Alias);
                 }
             }
