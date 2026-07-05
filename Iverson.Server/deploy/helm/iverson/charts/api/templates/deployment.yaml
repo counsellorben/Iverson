@@ -68,12 +68,20 @@ spec:
           ports:
             - containerPort: 8080
               name: grpc
+            - containerPort: 8081
+              name: http
           env:
-            - name: ConnectionStrings__Postgres
+            - name: POSTGRES_APP_PASSWORD
               valueFrom:
                 secretKeyRef:
                   name: {{ .Release.Name }}-postgres-app
-                  key: uri
+                  key: password
+            - name: ConnectionStrings__Postgres
+              # CNPG's own `uri` secret key is a postgresql:// URI, which Npgsql's
+              # connection-string parser rejects outright (it only accepts ADO.NET
+              # key=value syntax, not libpq-style URIs) — composing it here mirrors the
+              # ConnectionStrings__StarRocks pattern below.
+              value: "Host={{ .Release.Name }}-postgres-rw;Port=5432;Database=iverson;Username=iverson;Password=$(POSTGRES_APP_PASSWORD)"
             - name: STARROCKS_APP_PASSWORD
               valueFrom:
                 secretKeyRef:
@@ -116,12 +124,15 @@ spec:
           readinessProbe:
             httpGet:
               path: /health
-              port: 8080
+              # 8080 is Http2-only (see appsettings.json's Kestrel:Endpoints:Grpc) — kubelet's
+              # probe client speaks HTTP/1.1 and gets rejected with 400. 8081 is the dedicated
+              # Http1 endpoint the same /health routes are also mapped to.
+              port: 8081
             initialDelaySeconds: 10
           livenessProbe:
             httpGet:
               path: /health/live
-              port: 8080
+              port: 8081
             initialDelaySeconds: 30
             periodSeconds: 15
           volumeMounts:
