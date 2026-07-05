@@ -231,6 +231,26 @@ Console.WriteLine("Tags — slug basketball|culture|legacy:");
 await foreach (var result in tags.SearchAsync(tagQuery))
     Console.WriteLine($"  {result.Entity.Label} ({result.Entity.Slug})");
 
+// ── Object Search — Pipeline (CTE chain, StarRocks) ───────────────────────────
+
+Console.WriteLine("\n=== Object Search — Pipeline (CTE chain) ===");
+
+// One CTE step: group published Articles by author, count them, sorted descending.
+var articleCountsByAuthor = Pipeline.For<Article>()
+    .Where("IsPublished", EqualTo, true)
+    .Step("counts", s => s
+        .GroupBy("AuthorId")
+        .CountAll("total"))
+    .SortOn("total", descending: true);
+
+Console.WriteLine("Article counts by author (Pipeline, untyped rows):");
+await foreach (var row in articles.PipelineAsync(articleCountsByAuthor))
+    Console.WriteLine($"  author={row["AuthorId"]} total={row["total"]}");
+
+Console.WriteLine("Same pipeline, typed rows (AuthorArticleCount):");
+await foreach (var typedRow in articles.PipelineAsync<AuthorArticleCount>(articleCountsByAuthor))
+    Console.WriteLine($"  author={typedRow.AuthorId} total={typedRow.Total}");
+
 // ── Object Search — Qdrant Vector ─────────────────────────────────────────────
 
 // Article has [IversonEmbedding] on Title → "title_vector" named vector in Qdrant.

@@ -42,4 +42,21 @@ internal static class StructConverter
             return [];
         return v.ListValue.Values.Select(x => x.StringValue).ToList();
     }
+
+    /// <summary>
+    /// Converts a Struct row (e.g. a Pipeline/GroupBy result) to a string-keyed dictionary
+    /// without forcing it through a typed POCO.
+    /// </summary>
+    public static IReadOnlyDictionary<string, object?> ToDictionary(Struct data) =>
+        data.Fields.ToDictionary(kv => kv.Key, kv => FromValue(kv.Value));
+
+    private static object? FromValue(Value v) => v.KindCase switch
+    {
+        Value.KindOneofCase.StringValue => v.StringValue,
+        Value.KindOneofCase.NumberValue => v.NumberValue,
+        Value.KindOneofCase.BoolValue   => v.BoolValue,
+        Value.KindOneofCase.ListValue   => v.ListValue.Values.Select(FromValue).ToList(),
+        Value.KindOneofCase.StructValue => ToDictionary(v.StructValue),
+        _                               => null
+    };
 }

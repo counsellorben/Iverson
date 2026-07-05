@@ -201,6 +201,48 @@ public sealed class EntityCoordinator<T>(
         }
     }
 
+    /// <summary>
+    /// Executes a pipeline (CTE chain) and streams untyped rows. Column set depends on the
+    /// pipeline's final step, so rows come back as string-keyed dictionaries.
+    /// </summary>
+    public async IAsyncEnumerable<IReadOnlyDictionary<string, object?>> PipelineAsync(
+        PipelineBuilder pipeline,
+        [EnumeratorCancellation] CancellationToken ct = default)
+    {
+        var request     = pipeline.Build();
+        request.TraceId = CurrentTraceId();
+
+        logger.LogDebug("ObjectSearch.Pipeline {Entity} ({Steps} steps)",
+            _descriptor.EntityName, request.Steps.Count);
+
+        var stream = search.Pipeline(request, cancellationToken: ct);
+        await foreach (var response in stream.ResponseStream.ReadAllAsync(ct))
+            yield return StructConverter.ToDictionary(response.Data);
+    }
+
+    /// <summary>
+    /// Executes a pipeline and projects each row onto <typeparamref name="TResult"/>
+    /// (any class whose property names match the pipeline's output aliases).
+    /// </summary>
+    public async IAsyncEnumerable<TResult> PipelineAsync<TResult>(
+        PipelineBuilder pipeline,
+        [EnumeratorCancellation] CancellationToken ct = default)
+        where TResult : class
+    {
+        var request     = pipeline.Build();
+        request.TraceId = CurrentTraceId();
+
+        logger.LogDebug("ObjectSearch.Pipeline {Entity} ({Steps} steps, typed)",
+            _descriptor.EntityName, request.Steps.Count);
+
+        var stream = search.Pipeline(request, cancellationToken: ct);
+        await foreach (var response in stream.ResponseStream.ReadAllAsync(ct))
+        {
+            var row = StructConverter.FromStruct<TResult>(response.Data);
+            if (row is not null) yield return row;
+        }
+    }
+
     private static string CurrentTraceId() =>
         Activity.Current?.TraceId.ToString() ?? string.Empty;
 

@@ -18,4 +18,10 @@
     <ProjectReference Include="..\Iverson.Client.Search\Iverson.Client.Search.csproj" />
   </ItemGroup>
 
+  <!-- Lets Iverson.Client.Core.Tests exercise StructConverter (internal) directly,
+       e.g. StructConverterToDictionaryTests, without making it a public API surface. -->
+  <ItemGroup>
+    <InternalsVisibleTo Include="Iverson.Client.Core.Tests" />
+  </ItemGroup>
+
 </Project>
