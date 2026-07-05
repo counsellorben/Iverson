@@ -60,6 +60,11 @@ class ObjectSearchServiceStub:
                 request_serializer=object__search__pb2.GroupByRequest.SerializeToString,
                 response_deserializer=object__search__pb2.SearchResponse.FromString,
                 _registered_method=True)
+        self.Pipeline = channel.unary_stream(
+                '/iverson.ObjectSearchService/Pipeline',
+                request_serializer=object__search__pb2.PipelineRequest.SerializeToString,
+                response_deserializer=object__search__pb2.SearchResponse.FromString,
+                _registered_method=True)
 
 
 class ObjectSearchServiceServicer:
@@ -96,6 +101,12 @@ class ObjectSearchServiceServicer:
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def Pipeline(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
 
 def add_ObjectSearchServiceServicer_to_server(servicer, server):
     rpc_method_handlers = {
@@ -122,6 +133,11 @@ def add_ObjectSearchServiceServicer_to_server(servicer, server):
             'GroupBy': grpc.unary_stream_rpc_method_handler(
                     servicer.GroupBy,
                     request_deserializer=object__search__pb2.GroupByRequest.FromString,
+                    response_serializer=object__search__pb2.SearchResponse.SerializeToString,
+            ),
+            'Pipeline': grpc.unary_stream_rpc_method_handler(
+                    servicer.Pipeline,
+                    request_deserializer=object__search__pb2.PipelineRequest.FromString,
                     response_serializer=object__search__pb2.SearchResponse.SerializeToString,
             ),
     }
@@ -260,6 +276,33 @@ class ObjectSearchService:
             target,
             '/iverson.ObjectSearchService/GroupBy',
             object__search__pb2.GroupByRequest.SerializeToString,
+            object__search__pb2.SearchResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def Pipeline(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_stream(
+            request,
+            target,
+            '/iverson.ObjectSearchService/Pipeline',
+            object__search__pb2.PipelineRequest.SerializeToString,
             object__search__pb2.SearchResponse.FromString,
             options,
             channel_credentials,
