@@ -118,6 +118,19 @@ internal static class StarRocksPipelineBuilder
         // Join sources — resolution against prior steps or the schema registry.
         var joinSources = ResolveJoinSources(step, earlier, registry);
 
+        foreach (var join in step.Joins)
+        {
+            if (join.On.Count == 0)
+                throw Invalid($"Step '{step.Name}': join to '{join.Source}' requires at least " +
+                              "one ON condition.");
+            var src = joinSources[join.Source];
+            foreach (var cond in join.On)
+            {
+                RequireColumn(step.Name, input.Columns, cond.Left);
+                RequireColumn(step.Name, src.Columns, cond.Right);
+            }
+        }
+
         var output = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         void AddOutput(string alias)
         {
@@ -302,14 +315,16 @@ internal static class StarRocksPipelineBuilder
         sb.Append(')');
 
         var prev = BaseStepName;
+        var emitted = new List<StepColumns> { byName[BaseStepName] };
         for (var i = 0; i < request.Steps.Count; i++)
         {
             var step  = request.Steps[i];
             var input = byName[string.IsNullOrEmpty(step.Reads) ? prev : step.Reads];
             sb.Append($", `{step.Name}` AS (");
-            EmitStep(sb, step, input, byName, registry, param, stepIdx: i + 1);
+            EmitStep(sb, step, input, emitted, registry, param, stepIdx: i + 1);
             sb.Append(')');
             prev = step.Name;
+            emitted.Add(byName[step.Name]);
         }
 
         sb.Append($" SELECT * FROM `{prev}`");
@@ -330,19 +345,19 @@ internal static class StarRocksPipelineBuilder
         StringBuilder sb,
         PipelineStep step,
         StepColumns input,
-        Dictionary<string, StepColumns> byName,
+        List<StepColumns> emitted,
         SchemaRegistry registry,
         DynamicParameters param,
         int stepIdx)
     {
         var isAggregate = step.GroupBy.Count > 0 || step.Metrics.Count > 0;
 
-        var where = StarRocksQueryBuilder.BuildWhere(
-            p => input.Columns.TryGetValue(p, out var c) ? $"`{c}`" : null,
-            step.Where, step.WhereLogic, param, $"s{stepIdx}_p", out _);
-
         if (isAggregate)
         {
+            var where = StarRocksQueryBuilder.BuildWhere(
+                p => input.Columns.TryGetValue(p, out var c) ? $"`{c}`" : null,
+                step.Where, step.WhereLogic, param, $"s{stepIdx}_p", out _);
+
             var keyExprs  = new List<string>();
             var groupCols = new List<string>();
             foreach (var key in step.GroupBy)
@@ -373,17 +388,22 @@ internal static class StarRocksPipelineBuilder
             return;
         }
 
-        // Non-aggregate step: projection (+ windows, derives), FROM input (+ joins in Task 5).
+        // Non-aggregate step.
+        var joinSources = ResolveJoinSources(step, emitted, registry);
+        var hasJoins = step.Joins.Count > 0;
+
+        var nonAggWhere = StarRocksQueryBuilder.BuildWhere(
+            p => input.Columns.TryGetValue(p, out var c)
+                ? hasJoins ? $"`{input.Name}`.`{c}`" : $"`{c}`"
+                : null,
+            step.Where, step.WhereLogic, param, $"s{stepIdx}_p", out _);
+
         var selectParts = new List<string>();
         if (step.Select.Count > 0)
-        {
             foreach (var item in step.Select)
-                selectParts.Add(EmitSelectItem(step, item, input, byName, registry));
-        }
+                selectParts.Add(EmitSelectItem(step, item, input, joinSources));
         else
-        {
             selectParts.Add("*");
-        }
 
         foreach (var w in step.Windows)
             selectParts.Add(EmitWindow(w, input.Columns));
@@ -391,7 +411,29 @@ internal static class StarRocksPipelineBuilder
             selectParts.Add($"({d.Expr}) AS `{d.Alias}`");
 
         sb.Append($"SELECT {string.Join(", ", selectParts)} FROM `{input.Name}`");
-        if (where.Length > 0) sb.Append($" WHERE {where}");
+
+        foreach (var join in step.Joins)
+        {
+            var src = joinSources[join.Source];
+            var kind = join.Kind switch
+            {
+                JoinKind.Left  => "LEFT",
+                JoinKind.Right => "RIGHT",
+                JoinKind.Full  => "FULL",
+                _              => "INNER"
+            };
+            // Entity sources join the physical table aliased as the type name;
+            // step sources are CTEs joined by their own name (no alias needed).
+            var joinedSchema = registry.Get(src.Name);
+            var target = joinedSchema is not null && emitted.All(s => !s.Name.Equals(src.Name, StringComparison.OrdinalIgnoreCase))
+                ? $"`{joinedSchema.TableName}` AS `{src.Name}`"
+                : $"`{src.Name}`";
+            var conds = join.On.Select(c =>
+                $"`{input.Name}`.`{input.Columns[c.Left]}` = `{src.Name}`.`{src.Columns[c.Right]}`");
+            sb.Append($" {kind} JOIN {target} ON {string.Join(" AND ", conds)}");
+        }
+
+        if (nonAggWhere.Length > 0) sb.Append($" WHERE {nonAggWhere}");
     }
 
     private static string EmitMetric(MetricSpec m, Dictionary<string, string> input)
@@ -441,13 +483,31 @@ internal static class StarRocksPipelineBuilder
         return $"{call} {over} AS `{w.Alias}`";
     }
 
-    // Task 5 extends this for join sources; without joins the only legal source is the input.
     private static string EmitSelectItem(
         PipelineStep step, SelectItem item, StepColumns input,
-        Dictionary<string, StepColumns> byName, SchemaRegistry registry)
+        Dictionary<string, StepColumns> joinSources)
     {
-        if (item.All) return "*";
-        var col = input.Columns[item.Column];
-        return string.IsNullOrEmpty(item.Alias) ? $"`{col}`" : $"`{col}` AS `{item.Alias}`";
+        var hasJoins = step.Joins.Count > 0;
+
+        StepColumns source;
+        string sqlAlias;
+        if (string.IsNullOrEmpty(item.Source) ||
+            item.Source.Equals(input.Name, StringComparison.OrdinalIgnoreCase))
+        {
+            source = input;
+            sqlAlias = input.Name;
+        }
+        else
+        {
+            source = joinSources[item.Source];
+            sqlAlias = source.Name;
+        }
+
+        if (item.All)
+            return hasJoins ? $"`{sqlAlias}`.*" : "*";
+
+        var col = source.Columns[item.Column];
+        var qualified = hasJoins ? $"`{sqlAlias}`.`{col}`" : $"`{col}`";
+        return string.IsNullOrEmpty(item.Alias) ? qualified : $"{qualified} AS `{item.Alias}`";
     }
 }

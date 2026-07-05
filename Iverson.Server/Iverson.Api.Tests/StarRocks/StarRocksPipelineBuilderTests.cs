@@ -38,6 +38,22 @@ public class StarRocksPipelineBuilderTests
         return new SchemaRegistry(sql, NullLogger<SchemaRegistry>.Instance);
     }
 
+    private static SchemaDescriptor AuthorSchemaLocal() => new()
+    {
+        TypeName      = "Author",
+        TableName     = "authors",
+        KeyColumn     = new ColumnDescriptor("Id", "uuid", false),
+        ScalarColumns = [new ColumnDescriptor("Name", "text", false)],
+        FkColumns = [], VectorFields = [], ChunkFields = [], Relations = []
+    };
+
+    private static SchemaRegistry RegistryWithAuthor()
+    {
+        var r = EmptyRegistry();
+        r.RegisterAsync(AuthorSchemaLocal()).GetAwaiter().GetResult();
+        return r;
+    }
+
     private static PipelineRequest Request(params PipelineStep[] steps)
     {
         var r = new PipelineRequest { TypeName = "Article" };
@@ -475,5 +491,105 @@ public class StarRocksPipelineBuilderTests
 
         NormalizeWs(sql).Should().Contain(
             "LAG(`WordCount`, 1) OVER (ORDER BY `PublishedAt` ASC) AS `prev_wc`");
+    }
+
+    // ── Joins ─────────────────────────────────────────────────────────────────
+
+    private static PipelineStep JoinedStep()
+    {
+        var step = new PipelineStep { Name = "named" };
+        var join = new PipelineJoin { Source = "Author", Kind = JoinKind.Inner };
+        join.On.Add(new JoinCondition { Left = "AuthorId", Right = "Id" });
+        step.Joins.Add(join);
+        step.Select.Add(new SelectItem { All = true });                       // input.*
+        step.Select.Add(new SelectItem { Source = "Author", Column = "Name", Alias = "author_name" });
+        return step;
+    }
+
+    [Fact]
+    public void Track_JoinedStep_OutputMergesSelectItems()
+    {
+        var cols = StarRocksPipelineBuilder.TrackAndValidate(
+            ArticleSchema(), Request(JoinedStep()), RegistryWithAuthor());
+
+        cols[1].Columns.Keys.Should().Contain(["Title", "author_name"]);
+        cols[1].Columns.Keys.Should().NotContain("Name");   // only exposed via its alias
+    }
+
+    [Fact]
+    public void Build_JoinAgainstEntityTable_EmitsAliasedJoin()
+    {
+        var (sql, _) = StarRocksPipelineBuilder.Build(
+            ArticleSchema(), Request(JoinedStep()), RegistryWithAuthor());
+
+        var n = NormalizeWs(sql);
+        n.Should().Contain(
+            "`named` AS (SELECT `base`.*, `Author`.`Name` AS `author_name` FROM `base` " +
+            "INNER JOIN `authors` AS `Author` ON `base`.`AuthorId` = `Author`.`Id`)");
+    }
+
+    [Fact]
+    public void Build_JoinAgainstPriorCte_EmitsCteJoin()
+    {
+        var agg = new PipelineStep { Name = "by_author" };
+        agg.GroupBy.Add(new GroupKey { Field = "AuthorId" });
+        agg.Metrics.Add(new MetricSpec { Name = "articles", Type = AggregationType.Count });
+
+        var enriched = new PipelineStep { Name = "enriched", Reads = "base" };
+        var join = new PipelineJoin { Source = "by_author", Kind = JoinKind.Left };
+        join.On.Add(new JoinCondition { Left = "AuthorId", Right = "AuthorId" });
+        enriched.Joins.Add(join);
+        enriched.Select.Add(new SelectItem { All = true });
+        enriched.Select.Add(new SelectItem { Source = "by_author", Column = "articles" });
+
+        var (sql, _) = StarRocksPipelineBuilder.Build(
+            ArticleSchema(), Request(agg, enriched), EmptyRegistry());
+
+        var n = NormalizeWs(sql);
+        n.Should().Contain(
+            "`enriched` AS (SELECT `base`.*, `by_author`.`articles` FROM `base` " +
+            "LEFT JOIN `by_author` ON `base`.`AuthorId` = `by_author`.`AuthorId`)");
+    }
+
+    [Fact]
+    public void Validate_JoinOnUnknownRightColumn_Throws()
+    {
+        var step = JoinedStep();
+        step.Joins[0].On[0].Right = "Nope";
+        AssertInvalid(() => StarRocksPipelineBuilder.TrackAndValidate(
+            ArticleSchema(), Request(step), RegistryWithAuthor()), "Nope");
+    }
+
+    [Fact]
+    public void Validate_JoinUnknownSource_Throws()
+    {
+        var step = JoinedStep();
+        step.Joins[0].Source = "Ghost";
+        AssertInvalid(() => StarRocksPipelineBuilder.TrackAndValidate(
+            ArticleSchema(), Request(step), RegistryWithAuthor()), "Ghost");
+    }
+
+    [Fact]
+    public void Validate_JoinWithoutOnConditions_Throws()
+    {
+        var step = JoinedStep();
+        step.Joins[0].On.Clear();
+        AssertInvalid(() => StarRocksPipelineBuilder.TrackAndValidate(
+            ArticleSchema(), Request(step), RegistryWithAuthor()), "named");
+    }
+
+    [Fact]
+    public void Validate_JoinForwardStepSource_Throws()
+    {
+        var joined = new PipelineStep { Name = "j" };
+        var join = new PipelineJoin { Source = "later", Kind = JoinKind.Inner };
+        join.On.Add(new JoinCondition { Left = "AuthorId", Right = "AuthorId" });
+        joined.Joins.Add(join);
+        joined.Select.Add(new SelectItem { All = true });
+
+        var later = new PipelineStep { Name = "later" };
+
+        AssertInvalid(() => StarRocksPipelineBuilder.TrackAndValidate(
+            ArticleSchema(), Request(joined, later), EmptyRegistry()), "later");
     }
 }
