@@ -12,6 +12,12 @@
 
 ## Global Constraints
 
+**Model assignment (overrides subagent-driven-development's default per-task judgment):** use
+**Opus** for the pre-flight plan review, every per-task reviewer subagent, and the final
+whole-branch code reviewer subagent. Use **Sonnet** for every implementer subagent (every
+task's Steps 1–5) regardless of that task's apparent complexity. Always pass the model
+explicitly when dispatching — never let it inherit the session default.
+
 - Every validation failure must throw `RpcException` with `StatusCode.InvalidArgument` and a message naming the step and the offending reference — never surface a StarRocks SQL error for a malformed request.
 - Windows XOR aggregation within a step (a step with any `windows` must have empty `group_by`, `metrics`, and `having`).
 - A step with `joins` must have a non-empty `select`; a step with `group_by`/`metrics` must have an empty `select`.

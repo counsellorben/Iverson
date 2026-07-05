@@ -13,6 +13,12 @@
 
 ## Global Constraints
 
+**Model assignment (overrides subagent-driven-development's default per-task judgment):** use
+**Opus** for the pre-flight plan review, every per-task reviewer subagent, and the final
+whole-branch code reviewer subagent. Use **Sonnet** for every implementer subagent (every
+task's Steps 1–5) regardless of that task's apparent complexity. Always pass the model
+explicitly when dispatching — never let it inherit the session default.
+
 - Build-time validation errors: C# `InvalidOperationException`, Java `IllegalStateException`, Python `ValueError`, TypeScript `Error`, Go error returned from `Build()` — thrown at `build()`/`Build()` time, not at method-call time (the offending state is only knowable once building).
 - `GroupByBuilder` validation set (identical in all five languages, applied in `build()`):
   1. duplicate metric aliases (case-insensitive) rejected
