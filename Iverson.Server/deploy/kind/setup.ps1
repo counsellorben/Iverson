@@ -1,5 +1,14 @@
 $ErrorActionPreference = "Stop"
 
+# If running with KIND_EXPERIMENTAL_PROVIDER=podman (e.g. podman on WSL2), podman's default
+# PidsLimit (2048) on the kind node container becomes the *entire* node's pids budget, which
+# systemd then divides across every pod/container cgroup inside it — StarRocks BE alone needs
+# more threads than its resulting share (as low as ~300) allows, crash-looping on startup with
+# `std::system_error: Resource temporarily unavailable`. Fix once, before creating the cluster,
+# by adding `pids_limit = -1` under a `[containers]` table in the podman containers.conf used
+# by that environment — this is a podman-wide default, not something this script can set
+# per-container. Not needed when using real Docker Desktop as the provider.
+
 Write-Host "Installing Calico (kind's default CNI, kindnet, does not enforce NetworkPolicy)..."
 kubectl create namespace tigera-operator --dry-run=client -o yaml | kubectl apply -f -
 # The tigera-operator chart bundles both the operator and its Custom Resources
