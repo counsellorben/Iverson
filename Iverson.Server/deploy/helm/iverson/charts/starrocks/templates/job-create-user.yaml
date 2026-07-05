@@ -46,6 +46,7 @@ spec:
             - |
               set -e
               FE_HOST="{{ .Release.Name }}-starrocks-fe-service"
+              BE_REPLICAS="{{ .Values.be.replicas }}"
               until mysql -h "$FE_HOST" -P 9030 -u root -e "SELECT 1" >/dev/null 2>&1 \
                  || mysql -h "$FE_HOST" -P 9030 -u root -p"$ROOT_PW" -e "SELECT 1" >/dev/null 2>&1; do
                 echo "waiting for FE..."; sleep 5
@@ -55,14 +56,29 @@ spec:
               else
                 AUTH=""
               fi
+              # BE's own entrypoint script registers itself with FE via
+              # `mysql -u root` — hardcoded, no password, no way to configure — so changing
+              # root's password (below) before every expected BE has joined permanently
+              # locks any not-yet-joined BE out of the cluster (it only retries for ~15s
+              # before giving up). Wait for BE_REPLICAS backends first, using the same $AUTH
+              # so this is idempotent across upgrades where root already has a password.
+              until [ "$(mysql -h "$FE_HOST" -P 9030 -u root $AUTH --skip-column-names --batch -e "SHOW BACKENDS;" 2>/dev/null | wc -l)" -ge "$BE_REPLICAS" ]; do
+                echo "waiting for $BE_REPLICAS BE node(s) to register..."; sleep 5
+              done
               mysql -h "$FE_HOST" -P 9030 -u root $AUTH -e "
                 SET PASSWORD FOR 'root' = PASSWORD('$ROOT_PW');
                 CREATE USER IF NOT EXISTS 'iverson_app'@'%' IDENTIFIED BY '$APP_PW';
                 CREATE DATABASE IF NOT EXISTS iverson;
                 GRANT SELECT, INSERT, UPDATE, DELETE ON iverson.* TO 'iverson_app'@'%';
                 GRANT CREATE TABLE, DROP, ALTER ON DATABASE iverson TO 'iverson_app'@'%';
+                GRANT OPERATE ON SYSTEM TO 'iverson_app'@'%';
               "
               # StarRocks' GRANT dialect isn't MySQL's: DDL privileges (CREATE TABLE/DROP/ALTER)
               # are scoped ON DATABASE, not ON db.*, and CREATE must be written as the two-word
               # "CREATE TABLE" — a bare "CREATE" in the combined list used to fail with "No
               # viable statement", confirmed empirically against a live FE (4.1.1).
+              # OPERATE ON SYSTEM is needed for `SHOW BACKENDS`, which
+              # StarRocksRepository.IsHealthyAsync() runs as this user to back /health —
+              # without it every readiness probe fails with "Access denied; you need (at
+              # least one of) the OPERATE OR NODE privilege(s) on SYSTEM", confirmed
+              # empirically against a live FE (4.1.1).
