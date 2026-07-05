@@ -276,4 +276,174 @@ public class StarRocksPipelineBuilderTests
         AssertInvalid(() => StarRocksPipelineBuilder.TrackAndValidate(
             ArticleSchema(), Request(step), EmptyRegistry()), "agg");
     }
+
+    // ── SQL emission ──────────────────────────────────────────────────────────
+
+    private static string NormalizeWs(string sql) =>
+        System.Text.RegularExpressions.Regex.Replace(sql, @"\s+", " ").Trim();
+
+    [Fact]
+    public void Build_EmptyPipeline_SelectsFromBaseWithDefaultLimit()
+    {
+        var (sql, _) = StarRocksPipelineBuilder.Build(
+            ArticleSchema(), Request(), EmptyRegistry());
+
+        NormalizeWs(sql).Should().Be(
+            "WITH `base` AS (SELECT * FROM `articles`) SELECT * FROM `base` LIMIT 10000");
+    }
+
+    [Fact]
+    public void Build_BaseWhere_UsesS0Prefix()
+    {
+        var request = Request();
+        request.BaseWhere.Add(new SearchClause
+        {
+            Property = "IsPublished", Operator = SearchOperator.Equals,
+            Value = new SearchValue { BoolVal = true }, ClauseType = SearchClauseType.Filter
+        });
+
+        var (sql, param) = StarRocksPipelineBuilder.Build(
+            ArticleSchema(), request, EmptyRegistry());
+
+        sql.Should().Contain("WHERE `IsPublished` = @s0_p0");
+        param.Get<bool>("s0_p0").Should().BeTrue();
+    }
+
+    [Fact]
+    public void Build_WindowThenFilterOnAlias_TopNPerGroup()
+    {
+        var ranked = new PipelineStep { Name = "ranked" };
+        ranked.Windows.Add(new WindowFunction
+        {
+            Alias = "rn", Kind = WindowFunctionKind.RowNumber,
+            PartitionBy = "AuthorId", OrderBy = "PublishedAt", Descending = true
+        });
+
+        var top = new PipelineStep { Name = "top5" };
+        top.Where.Add(new SearchClause
+        {
+            Property = "rn", Operator = SearchOperator.LessThanOrEquals,
+            Value = new SearchValue { NumberVal = 5 }, ClauseType = SearchClauseType.Filter
+        });
+
+        var (sql, param) = StarRocksPipelineBuilder.Build(
+            ArticleSchema(), Request(ranked, top), EmptyRegistry());
+
+        var n = NormalizeWs(sql);
+        n.Should().Contain(
+            "`ranked` AS (SELECT *, ROW_NUMBER() OVER (PARTITION BY `AuthorId` ORDER BY `PublishedAt` DESC) AS `rn` FROM `base`)");
+        n.Should().Contain("`top5` AS (SELECT * FROM `ranked` WHERE `rn` <= @s2_p0)");
+        param.Get<double>("s2_p0").Should().Be(5);
+    }
+
+    [Fact]
+    public void Build_AggregateStep_EmitsGroupByAndHaving()
+    {
+        var step = new PipelineStep { Name = "by_author" };
+        step.GroupBy.Add(new GroupKey { Field = "AuthorId" });
+        step.Metrics.Add(new MetricSpec { Name = "articles", Type = AggregationType.Count });
+        step.Metrics.Add(new MetricSpec { Name = "avg_wc", Type = AggregationType.Avg, Field = "WordCount" });
+        step.Having.Add(new SearchClause
+        {
+            Property = "articles", Operator = SearchOperator.GreaterThan,
+            Value = new SearchValue { NumberVal = 5 }, ClauseType = SearchClauseType.Filter
+        });
+
+        var (sql, param) = StarRocksPipelineBuilder.Build(
+            ArticleSchema(), Request(step), EmptyRegistry());
+
+        var n = NormalizeWs(sql);
+        n.Should().Contain(
+            "`by_author` AS (SELECT `AuthorId`, COUNT(*) AS `articles`, AVG(`WordCount`) AS `avg_wc` " +
+            "FROM `base` GROUP BY `AuthorId` HAVING `articles` > @s1_h0)");
+        param.Get<double>("s1_h0").Should().Be(5);
+    }
+
+    [Fact]
+    public void Build_DateTruncKey_EmitsDateTruncWithAlias()
+    {
+        var step = new PipelineStep { Name = "monthly" };
+        step.GroupBy.Add(new GroupKey { Field = "PublishedAt", DateTrunc = DateTrunc.Month });
+        step.Metrics.Add(new MetricSpec { Name = "n", Type = AggregationType.Count });
+
+        var (sql, _) = StarRocksPipelineBuilder.Build(
+            ArticleSchema(), Request(step), EmptyRegistry());
+
+        var n = NormalizeWs(sql);
+        n.Should().Contain("DATE_TRUNC('month', `PublishedAt`) AS `PublishedAt_month`");
+        n.Should().Contain("GROUP BY `PublishedAt_month`");
+    }
+
+    [Fact]
+    public void Build_RunningSumAndDerive_EmitOverAndExpression()
+    {
+        var agg = new PipelineStep { Name = "monthly" };
+        agg.GroupBy.Add(new GroupKey { Field = "PublishedAt", DateTrunc = DateTrunc.Month });
+        agg.Metrics.Add(new MetricSpec { Name = "n", Type = AggregationType.Count });
+
+        var w = new PipelineStep { Name = "cume" };
+        w.Windows.Add(new WindowFunction
+        {
+            Alias = "running_total", Kind = WindowFunctionKind.RunningSum,
+            Field = "n", OrderBy = "PublishedAt_month"
+        });
+
+        var d = new PipelineStep { Name = "share" };
+        d.Derive.Add(new DeriveColumn { Alias = "pct", Expr = "100.0 * n / SUM(n) OVER ()" });
+
+        var (sql, _) = StarRocksPipelineBuilder.Build(
+            ArticleSchema(), Request(agg, w, d), EmptyRegistry());
+
+        var n = NormalizeWs(sql);
+        n.Should().Contain("SUM(`n`) OVER (ORDER BY `PublishedAt_month` ASC) AS `running_total`");
+        n.Should().Contain("(100.0 * n / SUM(n) OVER ()) AS `pct`");
+    }
+
+    [Fact]
+    public void Build_ReadsSkipsIntermediateStep()
+    {
+        var a = new PipelineStep { Name = "a" };
+        a.Derive.Add(new DeriveColumn { Alias = "x", Expr = "WordCount + 1" });
+        var b = new PipelineStep { Name = "b", Reads = "base" };
+        b.Derive.Add(new DeriveColumn { Alias = "y", Expr = "WordCount + 2" });
+
+        var (sql, _) = StarRocksPipelineBuilder.Build(
+            ArticleSchema(), Request(a, b), EmptyRegistry());
+
+        NormalizeWs(sql).Should().Contain("`b` AS (SELECT *, (WordCount + 2) AS `y` FROM `base`)");
+    }
+
+    [Fact]
+    public void Build_FinalOrderByAndLimit()
+    {
+        var step = new PipelineStep { Name = "agg" };
+        step.GroupBy.Add(new GroupKey { Field = "AuthorId" });
+        step.Metrics.Add(new MetricSpec { Name = "n", Type = AggregationType.Count });
+
+        var request = Request(step);
+        request.OrderBy.Add(new SearchSort { Property = "n", Descending = true });
+        request.Limit = 10;
+
+        var (sql, _) = StarRocksPipelineBuilder.Build(
+            ArticleSchema(), request, EmptyRegistry());
+
+        NormalizeWs(sql).Should().EndWith("SELECT * FROM `agg` ORDER BY `n` DESC LIMIT 10");
+    }
+
+    [Fact]
+    public void Build_LagWindow_DefaultsOffsetToOne()
+    {
+        var step = new PipelineStep { Name = "lagged" };
+        step.Windows.Add(new WindowFunction
+        {
+            Alias = "prev_wc", Kind = WindowFunctionKind.Lag,
+            Field = "WordCount", OrderBy = "PublishedAt"
+        });
+
+        var (sql, _) = StarRocksPipelineBuilder.Build(
+            ArticleSchema(), Request(step), EmptyRegistry());
+
+        NormalizeWs(sql).Should().Contain(
+            "LAG(`WordCount`, 1) OVER (ORDER BY `PublishedAt` ASC) AS `prev_wc`");
+    }
 }

@@ -1,4 +1,6 @@
+using System.Text;
 using System.Text.RegularExpressions;
+using Dapper;
 using Grpc.Core;
 using Iverson.Api.Schema;
 using Iverson.Client.Contracts;
@@ -278,4 +280,172 @@ internal static class StarRocksPipelineBuilder
 
     private static RpcException Invalid(string message) =>
         new(new Status(StatusCode.InvalidArgument, message));
+
+    internal static (string Sql, DynamicParameters Param) Build(
+        SchemaDescriptor schema,
+        PipelineRequest request,
+        SchemaRegistry registry)
+    {
+        var tracked = TrackAndValidate(schema, request, registry);
+        var byName  = tracked.ToDictionary(s => s.Name, StringComparer.OrdinalIgnoreCase);
+
+        var param = new DynamicParameters();
+        var sb = new StringBuilder();
+
+        var baseWhere = StarRocksQueryBuilder.BuildWhere(
+            p => StarRocksQueryBuilder.ResolveColumn(schema, p) is { } c ? $"`{c}`" : null,
+            request.BaseWhere, request.BaseLogic, param, "s0_p", out _);
+        sb.Append($"WITH `{BaseStepName}` AS (SELECT * FROM `{schema.TableName}`");
+        if (baseWhere.Length > 0) sb.Append($" WHERE {baseWhere}");
+        sb.Append(')');
+
+        var prev = BaseStepName;
+        for (var i = 0; i < request.Steps.Count; i++)
+        {
+            var step  = request.Steps[i];
+            var input = byName[string.IsNullOrEmpty(step.Reads) ? prev : step.Reads];
+            sb.Append($", `{step.Name}` AS (");
+            EmitStep(sb, step, input, byName, registry, param, stepIdx: i + 1);
+            sb.Append(')');
+            prev = step.Name;
+        }
+
+        sb.Append($" SELECT * FROM `{prev}`");
+        var lastCols = byName[prev].Columns;
+        if (request.OrderBy.Count > 0)
+        {
+            var orders = request.OrderBy
+                .Select(s => $"`{lastCols[s.Property]}` {(s.Descending ? "DESC" : "ASC")}");
+            sb.Append($" ORDER BY {string.Join(", ", orders)}");
+        }
+        var limit = request.Limit > 0 ? request.Limit : 10_000;
+        sb.Append($" LIMIT {limit}");
+
+        return (sb.ToString(), param);
+    }
+
+    private static void EmitStep(
+        StringBuilder sb,
+        PipelineStep step,
+        StepColumns input,
+        Dictionary<string, StepColumns> byName,
+        SchemaRegistry registry,
+        DynamicParameters param,
+        int stepIdx)
+    {
+        var isAggregate = step.GroupBy.Count > 0 || step.Metrics.Count > 0;
+
+        var where = StarRocksQueryBuilder.BuildWhere(
+            p => input.Columns.TryGetValue(p, out var c) ? $"`{c}`" : null,
+            step.Where, step.WhereLogic, param, $"s{stepIdx}_p", out _);
+
+        if (isAggregate)
+        {
+            var keyExprs  = new List<string>();
+            var groupCols = new List<string>();
+            foreach (var key in step.GroupBy)
+            {
+                var col = input.Columns[key.Field];
+                if (key.DateTrunc == DateTrunc.None)
+                {
+                    keyExprs.Add($"`{col}`");
+                    groupCols.Add($"`{col}`");
+                }
+                else
+                {
+                    var alias = OutputNameFor(key, input.Columns);
+                    keyExprs.Add(
+                        $"DATE_TRUNC('{key.DateTrunc.ToString().ToLowerInvariant()}', `{col}`) AS `{alias}`");
+                    groupCols.Add($"`{alias}`");
+                }
+            }
+            var metricExprs = step.Metrics.Select(m => EmitMetric(m, input.Columns));
+
+            sb.Append($"SELECT {string.Join(", ", keyExprs.Concat(metricExprs))} FROM `{input.Name}`");
+            if (where.Length > 0) sb.Append($" WHERE {where}");
+            sb.Append($" GROUP BY {string.Join(", ", groupCols)}");
+
+            var having = StarRocksQueryBuilder.BuildHaving(
+                step.Having, SearchLogic.And, param, $"s{stepIdx}_h");
+            if (having.Length > 0) sb.Append($" HAVING {having}");
+            return;
+        }
+
+        // Non-aggregate step: projection (+ windows, derives), FROM input (+ joins in Task 5).
+        var selectParts = new List<string>();
+        if (step.Select.Count > 0)
+        {
+            foreach (var item in step.Select)
+                selectParts.Add(EmitSelectItem(step, item, input, byName, registry));
+        }
+        else
+        {
+            selectParts.Add("*");
+        }
+
+        foreach (var w in step.Windows)
+            selectParts.Add(EmitWindow(w, input.Columns));
+        foreach (var d in step.Derive)
+            selectParts.Add($"({d.Expr}) AS `{d.Alias}`");
+
+        sb.Append($"SELECT {string.Join(", ", selectParts)} FROM `{input.Name}`");
+        if (where.Length > 0) sb.Append($" WHERE {where}");
+    }
+
+    private static string EmitMetric(MetricSpec m, Dictionary<string, string> input)
+    {
+        var quotedName = $"`{m.Name.Replace("`", "``")}`";
+        var isCountAll = m.Type == AggregationType.Count
+            && string.IsNullOrEmpty(m.Field) && string.IsNullOrEmpty(m.Expression);
+        if (isCountAll) return $"COUNT(*) AS {quotedName}";
+
+        var fn = m.Type switch
+        {
+            AggregationType.Avg   => "AVG",
+            AggregationType.Sum   => "SUM",
+            AggregationType.Min   => "MIN",
+            AggregationType.Max   => "MAX",
+            AggregationType.Count => "COUNT",
+            _ => throw new RpcException(new Status(StatusCode.InvalidArgument,
+                $"Metric '{m.Name}' has unsupported type '{m.Type}'."))
+        };
+        // m.Expression is raw trusted SQL — same posture as BuildMetricExpr in
+        // StarRocksQueryBuilder; see the comment there.
+        var arg = !string.IsNullOrEmpty(m.Expression) ? m.Expression : $"`{input[m.Field]}`";
+        return $"{fn}({arg}) AS {quotedName}";
+    }
+
+    private static string EmitWindow(WindowFunction w, Dictionary<string, string> input)
+    {
+        var partition = string.IsNullOrEmpty(w.PartitionBy)
+            ? ""
+            : $"PARTITION BY `{input[w.PartitionBy]}` ";
+        var order = $"ORDER BY `{input[w.OrderBy]}` {(w.Descending ? "DESC" : "ASC")}";
+        var over  = $"OVER ({partition}{order})";
+        var offset = w.Offset > 0 ? w.Offset : 1;
+
+        var call = w.Kind switch
+        {
+            WindowFunctionKind.RowNumber  => "ROW_NUMBER()",
+            WindowFunctionKind.Rank       => "RANK()",
+            WindowFunctionKind.DenseRank  => "DENSE_RANK()",
+            WindowFunctionKind.RunningSum => $"SUM(`{input[w.Field]}`)",
+            WindowFunctionKind.RunningAvg => $"AVG(`{input[w.Field]}`)",
+            WindowFunctionKind.Lag        => $"LAG(`{input[w.Field]}`, {offset})",
+            WindowFunctionKind.Lead       => $"LEAD(`{input[w.Field]}`, {offset})",
+            _ => throw new RpcException(new Status(StatusCode.InvalidArgument,
+                $"Window '{w.Alias}' has unsupported kind '{w.Kind}'."))
+        };
+        return $"{call} {over} AS `{w.Alias}`";
+    }
+
+    // Task 5 extends this for join sources; without joins the only legal source is the input.
+    private static string EmitSelectItem(
+        PipelineStep step, SelectItem item, StepColumns input,
+        Dictionary<string, StepColumns> byName, SchemaRegistry registry)
+    {
+        if (item.All) return "*";
+        var col = input.Columns[item.Column];
+        return string.IsNullOrEmpty(item.Alias) ? $"`{col}`" : $"`{col}` AS `{item.Alias}`";
+    }
 }
