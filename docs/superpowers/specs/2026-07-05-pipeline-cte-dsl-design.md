@@ -164,7 +164,7 @@ Every column reference — WHERE, join conditions, partition/order fields, HAVIN
 |----------|-------|------|-------|
 | C# | `Pipeline.For("Article")` / `Pipeline.For<T>()` | `.Step("name", s => ...)` | `EntityCoordinator<T>` gains `PipelineAsync` (dict rows) + `PipelineAsync<TResult>` (StructConverter projection) |
 | Java | `Query.pipeline("Article")` | `.step("name", s -> ...)` | `reads` (never `from` — keyword); blocking-stub streaming like `groupBy` |
-| Python | `pipeline("Article")` | `.step("name", lambda s: ...)` | `reads=` kwarg; snake_case methods |
+| Python | `pipeline("Article")` | `.step("name", lambda s: ...)` | `.reads(...)` method (never `from` — keyword); snake_case methods |
 | TypeScript | `pipeline('Article')` | `.step('name', s => ...)` | async-iterable streaming like `groupBy` |
 | Go | `iverson.NewPipeline("Article")` | `.Step("name", func(s *StepBuilder) {...})` | error accumulation surfaced at `Build()`, matching its QueryBuilder |
 
