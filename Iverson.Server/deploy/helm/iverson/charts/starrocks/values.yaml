@@ -1,5 +1,6 @@
 storageClassName: ""
 fe:
+  image: "starrocks/fe-ubuntu:4.1.1"
   replicas: 1
   storageSize: 50Gi
   resources:
@@ -8,6 +9,7 @@ fe:
   nodeSelector: {}
   tolerations: []
 be:
+  image: "starrocks/be-ubuntu:4.1.1"
   replicas: 2
   storageSize: 500Gi
   resources:

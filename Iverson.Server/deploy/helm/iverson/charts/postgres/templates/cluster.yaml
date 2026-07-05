@@ -27,4 +27,6 @@ spec:
   postgresql:
     parameters:
       max_connections: "200"
-      ssl: "on"   # CloudNativePG auto-generates and mounts the server cert/key this refers to; no extra template config needed
+      # No explicit `ssl` parameter: CNPG's validating webhook now rejects it as a
+      # "fixed configuration parameter" — CNPG always enables and manages TLS
+      # (cert/key auto-generated and mounted) itself, unconditionally.

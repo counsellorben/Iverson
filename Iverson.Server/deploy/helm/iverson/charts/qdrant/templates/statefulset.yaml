@@ -82,9 +82,13 @@ spec:
           volumeMounts:
             - name: qdrant-storage
               mountPath: /qdrant/storage
+            - name: snapshots
+              mountPath: /qdrant/snapshots
             - name: tmp
               mountPath: /tmp
       volumes:
+        - name: snapshots
+          emptyDir: {}
         - name: tmp
           emptyDir: {}
   volumeClaimTemplates:

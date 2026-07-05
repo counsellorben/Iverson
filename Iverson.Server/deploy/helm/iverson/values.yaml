@@ -36,6 +36,7 @@ kafka:
 starrocks:
   storageClassName: ""
   fe:
+    image: "starrocks/fe-ubuntu:4.1.1"
     replicas: 1
     storageSize: 50Gi
     resources:
@@ -44,6 +45,7 @@ starrocks:
     nodeSelector: {}
     tolerations: []
   be:
+    image: "starrocks/be-ubuntu:4.1.1"
     replicas: 2
     storageSize: 500Gi
     resources:
@@ -94,7 +96,7 @@ api:
     tlsSecretName: ""   # set per-environment; empty disables the tls: block (kind only — see values-local.yaml)
 
 jaeger:
-  imageTag: "1.62"
+  imageTag: "1.62.0"
   resources:
     requests: { cpu: "2", memory: "4Gi", ephemeral-storage: "1Gi" }
     limits: { cpu: "2", memory: "4Gi", ephemeral-storage: "2Gi" }

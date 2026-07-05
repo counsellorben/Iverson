@@ -1,4 +1,4 @@
-apiVersion: kafka.strimzi.io/v1beta2
+apiVersion: kafka.strimzi.io/v1
 kind: Kafka
 metadata:
   name: {{ .Release.Name }}-kafka
@@ -7,7 +7,9 @@ metadata:
     strimzi.io/node-pools: enabled
 spec:
   kafka:
-    version: 3.8.0
+    # 3.8.0 is no longer supported by this pinned operator version (1.1.0) — only
+    # 4.2.0/4.2.1/4.3.0 are (kafkaVersion.UnsupportedKafkaVersionException at reconcile).
+    version: 4.3.0
     listeners:
       - name: tls
         port: 9093
@@ -27,7 +29,7 @@ spec:
     topicOperator: {}
     userOperator: {}
 ---
-apiVersion: kafka.strimzi.io/v1beta2
+apiVersion: kafka.strimzi.io/v1
 kind: KafkaNodePool
 metadata:
   name: {{ .Release.Name }}-kafka-pool
@@ -51,7 +53,21 @@ spec:
     class: {{ .Values.storageClassName | quote }}
   template:
     pod:
-      nodeSelector:
-        {{- toYaml .Values.nodeSelector | nindent 8 }}
+      # KafkaNodePool's template.pod has no `nodeSelector` field (only `affinity`) —
+      # a plain nodeSelector here is silently pruned by the API server, so cloud
+      # profiles' `iverson.io/node-pool: kafka` constraint was never actually
+      # applied. Express it as the equivalent required nodeAffinity instead.
+      {{- if .Values.nodeSelector }}
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  {{- range $key, $value := .Values.nodeSelector }}
+                  - key: {{ $key }}
+                    operator: In
+                    values: [{{ $value | quote }}]
+                  {{- end }}
+      {{- end }}
       tolerations:
         {{- toYaml .Values.tolerations | nindent 8 }}

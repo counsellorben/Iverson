@@ -1,4 +1,4 @@
-imageTag: "1.62"
+imageTag: "1.62.0"
 resources:
   requests: { cpu: "2", memory: "4Gi", ephemeral-storage: "1Gi" }
   limits: { cpu: "2", memory: "4Gi", ephemeral-storage: "2Gi" }

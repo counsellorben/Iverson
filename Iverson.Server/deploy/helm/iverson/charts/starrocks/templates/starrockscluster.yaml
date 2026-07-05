@@ -4,35 +4,37 @@ metadata:
   name: {{ .Release.Name }}-starrocks
 spec:
   starRocksFeSpec:
+    image: {{ .Values.fe.image | quote }}
     replicas: {{ .Values.fe.replicas }}
-    resourceRequirements:
-      requests:
-        cpu: {{ .Values.fe.resources.requests.cpu | quote }}
-        memory: {{ .Values.fe.resources.requests.memory | quote }}
-      limits:
-        cpu: {{ .Values.fe.resources.limits.cpu | quote }}
-        memory: {{ .Values.fe.resources.limits.memory | quote }}
+    requests:
+      cpu: {{ .Values.fe.resources.requests.cpu | quote }}
+      memory: {{ .Values.fe.resources.requests.memory | quote }}
+    limits:
+      cpu: {{ .Values.fe.resources.limits.cpu | quote }}
+      memory: {{ .Values.fe.resources.limits.memory | quote }}
     storageVolumes:
       - name: fe-meta
         storageClassName: {{ .Values.storageClassName | quote }}
         storageSize: {{ .Values.fe.storageSize | quote }}
+        mountPath: /opt/starrocks/fe/meta
     nodeSelector:
       {{- toYaml .Values.fe.nodeSelector | nindent 6 }}
     tolerations:
       {{- toYaml .Values.fe.tolerations | nindent 6 }}
   starRocksBeSpec:
+    image: {{ .Values.be.image | quote }}
     replicas: {{ .Values.be.replicas }}
-    resourceRequirements:
-      requests:
-        cpu: {{ .Values.be.resources.requests.cpu | quote }}
-        memory: {{ .Values.be.resources.requests.memory | quote }}
-      limits:
-        cpu: {{ .Values.be.resources.limits.cpu | quote }}
-        memory: {{ .Values.be.resources.limits.memory | quote }}
+    requests:
+      cpu: {{ .Values.be.resources.requests.cpu | quote }}
+      memory: {{ .Values.be.resources.requests.memory | quote }}
+    limits:
+      cpu: {{ .Values.be.resources.limits.cpu | quote }}
+      memory: {{ .Values.be.resources.limits.memory | quote }}
     storageVolumes:
       - name: be-data
         storageClassName: {{ .Values.storageClassName | quote }}
         storageSize: {{ .Values.be.storageSize | quote }}
+        mountPath: /opt/starrocks/be/storage
     nodeSelector:
       {{- toYaml .Values.be.nodeSelector | nindent 6 }}
     tolerations:
