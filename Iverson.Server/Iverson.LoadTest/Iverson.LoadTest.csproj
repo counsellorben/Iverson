@@ -8,6 +8,7 @@
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="../../Iverson.Clients/DotNet/Iverson.Client.Core/Iverson.Client.Core.csproj" />
+    <ProjectReference Include="../Iverson.Events/Iverson.Events.csproj" />
   </ItemGroup>
   <ItemGroup>
     <PackageReference Include="Dapper"                                  Version="2.1.79" />
