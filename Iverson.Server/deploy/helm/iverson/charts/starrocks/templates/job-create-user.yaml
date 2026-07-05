@@ -72,6 +72,7 @@ spec:
                 GRANT SELECT, INSERT, UPDATE, DELETE ON iverson.* TO 'iverson_app'@'%';
                 GRANT CREATE TABLE, DROP, ALTER ON DATABASE iverson TO 'iverson_app'@'%';
                 GRANT OPERATE ON SYSTEM TO 'iverson_app'@'%';
+                GRANT CREATE DATABASE ON CATALOG default_catalog TO 'iverson_app'@'%';
               "
               # StarRocks' GRANT dialect isn't MySQL's: DDL privileges (CREATE TABLE/DROP/ALTER)
               # are scoped ON DATABASE, not ON db.*, and CREATE must be written as the two-word
@@ -82,3 +83,9 @@ spec:
               # without it every readiness probe fails with "Access denied; you need (at
               # least one of) the OPERATE OR NODE privilege(s) on SYSTEM", confirmed
               # empirically against a live FE (4.1.1).
+              # CREATE DATABASE ON CATALOG default_catalog is needed because
+              # StarRocksRepository.EnsureDatabaseAsync() runs `CREATE DATABASE IF NOT
+              # EXISTS iverson` as iverson_app on every RegisterSchema call — StarRocks
+              # checks the privilege before checking whether the database already exists,
+              # so this failed on literally every schema registration even though the
+              # database this job already created was right there.
