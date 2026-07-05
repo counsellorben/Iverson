@@ -301,6 +301,45 @@ public sealed class ObjectSearchGrpcService(
         }
     }
 
+    // ── Pipeline (CTE chains) ──────────────────────────────────────────────────
+
+    public override async Task Pipeline(
+        PipelineRequest request,
+        IServerStreamWriter<SearchResponse> responseStream,
+        ServerCallContext context)
+    {
+        var schema = RequireSchema(request.TypeName);
+
+        if (logger.IsEnabled(LogLevel.Information))
+            logger.LogInformation("[Pipeline] type={Type} steps={Steps}",
+                request.TypeName, request.Steps.Count);
+
+        var (sql, param) = StarRocksPipelineBuilder.Build(schema, request, registry);
+
+        IEnumerable<dynamic> rows;
+        try
+        {
+            rows = await sr.QueryAsync<dynamic>(sql, param);
+        }
+        catch (StarRocksNotReadyException ex)
+        {
+            throw new RpcException(new Status(StatusCode.Unavailable, $"StarRocks is not ready: {ex.Message}"));
+        }
+
+        foreach (var row in rows)
+        {
+            var dict = ((IDictionary<string, object>)row)
+                .ToDictionary(kv => kv.Key, kv => (object?)kv.Value);
+            await responseStream.WriteAsync(
+                new SearchResponse
+                {
+                    Data    = DictToProtoStruct(dict),
+                    TraceId = request.TraceId
+                },
+                context.CancellationToken);
+        }
+    }
+
     // ── Helpers ────────────────────────────────────────────────────────────────
 
     private SchemaDescriptor RequireSchema(string typeName) =>

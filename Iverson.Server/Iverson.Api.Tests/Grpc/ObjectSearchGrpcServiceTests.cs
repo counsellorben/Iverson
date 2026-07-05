@@ -474,4 +474,58 @@ public class ObjectSearchGrpcServiceTests
         written[0].ChunkText.Should().Be("passage text");
         written[0].ParentKey.Should().Be("parent-id-123");
     }
+
+    // ── Pipeline ──────────────────────────────────────────────────────────────
+
+    [Fact]
+    public async Task Pipeline_ThrowsRpcException_WhenSchemaNotRegistered()
+    {
+        var (writer, _) = MakeStream<SearchResponse>();
+        var act = async () => await _sut.Pipeline(
+            new PipelineRequest { TypeName = "Ghost" }, writer, TestServerCallContext.Create());
+
+        await act.Should().ThrowAsync<RpcException>()
+            .Where(e => e.Status.StatusCode == StatusCode.FailedPrecondition);
+    }
+
+    [Fact]
+    public async Task Pipeline_EmitsWithChain_AndStreamsRows()
+    {
+        await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
+
+        string? capturedSql = null;
+        var fakeRow = new Dictionary<string, object> { ["Name"] = "Alice", ["n"] = 3L };
+        _sr.QueryAsync<dynamic>(Arg.Do<string>(s => capturedSql = s), Arg.Any<object?>())
+           .Returns(new[] { (dynamic)fakeRow }.AsEnumerable());
+
+        var step = new PipelineStep { Name = "by_name" };
+        step.GroupBy.Add(new GroupKey { Field = "Name" });
+        step.Metrics.Add(new MetricSpec { Name = "n", Type = AggregationType.Count });
+        var request = new PipelineRequest { TypeName = "Author" };
+        request.Steps.Add(step);
+
+        var (writer, written) = MakeStream<SearchResponse>();
+        await _sut.Pipeline(request, writer, TestServerCallContext.Create());
+
+        capturedSql.Should().StartWith("WITH `base` AS");
+        capturedSql.Should().Contain("`by_name` AS");
+        written.Should().HaveCount(1);
+        written[0].Data.Fields["Name"].StringValue.Should().Be("Alice");
+    }
+
+    [Fact]
+    public async Task Pipeline_InvalidStepReference_SurfacesInvalidArgument()
+    {
+        await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
+
+        var step = new PipelineStep { Name = "s", Reads = "nonexistent" };
+        var request = new PipelineRequest { TypeName = "Author" };
+        request.Steps.Add(step);
+
+        var (writer, _) = MakeStream<SearchResponse>();
+        var act = async () => await _sut.Pipeline(request, writer, TestServerCallContext.Create());
+
+        await act.Should().ThrowAsync<RpcException>()
+            .Where(e => e.Status.StatusCode == StatusCode.InvalidArgument);
+    }
 }

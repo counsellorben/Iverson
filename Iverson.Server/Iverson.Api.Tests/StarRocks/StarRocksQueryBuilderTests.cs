@@ -1155,4 +1155,66 @@ public class StarRocksQueryBuilderTests
         var lookup = (SqlMapper.IParameterLookup)param;
         lookup["p0"].Should().Be("Foo");
     }
+
+    // ── BuildWhere/BuildHaving — resolver + prefix overloads ──────────────────
+
+    [Fact]
+    public void BuildWhere_ResolverOverload_UsesPrefixAndResolver()
+    {
+        var param = new DynamicParameters();
+        var clauses = new[]
+        {
+            new SearchClause
+            {
+                Property = "articles", Operator = SearchOperator.GreaterThan,
+                Value = new SearchValue { NumberVal = 5 }, ClauseType = SearchClauseType.Filter
+            }
+        };
+
+        var sql = StarRocksQueryBuilder.BuildWhere(
+            p => p == "articles" ? "`articles`" : null,
+            clauses, SearchLogic.And, param, "s2_p", out var next);
+
+        sql.Should().Be("`articles` > @s2_p0");
+        next.Should().Be(1);
+        param.Get<double>("s2_p0").Should().Be(5);
+    }
+
+    [Fact]
+    public void BuildWhere_ResolverOverload_SkipsUnresolvableColumns()
+    {
+        var param = new DynamicParameters();
+        var clauses = new[]
+        {
+            new SearchClause
+            {
+                Property = "nope", Operator = SearchOperator.Equals,
+                Value = new SearchValue { NumberVal = 1 }, ClauseType = SearchClauseType.Filter
+            }
+        };
+
+        var sql = StarRocksQueryBuilder.BuildWhere(
+            _ => null, clauses, SearchLogic.And, param, "s1_p", out _);
+
+        sql.Should().BeEmpty();
+    }
+
+    [Fact]
+    public void BuildHaving_PrefixOverload_UsesPrefix()
+    {
+        var param = new DynamicParameters();
+        var clauses = new[]
+        {
+            new SearchClause
+            {
+                Property = "article_count", Operator = SearchOperator.GreaterThan,
+                Value = new SearchValue { NumberVal = 3 }, ClauseType = SearchClauseType.Filter
+            }
+        };
+
+        var sql = StarRocksQueryBuilder.BuildHaving(clauses, SearchLogic.And, param, "s3_h");
+
+        sql.Should().Be("`article_count` > @s3_h0");
+        param.Get<double>("s3_h0").Should().Be(3);
+    }
 }

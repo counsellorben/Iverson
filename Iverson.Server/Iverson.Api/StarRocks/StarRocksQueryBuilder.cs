@@ -282,6 +282,31 @@ internal static class StarRocksQueryBuilder
         out int nextIdx,
         IReadOnlyDictionary<string, JoinContext>? tableMap = null)
     {
+        // Single quoting decision point: resolve + fully quote the column into one
+        // ready-to-embed SQL identifier. Cross-schema (tableMap present) columns are
+        // "alias.field" and MUST go through QuoteQualified (two separately-backtick-quoted
+        // parts) — a single backtick pair around "alias.field" is invalid SQL (see
+        // QuoteQualified's doc comment).
+        Func<string, string?> resolve = tableMap is not null
+            ? p => ResolveColumn(tableMap, p) is { } qc ? QuoteQualified(qc) : null
+            : p => ResolveColumn(schema, p) is { } c ? $"`{c}`" : null;
+        return BuildWhere(resolve, clauses, logic, param, "p", out nextIdx);
+    }
+
+    /// <summary>
+    /// Core WHERE builder. <paramref name="resolveQuoted"/> maps a clause property to a
+    /// fully-quoted, ready-to-embed SQL identifier (or null to skip the clause), and
+    /// <paramref name="paramPrefix"/> names the Dapper parameters ("p" for plain queries;
+    /// pipeline steps pass "s{i}_p" so multiple steps can share one DynamicParameters).
+    /// </summary>
+    internal static string BuildWhere(
+        Func<string, string?> resolveQuoted,
+        IEnumerable<SearchClause>? clauses,
+        SearchLogic logic,
+        DynamicParameters param,
+        string paramPrefix,
+        out int nextIdx)
+    {
         nextIdx = 0;
         if (clauses is null) return "";
 
@@ -291,19 +316,10 @@ internal static class StarRocksQueryBuilder
         {
             if (clause.Operator == SearchOperator.VectorSimilar) continue;
 
-            // Single quoting decision point: resolve + fully quote the column into one
-            // ready-to-embed SQL identifier here, once per clause, before the switch below.
-            // Cross-schema (tableMap present) columns are "alias.field" and MUST go through
-            // QuoteQualified (two separately-backtick-quoted parts) — a single backtick pair
-            // around "alias.field" is invalid SQL (see QuoteQualified's doc comment). Every
-            // switch branch and BuildEq/BuildIn below embed this string as-is, with no further
-            // backtick-wrapping.
-            string? quotedCol = tableMap is not null
-                ? ResolveColumn(tableMap, clause.Property) is { } qc ? QuoteQualified(qc) : null
-                : ResolveColumn(schema, clause.Property) is { } c ? $"`{c}`" : null;
+            var quotedCol = resolveQuoted(clause.Property);
             if (quotedCol is null) continue;
 
-            var pName = $"p{nextIdx++}";
+            var pName = $"{paramPrefix}{nextIdx++}";
 
             var condition = clause.Operator switch
             {
@@ -343,17 +359,19 @@ internal static class StarRocksQueryBuilder
     }
 
     /// <summary>
-    /// Builds a HAVING clause from the same clause-matching logic as <see cref="BuildWhere"/>,
+    /// Builds a HAVING clause from the same clause-matching logic as <see cref="BuildWhere(SchemaDescriptor, IEnumerable{SearchClause}?, SearchLogic, DynamicParameters, out int, IReadOnlyDictionary{string, JoinContext}?)"/>,
     /// but without the schema-backed <see cref="ResolveColumn(SchemaDescriptor, string)"/> guard —
     /// HAVING clauses reference SQL output aliases (e.g. "doc_count", "metric_val") which are not
     /// schema columns, so the clause's Property is used verbatim as the column name. Uses an
-    /// "h{n}" parameter prefix (vs. "p{n}" for WHERE) so both can share one DynamicParameters
-    /// instance without name collisions when a query has both a filter and a HAVING clause.
+    /// "h{n}" parameter prefix by default (vs. "p{n}" for WHERE) so both can share one
+    /// DynamicParameters instance without name collisions when a query has both a filter and a
+    /// HAVING clause; pipeline steps pass "s{i}_h" so multiple steps can share one instance too.
     /// </summary>
     internal static string BuildHaving(
         IEnumerable<SearchClause>? clauses,
         SearchLogic logic,
-        DynamicParameters param)
+        DynamicParameters param,
+        string paramPrefix = "h")
     {
         if (clauses is null) return "";
 
@@ -368,7 +386,7 @@ internal static class StarRocksQueryBuilder
             if (string.IsNullOrEmpty(col)) continue;
             var quotedCol = $"`{EscapeIdentifier(col)}`";
 
-            var pName = $"h{nextIdx++}";
+            var pName = $"{paramPrefix}{nextIdx++}";
 
             var condition = clause.Operator switch
             {

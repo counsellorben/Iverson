@@ -12,6 +12,7 @@ service ObjectSearchService {
     rpc SearchChunks   (SearchChunksRequest)  returns (stream ChunkSearchResponse);
     rpc Aggregate      (AggregateRequest)     returns (AggregateResponse);
     rpc GroupBy        (GroupByRequest)       returns (stream SearchResponse);
+    rpc Pipeline       (PipelineRequest)      returns (stream SearchResponse);
 }
 
 message SearchRequest {
@@ -225,4 +226,95 @@ message GroupByRequest {
     int32               limit     = 7;   // default 10000
     repeated JoinSpec   joins     = 8;
     string              trace_id  = 9;
+}
+
+// ── Pipeline (CTE chains) ────────────────────────────────────────────────────
+//
+// Compiles a chain of named, SQL-shaped steps into ONE StarRocks query built
+// from chained CTEs (WITH name AS (...)). Each step reads the previous step by
+// default, or any earlier named step via `reads`, and may join prior steps'
+// CTEs or registered entity tables. Rows stream back as SearchResponse with a
+// constant score of 1.0, exactly like GroupBy.
+
+message PipelineRequest {
+    string                type_name  = 1;
+    repeated SearchClause base_where = 2;   // WHERE on the implicit "base" step
+    SearchLogic           base_logic = 3;
+    repeated PipelineStep steps      = 4;
+    repeated SearchSort   order_by   = 5;   // final ORDER BY (last step's columns/aliases)
+    int32                 limit      = 6;   // 0 = default 10000
+    string                trace_id   = 7;
+}
+
+message PipelineStep {
+    string                  name        = 1;  // CTE name; required, unique, valid identifier
+    string                  reads       = 2;  // input step name; empty = previous step
+    repeated SearchClause   where       = 3;
+    SearchLogic             where_logic = 4;
+    repeated WindowFunction windows     = 5;  // XOR with group_by/metrics/having
+    repeated GroupKey       group_by    = 6;
+    repeated MetricSpec     metrics     = 7;  // reuses existing MetricSpec
+    repeated SearchClause   having      = 8;  // property = metric alias from this step
+    repeated DeriveColumn   derive      = 9;
+    repeated PipelineJoin   joins       = 10;
+    repeated SelectItem     select      = 11; // required when joins present; else optional
+}
+
+message PipelineJoin {
+    string   source = 1;              // prior step name OR registered type name
+    JoinKind kind   = 2;              // reuses existing enum
+    repeated JoinCondition on = 3;    // equality pairs, AND-ed
+}
+
+message JoinCondition {
+    string left  = 1;  // column in the step's input
+    string right = 2;  // column in the join source
+}
+
+message SelectItem {
+    string source = 1;  // step name or type name; empty = the step's input
+    string column = 2;  // empty when all = true
+    bool   all    = 3;  // emit source.* (expands the source's full column set)
+    string alias  = 4;  // optional output alias for a single column
+}
+
+message GroupKey {
+    string    field      = 1;
+    DateTrunc date_trunc = 2;  // NONE = group by the raw column
+}
+
+message DeriveColumn {
+    string alias = 1;
+    string expr  = 2;  // validated scalar expression over input columns / step aliases
+}
+
+message WindowFunction {
+    string             alias        = 1;
+    WindowFunctionKind kind         = 2;
+    string             field        = 3;  // source column (empty for ROW_NUMBER/RANK/DENSE_RANK)
+    string             partition_by = 4;  // optional
+    string             order_by     = 5;  // required for every kind
+    bool               descending   = 6;
+    int32              offset       = 7;  // LAG/LEAD only; 0 = default 1
+}
+
+enum WindowFunctionKind {
+    ROW_NUMBER  = 0;
+    RANK        = 1;
+    DENSE_RANK  = 2;
+    RUNNING_SUM = 3;
+    RUNNING_AVG = 4;
+    LAG         = 5;
+    LEAD        = 6;
+}
+
+enum DateTrunc {
+    NONE    = 0;
+    MINUTE  = 1;
+    HOUR    = 2;
+    DAY     = 3;
+    WEEK    = 4;
+    MONTH   = 5;
+    QUARTER = 6;
+    YEAR    = 7;
 }
