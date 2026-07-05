@@ -1,3 +1,4 @@
+{{- if .Values.networkPolicy.enabled }}
 # Default-deny: nothing in the namespace can talk to anything else unless a
 # more specific policy below explicitly allows it.
 apiVersion: networking.k8s.io/v1
@@ -7,7 +8,6 @@ metadata:
 spec:
   podSelector: {}
   policyTypes: ["Ingress", "Egress"]
-{{- if .Values.networkPolicy.enabled }}
 ---
 # api is the only component allowed in from outside the namespace (via
 # ingress-nginx), and the only component allowed to reach every datastore.
@@ -25,6 +25,12 @@ spec:
             matchLabels: { kubernetes.io/metadata.name: ingress-nginx }
       ports:
         - { protocol: TCP, port: 8080 }
+    - from: []   # kubelet readiness/liveness probes: the kubelet connects directly from the
+               # node, not from any pod/namespace, so there's no podSelector/namespaceSelector
+               # to scope this to — same any-source reasoning as the port-only egress rules
+               # elsewhere in this file. Scoped to the dedicated Http1 health port only.
+      ports:
+        - { protocol: TCP, port: 8081 }
 ---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
@@ -39,7 +45,9 @@ spec:
       ports: [{ protocol: TCP, port: 5432 }]
     - to: [{ podSelector: { matchLabels: { strimzi.io/cluster: {{ .Release.Name }}-kafka } } }]
       ports: [{ protocol: TCP, port: 9093 }]
-    - to: [{ podSelector: { matchLabels: { app.starrocks.io/cluster: {{ .Release.Name }}-starrocks } } }]
+    - to: [{ podSelector: { matchLabels: { app.starrocks.ownerreference/name: {{ .Release.Name }}-starrocks-fe } } }]
+               # clients only ever talk to FE's query port, never BE directly — see the
+               # starrocks-egress/-ingress note below on why this isn't app.starrocks.io/cluster.
       ports: [{ protocol: TCP, port: 9030 }]
     - to: [{ podSelector: { matchLabels: { app: {{ .Release.Name }}-qdrant } } }]
       ports: [{ protocol: TCP, port: 6334 }]
@@ -89,6 +97,21 @@ spec:
       ports: [{ protocol: UDP, port: 53 }, { protocol: TCP, port: 53 }]
     - to: [{ podSelector: { matchLabels: { cnpg.io/cluster: {{ .Release.Name }}-postgres } } }]   # streaming replication
       ports: [{ protocol: TCP, port: 5432 }]
+    - to: []   # Kubernetes API server: CNPG's own initdb/bootstrap job (baked into the
+               # postgres image, not a sidecar) calls back to the API server directly to
+               # sync Cluster status — without this it times out forever and the Cluster
+               # never leaves "Setting up primary". No portable way to scope this tighter:
+               # the API server isn't a normal in-namespace pod, and its address/CIDR
+               # differs across kind/EKS/AKS/GKE (managed control planes aren't even
+               # in-cluster pods), so this can't be a podSelector/namespaceSelector rule.
+               # Both 443 and 6443 are listed because NetworkPolicy enforcement happens
+               # after kube-proxy's Service DNAT rewrites the destination port: the
+               # `kubernetes` Service is always :443, but self-hosted/kubeadm-style
+               # control planes (kind included) back it with the apiserver's real port,
+               # 6443 — a rule scoped to 443 alone silently never matches that traffic.
+               # Managed control planes (EKS/AKS/GKE) commonly proxy straight through on
+               # 443 with no rewrite, so both must stay allowed.
+      ports: [{ protocol: TCP, port: 443 }, { protocol: TCP, port: 6443 }]
 ---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
@@ -125,7 +148,22 @@ spec:
     - to: []   # DNS
       ports: [{ protocol: UDP, port: 53 }, { protocol: TCP, port: 53 }]
     - to: [{ podSelector: { matchLabels: { strimzi.io/cluster: {{ .Release.Name }}-kafka } } }]   # broker/controller peers
-      ports: [{ protocol: TCP, port: 9093 }]
+               # 9093 (tcp-clientstls, external/API traffic) alone isn't enough: the
+               # entity-operator (Topic/User operators, also selected by this same
+               # strimzi.io/cluster label) talks to the bootstrap service's
+               # tcp-replication listener on 9091 to fetch cluster metadata — without it,
+               # its AdminClient never gets past "Timed out waiting to send the call".
+      ports: [{ protocol: TCP, port: 9091 }, { protocol: TCP, port: 9093 }]
+    - to: []   # Kubernetes API server: the broker process resolves ${strimziSecretName:...}
+               # config placeholders (e.g. iverson-kafka-trustbundle) via Strimzi's
+               # KubernetesSecretConfigProvider, which calls the API server directly at
+               # startup — without this it times out and the broker crash-loops before it
+               # ever gets to storage format/listener startup. Same 443+6443 reasoning as
+               # the postgres-egress rule above: the `kubernetes` Service is :443, but
+               # self-hosted/kubeadm control planes (kind included) back it on :6443 because
+               # NetworkPolicy enforcement runs after kube-proxy's Service DNAT rewrites the
+               # destination port.
+      ports: [{ protocol: TCP, port: 443 }, { protocol: TCP, port: 6443 }]
 ---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
@@ -137,13 +175,36 @@ metadata:
     # podSelector to any pod it renders — confirmed false positive.
     kube-score/ignore: networkpolicy-targets-pod
 spec:
+  # The operator never applies an `app.starrocks.io/cluster` label to the FE/BE pods it
+  # creates — its real runtime labels are `app.starrocks.ownerreference/name: <cr>-fe|be` and
+  # `app.kubernetes.io/component: fe|be` (confirmed against the operator's own
+  # pkg/k8sutils/load/metadata.go, same source used for the FE/BE PodDisruptionBudget
+  # selectors). A podSelector on app.starrocks.io/cluster matches zero real pods — this whole
+  # policy silently never applied to FE or BE. matchExpressions/In is required since FE and BE
+  # have different ownerreference/name values and there's no single label shared by both.
   podSelector:
-    matchLabels: { app.starrocks.io/cluster: {{ .Release.Name }}-starrocks }
+    matchExpressions:
+      - key: app.starrocks.ownerreference/name
+        operator: In
+        values: ["{{ .Release.Name }}-starrocks-fe", "{{ .Release.Name }}-starrocks-be"]
   policyTypes: ["Ingress"]
   ingress:
-    - from: [{ podSelector: { matchLabels: { app: {{ .Release.Name }}-api } } }]
+    - from:
+        - podSelector: { matchLabels: { app: {{ .Release.Name }}-api } }
+        - podSelector: { matchLabels: { job-name: {{ .Release.Name }}-starrocks-create-user } }
+               # the create-user job's own egress rule already allows it to *send* to FE on
+               # 9030, but that's only half of a NetworkPolicy: without a matching ingress
+               # rule here too, FE never accepts the connection — same asymmetry as the
+               # postgres ingress/egress pairing above. Missing this caused mysql's TCP
+               # connect to FE to time out (errno 110) instead of erroring cleanly, which
+               # the job's own `2>/dev/null` then hid as an infinite "waiting for FE...".
       ports: [{ protocol: TCP, port: 9030 }]
-    - from: [{ podSelector: { matchLabels: { app.starrocks.io/cluster: {{ .Release.Name }}-starrocks } } }]   # FE/BE peers
+    - from:   # FE/BE peers
+        - podSelector:
+            matchExpressions:
+              - key: app.starrocks.ownerreference/name
+                operator: In
+                values: ["{{ .Release.Name }}-starrocks-fe", "{{ .Release.Name }}-starrocks-be"]
 ---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
@@ -155,13 +216,59 @@ metadata:
     # podSelector to any pod it renders — confirmed false positive.
     kube-score/ignore: networkpolicy-targets-pod
 spec:
+  # See the matching comment on starrocks-ingress: app.starrocks.io/cluster matches no real
+  # pod, the operator's actual label is app.starrocks.ownerreference/name: <cr>-fe|be.
   podSelector:
-    matchLabels: { app.starrocks.io/cluster: {{ .Release.Name }}-starrocks }
+    matchExpressions:
+      - key: app.starrocks.ownerreference/name
+        operator: In
+        values: ["{{ .Release.Name }}-starrocks-fe", "{{ .Release.Name }}-starrocks-be"]
   policyTypes: ["Egress"]
   egress:
     - to: []   # DNS
       ports: [{ protocol: UDP, port: 53 }, { protocol: TCP, port: 53 }]
-    - to: [{ podSelector: { matchLabels: { app.starrocks.io/cluster: {{ .Release.Name }}-starrocks } } }]   # FE/BE peers
+    - to:   # FE/BE peers
+        - podSelector:
+            matchExpressions:
+              - key: app.starrocks.ownerreference/name
+                operator: In
+                values: ["{{ .Release.Name }}-starrocks-fe", "{{ .Release.Name }}-starrocks-be"]
+               # 9030 (query, MySQL protocol) alone isn't enough: BE registers itself with FE
+               # over FE's rpc_port (9020), and edit_log (9010)/http (8030) plus BE's own
+               # http/brpc/heartbeat ports (8040/8060/9050/9060) are used for FE<->BE and
+               # BE<->BE coordination. Missing 9020 specifically caused BE's "Add myself into
+               # FE" registration call to silently time out and crash-loop.
+      ports:
+        - { protocol: TCP, port: 8030 }
+        - { protocol: TCP, port: 9010 }
+        - { protocol: TCP, port: 9020 }
+        - { protocol: TCP, port: 9030 }
+        - { protocol: TCP, port: 8040 }
+        - { protocol: TCP, port: 8060 }
+        - { protocol: TCP, port: 9050 }
+        - { protocol: TCP, port: 9060 }
+---
+# The post-install/post-upgrade create-user Job (charts/starrocks/templates/job-create-user.yaml)
+# runs as a plain Job pod, not part of the StarRocksCluster CR — it only carries `job-name`,
+# not `app.starrocks.io/cluster`, so none of the policies above cover it. Under default-deny that
+# means zero egress, including DNS, so its `mysql -h <fe-service>` wait loop never resolves the
+# hostname and spins forever ("waiting for FE..." with no useful error, since the script
+# redirects mysql's stderr to /dev/null).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ .Release.Name }}-starrocks-create-user-egress
+spec:
+  podSelector:
+    matchLabels: { job-name: {{ .Release.Name }}-starrocks-create-user }
+  policyTypes: ["Egress"]
+  egress:
+    - to: []   # DNS
+      ports: [{ protocol: UDP, port: 53 }, { protocol: TCP, port: 53 }]
+    - to: [{ podSelector: { matchLabels: { app.starrocks.ownerreference/name: {{ .Release.Name }}-starrocks-fe } } }]
+               # the create-user job's `mysql -h <fe-service>` call only ever reaches FE, never
+               # BE — see the starrocks-egress note above on app.starrocks.io/cluster vs the
+               # operator's real app.starrocks.ownerreference/name label.
       ports: [{ protocol: TCP, port: 9030 }]
 ---
 apiVersion: networking.k8s.io/v1
@@ -215,6 +322,11 @@ spec:
   egress:
     - to: []   # DNS
       ports: [{ protocol: UDP, port: 53 }, { protocol: TCP, port: 53 }]
+    - to: []   # model registry (registry.ollama.ai): the pull-model init container fetches
+               # nomic-embed-text from there on every start — same external-pull need as
+               # docker-compose's ollama-init container. No portable pod/namespaceSelector
+               # target exists for an external registry.
+      ports: [{ protocol: TCP, port: 443 }]
 ---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
