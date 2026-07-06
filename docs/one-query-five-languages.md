@@ -283,6 +283,80 @@ Query.For<Article>()
 
 ---
 
+## Vector search: SearchSimilar/SearchChunks builders
+
+Qdrant-backed similarity search (embedded properties via `[IversonEmbedding]`) and chunk/RAG
+search (`[IversonChunk]`) support an optional scalar/FK filter, translated server-side into a
+Qdrant payload filter and applied alongside the vector similarity ranking. (See "Semantic
+search: Qdrant surfaces" below for how properties get vectorized and what a raw `SearchSimilar`/
+`SearchChunks` call looks like without the builder.)
+
+`SearchSimilar` filters accept `EQUALS`, `NOT_EQUALS`, `GREATER_THAN`, `LESS_THAN`,
+`GREATER_THAN_OR_EQUALS`, `LESS_THAN_OR_EQUALS`, and `IN` — `CONTAINS`/`STARTS_WITH`/`ENDS_WITH`/
+`VECTOR_SIMILAR` have no Qdrant payload-filter equivalent and are rejected by the builder (Go's
+builder threads the rejection through the fluent chain and surfaces it from `Build()`, matching
+its error-return idiom; the other four throw as soon as the unsupported clause is added).
+
+`SearchChunks` filters are more restricted: at most one `EQUALS` clause, which the builder
+enforces. Which property that clause may target is a server-side check — the chunks
+collection's payload only indexes `parent_id`, so the server rejects a filter that doesn't
+target the entity's primary-key property.
+
+C#:
+```csharp
+Query.Similar<Article>(a => a.Title)
+    .Text("machine learning")
+    .TopK(10)
+    .Where(a => a.Category, SearchOperators.Equals, "Tech")
+    .Build();
+
+Query.Chunks<Article>(a => a.Body)
+    .Text("neural networks")
+    .TopK(5)
+    .Where(a => a.Id, SearchOperators.Equals, parentId)
+    .Build();
+```
+
+Java:
+```java
+Query.similar("Article", "Title")
+    .text("machine learning")
+    .topK(10)
+    .where("Category", SearchOperator.EQUALS, "Tech")
+    .build();
+```
+
+Python:
+```python
+from iverson_client import similar, chunks
+from iverson_client.search import SearchOperator
+
+similar("Article", "Title").text("machine learning").top_k(10) \
+    .where("Category", SearchOperator.EQUALS, "Tech").build()
+```
+
+TypeScript:
+```typescript
+import { similar, SearchOperator } from '@iverson/client';
+
+similar('Article', 'Title')
+    .text('machine learning')
+    .topK(10)
+    .where('Category', SearchOperator.EQUALS, 'Tech')
+    .build();
+```
+
+Go:
+```go
+req, err := iverson.NewSimilar("Article", "Title").
+    Text("machine learning").
+    TopK(10).
+    Where("Category", pb.SearchOperator_EQUALS, "Tech").
+    Build()
+```
+
+---
+
 ## GroupBy: analytics in one round trip
 
 The `GroupBy` RPC is the DSL's analytics workhorse: several metrics over the same grouping, plus WHERE, HAVING, JOIN, ORDER BY, and LIMIT — compiled to **one compound SELECT**. (This is the shape of TPC-H Q1.) It's available in all five clients via `GroupByBuilder`, which is string-based everywhere — joins bring multiple types into scope, so fields are addressed by name.
@@ -620,7 +694,7 @@ stream, err := client.SearchStub.Pipeline(ctx, req)
 | `groupBy(field, dateTrunc?)` | `GROUP BY` (+ `DATE_TRUNC`) | truncated keys output as `{field}_{interval}` |
 | `sum/avg/min/max/count/countAll/sumExpr/avgExpr` | aggregate metrics | same shapes as GroupBy |
 | `having` | `HAVING` | references this step's metric aliases |
-| `derive(alias, expr)` | scalar expression column | validated: no subqueries, quotes, or semicolons |
+| `derive(alias, expr)` | scalar expression column | validated server-side: no subqueries, quotes, or semicolons (see "two-layered validation" below) |
 | `reads(step)` | `FROM step` | default is the previous step |
 | `join(source, left, right, kind?)` | `JOIN ... ON` | source = earlier step OR registered type; joined steps **require** a `select` |
 | `select` → `allFrom(src)` / `pick(src, col, alias?)` | projection | resolves join column collisions |
