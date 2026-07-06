@@ -2,6 +2,7 @@ package iverson
 
 import (
 	"fmt"
+	"strings"
 
 	pb "github.com/iverson/clients/go/generated"
 )
@@ -23,24 +24,26 @@ import (
 //	    OrderBy("ReturnFlag").
 //	    Build()
 type GroupByBuilder struct {
-	typeName   string
-	keys       []string
-	metrics    []*pb.MetricSpec
-	orderBy    []*pb.SearchSort
-	where      []*pb.SearchClause
-	having     []*pb.SearchClause
-	joins      []*pb.JoinSpec
-	whereLogic pb.SearchLogic
-	limit      int32
-	err        error
+	typeName    string
+	keys        []string
+	metrics     []*pb.MetricSpec
+	orderBy     []*pb.SearchSort
+	where       []*pb.SearchClause
+	having      []*pb.SearchClause
+	joins       []*pb.JoinSpec
+	whereLogic  pb.SearchLogic
+	havingLogic pb.SearchLogic
+	limit       int32
+	err         error
 }
 
 // NewGroupBy creates a GroupByBuilder for the given entity type name.
 func NewGroupBy(typeName string) *GroupByBuilder {
 	return &GroupByBuilder{
-		typeName:   typeName,
-		whereLogic: pb.SearchLogic_AND,
-		limit:      10_000,
+		typeName:    typeName,
+		whereLogic:  pb.SearchLogic_AND,
+		havingLogic: pb.SearchLogic_AND,
+		limit:       10_000,
 	}
 }
 
@@ -75,6 +78,21 @@ func (g *GroupByBuilder) Where(field string, op pb.SearchOperator, val *pb.Searc
 	return g
 }
 
+// Not adds a MUST_NOT WHERE clause (excludes matches before grouping).
+func (g *GroupByBuilder) Not(field string, op pb.SearchOperator, val *pb.SearchValue) *GroupByBuilder {
+	if val == nil {
+		g.err = fmt.Errorf("field %q: nil search value for operator %v", field, op)
+		return g
+	}
+	g.where = append(g.where, &pb.SearchClause{
+		Property:   field,
+		Operator:   op,
+		Value:      val,
+		ClauseType: pb.SearchClauseType_MUST_NOT,
+	})
+	return g
+}
+
 // WithLogic sets the logic used to combine top-level WHERE clauses. Default: AND.
 func (g *GroupByBuilder) WithLogic(logic pb.SearchLogic) *GroupByBuilder {
 	g.whereLogic = logic
@@ -95,6 +113,12 @@ func (g *GroupByBuilder) Having(alias string, op pb.SearchOperator, val *pb.Sear
 		Value:      val,
 		ClauseType: pb.SearchClauseType_FILTER,
 	})
+	return g
+}
+
+// WithHavingLogic sets the logic combining HAVING clauses. Default: AND.
+func (g *GroupByBuilder) WithHavingLogic(logic pb.SearchLogic) *GroupByBuilder {
+	g.havingLogic = logic
 	return g
 }
 
@@ -196,6 +220,31 @@ func (g *GroupByBuilder) Build(traceId ...string) (*pb.GroupByRequest, error) {
 	if g.err != nil {
 		return nil, g.err
 	}
+
+	aliases := map[string]bool{}
+	for _, m := range g.metrics {
+		key := strings.ToLower(m.Name)
+		if aliases[key] {
+			return nil, fmt.Errorf("duplicate metric alias %q", m.Name)
+		}
+		aliases[key] = true
+	}
+	for _, k := range g.keys {
+		aliases[strings.ToLower(k)] = true
+	}
+	for _, h := range g.having {
+		if !aliases[strings.ToLower(h.Property)] {
+			return nil, fmt.Errorf(
+				"HAVING references %q, which is neither a metric alias nor a key", h.Property)
+		}
+	}
+	for _, s := range g.orderBy {
+		if !aliases[strings.ToLower(s.Property)] {
+			return nil, fmt.Errorf(
+				"OrderBy references %q, which is neither a metric alias nor a key", s.Property)
+		}
+	}
+
 	id := ""
 	if len(traceId) > 0 {
 		id = traceId[0]
@@ -210,7 +259,7 @@ func (g *GroupByBuilder) Build(traceId ...string) (*pb.GroupByRequest, error) {
 		Metrics: g.metrics,
 		Having: &pb.SearchQuery{
 			Clauses: g.having,
-			Logic:   pb.SearchLogic_AND,
+			Logic:   g.havingLogic,
 		},
 		OrderBy: g.orderBy,
 		Limit:   g.limit,

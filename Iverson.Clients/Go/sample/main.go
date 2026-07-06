@@ -50,13 +50,12 @@ func main() {
 	fmt.Printf("  Sorts:   %d\n", len(req.Query.Sort))
 	fmt.Printf("  Page:    %d  PageSize: %d\n", req.Page, req.PageSize)
 
-	// ── IN / VectorSimilar examples ────────────────────────────────────────────
+	// ── IN example ─────────────────────────────────────────────────────────────
 	req2, err := iverson.NewQuery("Article").
 		Where("Category").In("tech", "science", "health").
-		Where("Body").VectorSimilar([]float32{0.1, 0.2, 0.3}).
 		Build()
 	if err != nil {
 		log.Fatalf("Build req2: %v", err)
 	}
-	fmt.Printf("\nVector+IN request: %d clauses\n", len(req2.Query.Clauses))
+	fmt.Printf("\nIN request: %d clauses\n", len(req2.Query.Clauses))
 }

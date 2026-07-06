@@ -191,16 +191,6 @@ func (f *FieldCondition) In(values ...string) *QueryBuilder {
 	return f.addClause(pb.SearchOperator_IN, sv)
 }
 
-// VectorSimilar adds a VECTOR_SIMILAR clause using the provided float vector.
-func (f *FieldCondition) VectorSimilar(vector []float32) *QueryBuilder {
-	sv := &pb.SearchValue{
-		Kind: &pb.SearchValue_FloatList{
-			FloatList: &pb.RepeatedFloat{Values: vector},
-		},
-	}
-	return f.addClause(pb.SearchOperator_VECTOR_SIMILAR, sv)
-}
-
 // addClause finalises this FieldCondition as a SearchClause and returns the builder.
 func (f *FieldCondition) addClause(op pb.SearchOperator, value *pb.SearchValue) *QueryBuilder {
 	if value == nil {

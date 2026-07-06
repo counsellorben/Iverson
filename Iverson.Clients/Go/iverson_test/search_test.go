@@ -253,22 +253,6 @@ func TestWhere_In(t *testing.T) {
 	}
 }
 
-func TestWhere_VectorSimilar(t *testing.T) {
-	vec := []float32{0.1, 0.2, 0.3}
-	req, err := iverson.NewQuery("Article").Where("Body").VectorSimilar(vec).Build()
-	if err != nil {
-		t.Fatalf("Build: %v", err)
-	}
-	assertSingleClause(t, req, "Body", pb.SearchOperator_VECTOR_SIMILAR)
-	fl := req.Query.Clauses[0].Value.GetFloatList()
-	if fl == nil {
-		t.Fatal("expected float_list, got nil")
-	}
-	if len(fl.Values) != 3 {
-		t.Errorf("expected 3 floats, got %d", len(fl.Values))
-	}
-}
-
 func TestWhere_BoolValue(t *testing.T) {
 	req, err := iverson.NewQuery("Article").Where("IsPublished").Eq(true).Build()
 	if err != nil {
