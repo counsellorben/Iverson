@@ -45,8 +45,9 @@ public final class GroupByBuilder {
     private final List<SearchClause> where    = new ArrayList<>();
     private final List<SearchClause> having   = new ArrayList<>();
     private final List<JoinSpec>     joins    = new ArrayList<>();
-    private SearchLogic whereLogic = SearchLogic.AND;
-    private int         limit      = 10_000;
+    private SearchLogic whereLogic  = SearchLogic.AND;
+    private SearchLogic havingLogic = SearchLogic.AND;
+    private int         limit       = 10_000;
 
     GroupByBuilder(String typeName) {
         this.typeName = typeName;
@@ -79,6 +80,17 @@ public final class GroupByBuilder {
         return this;
     }
 
+    /** Adds a MUST_NOT WHERE clause (excludes matches before grouping). */
+    public GroupByBuilder not(String field, SearchOperator op, Object value) {
+        where.add(SearchClause.newBuilder()
+            .setProperty(field)
+            .setOperator(op)
+            .setValue(SearchValues.toSearchValue(value))
+            .setClauseType(SearchClauseType.MUST_NOT)
+            .build());
+        return this;
+    }
+
     /** Sets the logic used to combine top-level WHERE clauses. Defaults to AND. */
     public GroupByBuilder withLogic(SearchLogic logic) {
         this.whereLogic = logic;
@@ -95,6 +107,12 @@ public final class GroupByBuilder {
             .setValue(SearchValues.toSearchValue(value))
             .setClauseType(SearchClauseType.FILTER)
             .build());
+        return this;
+    }
+
+    /** Sets the logic combining HAVING clauses. Defaults to AND. */
+    public GroupByBuilder withHavingLogic(SearchLogic logic) {
+        this.havingLogic = logic;
         return this;
     }
 
@@ -210,6 +228,21 @@ public final class GroupByBuilder {
 
     /** Builds and returns the {@link GroupByRequest} proto message with the given trace ID. */
     public GroupByRequest build(String traceId) {
+        java.util.Set<String> aliases = new java.util.HashSet<>();
+        for (MetricSpec m : metrics)
+            if (!aliases.add(m.getName().toLowerCase(java.util.Locale.ROOT)))
+                throw new IllegalStateException("Duplicate metric alias '" + m.getName() + "'.");
+        for (String k : keys) aliases.add(k.toLowerCase(java.util.Locale.ROOT));
+
+        for (SearchClause h : having)
+            if (!aliases.contains(h.getProperty().toLowerCase(java.util.Locale.ROOT)))
+                throw new IllegalStateException("HAVING references '" + h.getProperty()
+                    + "', which is neither a metric alias nor a key.");
+        for (SearchSort s : orderBy)
+            if (!aliases.contains(s.getProperty().toLowerCase(java.util.Locale.ROOT)))
+                throw new IllegalStateException("orderBy references '" + s.getProperty()
+                    + "', which is neither a metric alias nor a key.");
+
         SearchQuery query = SearchQuery.newBuilder()
             .addAllClauses(where)
             .setLogic(whereLogic)
@@ -217,7 +250,7 @@ public final class GroupByBuilder {
 
         SearchQuery havingQuery = SearchQuery.newBuilder()
             .addAllClauses(having)
-            .setLogic(SearchLogic.AND)
+            .setLogic(havingLogic)
             .build();
 
         return GroupByRequest.newBuilder()

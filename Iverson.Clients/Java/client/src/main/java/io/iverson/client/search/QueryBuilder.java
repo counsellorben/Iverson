@@ -3,7 +3,6 @@ package io.iverson.client.search;
 import iverson.ObjectSearch;
 import iverson.ObjectSearch.JoinKind;
 import iverson.ObjectSearch.JoinSpec;
-import iverson.ObjectSearch.RepeatedFloat;
 import iverson.ObjectSearch.RepeatedString;
 import iverson.ObjectSearch.SearchClause;
 import iverson.ObjectSearch.SearchClauseType;
@@ -230,25 +229,9 @@ public final class QueryBuilder<T> {
             return in(Arrays.asList(values));
         }
 
-        /** Vector similarity search with a pre-computed embedding. */
-        public QueryBuilder<T> vectorSimilar(float[] vector) {
-            RepeatedFloat rf = RepeatedFloat.newBuilder()
-                .addAllValues(floatArrayToList(vector))
-                .build();
-            SearchValue sv = SearchValue.newBuilder().setFloatList(rf).build();
-            parent.addClause(field, SearchOperator.VECTOR_SIMILAR, sv, clauseType);
-            return parent;
-        }
-
         private QueryBuilder<T> addOp(SearchOperator op, Object value) {
             parent.addClause(field, op, SearchValues.toSearchValue(value), clauseType);
             return parent;
-        }
-
-        private static List<Float> floatArrayToList(float[] arr) {
-            List<Float> list = new ArrayList<>(arr.length);
-            for (float f : arr) list.add(f);
-            return list;
         }
     }
 }

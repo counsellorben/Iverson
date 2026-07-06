@@ -175,18 +175,6 @@ class QueryBuilderTest {
         assertEquals(3, clause.getValue().getStringList().getValuesCount());
     }
 
-    @Test
-    void vectorSimilar_producesVectorSimilarOperator_withFloatList() {
-        float[] vec = {0.1f, 0.2f, 0.3f};
-        SearchRequest req = Query.of(Article.class)
-            .where("embedding").vectorSimilar(vec)
-            .build();
-        SearchClause clause = req.getQuery().getClauses(0);
-        assertEquals(SearchOperator.VECTOR_SIMILAR, clause.getOperator());
-        assertEquals(3, clause.getValue().getFloatList().getValuesCount());
-        assertEquals(0.1f, clause.getValue().getFloatList().getValues(0), 0.001f);
-    }
-
     // ── Value encoding ────────────────────────────────────────────────────────
 
     @Test

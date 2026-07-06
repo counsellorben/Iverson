@@ -7,6 +7,7 @@ import iverson.ObjectSearch.JoinSpec;
 import iverson.ObjectSearch.MetricSpec;
 import iverson.ObjectSearch.SearchClause;
 import iverson.ObjectSearch.SearchClauseType;
+import iverson.ObjectSearch.SearchLogic;
 import iverson.ObjectSearch.SearchOperator;
 import org.junit.jupiter.api.Test;
 
@@ -154,5 +155,56 @@ class GroupByBuilderTest {
         assertTrue(req.getOrderBy(1).getDescending());
         assertEquals(500, req.getLimit());
         assertEquals("q1-trace", req.getTraceId());
+    }
+
+    // ── Not / HavingLogic / validation ───────────────────────────────────────
+
+    @Test
+    void notAddsMustNotClause() {
+        var req = Query.groupBy("Article")
+            .keys("Category")
+            .countAll("n")
+            .not("Category", SearchOperator.EQUALS, "spam")
+            .build();
+
+        assertEquals(SearchClauseType.MUST_NOT, req.getQuery().getClauses(0).getClauseType());
+    }
+
+    @Test
+    void withHavingLogicOrIsCarried() {
+        var req = Query.groupBy("Article")
+            .keys("Category")
+            .countAll("n")
+            .having("n", SearchOperator.GREATER_THAN, 5)
+            .withHavingLogic(SearchLogic.OR)
+            .build();
+
+        assertEquals(SearchLogic.OR, req.getHaving().getLogic());
+    }
+
+    @Test
+    void duplicateMetricAliasThrows() {
+        var b = Query.groupBy("Article").keys("Category").sum("WordCount").sum("WordCount");
+        assertThrows(IllegalStateException.class, b::build);
+    }
+
+    @Test
+    void havingUnknownAliasThrows() {
+        var b = Query.groupBy("Article").keys("Category").countAll("n")
+            .having("misspelled", SearchOperator.GREATER_THAN, 5);
+        assertThrows(IllegalStateException.class, b::build);
+    }
+
+    @Test
+    void havingOnKeyIsAllowed() {
+        var b = Query.groupBy("Article").keys("Category").countAll("n")
+            .having("Category", SearchOperator.EQUALS, "tech");
+        assertDoesNotThrow(() -> { b.build(); });
+    }
+
+    @Test
+    void orderByUnknownAliasThrows() {
+        var b = Query.groupBy("Article").keys("Category").countAll("n").orderBy("nope");
+        assertThrows(IllegalStateException.class, b::build);
     }
 }
