@@ -574,3 +574,19 @@ func assertSingleClause(t *testing.T, req *pb.SearchRequest, property string, op
 		t.Errorf("expected operator=%v, got %v", op, c.Operator)
 	}
 }
+
+func TestJoinType_SetsLeftTypeIndependentlyOfBaseType(t *testing.T) {
+	req, err := iverson.NewQuery("LineItem").
+		JoinType("LineItem", "AuthorId", "Author", "Id").
+		JoinType("Author", "PublisherId", "Publisher", "Id").
+		Build()
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if len(req.Joins) != 2 {
+		t.Fatalf("expected 2 joins, got %d", len(req.Joins))
+	}
+	if req.Joins[1].LeftType != "Author" || req.Joins[1].RightType != "Publisher" {
+		t.Errorf("unexpected second join: %+v", req.Joins[1])
+	}
+}

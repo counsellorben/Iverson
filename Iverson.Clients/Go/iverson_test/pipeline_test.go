@@ -129,3 +129,28 @@ func TestPipelineDuplicateAliasErrors(t *testing.T) {
 		t.Fatal("expected duplicate alias error")
 	}
 }
+
+func TestJoinOn_WithCompositeKey_AddsMultipleConditions(t *testing.T) {
+	req, err := iverson.NewPipeline("Article").
+		Step("enriched", func(s *iverson.PipelineStepBuilder) {
+			s.JoinOn("Author", []iverson.JoinCondition{
+				{Left: "AuthorId", Right: "Id"},
+				{Left: "TenantId", Right: "TenantId"},
+			}).
+				SelectAllFrom("base")
+		}).
+		Build()
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	join := req.Steps[0].Joins[0]
+	if len(join.On) != 2 {
+		t.Fatalf("expected 2 join conditions, got %d", len(join.On))
+	}
+	if join.On[0].Left != "AuthorId" || join.On[0].Right != "Id" {
+		t.Errorf("unexpected first condition: %+v", join.On[0])
+	}
+	if join.On[1].Left != "TenantId" || join.On[1].Right != "TenantId" {
+		t.Errorf("unexpected second condition: %+v", join.On[1])
+	}
+}

@@ -101,6 +101,23 @@ func (q *QueryBuilder) Join(leftField, rightType, rightField string, opts ...pb.
 	return q
 }
 
+// JoinType adds a join with an explicit left type — for multi-hop chains where the left side
+// isn't this query's own base type.
+func (q *QueryBuilder) JoinType(leftType, leftField, rightType, rightField string, opts ...pb.JoinKind) *QueryBuilder {
+	kind := pb.JoinKind_INNER
+	if len(opts) > 0 {
+		kind = opts[0]
+	}
+	q.joins = append(q.joins, &pb.JoinSpec{
+		LeftType:   leftType,
+		RightType:  rightType,
+		LeftField:  leftField,
+		RightField: rightField,
+		Kind:       kind,
+	})
+	return q
+}
+
 // Build constructs the SearchRequest proto.
 func (q *QueryBuilder) Build() (*pb.SearchRequest, error) {
 	if q.err != nil {

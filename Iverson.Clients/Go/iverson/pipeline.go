@@ -307,6 +307,27 @@ func (s *PipelineStepBuilder) Join(source, onLeft, onRight string, opts ...pb.Jo
 	return s
 }
 
+// JoinCondition is a client-side left/right column pair for a composite-key join.
+type JoinCondition struct {
+	Left  string
+	Right string
+}
+
+// JoinOn joins the step's input against an earlier step's CTE or a registered entity type
+// using one or more equality conditions (AND-ed) — the composite-key form of Join.
+func (s *PipelineStepBuilder) JoinOn(source string, on []JoinCondition, opts ...pb.JoinKind) *PipelineStepBuilder {
+	kind := pb.JoinKind_INNER
+	if len(opts) > 0 {
+		kind = opts[0]
+	}
+	conditions := make([]*pb.JoinCondition, 0, len(on))
+	for _, c := range on {
+		conditions = append(conditions, &pb.JoinCondition{Left: c.Left, Right: c.Right})
+	}
+	s.step.Joins = append(s.step.Joins, &pb.PipelineJoin{Source: source, Kind: kind, On: conditions})
+	return s
+}
+
 // SelectAllFrom projects all columns from a source ("base", a step name, or a joined type).
 func (s *PipelineStepBuilder) SelectAllFrom(source string) *PipelineStepBuilder {
 	s.step.Select = append(s.step.Select, &pb.SelectItem{Source: source, All: true})
