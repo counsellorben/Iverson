@@ -47,4 +47,19 @@ public final class Query {
     public static PipelineBuilder pipeline(String typeName) {
         return new PipelineBuilder(typeName);
     }
+
+    /**
+     * Creates a {@link SimilarBuilder} for Qdrant vector similarity search on the given
+     * embedded property.
+     */
+    public static SimilarBuilder similar(String typeName, String property) {
+        return new SimilarBuilder(typeName, property);
+    }
+
+    /**
+     * Creates a {@link ChunksBuilder} for Qdrant chunk/RAG search on the given chunked property.
+     */
+    public static ChunksBuilder chunks(String typeName, String property) {
+        return new ChunksBuilder(typeName, property);
+    }
 }
