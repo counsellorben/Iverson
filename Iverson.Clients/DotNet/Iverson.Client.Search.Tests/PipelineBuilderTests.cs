@@ -11,7 +11,7 @@ public class PipelineBuilderTests
     [Fact]
     public void Build_FullPipeline_CompilesToExpectedProto()
     {
-        var request = Pipeline.For("Article")
+        var request = Query.Pipeline("Article")
             .Where("IsPublished", EqualTo, true)
             .Step("by_author", s => s
                 .GroupBy("AuthorId")
@@ -57,7 +57,7 @@ public class PipelineBuilderTests
     [Fact]
     public void Build_Typed_UsesTypeName()
     {
-        var request = Pipeline.For<PipelineBuilderTests>().Build();
+        var request = Query.Pipeline<PipelineBuilderTests>().Build();
         request.TypeName.Should().Be(nameof(PipelineBuilderTests));
         request.Limit.Should().Be(10_000);
     }
@@ -65,7 +65,7 @@ public class PipelineBuilderTests
     [Fact]
     public void Step_ExplicitReads_IsCarried()
     {
-        var request = Pipeline.For("Article")
+        var request = Query.Pipeline("Article")
             .Step("a", s => s.Derive("x", "WordCount + 1"))
             .Step("b", s => s.Reads("base").Derive("y", "WordCount + 2"))
             .Build();
@@ -76,7 +76,7 @@ public class PipelineBuilderTests
     [Fact]
     public void Step_DuplicateName_Throws()
     {
-        var act = () => Pipeline.For("Article")
+        var act = () => Query.Pipeline("Article")
             .Step("x", s => s.Derive("a", "WordCount"))
             .Step("X", s => s.Derive("b", "WordCount"));
         act.Should().Throw<ArgumentException>().WithMessage("*X*");
@@ -85,7 +85,7 @@ public class PipelineBuilderTests
     [Fact]
     public void Step_ReadsUnknownStep_Throws()
     {
-        var act = () => Pipeline.For("Article")
+        var act = () => Query.Pipeline("Article")
             .Step("a", s => s.Reads("nope").Derive("x", "WordCount"));
         act.Should().Throw<ArgumentException>().WithMessage("*nope*");
     }
@@ -93,7 +93,7 @@ public class PipelineBuilderTests
     [Fact]
     public void Step_WindowAndGroupBy_Throws()
     {
-        var act = () => Pipeline.For("Article")
+        var act = () => Query.Pipeline("Article")
             .Step("bad", s => s
                 .RowNumber("rn", orderBy: "Id")
                 .GroupBy("AuthorId").CountAll());
@@ -103,7 +103,7 @@ public class PipelineBuilderTests
     [Fact]
     public void Step_MetricsWithoutGroupBy_Throws()
     {
-        var act = () => Pipeline.For("Article")
+        var act = () => Query.Pipeline("Article")
             .Step("bad", s => s.CountAll("n"));
         act.Should().Throw<ArgumentException>().WithMessage("*bad*");
     }
@@ -111,7 +111,7 @@ public class PipelineBuilderTests
     [Fact]
     public void Step_JoinWithoutSelect_Throws()
     {
-        var act = () => Pipeline.For("Article")
+        var act = () => Query.Pipeline("Article")
             .Step("bad", s => s.Join("Author", ("AuthorId", "Id")));
         act.Should().Throw<ArgumentException>().WithMessage("*select*");
     }
@@ -119,7 +119,7 @@ public class PipelineBuilderTests
     [Fact]
     public void Step_DuplicateAliases_Throws()
     {
-        var act = () => Pipeline.For("Article")
+        var act = () => Query.Pipeline("Article")
             .Step("bad", s => s
                 .RowNumber("x", orderBy: "Id")
                 .Derive("X", "WordCount + 1"));
@@ -129,7 +129,7 @@ public class PipelineBuilderTests
     [Fact]
     public void Windows_AllKinds_MapToProtoKinds()
     {
-        var request = Pipeline.For("Article")
+        var request = Query.Pipeline("Article")
             .Step("w", s => s
                 .RowNumber("a", orderBy: "Id")
                 .Rank("b", orderBy: "Id")
@@ -152,7 +152,7 @@ public class PipelineBuilderTests
     [Fact]
     public void GroupBy_WithDateTrunc_SetsEnum()
     {
-        var request = Pipeline.For("Article")
+        var request = Query.Pipeline("Article")
             .Step("m", s => s.GroupBy("PublishedAt", DateTrunc.Month).CountAll("n"))
             .Build();
 

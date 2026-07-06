@@ -229,4 +229,34 @@ public sealed class GroupByBuilderTests
         var act = () => builder.Build();
         act.Should().Throw<InvalidOperationException>().WithMessage("*nope*");
     }
+
+    [Fact]
+    public void Build_KeyCollidesWithMetricAlias_Throws()
+    {
+        var builder = Query.GroupBy("Article").Keys("total").Sum("Price", "total");
+        var act = () => builder.Build();
+        act.Should().Throw<InvalidOperationException>().WithMessage("*total*");
+    }
+
+    [Fact]
+    public void Build_HavingReferencesMetricAlias_CaseInsensitive_IsAllowed()
+    {
+        var act = () => Query.GroupBy("Article")
+            .Keys("Category")
+            .Sum("WordCount", "Total")
+            .Having("TOTAL", SearchOperator.GreaterThan, 100)
+            .Build();
+        act.Should().NotThrow();
+    }
+
+    [Fact]
+    public void Build_OrderByReferencesKey_CaseInsensitive_IsAllowed()
+    {
+        var act = () => Query.GroupBy("Article")
+            .Keys("Category")
+            .CountAll("n")
+            .OrderBy("CATEGORY")
+            .Build();
+        act.Should().NotThrow();
+    }
 }

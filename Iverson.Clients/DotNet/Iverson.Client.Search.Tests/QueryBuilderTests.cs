@@ -526,4 +526,13 @@ public sealed class QueryBuilderTests
         request.Joins[1].LeftType.Should().Be("TestAuthor");
         request.Joins[1].RightType.Should().Be("TestPublisher");
     }
+
+    // ── Query.Pipeline entry point ──────────────────────────────────────────────
+
+    [Fact]
+    public void QueryPipeline_Generic_MatchesStringOverloadTypeName()
+    {
+        var request = Query.Pipeline<TestArticle>().Build();
+        request.TypeName.Should().Be("TestArticle");
+    }
 }

@@ -2,13 +2,6 @@ using Iverson.Client.Contracts;
 
 namespace Iverson.Client.Search;
 
-/// <summary>Entry point for the pipeline (CTE chain) DSL.</summary>
-public static class Pipeline
-{
-    public static PipelineBuilder For(string typeName) => new(typeName);
-    public static PipelineBuilder For<T>() where T : class => new(typeof(T).Name);
-}
-
 /// <summary>
 /// Fluent DSL builder that compiles to a <see cref="PipelineRequest"/>. Each
 /// <see cref="Step"/> is exactly one CTE in the generated StarRocks query; steps read

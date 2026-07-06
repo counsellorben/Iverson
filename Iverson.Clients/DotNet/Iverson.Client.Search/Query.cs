@@ -18,10 +18,12 @@ public static class Query
 
     /// <summary>
     /// Entry point for the pipeline (CTE chain) DSL. String-based like GroupBy —
-    /// steps and joins bring multiple sources into scope. Equivalent to
-    /// <see cref="Iverson.Client.Search.Pipeline.For(string)"/>.
+    /// steps and joins bring multiple sources into scope.
     /// </summary>
     public static PipelineBuilder Pipeline(string typeName) => new(typeName);
+
+    /// <summary>Entry point for the pipeline (CTE chain) DSL, typed on the base entity.</summary>
+    public static PipelineBuilder Pipeline<T>() where T : class => new(typeof(T).Name);
 
     /// <summary>
     /// Entry point for Qdrant vector similarity search on a property annotated with

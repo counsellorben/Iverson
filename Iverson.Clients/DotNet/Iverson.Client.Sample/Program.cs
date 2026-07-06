@@ -236,7 +236,7 @@ await foreach (var result in tags.SearchAsync(tagQuery))
 Console.WriteLine("\n=== Object Search — Pipeline (CTE chain) ===");
 
 // One CTE step: group published Articles by author, count them, sorted descending.
-var articleCountsByAuthor = Pipeline.For<Article>()
+var articleCountsByAuthor = Query.Pipeline<Article>()
     .Where("IsPublished", EqualTo, true)
     .Step("counts", s => s
         .GroupBy("AuthorId")
