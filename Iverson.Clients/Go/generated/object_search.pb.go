@@ -989,6 +989,8 @@ type SearchSimilarRequest struct {
 	Query         string                 `protobuf:"bytes,3,opt,name=query,proto3" json:"query,omitempty"`                       // text to embed and compare
 	TopK          uint32                 `protobuf:"varint,4,opt,name=top_k,json=topK,proto3" json:"top_k,omitempty"`
 	TraceId       string                 `protobuf:"bytes,5,opt,name=trace_id,json=traceId,proto3" json:"trace_id,omitempty"`
+	Filter        []*SearchClause        `protobuf:"bytes,6,rep,name=filter,proto3" json:"filter,omitempty"`                                                        // optional scalar/FK filter, ANDed/ORed with filter_logic
+	FilterLogic   SearchLogic            `protobuf:"varint,7,opt,name=filter_logic,json=filterLogic,proto3,enum=iverson.SearchLogic" json:"filter_logic,omitempty"` // default AND
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1058,15 +1060,32 @@ func (x *SearchSimilarRequest) GetTraceId() string {
 	return ""
 }
 
+func (x *SearchSimilarRequest) GetFilter() []*SearchClause {
+	if x != nil {
+		return x.Filter
+	}
+	return nil
+}
+
+func (x *SearchSimilarRequest) GetFilterLogic() SearchLogic {
+	if x != nil {
+		return x.FilterLogic
+	}
+	return SearchLogic_AND
+}
+
 // Searches by chunk embedding similarity on a property annotated with [IversonChunk].
 // Returns individual passage chunks with the parent entity key and relevance score.
 type SearchChunksRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	TypeName      string                 `protobuf:"bytes,1,opt,name=type_name,json=typeName,proto3" json:"type_name,omitempty"` // registered entity type
-	Property      string                 `protobuf:"bytes,2,opt,name=property,proto3" json:"property,omitempty"`                 // property with [IversonChunk]
-	Query         string                 `protobuf:"bytes,3,opt,name=query,proto3" json:"query,omitempty"`                       // text to embed and compare
-	TopK          uint32                 `protobuf:"varint,4,opt,name=top_k,json=topK,proto3" json:"top_k,omitempty"`
-	TraceId       string                 `protobuf:"bytes,5,opt,name=trace_id,json=traceId,proto3" json:"trace_id,omitempty"`
+	state    protoimpl.MessageState `protogen:"open.v1"`
+	TypeName string                 `protobuf:"bytes,1,opt,name=type_name,json=typeName,proto3" json:"type_name,omitempty"` // registered entity type
+	Property string                 `protobuf:"bytes,2,opt,name=property,proto3" json:"property,omitempty"`                 // property with [IversonChunk]
+	Query    string                 `protobuf:"bytes,3,opt,name=query,proto3" json:"query,omitempty"`                       // text to embed and compare
+	TopK     uint32                 `protobuf:"varint,4,opt,name=top_k,json=topK,proto3" json:"top_k,omitempty"`
+	TraceId  string                 `protobuf:"bytes,5,opt,name=trace_id,json=traceId,proto3" json:"trace_id,omitempty"`
+	// At most one EQUALS clause on the type's primary-key property; see ObjectSearchGrpcService.SearchChunks.
+	Filter        []*SearchClause `protobuf:"bytes,6,rep,name=filter,proto3" json:"filter,omitempty"`
+	FilterLogic   SearchLogic     `protobuf:"varint,7,opt,name=filter_logic,json=filterLogic,proto3,enum=iverson.SearchLogic" json:"filter_logic,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1134,6 +1153,20 @@ func (x *SearchChunksRequest) GetTraceId() string {
 		return x.TraceId
 	}
 	return ""
+}
+
+func (x *SearchChunksRequest) GetFilter() []*SearchClause {
+	if x != nil {
+		return x.Filter
+	}
+	return nil
+}
+
+func (x *SearchChunksRequest) GetFilterLogic() SearchLogic {
+	if x != nil {
+		return x.FilterLogic
+	}
+	return SearchLogic_AND
 }
 
 type ChunkSearchResponse struct {
@@ -2560,7 +2593,7 @@ var file_object_search_proto_rawDesc = string([]byte{
 	0x53, 0x74, 0x72, 0x75, 0x63, 0x74, 0x52, 0x04, 0x64, 0x61, 0x74, 0x61, 0x12, 0x14, 0x0a, 0x05,
 	0x73, 0x63, 0x6f, 0x72, 0x65, 0x18, 0x02, 0x20, 0x01, 0x28, 0x02, 0x52, 0x05, 0x73, 0x63, 0x6f,
 	0x72, 0x65, 0x12, 0x19, 0x0a, 0x08, 0x74, 0x72, 0x61, 0x63, 0x65, 0x5f, 0x69, 0x64, 0x18, 0x03,
-	0x20, 0x01, 0x28, 0x09, 0x52, 0x07, 0x74, 0x72, 0x61, 0x63, 0x65, 0x49, 0x64, 0x22, 0x95, 0x01,
+	0x20, 0x01, 0x28, 0x09, 0x52, 0x07, 0x74, 0x72, 0x61, 0x63, 0x65, 0x49, 0x64, 0x22, 0xfd, 0x01,
 	0x0a, 0x14, 0x53, 0x65, 0x61, 0x72, 0x63, 0x68, 0x53, 0x69, 0x6d, 0x69, 0x6c, 0x61, 0x72, 0x52,
 	0x65, 0x71, 0x75, 0x65, 0x73, 0x74, 0x12, 0x1b, 0x0a, 0x09, 0x74, 0x79, 0x70, 0x65, 0x5f, 0x6e,
 	0x61, 0x6d, 0x65, 0x18, 0x01, 0x20, 0x01, 0x28, 0x09, 0x52, 0x08, 0x74, 0x79, 0x70, 0x65, 0x4e,
@@ -2570,16 +2603,29 @@ var file_object_search_proto_rawDesc = string([]byte{
 	0x71, 0x75, 0x65, 0x72, 0x79, 0x12, 0x13, 0x0a, 0x05, 0x74, 0x6f, 0x70, 0x5f, 0x6b, 0x18, 0x04,
 	0x20, 0x01, 0x28, 0x0d, 0x52, 0x04, 0x74, 0x6f, 0x70, 0x4b, 0x12, 0x19, 0x0a, 0x08, 0x74, 0x72,
 	0x61, 0x63, 0x65, 0x5f, 0x69, 0x64, 0x18, 0x05, 0x20, 0x01, 0x28, 0x09, 0x52, 0x07, 0x74, 0x72,
-	0x61, 0x63, 0x65, 0x49, 0x64, 0x22, 0x94, 0x01, 0x0a, 0x13, 0x53, 0x65, 0x61, 0x72, 0x63, 0x68,
-	0x43, 0x68, 0x75, 0x6e, 0x6b, 0x73, 0x52, 0x65, 0x71, 0x75, 0x65, 0x73, 0x74, 0x12, 0x1b, 0x0a,
-	0x09, 0x74, 0x79, 0x70, 0x65, 0x5f, 0x6e, 0x61, 0x6d, 0x65, 0x18, 0x01, 0x20, 0x01, 0x28, 0x09,
-	0x52, 0x08, 0x74, 0x79, 0x70, 0x65, 0x4e, 0x61, 0x6d, 0x65, 0x12, 0x1a, 0x0a, 0x08, 0x70, 0x72,
-	0x6f, 0x70, 0x65, 0x72, 0x74, 0x79, 0x18, 0x02, 0x20, 0x01, 0x28, 0x09, 0x52, 0x08, 0x70, 0x72,
-	0x6f, 0x70, 0x65, 0x72, 0x74, 0x79, 0x12, 0x14, 0x0a, 0x05, 0x71, 0x75, 0x65, 0x72, 0x79, 0x18,
-	0x03, 0x20, 0x01, 0x28, 0x09, 0x52, 0x05, 0x71, 0x75, 0x65, 0x72, 0x79, 0x12, 0x13, 0x0a, 0x05,
-	0x74, 0x6f, 0x70, 0x5f, 0x6b, 0x18, 0x04, 0x20, 0x01, 0x28, 0x0d, 0x52, 0x04, 0x74, 0x6f, 0x70,
-	0x4b, 0x12, 0x19, 0x0a, 0x08, 0x74, 0x72, 0x61, 0x63, 0x65, 0x5f, 0x69, 0x64, 0x18, 0x05, 0x20,
-	0x01, 0x28, 0x09, 0x52, 0x07, 0x74, 0x72, 0x61, 0x63, 0x65, 0x49, 0x64, 0x22, 0x84, 0x01, 0x0a,
+	0x61, 0x63, 0x65, 0x49, 0x64, 0x12, 0x2d, 0x0a, 0x06, 0x66, 0x69, 0x6c, 0x74, 0x65, 0x72, 0x18,
+	0x06, 0x20, 0x03, 0x28, 0x0b, 0x32, 0x15, 0x2e, 0x69, 0x76, 0x65, 0x72, 0x73, 0x6f, 0x6e, 0x2e,
+	0x53, 0x65, 0x61, 0x72, 0x63, 0x68, 0x43, 0x6c, 0x61, 0x75, 0x73, 0x65, 0x52, 0x06, 0x66, 0x69,
+	0x6c, 0x74, 0x65, 0x72, 0x12, 0x37, 0x0a, 0x0c, 0x66, 0x69, 0x6c, 0x74, 0x65, 0x72, 0x5f, 0x6c,
+	0x6f, 0x67, 0x69, 0x63, 0x18, 0x07, 0x20, 0x01, 0x28, 0x0e, 0x32, 0x14, 0x2e, 0x69, 0x76, 0x65,
+	0x72, 0x73, 0x6f, 0x6e, 0x2e, 0x53, 0x65, 0x61, 0x72, 0x63, 0x68, 0x4c, 0x6f, 0x67, 0x69, 0x63,
+	0x52, 0x0b, 0x66, 0x69, 0x6c, 0x74, 0x65, 0x72, 0x4c, 0x6f, 0x67, 0x69, 0x63, 0x22, 0xfc, 0x01,
+	0x0a, 0x13, 0x53, 0x65, 0x61, 0x72, 0x63, 0x68, 0x43, 0x68, 0x75, 0x6e, 0x6b, 0x73, 0x52, 0x65,
+	0x71, 0x75, 0x65, 0x73, 0x74, 0x12, 0x1b, 0x0a, 0x09, 0x74, 0x79, 0x70, 0x65, 0x5f, 0x6e, 0x61,
+	0x6d, 0x65, 0x18, 0x01, 0x20, 0x01, 0x28, 0x09, 0x52, 0x08, 0x74, 0x79, 0x70, 0x65, 0x4e, 0x61,
+	0x6d, 0x65, 0x12, 0x1a, 0x0a, 0x08, 0x70, 0x72, 0x6f, 0x70, 0x65, 0x72, 0x74, 0x79, 0x18, 0x02,
+	0x20, 0x01, 0x28, 0x09, 0x52, 0x08, 0x70, 0x72, 0x6f, 0x70, 0x65, 0x72, 0x74, 0x79, 0x12, 0x14,
+	0x0a, 0x05, 0x71, 0x75, 0x65, 0x72, 0x79, 0x18, 0x03, 0x20, 0x01, 0x28, 0x09, 0x52, 0x05, 0x71,
+	0x75, 0x65, 0x72, 0x79, 0x12, 0x13, 0x0a, 0x05, 0x74, 0x6f, 0x70, 0x5f, 0x6b, 0x18, 0x04, 0x20,
+	0x01, 0x28, 0x0d, 0x52, 0x04, 0x74, 0x6f, 0x70, 0x4b, 0x12, 0x19, 0x0a, 0x08, 0x74, 0x72, 0x61,
+	0x63, 0x65, 0x5f, 0x69, 0x64, 0x18, 0x05, 0x20, 0x01, 0x28, 0x09, 0x52, 0x07, 0x74, 0x72, 0x61,
+	0x63, 0x65, 0x49, 0x64, 0x12, 0x2d, 0x0a, 0x06, 0x66, 0x69, 0x6c, 0x74, 0x65, 0x72, 0x18, 0x06,
+	0x20, 0x03, 0x28, 0x0b, 0x32, 0x15, 0x2e, 0x69, 0x76, 0x65, 0x72, 0x73, 0x6f, 0x6e, 0x2e, 0x53,
+	0x65, 0x61, 0x72, 0x63, 0x68, 0x43, 0x6c, 0x61, 0x75, 0x73, 0x65, 0x52, 0x06, 0x66, 0x69, 0x6c,
+	0x74, 0x65, 0x72, 0x12, 0x37, 0x0a, 0x0c, 0x66, 0x69, 0x6c, 0x74, 0x65, 0x72, 0x5f, 0x6c, 0x6f,
+	0x67, 0x69, 0x63, 0x18, 0x07, 0x20, 0x01, 0x28, 0x0e, 0x32, 0x14, 0x2e, 0x69, 0x76, 0x65, 0x72,
+	0x73, 0x6f, 0x6e, 0x2e, 0x53, 0x65, 0x61, 0x72, 0x63, 0x68, 0x4c, 0x6f, 0x67, 0x69, 0x63, 0x52,
+	0x0b, 0x66, 0x69, 0x6c, 0x74, 0x65, 0x72, 0x4c, 0x6f, 0x67, 0x69, 0x63, 0x22, 0x84, 0x01, 0x0a,
 	0x13, 0x43, 0x68, 0x75, 0x6e, 0x6b, 0x53, 0x65, 0x61, 0x72, 0x63, 0x68, 0x52, 0x65, 0x73, 0x70,
 	0x6f, 0x6e, 0x73, 0x65, 0x12, 0x1d, 0x0a, 0x0a, 0x70, 0x61, 0x72, 0x65, 0x6e, 0x74, 0x5f, 0x6b,
 	0x65, 0x79, 0x18, 0x01, 0x20, 0x01, 0x28, 0x09, 0x52, 0x09, 0x70, 0x61, 0x72, 0x65, 0x6e, 0x74,
@@ -2926,58 +2972,62 @@ var file_object_search_proto_depIdxs = []int32{
 	11, // 8: iverson.SearchValue.string_list:type_name -> iverson.RepeatedString
 	12, // 9: iverson.SearchValue.float_list:type_name -> iverson.RepeatedFloat
 	35, // 10: iverson.SearchResponse.data:type_name -> google.protobuf.Struct
-	3,  // 11: iverson.JoinSpec.kind:type_name -> iverson.JoinKind
-	8,  // 12: iverson.AggregateRequest.query:type_name -> iverson.SearchQuery
-	21, // 13: iverson.AggregateRequest.aggregations:type_name -> iverson.AggregationSpec
-	8,  // 14: iverson.AggregateRequest.having:type_name -> iverson.SearchQuery
-	18, // 15: iverson.AggregateRequest.joins:type_name -> iverson.JoinSpec
-	23, // 16: iverson.AggregateResponse.results:type_name -> iverson.AggregationResult
-	4,  // 17: iverson.AggregationSpec.type:type_name -> iverson.AggregationType
-	22, // 18: iverson.AggregationSpec.range_buckets:type_name -> iverson.RangeBucket
-	36, // 19: iverson.RangeBucket.from:type_name -> google.protobuf.DoubleValue
-	36, // 20: iverson.RangeBucket.to:type_name -> google.protobuf.DoubleValue
-	4,  // 21: iverson.AggregationResult.type:type_name -> iverson.AggregationType
-	24, // 22: iverson.AggregationResult.buckets:type_name -> iverson.AggregationBucket
-	4,  // 23: iverson.MetricSpec.type:type_name -> iverson.AggregationType
-	8,  // 24: iverson.GroupByRequest.query:type_name -> iverson.SearchQuery
-	25, // 25: iverson.GroupByRequest.metrics:type_name -> iverson.MetricSpec
-	8,  // 26: iverson.GroupByRequest.having:type_name -> iverson.SearchQuery
-	13, // 27: iverson.GroupByRequest.order_by:type_name -> iverson.SearchSort
-	18, // 28: iverson.GroupByRequest.joins:type_name -> iverson.JoinSpec
-	9,  // 29: iverson.PipelineRequest.base_where:type_name -> iverson.SearchClause
-	1,  // 30: iverson.PipelineRequest.base_logic:type_name -> iverson.SearchLogic
-	28, // 31: iverson.PipelineRequest.steps:type_name -> iverson.PipelineStep
-	13, // 32: iverson.PipelineRequest.order_by:type_name -> iverson.SearchSort
-	9,  // 33: iverson.PipelineStep.where:type_name -> iverson.SearchClause
-	1,  // 34: iverson.PipelineStep.where_logic:type_name -> iverson.SearchLogic
-	34, // 35: iverson.PipelineStep.windows:type_name -> iverson.WindowFunction
-	32, // 36: iverson.PipelineStep.group_by:type_name -> iverson.GroupKey
-	25, // 37: iverson.PipelineStep.metrics:type_name -> iverson.MetricSpec
-	9,  // 38: iverson.PipelineStep.having:type_name -> iverson.SearchClause
-	33, // 39: iverson.PipelineStep.derive:type_name -> iverson.DeriveColumn
-	29, // 40: iverson.PipelineStep.joins:type_name -> iverson.PipelineJoin
-	31, // 41: iverson.PipelineStep.select:type_name -> iverson.SelectItem
-	3,  // 42: iverson.PipelineJoin.kind:type_name -> iverson.JoinKind
-	30, // 43: iverson.PipelineJoin.on:type_name -> iverson.JoinCondition
-	6,  // 44: iverson.GroupKey.date_trunc:type_name -> iverson.DateTrunc
-	5,  // 45: iverson.WindowFunction.kind:type_name -> iverson.WindowFunctionKind
-	7,  // 46: iverson.ObjectSearchService.Search:input_type -> iverson.SearchRequest
-	15, // 47: iverson.ObjectSearchService.SearchSimilar:input_type -> iverson.SearchSimilarRequest
-	16, // 48: iverson.ObjectSearchService.SearchChunks:input_type -> iverson.SearchChunksRequest
-	19, // 49: iverson.ObjectSearchService.Aggregate:input_type -> iverson.AggregateRequest
-	26, // 50: iverson.ObjectSearchService.GroupBy:input_type -> iverson.GroupByRequest
-	27, // 51: iverson.ObjectSearchService.Pipeline:input_type -> iverson.PipelineRequest
-	14, // 52: iverson.ObjectSearchService.Search:output_type -> iverson.SearchResponse
-	14, // 53: iverson.ObjectSearchService.SearchSimilar:output_type -> iverson.SearchResponse
-	17, // 54: iverson.ObjectSearchService.SearchChunks:output_type -> iverson.ChunkSearchResponse
-	20, // 55: iverson.ObjectSearchService.Aggregate:output_type -> iverson.AggregateResponse
-	14, // 56: iverson.ObjectSearchService.GroupBy:output_type -> iverson.SearchResponse
-	14, // 57: iverson.ObjectSearchService.Pipeline:output_type -> iverson.SearchResponse
-	52, // [52:58] is the sub-list for method output_type
-	46, // [46:52] is the sub-list for method input_type
-	46, // [46:46] is the sub-list for extension type_name
-	46, // [46:46] is the sub-list for extension extendee
-	0,  // [0:46] is the sub-list for field type_name
+	9,  // 11: iverson.SearchSimilarRequest.filter:type_name -> iverson.SearchClause
+	1,  // 12: iverson.SearchSimilarRequest.filter_logic:type_name -> iverson.SearchLogic
+	9,  // 13: iverson.SearchChunksRequest.filter:type_name -> iverson.SearchClause
+	1,  // 14: iverson.SearchChunksRequest.filter_logic:type_name -> iverson.SearchLogic
+	3,  // 15: iverson.JoinSpec.kind:type_name -> iverson.JoinKind
+	8,  // 16: iverson.AggregateRequest.query:type_name -> iverson.SearchQuery
+	21, // 17: iverson.AggregateRequest.aggregations:type_name -> iverson.AggregationSpec
+	8,  // 18: iverson.AggregateRequest.having:type_name -> iverson.SearchQuery
+	18, // 19: iverson.AggregateRequest.joins:type_name -> iverson.JoinSpec
+	23, // 20: iverson.AggregateResponse.results:type_name -> iverson.AggregationResult
+	4,  // 21: iverson.AggregationSpec.type:type_name -> iverson.AggregationType
+	22, // 22: iverson.AggregationSpec.range_buckets:type_name -> iverson.RangeBucket
+	36, // 23: iverson.RangeBucket.from:type_name -> google.protobuf.DoubleValue
+	36, // 24: iverson.RangeBucket.to:type_name -> google.protobuf.DoubleValue
+	4,  // 25: iverson.AggregationResult.type:type_name -> iverson.AggregationType
+	24, // 26: iverson.AggregationResult.buckets:type_name -> iverson.AggregationBucket
+	4,  // 27: iverson.MetricSpec.type:type_name -> iverson.AggregationType
+	8,  // 28: iverson.GroupByRequest.query:type_name -> iverson.SearchQuery
+	25, // 29: iverson.GroupByRequest.metrics:type_name -> iverson.MetricSpec
+	8,  // 30: iverson.GroupByRequest.having:type_name -> iverson.SearchQuery
+	13, // 31: iverson.GroupByRequest.order_by:type_name -> iverson.SearchSort
+	18, // 32: iverson.GroupByRequest.joins:type_name -> iverson.JoinSpec
+	9,  // 33: iverson.PipelineRequest.base_where:type_name -> iverson.SearchClause
+	1,  // 34: iverson.PipelineRequest.base_logic:type_name -> iverson.SearchLogic
+	28, // 35: iverson.PipelineRequest.steps:type_name -> iverson.PipelineStep
+	13, // 36: iverson.PipelineRequest.order_by:type_name -> iverson.SearchSort
+	9,  // 37: iverson.PipelineStep.where:type_name -> iverson.SearchClause
+	1,  // 38: iverson.PipelineStep.where_logic:type_name -> iverson.SearchLogic
+	34, // 39: iverson.PipelineStep.windows:type_name -> iverson.WindowFunction
+	32, // 40: iverson.PipelineStep.group_by:type_name -> iverson.GroupKey
+	25, // 41: iverson.PipelineStep.metrics:type_name -> iverson.MetricSpec
+	9,  // 42: iverson.PipelineStep.having:type_name -> iverson.SearchClause
+	33, // 43: iverson.PipelineStep.derive:type_name -> iverson.DeriveColumn
+	29, // 44: iverson.PipelineStep.joins:type_name -> iverson.PipelineJoin
+	31, // 45: iverson.PipelineStep.select:type_name -> iverson.SelectItem
+	3,  // 46: iverson.PipelineJoin.kind:type_name -> iverson.JoinKind
+	30, // 47: iverson.PipelineJoin.on:type_name -> iverson.JoinCondition
+	6,  // 48: iverson.GroupKey.date_trunc:type_name -> iverson.DateTrunc
+	5,  // 49: iverson.WindowFunction.kind:type_name -> iverson.WindowFunctionKind
+	7,  // 50: iverson.ObjectSearchService.Search:input_type -> iverson.SearchRequest
+	15, // 51: iverson.ObjectSearchService.SearchSimilar:input_type -> iverson.SearchSimilarRequest
+	16, // 52: iverson.ObjectSearchService.SearchChunks:input_type -> iverson.SearchChunksRequest
+	19, // 53: iverson.ObjectSearchService.Aggregate:input_type -> iverson.AggregateRequest
+	26, // 54: iverson.ObjectSearchService.GroupBy:input_type -> iverson.GroupByRequest
+	27, // 55: iverson.ObjectSearchService.Pipeline:input_type -> iverson.PipelineRequest
+	14, // 56: iverson.ObjectSearchService.Search:output_type -> iverson.SearchResponse
+	14, // 57: iverson.ObjectSearchService.SearchSimilar:output_type -> iverson.SearchResponse
+	17, // 58: iverson.ObjectSearchService.SearchChunks:output_type -> iverson.ChunkSearchResponse
+	20, // 59: iverson.ObjectSearchService.Aggregate:output_type -> iverson.AggregateResponse
+	14, // 60: iverson.ObjectSearchService.GroupBy:output_type -> iverson.SearchResponse
+	14, // 61: iverson.ObjectSearchService.Pipeline:output_type -> iverson.SearchResponse
+	56, // [56:62] is the sub-list for method output_type
+	50, // [50:56] is the sub-list for method input_type
+	50, // [50:50] is the sub-list for extension type_name
+	50, // [50:50] is the sub-list for extension extendee
+	0,  // [0:50] is the sub-list for field type_name
 }
 
 func init() { file_object_search_proto_init() }

@@ -97,6 +97,8 @@ message SearchSimilarRequest {
     string query     = 3;  // text to embed and compare
     uint32 top_k     = 4;
     string trace_id  = 5;
+    repeated SearchClause filter        = 6;  // optional scalar/FK filter, ANDed/ORed with filter_logic
+    SearchLogic           filter_logic = 7;   // default AND
 }
 
 // Searches by chunk embedding similarity on a property annotated with [IversonChunk].
@@ -107,6 +109,9 @@ message SearchChunksRequest {
     string query     = 3;  // text to embed and compare
     uint32 top_k     = 4;
     string trace_id  = 5;
+    // At most one EQUALS clause on the type's primary-key property; see ObjectSearchGrpcService.SearchChunks.
+    repeated SearchClause filter        = 6;
+    SearchLogic           filter_logic = 7;
 }
 
 message ChunkSearchResponse {

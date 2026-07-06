@@ -495,6 +495,10 @@ export interface SearchSimilarRequest {
   query: string;
   topK: number;
   traceId: string;
+  /** optional scalar/FK filter, ANDed/ORed with filter_logic */
+  filter: SearchClause[];
+  /** default AND */
+  filterLogic: SearchLogic;
 }
 
 /**
@@ -510,6 +514,9 @@ export interface SearchChunksRequest {
   query: string;
   topK: number;
   traceId: string;
+  /** At most one EQUALS clause on the type's primary-key property; see ObjectSearchGrpcService.SearchChunks. */
+  filter: SearchClause[];
+  filterLogic: SearchLogic;
 }
 
 export interface ChunkSearchResponse {
@@ -1551,7 +1558,7 @@ export const SearchResponse: MessageFns<SearchResponse> = {
 };
 
 function createBaseSearchSimilarRequest(): SearchSimilarRequest {
-  return { typeName: "", property: "", query: "", topK: 0, traceId: "" };
+  return { typeName: "", property: "", query: "", topK: 0, traceId: "", filter: [], filterLogic: 0 };
 }
 
 export const SearchSimilarRequest: MessageFns<SearchSimilarRequest> = {
@@ -1570,6 +1577,12 @@ export const SearchSimilarRequest: MessageFns<SearchSimilarRequest> = {
     }
     if (message.traceId !== "") {
       writer.uint32(42).string(message.traceId);
+    }
+    for (const v of message.filter) {
+      SearchClause.encode(v!, writer.uint32(50).fork()).join();
+    }
+    if (message.filterLogic !== 0) {
+      writer.uint32(56).int32(message.filterLogic);
     }
     return writer;
   },
@@ -1621,6 +1634,22 @@ export const SearchSimilarRequest: MessageFns<SearchSimilarRequest> = {
           message.traceId = reader.string();
           continue;
         }
+        case 6: {
+          if (tag !== 50) {
+            break;
+          }
+
+          message.filter.push(SearchClause.decode(reader, reader.uint32()));
+          continue;
+        }
+        case 7: {
+          if (tag !== 56) {
+            break;
+          }
+
+          message.filterLogic = reader.int32() as any;
+          continue;
+        }
       }
       if ((tag & 7) === 4 || tag === 0) {
         break;
@@ -1649,6 +1678,14 @@ export const SearchSimilarRequest: MessageFns<SearchSimilarRequest> = {
         : isSet(object.trace_id)
         ? globalThis.String(object.trace_id)
         : "",
+      filter: globalThis.Array.isArray(object?.filter)
+        ? object.filter.map((e: any) => SearchClause.fromJSON(e))
+        : [],
+      filterLogic: isSet(object.filterLogic)
+        ? searchLogicFromJSON(object.filterLogic)
+        : isSet(object.filter_logic)
+        ? searchLogicFromJSON(object.filter_logic)
+        : 0,
     };
   },
 
@@ -1669,6 +1706,12 @@ export const SearchSimilarRequest: MessageFns<SearchSimilarRequest> = {
     if (message.traceId !== "") {
       obj.traceId = message.traceId;
     }
+    if (message.filter?.length) {
+      obj.filter = message.filter.map((e) => SearchClause.toJSON(e));
+    }
+    if (message.filterLogic !== 0) {
+      obj.filterLogic = searchLogicToJSON(message.filterLogic);
+    }
     return obj;
   },
 
@@ -1682,12 +1725,14 @@ export const SearchSimilarRequest: MessageFns<SearchSimilarRequest> = {
     message.query = object.query ?? "";
     message.topK = object.topK ?? 0;
     message.traceId = object.traceId ?? "";
+    message.filter = object.filter?.map((e) => SearchClause.fromPartial(e)) || [];
+    message.filterLogic = object.filterLogic ?? 0;
     return message;
   },
 };
 
 function createBaseSearchChunksRequest(): SearchChunksRequest {
-  return { typeName: "", property: "", query: "", topK: 0, traceId: "" };
+  return { typeName: "", property: "", query: "", topK: 0, traceId: "", filter: [], filterLogic: 0 };
 }
 
 export const SearchChunksRequest: MessageFns<SearchChunksRequest> = {
@@ -1706,6 +1751,12 @@ export const SearchChunksRequest: MessageFns<SearchChunksRequest> = {
     }
     if (message.traceId !== "") {
       writer.uint32(42).string(message.traceId);
+    }
+    for (const v of message.filter) {
+      SearchClause.encode(v!, writer.uint32(50).fork()).join();
+    }
+    if (message.filterLogic !== 0) {
+      writer.uint32(56).int32(message.filterLogic);
     }
     return writer;
   },
@@ -1757,6 +1808,22 @@ export const SearchChunksRequest: MessageFns<SearchChunksRequest> = {
           message.traceId = reader.string();
           continue;
         }
+        case 6: {
+          if (tag !== 50) {
+            break;
+          }
+
+          message.filter.push(SearchClause.decode(reader, reader.uint32()));
+          continue;
+        }
+        case 7: {
+          if (tag !== 56) {
+            break;
+          }
+
+          message.filterLogic = reader.int32() as any;
+          continue;
+        }
       }
       if ((tag & 7) === 4 || tag === 0) {
         break;
@@ -1785,6 +1852,14 @@ export const SearchChunksRequest: MessageFns<SearchChunksRequest> = {
         : isSet(object.trace_id)
         ? globalThis.String(object.trace_id)
         : "",
+      filter: globalThis.Array.isArray(object?.filter)
+        ? object.filter.map((e: any) => SearchClause.fromJSON(e))
+        : [],
+      filterLogic: isSet(object.filterLogic)
+        ? searchLogicFromJSON(object.filterLogic)
+        : isSet(object.filter_logic)
+        ? searchLogicFromJSON(object.filter_logic)
+        : 0,
     };
   },
 
@@ -1805,6 +1880,12 @@ export const SearchChunksRequest: MessageFns<SearchChunksRequest> = {
     if (message.traceId !== "") {
       obj.traceId = message.traceId;
     }
+    if (message.filter?.length) {
+      obj.filter = message.filter.map((e) => SearchClause.toJSON(e));
+    }
+    if (message.filterLogic !== 0) {
+      obj.filterLogic = searchLogicToJSON(message.filterLogic);
+    }
     return obj;
   },
 
@@ -1818,6 +1899,8 @@ export const SearchChunksRequest: MessageFns<SearchChunksRequest> = {
     message.query = object.query ?? "";
     message.topK = object.topK ?? 0;
     message.traceId = object.traceId ?? "";
+    message.filter = object.filter?.map((e) => SearchClause.fromPartial(e)) || [];
+    message.filterLogic = object.filterLogic ?? 0;
     return message;
   },
 };
