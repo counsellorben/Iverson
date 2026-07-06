@@ -57,6 +57,27 @@ func TestPipelineBuildFull(t *testing.T) {
 	}
 }
 
+func TestPipelineRunningSumWithPartitionBy(t *testing.T) {
+	req, err := iverson.NewPipeline("Article").
+		Step("cumulative", func(s *iverson.PipelineStepBuilder) {
+			s.RunningSum("running_total", "AuthorId", "ViewCount", "PublishedAt")
+		}).
+		Build()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	win := req.Steps[0].Windows[0]
+	if win.Kind != pb.WindowFunctionKind_RUNNING_SUM {
+		t.Errorf("kind = %v", win.Kind)
+	}
+	if win.PartitionBy != "AuthorId" {
+		t.Errorf("partitionBy = %q, want %q", win.PartitionBy, "AuthorId")
+	}
+	if win.Field != "ViewCount" || win.OrderBy != "PublishedAt" {
+		t.Errorf("field/orderBy = %q/%q", win.Field, win.OrderBy)
+	}
+}
+
 func TestPipelineDuplicateStepNameErrors(t *testing.T) {
 	_, err := iverson.NewPipeline("Article").
 		Step("x", func(s *iverson.PipelineStepBuilder) { s.Derive("a", "WordCount") }).

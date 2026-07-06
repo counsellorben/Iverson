@@ -200,24 +200,24 @@ func (s *PipelineStepBuilder) DenseRank(alias, partitionBy, orderBy string, desc
 	return s.addWindow(alias, pb.WindowFunctionKind_DENSE_RANK, "", partitionBy, orderBy, descending, 1)
 }
 
-// RunningSum adds SUM(field) OVER (ORDER BY ...).
-func (s *PipelineStepBuilder) RunningSum(alias, field, orderBy string) *PipelineStepBuilder {
-	return s.addWindow(alias, pb.WindowFunctionKind_RUNNING_SUM, field, "", orderBy, false, 1)
+// RunningSum adds SUM(field) OVER (PARTITION BY ... ORDER BY ...). partitionBy may be "" for none.
+func (s *PipelineStepBuilder) RunningSum(alias, partitionBy, field, orderBy string) *PipelineStepBuilder {
+	return s.addWindow(alias, pb.WindowFunctionKind_RUNNING_SUM, field, partitionBy, orderBy, false, 1)
 }
 
-// RunningAvg adds AVG(field) OVER (ORDER BY ...).
-func (s *PipelineStepBuilder) RunningAvg(alias, field, orderBy string) *PipelineStepBuilder {
-	return s.addWindow(alias, pb.WindowFunctionKind_RUNNING_AVG, field, "", orderBy, false, 1)
+// RunningAvg adds AVG(field) OVER (PARTITION BY ... ORDER BY ...). partitionBy may be "" for none.
+func (s *PipelineStepBuilder) RunningAvg(alias, partitionBy, field, orderBy string) *PipelineStepBuilder {
+	return s.addWindow(alias, pb.WindowFunctionKind_RUNNING_AVG, field, partitionBy, orderBy, false, 1)
 }
 
-// Lag adds LAG(field, offset) OVER (ORDER BY ...).
-func (s *PipelineStepBuilder) Lag(alias, field, orderBy string, offset int32) *PipelineStepBuilder {
-	return s.addWindow(alias, pb.WindowFunctionKind_LAG, field, "", orderBy, false, offset)
+// Lag adds LAG(field, offset) OVER (PARTITION BY ... ORDER BY ...). partitionBy may be "" for none.
+func (s *PipelineStepBuilder) Lag(alias, partitionBy, field, orderBy string, offset int32) *PipelineStepBuilder {
+	return s.addWindow(alias, pb.WindowFunctionKind_LAG, field, partitionBy, orderBy, false, offset)
 }
 
-// Lead adds LEAD(field, offset) OVER (ORDER BY ...).
-func (s *PipelineStepBuilder) Lead(alias, field, orderBy string, offset int32) *PipelineStepBuilder {
-	return s.addWindow(alias, pb.WindowFunctionKind_LEAD, field, "", orderBy, false, offset)
+// Lead adds LEAD(field, offset) OVER (PARTITION BY ... ORDER BY ...). partitionBy may be "" for none.
+func (s *PipelineStepBuilder) Lead(alias, partitionBy, field, orderBy string, offset int32) *PipelineStepBuilder {
+	return s.addWindow(alias, pb.WindowFunctionKind_LEAD, field, partitionBy, orderBy, false, offset)
 }
 
 // GroupBy adds a GROUP BY key without date truncation.

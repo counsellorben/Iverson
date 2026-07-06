@@ -55,6 +55,20 @@ class PipelineBuilderTest {
     }
 
     @Test
+    void rankWithPartitionByCompilesToExpectedProto() {
+        PipelineRequest req = Query.pipeline("Article")
+            .step("ranked", s -> s
+                .rank("author_rank", "Score", true, "AuthorId"))
+            .build();
+
+        var win = req.getSteps(0).getWindows(0);
+        assertEquals(WindowFunctionKind.RANK, win.getKind());
+        assertEquals("AuthorId", win.getPartitionBy());
+        assertEquals("Score", win.getOrderBy());
+        assertTrue(win.getDescending());
+    }
+
+    @Test
     void duplicateStepNameThrows() {
         var b = Query.pipeline("Article").step("x", s -> s.derive("a", "WordCount"));
         assertThrows(IllegalArgumentException.class,

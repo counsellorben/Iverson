@@ -76,37 +76,61 @@ public final class PipelineStepBuilder {
     }
 
     public PipelineStepBuilder rank(String alias, String orderBy, boolean descending) {
-        return addWindow(alias, WindowFunctionKind.RANK, "", orderBy, descending, null, 1);
+        return rank(alias, orderBy, descending, null);
+    }
+
+    public PipelineStepBuilder rank(String alias, String orderBy, boolean descending, String partitionBy) {
+        return addWindow(alias, WindowFunctionKind.RANK, "", orderBy, descending, partitionBy, 1);
     }
 
     public PipelineStepBuilder denseRank(String alias, String orderBy, boolean descending) {
-        return addWindow(alias, WindowFunctionKind.DENSE_RANK, "", orderBy, descending, null, 1);
+        return denseRank(alias, orderBy, descending, null);
+    }
+
+    public PipelineStepBuilder denseRank(String alias, String orderBy, boolean descending, String partitionBy) {
+        return addWindow(alias, WindowFunctionKind.DENSE_RANK, "", orderBy, descending, partitionBy, 1);
     }
 
     public PipelineStepBuilder runningSum(String alias, String field, String orderBy) {
-        return addWindow(alias, WindowFunctionKind.RUNNING_SUM, field, orderBy, false, null, 1);
+        return runningSum(alias, field, orderBy, null);
+    }
+
+    public PipelineStepBuilder runningSum(String alias, String field, String orderBy, String partitionBy) {
+        return addWindow(alias, WindowFunctionKind.RUNNING_SUM, field, orderBy, false, partitionBy, 1);
     }
 
     public PipelineStepBuilder runningAvg(String alias, String field, String orderBy) {
-        return addWindow(alias, WindowFunctionKind.RUNNING_AVG, field, orderBy, false, null, 1);
+        return runningAvg(alias, field, orderBy, null);
+    }
+
+    public PipelineStepBuilder runningAvg(String alias, String field, String orderBy, String partitionBy) {
+        return addWindow(alias, WindowFunctionKind.RUNNING_AVG, field, orderBy, false, partitionBy, 1);
     }
 
     /** LAG with the default offset of 1 (same default the server substitutes for offset 0). */
     public PipelineStepBuilder lag(String alias, String field, String orderBy) {
-        return lag(alias, field, orderBy, 1);
+        return lag(alias, field, orderBy, 1, null);
     }
 
     public PipelineStepBuilder lag(String alias, String field, String orderBy, int offset) {
-        return addWindow(alias, WindowFunctionKind.LAG, field, orderBy, false, null, offset);
+        return lag(alias, field, orderBy, offset, null);
+    }
+
+    public PipelineStepBuilder lag(String alias, String field, String orderBy, int offset, String partitionBy) {
+        return addWindow(alias, WindowFunctionKind.LAG, field, orderBy, false, partitionBy, offset);
     }
 
     /** LEAD with the default offset of 1 (same default the server substitutes for offset 0). */
     public PipelineStepBuilder lead(String alias, String field, String orderBy) {
-        return lead(alias, field, orderBy, 1);
+        return lead(alias, field, orderBy, 1, null);
     }
 
     public PipelineStepBuilder lead(String alias, String field, String orderBy, int offset) {
-        return addWindow(alias, WindowFunctionKind.LEAD, field, orderBy, false, null, offset);
+        return lead(alias, field, orderBy, offset, null);
+    }
+
+    public PipelineStepBuilder lead(String alias, String field, String orderBy, int offset, String partitionBy) {
+        return addWindow(alias, WindowFunctionKind.LEAD, field, orderBy, false, partitionBy, offset);
     }
 
     // ── Aggregation ─────────────────────────────────────────────────────────────
