@@ -192,14 +192,12 @@ QueryBuilder("Article") \
 | Not equals | `<>` | `NotEquals` | `.neq(v)` | `.neq(v)` | `.neq(v)` | `.NotEq(v)` |
 | Substring | `LIKE '%v%'` | `Contains` | `.contains(v)` | `.contains(v)` | `.contains(v)` | `.Contains(v)` |
 | Prefix | `LIKE 'v%'` | `StartsWith` | `.startsWith(v)` | `.starts_with(v)` | `.startsWith(v)` | `.StartsWith(v)` |
-| Suffix | `LIKE '%v'` | `SearchOperator.EndsWith` ¹ | `.endsWith(v)` | `.ends_with(v)` | `.endsWith(v)` | `.EndsWith(v)` |
+| Suffix | `LIKE '%v'` | `EndsWith` | `.endsWith(v)` | `.ends_with(v)` | `.endsWith(v)` | `.EndsWith(v)` |
 | Greater than | `>` | `GreaterThan` | `.gt(v)` | `.gt(v)` | `.gt(v)` | `.Gt(v)` |
 | Less than | `<` | `LessThan` | `.lt(v)` | `.lt(v)` | `.lt(v)` | `.Lt(v)` |
 | At least | `>=` | `GreaterThanOrEquals` | `.gte(v)` | `.gte(v)` | `.gte(v)` | `.Gte(v)` |
 | At most | `<=` | `LessThanOrEquals` | `.lte(v)` | `.lte(v)` | `.lte(v)` | `.Lte(v)` |
 | One of a set | `IN (...)` | `In` | `.in(v...)` | `.in_(list)` | `.in(list)` | `.In(v...)` |
-
-¹ The proto enum has `ENDS_WITH` and the C# builder accepts it (`.Where(a => a.Title, SearchOperator.EndsWith, "era")`), but `SearchOperators` has no static `EndsWith` alias yet.
 
 **Values.** Strings, numbers, and booleans map to the typed proto union. **Dates travel as ISO 8601 strings** (C# serializes `DateTime` with the round-trip `"o"` format automatically; other languages pass strings like `"2026-06-01T00:00:00Z"`). `IN` accepts a list of strings.
 
@@ -423,6 +421,20 @@ Query.GroupBy("LineItem")
 ```
 
 Results stream back as `SearchResponse` rows whose `Data` struct holds the group keys plus one entry per metric alias. Default row limit: 10,000.
+
+### Build-time validation
+
+Builders now fail fast instead of silently dropping configuration:
+
+- `GroupByBuilder` rejects duplicate metric aliases, and any `having`/`orderBy` reference
+  that is neither a declared metric alias nor a key — at `build()`, before any RPC.
+- `GroupByBuilder` gains `not(...)` (MUST_NOT clauses) and `withHavingLogic(...)` (OR-combined
+  HAVING) in all five languages.
+- C#'s `QueryBuilder<T>.Build()` throws if aggregations were configured (call
+  `BuildAggregate()` instead), and `BuildAggregate()` throws if sorting or paging was
+  configured (they have no effect on aggregations).
+- C# joins support multi-hop chains: `Join<TAuthor, TPublisher>(au => au.PublisherId, p => p.Id)`
+  joins from an already-joined type.
 
 ---
 
@@ -702,7 +714,9 @@ const prompt = `Answer using only the passages below.\n\n` +
 
 Each hit carries `parentKey` — feed it to your coordinator's `get` to pull the full document alongside the passage.
 
-> **Heads-up:** the query builders still expose a `vectorSimilar` clause (a pre-computed `float[]` inside a structured query). The StarRocks `Search` path **ignores** these clauses today — use `SearchSimilar` / `SearchChunks` for vector work.
+> **Removed:** the query builders no longer expose a `vectorSimilar` clause, and the server
+> rejects `VECTOR_SIMILAR` clauses on the SQL paths with `INVALID_ARGUMENT`. Vector search
+> goes through `SearchSimilar` / `SearchChunks` exclusively.
 
 ---
 
@@ -713,17 +727,16 @@ Each hit carries `parentKey` — feed it to your coordinator's `get` to pull the
 | Typed property expressions | ✅ | — | — | — | — |
 | Core operators (eq, neq, gt/gte/lt/lte, contains, in) | ✅ | ✅ | ✅ | ✅ | ✅ |
 | `startsWith` | ✅ | ✅ | ✅ | ✅ | ✅ |
-| `endsWith` | ✅ ¹ | ✅ | ✅ | ✅ | ✅ |
+| `endsWith` | ✅ | ✅ | ✅ | ✅ | ✅ |
 | Field projection (`fields`) | ✅ | ✅ | ✅ | ✅ | ✅ |
 | Joins on `Search` | ✅ | ✅ | ✅ | ✅ | ✅ |
 | `GroupByBuilder` | ✅ | ✅ | ✅ | ✅ | ✅ |
 | `PipelineBuilder` (CTE chains) | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Aggregate DSL builder | ✅ | proto ² | proto ² | proto ² | proto ² |
+| Aggregate DSL builder | ✅ | proto ¹ | proto ¹ | proto ¹ | proto ¹ |
 | Typed search execution helper | `SearchAsync` | `search()` | raw stub | raw stub | raw stub |
 | Embedding/chunk schema annotations | ✅ | ✅ | ✅ | ✅ | ✅ |
 
-¹ Via `SearchOperator.EndsWith`; no `SearchOperators` static alias yet.
-² Construct `AggregateRequest` from generated protos.
+¹ Construct `AggregateRequest` from generated protos.
 
 ## Gotchas worth knowing
 
