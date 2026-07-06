@@ -87,7 +87,8 @@ public sealed class PipelineIntegrationTests : IClassFixture<StarRocksContainerF
         var (sql, param) = StarRocksPipelineBuilder.Build(ArticleSchema(), request, EmptyRegistry());
         var rows = (await _fx.Repository.QueryAsync<dynamic>(sql, param)).ToList();
 
-        rows.Should().HaveCount(4);   // 2 per author
+        rows.Should().HaveCount(4);
+        ((IEnumerable<dynamic>)rows).Select(r => (string)r.Id).Should().BeEquivalentTo(["3", "4", "5", "6"]);
     }
 
     [Fact]
@@ -172,7 +173,10 @@ public sealed class PipelineIntegrationTests : IClassFixture<StarRocksContainerF
         var (sql, param) = StarRocksPipelineBuilder.Build(ArticleSchema(), request, EmptyRegistry());
         var rows = (await _fx.Repository.QueryAsync<dynamic>(sql, param)).ToList();
 
-        rows.Sum(r => (double)Convert.ToDouble(r.pct)).Should().BeApproximately(100.0, 0.01);
+        var byAuthorPct = ((IEnumerable<dynamic>)rows)
+            .ToDictionary(r => (string)r.AuthorId, r => (double)Convert.ToDouble(r.pct));
+        byAuthorPct["A"].Should().BeApproximately(66.6667, 0.01);
+        byAuthorPct["B"].Should().BeApproximately(33.3333, 0.01);
     }
 
     [Fact]
@@ -198,6 +202,12 @@ public sealed class PipelineIntegrationTests : IClassFixture<StarRocksContainerF
         var (sql, param) = StarRocksPipelineBuilder.Build(ArticleSchema(), request, EmptyRegistry());
         var rows = (await _fx.Repository.QueryAsync<dynamic>(sql, param)).ToList();
 
-        rows.Should().HaveCount(6);   // every article row, each carrying its author's count
+        rows.Should().HaveCount(6);
+        foreach (var row in (IEnumerable<dynamic>)rows)
+        {
+            var authorId = (string)row.AuthorId;
+            var articles = Convert.ToInt32(row.articles);
+            (authorId == "A" ? 4 : 2).Should().Be(articles);
+        }
     }
 }

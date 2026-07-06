@@ -552,6 +552,50 @@ public class StarRocksPipelineBuilderTests
     }
 
     [Fact]
+    public void Build_SelectAllFromJoinSource_EmitsJoinSourceWildcard()
+    {
+        var agg = new PipelineStep { Name = "by_author" };
+        agg.GroupBy.Add(new GroupKey { Field = "AuthorId" });
+        agg.Metrics.Add(new MetricSpec { Name = "articles", Type = AggregationType.Count });
+
+        var enriched = new PipelineStep { Name = "enriched", Reads = "base" };
+        var join = new PipelineJoin { Source = "by_author", Kind = JoinKind.Inner };
+        join.On.Add(new JoinCondition { Left = "AuthorId", Right = "AuthorId" });
+        enriched.Joins.Add(join);
+        enriched.Select.Add(new SelectItem { Source = "by_author", All = true });
+
+        var request = new PipelineRequest { TypeName = "Article" };
+        request.Steps.Add(agg);
+        request.Steps.Add(enriched);
+
+        var (sql, _) = StarRocksPipelineBuilder.Build(ArticleSchema(), request, EmptyRegistry());
+
+        sql.Should().Contain("`by_author`.*");
+    }
+
+    [Fact]
+    public void Build_JoinSourceNameDifferentCase_ResolvesViaOrdinalIgnoreCase()
+    {
+        var agg = new PipelineStep { Name = "by_author" };
+        agg.GroupBy.Add(new GroupKey { Field = "AuthorId" });
+        agg.Metrics.Add(new MetricSpec { Name = "articles", Type = AggregationType.Count });
+
+        var enriched = new PipelineStep { Name = "enriched", Reads = "base" };
+        var join = new PipelineJoin { Source = "BY_AUTHOR", Kind = JoinKind.Inner }; // different case
+        join.On.Add(new JoinCondition { Left = "AuthorId", Right = "AuthorId" });
+        enriched.Joins.Add(join);
+        enriched.Select.Add(new SelectItem { All = true });
+
+        var request = new PipelineRequest { TypeName = "Article" };
+        request.Steps.Add(agg);
+        request.Steps.Add(enriched);
+
+        var act = () => StarRocksPipelineBuilder.Build(ArticleSchema(), request, EmptyRegistry());
+
+        act.Should().NotThrow();
+    }
+
+    [Fact]
     public void Validate_JoinOnUnknownRightColumn_Throws()
     {
         var step = JoinedStep();
@@ -612,5 +656,35 @@ public class StarRocksPipelineBuilderTests
 
         AssertInvalid(() => StarRocksPipelineBuilder.TrackAndValidate(
             ArticleSchema(), Request(step), RegistryWithAuthor()), "named");
+    }
+
+    [Fact]
+    public void Build_SelectAliasNotValidIdentifier_Throws()
+    {
+        var step = new PipelineStep { Name = "s1" };
+        step.Select.Add(new SelectItem { Column = "Title", Alias = "bad alias" });
+
+        var request = new PipelineRequest { TypeName = "Article" };
+        request.Steps.Add(step);
+
+        var act = () => StarRocksPipelineBuilder.Build(ArticleSchema(), request, EmptyRegistry());
+
+        act.Should().Throw<RpcException>()
+            .Where(e => e.Status.Detail == "Step 's1': select alias 'bad alias' is not a valid identifier.");
+    }
+
+    [Fact]
+    public void Build_WindowAliasNotValidIdentifier_Throws()
+    {
+        var step = new PipelineStep { Name = "s1" };
+        step.Windows.Add(new WindowFunction { Alias = "bad alias", Kind = WindowFunctionKind.RowNumber, OrderBy = "AuthorId" });
+
+        var request = new PipelineRequest { TypeName = "Article" };
+        request.Steps.Add(step);
+
+        var act = () => StarRocksPipelineBuilder.Build(ArticleSchema(), request, EmptyRegistry());
+
+        act.Should().Throw<RpcException>()
+            .Where(e => e.Status.Detail == "Step 's1': window alias 'bad alias' is not a valid identifier.");
     }
 }

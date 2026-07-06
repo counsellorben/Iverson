@@ -645,4 +645,35 @@ public class ObjectSearchGrpcServiceTests
         await act.Should().ThrowAsync<RpcException>()
             .Where(e => e.Status.StatusCode == StatusCode.InvalidArgument);
     }
+
+    [Fact]
+    public async Task Pipeline_StarRocksNotReady_ThrowsUnavailable()
+    {
+        await _registry.RegisterAsync(SchemaFixtures.ArticleWithProjectionSchema());
+        _sr.QueryAsync<dynamic>(Arg.Any<string>(), Arg.Any<object?>())
+           .Returns<Task<IEnumerable<dynamic>>>(_ => throw new StarRocksNotReadyException("warming up"));
+
+        var request = new PipelineRequest { TypeName = "Article" };
+        var (writer, _) = MakeStream<SearchResponse>();
+
+        var act = async () => await _sut.Pipeline(request, writer, TestServerCallContext.Create());
+
+        (await act.Should().ThrowAsync<RpcException>())
+            .Where(e => e.Status.StatusCode == StatusCode.Unavailable);
+    }
+
+    [Fact]
+    public async Task Pipeline_StreamsResults_PropagatesTraceId()
+    {
+        await _registry.RegisterAsync(SchemaFixtures.ArticleWithProjectionSchema());
+        _sr.QueryAsync<dynamic>(Arg.Any<string>(), Arg.Any<object?>())
+           .Returns(new List<dynamic> { new Dictionary<string, object?> { ["Title"] = "T" } });
+
+        var request = new PipelineRequest { TypeName = "Article", TraceId = "trace-xyz" };
+        var (writer, written) = MakeStream<SearchResponse>();
+
+        await _sut.Pipeline(request, writer, TestServerCallContext.Create());
+
+        written.Should().ContainSingle(r => r.TraceId == "trace-xyz");
+    }
 }
