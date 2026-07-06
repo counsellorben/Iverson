@@ -230,7 +230,11 @@ func (g *GroupByBuilder) Build(traceId ...string) (*pb.GroupByRequest, error) {
 		aliases[key] = true
 	}
 	for _, k := range g.keys {
-		aliases[strings.ToLower(k)] = true
+		key := strings.ToLower(k)
+		if aliases[key] {
+			return nil, fmt.Errorf("key %q collides with an existing metric alias", k)
+		}
+		aliases[key] = true
 	}
 	for _, h := range g.having {
 		if !aliases[strings.ToLower(h.Property)] {

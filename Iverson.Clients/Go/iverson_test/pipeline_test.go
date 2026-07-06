@@ -154,3 +154,21 @@ func TestJoinOn_WithCompositeKey_AddsMultipleConditions(t *testing.T) {
 		t.Errorf("unexpected second condition: %+v", join.On[1])
 	}
 }
+
+func TestStep_WithReservedNameBase_ReturnsBuildError(t *testing.T) {
+	_, err := iverson.NewPipeline("Article").
+		Step("base", func(s *iverson.PipelineStepBuilder) {}).
+		Build()
+	if err == nil {
+		t.Fatal("expected an error for reserved step name \"base\"")
+	}
+}
+
+func TestStep_WithMetricsButNoGroupBy_ReturnsBuildError(t *testing.T) {
+	_, err := iverson.NewPipeline("Article").
+		Step("s1", func(s *iverson.PipelineStepBuilder) { s.Count("id") }).
+		Build()
+	if err == nil {
+		t.Fatal("expected an error for metrics without groupBy")
+	}
+}

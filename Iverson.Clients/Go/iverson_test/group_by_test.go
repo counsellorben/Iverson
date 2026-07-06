@@ -73,3 +73,30 @@ func TestGroupByOrderByUnknownAliasErrors(t *testing.T) {
 		t.Fatal("expected unknown orderBy alias error")
 	}
 }
+
+func TestGroupByKeyCollidesWithMetricAlias_Errors(t *testing.T) {
+	_, err := iverson.NewGroupBy("Article").
+		Keys("total").Sum("Price", "total").Build()
+	if err == nil {
+		t.Fatal("expected key/metric-alias collision error")
+	}
+}
+
+func TestGroupByHaving_ReferencesMetricAlias_CaseInsensitive_IsAllowed(t *testing.T) {
+	_, err := iverson.NewGroupBy("Article").
+		Keys("Category").Sum("WordCount", "Total").
+		Having("TOTAL", pb.SearchOperator_GREATER_THAN, numberVal(100)).
+		Build()
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+}
+
+func TestGroupByOrderBy_ReferencesKey_CaseInsensitive_IsAllowed(t *testing.T) {
+	_, err := iverson.NewGroupBy("Article").
+		Keys("Category").CountAll("n").OrderBy("CATEGORY").
+		Build()
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+}
