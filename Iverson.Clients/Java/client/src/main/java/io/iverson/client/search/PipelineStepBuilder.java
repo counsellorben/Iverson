@@ -152,7 +152,7 @@ public final class PipelineStepBuilder {
     public PipelineStepBuilder min(String field, String alias)  { return addMetric(alias, AggregationType.MIN, field, null); }
     public PipelineStepBuilder max(String field)                { return addMetric(field + "_max", AggregationType.MAX, field, null); }
     public PipelineStepBuilder max(String field, String alias)  { return addMetric(alias, AggregationType.MAX, field, null); }
-    public PipelineStepBuilder count(String field)               { return addMetric(field + "_count", AggregationType.COUNT, field, null); }
+    public PipelineStepBuilder count(String field)               { return count(field, field + "_count"); }
     public PipelineStepBuilder count(String field, String alias) { return addMetric(alias, AggregationType.COUNT, field, null); }
     public PipelineStepBuilder countAll()                        { return countAll("count"); }
     public PipelineStepBuilder countAll(String alias)            { return addMetric(alias, AggregationType.COUNT, null, null); }

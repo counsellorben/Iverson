@@ -121,4 +121,16 @@ class PipelineBuilderTest {
         assertEquals("TenantId", join.getOn(1).getLeft());
         assertEquals("TenantId", join.getOn(1).getRight());
     }
+
+    @Test
+    void step_withReservedNameBase_throws() {
+        assertThrows(IllegalArgumentException.class, () ->
+            Query.pipeline("Article").step("base", s -> {}).build());
+    }
+
+    @Test
+    void step_withMetricsButNoGroupBy_throws() {
+        assertThrows(IllegalArgumentException.class, () ->
+            Query.pipeline("Article").step("s1", s -> s.count("id")).build());
+    }
 }

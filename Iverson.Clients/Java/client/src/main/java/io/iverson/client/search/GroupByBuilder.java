@@ -14,7 +14,10 @@ import iverson.ObjectSearch.GroupByRequest;
 
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Locale;
+import java.util.Set;
 
 /**
  * Fluent DSL builder that compiles to a {@link GroupByRequest} proto message.
@@ -228,18 +231,20 @@ public final class GroupByBuilder {
 
     /** Builds and returns the {@link GroupByRequest} proto message with the given trace ID. */
     public GroupByRequest build(String traceId) {
-        java.util.Set<String> aliases = new java.util.HashSet<>();
+        Set<String> aliases = new HashSet<>();
         for (MetricSpec m : metrics)
-            if (!aliases.add(m.getName().toLowerCase(java.util.Locale.ROOT)))
+            if (!aliases.add(m.getName().toLowerCase(Locale.ROOT)))
                 throw new IllegalStateException("Duplicate metric alias '" + m.getName() + "'.");
-        for (String k : keys) aliases.add(k.toLowerCase(java.util.Locale.ROOT));
+        for (String k : keys)
+            if (!aliases.add(k.toLowerCase(Locale.ROOT)))
+                throw new IllegalStateException("Key '" + k + "' collides with an existing metric alias.");
 
         for (SearchClause h : having)
-            if (!aliases.contains(h.getProperty().toLowerCase(java.util.Locale.ROOT)))
+            if (!aliases.contains(h.getProperty().toLowerCase(Locale.ROOT)))
                 throw new IllegalStateException("HAVING references '" + h.getProperty()
                     + "', which is neither a metric alias nor a key.");
         for (SearchSort s : orderBy)
-            if (!aliases.contains(s.getProperty().toLowerCase(java.util.Locale.ROOT)))
+            if (!aliases.contains(s.getProperty().toLowerCase(Locale.ROOT)))
                 throw new IllegalStateException("orderBy references '" + s.getProperty()
                     + "', which is neither a metric alias nor a key.");
 

@@ -207,4 +207,26 @@ class GroupByBuilderTest {
         var b = Query.groupBy("Article").keys("Category").countAll("n").orderBy("nope");
         assertThrows(IllegalStateException.class, b::build);
     }
+
+    @Test
+    void keyCollidesWithMetricAliasThrows() {
+        var b = Query.groupBy("Article").keys("total").sum("Price", "total");
+        assertThrows(IllegalStateException.class, b::build);
+    }
+
+    @Test
+    void havingReferencesMetricAlias_caseInsensitive_isAllowed() {
+        assertDoesNotThrow(() -> Query.groupBy("Article")
+            .keys("Category").sum("WordCount", "Total")
+            .having("TOTAL", SearchOperator.GREATER_THAN, 100)
+            .build());
+    }
+
+    @Test
+    void orderByReferencesKey_caseInsensitive_isAllowed() {
+        assertDoesNotThrow(() -> Query.groupBy("Article")
+            .keys("Category").countAll("n")
+            .orderBy("CATEGORY")
+            .build());
+    }
 }
