@@ -150,16 +150,14 @@ for {
 
 ## Clauses: filtering the result set
 
-Every clause has a **field**, an **operator**, and a **value**. Clauses also carry a *clause type*, a holdover from the DSL's boolean-search heritage:
+Every clause has a **field**, an **operator**, and a **value**, and is either a required predicate or a negated one:
 
 | Proto | C# | Java | Python | TypeScript | Go |
 |-------|----|------|--------|------------|----|
 | `FILTER` | `.Where(...)` | `.where(f)` | `.where(f)` | `.where(f)` | `.Where(f)` |
-| `MUST` | `.And(...)` | `.and(f)` | `.must(f)` | `.must(f)` | `.Must(f)` |
-| `SHOULD` | `.Or(...)` | `.or(f)` | `.should(f)` | `.should(f)` | `.Should(f)` |
 | `MUST_NOT` | `.Not(...)` | `.not(f)` | `.must_not(f)` | `.mustNot(f)` | `.MustNot(f)` |
 
-> **On StarRocks, clause types are simpler than they look.** `FILTER`, `MUST`, and `SHOULD` all compile to ordinary `WHERE` predicates; `MUST_NOT` wraps its predicate in `NOT (...)`. There is no relevance boosting — `Search` returns a constant score of `1.0` for every row, and result order is controlled entirely by `OrderBy`. To make clauses alternatives instead of requirements, switch the combination logic to OR (below).
+There is no relevance boosting — `Search` returns a constant score of `1.0` for every row, and result order is controlled entirely by `OrderBy`. To make clauses alternatives instead of requirements, switch the combination logic to OR (below).
 
 ### Combination logic
 
@@ -169,8 +167,8 @@ By default all clauses are ANDed. `withLogic` flips the top level to OR:
 // C# — match any of three categories
 Query.For<Article>()
     .Where(a => a.Category, EqualTo, "basketball")
-    .Or(a   => a.Category, EqualTo, "culture")
-    .Or(a   => a.Category, EqualTo, "legacy")
+    .Where(a => a.Category, EqualTo, "culture")
+    .Where(a => a.Category, EqualTo, "legacy")
     .WithLogic(SearchLogic.Or);
 ```
 
@@ -730,7 +728,6 @@ Each hit carries `parentKey` — feed it to your coordinator's `get` to pull the
 ## Gotchas worth knowing
 
 - **`Search` scores are constant (`1.0`).** StarRocks has no relevance concept; order results with `orderBy`. Real scores come from `SearchSimilar` / `SearchChunks`.
-- **`SHOULD` doesn't boost.** Under default AND logic, "should" clauses are just as required as "must" — switch to OR logic for alternatives.
 - **Dates are ISO 8601 strings** on the wire; `IN` lists are strings.
 - **Field names are case-insensitive**; with joins, qualify ambiguous fields as `TypeName.FieldName`.
 - **Go's `GroupByBuilder.Where`/`Having` take raw `*pb.SearchValue`**, unlike its `QueryBuilder` which converts scalars for you.
