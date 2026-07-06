@@ -201,6 +201,39 @@ public sealed class EntityCoordinator<T>(
         }
     }
 
+    public async IAsyncEnumerable<SearchResult<T>> SearchSimilarAsync(
+        QuerySimilarBuilder<T> query,
+        [EnumeratorCancellation] CancellationToken ct = default)
+    {
+        var request     = query.Build();
+        request.TraceId = CurrentTraceId();
+
+        logger.LogDebug("ObjectSearch.SearchSimilar {Entity} property={Property}",
+            _descriptor.EntityName, request.Property);
+
+        var stream = search.SearchSimilar(request, cancellationToken: ct);
+        await foreach (var response in stream.ResponseStream.ReadAllAsync(ct))
+        {
+            var entity = StructConverter.FromStruct<T>(response.Data);
+            if (entity is not null) yield return new SearchResult<T>(entity, response.Score);
+        }
+    }
+
+    public async IAsyncEnumerable<ChunkSearchResponse> SearchChunksAsync(
+        QueryChunksBuilder<T> query,
+        [EnumeratorCancellation] CancellationToken ct = default)
+    {
+        var request     = query.Build();
+        request.TraceId = CurrentTraceId();
+
+        logger.LogDebug("ObjectSearch.SearchChunks {Entity} property={Property}",
+            _descriptor.EntityName, request.Property);
+
+        var stream = search.SearchChunks(request, cancellationToken: ct);
+        await foreach (var response in stream.ResponseStream.ReadAllAsync(ct))
+            yield return response;
+    }
+
     /// <summary>
     /// Executes a pipeline (CTE chain) and streams untyped rows. Column set depends on the
     /// pipeline's final step, so rows come back as string-keyed dictionaries.

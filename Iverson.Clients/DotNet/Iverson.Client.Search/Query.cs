@@ -1,3 +1,5 @@
+using System.Linq.Expressions;
+
 namespace Iverson.Client.Search;
 
 /// <summary>
@@ -20,4 +22,26 @@ public static class Query
     /// <see cref="Iverson.Client.Search.Pipeline.For(string)"/>.
     /// </summary>
     public static PipelineBuilder Pipeline(string typeName) => new(typeName);
+
+    /// <summary>
+    /// Entry point for Qdrant vector similarity search on a property annotated with
+    /// <c>[IversonEmbedding]</c>.
+    /// </summary>
+    public static QuerySimilarBuilder<T> Similar<T>(Expression<Func<T, object>> property) where T : class =>
+        new(typeof(T).Name, PropertyNameObj(property));
+
+    /// <summary>
+    /// Entry point for Qdrant chunk/RAG search on a property annotated with <c>[IversonChunk]</c>.
+    /// </summary>
+    public static QueryChunksBuilder<T> Chunks<T>(Expression<Func<T, object>> property) where T : class =>
+        new(typeof(T).Name, PropertyNameObj(property));
+
+    private static string PropertyNameObj<TSource>(Expression<Func<TSource, object>> expr) =>
+        expr.Body switch
+        {
+            MemberExpression member => member.Member.Name,
+            UnaryExpression { NodeType: ExpressionType.Convert or ExpressionType.ConvertChecked } unary
+                when unary.Operand is MemberExpression innerMember => innerMember.Member.Name,
+            _ => throw new ArgumentException("Expression must be a direct property access, e.g. x => x.Title")
+        };
 }
