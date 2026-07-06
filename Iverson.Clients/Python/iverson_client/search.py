@@ -31,7 +31,6 @@ class SearchOperator:
     GREATER_THAN_OR_EQUALS = _pb.GREATER_THAN_OR_EQUALS
     LESS_THAN_OR_EQUALS    = _pb.LESS_THAN_OR_EQUALS
     IN                     = _pb.IN
-    VECTOR_SIMILAR         = _pb.VECTOR_SIMILAR
 
 
 # ── Value conversion helper ────────────────────────────────────────────────────
@@ -125,17 +124,6 @@ class FieldCondition:
         self._builder._clauses.append(clause)
         return self._builder
 
-    def vector_similar(self, query_vector: List[float]) -> "QueryBuilder":
-        """VECTOR_SIMILAR — accepts a float list."""
-        clause = _pb.SearchClause(
-            property=self._field,
-            operator=_pb.VECTOR_SIMILAR,
-            value=_pb.SearchValue(float_list=_pb.RepeatedFloat(values=query_vector)),
-            clause_type=self._clause_type,
-        )
-        self._builder._clauses.append(clause)
-        return self._builder
-
 
 # ── QueryBuilder ───────────────────────────────────────────────────────────────
 
@@ -143,7 +131,7 @@ class QueryBuilder:
     """Fluent DSL builder that compiles to a ``SearchRequest`` proto.
 
     Operators supported (matching ``SearchOperator`` enum exactly):
-        eq, neq, contains, starts_with, ends_with, gt, lt, gte, lte, in_, vector_similar
+        eq, neq, contains, starts_with, ends_with, gt, lt, gte, lte, in_
     """
 
     def __init__(self, type_name: str) -> None:

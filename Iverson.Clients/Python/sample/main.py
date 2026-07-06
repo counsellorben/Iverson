@@ -33,19 +33,6 @@ def demo_query_builder() -> None:
               f"val={clause.value}")
 
 
-def demo_vector_search() -> None:
-    """Show a vector similarity search clause."""
-    query_vec = [0.1, 0.2, 0.3, 0.4, 0.5]
-    request = (
-        QueryBuilder("Article")
-        .where("embedding").vector_similar(query_vec)
-        .limit(5)
-        .build()
-    )
-    print(f"\nVector search — floats in clause: "
-          f"{list(request.query.clauses[0].value.float_list.values)}")
-
-
 def demo_in_operator() -> None:
     """Show the IN operator with a string list."""
     request = (
@@ -60,7 +47,6 @@ def demo_in_operator() -> None:
 if __name__ == "__main__":
     print("=== QueryBuilder demo ===")
     demo_query_builder()
-    demo_vector_search()
     demo_in_operator()
 
     print("\n=== Entity metadata ===")

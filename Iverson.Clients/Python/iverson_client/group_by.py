@@ -41,6 +41,7 @@ class GroupByBuilder:
         self._having: list[_pb.SearchClause] = []
         self._joins: list[_pb.JoinSpec] = []
         self._where_logic = _pb.AND
+        self._having_logic = _pb.AND
         self._limit = 10_000
 
     # ── Keys ───────────────────────────────────────────────────────────────────
@@ -67,6 +68,16 @@ class GroupByBuilder:
         ))
         return self
 
+    def not_(self, field: str, op: int, value: object) -> "GroupByBuilder":
+        """Add a MUST_NOT WHERE clause (excludes matches before grouping)."""
+        self._where.append(_pb.SearchClause(
+            property=field,
+            operator=op,
+            value=_to_search_value(value),
+            clause_type=_pb.MUST_NOT,
+        ))
+        return self
+
     def with_logic(self, logic: int) -> "GroupByBuilder":
         """Set the logic used to combine top-level WHERE clauses. Default: AND."""
         self._where_logic = logic
@@ -82,6 +93,11 @@ class GroupByBuilder:
             value=_to_search_value(value),
             clause_type=_pb.FILTER,
         ))
+        return self
+
+    def with_having_logic(self, logic: int) -> "GroupByBuilder":
+        """Set the logic combining HAVING clauses. Default: AND."""
+        self._having_logic = logic
         return self
 
     # ── JOIN ──────────────────────────────────────────────────────────────────
@@ -148,14 +164,37 @@ class GroupByBuilder:
     # ── Build ──────────────────────────────────────────────────────────────────
 
     def build(self, trace_id: str = "") -> _pb.GroupByRequest:
-        """Compile to a ``GroupByRequest`` proto message."""
+        """Compile to a ``GroupByRequest`` proto message.
+
+        Raises:
+            ValueError: If a metric alias is duplicated, or a HAVING/order_by
+                clause references a name that is neither a metric alias nor a
+                GROUP BY key.
+        """
+        aliases: set[str] = set()
+        for m in self._metrics:
+            key = m.name.lower()
+            if key in aliases:
+                raise ValueError(f"Duplicate metric alias '{m.name}'.")
+            aliases.add(key)
+        aliases.update(k.lower() for k in self._keys)
+
+        for h in self._having:
+            if h.property.lower() not in aliases:
+                raise ValueError(
+                    f"HAVING references '{h.property}', which is neither a metric alias nor a key.")
+        for s in self._order_by:
+            if s.property.lower() not in aliases:
+                raise ValueError(
+                    f"order_by references '{s.property}', which is neither a metric alias nor a key.")
+
         query = _pb.SearchQuery(
             clauses=self._where,
             logic=self._where_logic,
         )
         having = _pb.SearchQuery(
             clauses=self._having,
-            logic=_pb.AND,
+            logic=self._having_logic,
         )
         return _pb.GroupByRequest(
             type_name=self._type_name,

@@ -145,19 +145,6 @@ class TestOperatorIn:
         assert clause.value.HasField("string_list")
 
 
-class TestOperatorVectorSimilar:
-    def test_vector_similar(self):
-        vec = [0.1, 0.2, 0.3]
-        req = QueryBuilder("Article").where("embedding").vector_similar(vec).build()
-        clause = req.query.clauses[0]
-        assert clause.operator == pb.VECTOR_SIMILAR
-        assert list(clause.value.float_list.values) == pytest.approx(vec)
-
-    def test_vector_uses_float_list(self):
-        req = QueryBuilder("Article").where("emb").vector_similar([1.0, 2.0]).build()
-        assert req.query.clauses[0].value.HasField("float_list")
-
-
 class TestClauseTypes:
     def test_where_is_filter(self):
         req = QueryBuilder("Article").where("category").eq("tech").build()
