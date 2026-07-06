@@ -30,3 +30,5 @@ export { QueryBuilder, FieldCondition, SearchOperator, SearchLogic, SearchClause
 export { GroupByBuilder, groupBy } from './group-by.js';
 
 export { PipelineBuilder, PipelineStepBuilder, SelectSpecBuilder, pipeline } from './pipeline.js';
+
+export { SimilarBuilder, ChunksBuilder, similar, chunks } from './vector-search.js';
