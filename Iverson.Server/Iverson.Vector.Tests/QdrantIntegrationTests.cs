@@ -3,7 +3,9 @@ using FluentAssertions;
 using Iverson.Vector;
 using Microsoft.Extensions.Logging.Abstractions;
 using Qdrant.Client;
+using Qdrant.Client.Grpc;
 using Xunit;
+using Range = Qdrant.Client.Grpc.Range;
 
 namespace Iverson.Vector.Tests;
 
@@ -260,5 +262,30 @@ public sealed class QdrantIntegrationTests(QdrantContainerFixture fixture)
         // Read-side projection (VectorSearchResult.Payload) stays string-typed by design —
         // this only asserts the upsert didn't throw and a point round-tripped.
         results[0].Payload.Should().ContainKey("wordCount");
+    }
+
+    [Fact]
+    public async Task SearchNamedAsync_WithFilter_ReturnsOnlyMatchingPoints()
+    {
+        var collection = UniqueName();
+        await _svc.ApplyCollectionAsync(new CollectionSchema(
+            collection,
+            [new NamedVector("title_vector", 4)],
+            []));
+
+        await _svc.UpsertNamedAsync(collection, 1,
+            new Dictionary<string, float[]> { ["title_vector"] = [0.1f, 0.2f, 0.3f, 0.4f] },
+            new Dictionary<string, object> { ["wordCount"] = 100L });
+        await _svc.UpsertNamedAsync(collection, 2,
+            new Dictionary<string, float[]> { ["title_vector"] = [0.1f, 0.2f, 0.3f, 0.4f] },
+            new Dictionary<string, object> { ["wordCount"] = 900L });
+
+        var filter = new Filter();
+        filter.Must.Add(Conditions.Range("wordCount", new Range { Gt = 500 }));
+
+        var results = await _svc.SearchNamedAsync(collection, "title_vector", [0.1f, 0.2f, 0.3f, 0.4f], 10, filter);
+
+        results.Should().ContainSingle();
+        results[0].Id.Should().Be(2);
     }
 }

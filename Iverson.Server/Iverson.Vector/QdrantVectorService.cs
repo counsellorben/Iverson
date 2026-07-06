@@ -115,17 +115,20 @@ public class QdrantVectorService(
         string collectionName,
         string vectorName,
         float[] queryVector,
-        ulong limit = 10)
+        ulong limit = 10,
+        Filter? filter = null)
     {
         using var activity = Telemetry.Source.StartActivity("qdrant.search_named", ActivityKind.Client);
         activity?.SetTag("db.system", "qdrant");
         activity?.SetTag("qdrant.collection", collectionName);
         activity?.SetTag("qdrant.vector_name", vectorName);
         activity?.SetTag("qdrant.limit", limit);
+        activity?.SetTag("qdrant.filtered", filter is not null);
 
         var results = await client.SearchAsync(
             collectionName,
             queryVector,
+            filter:          filter,
             limit:           limit,
             payloadSelector: true,
             vectorName:      vectorName);

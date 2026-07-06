@@ -1,3 +1,5 @@
+using Qdrant.Client.Grpc;
+
 namespace Iverson.Vector;
 
 public interface IVectorService
@@ -24,7 +26,8 @@ public interface IVectorService
         string collectionName,
         string vectorName,
         float[] queryVector,
-        ulong limit = 10);
+        ulong limit = 10,
+        Filter? filter = null);
     Task DeleteAsync(string collectionName, ulong id);
 }
 
