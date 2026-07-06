@@ -101,4 +101,12 @@ describe('PipelineBuilder', () => {
         expect(join.on[0]).toMatchObject({ left: 'AuthorId', right: 'Id' });
         expect(join.on[1]).toMatchObject({ left: 'TenantId', right: 'TenantId' });
     });
+
+    it('throws when a step uses the reserved name "base"', () => {
+        expect(() => pipeline('Article').step('base', s => s).build()).toThrow();
+    });
+
+    it('throws when a step declares metrics without groupBy', () => {
+        expect(() => pipeline('Article').step('s1', s => s.count('id')).build()).toThrow();
+    });
 });

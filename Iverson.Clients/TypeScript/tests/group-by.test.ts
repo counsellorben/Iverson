@@ -36,4 +36,20 @@ describe('GroupByBuilder validation and additions', () => {
         const b = groupBy('Article').keys('Category').countAll('n').orderBy('nope');
         expect(() => b.build()).toThrow(/nope/);
     });
+
+    it('throws when a key collides with a metric alias', () => {
+        const b = groupBy('Article').keys('total').sum('Price', 'total');
+        expect(() => b.build()).toThrow();
+    });
+
+    it('allows HAVING to reference a metric alias case-insensitively', () => {
+        const b = groupBy('Article').keys('Category').sum('WordCount', 'Total')
+            .having('TOTAL', SearchOperator.GREATER_THAN, 100);
+        expect(() => b.build()).not.toThrow();
+    });
+
+    it('allows orderBy to reference a key case-insensitively', () => {
+        const b = groupBy('Article').keys('Category').countAll('n').orderBy('CATEGORY');
+        expect(() => b.build()).not.toThrow();
+    });
 });
