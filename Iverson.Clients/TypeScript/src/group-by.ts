@@ -38,6 +38,7 @@ export class GroupByBuilder {
     private readonly _having: SearchClause[] = [];
     private readonly _joins: JoinSpec[] = [];
     private _whereLogic: SearchLogic = SearchLogic.AND;
+    private _havingLogic: SearchLogic = SearchLogic.AND;
     private _limit = 10_000;
 
     constructor(typeName: string) {
@@ -71,6 +72,17 @@ export class GroupByBuilder {
         return this;
     }
 
+    /** Add a MUST_NOT WHERE clause (excludes matches before grouping). */
+    not(field: string, op: SearchOperator, value: unknown): this {
+        this._where.push({
+            property: field,
+            operator: op,
+            value: toSearchValue(value),
+            clauseType: SearchClauseType.MUST_NOT,
+        });
+        return this;
+    }
+
     /** Set the top-level WHERE clause logic (AND / OR). Default: AND. */
     withLogic(logic: SearchLogic): this {
         this._whereLogic = logic;
@@ -85,6 +97,12 @@ export class GroupByBuilder {
             value: toSearchValue(value),
             clauseType: SearchClauseType.FILTER,
         });
+        return this;
+    }
+
+    /** Set the logic combining HAVING clauses. Default: AND. */
+    withHavingLogic(logic: SearchLogic): this {
+        this._havingLogic = logic;
         return this;
     }
 
@@ -195,6 +213,27 @@ export class GroupByBuilder {
 
     /** Compile to a GroupByRequest proto message. */
     build(traceId = ''): GroupByRequest {
+        const aliases = new Set<string>();
+        for (const m of this._metrics) {
+            const key = m.name.toLowerCase();
+            if (aliases.has(key)) throw new Error(`Duplicate metric alias '${m.name}'.`);
+            aliases.add(key);
+        }
+        for (const k of this._keys) aliases.add(k.toLowerCase());
+
+        for (const h of this._having) {
+            if (!aliases.has(h.property.toLowerCase())) {
+                throw new Error(
+                    `HAVING references '${h.property}', which is neither a metric alias nor a key.`);
+            }
+        }
+        for (const s of this._orderBy) {
+            if (!aliases.has(s.property.toLowerCase())) {
+                throw new Error(
+                    `orderBy references '${s.property}', which is neither a metric alias nor a key.`);
+            }
+        }
+
         const query: SearchQuery = {
             clauses: [...this._where],
             logic: this._whereLogic,
@@ -202,7 +241,7 @@ export class GroupByBuilder {
         };
         const having: SearchQuery = {
             clauses: [...this._having],
-            logic: SearchLogic.AND,
+            logic: this._havingLogic,
             sort: [],
         };
         return {

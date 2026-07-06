@@ -100,15 +100,6 @@ describe('QueryBuilder', () => {
             expect(clause.value!.stringList).toBeDefined();
             expect(clause.value!.stringList!.values).toEqual(['tech', 'science']);
         });
-
-        it('vectorSimilar builds VECTOR_SIMILAR clause with float list', () => {
-            const vec = [0.1, 0.2, 0.3];
-            const req = new QueryBuilder('Article').where('embedding').vectorSimilar(vec).build();
-            const clause = req.query!.clauses[0];
-            expect(clause.operator).toBe(SearchOperator.VECTOR_SIMILAR);
-            expect(clause.value!.floatList).toBeDefined();
-            expect(clause.value!.floatList!.values).toEqual(vec);
-        });
     });
 
     describe('clause types', () => {

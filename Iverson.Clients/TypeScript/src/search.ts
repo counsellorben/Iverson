@@ -129,12 +129,6 @@ export class FieldCondition {
         const sv: SearchValue = { stringList: { values } };
         return this._add(SearchOperator.IN, sv);
     }
-
-    /** VECTOR_SIMILAR — accepts a float list */
-    vectorSimilar(queryVector: number[]): QueryBuilder {
-        const sv: SearchValue = { floatList: { values: queryVector } };
-        return this._add(SearchOperator.VECTOR_SIMILAR, sv);
-    }
 }
 
 // ── QueryBuilder ──────────────────────────────────────────────────────────────
@@ -143,7 +137,7 @@ export class FieldCondition {
  * Fluent DSL builder that compiles to a SearchRequest proto.
  *
  * Operators supported (matching SearchOperator enum exactly):
- *   eq, neq, contains, startsWith, gt, lt, gte, lte, in, vectorSimilar
+ *   eq, neq, contains, startsWith, gt, lt, gte, lte, in
  */
 export class QueryBuilder {
     private readonly _clauses: SearchClause[] = [];
