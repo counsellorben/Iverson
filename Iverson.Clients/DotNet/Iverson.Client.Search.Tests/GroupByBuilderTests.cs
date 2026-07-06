@@ -154,4 +154,79 @@ public sealed class GroupByBuilderTests
         req.OrderBy.Should().HaveCount(2);
         req.Query.Clauses.Should().ContainSingle();
     }
+
+    // ── Not / HavingLogic ───────────────────────────────────────────────────────
+
+    [Fact]
+    public void Not_AddsMustNotClause()
+    {
+        var request = Query.GroupBy("Article")
+            .Keys("Category")
+            .CountAll("n")
+            .Not("Category", SearchOperator.Equals, "spam")
+            .Build();
+
+        request.Query.Clauses.Should().ContainSingle(c =>
+            c.ClauseType == SearchClauseType.MustNot && c.Property == "Category");
+    }
+
+    [Fact]
+    public void WithHavingLogic_Or_IsCarried()
+    {
+        var request = Query.GroupBy("Article")
+            .Keys("Category")
+            .CountAll("n")
+            .Having("n", SearchOperator.GreaterThan, 5)
+            .Having("n", SearchOperator.LessThan, 2)
+            .WithHavingLogic(SearchLogic.Or)
+            .Build();
+
+        request.Having.Logic.Should().Be(SearchLogic.Or);
+    }
+
+    // ── Build validation ────────────────────────────────────────────────────────
+
+    [Fact]
+    public void Build_DuplicateMetricAliases_Throws()
+    {
+        var builder = Query.GroupBy("Article")
+            .Keys("Category")
+            .Sum("WordCount")
+            .Sum("WordCount");
+        var act = () => builder.Build();
+        act.Should().Throw<InvalidOperationException>().WithMessage("*WordCount_sum*");
+    }
+
+    [Fact]
+    public void Build_HavingUnknownAlias_Throws()
+    {
+        var builder = Query.GroupBy("Article")
+            .Keys("Category")
+            .CountAll("n")
+            .Having("misspelled", SearchOperator.GreaterThan, 5);
+        var act = () => builder.Build();
+        act.Should().Throw<InvalidOperationException>().WithMessage("*misspelled*");
+    }
+
+    [Fact]
+    public void Build_HavingOnKey_IsAllowed()
+    {
+        var act = () => Query.GroupBy("Article")
+            .Keys("Category")
+            .CountAll("n")
+            .Having("Category", SearchOperator.Equals, "tech")
+            .Build();
+        act.Should().NotThrow();
+    }
+
+    [Fact]
+    public void Build_OrderByUnknownAlias_Throws()
+    {
+        var builder = Query.GroupBy("Article")
+            .Keys("Category")
+            .CountAll("n")
+            .OrderBy("nope");
+        var act = () => builder.Build();
+        act.Should().Throw<InvalidOperationException>().WithMessage("*nope*");
+    }
 }

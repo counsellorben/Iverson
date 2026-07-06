@@ -23,6 +23,24 @@ public sealed class QueryBuilderTests
         public string Name            { get; set; } = "";
     }
 
+    private sealed class TestArticle
+    {
+        public string Title { get; set; } = "";
+        public int WordCount { get; set; }
+        public string AuthorId { get; set; } = "";
+    }
+
+    private sealed class TestAuthor
+    {
+        public string Id { get; set; } = "";
+        public string PublisherId { get; set; } = "";
+    }
+
+    private sealed class TestPublisher
+    {
+        public string Id { get; set; } = "";
+    }
+
     // ── Build: TypeName ───────────────────────────────────────────────────────
 
     [Fact]
@@ -174,22 +192,6 @@ public sealed class QueryBuilderTests
             .Build();
 
         req.Query.Clauses.Single().Value.StringList.Values.Should().BeEquivalentTo(["Alice", "Bob"]);
-    }
-
-    // ── Build: vector clauses ─────────────────────────────────────────────────
-
-    [Fact]
-    public void WhereVectorSimilar_ProducesFilterClause_WithFloatList()
-    {
-        var vec = new float[] { 0.1f, 0.2f, 0.3f };
-        var req = Query.For<Article>()
-            .WhereVectorSimilar(x => x.Title, vec)
-            .Build();
-
-        var clause = req.Query.Clauses.Single();
-        clause.ClauseType.Should().Be(SearchClauseType.Filter);
-        clause.Operator.Should().Be(SearchOperator.VectorSimilar);
-        clause.Value.FloatList.Values.Should().BeEquivalentTo(vec);
     }
 
     // ── Build: sorting ────────────────────────────────────────────────────────
@@ -470,5 +472,58 @@ public sealed class QueryBuilderTests
 
         var join = req.Joins.Should().ContainSingle().Subject;
         join.Kind.Should().Be(JoinKind.Full);
+    }
+
+    // ── EndsWith alias ─────────────────────────────────────────────────────────
+
+    [Fact]
+    public void EndsWith_Alias_MapsToEndsWithOperator()
+    {
+        SearchOperators.EndsWith.Should().Be(SearchOperator.EndsWith);
+    }
+
+    // ── Build: guard against BuildAggregate-only state ────────────────────────
+
+    [Fact]
+    public void Build_WithAggregationsConfigured_Throws()
+    {
+        var builder = Query.For<TestArticle>().Avg(a => a.WordCount);
+        var act = () => builder.Build();
+        act.Should().Throw<InvalidOperationException>().WithMessage("*BuildAggregate*");
+    }
+
+    [Fact]
+    public void BuildAggregate_WithSortConfigured_Throws()
+    {
+        var builder = Query.For<TestArticle>()
+            .Avg(a => a.WordCount)
+            .OrderBy(a => a.Title);
+        var act = () => builder.BuildAggregate();
+        act.Should().Throw<InvalidOperationException>().WithMessage("*sort*");
+    }
+
+    [Fact]
+    public void BuildAggregate_WithPagingConfigured_Throws()
+    {
+        var builder = Query.For<TestArticle>()
+            .Avg(a => a.WordCount)
+            .Page(1, 10);
+        var act = () => builder.BuildAggregate();
+        act.Should().Throw<InvalidOperationException>().WithMessage("*pag*");
+    }
+
+    // ── Build: multi-hop joins ─────────────────────────────────────────────────
+
+    [Fact]
+    public void Join_MultiHop_SetsExplicitLeftType()
+    {
+        var request = Query.For<TestArticle>()
+            .Join<TestArticle, TestAuthor>(a => a.AuthorId, au => au.Id)
+            .Join<TestAuthor, TestPublisher>(au => au.PublisherId, p => p.Id)
+            .Build();
+
+        request.Joins.Should().HaveCount(2);
+        request.Joins[1].LeftType.Should().Be("TestAuthor");
+        request.Joins[1].RightType.Should().Be("TestPublisher");
     }
 }

@@ -14,10 +14,10 @@ public static class SearchOperators
     public static readonly SearchOperator NotEquals            = SearchOperator.NotEquals;
     public static readonly SearchOperator Contains             = SearchOperator.Contains;
     public static readonly SearchOperator StartsWith           = SearchOperator.StartsWith;
+    public static readonly SearchOperator EndsWith             = SearchOperator.EndsWith;
     public static readonly SearchOperator GreaterThan          = SearchOperator.GreaterThan;
     public static readonly SearchOperator LessThan             = SearchOperator.LessThan;
     public static readonly SearchOperator GreaterThanOrEquals  = SearchOperator.GreaterThanOrEquals;
     public static readonly SearchOperator LessThanOrEquals     = SearchOperator.LessThanOrEquals;
     public static readonly SearchOperator In                   = SearchOperator.In;
-    public static readonly SearchOperator VectorSimilar        = SearchOperator.VectorSimilar;
 }

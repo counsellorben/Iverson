@@ -14,9 +14,10 @@ public sealed class QueryBuilder<T> where T : class
     private readonly List<AggregationSpec> _aggregations = [];
     private readonly List<JoinSpec>        _joins        = [];
     private readonly List<string>          _fields       = [];
-    private SearchLogic _logic    = SearchLogic.And;
-    private int         _page     = 0;
-    private int         _pageSize = 20;
+    private SearchLogic _logic     = SearchLogic.And;
+    private int         _page      = 0;
+    private int         _pageSize  = 20;
+    private bool        _pagingSet;
 
     internal QueryBuilder(string typeName) => _typeName = typeName;
 
@@ -36,18 +37,6 @@ public sealed class QueryBuilder<T> where T : class
         TValue value)
         => AddClause(property, op, value, SearchClauseType.MustNot);
 
-    // ── Vector similarity ──────────────────────────────────────────────────────
-    // Dedicated overloads decouple the property type (string) from the query type
-    // (float[]) — needed when [IversonEmbedding] is placed on a string property.
-
-    public QueryBuilder<T> WhereVectorSimilar<TValue>(
-        Expression<Func<T, TValue>> property, float[] queryVector)
-        => AddVectorClause(property, queryVector, SearchClauseType.Filter);
-
-    public QueryBuilder<T> NotVectorSimilar<TValue>(
-        Expression<Func<T, TValue>> property, float[] queryVector)
-        => AddVectorClause(property, queryVector, SearchClauseType.MustNot);
-
     // ── Sorting and paging ─────────────────────────────────────────────────────
 
     public QueryBuilder<T> OrderBy<TValue>(
@@ -60,8 +49,9 @@ public sealed class QueryBuilder<T> where T : class
 
     public QueryBuilder<T> Page(int page, int size = 20)
     {
-        _page     = page;
-        _pageSize = size;
+        _page      = page;
+        _pageSize  = size;
+        _pagingSet = true;
         return this;
     }
 
@@ -94,6 +84,28 @@ public sealed class QueryBuilder<T> where T : class
         _joins.Add(new JoinSpec
         {
             LeftType   = typeof(T).Name,
+            RightType  = typeof(TRight).Name,
+            LeftField  = PropertyNameObj(leftField),
+            RightField = PropertyNameObj(rightField),
+            Kind       = kind
+        });
+        return this;
+    }
+
+    /// <summary>
+    /// Joins from an already-joined type to another registered type — the multi-hop form.
+    /// The single-type <see cref="Join{TRight}"/> always joins from <typeparamref name="T"/>.
+    /// </summary>
+    public QueryBuilder<T> Join<TLeft, TRight>(
+        Expression<Func<TLeft, object>> leftField,
+        Expression<Func<TRight, object>> rightField,
+        JoinKind kind = JoinKind.Inner)
+        where TLeft : class
+        where TRight : class
+    {
+        _joins.Add(new JoinSpec
+        {
+            LeftType   = typeof(TLeft).Name,
             RightType  = typeof(TRight).Name,
             LeftField  = PropertyNameObj(leftField),
             RightField = PropertyNameObj(rightField),
@@ -168,6 +180,11 @@ public sealed class QueryBuilder<T> where T : class
 
     public SearchRequest Build()
     {
+        if (_aggregations.Count > 0)
+            throw new InvalidOperationException(
+                "Aggregations were configured but Build() produces a SearchRequest, which " +
+                "ignores them — call BuildAggregate() instead.");
+
         var query = new SearchQuery { Logic = _logic };
         query.Clauses.AddRange(_clauses);
         query.Sort.AddRange(_sorts);
@@ -187,6 +204,15 @@ public sealed class QueryBuilder<T> where T : class
     /// <summary>Builds an <see cref="AggregateRequest"/> using any clauses as the filter.</summary>
     public AggregateRequest BuildAggregate(string? traceId = null)
     {
+        if (_sorts.Count > 0)
+            throw new InvalidOperationException(
+                "OrderBy has no effect on aggregations — sort/bucket order is determined by " +
+                "the aggregation type. Remove the OrderBy call.");
+        if (_pagingSet)
+            throw new InvalidOperationException(
+                "Page has no effect on aggregations — paging applies to Search only. " +
+                "Remove the Page call.");
+
         var query = new SearchQuery { Logic = _logic };
         query.Clauses.AddRange(_clauses);
 
@@ -212,21 +238,6 @@ public sealed class QueryBuilder<T> where T : class
             Name  = $"{field}_{type.ToString().ToLowerInvariant()}",
             Type  = type,
             Field = field
-        });
-        return this;
-    }
-
-    private QueryBuilder<T> AddVectorClause<TValue>(
-        Expression<Func<T, TValue>> property,
-        float[] queryVector,
-        SearchClauseType clauseType)
-    {
-        _clauses.Add(new SearchClause
-        {
-            Property   = PropertyName(property),
-            Operator   = SearchOperator.VectorSimilar,
-            Value      = new SearchValue { FloatList = new RepeatedFloat { Values = { queryVector } } },
-            ClauseType = clauseType
         });
         return this;
     }

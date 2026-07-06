@@ -16,8 +16,9 @@ public sealed class GroupByBuilder
     private readonly List<SearchClause> _where   = [];
     private readonly List<SearchClause> _having  = [];
     private readonly List<JoinSpec>     _joins   = [];
-    private SearchLogic _whereLogic = SearchLogic.And;
-    private int          _limit     = 10_000;
+    private SearchLogic _whereLogic  = SearchLogic.And;
+    private SearchLogic _havingLogic = SearchLogic.And;
+    private int          _limit      = 10_000;
 
     public GroupByBuilder(string typeName) => _typeName = typeName;
 
@@ -42,6 +43,10 @@ public sealed class GroupByBuilder
     public GroupByBuilder Where(string field, SearchOperator op, object value)
         => AddWhere(field, op, value, SearchClauseType.Filter);
 
+    /// <summary>Adds a MUST_NOT WHERE clause (excludes matches before grouping).</summary>
+    public GroupByBuilder Not(string field, SearchOperator op, object value)
+        => AddWhere(field, op, value, SearchClauseType.MustNot);
+
     public GroupByBuilder WithLogic(SearchLogic logic)
     {
         _whereLogic = logic;
@@ -52,6 +57,13 @@ public sealed class GroupByBuilder
 
     public GroupByBuilder Having(string alias, SearchOperator op, object value)
         => AddHaving(alias, op, value);
+
+    /// <summary>Sets the logic combining HAVING clauses. Defaults to AND.</summary>
+    public GroupByBuilder WithHavingLogic(SearchLogic logic)
+    {
+        _havingLogic = logic;
+        return this;
+    }
 
     // ── JOIN ────────────────────────────────────────────────────────────────────
 
@@ -125,11 +137,26 @@ public sealed class GroupByBuilder
 
     public GroupByRequest Build(string? traceId = null)
     {
+        var aliasSet = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var m in _metrics)
+            if (!aliasSet.Add(m.Name))
+                throw new InvalidOperationException($"Duplicate metric alias '{m.Name}'.");
+        foreach (var k in _keys) aliasSet.Add(k);
+
+        foreach (var h in _having)
+            if (!aliasSet.Contains(h.Property))
+                throw new InvalidOperationException(
+                    $"HAVING references '{h.Property}', which is neither a metric alias nor a key.");
+        foreach (var s in _orderBy)
+            if (!aliasSet.Contains(s.Property))
+                throw new InvalidOperationException(
+                    $"OrderBy references '{s.Property}', which is neither a metric alias nor a key.");
+
         var request = new GroupByRequest
         {
             TypeName = _typeName,
             Query    = new SearchQuery { Logic = _whereLogic },
-            Having   = new SearchQuery { Logic = SearchLogic.And },
+            Having   = new SearchQuery { Logic = _havingLogic },
             Limit    = _limit,
             TraceId  = traceId ?? string.Empty
         };
