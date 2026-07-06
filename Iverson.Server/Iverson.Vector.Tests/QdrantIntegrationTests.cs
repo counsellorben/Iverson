@@ -78,7 +78,7 @@ public sealed class QdrantIntegrationTests(QdrantContainerFixture fixture)
         var vector = new float[] { 1f, 0f, 0f, 0f };
 
         await _svc.EnsureCollectionAsync(name, vectorSize: 4);
-        await _svc.UpsertAsync(name, 42UL, vector, new Dictionary<string, string> { ["label"] = "iverson" });
+        await _svc.UpsertAsync(name, 42UL, vector, new Dictionary<string, object> { ["label"] = "iverson" });
 
         var results = await _svc.SearchAsync(name, vector, limit: 5);
 
@@ -195,7 +195,7 @@ public sealed class QdrantIntegrationTests(QdrantContainerFixture fixture)
 
         await _svc.UpsertNamedAsync(name, 7UL,
             new Dictionary<string, float[]> { ["title_vector"] = [1f, 0f, 0f, 0f] },
-            new Dictionary<string, string>  { ["title"]        = "The Answer" });
+            new Dictionary<string, object>  { ["title"]        = "The Answer" });
 
         var results = await _svc.SearchNamedAsync(name, "title_vector", [1f, 0f, 0f, 0f], limit: 5);
 
@@ -239,5 +239,26 @@ public sealed class QdrantIntegrationTests(QdrantContainerFixture fixture)
 
         titleResults.Should().ContainSingle().Which.Id.Should().Be(10UL);
         bodyResults.Should().ContainSingle().Which.Id.Should().Be(10UL);
+    }
+
+    [Fact]
+    public async Task UpsertAsync_TypedPayload_RoundTripsThroughRealQdrant()
+    {
+        var collection = UniqueName();
+        await _svc.EnsureCollectionAsync(collection, 4);
+
+        await _svc.UpsertAsync(collection, 1, [0.1f, 0.2f, 0.3f, 0.4f], new Dictionary<string, object>
+        {
+            ["wordCount"] = 500L,
+            ["rating"]    = 4.5,
+            ["featured"]  = true
+        });
+
+        var results = await _svc.SearchAsync(collection, [0.1f, 0.2f, 0.3f, 0.4f], limit: 1);
+
+        results.Should().ContainSingle();
+        // Read-side projection (VectorSearchResult.Payload) stays string-typed by design —
+        // this only asserts the upsert didn't throw and a point round-tripped.
+        results[0].Payload.Should().ContainKey("wordCount");
     }
 }

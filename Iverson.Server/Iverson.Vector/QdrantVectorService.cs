@@ -40,7 +40,7 @@ public class QdrantVectorService(
         string collectionName,
         ulong id,
         float[] vector,
-        Dictionary<string, string>? payload = null)
+        IReadOnlyDictionary<string, object>? payload = null)
     {
         using var activity = Telemetry.Source.StartActivity("qdrant.upsert", ActivityKind.Client);
         activity?.SetTag("db.system", "qdrant");
@@ -52,7 +52,7 @@ public class QdrantVectorService(
 
         if (payload is not null)
             foreach (var (key, value) in payload)
-                point.Payload[key] = value;
+                point.Payload[key] = ToQdrantValue(value);
 
         await client.UpsertAsync(collectionName, [point]);
         activity?.SetStatus(ActivityStatusCode.Ok);
@@ -62,7 +62,7 @@ public class QdrantVectorService(
         string collectionName,
         ulong id,
         IReadOnlyDictionary<string, float[]> namedVectors,
-        IReadOnlyDictionary<string, string>? payload = null)
+        IReadOnlyDictionary<string, object>? payload = null)
     {
         using var activity = Telemetry.Source.StartActivity("qdrant.upsert_named", ActivityKind.Client);
         activity?.SetTag("db.system", "qdrant");
@@ -82,7 +82,7 @@ public class QdrantVectorService(
 
         if (payload is not null)
             foreach (var (key, value) in payload)
-                point.Payload[key] = value;
+                point.Payload[key] = ToQdrantValue(value);
 
         await client.UpsertAsync(collectionName, [point]);
         activity?.SetStatus(ActivityStatusCode.Ok);
@@ -217,6 +217,19 @@ public class QdrantVectorService(
     }
 
     // ── Private helpers ────────────────────────────────────────────────────────
+
+    private static Value ToQdrantValue(object value) => value switch
+    {
+        string s           => s,
+        bool b             => b,
+        int i              => (long)i,
+        long l             => l,
+        float f            => (double)f,
+        double d           => d,
+        DateTime dt        => dt.ToString("o"),
+        DateTimeOffset dto => dto.ToString("o"),
+        _                  => value.ToString() ?? string.Empty
+    };
 
     private async Task MigrateCollectionAsync(
         CollectionSchema schema,

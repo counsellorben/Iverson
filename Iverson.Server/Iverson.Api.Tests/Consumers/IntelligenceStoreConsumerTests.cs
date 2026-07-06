@@ -40,7 +40,7 @@ public class IntelligenceStoreConsumerTests
             Arg.Any<string>(),
             Arg.Any<ulong>(),
             Arg.Any<IReadOnlyDictionary<string, float[]>>(),
-            Arg.Any<IReadOnlyDictionary<string, string>?>())
+            Arg.Any<IReadOnlyDictionary<string, object>?>())
             .Returns(Task.CompletedTask);
         _vector.DeleteAsync(Arg.Any<string>(), Arg.Any<ulong>()).Returns(Task.CompletedTask);
         _embedding.EmbedAsync(Arg.Any<string>(), Arg.Any<CancellationToken>())
@@ -84,7 +84,7 @@ public class IntelligenceStoreConsumerTests
             "articles",
             Arg.Any<ulong>(),
             Arg.Any<IReadOnlyDictionary<string, float[]>>(),
-            Arg.Any<IReadOnlyDictionary<string, string>?>());
+            Arg.Any<IReadOnlyDictionary<string, object>?>());
     }
 
     [Fact]
@@ -111,7 +111,7 @@ public class IntelligenceStoreConsumerTests
             "articles_chunks",
             Arg.Any<ulong>(),
             Arg.Any<IReadOnlyDictionary<string, float[]>>(),
-            Arg.Any<IReadOnlyDictionary<string, string>?>());
+            Arg.Any<IReadOnlyDictionary<string, object>?>());
     }
 
     [Fact]
@@ -157,7 +157,7 @@ public class IntelligenceStoreConsumerTests
             Arg.Any<string>(),
             Arg.Any<ulong>(),
             Arg.Any<IReadOnlyDictionary<string, float[]>>(),
-            Arg.Any<IReadOnlyDictionary<string, string>?>());
+            Arg.Any<IReadOnlyDictionary<string, object>?>());
     }
 
     [Fact]
@@ -223,12 +223,12 @@ public class IntelligenceStoreConsumerTests
             OccurredAt:    DateTimeOffset.UtcNow,
             TargetStores:  StoreTarget.Intelligence);
 
-        IReadOnlyDictionary<string, string>? capturedPayload = null;
+        IReadOnlyDictionary<string, object>? capturedPayload = null;
         _vector.UpsertNamedAsync(
             "articles",
             Arg.Any<ulong>(),
             Arg.Any<IReadOnlyDictionary<string, float[]>>(),
-            Arg.Do<IReadOnlyDictionary<string, string>?>(p => capturedPayload = p))
+            Arg.Do<IReadOnlyDictionary<string, object>?>(p => capturedPayload = p))
             .Returns(Task.CompletedTask);
 
         var sut = BuildSut();
@@ -317,7 +317,7 @@ public class IntelligenceStoreConsumerTests
             "docs_chunks",
             Arg.Any<ulong>(),
             Arg.Any<IReadOnlyDictionary<string, float[]>>(),
-            Arg.Any<IReadOnlyDictionary<string, string>?>())
+            Arg.Any<IReadOnlyDictionary<string, object>?>())
             .Returns(ci =>
             {
                 upsertCount++;

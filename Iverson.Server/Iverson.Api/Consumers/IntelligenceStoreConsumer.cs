@@ -93,7 +93,7 @@ public sealed class IntelligenceStoreConsumer(
 
             if (namedVectors.Count > 0)
             {
-                var pointPayload = new Dictionary<string, string> { ["key"] = ev.Key };
+                var pointPayload = new Dictionary<string, object> { ["key"] = ev.Key };
                 foreach (var vf in schema.VectorFields)
                 {
                     var fieldText = ExtractString(payload, vf.PropertyName);
@@ -136,7 +136,7 @@ public sealed class IntelligenceStoreConsumer(
                         chunksCollection,
                         chunkId,
                         new Dictionary<string, float[]> { [vectorName] = chunkVector },
-                        new Dictionary<string, string>
+                        new Dictionary<string, object>
                         {
                             ["text"]        = chunkText,
                             ["parent_id"]   = ev.Key,

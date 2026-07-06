@@ -10,12 +10,12 @@ public interface IVectorService
         string collectionName,
         ulong id,
         float[] vector,
-        Dictionary<string, string>? payload = null);
+        IReadOnlyDictionary<string, object>? payload = null);
     Task UpsertNamedAsync(
         string collectionName,
         ulong id,
         IReadOnlyDictionary<string, float[]> namedVectors,
-        IReadOnlyDictionary<string, string>? payload = null);
+        IReadOnlyDictionary<string, object>? payload = null);
     Task<IReadOnlyList<VectorSearchResult>> SearchAsync(
         string collectionName,
         float[] queryVector,

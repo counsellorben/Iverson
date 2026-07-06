@@ -66,7 +66,7 @@ public sealed class QdrantVectorServiceTests
             7UL,
             Arg.Is<IReadOnlyDictionary<string, float[]>>(d =>
                 d.ContainsKey("bio_embedding") && d.ContainsKey("stats_embedding")),
-            Arg.Any<IReadOnlyDictionary<string, string>?>());
+            Arg.Any<IReadOnlyDictionary<string, object>?>());
     }
 
     [Fact]
@@ -148,6 +148,26 @@ public sealed class QdrantVectorServiceTests
 
         index.FieldName.Should().Be("year");
         index.Kind.Should().Be(PayloadIndexKind.Integer);
+    }
+
+    [Fact]
+    public async Task UpsertAsync_AcceptsTypedPayloadValues()
+    {
+        var vector = Substitute.For<IVectorService>();
+        var payload = new Dictionary<string, object>
+        {
+            ["title"]     = "typed",
+            ["wordCount"] = 42L,
+            ["rating"]    = 4.5,
+            ["published"] = true
+        };
+
+        await vector.UpsertAsync("articles", 1, [0.1f, 0.2f], payload);
+
+        await vector.Received(1).UpsertAsync("articles", 1, Arg.Any<float[]>(),
+            Arg.Is<IReadOnlyDictionary<string, object>>(p =>
+                p["title"].Equals("typed") && p["wordCount"].Equals(42L) &&
+                p["rating"].Equals(4.5) && p["published"].Equals(true)));
     }
 
 }
