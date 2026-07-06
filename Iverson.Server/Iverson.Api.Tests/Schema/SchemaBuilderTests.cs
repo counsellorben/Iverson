@@ -1,5 +1,6 @@
 using FluentAssertions;
 using Iverson.Api.Schema;
+using Iverson.Api.Tests.Helpers;
 using Iverson.Client.Contracts;
 using Iverson.Embeddings;
 using NSubstitute;
@@ -113,5 +114,16 @@ public class SchemaBuilderTests
 
         act.Should().Throw<InvalidOperationException>()
            .WithMessage("*Category*");
+    }
+
+    [Fact]
+    public void ToCollectionSchema_PayloadIndexNames_AreCamelCase()
+    {
+        var descriptor = SchemaFixtures.ArticleSchema();
+
+        var schema = SchemaBuilder.ToCollectionSchema(descriptor);
+
+        schema.PayloadIndexes.Select(p => p.FieldName).Should().Contain(["title", "body", "authorId"]);
+        schema.PayloadIndexes.Select(p => p.FieldName).Should().NotContain(["Title", "Body", "AuthorId"]);
     }
 }

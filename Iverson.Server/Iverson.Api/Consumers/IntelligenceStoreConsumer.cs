@@ -98,7 +98,17 @@ public sealed class IntelligenceStoreConsumer(
                 {
                     var fieldText = ExtractString(payload, vf.PropertyName);
                     if (!string.IsNullOrWhiteSpace(fieldText))
-                        pointPayload[char.ToLowerInvariant(vf.PropertyName[0]) + vf.PropertyName[1..]] = fieldText;
+                        pointPayload[ToCamelCase(vf.PropertyName)] = fieldText;
+                }
+                foreach (var col in schema.ScalarColumns)
+                {
+                    var val = ExtractTypedValue(payload, col.Name, col.SqlType);
+                    if (val is not null) pointPayload[ToCamelCase(col.Name)] = val;
+                }
+                foreach (var fk in schema.FkColumns)
+                {
+                    var val = ExtractTypedValue(payload, fk.ColumnName, "TEXT");
+                    if (val is not null) pointPayload[ToCamelCase(fk.ColumnName)] = val;
                 }
                 await vector.UpsertNamedAsync(schema.CollectionName, pointId, namedVectors, pointPayload);
                 logger.LogInformation("[Intelligence] Upserted {Count} vector(s) for {Type}:{Key}",
@@ -248,6 +258,26 @@ public sealed class IntelligenceStoreConsumer(
 
         return null;
     }
+
+    private static object? ExtractTypedValue(JsonElement payload, string propertyName, string sqlType)
+    {
+        if (!payload.TryGetProperty(propertyName, out var v))
+        {
+            var camel = char.ToLowerInvariant(propertyName[0]) + propertyName[1..];
+            if (!payload.TryGetProperty(camel, out v)) return null;
+        }
+        if (v.ValueKind == JsonValueKind.Null) return null;
+
+        return sqlType.ToUpperInvariant() switch
+        {
+            "INTEGER" or "BIGINT"         => v.TryGetInt64(out var l) ? l : null,
+            "REAL" or "DOUBLE PRECISION"  => v.TryGetDouble(out var d) ? d : null,
+            "BOOLEAN"                     => v.ValueKind is JsonValueKind.True or JsonValueKind.False ? v.GetBoolean() : null,
+            _                             => v.ValueKind == JsonValueKind.String ? v.GetString() : v.ToString()
+        };
+    }
+
+    private static string ToCamelCase(string name) => char.ToLowerInvariant(name[0]) + name[1..];
 
     private static EntityEvent Deserialize(string key, string value)
     {

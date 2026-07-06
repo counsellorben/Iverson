@@ -329,4 +329,36 @@ public class IntelligenceStoreConsumerTests
 
         upsertCount.Should().BeGreaterThanOrEqualTo(10);
     }
+
+    [Fact]
+    public async Task HandleCreated_PointPayload_ContainsTypedScalarAndFkColumns()
+    {
+        await _registry.RegisterAsync(SchemaFixtures.ArticleSchema());
+
+        var entityKey  = Guid.NewGuid().ToString();
+        var authorId   = "00000000-0000-0000-0000-000000000001";
+        var payload    = $$$"""{"Title":"T","Body":"B","AuthorId":"{{{authorId}}}"}""";
+        var ev = new EntityEvent(
+            TypeName:      "Article",
+            Key:           entityKey,
+            PayloadJson:   payload,
+            TraceId:       "trace-typed",
+            SchemaVersion: "1",
+            OccurredAt:    DateTimeOffset.UtcNow,
+            TargetStores:  StoreTarget.Intelligence);
+
+        IReadOnlyDictionary<string, object>? capturedPayload = null;
+        _vector.UpsertNamedAsync(
+            "articles",
+            Arg.Any<ulong>(),
+            Arg.Any<IReadOnlyDictionary<string, float[]>>(),
+            Arg.Do<IReadOnlyDictionary<string, object>?>(p => capturedPayload = p))
+            .Returns(Task.CompletedTask);
+
+        var sut = BuildSut();
+        await sut.HandleAsync(ev.Key, Serialize(ev), CancellationToken.None);
+
+        capturedPayload.Should().NotBeNull();
+        capturedPayload!["authorId"].Should().Be(authorId);
+    }
 }
