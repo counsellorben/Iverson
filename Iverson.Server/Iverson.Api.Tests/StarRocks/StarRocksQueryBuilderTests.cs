@@ -1251,6 +1251,8 @@ public class StarRocksQueryBuilderTests
             [VectorClause()], SearchLogic.And, param);
 
         act.Should().Throw<RpcException>()
-            .Where(e => e.Status.StatusCode == StatusCode.InvalidArgument);
+            .Where(e => e.Status.StatusCode == StatusCode.InvalidArgument
+                     && e.Status.Detail.Contains("VECTOR_SIMILAR")
+                     && e.Status.Detail.Contains("SearchSimilar"));
     }
 }

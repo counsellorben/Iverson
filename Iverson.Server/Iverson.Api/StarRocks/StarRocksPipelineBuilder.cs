@@ -33,6 +33,16 @@ internal static class StarRocksPipelineBuilder
         "ASC", "DESC", "COALESCE", "NULLIF", "ROUND", "ABS", "AND", "OR", "NOT", "NULL"
     };
 
+    private static Dictionary<string, string> ColumnsFor(SchemaDescriptor schema)
+    {
+        var cols = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+        {
+            [schema.KeyColumn.Name] = schema.KeyColumn.Name
+        };
+        foreach (var c in schema.ScalarColumns) cols[c.Name] = c.Name;
+        return cols;
+    }
+
     internal static IReadOnlyList<StepColumns> TrackAndValidate(
         SchemaDescriptor schema,
         PipelineRequest request,
@@ -40,12 +50,7 @@ internal static class StarRocksPipelineBuilder
     {
         var steps = new List<StepColumns>();
 
-        var baseColumns = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
-        {
-            [schema.KeyColumn.Name] = schema.KeyColumn.Name
-        };
-        foreach (var c in schema.ScalarColumns)
-            baseColumns[c.Name] = c.Name;
+        var baseColumns = ColumnsFor(schema);
         steps.Add(new StepColumns(BaseStepName, baseColumns));
 
         foreach (var clause in request.BaseWhere)
@@ -151,8 +156,8 @@ internal static class StarRocksPipelineBuilder
             }
             foreach (var m in step.Metrics)
             {
-                if (string.IsNullOrEmpty(m.Name))
-                    throw Invalid($"Step '{step.Name}': every metric requires an alias.");
+                if (string.IsNullOrEmpty(m.Name) || !IdentifierRx.IsMatch(m.Name))
+                    throw Invalid($"Step '{step.Name}': metric alias '{m.Name}' is not a valid identifier.");
                 if (!string.IsNullOrEmpty(m.Field))
                     RequireColumn(step.Name, input.Columns, m.Field);
                 else if (string.IsNullOrEmpty(m.Expression) && m.Type != AggregationType.Count)
@@ -227,12 +232,7 @@ internal static class StarRocksPipelineBuilder
             var joinedSchema = registry.Get(join.Source)
                 ?? throw Invalid($"Step '{step.Name}': join source '{join.Source}' is neither " +
                                  "an earlier step nor a registered type.");
-            var cols = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
-            {
-                [joinedSchema.KeyColumn.Name] = joinedSchema.KeyColumn.Name
-            };
-            foreach (var c in joinedSchema.ScalarColumns) cols[c.Name] = c.Name;
-            sources[joinedSchema.TypeName] = new StepColumns(joinedSchema.TypeName, cols);
+            sources[joinedSchema.TypeName] = new StepColumns(joinedSchema.TypeName, ColumnsFor(joinedSchema));
         }
         return sources;
     }
@@ -273,9 +273,10 @@ internal static class StarRocksPipelineBuilder
     private static void ValidateDeriveExpr(
         string stepName, DeriveColumn d, Dictionary<string, string> available)
     {
-        if (d.Expr.Contains(';') || d.Expr.Contains('\'') || d.Expr.Contains('`'))
+        if (d.Expr.Contains(';') || d.Expr.Contains('\'') || d.Expr.Contains('`') ||
+            d.Expr.Contains("--") || d.Expr.Contains("/*") || d.Expr.Contains("*/"))
             throw Invalid($"Step '{stepName}': derive '{d.Alias}' contains a forbidden character " +
-                          "(no semicolons, quotes, or backticks).");
+                          "(no semicolons, quotes, backticks, or SQL comment sequences).");
         foreach (Match m in TokenRx.Matches(d.Expr))
         {
             if (DeriveWhitelist.Contains(m.Value)) continue;

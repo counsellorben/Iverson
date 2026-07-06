@@ -687,4 +687,37 @@ public class StarRocksPipelineBuilderTests
         act.Should().Throw<RpcException>()
             .Where(e => e.Status.Detail == "Step 's1': window alias 'bad alias' is not a valid identifier.");
     }
+
+    [Fact]
+    public void Build_MetricAliasNotValidIdentifier_Throws()
+    {
+        var step = new PipelineStep { Name = "s1" };
+        step.GroupBy.Add(new GroupKey { Field = "AuthorId" });
+        step.Metrics.Add(new MetricSpec { Name = "bad alias", Type = AggregationType.Count });
+
+        var request = new PipelineRequest { TypeName = "Article" };
+        request.Steps.Add(step);
+
+        var act = () => StarRocksPipelineBuilder.Build(ArticleSchema(), request, EmptyRegistry());
+
+        act.Should().Throw<RpcException>()
+            .Where(e => e.Status.Detail == "Step 's1': metric alias 'bad alias' is not a valid identifier.");
+    }
+
+    [Theory]
+    [InlineData("WordCount -- drop everything")]
+    [InlineData("WordCount /* comment */ + 1")]
+    public void Build_DeriveExprWithSqlCommentSequence_Throws(string expr)
+    {
+        var step = new PipelineStep { Name = "s1" };
+        step.Derive.Add(new DeriveColumn { Alias = "d", Expr = expr });
+
+        var request = new PipelineRequest { TypeName = "Article" };
+        request.Steps.Add(step);
+
+        var act = () => StarRocksPipelineBuilder.Build(ArticleSchema(), request, EmptyRegistry());
+
+        act.Should().Throw<RpcException>()
+            .Where(e => e.Status.Detail.Contains("forbidden character"));
+    }
 }
