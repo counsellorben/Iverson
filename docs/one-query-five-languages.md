@@ -610,7 +610,7 @@ round trip, no client-side stitching.
 using Iverson.Client.Search;
 using static Iverson.Client.Search.SearchOperators;
 
-var pipeline = Pipeline.For("Article")
+var pipeline = Query.Pipeline("Article")
     .Where("IsPublished", EqualTo, true)                    // base CTE
     .Step("by_author", s => s
         .GroupBy("AuthorId")

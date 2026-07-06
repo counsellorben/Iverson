@@ -23,7 +23,13 @@ public static class QdrantFilterBuilder
             var (condition, negate) = BuildCondition(clause, rpcName);
             var mustNot = negate ^ (clause.ClauseType == SearchClauseType.MustNot);
 
-            if (mustNot)
+            if (mustNot && logic == SearchLogic.Or)
+                // Under OR logic, a top-level MustNot would be ANDed against the whole filter
+                // (Qdrant evaluates must_not conjunctively), silently turning "A OR NOT B" into
+                // "A AND NOT B". Nest the negation inside Should instead so it participates in
+                // the OR-group correctly.
+                filter.Should.Add(!condition);
+            else if (mustNot)
                 filter.MustNot.Add(condition);
             else if (logic == SearchLogic.Or)
                 filter.Should.Add(condition);
@@ -39,15 +45,33 @@ public static class QdrantFilterBuilder
         {
             SearchOperator.Equals    => (BuildEqualityCondition(clause.Property, clause.Value), false),
             SearchOperator.NotEquals => (BuildEqualityCondition(clause.Property, clause.Value), true),
-            SearchOperator.GreaterThan          => (Conditions.Range(clause.Property, new Range { Gt  = clause.Value.NumberVal }), false),
-            SearchOperator.LessThan             => (Conditions.Range(clause.Property, new Range { Lt  = clause.Value.NumberVal }), false),
-            SearchOperator.GreaterThanOrEquals  => (Conditions.Range(clause.Property, new Range { Gte = clause.Value.NumberVal }), false),
-            SearchOperator.LessThanOrEquals     => (Conditions.Range(clause.Property, new Range { Lte = clause.Value.NumberVal }), false),
-            SearchOperator.In => (Conditions.Match(clause.Property, clause.Value.StringList.Values.ToList()), false),
+            SearchOperator.GreaterThan          => (Conditions.Range(clause.Property, new Range { Gt  = RequireNumber(clause) }), false),
+            SearchOperator.LessThan             => (Conditions.Range(clause.Property, new Range { Lt  = RequireNumber(clause) }), false),
+            SearchOperator.GreaterThanOrEquals  => (Conditions.Range(clause.Property, new Range { Gte = RequireNumber(clause) }), false),
+            SearchOperator.LessThanOrEquals     => (Conditions.Range(clause.Property, new Range { Lte = RequireNumber(clause) }), false),
+            SearchOperator.In => (Conditions.Match(clause.Property, RequireStringList(clause).ToList()), false),
             _ => throw new RpcException(new Status(StatusCode.InvalidArgument,
                 $"Operator '{clause.Operator}' is not supported by {rpcName} filters. Supported operators: " +
                 "EQUALS, NOT_EQUALS, GREATER_THAN, LESS_THAN, GREATER_THAN_OR_EQUALS, LESS_THAN_OR_EQUALS, IN."))
         };
+
+    private static double RequireNumber(SearchClause clause)
+    {
+        if (clause.Value.KindCase != SearchValue.KindOneofCase.NumberVal)
+            throw new RpcException(new Status(StatusCode.InvalidArgument,
+                $"{clause.Operator} filter on '{clause.Property}' requires a numeric value."));
+
+        return clause.Value.NumberVal;
+    }
+
+    private static IReadOnlyList<string> RequireStringList(SearchClause clause)
+    {
+        if (clause.Value.KindCase != SearchValue.KindOneofCase.StringList)
+            throw new RpcException(new Status(StatusCode.InvalidArgument,
+                $"{clause.Operator} filter on '{clause.Property}' requires a string list value."));
+
+        return clause.Value.StringList.Values;
+    }
 
     private static Condition BuildEqualityCondition(string property, SearchValue value) => value.KindCase switch
     {

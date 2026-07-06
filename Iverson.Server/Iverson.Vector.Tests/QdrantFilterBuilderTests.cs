@@ -125,6 +125,22 @@ public class QdrantFilterBuilderTests
         filter.Must.Should().BeEmpty();
     }
 
+    [Fact]
+    public void Build_OrLogicWithNegatedClause_KeepsNegationInsideShould()
+    {
+        // Regression test: under OR logic, a NotEquals clause must be nested (negated) inside
+        // the top-level Should group — not routed to top-level MustNot, which Qdrant ANDs
+        // against everything else and would silently turn "A OR NOT B" into "A AND NOT B".
+        var filter = QdrantFilterBuilder.Build(
+            [Clause("category", SearchOperator.Equals, Str("Tech")),
+             Clause("category", SearchOperator.NotEquals, Str("Science"))],
+            SearchLogic.Or, "SearchSimilar");
+
+        filter.Should.Should().HaveCount(2);
+        filter.Must.Should().BeEmpty();
+        filter.MustNot.Should().BeEmpty();
+    }
+
     [Theory]
     [InlineData(SearchOperator.Contains)]
     [InlineData(SearchOperator.StartsWith)]
@@ -142,5 +158,39 @@ public class QdrantFilterBuilderTests
             .Where(e => e.Status.StatusCode == StatusCode.InvalidArgument
                      && e.Status.Detail.Contains(op.ToString())
                      && e.Status.Detail.Contains("SearchSimilar"));
+    }
+
+    [Fact]
+    public void Build_InWithNonListValue_ThrowsInvalidArgument()
+    {
+        // A caller could send an IN clause whose Value isn't actually a StringList (proto3
+        // message field defaults to null when unset). Accessing .StringList.Values on that
+        // would NullReferenceException — must be a clean InvalidArgument instead.
+        var act = () => QdrantFilterBuilder.Build(
+            [Clause("category", SearchOperator.In, Str("Tech"))], SearchLogic.And, "SearchSimilar");
+
+        act.Should().Throw<RpcException>()
+            .Where(e => e.Status.StatusCode == StatusCode.InvalidArgument
+                     && e.Status.Detail.Contains(SearchOperator.In.ToString())
+                     && e.Status.Detail.Contains("category"));
+    }
+
+    [Theory]
+    [InlineData(SearchOperator.GreaterThan)]
+    [InlineData(SearchOperator.LessThan)]
+    [InlineData(SearchOperator.GreaterThanOrEquals)]
+    [InlineData(SearchOperator.LessThanOrEquals)]
+    public void Build_RangeOperatorWithNonNumericValue_ThrowsInvalidArgument(SearchOperator op)
+    {
+        // A caller could send a Range clause whose Value isn't actually a NumberVal (proto3
+        // scalar field silently defaults to 0 when a different oneof member is set) — must be
+        // a clean InvalidArgument rather than silently filtering on 0.
+        var act = () => QdrantFilterBuilder.Build(
+            [Clause("wordCount", op, Str("not-a-number"))], SearchLogic.And, "SearchSimilar");
+
+        act.Should().Throw<RpcException>()
+            .Where(e => e.Status.StatusCode == StatusCode.InvalidArgument
+                     && e.Status.Detail.Contains(op.ToString())
+                     && e.Status.Detail.Contains("wordCount"));
     }
 }

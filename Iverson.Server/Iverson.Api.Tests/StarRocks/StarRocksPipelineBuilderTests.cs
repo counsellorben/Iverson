@@ -718,6 +718,7 @@ public class StarRocksPipelineBuilderTests
         var act = () => StarRocksPipelineBuilder.Build(ArticleSchema(), request, EmptyRegistry());
 
         act.Should().Throw<RpcException>()
-            .Where(e => e.Status.Detail.Contains("forbidden character"));
+            .Where(e => e.Status.Detail.Contains("forbidden character")
+                     && e.Status.Detail.Contains("SQL comment sequences"));
     }
 }
