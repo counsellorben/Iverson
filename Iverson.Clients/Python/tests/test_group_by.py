@@ -42,3 +42,20 @@ def test_order_by_unknown_alias_raises():
     b = group_by("Article").keys("Category").count_all("n").order_by("nope")
     with pytest.raises(ValueError, match="nope"):
         b.build()
+
+
+def test_key_collides_with_metric_alias_raises():
+    b = group_by("Article").keys("total").sum("Price", "total")
+    with pytest.raises(ValueError):
+        b.build()
+
+
+def test_having_references_metric_alias_case_insensitive_is_allowed():
+    b = (group_by("Article").keys("Category").sum("WordCount", "Total")
+         .having("TOTAL", pb.GREATER_THAN, 100))
+    b.build()  # should not raise
+
+
+def test_order_by_references_key_case_insensitive_is_allowed():
+    b = group_by("Article").keys("Category").count_all("n").order_by("CATEGORY")
+    b.build()  # should not raise

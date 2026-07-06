@@ -108,3 +108,13 @@ def test_join_all_with_composite_key_adds_multiple_conditions():
     assert len(join.on) == 2
     assert join.on[0].left == "AuthorId" and join.on[0].right == "Id"
     assert join.on[1].left == "TenantId" and join.on[1].right == "TenantId"
+
+
+def test_step_with_reserved_name_base_raises():
+    with pytest.raises(ValueError):
+        pipeline("Article").step("base", lambda s: s).build()
+
+
+def test_step_with_metrics_but_no_group_by_raises():
+    with pytest.raises(ValueError):
+        pipeline("Article").step("s1", lambda s: s.count("id")).build()

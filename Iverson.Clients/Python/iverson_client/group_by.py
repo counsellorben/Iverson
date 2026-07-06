@@ -177,7 +177,11 @@ class GroupByBuilder:
             if key in aliases:
                 raise ValueError(f"Duplicate metric alias '{m.name}'.")
             aliases.add(key)
-        aliases.update(k.lower() for k in self._keys)
+        for k in self._keys:
+            key = k.lower()
+            if key in aliases:
+                raise ValueError(f"Key '{k}' collides with an existing metric alias.")
+            aliases.add(key)
 
         for h in self._having:
             if h.property.lower() not in aliases:
