@@ -232,6 +232,12 @@ export class QueryBuilder {
         return this;
     }
 
+    /** Add a join with an explicit left type — for multi-hop chains where the left side isn't this query's own base type. */
+    joinFrom(leftType: string, leftField: string, rightType: string, rightField: string, kind: JoinKind = JoinKind.INNER): QueryBuilder {
+        this._joins.push({ leftType, rightType, leftField, rightField, kind });
+        return this;
+    }
+
     // ── Build ─────────────────────────────────────────────────────────────────
 
     /** Compile to a SearchRequest proto message. */

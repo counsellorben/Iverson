@@ -85,4 +85,20 @@ describe('PipelineBuilder', () => {
             .rowNumber('x', { orderBy: 'Id' })
             .derive('X', 'WordCount + 1'))).toThrow(/X/);
     });
+
+    it('joinAll with composite key adds multiple conditions', () => {
+        const request = pipeline('Article')
+            .step('enriched', s => s
+                .joinAll('Author', [
+                    { left: 'AuthorId', right: 'Id' },
+                    { left: 'TenantId', right: 'TenantId' },
+                ])
+                .select(sel => sel.allFrom('base')))
+            .build();
+
+        const join = request.steps[0].joins[0];
+        expect(join.on).toHaveLength(2);
+        expect(join.on[0]).toMatchObject({ left: 'AuthorId', right: 'Id' });
+        expect(join.on[1]).toMatchObject({ left: 'TenantId', right: 'TenantId' });
+    });
 });

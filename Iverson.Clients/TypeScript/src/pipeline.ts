@@ -179,6 +179,12 @@ export class PipelineStepBuilder {
         return this;
     }
 
+    /** Add a join with a composite key — one or more left/right column pairs. */
+    joinAll(source: string, on: Array<{ left: string; right: string }>, kind: JoinKind = JoinKind.INNER): this {
+        this._joins.push({ source, kind, on: on.map(({ left, right }) => ({ left, right })) });
+        return this;
+    }
+
     select(configure: (sel: SelectSpecBuilder) => unknown): this {
         const builder = new SelectSpecBuilder();
         configure(builder);

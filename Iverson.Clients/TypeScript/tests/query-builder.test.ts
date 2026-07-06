@@ -200,6 +200,19 @@ describe('QueryBuilder', () => {
             expect(req.joins[0].kind).toBe(JoinKind.FULL);
         });
     });
+
+    describe('joinFrom', () => {
+        it('joinFrom sets left type independently of the base type', () => {
+            const req = new QueryBuilder('LineItem')
+                .joinFrom('LineItem', 'authorId', 'Author', 'id')
+                .joinFrom('Author', 'publisherId', 'Publisher', 'id')
+                .build();
+
+            expect(req.joins).toHaveLength(2);
+            expect(req.joins[1].leftType).toBe('Author');
+            expect(req.joins[1].rightType).toBe('Publisher');
+        });
+    });
 });
 
 describe('GroupByBuilder', () => {
