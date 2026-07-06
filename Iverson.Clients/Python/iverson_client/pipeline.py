@@ -18,7 +18,7 @@ Usage:
 """
 from __future__ import annotations
 
-from typing import Callable, Optional
+from typing import Callable, List, Optional, Tuple
 
 from iverson_client.generated import object_search_pb2 as _pb
 from iverson_client.search import _to_search_value
@@ -165,6 +165,13 @@ class PipelineStepBuilder:
         self._joins.append(_pb.PipelineJoin(
             source=source, kind=kind,
             on=[_pb.JoinCondition(left=on_left, right=on_right)]))
+        return self
+
+    def join_all(self, source: str, on: List[Tuple[str, str]],
+                 kind: int = _pb.JoinKind.INNER) -> "PipelineStepBuilder":
+        self._joins.append(_pb.PipelineJoin(
+            source=source, kind=kind,
+            on=[_pb.JoinCondition(left=l, right=r) for l, r in on]))
         return self
 
     def select(self, configure: Callable[[SelectSpecBuilder], object]) -> "PipelineStepBuilder":

@@ -233,6 +233,17 @@ class TestJoin:
         )
         assert req.joins[0].kind == pb.JoinKind.FULL
 
+    def test_join_from_explicit_left_type_sets_left_type_independently_of_base_type(self):
+        req = (
+            QueryBuilder("LineItem")
+            .join_from("LineItem", "author_id", "Author", "id")
+            .join_from("Author", "publisher_id", "Publisher", "id")
+            .build()
+        )
+        assert len(req.joins) == 2
+        assert req.joins[1].left_type == "Author"
+        assert req.joins[1].right_type == "Publisher"
+
 
 class TestGroupByBuilder:
     def test_keys_adds_group_by_fields(self):

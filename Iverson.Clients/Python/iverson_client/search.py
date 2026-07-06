@@ -173,6 +173,19 @@ class QueryBuilder:
         ))
         return self
 
+    def join_from(self, left_type: str, left_field: str, right_type: str, right_field: str,
+                  kind: int = _pb.JoinKind.INNER) -> "QueryBuilder":
+        """Add a join with an explicit left type — for multi-hop chains where the left side
+        isn't this query's own base type."""
+        self._joins.append(_pb.JoinSpec(
+            left_type=left_type,
+            right_type=right_type,
+            left_field=left_field,
+            right_field=right_field,
+            kind=kind,
+        ))
+        return self
+
     # ── Sorting and paging ─────────────────────────────────────────────────────
 
     def order_by(self, field: str, descending: bool = False) -> "QueryBuilder":

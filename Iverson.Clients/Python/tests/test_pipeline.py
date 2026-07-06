@@ -94,3 +94,17 @@ def test_date_trunc_group_key():
         .build()
     )
     assert request.steps[0].group_by[0].date_trunc == pb.MONTH
+
+
+def test_join_all_with_composite_key_adds_multiple_conditions():
+    request = (
+        pipeline("Article")
+        .step("enriched", lambda s: s
+              .join_all("Author", [("AuthorId", "Id"), ("TenantId", "TenantId")])
+              .select(lambda sel: sel.all_from("base")))
+        .build()
+    )
+    join = request.steps[0].joins[0]
+    assert len(join.on) == 2
+    assert join.on[0].left == "AuthorId" and join.on[0].right == "Id"
+    assert join.on[1].left == "TenantId" and join.on[1].right == "TenantId"
