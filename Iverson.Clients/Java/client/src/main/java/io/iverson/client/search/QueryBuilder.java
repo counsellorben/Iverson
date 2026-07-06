@@ -88,6 +88,26 @@ public final class QueryBuilder<T> {
         return this;
     }
 
+    /**
+     * Adds an INNER join with an explicit left type — for multi-hop chains where the left side
+     * of this join isn't this query's own base type (e.g. chaining off a previously joined type).
+     */
+    public QueryBuilder<T> join(String leftType, String leftField, String rightType, String rightField) {
+        return join(leftType, leftField, rightType, rightField, JoinKind.INNER);
+    }
+
+    /** Adds a join of the given {@link JoinKind} with an explicit left type. */
+    public QueryBuilder<T> join(String leftType, String leftField, String rightType, String rightField, JoinKind kind) {
+        joins.add(JoinSpec.newBuilder()
+            .setLeftType(leftType)
+            .setRightType(rightType)
+            .setLeftField(leftField)
+            .setRightField(rightField)
+            .setKind(kind)
+            .build());
+        return this;
+    }
+
     // ── Sorting ────────────────────────────────────────────────────────────────
 
     /** Adds an ascending sort on the given field. */

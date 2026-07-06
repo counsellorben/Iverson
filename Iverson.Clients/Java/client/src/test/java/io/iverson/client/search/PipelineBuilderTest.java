@@ -3,10 +3,13 @@ package io.iverson.client.search;
 import iverson.ObjectSearch.AggregationType;
 import iverson.ObjectSearch.DateTrunc;
 import iverson.ObjectSearch.JoinKind;
+import iverson.ObjectSearch.PipelineJoin;
 import iverson.ObjectSearch.PipelineRequest;
 import iverson.ObjectSearch.SearchOperator;
 import iverson.ObjectSearch.WindowFunctionKind;
 import org.junit.jupiter.api.Test;
+
+import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -101,5 +104,21 @@ class PipelineBuilderTest {
             () -> Query.pipeline("Article").step("bad", s -> s
                 .rowNumber("x", "Id", false)
                 .derive("X", "WordCount + 1")));
+    }
+
+    @Test
+    void join_withCompositeKey_addsMultipleConditions() {
+        PipelineRequest req = Query.pipeline("Article")
+            .step("enriched", s -> s
+                .join("Author", List.of(new String[]{"AuthorId", "Id"}, new String[]{"TenantId", "TenantId"}))
+                .select(sel -> sel.allFrom("base")))
+            .build();
+
+        PipelineJoin join = req.getSteps(0).getJoins(0);
+        assertEquals(2, join.getOnCount());
+        assertEquals("AuthorId", join.getOn(0).getLeft());
+        assertEquals("Id", join.getOn(0).getRight());
+        assertEquals("TenantId", join.getOn(1).getLeft());
+        assertEquals("TenantId", join.getOn(1).getRight());
     }
 }

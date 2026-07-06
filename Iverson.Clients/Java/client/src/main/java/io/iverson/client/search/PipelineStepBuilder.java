@@ -189,6 +189,20 @@ public final class PipelineStepBuilder {
         return this;
     }
 
+    /** Composite-key join: {@code on} is a list of {@code {left, right}} field-name pairs. */
+    public PipelineStepBuilder join(String source, List<String[]> on) {
+        return join(source, on, JoinKind.INNER);
+    }
+
+    public PipelineStepBuilder join(String source, List<String[]> on, JoinKind kind) {
+        PipelineJoin.Builder joinBuilder = PipelineJoin.newBuilder().setSource(source).setKind(kind);
+        for (String[] pair : on) {
+            joinBuilder.addOn(JoinCondition.newBuilder().setLeft(pair[0]).setRight(pair[1]).build());
+        }
+        step.addJoins(joinBuilder.build());
+        return this;
+    }
+
     public PipelineStepBuilder select(Consumer<SelectSpecBuilder> configure) {
         SelectSpecBuilder builder = new SelectSpecBuilder();
         configure.accept(builder);

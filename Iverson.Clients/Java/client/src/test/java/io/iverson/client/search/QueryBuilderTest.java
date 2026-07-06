@@ -295,6 +295,18 @@ class QueryBuilderTest {
         assertEquals(JoinKind.FULL, req.getJoins(0).getKind());
     }
 
+    @Test
+    void join_explicitLeftType_setsLeftTypeIndependentlyOfBaseType() {
+        SearchRequest req = Query.of(Article.class)
+            .join("Article", "authorId", "Author", "id")
+            .join("Author", "publisherId", "Publisher", "id")
+            .build();
+
+        assertEquals(2, req.getJoinsCount());
+        assertEquals("Author", req.getJoins(1).getLeftType());
+        assertEquals("Publisher", req.getJoins(1).getRightType());
+    }
+
     // ── SearchOperators constants ─────────────────────────────────────────────
 
     @Test
