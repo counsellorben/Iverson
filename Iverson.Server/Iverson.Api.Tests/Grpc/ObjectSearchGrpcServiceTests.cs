@@ -527,6 +527,71 @@ public class ObjectSearchGrpcServiceTests
         written[0].ParentKey.Should().Be("parent-id-123");
     }
 
+    [Fact]
+    public async Task SearchChunks_WithPkEqualsFilter_PassesParentIdMatchToVectorService()
+    {
+        await _registry.RegisterAsync(SchemaFixtures.ArticleSchema());
+        _embedding.EmbedAsync("q", Arg.Any<CancellationToken>()).Returns(new float[768]);
+        _vector.SearchNamedAsync("articles_chunks", "body_vector", Arg.Any<float[]>(), Arg.Any<ulong>(), Arg.Any<Filter>())
+               .Returns(new List<VectorSearchResult>().AsReadOnly());
+
+        var request = new SearchChunksRequest { TypeName = "Article", Property = "Body", Query = "q", TopK = 5 };
+        request.Filter.Add(new SearchClause
+        {
+            Property = "Id", Operator = SearchOperator.Equals,
+            Value = new SearchValue { StringVal = "parent-123" }, ClauseType = SearchClauseType.Filter
+        });
+
+        var (writer, _) = MakeStream<ChunkSearchResponse>();
+        await _sut.SearchChunks(request, writer, TestServerCallContext.Create());
+
+        // NB: Arg.Do does not fire inside Received() verification on this project's NSubstitute
+        // version (see project-test-coverage memory) — use ReceivedCalls()/GetArguments() instead.
+        var call = _vector.ReceivedCalls()
+            .Should().ContainSingle(c => c.GetMethodInfo().Name == nameof(IVectorService.SearchNamedAsync))
+            .Subject;
+        var captured = (Filter?)call.GetArguments()[4];
+        captured.Should().NotBeNull();
+        captured!.Must.Should().ContainSingle();
+    }
+
+    [Fact]
+    public async Task SearchChunks_FilterOnNonPkProperty_ThrowsInvalidArgument()
+    {
+        await _registry.RegisterAsync(SchemaFixtures.ArticleSchema());
+        _embedding.EmbedAsync("q", Arg.Any<CancellationToken>()).Returns(new float[768]);
+
+        var request = new SearchChunksRequest { TypeName = "Article", Property = "Body", Query = "q", TopK = 5 };
+        request.Filter.Add(new SearchClause
+        {
+            Property = "AuthorId", Operator = SearchOperator.Equals,
+            Value = new SearchValue { StringVal = "x" }, ClauseType = SearchClauseType.Filter
+        });
+
+        var (writer, _) = MakeStream<ChunkSearchResponse>();
+        var act = async () => await _sut.SearchChunks(request, writer, TestServerCallContext.Create());
+
+        (await act.Should().ThrowAsync<RpcException>())
+            .Where(e => e.Status.StatusCode == StatusCode.InvalidArgument);
+    }
+
+    [Fact]
+    public async Task SearchChunks_MoreThanOneFilterClause_ThrowsInvalidArgument()
+    {
+        await _registry.RegisterAsync(SchemaFixtures.ArticleSchema());
+        _embedding.EmbedAsync("q", Arg.Any<CancellationToken>()).Returns(new float[768]);
+
+        var request = new SearchChunksRequest { TypeName = "Article", Property = "Body", Query = "q", TopK = 5 };
+        request.Filter.Add(new SearchClause { Property = "Id", Operator = SearchOperator.Equals, Value = new SearchValue { StringVal = "a" } });
+        request.Filter.Add(new SearchClause { Property = "Id", Operator = SearchOperator.Equals, Value = new SearchValue { StringVal = "b" } });
+
+        var (writer, _) = MakeStream<ChunkSearchResponse>();
+        var act = async () => await _sut.SearchChunks(request, writer, TestServerCallContext.Create());
+
+        (await act.Should().ThrowAsync<RpcException>())
+            .Where(e => e.Status.StatusCode == StatusCode.InvalidArgument);
+    }
+
     // ── Pipeline ──────────────────────────────────────────────────────────────
 
     [Fact]

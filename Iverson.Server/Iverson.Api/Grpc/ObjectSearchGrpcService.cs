@@ -8,6 +8,7 @@ using Iverson.StarRocks;
 using Iverson.Vector;
 
 using Filter      = Qdrant.Client.Grpc.Filter;
+using Conditions  = Qdrant.Client.Grpc.Conditions;
 using SrAggKind   = Iverson.StarRocks.AggregationKind;
 using SrAggSpec   = Iverson.StarRocks.AggregationDescriptor;
 using SrAggResult = Iverson.StarRocks.AggregationResult;
@@ -165,8 +166,10 @@ public sealed class ObjectSearchGrpcService(
             throw new RpcException(new Status(StatusCode.FailedPrecondition,
                 $"Type '{request.TypeName}' has no Qdrant collection."));
 
-        logger.LogInformation("[SearchChunks] type={Type} property={Prop} topK={K}",
-            request.TypeName, request.Property, request.TopK);
+        var filter = BuildChunksFilter(schema, request);
+
+        logger.LogInformation("[SearchChunks] type={Type} property={Prop} topK={K} filtered={Filtered}",
+            request.TypeName, request.Property, request.TopK, filter is not null);
 
         float[] queryVector;
         try
@@ -182,7 +185,7 @@ public sealed class ObjectSearchGrpcService(
         var vectorName       = chunkDesc.PropertyName.ToSnakeCase() + "_vector";
         var chunksCollection = schema.CollectionName + "_chunks";
         var topK             = (ulong)Math.Max(1, (int)request.TopK);
-        var results          = await vector.SearchNamedAsync(chunksCollection, vectorName, queryVector, topK);
+        var results          = await vector.SearchNamedAsync(chunksCollection, vectorName, queryVector, topK, filter);
 
         foreach (var r in results)
         {
@@ -374,6 +377,31 @@ public sealed class ObjectSearchGrpcService(
     }
 
     private static string ToCamelCase(string name) => char.ToLowerInvariant(name[0]) + name[1..];
+
+    private static Filter? BuildChunksFilter(SchemaDescriptor schema, SearchChunksRequest request)
+    {
+        if (request.Filter.Count == 0) return null;
+
+        if (request.Filter.Count > 1)
+            throw new RpcException(new Status(StatusCode.InvalidArgument,
+                "SearchChunks supports at most one filter clause: an EQUALS match on the type's " +
+                $"primary-key property ('{schema.KeyColumn.Name}')."));
+
+        var clause = request.Filter[0];
+        if (clause.Operator != SearchOperator.Equals || clause.ClauseType != SearchClauseType.Filter)
+            throw new RpcException(new Status(StatusCode.InvalidArgument,
+                "SearchChunks only supports a single EQUALS filter clause; other operators and " +
+                "MUST_NOT clauses are rejected."));
+
+        if (!string.Equals(clause.Property, schema.KeyColumn.Name, StringComparison.OrdinalIgnoreCase))
+            throw new RpcException(new Status(StatusCode.InvalidArgument,
+                $"SearchChunks filter must target the primary-key property '{schema.KeyColumn.Name}', " +
+                $"got '{clause.Property}'."));
+
+        var filter = new Filter();
+        filter.Must.Add(Conditions.MatchKeyword("parent_id", clause.Value.StringVal));
+        return filter;
+    }
 
     private static SrAggSpec ProtoToSrSpec(ProtoAggSpec proto) =>
         new(
