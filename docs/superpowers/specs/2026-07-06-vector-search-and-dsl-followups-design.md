@@ -11,9 +11,22 @@ Two independent gaps, bundled into one plan by request:
    plan declared "the real vector path" when it stripped `VECTOR_SIMILAR` out of the SQL-facing
    builders) have no fluent client builder in any of the 5 languages — callers hand-construct
    `SearchSimilarRequest`/`SearchChunksRequest` directly. They also carry no filter at all:
-   `QdrantVectorService.SearchNamedAsync` never passes a `Filter` to the underlying Qdrant SDK call,
-   even though the payload indexes needed to filter already exist. Vector search and scalar filtering
-   are today two fully disjoint paths.
+   `QdrantVectorService.SearchNamedAsync` never passes a `Filter` to the underlying Qdrant SDK call.
+   Vector search and scalar filtering are today two fully disjoint paths.
+
+   **Correction discovered during implementation planning (superseding an inaccurate claim in the
+   original draft of this section):** it is not just that filtering is unwired — the payload data
+   filtering would need doesn't fully exist yet either. `SchemaBuilder.ToCollectionSchema` declares
+   a Qdrant payload index per scalar/FK column, but the actual ingestion path
+   (`IntelligenceStoreConsumer.HandleAsync`) never writes those columns' values into the payload —
+   it only writes `key` and the embedded field's own text. Separately, `IVectorService.UpsertAsync`/
+   `UpsertNamedAsync` only accept `IReadOnlyDictionary<string, string>` payloads, so every value that
+   *is* written is coerced to a Qdrant string-typed value regardless of its real type — which means
+   Qdrant's `Range` condition (needed for `GREATER_THAN`/`LESS_THAN`) could never match against them
+   even if the values were populated, since `Range` requires numeric-typed stored values. Part A now
+   includes fixing both: typing the payload properly (`IVectorService`'s upsert payload parameter
+   becomes value-preserving, `QdrantVectorService` writes typed Qdrant `Value`s) and populating every
+   scalar/FK column's real value at ingestion time, not just the embedded field's own text.
 
 2. **A backlog of Minor-severity findings and two cross-language divergences** were deliberately left
    unaddressed across the three most recently completed DSL plans (server pipeline, client pipeline,
@@ -66,6 +79,25 @@ No new enums or messages. `VECTOR_SIMILAR` stays rejected on the SQL paths (`Bui
 `QdrantVectorService.SearchNamedAsync` passes it straight through to the existing
 `QdrantClient.SearchAsync(..., filter: filter, ...)` overload (already supported by the SDK, simply
 never wired up).
+
+**Payload typing and population** (new — see the correction note above):
+
+- `IVectorService.UpsertAsync`/`UpsertNamedAsync` change their payload parameter from
+  `IReadOnlyDictionary<string, string>?` to `IReadOnlyDictionary<string, object>?`.
+  `QdrantVectorService` writes each value through a typed conversion to `Qdrant.Client.Grpc.Value`
+  (string/long/double/bool via the SDK's own implicit operators; `DateTime`/`DateTimeOffset` stay
+  ISO-8601 strings, matching `SearchValueConverter`'s existing convention on the client side) instead
+  of coercing everything to a string. Read-side payload mapping
+  (`VectorSearchResult.Payload`/`SearchNamedAsync`'s result projection) is unchanged — this is a
+  write-path-only fix, scoped to what filtering correctness needs.
+- `IntelligenceStoreConsumer.HandleAsync`'s named-vector upsert block additionally writes every
+  `schema.ScalarColumns`/`schema.FkColumns` entry's real value (extracted from the event's JSON
+  payload by `JsonValueKind`, not just as a string) into `pointPayload`, camelCased the same way the
+  existing `key`/embedded-field-text entries already are.
+- `SchemaBuilder.ToCollectionSchema`'s payload-index field names change from the raw PascalCase
+  `ColumnDescriptor.Name` to the same camelCase form, so the declared index actually matches the
+  payload keys now being written (a latent, previously-harmless naming mismatch — Qdrant filtering
+  works without a matching index, just unoptimized, so this was invisible until filtering existed).
 
 **`ObjectSearchGrpcService` changes:**
 
@@ -120,10 +152,14 @@ request):
   about message-content assertions to this code from day one). `ObjectSearchGrpcService` tests:
   `SearchSimilar` with a filter passes the expected `Filter` to a mocked `IVectorService`; unknown
   filter property → `InvalidArgument`; `SearchChunks` accepts a PK-equals clause and rejects anything
-  else. A new Docker-backed integration test (mirrors `PipelineIntegrationTests`/
-  `StarRocksIntegrationTests` conventions) against live Qdrant + live embedding: upsert points with
-  distinct payload values, assert a filtered `SearchSimilar` returns only matching points; same
-  pattern scoped to one parent for `SearchChunks`.
+  else. `QdrantVectorService`/`IntelligenceStoreConsumer` tests updated for the payload-typing change
+  (existing `Dictionary<string,string>` payload assertions become type-preserving); new
+  `IntelligenceStoreConsumer` test confirming scalar/FK columns are written into the payload. A new
+  Docker-backed integration test (mirrors `PipelineIntegrationTests`/`StarRocksIntegrationTests`
+  conventions) against live Qdrant + live embedding: upsert points with distinct typed payload
+  values, assert a filtered `SearchSimilar` (including a `GREATER_THAN`/`LESS_THAN` range clause,
+  now meaningful since payload values are typed) returns only matching points; same pattern scoped
+  to one parent for `SearchChunks`.
 - **Clients (all 5 languages):** builder unit tests — happy-path proto shape (filter/filter_logic
   populated correctly), build-time rejection of unsupported operators, build-time rejection of
   non-PK-equals clauses on the Chunks builder.
