@@ -559,7 +559,7 @@ public class StarRocksQueryBuilderTests
     // ── BuildSearch — VectorSimilar behavior ───────────────────────────────────
 
     [Fact]
-    public void BuildSearch_VectorSimilarClause_IsSkippedInWhereClause()
+    public void BuildSearch_VectorSimilarClause_ThrowsInvalidArgument()
     {
         var query = new SearchQuery();
         query.Clauses.Add(new SearchClause
@@ -570,11 +570,13 @@ public class StarRocksQueryBuilderTests
             ClauseType = SearchClauseType.Filter
         });
 
-        var (sql, _) = StarRocksQueryBuilder.BuildSearch("authors", AuthorSchema(), query, 0, 50);
+        var act = () => StarRocksQueryBuilder.BuildSearch("authors", AuthorSchema(), query, 0, 50);
 
-        // VECTOR_SIMILAR is Qdrant's job, not StarRocks's — BuildWhere must silently drop it,
-        // not error and not emit a bogus WHERE clause.
-        sql.Should().NotContain("WHERE");
+        // VECTOR_SIMILAR is Qdrant's job, not StarRocks's — BuildSearch (via BuildWhere)
+        // must reject it loudly with InvalidArgument, not silently drop it.
+        act.Should().Throw<RpcException>()
+            .Where(e => e.Status.StatusCode == StatusCode.InvalidArgument
+                     && e.Status.Detail.Contains("VECTOR_SIMILAR"));
     }
 
     // ── BuildSearch — explicit SELECT columns ─────────────────────────────────────
@@ -1216,5 +1218,39 @@ public class StarRocksQueryBuilderTests
 
         sql.Should().Be("`article_count` > @s3_h0");
         param.Get<double>("s3_h0").Should().Be(3);
+    }
+
+    // ── VectorSimilar rejection ────────────────────────────────────────────────
+
+    private static SearchClause VectorClause() => new()
+    {
+        Property   = "Name",
+        Operator   = SearchOperator.VectorSimilar,
+        Value      = new SearchValue { FloatList = new RepeatedFloat { Values = { 0.1f, 0.2f } } },
+        ClauseType = SearchClauseType.Filter
+    };
+
+    [Fact]
+    public void BuildWhere_VectorSimilarClause_ThrowsInvalidArgument()
+    {
+        var param = new DynamicParameters();
+        var act = () => StarRocksQueryBuilder.BuildWhere(
+            AuthorSchema(), [VectorClause()], SearchLogic.And, param, out _);
+
+        act.Should().Throw<RpcException>()
+            .Where(e => e.Status.StatusCode == StatusCode.InvalidArgument
+                     && e.Status.Detail.Contains("VECTOR_SIMILAR")
+                     && e.Status.Detail.Contains("SearchSimilar"));
+    }
+
+    [Fact]
+    public void BuildHaving_VectorSimilarClause_ThrowsInvalidArgument()
+    {
+        var param = new DynamicParameters();
+        var act = () => StarRocksQueryBuilder.BuildHaving(
+            [VectorClause()], SearchLogic.And, param);
+
+        act.Should().Throw<RpcException>()
+            .Where(e => e.Status.StatusCode == StatusCode.InvalidArgument);
     }
 }

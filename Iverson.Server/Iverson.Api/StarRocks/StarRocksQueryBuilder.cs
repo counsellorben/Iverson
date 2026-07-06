@@ -314,7 +314,10 @@ internal static class StarRocksQueryBuilder
 
         foreach (var clause in clauses)
         {
-            if (clause.Operator == SearchOperator.VectorSimilar) continue;
+            if (clause.Operator == SearchOperator.VectorSimilar)
+                throw new RpcException(new Status(StatusCode.InvalidArgument,
+                    "VECTOR_SIMILAR clauses are not supported by the SQL search path; " +
+                    "use the SearchSimilar or SearchChunks RPCs for vector search."));
 
             var quotedCol = resolveQuoted(clause.Property);
             if (quotedCol is null) continue;
@@ -380,7 +383,10 @@ internal static class StarRocksQueryBuilder
 
         foreach (var clause in clauses)
         {
-            if (clause.Operator == SearchOperator.VectorSimilar) continue;
+            if (clause.Operator == SearchOperator.VectorSimilar)
+                throw new RpcException(new Status(StatusCode.InvalidArgument,
+                    "VECTOR_SIMILAR clauses are not supported by the SQL search path; " +
+                    "use the SearchSimilar or SearchChunks RPCs for vector search."));
 
             var col = clause.Property;
             if (string.IsNullOrEmpty(col)) continue;
