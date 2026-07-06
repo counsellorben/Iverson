@@ -316,7 +316,7 @@ iverson.NewPipeline("OrderLine").
         s.JoinOn("Shipment", []iverson.JoinCondition{
             {Left: "OrderId", Right: "OrderId"},
             {Left: "LineNumber", Right: "LineNumber"},
-        }).SelectAllFrom("OrderLine").
+        }).SelectAllFrom("base").
             SelectPick("Shipment", "TrackingNumber", "tracking")
     })
 ```
