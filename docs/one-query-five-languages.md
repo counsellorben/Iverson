@@ -279,6 +279,52 @@ Query.For<Article>()
     .Where(a => a.Title, Contains, "crossover");
 ```
 
+Composite-key joins (multiple ON conditions) and multi-hop joins (an explicit left type, for
+chaining a join off an already-joined type rather than the query's own base type) are available
+in all five languages:
+
+- **C#**: `QueryBuilder<T>.Join<TLeft, TRight>(leftField, rightField, kind?)` is the multi-hop
+  form — the single-type `Join<TRight>` shown above always joins from `T`. Pipeline steps take
+  composite keys via `PipelineStepBuilder.Join(source, IReadOnlyList<(string Left, string Right)> on, kind?)`.
+- **Java**: `QueryBuilder<T>.join(leftType, leftField, rightType, rightField[, kind])` is the
+  multi-hop form; `PipelineStepBuilder.join(source, List<String[]> on[, kind])` is the
+  composite-key form.
+- **Python**: `QueryBuilder.join_from(left_type, left_field, right_type, right_field, kind=...)`
+  is the multi-hop form; `PipelineStepBuilder.join_all(source, on: List[Tuple[str, str]], kind=...)`
+  is the composite-key form.
+- **TypeScript**: `QueryBuilder.joinFrom(leftType, leftField, rightType, rightField, kind?)` is
+  the multi-hop form; `PipelineStepBuilder.joinAll(source, on: Array<{ left, right }>, kind?)` is
+  the composite-key form.
+- **Go**: `QueryBuilder.JoinType(leftType, leftField, rightType, rightField, opts...)` is the
+  multi-hop form; `PipelineStepBuilder.JoinOn(source, on []JoinCondition, opts...)` is the
+  composite-key form.
+
+*Multi-hop* — chain off `Author` (already joined from `Article`) to reach `Publisher`, in Python:
+
+```python
+QueryBuilder("Article")
+    .join("AuthorId", "Author", "Id")
+    .join_from("Author", "PublisherId", "Publisher", "Id")
+    .fields("Title", "Author.Name", "Publisher.Name")
+```
+
+*Composite key* — join a pipeline step's input on two columns (order ID and line number), in Go:
+
+```go
+iverson.NewPipeline("OrderLine").
+    Step("shipped", func(s *iverson.PipelineStepBuilder) {
+        s.JoinOn("Shipment", []iverson.JoinCondition{
+            {Left: "OrderId", Right: "OrderId"},
+            {Left: "LineNumber", Right: "LineNumber"},
+        }).SelectAllFrom("OrderLine").
+            SelectPick("Shipment", "TrackingNumber", "tracking")
+    })
+```
+
+Composite-key `JoinSpec` joins (multiple ON conditions on a plain `Search`/`GroupBy` call, as
+opposed to a pipeline step) are not yet supported in any language — `JoinSpec` has a single
+`left_field`/`right_field` pair on the wire; tracked as a separate future proto change.
+
 **Disambiguation:** once a join is in play, reference fields as `TypeName.FieldName` (`"Author.Name"`). Bare names still work when they're unambiguous across the joined schemas; ambiguous bare names are rejected rather than guessed.
 
 ---
@@ -507,8 +553,8 @@ Builders now fail fast instead of silently dropping configuration:
 - C#'s `QueryBuilder<T>.Build()` throws if aggregations were configured (call
   `BuildAggregate()` instead), and `BuildAggregate()` throws if sorting or paging was
   configured (they have no effect on aggregations).
-- C# joins support multi-hop chains: `Join<TAuthor, TPublisher>(au => au.PublisherId, p => p.Id)`
-  joins from an already-joined type.
+- Multi-hop joins (explicit left type) and composite-key joins (multiple ON conditions) are
+  available in all five languages — see "## Joins" above for the per-language signatures.
 
 ---
 
@@ -696,7 +742,7 @@ stream, err := client.SearchStub.Pipeline(ctx, req)
 | `having` | `HAVING` | references this step's metric aliases |
 | `derive(alias, expr)` | scalar expression column | validated server-side: no subqueries, quotes, or semicolons (see "two-layered validation" below) |
 | `reads(step)` | `FROM step` | default is the previous step |
-| `join(source, left, right, kind?)` | `JOIN ... ON` | source = earlier step OR registered type; joined steps **require** a `select` |
+| `join(source, left, right, kind?)` — composite-key form per-language (see "## Joins") | `JOIN ... ON` | source = earlier step OR registered type; joined steps **require** a `select` |
 | `select` → `allFrom(src)` / `pick(src, col, alias?)` | projection | resolves join column collisions |
 
 Pipeline gotchas:
