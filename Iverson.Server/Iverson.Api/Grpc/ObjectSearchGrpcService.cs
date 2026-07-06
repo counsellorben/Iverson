@@ -7,6 +7,7 @@ using Iverson.Embeddings;
 using Iverson.StarRocks;
 using Iverson.Vector;
 
+using Filter      = Qdrant.Client.Grpc.Filter;
 using SrAggKind   = Iverson.StarRocks.AggregationKind;
 using SrAggSpec   = Iverson.StarRocks.AggregationDescriptor;
 using SrAggResult = Iverson.StarRocks.AggregationResult;
@@ -94,8 +95,25 @@ public sealed class ObjectSearchGrpcService(
             throw new RpcException(new Status(StatusCode.FailedPrecondition,
                 $"Type '{request.TypeName}' has no Qdrant collection."));
 
-        logger.LogInformation("[SearchSimilar] type={Type} property={Prop} topK={K}",
-            request.TypeName, request.Property, request.TopK);
+        Filter? filter = null;
+        if (request.Filter.Count > 0)
+        {
+            var camelCased = request.Filter.Select(c =>
+            {
+                ValidateFilterProperty(schema, c.Property, "SearchSimilar");
+                return new SearchClause
+                {
+                    Property   = ToCamelCase(c.Property),
+                    Operator   = c.Operator,
+                    Value      = c.Value,
+                    ClauseType = c.ClauseType
+                };
+            }).ToList();
+            filter = QdrantFilterBuilder.Build(camelCased, request.FilterLogic, "SearchSimilar");
+        }
+
+        logger.LogInformation("[SearchSimilar] type={Type} property={Prop} topK={K} filtered={Filtered}",
+            request.TypeName, request.Property, request.TopK, filter is not null);
 
         float[] queryVector;
         try
@@ -110,7 +128,7 @@ public sealed class ObjectSearchGrpcService(
 
         var vectorName = vectorDesc.PropertyName.ToSnakeCase() + "_vector";
         var topK       = (ulong)Math.Max(1, (int)request.TopK);
-        var results    = await vector.SearchNamedAsync(schema.CollectionName, vectorName, queryVector, topK);
+        var results    = await vector.SearchNamedAsync(schema.CollectionName, vectorName, queryVector, topK, filter);
 
         foreach (var r in results)
         {
@@ -345,6 +363,17 @@ public sealed class ObjectSearchGrpcService(
     private SchemaDescriptor RequireSchema(string typeName) =>
         registry.Get(typeName) ?? throw new RpcException(new Status(StatusCode.FailedPrecondition,
             $"No schema registered for '{typeName}'. Call RegisterSchema first."));
+
+    private static void ValidateFilterProperty(SchemaDescriptor schema, string property, string rpcName)
+    {
+        var known = schema.ScalarColumns.Any(c => string.Equals(c.Name, property, StringComparison.OrdinalIgnoreCase))
+                 || schema.FkColumns.Any(fk => string.Equals(fk.ColumnName, property, StringComparison.OrdinalIgnoreCase));
+        if (!known)
+            throw new RpcException(new Status(StatusCode.InvalidArgument,
+                $"{rpcName}: filter property '{property}' is not a scalar or foreign-key column on '{schema.TypeName}'."));
+    }
+
+    private static string ToCamelCase(string name) => char.ToLowerInvariant(name[0]) + name[1..];
 
     private static SrAggSpec ProtoToSrSpec(ProtoAggSpec proto) =>
         new(

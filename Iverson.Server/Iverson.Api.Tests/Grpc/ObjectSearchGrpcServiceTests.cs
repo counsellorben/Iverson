@@ -11,6 +11,7 @@ using Iverson.Vector;
 using Microsoft.Extensions.Logging.Abstractions;
 using NSubstitute;
 using Xunit;
+using Filter = Qdrant.Client.Grpc.Filter;
 
 namespace Iverson.Api.Tests.Grpc;
 
@@ -391,6 +392,57 @@ public class ObjectSearchGrpcServiceTests
 
         written.Should().HaveCount(1);
         written[0].Score.Should().BeApproximately(0.95f, 0.001f);
+    }
+
+    [Fact]
+    public async Task SearchSimilar_WithFilter_PassesTranslatedFilterToVectorService()
+    {
+        await _registry.RegisterAsync(SchemaFixtures.ArticleSchema());
+
+        var fakeVector = new float[768];
+        _embedding.EmbedAsync("test query", Arg.Any<CancellationToken>()).Returns(fakeVector);
+        _vector.SearchNamedAsync("articles", "title_vector", fakeVector, Arg.Any<ulong>(), Arg.Any<Filter>())
+               .Returns(new List<VectorSearchResult>().AsReadOnly());
+
+        var request = new SearchSimilarRequest { TypeName = "Article", Property = "Title", Query = "test query", TopK = 5 };
+        request.Filter.Add(new SearchClause
+        {
+            Property = "AuthorId", Operator = SearchOperator.Equals,
+            Value = new SearchValue { StringVal = "00000000-0000-0000-0000-000000000001" },
+            ClauseType = SearchClauseType.Filter
+        });
+
+        var (writer, _) = MakeStream<SearchResponse>();
+        await _sut.SearchSimilar(request, writer, TestServerCallContext.Create());
+
+        // NB: Arg.Do does not fire inside Received() verification on this project's NSubstitute
+        // version (see project-test-coverage memory) — use ReceivedCalls()/GetArguments() instead.
+        var call = _vector.ReceivedCalls()
+            .Should().ContainSingle(c => c.GetMethodInfo().Name == nameof(IVectorService.SearchNamedAsync))
+            .Subject;
+        var captured = (Filter?)call.GetArguments()[4];
+        captured.Should().NotBeNull();
+        captured!.Must.Should().ContainSingle();
+    }
+
+    [Fact]
+    public async Task SearchSimilar_FilterOnUnknownProperty_ThrowsInvalidArgument()
+    {
+        await _registry.RegisterAsync(SchemaFixtures.ArticleSchema());
+        _embedding.EmbedAsync("q", Arg.Any<CancellationToken>()).Returns(new float[768]);
+
+        var request = new SearchSimilarRequest { TypeName = "Article", Property = "Title", Query = "q", TopK = 5 };
+        request.Filter.Add(new SearchClause
+        {
+            Property = "Nope", Operator = SearchOperator.Equals,
+            Value = new SearchValue { StringVal = "x" }, ClauseType = SearchClauseType.Filter
+        });
+
+        var (writer, _) = MakeStream<SearchResponse>();
+        var act = async () => await _sut.SearchSimilar(request, writer, TestServerCallContext.Create());
+
+        (await act.Should().ThrowAsync<RpcException>())
+            .Where(e => e.Status.StatusCode == StatusCode.InvalidArgument && e.Status.Detail.Contains("Nope"));
     }
 
     // ── SearchChunks — Qdrant path unchanged ──────────────────────────────────
