@@ -168,6 +168,45 @@ public class PostgresRepository(
         }
     }
 
+    private sealed class TransactionContext(NpgsqlConnection conn, NpgsqlTransaction tx) : IDbTransactionContext
+    {
+        public Task<int> ExecuteAsync(string sql, object? param = null) =>
+            conn.ExecuteAsync(sql, param, tx);
+
+        public Task<T?> QuerySingleOrDefaultAsync<T>(string sql, object? param = null) =>
+            conn.QuerySingleOrDefaultAsync<T>(sql, param, tx);
+    }
+
+    public async Task ExecuteInTransactionAsync(Func<IDbTransactionContext, Task> work)
+    {
+        await ExecuteInTransactionAsync(async ctx => { await work(ctx); return true; });
+    }
+
+    public async Task<T> ExecuteInTransactionAsync<T>(Func<IDbTransactionContext, Task<T>> work)
+    {
+        using var activity = Telemetry.Source.StartActivity("db.transaction", ActivityKind.Client);
+        activity?.SetTag("db.system", "postgresql");
+
+        await using var conn = CreateConnection();
+        await conn.OpenAsync();
+        await using var tx = await conn.BeginTransactionAsync();
+
+        try
+        {
+            var result = await work(new TransactionContext(conn, tx));
+            await tx.CommitAsync();
+            activity?.SetStatus(ActivityStatusCode.Ok);
+            return result;
+        }
+        catch (Exception ex)
+        {
+            activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
+            activity?.RecordException(ex);
+            await tx.RollbackAsync();
+            throw;
+        }
+    }
+
     private static string GetDefaultForType(string sqlType) => sqlType.ToUpperInvariant() switch
     {
         var t when t.StartsWith("INT")       => "0",

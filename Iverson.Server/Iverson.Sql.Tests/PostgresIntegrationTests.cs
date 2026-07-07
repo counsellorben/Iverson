@@ -230,4 +230,44 @@ public sealed class PostgresIntegrationTests(PostgresContainerFixture fixture)
 
         indexes.Should().Contain(i => i.Contains("authorid", StringComparison.OrdinalIgnoreCase));
     }
+
+    // ── ExecuteInTransactionAsync ─────────────────────────────────────────────
+
+    [Fact]
+    public async Task ExecuteInTransactionAsync_BothStatementsSucceed_BothCommit()
+    {
+        var tableA = UniqueTable();
+        var tableB = UniqueTable();
+        await _repo.ExecuteAsync($"CREATE TABLE IF NOT EXISTS \"{tableA}\" (id int PRIMARY KEY)");
+        await _repo.ExecuteAsync($"CREATE TABLE IF NOT EXISTS \"{tableB}\" (id int PRIMARY KEY)");
+
+        await _repo.ExecuteInTransactionAsync(async tx =>
+        {
+            await tx.ExecuteAsync($"INSERT INTO \"{tableA}\" (id) VALUES (1)");
+            await tx.ExecuteAsync($"INSERT INTO \"{tableB}\" (id) VALUES (1)");
+        });
+
+        var a = await _repo.QuerySingleOrDefaultAsync<int>($"SELECT COUNT(*) FROM \"{tableA}\"");
+        var b = await _repo.QuerySingleOrDefaultAsync<int>($"SELECT COUNT(*) FROM \"{tableB}\"");
+        a.Should().Be(1);
+        b.Should().Be(1);
+    }
+
+    [Fact]
+    public async Task ExecuteInTransactionAsync_SecondStatementThrows_FirstIsRolledBack()
+    {
+        var tableC = UniqueTable();
+        await _repo.ExecuteAsync($"CREATE TABLE IF NOT EXISTS \"{tableC}\" (id int PRIMARY KEY)");
+
+        var act = async () => await _repo.ExecuteInTransactionAsync(async tx =>
+        {
+            await tx.ExecuteAsync($"INSERT INTO \"{tableC}\" (id) VALUES (1)");
+            await tx.ExecuteAsync("this is not valid sql");
+        });
+
+        await act.Should().ThrowAsync<Exception>();
+
+        var count = await _repo.QuerySingleOrDefaultAsync<int>($"SELECT COUNT(*) FROM \"{tableC}\"");
+        count.Should().Be(0); // rolled back, not committed
+    }
 }

@@ -6,6 +6,14 @@ public interface IPostgresRepository
     Task<int> ExecuteAsync(string sql, object? param = null);
     Task<T?> QuerySingleOrDefaultAsync<T>(string sql, object? param = null);
     Task ApplySchemaAsync(TableSchema schema);
+    Task ExecuteInTransactionAsync(Func<IDbTransactionContext, Task> work);
+    Task<T> ExecuteInTransactionAsync<T>(Func<IDbTransactionContext, Task<T>> work);
+}
+
+public interface IDbTransactionContext
+{
+    Task<int> ExecuteAsync(string sql, object? param = null);
+    Task<T?> QuerySingleOrDefaultAsync<T>(string sql, object? param = null);
 }
 
 public sealed record TableSchema(
