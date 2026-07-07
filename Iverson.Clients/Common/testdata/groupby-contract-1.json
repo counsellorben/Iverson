@@ -1,0 +1,37 @@
+{
+    "typeName": "Article",
+    "query": {},
+    "keys": [
+        "Category"
+    ],
+    "metrics": [
+        {
+            "name": "TotalWords",
+            "type": "SUM",
+            "field": "WordCount"
+        },
+        {
+            "name": "ArticleCount",
+            "type": "COUNT"
+        }
+    ],
+    "having": {
+        "clauses": [
+            {
+                "property": "TotalWords",
+                "operator": "GREATER_THAN",
+                "value": {
+                    "numberVal": 1000
+                }
+            }
+        ]
+    },
+    "orderBy": [
+        {
+            "property": "TotalWords",
+            "descending": true
+        }
+    ],
+    "limit": 50,
+    "traceId": "fixture-trace-id"
+}

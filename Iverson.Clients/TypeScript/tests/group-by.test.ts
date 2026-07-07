@@ -1,6 +1,21 @@
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { dirname, join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { groupBy } from '../src/group-by.js';
-import { SearchClauseType, SearchLogic, SearchOperator } from '../generated/object_search.js';
+import {
+    GroupByRequest,
+    SearchClauseType,
+    SearchLogic,
+    SearchOperator,
+} from '../generated/object_search.js';
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+
+// Shared cross-language golden fixture. Generated from the C# builder (the reference
+// implementation); every language's builder must produce the same structural JSON for
+// the same logical request.
+const GOLDEN_FIXTURE_PATH = join(__dirname, '..', '..', 'Common', 'testdata', 'groupby-contract-1.json');
 
 describe('GroupByBuilder validation and additions', () => {
     it('not() adds a MUST_NOT clause', () => {
@@ -51,5 +66,21 @@ describe('GroupByBuilder validation and additions', () => {
     it('allows orderBy to reference a key case-insensitively', () => {
         const b = groupBy('Article').keys('Category').countAll('n').orderBy('CATEGORY');
         expect(() => b.build()).not.toThrow();
+    });
+
+    it('build() matches the golden fixture groupby-contract-1.json', () => {
+        const request = groupBy('Article')
+            .keys('Category')
+            .sum('WordCount', 'TotalWords')
+            .countAll('ArticleCount')
+            .having('TotalWords', SearchOperator.GREATER_THAN, 1000)
+            .orderBy('TotalWords', true)
+            .limit(50)
+            .build('fixture-trace-id');
+
+        const actual = GroupByRequest.toJSON(request);
+        const expected = JSON.parse(readFileSync(GOLDEN_FIXTURE_PATH, 'utf-8'));
+
+        expect(actual).toEqual(expected);
     });
 });

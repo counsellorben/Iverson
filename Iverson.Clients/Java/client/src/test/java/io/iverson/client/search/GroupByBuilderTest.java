@@ -1,5 +1,6 @@
 package io.iverson.client.search;
 
+import com.google.protobuf.util.JsonFormat;
 import iverson.ObjectSearch.AggregationType;
 import iverson.ObjectSearch.GroupByRequest;
 import iverson.ObjectSearch.JoinKind;
@@ -9,7 +10,15 @@ import iverson.ObjectSearch.SearchClause;
 import iverson.ObjectSearch.SearchClauseType;
 import iverson.ObjectSearch.SearchLogic;
 import iverson.ObjectSearch.SearchOperator;
+import org.json.JSONException;
 import org.junit.jupiter.api.Test;
+import org.skyscreamer.jsonassert.JSONAssert;
+import org.skyscreamer.jsonassert.JSONCompareMode;
+
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -228,5 +237,36 @@ class GroupByBuilderTest {
             .keys("Category").countAll("n")
             .orderBy("CATEGORY")
             .build());
+    }
+
+    // ── Cross-language golden-fixture contract ───────────────────────────────
+    // Golden fixture generated from the C# builder (the reference implementation), checked
+    // in at Iverson.Clients/Common/testdata/groupby-contract-1.json. Same logical request,
+    // built here via Java's Query.groupBy(...), must serialize to the same JSON structure.
+
+    @Test
+    void build_matchesGoldenFixture_groupByContract1() throws IOException, JSONException {
+        GroupByRequest request = Query.groupBy("Article")
+            .keys("Category")
+            .sum("WordCount", "TotalWords")
+            .countAll("ArticleCount")
+            .having("TotalWords", SearchOperator.GREATER_THAN, 1000)
+            .orderBy("TotalWords", true)
+            .limit(50)
+            .build("fixture-trace-id");
+
+        String actualJson = JsonFormat.printer().print(request);
+        String expectedJson = Files.readString(goldenFixturePath());
+
+        JSONAssert.assertEquals(expectedJson, actualJson, JSONCompareMode.STRICT);
+    }
+
+    /**
+     * Resolves the shared golden-fixture directory relative to this module's basedir
+     * ({@code Iverson.Clients/Java/client}), mirroring the {@code protoSourceRoot} convention
+     * already used in {@code pom.xml} for {@code Common/Proto}.
+     */
+    private static Path goldenFixturePath() {
+        return Paths.get("..", "..", "Common", "testdata", "groupby-contract-1.json");
     }
 }

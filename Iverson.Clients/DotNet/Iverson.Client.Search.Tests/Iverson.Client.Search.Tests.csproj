@@ -21,4 +21,9 @@
   <ItemGroup>
     <ProjectReference Include="../Iverson.Client.Search/Iverson.Client.Search.csproj" />
   </ItemGroup>
+
+  <ItemGroup>
+    <!-- Shared cross-language golden fixtures used by contract tests. -->
+    <Content Include="../../Common/testdata/**/*.json" LinkBase="testdata" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
 </Project>

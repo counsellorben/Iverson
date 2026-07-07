@@ -1,10 +1,21 @@
 """Tests for GroupByBuilder — Not/HavingLogic and build-time validation."""
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 import pytest
+from google.protobuf.json_format import MessageToJson
 
 from iverson_client import group_by
 from iverson_client.generated import object_search_pb2 as pb
+
+# Shared cross-language golden fixture. Generated from the C# builder (the reference
+# implementation); every language's builder must produce the same structural JSON for
+# the same logical request.
+_GOLDEN_FIXTURE = (
+    Path(__file__).resolve().parents[2] / "Common" / "testdata" / "groupby-contract-1.json"
+)
 
 
 def test_not_adds_must_not_clause():
@@ -59,3 +70,21 @@ def test_having_references_metric_alias_case_insensitive_is_allowed():
 def test_order_by_references_key_case_insensitive_is_allowed():
     b = group_by("Article").keys("Category").count_all("n").order_by("CATEGORY")
     b.build()  # should not raise
+
+
+def test_build_matches_golden_fixture_group_by_contract_1():
+    request = (
+        group_by("Article")
+        .keys("Category")
+        .sum("WordCount", "TotalWords")
+        .count_all("ArticleCount")
+        .having("TotalWords", pb.GREATER_THAN, 1000)
+        .order_by("TotalWords", descending=True)
+        .limit(50)
+        .build("fixture-trace-id")
+    )
+
+    actual = json.loads(MessageToJson(request))
+    expected = json.loads(_GOLDEN_FIXTURE.read_text())
+
+    assert actual == expected

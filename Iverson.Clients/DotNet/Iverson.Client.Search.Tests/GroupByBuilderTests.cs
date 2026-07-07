@@ -259,4 +259,34 @@ public sealed class GroupByBuilderTests
             .Build();
         act.Should().NotThrow();
     }
+
+    // ── Cross-language golden-fixture contract ─────────────────────────────────
+    // Golden fixture generated from this exact builder invocation, checked in at
+    // Iverson.Clients/Common/testdata/groupby-contract-1.json. Java, Python,
+    // TypeScript, and Go each have an equivalent test asserting their builder
+    // produces the same structural JSON when built with the same inputs.
+
+    [Fact]
+    public void Build_MatchesGoldenFixture_GroupByContract1()
+    {
+        var request = Query.GroupBy("Article")
+            .Keys("Category")
+            .Sum("WordCount", "TotalWords")
+            .CountAll("ArticleCount")
+            .Having("TotalWords", SearchOperator.GreaterThan, 1000)
+            .OrderBy("TotalWords", descending: true)
+            .Limit(50)
+            .Build("fixture-trace-id");
+
+        var actualJson = Google.Protobuf.JsonFormatter.Default.Format(request);
+        var actual = System.Text.Json.JsonDocument.Parse(actualJson).RootElement;
+
+        var goldenPath = Path.Combine(AppContext.BaseDirectory, "testdata", "groupby-contract-1.json");
+        var expected = System.Text.Json.JsonDocument.Parse(File.ReadAllText(goldenPath)).RootElement;
+
+        // Re-serialize both to a canonical compact form before comparing: JsonElement.GetRawText()
+        // preserves the source's original whitespace, so a pretty-printed golden file would never
+        // raw-text-equal a compactly-formatted actual value even when structurally identical.
+        System.Text.Json.JsonSerializer.Serialize(actual).Should().Be(System.Text.Json.JsonSerializer.Serialize(expected));
+    }
 }

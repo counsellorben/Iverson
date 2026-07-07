@@ -61,6 +61,19 @@
       <version>${mockito.version}</version>
       <scope>test</scope>
     </dependency>
+    <!-- JsonFormat for cross-language golden-fixture contract tests -->
+    <dependency>
+      <groupId>com.google.protobuf</groupId>
+      <artifactId>protobuf-java-util</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <!-- Structural (order-independent) JSON comparison for the same tests -->
+    <dependency>
+      <groupId>org.skyscreamer</groupId>
+      <artifactId>jsonassert</artifactId>
+      <version>1.5.3</version>
+      <scope>test</scope>
+    </dependency>
   </dependencies>
 
   <build>
