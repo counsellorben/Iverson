@@ -28,7 +28,7 @@ if (workloadRole is not ("api" or "worker"))
 var otelEndpoint = cfg["Otel:Endpoint"] ?? "http://localhost:4317";
 
 var resource = ResourceBuilder.CreateDefault()
-    .AddService(serviceName: "Iverson.Api", serviceVersion: "1.0.0")
+    .AddService(serviceName: workloadRole == "worker" ? "Iverson.Worker" : "Iverson.Api", serviceVersion: "1.0.0")
     .AddAttributes(new Dictionary<string, object>
     {
         ["deployment.environment"] = builder.Environment.EnvironmentName

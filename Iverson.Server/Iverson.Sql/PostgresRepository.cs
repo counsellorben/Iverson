@@ -202,7 +202,18 @@ public class PostgresRepository(
         {
             activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
             activity?.RecordException(ex);
-            await tx.RollbackAsync();
+            try
+            {
+                await tx.RollbackAsync();
+            }
+            catch (Exception rollbackEx)
+            {
+                // A broken connection (e.g. dropped mid-transaction) can make RollbackAsync
+                // itself throw. That must never replace the original exception — it's the
+                // one that explains what actually went wrong — so log the rollback failure
+                // and let the original exception propagate via `throw;` below.
+                logger.LogError(rollbackEx, "Rollback failed after transaction error");
+            }
             throw;
         }
     }

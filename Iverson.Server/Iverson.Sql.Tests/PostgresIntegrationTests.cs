@@ -1,5 +1,6 @@
 using FluentAssertions;
 using Microsoft.Extensions.Logging.Abstractions;
+using Npgsql;
 using Testcontainers.PostgreSql;
 using Xunit;
 
@@ -12,6 +13,7 @@ public sealed class PostgresContainerFixture : IAsyncLifetime
         .Build();
 
     public PostgresRepository Repository { get; private set; } = null!;
+    public string ConnectionString => _container.GetConnectionString();
 
     public async Task InitializeAsync()
     {
@@ -269,5 +271,30 @@ public sealed class PostgresIntegrationTests(PostgresContainerFixture fixture)
 
         var count = await _repo.QuerySingleOrDefaultAsync<int>($"SELECT COUNT(*) FROM \"{tableC}\"");
         count.Should().Be(0); // rolled back, not committed
+    }
+
+    [Fact]
+    public async Task ExecuteInTransactionAsync_RollbackFails_OriginalExceptionStillPropagates()
+    {
+        // If the connection is already broken when the catch block calls RollbackAsync(),
+        // the rollback itself throws — that failure must never replace the original
+        // exception, which is the one that actually explains what went wrong. Force this
+        // by terminating our own backend from a second connection, then throwing from the
+        // `work` delegate: by the time the catch block attempts the rollback, the
+        // connection is already dead, so RollbackAsync() fails too.
+        var act = async () => await _repo.ExecuteInTransactionAsync(async tx =>
+        {
+            var pid = await tx.QuerySingleOrDefaultAsync<int?>("SELECT pg_backend_pid()");
+
+            await using var killer = new NpgsqlConnection(fixture.ConnectionString);
+            await killer.OpenAsync();
+            await using (var cmd = new NpgsqlCommand($"SELECT pg_terminate_backend({pid})", killer))
+                await cmd.ExecuteNonQueryAsync();
+
+            throw new InvalidOperationException("original failure");
+        });
+
+        var thrown = await act.Should().ThrowAsync<InvalidOperationException>();
+        thrown.Which.Message.Should().Be("original failure");
     }
 }

@@ -440,4 +440,50 @@ public class IntelligenceStoreConsumerTests
 
         result.Should().Be(expected);
     }
+
+    [Fact]
+    public void KeyToUlong_NonGuidKey_IsStableAcrossHashSeeds()
+    {
+        // Regression test for the same hash-instability bug ComputeChunkPointId was fixed
+        // for: the non-GUID fallback branch is unreachable today (keys are server-generated
+        // UUIDv7, always GUID-parseable) but feeds directly into ComputeChunkPointId's
+        // parentId, so it must not rely on string.GetHashCode() either. As with
+        // ComputeChunkPointId, this asserts the method is a pure function of its input.
+        var method = typeof(IntelligenceStoreConsumer).GetMethod(
+            "KeyToUlong", BindingFlags.NonPublic | BindingFlags.Static)!;
+
+        var first  = (ulong)method.Invoke(null, ["not-a-guid-key"])!;
+        var second = (ulong)method.Invoke(null, ["not-a-guid-key"])!;
+
+        first.Should().Be(second);
+        first.Should().NotBe(0UL);
+
+        var differentKey = (ulong)method.Invoke(null, ["another-non-guid-key"])!;
+        differentKey.Should().NotBe(first);
+    }
+
+    [Fact]
+    public void KeyToUlong_NonGuidKey_UsesFnvHash()
+    {
+        // Hard-codes the expected output for a fixed input so a future accidental
+        // reintroduction of GetHashCode() in the fallback branch is caught immediately.
+        var method = typeof(IntelligenceStoreConsumer).GetMethod(
+            "KeyToUlong", BindingFlags.NonPublic | BindingFlags.Static)!;
+
+        var result = (ulong)method.Invoke(null, ["not-a-guid-key"])!;
+
+        // Compute the expected value independently (not by calling the method under test)
+        // using the same FNV-1a formula as FnvHash, so this test would fail if the
+        // implementation's hash source changes even though it's still "deterministic".
+        const ulong offsetBasis = 14695981039346656037UL;
+        const ulong prime       = 1099511628211UL;
+        var expected = offsetBasis;
+        foreach (var b in System.Text.Encoding.UTF8.GetBytes("not-a-guid-key"))
+        {
+            expected ^= b;
+            expected *= prime;
+        }
+
+        result.Should().Be(expected);
+    }
 }

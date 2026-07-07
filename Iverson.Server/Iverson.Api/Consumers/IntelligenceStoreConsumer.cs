@@ -245,7 +245,10 @@ public sealed class IntelligenceStoreConsumer(
             var bytes = g.ToByteArray();
             return BitConverter.ToUInt64(bytes, 8);
         }
-        return (ulong)Math.Abs(key.GetHashCode());
+        // Non-GUID keys are unreachable today (keys are server-generated UUIDv7), but use the
+        // same stable FNV-1a hash as ComputeChunkPointId — not string.GetHashCode(), which
+        // .NET randomizes per process — since this value feeds ComputeChunkPointId's parentId.
+        return FnvHash(key);
     }
 
     // Combines parent ID + field name + chunk index into a collision-resistant ulong.
