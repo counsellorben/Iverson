@@ -78,3 +78,4 @@ helm upgrade --install starrocks-operator operator `
   --wait
 
 Write-Host "All operators installed."
+Write-Host "Next: deploy/kind/build-and-load-image.ps1 to build+load the app image, then helm upgrade --install iverson . -f values-local.yaml -n iverson"
