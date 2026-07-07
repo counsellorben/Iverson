@@ -16,6 +16,14 @@ using OpenTelemetry.Trace;
 var builder = WebApplication.CreateBuilder(args);
 var cfg = builder.Configuration;
 
+// The env-var configuration provider only folds "__" into ":" — it does not strip the
+// single underscore in "WORKLOAD_ROLE" — so that env var lands in IConfiguration under the
+// literal key "WORKLOAD_ROLE", not "WorkloadRole". Check both: the literal env var name (what
+// Helm/docker-compose will actually set) and the PascalCase key (appsettings.json override).
+var workloadRole = cfg["WORKLOAD_ROLE"] ?? cfg["WorkloadRole"] ?? "api";
+if (workloadRole is not ("api" or "worker"))
+    throw new InvalidOperationException($"WorkloadRole must be 'api' or 'worker', got '{workloadRole}'.");
+
 // ── OpenTelemetry ──────────────────────────────────────────────────────────────
 var otelEndpoint = cfg["Otel:Endpoint"] ?? "http://localhost:4317";
 
@@ -92,8 +100,6 @@ builder.Services.AddKafka(cfg);
 builder.Services.AddSingleton<SchemaRegistry>();
 builder.Services.AddSingleton<Iverson.Api.Reconciliation.ReconciliationService>();
 
-builder.Services.AddHostedService<Iverson.Api.Reconciliation.ReconciliationQueueWorker>();
-
 builder.Services.AddEmbeddings(cfg);
 
 // Defense-in-depth: ConsumerResilience.RunWithRestartAsync already catches and retries
@@ -103,9 +109,13 @@ builder.Services.AddEmbeddings(cfg);
 builder.Services.Configure<Microsoft.Extensions.Hosting.HostOptions>(o =>
     o.BackgroundServiceExceptionBehavior = Microsoft.Extensions.Hosting.BackgroundServiceExceptionBehavior.Ignore);
 
-builder.Services.AddHostedService<EngagementStoreConsumer>();
-builder.Services.AddHostedService<IntelligenceStoreConsumer>();
-builder.Services.AddHostedService<Iverson.Api.Reconciliation.DlqMonitorConsumer>();
+if (workloadRole == "worker")
+{
+    builder.Services.AddHostedService<EngagementStoreConsumer>();
+    builder.Services.AddHostedService<IntelligenceStoreConsumer>();
+    builder.Services.AddHostedService<Iverson.Api.Reconciliation.DlqMonitorConsumer>();
+    builder.Services.AddHostedService<Iverson.Api.Reconciliation.ReconciliationQueueWorker>();
+}
 
 // ── Middleware ─────────────────────────────────────────────────────────────────
 var app = builder.Build();
@@ -236,15 +246,19 @@ await app.Services.GetRequiredService<IPostgresRepository>().ApplySchemaAsync(Iv
 await app.Services.GetRequiredService<IPostgresRepository>().ApplySchemaAsync(Iverson.Api.Reconciliation.DlqSchema.Table);
 
 // ── gRPC endpoints ─────────────────────────────────────────────────────────────
-app.MapGrpcService<ObjectMappingGrpcService>();
-app.MapGrpcService<ObjectPersistenceGrpcService>();
-app.MapGrpcService<ObjectRetrievalGrpcService>();
-app.MapGrpcService<ObjectSearchGrpcService>();
+if (workloadRole == "api")
+{
+    app.MapGrpcService<ObjectMappingGrpcService>();
+    app.MapGrpcService<ObjectPersistenceGrpcService>();
+    app.MapGrpcService<ObjectRetrievalGrpcService>();
+    app.MapGrpcService<ObjectSearchGrpcService>();
+}
 
 app.Lifetime.ApplicationStarted.Register(() =>
 {
     app.Logger.LogInformation("Iverson.Api is available — all Kafka topic subscriptions initiated");
     app.Logger.LogInformation("OTel OTLP endpoint: {Endpoint}", otelEndpoint);
+    app.Logger.LogInformation("Iverson.Api started in '{Role}' role", workloadRole);
 });
 
 app.Run();
