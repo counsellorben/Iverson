@@ -9,6 +9,14 @@ spec:
     type: scram-sha-512
   authorization:
     type: simple
+    # This single principal is shared by both the `api` and `worker` Deployments (see
+    # charts/worker) — its ACLs are prefix-scoped broadly enough (all `iverson.` topics,
+    # all `iverson.consumer.*` groups) to cover both roles' needs without a separate
+    # KafkaUser. Revisit this if either role ever needs a permission the other
+    # shouldn't have (e.g. restricting `worker` to Read-only, since it never produces
+    # anything except opportunistic-publish-adjacent Kafka calls today are all in `api`
+    # — DlqMonitorConsumer's replay path in Task 7 is the one exception, since /admin/dlq
+    # replay runs in the `api` role, not `worker`, so this remains true).
     acls:
       - resource: { type: topic, name: "iverson.", patternType: prefix }
         operations: ["Read", "Write", "Describe", "Create"]
