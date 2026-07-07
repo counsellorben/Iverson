@@ -1,12 +1,23 @@
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { dirname, join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { pipeline } from '../src/pipeline.js';
 import {
     AggregationType,
     DateTrunc,
     JoinKind,
+    PipelineRequest,
     SearchOperator,
     WindowFunctionKind,
 } from '../generated/object_search.js';
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+
+// Shared cross-language golden fixture. Generated from the C# builder (the reference
+// implementation); every language's builder must produce the same structural JSON for
+// the same logical request.
+const GOLDEN_FIXTURE_PATH = join(__dirname, '..', '..', 'Common', 'testdata', 'pipeline-contract-1.json');
 
 describe('PipelineBuilder', () => {
     it('compiles a full pipeline to the expected proto', () => {
@@ -108,5 +119,35 @@ describe('PipelineBuilder', () => {
 
     it('throws when a step declares metrics without groupBy', () => {
         expect(() => pipeline('Article').step('s1', s => s.count('id')).build()).toThrow();
+    });
+
+    // ── Cross-language golden-fixture contract ──────────────────────────────
+    // Golden fixture generated from the C# builder (the reference implementation), checked
+    // in at Iverson.Clients/Common/testdata/pipeline-contract-1.json. Same logical request —
+    // a base-step filter, an aggregate step, and a composite-key join step (2 ON pairs) with
+    // a select projection — built here via TypeScript's pipeline(...), must serialize to the
+    // same JSON structure.
+
+    it('build() matches the golden fixture pipeline-contract-1.json', () => {
+        const request = pipeline('Article')
+            .where('IsPublished', SearchOperator.EQUALS, true)
+            .step('by_author', s => s
+                .groupBy('AuthorId')
+                .countAll('articles')
+                .having('articles', SearchOperator.GREATER_THAN, 5))
+            .step('enriched', s => s
+                .joinAll('Author', [
+                    { left: 'AuthorId', right: 'Id' },
+                    { left: 'TenantId', right: 'TenantId' },
+                ])
+                .select(sel => sel.allFrom('by_author').pick('Author', 'Name', 'author_name')))
+            .sortOnDesc('articles')
+            .limit(25)
+            .build('fixture-trace-id');
+
+        const actual = PipelineRequest.toJSON(request);
+        const expected = JSON.parse(readFileSync(GOLDEN_FIXTURE_PATH, 'utf-8'));
+
+        expect(actual).toEqual(expected);
     });
 });

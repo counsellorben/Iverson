@@ -1,0 +1,73 @@
+{
+    "typeName": "Article",
+    "baseWhere": [
+        {
+            "property": "IsPublished",
+            "value": {
+                "boolVal": true
+            }
+        }
+    ],
+    "steps": [
+        {
+            "name": "by_author",
+            "groupBy": [
+                {
+                    "field": "AuthorId"
+                }
+            ],
+            "metrics": [
+                {
+                    "name": "articles",
+                    "type": "COUNT"
+                }
+            ],
+            "having": [
+                {
+                    "property": "articles",
+                    "operator": "GREATER_THAN",
+                    "value": {
+                        "numberVal": 5
+                    }
+                }
+            ]
+        },
+        {
+            "name": "enriched",
+            "joins": [
+                {
+                    "source": "Author",
+                    "on": [
+                        {
+                            "left": "AuthorId",
+                            "right": "Id"
+                        },
+                        {
+                            "left": "TenantId",
+                            "right": "TenantId"
+                        }
+                    ]
+                }
+            ],
+            "select": [
+                {
+                    "source": "by_author",
+                    "all": true
+                },
+                {
+                    "source": "Author",
+                    "column": "Name",
+                    "alias": "author_name"
+                }
+            ]
+        }
+    ],
+    "orderBy": [
+        {
+            "property": "articles",
+            "descending": true
+        }
+    ],
+    "limit": 25,
+    "traceId": "fixture-trace-id"
+}

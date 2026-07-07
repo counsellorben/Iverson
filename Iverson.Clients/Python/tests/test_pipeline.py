@@ -1,7 +1,18 @@
+import json
+from pathlib import Path
+
 import pytest
+from google.protobuf.json_format import MessageToJson
 
 from iverson_client import pipeline
 from iverson_client.generated import object_search_pb2 as pb
+
+# Shared cross-language golden fixture. Generated from the C# builder (the reference
+# implementation); every language's builder must produce the same structural JSON for
+# the same logical request.
+_GOLDEN_FIXTURE = (
+    Path(__file__).resolve().parents[2] / "Common" / "testdata" / "pipeline-contract-1.json"
+)
 
 
 def test_build_full_pipeline_compiles_to_expected_proto():
@@ -118,3 +129,32 @@ def test_step_with_reserved_name_base_raises():
 def test_step_with_metrics_but_no_group_by_raises():
     with pytest.raises(ValueError):
         pipeline("Article").step("s1", lambda s: s.count("id")).build()
+
+
+# ── Cross-language golden-fixture contract ──────────────────────────────────
+# Golden fixture generated from the C# builder (the reference implementation), checked
+# in at Iverson.Clients/Common/testdata/pipeline-contract-1.json. Same logical request —
+# a base-step filter, an aggregate step, and a composite-key join step (2 ON pairs) with
+# a select projection — built here via Python's pipeline(...), must serialize to the
+# same JSON structure.
+
+def test_build_matches_golden_fixture_pipeline_contract_1():
+    request = (
+        pipeline("Article")
+        .where("IsPublished", pb.EQUALS, True)
+        .step("by_author", lambda s: s
+              .group_by("AuthorId")
+              .count_all("articles")
+              .having("articles", pb.GREATER_THAN, 5))
+        .step("enriched", lambda s: s
+              .join_all("Author", [("AuthorId", "Id"), ("TenantId", "TenantId")])
+              .select(lambda sel: sel.all_from("by_author").pick("Author", "Name", "author_name")))
+        .sort_on_desc("articles")
+        .limit(25)
+        .build("fixture-trace-id")
+    )
+
+    actual = json.loads(MessageToJson(request))
+    expected = json.loads(_GOLDEN_FIXTURE.read_text())
+
+    assert actual == expected

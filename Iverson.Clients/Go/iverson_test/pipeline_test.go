@@ -1,10 +1,15 @@
 package iverson_test
 
 import (
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"reflect"
 	"testing"
 
 	pb "github.com/iverson/clients/go/generated"
 	"github.com/iverson/clients/go/iverson"
+	"google.golang.org/protobuf/encoding/protojson"
 )
 
 func numberVal(n float64) *pb.SearchValue {
@@ -170,5 +175,60 @@ func TestStep_WithMetricsButNoGroupBy_ReturnsBuildError(t *testing.T) {
 		Build()
 	if err == nil {
 		t.Fatal("expected an error for metrics without groupBy")
+	}
+}
+
+// ── Cross-language golden-fixture contract ─────────────────────────────────
+// Golden fixture generated from the C# builder (the reference implementation), checked
+// in at Iverson.Clients/Common/testdata/pipeline-contract-1.json. Same logical request —
+// a base-step filter, an aggregate step, and a composite-key join step (2 ON pairs) with
+// a select projection — built here via Go's iverson.NewPipeline(...), must serialize to
+// the same JSON structure.
+
+func TestPipelineBuild_MatchesGoldenFixture_Contract1(t *testing.T) {
+	req, err := iverson.NewPipeline("Article").
+		Where("IsPublished", pb.SearchOperator_EQUALS, boolVal(true)).
+		Step("by_author", func(s *iverson.PipelineStepBuilder) {
+			s.GroupBy("AuthorId").
+				CountAll("articles").
+				Having("articles", pb.SearchOperator_GREATER_THAN, numberVal(5))
+		}).
+		Step("enriched", func(s *iverson.PipelineStepBuilder) {
+			s.JoinOn("Author", []iverson.JoinCondition{
+				{Left: "AuthorId", Right: "Id"},
+				{Left: "TenantId", Right: "TenantId"},
+			}).
+				SelectAllFrom("by_author").
+				SelectPick("Author", "Name", "author_name")
+		}).
+		SortOnDesc("articles").
+		Limit(25).
+		Build("fixture-trace-id")
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	actualBytes, err := protojson.Marshal(req)
+	if err != nil {
+		t.Fatalf("protojson.Marshal: %v", err)
+	}
+	var actual map[string]interface{}
+	if err := json.Unmarshal(actualBytes, &actual); err != nil {
+		t.Fatalf("unmarshal actual: %v", err)
+	}
+
+	goldenPath := filepath.Join("..", "..", "Common", "testdata", "pipeline-contract-1.json")
+	goldenBytes, err := os.ReadFile(goldenPath)
+	if err != nil {
+		t.Fatalf("read golden fixture: %v", err)
+	}
+	var expected map[string]interface{}
+	if err := json.Unmarshal(goldenBytes, &expected); err != nil {
+		t.Fatalf("unmarshal golden fixture: %v", err)
+	}
+
+	if !reflect.DeepEqual(actual, expected) {
+		t.Errorf("golden fixture mismatch:\n  actual:   %s\n  expected: %s", actualBytes, goldenBytes)
 	}
 }

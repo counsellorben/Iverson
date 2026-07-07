@@ -158,4 +158,47 @@ public class PipelineBuilderTests
 
         request.Steps[0].GroupBy[0].DateTrunc.Should().Be(DateTrunc.Month);
     }
+
+    // ── Cross-language golden-fixture contract ─────────────────────────────────
+    // Golden fixture generated from this exact builder invocation, checked in at
+    // Iverson.Clients/Common/testdata/pipeline-contract-1.json. Java, Python,
+    // TypeScript, and Go each have an equivalent test asserting their builder
+    // produces the same structural JSON when built with the same inputs.
+    //
+    // Covers a base-step filter, an aggregate step (GroupBy/CountAll/Having), and a
+    // join step using a composite-key join (2 ON pairs) plus a select projection —
+    // the exact shape that Tasks 15-18 of the 2026-07-06 vector-search-and-dsl-followups
+    // plan had to equalize across all 5 languages after real per-language divergences.
+    //
+    // If a legitimate proto/DSL change requires updating this fixture, regenerate it
+    // from this C# builder invocation (the reference implementation) — do not hand-edit
+    // the JSON file.
+
+    [Fact]
+    public void Build_MatchesGoldenFixture_PipelineContract1()
+    {
+        var request = Query.Pipeline("Article")
+            .Where("IsPublished", EqualTo, true)
+            .Step("by_author", s => s
+                .GroupBy("AuthorId")
+                .CountAll("articles")
+                .Having("articles", GreaterThan, 5))
+            .Step("enriched", s => s
+                .Join("Author", [("AuthorId", "Id"), ("TenantId", "TenantId")])
+                .Select(p => p.AllFrom("by_author").Pick("Author", "Name", "author_name")))
+            .SortOn("articles", descending: true)
+            .Limit(25)
+            .Build("fixture-trace-id");
+
+        var actualJson = Google.Protobuf.JsonFormatter.Default.Format(request);
+        var actual = System.Text.Json.JsonDocument.Parse(actualJson).RootElement;
+
+        var goldenPath = Path.Combine(AppContext.BaseDirectory, "testdata", "pipeline-contract-1.json");
+        var expected = System.Text.Json.JsonDocument.Parse(File.ReadAllText(goldenPath)).RootElement;
+
+        // Re-serialize both to a canonical compact form before comparing: JsonElement.GetRawText()
+        // preserves the source's original whitespace, so a pretty-printed golden file would never
+        // raw-text-equal a compactly-formatted actual value even when structurally identical.
+        System.Text.Json.JsonSerializer.Serialize(actual).Should().Be(System.Text.Json.JsonSerializer.Serialize(expected));
+    }
 }
