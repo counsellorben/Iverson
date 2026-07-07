@@ -93,6 +93,51 @@ public class KafkaConsumer(
         consumer.Close();
     }
 
+    public async Task ConsumeRawAsync(
+        string topic,
+        string groupId,
+        Func<string, string, Headers, CancellationToken, Task> handler,
+        CancellationToken cancellationToken)
+    {
+        await EnsureTopicExistsAsync(topic, cancellationToken);
+
+        var config = new ConsumerConfig
+        {
+            BootstrapServers = options.BootstrapServers,
+            GroupId = groupId,
+            AutoOffsetReset = AutoOffsetReset.Earliest,
+            EnableAutoCommit = false
+        };
+        KafkaClientConfigFactory.ApplySecurity(config, options);
+
+        using var consumer = new ConsumerBuilder<string, string>(config).Build();
+        consumer.Subscribe(topic);
+        logger.LogInformation("Subscribed to topic {Topic} as group {GroupId} (raw)", topic, groupId);
+
+        while (!cancellationToken.IsCancellationRequested)
+        {
+            try
+            {
+                var result = consumer.Consume(cancellationToken);
+                if (result is null) continue;
+
+                await handler(result.Message.Key, result.Message.Value, result.Message.Headers, cancellationToken);
+                consumer.Commit(result);
+            }
+            catch (OperationCanceledException)
+            {
+                break;
+            }
+            catch (ConsumeException ex)
+            {
+                logger.LogError(ex, "Consume error on topic {Topic}", topic);
+                await Task.Delay(1000, cancellationToken);
+            }
+        }
+
+        consumer.Close();
+    }
+
     private async Task EnsureTopicExistsAsync(string topic, CancellationToken ct)
     {
         var adminConfig = new AdminClientConfig { BootstrapServers = options.BootstrapServers };

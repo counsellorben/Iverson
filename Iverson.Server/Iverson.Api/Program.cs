@@ -105,6 +105,7 @@ builder.Services.Configure<Microsoft.Extensions.Hosting.HostOptions>(o =>
 
 builder.Services.AddHostedService<EngagementStoreConsumer>();
 builder.Services.AddHostedService<IntelligenceStoreConsumer>();
+builder.Services.AddHostedService<Iverson.Api.Reconciliation.DlqMonitorConsumer>();
 
 // ── Middleware ─────────────────────────────────────────────────────────────────
 var app = builder.Build();
@@ -198,6 +199,7 @@ app.MapPost("/admin/reconcile/{typeName}", async (
 await app.Services.GetRequiredService<IEmbeddingService>().InitializeAsync();
 await app.Services.GetRequiredService<SchemaRegistry>().LoadAsync();
 await app.Services.GetRequiredService<IPostgresRepository>().ApplySchemaAsync(Iverson.Api.Reconciliation.ReconciliationSchema.Table);
+await app.Services.GetRequiredService<IPostgresRepository>().ApplySchemaAsync(Iverson.Api.Reconciliation.DlqSchema.Table);
 
 // ── gRPC endpoints ─────────────────────────────────────────────────────────────
 app.MapGrpcService<ObjectMappingGrpcService>();
