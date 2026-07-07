@@ -129,6 +129,10 @@ public class ReconciliationServiceTests
     [Fact]
     public async Task ProcessQueuedFailuresAsync_DeleteRow_PublishesDeletedEvent_UsingStoredPayload_WithoutQueryingEntityTable()
     {
+        // AuthorSchema has no relations and no vector/chunk fields, so a correctly-resolved
+        // TargetStores is Engagement only — distinct from the record default of All, which is
+        // what a buggy replay (skipping schema resolution) would produce instead.
+        await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
         var queueId = Guid.NewGuid();
         const string payload = """{"Id":"author-1","Name":"Alice"}""";
         _sql.QueryAsync<ReconciliationQueueRow>(
@@ -140,13 +144,34 @@ public class ReconciliationServiceTests
         await _events.Received(1).ProduceAsync(
             EntityTopics.Deleted,
             "author-1",
-            Arg.Is<EntityEvent>(e => e.TypeName == "Author" && e.Key == "author-1" && e.PayloadJson == payload));
+            Arg.Is<EntityEvent>(e =>
+                e.TypeName == "Author" && e.Key == "author-1" && e.PayloadJson == payload &&
+                e.TargetStores == StoreTarget.Engagement));
 
         await _sql.DidNotReceiveWithAnyArgs().QuerySingleOrDefaultAsync<string>(Arg.Any<string>(), Arg.Any<object?>());
 
         await _sql.Received(1).ExecuteAsync(
             Arg.Is<string>(s => s.Contains("DELETE") && s.Contains(ReconciliationSchema.TableName)),
             Arg.Any<object>());
+    }
+
+    [Fact]
+    public async Task ProcessDeleteRowAsync_NoSchemaRegistered_FallsBackToTargetStoresAll()
+    {
+        // Schema deregistered since the delete happened is an edge case where the fix should
+        // preserve current behavior (target every store) rather than throw or narrow scope.
+        var queueId = Guid.NewGuid();
+        const string payload = """{"Id":"ghost-1","Name":"Ghost"}""";
+        _sql.QueryAsync<ReconciliationQueueRow>(
+                Arg.Is<string>(s => s.Contains(ReconciliationSchema.TableName)), Arg.Any<object?>())
+            .Returns(new[] { new ReconciliationQueueRow(queueId, "NoSuchType", "ghost-1", 0, "Deleted", payload) });
+
+        await _sut.ProcessQueuedFailuresAsync(CancellationToken.None);
+
+        await _events.Received(1).ProduceAsync(
+            EntityTopics.Deleted,
+            "ghost-1",
+            Arg.Is<EntityEvent>(e => e.TargetStores == StoreTarget.All));
     }
 
     [Fact]

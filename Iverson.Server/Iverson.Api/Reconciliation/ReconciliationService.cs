@@ -142,10 +142,15 @@ internal sealed class ReconciliationService(
     {
         try
         {
+            var schema = registry.Get(row.TypeName);
+            var targetStores = schema is not null
+                ? StoreTargeting.DetermineTargetStores(schema)
+                : StoreTarget.All;
+
             await events.ProduceAsync(
                 EntityTopics.Deleted,
                 row.EntityKey,
-                new EntityEvent(row.TypeName, row.EntityKey, row.Payload!, string.Empty, "1", DateTimeOffset.UtcNow));
+                new EntityEvent(row.TypeName, row.EntityKey, row.Payload!, string.Empty, "1", DateTimeOffset.UtcNow, targetStores));
 
             await DeleteQueueRowAsync(row.Id);
             logger.LogInformation(
