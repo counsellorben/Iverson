@@ -1,0 +1,17 @@
+image:
+  repository: "iverson-api"   # same image as the api subchart — role is selected by WorkloadRole
+  tag: "0.1.0"   # never "latest" — see Global Constraints
+  pullPolicy: IfNotPresent
+resources:
+  requests: { cpu: "2", memory: "4Gi", ephemeral-storage: "1Gi" }
+  limits: { cpu: "2", memory: "4Gi", ephemeral-storage: "2Gi" }
+hpa:
+  minReplicas: 2
+  maxReplicas: 5
+  targetCPUUtilization: 70
+  # NOTE: this is CPU-based, matching the api subchart's HPA today. A consumer-lag-based
+  # signal (e.g. via KEDA's Kafka scaler) would be a strictly better fit for this
+  # workload's actual bottleneck, but introducing KEDA is a new cluster-wide operator
+  # dependency across all 4 environments (kind + AWS + Azure + GCP) — out of scope for
+  # this task. Flagged here as a follow-up worth its own separately-approved plan, not
+  # silently added.

@@ -23,6 +23,9 @@ dependencies:
   - name: api
     version: "0.1.0"
     repository: "file://charts/api"
+  - name: worker
+    version: "0.1.0"
+    repository: "file://charts/worker"
   - name: jaeger
     version: "0.1.0"
     repository: "file://charts/jaeger"

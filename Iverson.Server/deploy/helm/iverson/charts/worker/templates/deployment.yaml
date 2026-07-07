@@ -1,0 +1,141 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ .Release.Name }}-worker
+automountServiceAccountToken: false
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}-worker
+  annotations:
+    # See charts/api/templates/deployment.yaml's identical annotation for the full
+    # explanation: this Deployment is HPA-controlled (no static `replicas:` below) so
+    # kube-score's PDB check can never take its <2-replicas skip path. Unlike the api
+    # subchart, this subchart doesn't render a PodDisruptionBudget at all (out of scope
+    # for this task per the task-11 brief), so the ignore is unconditional here rather
+    # than a values-local-only edge case.
+    kube-score/ignore: deployment-has-poddisruptionbudget
+spec:
+  # No static `replicas:` field here on purpose — this Deployment is HPA-controlled
+  # (templates/hpa.yaml). See charts/api/templates/deployment.yaml for the full
+  # rationale (Helm upgrades resetting replica count on every apply, fighting the
+  # autoscaler, and kube-score flagging the combination as CRITICAL).
+  selector:
+    matchLabels:
+      app: {{ .Release.Name }}-worker
+  template:
+    metadata:
+      labels:
+        app: {{ .Release.Name }}-worker
+    spec:
+      serviceAccountName: {{ .Release.Name }}-worker
+      automountServiceAccountToken: false
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    app: {{ .Release.Name }}-worker
+                topologyKey: kubernetes.io/hostname
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: worker
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
+          ports:
+            # No grpc (8080) port here — the worker role serves no client gRPC/HTTP
+            # traffic (Kafka consumers + background reconciliation only). 8081/http is
+            # kept solely so the readiness/liveness probes below can reach /health and
+            # /health/live; there is no Service or Ingress in front of it.
+            - containerPort: 8081
+              name: http
+          env:
+            - name: WorkloadRole
+              value: "worker"
+            - name: POSTGRES_APP_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Release.Name }}-postgres-app
+                  key: password
+            - name: ConnectionStrings__Postgres
+              # CNPG's own `uri` secret key is a postgresql:// URI, which Npgsql's
+              # connection-string parser rejects outright (it only accepts ADO.NET
+              # key=value syntax, not libpq-style URIs) — composing it here mirrors the
+              # ConnectionStrings__StarRocks pattern below.
+              value: "Host={{ .Release.Name }}-postgres-rw;Port=5432;Database=iverson;Username=iverson;Password=$(POSTGRES_APP_PASSWORD)"
+            - name: STARROCKS_APP_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Release.Name }}-starrocks-app
+                  key: app-password
+            - name: ConnectionStrings__StarRocks
+              value: "Server={{ .Release.Name }}-starrocks-fe-service;Port=9030;Database=iverson;User Id=iverson_app;Password=$(STARROCKS_APP_PASSWORD);AllowPublicKeyRetrieval=true;"
+            - name: Qdrant__Host
+              value: "{{ .Release.Name }}-qdrant"
+            - name: Qdrant__Port
+              value: "6334"
+            - name: Kafka__BootstrapServers
+              value: "{{ .Release.Name }}-kafka-kafka-bootstrap:9093"
+            - name: Kafka__SecurityProtocol
+              value: "SASL_SSL"
+            - name: Kafka__SaslMechanism
+              value: "SCRAM-SHA-512"
+            # Deliberately reuses the api subchart's KafkaUser/secret ({{ .Release.Name }}-api)
+            # rather than provisioning a separate `worker` KafkaUser — see Task 12 for why.
+            - name: Kafka__SaslUsername
+              value: "{{ .Release.Name }}-api"
+            - name: Kafka__SaslPassword
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Release.Name }}-api
+                  key: password
+            - name: Kafka__SslCaLocation
+              value: "/etc/kafka-ca/ca.crt"
+            - name: Embeddings__BaseUrl
+              value: "http://{{ .Release.Name }}-ollama:11434"
+            - name: Otel__Endpoint
+              value: "http://{{ .Release.Name }}-jaeger:4317"
+          resources:
+            requests:
+              cpu: {{ .Values.resources.requests.cpu | quote }}
+              memory: {{ .Values.resources.requests.memory | quote }}
+              ephemeral-storage: {{ index .Values.resources.requests "ephemeral-storage" | quote }}
+            limits:
+              cpu: {{ .Values.resources.limits.cpu | quote }}
+              memory: {{ .Values.resources.limits.memory | quote }}
+              ephemeral-storage: {{ index .Values.resources.limits "ephemeral-storage" | quote }}
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8081
+            initialDelaySeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health/live
+              port: 8081
+            initialDelaySeconds: 30
+            periodSeconds: 15
+          volumeMounts:
+            - name: kafka-ca
+              mountPath: /etc/kafka-ca
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: kafka-ca
+          secret:
+            secretName: {{ .Release.Name }}-kafka-cluster-ca-cert
+        - name: tmp
+          emptyDir: {}

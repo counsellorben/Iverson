@@ -72,5 +72,11 @@ api:
     # cert-manager-issued Secret name for the real host before applying.
     tlsSecretName: "iverson-api-tls"
 
+# No worker: overlay here on purpose. The api subchart's only cloud-specific override
+# in this file is its Ingress (AGIC class/tlsSecretName above); the worker subchart has
+# no Ingress and, like api, isn't wired to a dedicated node pool (compare postgres/kafka/
+# starrocks/qdrant/ollama above, which do get one). Its resources/hpa come from the
+# cloud-agnostic worker: block in values.yaml, same as api's do.
+
 jaeger:
   nodeSelector: {}

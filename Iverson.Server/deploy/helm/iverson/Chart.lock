@@ -17,8 +17,11 @@ dependencies:
 - name: api
   repository: file://charts/api
   version: 0.1.0
+- name: worker
+  repository: file://charts/worker
+  version: 0.1.0
 - name: jaeger
   repository: file://charts/jaeger
   version: 0.1.0
-digest: sha256:df097a6d9cf499e605dc914f9c876ba9ae4569d92290e1fe1532a91693331e72
-generated: "2026-07-03T19:41:03.344138293-04:00"
+digest: sha256:adaf0ef599cb4fda66c96fcd924ad89d6a2e4fc2dafd89a4d3b413867c0d3d92
+generated: "2026-07-07T09:10:43.61768545-04:00"
