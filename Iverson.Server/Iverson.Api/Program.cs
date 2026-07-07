@@ -195,6 +195,40 @@ app.MapPost("/admin/reconcile/{typeName}", async (
         : Results.Ok(new { reconciledCount = count, typeName });
 }).WithName("Reconcile");
 
+app.MapGet("/admin/dlq", async (IPostgresRepository db) =>
+{
+    var rows = await db.QueryAsync<DlqRow>(
+        $"""
+        SELECT "Id", "SourceTopic", "ConsumerGroup", "MessageKey", "ExceptionType",
+               "ExceptionMessage", "Attempts", "FailedAt", "Replayed"
+        FROM "{Iverson.Api.Reconciliation.DlqSchema.TableName}"
+        WHERE "Replayed" = false
+        ORDER BY "FailedAt" DESC
+        LIMIT 200
+        """, null);
+    return Results.Ok(rows);
+}).WithName("ListDlq");
+
+app.MapPost("/admin/dlq/{id}/replay", async (Guid id, IPostgresRepository db, IEventProducer events) =>
+{
+    var row = await db.QuerySingleOrDefaultAsync<DlqReplayRow>(
+        $"""
+        SELECT "SourceTopic", "MessageKey", "MessageValue"
+        FROM "{Iverson.Api.Reconciliation.DlqSchema.TableName}"
+        WHERE "Id" = @Id AND "Replayed" = false
+        """, new { Id = id });
+
+    if (row is null) return Results.NotFound(new { error = $"No unreplayed DLQ row with id '{id}'" });
+
+    await events.ProduceAsync(row.SourceTopic, row.MessageKey, row.MessageValue);
+
+    await db.ExecuteAsync(
+        $"""UPDATE "{Iverson.Api.Reconciliation.DlqSchema.TableName}" SET "Replayed" = true WHERE "Id" = @Id""",
+        new { Id = id });
+
+    return Results.Ok(new { replayed = true, id, topic = row.SourceTopic });
+}).WithName("ReplayDlq");
+
 // ── Schema hydration ───────────────────────────────────────────────────────────
 await app.Services.GetRequiredService<IEmbeddingService>().InitializeAsync();
 await app.Services.GetRequiredService<SchemaRegistry>().LoadAsync();
@@ -214,3 +248,8 @@ app.Lifetime.ApplicationStarted.Register(() =>
 });
 
 app.Run();
+
+// ── DTOs for minimal-API endpoints ──────────────────────────────────────────────
+internal sealed record DlqRow(Guid Id, string SourceTopic, string ConsumerGroup, string MessageKey,
+    string? ExceptionType, string? ExceptionMessage, int Attempts, DateTimeOffset FailedAt, bool Replayed);
+internal sealed record DlqReplayRow(string SourceTopic, string MessageKey, string MessageValue);
