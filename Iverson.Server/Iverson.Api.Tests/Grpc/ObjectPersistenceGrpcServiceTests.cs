@@ -3,6 +3,7 @@ using FluentAssertions;
 using Google.Protobuf.WellKnownTypes;
 using Grpc.Core;
 using Iverson.Api.Grpc;
+using Iverson.Api.Reconciliation;
 using Iverson.Api.Schema;
 using Iverson.Api.Tests.Helpers;
 using Iverson.Client.Contracts;
@@ -42,9 +43,28 @@ public class ObjectPersistenceGrpcServiceTests
     private EntityEvent? CaptureFireAndForgetEvent(string topic)
     {
         EntityEvent? captured = null;
-        _events.When(e => e.PublishFireAndForget(topic, Arg.Any<string>(), Arg.Any<string>(), Arg.Any<EntityEvent>()))
-               .Do(call => captured = call.ArgAt<EntityEvent>(3));
+        _events.When(e => e.ProduceAsync(topic, Arg.Any<string>(), Arg.Any<EntityEvent>()))
+               .Do(call => captured = call.ArgAt<EntityEvent>(2));
         return captured; // populated after sut call — caller must read after invoking sut
+    }
+
+    /// <summary>
+    /// Configures <see cref="_sql"/>'s <c>ExecuteInTransactionAsync</c> to actually invoke the
+    /// captured transactional work against a fake <see cref="IDbTransactionContext"/>, recording
+    /// every SQL statement issued inside it. Used by tests that need to assert on what happens
+    /// inside the upsert+outbox transaction (as opposed to tests that only care about the
+    /// opportunistic publish, for which the default unconfigured no-op is sufficient).
+    /// </summary>
+    private List<string> CaptureTransactionalSql()
+    {
+        var executedSql = new List<string>();
+        var fakeTx = Substitute.For<IDbTransactionContext>();
+        fakeTx.ExecuteAsync(Arg.Do<string>(sql => executedSql.Add(sql)), Arg.Any<object?>()).Returns(0);
+
+        _sql.ExecuteInTransactionAsync(Arg.Any<Func<IDbTransactionContext, Task>>())
+            .Returns(call => call.Arg<Func<IDbTransactionContext, Task>>()(fakeTx));
+
+        return executedSql;
     }
 
     [Fact]
@@ -82,13 +102,43 @@ public class ObjectPersistenceGrpcServiceTests
     public async Task Post_ExecutesSqlUpsert_WithPayloadJson()
     {
         await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
+        var executedSql = CaptureTransactionalSql();
         var payload = MakePayload(new() { ["Name"] = Value.ForString("Alice") });
 
         await _sut.Post(new PersistRequest { TypeName = "Author", Payload = payload }, TestServerCallContext.Create());
 
-        await _sql.Received(1).ExecuteAsync(
-            Arg.Is<string>(s => s.Contains("json_populate_record")),
-            Arg.Any<object?>());
+        executedSql.Should().Contain(s => s.Contains("json_populate_record"));
+    }
+
+    [Fact]
+    public async Task Post_InsertsReconciliationQueueRowInSameTransactionAsUpsert()
+    {
+        await _registry.RegisterAsync(SchemaFixtures.ArticleSchema());
+
+        var capturedWork = default(Func<IDbTransactionContext, Task>);
+        _sql.ExecuteInTransactionAsync(Arg.Do<Func<IDbTransactionContext, Task>>(w => capturedWork = w))
+            .Returns(Task.CompletedTask);
+
+        var request = new PersistRequest { TypeName = "Article", Payload = new Struct() };
+        request.Payload.Fields["Title"] = Value.ForString("Test");
+        request.Payload.Fields["AuthorId"] = Value.ForString(Guid.NewGuid().ToString());
+
+        await _sut.Post(request, TestServerCallContext.Create());
+
+        capturedWork.Should().NotBeNull();
+
+        // Execute the captured transactional work against a fake transaction context and
+        // assert it issues BOTH an upsert into the entity table AND an insert into the
+        // reconciliation-queue table — proving both happen inside the one transaction
+        // this test captured, not as two independent top-level calls.
+        var executedSql = new List<string>();
+        var fakeTx = Substitute.For<IDbTransactionContext>();
+        fakeTx.ExecuteAsync(Arg.Do<string>(sql => executedSql.Add(sql)), Arg.Any<object?>()).Returns(0);
+
+        await capturedWork!(fakeTx);
+
+        executedSql.Should().Contain(sql => sql.Contains("INSERT INTO \"articles\""));
+        executedSql.Should().Contain(sql => sql.Contains($"INSERT INTO \"{ReconciliationSchema.TableName}\""));
     }
 
     [Fact]
@@ -97,8 +147,8 @@ public class ObjectPersistenceGrpcServiceTests
         await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
 
         EntityEvent? captured = null;
-        _events.When(e => e.PublishFireAndForget(EntityTopics.Created, Arg.Any<string>(), Arg.Any<string>(), Arg.Any<EntityEvent>()))
-               .Do(call => captured = call.ArgAt<EntityEvent>(3));
+        _events.When(e => e.ProduceAsync(EntityTopics.Created, Arg.Any<string>(), Arg.Any<EntityEvent>()))
+               .Do(call => captured = call.ArgAt<EntityEvent>(2));
 
         var payload = MakePayload(new() { ["Name"] = Value.ForString("Alice") });
         await _sut.Post(new PersistRequest { TypeName = "Author", Payload = payload }, TestServerCallContext.Create());
@@ -113,8 +163,8 @@ public class ObjectPersistenceGrpcServiceTests
         await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
 
         EntityEvent? captured = null;
-        _events.When(e => e.PublishFireAndForget(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<string>(), Arg.Any<EntityEvent>()))
-               .Do(call => captured = call.ArgAt<EntityEvent>(3));
+        _events.When(e => e.ProduceAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<EntityEvent>()))
+               .Do(call => captured = call.ArgAt<EntityEvent>(2));
 
         var payload = MakePayload(new() { ["Name"] = Value.ForString("Alice") });
         await _sut.Post(new PersistRequest { TypeName = "Author", Payload = payload }, TestServerCallContext.Create());
@@ -128,8 +178,8 @@ public class ObjectPersistenceGrpcServiceTests
         await _registry.RegisterAsync(SchemaFixtures.ArticleWithOneToManySchema());
 
         EntityEvent? captured = null;
-        _events.When(e => e.PublishFireAndForget(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<string>(), Arg.Any<EntityEvent>()))
-               .Do(call => captured = call.ArgAt<EntityEvent>(3));
+        _events.When(e => e.ProduceAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<EntityEvent>()))
+               .Do(call => captured = call.ArgAt<EntityEvent>(2));
 
         var payload = MakePayload(new()
         {
@@ -147,8 +197,8 @@ public class ObjectPersistenceGrpcServiceTests
         await _registry.RegisterAsync(SchemaFixtures.ArticleSchema());
 
         EntityEvent? captured = null;
-        _events.When(e => e.PublishFireAndForget(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<string>(), Arg.Any<EntityEvent>()))
-               .Do(call => captured = call.ArgAt<EntityEvent>(3));
+        _events.When(e => e.ProduceAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<EntityEvent>()))
+               .Do(call => captured = call.ArgAt<EntityEvent>(2));
 
         var payload = MakePayload(new()
         {
@@ -167,8 +217,8 @@ public class ObjectPersistenceGrpcServiceTests
         await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
 
         EntityEvent? captured = null;
-        _events.When(e => e.PublishFireAndForget(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<string>(), Arg.Any<EntityEvent>()))
-               .Do(call => captured = call.ArgAt<EntityEvent>(3));
+        _events.When(e => e.ProduceAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<EntityEvent>()))
+               .Do(call => captured = call.ArgAt<EntityEvent>(2));
 
         var payload = MakePayload(new() { ["Name"] = Value.ForString("Alice") });
         await _sut.Post(new PersistRequest { TypeName = "Author", Payload = payload }, TestServerCallContext.Create());
@@ -192,6 +242,7 @@ public class ObjectPersistenceGrpcServiceTests
     public async Task Update_ExecutesSqlUpsert_WithPayloadJson()
     {
         await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
+        var executedSql = CaptureTransactionalSql();
         var payload = MakePayload(new()
         {
             ["Id"]   = Value.ForString(Guid.NewGuid().ToString()),
@@ -200,9 +251,7 @@ public class ObjectPersistenceGrpcServiceTests
 
         await _sut.Update(new PersistRequest { TypeName = "Author", Payload = payload }, TestServerCallContext.Create());
 
-        await _sql.Received(1).ExecuteAsync(
-            Arg.Is<string>(s => s.Contains("json_populate_record")),
-            Arg.Any<object?>());
+        executedSql.Should().Contain(s => s.Contains("json_populate_record"));
     }
 
     [Fact]
@@ -240,8 +289,8 @@ public class ObjectPersistenceGrpcServiceTests
         await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
 
         EntityEvent? captured = null;
-        _events.When(e => e.PublishFireAndForget(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<string>(), Arg.Any<EntityEvent>()))
-               .Do(call => captured = call.ArgAt<EntityEvent>(3));
+        _events.When(e => e.ProduceAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<EntityEvent>()))
+               .Do(call => captured = call.ArgAt<EntityEvent>(2));
 
         var payload = MakePayload(new()
         {
