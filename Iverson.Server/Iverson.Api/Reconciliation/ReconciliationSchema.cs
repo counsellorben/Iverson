@@ -26,5 +26,34 @@ internal static class ReconciliationSchema
             new("Attempts", "integer", false),
             new("LastError", "text", true),
             new("LastAttemptAt", "timestamptz", true),
+            new("EventType", "text", true),
+            new("Payload", "text", true),
         });
+
+    /// <summary>
+    /// Enqueues a delete-replay outbox row: unlike the upsert path's inline INSERT (see
+    /// <see cref="Iverson.Api.Grpc.ObjectPersistenceGrpcService"/>'s
+    /// <c>UpsertAndEnqueueOutboxAsync</c>), a delete leaves no row behind for the reconciliation
+    /// worker to re-fetch, so the pre-delete JSON snapshot is captured here as <paramref name="payload"/>
+    /// and replayed verbatim by <see cref="ReconciliationService"/> when <c>EventType == "Deleted"</c>.
+    /// Must be called from inside the same transaction as the entity DELETE (<paramref name="tx"/>)
+    /// so the outbox row's existence is an accurate durability guarantee.
+    /// </summary>
+    internal static Task EnqueueDeleteOutboxRowAsync(
+        IDbTransactionContext tx, Guid id, string typeName, string key, string payload) =>
+        tx.ExecuteAsync(
+            $"""
+            INSERT INTO "{TableName}"
+                ("Id", "TypeName", "EntityKey", "EnqueuedAt", "Attempts", "LastError", "LastAttemptAt", "EventType", "Payload")
+            VALUES
+                (@Id, @TypeName, @EntityKey, @EnqueuedAt, 0, null, null, 'Deleted', @Payload)
+            """,
+            new
+            {
+                Id = id,
+                TypeName = typeName,
+                EntityKey = key,
+                EnqueuedAt = DateTimeOffset.UtcNow,
+                Payload = payload
+            });
 }

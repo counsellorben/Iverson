@@ -6,7 +6,8 @@ using Iverson.Sql;
 
 namespace Iverson.Api.Reconciliation;
 
-internal sealed record ReconciliationQueueRow(Guid Id, string TypeName, string EntityKey, int Attempts);
+internal sealed record ReconciliationQueueRow(
+    Guid Id, string TypeName, string EntityKey, int Attempts, string? EventType = null, string? Payload = null);
 
 /// <summary>
 /// Two ways to re-project entities from Postgres (the system of record) back through the
@@ -56,7 +57,7 @@ internal sealed class ReconciliationService(
     {
         var rows = (await db.QueryAsync<ReconciliationQueueRow>(
             $"""
-            SELECT "Id", "TypeName", "EntityKey", "Attempts"
+            SELECT "Id", "TypeName", "EntityKey", "Attempts", "EventType", "Payload"
             FROM "{ReconciliationSchema.TableName}"
             WHERE "Attempts" < @MaxAttempts
             ORDER BY "EnqueuedAt"
@@ -83,6 +84,12 @@ internal sealed class ReconciliationService(
 
     private async Task ProcessOneAsync(ReconciliationQueueRow row)
     {
+        if (row.EventType == "Deleted")
+        {
+            await ProcessDeleteRowAsync(row);
+            return;
+        }
+
         var schema = registry.Get(row.TypeName);
         if (schema is null)
         {
@@ -120,21 +127,53 @@ internal sealed class ReconciliationService(
         }
         catch (Exception ex)
         {
-            var attempts = row.Attempts + 1;
-            await db.ExecuteAsync(
-                $"""
-                UPDATE "{ReconciliationSchema.TableName}"
-                SET "Attempts" = @Attempts, "LastError" = @LastError, "LastAttemptAt" = @Now
-                WHERE "Id" = @Id
-                """,
-                new { Attempts = attempts, LastError = ex.Message, Now = DateTimeOffset.UtcNow, row.Id });
-
-            if (attempts >= MaxAttempts)
-                logger.LogCritical(
-                    "[Reconciliation] Giving up on type={Type} key={Key} after {Attempts} attempts — " +
-                    "requires manual POST /admin/reconcile/{Type}. Last error: {Error}",
-                    row.TypeName, row.EntityKey, attempts, row.TypeName, ex.Message);
+            await RecordFailureAsync(row, ex);
         }
+    }
+
+    /// <summary>
+    /// Replays a delete-typed row: the entity is already gone from Postgres by the time the
+    /// worker polls, so this republishes the pre-delete JSON snapshot captured in
+    /// <see cref="ReconciliationQueueRow.Payload"/> at enqueue time
+    /// (<see cref="ReconciliationSchema.EnqueueDeleteOutboxRowAsync"/>) instead of re-fetching —
+    /// same attempts/backoff/exhaustion shape as the upsert-replay path.
+    /// </summary>
+    private async Task ProcessDeleteRowAsync(ReconciliationQueueRow row)
+    {
+        try
+        {
+            await events.ProduceAsync(
+                EntityTopics.Deleted,
+                row.EntityKey,
+                new EntityEvent(row.TypeName, row.EntityKey, row.Payload!, string.Empty, "1", DateTimeOffset.UtcNow));
+
+            await DeleteQueueRowAsync(row.Id);
+            logger.LogInformation(
+                "[Reconciliation] Re-published queued delete type={Type} key={Key} after {Attempts} prior failed attempt(s)",
+                row.TypeName, row.EntityKey, row.Attempts);
+        }
+        catch (Exception ex)
+        {
+            await RecordFailureAsync(row, ex);
+        }
+    }
+
+    private async Task RecordFailureAsync(ReconciliationQueueRow row, Exception ex)
+    {
+        var attempts = row.Attempts + 1;
+        await db.ExecuteAsync(
+            $"""
+            UPDATE "{ReconciliationSchema.TableName}"
+            SET "Attempts" = @Attempts, "LastError" = @LastError, "LastAttemptAt" = @Now
+            WHERE "Id" = @Id
+            """,
+            new { Attempts = attempts, LastError = ex.Message, Now = DateTimeOffset.UtcNow, row.Id });
+
+        if (attempts >= MaxAttempts)
+            logger.LogCritical(
+                "[Reconciliation] Giving up on type={Type} key={Key} after {Attempts} attempts — " +
+                "requires manual POST /admin/reconcile/{Type}. Last error: {Error}",
+                row.TypeName, row.EntityKey, attempts, row.TypeName, ex.Message);
     }
 
     private Task DeleteQueueRowAsync(Guid id) =>

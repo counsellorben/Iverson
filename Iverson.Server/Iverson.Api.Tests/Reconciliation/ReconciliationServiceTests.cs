@@ -127,6 +127,56 @@ public class ReconciliationServiceTests
     }
 
     [Fact]
+    public async Task ProcessQueuedFailuresAsync_DeleteRow_PublishesDeletedEvent_UsingStoredPayload_WithoutQueryingEntityTable()
+    {
+        var queueId = Guid.NewGuid();
+        const string payload = """{"Id":"author-1","Name":"Alice"}""";
+        _sql.QueryAsync<ReconciliationQueueRow>(
+                Arg.Is<string>(s => s.Contains(ReconciliationSchema.TableName)), Arg.Any<object?>())
+            .Returns(new[] { new ReconciliationQueueRow(queueId, "Author", "author-1", 0, "Deleted", payload) });
+
+        await _sut.ProcessQueuedFailuresAsync(CancellationToken.None);
+
+        await _events.Received(1).ProduceAsync(
+            EntityTopics.Deleted,
+            "author-1",
+            Arg.Is<EntityEvent>(e => e.TypeName == "Author" && e.Key == "author-1" && e.PayloadJson == payload));
+
+        await _sql.DidNotReceiveWithAnyArgs().QuerySingleOrDefaultAsync<string>(Arg.Any<string>(), Arg.Any<object?>());
+
+        await _sql.Received(1).ExecuteAsync(
+            Arg.Is<string>(s => s.Contains("DELETE") && s.Contains(ReconciliationSchema.TableName)),
+            Arg.Any<object>());
+    }
+
+    [Fact]
+    public async Task ProcessQueuedFailuresAsync_DeleteRow_ProduceAsyncThrows_IncrementsAttempts_AndKeepsQueueEntry()
+    {
+        var queueId = Guid.NewGuid();
+        const string payload = """{"Id":"author-1","Name":"Alice"}""";
+        _sql.QueryAsync<ReconciliationQueueRow>(
+                Arg.Is<string>(s => s.Contains(ReconciliationSchema.TableName)), Arg.Any<object?>())
+            .Returns(new[] { new ReconciliationQueueRow(queueId, "Author", "author-1", 3, "Deleted", payload) });
+        _events.ProduceAsync(EntityTopics.Deleted, Arg.Any<string>(), Arg.Any<EntityEvent>())
+               .Returns<Task>(_ => throw new InvalidOperationException("kafka still down"));
+
+        object? capturedUpdateParams = null;
+        _sql.WhenForAnyArgs(s => s.ExecuteAsync(Arg.Any<string>(), Arg.Any<object?>()))
+            .Do(call =>
+            {
+                var executedSql = call.ArgAt<string>(0);
+                if (executedSql.Contains("UPDATE") && executedSql.Contains(ReconciliationSchema.TableName))
+                    capturedUpdateParams = call.ArgAt<object?>(1);
+            });
+
+        await _sut.ProcessQueuedFailuresAsync(CancellationToken.None);
+
+        capturedUpdateParams.Should().NotBeNull();
+        var dynamicParams = (dynamic)capturedUpdateParams!;
+        ((int)dynamicParams.Attempts).Should().Be(4);
+    }
+
+    [Fact]
     public async Task ProcessQueuedFailuresAsync_QueriesExhaustedCount_WhenRowsHaveReachedMaxAttempts()
     {
         // No precedent in this codebase for substituting ILogger to assert log calls (all existing
@@ -150,5 +200,34 @@ public class ReconciliationServiceTests
             ((string)c.GetArguments()[0]!).Contains("COUNT(*)")).Subject;
         var dynamicParams = (dynamic)call.GetArguments()[1]!;
         ((int)dynamicParams.MaxAttempts).Should().Be(ReconciliationService.MaxAttempts);
+    }
+
+    [Fact]
+    public async Task EnqueueDeleteOutboxRowAsync_InsertsRowWithEventTypeDeleted_AndStoredPayload()
+    {
+        var tx = Substitute.For<IDbTransactionContext>();
+        var id = Guid.NewGuid();
+        const string payload = """{"Id":"author-1","Name":"Alice"}""";
+
+        string? capturedSql = null;
+        object? capturedParams = null;
+        tx.WhenForAnyArgs(t => t.ExecuteAsync(Arg.Any<string>(), Arg.Any<object?>()))
+          .Do(call =>
+          {
+              capturedSql = call.ArgAt<string>(0);
+              capturedParams = call.ArgAt<object?>(1);
+          });
+
+        await ReconciliationSchema.EnqueueDeleteOutboxRowAsync(tx, id, "Author", "author-1", payload);
+
+        capturedSql.Should().NotBeNull();
+        capturedSql!.Should().Contain("INSERT INTO").And.Contain(ReconciliationSchema.TableName).And.Contain("'Deleted'");
+
+        capturedParams.Should().NotBeNull();
+        var dynamicInsertParams = (dynamic)capturedParams!;
+        ((Guid)dynamicInsertParams.Id).Should().Be(id);
+        ((string)dynamicInsertParams.TypeName).Should().Be("Author");
+        ((string)dynamicInsertParams.EntityKey).Should().Be("author-1");
+        ((string)dynamicInsertParams.Payload).Should().Be(payload);
     }
 }
