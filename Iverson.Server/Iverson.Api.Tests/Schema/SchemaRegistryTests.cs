@@ -65,4 +65,32 @@ public class SchemaRegistryTests
         _sut.Get("Author").Should().BeNull();
     }
 
+    [Fact]
+    public async Task LoadAsync_RemovesSchemasNoLongerInPostgres()
+    {
+        await _sut.RegisterAsync(SchemaFixtures.AuthorSchema());
+        await _sut.RegisterAsync(SchemaFixtures.ArticleSchema());
+        _sut.IsRegistered("Author").Should().BeTrue();
+        _sut.IsRegistered("Article").Should().BeTrue();
+
+        // Simulate "Article" having been unregistered by a different process: the next
+        // LoadAsync's query only returns "Author" (matching what UnregisterAsync's DELETE
+        // would leave behind in Postgres), even though this instance's in-memory copy still
+        // has "Article" from the RegisterAsync call above.
+        _sql.QueryAsync<(string type_name, string schema_json)>(
+                Arg.Is<string>(s => s.Contains("_iverson_schema")), Arg.Any<object?>())
+            .Returns(new List<(string, string)>
+            {
+                ("Author", System.Text.Json.JsonSerializer.Serialize(
+                    SchemaFixtures.AuthorSchema(),
+                    new System.Text.Json.JsonSerializerOptions
+                        { PropertyNamingPolicy = System.Text.Json.JsonNamingPolicy.CamelCase }))
+            });
+
+        await _sut.LoadAsync();
+
+        _sut.IsRegistered("Author").Should().BeTrue();
+        _sut.IsRegistered("Article").Should().BeFalse();
+    }
+
 }

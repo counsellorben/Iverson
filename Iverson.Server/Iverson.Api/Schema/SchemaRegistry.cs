@@ -24,12 +24,23 @@ public sealed class SchemaRegistry(
         var rows = await sql.QueryAsync<(string type_name, string schema_json)>(
             "SELECT type_name, schema_json FROM _iverson_schema");
 
+        var loadedTypeNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
         foreach (var (typeName, json) in rows)
         {
+            loadedTypeNames.Add(typeName);
             var descriptor = JsonSerializer.Deserialize<SchemaDescriptor>(json, s_jsonOptions);
             if (descriptor is not null)
                 _schemas[typeName] = descriptor;
         }
+
+        // Reconcile removals: a schema present in this instance's cache but no longer
+        // returned by Postgres was unregistered by a different process (e.g. a different
+        // api/worker replica calling UnregisterAsync) — without this, a periodic re-poll
+        // could never converge on that removal.
+        foreach (var typeName in _schemas.Keys)
+            if (!loadedTypeNames.Contains(typeName))
+                _schemas.TryRemove(typeName, out _);
 
         logger.LogInformation("SchemaRegistry loaded {Count} schema(s)", _schemas.Count);
     }
