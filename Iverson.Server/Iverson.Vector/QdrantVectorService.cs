@@ -325,6 +325,17 @@ public class QdrantVectorService(
         } while (nextOffset is not null);
     }
 
+    // Normalizes a retrieved vector to Vector.Dense, falling back to the legacy Data field.
+    // Qdrant server v1.13.6 (this repo's pinned Testcontainers/deployment version) populates
+    // Data, not Dense, on retrieval/scroll responses, even though it accepts and stores Dense
+    // correctly on writes — confirmed via a live repro against that exact server version.
+    // A no-op passthrough once the retrieved vector already has Dense populated (later server
+    // versions), so this is safe for both.
+    private static QdrantVector NormalizeDense(VectorOutput source) =>
+        source.Dense is not null
+            ? new QdrantVector { Dense = source.Dense }
+            : new QdrantVector { Dense = new DenseVector { Data = { source.Data } } };
+
     // Converts VectorsOutput (from RetrievedPoint) to Vectors (for PointStruct).
     // When the source collection used a single unnamed vector and the destination uses named vectors,
     // wraps the unnamed vector data under the first schema vector name.
@@ -342,17 +353,17 @@ public class QdrantVectorService(
             {
                 // Unnamed single-vector → named for new collection layout
                 var namedVecs = new NamedVectors();
-                namedVecs.Vectors[firstVectorName] = new QdrantVector { Dense = source.Vector.Dense };
+                namedVecs.Vectors[firstVectorName] = NormalizeDense(source.Vector);
                 return new Vectors { Vectors_ = namedVecs };
             }
 
-            return new Vectors { Vector = new QdrantVector { Dense = source.Vector.Dense } };
+            return new Vectors { Vector = NormalizeDense(source.Vector) };
         }
 
         // VectorsOutput.VectorsOptionsOneofCase.Vectors — named vectors
         var named = new NamedVectors();
         foreach (var kvp in source.Vectors.Vectors)
-            named.Vectors[kvp.Key] = new QdrantVector { Dense = kvp.Value.Dense };
+            named.Vectors[kvp.Key] = NormalizeDense(kvp.Value);
         return new Vectors { Vectors_ = named };
     }
 
