@@ -117,6 +117,12 @@ if (workloadRole == "worker")
     builder.Services.AddHostedService<Iverson.Api.Reconciliation.ReconciliationQueueWorker>();
 }
 
+// Registered for both roles (not gated on workloadRole): api itself runs multiple replicas
+// in every non-local environment (values.yaml, api.replicas: 2), so a second api replica has
+// the identical SchemaRegistry cache-coherence gap worker has — RegisterSchema only updates
+// the calling process's own in-memory copy.
+builder.Services.AddHostedService<Iverson.Api.Schema.SchemaRefreshWorker>();
+
 // ── Middleware ─────────────────────────────────────────────────────────────────
 var app = builder.Build();
 
