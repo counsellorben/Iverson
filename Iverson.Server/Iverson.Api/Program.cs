@@ -92,10 +92,6 @@ builder.Services.AddKafka(cfg);
 builder.Services.AddSingleton<SchemaRegistry>();
 builder.Services.AddSingleton<Iverson.Api.Reconciliation.ReconciliationService>();
 
-// Overrides AddKafka's default NullFailedPublishSink registration above — the container
-// resolves the last registration for a single-implementation constructor injection, so this
-// real sink (persists to the reconciliation queue table) is what IFailedPublishSink resolves to.
-builder.Services.AddSingleton<Iverson.Events.IFailedPublishSink, Iverson.Api.Reconciliation.PostgresFailedPublishSink>();
 builder.Services.AddHostedService<Iverson.Api.Reconciliation.ReconciliationQueueWorker>();
 
 builder.Services.AddEmbeddings(cfg);

@@ -3,13 +3,23 @@ using Iverson.Sql;
 namespace Iverson.Api.Reconciliation;
 
 /// <summary>
-/// Table backing the automatic failure-triggered reconciliation queue: one row per entity
-/// write whose fire-and-forget Kafka publish failed to deliver. A background worker
-/// (<see cref="ReconciliationQueueWorker"/>) polls this table and re-publishes each row via
-/// the confirmed <see cref="Iverson.Events.IEventProducer.ProduceAsync{T}"/>, deleting the
-/// row once it succeeds. This is internal infrastructure, not a user-registered entity — it
-/// is bootstrapped once at startup via the same ApplySchemaAsync mechanism SchemaRegistry
-/// uses for user entity tables, not through the schema-registration/proto pipeline.
+/// The transactional outbox: one row per entity write, inserted in the same Postgres
+/// transaction as the entity upsert or delete itself (<see cref="Iverson.Api.Grpc.ObjectPersistenceGrpcService"/>,
+/// <see cref="Iverson.Api.Grpc.ObjectMappingGrpcService"/>), so the row's existence is the
+/// durability guarantee that the write will eventually reach StarRocks/Qdrant — independent of
+/// whether the write path's own opportunistic Kafka publish attempt succeeds, fails, or never
+/// runs because the process crashes first. A background worker (<see cref="ReconciliationQueueWorker"/>)
+/// polls for rows still present and re-publishes each via <see cref="Iverson.Events.IEventProducer.ProduceAsync{T}"/>,
+/// deleting the row once it succeeds — this is the ONLY path an event is guaranteed to
+/// eventually take if every opportunistic fast-path attempt fails. Upsert rows (<c>EventType</c>
+/// null) are replayed by re-reading the entity's current state from Postgres at replay time;
+/// delete rows (<c>EventType = "Deleted"</c>) are replayed from the <c>Payload</c> column's
+/// stored pre-delete snapshot, since the entity row no longer exists by the time the worker
+/// polls. The same table and worker also serve manual/admin full-type reconciliation (see
+/// <see cref="ReconciliationService.ReconcileTypeAsync"/>). This is internal infrastructure, not
+/// a user-registered entity — it is bootstrapped once at startup via the same ApplySchemaAsync
+/// mechanism SchemaRegistry uses for user entity tables, not through the schema-registration/
+/// proto pipeline.
 /// </summary>
 internal static class ReconciliationSchema
 {

@@ -29,8 +29,6 @@ public static class ServiceCollectionExtensions
             return new ProducerBuilder<string, string>(producerConfig).Build();
         });
 
-        services.AddSingleton<IFailedPublishSink, NullFailedPublishSink>();
-
         services.AddSingleton<IEventProducer, KafkaProducer>();
 
         services.AddSingleton<IEventConsumer>(sp =>

@@ -69,12 +69,26 @@ public sealed class ReconciliationQueuePostgresIntegrationTests(ReconciliationQu
         await registry.RegisterAsync(schema);
 
         var events = Substitute.For<IEventProducer>();
-        var sink = new PostgresFailedPublishSink(_repo);
         var service = new ReconciliationService(registry, _repo, events, NullLogger<ReconciliationService>.Instance);
 
-        // 1+2: record a failed publish for this author — exercises the uuid-typed INSERT.
+        // 1+2: enqueue an upsert-style outbox row for this author directly — exercises the
+        // uuid-typed INSERT the same way the (now-inlined) upsert-and-enqueue write path does.
         var authorKey = authorId.ToString();
-        await sink.RecordAsync("Author", authorKey, "broker unavailable");
+        await _repo.ExecuteAsync(
+            $"""
+            INSERT INTO "{ReconciliationSchema.TableName}"
+                ("Id", "TypeName", "EntityKey", "EnqueuedAt", "Attempts", "LastError", "LastAttemptAt")
+            VALUES
+                (@Id, @TypeName, @EntityKey, @EnqueuedAt, 0, @LastError, null)
+            """,
+            new
+            {
+                Id = Guid.NewGuid(),
+                TypeName = "Author",
+                EntityKey = authorKey,
+                EnqueuedAt = DateTimeOffset.UtcNow,
+                LastError = "broker unavailable"
+            });
 
         var queuedCountBefore = await _repo.QuerySingleOrDefaultAsync<int>(
             $"""SELECT COUNT(*) FROM "{ReconciliationSchema.TableName}" """);

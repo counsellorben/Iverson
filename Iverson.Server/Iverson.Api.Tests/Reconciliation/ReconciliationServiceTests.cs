@@ -205,10 +205,9 @@ public class ReconciliationServiceTests
     public async Task ProcessQueuedFailuresAsync_QueriesExhaustedCount_WhenRowsHaveReachedMaxAttempts()
     {
         // No precedent in this codebase for substituting ILogger to assert log calls (all existing
-        // tests use NullLogger for ReconciliationService), so — per this suite's established pattern
-        // in PostgresFailedPublishSinkTests — prove the observability behavior by asserting the
-        // exhausted-count query actually executes with the expected SQL/params, rather than
-        // intercepting the logger.
+        // tests use NullLogger for ReconciliationService), so prove the observability behavior by
+        // asserting the exhausted-count query actually executes with the expected SQL/params,
+        // rather than intercepting the logger.
         await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
         _sql.QueryAsync<ReconciliationQueueRow>(
                 Arg.Is<string>(s => s.Contains(ReconciliationSchema.TableName)), Arg.Any<object?>())
