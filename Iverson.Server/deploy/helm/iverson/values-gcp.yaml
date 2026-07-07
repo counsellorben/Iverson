@@ -25,6 +25,7 @@ kafka:
 starrocks:
   storageClassName: "iverson-starrocks"
   fe:
+    replicas: 3
     nodeSelector:
       iverson.io/node-pool: starrocks-fe
     tolerations:
