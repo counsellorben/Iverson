@@ -2,6 +2,7 @@ using FluentAssertions;
 using Google.Protobuf.WellKnownTypes;
 using Grpc.Core;
 using Iverson.Api.Grpc;
+using Iverson.Api.Reconciliation;
 using Iverson.Api.Schema;
 using Iverson.Api.Tests.Helpers;
 using Iverson.Client.Contracts;
@@ -96,9 +97,28 @@ public class ObjectMappingGrpcServiceTests
     private EntityEvent? CaptureKafkaEvent(string topic)
     {
         EntityEvent? captured = null;
-        _events.When(e => e.PublishFireAndForget(topic, Arg.Any<string>(), Arg.Any<string>(), Arg.Any<EntityEvent>()))
-               .Do(call => captured = call.ArgAt<EntityEvent>(3));
+        _events.When(e => e.ProduceAsync(topic, Arg.Any<string>(), Arg.Any<EntityEvent>()))
+               .Do(call => captured = call.ArgAt<EntityEvent>(2));
         return captured; // populated after sut call
+    }
+
+    /// <summary>
+    /// Configures <see cref="_sql"/>'s <c>ExecuteInTransactionAsync</c> to actually invoke the
+    /// captured transactional work against a fake <see cref="IDbTransactionContext"/>, recording
+    /// every SQL statement issued inside it. Used by tests that need to assert on what happens
+    /// inside the upsert/delete + outbox transaction (as opposed to tests that only care about
+    /// the opportunistic publish, for which the default unconfigured no-op is sufficient).
+    /// </summary>
+    private List<string> CaptureTransactionalSql()
+    {
+        var executedSql = new List<string>();
+        var fakeTx = Substitute.For<IDbTransactionContext>();
+        fakeTx.ExecuteAsync(Arg.Do<string>(sql => executedSql.Add(sql)), Arg.Any<object?>()).Returns(0);
+
+        _sql.ExecuteInTransactionAsync(Arg.Any<Func<IDbTransactionContext, Task>>())
+            .Returns(call => call.Arg<Func<IDbTransactionContext, Task>>()(fakeTx));
+
+        return executedSql;
     }
 
     // ── RegisterSchema ────────────────────────────────────────────────────────
@@ -225,8 +245,8 @@ public class ObjectMappingGrpcServiceTests
             .Returns(AuthorJson);
 
         EntityEvent? evt = null;
-        _events.When(e => e.PublishFireAndForget(EntityTopics.Created, Arg.Any<string>(), Arg.Any<string>(), Arg.Any<EntityEvent>()))
-               .Do(call => evt = call.ArgAt<EntityEvent>(3));
+        _events.When(e => e.ProduceAsync(EntityTopics.Created, Arg.Any<string>(), Arg.Any<EntityEvent>()))
+               .Do(call => evt = call.ArgAt<EntityEvent>(2));
 
         var payload = MakePayload(new() { ["Name"] = Value.ForString("Alice") });
         var response = await _sut.Post(
@@ -246,8 +266,8 @@ public class ObjectMappingGrpcServiceTests
             .Returns(AuthorJson);
 
         EntityEvent? evt = null;
-        _events.When(e => e.PublishFireAndForget(EntityTopics.Created, Arg.Any<string>(), Arg.Any<string>(), Arg.Any<EntityEvent>()))
-               .Do(call => evt = call.ArgAt<EntityEvent>(3));
+        _events.When(e => e.ProduceAsync(EntityTopics.Created, Arg.Any<string>(), Arg.Any<EntityEvent>()))
+               .Do(call => evt = call.ArgAt<EntityEvent>(2));
 
         var payload = MakePayload(new()
         {
@@ -265,6 +285,7 @@ public class ObjectMappingGrpcServiceTests
     public async Task Post_ExecutesUpsertSql_DirectlyToPostgres()
     {
         await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
+        var executedSql = CaptureTransactionalSql();
 
         var payload = MakePayload(new()
         {
@@ -275,9 +296,42 @@ public class ObjectMappingGrpcServiceTests
             new MappingWriteRequest { TypeName = "Author", Payload = payload },
             TestServerCallContext.Create());
 
-        await _sql.Received(1).ExecuteAsync(
-            Arg.Is<string>(s => s.Contains("json_populate_record")),
-            Arg.Any<object?>());
+        executedSql.Should().Contain(s => s.Contains("json_populate_record"));
+    }
+
+    [Fact]
+    public async Task Post_InsertsReconciliationQueueRowInSameTransactionAsUpsert()
+    {
+        await _registry.RegisterAsync(SchemaFixtures.ArticleSchema());
+
+        var capturedWork = default(Func<IDbTransactionContext, Task>);
+        _sql.ExecuteInTransactionAsync(Arg.Do<Func<IDbTransactionContext, Task>>(w => capturedWork = w))
+            .Returns(Task.CompletedTask);
+
+        var payload = MakePayload(new()
+        {
+            ["Id"]       = Value.ForString(ArticleId),
+            ["Title"]    = Value.ForString("Test"),
+            ["AuthorId"] = Value.ForString(AuthorId)
+        });
+        await _sut.Post(
+            new MappingWriteRequest { TypeName = "Article", Payload = payload },
+            TestServerCallContext.Create());
+
+        capturedWork.Should().NotBeNull();
+
+        // Execute the captured transactional work against a fake transaction context and
+        // assert it issues BOTH an upsert into the entity table AND an insert into the
+        // reconciliation-queue table — proving both happen inside the one transaction
+        // this test captured, not as two independent top-level calls.
+        var executedSql = new List<string>();
+        var fakeTx = Substitute.For<IDbTransactionContext>();
+        fakeTx.ExecuteAsync(Arg.Do<string>(sql => executedSql.Add(sql)), Arg.Any<object?>()).Returns(0);
+
+        await capturedWork!(fakeTx);
+
+        executedSql.Should().Contain(sql => sql.Contains("INSERT INTO \"articles\""));
+        executedSql.Should().Contain(sql => sql.Contains($"INSERT INTO \"{ReconciliationSchema.TableName}\""));
     }
 
     [Fact]
@@ -288,8 +342,8 @@ public class ObjectMappingGrpcServiceTests
             .Returns(AuthorJson);
 
         EntityEvent? evt = null;
-        _events.When(e => e.PublishFireAndForget(EntityTopics.Created, Arg.Any<string>(), Arg.Any<string>(), Arg.Any<EntityEvent>()))
-               .Do(call => evt = call.ArgAt<EntityEvent>(3));
+        _events.When(e => e.ProduceAsync(EntityTopics.Created, Arg.Any<string>(), Arg.Any<EntityEvent>()))
+               .Do(call => evt = call.ArgAt<EntityEvent>(2));
 
         var payload = MakePayload(new()
         {
@@ -482,8 +536,8 @@ public class ObjectMappingGrpcServiceTests
         await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
 
         EntityEvent? evt = null;
-        _events.When(e => e.PublishFireAndForget(EntityTopics.Updated, Arg.Any<string>(), Arg.Any<string>(), Arg.Any<EntityEvent>()))
-               .Do(call => evt = call.ArgAt<EntityEvent>(3));
+        _events.When(e => e.ProduceAsync(EntityTopics.Updated, Arg.Any<string>(), Arg.Any<EntityEvent>()))
+               .Do(call => evt = call.ArgAt<EntityEvent>(2));
 
         var payload = MakePayload(new()
         {
@@ -496,6 +550,55 @@ public class ObjectMappingGrpcServiceTests
 
         response.Success.Should().BeTrue();
         evt!.Key.Should().Be(AuthorId);
+    }
+
+    [Fact]
+    public async Task Update_ExecutesUpsertSql_DirectlyToPostgres()
+    {
+        await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
+        var executedSql = CaptureTransactionalSql();
+
+        var payload = MakePayload(new()
+        {
+            ["Id"]   = Value.ForString(AuthorId),
+            ["Name"] = Value.ForString("Alice Updated")
+        });
+        await _sut.Update(
+            new MappingWriteRequest { TypeName = "Author", Payload = payload },
+            TestServerCallContext.Create());
+
+        executedSql.Should().Contain(s => s.Contains("json_populate_record"));
+    }
+
+    [Fact]
+    public async Task Update_InsertsReconciliationQueueRowInSameTransactionAsUpsert()
+    {
+        await _registry.RegisterAsync(SchemaFixtures.ArticleSchema());
+
+        var capturedWork = default(Func<IDbTransactionContext, Task>);
+        _sql.ExecuteInTransactionAsync(Arg.Do<Func<IDbTransactionContext, Task>>(w => capturedWork = w))
+            .Returns(Task.CompletedTask);
+
+        var payload = MakePayload(new()
+        {
+            ["Id"]       = Value.ForString(ArticleId),
+            ["Title"]    = Value.ForString("Updated Title"),
+            ["AuthorId"] = Value.ForString(AuthorId)
+        });
+        await _sut.Update(
+            new MappingWriteRequest { TypeName = "Article", Payload = payload },
+            TestServerCallContext.Create());
+
+        capturedWork.Should().NotBeNull();
+
+        var executedSql = new List<string>();
+        var fakeTx = Substitute.For<IDbTransactionContext>();
+        fakeTx.ExecuteAsync(Arg.Do<string>(sql => executedSql.Add(sql)), Arg.Any<object?>()).Returns(0);
+
+        await capturedWork!(fakeTx);
+
+        executedSql.Should().Contain(sql => sql.Contains("INSERT INTO \"articles\""));
+        executedSql.Should().Contain(sql => sql.Contains($"INSERT INTO \"{ReconciliationSchema.TableName}\""));
     }
 
     [Fact]
@@ -533,19 +636,18 @@ public class ObjectMappingGrpcServiceTests
         await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
         _sql.QuerySingleOrDefaultAsync<string>(Arg.Any<string>(), Arg.Any<object?>())
             .Returns(AuthorJson);
+        var executedSql = CaptureTransactionalSql();
 
         EntityEvent? evt = null;
-        _events.When(e => e.PublishFireAndForget(EntityTopics.Deleted, Arg.Any<string>(), Arg.Any<string>(), Arg.Any<EntityEvent>()))
-               .Do(call => evt = call.ArgAt<EntityEvent>(3));
+        _events.When(e => e.ProduceAsync(EntityTopics.Deleted, Arg.Any<string>(), Arg.Any<EntityEvent>()))
+               .Do(call => evt = call.ArgAt<EntityEvent>(2));
 
         var response = await _sut.Delete(
             new MappingDeleteRequest { TypeName = "Author", Key = AuthorId },
             TestServerCallContext.Create());
 
         response.Success.Should().BeTrue();
-        await _sql.Received().ExecuteAsync(
-            Arg.Is<string>(s => s.Contains("DELETE FROM")),
-            Arg.Any<object?>());
+        executedSql.Should().Contain(s => s.Contains("DELETE FROM"));
         evt!.TypeName.Should().Be("Author");
         evt.Key.Should().Be(AuthorId);
     }
@@ -563,8 +665,48 @@ public class ObjectMappingGrpcServiceTests
 
         response.Success.Should().BeFalse();
         response.Error.Should().Contain("not found");
-        _events.DidNotReceive().PublishFireAndForget(
-            EntityTopics.Deleted, Arg.Any<string>(), Arg.Any<string>(), Arg.Any<EntityEvent>());
+        await _events.DidNotReceive().ProduceAsync(
+            EntityTopics.Deleted, Arg.Any<string>(), Arg.Any<EntityEvent>());
+    }
+
+    [Fact]
+    public async Task Delete_InsertsDeleteOutboxRowInSameTransactionAsDelete_WithEventTypeAndSnapshotPayload()
+    {
+        await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
+        _sql.QuerySingleOrDefaultAsync<string>(Arg.Any<string>(), Arg.Any<object?>())
+            .Returns(AuthorJson);
+
+        var capturedWork = default(Func<IDbTransactionContext, Task>);
+        _sql.ExecuteInTransactionAsync(Arg.Do<Func<IDbTransactionContext, Task>>(w => capturedWork = w))
+            .Returns(Task.CompletedTask);
+
+        await _sut.Delete(
+            new MappingDeleteRequest { TypeName = "Author", Key = AuthorId },
+            TestServerCallContext.Create());
+
+        capturedWork.Should().NotBeNull();
+
+        // Execute the captured transactional work against a fake transaction context,
+        // recording both the SQL and the bound parameter object for each statement, so we
+        // can assert the outbox row is inserted as EventType='Deleted' with the pre-delete
+        // JSON snapshot as its Payload — not merely that some INSERT happened.
+        var calls = new List<(string Sql, object? Params)>();
+        var fakeTx = Substitute.For<IDbTransactionContext>();
+        fakeTx.ExecuteAsync(Arg.Do<string>(sql => { }), Arg.Any<object?>()).Returns(0);
+        fakeTx.When(t => t.ExecuteAsync(Arg.Any<string>(), Arg.Any<object?>()))
+              .Do(call => calls.Add((call.ArgAt<string>(0), call.ArgAt<object?>(1))));
+
+        await capturedWork!(fakeTx);
+
+        calls.Should().Contain(c => c.Sql.Contains("DELETE FROM \"authors\""));
+
+        var outboxCall = calls.Should().ContainSingle(
+            c => c.Sql.Contains($"INSERT INTO \"{ReconciliationSchema.TableName}\"")).Subject;
+        outboxCall.Sql.Should().Contain("'Deleted'");
+
+        var payloadProp = outboxCall.Params!.GetType().GetProperty("Payload");
+        payloadProp.Should().NotBeNull();
+        payloadProp!.GetValue(outboxCall.Params).Should().Be(AuthorJson);
     }
 
     [Fact]

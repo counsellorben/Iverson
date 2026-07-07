@@ -2,6 +2,7 @@ using System.Diagnostics;
 using Google.Protobuf;
 using Google.Protobuf.WellKnownTypes;
 using Grpc.Core;
+using Iverson.Api.Reconciliation;
 using Iverson.Api.Schema;
 using Iverson.Client.Contracts;
 using Iverson.Embeddings;
@@ -126,21 +127,44 @@ public sealed class ObjectMappingGrpcService(
 
         var payloadJson = StructSerializer.SerializePayload(request.Payload);
 
-        await UpsertAsync(schema, payloadJson);
+        var outboxRowId = await UpsertAndEnqueueOutboxAsync(schema, request.TypeName, key, payloadJson);
         var targetStores = StoreTargeting.DetermineTargetStores(schema);
 
-        _events.PublishFireAndForget(
-            EntityTopics.Created,
-            request.TypeName,
-            key,
-            new EntityEvent(
-                request.TypeName,
+        // Opportunistic fast-path publish: the durability guarantee already exists (the
+        // outbox row committed above, in the same transaction as the entity write), so a
+        // failure here is not data loss — the existing ReconciliationQueueWorker (which now
+        // polls unconditionally-inserted outbox rows, not just failure-recorded ones — see
+        // Task 5's updated ReconciliationSchema doc comment) will pick this row up on its
+        // next poll. This just keeps the common case's projection latency low.
+        var published = false;
+        try
+        {
+            await _events.ProduceAsync(
+                EntityTopics.Created,
                 key,
-                payloadJson,
-                request.TraceId.NullIfEmpty() ?? Activity.Current?.TraceId.ToString() ?? string.Empty,
-                SchemaVersion,
-                DateTimeOffset.UtcNow,
-                targetStores));
+                new EntityEvent(
+                    request.TypeName,
+                    key,
+                    payloadJson,
+                    request.TraceId.NullIfEmpty() ?? Activity.Current?.TraceId.ToString() ?? string.Empty,
+                    SchemaVersion,
+                    DateTimeOffset.UtcNow,
+                    targetStores));
+            published = true;
+            await DeleteOutboxRowIfPresentAsync(outboxRowId);
+        }
+        catch (Exception ex) when (!published)
+        {
+            _logger.LogWarning(ex,
+                "[Mapping.Post] Opportunistic publish failed for type={Type} key={Key} — " +
+                "ReconciliationQueueWorker will retry from the durable outbox row", request.TypeName, key);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex,
+                "[Mapping.Post] Publish succeeded but outbox cleanup failed for type={Type} key={Key} — " +
+                "ReconciliationQueueWorker will harmlessly re-publish from the durable outbox row", request.TypeName, key);
+        }
 
         return new MappingResponse { Success = true, Data = request.Payload, TraceId = request.TraceId };
     }
@@ -162,21 +186,44 @@ public sealed class ObjectMappingGrpcService(
 
         var payloadJson = StructSerializer.SerializePayload(request.Payload);
 
-        await UpsertAsync(schema, payloadJson);
+        var outboxRowId = await UpsertAndEnqueueOutboxAsync(schema, request.TypeName, key, payloadJson);
         var targetStores = StoreTargeting.DetermineTargetStores(schema);
 
-        _events.PublishFireAndForget(
-            EntityTopics.Updated,
-            request.TypeName,
-            key,
-            new EntityEvent(
-                request.TypeName,
+        // Opportunistic fast-path publish: the durability guarantee already exists (the
+        // outbox row committed above, in the same transaction as the entity write), so a
+        // failure here is not data loss — the existing ReconciliationQueueWorker (which now
+        // polls unconditionally-inserted outbox rows, not just failure-recorded ones — see
+        // Task 5's updated ReconciliationSchema doc comment) will pick this row up on its
+        // next poll. This just keeps the common case's projection latency low.
+        var published = false;
+        try
+        {
+            await _events.ProduceAsync(
+                EntityTopics.Updated,
                 key,
-                payloadJson,
-                request.TraceId.NullIfEmpty() ?? Activity.Current?.TraceId.ToString() ?? string.Empty,
-                SchemaVersion,
-                DateTimeOffset.UtcNow,
-                targetStores));
+                new EntityEvent(
+                    request.TypeName,
+                    key,
+                    payloadJson,
+                    request.TraceId.NullIfEmpty() ?? Activity.Current?.TraceId.ToString() ?? string.Empty,
+                    SchemaVersion,
+                    DateTimeOffset.UtcNow,
+                    targetStores));
+            published = true;
+            await DeleteOutboxRowIfPresentAsync(outboxRowId);
+        }
+        catch (Exception ex) when (!published)
+        {
+            _logger.LogWarning(ex,
+                "[Mapping.Update] Opportunistic publish failed for type={Type} key={Key} — " +
+                "ReconciliationQueueWorker will retry from the durable outbox row", request.TypeName, key);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex,
+                "[Mapping.Update] Publish succeeded but outbox cleanup failed for type={Type} key={Key} — " +
+                "ReconciliationQueueWorker will harmlessly re-publish from the durable outbox row", request.TypeName, key);
+        }
 
         return new MappingResponse { Success = true, Data = request.Payload, TraceId = request.TraceId };
     }
@@ -197,22 +244,55 @@ public sealed class ObjectMappingGrpcService(
                 TraceId = request.TraceId
             };
 
-        await _sql.ExecuteAsync(
-            $"DELETE FROM \"{schema.TableName}\" WHERE \"{schema.KeyColumn.Name}\" = @Key::uuid",
-            new { Key = request.Key });
+        var targetStores = StoreTargeting.DetermineTargetStores(schema);
+        var outboxRowId  = Guid.CreateVersion7();
 
-        _events.PublishFireAndForget(
-            EntityTopics.Deleted,
-            request.TypeName,
-            request.Key,
-            new EntityEvent(
-                request.TypeName,
+        await _sql.ExecuteInTransactionAsync(async tx =>
+        {
+            await tx.ExecuteAsync(
+                $"DELETE FROM \"{schema.TableName}\" WHERE \"{schema.KeyColumn.Name}\" = @Key::uuid",
+                new { Key = request.Key });
+
+            await ReconciliationSchema.EnqueueDeleteOutboxRowAsync(
+                tx, outboxRowId, request.TypeName, request.Key, rowJson);
+        });
+
+        // Opportunistic fast-path publish: the durability guarantee already exists (the
+        // delete-outbox row committed above, in the same transaction as the entity delete),
+        // so a failure here is not data loss — the existing ReconciliationQueueWorker (which
+        // now polls unconditionally-inserted outbox rows, not just failure-recorded ones —
+        // see Task 5's updated ReconciliationSchema doc comment) will pick this row up on its
+        // next poll and replay it from the stored pre-delete snapshot. This just keeps the
+        // common case's projection latency low.
+        var published = false;
+        try
+        {
+            await _events.ProduceAsync(
+                EntityTopics.Deleted,
                 request.Key,
-                rowJson,
-                request.TraceId.NullIfEmpty() ?? Activity.Current?.TraceId.ToString() ?? string.Empty,
-                SchemaVersion,
-                DateTimeOffset.UtcNow,
-                StoreTargeting.DetermineTargetStores(schema)));
+                new EntityEvent(
+                    request.TypeName,
+                    request.Key,
+                    rowJson,
+                    request.TraceId.NullIfEmpty() ?? Activity.Current?.TraceId.ToString() ?? string.Empty,
+                    SchemaVersion,
+                    DateTimeOffset.UtcNow,
+                    targetStores));
+            published = true;
+            await DeleteOutboxRowIfPresentAsync(outboxRowId);
+        }
+        catch (Exception ex) when (!published)
+        {
+            _logger.LogWarning(ex,
+                "[Mapping.Delete] Opportunistic publish failed for type={Type} key={Key} — " +
+                "ReconciliationQueueWorker will retry from the durable outbox row", request.TypeName, request.Key);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex,
+                "[Mapping.Delete] Publish succeeded but outbox cleanup failed for type={Type} key={Key} — " +
+                "ReconciliationQueueWorker will harmlessly re-publish from the durable outbox row", request.TypeName, request.Key);
+        }
 
         return new MappingDeleteResponse { Success = true, TraceId = request.TraceId };
     }
@@ -496,21 +576,53 @@ public sealed class ObjectMappingGrpcService(
                 $"the key field '{keyColumnName}' — remove extra properties.");
     }
 
-    private async Task UpsertAsync(SchemaDescriptor schema, string payloadJson)
+    private async Task<Guid> UpsertAndEnqueueOutboxAsync(
+        SchemaDescriptor schema, string typeName, string key, string payloadJson)
     {
         var allCols   = schema.ScalarColumns.Select(c => c.Name).ToList();
         var updateSet = allCols.Count > 0
             ? string.Join(", ", allCols.Select(c => $"\"{c}\" = EXCLUDED.\"{c}\""))
             : $"\"{schema.KeyColumn.Name}\" = EXCLUDED.\"{schema.KeyColumn.Name}\"";
 
-        await _sql.ExecuteAsync(
+        var upsertSql =
             $"""
             INSERT INTO "{schema.TableName}"
             SELECT * FROM json_populate_record(null::"{schema.TableName}", @Json::json)
             ON CONFLICT ("{schema.KeyColumn.Name}") DO UPDATE SET {updateSet}
-            """,
-            new { Json = payloadJson });
+            """;
+
+        var outboxSql =
+            $"""
+            INSERT INTO "{ReconciliationSchema.TableName}"
+                ("Id", "TypeName", "EntityKey", "EnqueuedAt", "Attempts", "LastError", "LastAttemptAt")
+            VALUES
+                (@Id, @TypeName, @EntityKey, @EnqueuedAt, 0, null, null)
+            """;
+
+        var outboxRowId = Guid.CreateVersion7();
+
+        await _sql.ExecuteInTransactionAsync(async tx =>
+        {
+            await tx.ExecuteAsync(upsertSql, new { Json = payloadJson });
+            await tx.ExecuteAsync(outboxSql, new
+            {
+                Id = outboxRowId,
+                TypeName = typeName,
+                EntityKey = key,
+                EnqueuedAt = DateTimeOffset.UtcNow
+            });
+        });
+
+        return outboxRowId;
     }
+
+    private Task DeleteOutboxRowIfPresentAsync(Guid outboxRowId) =>
+        _sql.ExecuteAsync(
+            $"""
+            DELETE FROM "{ReconciliationSchema.TableName}"
+            WHERE "Id" = @Id
+            """,
+            new { Id = outboxRowId });
 }
 
 file static class StringExtensions
