@@ -137,6 +137,10 @@ def test_step_with_metrics_but_no_group_by_raises():
 # a base-step filter, an aggregate step, and a composite-key join step (2 ON pairs) with
 # a select projection — built here via Python's pipeline(...), must serialize to the
 # same JSON structure.
+#
+# If a legitimate proto/DSL change requires updating this fixture, regenerate it from the
+# C# reference builder invocation (Iverson.Client.Search.Tests/PipelineBuilderTests.cs) —
+# do not hand-edit the JSON file.
 
 def test_build_matches_golden_fixture_pipeline_contract_1():
     request = (

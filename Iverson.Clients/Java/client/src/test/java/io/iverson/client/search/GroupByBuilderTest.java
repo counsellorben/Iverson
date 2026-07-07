@@ -243,6 +243,10 @@ class GroupByBuilderTest {
     // Golden fixture generated from the C# builder (the reference implementation), checked
     // in at Iverson.Clients/Common/testdata/groupby-contract-1.json. Same logical request,
     // built here via Java's Query.groupBy(...), must serialize to the same JSON structure.
+    //
+    // If a legitimate proto/DSL change requires updating this fixture, regenerate it from the
+    // C# reference builder invocation (Iverson.Client.Search.Tests/GroupByBuilderTests.cs) —
+    // do not hand-edit the JSON file.
 
     @Test
     void build_matchesGoldenFixture_groupByContract1() throws IOException, JSONException {

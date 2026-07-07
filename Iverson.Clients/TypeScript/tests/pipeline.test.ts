@@ -127,6 +127,10 @@ describe('PipelineBuilder', () => {
     // a base-step filter, an aggregate step, and a composite-key join step (2 ON pairs) with
     // a select projection — built here via TypeScript's pipeline(...), must serialize to the
     // same JSON structure.
+    //
+    // If a legitimate proto/DSL change requires updating this fixture, regenerate it from the
+    // C# reference builder invocation (Iverson.Client.Search.Tests/PipelineBuilderTests.cs) —
+    // do not hand-edit the JSON file.
 
     it('build() matches the golden fixture pipeline-contract-1.json', () => {
         const request = pipeline('Article')

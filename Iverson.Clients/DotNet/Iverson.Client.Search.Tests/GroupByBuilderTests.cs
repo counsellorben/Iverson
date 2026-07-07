@@ -265,6 +265,10 @@ public sealed class GroupByBuilderTests
     // Iverson.Clients/Common/testdata/groupby-contract-1.json. Java, Python,
     // TypeScript, and Go each have an equivalent test asserting their builder
     // produces the same structural JSON when built with the same inputs.
+    //
+    // If a legitimate proto/DSL change requires updating this fixture, regenerate it
+    // from this C# builder invocation (the reference implementation) — do not hand-edit
+    // the JSON file.
 
     [Fact]
     public void Build_MatchesGoldenFixture_GroupByContract1()

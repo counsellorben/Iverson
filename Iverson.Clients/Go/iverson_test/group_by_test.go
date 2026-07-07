@@ -110,6 +110,10 @@ func TestGroupByOrderBy_ReferencesKey_CaseInsensitive_IsAllowed(t *testing.T) {
 // Golden fixture generated from the C# builder (the reference implementation), checked
 // in at Iverson.Clients/Common/testdata/groupby-contract-1.json. Same logical request,
 // built here via Go's iverson.NewGroupBy(...), must serialize to the same JSON structure.
+//
+// If a legitimate proto/DSL change requires updating this fixture, regenerate it from the
+// C# reference builder invocation (Iverson.Client.Search.Tests/GroupByBuilderTests.cs) —
+// do not hand-edit the JSON file.
 
 func TestGroupByBuild_MatchesGoldenFixture_Contract1(t *testing.T) {
 	req, err := iverson.NewGroupBy("Article").
