@@ -44,7 +44,7 @@ public sealed class ObjectPersistenceGrpcService(
             logger.LogInformation("[Persistence.Post] type={Type} key={Key} stores={Stores}",
                 request.TypeName, key, targetStores);
 
-        await UpsertAndEnqueueOutboxAsync(schema, request.TypeName, key, payloadJson);
+        var outboxRowId = await UpsertAndEnqueueOutboxAsync(schema, request.TypeName, key, payloadJson);
 
         // Opportunistic fast-path publish: the durability guarantee already exists (the
         // outbox row committed above, in the same transaction as the entity write), so a
@@ -52,6 +52,7 @@ public sealed class ObjectPersistenceGrpcService(
         // polls unconditionally-inserted outbox rows, not just failure-recorded ones — see
         // Task 5's updated ReconciliationSchema doc comment) will pick this row up on its
         // next poll. This just keeps the common case's projection latency low.
+        var published = false;
         try
         {
             await events.ProduceAsync(
@@ -65,13 +66,20 @@ public sealed class ObjectPersistenceGrpcService(
                     SchemaVersion,
                     DateTimeOffset.UtcNow,
                     targetStores));
-            await DeleteOutboxRowIfPresentAsync(request.TypeName, key);
+            published = true;
+            await DeleteOutboxRowIfPresentAsync(outboxRowId);
         }
-        catch (Exception ex)
+        catch (Exception ex) when (!published)
         {
             logger.LogWarning(ex,
                 "[Persistence.Post] Opportunistic publish failed for type={Type} key={Key} — " +
                 "ReconciliationQueueWorker will retry from the durable outbox row", request.TypeName, key);
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex,
+                "[Persistence.Post] Publish succeeded but outbox cleanup failed for type={Type} key={Key} — " +
+                "ReconciliationQueueWorker will harmlessly re-publish from the durable outbox row", request.TypeName, key);
         }
 
         return new PersistResponse
@@ -102,7 +110,7 @@ public sealed class ObjectPersistenceGrpcService(
             logger.LogInformation("[Persistence.Update] type={Type} key={Key} stores={Stores}",
                 request.TypeName, key, targetStores);
 
-        await UpsertAndEnqueueOutboxAsync(schema, request.TypeName, key, payloadJson);
+        var outboxRowId = await UpsertAndEnqueueOutboxAsync(schema, request.TypeName, key, payloadJson);
 
         // Opportunistic fast-path publish: the durability guarantee already exists (the
         // outbox row committed above, in the same transaction as the entity write), so a
@@ -110,6 +118,7 @@ public sealed class ObjectPersistenceGrpcService(
         // polls unconditionally-inserted outbox rows, not just failure-recorded ones — see
         // Task 5's updated ReconciliationSchema doc comment) will pick this row up on its
         // next poll. This just keeps the common case's projection latency low.
+        var published = false;
         try
         {
             await events.ProduceAsync(
@@ -123,13 +132,20 @@ public sealed class ObjectPersistenceGrpcService(
                     SchemaVersion,
                     DateTimeOffset.UtcNow,
                     targetStores));
-            await DeleteOutboxRowIfPresentAsync(request.TypeName, key);
+            published = true;
+            await DeleteOutboxRowIfPresentAsync(outboxRowId);
         }
-        catch (Exception ex)
+        catch (Exception ex) when (!published)
         {
             logger.LogWarning(ex,
                 "[Persistence.Update] Opportunistic publish failed for type={Type} key={Key} — " +
                 "ReconciliationQueueWorker will retry from the durable outbox row", request.TypeName, key);
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex,
+                "[Persistence.Update] Publish succeeded but outbox cleanup failed for type={Type} key={Key} — " +
+                "ReconciliationQueueWorker will harmlessly re-publish from the durable outbox row", request.TypeName, key);
         }
 
         return new PersistResponse
@@ -297,7 +313,7 @@ public sealed class ObjectPersistenceGrpcService(
         registry.Get(typeName) ?? throw new RpcException(new Status(StatusCode.FailedPrecondition,
             $"No schema registered for '{typeName}'. Call RegisterSchema first."));
 
-    private async Task UpsertAndEnqueueOutboxAsync(
+    private async Task<Guid> UpsertAndEnqueueOutboxAsync(
         SchemaDescriptor schema, string typeName, string key, string payloadJson)
     {
         var allCols   = schema.ScalarColumns.Select(c => c.Name).ToList();
@@ -320,26 +336,30 @@ public sealed class ObjectPersistenceGrpcService(
                 (@Id, @TypeName, @EntityKey, @EnqueuedAt, 0, null, null)
             """;
 
+        var outboxRowId = Guid.CreateVersion7();
+
         await sql.ExecuteInTransactionAsync(async tx =>
         {
             await tx.ExecuteAsync(upsertSql, new { Json = payloadJson });
             await tx.ExecuteAsync(outboxSql, new
             {
-                Id = Guid.CreateVersion7(),
+                Id = outboxRowId,
                 TypeName = typeName,
                 EntityKey = key,
                 EnqueuedAt = DateTimeOffset.UtcNow
             });
         });
+
+        return outboxRowId;
     }
 
-    private Task DeleteOutboxRowIfPresentAsync(string typeName, string key) =>
+    private Task DeleteOutboxRowIfPresentAsync(Guid outboxRowId) =>
         sql.ExecuteAsync(
             $"""
             DELETE FROM "{ReconciliationSchema.TableName}"
-            WHERE "TypeName" = @TypeName AND "EntityKey" = @EntityKey
+            WHERE "Id" = @Id
             """,
-            new { TypeName = typeName, EntityKey = key });
+            new { Id = outboxRowId });
 }
 
 file static class StringExtensions
