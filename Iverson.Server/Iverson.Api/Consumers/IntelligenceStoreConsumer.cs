@@ -4,6 +4,7 @@ using Iverson.Api.Schema;
 using Iverson.Embeddings;
 using Iverson.Events;
 using Iverson.Vector;
+using Qdrant.Client.Grpc;
 
 namespace Iverson.Api.Consumers;
 
@@ -183,8 +184,13 @@ public sealed class IntelligenceStoreConsumer(
 
         await vector.DeleteAsync(schema.CollectionName, pointId);
 
-        // Best-effort: delete chunk points (no scroll-delete API; skip for now — orphaned chunks
-        // are harmless for search correctness since parent_id lookups won't match live documents)
+        if (schema.ChunkFields.Count > 0)
+        {
+            var chunkFilter = new Filter();
+            chunkFilter.Must.Add(Conditions.MatchKeyword("parent_id", ev.Key));
+            await vector.DeleteByFilterAsync(schema.CollectionName + "_chunks", chunkFilter);
+        }
+
         logger.LogInformation("[Intelligence] Deleted vector for {Type}:{Key}", ev.TypeName, ev.Key);
     }
 

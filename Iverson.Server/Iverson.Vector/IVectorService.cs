@@ -29,6 +29,7 @@ public interface IVectorService
         ulong limit = 10,
         Filter? filter = null);
     Task DeleteAsync(string collectionName, ulong id);
+    Task DeleteByFilterAsync(string collectionName, Filter filter);
 }
 
 public record VectorSearchResult(

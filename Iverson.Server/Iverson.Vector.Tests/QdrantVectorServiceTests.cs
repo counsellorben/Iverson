@@ -1,5 +1,6 @@
 using FluentAssertions;
 using NSubstitute;
+using Qdrant.Client.Grpc;
 using Xunit;
 
 namespace Iverson.Vector.Tests;
@@ -77,6 +78,18 @@ public sealed class QdrantVectorServiceTests
         await svc.DeleteAsync("players", 99UL);
 
         await svc.Received(1).DeleteAsync("players", 99UL);
+    }
+
+    [Fact]
+    public async Task DeleteByFilterAsync_IsCalledWithCollectionAndFilter()
+    {
+        var svc = Substitute.For<IVectorService>();
+        var filter = new Filter();
+        filter.Must.Add(Conditions.MatchKeyword("parent_id", "article-123"));
+
+        await svc.DeleteByFilterAsync("articles_chunks", filter);
+
+        await svc.Received(1).DeleteByFilterAsync("articles_chunks", filter);
     }
 
     [Fact]

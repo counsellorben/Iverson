@@ -154,6 +154,16 @@ public class QdrantVectorService(
         activity?.SetStatus(ActivityStatusCode.Ok);
     }
 
+    public async Task DeleteByFilterAsync(string collectionName, Filter filter)
+    {
+        using var activity = Telemetry.Source.StartActivity("qdrant.delete_by_filter", ActivityKind.Client);
+        activity?.SetTag("db.system", "qdrant");
+        activity?.SetTag("qdrant.collection", collectionName);
+
+        await client.DeleteAsync(collectionName, filter);
+        activity?.SetStatus(ActivityStatusCode.Ok);
+    }
+
     public async Task ApplyCollectionAsync(CollectionSchema schema)
     {
         using var activity = Telemetry.Source.StartActivity("qdrant.apply_collection", ActivityKind.Client);

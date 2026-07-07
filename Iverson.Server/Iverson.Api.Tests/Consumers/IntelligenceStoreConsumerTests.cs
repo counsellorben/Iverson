@@ -10,6 +10,7 @@ using Iverson.Sql;
 using Iverson.Vector;
 using Microsoft.Extensions.Logging.Abstractions;
 using NSubstitute;
+using Qdrant.Client.Grpc;
 using Xunit;
 
 namespace Iverson.Api.Tests.Consumers;
@@ -44,6 +45,7 @@ public class IntelligenceStoreConsumerTests
             Arg.Any<IReadOnlyDictionary<string, object>?>())
             .Returns(Task.CompletedTask);
         _vector.DeleteAsync(Arg.Any<string>(), Arg.Any<ulong>()).Returns(Task.CompletedTask);
+        _vector.DeleteByFilterAsync(Arg.Any<string>(), Arg.Any<Filter>()).Returns(Task.CompletedTask);
         _embedding.EmbedAsync(Arg.Any<string>(), Arg.Any<CancellationToken>())
                   .Returns(new float[768]);
 
@@ -134,6 +136,29 @@ public class IntelligenceStoreConsumerTests
         await sut.HandleDeleteAsync(ev.Key, Serialize(ev), CancellationToken.None);
 
         await _vector.Received(1).DeleteAsync("articles", Arg.Any<ulong>());
+    }
+
+    [Fact]
+    public async Task HandleDeleteAsync_WithChunkFields_DeletesChunkPointsByParentIdFilter()
+    {
+        await _registry.RegisterAsync(SchemaFixtures.ArticleSchema()); // has ChunkFields (Body)
+
+        var ev = new EntityEvent(
+            TypeName:      "Article",
+            Key:           "article-123",
+            PayloadJson:   "{}",
+            TraceId:       "trace-chunk-delete",
+            SchemaVersion: "1",
+            OccurredAt:    DateTimeOffset.UtcNow,
+            TargetStores:  StoreTarget.Intelligence);
+
+        var sut = BuildSut();
+        await sut.HandleDeleteAsync(ev.Key, Serialize(ev), CancellationToken.None);
+
+        await _vector.Received(1).DeleteByFilterAsync(
+            "articles_chunks",
+            Arg.Is<Filter>(f => f.Must.Count == 1 && f.Must[0].Field.Key == "parent_id"
+                              && f.Must[0].Field.Match.Keyword == "article-123"));
     }
 
     [Fact]
