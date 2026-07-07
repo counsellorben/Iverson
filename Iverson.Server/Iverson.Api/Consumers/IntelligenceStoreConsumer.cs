@@ -242,9 +242,27 @@ public sealed class IntelligenceStoreConsumer(
         return (ulong)Math.Abs(key.GetHashCode());
     }
 
-    // Combines parent ID + field name + chunk index into a collision-resistant ulong
+    // Combines parent ID + field name + chunk index into a collision-resistant ulong.
+    // Uses FNV-1a (not string.GetHashCode()) because .NET randomizes string.GetHashCode()
+    // per process as a hash-flooding mitigation — the old implementation produced a
+    // different chunk point ID for the same (parentId, fieldName, chunkIndex) on every
+    // process restart, silently duplicating chunk content in Qdrant on every update that
+    // crossed a restart boundary instead of overwriting the existing point.
     private static ulong ComputeChunkPointId(ulong parentId, string fieldName, int chunkIndex) =>
-        parentId ^ ((ulong)(fieldName.GetHashCode() * 1000003L + chunkIndex) * 0x9E3779B97F4A7C15UL);
+        parentId ^ ((FnvHash(fieldName) * 1000003UL + (ulong)chunkIndex) * 0x9E3779B97F4A7C15UL);
+
+    private static ulong FnvHash(string s)
+    {
+        const ulong offsetBasis = 14695981039346656037UL;
+        const ulong prime       = 1099511628211UL;
+        var hash = offsetBasis;
+        foreach (var b in System.Text.Encoding.UTF8.GetBytes(s))
+        {
+            hash ^= b;
+            hash *= prime;
+        }
+        return hash;
+    }
 
     private static string? ExtractString(JsonElement payload, string propertyName)
     {

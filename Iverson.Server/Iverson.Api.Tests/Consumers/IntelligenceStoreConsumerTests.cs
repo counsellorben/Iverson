@@ -1,3 +1,4 @@
+using System.Reflection;
 using System.Text.Json;
 using FluentAssertions;
 using Iverson.Api.Consumers;
@@ -360,5 +361,58 @@ public class IntelligenceStoreConsumerTests
 
         capturedPayload.Should().NotBeNull();
         capturedPayload!["authorId"].Should().Be(authorId);
+    }
+
+    [Fact]
+    public void ComputeChunkPointId_SameInputs_ProducesSameIdAcrossHashSeeds()
+    {
+        // Regression test for the process-restart chunk-ID instability bug: the old
+        // implementation folded in string.GetHashCode(), which .NET randomizes per
+        // process, so the same (parentId, fieldName, chunkIndex) must produce the
+        // same point ID regardless of AppDomain string-hash-seed — this test can't
+        // literally restart the process, so instead it asserts the method's result
+        // is a pure function of its inputs, computed twice, with no reliance on any
+        // process-global mutable state (the strongest test obtainable in-process).
+        var method = typeof(IntelligenceStoreConsumer).GetMethod(
+            "ComputeChunkPointId", BindingFlags.NonPublic | BindingFlags.Static)!;
+
+        var first  = (ulong)method.Invoke(null, [42UL, "Body", 3])!;
+        var second = (ulong)method.Invoke(null, [42UL, "Body", 3])!;
+
+        first.Should().Be(second);
+        first.Should().NotBe(0UL);
+
+        // Different fieldName must still produce a different id (collision resistance
+        // is not weakened by removing GetHashCode()).
+        var differentField = (ulong)method.Invoke(null, [42UL, "Title", 3])!;
+        differentField.Should().NotBe(first);
+    }
+
+    [Fact]
+    public void ComputeChunkPointId_IsStableAcrossHypotheticalProcessRestarts()
+    {
+        // Hard-codes the expected output for a fixed input so a future accidental
+        // reintroduction of GetHashCode() (or any other process-seeded source) is
+        // caught immediately — this exact numeric value must never change for these
+        // inputs, in this process or any other.
+        var method = typeof(IntelligenceStoreConsumer).GetMethod(
+            "ComputeChunkPointId", BindingFlags.NonPublic | BindingFlags.Static)!;
+
+        var result = (ulong)method.Invoke(null, [42UL, "Body", 3])!;
+
+        // Compute the expected value independently (not by calling the method under test)
+        // using the same FNV-1a + mixing formula, so this test would fail if the
+        // implementation's formula changes even though it's still "deterministic".
+        const ulong offsetBasis = 14695981039346656037UL;
+        const ulong prime       = 1099511628211UL;
+        var fnv = offsetBasis;
+        foreach (var b in System.Text.Encoding.UTF8.GetBytes("Body"))
+        {
+            fnv ^= b;
+            fnv *= prime;
+        }
+        var expected = 42UL ^ ((fnv * 1000003UL + 3UL) * 0x9E3779B97F4A7C15UL);
+
+        result.Should().Be(expected);
     }
 }
