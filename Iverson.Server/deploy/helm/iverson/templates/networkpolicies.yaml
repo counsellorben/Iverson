@@ -58,8 +58,37 @@ spec:
     - to: []   # DNS — every egress policy needs this or in-cluster name resolution breaks
       ports: [{ protocol: UDP, port: 53 }, { protocol: TCP, port: 53 }]
 ---
-# Every datastore/backing-service component: ingress only from api, on its
-# own port. None of them need to initiate egress beyond DNS + their own
+# worker is the Kafka-consumer/background-processing counterpart to api (same image,
+# WORKLOAD_ROLE=worker) — it needs the same datastore/backing-service egress as api,
+# minus the ingress-nginx/health-probe ingress rules (it serves no inbound client
+# traffic, so the default-deny above already covers it correctly with no ingress
+# policy of its own).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ .Release.Name }}-worker-egress
+spec:
+  podSelector:
+    matchLabels: { app: {{ .Release.Name }}-worker }
+  policyTypes: ["Egress"]
+  egress:
+    - to: [{ podSelector: { matchLabels: { cnpg.io/cluster: {{ .Release.Name }}-postgres } } }]
+      ports: [{ protocol: TCP, port: 5432 }]
+    - to: [{ podSelector: { matchLabels: { strimzi.io/cluster: {{ .Release.Name }}-kafka } } }]
+      ports: [{ protocol: TCP, port: 9093 }]
+    - to: [{ podSelector: { matchLabels: { app.starrocks.ownerreference/name: {{ .Release.Name }}-starrocks-fe } } }]
+      ports: [{ protocol: TCP, port: 9030 }]
+    - to: [{ podSelector: { matchLabels: { app: {{ .Release.Name }}-qdrant } } }]
+      ports: [{ protocol: TCP, port: 6334 }]
+    - to: [{ podSelector: { matchLabels: { app: {{ .Release.Name }}-ollama } } }]
+      ports: [{ protocol: TCP, port: 11434 }]
+    - to: [{ podSelector: { matchLabels: { app: {{ .Release.Name }}-jaeger } } }]
+      ports: [{ protocol: TCP, port: 4317 }]
+    - to: []   # DNS — every egress policy needs this or in-cluster name resolution breaks
+      ports: [{ protocol: UDP, port: 53 }, { protocol: TCP, port: 53 }]
+---
+# Every datastore/backing-service component: ingress only from api (and, where noted,
+# worker), on its own port. None of them need to initiate egress beyond DNS + their own
 # operator/peer traffic, which the operator's own NetworkPolicy (if any) or
 # a component-specific rule below already covers.
 apiVersion: networking.k8s.io/v1
@@ -76,7 +105,9 @@ spec:
     matchLabels: { cnpg.io/cluster: {{ .Release.Name }}-postgres }
   policyTypes: ["Ingress"]
   ingress:
-    - from: [{ podSelector: { matchLabels: { app: {{ .Release.Name }}-api } } }]
+    - from:
+        - podSelector: { matchLabels: { app: {{ .Release.Name }}-api } }
+        - podSelector: { matchLabels: { app: {{ .Release.Name }}-worker } }
       ports: [{ protocol: TCP, port: 5432 }]
 ---
 apiVersion: networking.k8s.io/v1
@@ -127,7 +158,17 @@ spec:
     matchLabels: { strimzi.io/cluster: {{ .Release.Name }}-kafka }
   policyTypes: ["Ingress"]
   ingress:
-    - from: [{ podSelector: { matchLabels: { app: {{ .Release.Name }}-api } } }]
+    - from:
+        - podSelector: { matchLabels: { app: {{ .Release.Name }}-api } }
+        - podSelector: { matchLabels: { app: {{ .Release.Name }}-worker } }
+               # worker reuses api's own KafkaUser/SASL credentials (see
+               # charts/worker/templates/deployment.yaml's Kafka__SaslUsername) rather than a
+               # separate KafkaUser, but NetworkPolicy enforcement is pure L3/L4 pod-label
+               # matching — it has no visibility into the SASL layer above it. The Kafka CR
+               # (charts/kafka/templates/kafka.yaml) doesn't set the listener's
+               # networkPolicyPeers either, so this policy is the only enforcement point;
+               # without this entry worker's TCP SYN to the broker never gets past the
+               # network policy regardless of having valid credentials.
       ports: [{ protocol: TCP, port: 9093 }]
     - from: [{ podSelector: { matchLabels: { strimzi.io/cluster: {{ .Release.Name }}-kafka } } }]   # broker/controller peers
 ---
@@ -191,6 +232,7 @@ spec:
   ingress:
     - from:
         - podSelector: { matchLabels: { app: {{ .Release.Name }}-api } }
+        - podSelector: { matchLabels: { app: {{ .Release.Name }}-worker } }
         - podSelector: { matchLabels: { job-name: {{ .Release.Name }}-starrocks-create-user } }
                # the create-user job's own egress rule already allows it to *send* to FE on
                # 9030, but that's only half of a NetworkPolicy: without a matching ingress
@@ -280,7 +322,9 @@ spec:
     matchLabels: { app: {{ .Release.Name }}-qdrant }
   policyTypes: ["Ingress"]
   ingress:
-    - from: [{ podSelector: { matchLabels: { app: {{ .Release.Name }}-api } } }]
+    - from:
+        - podSelector: { matchLabels: { app: {{ .Release.Name }}-api } }
+        - podSelector: { matchLabels: { app: {{ .Release.Name }}-worker } }
       ports: [{ protocol: TCP, port: 6334 }]
     - from: [{ podSelector: { matchLabels: { app: {{ .Release.Name }}-qdrant } } }]   # Raft peers
       ports: [{ protocol: TCP, port: 6335 }]
@@ -308,7 +352,9 @@ spec:
     matchLabels: { app: {{ .Release.Name }}-ollama }
   policyTypes: ["Ingress"]
   ingress:
-    - from: [{ podSelector: { matchLabels: { app: {{ .Release.Name }}-api } } }]
+    - from:
+        - podSelector: { matchLabels: { app: {{ .Release.Name }}-api } }
+        - podSelector: { matchLabels: { app: {{ .Release.Name }}-worker } }
       ports: [{ protocol: TCP, port: 11434 }]
 ---
 apiVersion: networking.k8s.io/v1
@@ -337,7 +383,9 @@ spec:
     matchLabels: { app: {{ .Release.Name }}-jaeger }
   policyTypes: ["Ingress"]
   ingress:
-    - from: [{ podSelector: { matchLabels: { app: {{ .Release.Name }}-api } } }]
+    - from:
+        - podSelector: { matchLabels: { app: {{ .Release.Name }}-api } }
+        - podSelector: { matchLabels: { app: {{ .Release.Name }}-worker } }
       ports: [{ protocol: TCP, port: 4317 }]
 ---
 apiVersion: networking.k8s.io/v1
