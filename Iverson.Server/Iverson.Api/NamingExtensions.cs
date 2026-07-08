@@ -12,4 +12,7 @@ internal static class NamingExtensions
         }
         return sb.ToString();
     }
+
+    internal static string ToCamelCase(this string name) =>
+        name.Length == 0 ? name : char.ToLowerInvariant(name[0]) + name[1..];
 }

@@ -132,14 +132,12 @@ internal static class SchemaBuilder
         d.ChunkFields.Select(c => new NamedVector($"{c.PropertyName.ToSnakeCase()}_vector", c.Dimension)).ToList(),
         [new PayloadIndex("parent_id", PayloadIndexKind.Keyword)]);
 
-    internal static string ToCamelCase(string name) => char.ToLowerInvariant(name[0]) + name[1..];
-
     internal static CollectionSchema ToCollectionSchema(SchemaDescriptor d) => new(
         d.CollectionName!,
         d.VectorFields.Select(v => new NamedVector($"{v.PropertyName.ToSnakeCase()}_vector", v.Dimension)).ToList(),
         d.ScalarColumns
-            .Select(c => new PayloadIndex(ToCamelCase(c.Name), SqlTypeToPayloadKind(c.SqlType)))
-            .Concat(d.FkColumns.Select(fk => new PayloadIndex(ToCamelCase(fk.ColumnName), PayloadIndexKind.Keyword)))
+            .Select(c => new PayloadIndex(c.Name.ToCamelCase(), SqlTypeToPayloadKind(c.SqlType)))
+            .Concat(d.FkColumns.Select(fk => new PayloadIndex(fk.ColumnName.ToCamelCase(), PayloadIndexKind.Keyword)))
             .ToList());
 
     internal static string ClrTypeToSql(ClrType t, bool isArray) => (t, isArray) switch

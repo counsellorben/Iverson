@@ -99,17 +99,17 @@ public sealed class IntelligenceStoreConsumer(
                 {
                     var fieldText = ExtractString(payload, vf.PropertyName);
                     if (!string.IsNullOrWhiteSpace(fieldText))
-                        pointPayload[ToCamelCase(vf.PropertyName)] = fieldText;
+                        pointPayload[vf.PropertyName.ToCamelCase()] = fieldText;
                 }
                 foreach (var col in schema.ScalarColumns)
                 {
                     var val = ExtractTypedValue(payload, col.Name, col.SqlType);
-                    if (val is not null) pointPayload[ToCamelCase(col.Name)] = val;
+                    if (val is not null) pointPayload[col.Name.ToCamelCase()] = val;
                 }
                 foreach (var fk in schema.FkColumns)
                 {
                     var val = ExtractTypedValue(payload, fk.ColumnName, "TEXT");
-                    if (val is not null) pointPayload[ToCamelCase(fk.ColumnName)] = val;
+                    if (val is not null) pointPayload[fk.ColumnName.ToCamelCase()] = val;
                 }
                 await vector.UpsertNamedAsync(schema.CollectionName, pointId, namedVectors, pointPayload);
                 logger.LogInformation("[Intelligence] Upserted {Count} vector(s) for {Type}:{Key}",
@@ -303,8 +303,6 @@ public sealed class IntelligenceStoreConsumer(
             _                             => v.ValueKind == JsonValueKind.String ? v.GetString() : v.ToString()
         };
     }
-
-    private static string ToCamelCase(string name) => char.ToLowerInvariant(name[0]) + name[1..];
 
     private static EntityEvent Deserialize(string key, string value)
     {
