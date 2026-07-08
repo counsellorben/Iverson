@@ -210,7 +210,7 @@ public sealed class StarRocksRepository(
         activity?.SetStatus(ActivityStatusCode.Ok);
     }
 
-    public async Task<bool> IsHealthyAsync()
+    public async Task<StarRocksHealthStatus> CheckHealthAsync()
     {
         // Deliberately NOT routed through RunAsync: this backs the k8s readiness probe
         // (via /health), which must return quickly and let k8s re-poll on its own cadence
@@ -223,13 +223,30 @@ public sealed class StarRocksRepository(
             await using (var cmd = new MySqlCommand("SELECT 1", conn))
                 await cmd.ExecuteScalarAsync();
 
-            return await AnyBackendAliveAsync(conn);
+            return await AnyBackendAliveAsync(conn)
+                ? StarRocksHealthStatus.Healthy
+                : StarRocksHealthStatus.Unhealthy;
         }
-        catch
+        catch (Exception ex)
         {
-            return false;
+            return ClassifyConnectionException(ex);
         }
     }
+
+    // iverson_app doesn't exist until the StarRocks create-user post-install Helm hook runs, and
+    // Helm only runs post-install hooks after --wait succeeds on the main manifest (which
+    // includes this process's own readinessProbe) — so treating this specific failure as
+    // blocking readiness would deadlock every fresh install forever. Any other failure (down,
+    // wrong host, a genuine misconfiguration after the hook already ran) still correctly reports
+    // Unhealthy. internal (not private) so Iverson.StarRocks.Tests — which has InternalsVisibleTo
+    // access — can test the classification directly without a live connection.
+    internal static StarRocksHealthStatus ClassifyConnectionException(Exception ex) =>
+        ex is MySqlException { ErrorCode: MySqlErrorCode.AccessDenied }
+            ? StarRocksHealthStatus.AuthPending
+            : StarRocksHealthStatus.Unhealthy;
+
+    public async Task<bool> IsHealthyAsync() =>
+        await CheckHealthAsync() == StarRocksHealthStatus.Healthy;
 
     private async Task EnsureDatabaseAsync()
     {

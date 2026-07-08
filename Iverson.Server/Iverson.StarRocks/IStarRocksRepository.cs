@@ -7,5 +7,6 @@ public interface IStarRocksRepository
     Task UpsertAsync(StarRocksTableSchema schema, string payloadJson);
     Task DeleteAsync(string tableName, string keyColumn, string keyValue);
     Task ApplyTableAsync(StarRocksTableSchema schema);
+    Task<StarRocksHealthStatus> CheckHealthAsync();
     Task<bool> IsHealthyAsync();
 }
