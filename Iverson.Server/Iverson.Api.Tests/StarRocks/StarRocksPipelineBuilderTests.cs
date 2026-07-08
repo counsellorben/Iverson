@@ -590,9 +590,12 @@ public class StarRocksPipelineBuilderTests
         request.Steps.Add(agg);
         request.Steps.Add(enriched);
 
-        var act = () => StarRocksPipelineBuilder.Build(ArticleSchema(), request, EmptyRegistry());
+        var (sql, _) = StarRocksPipelineBuilder.Build(ArticleSchema(), request, EmptyRegistry());
 
-        act.Should().NotThrow();
+        // Proves the join resolved to the correct canonically-cased source (not just that
+        // *something* didn't throw) — a regression that silently dropped the join, or joined
+        // to the wrong source, would not be caught by NotThrow() alone.
+        sql.Should().Contain("INNER JOIN `by_author`");
     }
 
     [Fact]
