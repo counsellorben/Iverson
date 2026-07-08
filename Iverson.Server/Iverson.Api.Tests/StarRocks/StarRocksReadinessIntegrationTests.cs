@@ -69,4 +69,33 @@ public sealed class StarRocksReadinessIntegrationTests : IAsyncLifetime
         healthy.Should().BeTrue(
             "once the backend is alive, the extended SHOW BACKENDS health check should report true");
     }
+
+    [Fact]
+    public async Task CheckHealthAsync_UnknownUser_ReturnsAuthPending()
+    {
+        // Confirms AccessDenied (1045) is really what a live StarRocks server returns for a
+        // nonexistent user at the connection/login step — this is standard MySQL wire-protocol
+        // behavior, but StarRocks's own privilege model could in principle diverge, so this is
+        // verified against the real image rather than assumed from MySqlConnector's enum alone.
+        // Doesn't need BE to have registered (login failure happens before any query runs), so
+        // this can assert immediately once the port is open — no BackendReadyTimeout needed.
+        var badConnectionString = new MySqlConnector.MySqlConnectionStringBuilder
+        {
+            Server                  = _container.Hostname,
+            Port                    = (uint)_container.GetMappedPublicPort(MysqlPort),
+            Database                = "iverson_readiness_test",
+            UserID                  = "nonexistent_user_12345",
+            Password                = "wrong",
+            AllowPublicKeyRetrieval = true,
+        }.ToString();
+
+        var repo = new StarRocksRepository(
+            badConnectionString,
+            NullLogger<StarRocksRepository>.Instance,
+            new StarRocksResilienceOptions { BackendReadyTimeout = TimeSpan.FromSeconds(5) });
+
+        var status = await repo.CheckHealthAsync();
+
+        status.Should().Be(StarRocksHealthStatus.AuthPending);
+    }
 }
