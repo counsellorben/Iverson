@@ -43,7 +43,7 @@ public sealed class QueryBuilder<T> where T : class
         Expression<Func<T, TValue>> property,
         bool descending = false)
     {
-        _sorts.Add(new SearchSort { Property = PropertyName(property), Descending = descending });
+        _sorts.Add(new SearchSort { Property = PropertyNameExtractor.PropertyName(property), Descending = descending });
         return this;
     }
 
@@ -119,7 +119,7 @@ public sealed class QueryBuilder<T> where T : class
     /// <summary>Bucket documents by distinct values of a field.</summary>
     public QueryBuilder<T> GroupBy<TValue>(Expression<Func<T, TValue>> property, int size = 10)
     {
-        var field = PropertyName(property);
+        var field = PropertyNameExtractor.PropertyName(property);
         _aggregations.Add(new AggregationSpec { Name = $"{field}_terms", Type = AggregationType.Terms, Field = field, Size = size });
         return this;
     }
@@ -130,7 +130,7 @@ public sealed class QueryBuilder<T> where T : class
         string calendarInterval,
         string? timeZone = null)
     {
-        var field = PropertyName(property);
+        var field = PropertyNameExtractor.PropertyName(property);
         var spec  = new AggregationSpec
         {
             Name             = $"{field}_date_histogram",
@@ -148,7 +148,7 @@ public sealed class QueryBuilder<T> where T : class
         Expression<Func<T, TValue>> property,
         params (string Key, double? From, double? To)[] buckets)
     {
-        var field = PropertyName(property);
+        var field = PropertyNameExtractor.PropertyName(property);
         var spec  = new AggregationSpec { Name = $"{field}_range", Type = AggregationType.Range, Field = field };
         foreach (var (key, from, to) in buckets)
             spec.RangeBuckets.Add(new RangeBucket { Key = key, From = from, To = to });
@@ -232,7 +232,7 @@ public sealed class QueryBuilder<T> where T : class
     private QueryBuilder<T> AddMetricAgg<TValue>(
         Expression<Func<T, TValue>> property, AggregationType type)
     {
-        var field = PropertyName(property);
+        var field = PropertyNameExtractor.PropertyName(property);
         _aggregations.Add(new AggregationSpec
         {
             Name  = $"{field}_{type.ToString().ToLowerInvariant()}",
@@ -250,18 +250,13 @@ public sealed class QueryBuilder<T> where T : class
     {
         _clauses.Add(new SearchClause
         {
-            Property   = PropertyName(property),
+            Property   = PropertyNameExtractor.PropertyName(property),
             Operator   = op,
             Value      = SearchValueConverter.ToSearchValue(value),
             ClauseType = clauseType
         });
         return this;
     }
-
-    private static string PropertyName<TValue>(Expression<Func<T, TValue>> expr) =>
-        expr.Body is MemberExpression member
-            ? member.Member.Name
-            : throw new ArgumentException("Expression must be a direct property access, e.g. x => x.Title");
 
     /// <summary>
     /// Extracts a property name from an expression typed as <c>Func&lt;TSource, object&gt;</c>.
