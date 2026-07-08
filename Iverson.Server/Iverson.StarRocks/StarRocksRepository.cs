@@ -237,9 +237,12 @@ public sealed class StarRocksRepository(
     // Helm only runs post-install hooks after --wait succeeds on the main manifest (which
     // includes this process's own readinessProbe) — so treating this specific failure as
     // blocking readiness would deadlock every fresh install forever. Any other failure (down,
-    // wrong host, a genuine misconfiguration after the hook already ran) still correctly reports
-    // Unhealthy. internal (not private) so Iverson.StarRocks.Tests — which has InternalsVisibleTo
-    // access — can test the classification directly without a live connection.
+    // wrong host) still correctly reports Unhealthy. Note AccessDenied is wire-level ambiguous —
+    // it also covers a wrong password for an already-created iverson_app user — so that specific
+    // misconfiguration is deliberately tolerated for readiness too; the /health response body
+    // still reports checks.starrocks=false/"degraded" the whole time, so body-reading monitoring
+    // still catches it. internal (not private) so Iverson.StarRocks.Tests — which has
+    // InternalsVisibleTo access — can test the classification directly without a live connection.
     internal static StarRocksHealthStatus ClassifyConnectionException(Exception ex) =>
         ex is MySqlException { ErrorCode: MySqlErrorCode.AccessDenied }
             ? StarRocksHealthStatus.AuthPending
