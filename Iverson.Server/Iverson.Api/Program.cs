@@ -153,25 +153,33 @@ app.MapGet("/health", async (
     IEventProducer kafka) =>
 {
     var pgTask     = db.QuerySingleOrDefaultAsync<int>("SELECT 1").ContinueWith(t => t.IsCompletedSuccessfully && t.Result == 1);
-    var srTask     = sr.IsHealthyAsync();
+    var srTask     = sr.CheckHealthAsync();
     var vectorTask = vector.EnsureCollectionAsync("iverson-probe", 4).ContinueWith(t => t.IsCompletedSuccessfully);
     var kafkaTask  = kafka.ProduceAsync("iverson.health.probe", "probe", new { ts = DateTime.UtcNow })
                          .ContinueWith(t => t.IsCompletedSuccessfully);
 
     await Task.WhenAll(pgTask, srTask, vectorTask, kafkaTask);
 
+    var srStatus = await srTask;
     var checks = new
     {
         postgres  = pgTask.Result,
-        starrocks = await srTask,
+        starrocks = srStatus == StarRocksHealthStatus.Healthy,
         qdrant    = vectorTask.Result,
         kafka     = kafkaTask.Result
     };
 
-    var allHealthy = checks.postgres && checks.starrocks && checks.qdrant && checks.kafka;
+    // StarRocks "auth pending" is expected during a fresh install: the create-user post-install
+    // hook can only run after --wait succeeds on this very readiness probe, so failing readiness
+    // on AuthPending would deadlock every first install forever. It's still reported unhealthy
+    // in the body (checks.starrocks stays false) for real observability — only the k8s-facing
+    // readiness verdict (the HTTP status code) tolerates it.
+    var readinessHealthy = checks.postgres && checks.qdrant && checks.kafka
+        && srStatus != StarRocksHealthStatus.Unhealthy;
+    var fullyHealthy = readinessHealthy && checks.starrocks;
 
-    return allHealthy
-        ? Results.Ok(new { status = "healthy", checks })
+    return readinessHealthy
+        ? Results.Ok(new { status = fullyHealthy ? "healthy" : "degraded", checks })
         : Results.Json(new { status = "degraded", checks }, statusCode: 503);
 })
 .WithName("Health");
