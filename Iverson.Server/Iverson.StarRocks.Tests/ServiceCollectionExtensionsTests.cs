@@ -16,6 +16,7 @@ public class ServiceCollectionExtensionsTests
     {
         var services = new ServiceCollection();
         services.AddSingleton<ILogger<StarRocksRepository>>(NullLogger<StarRocksRepository>.Instance);
+        services.AddSingleton<ILogger<StarRocksSchemaManager>>(NullLogger<StarRocksSchemaManager>.Instance);
         services.AddStarRocks(ConnString);
 
         using var provider = services.BuildServiceProvider();
@@ -25,8 +26,8 @@ public class ServiceCollectionExtensionsTests
         var entityStore = provider.GetRequiredService<IStarRocksEntityStore>();
 
         queryExecutor.Should().BeOfType<StarRocksRepository>();
-        schemaManager.Should().BeOfType<StarRocksRepository>();
-        healthCheck.Should().BeOfType<StarRocksRepository>();
+        schemaManager.Should().BeOfType<StarRocksSchemaManager>();
+        healthCheck.Should().BeOfType<StarRocksHealthChecker>();
         entityStore.Should().BeOfType<StarRocksRepository>();
     }
 
@@ -35,6 +36,7 @@ public class ServiceCollectionExtensionsTests
     {
         var services = new ServiceCollection();
         services.AddSingleton<ILogger<StarRocksRepository>>(NullLogger<StarRocksRepository>.Instance);
+        services.AddSingleton<ILogger<StarRocksSchemaManager>>(NullLogger<StarRocksSchemaManager>.Instance);
         services.AddStarRocks(
             ConnString,
             new StarRocksResilienceOptions { BackendReadyTimeout = TimeSpan.FromSeconds(5) });
@@ -46,8 +48,8 @@ public class ServiceCollectionExtensionsTests
         var entityStore = provider.GetRequiredService<IStarRocksEntityStore>();
 
         queryExecutor.Should().BeOfType<StarRocksRepository>();
-        schemaManager.Should().BeOfType<StarRocksRepository>();
-        healthCheck.Should().BeOfType<StarRocksRepository>();
+        schemaManager.Should().BeOfType<StarRocksSchemaManager>();
+        healthCheck.Should().BeOfType<StarRocksHealthChecker>();
         entityStore.Should().BeOfType<StarRocksRepository>();
     }
 }
