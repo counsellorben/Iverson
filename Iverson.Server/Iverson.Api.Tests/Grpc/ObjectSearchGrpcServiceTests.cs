@@ -19,7 +19,7 @@ public class ObjectSearchGrpcServiceTests
 {
     private readonly IPostgresRepository _sql;
     private readonly SchemaRegistry _registry;
-    private readonly IStarRocksRepository _sr;
+    private readonly IStarRocksQueryExecutor _sr;
     private readonly IVectorService _vector;
     private readonly IEmbeddingService _embedding;
     private readonly ObjectSearchGrpcService _sut;
@@ -29,7 +29,7 @@ public class ObjectSearchGrpcServiceTests
         _sql = Substitute.For<IPostgresRepository>();
         _sql.ExecuteAsync(Arg.Any<string>(), Arg.Any<object?>()).Returns(0);
         _registry  = new SchemaRegistry(_sql, NullLogger<SchemaRegistry>.Instance);
-        _sr        = Substitute.For<IStarRocksRepository>();
+        _sr        = Substitute.For<IStarRocksQueryExecutor>();
         _vector    = Substitute.For<IVectorService>();
         _embedding = Substitute.For<IEmbeddingService>();
 

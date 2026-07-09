@@ -148,7 +148,7 @@ app.MapGet("/health/live", () => Results.Ok(new { status = "alive" })).WithName(
 
 app.MapGet("/health", async (
     IPostgresRepository db,
-    IStarRocksRepository sr,
+    IStarRocksHealthCheck sr,
     IVectorService vector,
     IEventProducer kafka) =>
 {
@@ -190,7 +190,7 @@ app.MapGet("/probe/sql", async (IPostgresRepository db) =>
     return Results.Ok(new { connected = result == 1, traceId = Activity.Current?.TraceId.ToString() });
 }).WithName("ProbeSql");
 
-app.MapGet("/probe/starrocks", async (IStarRocksRepository sr) =>
+app.MapGet("/probe/starrocks", async (IStarRocksHealthCheck sr) =>
 {
     var healthy = await sr.IsHealthyAsync();
     return Results.Ok(new { connected = healthy, traceId = Activity.Current?.TraceId.ToString() });

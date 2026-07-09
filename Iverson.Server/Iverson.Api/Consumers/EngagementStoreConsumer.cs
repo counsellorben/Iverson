@@ -7,7 +7,7 @@ namespace Iverson.Api.Consumers;
 
 public sealed class EngagementStoreConsumer(
     IEventConsumer consumer,
-    IStarRocksRepository sr,
+    IStarRocksEntityStore sr,
     SchemaRegistry registry,
     ILogger<EngagementStoreConsumer> logger) : BackgroundService
 {

@@ -24,7 +24,7 @@ public class ObjectMappingGrpcServiceTests
     private readonly IEventProducer _events;
     private readonly SchemaRegistry _registry;
     private readonly IEmbeddingService _embedding;
-    private readonly IStarRocksRepository _starRocks;
+    private readonly IStarRocksSchemaManager _starRocks;
     private readonly ObjectMappingGrpcService _sut;
 
     private static readonly string AuthorId  = "11111111-0000-0000-0000-000000000001";
@@ -46,7 +46,7 @@ public class ObjectMappingGrpcServiceTests
         _embedding.Dimension.Returns(768);
         _embedding.ModelId.Returns("nomic-embed-text");
 
-        _starRocks = Substitute.For<IStarRocksRepository>();
+        _starRocks = Substitute.For<IStarRocksSchemaManager>();
         _starRocks.ApplyTableAsync(Arg.Any<StarRocksTableSchema>()).Returns(Task.CompletedTask);
 
         _registry = new SchemaRegistry(_sql, NullLogger<SchemaRegistry>.Instance);

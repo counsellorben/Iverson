@@ -9,11 +9,40 @@ namespace Iverson.StarRocks.Tests;
 public class StarRocksRepositoryTests
 {
     [Fact]
-    public void IStarRocksRepository_ExistsAsInterface()
+    public void IStarRocksQueryExecutor_ExistsAsInterface()
     {
-        // Verifies the interface can be substituted — used by all consumer/service tests
-        var sut = Substitute.For<IStarRocksRepository>();
+        var sut = Substitute.For<IStarRocksQueryExecutor>();
         sut.Should().NotBeNull();
+    }
+
+    [Fact]
+    public void IStarRocksSchemaManager_ExistsAsInterface()
+    {
+        var sut = Substitute.For<IStarRocksSchemaManager>();
+        sut.Should().NotBeNull();
+    }
+
+    [Fact]
+    public void IStarRocksHealthCheck_ExistsAsInterface()
+    {
+        var sut = Substitute.For<IStarRocksHealthCheck>();
+        sut.Should().NotBeNull();
+    }
+
+    [Fact]
+    public void IStarRocksEntityStore_ExistsAsInterface()
+    {
+        var sut = Substitute.For<IStarRocksEntityStore>();
+        sut.Should().NotBeNull();
+    }
+
+    [Fact]
+    public void StarRocksRepository_ImplementsAllFourRoleInterfaces()
+    {
+        typeof(StarRocksRepository).Should().Implement<IStarRocksQueryExecutor>();
+        typeof(StarRocksRepository).Should().Implement<IStarRocksSchemaManager>();
+        typeof(StarRocksRepository).Should().Implement<IStarRocksHealthCheck>();
+        typeof(StarRocksRepository).Should().Implement<IStarRocksEntityStore>();
     }
 
     [Fact]

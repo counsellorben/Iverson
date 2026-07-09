@@ -12,7 +12,7 @@ public sealed class StarRocksRepository(
     string connectionString,
     ILogger<StarRocksRepository> logger,
     StarRocksResilienceOptions? resilienceOptions = null)
-    : IStarRocksRepository
+    : IStarRocksQueryExecutor, IStarRocksSchemaManager, IStarRocksHealthCheck, IStarRocksEntityStore
 {
     private readonly string _dbName = new MySqlConnectionStringBuilder(connectionString).Database;
     private readonly StarRocksResilienceOptions _resilience = resilienceOptions ?? StarRocksResilienceOptions.Default;

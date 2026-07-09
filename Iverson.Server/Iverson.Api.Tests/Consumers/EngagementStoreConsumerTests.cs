@@ -14,7 +14,7 @@ namespace Iverson.Api.Tests.Consumers;
 public class EngagementStoreConsumerTests
 {
     private readonly IEventConsumer _consumer;
-    private readonly IStarRocksRepository _sr;
+    private readonly IStarRocksEntityStore _sr;
     private readonly IPostgresRepository _sql;
     private readonly Api.Schema.SchemaRegistry _registry;
 
@@ -27,7 +27,7 @@ public class EngagementStoreConsumerTests
     public EngagementStoreConsumerTests()
     {
         _consumer = Substitute.For<IEventConsumer>();
-        _sr       = Substitute.For<IStarRocksRepository>();
+        _sr       = Substitute.For<IStarRocksEntityStore>();
         _sql      = Substitute.For<IPostgresRepository>();
 
         _sql.ExecuteAsync(Arg.Any<string>(), Arg.Any<object?>()).Returns(0);

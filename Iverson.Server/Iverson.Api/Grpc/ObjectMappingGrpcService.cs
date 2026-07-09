@@ -26,7 +26,7 @@ public sealed class ObjectMappingGrpcService(
     IEventProducer _events,
     SchemaRegistry _registry,
     IEmbeddingService _embedding,
-    IStarRocksRepository _starRocks,
+    IStarRocksSchemaManager _starRocks,
     ILogger<ObjectMappingGrpcService> _logger)
     : ObjectMappingService.ObjectMappingServiceBase
 {
