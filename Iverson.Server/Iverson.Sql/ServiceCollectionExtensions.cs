@@ -7,11 +7,14 @@ public static class ServiceCollectionExtensions
 {
     public static IServiceCollection AddPostgres(this IServiceCollection services, string connectionString)
     {
-        services.AddSingleton<IPostgresRepository>(sp =>
+        services.AddSingleton(sp =>
         {
             var logger = sp.GetRequiredService<ILogger<PostgresRepository>>();
             return new PostgresRepository(connectionString, logger);
         });
+        services.AddSingleton<IPostgresQueryExecutor>(sp => sp.GetRequiredService<PostgresRepository>());
+        services.AddSingleton<IPostgresSchemaManager>(sp => sp.GetRequiredService<PostgresRepository>());
+        services.AddSingleton<IPostgresTransactionRunner>(sp => sp.GetRequiredService<PostgresRepository>());
         return services;
     }
 }

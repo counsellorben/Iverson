@@ -10,12 +10,12 @@ namespace Iverson.Api.Tests.Schema;
 
 public class SchemaRegistryTests
 {
-    private readonly IPostgresRepository _sql;
+    private readonly IPostgresQueryExecutor _sql;
     private readonly SchemaRegistry _sut;
 
     public SchemaRegistryTests()
     {
-        _sql = Substitute.For<IPostgresRepository>();
+        _sql = Substitute.For<IPostgresQueryExecutor>();
         // ExecuteAsync is used for EnsureMetadataTableAsync and SQL operations — default to no-op
         _sql.ExecuteAsync(Arg.Any<string>(), Arg.Any<object?>()).Returns(0);
         _sut = new SchemaRegistry(_sql, NullLogger<SchemaRegistry>.Instance);

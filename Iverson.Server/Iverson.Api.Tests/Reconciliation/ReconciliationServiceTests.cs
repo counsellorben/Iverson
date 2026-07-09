@@ -12,14 +12,14 @@ namespace Iverson.Api.Tests.Reconciliation;
 
 public class ReconciliationServiceTests
 {
-    private readonly IPostgresRepository _sql;
+    private readonly IPostgresQueryExecutor _sql;
     private readonly IEventProducer _events;
     private readonly SchemaRegistry _registry;
     private readonly ReconciliationService _sut;
 
     public ReconciliationServiceTests()
     {
-        _sql = Substitute.For<IPostgresRepository>();
+        _sql = Substitute.For<IPostgresQueryExecutor>();
         _sql.ExecuteAsync(Arg.Any<string>(), Arg.Any<object?>()).Returns(0);
         _events = Substitute.For<IEventProducer>();
         _registry = new SchemaRegistry(_sql, NullLogger<SchemaRegistry>.Instance);
@@ -220,7 +220,7 @@ public class ReconciliationServiceTests
         await _sut.ProcessQueuedFailuresAsync(CancellationToken.None);
 
         var call = _sql.ReceivedCalls().Should().Contain(c =>
-            c.GetMethodInfo().Name == nameof(IPostgresRepository.QuerySingleOrDefaultAsync) &&
+            c.GetMethodInfo().Name == nameof(IPostgresQueryExecutor.QuerySingleOrDefaultAsync) &&
             ((string)c.GetArguments()[0]!).Contains("COUNT(*)")).Subject;
         var dynamicParams = (dynamic)call.GetArguments()[1]!;
         ((int)dynamicParams.MaxAttempts).Should().Be(ReconciliationService.MaxAttempts);

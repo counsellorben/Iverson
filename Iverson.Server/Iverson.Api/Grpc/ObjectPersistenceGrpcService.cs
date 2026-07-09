@@ -18,7 +18,8 @@ namespace Iverson.Api.Grpc;
 /// </summary>
 public sealed class ObjectPersistenceGrpcService(
     IEventProducer events,
-    IPostgresRepository sql,
+    IPostgresQueryExecutor sql,
+    IPostgresTransactionRunner txRunner,
     SchemaRegistry registry,
     ILogger<ObjectPersistenceGrpcService> logger)
     : ObjectPersistenceService.ObjectPersistenceServiceBase
@@ -338,7 +339,7 @@ public sealed class ObjectPersistenceGrpcService(
 
         var outboxRowId = Guid.CreateVersion7();
 
-        await sql.ExecuteInTransactionAsync(async tx =>
+        await txRunner.ExecuteInTransactionAsync(async tx =>
         {
             await tx.ExecuteAsync(upsertSql, new { Json = payloadJson });
             await tx.ExecuteAsync(outboxSql, new

@@ -18,7 +18,7 @@ internal sealed record ReconciliationQueueRow(
 /// </summary>
 internal sealed class ReconciliationService(
     SchemaRegistry registry,
-    IPostgresRepository db,
+    IPostgresQueryExecutor db,
     IEventProducer events,
     ILogger<ReconciliationService> logger)
 {

@@ -12,7 +12,7 @@ public sealed class PostgresRepositoryTests
     [Fact]
     public async Task QueryAsync_ReturnsExpectedResults()
     {
-        var repo = Substitute.For<IPostgresRepository>();
+        var repo = Substitute.For<IPostgresQueryExecutor>();
         var expected = new[] { new { Id = 1, Name = "Allen" } };
         repo.QueryAsync<object>(Arg.Any<string>(), Arg.Any<object?>())
             .Returns(expected);
@@ -25,7 +25,7 @@ public sealed class PostgresRepositoryTests
     [Fact]
     public async Task ExecuteAsync_ReturnsRowCount()
     {
-        var repo = Substitute.For<IPostgresRepository>();
+        var repo = Substitute.For<IPostgresQueryExecutor>();
         repo.ExecuteAsync(Arg.Any<string>(), Arg.Any<object?>()).Returns(3);
 
         var result = await repo.ExecuteAsync("UPDATE players SET active = true");
@@ -36,7 +36,7 @@ public sealed class PostgresRepositoryTests
     [Fact]
     public async Task QuerySingleOrDefaultAsync_ReturnsNull_WhenNotFound()
     {
-        var repo = Substitute.For<IPostgresRepository>();
+        var repo = Substitute.For<IPostgresQueryExecutor>();
         repo.QuerySingleOrDefaultAsync<object>(Arg.Any<string>(), Arg.Any<object?>())
             .ReturnsNull();
 
@@ -48,7 +48,7 @@ public sealed class PostgresRepositoryTests
     [Fact]
     public async Task ApplySchemaAsync_IsCalledWithCorrectTableName()
     {
-        var repo = Substitute.For<IPostgresRepository>();
+        var repo = Substitute.For<IPostgresSchemaManager>();
         var schema = new TableSchema(
             "players",
             new ColumnSchema("id", "uuid", IsNullable: false),
@@ -84,6 +84,14 @@ public sealed class PostgresRepositoryTests
 
         nullable.IsNullable.Should().BeTrue();
         notNullable.IsNullable.Should().BeFalse();
+    }
+
+    [Fact]
+    public void PostgresRepository_ImplementsAllThreeRoleInterfaces()
+    {
+        typeof(PostgresRepository).Should().Implement<IPostgresQueryExecutor>();
+        typeof(PostgresRepository).Should().Implement<IPostgresSchemaManager>();
+        typeof(PostgresRepository).Should().Implement<IPostgresTransactionRunner>();
     }
 
 }

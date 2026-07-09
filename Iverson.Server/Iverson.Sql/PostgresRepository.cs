@@ -7,7 +7,7 @@ namespace Iverson.Sql;
 
 public class PostgresRepository(
     string connectionString,
-    ILogger<PostgresRepository> logger) : IPostgresRepository
+    ILogger<PostgresRepository> logger) : IPostgresQueryExecutor, IPostgresSchemaManager, IPostgresTransactionRunner
 {
     private NpgsqlConnection CreateConnection() => new(connectionString);
 

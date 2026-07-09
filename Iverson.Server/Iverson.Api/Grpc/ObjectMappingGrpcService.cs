@@ -21,7 +21,9 @@ namespace Iverson.Api.Grpc;
 /// the server's entity schema — the client is ignorant of this mapping.
 /// </summary>
 public sealed class ObjectMappingGrpcService(
-    IPostgresRepository _sql,
+    IPostgresQueryExecutor _sql,
+    IPostgresTransactionRunner _txRunner,
+    IPostgresSchemaManager _schemaManager,
     IVectorService _vector,
     IEventProducer _events,
     SchemaRegistry _registry,
@@ -50,7 +52,7 @@ public sealed class ObjectMappingGrpcService(
         {
             var descriptor = SchemaBuilder.BuildDescriptor(typeDesc, _embedding);
 
-            await _sql.ApplySchemaAsync(SchemaBuilder.ToTableSchema(descriptor));
+            await _schemaManager.ApplySchemaAsync(SchemaBuilder.ToTableSchema(descriptor));
 
             try
             {
@@ -247,7 +249,7 @@ public sealed class ObjectMappingGrpcService(
         var targetStores = StoreTargeting.DetermineTargetStores(schema);
         var outboxRowId  = Guid.CreateVersion7();
 
-        await _sql.ExecuteInTransactionAsync(async tx =>
+        await _txRunner.ExecuteInTransactionAsync(async tx =>
         {
             await tx.ExecuteAsync(
                 $"DELETE FROM \"{schema.TableName}\" WHERE \"{schema.KeyColumn.Name}\" = @Key::uuid",
@@ -601,7 +603,7 @@ public sealed class ObjectMappingGrpcService(
 
         var outboxRowId = Guid.CreateVersion7();
 
-        await _sql.ExecuteInTransactionAsync(async tx =>
+        await _txRunner.ExecuteInTransactionAsync(async tx =>
         {
             await tx.ExecuteAsync(upsertSql, new { Json = payloadJson });
             await tx.ExecuteAsync(outboxSql, new

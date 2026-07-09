@@ -18,7 +18,8 @@ namespace Iverson.Api.Tests.Grpc;
 public class ObjectPersistenceGrpcServiceTests
 {
     private readonly IEventProducer _events;
-    private readonly IPostgresRepository _sql;
+    private readonly IPostgresQueryExecutor _sql;
+    private readonly IPostgresTransactionRunner _txRunner;
     private readonly SchemaRegistry _registry;
     private readonly ObjectPersistenceGrpcService _sut;
 
@@ -26,11 +27,15 @@ public class ObjectPersistenceGrpcServiceTests
     {
         _events = Substitute.For<IEventProducer>();
 
-        _sql = Substitute.For<IPostgresRepository>();
+        _sql = Substitute.For<IPostgresQueryExecutor>();
         _sql.ExecuteAsync(Arg.Any<string>(), Arg.Any<object?>()).Returns(0);
 
+        _txRunner = Substitute.For<IPostgresTransactionRunner>();
+        _txRunner.ExecuteInTransactionAsync(Arg.Any<Func<IDbTransactionContext, Task>>())
+            .Returns(ci => ci.Arg<Func<IDbTransactionContext, Task>>()(Substitute.For<IDbTransactionContext>()));
+
         _registry = new SchemaRegistry(_sql, NullLogger<SchemaRegistry>.Instance);
-        _sut = new ObjectPersistenceGrpcService(_events, _sql, _registry, NullLogger<ObjectPersistenceGrpcService>.Instance);
+        _sut = new ObjectPersistenceGrpcService(_events, _sql, _txRunner, _registry, NullLogger<ObjectPersistenceGrpcService>.Instance);
     }
 
     private static Struct MakePayload(Dictionary<string, Value> fields)
@@ -61,7 +66,7 @@ public class ObjectPersistenceGrpcServiceTests
         var fakeTx = Substitute.For<IDbTransactionContext>();
         fakeTx.ExecuteAsync(Arg.Do<string>(sql => executedSql.Add(sql)), Arg.Any<object?>()).Returns(0);
 
-        _sql.ExecuteInTransactionAsync(Arg.Any<Func<IDbTransactionContext, Task>>())
+        _txRunner.ExecuteInTransactionAsync(Arg.Any<Func<IDbTransactionContext, Task>>())
             .Returns(call => call.Arg<Func<IDbTransactionContext, Task>>()(fakeTx));
 
         return executedSql;
@@ -116,7 +121,7 @@ public class ObjectPersistenceGrpcServiceTests
         await _registry.RegisterAsync(SchemaFixtures.ArticleSchema());
 
         var capturedWork = default(Func<IDbTransactionContext, Task>);
-        _sql.ExecuteInTransactionAsync(Arg.Do<Func<IDbTransactionContext, Task>>(w => capturedWork = w))
+        _txRunner.ExecuteInTransactionAsync(Arg.Do<Func<IDbTransactionContext, Task>>(w => capturedWork = w))
             .Returns(Task.CompletedTask);
 
         var request = new PersistRequest { TypeName = "Article", Payload = new Struct() };

@@ -733,7 +733,7 @@ public class StarRocksQueryBuilderTests
 
     private static SchemaRegistry BuildRegistry(params SchemaDescriptor[] schemas)
     {
-        var sql = Substitute.For<IPostgresRepository>();
+        var sql = Substitute.For<IPostgresQueryExecutor>();
         sql.ExecuteAsync(Arg.Any<string>(), Arg.Any<object?>()).Returns(0);
         var registry = new SchemaRegistry(sql, NullLogger<SchemaRegistry>.Instance);
         foreach (var schema in schemas)

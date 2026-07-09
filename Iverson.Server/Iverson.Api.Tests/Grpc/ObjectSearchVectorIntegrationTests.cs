@@ -49,7 +49,7 @@ public sealed class ObjectSearchVectorIntegrationTests : IClassFixture<QdrantGrp
     public ObjectSearchVectorIntegrationTests(QdrantGrpcContainerFixture fx)
     {
         _vector = fx.Service;
-        var sql = Substitute.For<IPostgresRepository>();
+        var sql = Substitute.For<IPostgresQueryExecutor>();
         sql.ExecuteAsync(Arg.Any<string>(), Arg.Any<object?>()).Returns(0);
         _registry = new SchemaRegistry(sql, NullLogger<SchemaRegistry>.Instance);
     }

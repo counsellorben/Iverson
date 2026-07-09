@@ -20,7 +20,7 @@ public class IntelligenceStoreConsumerTests
     private readonly IEventConsumer _consumer;
     private readonly IVectorService _vector;
     private readonly IEmbeddingService _embedding;
-    private readonly IPostgresRepository _sql;
+    private readonly IPostgresQueryExecutor _sql;
     private readonly SchemaRegistry _registry;
 
     private static readonly JsonSerializerOptions JsonOptions = new()
@@ -34,7 +34,7 @@ public class IntelligenceStoreConsumerTests
         _consumer  = Substitute.For<IEventConsumer>();
         _vector    = Substitute.For<IVectorService>();
         _embedding = Substitute.For<IEmbeddingService>();
-        _sql       = Substitute.For<IPostgresRepository>();
+        _sql       = Substitute.For<IPostgresQueryExecutor>();
 
         _sql.ExecuteAsync(Arg.Any<string>(), Arg.Any<object?>()).Returns(0);
         _vector.ApplyCollectionAsync(Arg.Any<CollectionSchema>()).Returns(Task.CompletedTask);

@@ -7,7 +7,7 @@ namespace Iverson.Api.Reconciliation;
 
 internal sealed class DlqMonitorConsumer(
     IEventConsumer consumer,
-    IPostgresRepository sql,
+    IPostgresQueryExecutor sql,
     ILogger<DlqMonitorConsumer> logger) : BackgroundService
 {
     private const string GroupId = "iverson.consumer.dlq-monitor";
