@@ -239,6 +239,14 @@ public sealed class GroupByBuilderTests
     }
 
     [Fact]
+    public void Build_DuplicateKeys_ThrowsWithDuplicateKeyMessage()
+    {
+        var builder = Query.GroupBy("Article").Keys("Category", "Category").CountAll("n");
+        var act = () => builder.Build();
+        act.Should().Throw<InvalidOperationException>().WithMessage("*Duplicate key*Category*");
+    }
+
+    [Fact]
     public void Build_HavingReferencesMetricAlias_CaseInsensitive_IsAllowed()
     {
         var act = () => Query.GroupBy("Article")
