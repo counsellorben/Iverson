@@ -449,7 +449,7 @@ public static class StarRocksQueryBuilder
 
     /// <summary>
     /// Builds a FROM clause with zero or more JOINs from a list of <see cref="JoinSpec"/>s,
-    /// resolving each side's type against the <see cref="Func<string, StarRocksQuerySchema?>"/>. Always populates
+    /// resolving each side's type against the <see cref="Func{T, TResult}"/> registry lookup. Always populates
     /// <paramref name="tableMap"/> with at least the primary table (keyed by
     /// <paramref name="primarySchema"/>'s <c>TypeName</c>), plus every joined type name, each
     /// mapped to its resolved <see cref="JoinContext"/> so callers can later qualify columns
