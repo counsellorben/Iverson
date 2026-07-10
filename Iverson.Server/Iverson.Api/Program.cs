@@ -98,6 +98,9 @@ builder.Services.AddQdrant(
 builder.Services.AddKafka(cfg);
 
 builder.Services.AddSingleton<SchemaRegistry>();
+builder.Services.AddSingleton<IRelationValidator, RelationValidator>();
+builder.Services.AddSingleton<IEntityKeyAccessor, EntityKeyAccessor>();
+builder.Services.AddSingleton<IOutboxWriter, OutboxWriter>();
 builder.Services.AddSingleton<Iverson.Api.Reconciliation.ReconciliationService>();
 
 builder.Services.AddEmbeddings(cfg);

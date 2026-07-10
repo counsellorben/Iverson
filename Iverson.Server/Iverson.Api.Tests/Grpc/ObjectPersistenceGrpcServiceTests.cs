@@ -35,7 +35,10 @@ public class ObjectPersistenceGrpcServiceTests
             .Returns(ci => ci.Arg<Func<IDbTransactionContext, Task>>()(Substitute.For<IDbTransactionContext>()));
 
         _registry = new SchemaRegistry(_sql, NullLogger<SchemaRegistry>.Instance);
-        _sut = new ObjectPersistenceGrpcService(_events, _sql, _txRunner, _registry, NullLogger<ObjectPersistenceGrpcService>.Instance);
+        _sut = new ObjectPersistenceGrpcService(
+            _events, _sql, _txRunner, _registry,
+            new RelationValidator(_registry), new EntityKeyAccessor(), new OutboxWriter(_sql, _txRunner),
+            NullLogger<ObjectPersistenceGrpcService>.Instance);
     }
 
     private static Struct MakePayload(Dictionary<string, Value> fields)

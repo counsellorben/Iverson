@@ -60,6 +60,7 @@ public class ObjectMappingGrpcServiceTests
         _registry = new SchemaRegistry(_sql, NullLogger<SchemaRegistry>.Instance);
         _sut = new ObjectMappingGrpcService(
             _sql, _txRunner, _schemaManager, _vector, _events, _registry, _embedding, _starRocks,
+            new RelationValidator(_registry), new EntityKeyAccessor(), new OutboxWriter(_sql, _txRunner),
             NullLogger<ObjectMappingGrpcService>.Instance);
     }
 
