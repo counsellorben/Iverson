@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Text.Json;
+using Iverson.Api;
 using Iverson.Api.Consumers;
 using Iverson.Api.Grpc;
 using Iverson.Api.Schema;
@@ -172,17 +173,10 @@ app.MapGet("/health", async (
         kafka     = kafkaTask.Result
     };
 
-    // StarRocks "auth pending" is expected during a fresh install: the create-user post-install
-    // hook can only run after --wait succeeds on this very readiness probe, so failing readiness
-    // on AuthPending would deadlock every first install forever. It's still reported unhealthy
-    // in the body (checks.starrocks stays false) for real observability — only the k8s-facing
-    // readiness verdict (the HTTP status code) tolerates it.
-    var readinessHealthy = checks.postgres && checks.qdrant && checks.kafka
-        && srStatus != StarRocksHealthStatus.Unhealthy;
-    var fullyHealthy = readinessHealthy && checks.starrocks;
+    var readiness = ReadinessPolicy.Evaluate(checks.postgres, srStatus, checks.qdrant, checks.kafka);
 
-    return readinessHealthy
-        ? Results.Ok(new { status = fullyHealthy ? "healthy" : "degraded", checks })
+    return readiness.Ready
+        ? Results.Ok(new { status = readiness.FullyHealthy ? "healthy" : "degraded", checks })
         : Results.Json(new { status = "degraded", checks }, statusCode: 503);
 })
 .WithName("Health");
