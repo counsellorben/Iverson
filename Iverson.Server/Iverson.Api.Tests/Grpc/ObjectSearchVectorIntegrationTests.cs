@@ -61,7 +61,7 @@ public sealed class ObjectSearchVectorIntegrationTests : IClassFixture<QdrantGrp
     private static string UniqueName() => "art_" + Guid.NewGuid().ToString("N")[..8];
 
     private ObjectSearchGrpcService BuildSut() =>
-        new(_registry, Substitute.For<IEngagementStoreQueryExecutor>(), _vector, _embedding,
+        new(_registry, Substitute.For<IEngagementStoreSearchService>(), _vector, _embedding,
             NullLogger<ObjectSearchGrpcService>.Instance);
 
     private static (IServerStreamWriter<T> writer, List<T> written) MakeStream<T>()

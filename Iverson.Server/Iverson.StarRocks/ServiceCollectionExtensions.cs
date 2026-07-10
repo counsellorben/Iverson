@@ -17,6 +17,7 @@ public static class ServiceCollectionExtensions
         });
         services.AddSingleton<IEngagementStoreQueryExecutor>(sp => sp.GetRequiredService<StarRocksRepository>());
         services.AddSingleton<IEngagementStoreEntityStore>(sp => sp.GetRequiredService<StarRocksRepository>());
+        services.AddSingleton<IEngagementStoreSearchService>(sp => sp.GetRequiredService<StarRocksRepository>());
 
         services.AddSingleton(sp =>
         {

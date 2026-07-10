@@ -1,4 +1,3 @@
-using Dapper;
 using Google.Protobuf.WellKnownTypes;
 using Grpc.Core;
 using Iverson.Api.Schema;
@@ -27,7 +26,7 @@ namespace Iverson.Api.Grpc;
 /// </summary>
 public sealed class ObjectSearchGrpcService(
     SchemaRegistry registry,
-    IEngagementStoreQueryExecutor sr,
+    IEngagementStoreSearchService search,
     IVectorQueryService vector,
     IEmbeddingService embedding,
     ILogger<ObjectSearchGrpcService> logger)
@@ -46,12 +45,18 @@ public sealed class ObjectSearchGrpcService(
             logger.LogInformation("[Search] type={Type} clauses={Clauses} page={Page}/{Size}",
                 request.TypeName, request.Query?.Clauses.Count ?? 0, request.Page, request.PageSize);
 
-        var (sql, param) = BuildSearchSql(schema, request);
-
         IEnumerable<dynamic> rows;
         try
         {
-            rows = await sr.QueryAsync<dynamic>(sql, param);
+            rows = await search.SearchAsync(
+                SchemaBuilder.ToStarRocksQuerySchema(schema), request.Query, request.Page, request.PageSize,
+                fields: request.Fields.Count > 0 ? request.Fields : null,
+                joins: request.Joins,
+                registry: t => registry.Get(t) is { } d ? SchemaBuilder.ToStarRocksQuerySchema(d) : null);
+        }
+        catch (StarRocksQueryTranslationException ex)
+        {
+            throw new RpcException(new Status(StatusCode.InvalidArgument, ex.Message));
         }
         catch (StarRocksNotReadyException ex)
         {
@@ -242,56 +247,19 @@ public sealed class ObjectSearchGrpcService(
         SchemaDescriptor schema, SearchQuery? query, SrAggSpec spec, SearchQuery? having = null,
         IReadOnlyList<JoinSpec>? joins = null)
     {
-        if (spec.GroupByFields is { Count: > 1 })
-            throw new RpcException(new Status(StatusCode.InvalidArgument,
-                "Multi-key GROUP BY (group_by_fields with more than one entry) is not yet supported via the Aggregate RPC's result decoding; use a single field or wait for the GroupByRequest RPC."));
-
-        (string sql, DynamicParameters param) result;
         try
         {
-            result = StarRocksQueryBuilder.BuildAggregate(
-                schema.TableName, SchemaBuilder.ToStarRocksQuerySchema(schema), query, spec, having, joins,
+            return await search.AggregateAsync(
+                SchemaBuilder.ToStarRocksQuerySchema(schema), query, spec, having, joins,
                 t => registry.Get(t) is { } d ? SchemaBuilder.ToStarRocksQuerySchema(d) : null);
         }
         catch (StarRocksQueryTranslationException ex)
         {
             throw new RpcException(new Status(StatusCode.InvalidArgument, ex.Message));
         }
-
-        List<dynamic> rows;
-        try
-        {
-            rows = (await sr.QueryAsync<dynamic>(result.sql, result.param)).ToList();
-        }
         catch (StarRocksNotReadyException ex)
         {
             throw new RpcException(new Status(StatusCode.Unavailable, $"StarRocks is not ready: {ex.Message}"));
-        }
-
-        switch (spec.Kind)
-        {
-            case SrAggKind.Terms:
-            case SrAggKind.DateHistogram:
-            case SrAggKind.Range:
-            {
-                var buckets = rows
-                    .Select(r => (IDictionary<string, object>)r)
-                    .Where(r => r.TryGetValue("bucket_key", out var k) && k is not null)
-                    .Select(r => new SrAggBucket(
-                        r["bucket_key"]?.ToString() ?? string.Empty,
-                        Convert.ToInt64(r["doc_count"])))
-                    .ToList();
-                return new SrAggResult(spec.Name, spec.Kind, Buckets: buckets);
-            }
-
-            default:
-            {
-                if (rows.Count == 0) return new SrAggResult(spec.Name, spec.Kind, MetricValue: null);
-                var row0 = (IDictionary<string, object>)rows[0];
-                row0.TryGetValue("metric_val", out var val);
-                return new SrAggResult(spec.Name, spec.Kind,
-                    MetricValue: val is null ? null : Convert.ToDouble(val));
-            }
         }
     }
 
@@ -308,22 +276,16 @@ public sealed class ObjectSearchGrpcService(
             logger.LogInformation("[GroupBy] type={Type} keys={Keys} metrics={Metrics}",
                 request.TypeName, request.Keys.Count, request.Metrics.Count);
 
-        (string sql, DynamicParameters param) built;
+        IEnumerable<dynamic> rows;
         try
         {
-            built = StarRocksQueryBuilder.BuildGroupBy(
-                schema.TableName, SchemaBuilder.ToStarRocksQuerySchema(schema), request,
+            rows = await search.GroupByAsync(
+                SchemaBuilder.ToStarRocksQuerySchema(schema), request,
                 t => registry.Get(t) is { } d ? SchemaBuilder.ToStarRocksQuerySchema(d) : null);
         }
         catch (StarRocksQueryTranslationException ex)
         {
             throw new RpcException(new Status(StatusCode.InvalidArgument, ex.Message));
-        }
-
-        IEnumerable<dynamic> rows;
-        try
-        {
-            rows = await sr.QueryAsync<dynamic>(built.sql, built.param);
         }
         catch (StarRocksNotReadyException ex)
         {
@@ -357,22 +319,16 @@ public sealed class ObjectSearchGrpcService(
             logger.LogInformation("[Pipeline] type={Type} steps={Steps}",
                 request.TypeName, request.Steps.Count);
 
-        (string sql, DynamicParameters param) built;
+        IEnumerable<dynamic> rows;
         try
         {
-            built = StarRocksPipelineBuilder.Build(
+            rows = await search.PipelineAsync(
                 SchemaBuilder.ToStarRocksQuerySchema(schema), request,
                 t => registry.Get(t) is { } d ? SchemaBuilder.ToStarRocksQuerySchema(d) : null);
         }
         catch (StarRocksQueryTranslationException ex)
         {
             throw new RpcException(new Status(StatusCode.InvalidArgument, ex.Message));
-        }
-
-        IEnumerable<dynamic> rows;
-        try
-        {
-            rows = await sr.QueryAsync<dynamic>(built.sql, built.param);
         }
         catch (StarRocksNotReadyException ex)
         {
@@ -406,23 +362,6 @@ public sealed class ObjectSearchGrpcService(
         if (!known)
             throw new RpcException(new Status(StatusCode.InvalidArgument,
                 $"{rpcName}: filter property '{property}' is not a scalar or foreign-key column on '{schema.TypeName}'."));
-    }
-
-    private (string Sql, DynamicParameters Param) BuildSearchSql(SchemaDescriptor schema, SearchRequest request)
-    {
-        try
-        {
-            return StarRocksQueryBuilder.BuildSearch(
-                schema.TableName, SchemaBuilder.ToStarRocksQuerySchema(schema), request.Query,
-                request.Page, request.PageSize,
-                fields: request.Fields.Count > 0 ? request.Fields : null,
-                joins: request.Joins,
-                registry: t => registry.Get(t) is { } d ? SchemaBuilder.ToStarRocksQuerySchema(d) : null);
-        }
-        catch (StarRocksQueryTranslationException ex)
-        {
-            throw new RpcException(new Status(StatusCode.InvalidArgument, ex.Message));
-        }
     }
 
     private static Filter? BuildChunksFilter(SchemaDescriptor schema, SearchChunksRequest request)

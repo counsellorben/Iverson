@@ -11,7 +11,9 @@ using Iverson.Vector;
 using Microsoft.Extensions.Logging.Abstractions;
 using NSubstitute;
 using Xunit;
-using Filter = Qdrant.Client.Grpc.Filter;
+using Filter        = Qdrant.Client.Grpc.Filter;
+using SrAggResult   = Iverson.StarRocks.AggregationResult;
+using SrAggBucket   = Iverson.StarRocks.AggregationBucket;
 
 namespace Iverson.Api.Tests.Grpc;
 
@@ -19,7 +21,7 @@ public class ObjectSearchGrpcServiceTests
 {
     private readonly IRecordStoreQueryExecutor _sql;
     private readonly SchemaRegistry _registry;
-    private readonly IEngagementStoreQueryExecutor _sr;
+    private readonly IEngagementStoreSearchService _search;
     private readonly IVectorQueryService _vector;
     private readonly IEmbeddingService _embedding;
     private readonly ObjectSearchGrpcService _sut;
@@ -29,15 +31,29 @@ public class ObjectSearchGrpcServiceTests
         _sql = Substitute.For<IRecordStoreQueryExecutor>();
         _sql.ExecuteAsync(Arg.Any<string>(), Arg.Any<object?>()).Returns(0);
         _registry  = new SchemaRegistry(_sql, NullLogger<SchemaRegistry>.Instance);
-        _sr        = Substitute.For<IEngagementStoreQueryExecutor>();
+        _search    = Substitute.For<IEngagementStoreSearchService>();
         _vector    = Substitute.For<IVectorQueryService>();
         _embedding = Substitute.For<IEmbeddingService>();
 
-        _sr.QueryAsync<dynamic>(Arg.Any<string>(), Arg.Any<object?>())
-           .Returns(Enumerable.Empty<dynamic>());
+        _search.SearchAsync(
+                Arg.Any<StarRocksQuerySchema>(), Arg.Any<SearchQuery?>(), Arg.Any<int>(), Arg.Any<int>(),
+                Arg.Any<IReadOnlyList<string>?>(), Arg.Any<IReadOnlyList<JoinSpec>?>(),
+                Arg.Any<Func<string, StarRocksQuerySchema?>?>())
+            .Returns(Enumerable.Empty<dynamic>());
+        _search.AggregateAsync(
+                Arg.Any<StarRocksQuerySchema>(), Arg.Any<SearchQuery?>(), Arg.Any<AggregationDescriptor>(),
+                Arg.Any<SearchQuery?>(), Arg.Any<IReadOnlyList<JoinSpec>?>(),
+                Arg.Any<Func<string, StarRocksQuerySchema?>?>())
+            .Returns((SrAggResult?)null);
+        _search.GroupByAsync(
+                Arg.Any<StarRocksQuerySchema>(), Arg.Any<GroupByRequest>(), Arg.Any<Func<string, StarRocksQuerySchema?>>())
+            .Returns(Enumerable.Empty<dynamic>());
+        _search.PipelineAsync(
+                Arg.Any<StarRocksQuerySchema>(), Arg.Any<PipelineRequest>(), Arg.Any<Func<string, StarRocksQuerySchema?>>())
+            .Returns(Enumerable.Empty<dynamic>());
 
         _sut = new ObjectSearchGrpcService(
-            _registry, _sr, _vector, _embedding,
+            _registry, _search, _vector, _embedding,
             NullLogger<ObjectSearchGrpcService>.Instance);
     }
 
@@ -64,44 +80,64 @@ public class ObjectSearchGrpcServiceTests
     }
 
     [Fact]
-    public async Task Search_CallsStarRocksQueryAsync_AndStreamsResults()
+    public async Task Search_CallsSearchService_AndStreamsResults()
     {
         await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
 
         var fakeRow = new Dictionary<string, object> { ["Name"] = "Alice" };
-        _sr.QueryAsync<dynamic>(Arg.Any<string>(), Arg.Any<object?>())
-           .Returns(new[] { (dynamic)fakeRow }.AsEnumerable());
+        _search.SearchAsync(
+                Arg.Any<StarRocksQuerySchema>(), Arg.Any<SearchQuery?>(), Arg.Any<int>(), Arg.Any<int>(),
+                Arg.Any<IReadOnlyList<string>?>(), Arg.Any<IReadOnlyList<JoinSpec>?>(),
+                Arg.Any<Func<string, StarRocksQuerySchema?>?>())
+            .Returns(new[] { (dynamic)fakeRow }.AsEnumerable());
 
         var (writer, written) = MakeStream<SearchResponse>();
         await _sut.Search(new SearchRequest { TypeName = "Author" }, writer, TestServerCallContext.Create());
 
         written.Should().HaveCount(1);
-        await _sr.Received(1).QueryAsync<dynamic>(Arg.Any<string>(), Arg.Any<object?>());
+        await _search.Received(1).SearchAsync(
+            Arg.Any<StarRocksQuerySchema>(), Arg.Any<SearchQuery?>(), Arg.Any<int>(), Arg.Any<int>(),
+            Arg.Any<IReadOnlyList<string>?>(), Arg.Any<IReadOnlyList<JoinSpec>?>(),
+            Arg.Any<Func<string, StarRocksQuerySchema?>?>());
     }
 
     [Fact]
-    public async Task Search_SqlContainsTableName()
+    public async Task Search_PassesCorrectTableSchema_ToSearchService()
     {
+        // SQL generation itself is now StarRocksQueryBuilder's concern (covered by
+        // StarRocksQueryBuilderTests in Iverson.StarRocks.Tests). This test verifies
+        // ObjectSearchGrpcService converts the registered SchemaDescriptor to a
+        // StarRocksQuerySchema targeting the right table before delegating.
         await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
 
-        string? capturedSql = null;
-        _sr.QueryAsync<dynamic>(Arg.Do<string>(s => capturedSql = s), Arg.Any<object?>())
-           .Returns(Enumerable.Empty<dynamic>());
+        StarRocksQuerySchema? capturedSchema = null;
+        _search.SearchAsync(
+                Arg.Do<StarRocksQuerySchema>(s => capturedSchema = s), Arg.Any<SearchQuery?>(), Arg.Any<int>(),
+                Arg.Any<int>(), Arg.Any<IReadOnlyList<string>?>(), Arg.Any<IReadOnlyList<JoinSpec>?>(),
+                Arg.Any<Func<string, StarRocksQuerySchema?>?>())
+            .Returns(Enumerable.Empty<dynamic>());
 
         var (writer, _) = MakeStream<SearchResponse>();
         await _sut.Search(new SearchRequest { TypeName = "Author" }, writer, TestServerCallContext.Create());
 
-        capturedSql.Should().Contain("authors");
+        capturedSchema.Should().NotBeNull();
+        capturedSchema!.TableName.Should().Be("authors");
     }
 
     [Fact]
-    public async Task Search_ContainsClause_ProducesLikeSql()
+    public async Task Search_ContainsClause_IsPassedThroughToSearchService()
     {
+        // CONTAINS -> LIKE translation is StarRocksQueryBuilder's concern (covered by
+        // StarRocksQueryBuilderTests). This test verifies the clause reaches the search
+        // service unmodified.
         await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
 
-        string? capturedSql = null;
-        _sr.QueryAsync<dynamic>(Arg.Do<string>(s => capturedSql = s), Arg.Any<object?>())
-           .Returns(Enumerable.Empty<dynamic>());
+        SearchQuery? capturedQuery = null;
+        _search.SearchAsync(
+                Arg.Any<StarRocksQuerySchema>(), Arg.Do<SearchQuery?>(q => capturedQuery = q), Arg.Any<int>(),
+                Arg.Any<int>(), Arg.Any<IReadOnlyList<string>?>(), Arg.Any<IReadOnlyList<JoinSpec>?>(),
+                Arg.Any<Func<string, StarRocksQuerySchema?>?>())
+            .Returns(Enumerable.Empty<dynamic>());
 
         var request = new SearchRequest { TypeName = "Author", Query = new SearchQuery() };
         request.Query.Clauses.Add(new SearchClause
@@ -115,7 +151,9 @@ public class ObjectSearchGrpcServiceTests
         var (writer, _) = MakeStream<SearchResponse>();
         await _sut.Search(request, writer, TestServerCallContext.Create());
 
-        capturedSql.Should().Contain("LIKE");
+        capturedQuery.Should().NotBeNull();
+        capturedQuery!.Clauses.Should().ContainSingle(c =>
+            c.Property == "Name" && c.Operator == SearchOperator.Contains);
     }
 
     // ── Aggregate ─────────────────────────────────────────────────────────────
@@ -142,9 +180,21 @@ public class ObjectSearchGrpcServiceTests
     }
 
     [Fact]
-    public async Task Aggregate_ThrowsRpcException_WhenGroupByFieldsHasMultipleEntries()
+    public async Task Aggregate_TranslatesStarRocksQueryTranslationException_ToInvalidArgument()
     {
+        // The multi-key-GROUP-BY guard now lives in StarRocksRepository.AggregateAsync
+        // (covered by StarRocksRepositorySearchTests). This test verifies
+        // ObjectSearchGrpcService still correctly translates a
+        // StarRocksQueryTranslationException raised by the search service into an
+        // InvalidArgument RpcException.
         await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
+
+        _search.AggregateAsync(
+                Arg.Any<StarRocksQuerySchema>(), Arg.Any<SearchQuery?>(), Arg.Any<AggregationDescriptor>(),
+                Arg.Any<SearchQuery?>(), Arg.Any<IReadOnlyList<JoinSpec>?>(),
+                Arg.Any<Func<string, StarRocksQuerySchema?>?>())
+            .Returns<Task<SrAggResult?>>(_ => throw new StarRocksQueryTranslationException(
+                "Multi-key GROUP BY (group_by_fields with more than one entry) is not yet supported"));
 
         var request = new AggregateRequest { TypeName = "Author" };
         request.Aggregations.Add(new AggregationSpec
@@ -162,12 +212,18 @@ public class ObjectSearchGrpcServiceTests
     [Fact]
     public async Task Aggregate_Terms_ReturnsBuckets()
     {
+        // Row-shape-to-AggregationResult decoding now happens inside
+        // StarRocksRepository.AggregateAsync (covered by StarRocksRepositorySearchTests
+        // and Task 5's integration tests). This test mocks the search service to
+        // return the already-decoded AggregationResult directly.
         await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
 
-        var row1 = new Dictionary<string, object> { ["bucket_key"] = "Alice", ["doc_count"] = 10L };
-        var row2 = new Dictionary<string, object> { ["bucket_key"] = "Bob",   ["doc_count"] = 5L  };
-        _sr.QueryAsync<dynamic>(Arg.Any<string>(), Arg.Any<object?>())
-           .Returns(new[] { (dynamic)row1, (dynamic)row2 }.AsEnumerable());
+        _search.AggregateAsync(
+                Arg.Any<StarRocksQuerySchema>(), Arg.Any<SearchQuery?>(), Arg.Any<AggregationDescriptor>(),
+                Arg.Any<SearchQuery?>(), Arg.Any<IReadOnlyList<JoinSpec>?>(),
+                Arg.Any<Func<string, StarRocksQuerySchema?>?>())
+            .Returns(new SrAggResult("name_terms", AggregationKind.Terms,
+                Buckets: [new SrAggBucket("Alice", 10), new SrAggBucket("Bob", 5)]));
 
         var request = new AggregateRequest { TypeName = "Author" };
         request.Aggregations.Add(new AggregationSpec
@@ -189,9 +245,11 @@ public class ObjectSearchGrpcServiceTests
     {
         await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
 
-        var metricRow = new Dictionary<string, object> { ["metric_val"] = 42.5 };
-        _sr.QueryAsync<dynamic>(Arg.Any<string>(), Arg.Any<object?>())
-           .Returns(new[] { (dynamic)metricRow }.AsEnumerable());
+        _search.AggregateAsync(
+                Arg.Any<StarRocksQuerySchema>(), Arg.Any<SearchQuery?>(), Arg.Any<AggregationDescriptor>(),
+                Arg.Any<SearchQuery?>(), Arg.Any<IReadOnlyList<JoinSpec>?>(),
+                Arg.Any<Func<string, StarRocksQuerySchema?>?>())
+            .Returns(new SrAggResult("bio_avg", AggregationKind.Avg, MetricValue: 42.5));
 
         var request = new AggregateRequest { TypeName = "Author" };
         request.Aggregations.Add(new AggregationSpec
@@ -210,9 +268,12 @@ public class ObjectSearchGrpcServiceTests
     {
         await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
 
-        var row = new Dictionary<string, object> { ["bucket_key"] = "Alice", ["doc_count"] = 3L };
-        _sr.QueryAsync<dynamic>(Arg.Any<string>(), Arg.Any<object?>())
-           .Returns(new[] { (dynamic)row }.AsEnumerable());
+        _search.AggregateAsync(
+                Arg.Any<StarRocksQuerySchema>(), Arg.Any<SearchQuery?>(), Arg.Any<AggregationDescriptor>(),
+                Arg.Any<SearchQuery?>(), Arg.Any<IReadOnlyList<JoinSpec>?>(),
+                Arg.Any<Func<string, StarRocksQuerySchema?>?>())
+            .Returns(new SrAggResult("name_terms", AggregationKind.Terms,
+                Buckets: [new SrAggBucket("Alice", 3)]));
 
         var request = new AggregateRequest { TypeName = "Author" };
         request.Aggregations.Add(new AggregationSpec
@@ -227,13 +288,19 @@ public class ObjectSearchGrpcServiceTests
     }
 
     [Fact]
-    public async Task Aggregate_WithFilterQuery_PropagatesFilterIntoSql()
+    public async Task Aggregate_WithFilterQuery_PassesQueryToSearchService()
     {
+        // WHERE-clause SQL generation is StarRocksQueryBuilder's concern (covered by
+        // StarRocksQueryBuilderTests). This test verifies the filter query reaches the
+        // search service unmodified.
         await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
 
-        string? capturedSql = null;
-        _sr.QueryAsync<dynamic>(Arg.Do<string>(s => capturedSql = s), Arg.Any<object?>())
-           .Returns(Enumerable.Empty<dynamic>());
+        SearchQuery? capturedQuery = null;
+        _search.AggregateAsync(
+                Arg.Any<StarRocksQuerySchema>(), Arg.Do<SearchQuery?>(q => capturedQuery = q),
+                Arg.Any<AggregationDescriptor>(), Arg.Any<SearchQuery?>(), Arg.Any<IReadOnlyList<JoinSpec>?>(),
+                Arg.Any<Func<string, StarRocksQuerySchema?>?>())
+            .Returns((SrAggResult?)null);
 
         var query = new SearchQuery();
         query.Clauses.Add(new SearchClause
@@ -252,9 +319,9 @@ public class ObjectSearchGrpcServiceTests
 
         await _sut.Aggregate(request, TestServerCallContext.Create());
 
-        capturedSql.Should().NotBeNull();
-        capturedSql.Should().Contain("WHERE");
-        capturedSql.Should().Contain("`Name`");
+        capturedQuery.Should().NotBeNull();
+        capturedQuery!.Clauses.Should().ContainSingle(c =>
+            c.Property == "Name" && c.Operator == SearchOperator.Equals);
     }
 
     [Fact]
@@ -264,12 +331,16 @@ public class ObjectSearchGrpcServiceTests
 
         var callCount = 0;
 
-        _sr.QueryAsync<dynamic>(Arg.Any<string>(), Arg.Any<object?>())
-           .Returns(_ =>
-           {
-               System.Threading.Interlocked.Increment(ref callCount);
-               return Task.FromResult(Enumerable.Empty<dynamic>());
-           });
+        _search.AggregateAsync(
+                Arg.Any<StarRocksQuerySchema>(), Arg.Any<SearchQuery?>(), Arg.Any<AggregationDescriptor>(),
+                Arg.Any<SearchQuery?>(), Arg.Any<IReadOnlyList<JoinSpec>?>(),
+                Arg.Any<Func<string, StarRocksQuerySchema?>?>())
+            .Returns(_ =>
+            {
+                System.Threading.Interlocked.Increment(ref callCount);
+                return Task.FromResult<SrAggResult?>(
+                    new SrAggResult("agg", AggregationKind.Terms));
+            });
 
         var request = new AggregateRequest
         {
@@ -289,13 +360,19 @@ public class ObjectSearchGrpcServiceTests
     }
 
     [Fact]
-    public async Task Search_WithFieldsProjection_PassesFieldsToQueryBuilder()
+    public async Task Search_WithFieldsProjection_PassesFieldsToSearchService()
     {
+        // Column-list SQL generation is StarRocksQueryBuilder's concern (covered by
+        // StarRocksQueryBuilderTests). This test verifies the requested field
+        // projection reaches the search service unmodified.
         await _registry.RegisterAsync(SchemaFixtures.ArticleWithProjectionSchema());
 
-        string? capturedSql = null;
-        _sr.QueryAsync<dynamic>(Arg.Do<string>(sql => capturedSql = sql), Arg.Any<object?>())
-           .Returns(Enumerable.Empty<dynamic>());
+        IReadOnlyList<string>? capturedFields = null;
+        _search.SearchAsync(
+                Arg.Any<StarRocksQuerySchema>(), Arg.Any<SearchQuery?>(), Arg.Any<int>(), Arg.Any<int>(),
+                Arg.Do<IReadOnlyList<string>?>(f => capturedFields = f), Arg.Any<IReadOnlyList<JoinSpec>?>(),
+                Arg.Any<Func<string, StarRocksQuerySchema?>?>())
+            .Returns(Enumerable.Empty<dynamic>());
 
         var req = new SearchRequest
         {
@@ -308,11 +385,8 @@ public class ObjectSearchGrpcServiceTests
         var (writer, _) = MakeStream<SearchResponse>();
         await _sut.Search(req, writer, TestServerCallContext.Create());
 
-        capturedSql.Should().NotBeNull();
-        capturedSql!.Should().Contain("`Category`");
-        capturedSql!.Should().Contain("`PublishedAt`");
-        capturedSql!.Should().NotContain("`Body`");
-        capturedSql!.Should().Contain("`Id`");
+        capturedFields.Should().NotBeNull();
+        capturedFields!.Should().Contain(["Category", "PublishedAt"]);
     }
 
     // ── SearchSimilar / SearchChunks — Qdrant paths unchanged ─────────────────
@@ -649,14 +723,19 @@ public class ObjectSearchGrpcServiceTests
     }
 
     [Fact]
-    public async Task Pipeline_EmitsWithChain_AndStreamsRows()
+    public async Task Pipeline_PassesStepsToSearchService_AndStreamsRows()
     {
+        // CTE SQL generation is StarRocksPipelineBuilder's concern (covered by
+        // StarRocksPipelineBuilderTests). This test verifies the pipeline steps reach
+        // the search service unmodified and that returned rows are streamed correctly.
         await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
 
-        string? capturedSql = null;
+        PipelineRequest? capturedRequest = null;
         var fakeRow = new Dictionary<string, object> { ["Name"] = "Alice", ["n"] = 3L };
-        _sr.QueryAsync<dynamic>(Arg.Do<string>(s => capturedSql = s), Arg.Any<object?>())
-           .Returns(new[] { (dynamic)fakeRow }.AsEnumerable());
+        _search.PipelineAsync(
+                Arg.Any<StarRocksQuerySchema>(), Arg.Do<PipelineRequest>(r => capturedRequest = r),
+                Arg.Any<Func<string, StarRocksQuerySchema?>>())
+            .Returns(new[] { (dynamic)fakeRow }.AsEnumerable());
 
         var step = new PipelineStep { Name = "by_name" };
         step.GroupBy.Add(new GroupKey { Field = "Name" });
@@ -667,16 +746,21 @@ public class ObjectSearchGrpcServiceTests
         var (writer, written) = MakeStream<SearchResponse>();
         await _sut.Pipeline(request, writer, TestServerCallContext.Create());
 
-        capturedSql.Should().StartWith("WITH `base` AS");
-        capturedSql.Should().Contain("`by_name` AS");
+        capturedRequest.Should().NotBeNull();
+        capturedRequest!.Steps.Should().ContainSingle(s => s.Name == "by_name");
         written.Should().HaveCount(1);
         written[0].Data.Fields["Name"].StringValue.Should().Be("Alice");
     }
 
     [Fact]
-    public async Task Pipeline_InvalidStepReference_SurfacesInvalidArgument()
+    public async Task Pipeline_TranslatesStarRocksQueryTranslationException_ToInvalidArgument()
     {
         await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
+
+        _search.PipelineAsync(
+                Arg.Any<StarRocksQuerySchema>(), Arg.Any<PipelineRequest>(), Arg.Any<Func<string, StarRocksQuerySchema?>>())
+            .Returns<Task<IEnumerable<dynamic>>>(_ => throw new StarRocksQueryTranslationException(
+                "step 's' reads from unknown step 'nonexistent'"));
 
         var step = new PipelineStep { Name = "s", Reads = "nonexistent" };
         var request = new PipelineRequest { TypeName = "Author" };
@@ -693,8 +777,9 @@ public class ObjectSearchGrpcServiceTests
     public async Task Pipeline_StarRocksNotReady_ThrowsUnavailable()
     {
         await _registry.RegisterAsync(SchemaFixtures.ArticleWithProjectionSchema());
-        _sr.QueryAsync<dynamic>(Arg.Any<string>(), Arg.Any<object?>())
-           .Returns<Task<IEnumerable<dynamic>>>(_ => throw new StarRocksNotReadyException("warming up"));
+        _search.PipelineAsync(
+                Arg.Any<StarRocksQuerySchema>(), Arg.Any<PipelineRequest>(), Arg.Any<Func<string, StarRocksQuerySchema?>>())
+            .Returns<Task<IEnumerable<dynamic>>>(_ => throw new StarRocksNotReadyException("warming up"));
 
         var request = new PipelineRequest { TypeName = "Article" };
         var (writer, _) = MakeStream<SearchResponse>();
@@ -709,8 +794,9 @@ public class ObjectSearchGrpcServiceTests
     public async Task Pipeline_StreamsResults_PropagatesTraceId()
     {
         await _registry.RegisterAsync(SchemaFixtures.ArticleWithProjectionSchema());
-        _sr.QueryAsync<dynamic>(Arg.Any<string>(), Arg.Any<object?>())
-           .Returns(new List<dynamic> { new Dictionary<string, object?> { ["Title"] = "T" } });
+        _search.PipelineAsync(
+                Arg.Any<StarRocksQuerySchema>(), Arg.Any<PipelineRequest>(), Arg.Any<Func<string, StarRocksQuerySchema?>>())
+            .Returns(new List<dynamic> { new Dictionary<string, object?> { ["Title"] = "T" } });
 
         var request = new PipelineRequest { TypeName = "Article", TraceId = "trace-xyz" };
         var (writer, written) = MakeStream<SearchResponse>();

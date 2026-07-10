@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Text.Json;
 using Dapper;
+using Iverson.Client.Contracts;
 using Microsoft.Extensions.Logging;
 using MySqlConnector;
 using Polly;
@@ -12,7 +13,7 @@ public sealed class StarRocksRepository(
     string connectionString,
     ILogger<StarRocksRepository> logger,
     StarRocksResilienceOptions? resilienceOptions = null)
-    : IEngagementStoreQueryExecutor, IEngagementStoreEntityStore
+    : IEngagementStoreQueryExecutor, IEngagementStoreEntityStore, IEngagementStoreSearchService
 {
     private readonly StarRocksResilienceOptions _resilience = resilienceOptions ?? StarRocksResilienceOptions.Default;
 
@@ -142,6 +143,82 @@ public sealed class StarRocksRepository(
         ExecuteAsync(
             $"DELETE FROM `{tableName}` WHERE `{keyColumn}` = @key",
             new { key = keyValue });
+
+    public async Task<IEnumerable<dynamic>> SearchAsync(
+        StarRocksQuerySchema schema,
+        SearchQuery? query,
+        int page,
+        int pageSize,
+        IReadOnlyList<string>? fields = null,
+        IReadOnlyList<JoinSpec>? joins = null,
+        Func<string, StarRocksQuerySchema?>? registry = null)
+    {
+        var (sql, param) = StarRocksQueryBuilder.BuildSearch(
+            schema.TableName, schema, query, page, pageSize, fields, joins, registry);
+        return await QueryAsync<dynamic>(sql, param);
+    }
+
+    public async Task<AggregationResult?> AggregateAsync(
+        StarRocksQuerySchema schema,
+        SearchQuery? query,
+        AggregationDescriptor spec,
+        SearchQuery? having = null,
+        IReadOnlyList<JoinSpec>? joins = null,
+        Func<string, StarRocksQuerySchema?>? registry = null)
+    {
+        if (spec.GroupByFields is { Count: > 1 })
+            throw new StarRocksQueryTranslationException(
+                "Multi-key GROUP BY (group_by_fields with more than one entry) is not yet supported via the Aggregate RPC's result decoding; use a single field or wait for the GroupByRequest RPC.");
+
+        var (sql, param) = StarRocksQueryBuilder.BuildAggregate(
+            schema.TableName, schema, query, spec, having, joins, registry);
+
+        var rows = (await QueryAsync<dynamic>(sql, param)).ToList();
+
+        switch (spec.Kind)
+        {
+            case AggregationKind.Terms:
+            case AggregationKind.DateHistogram:
+            case AggregationKind.Range:
+            {
+                var buckets = rows
+                    .Select(r => (IDictionary<string, object>)r)
+                    .Where(r => r.TryGetValue("bucket_key", out var k) && k is not null)
+                    .Select(r => new AggregationBucket(
+                        r["bucket_key"]?.ToString() ?? string.Empty,
+                        Convert.ToInt64(r["doc_count"])))
+                    .ToList();
+                return new AggregationResult(spec.Name, spec.Kind, Buckets: buckets);
+            }
+
+            default:
+            {
+                if (rows.Count == 0) return new AggregationResult(spec.Name, spec.Kind, MetricValue: null);
+                var row0 = (IDictionary<string, object>)rows[0];
+                row0.TryGetValue("metric_val", out var val);
+                return new AggregationResult(spec.Name, spec.Kind,
+                    MetricValue: val is null ? null : Convert.ToDouble(val));
+            }
+        }
+    }
+
+    public async Task<IEnumerable<dynamic>> GroupByAsync(
+        StarRocksQuerySchema schema,
+        GroupByRequest request,
+        Func<string, StarRocksQuerySchema?> registry)
+    {
+        var (sql, param) = StarRocksQueryBuilder.BuildGroupBy(schema.TableName, schema, request, registry);
+        return await QueryAsync<dynamic>(sql, param);
+    }
+
+    public async Task<IEnumerable<dynamic>> PipelineAsync(
+        StarRocksQuerySchema schema,
+        PipelineRequest request,
+        Func<string, StarRocksQuerySchema?> registry)
+    {
+        var (sql, param) = StarRocksPipelineBuilder.Build(schema, request, registry);
+        return await QueryAsync<dynamic>(sql, param);
+    }
 
     private static async Task<bool> CheckBackendAliveAsync(string connectionString, CancellationToken ct)
     {
