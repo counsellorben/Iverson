@@ -28,12 +28,14 @@ public sealed class QdrantGrpcContainerFixture : IAsyncLifetime
             .Build();
 
     public QdrantVectorService Service { get; private set; } = null!;
+    public QdrantCollectionManager CollectionManager { get; private set; } = null!;
 
     public async Task InitializeAsync()
     {
         await _container.StartAsync();
         var client = new QdrantClient(_container.Hostname, _container.GetMappedPublicPort(GrpcPort), https: false);
-        Service = new QdrantVectorService(client, NullLogger<QdrantVectorService>.Instance);
+        Service           = new QdrantVectorService(client, NullLogger<QdrantVectorService>.Instance);
+        CollectionManager = new QdrantCollectionManager(client, NullLogger<QdrantCollectionManager>.Instance);
     }
 
     public async Task DisposeAsync() => await _container.DisposeAsync();
@@ -43,12 +45,14 @@ public sealed class QdrantGrpcContainerFixture : IAsyncLifetime
 public sealed class ObjectSearchVectorIntegrationTests : IClassFixture<QdrantGrpcContainerFixture>
 {
     private readonly QdrantVectorService _vector;
+    private readonly QdrantCollectionManager _mgr;
     private readonly IEmbeddingService _embedding = Substitute.For<IEmbeddingService>();
     private readonly SchemaRegistry _registry;
 
     public ObjectSearchVectorIntegrationTests(QdrantGrpcContainerFixture fx)
     {
         _vector = fx.Service;
+        _mgr    = fx.CollectionManager;
         var sql = Substitute.For<IPostgresQueryExecutor>();
         sql.ExecuteAsync(Arg.Any<string>(), Arg.Any<object?>()).Returns(0);
         _registry = new SchemaRegistry(sql, NullLogger<SchemaRegistry>.Instance);
@@ -81,7 +85,7 @@ public sealed class ObjectSearchVectorIntegrationTests : IClassFixture<QdrantGrp
             ScalarColumns = [.. baseSchema.ScalarColumns, new ColumnDescriptor("WordCount", "integer", false)]
         };
         await _registry.RegisterAsync(schema);
-        await _vector.ApplyCollectionAsync(new CollectionSchema(
+        await _mgr.ApplyCollectionAsync(new CollectionSchema(
             collection, [new NamedVector("title_vector", 4)], []));
 
         var vec = new float[] { 0.1f, 0.2f, 0.3f, 0.4f };
@@ -116,7 +120,7 @@ public sealed class ObjectSearchVectorIntegrationTests : IClassFixture<QdrantGrp
         await _registry.RegisterAsync(schema);
 
         var chunksCollection = collection + "_chunks";
-        await _vector.ApplyCollectionAsync(new CollectionSchema(
+        await _mgr.ApplyCollectionAsync(new CollectionSchema(
             chunksCollection, [new NamedVector("body_vector", 4)],
             [new PayloadIndex("parent_id", PayloadIndexKind.Keyword)]));
 

@@ -93,21 +93,6 @@ public sealed class QdrantVectorServiceTests
     }
 
     [Fact]
-    public async Task ApplyCollectionAsync_IsCalledWithSchema()
-    {
-        var svc = Substitute.For<IVectorSchemaManager>();
-        var schema = new CollectionSchema(
-            "players",
-            new List<NamedVector> { new("bio_embedding", 1536) },
-            new List<PayloadIndex> { new("team", PayloadIndexKind.Keyword) });
-
-        await svc.ApplyCollectionAsync(schema);
-
-        await svc.Received(1).ApplyCollectionAsync(
-            Arg.Is<CollectionSchema>(s => s.CollectionName == "players"));
-    }
-
-    [Fact]
     public async Task SearchAsync_ReturnsEmptyList_WhenNoMatches()
     {
         var svc = Substitute.For<IVectorQueryService>();
@@ -184,10 +169,9 @@ public sealed class QdrantVectorServiceTests
     }
 
     [Fact]
-    public void QdrantVectorService_ImplementsAllThreeRoleInterfaces()
+    public void QdrantVectorService_ImplementsQueryAndWriteRoleInterfaces()
     {
         typeof(QdrantVectorService).Should().Implement<IVectorQueryService>();
-        typeof(QdrantVectorService).Should().Implement<IVectorSchemaManager>();
         typeof(QdrantVectorService).Should().Implement<IVectorWriteService>();
     }
 

@@ -22,6 +22,7 @@ public sealed class QdrantContainerFixture : IAsyncLifetime
             .Build();
 
     public QdrantVectorService Service { get; private set; } = null!;
+    public QdrantCollectionManager CollectionManager { get; private set; } = null!;
 
     public async Task InitializeAsync()
     {
@@ -30,8 +31,9 @@ public sealed class QdrantContainerFixture : IAsyncLifetime
         var host       = _container.Hostname;
         var mappedPort = _container.GetMappedPublicPort(GrpcPort);
 
-        var qdrantClient = new QdrantClient(host, mappedPort, https: false);
-        Service = new QdrantVectorService(qdrantClient, NullLogger<QdrantVectorService>.Instance);
+        var qdrantClient  = new QdrantClient(host, mappedPort, https: false);
+        Service           = new QdrantVectorService(qdrantClient, NullLogger<QdrantVectorService>.Instance);
+        CollectionManager = new QdrantCollectionManager(qdrantClient, NullLogger<QdrantCollectionManager>.Instance);
     }
 
     public async Task DisposeAsync() => await _container.DisposeAsync();
@@ -41,6 +43,7 @@ public sealed class QdrantIntegrationTests(QdrantContainerFixture fixture)
     : IClassFixture<QdrantContainerFixture>
 {
     private readonly QdrantVectorService _svc = fixture.Service;
+    private readonly QdrantCollectionManager _mgr = fixture.CollectionManager;
 
     // Each test gets its own collection name to avoid state leakage
     private static string UniqueName() =>
@@ -53,7 +56,7 @@ public sealed class QdrantIntegrationTests(QdrantContainerFixture fixture)
     {
         var name = UniqueName();
 
-        await _svc.EnsureCollectionAsync(name, vectorSize: 4);
+        await _mgr.EnsureCollectionAsync(name, vectorSize: 4);
 
         // Confirm: upsert a point without error
         var act = async () => await _svc.UpsertAsync(name, 1UL, [0.1f, 0.2f, 0.3f, 0.4f]);
@@ -65,9 +68,9 @@ public sealed class QdrantIntegrationTests(QdrantContainerFixture fixture)
     {
         var name = UniqueName();
 
-        await _svc.EnsureCollectionAsync(name, vectorSize: 4);
+        await _mgr.EnsureCollectionAsync(name, vectorSize: 4);
 
-        var act = async () => await _svc.EnsureCollectionAsync(name, vectorSize: 4);
+        var act = async () => await _mgr.EnsureCollectionAsync(name, vectorSize: 4);
         await act.Should().NotThrowAsync();
     }
 
@@ -79,7 +82,7 @@ public sealed class QdrantIntegrationTests(QdrantContainerFixture fixture)
         var name   = UniqueName();
         var vector = new float[] { 1f, 0f, 0f, 0f };
 
-        await _svc.EnsureCollectionAsync(name, vectorSize: 4);
+        await _mgr.EnsureCollectionAsync(name, vectorSize: 4);
         await _svc.UpsertAsync(name, 42UL, vector, new Dictionary<string, object> { ["label"] = "iverson" });
 
         var results = await _svc.SearchAsync(name, vector, limit: 5);
@@ -93,7 +96,7 @@ public sealed class QdrantIntegrationTests(QdrantContainerFixture fixture)
     public async Task SearchAsync_ReturnsEmpty_WhenCollectionIsEmpty()
     {
         var name = UniqueName();
-        await _svc.EnsureCollectionAsync(name, vectorSize: 4);
+        await _mgr.EnsureCollectionAsync(name, vectorSize: 4);
 
         var results = await _svc.SearchAsync(name, [0.1f, 0.2f, 0.3f, 0.4f], limit: 5);
 
@@ -104,7 +107,7 @@ public sealed class QdrantIntegrationTests(QdrantContainerFixture fixture)
     public async Task SearchAsync_ReturnsClosestVector_ByCosineSimilarity()
     {
         var name = UniqueName();
-        await _svc.EnsureCollectionAsync(name, vectorSize: 3);
+        await _mgr.EnsureCollectionAsync(name, vectorSize: 3);
 
         await _svc.UpsertAsync(name, 1UL, [1f, 0f, 0f]);
         await _svc.UpsertAsync(name, 2UL, [0f, 1f, 0f]);
@@ -124,7 +127,7 @@ public sealed class QdrantIntegrationTests(QdrantContainerFixture fixture)
         var name   = UniqueName();
         var vector = new float[] { 1f, 0f, 0f, 0f };
 
-        await _svc.EnsureCollectionAsync(name, vectorSize: 4);
+        await _mgr.EnsureCollectionAsync(name, vectorSize: 4);
         await _svc.UpsertAsync(name, 99UL, vector);
 
         await _svc.DeleteAsync(name, 99UL);
@@ -143,7 +146,7 @@ public sealed class QdrantIntegrationTests(QdrantContainerFixture fixture)
             [new NamedVector("title_vector", 4)],
             [new PayloadIndex("type", PayloadIndexKind.Keyword)]);
 
-        await _svc.ApplyCollectionAsync(schema);
+        await _mgr.ApplyCollectionAsync(schema);
 
         // Confirm: upsert a named vector without error
         var act = async () => await _svc.UpsertNamedAsync(
@@ -160,9 +163,9 @@ public sealed class QdrantIntegrationTests(QdrantContainerFixture fixture)
             [new NamedVector("bio_vector", 4)],
             []);
 
-        await _svc.ApplyCollectionAsync(schema);
+        await _mgr.ApplyCollectionAsync(schema);
 
-        var act = async () => await _svc.ApplyCollectionAsync(schema);
+        var act = async () => await _mgr.ApplyCollectionAsync(schema);
         await act.Should().NotThrowAsync();
     }
 
@@ -172,7 +175,7 @@ public sealed class QdrantIntegrationTests(QdrantContainerFixture fixture)
         var name = UniqueName();
 
         var v1 = new CollectionSchema(name, [new NamedVector("title_vector", 4)], []);
-        await _svc.ApplyCollectionAsync(v1);
+        await _mgr.ApplyCollectionAsync(v1);
 
         // Seed a point
         await _svc.UpsertNamedAsync(name, 1UL,
@@ -182,7 +185,7 @@ public sealed class QdrantIntegrationTests(QdrantContainerFixture fixture)
         var v2 = new CollectionSchema(name,
             [new NamedVector("title_vector", 4), new NamedVector("body_vector", 4)], []);
 
-        var act = async () => await _svc.ApplyCollectionAsync(v2);
+        var act = async () => await _mgr.ApplyCollectionAsync(v2);
         await act.Should().NotThrowAsync();
     }
 
@@ -193,7 +196,7 @@ public sealed class QdrantIntegrationTests(QdrantContainerFixture fixture)
     {
         var name   = UniqueName();
         var schema = new CollectionSchema(name, [new NamedVector("title_vector", 4)], []);
-        await _svc.ApplyCollectionAsync(schema);
+        await _mgr.ApplyCollectionAsync(schema);
 
         await _svc.UpsertNamedAsync(name, 7UL,
             new Dictionary<string, float[]> { ["title_vector"] = [1f, 0f, 0f, 0f] },
@@ -211,7 +214,7 @@ public sealed class QdrantIntegrationTests(QdrantContainerFixture fixture)
     {
         var name   = UniqueName();
         var schema = new CollectionSchema(name, [new NamedVector("embed", 3)], []);
-        await _svc.ApplyCollectionAsync(schema);
+        await _mgr.ApplyCollectionAsync(schema);
 
         await _svc.UpsertNamedAsync(name, 1UL, new Dictionary<string, float[]> { ["embed"] = [1f, 0f, 0f] });
         await _svc.UpsertNamedAsync(name, 2UL, new Dictionary<string, float[]> { ["embed"] = [0f, 1f, 0f] });
@@ -228,7 +231,7 @@ public sealed class QdrantIntegrationTests(QdrantContainerFixture fixture)
         var name   = UniqueName();
         var schema = new CollectionSchema(name,
             [new NamedVector("title_vector", 4), new NamedVector("body_vector", 4)], []);
-        await _svc.ApplyCollectionAsync(schema);
+        await _mgr.ApplyCollectionAsync(schema);
 
         await _svc.UpsertNamedAsync(name, 10UL, new Dictionary<string, float[]>
         {
@@ -247,7 +250,7 @@ public sealed class QdrantIntegrationTests(QdrantContainerFixture fixture)
     public async Task UpsertAsync_TypedPayload_RoundTripsThroughRealQdrant()
     {
         var collection = UniqueName();
-        await _svc.EnsureCollectionAsync(collection, 4);
+        await _mgr.EnsureCollectionAsync(collection, 4);
 
         await _svc.UpsertAsync(collection, 1, [0.1f, 0.2f, 0.3f, 0.4f], new Dictionary<string, object>
         {
@@ -268,7 +271,7 @@ public sealed class QdrantIntegrationTests(QdrantContainerFixture fixture)
     public async Task SearchNamedAsync_WithFilter_ReturnsOnlyMatchingPoints()
     {
         var collection = UniqueName();
-        await _svc.ApplyCollectionAsync(new CollectionSchema(
+        await _mgr.ApplyCollectionAsync(new CollectionSchema(
             collection,
             [new NamedVector("title_vector", 4)],
             []));
