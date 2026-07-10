@@ -1,49 +1,29 @@
 using Dapper;
 using FluentAssertions;
-using Grpc.Core;
-using Iverson.Api.Schema;
-using Iverson.Api.StarRocks;
-using Iverson.Api.Tests.Helpers;
 using Iverson.Client.Contracts;
-using Iverson.Sql;
-using Microsoft.Extensions.Logging.Abstractions;
-using NSubstitute;
 using Xunit;
 
-using SrAggKind  = Iverson.StarRocks.AggregationKind;
-using SrAggSpec  = Iverson.StarRocks.AggregationDescriptor;
-using SrRangeSpec = Iverson.StarRocks.RangeBucketDescriptor;
-
-namespace Iverson.Api.Tests.StarRocks;
+namespace Iverson.StarRocks.Tests;
 
 public class StarRocksQueryBuilderTests
 {
     // ── Fixtures ───────────────────────────────────────────────────────────────
 
-    private static SchemaDescriptor AuthorSchema() => new()
-    {
-        TypeName      = "Author",
-        TableName     = "authors",
-        KeyColumn     = new ColumnDescriptor("Id", "uuid", false),
-        ScalarColumns =
-        [
-            new ColumnDescriptor("Name",      "text",        false),
-            new ColumnDescriptor("Bio",        "text",        true),
-            new ColumnDescriptor("Rating",     "integer",     true),
-            new ColumnDescriptor("PublishedAt","timestamptz", true),
-        ],
-        FkColumns    = [],
-        VectorFields = [],
-        ChunkFields  = [],
-        Relations    = []
-    };
+    private static StarRocksQuerySchema AuthorSchema() => new(
+        "Author", "authors", "Id", ["Name", "Bio", "Rating", "PublishedAt"]);
+
+    private static StarRocksQuerySchema ArticleSchema() => new(
+        "Article", "articles", "Id", ["Title", "Body"]);
+
+    private static StarRocksQuerySchema ArticleWithProjectionSchema() => new(
+        "Article", "articles", "Id", ["Title", "Category", "WordCount", "PublishedAt", "Body"]);
 
     // ── BuildAggregate — Terms ─────────────────────────────────────────────────
 
     [Fact]
     public void BuildAggregate_Terms_ProducesGroupByWithLimit()
     {
-        var spec = new SrAggSpec("by_name", SrAggKind.Terms, "Name", Size: 5);
+        var spec = new AggregationDescriptor("by_name", AggregationKind.Terms, "Name", Size: 5);
 
         var (sql, _) = StarRocksQueryBuilder.BuildAggregate("authors", AuthorSchema(), null, spec);
 
@@ -59,13 +39,13 @@ public class StarRocksQueryBuilderTests
     [Fact]
     public void BuildAggregate_Range_ProducesCaseExprWithEscapedKey()
     {
-        var spec = new SrAggSpec(
-            "rating_ranges", SrAggKind.Range, "Rating",
+        var spec = new AggregationDescriptor(
+            "rating_ranges", AggregationKind.Range, "Rating",
             RangeBuckets:
             [
-                new SrRangeSpec("low",  null, 3),
-                new SrRangeSpec("mid",  3,    7),
-                new SrRangeSpec("high", 7,    null),
+                new RangeBucketDescriptor("low",  null, 3),
+                new RangeBucketDescriptor("mid",  3,    7),
+                new RangeBucketDescriptor("high", 7,    null),
             ]);
 
         var (sql, _) = StarRocksQueryBuilder.BuildAggregate("authors", AuthorSchema(), null, spec);
@@ -81,9 +61,9 @@ public class StarRocksQueryBuilderTests
     [Fact]
     public void BuildAggregate_Range_EscapesSingleQuotesInKey()
     {
-        var spec = new SrAggSpec(
-            "r", SrAggKind.Range, "Rating",
-            RangeBuckets: [new SrRangeSpec("it's high", 7, null)]);
+        var spec = new AggregationDescriptor(
+            "r", AggregationKind.Range, "Rating",
+            RangeBuckets: [new RangeBucketDescriptor("it's high", 7, null)]);
 
         var (sql, _) = StarRocksQueryBuilder.BuildAggregate("authors", AuthorSchema(), null, spec);
 
@@ -93,7 +73,7 @@ public class StarRocksQueryBuilderTests
     [Fact]
     public void BuildAggregate_Range_NoBuckets_AppendsHavingClause()
     {
-        var spec = new SrAggSpec("rating_ranges", SrAggKind.Range, "Rating", RangeBuckets: null);
+        var spec = new AggregationDescriptor("rating_ranges", AggregationKind.Range, "Rating", RangeBuckets: null);
 
         var having = new SearchQuery();
         having.Clauses.Add(new SearchClause
@@ -118,8 +98,8 @@ public class StarRocksQueryBuilderTests
     [Fact]
     public void BuildAggregate_MultiKeyGroupBy_ProducesMultiColumnGroupBy()
     {
-        var spec = new SrAggSpec(
-            "by_name_rating", SrAggKind.Terms, "Name",
+        var spec = new AggregationDescriptor(
+            "by_name_rating", AggregationKind.Terms, "Name",
             GroupByFields: ["Name", "Rating"]);
 
         var (sql, _) = StarRocksQueryBuilder.BuildAggregate("authors", AuthorSchema(), null, spec);
@@ -134,8 +114,8 @@ public class StarRocksQueryBuilderTests
     [Fact]
     public void BuildAggregate_ExpressionMetric_UsesRawExpressionInAggFn()
     {
-        var spec = new SrAggSpec(
-            "revenue", SrAggKind.Sum, "Rating",
+        var spec = new AggregationDescriptor(
+            "revenue", AggregationKind.Sum, "Rating",
             Expression: "Rating * 2");
 
         var (sql, _) = StarRocksQueryBuilder.BuildAggregate("authors", AuthorSchema(), null, spec);
@@ -149,7 +129,7 @@ public class StarRocksQueryBuilderTests
     [Fact]
     public void BuildAggregate_Having_AppendsHavingClause()
     {
-        var spec = new SrAggSpec("by_name", SrAggKind.Terms, "Name", Size: 5);
+        var spec = new AggregationDescriptor("by_name", AggregationKind.Terms, "Name", Size: 5);
 
         var having = new SearchQuery();
         having.Clauses.Add(new SearchClause
@@ -185,7 +165,7 @@ public class StarRocksQueryBuilderTests
             ClauseType = SearchClauseType.Filter
         });
 
-        var spec = new SrAggSpec("by_name", SrAggKind.Terms, "Name", Size: 5);
+        var spec = new AggregationDescriptor("by_name", AggregationKind.Terms, "Name", Size: 5);
 
         var having = new SearchQuery();
         having.Clauses.Add(new SearchClause
@@ -211,8 +191,8 @@ public class StarRocksQueryBuilderTests
     [Fact]
     public void BuildAggregate_DateHistogram_Quarter_UsesConcatAndQuarterFunction()
     {
-        var spec = new SrAggSpec(
-            "by_quarter", SrAggKind.DateHistogram, "PublishedAt",
+        var spec = new AggregationDescriptor(
+            "by_quarter", AggregationKind.DateHistogram, "PublishedAt",
             CalendarInterval: "quarter");
 
         var (sql, _) = StarRocksQueryBuilder.BuildAggregate("authors", AuthorSchema(), null, spec);
@@ -233,8 +213,8 @@ public class StarRocksQueryBuilderTests
     public void BuildAggregate_DateHistogram_EachCalendarInterval_UsesExpectedDateFormat(
         string interval, string expectedFormat)
     {
-        var spec = new SrAggSpec(
-            "by_interval", SrAggKind.DateHistogram, "PublishedAt",
+        var spec = new AggregationDescriptor(
+            "by_interval", AggregationKind.DateHistogram, "PublishedAt",
             CalendarInterval: interval);
 
         var (sql, _) = StarRocksQueryBuilder.BuildAggregate("authors", AuthorSchema(), null, spec);
@@ -247,7 +227,7 @@ public class StarRocksQueryBuilderTests
     [Fact]
     public void BuildAggregate_WithJoin_ProducesJoinAndQuotesJoinedColumn()
     {
-        var registry = BuildRegistry(AuthorSchema(), SchemaFixtures.ArticleSchema());
+        var registry = BuildRegistry(AuthorSchema(), ArticleSchema());
 
         var joins = new List<JoinSpec>
         {
@@ -261,7 +241,7 @@ public class StarRocksQueryBuilderTests
             }
         };
 
-        var spec = new SrAggSpec("by_title", SrAggKind.Terms, "Article.Title", Size: 5);
+        var spec = new AggregationDescriptor("by_title", AggregationKind.Terms, "Article.Title", Size: 5);
 
         var (sql, _) = StarRocksQueryBuilder.BuildAggregate(
             "authors", AuthorSchema(), null, spec, joins: joins, registry: registry);
@@ -274,7 +254,7 @@ public class StarRocksQueryBuilderTests
     [Fact]
     public void BuildAggregate_WithJoin_WhereOnJoinedTableColumn_QuotesAliasAndFieldSeparately()
     {
-        var registry = BuildRegistry(AuthorSchema(), SchemaFixtures.ArticleSchema());
+        var registry = BuildRegistry(AuthorSchema(), ArticleSchema());
 
         var joins = new List<JoinSpec>
         {
@@ -297,7 +277,7 @@ public class StarRocksQueryBuilderTests
             ClauseType = SearchClauseType.Filter
         });
 
-        var spec = new SrAggSpec("avg_rating", SrAggKind.Avg, "Rating");
+        var spec = new AggregationDescriptor("avg_rating", AggregationKind.Avg, "Rating");
 
         var (sql, param) = StarRocksQueryBuilder.BuildAggregate(
             "authors", AuthorSchema(), query, spec, joins: joins, registry: registry);
@@ -312,7 +292,7 @@ public class StarRocksQueryBuilderTests
     [Fact]
     public void BuildAggregate_Min_BareField_ProducesMinFunction()
     {
-        var spec = new SrAggSpec("lowest_rating", SrAggKind.Min, "Rating");
+        var spec = new AggregationDescriptor("lowest_rating", AggregationKind.Min, "Rating");
 
         var (sql, _) = StarRocksQueryBuilder.BuildAggregate("authors", AuthorSchema(), null, spec);
 
@@ -322,7 +302,7 @@ public class StarRocksQueryBuilderTests
     [Fact]
     public void BuildAggregate_Max_BareField_ProducesMaxFunction()
     {
-        var spec = new SrAggSpec("highest_rating", SrAggKind.Max, "Rating");
+        var spec = new AggregationDescriptor("highest_rating", AggregationKind.Max, "Rating");
 
         var (sql, _) = StarRocksQueryBuilder.BuildAggregate("authors", AuthorSchema(), null, spec);
 
@@ -332,7 +312,7 @@ public class StarRocksQueryBuilderTests
     [Fact]
     public void BuildAggregate_Count_BareField_ProducesCountDistinctFunction()
     {
-        var spec = new SrAggSpec("distinct_ratings", SrAggKind.Count, "Rating");
+        var spec = new AggregationDescriptor("distinct_ratings", AggregationKind.Count, "Rating");
 
         var (sql, _) = StarRocksQueryBuilder.BuildAggregate("authors", AuthorSchema(), null, spec);
 
@@ -574,9 +554,8 @@ public class StarRocksQueryBuilderTests
 
         // VECTOR_SIMILAR is Qdrant's job, not StarRocks's — BuildSearch (via BuildWhere)
         // must reject it loudly with InvalidArgument, not silently drop it.
-        act.Should().Throw<RpcException>()
-            .Where(e => e.Status.StatusCode == StatusCode.InvalidArgument
-                     && e.Status.Detail.Contains("VECTOR_SIMILAR"));
+        act.Should().Throw<StarRocksQueryTranslationException>()
+            .Where(e => e.Message.Contains("VECTOR_SIMILAR"));
     }
 
     // ── BuildSearch — explicit SELECT columns ─────────────────────────────────────
@@ -584,7 +563,7 @@ public class StarRocksQueryBuilderTests
     [Fact]
     public void BuildSearch_NoFields_SelectsAllColumnsExplicitly()
     {
-        var schema = SchemaFixtures.ArticleWithProjectionSchema();
+        var schema = ArticleWithProjectionSchema();
 
         var (sql, _) = StarRocksQueryBuilder.BuildSearch("articles", schema, null, 0, 10);
 
@@ -600,7 +579,7 @@ public class StarRocksQueryBuilderTests
     [Fact]
     public void BuildSearch_WithFields_SelectsOnlyRequestedColumnsAndKey()
     {
-        var schema = SchemaFixtures.ArticleWithProjectionSchema();
+        var schema = ArticleWithProjectionSchema();
 
         var (sql, _) = StarRocksQueryBuilder.BuildSearch(
             "articles", schema, null, 0, 10,
@@ -617,7 +596,7 @@ public class StarRocksQueryBuilderTests
     [Fact]
     public void BuildSearch_WithFields_KeyAlwaysIncludedEvenIfNotRequested()
     {
-        var schema = SchemaFixtures.ArticleWithProjectionSchema();
+        var schema = ArticleWithProjectionSchema();
 
         var (sql, _) = StarRocksQueryBuilder.BuildSearch(
             "articles", schema, null, 0, 10,
@@ -631,7 +610,7 @@ public class StarRocksQueryBuilderTests
     [Fact]
     public void BuildSearch_WithFields_UnknownFieldNamesAreIgnored()
     {
-        var schema = SchemaFixtures.ArticleWithProjectionSchema();
+        var schema = ArticleWithProjectionSchema();
 
         var (sql, _) = StarRocksQueryBuilder.BuildSearch(
             "articles", schema, null, 0, 10,
@@ -647,7 +626,7 @@ public class StarRocksQueryBuilderTests
     [Fact]
     public void BuildSearch_WithJoin_ProducesInnerJoin()
     {
-        var registry = BuildRegistry(AuthorSchema(), SchemaFixtures.ArticleSchema());
+        var registry = BuildRegistry(AuthorSchema(), ArticleSchema());
 
         var joins = new List<JoinSpec>
         {
@@ -671,7 +650,7 @@ public class StarRocksQueryBuilderTests
     [Fact]
     public void BuildSearch_WithJoin_WhereOnJoinedTableColumn_QuotesAliasAndFieldSeparately()
     {
-        var registry = BuildRegistry(AuthorSchema(), SchemaFixtures.ArticleSchema());
+        var registry = BuildRegistry(AuthorSchema(), ArticleSchema());
 
         var joins = new List<JoinSpec>
         {
@@ -731,20 +710,16 @@ public class StarRocksQueryBuilderTests
 
     // ── BuildFromWithJoins ─────────────────────────────────────────────────────
 
-    private static SchemaRegistry BuildRegistry(params SchemaDescriptor[] schemas)
+    private static Func<string, StarRocksQuerySchema?> BuildRegistry(params StarRocksQuerySchema[] schemas)
     {
-        var sql = Substitute.For<IRecordStoreQueryExecutor>();
-        sql.ExecuteAsync(Arg.Any<string>(), Arg.Any<object?>()).Returns(0);
-        var registry = new SchemaRegistry(sql, NullLogger<SchemaRegistry>.Instance);
-        foreach (var schema in schemas)
-            registry.RegisterAsync(schema).GetAwaiter().GetResult();
-        return registry;
+        var map = schemas.ToDictionary(s => s.TypeName, StringComparer.OrdinalIgnoreCase);
+        return typeName => map.GetValueOrDefault(typeName);
     }
 
     [Fact]
     public void BuildFromWithJoins_InnerJoin_ProducesJoinClause()
     {
-        var registry = BuildRegistry(AuthorSchema(), SchemaFixtures.ArticleSchema());
+        var registry = BuildRegistry(AuthorSchema(), ArticleSchema());
 
         var joins = new List<JoinSpec>
         {
@@ -770,7 +745,7 @@ public class StarRocksQueryBuilderTests
     [Fact]
     public void BuildFromWithJoins_LeftJoin_ProducesLeftJoinClause()
     {
-        var registry = BuildRegistry(AuthorSchema(), SchemaFixtures.ArticleSchema());
+        var registry = BuildRegistry(AuthorSchema(), ArticleSchema());
 
         var joins = new List<JoinSpec>
         {
@@ -793,7 +768,7 @@ public class StarRocksQueryBuilderTests
     [Fact]
     public void BuildFromWithJoins_RightJoin_ProducesRightJoinClause()
     {
-        var registry = BuildRegistry(AuthorSchema(), SchemaFixtures.ArticleSchema());
+        var registry = BuildRegistry(AuthorSchema(), ArticleSchema());
 
         var joins = new List<JoinSpec>
         {
@@ -816,7 +791,7 @@ public class StarRocksQueryBuilderTests
     [Fact]
     public void BuildFromWithJoins_FullJoin_ProducesJoinClause()
     {
-        var registry = BuildRegistry(AuthorSchema(), SchemaFixtures.ArticleSchema());
+        var registry = BuildRegistry(AuthorSchema(), ArticleSchema());
 
         var joins = new List<JoinSpec>
         {
@@ -856,8 +831,8 @@ public class StarRocksQueryBuilderTests
 
         var act = () => StarRocksQueryBuilder.BuildFromWithJoins(AuthorSchema(), joins, registry, out _);
 
-        act.Should().Throw<RpcException>()
-            .Which.StatusCode.Should().Be(StatusCode.InvalidArgument);
+        act.Should().Throw<StarRocksQueryTranslationException>()
+            .WithMessage("*NoSuchType*");
     }
 
     [Fact]
@@ -876,7 +851,7 @@ public class StarRocksQueryBuilderTests
     [Fact]
     public void ResolveColumn_JoinContext_DotNotationResolves()
     {
-        var registry = BuildRegistry(AuthorSchema(), SchemaFixtures.ArticleSchema());
+        var registry = BuildRegistry(AuthorSchema(), ArticleSchema());
 
         var joins = new List<JoinSpec>
         {
@@ -953,7 +928,7 @@ public class StarRocksQueryBuilderTests
     [Fact]
     public void BuildGroupBy_WithJoin_ProducesJoinClause()
     {
-        var registry = BuildRegistry(AuthorSchema(), SchemaFixtures.ArticleSchema());
+        var registry = BuildRegistry(AuthorSchema(), ArticleSchema());
 
         var request = new GroupByRequest
         {
@@ -1109,14 +1084,14 @@ public class StarRocksQueryBuilderTests
 
         var act = () => StarRocksQueryBuilder.BuildGroupBy("authors", AuthorSchema(), request, registry);
 
-        act.Should().Throw<RpcException>()
-            .Which.StatusCode.Should().Be(StatusCode.InvalidArgument);
+        act.Should().Throw<StarRocksQueryTranslationException>()
+            .WithMessage("*bad_sum*");
     }
 
     [Fact]
     public void BuildGroupBy_WithJoin_WhereOnJoinedTableColumn_QuotesAliasAndFieldSeparately()
     {
-        var registry = BuildRegistry(AuthorSchema(), SchemaFixtures.ArticleSchema());
+        var registry = BuildRegistry(AuthorSchema(), ArticleSchema());
 
         var request = new GroupByRequest
         {
@@ -1237,10 +1212,9 @@ public class StarRocksQueryBuilderTests
         var act = () => StarRocksQueryBuilder.BuildWhere(
             AuthorSchema(), [VectorClause()], SearchLogic.And, param, out _);
 
-        act.Should().Throw<RpcException>()
-            .Where(e => e.Status.StatusCode == StatusCode.InvalidArgument
-                     && e.Status.Detail.Contains("VECTOR_SIMILAR")
-                     && e.Status.Detail.Contains("SearchSimilar"));
+        act.Should().Throw<StarRocksQueryTranslationException>()
+            .Where(e => e.Message.Contains("VECTOR_SIMILAR")
+                     && e.Message.Contains("SearchSimilar"));
     }
 
     [Fact]
@@ -1250,9 +1224,8 @@ public class StarRocksQueryBuilderTests
         var act = () => StarRocksQueryBuilder.BuildHaving(
             [VectorClause()], SearchLogic.And, param);
 
-        act.Should().Throw<RpcException>()
-            .Where(e => e.Status.StatusCode == StatusCode.InvalidArgument
-                     && e.Status.Detail.Contains("VECTOR_SIMILAR")
-                     && e.Status.Detail.Contains("SearchSimilar"));
+        act.Should().Throw<StarRocksQueryTranslationException>()
+            .Where(e => e.Message.Contains("VECTOR_SIMILAR")
+                     && e.Message.Contains("SearchSimilar"));
     }
 }

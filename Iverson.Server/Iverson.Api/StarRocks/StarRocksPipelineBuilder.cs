@@ -4,6 +4,7 @@ using Dapper;
 using Grpc.Core;
 using Iverson.Api.Schema;
 using Iverson.Client.Contracts;
+using Iverson.StarRocks;
 
 namespace Iverson.Api.StarRocks;
 
@@ -312,8 +313,9 @@ internal static class StarRocksPipelineBuilder
         var param = new DynamicParameters();
         var sb = new StringBuilder();
 
+        var srSchema = SchemaBuilder.ToStarRocksQuerySchema(schema);
         var baseWhere = StarRocksQueryBuilder.BuildWhere(
-            p => StarRocksQueryBuilder.ResolveColumn(schema, p) is { } c ? $"`{c}`" : null,
+            p => StarRocksQueryBuilder.ResolveColumn(srSchema, p) is { } c ? $"`{c}`" : null,
             request.BaseWhere, request.BaseLogic, param, "s0_p", out _);
         sb.Append($"WITH `{BaseStepName}` AS (SELECT * FROM `{schema.TableName}`");
         if (baseWhere.Length > 0) sb.Append($" WHERE {baseWhere}");

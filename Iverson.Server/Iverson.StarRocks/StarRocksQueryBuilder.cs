@@ -1,36 +1,31 @@
 using System.Runtime.CompilerServices;
 using System.Text;
 using Dapper;
-using Grpc.Core;
-using Iverson.Api.Schema;
 using Iverson.Client.Contracts;
 
-using SrAggKind  = Iverson.StarRocks.AggregationKind;
-using SrAggSpec  = Iverson.StarRocks.AggregationDescriptor;
-using SrRangeSpec = Iverson.StarRocks.RangeBucketDescriptor;
 
-namespace Iverson.Api.StarRocks;
+namespace Iverson.StarRocks;
 
 /// <summary>
 /// A single table participating in a joined query: its physical table name,
 /// schema descriptor, and the alias used to qualify columns in generated SQL.
 /// </summary>
-internal sealed record JoinContext(string TableName, SchemaDescriptor Schema, string Alias);
+internal sealed record JoinContext(string TableName, StarRocksQuerySchema Schema, string Alias);
 
-internal static class StarRocksQueryBuilder
+public static class StarRocksQueryBuilder
 {
     private static readonly ConditionalWeakTable<
-        SchemaDescriptor,
+        StarRocksQuerySchema,
         Dictionary<string, string>> _columnCache = new();
-    internal static (string Sql, DynamicParameters Param) BuildSearch(
+    public static (string Sql, DynamicParameters Param) BuildSearch(
         string tableName,
-        SchemaDescriptor schema,
+        StarRocksQuerySchema schema,
         SearchQuery? query,
         int page,
         int pageSize,
         IReadOnlyList<string>? fields = null,
         IReadOnlyList<JoinSpec>? joins = null,
-        SchemaRegistry? registry = null)
+        Func<string, StarRocksQuerySchema?>? registry = null)
     {
         var param = new DynamicParameters();
 
@@ -70,36 +65,36 @@ internal static class StarRocksQueryBuilder
         return (sb.ToString(), param);
     }
 
-    private static string BuildSelectColumns(SchemaDescriptor schema, IReadOnlyList<string>? fields, string? primaryAlias = null)
+    private static string BuildSelectColumns(StarRocksQuerySchema schema, IReadOnlyList<string>? fields, string? primaryAlias = null)
     {
         string Quote(string name) => primaryAlias is null ? $"`{name}`" : $"`{primaryAlias}`.`{name}`";
 
         if (fields is null || fields.Count == 0)
         {
-            var all = schema.ScalarColumns
-                .Select(c => Quote(c.Name))
-                .Prepend(Quote(schema.KeyColumn.Name));
+            var all = schema.ColumnNames
+                .Select(Quote)
+                .Prepend(Quote(schema.KeyColumnName));
             return string.Join(", ", all);
         }
 
-        var resolved = new List<string> { schema.KeyColumn.Name };
+        var resolved = new List<string> { schema.KeyColumnName };
         foreach (var f in fields)
         {
             var col = ResolveColumn(schema, f);
-            if (col is not null && !col.Equals(schema.KeyColumn.Name, StringComparison.OrdinalIgnoreCase))
+            if (col is not null && !col.Equals(schema.KeyColumnName, StringComparison.OrdinalIgnoreCase))
                 resolved.Add(col);
         }
         return string.Join(", ", resolved.Select(Quote));
     }
 
-    internal static (string Sql, DynamicParameters Param) BuildAggregate(
+    public static (string Sql, DynamicParameters Param) BuildAggregate(
         string tableName,
-        SchemaDescriptor schema,
+        StarRocksQuerySchema schema,
         SearchQuery? query,
-        SrAggSpec spec,
+        AggregationDescriptor spec,
         SearchQuery? having = null,
         IReadOnlyList<JoinSpec>? joins = null,
-        SchemaRegistry? registry = null)
+        Func<string, StarRocksQuerySchema?>? registry = null)
     {
         var param = new DynamicParameters();
 
@@ -144,7 +139,7 @@ internal static class StarRocksQueryBuilder
 
         var sql = spec.Kind switch
         {
-            SrAggKind.Terms => groupCols is not null
+            AggregationKind.Terms => groupCols is not null
                 ? $"SELECT {string.Join(", ", groupCols.Select(Quote))}, COUNT(*) AS doc_count " +
                   $"{from}{wc} " +
                   $"GROUP BY {string.Join(", ", groupCols.Select(Quote))}{hc} " +
@@ -156,22 +151,22 @@ internal static class StarRocksQueryBuilder
                   $"ORDER BY doc_count DESC " +
                   $"LIMIT {(spec.Size > 0 ? spec.Size : 10)}",
 
-            SrAggKind.DateHistogram =>
+            AggregationKind.DateHistogram =>
                 $"SELECT {DateBucketExpr(Quote(col), spec.CalendarInterval)} AS bucket_key, " +
                 $"COUNT(*) AS doc_count " +
                 $"{from}{wc} " +
                 $"GROUP BY bucket_key{hc} ORDER BY bucket_key",
 
-            SrAggKind.Range => BuildRangeSql(from, Quote(col), spec.RangeBuckets, wc, hc),
+            AggregationKind.Range => BuildRangeSql(from, Quote(col), spec.RangeBuckets, wc, hc),
 
             // spec.Expression, when set, is raw StarRocks SQL supplied by a trusted
             // server-side caller (e.g. TPC-H DSL translation) and is spliced directly
             // into the aggregate function — NOT user input, no escaping is performed.
-            SrAggKind.Avg   => $"SELECT AVG({spec.Expression ?? Quote(col)}) AS metric_val {from}{wc}{hc}",
-            SrAggKind.Sum   => $"SELECT SUM({spec.Expression ?? Quote(col)}) AS metric_val {from}{wc}{hc}",
-            SrAggKind.Min   => $"SELECT MIN({spec.Expression ?? Quote(col)}) AS metric_val {from}{wc}{hc}",
-            SrAggKind.Max   => $"SELECT MAX({spec.Expression ?? Quote(col)}) AS metric_val {from}{wc}{hc}",
-            SrAggKind.Count => $"SELECT COUNT(DISTINCT {spec.Expression ?? Quote(col)}) AS metric_val {from}{wc}{hc}",
+            AggregationKind.Avg   => $"SELECT AVG({spec.Expression ?? Quote(col)}) AS metric_val {from}{wc}{hc}",
+            AggregationKind.Sum   => $"SELECT SUM({spec.Expression ?? Quote(col)}) AS metric_val {from}{wc}{hc}",
+            AggregationKind.Min   => $"SELECT MIN({spec.Expression ?? Quote(col)}) AS metric_val {from}{wc}{hc}",
+            AggregationKind.Max   => $"SELECT MAX({spec.Expression ?? Quote(col)}) AS metric_val {from}{wc}{hc}",
+            AggregationKind.Count => $"SELECT COUNT(DISTINCT {spec.Expression ?? Quote(col)}) AS metric_val {from}{wc}{hc}",
 
             _ => throw new ArgumentOutOfRangeException(nameof(spec.Kind))
         };
@@ -183,14 +178,14 @@ internal static class StarRocksQueryBuilder
     /// Builds a single compound SELECT that computes multiple metrics over one GROUP BY in a
     /// single SQL round-trip (e.g. TPC-H Q1: several SUM/AVG/COUNT columns, grouped by 2 keys,
     /// ordered, HAVING-filtered). Unlike <see cref="BuildAggregate"/>, which issues one SQL
-    /// query per <see cref="SrAggSpec"/>, this emits one query for the whole
+    /// query per <see cref="AggregationDescriptor"/>, this emits one query for the whole
     /// <see cref="GroupByRequest"/>.
     /// </summary>
-    internal static (string Sql, DynamicParameters Param) BuildGroupBy(
+    public static (string Sql, DynamicParameters Param) BuildGroupBy(
         string primaryTable,
-        SchemaDescriptor schema,
+        StarRocksQuerySchema schema,
         GroupByRequest request,
-        SchemaRegistry registry)
+        Func<string, StarRocksQuerySchema?> registry)
     {
         var from = BuildFromWithJoins(schema, request.Joins, registry, out var tableMap);
 
@@ -200,8 +195,8 @@ internal static class StarRocksQueryBuilder
 
         var keyCols = request.Keys
             .Select(k => ResolveColumn(tableMap, k)
-                ?? throw new RpcException(new Status(StatusCode.InvalidArgument,
-                    $"Unknown or ambiguous GROUP BY key '{k}'.")))
+                ?? throw new StarRocksQueryTranslationException(
+                    $"Unknown or ambiguous GROUP BY key '{k}'."))
             .ToList();
 
         var metricExprs = request.Metrics.Select(m => BuildMetricExpr(m, tableMap)).ToList();
@@ -251,8 +246,8 @@ internal static class StarRocksQueryBuilder
             AggregationType.Min   => "MIN",
             AggregationType.Max   => "MAX",
             AggregationType.Count => "COUNT",
-            _ => throw new RpcException(new Status(StatusCode.InvalidArgument,
-                $"Metric '{metric.Name}' has unsupported type '{metric.Type}'; GroupBy metrics must be AVG, SUM, MIN, MAX, or COUNT."))
+            _ => throw new StarRocksQueryTranslationException(
+                $"Metric '{metric.Name}' has unsupported type '{metric.Type}'; GroupBy metrics must be AVG, SUM, MIN, MAX, or COUNT.")
         };
 
         if (!string.IsNullOrEmpty(metric.Expression))
@@ -261,8 +256,8 @@ internal static class StarRocksQueryBuilder
         if (!string.IsNullOrEmpty(metric.Field))
         {
             var col = ResolveColumn(tableMap, metric.Field)
-                ?? throw new RpcException(new Status(StatusCode.InvalidArgument,
-                    $"Unknown or ambiguous field '{metric.Field}' referenced by metric '{metric.Name}'."));
+                ?? throw new StarRocksQueryTranslationException(
+                    $"Unknown or ambiguous field '{metric.Field}' referenced by metric '{metric.Name}'.");
             return $"{fn}({QuoteQualified(col)}) AS {quotedName}";
         }
 
@@ -270,12 +265,12 @@ internal static class StarRocksQueryBuilder
         // this (handled above via isCountAll); every other metric kind requires a column
         // argument, so emitting the naive fallback here would produce invalid SQL like
         // "SUM(``)" — fail loudly instead.
-        throw new RpcException(new Status(StatusCode.InvalidArgument,
-            $"metric '{metric.Name}' requires a field or expression"));
+        throw new StarRocksQueryTranslationException(
+            $"metric '{metric.Name}' requires a field or expression");
     }
 
     internal static string BuildWhere(
-        SchemaDescriptor schema,
+        StarRocksQuerySchema schema,
         IEnumerable<SearchClause>? clauses,
         SearchLogic logic,
         DynamicParameters param,
@@ -299,7 +294,7 @@ internal static class StarRocksQueryBuilder
     /// <paramref name="paramPrefix"/> names the Dapper parameters ("p" for plain queries;
     /// pipeline steps pass "s{i}_p" so multiple steps can share one DynamicParameters).
     /// </summary>
-    internal static string BuildWhere(
+    public static string BuildWhere(
         Func<string, string?> resolveQuoted,
         IEnumerable<SearchClause>? clauses,
         SearchLogic logic,
@@ -315,9 +310,9 @@ internal static class StarRocksQueryBuilder
         foreach (var clause in clauses)
         {
             if (clause.Operator == SearchOperator.VectorSimilar)
-                throw new RpcException(new Status(StatusCode.InvalidArgument,
+                throw new StarRocksQueryTranslationException(
                     "VECTOR_SIMILAR clauses are not supported by the SQL search path; " +
-                    "use the SearchSimilar or SearchChunks RPCs for vector search."));
+                    "use the SearchSimilar or SearchChunks RPCs for vector search.");
 
             var quotedCol = resolveQuoted(clause.Property);
             if (quotedCol is null) continue;
@@ -341,15 +336,15 @@ internal static class StarRocksQueryBuilder
     }
 
     /// <summary>
-    /// Builds a HAVING clause from the same clause-matching logic as <see cref="BuildWhere(SchemaDescriptor, IEnumerable{SearchClause}?, SearchLogic, DynamicParameters, out int, IReadOnlyDictionary{string, JoinContext}?)"/>,
-    /// but without the schema-backed <see cref="ResolveColumn(SchemaDescriptor, string)"/> guard —
+    /// Builds a HAVING clause from the same clause-matching logic as <see cref="BuildWhere(StarRocksQuerySchema, IEnumerable{SearchClause}?, SearchLogic, DynamicParameters, out int, IReadOnlyDictionary{string, JoinContext}?)"/>,
+    /// but without the schema-backed <see cref="ResolveColumn(StarRocksQuerySchema, string)"/> guard —
     /// HAVING clauses reference SQL output aliases (e.g. "doc_count", "metric_val") which are not
     /// schema columns, so the clause's Property is used verbatim as the column name. Uses an
     /// "h{n}" parameter prefix by default (vs. "p{n}" for WHERE) so both can share one
     /// DynamicParameters instance without name collisions when a query has both a filter and a
     /// HAVING clause; pipeline steps pass "s{i}_h" so multiple steps can share one instance too.
     /// </summary>
-    internal static string BuildHaving(
+    public static string BuildHaving(
         IEnumerable<SearchClause>? clauses,
         SearchLogic logic,
         DynamicParameters param,
@@ -363,9 +358,9 @@ internal static class StarRocksQueryBuilder
         foreach (var clause in clauses)
         {
             if (clause.Operator == SearchOperator.VectorSimilar)
-                throw new RpcException(new Status(StatusCode.InvalidArgument,
+                throw new StarRocksQueryTranslationException(
                     "VECTOR_SIMILAR clauses are not supported by the SQL search path; " +
-                    "use the SearchSimilar or SearchChunks RPCs for vector search."));
+                    "use the SearchSimilar or SearchChunks RPCs for vector search.");
 
             var col = clause.Property;
             if (string.IsNullOrEmpty(col)) continue;
@@ -389,12 +384,11 @@ internal static class StarRocksQueryBuilder
         return string.Join(sep, parts);
     }
 
-    internal static string? ResolveColumn(SchemaDescriptor schema, string property)
+    public static string? ResolveColumn(StarRocksQuerySchema schema, string property)
     {
         var index = _columnCache.GetValue(schema, static s =>
-            s.ScalarColumns
-                .Select(c => c.Name)
-                .Append(s.KeyColumn.Name)
+            s.ColumnNames
+                .Append(s.KeyColumnName)
                 .ToDictionary(n => n, n => n, StringComparer.OrdinalIgnoreCase));
 
         return index.TryGetValue(property, out var col) ? col : null;
@@ -455,16 +449,16 @@ internal static class StarRocksQueryBuilder
 
     /// <summary>
     /// Builds a FROM clause with zero or more JOINs from a list of <see cref="JoinSpec"/>s,
-    /// resolving each side's type against the <see cref="SchemaRegistry"/>. Always populates
+    /// resolving each side's type against the <see cref="Func<string, StarRocksQuerySchema?>"/>. Always populates
     /// <paramref name="tableMap"/> with at least the primary table (keyed by
     /// <paramref name="primarySchema"/>'s <c>TypeName</c>), plus every joined type name, each
     /// mapped to its resolved <see cref="JoinContext"/> so callers can later qualify columns
     /// per-table — including in the no-join case.
     /// </summary>
     internal static string BuildFromWithJoins(
-        SchemaDescriptor primarySchema,
+        StarRocksQuerySchema primarySchema,
         IReadOnlyList<JoinSpec> joins,
-        SchemaRegistry registry,
+        Func<string, StarRocksQuerySchema?> registry,
         out IReadOnlyDictionary<string, JoinContext> tableMap)
     {
         var map = new Dictionary<string, JoinContext>(StringComparer.OrdinalIgnoreCase);
@@ -484,24 +478,24 @@ internal static class StarRocksQueryBuilder
         {
             if (!map.TryGetValue(join.LeftType, out var leftCtx))
             {
-                var leftSchema = registry.Get(join.LeftType)
-                    ?? throw new RpcException(new Status(StatusCode.InvalidArgument,
-                        $"Unknown type '{join.LeftType}' referenced in join."));
+                var leftSchema = registry(join.LeftType)
+                    ?? throw new StarRocksQueryTranslationException(
+                        $"Unknown type '{join.LeftType}' referenced in join.");
                 leftCtx = new JoinContext(leftSchema.TableName, leftSchema, leftSchema.TableName);
                 map[join.LeftType] = leftCtx;
             }
 
-            var rightSchema = registry.Get(join.RightType)
-                ?? throw new RpcException(new Status(StatusCode.InvalidArgument,
-                    $"Unknown type '{join.RightType}' referenced in join."));
+            var rightSchema = registry(join.RightType)
+                ?? throw new StarRocksQueryTranslationException(
+                    $"Unknown type '{join.RightType}' referenced in join.");
             var rightCtx = new JoinContext(rightSchema.TableName, rightSchema, rightSchema.TableName);
 
             var leftCol = ResolveColumn(leftCtx.Schema, join.LeftField)
-                ?? throw new RpcException(new Status(StatusCode.InvalidArgument,
-                    $"Unknown field '{join.LeftField}' on type '{join.LeftType}' referenced in join."));
+                ?? throw new StarRocksQueryTranslationException(
+                    $"Unknown field '{join.LeftField}' on type '{join.LeftType}' referenced in join.");
             var rightCol = ResolveColumn(rightCtx.Schema, join.RightField)
-                ?? throw new RpcException(new Status(StatusCode.InvalidArgument,
-                    $"Unknown field '{join.RightField}' on type '{join.RightType}' referenced in join."));
+                ?? throw new StarRocksQueryTranslationException(
+                    $"Unknown field '{join.RightField}' on type '{join.RightType}' referenced in join.");
 
             var kind = join.Kind switch
             {
@@ -522,7 +516,7 @@ internal static class StarRocksQueryBuilder
         return sb.ToString();
     }
 
-    private static string BuildOrder(SchemaDescriptor schema, IEnumerable<SearchSort>? sorts)
+    private static string BuildOrder(StarRocksQuerySchema schema, IEnumerable<SearchSort>? sorts)
     {
         if (sorts is null) return "";
         var parts = sorts
@@ -540,7 +534,7 @@ internal static class StarRocksQueryBuilder
     /// </summary>
     private static string BuildRangeSql(
         string from, string quotedCol,
-        IReadOnlyList<SrRangeSpec>? buckets, string wc, string hc = "")
+        IReadOnlyList<RangeBucketDescriptor>? buckets, string wc, string hc = "")
     {
         if (buckets is null || buckets.Count == 0)
             return $"SELECT NULL AS bucket_key, COUNT(*) AS doc_count {from}{wc}{hc}";

@@ -1,3 +1,4 @@
+using Dapper;
 using Google.Protobuf.WellKnownTypes;
 using Grpc.Core;
 using Iverson.Api.Schema;
@@ -46,11 +47,7 @@ public sealed class ObjectSearchGrpcService(
             logger.LogInformation("[Search] type={Type} clauses={Clauses} page={Page}/{Size}",
                 request.TypeName, request.Query?.Clauses.Count ?? 0, request.Page, request.PageSize);
 
-        var (sql, param) = StarRocksQueryBuilder.BuildSearch(
-            schema.TableName, schema, request.Query, request.Page, request.PageSize,
-            fields: request.Fields.Count > 0 ? request.Fields : null,
-            joins: request.Joins,
-            registry: registry);
+        var (sql, param) = BuildSearchSql(schema, request);
 
         IEnumerable<dynamic> rows;
         try
@@ -250,13 +247,22 @@ public sealed class ObjectSearchGrpcService(
             throw new RpcException(new Status(StatusCode.InvalidArgument,
                 "Multi-key GROUP BY (group_by_fields with more than one entry) is not yet supported via the Aggregate RPC's result decoding; use a single field or wait for the GroupByRequest RPC."));
 
-        var (sql, param) = StarRocksQueryBuilder.BuildAggregate(
-            schema.TableName, schema, query, spec, having, joins, registry);
+        (string sql, DynamicParameters param) result;
+        try
+        {
+            result = StarRocksQueryBuilder.BuildAggregate(
+                schema.TableName, SchemaBuilder.ToStarRocksQuerySchema(schema), query, spec, having, joins,
+                t => registry.Get(t) is { } d ? SchemaBuilder.ToStarRocksQuerySchema(d) : null);
+        }
+        catch (StarRocksQueryTranslationException ex)
+        {
+            throw new RpcException(new Status(StatusCode.InvalidArgument, ex.Message));
+        }
 
         List<dynamic> rows;
         try
         {
-            rows = (await sr.QueryAsync<dynamic>(sql, param)).ToList();
+            rows = (await sr.QueryAsync<dynamic>(result.sql, result.param)).ToList();
         }
         catch (StarRocksNotReadyException ex)
         {
@@ -303,12 +309,22 @@ public sealed class ObjectSearchGrpcService(
             logger.LogInformation("[GroupBy] type={Type} keys={Keys} metrics={Metrics}",
                 request.TypeName, request.Keys.Count, request.Metrics.Count);
 
-        var (sql, param) = StarRocksQueryBuilder.BuildGroupBy(schema.TableName, schema, request, registry);
+        (string sql, DynamicParameters param) built;
+        try
+        {
+            built = StarRocksQueryBuilder.BuildGroupBy(
+                schema.TableName, SchemaBuilder.ToStarRocksQuerySchema(schema), request,
+                t => registry.Get(t) is { } d ? SchemaBuilder.ToStarRocksQuerySchema(d) : null);
+        }
+        catch (StarRocksQueryTranslationException ex)
+        {
+            throw new RpcException(new Status(StatusCode.InvalidArgument, ex.Message));
+        }
 
         IEnumerable<dynamic> rows;
         try
         {
-            rows = await sr.QueryAsync<dynamic>(sql, param);
+            rows = await sr.QueryAsync<dynamic>(built.sql, built.param);
         }
         catch (StarRocksNotReadyException ex)
         {
@@ -381,6 +397,23 @@ public sealed class ObjectSearchGrpcService(
         if (!known)
             throw new RpcException(new Status(StatusCode.InvalidArgument,
                 $"{rpcName}: filter property '{property}' is not a scalar or foreign-key column on '{schema.TypeName}'."));
+    }
+
+    private (string Sql, DynamicParameters Param) BuildSearchSql(SchemaDescriptor schema, SearchRequest request)
+    {
+        try
+        {
+            return StarRocksQueryBuilder.BuildSearch(
+                schema.TableName, SchemaBuilder.ToStarRocksQuerySchema(schema), request.Query,
+                request.Page, request.PageSize,
+                fields: request.Fields.Count > 0 ? request.Fields : null,
+                joins: request.Joins,
+                registry: t => registry.Get(t) is { } d ? SchemaBuilder.ToStarRocksQuerySchema(d) : null);
+        }
+        catch (StarRocksQueryTranslationException ex)
+        {
+            throw new RpcException(new Status(StatusCode.InvalidArgument, ex.Message));
+        }
     }
 
     private static Filter? BuildChunksFilter(SchemaDescriptor schema, SearchChunksRequest request)

@@ -214,7 +214,7 @@ public sealed class StarRocksIntegrationTests(StarRocksContainerFixture fixture)
             Value = new SearchValue { StringVal = "Alice" }, ClauseType = SearchClauseType.Filter
         });
 
-        var (sql, param) = StarRocksQueryBuilder.BuildSearch(table, AuthorSchema(table), query, 0, 50);
+        var (sql, param) = StarRocksQueryBuilder.BuildSearch(table, SchemaBuilder.ToStarRocksQuerySchema(AuthorSchema(table)), query, 0, 50);
         var rows = (await _repo.QueryAsync<dynamic>(sql, param)).ToList();
 
         rows.Should().ContainSingle();
@@ -236,7 +236,7 @@ public sealed class StarRocksIntegrationTests(StarRocksContainerFixture fixture)
             Property = "Name", Operator = SearchOperator.StartsWith,
             Value = new SearchValue { StringVal = "Al" }, ClauseType = SearchClauseType.Filter
         });
-        var (startsSql, startsParam) = StarRocksQueryBuilder.BuildSearch(table, AuthorSchema(table), startsWithQuery, 0, 50);
+        var (startsSql, startsParam) = StarRocksQueryBuilder.BuildSearch(table, SchemaBuilder.ToStarRocksQuerySchema(AuthorSchema(table)), startsWithQuery, 0, 50);
         var startsRows = (await _repo.QueryAsync<dynamic>(startsSql, startsParam)).ToList();
         startsRows.Should().HaveCount(2);
 
@@ -246,7 +246,7 @@ public sealed class StarRocksIntegrationTests(StarRocksContainerFixture fixture)
             Property = "Name", Operator = SearchOperator.EndsWith,
             Value = new SearchValue { StringVal = "ce" }, ClauseType = SearchClauseType.Filter
         });
-        var (endsSql, endsParam) = StarRocksQueryBuilder.BuildSearch(table, AuthorSchema(table), endsWithQuery, 0, 50);
+        var (endsSql, endsParam) = StarRocksQueryBuilder.BuildSearch(table, SchemaBuilder.ToStarRocksQuerySchema(AuthorSchema(table)), endsWithQuery, 0, 50);
         var endsRows = (await _repo.QueryAsync<dynamic>(endsSql, endsParam)).ToList();
         endsRows.Should().ContainSingle();
         ((string)endsRows[0].Name).Should().Be("Alice");
@@ -268,7 +268,7 @@ public sealed class StarRocksIntegrationTests(StarRocksContainerFixture fixture)
             Value = new SearchValue { NumberVal = 3 }, ClauseType = SearchClauseType.Filter
         });
 
-        var (sql, param) = StarRocksQueryBuilder.BuildSearch(table, AuthorSchema(table), query, 0, 50);
+        var (sql, param) = StarRocksQueryBuilder.BuildSearch(table, SchemaBuilder.ToStarRocksQuerySchema(AuthorSchema(table)), query, 0, 50);
         var rows = (await _repo.QueryAsync<dynamic>(sql, param)).ToList();
 
         rows.Should().HaveCount(2);
@@ -294,7 +294,7 @@ public sealed class StarRocksIntegrationTests(StarRocksContainerFixture fixture)
             Value = new SearchValue { StringList = strList }, ClauseType = SearchClauseType.Filter
         });
 
-        var (sql, param) = StarRocksQueryBuilder.BuildSearch(table, AuthorSchema(table), query, 0, 50);
+        var (sql, param) = StarRocksQueryBuilder.BuildSearch(table, SchemaBuilder.ToStarRocksQuerySchema(AuthorSchema(table)), query, 0, 50);
         var rows = (await _repo.QueryAsync<dynamic>(sql, param)).ToList();
 
         rows.Should().HaveCount(2);
@@ -348,7 +348,8 @@ public sealed class StarRocksIntegrationTests(StarRocksContainerFixture fixture)
         };
 
         var (sql, param) = StarRocksQueryBuilder.BuildSearch(
-            authorsTable, authorApiSchema, null, 0, 50, joins: joins, registry: registry);
+            authorsTable, SchemaBuilder.ToStarRocksQuerySchema(authorApiSchema), null, 0, 50, joins: joins,
+            registry: t => registry.Get(t) is { } d ? SchemaBuilder.ToStarRocksQuerySchema(d) : null);
         var rows = (await _repo.QueryAsync<dynamic>(sql, param)).ToList();
 
         rows.Should().ContainSingle();
@@ -401,7 +402,8 @@ public sealed class StarRocksIntegrationTests(StarRocksContainerFixture fixture)
         };
 
         var (sql, param) = StarRocksQueryBuilder.BuildSearch(
-            authorsTable, authorApiSchema, null, 0, 50, joins: joins, registry: registry);
+            authorsTable, SchemaBuilder.ToStarRocksQuerySchema(authorApiSchema), null, 0, 50, joins: joins,
+            registry: t => registry.Get(t) is { } d ? SchemaBuilder.ToStarRocksQuerySchema(d) : null);
         var rows = (await _repo.QueryAsync<dynamic>(sql, param)).ToList();
 
         // Both Alice (matched) and Bob (unmatched) must appear — this is what actually
@@ -420,7 +422,7 @@ public sealed class StarRocksIntegrationTests(StarRocksContainerFixture fixture)
             ("33333333-3333-3333-3333-333333333333", "Bob",   null, null, null));
 
         var spec = new AggregationDescriptor("by_name", AggregationKind.Terms, "Name", Size: 10);
-        var (sql, param) = StarRocksQueryBuilder.BuildAggregate(table, AuthorSchema(table), null, spec);
+        var (sql, param) = StarRocksQueryBuilder.BuildAggregate(table, SchemaBuilder.ToStarRocksQuerySchema(AuthorSchema(table)), null, spec);
         var rows = (await _repo.QueryAsync<dynamic>(sql, param)).ToList();
 
         rows.Should().HaveCount(2);
@@ -445,7 +447,7 @@ public sealed class StarRocksIntegrationTests(StarRocksContainerFixture fixture)
                 new RangeBucketDescriptor("mid",  3,    7),
                 new RangeBucketDescriptor("high", 7,    null),
             ]);
-        var (sql, param) = StarRocksQueryBuilder.BuildAggregate(table, AuthorSchema(table), null, spec);
+        var (sql, param) = StarRocksQueryBuilder.BuildAggregate(table, SchemaBuilder.ToStarRocksQuerySchema(AuthorSchema(table)), null, spec);
         var rows = (await _repo.QueryAsync<dynamic>(sql, param)).ToList();
 
         rows.Should().HaveCount(3);
@@ -473,7 +475,7 @@ public sealed class StarRocksIntegrationTests(StarRocksContainerFixture fixture)
         var spec = new AggregationDescriptor(
             "by_month", AggregationKind.DateHistogram, "PublishedAt",
             CalendarInterval: "month");
-        var (sql, param) = StarRocksQueryBuilder.BuildAggregate(table, AuthorSchema(table), null, spec);
+        var (sql, param) = StarRocksQueryBuilder.BuildAggregate(table, SchemaBuilder.ToStarRocksQuerySchema(AuthorSchema(table)), null, spec);
         var rows = (await _repo.QueryAsync<dynamic>(sql, param)).ToList();
 
         rows.Should().HaveCount(2);
@@ -495,7 +497,7 @@ public sealed class StarRocksIntegrationTests(StarRocksContainerFixture fixture)
         var spec = new AggregationDescriptor(
             "by_quarter", AggregationKind.DateHistogram, "PublishedAt",
             CalendarInterval: "quarter");
-        var (sql, param) = StarRocksQueryBuilder.BuildAggregate(table, AuthorSchema(table), null, spec);
+        var (sql, param) = StarRocksQueryBuilder.BuildAggregate(table, SchemaBuilder.ToStarRocksQuerySchema(AuthorSchema(table)), null, spec);
         var rows = (await _repo.QueryAsync<dynamic>(sql, param)).ToList();
 
         rows.Should().HaveCount(2);
@@ -528,7 +530,7 @@ public sealed class StarRocksIntegrationTests(StarRocksContainerFixture fixture)
             Value = new SearchValue { NumberVal = 1 }, ClauseType = SearchClauseType.Filter
         });
 
-        var (sql, param) = StarRocksQueryBuilder.BuildAggregate(table, AuthorSchema(table), null, spec, having);
+        var (sql, param) = StarRocksQueryBuilder.BuildAggregate(table, SchemaBuilder.ToStarRocksQuerySchema(AuthorSchema(table)), null, spec, having);
         var rows = (await _repo.QueryAsync<dynamic>(sql, param)).ToList();
 
         // Only "Alice" (count=2) clears the HAVING doc_count > 1 bar; "Bob" (count=1) doesn't.
@@ -556,7 +558,9 @@ public sealed class StarRocksIntegrationTests(StarRocksContainerFixture fixture)
         request.OrderBy.Add(new SearchSort { Property = "Name" });
 
         var registry = BuildRegistry(AuthorSchema(table));
-        var (sql, param) = StarRocksQueryBuilder.BuildGroupBy(table, AuthorSchema(table), request, registry);
+        var (sql, param) = StarRocksQueryBuilder.BuildGroupBy(
+            table, SchemaBuilder.ToStarRocksQuerySchema(AuthorSchema(table)), request,
+            t => registry.Get(t) is { } d ? SchemaBuilder.ToStarRocksQuerySchema(d) : null);
         var rows = (await _repo.QueryAsync<dynamic>(sql, param)).ToList();
 
         rows.Should().HaveCount(2);
@@ -625,7 +629,9 @@ public sealed class StarRocksIntegrationTests(StarRocksContainerFixture fixture)
         });
         request.Metrics.Add(new MetricSpec { Name = "cnt", Type = AggregationType.Count });
 
-        var (sql, param) = StarRocksQueryBuilder.BuildGroupBy(authorsTable, authorApiSchema, request, registry);
+        var (sql, param) = StarRocksQueryBuilder.BuildGroupBy(
+            authorsTable, SchemaBuilder.ToStarRocksQuerySchema(authorApiSchema), request,
+            t => registry.Get(t) is { } d ? SchemaBuilder.ToStarRocksQuerySchema(d) : null);
         var rows = (await _repo.QueryAsync<dynamic>(sql, param)).ToList();
 
         // Only Alice's row (whose article matches "Wanted Title") should survive the
