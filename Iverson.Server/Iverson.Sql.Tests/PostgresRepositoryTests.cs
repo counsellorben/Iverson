@@ -45,24 +45,6 @@ public sealed class PostgresRepositoryTests
         result.Should().BeNull();
     }
 
-    [Fact]
-    public async Task ApplySchemaAsync_IsCalledWithCorrectTableName()
-    {
-        var repo = Substitute.For<IPostgresSchemaManager>();
-        var schema = new TableSchema(
-            "players",
-            new ColumnSchema("id", "uuid", IsNullable: false),
-            new List<ColumnSchema>
-            {
-                new("name", "text", IsNullable: false),
-                new("jersey_number", "int", IsNullable: true)
-            });
-
-        await repo.ApplySchemaAsync(schema);
-
-        await repo.Received(1).ApplySchemaAsync(Arg.Is<TableSchema>(s => s.TableName == "players"));
-    }
-
     // ─── Schema record tests (pure value) ────────────────────────────────────
 
     [Fact]
@@ -87,10 +69,9 @@ public sealed class PostgresRepositoryTests
     }
 
     [Fact]
-    public void PostgresRepository_ImplementsAllThreeRoleInterfaces()
+    public void PostgresRepository_ImplementsQueryAndTransactionRoles()
     {
         typeof(PostgresRepository).Should().Implement<IPostgresQueryExecutor>();
-        typeof(PostgresRepository).Should().Implement<IPostgresSchemaManager>();
         typeof(PostgresRepository).Should().Implement<IPostgresTransactionRunner>();
     }
 

@@ -13,6 +13,7 @@ public sealed class PostgresContainerFixture : IAsyncLifetime
         .Build();
 
     public PostgresRepository Repository { get; private set; } = null!;
+    public PostgresSchemaManager SchemaManager { get; private set; } = null!;
     public string ConnectionString => _container.GetConnectionString();
 
     public async Task InitializeAsync()
@@ -21,6 +22,9 @@ public sealed class PostgresContainerFixture : IAsyncLifetime
         Repository = new PostgresRepository(
             _container.GetConnectionString(),
             NullLogger<PostgresRepository>.Instance);
+        SchemaManager = new PostgresSchemaManager(
+            _container.GetConnectionString(),
+            NullLogger<PostgresSchemaManager>.Instance);
     }
 
     public async Task DisposeAsync() => await _container.DisposeAsync();
@@ -30,6 +34,7 @@ public sealed class PostgresIntegrationTests(PostgresContainerFixture fixture)
     : IClassFixture<PostgresContainerFixture>
 {
     private readonly PostgresRepository _repo = fixture.Repository;
+    private readonly PostgresSchemaManager _schemaManager = fixture.SchemaManager;
 
     // Use unique table names per test to avoid state leakage
     private static string UniqueTable() =>
@@ -46,7 +51,7 @@ public sealed class PostgresIntegrationTests(PostgresContainerFixture fixture)
             new ColumnSchema("id",    "uuid", IsNullable: false),
             [new ColumnSchema("name", "text", IsNullable: false)]);
 
-        await _repo.ApplySchemaAsync(schema);
+        await _schemaManager.ApplySchemaAsync(schema);
 
         // Confirm the table exists by querying information_schema
         var count = await _repo.QuerySingleOrDefaultAsync<int>(
@@ -63,9 +68,9 @@ public sealed class PostgresIntegrationTests(PostgresContainerFixture fixture)
             new ColumnSchema("id",    "uuid", IsNullable: false),
             [new ColumnSchema("name", "text", IsNullable: false)]);
 
-        await _repo.ApplySchemaAsync(schema);
+        await _schemaManager.ApplySchemaAsync(schema);
 
-        var act = async () => await _repo.ApplySchemaAsync(schema);
+        var act = async () => await _schemaManager.ApplySchemaAsync(schema);
         await act.Should().NotThrowAsync();
     }
 
@@ -78,7 +83,7 @@ public sealed class PostgresIntegrationTests(PostgresContainerFixture fixture)
             table,
             new ColumnSchema("id",    "uuid", IsNullable: false),
             [new ColumnSchema("name", "text", IsNullable: false)]);
-        await _repo.ApplySchemaAsync(v1);
+        await _schemaManager.ApplySchemaAsync(v1);
 
         var v2 = new TableSchema(
             table,
@@ -87,7 +92,7 @@ public sealed class PostgresIntegrationTests(PostgresContainerFixture fixture)
                 new ColumnSchema("name", "text", IsNullable: false),
                 new ColumnSchema("bio",  "text", IsNullable: true),
             ]);
-        await _repo.ApplySchemaAsync(v2);
+        await _schemaManager.ApplySchemaAsync(v2);
 
         var cols = (await _repo.QueryAsync<string>(
             $"SELECT column_name FROM information_schema.columns WHERE table_name = '{table}'"))
@@ -108,13 +113,13 @@ public sealed class PostgresIntegrationTests(PostgresContainerFixture fixture)
                 new ColumnSchema("name", "text", IsNullable: false),
                 new ColumnSchema("bio",  "text", IsNullable: true),
             ]);
-        await _repo.ApplySchemaAsync(v1);
+        await _schemaManager.ApplySchemaAsync(v1);
 
         var v2 = new TableSchema(
             table,
             new ColumnSchema("id",    "uuid", IsNullable: false),
             [new ColumnSchema("name", "text", IsNullable: false)]);
-        await _repo.ApplySchemaAsync(v2);
+        await _schemaManager.ApplySchemaAsync(v2);
 
         var cols = (await _repo.QueryAsync<string>(
             $"SELECT column_name FROM information_schema.columns WHERE table_name = '{table}'"))
@@ -129,7 +134,7 @@ public sealed class PostgresIntegrationTests(PostgresContainerFixture fixture)
     public async Task ExecuteAsync_InsertAndQueryAsync_RoundTrip()
     {
         var table = UniqueTable();
-        await _repo.ApplySchemaAsync(new TableSchema(
+        await _schemaManager.ApplySchemaAsync(new TableSchema(
             table,
             new ColumnSchema("id",    "uuid", IsNullable: false),
             [new ColumnSchema("name", "text", IsNullable: false)]));
@@ -152,7 +157,7 @@ public sealed class PostgresIntegrationTests(PostgresContainerFixture fixture)
     public async Task QuerySingleOrDefaultAsync_ReturnsNull_WhenRowNotFound()
     {
         var table = UniqueTable();
-        await _repo.ApplySchemaAsync(new TableSchema(
+        await _schemaManager.ApplySchemaAsync(new TableSchema(
             table,
             new ColumnSchema("id",    "uuid", IsNullable: false),
             [new ColumnSchema("name", "text", IsNullable: false)]));
@@ -169,7 +174,7 @@ public sealed class PostgresIntegrationTests(PostgresContainerFixture fixture)
     public async Task UpsertViaJsonPopulateRecord_RoundTrips()
     {
         var table = UniqueTable();
-        await _repo.ApplySchemaAsync(new TableSchema(
+        await _schemaManager.ApplySchemaAsync(new TableSchema(
             table,
             new ColumnSchema("id",    "uuid", IsNullable: false),
             [new ColumnSchema("name", "text", IsNullable: false)]));
@@ -196,7 +201,7 @@ public sealed class PostgresIntegrationTests(PostgresContainerFixture fixture)
     public async Task UpsertViaJsonPopulateRecord_UpdatesExistingRow()
     {
         var table = UniqueTable();
-        await _repo.ApplySchemaAsync(new TableSchema(
+        await _schemaManager.ApplySchemaAsync(new TableSchema(
             table,
             new ColumnSchema("id",    "uuid", IsNullable: false),
             [new ColumnSchema("name", "text", IsNullable: false)]));
@@ -221,7 +226,7 @@ public sealed class PostgresIntegrationTests(PostgresContainerFixture fixture)
     public async Task ApplySchemaAsync_CreatesIndex_OnFkColumn()
     {
         var table = UniqueTable();
-        await _repo.ApplySchemaAsync(new TableSchema(
+        await _schemaManager.ApplySchemaAsync(new TableSchema(
             table,
             new ColumnSchema("id",        "uuid", IsNullable: false),
             [new ColumnSchema("authorId", "uuid", IsNullable: false)]));
