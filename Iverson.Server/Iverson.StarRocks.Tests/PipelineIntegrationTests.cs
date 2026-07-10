@@ -1,13 +1,8 @@
 using FluentAssertions;
-using Iverson.Api.Schema;
 using Iverson.Client.Contracts;
-using Iverson.Sql;
-using Iverson.StarRocks;
-using Microsoft.Extensions.Logging.Abstractions;
-using NSubstitute;
 using Xunit;
 
-namespace Iverson.Api.Tests.StarRocks;
+namespace Iverson.StarRocks.Tests;
 
 [Trait("Category", "Integration")]
 public sealed class PipelineIntegrationTests : IClassFixture<StarRocksContainerFixture>
@@ -16,32 +11,10 @@ public sealed class PipelineIntegrationTests : IClassFixture<StarRocksContainerF
 
     public PipelineIntegrationTests(StarRocksContainerFixture fx) => _fx = fx;
 
-    private static SchemaDescriptor ArticleSchema() => new()
-    {
-        TypeName      = "PipeArticle",
-        TableName     = "pipe_articles",
-        KeyColumn     = new ColumnDescriptor("Id", "uuid", false),
-        ScalarColumns =
-        [
-            new ColumnDescriptor("AuthorId",    "uuid",        true),
-            new ColumnDescriptor("WordCount",   "integer",     true),
-            new ColumnDescriptor("PublishedAt", "timestamptz", true),
-        ],
-        FkColumns = [], VectorFields = [], ChunkFields = [], Relations = []
-    };
+    private static StarRocksQuerySchema ArticleSchema() =>
+        new("PipeArticle", "pipe_articles", "Id", ["AuthorId", "WordCount", "PublishedAt"]);
 
-    private static SchemaRegistry EmptyRegistry()
-    {
-        var sql = Substitute.For<IRecordStoreQueryExecutor>();
-        sql.ExecuteAsync(Arg.Any<string>(), Arg.Any<object?>()).Returns(0);
-        return new SchemaRegistry(sql, NullLogger<SchemaRegistry>.Instance);
-    }
-
-    // Adapts a SchemaDescriptor-backed SchemaRegistry to the Func<string, StarRocksQuerySchema?>
-    // lookup delegate StarRocksPipelineBuilder.Build now takes — same pattern used at
-    // ObjectSearchGrpcService's Pipeline call site and throughout StarRocksIntegrationTests.cs.
-    private static Func<string, StarRocksQuerySchema?> ResolvedRegistry(SchemaRegistry registry) =>
-        t => registry.Get(t) is { } d ? SchemaBuilder.ToStarRocksQuerySchema(d) : null;
+    private static Func<string, StarRocksQuerySchema?> EmptyRegistry() => TestSchemaRegistry.BuildRegistry();
 
     private async Task SeedAsync()
     {
@@ -90,9 +63,7 @@ public sealed class PipelineIntegrationTests : IClassFixture<StarRocksContainerF
         request.Steps.Add(ranked);
         request.Steps.Add(top);
 
-        var (sql, param) = StarRocksPipelineBuilder.Build(
-            SchemaBuilder.ToStarRocksQuerySchema(ArticleSchema()), request, ResolvedRegistry(EmptyRegistry()));
-        var rows = (await _fx.Repository.QueryAsync<dynamic>(sql, param)).ToList();
+        var rows = (await _fx.Repository.PipelineAsync(ArticleSchema(), request, EmptyRegistry())).ToList();
 
         rows.Should().HaveCount(4);
         ((IEnumerable<dynamic>)rows).Select(r => (string)r.Id).Should().BeEquivalentTo(["3", "4", "5", "6"]);
@@ -120,9 +91,7 @@ public sealed class PipelineIntegrationTests : IClassFixture<StarRocksContainerF
         var request = new PipelineRequest { TypeName = "PipeArticle" };
         request.Steps.Add(agg);
 
-        var (sql, param) = StarRocksPipelineBuilder.Build(
-            SchemaBuilder.ToStarRocksQuerySchema(ArticleSchema()), request, ResolvedRegistry(EmptyRegistry()));
-        var rows = (await _fx.Repository.QueryAsync<dynamic>(sql, param)).ToList();
+        var rows = (await _fx.Repository.PipelineAsync(ArticleSchema(), request, EmptyRegistry())).ToList();
 
         rows.Should().HaveCount(1);   // only author A has >=3 articles with >=200 words
         ((string)rows[0].AuthorId).Should().Be("A");
@@ -149,17 +118,14 @@ public sealed class PipelineIntegrationTests : IClassFixture<StarRocksContainerF
         request.Steps.Add(cume);
         request.OrderBy.Add(new SearchSort { Property = "PublishedAt_month" });
 
-        var (sql, param) = StarRocksPipelineBuilder.Build(
-            SchemaBuilder.ToStarRocksQuerySchema(ArticleSchema()), request, ResolvedRegistry(EmptyRegistry()));
-        var rows = (await _fx.Repository.QueryAsync<dynamic>(sql, param)).ToList();
+        var rows = (await _fx.Repository.PipelineAsync(ArticleSchema(), request, EmptyRegistry())).ToList();
 
         rows.Should().HaveCount(4);                                  // Jan, Feb, Mar, Apr
         // (long) cast is required here, not just style: rows[^1].running_total is `dynamic`,
         // and Convert.ToInt64(dynamic) resolves via the runtime binder too, so its result stays
         // `dynamic` — the C# runtime binder then can't find an instance member '.Should()' on
         // the boxed long it unwraps to (RuntimeBinderException). Casting to (long) first forces
-        // static typing before FluentAssertions' extension method is resolved. Same issue and
-        // fix as the (long) casts throughout StarRocksIntegrationTests.cs.
+        // static typing before FluentAssertions' extension method is resolved.
         ((long)Convert.ToInt64(rows[^1].running_total)).Should().Be(6L);   // all six articles
     }
 
@@ -179,9 +145,7 @@ public sealed class PipelineIntegrationTests : IClassFixture<StarRocksContainerF
         request.Steps.Add(byAuthor);
         request.Steps.Add(share);
 
-        var (sql, param) = StarRocksPipelineBuilder.Build(
-            SchemaBuilder.ToStarRocksQuerySchema(ArticleSchema()), request, ResolvedRegistry(EmptyRegistry()));
-        var rows = (await _fx.Repository.QueryAsync<dynamic>(sql, param)).ToList();
+        var rows = (await _fx.Repository.PipelineAsync(ArticleSchema(), request, EmptyRegistry())).ToList();
 
         var byAuthorPct = ((IEnumerable<dynamic>)rows)
             .ToDictionary(r => (string)r.AuthorId, r => (double)Convert.ToDouble(r.pct));
@@ -209,9 +173,7 @@ public sealed class PipelineIntegrationTests : IClassFixture<StarRocksContainerF
         request.Steps.Add(agg);
         request.Steps.Add(enriched);
 
-        var (sql, param) = StarRocksPipelineBuilder.Build(
-            SchemaBuilder.ToStarRocksQuerySchema(ArticleSchema()), request, ResolvedRegistry(EmptyRegistry()));
-        var rows = (await _fx.Repository.QueryAsync<dynamic>(sql, param)).ToList();
+        var rows = (await _fx.Repository.PipelineAsync(ArticleSchema(), request, EmptyRegistry())).ToList();
 
         rows.Should().HaveCount(6);
         foreach (var row in (IEnumerable<dynamic>)rows)
