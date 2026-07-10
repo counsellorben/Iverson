@@ -2,7 +2,7 @@ using MySqlConnector;
 
 namespace Iverson.StarRocks;
 
-public sealed class StarRocksHealthChecker(string connectionString) : IStarRocksHealthCheck
+public sealed class StarRocksHealthChecker(string connectionString) : IEngagementStoreHealthCheck
 {
     private MySqlConnection CreateConnection() => new(connectionString);
 

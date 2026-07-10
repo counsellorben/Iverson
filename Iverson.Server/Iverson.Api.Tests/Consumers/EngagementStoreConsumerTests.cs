@@ -14,8 +14,8 @@ namespace Iverson.Api.Tests.Consumers;
 public class EngagementStoreConsumerTests
 {
     private readonly IEventConsumer _consumer;
-    private readonly IStarRocksEntityStore _sr;
-    private readonly IPostgresQueryExecutor _sql;
+    private readonly IEngagementStoreEntityStore _sr;
+    private readonly IRecordStoreQueryExecutor _sql;
     private readonly Api.Schema.SchemaRegistry _registry;
 
     private static readonly JsonSerializerOptions JsonOptions = new()
@@ -27,8 +27,8 @@ public class EngagementStoreConsumerTests
     public EngagementStoreConsumerTests()
     {
         _consumer = Substitute.For<IEventConsumer>();
-        _sr       = Substitute.For<IStarRocksEntityStore>();
-        _sql      = Substitute.For<IPostgresQueryExecutor>();
+        _sr       = Substitute.For<IEngagementStoreEntityStore>();
+        _sql      = Substitute.For<IRecordStoreQueryExecutor>();
 
         _sql.ExecuteAsync(Arg.Any<string>(), Arg.Any<object?>()).Returns(0);
         _sr.UpsertAsync(Arg.Any<StarRocksTableSchema>(), Arg.Any<string>())

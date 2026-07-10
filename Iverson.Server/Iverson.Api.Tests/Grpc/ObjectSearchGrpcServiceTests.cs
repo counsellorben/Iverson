@@ -17,19 +17,19 @@ namespace Iverson.Api.Tests.Grpc;
 
 public class ObjectSearchGrpcServiceTests
 {
-    private readonly IPostgresQueryExecutor _sql;
+    private readonly IRecordStoreQueryExecutor _sql;
     private readonly SchemaRegistry _registry;
-    private readonly IStarRocksQueryExecutor _sr;
+    private readonly IEngagementStoreQueryExecutor _sr;
     private readonly IVectorQueryService _vector;
     private readonly IEmbeddingService _embedding;
     private readonly ObjectSearchGrpcService _sut;
 
     public ObjectSearchGrpcServiceTests()
     {
-        _sql = Substitute.For<IPostgresQueryExecutor>();
+        _sql = Substitute.For<IRecordStoreQueryExecutor>();
         _sql.ExecuteAsync(Arg.Any<string>(), Arg.Any<object?>()).Returns(0);
         _registry  = new SchemaRegistry(_sql, NullLogger<SchemaRegistry>.Instance);
-        _sr        = Substitute.For<IStarRocksQueryExecutor>();
+        _sr        = Substitute.For<IEngagementStoreQueryExecutor>();
         _vector    = Substitute.For<IVectorQueryService>();
         _embedding = Substitute.For<IEmbeddingService>();
 

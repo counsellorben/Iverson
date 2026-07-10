@@ -13,7 +13,7 @@ namespace Iverson.Api.Tests.Reconciliation;
 
 /// <summary>
 /// Exercises the reconciliation queue against a real Postgres instance (not a mocked
-/// <see cref="IPostgresRepository"/>) specifically to catch the uuid/string type-mismatch class
+/// <see cref="IRecordStoreQueryExecutor"/>) specifically to catch the uuid/string type-mismatch class
 /// of bug that mocked unit tests structurally cannot detect: Npgsql binding a native
 /// <see cref="Guid"/> against a "uuid" column, and Dapper materializing a uuid column back into
 /// <see cref="ReconciliationQueueRow.Id"/>.

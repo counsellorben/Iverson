@@ -18,8 +18,8 @@ namespace Iverson.Api.Tests.Grpc;
 public class ObjectPersistenceGrpcServiceTests
 {
     private readonly IEventProducer _events;
-    private readonly IPostgresQueryExecutor _sql;
-    private readonly IPostgresTransactionRunner _txRunner;
+    private readonly IRecordStoreQueryExecutor _sql;
+    private readonly IRecordStoreTransactionRunner _txRunner;
     private readonly SchemaRegistry _registry;
     private readonly ObjectPersistenceGrpcService _sut;
 
@@ -27,10 +27,10 @@ public class ObjectPersistenceGrpcServiceTests
     {
         _events = Substitute.For<IEventProducer>();
 
-        _sql = Substitute.For<IPostgresQueryExecutor>();
+        _sql = Substitute.For<IRecordStoreQueryExecutor>();
         _sql.ExecuteAsync(Arg.Any<string>(), Arg.Any<object?>()).Returns(0);
 
-        _txRunner = Substitute.For<IPostgresTransactionRunner>();
+        _txRunner = Substitute.For<IRecordStoreTransactionRunner>();
         _txRunner.ExecuteInTransactionAsync(Arg.Any<Func<IDbTransactionContext, Task>>())
             .Returns(ci => ci.Arg<Func<IDbTransactionContext, Task>>()(Substitute.For<IDbTransactionContext>()));
 

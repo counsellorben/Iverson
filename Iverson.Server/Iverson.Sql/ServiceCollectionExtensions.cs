@@ -12,15 +12,15 @@ public static class ServiceCollectionExtensions
             var logger = sp.GetRequiredService<ILogger<PostgresRepository>>();
             return new PostgresRepository(connectionString, logger);
         });
-        services.AddSingleton<IPostgresQueryExecutor>(sp => sp.GetRequiredService<PostgresRepository>());
-        services.AddSingleton<IPostgresTransactionRunner>(sp => sp.GetRequiredService<PostgresRepository>());
+        services.AddSingleton<IRecordStoreQueryExecutor>(sp => sp.GetRequiredService<PostgresRepository>());
+        services.AddSingleton<IRecordStoreTransactionRunner>(sp => sp.GetRequiredService<PostgresRepository>());
 
         services.AddSingleton(sp =>
         {
             var logger = sp.GetRequiredService<ILogger<PostgresSchemaManager>>();
             return new PostgresSchemaManager(connectionString, logger);
         });
-        services.AddSingleton<IPostgresSchemaManager>(sp => sp.GetRequiredService<PostgresSchemaManager>());
+        services.AddSingleton<IRecordStoreSchemaManager>(sp => sp.GetRequiredService<PostgresSchemaManager>());
 
         return services;
     }

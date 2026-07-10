@@ -12,7 +12,7 @@ namespace Iverson.Api.Grpc;
 /// object graph locally from its relationship attribute metadata.
 /// </summary>
 public sealed class ObjectRetrievalGrpcService(
-    IPostgresQueryExecutor _sql,
+    IRecordStoreQueryExecutor _sql,
     SchemaRegistry registry,
     ILogger<ObjectRetrievalGrpcService> logger)
     : ObjectRetrievalService.ObjectRetrievalServiceBase

@@ -12,7 +12,7 @@ public sealed class PostgresRepositoryTests
     [Fact]
     public async Task QueryAsync_ReturnsExpectedResults()
     {
-        var repo = Substitute.For<IPostgresQueryExecutor>();
+        var repo = Substitute.For<IRecordStoreQueryExecutor>();
         var expected = new[] { new { Id = 1, Name = "Allen" } };
         repo.QueryAsync<object>(Arg.Any<string>(), Arg.Any<object?>())
             .Returns(expected);
@@ -25,7 +25,7 @@ public sealed class PostgresRepositoryTests
     [Fact]
     public async Task ExecuteAsync_ReturnsRowCount()
     {
-        var repo = Substitute.For<IPostgresQueryExecutor>();
+        var repo = Substitute.For<IRecordStoreQueryExecutor>();
         repo.ExecuteAsync(Arg.Any<string>(), Arg.Any<object?>()).Returns(3);
 
         var result = await repo.ExecuteAsync("UPDATE players SET active = true");
@@ -36,7 +36,7 @@ public sealed class PostgresRepositoryTests
     [Fact]
     public async Task QuerySingleOrDefaultAsync_ReturnsNull_WhenNotFound()
     {
-        var repo = Substitute.For<IPostgresQueryExecutor>();
+        var repo = Substitute.For<IRecordStoreQueryExecutor>();
         repo.QuerySingleOrDefaultAsync<object>(Arg.Any<string>(), Arg.Any<object?>())
             .ReturnsNull();
 
@@ -71,8 +71,8 @@ public sealed class PostgresRepositoryTests
     [Fact]
     public void PostgresRepository_ImplementsQueryAndTransactionRoles()
     {
-        typeof(PostgresRepository).Should().Implement<IPostgresQueryExecutor>();
-        typeof(PostgresRepository).Should().Implement<IPostgresTransactionRunner>();
+        typeof(PostgresRepository).Should().Implement<IRecordStoreQueryExecutor>();
+        typeof(PostgresRepository).Should().Implement<IRecordStoreTransactionRunner>();
     }
 
 }

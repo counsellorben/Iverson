@@ -11,7 +11,7 @@ public sealed class StarRocksSchemaManager(
     string connectionString,
     ILogger<StarRocksSchemaManager> logger,
     StarRocksResilienceOptions? resilienceOptions = null)
-    : IStarRocksSchemaManager
+    : IEngagementStoreSchemaManager
 {
     private readonly string _dbName = new MySqlConnectionStringBuilder(connectionString).Database;
 

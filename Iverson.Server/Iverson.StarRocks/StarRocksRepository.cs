@@ -12,7 +12,7 @@ public sealed class StarRocksRepository(
     string connectionString,
     ILogger<StarRocksRepository> logger,
     StarRocksResilienceOptions? resilienceOptions = null)
-    : IStarRocksQueryExecutor, IStarRocksEntityStore
+    : IEngagementStoreQueryExecutor, IEngagementStoreEntityStore
 {
     private readonly StarRocksResilienceOptions _resilience = resilienceOptions ?? StarRocksResilienceOptions.Default;
 

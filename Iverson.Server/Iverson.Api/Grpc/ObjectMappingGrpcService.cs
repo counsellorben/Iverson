@@ -21,14 +21,14 @@ namespace Iverson.Api.Grpc;
 /// the server's entity schema — the client is ignorant of this mapping.
 /// </summary>
 public sealed class ObjectMappingGrpcService(
-    IPostgresQueryExecutor _sql,
-    IPostgresTransactionRunner _txRunner,
-    IPostgresSchemaManager _schemaManager,
+    IRecordStoreQueryExecutor _sql,
+    IRecordStoreTransactionRunner _txRunner,
+    IRecordStoreSchemaManager _schemaManager,
     IVectorSchemaManager _vector,
     IEventProducer _events,
     SchemaRegistry _registry,
     IEmbeddingService _embedding,
-    IStarRocksSchemaManager _starRocks,
+    IEngagementStoreSchemaManager _starRocks,
     IRelationValidator _relationValidator,
     IEntityKeyAccessor _keyAccessor,
     IOutboxWriter _outboxWriter,

@@ -72,6 +72,6 @@ public class StarRocksSchemaManagerTests
     [Fact]
     public void StarRocksSchemaManager_ImplementsIStarRocksSchemaManager()
     {
-        typeof(StarRocksSchemaManager).Should().Implement<IStarRocksSchemaManager>();
+        typeof(StarRocksSchemaManager).Should().Implement<IEngagementStoreSchemaManager>();
     }
 }

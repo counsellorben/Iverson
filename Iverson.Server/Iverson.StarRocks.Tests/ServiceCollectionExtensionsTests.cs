@@ -20,10 +20,10 @@ public class ServiceCollectionExtensionsTests
         services.AddStarRocks(ConnString);
 
         using var provider = services.BuildServiceProvider();
-        var queryExecutor = provider.GetRequiredService<IStarRocksQueryExecutor>();
-        var schemaManager = provider.GetRequiredService<IStarRocksSchemaManager>();
-        var healthCheck = provider.GetRequiredService<IStarRocksHealthCheck>();
-        var entityStore = provider.GetRequiredService<IStarRocksEntityStore>();
+        var queryExecutor = provider.GetRequiredService<IEngagementStoreQueryExecutor>();
+        var schemaManager = provider.GetRequiredService<IEngagementStoreSchemaManager>();
+        var healthCheck = provider.GetRequiredService<IEngagementStoreHealthCheck>();
+        var entityStore = provider.GetRequiredService<IEngagementStoreEntityStore>();
 
         queryExecutor.Should().BeOfType<StarRocksRepository>();
         schemaManager.Should().BeOfType<StarRocksSchemaManager>();
@@ -42,10 +42,10 @@ public class ServiceCollectionExtensionsTests
             new StarRocksResilienceOptions { BackendReadyTimeout = TimeSpan.FromSeconds(5) });
 
         using var provider = services.BuildServiceProvider();
-        var queryExecutor = provider.GetRequiredService<IStarRocksQueryExecutor>();
-        var schemaManager = provider.GetRequiredService<IStarRocksSchemaManager>();
-        var healthCheck = provider.GetRequiredService<IStarRocksHealthCheck>();
-        var entityStore = provider.GetRequiredService<IStarRocksEntityStore>();
+        var queryExecutor = provider.GetRequiredService<IEngagementStoreQueryExecutor>();
+        var schemaManager = provider.GetRequiredService<IEngagementStoreSchemaManager>();
+        var healthCheck = provider.GetRequiredService<IEngagementStoreHealthCheck>();
+        var entityStore = provider.GetRequiredService<IEngagementStoreEntityStore>();
 
         queryExecutor.Should().BeOfType<StarRocksRepository>();
         schemaManager.Should().BeOfType<StarRocksSchemaManager>();

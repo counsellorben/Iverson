@@ -7,7 +7,7 @@ namespace Iverson.Sql;
 
 public sealed class PostgresSchemaManager(
     string connectionString,
-    ILogger<PostgresSchemaManager> logger) : IPostgresSchemaManager
+    ILogger<PostgresSchemaManager> logger) : IRecordStoreSchemaManager
 {
     private NpgsqlConnection CreateConnection() => new(connectionString);
 

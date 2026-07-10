@@ -10,22 +10,22 @@ public class StarRocksRepositoryTests
     [Fact]
     public void IStarRocksQueryExecutor_ExistsAsInterface()
     {
-        var sut = Substitute.For<IStarRocksQueryExecutor>();
+        var sut = Substitute.For<IEngagementStoreQueryExecutor>();
         sut.Should().NotBeNull();
     }
 
     [Fact]
     public void IStarRocksEntityStore_ExistsAsInterface()
     {
-        var sut = Substitute.For<IStarRocksEntityStore>();
+        var sut = Substitute.For<IEngagementStoreEntityStore>();
         sut.Should().NotBeNull();
     }
 
     [Fact]
     public void StarRocksRepository_ImplementsQueryAndEntityStoreRoles()
     {
-        typeof(StarRocksRepository).Should().Implement<IStarRocksQueryExecutor>();
-        typeof(StarRocksRepository).Should().Implement<IStarRocksEntityStore>();
+        typeof(StarRocksRepository).Should().Implement<IEngagementStoreQueryExecutor>();
+        typeof(StarRocksRepository).Should().Implement<IEngagementStoreEntityStore>();
     }
 
     [Fact]

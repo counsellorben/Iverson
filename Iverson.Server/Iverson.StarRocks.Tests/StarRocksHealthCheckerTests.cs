@@ -39,6 +39,6 @@ public class StarRocksHealthCheckerTests
     [Fact]
     public void StarRocksHealthChecker_ImplementsIStarRocksHealthCheck()
     {
-        typeof(StarRocksHealthChecker).Should().Implement<IStarRocksHealthCheck>();
+        typeof(StarRocksHealthChecker).Should().Implement<IEngagementStoreHealthCheck>();
     }
 }

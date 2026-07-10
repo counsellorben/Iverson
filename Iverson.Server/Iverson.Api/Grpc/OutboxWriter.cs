@@ -11,8 +11,8 @@ public interface IOutboxWriter
 }
 
 public sealed class OutboxWriter(
-    IPostgresQueryExecutor sql,
-    IPostgresTransactionRunner txRunner) : IOutboxWriter
+    IRecordStoreQueryExecutor sql,
+    IRecordStoreTransactionRunner txRunner) : IOutboxWriter
 {
     public async Task<Guid> UpsertAndEnqueueOutboxAsync(
         SchemaDescriptor schema, string typeName, string key, string payloadJson)

@@ -9,7 +9,7 @@ public sealed class PostgresSchemaManagerTests
     [Fact]
     public async Task ApplySchemaAsync_IsCalledWithCorrectTableName()
     {
-        var manager = Substitute.For<IPostgresSchemaManager>();
+        var manager = Substitute.For<IRecordStoreSchemaManager>();
         var schema = new TableSchema(
             "players",
             new ColumnSchema("id", "uuid", IsNullable: false),
@@ -27,6 +27,6 @@ public sealed class PostgresSchemaManagerTests
     [Fact]
     public void PostgresSchemaManager_ImplementsIPostgresSchemaManager()
     {
-        typeof(PostgresSchemaManager).Should().Implement<IPostgresSchemaManager>();
+        typeof(PostgresSchemaManager).Should().Implement<IRecordStoreSchemaManager>();
     }
 }

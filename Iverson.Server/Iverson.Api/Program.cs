@@ -151,8 +151,8 @@ app.Use(async (context, next) =>
 app.MapGet("/health/live", () => Results.Ok(new { status = "alive" })).WithName("HealthLive");
 
 app.MapGet("/health", async (
-    IPostgresQueryExecutor db,
-    IStarRocksHealthCheck sr,
+    IRecordStoreQueryExecutor db,
+    IEngagementStoreHealthCheck sr,
     IVectorSchemaManager vector,
     IEventProducer kafka) =>
 {
@@ -181,13 +181,13 @@ app.MapGet("/health", async (
 })
 .WithName("Health");
 
-app.MapGet("/probe/sql", async (IPostgresQueryExecutor db) =>
+app.MapGet("/probe/sql", async (IRecordStoreQueryExecutor db) =>
 {
     var result = await db.QuerySingleOrDefaultAsync<int>("SELECT 1");
     return Results.Ok(new { connected = result == 1, traceId = Activity.Current?.TraceId.ToString() });
 }).WithName("ProbeSql");
 
-app.MapGet("/probe/starrocks", async (IStarRocksHealthCheck sr) =>
+app.MapGet("/probe/starrocks", async (IEngagementStoreHealthCheck sr) =>
 {
     var healthy = await sr.IsHealthyAsync();
     return Results.Ok(new { connected = healthy, traceId = Activity.Current?.TraceId.ToString() });
@@ -216,7 +216,7 @@ app.MapPost("/admin/reconcile/{typeName}", async (
         : Results.Ok(new { reconciledCount = count, typeName });
 }).WithName("Reconcile");
 
-app.MapGet("/admin/dlq", async (IPostgresQueryExecutor db) =>
+app.MapGet("/admin/dlq", async (IRecordStoreQueryExecutor db) =>
 {
     var rows = await db.QueryAsync<DlqRow>(
         $"""
@@ -230,7 +230,7 @@ app.MapGet("/admin/dlq", async (IPostgresQueryExecutor db) =>
     return Results.Ok(rows);
 }).WithName("ListDlq");
 
-app.MapPost("/admin/dlq/{id}/replay", async (Guid id, IPostgresQueryExecutor db, IEventProducer events) =>
+app.MapPost("/admin/dlq/{id}/replay", async (Guid id, IRecordStoreQueryExecutor db, IEventProducer events) =>
 {
     var row = await db.QuerySingleOrDefaultAsync<DlqReplayRow>(
         $"""
@@ -253,8 +253,8 @@ app.MapPost("/admin/dlq/{id}/replay", async (Guid id, IPostgresQueryExecutor db,
 // ── Schema hydration ───────────────────────────────────────────────────────────
 await app.Services.GetRequiredService<IEmbeddingService>().InitializeAsync();
 await app.Services.GetRequiredService<SchemaRegistry>().LoadAsync();
-await app.Services.GetRequiredService<IPostgresSchemaManager>().ApplySchemaAsync(Iverson.Api.Reconciliation.ReconciliationSchema.Table);
-await app.Services.GetRequiredService<IPostgresSchemaManager>().ApplySchemaAsync(Iverson.Api.Reconciliation.DlqSchema.Table);
+await app.Services.GetRequiredService<IRecordStoreSchemaManager>().ApplySchemaAsync(Iverson.Api.Reconciliation.ReconciliationSchema.Table);
+await app.Services.GetRequiredService<IRecordStoreSchemaManager>().ApplySchemaAsync(Iverson.Api.Reconciliation.DlqSchema.Table);
 
 // ── gRPC endpoints ─────────────────────────────────────────────────────────────
 if (workloadRole == "api")

@@ -14,7 +14,7 @@ namespace Iverson.Api.Tests.Grpc;
 
 public class ObjectRetrievalGrpcServiceTests
 {
-    private readonly IPostgresQueryExecutor _sql;
+    private readonly IRecordStoreQueryExecutor _sql;
     private readonly SchemaRegistry _registry;
     private readonly ObjectRetrievalGrpcService _sut;
 
@@ -24,7 +24,7 @@ public class ObjectRetrievalGrpcServiceTests
 
     public ObjectRetrievalGrpcServiceTests()
     {
-        _sql = Substitute.For<IPostgresQueryExecutor>();
+        _sql = Substitute.For<IRecordStoreQueryExecutor>();
         _sql.ExecuteAsync(Arg.Any<string>(), Arg.Any<object?>()).Returns(0);
 
         _registry = new SchemaRegistry(_sql, NullLogger<SchemaRegistry>.Instance);

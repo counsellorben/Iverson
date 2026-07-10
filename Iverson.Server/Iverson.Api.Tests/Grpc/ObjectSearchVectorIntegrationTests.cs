@@ -53,7 +53,7 @@ public sealed class ObjectSearchVectorIntegrationTests : IClassFixture<QdrantGrp
     {
         _vector = fx.Service;
         _mgr    = fx.CollectionManager;
-        var sql = Substitute.For<IPostgresQueryExecutor>();
+        var sql = Substitute.For<IRecordStoreQueryExecutor>();
         sql.ExecuteAsync(Arg.Any<string>(), Arg.Any<object?>()).Returns(0);
         _registry = new SchemaRegistry(sql, NullLogger<SchemaRegistry>.Instance);
     }
@@ -61,7 +61,7 @@ public sealed class ObjectSearchVectorIntegrationTests : IClassFixture<QdrantGrp
     private static string UniqueName() => "art_" + Guid.NewGuid().ToString("N")[..8];
 
     private ObjectSearchGrpcService BuildSut() =>
-        new(_registry, Substitute.For<IStarRocksQueryExecutor>(), _vector, _embedding,
+        new(_registry, Substitute.For<IEngagementStoreQueryExecutor>(), _vector, _embedding,
             NullLogger<ObjectSearchGrpcService>.Instance);
 
     private static (IServerStreamWriter<T> writer, List<T> written) MakeStream<T>()

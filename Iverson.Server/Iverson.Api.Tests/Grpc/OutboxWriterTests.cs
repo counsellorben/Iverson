@@ -10,14 +10,14 @@ namespace Iverson.Api.Tests.Grpc;
 
 public class OutboxWriterTests
 {
-    private readonly IPostgresQueryExecutor _sql;
-    private readonly IPostgresTransactionRunner _txRunner;
+    private readonly IRecordStoreQueryExecutor _sql;
+    private readonly IRecordStoreTransactionRunner _txRunner;
     private readonly OutboxWriter _sut;
 
     public OutboxWriterTests()
     {
-        _sql = Substitute.For<IPostgresQueryExecutor>();
-        _txRunner = Substitute.For<IPostgresTransactionRunner>();
+        _sql = Substitute.For<IRecordStoreQueryExecutor>();
+        _txRunner = Substitute.For<IRecordStoreTransactionRunner>();
         _txRunner.ExecuteInTransactionAsync(Arg.Any<Func<IDbTransactionContext, Task>>())
             .Returns(ci => ci.Arg<Func<IDbTransactionContext, Task>>()(Substitute.For<IDbTransactionContext>()));
         _sut = new OutboxWriter(_sql, _txRunner);

@@ -1,18 +1,18 @@
 namespace Iverson.Sql;
 
-public interface IPostgresQueryExecutor
+public interface IRecordStoreQueryExecutor
 {
     Task<IEnumerable<T>> QueryAsync<T>(string sql, object? param = null);
     Task<int> ExecuteAsync(string sql, object? param = null);
     Task<T?> QuerySingleOrDefaultAsync<T>(string sql, object? param = null);
 }
 
-public interface IPostgresSchemaManager
+public interface IRecordStoreSchemaManager
 {
     Task ApplySchemaAsync(TableSchema schema);
 }
 
-public interface IPostgresTransactionRunner
+public interface IRecordStoreTransactionRunner
 {
     Task ExecuteInTransactionAsync(Func<IDbTransactionContext, Task> work);
     Task<T> ExecuteInTransactionAsync<T>(Func<IDbTransactionContext, Task<T>> work);

@@ -17,7 +17,7 @@ public class RelationValidatorTests
 
     public RelationValidatorTests()
     {
-        var sql = Substitute.For<IPostgresQueryExecutor>();
+        var sql = Substitute.For<IRecordStoreQueryExecutor>();
         _registry = new SchemaRegistry(sql, NullLogger<SchemaRegistry>.Instance);
         _sut = new RelationValidator(_registry);
     }

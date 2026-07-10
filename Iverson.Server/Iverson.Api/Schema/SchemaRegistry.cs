@@ -5,7 +5,7 @@ using Iverson.Sql;
 namespace Iverson.Api.Schema;
 
 public sealed class SchemaRegistry(
-    IPostgresQueryExecutor sql,
+    IRecordStoreQueryExecutor sql,
     ILogger<SchemaRegistry> logger)
 {
     private readonly ConcurrentDictionary<string, SchemaDescriptor> _schemas = new(StringComparer.OrdinalIgnoreCase);

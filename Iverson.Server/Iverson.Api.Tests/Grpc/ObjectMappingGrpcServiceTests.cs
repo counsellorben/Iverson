@@ -19,14 +19,14 @@ namespace Iverson.Api.Tests.Grpc;
 
 public class ObjectMappingGrpcServiceTests
 {
-    private readonly IPostgresQueryExecutor _sql;
-    private readonly IPostgresTransactionRunner _txRunner;
-    private readonly IPostgresSchemaManager _schemaManager;
+    private readonly IRecordStoreQueryExecutor _sql;
+    private readonly IRecordStoreTransactionRunner _txRunner;
+    private readonly IRecordStoreSchemaManager _schemaManager;
     private readonly IVectorSchemaManager _vector;
     private readonly IEventProducer _events;
     private readonly SchemaRegistry _registry;
     private readonly IEmbeddingService _embedding;
-    private readonly IStarRocksSchemaManager _starRocks;
+    private readonly IEngagementStoreSchemaManager _starRocks;
     private readonly ObjectMappingGrpcService _sut;
 
     private static readonly string AuthorId  = "11111111-0000-0000-0000-000000000001";
@@ -36,7 +36,7 @@ public class ObjectMappingGrpcServiceTests
 
     public ObjectMappingGrpcServiceTests()
     {
-        _sql    = Substitute.For<IPostgresQueryExecutor>();
+        _sql    = Substitute.For<IRecordStoreQueryExecutor>();
         _vector = Substitute.For<IVectorSchemaManager>();
         _events = Substitute.For<IEventProducer>();
 
@@ -44,17 +44,17 @@ public class ObjectMappingGrpcServiceTests
         _sql.QueryAsync<string>(Arg.Any<string>(), Arg.Any<object?>())
             .Returns(Task.FromResult(Enumerable.Empty<string>()));
 
-        _txRunner = Substitute.For<IPostgresTransactionRunner>();
+        _txRunner = Substitute.For<IRecordStoreTransactionRunner>();
         _txRunner.ExecuteInTransactionAsync(Arg.Any<Func<IDbTransactionContext, Task>>())
             .Returns(ci => ci.Arg<Func<IDbTransactionContext, Task>>()(Substitute.For<IDbTransactionContext>()));
 
-        _schemaManager = Substitute.For<IPostgresSchemaManager>();
+        _schemaManager = Substitute.For<IRecordStoreSchemaManager>();
 
         _embedding = Substitute.For<IEmbeddingService>();
         _embedding.Dimension.Returns(768);
         _embedding.ModelId.Returns("nomic-embed-text");
 
-        _starRocks = Substitute.For<IStarRocksSchemaManager>();
+        _starRocks = Substitute.For<IEngagementStoreSchemaManager>();
         _starRocks.ApplyTableAsync(Arg.Any<StarRocksTableSchema>()).Returns(Task.CompletedTask);
 
         _registry = new SchemaRegistry(_sql, NullLogger<SchemaRegistry>.Instance);
