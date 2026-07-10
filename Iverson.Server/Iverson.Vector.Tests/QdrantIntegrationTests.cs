@@ -15,7 +15,7 @@ public sealed class QdrantContainerFixture : IAsyncLifetime
 
     private readonly DotNet.Testcontainers.Containers.IContainer _container =
         new ContainerBuilder()
-            .WithImage("qdrant/qdrant:v1.13.6")
+            .WithImage("qdrant/qdrant:v1.18.2")
             .WithPortBinding(GrpcPort, assignRandomHostPort: true)
             .WithPortBinding(6333,     assignRandomHostPort: true)
             .WithWaitStrategy(Wait.ForUnixContainer().UntilPortIsAvailable(GrpcPort))
