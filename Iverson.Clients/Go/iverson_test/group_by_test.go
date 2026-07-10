@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 
 	pb "github.com/iverson/clients/go/generated"
@@ -84,6 +85,17 @@ func TestGroupByKeyCollidesWithMetricAlias_Errors(t *testing.T) {
 		Keys("total").Sum("Price", "total").Build()
 	if err == nil {
 		t.Fatal("expected key/metric-alias collision error")
+	}
+}
+
+func TestGroupByDuplicateKeys_ReturnsDuplicateKeyMessage(t *testing.T) {
+	_, err := iverson.NewGroupBy("Article").
+		Keys("Category", "Category").CountAll("n").Build()
+	if err == nil {
+		t.Fatal("expected an error for duplicate keys")
+	}
+	if !strings.Contains(err.Error(), "duplicate key") {
+		t.Fatalf("expected error to mention 'duplicate key', got: %v", err)
 	}
 }
 

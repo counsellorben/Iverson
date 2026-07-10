@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 
 	pb "github.com/iverson/clients/go/generated"
@@ -167,6 +168,9 @@ func TestStep_WithReservedNameBase_ReturnsBuildError(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected an error for reserved step name \"base\"")
 	}
+	if !strings.Contains(err.Error(), "reserved") {
+		t.Fatalf("expected error to mention 'reserved', got: %v", err)
+	}
 }
 
 func TestStep_WithMetricsButNoGroupBy_ReturnsBuildError(t *testing.T) {
@@ -175,6 +179,9 @@ func TestStep_WithMetricsButNoGroupBy_ReturnsBuildError(t *testing.T) {
 		Build()
 	if err == nil {
 		t.Fatal("expected an error for metrics without groupBy")
+	}
+	if !strings.Contains(err.Error(), "GroupBy") {
+		t.Fatalf("expected error to mention 'GroupBy', got: %v", err)
 	}
 }
 
