@@ -404,9 +404,7 @@ public sealed class ObjectSearchGrpcService(
                 $"SearchChunks filter must target the primary-key property '{schema.KeyColumn.Name}', " +
                 $"got '{clause.Property}'."));
 
-        var filter = new Filter();
-        filter.Must.Add(Conditions.MatchKeyword("parent_id", clause.Value.StringVal));
-        return filter;
+        return QdrantFilterBuilder.MatchParentId(clause.Value.StringVal);
     }
 
     private static SrAggSpec ProtoToSrSpec(ProtoAggSpec proto) =>

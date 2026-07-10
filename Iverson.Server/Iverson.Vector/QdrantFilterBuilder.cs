@@ -39,6 +39,18 @@ public static class QdrantFilterBuilder
         return filter;
     }
 
+    /// <summary>
+    /// Builds a Filter matching points whose "parent_id" payload field equals the given key.
+    /// Used for chunk-collection lookups/deletes, where every chunk point carries its owning
+    /// entity's key under "parent_id" (see IntelligenceStoreConsumer).
+    /// </summary>
+    public static Filter MatchParentId(string parentKey)
+    {
+        var filter = new Filter();
+        filter.Must.Add(Conditions.MatchKeyword("parent_id", parentKey));
+        return filter;
+    }
+
     private static (Condition Condition, bool Negate) BuildCondition(SearchClause clause, string rpcName) =>
         clause.Operator switch
         {

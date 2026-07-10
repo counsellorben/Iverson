@@ -193,4 +193,16 @@ public class QdrantFilterBuilderTests
         act.Should().Throw<FilterTranslationException>()
             .Where(e => e.Message.Contains(op.ToString()) && e.Message.Contains("wordCount"));
     }
+
+    [Fact]
+    public void MatchParentId_ProducesSingleMustMatchKeywordOnParentId()
+    {
+        var filter = QdrantFilterBuilder.MatchParentId("parent-123");
+
+        filter.Must.Should().ContainSingle();
+        filter.Must[0].Field.Key.Should().Be("parent_id");
+        filter.Must[0].Field.Match.Keyword.Should().Be("parent-123");
+        filter.Should.Should().BeEmpty();
+        filter.MustNot.Should().BeEmpty();
+    }
 }

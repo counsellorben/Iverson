@@ -187,8 +187,7 @@ public sealed class IntelligenceStoreConsumer(
 
         if (schema.ChunkFields.Count > 0)
         {
-            var chunkFilter = new Filter();
-            chunkFilter.Must.Add(Conditions.MatchKeyword("parent_id", ev.Key));
+            var chunkFilter = QdrantFilterBuilder.MatchParentId(ev.Key);
             await vectorWrite.DeleteByFilterAsync(schema.CollectionName + "_chunks", chunkFilter);
         }
 
