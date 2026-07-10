@@ -1,4 +1,3 @@
-using Grpc.Core;
 using Iverson.Client.Contracts;
 using Qdrant.Client.Grpc;
 using Range = Qdrant.Client.Grpc.Range;
@@ -50,16 +49,16 @@ public static class QdrantFilterBuilder
             SearchOperator.GreaterThanOrEquals  => (Conditions.Range(clause.Property, new Range { Gte = RequireNumber(clause) }), false),
             SearchOperator.LessThanOrEquals     => (Conditions.Range(clause.Property, new Range { Lte = RequireNumber(clause) }), false),
             SearchOperator.In => (Conditions.Match(clause.Property, RequireStringList(clause).ToList()), false),
-            _ => throw new RpcException(new Status(StatusCode.InvalidArgument,
+            _ => throw new FilterTranslationException(
                 $"Operator '{clause.Operator}' is not supported by {rpcName} filters. Supported operators: " +
-                "EQUALS, NOT_EQUALS, GREATER_THAN, LESS_THAN, GREATER_THAN_OR_EQUALS, LESS_THAN_OR_EQUALS, IN."))
+                "EQUALS, NOT_EQUALS, GREATER_THAN, LESS_THAN, GREATER_THAN_OR_EQUALS, LESS_THAN_OR_EQUALS, IN.")
         };
 
     private static double RequireNumber(SearchClause clause)
     {
         if (clause.Value.KindCase != SearchValue.KindOneofCase.NumberVal)
-            throw new RpcException(new Status(StatusCode.InvalidArgument,
-                $"{clause.Operator} filter on '{clause.Property}' requires a numeric value."));
+            throw new FilterTranslationException(
+                $"{clause.Operator} filter on '{clause.Property}' requires a numeric value.");
 
         return clause.Value.NumberVal;
     }
@@ -67,8 +66,8 @@ public static class QdrantFilterBuilder
     private static IReadOnlyList<string> RequireStringList(SearchClause clause)
     {
         if (clause.Value.KindCase != SearchValue.KindOneofCase.StringList)
-            throw new RpcException(new Status(StatusCode.InvalidArgument,
-                $"{clause.Operator} filter on '{clause.Property}' requires a string list value."));
+            throw new FilterTranslationException(
+                $"{clause.Operator} filter on '{clause.Property}' requires a string list value.");
 
         return clause.Value.StringList.Values;
     }
@@ -78,7 +77,7 @@ public static class QdrantFilterBuilder
         SearchValue.KindOneofCase.StringVal => Conditions.MatchKeyword(property, value.StringVal),
         SearchValue.KindOneofCase.BoolVal   => Conditions.Match(property, value.BoolVal),
         SearchValue.KindOneofCase.NumberVal => Conditions.Match(property, Convert.ToInt64(value.NumberVal)),
-        _ => throw new RpcException(new Status(StatusCode.InvalidArgument,
-            $"EQUALS/NOT_EQUALS filter on '{property}' requires a string, bool, or numeric value."))
+        _ => throw new FilterTranslationException(
+            $"EQUALS/NOT_EQUALS filter on '{property}' requires a string, bool, or numeric value.")
     };
 }

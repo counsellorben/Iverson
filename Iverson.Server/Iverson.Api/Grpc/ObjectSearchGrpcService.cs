@@ -110,7 +110,15 @@ public sealed class ObjectSearchGrpcService(
                     ClauseType = c.ClauseType
                 };
             }).ToList();
-            filter = QdrantFilterBuilder.Build(camelCased, request.FilterLogic, "SearchSimilar");
+
+            try
+            {
+                filter = QdrantFilterBuilder.Build(camelCased, request.FilterLogic, "SearchSimilar");
+            }
+            catch (FilterTranslationException ex)
+            {
+                throw new RpcException(new Status(StatusCode.InvalidArgument, ex.Message));
+            }
         }
 
         logger.LogInformation("[SearchSimilar] type={Type} property={Prop} topK={K} filtered={Filtered}",
