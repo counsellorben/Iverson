@@ -219,8 +219,11 @@ export class GroupByBuilder {
             if (aliases.has(key)) throw new Error(`Duplicate metric alias '${m.name}'.`);
             aliases.add(key);
         }
+        const keys = new Set<string>();
         for (const k of this._keys) {
             const key = k.toLowerCase();
+            if (keys.has(key)) throw new Error(`Duplicate key '${k}'.`);
+            keys.add(key);
             if (aliases.has(key)) throw new Error(`Key '${k}' collides with an existing metric alias.`);
             aliases.add(key);
         }

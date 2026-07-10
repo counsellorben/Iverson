@@ -57,6 +57,11 @@ describe('GroupByBuilder validation and additions', () => {
         expect(() => b.build()).toThrow();
     });
 
+    it('throws a distinct message for duplicate keys', () => {
+        const b = groupBy('Article').keys('Category', 'Category').countAll('n');
+        expect(() => b.build()).toThrow(/Duplicate key.*Category/);
+    });
+
     it('allows HAVING to reference a metric alias case-insensitively', () => {
         const b = groupBy('Article').keys('Category').sum('WordCount', 'Total')
             .having('TOTAL', SearchOperator.GREATER_THAN, 100);
