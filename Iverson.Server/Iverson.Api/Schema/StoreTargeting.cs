@@ -34,7 +34,9 @@ internal static class StoreTargeting
                 .Any(fk => string.Equals(
                     fk.ColumnName,
                     r.ForeignKey,
-                    StringComparison.OrdinalIgnoreCase))
+                    StringComparison.OrdinalIgnoreCase)),
+            _ => throw new ArgumentOutOfRangeException(nameof(r.Kind), r.Kind,
+                $"Unhandled {nameof(RelationKind)} value in engagement eligibility check — add a case above.")
         });
 
     internal static bool HasVectorOrChunkFields(SchemaDescriptor schema) =>
