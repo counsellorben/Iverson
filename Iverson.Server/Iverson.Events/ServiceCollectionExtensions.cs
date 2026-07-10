@@ -41,6 +41,8 @@ public static class ServiceCollectionExtensions
                 options,
                 sp.GetRequiredService<ILogger<KafkaConsumer>>(),
                 dispatcher,
+                cfg => new ConsumerBuilder<string, string>(cfg).Build(),
+                cfg => new AdminClientBuilder(cfg).Build(),
                 numPartitions);
         });
 
