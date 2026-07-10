@@ -4,7 +4,6 @@ using Iverson.Api.Reconciliation;
 using Iverson.Api.Schema;
 using Iverson.Client.Contracts;
 using Iverson.Events;
-using Iverson.Sql;
 
 namespace Iverson.Api.Grpc;
 
@@ -15,8 +14,6 @@ namespace Iverson.Api.Grpc;
 /// </summary>
 public sealed class ObjectPersistenceGrpcService(
     IEventProducer events,
-    IPostgresQueryExecutor sql,
-    IPostgresTransactionRunner txRunner,
     SchemaRegistry registry,
     IRelationValidator relationValidator,
     IEntityKeyAccessor keyAccessor,

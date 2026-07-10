@@ -36,7 +36,7 @@ public class ObjectPersistenceGrpcServiceTests
 
         _registry = new SchemaRegistry(_sql, NullLogger<SchemaRegistry>.Instance);
         _sut = new ObjectPersistenceGrpcService(
-            _events, _sql, _txRunner, _registry,
+            _events, _registry,
             new RelationValidator(_registry), new EntityKeyAccessor(), new OutboxWriter(_sql, _txRunner),
             NullLogger<ObjectPersistenceGrpcService>.Instance);
     }
