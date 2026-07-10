@@ -82,19 +82,19 @@ class PipelineBuilderTest {
     @Test
     void duplicateStepNameThrows() {
         var b = Query.pipeline("Article").step("x", s -> s.derive("a", "WordCount"));
-        assertThrows(IllegalArgumentException.class,
+        assertThrows(IllegalStateException.class,
             () -> b.step("X", s -> s.derive("b", "WordCount")));
     }
 
     @Test
     void readsUnknownStepThrows() {
-        assertThrows(IllegalArgumentException.class,
+        assertThrows(IllegalStateException.class,
             () -> Query.pipeline("Article").step("a", s -> s.reads("nope")));
     }
 
     @Test
     void windowAndGroupByInOneStepThrows() {
-        assertThrows(IllegalArgumentException.class,
+        assertThrows(IllegalStateException.class,
             () -> Query.pipeline("Article").step("bad", s -> s
                 .rowNumber("rn", "Id", false)
                 .groupBy("AuthorId").countAll("n")));
@@ -102,13 +102,13 @@ class PipelineBuilderTest {
 
     @Test
     void joinWithoutSelectThrows() {
-        assertThrows(IllegalArgumentException.class,
+        assertThrows(IllegalStateException.class,
             () -> Query.pipeline("Article").step("bad", s -> s.join("Author", "AuthorId", "Id")));
     }
 
     @Test
     void duplicateAliasesThrow() {
-        assertThrows(IllegalArgumentException.class,
+        assertThrows(IllegalStateException.class,
             () -> Query.pipeline("Article").step("bad", s -> s
                 .rowNumber("x", "Id", false)
                 .derive("X", "WordCount + 1")));
@@ -132,13 +132,13 @@ class PipelineBuilderTest {
 
     @Test
     void step_withReservedNameBase_throws() {
-        assertThrows(IllegalArgumentException.class, () ->
+        assertThrows(IllegalStateException.class, () ->
             Query.pipeline("Article").step("base", s -> {}).build());
     }
 
     @Test
     void step_withMetricsButNoGroupBy_throws() {
-        assertThrows(IllegalArgumentException.class, () ->
+        assertThrows(IllegalStateException.class, () ->
             Query.pipeline("Article").step("s1", s -> s.count("id")).build());
     }
 

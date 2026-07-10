@@ -54,13 +54,13 @@ public final class PipelineBuilder {
     /** Adds one named step (= one CTE). */
     public PipelineBuilder step(String name, Consumer<PipelineStepBuilder> configure) {
         if (name == null || name.isEmpty())
-            throw new IllegalArgumentException("Step name must be non-empty.");
+            throw new IllegalStateException("Step name must be non-empty.");
         if (name.equalsIgnoreCase(BASE_STEP_NAME))
-            throw new IllegalArgumentException(
+            throw new IllegalStateException(
                 "Step name '" + name + "' is reserved for the implicit base step.");
         for (PipelineStep s : steps)
             if (s.getName().equalsIgnoreCase(name))
-                throw new IllegalArgumentException("Duplicate step name '" + name + "'.");
+                throw new IllegalStateException("Duplicate step name '" + name + "'.");
 
         List<String> earlier = new ArrayList<>();
         earlier.add(BASE_STEP_NAME);
