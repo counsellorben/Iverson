@@ -2,7 +2,6 @@ using Dapper;
 using Google.Protobuf.WellKnownTypes;
 using Grpc.Core;
 using Iverson.Api.Schema;
-using Iverson.Api.StarRocks;
 using Iverson.Client.Contracts;
 using Iverson.Embeddings;
 using Iverson.StarRocks;
@@ -358,12 +357,22 @@ public sealed class ObjectSearchGrpcService(
             logger.LogInformation("[Pipeline] type={Type} steps={Steps}",
                 request.TypeName, request.Steps.Count);
 
-        var (sql, param) = StarRocksPipelineBuilder.Build(schema, request, registry);
+        (string sql, DynamicParameters param) built;
+        try
+        {
+            built = StarRocksPipelineBuilder.Build(
+                SchemaBuilder.ToStarRocksQuerySchema(schema), request,
+                t => registry.Get(t) is { } d ? SchemaBuilder.ToStarRocksQuerySchema(d) : null);
+        }
+        catch (StarRocksQueryTranslationException ex)
+        {
+            throw new RpcException(new Status(StatusCode.InvalidArgument, ex.Message));
+        }
 
         IEnumerable<dynamic> rows;
         try
         {
-            rows = await sr.QueryAsync<dynamic>(sql, param);
+            rows = await sr.QueryAsync<dynamic>(built.sql, built.param);
         }
         catch (StarRocksNotReadyException ex)
         {

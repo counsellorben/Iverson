@@ -1,58 +1,29 @@
 using Dapper;
 using FluentAssertions;
-using Grpc.Core;
-using Iverson.Api.Schema;
-using Iverson.Api.StarRocks;
-using Iverson.Api.Tests.Helpers;
 using Iverson.Client.Contracts;
-using Iverson.Sql;
-using Microsoft.Extensions.Logging.Abstractions;
-using NSubstitute;
 using Xunit;
 
-namespace Iverson.Api.Tests.StarRocks;
+namespace Iverson.StarRocks.Tests;
 
 public class StarRocksPipelineBuilderTests
 {
-    private static SchemaDescriptor ArticleSchema() => new()
-    {
-        TypeName      = "Article",
-        TableName     = "articles",
-        KeyColumn     = new ColumnDescriptor("Id", "uuid", false),
-        ScalarColumns =
-        [
-            new ColumnDescriptor("Title",       "text",        false),
-            new ColumnDescriptor("Category",    "text",        true),
-            new ColumnDescriptor("WordCount",   "integer",     true),
-            new ColumnDescriptor("IsPublished", "boolean",     true),
-            new ColumnDescriptor("PublishedAt", "timestamptz", true),
-            new ColumnDescriptor("AuthorId",    "uuid",        true),
-        ],
-        FkColumns = [], VectorFields = [], ChunkFields = [], Relations = []
-    };
+    private static StarRocksQuerySchema ArticleSchema() => new(
+        "Article", "articles", "Id",
+        ["Title", "Category", "WordCount", "IsPublished", "PublishedAt", "AuthorId"]);
 
-    private static SchemaRegistry EmptyRegistry()
+    private static Func<string, StarRocksQuerySchema?> BuildRegistry(params StarRocksQuerySchema[] schemas)
     {
-        var sql = Substitute.For<IRecordStoreQueryExecutor>();
-        sql.ExecuteAsync(Arg.Any<string>(), Arg.Any<object?>()).Returns(0);
-        return new SchemaRegistry(sql, NullLogger<SchemaRegistry>.Instance);
+        var map = schemas.ToDictionary(s => s.TypeName, StringComparer.OrdinalIgnoreCase);
+        return typeName => map.GetValueOrDefault(typeName);
     }
 
-    private static SchemaDescriptor AuthorSchemaLocal() => new()
-    {
-        TypeName      = "Author",
-        TableName     = "authors",
-        KeyColumn     = new ColumnDescriptor("Id", "uuid", false),
-        ScalarColumns = [new ColumnDescriptor("Name", "text", false)],
-        FkColumns = [], VectorFields = [], ChunkFields = [], Relations = []
-    };
+    private static Func<string, StarRocksQuerySchema?> EmptyRegistry() => BuildRegistry();
 
-    private static SchemaRegistry RegistryWithAuthor()
-    {
-        var r = EmptyRegistry();
-        r.RegisterAsync(AuthorSchemaLocal()).GetAwaiter().GetResult();
-        return r;
-    }
+    private static StarRocksQuerySchema AuthorSchemaLocal() => new(
+        "Author", "authors", "Id", ["Name"]);
+
+    private static Func<string, StarRocksQuerySchema?> RegistryWithAuthor() =>
+        BuildRegistry(AuthorSchemaLocal());
 
     private static PipelineRequest Request(params PipelineStep[] steps)
     {
@@ -63,9 +34,8 @@ public class StarRocksPipelineBuilderTests
 
     private static void AssertInvalid(Action act, string messagePart)
     {
-        var ex = Assert.Throws<RpcException>(act);
-        ex.Status.StatusCode.Should().Be(StatusCode.InvalidArgument);
-        ex.Status.Detail.Should().Contain(messagePart);
+        var ex = Assert.Throws<StarRocksQueryTranslationException>(act);
+        ex.Message.Should().Contain(messagePart);
     }
 
     // ── Column tracking ────────────────────────────────────────────────────────
@@ -672,8 +642,8 @@ public class StarRocksPipelineBuilderTests
 
         var act = () => StarRocksPipelineBuilder.Build(ArticleSchema(), request, EmptyRegistry());
 
-        act.Should().Throw<RpcException>()
-            .Where(e => e.Status.Detail == "Step 's1': select alias 'bad alias' is not a valid identifier.");
+        act.Should().Throw<StarRocksQueryTranslationException>()
+            .Where(e => e.Message == "Step 's1': select alias 'bad alias' is not a valid identifier.");
     }
 
     [Fact]
@@ -687,8 +657,8 @@ public class StarRocksPipelineBuilderTests
 
         var act = () => StarRocksPipelineBuilder.Build(ArticleSchema(), request, EmptyRegistry());
 
-        act.Should().Throw<RpcException>()
-            .Where(e => e.Status.Detail == "Step 's1': window alias 'bad alias' is not a valid identifier.");
+        act.Should().Throw<StarRocksQueryTranslationException>()
+            .Where(e => e.Message == "Step 's1': window alias 'bad alias' is not a valid identifier.");
     }
 
     [Fact]
@@ -703,8 +673,8 @@ public class StarRocksPipelineBuilderTests
 
         var act = () => StarRocksPipelineBuilder.Build(ArticleSchema(), request, EmptyRegistry());
 
-        act.Should().Throw<RpcException>()
-            .Where(e => e.Status.Detail == "Step 's1': metric alias 'bad alias' is not a valid identifier.");
+        act.Should().Throw<StarRocksQueryTranslationException>()
+            .Where(e => e.Message == "Step 's1': metric alias 'bad alias' is not a valid identifier.");
     }
 
     [Theory]
@@ -720,8 +690,8 @@ public class StarRocksPipelineBuilderTests
 
         var act = () => StarRocksPipelineBuilder.Build(ArticleSchema(), request, EmptyRegistry());
 
-        act.Should().Throw<RpcException>()
-            .Where(e => e.Status.Detail.Contains("forbidden character")
-                     && e.Status.Detail.Contains("SQL comment sequences"));
+        act.Should().Throw<StarRocksQueryTranslationException>()
+            .Where(e => e.Message.Contains("forbidden character")
+                     && e.Message.Contains("SQL comment sequences"));
     }
 }

@@ -1,8 +1,8 @@
 using FluentAssertions;
 using Iverson.Api.Schema;
-using Iverson.Api.StarRocks;
 using Iverson.Client.Contracts;
 using Iverson.Sql;
+using Iverson.StarRocks;
 using Microsoft.Extensions.Logging.Abstractions;
 using NSubstitute;
 using Xunit;
@@ -36,6 +36,12 @@ public sealed class PipelineIntegrationTests : IClassFixture<StarRocksContainerF
         sql.ExecuteAsync(Arg.Any<string>(), Arg.Any<object?>()).Returns(0);
         return new SchemaRegistry(sql, NullLogger<SchemaRegistry>.Instance);
     }
+
+    // Adapts a SchemaDescriptor-backed SchemaRegistry to the Func<string, StarRocksQuerySchema?>
+    // lookup delegate StarRocksPipelineBuilder.Build now takes — same pattern used at
+    // ObjectSearchGrpcService's Pipeline call site and throughout StarRocksIntegrationTests.cs.
+    private static Func<string, StarRocksQuerySchema?> ResolvedRegistry(SchemaRegistry registry) =>
+        t => registry.Get(t) is { } d ? SchemaBuilder.ToStarRocksQuerySchema(d) : null;
 
     private async Task SeedAsync()
     {
@@ -84,7 +90,8 @@ public sealed class PipelineIntegrationTests : IClassFixture<StarRocksContainerF
         request.Steps.Add(ranked);
         request.Steps.Add(top);
 
-        var (sql, param) = StarRocksPipelineBuilder.Build(ArticleSchema(), request, EmptyRegistry());
+        var (sql, param) = StarRocksPipelineBuilder.Build(
+            SchemaBuilder.ToStarRocksQuerySchema(ArticleSchema()), request, ResolvedRegistry(EmptyRegistry()));
         var rows = (await _fx.Repository.QueryAsync<dynamic>(sql, param)).ToList();
 
         rows.Should().HaveCount(4);
@@ -113,7 +120,8 @@ public sealed class PipelineIntegrationTests : IClassFixture<StarRocksContainerF
         var request = new PipelineRequest { TypeName = "PipeArticle" };
         request.Steps.Add(agg);
 
-        var (sql, param) = StarRocksPipelineBuilder.Build(ArticleSchema(), request, EmptyRegistry());
+        var (sql, param) = StarRocksPipelineBuilder.Build(
+            SchemaBuilder.ToStarRocksQuerySchema(ArticleSchema()), request, ResolvedRegistry(EmptyRegistry()));
         var rows = (await _fx.Repository.QueryAsync<dynamic>(sql, param)).ToList();
 
         rows.Should().HaveCount(1);   // only author A has >=3 articles with >=200 words
@@ -141,7 +149,8 @@ public sealed class PipelineIntegrationTests : IClassFixture<StarRocksContainerF
         request.Steps.Add(cume);
         request.OrderBy.Add(new SearchSort { Property = "PublishedAt_month" });
 
-        var (sql, param) = StarRocksPipelineBuilder.Build(ArticleSchema(), request, EmptyRegistry());
+        var (sql, param) = StarRocksPipelineBuilder.Build(
+            SchemaBuilder.ToStarRocksQuerySchema(ArticleSchema()), request, ResolvedRegistry(EmptyRegistry()));
         var rows = (await _fx.Repository.QueryAsync<dynamic>(sql, param)).ToList();
 
         rows.Should().HaveCount(4);                                  // Jan, Feb, Mar, Apr
@@ -170,7 +179,8 @@ public sealed class PipelineIntegrationTests : IClassFixture<StarRocksContainerF
         request.Steps.Add(byAuthor);
         request.Steps.Add(share);
 
-        var (sql, param) = StarRocksPipelineBuilder.Build(ArticleSchema(), request, EmptyRegistry());
+        var (sql, param) = StarRocksPipelineBuilder.Build(
+            SchemaBuilder.ToStarRocksQuerySchema(ArticleSchema()), request, ResolvedRegistry(EmptyRegistry()));
         var rows = (await _fx.Repository.QueryAsync<dynamic>(sql, param)).ToList();
 
         var byAuthorPct = ((IEnumerable<dynamic>)rows)
@@ -199,7 +209,8 @@ public sealed class PipelineIntegrationTests : IClassFixture<StarRocksContainerF
         request.Steps.Add(agg);
         request.Steps.Add(enriched);
 
-        var (sql, param) = StarRocksPipelineBuilder.Build(ArticleSchema(), request, EmptyRegistry());
+        var (sql, param) = StarRocksPipelineBuilder.Build(
+            SchemaBuilder.ToStarRocksQuerySchema(ArticleSchema()), request, ResolvedRegistry(EmptyRegistry()));
         var rows = (await _fx.Repository.QueryAsync<dynamic>(sql, param)).ToList();
 
         rows.Should().HaveCount(6);

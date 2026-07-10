@@ -1,12 +1,9 @@
 using System.Text;
 using System.Text.RegularExpressions;
 using Dapper;
-using Grpc.Core;
-using Iverson.Api.Schema;
 using Iverson.Client.Contracts;
-using Iverson.StarRocks;
 
-namespace Iverson.Api.StarRocks;
+namespace Iverson.StarRocks;
 
 /// <summary>
 /// One pipeline step's output column set: <see cref="Columns"/> maps a referenced
@@ -19,7 +16,7 @@ internal sealed record StepColumns(string Name, Dictionary<string, string> Colum
 /// Pass 1 (<see cref="TrackAndValidate"/>) computes every step's output column set and
 /// rejects invalid references as gRPC InvalidArgument before any SQL is built.
 /// </summary>
-internal static class StarRocksPipelineBuilder
+public static class StarRocksPipelineBuilder
 {
     internal const string BaseStepName = "base";
 
@@ -34,20 +31,20 @@ internal static class StarRocksPipelineBuilder
         "ASC", "DESC", "COALESCE", "NULLIF", "ROUND", "ABS", "AND", "OR", "NOT", "NULL"
     };
 
-    private static Dictionary<string, string> ColumnsFor(SchemaDescriptor schema)
+    private static Dictionary<string, string> ColumnsFor(StarRocksQuerySchema schema)
     {
         var cols = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
         {
-            [schema.KeyColumn.Name] = schema.KeyColumn.Name
+            [schema.KeyColumnName] = schema.KeyColumnName
         };
-        foreach (var c in schema.ScalarColumns) cols[c.Name] = c.Name;
+        foreach (var c in schema.ColumnNames) cols[c] = c;
         return cols;
     }
 
     internal static IReadOnlyList<StepColumns> TrackAndValidate(
-        SchemaDescriptor schema,
+        StarRocksQuerySchema schema,
         PipelineRequest request,
-        SchemaRegistry registry)
+        Func<string, StarRocksQuerySchema?> registry)
     {
         var steps = new List<StepColumns>();
 
@@ -74,7 +71,7 @@ internal static class StarRocksPipelineBuilder
     }
 
     private static void ValidateStepName(
-        PipelineStep step, List<StepColumns> earlier, SchemaRegistry registry)
+        PipelineStep step, List<StepColumns> earlier, Func<string, StarRocksQuerySchema?> registry)
     {
         if (string.IsNullOrEmpty(step.Name) || !IdentifierRx.IsMatch(step.Name))
             throw Invalid($"Step name '{step.Name}' is not a valid identifier.");
@@ -84,7 +81,7 @@ internal static class StarRocksPipelineBuilder
             s => s.Name.Equals(step.Name, StringComparison.OrdinalIgnoreCase));
         if (duplicate is not null)
             throw Invalid($"Duplicate step name '{duplicate.Name}'.");
-        if (registry.Get(step.Name) is not null)
+        if (registry(step.Name) is not null)
             throw Invalid($"Step name '{step.Name}' collides with a registered type name.");
     }
 
@@ -102,7 +99,7 @@ internal static class StarRocksPipelineBuilder
         PipelineStep step,
         StepColumns input,
         List<StepColumns> earlier,
-        SchemaRegistry registry)
+        Func<string, StarRocksQuerySchema?> registry)
     {
         var isAggregate = step.GroupBy.Count > 0 || step.Metrics.Count > 0 || step.Having.Count > 0;
 
@@ -217,7 +214,7 @@ internal static class StarRocksPipelineBuilder
     }
 
     private static Dictionary<string, StepColumns> ResolveJoinSources(
-        PipelineStep step, List<StepColumns> earlier, SchemaRegistry registry)
+        PipelineStep step, List<StepColumns> earlier, Func<string, StarRocksQuerySchema?> registry)
     {
         var sources = new Dictionary<string, StepColumns>(StringComparer.OrdinalIgnoreCase);
         foreach (var join in step.Joins)
@@ -230,7 +227,7 @@ internal static class StarRocksPipelineBuilder
                 continue;
             }
 
-            var joinedSchema = registry.Get(join.Source)
+            var joinedSchema = registry(join.Source)
                 ?? throw Invalid($"Step '{step.Name}': join source '{join.Source}' is neither " +
                                  "an earlier step nor a registered type.");
             sources[joinedSchema.TypeName] = new StepColumns(joinedSchema.TypeName, ColumnsFor(joinedSchema));
@@ -299,13 +296,13 @@ internal static class StarRocksPipelineBuilder
             throw Invalid($"Step '{stepName}': unknown column or alias '{property}'.");
     }
 
-    private static RpcException Invalid(string message) =>
-        new(new Status(StatusCode.InvalidArgument, message));
+    private static StarRocksQueryTranslationException Invalid(string message) =>
+        new(message);
 
-    internal static (string Sql, DynamicParameters Param) Build(
-        SchemaDescriptor schema,
+    public static (string Sql, DynamicParameters Param) Build(
+        StarRocksQuerySchema schema,
         PipelineRequest request,
-        SchemaRegistry registry)
+        Func<string, StarRocksQuerySchema?> registry)
     {
         var tracked = TrackAndValidate(schema, request, registry);
         var byName  = tracked.ToDictionary(s => s.Name, StringComparer.OrdinalIgnoreCase);
@@ -313,9 +310,8 @@ internal static class StarRocksPipelineBuilder
         var param = new DynamicParameters();
         var sb = new StringBuilder();
 
-        var srSchema = SchemaBuilder.ToStarRocksQuerySchema(schema);
         var baseWhere = StarRocksQueryBuilder.BuildWhere(
-            p => StarRocksQueryBuilder.ResolveColumn(srSchema, p) is { } c ? $"`{c}`" : null,
+            p => StarRocksQueryBuilder.ResolveColumn(schema, p) is { } c ? $"`{c}`" : null,
             request.BaseWhere, request.BaseLogic, param, "s0_p", out _);
         sb.Append($"WITH `{BaseStepName}` AS (SELECT * FROM `{schema.TableName}`");
         if (baseWhere.Length > 0) sb.Append($" WHERE {baseWhere}");
@@ -353,7 +349,7 @@ internal static class StarRocksPipelineBuilder
         PipelineStep step,
         StepColumns input,
         List<StepColumns> emitted,
-        SchemaRegistry registry,
+        Func<string, StarRocksQuerySchema?> registry,
         DynamicParameters param,
         int stepIdx)
     {
@@ -431,7 +427,7 @@ internal static class StarRocksPipelineBuilder
             };
             // Entity sources join the physical table aliased as the type name;
             // step sources are CTEs joined by their own name (no alias needed).
-            var joinedSchema = registry.Get(src.Name);
+            var joinedSchema = registry(src.Name);
             var target = joinedSchema is not null && emitted.All(s => !s.Name.Equals(src.Name, StringComparison.OrdinalIgnoreCase))
                 ? $"`{joinedSchema.TableName}` AS `{src.Name}`"
                 : $"`{src.Name}`";
@@ -457,8 +453,8 @@ internal static class StarRocksPipelineBuilder
             AggregationType.Min   => "MIN",
             AggregationType.Max   => "MAX",
             AggregationType.Count => "COUNT",
-            _ => throw new RpcException(new Status(StatusCode.InvalidArgument,
-                $"Metric '{m.Name}' has unsupported type '{m.Type}'."))
+            _ => throw new StarRocksQueryTranslationException(
+                $"Metric '{m.Name}' has unsupported type '{m.Type}'.")
         };
         // m.Expression is raw trusted SQL — same posture as BuildMetricExpr in
         // StarRocksQueryBuilder; see the comment there.
@@ -484,8 +480,8 @@ internal static class StarRocksPipelineBuilder
             WindowFunctionKind.RunningAvg => $"AVG(`{input[w.Field]}`)",
             WindowFunctionKind.Lag        => $"LAG(`{input[w.Field]}`, {offset})",
             WindowFunctionKind.Lead       => $"LEAD(`{input[w.Field]}`, {offset})",
-            _ => throw new RpcException(new Status(StatusCode.InvalidArgument,
-                $"Window '{w.Alias}' has unsupported kind '{w.Kind}'."))
+            _ => throw new StarRocksQueryTranslationException(
+                $"Window '{w.Alias}' has unsupported kind '{w.Kind}'.")
         };
         return $"{call} {over} AS `{w.Alias}`";
     }
