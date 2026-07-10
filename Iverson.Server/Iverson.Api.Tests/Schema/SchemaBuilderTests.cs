@@ -118,6 +118,19 @@ public class SchemaBuilderTests
     }
 
     [Fact]
+    public void ToStarRocksQuerySchema_MapsTypeNameTableNameKeyAndScalarColumns()
+    {
+        var schema = SchemaFixtures.ArticleSchema();
+
+        var result = SchemaBuilder.ToStarRocksQuerySchema(schema);
+
+        result.TypeName.Should().Be("Article");
+        result.TableName.Should().Be("articles");
+        result.KeyColumnName.Should().Be("Id");
+        result.ColumnNames.Should().BeEquivalentTo(["Title", "Body"]);
+    }
+
+    [Fact]
     public void ToCollectionSchema_PayloadIndexNames_AreCamelCase()
     {
         var descriptor = SchemaFixtures.ArticleSchema();

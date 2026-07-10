@@ -113,6 +113,12 @@ internal static class SchemaBuilder
         SortKey = d.SearchKeyColumns
     };
 
+    internal static StarRocksQuerySchema ToStarRocksQuerySchema(SchemaDescriptor d) => new(
+        d.TypeName,
+        d.TableName,
+        d.KeyColumn.Name,
+        d.ScalarColumns.Select(c => c.Name).ToList());
+
     internal static CollectionSchema ToChunkCollectionSchema(SchemaDescriptor d) => new(
         d.CollectionName! + "_chunks",
         d.ChunkFields.Select(c => new NamedVector($"{c.PropertyName.ToSnakeCase()}_vector", c.Dimension)).ToList(),
