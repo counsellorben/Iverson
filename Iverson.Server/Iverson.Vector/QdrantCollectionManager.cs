@@ -182,16 +182,12 @@ public class QdrantCollectionManager(
         } while (nextOffset is not null);
     }
 
-    // Normalizes a retrieved vector to Vector.Dense, falling back to the legacy Data field.
-    // Qdrant server v1.13.6 (this repo's pinned Testcontainers/deployment version) populates
-    // Data, not Dense, on retrieval/scroll responses, even though it accepts and stores Dense
-    // correctly on writes — confirmed via a live repro against that exact server version.
-    // A no-op passthrough once the retrieved vector already has Dense populated (later server
-    // versions), so this is safe for both.
+    // Normalizes a retrieved vector to Vector.Dense via the SDK's own GetDenseVector() helper,
+    // which reads the legacy flat Data field when populated and falls back to the Dense oneof
+    // otherwise — covers any server version's retrieval behavior without this code touching the
+    // deprecated VectorOutput.Data field directly.
     private static QdrantVector NormalizeDense(VectorOutput source) =>
-        source.Dense is not null
-            ? new QdrantVector { Dense = source.Dense }
-            : new QdrantVector { Dense = new DenseVector { Data = { source.Data } } };
+        new QdrantVector { Dense = source.GetDenseVector() ?? new DenseVector() };
 
     // Converts VectorsOutput (from RetrievedPoint) to Vectors (for PointStruct).
     // When the source collection used a single unnamed vector and the destination uses named vectors,
