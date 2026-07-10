@@ -126,4 +126,25 @@ public class SchemaBuilderTests
         schema.PayloadIndexes.Select(p => p.FieldName).Should().Contain(["title", "body", "authorId"]);
         schema.PayloadIndexes.Select(p => p.FieldName).Should().NotContain(["Title", "Body", "AuthorId"]);
     }
+
+    [Fact]
+    public void BuildDescriptor_ManyToManyRelation_MapsToInternalManyToMany()
+    {
+        var td = new TypeDescriptor { TypeName = "Article" };
+        td.Properties.Add(new PropertyDescriptor { Name = "Id", ClrType = ClrType.ClrGuid, IsKey = true });
+        td.Relations.Add(new Iverson.Client.Contracts.RelationDescriptor
+        {
+            PropertyName = "Tags",
+            Kind         = Iverson.Client.Contracts.RelationKind.ManyToMany,
+            RelatedType  = "Tag",
+            ForeignKey   = "TagIds"
+        });
+        var embedding = Substitute.For<IEmbeddingService>();
+        embedding.Dimension.Returns(768);
+        embedding.ModelId.Returns("nomic-embed-text");
+
+        var descriptor = SchemaBuilder.BuildDescriptor(td, embedding);
+
+        descriptor.Relations.Single().Kind.Should().Be(Iverson.Api.Schema.RelationKind.ManyToMany);
+    }
 }

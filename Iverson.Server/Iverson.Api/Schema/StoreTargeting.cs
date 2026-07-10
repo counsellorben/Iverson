@@ -34,8 +34,7 @@ internal static class StoreTargeting
                 .Any(fk => string.Equals(
                     fk.ColumnName,
                     r.ForeignKey,
-                    StringComparison.OrdinalIgnoreCase)),
-            _                       => false
+                    StringComparison.OrdinalIgnoreCase))
         });
 
     internal static bool HasVectorOrChunkFields(SchemaDescriptor schema) =>

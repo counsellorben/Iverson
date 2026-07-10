@@ -30,6 +30,10 @@ public sealed class RelationValidator(SchemaRegistry registry) : IRelationValida
 
                 case RelationKind.OneToMany:
                     break; // FK lives on the related entity
+
+                default:
+                    throw new ArgumentOutOfRangeException(nameof(relation.Kind), relation.Kind,
+                        $"Unhandled {nameof(RelationKind)} value in relation validation — add a case above.");
             }
         }
 

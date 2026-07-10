@@ -68,10 +68,12 @@ internal static class SchemaBuilder
             r.PropertyName,
             r.Kind switch
             {
-                ContractsRelationKind.OneToOne  => SchemaRelationKind.OneToOne,
-                ContractsRelationKind.OneToMany => SchemaRelationKind.OneToMany,
-                ContractsRelationKind.ManyToOne => SchemaRelationKind.ManyToOne,
-                _                               => SchemaRelationKind.ManyToMany
+                ContractsRelationKind.OneToOne   => SchemaRelationKind.OneToOne,
+                ContractsRelationKind.OneToMany  => SchemaRelationKind.OneToMany,
+                ContractsRelationKind.ManyToOne  => SchemaRelationKind.ManyToOne,
+                ContractsRelationKind.ManyToMany => SchemaRelationKind.ManyToMany,
+                _ => throw new ArgumentOutOfRangeException(nameof(r.Kind), r.Kind,
+                    $"Unhandled {nameof(ContractsRelationKind)} value — add a case above.")
             },
             r.RelatedType,
             r.ForeignKey

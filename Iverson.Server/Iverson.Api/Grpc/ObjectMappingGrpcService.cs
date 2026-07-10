@@ -334,6 +334,10 @@ public sealed class ObjectMappingGrpcService(
                 case SchemaRelationKind.OneToMany:
                     await ResolveOneToManyAsync(entityStruct, schema, relation, depth, ct);
                     break;
+
+                default:
+                    throw new ArgumentOutOfRangeException(nameof(relation.Kind), relation.Kind,
+                        $"Unhandled {nameof(SchemaRelationKind)} value in relation resolution — add a case above.");
             }
         }
     }
