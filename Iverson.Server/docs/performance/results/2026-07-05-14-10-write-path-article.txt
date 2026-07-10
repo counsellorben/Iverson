@@ -1,0 +1,12 @@
+=== gRPC Post | type=Article | concurrency=16 | count=10000 ===
+  p50    :     80.4 ms
+  p95    :    191.5 ms
+  p99    :    343.8 ms
+  p999   :    916.0 ms
+  max    :   1136.6 ms
+  RPS    :      178 ops/sec
+  errors :        0
+
+=== End-to-end (Post → Postgres visible) ===
+  (no successful samples — 100 errors)
+

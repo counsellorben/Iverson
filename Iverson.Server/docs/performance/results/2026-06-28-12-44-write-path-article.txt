@@ -1,0 +1,9 @@
+=== gRPC Post | type=Article | concurrency=16 | count=10000 ===
+  p50    :     35.9 ms
+  p95    :    274.7 ms
+  p99    :    928.3 ms
+  p999   :   1449.0 ms
+  max    :   1610.8 ms
+  RPS    :      187 ops/sec
+  errors :      164
+
