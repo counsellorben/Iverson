@@ -4,7 +4,6 @@ using Iverson.Api.Schema;
 using Iverson.Embeddings;
 using Iverson.Events;
 using Iverson.Vector;
-using Qdrant.Client.Grpc;
 
 namespace Iverson.Api.Consumers;
 

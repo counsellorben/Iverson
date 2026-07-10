@@ -8,7 +8,6 @@ using Iverson.StarRocks;
 using Iverson.Vector;
 
 using Filter      = Qdrant.Client.Grpc.Filter;
-using Conditions  = Qdrant.Client.Grpc.Conditions;
 using SrAggKind   = Iverson.StarRocks.AggregationKind;
 using SrAggSpec   = Iverson.StarRocks.AggregationDescriptor;
 using SrAggResult = Iverson.StarRocks.AggregationResult;
