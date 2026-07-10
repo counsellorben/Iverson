@@ -29,7 +29,7 @@ namespace Iverson.Api.Grpc;
 public sealed class ObjectSearchGrpcService(
     SchemaRegistry registry,
     IStarRocksQueryExecutor sr,
-    IVectorService vector,
+    IVectorQueryService vector,
     IEmbeddingService embedding,
     ILogger<ObjectSearchGrpcService> logger)
     : ObjectSearchService.ObjectSearchServiceBase

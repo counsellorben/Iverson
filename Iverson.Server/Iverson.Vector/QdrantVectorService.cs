@@ -8,7 +8,7 @@ namespace Iverson.Vector;
 
 public class QdrantVectorService(
     QdrantClient client,
-    ILogger<QdrantVectorService> logger) : IVectorService
+    ILogger<QdrantVectorService> logger) : IVectorQueryService, IVectorSchemaManager, IVectorWriteService
 {
     public async Task EnsureCollectionAsync(string collectionName, ulong vectorSize)
     {

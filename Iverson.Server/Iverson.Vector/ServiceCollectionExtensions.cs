@@ -11,7 +11,10 @@ public static class ServiceCollectionExtensions
         int port = 6334)
     {
         services.AddSingleton(_ => new QdrantClient(host, port));
-        services.AddSingleton<IVectorService, QdrantVectorService>();
+        services.AddSingleton<QdrantVectorService>();
+        services.AddSingleton<IVectorQueryService>(sp => sp.GetRequiredService<QdrantVectorService>());
+        services.AddSingleton<IVectorSchemaManager>(sp => sp.GetRequiredService<QdrantVectorService>());
+        services.AddSingleton<IVectorWriteService>(sp => sp.GetRequiredService<QdrantVectorService>());
         return services;
     }
 }

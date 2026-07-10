@@ -12,7 +12,7 @@ public sealed class QdrantVectorServiceTests
     [Fact]
     public async Task UpsertAsync_IsCalledWithCorrectCollectionAndId()
     {
-        var svc = Substitute.For<IVectorService>();
+        var svc = Substitute.For<IVectorWriteService>();
         var vector = new float[] { 0.1f, 0.2f, 0.3f };
 
         await svc.UpsertAsync("players", 42UL, vector);
@@ -23,7 +23,7 @@ public sealed class QdrantVectorServiceTests
     [Fact]
     public async Task SearchAsync_ReturnsResults()
     {
-        var svc = Substitute.For<IVectorService>();
+        var svc = Substitute.For<IVectorQueryService>();
         var expected = new List<VectorSearchResult>
         {
             new(1UL, 0.95, new Dictionary<string, string> { ["name"] = "Allen Iverson" }),
@@ -40,7 +40,7 @@ public sealed class QdrantVectorServiceTests
     [Fact]
     public async Task SearchNamedAsync_IsCalledWithVectorName()
     {
-        var svc = Substitute.For<IVectorService>();
+        var svc = Substitute.For<IVectorQueryService>();
         svc.SearchNamedAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<float[]>(), Arg.Any<ulong>())
            .Returns(new List<VectorSearchResult>());
         const string vectorName = "bio_embedding";
@@ -53,7 +53,7 @@ public sealed class QdrantVectorServiceTests
     [Fact]
     public async Task UpsertNamedAsync_IsCalledWithNamedVectors()
     {
-        var svc = Substitute.For<IVectorService>();
+        var svc = Substitute.For<IVectorWriteService>();
         var namedVectors = new Dictionary<string, float[]>
         {
             ["bio_embedding"] = new float[] { 0.1f, 0.2f },
@@ -73,7 +73,7 @@ public sealed class QdrantVectorServiceTests
     [Fact]
     public async Task DeleteAsync_IsCalledWithCorrectId()
     {
-        var svc = Substitute.For<IVectorService>();
+        var svc = Substitute.For<IVectorWriteService>();
 
         await svc.DeleteAsync("players", 99UL);
 
@@ -83,7 +83,7 @@ public sealed class QdrantVectorServiceTests
     [Fact]
     public async Task DeleteByFilterAsync_IsCalledWithCollectionAndFilter()
     {
-        var svc = Substitute.For<IVectorService>();
+        var svc = Substitute.For<IVectorWriteService>();
         var filter = new Filter();
         filter.Must.Add(Conditions.MatchKeyword("parent_id", "article-123"));
 
@@ -95,7 +95,7 @@ public sealed class QdrantVectorServiceTests
     [Fact]
     public async Task ApplyCollectionAsync_IsCalledWithSchema()
     {
-        var svc = Substitute.For<IVectorService>();
+        var svc = Substitute.For<IVectorSchemaManager>();
         var schema = new CollectionSchema(
             "players",
             new List<NamedVector> { new("bio_embedding", 1536) },
@@ -110,7 +110,7 @@ public sealed class QdrantVectorServiceTests
     [Fact]
     public async Task SearchAsync_ReturnsEmptyList_WhenNoMatches()
     {
-        var svc = Substitute.For<IVectorService>();
+        var svc = Substitute.For<IVectorQueryService>();
         svc.SearchAsync(Arg.Any<string>(), Arg.Any<float[]>(), Arg.Any<ulong>())
            .Returns(new List<VectorSearchResult>());
 
@@ -166,7 +166,7 @@ public sealed class QdrantVectorServiceTests
     [Fact]
     public async Task UpsertAsync_AcceptsTypedPayloadValues()
     {
-        var vector = Substitute.For<IVectorService>();
+        var vector = Substitute.For<IVectorWriteService>();
         var payload = new Dictionary<string, object>
         {
             ["title"]     = "typed",
@@ -181,6 +181,14 @@ public sealed class QdrantVectorServiceTests
             Arg.Is<IReadOnlyDictionary<string, object>>(p =>
                 p["title"].Equals("typed") && p["wordCount"].Equals(42L) &&
                 p["rating"].Equals(4.5) && p["published"].Equals(true)));
+    }
+
+    [Fact]
+    public void QdrantVectorService_ImplementsAllThreeRoleInterfaces()
+    {
+        typeof(QdrantVectorService).Should().Implement<IVectorQueryService>();
+        typeof(QdrantVectorService).Should().Implement<IVectorSchemaManager>();
+        typeof(QdrantVectorService).Should().Implement<IVectorWriteService>();
     }
 
 }

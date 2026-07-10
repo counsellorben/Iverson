@@ -22,7 +22,7 @@ public class ObjectMappingGrpcServiceTests
     private readonly IPostgresQueryExecutor _sql;
     private readonly IPostgresTransactionRunner _txRunner;
     private readonly IPostgresSchemaManager _schemaManager;
-    private readonly IVectorService _vector;
+    private readonly IVectorSchemaManager _vector;
     private readonly IEventProducer _events;
     private readonly SchemaRegistry _registry;
     private readonly IEmbeddingService _embedding;
@@ -37,7 +37,7 @@ public class ObjectMappingGrpcServiceTests
     public ObjectMappingGrpcServiceTests()
     {
         _sql    = Substitute.For<IPostgresQueryExecutor>();
-        _vector = Substitute.For<IVectorService>();
+        _vector = Substitute.For<IVectorSchemaManager>();
         _events = Substitute.For<IEventProducer>();
 
         _sql.ExecuteAsync(Arg.Any<string>(), Arg.Any<object?>()).Returns(1);

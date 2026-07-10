@@ -18,7 +18,8 @@ namespace Iverson.Api.Tests.Consumers;
 public class IntelligenceStoreConsumerTests
 {
     private readonly IEventConsumer _consumer;
-    private readonly IVectorService _vector;
+    private readonly IVectorSchemaManager _vectorSchema;
+    private readonly IVectorWriteService _vectorWrite;
     private readonly IEmbeddingService _embedding;
     private readonly IPostgresQueryExecutor _sql;
     private readonly SchemaRegistry _registry;
@@ -32,20 +33,23 @@ public class IntelligenceStoreConsumerTests
     public IntelligenceStoreConsumerTests()
     {
         _consumer  = Substitute.For<IEventConsumer>();
-        _vector    = Substitute.For<IVectorService>();
         _embedding = Substitute.For<IEmbeddingService>();
         _sql       = Substitute.For<IPostgresQueryExecutor>();
 
         _sql.ExecuteAsync(Arg.Any<string>(), Arg.Any<object?>()).Returns(0);
-        _vector.ApplyCollectionAsync(Arg.Any<CollectionSchema>()).Returns(Task.CompletedTask);
-        _vector.UpsertNamedAsync(
+
+        _vectorSchema = Substitute.For<IVectorSchemaManager>();
+        _vectorWrite  = Substitute.For<IVectorWriteService>();
+
+        _vectorSchema.ApplyCollectionAsync(Arg.Any<CollectionSchema>()).Returns(Task.CompletedTask);
+        _vectorWrite.UpsertNamedAsync(
             Arg.Any<string>(),
             Arg.Any<ulong>(),
             Arg.Any<IReadOnlyDictionary<string, float[]>>(),
             Arg.Any<IReadOnlyDictionary<string, object>?>())
             .Returns(Task.CompletedTask);
-        _vector.DeleteAsync(Arg.Any<string>(), Arg.Any<ulong>()).Returns(Task.CompletedTask);
-        _vector.DeleteByFilterAsync(Arg.Any<string>(), Arg.Any<Filter>()).Returns(Task.CompletedTask);
+        _vectorWrite.DeleteAsync(Arg.Any<string>(), Arg.Any<ulong>()).Returns(Task.CompletedTask);
+        _vectorWrite.DeleteByFilterAsync(Arg.Any<string>(), Arg.Any<Filter>()).Returns(Task.CompletedTask);
         _embedding.EmbedAsync(Arg.Any<string>(), Arg.Any<CancellationToken>())
                   .Returns(new float[768]);
 
@@ -55,7 +59,7 @@ public class IntelligenceStoreConsumerTests
     private string Serialize(EntityEvent ev) => JsonSerializer.Serialize(ev, JsonOptions);
 
     private IntelligenceStoreConsumer BuildSut() =>
-        new(_consumer, _vector, _embedding, _registry, NullLogger<IntelligenceStoreConsumer>.Instance);
+        new(_consumer, _vectorSchema, _vectorWrite, _embedding, _registry, NullLogger<IntelligenceStoreConsumer>.Instance);
 
     [Fact]
     public async Task HandleCreated_WithVectorField_CallsEmbedAndUpsertNamed()
@@ -83,7 +87,7 @@ public class IntelligenceStoreConsumerTests
             "Great Title",
             Arg.Any<CancellationToken>());
 
-        await _vector.Received().UpsertNamedAsync(
+        await _vectorWrite.Received().UpsertNamedAsync(
             "articles",
             Arg.Any<ulong>(),
             Arg.Any<IReadOnlyDictionary<string, float[]>>(),
@@ -110,7 +114,7 @@ public class IntelligenceStoreConsumerTests
         await sut.HandleAsync(ev.Key, Serialize(ev), CancellationToken.None);
 
         // Should upsert at least once into the chunks collection
-        await _vector.Received().UpsertNamedAsync(
+        await _vectorWrite.Received().UpsertNamedAsync(
             "articles_chunks",
             Arg.Any<ulong>(),
             Arg.Any<IReadOnlyDictionary<string, float[]>>(),
@@ -135,7 +139,7 @@ public class IntelligenceStoreConsumerTests
         var sut = BuildSut();
         await sut.HandleDeleteAsync(ev.Key, Serialize(ev), CancellationToken.None);
 
-        await _vector.Received(1).DeleteAsync("articles", Arg.Any<ulong>());
+        await _vectorWrite.Received(1).DeleteAsync("articles", Arg.Any<ulong>());
     }
 
     [Fact]
@@ -155,7 +159,7 @@ public class IntelligenceStoreConsumerTests
         var sut = BuildSut();
         await sut.HandleDeleteAsync(ev.Key, Serialize(ev), CancellationToken.None);
 
-        await _vector.Received(1).DeleteByFilterAsync(
+        await _vectorWrite.Received(1).DeleteByFilterAsync(
             "articles_chunks",
             Arg.Is<Filter>(f => f.Must.Count == 1 && f.Must[0].Field.Key == "parent_id"
                               && f.Must[0].Field.Match.Keyword == "article-123"));
@@ -179,7 +183,7 @@ public class IntelligenceStoreConsumerTests
         await sut.HandleAsync(ev.Key, Serialize(ev), CancellationToken.None);
 
         _ = _embedding.DidNotReceive().EmbedAsync(Arg.Any<string>(), Arg.Any<CancellationToken>());
-        await _vector.DidNotReceive().UpsertNamedAsync(
+        await _vectorWrite.DidNotReceive().UpsertNamedAsync(
             Arg.Any<string>(),
             Arg.Any<ulong>(),
             Arg.Any<IReadOnlyDictionary<string, float[]>>(),
@@ -250,7 +254,7 @@ public class IntelligenceStoreConsumerTests
             TargetStores:  StoreTarget.Intelligence);
 
         IReadOnlyDictionary<string, object>? capturedPayload = null;
-        _vector.UpsertNamedAsync(
+        _vectorWrite.UpsertNamedAsync(
             "articles",
             Arg.Any<ulong>(),
             Arg.Any<IReadOnlyDictionary<string, float[]>>(),
@@ -339,7 +343,7 @@ public class IntelligenceStoreConsumerTests
             TargetStores:  StoreTarget.Intelligence);
 
         var upsertCount = 0;
-        _vector.UpsertNamedAsync(
+        _vectorWrite.UpsertNamedAsync(
             "docs_chunks",
             Arg.Any<ulong>(),
             Arg.Any<IReadOnlyDictionary<string, float[]>>(),
@@ -374,7 +378,7 @@ public class IntelligenceStoreConsumerTests
             TargetStores:  StoreTarget.Intelligence);
 
         IReadOnlyDictionary<string, object>? capturedPayload = null;
-        _vector.UpsertNamedAsync(
+        _vectorWrite.UpsertNamedAsync(
             "articles",
             Arg.Any<ulong>(),
             Arg.Any<IReadOnlyDictionary<string, float[]>>(),

@@ -24,7 +24,7 @@ public sealed class ObjectMappingGrpcService(
     IPostgresQueryExecutor _sql,
     IPostgresTransactionRunner _txRunner,
     IPostgresSchemaManager _schemaManager,
-    IVectorService _vector,
+    IVectorSchemaManager _vector,
     IEventProducer _events,
     SchemaRegistry _registry,
     IEmbeddingService _embedding,
