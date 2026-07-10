@@ -33,7 +33,7 @@ public class StarRocksPipelineBuilderTests
 
     private static SchemaRegistry EmptyRegistry()
     {
-        var sql = Substitute.For<IPostgresRepository>();
+        var sql = Substitute.For<IPostgresQueryExecutor>();
         sql.ExecuteAsync(Arg.Any<string>(), Arg.Any<object?>()).Returns(0);
         return new SchemaRegistry(sql, NullLogger<SchemaRegistry>.Instance);
     }

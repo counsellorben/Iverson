@@ -26,6 +26,7 @@ public sealed class StarRocksContainerFixture : IAsyncLifetime
 
     public string ConnectionString { get; private set; } = null!;
     public StarRocksRepository Repository { get; private set; } = null!;
+    public StarRocksSchemaManager SchemaManager { get; private set; } = null!;
 
     public async Task InitializeAsync()
     {
@@ -47,6 +48,7 @@ public sealed class StarRocksContainerFixture : IAsyncLifetime
         await WaitUntilQueryReadyAsync(TimeSpan.FromMinutes(3));
 
         Repository = new StarRocksRepository(ConnectionString, NullLogger<StarRocksRepository>.Instance);
+        SchemaManager = new StarRocksSchemaManager(ConnectionString, NullLogger<StarRocksSchemaManager>.Instance);
     }
 
     private async Task WaitUntilQueryReadyAsync(TimeSpan timeout)
@@ -129,6 +131,7 @@ public sealed class StarRocksIntegrationTests(StarRocksContainerFixture fixture)
     : IClassFixture<StarRocksContainerFixture>
 {
     private readonly StarRocksRepository _repo = fixture.Repository;
+    private readonly StarRocksSchemaManager _schemaManager = fixture.SchemaManager;
 
     // Use unique table names per test to avoid state leakage — the container and its
     // schema persist for the whole test class (IClassFixture), and StarRocks has no
@@ -154,7 +157,7 @@ public sealed class StarRocksIntegrationTests(StarRocksContainerFixture fixture)
         Relations    = []
     };
 
-    private static async Task CreateAndSeedAuthorsAsync(
+    private async Task CreateAndSeedAuthorsAsync(
         StarRocksRepository repo, string tableName, params (string Id, string Name, string? Bio, int? Rating, string? PublishedAt)[] rows)
     {
         var schema = new StarRocksTableSchema(
@@ -167,7 +170,7 @@ public sealed class StarRocksIntegrationTests(StarRocksContainerFixture fixture)
                 new StarRocksColumnSchema("PublishedAt", "DATETIME", true),
             ]);
 
-        await repo.ApplyTableAsync(schema);
+        await _schemaManager.ApplyTableAsync(schema);
 
         foreach (var row in rows)
         {
@@ -181,7 +184,7 @@ public sealed class StarRocksIntegrationTests(StarRocksContainerFixture fixture)
 
     private static SchemaRegistry BuildRegistry(params SchemaDescriptor[] schemas)
     {
-        var sql = Substitute.For<IPostgresRepository>();
+        var sql = Substitute.For<IPostgresQueryExecutor>();
         sql.ExecuteAsync(Arg.Any<string>(), Arg.Any<object?>()).Returns(0);
         var registry = new SchemaRegistry(sql, NullLogger<SchemaRegistry>.Instance);
         foreach (var schema in schemas)
@@ -315,7 +318,7 @@ public sealed class StarRocksIntegrationTests(StarRocksContainerFixture fixture)
                 new StarRocksColumnSchema("AuthorId", "VARCHAR(36)", false),
                 new StarRocksColumnSchema("Title",    "STRING",      false),
             ]);
-        await _repo.ApplyTableAsync(articleSchema);
+        await _schemaManager.ApplyTableAsync(articleSchema);
         await _repo.ExecuteAsync(
             $"INSERT INTO `{articlesTable}` VALUES " +
             $"('aaaaaaaa-1111-1111-1111-111111111111', '11111111-1111-1111-1111-111111111111', 'Alice''s First Post')");
@@ -368,7 +371,7 @@ public sealed class StarRocksIntegrationTests(StarRocksContainerFixture fixture)
                 new StarRocksColumnSchema("AuthorId", "VARCHAR(36)", false),
                 new StarRocksColumnSchema("Title",    "STRING",      false),
             ]);
-        await _repo.ApplyTableAsync(articleSchema);
+        await _schemaManager.ApplyTableAsync(articleSchema);
         await _repo.ExecuteAsync(
             $"INSERT INTO `{articlesTable}` VALUES " +
             $"('aaaaaaaa-1111-1111-1111-111111111111', '11111111-1111-1111-1111-111111111111', 'Alice''s First Post')");
@@ -582,7 +585,7 @@ public sealed class StarRocksIntegrationTests(StarRocksContainerFixture fixture)
                 new StarRocksColumnSchema("AuthorId", "VARCHAR(36)", false),
                 new StarRocksColumnSchema("Title",    "STRING",      false),
             ]);
-        await _repo.ApplyTableAsync(articleSchema);
+        await _schemaManager.ApplyTableAsync(articleSchema);
         await _repo.ExecuteAsync(
             $"INSERT INTO `{articlesTable}` VALUES " +
             $"('aaaaaaaa-1111-1111-1111-111111111111', '11111111-1111-1111-1111-111111111111', 'Wanted Title'), " +

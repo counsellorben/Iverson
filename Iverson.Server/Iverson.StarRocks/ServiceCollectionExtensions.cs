@@ -10,11 +10,24 @@ public static class ServiceCollectionExtensions
         string connectionString,
         StarRocksResilienceOptions? resilienceOptions = null)
     {
-        services.AddSingleton<IStarRocksRepository>(sp =>
+        services.AddSingleton(sp =>
         {
             var logger = sp.GetRequiredService<ILogger<StarRocksRepository>>();
             return new StarRocksRepository(connectionString, logger, resilienceOptions);
         });
+        services.AddSingleton<IStarRocksQueryExecutor>(sp => sp.GetRequiredService<StarRocksRepository>());
+        services.AddSingleton<IStarRocksEntityStore>(sp => sp.GetRequiredService<StarRocksRepository>());
+
+        services.AddSingleton(sp =>
+        {
+            var logger = sp.GetRequiredService<ILogger<StarRocksSchemaManager>>();
+            return new StarRocksSchemaManager(connectionString, logger, resilienceOptions);
+        });
+        services.AddSingleton<IStarRocksSchemaManager>(sp => sp.GetRequiredService<StarRocksSchemaManager>());
+
+        services.AddSingleton(new StarRocksHealthChecker(connectionString));
+        services.AddSingleton<IStarRocksHealthCheck>(sp => sp.GetRequiredService<StarRocksHealthChecker>());
+
         return services;
     }
 }

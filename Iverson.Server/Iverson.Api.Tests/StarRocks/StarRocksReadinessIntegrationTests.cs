@@ -49,9 +49,9 @@ public sealed class StarRocksReadinessIntegrationTests : IAsyncLifetime
         // FE/BE bootstrap may still be in progress — this is the exact race
         // StarRocksContainerFixture's WaitUntilQueryReadyAsync exists to hide from every
         // other integration test. Here we skip that external gate on purpose.
-        var repo = new StarRocksRepository(
+        var schemaManager = new StarRocksSchemaManager(
             _connectionString,
-            NullLogger<StarRocksRepository>.Instance,
+            NullLogger<StarRocksSchemaManager>.Instance,
             new StarRocksResilienceOptions { BackendReadyTimeout = TimeSpan.FromMinutes(3) });
 
         var schema = new StarRocksTableSchema(
@@ -59,12 +59,13 @@ public sealed class StarRocksReadinessIntegrationTests : IAsyncLifetime
             new StarRocksColumnSchema("Id", "VARCHAR(36)", false),
             [new StarRocksColumnSchema("Name", "STRING", false)]);
 
-        var act = async () => await repo.ApplyTableAsync(schema);
+        var act = async () => await schemaManager.ApplyTableAsync(schema);
 
         await act.Should().NotThrowAsync(
-            "the repository's own readiness gate should absorb the FE/BE startup race internally");
+            "the schema manager's own readiness gate should absorb the FE/BE startup race internally");
 
-        var healthy = await repo.IsHealthyAsync();
+        var healthChecker = new StarRocksHealthChecker(_connectionString);
+        var healthy = await healthChecker.IsHealthyAsync();
 
         healthy.Should().BeTrue(
             "once the backend is alive, the extended SHOW BACKENDS health check should report true");
@@ -89,12 +90,9 @@ public sealed class StarRocksReadinessIntegrationTests : IAsyncLifetime
             AllowPublicKeyRetrieval = true,
         }.ToString();
 
-        var repo = new StarRocksRepository(
-            badConnectionString,
-            NullLogger<StarRocksRepository>.Instance,
-            new StarRocksResilienceOptions { BackendReadyTimeout = TimeSpan.FromSeconds(5) });
+        var healthChecker = new StarRocksHealthChecker(badConnectionString);
 
-        var status = await repo.CheckHealthAsync();
+        var status = await healthChecker.CheckHealthAsync();
 
         status.Should().Be(StarRocksHealthStatus.AuthPending);
     }

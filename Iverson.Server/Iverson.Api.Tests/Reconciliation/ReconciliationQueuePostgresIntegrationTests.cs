@@ -25,6 +25,7 @@ public sealed class ReconciliationQueuePostgresContainerFixture : IAsyncLifetime
         .Build();
 
     public PostgresRepository Repository { get; private set; } = null!;
+    public PostgresSchemaManager SchemaManager { get; private set; } = null!;
 
     public async Task InitializeAsync()
     {
@@ -32,6 +33,9 @@ public sealed class ReconciliationQueuePostgresContainerFixture : IAsyncLifetime
         Repository = new PostgresRepository(
             _container.GetConnectionString(),
             NullLogger<PostgresRepository>.Instance);
+        SchemaManager = new PostgresSchemaManager(
+            _container.GetConnectionString(),
+            NullLogger<PostgresSchemaManager>.Instance);
     }
 
     public async Task DisposeAsync() => await _container.DisposeAsync();
@@ -41,6 +45,7 @@ public sealed class ReconciliationQueuePostgresIntegrationTests(ReconciliationQu
     : IClassFixture<ReconciliationQueuePostgresContainerFixture>
 {
     private readonly PostgresRepository _repo = fixture.Repository;
+    private readonly PostgresSchemaManager _schemaManager = fixture.SchemaManager;
 
     [Fact]
     public async Task ProcessQueuedFailuresAsync_RoundTripsGuidQueueId_AgainstRealPostgres()
@@ -49,12 +54,12 @@ public sealed class ReconciliationQueuePostgresIntegrationTests(ReconciliationQu
         // table) — DROP/recreate at the start of this test so the fixture's real Postgres container
         // is left in a known-clean state regardless of test re-runs against the same container.
         await _repo.ExecuteAsync($"""DROP TABLE IF EXISTS "{ReconciliationSchema.TableName}" """);
-        await _repo.ApplySchemaAsync(ReconciliationSchema.Table);
+        await _schemaManager.ApplySchemaAsync(ReconciliationSchema.Table);
 
         // Real "authors" table + row, so ProcessOneAsync's entity re-fetch
         // (`WHERE "Id" = @Key::uuid`) has something real to find.
         var authorsTable = "authors_" + Guid.NewGuid().ToString("N")[..8];
-        await _repo.ApplySchemaAsync(new TableSchema(
+        await _schemaManager.ApplySchemaAsync(new TableSchema(
             authorsTable,
             new ColumnSchema("Id", "uuid", IsNullable: false),
             [new ColumnSchema("Name", "text", IsNullable: false)]));

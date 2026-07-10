@@ -23,7 +23,8 @@ namespace Iverson.Api.Consumers;
 /// </summary>
 public sealed class IntelligenceStoreConsumer(
     IEventConsumer consumer,
-    IVectorService vector,
+    IVectorSchemaManager vectorSchema,
+    IVectorWriteService vectorWrite,
     IEmbeddingService embedding,
     SchemaRegistry registry,
     ILogger<IntelligenceStoreConsumer> logger) : BackgroundService
@@ -111,7 +112,7 @@ public sealed class IntelligenceStoreConsumer(
                     var val = ExtractTypedValue(payload, fk.ColumnName, "TEXT");
                     if (val is not null) pointPayload[ToCamelCase(fk.ColumnName)] = val;
                 }
-                await vector.UpsertNamedAsync(schema.CollectionName, pointId, namedVectors, pointPayload);
+                await vectorWrite.UpsertNamedAsync(schema.CollectionName, pointId, namedVectors, pointPayload);
                 logger.LogInformation("[Intelligence] Upserted {Count} vector(s) for {Type}:{Key}",
                     namedVectors.Count, ev.TypeName, ev.Key);
             }
@@ -143,7 +144,7 @@ public sealed class IntelligenceStoreConsumer(
 
                 foreach (var (chunkVector, chunkId, chunkText, chunkIndex) in chunkResults)
                 {
-                    await vector.UpsertNamedAsync(
+                    await vectorWrite.UpsertNamedAsync(
                         chunksCollection,
                         chunkId,
                         new Dictionary<string, float[]> { [vectorName] = chunkVector },
@@ -182,13 +183,13 @@ public sealed class IntelligenceStoreConsumer(
 
         var pointId = KeyToUlong(ev.Key);
 
-        await vector.DeleteAsync(schema.CollectionName, pointId);
+        await vectorWrite.DeleteAsync(schema.CollectionName, pointId);
 
         if (schema.ChunkFields.Count > 0)
         {
             var chunkFilter = new Filter();
             chunkFilter.Must.Add(Conditions.MatchKeyword("parent_id", ev.Key));
-            await vector.DeleteByFilterAsync(schema.CollectionName + "_chunks", chunkFilter);
+            await vectorWrite.DeleteByFilterAsync(schema.CollectionName + "_chunks", chunkFilter);
         }
 
         logger.LogInformation("[Intelligence] Deleted vector for {Type}:{Key}", ev.TypeName, ev.Key);
@@ -207,7 +208,7 @@ public sealed class IntelligenceStoreConsumer(
                 .ToList(),
             [new PayloadIndex("parent_id", PayloadIndexKind.Keyword)]);
 
-        await vector.ApplyCollectionAsync(collectionSchema);
+        await vectorSchema.ApplyCollectionAsync(collectionSchema);
         _ensuredChunkCollections.Add(name);
     }
 

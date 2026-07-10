@@ -1,5 +1,4 @@
 using FluentAssertions;
-using Grpc.Core;
 using Iverson.Client.Contracts;
 using Qdrant.Client.Grpc;
 using Xunit;
@@ -146,7 +145,7 @@ public class QdrantFilterBuilderTests
     [InlineData(SearchOperator.StartsWith)]
     [InlineData(SearchOperator.EndsWith)]
     [InlineData(SearchOperator.VectorSimilar)]
-    public void Build_UnsupportedOperator_ThrowsInvalidArgumentNamingOperatorAndRpc(SearchOperator op)
+    public void Build_UnsupportedOperator_ThrowsNamingOperatorAndRpc(SearchOperator op)
     {
         var value = op == SearchOperator.VectorSimilar
             ? new SearchValue { FloatList = new RepeatedFloat { Values = { 0.1f } } }
@@ -154,25 +153,21 @@ public class QdrantFilterBuilderTests
 
         var act = () => QdrantFilterBuilder.Build([Clause("title", op, value)], SearchLogic.And, "SearchSimilar");
 
-        act.Should().Throw<RpcException>()
-            .Where(e => e.Status.StatusCode == StatusCode.InvalidArgument
-                     && e.Status.Detail.Contains(op.ToString())
-                     && e.Status.Detail.Contains("SearchSimilar"));
+        act.Should().Throw<FilterTranslationException>()
+            .Where(e => e.Message.Contains(op.ToString()) && e.Message.Contains("SearchSimilar"));
     }
 
     [Fact]
-    public void Build_InWithNonListValue_ThrowsInvalidArgument()
+    public void Build_InWithNonListValue_Throws()
     {
         // A caller could send an IN clause whose Value isn't actually a StringList (proto3
         // message field defaults to null when unset). Accessing .StringList.Values on that
-        // would NullReferenceException — must be a clean InvalidArgument instead.
+        // would NullReferenceException — must be a clean exception instead.
         var act = () => QdrantFilterBuilder.Build(
             [Clause("category", SearchOperator.In, Str("Tech"))], SearchLogic.And, "SearchSimilar");
 
-        act.Should().Throw<RpcException>()
-            .Where(e => e.Status.StatusCode == StatusCode.InvalidArgument
-                     && e.Status.Detail.Contains(SearchOperator.In.ToString())
-                     && e.Status.Detail.Contains("category"));
+        act.Should().Throw<FilterTranslationException>()
+            .Where(e => e.Message.Contains(SearchOperator.In.ToString()) && e.Message.Contains("category"));
     }
 
     [Theory]
@@ -180,17 +175,15 @@ public class QdrantFilterBuilderTests
     [InlineData(SearchOperator.LessThan)]
     [InlineData(SearchOperator.GreaterThanOrEquals)]
     [InlineData(SearchOperator.LessThanOrEquals)]
-    public void Build_RangeOperatorWithNonNumericValue_ThrowsInvalidArgument(SearchOperator op)
+    public void Build_RangeOperatorWithNonNumericValue_Throws(SearchOperator op)
     {
         // A caller could send a Range clause whose Value isn't actually a NumberVal (proto3
         // scalar field silently defaults to 0 when a different oneof member is set) — must be
-        // a clean InvalidArgument rather than silently filtering on 0.
+        // a clean exception rather than silently filtering on 0.
         var act = () => QdrantFilterBuilder.Build(
             [Clause("wordCount", op, Str("not-a-number"))], SearchLogic.And, "SearchSimilar");
 
-        act.Should().Throw<RpcException>()
-            .Where(e => e.Status.StatusCode == StatusCode.InvalidArgument
-                     && e.Status.Detail.Contains(op.ToString())
-                     && e.Status.Detail.Contains("wordCount"));
+        act.Should().Throw<FilterTranslationException>()
+            .Where(e => e.Message.Contains(op.ToString()) && e.Message.Contains("wordCount"));
     }
 }

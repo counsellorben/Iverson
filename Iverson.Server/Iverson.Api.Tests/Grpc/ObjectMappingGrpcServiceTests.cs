@@ -19,12 +19,14 @@ namespace Iverson.Api.Tests.Grpc;
 
 public class ObjectMappingGrpcServiceTests
 {
-    private readonly IPostgresRepository _sql;
-    private readonly IVectorService _vector;
+    private readonly IPostgresQueryExecutor _sql;
+    private readonly IPostgresTransactionRunner _txRunner;
+    private readonly IPostgresSchemaManager _schemaManager;
+    private readonly IVectorSchemaManager _vector;
     private readonly IEventProducer _events;
     private readonly SchemaRegistry _registry;
     private readonly IEmbeddingService _embedding;
-    private readonly IStarRocksRepository _starRocks;
+    private readonly IStarRocksSchemaManager _starRocks;
     private readonly ObjectMappingGrpcService _sut;
 
     private static readonly string AuthorId  = "11111111-0000-0000-0000-000000000001";
@@ -34,24 +36,31 @@ public class ObjectMappingGrpcServiceTests
 
     public ObjectMappingGrpcServiceTests()
     {
-        _sql    = Substitute.For<IPostgresRepository>();
-        _vector = Substitute.For<IVectorService>();
+        _sql    = Substitute.For<IPostgresQueryExecutor>();
+        _vector = Substitute.For<IVectorSchemaManager>();
         _events = Substitute.For<IEventProducer>();
 
         _sql.ExecuteAsync(Arg.Any<string>(), Arg.Any<object?>()).Returns(1);
         _sql.QueryAsync<string>(Arg.Any<string>(), Arg.Any<object?>())
             .Returns(Task.FromResult(Enumerable.Empty<string>()));
 
+        _txRunner = Substitute.For<IPostgresTransactionRunner>();
+        _txRunner.ExecuteInTransactionAsync(Arg.Any<Func<IDbTransactionContext, Task>>())
+            .Returns(ci => ci.Arg<Func<IDbTransactionContext, Task>>()(Substitute.For<IDbTransactionContext>()));
+
+        _schemaManager = Substitute.For<IPostgresSchemaManager>();
+
         _embedding = Substitute.For<IEmbeddingService>();
         _embedding.Dimension.Returns(768);
         _embedding.ModelId.Returns("nomic-embed-text");
 
-        _starRocks = Substitute.For<IStarRocksRepository>();
+        _starRocks = Substitute.For<IStarRocksSchemaManager>();
         _starRocks.ApplyTableAsync(Arg.Any<StarRocksTableSchema>()).Returns(Task.CompletedTask);
 
         _registry = new SchemaRegistry(_sql, NullLogger<SchemaRegistry>.Instance);
         _sut = new ObjectMappingGrpcService(
-            _sql, _vector, _events, _registry, _embedding, _starRocks,
+            _sql, _txRunner, _schemaManager, _vector, _events, _registry, _embedding, _starRocks,
+            new RelationValidator(_registry), new EntityKeyAccessor(), new OutboxWriter(_sql, _txRunner),
             NullLogger<ObjectMappingGrpcService>.Instance);
     }
 
@@ -103,7 +112,7 @@ public class ObjectMappingGrpcServiceTests
     }
 
     /// <summary>
-    /// Configures <see cref="_sql"/>'s <c>ExecuteInTransactionAsync</c> to actually invoke the
+    /// Configures <see cref="_txRunner"/>'s <c>ExecuteInTransactionAsync</c> to actually invoke the
     /// captured transactional work against a fake <see cref="IDbTransactionContext"/>, recording
     /// every SQL statement issued inside it. Used by tests that need to assert on what happens
     /// inside the upsert/delete + outbox transaction (as opposed to tests that only care about
@@ -115,7 +124,7 @@ public class ObjectMappingGrpcServiceTests
         var fakeTx = Substitute.For<IDbTransactionContext>();
         fakeTx.ExecuteAsync(Arg.Do<string>(sql => executedSql.Add(sql)), Arg.Any<object?>()).Returns(0);
 
-        _sql.ExecuteInTransactionAsync(Arg.Any<Func<IDbTransactionContext, Task>>())
+        _txRunner.ExecuteInTransactionAsync(Arg.Any<Func<IDbTransactionContext, Task>>())
             .Returns(call => call.Arg<Func<IDbTransactionContext, Task>>()(fakeTx));
 
         return executedSql;
@@ -305,7 +314,7 @@ public class ObjectMappingGrpcServiceTests
         await _registry.RegisterAsync(SchemaFixtures.ArticleSchema());
 
         var capturedWork = default(Func<IDbTransactionContext, Task>);
-        _sql.ExecuteInTransactionAsync(Arg.Do<Func<IDbTransactionContext, Task>>(w => capturedWork = w))
+        _txRunner.ExecuteInTransactionAsync(Arg.Do<Func<IDbTransactionContext, Task>>(w => capturedWork = w))
             .Returns(Task.CompletedTask);
 
         var payload = MakePayload(new()
@@ -576,7 +585,7 @@ public class ObjectMappingGrpcServiceTests
         await _registry.RegisterAsync(SchemaFixtures.ArticleSchema());
 
         var capturedWork = default(Func<IDbTransactionContext, Task>);
-        _sql.ExecuteInTransactionAsync(Arg.Do<Func<IDbTransactionContext, Task>>(w => capturedWork = w))
+        _txRunner.ExecuteInTransactionAsync(Arg.Do<Func<IDbTransactionContext, Task>>(w => capturedWork = w))
             .Returns(Task.CompletedTask);
 
         var payload = MakePayload(new()
@@ -677,7 +686,7 @@ public class ObjectMappingGrpcServiceTests
             .Returns(AuthorJson);
 
         var capturedWork = default(Func<IDbTransactionContext, Task>);
-        _sql.ExecuteInTransactionAsync(Arg.Do<Func<IDbTransactionContext, Task>>(w => capturedWork = w))
+        _txRunner.ExecuteInTransactionAsync(Arg.Do<Func<IDbTransactionContext, Task>>(w => capturedWork = w))
             .Returns(Task.CompletedTask);
 
         await _sut.Delete(

@@ -9,6 +9,8 @@ public class KafkaConsumer(
     KafkaOptions options,
     ILogger<KafkaConsumer> logger,
     MessageDispatcher dispatcher,
+    Func<ConsumerConfig, IConsumer<string, string>> consumerFactory,
+    Func<AdminClientConfig, IAdminClient> adminClientFactory,
     int numPartitions = 12) : IEventConsumer
 {
     public async Task ConsumeAsync(
@@ -28,7 +30,7 @@ public class KafkaConsumer(
         };
         KafkaClientConfigFactory.ApplySecurity(config, options);
 
-        using var consumer = new ConsumerBuilder<string, string>(config).Build();
+        using var consumer = consumerFactory(config);
         consumer.Subscribe(topic);
         logger.LogInformation("Subscribed to topic {Topic} as group {GroupId}", topic, groupId);
 
@@ -110,7 +112,7 @@ public class KafkaConsumer(
         };
         KafkaClientConfigFactory.ApplySecurity(config, options);
 
-        using var consumer = new ConsumerBuilder<string, string>(config).Build();
+        using var consumer = consumerFactory(config);
         consumer.Subscribe(topic);
         logger.LogInformation("Subscribed to topic {Topic} as group {GroupId} (raw)", topic, groupId);
 
@@ -142,7 +144,7 @@ public class KafkaConsumer(
     {
         var adminConfig = new AdminClientConfig { BootstrapServers = options.BootstrapServers };
         KafkaClientConfigFactory.ApplySecurity(adminConfig, options);
-        using var admin = new AdminClientBuilder(adminConfig).Build();
+        using var admin = adminClientFactory(adminConfig);
         while (!ct.IsCancellationRequested)
         {
             try

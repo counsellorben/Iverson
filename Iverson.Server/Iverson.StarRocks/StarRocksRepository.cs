@@ -12,9 +12,8 @@ public sealed class StarRocksRepository(
     string connectionString,
     ILogger<StarRocksRepository> logger,
     StarRocksResilienceOptions? resilienceOptions = null)
-    : IStarRocksRepository
+    : IStarRocksQueryExecutor, IStarRocksEntityStore
 {
-    private readonly string _dbName = new MySqlConnectionStringBuilder(connectionString).Database;
     private readonly StarRocksResilienceOptions _resilience = resilienceOptions ?? StarRocksResilienceOptions.Default;
 
     private readonly StarRocksReadinessGate _readinessGate = new(
@@ -47,9 +46,6 @@ public sealed class StarRocksRepository(
                 "StarRocks is currently unavailable (circuit breaker open).", ex);
         }
     }
-
-    private Task RunAsync(Func<Task> operation) =>
-        RunAsync(async () => { await operation().ConfigureAwait(false); return true; });
 
     public async Task<IEnumerable<T>> QueryAsync<T>(string sql, object? param = null)
     {
@@ -147,140 +143,12 @@ public sealed class StarRocksRepository(
             $"DELETE FROM `{tableName}` WHERE `{keyColumn}` = @key",
             new { key = keyValue });
 
-    internal static string BuildCreateTableDdl(StarRocksTableSchema schema)
-    {
-        var keySql  = $"`{schema.KeyColumn.Name}` {schema.KeyColumn.SrType} NOT NULL";
-        var colsSql = schema.Columns.Select(c =>
-            $"`{c.Name}` {c.SrType}{(c.IsNullable ? "" : " NOT NULL")}");
-
-        var orderBy = schema.SortKey.Count > 0
-            ? $"\nORDER BY ({string.Join(", ", schema.SortKey.Select(k => $"`{k}`"))})"
-            : "";
-
-        return $"""
-            CREATE TABLE IF NOT EXISTS `{schema.TableName}` (
-                {keySql},
-                {string.Join(",\n    ", colsSql)}
-            ) ENGINE=OLAP
-            PRIMARY KEY(`{schema.KeyColumn.Name}`)
-            DISTRIBUTED BY HASH(`{schema.KeyColumn.Name}`) BUCKETS 4{orderBy}
-            PROPERTIES ("replication_num" = "1")
-            """;
-    }
-
-    public async Task ApplyTableAsync(StarRocksTableSchema schema)
-    {
-        using var activity = Telemetry.Source.StartActivity("sr.apply_table", ActivityKind.Client);
-        activity?.SetTag("db.system", "starrocks");
-        activity?.SetTag("db.table", schema.TableName);
-
-        await RunAsync(async () =>
-        {
-            await EnsureDatabaseAsync();
-
-            await using var conn = CreateConnection();
-
-            var exists = await conn.QuerySingleOrDefaultAsync<int>(
-                "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = @db AND table_name = @tbl",
-                new { db = _dbName, tbl = schema.TableName });
-
-            if (exists == 0)
-            {
-                await conn.ExecuteAsync(BuildCreateTableDdl(schema));
-                logger.LogInformation("Created StarRocks table {Table}", schema.TableName);
-            }
-            else
-            {
-                // Only ADDS columns that are missing. Type widening, column removal, and
-                // primary-key changes are not handled — those require manual DDL migration.
-                var existingCols = (await conn.QueryAsync<string>(
-                    "SELECT column_name FROM information_schema.columns WHERE table_schema = @db AND table_name = @tbl",
-                    new { db = _dbName, tbl = schema.TableName }
-                )).ToHashSet(StringComparer.OrdinalIgnoreCase);
-
-                foreach (var col in schema.Columns.Where(c => !existingCols.Contains(c.Name)))
-                {
-                    await conn.ExecuteAsync(
-                        $"ALTER TABLE `{schema.TableName}` ADD COLUMN `{col.Name}` {col.SrType}");
-                    logger.LogInformation("Added column {Col} to StarRocks table {Table}", col.Name, schema.TableName);
-                }
-            }
-        });
-
-        activity?.SetStatus(ActivityStatusCode.Ok);
-    }
-
-    public async Task<StarRocksHealthStatus> CheckHealthAsync()
-    {
-        // Deliberately NOT routed through RunAsync: this backs the k8s readiness probe
-        // (via /health), which must return quickly and let k8s re-poll on its own cadence
-        // rather than block for the gate's multi-minute cold-start budget.
-        try
-        {
-            await using var conn = CreateConnection();
-            await conn.OpenAsync();
-
-            await using (var cmd = new MySqlCommand("SELECT 1", conn))
-                await cmd.ExecuteScalarAsync();
-
-            return await AnyBackendAliveAsync(conn)
-                ? StarRocksHealthStatus.Healthy
-                : StarRocksHealthStatus.Unhealthy;
-        }
-        catch (Exception ex)
-        {
-            return ClassifyConnectionException(ex);
-        }
-    }
-
-    // iverson_app doesn't exist until the StarRocks create-user post-install Helm hook runs, and
-    // Helm only runs post-install hooks after --wait succeeds on the main manifest (which
-    // includes this process's own readinessProbe) — so treating this specific failure as
-    // blocking readiness would deadlock every fresh install forever. Any other failure (down,
-    // wrong host) still correctly reports Unhealthy. Note AccessDenied is wire-level ambiguous —
-    // it also covers a wrong password for an already-created iverson_app user — so that specific
-    // misconfiguration is deliberately tolerated for readiness too; the /health response body
-    // still reports checks.starrocks=false/"degraded" the whole time, so body-reading monitoring
-    // still catches it. internal (not private) so Iverson.StarRocks.Tests — which has
-    // InternalsVisibleTo access — can test the classification directly without a live connection.
-    internal static StarRocksHealthStatus ClassifyConnectionException(Exception ex) =>
-        ex is MySqlException { ErrorCode: MySqlErrorCode.AccessDenied }
-            ? StarRocksHealthStatus.AuthPending
-            : StarRocksHealthStatus.Unhealthy;
-
-    public async Task<bool> IsHealthyAsync() =>
-        await CheckHealthAsync() == StarRocksHealthStatus.Healthy;
-
-    private async Task EnsureDatabaseAsync()
-    {
-        var builder = new MySqlConnectionStringBuilder(connectionString) { Database = string.Empty };
-        await using var conn = new MySqlConnection(builder.ToString());
-        await conn.ExecuteAsync($"CREATE DATABASE IF NOT EXISTS `{_dbName}`");
-    }
-
     private static async Task<bool> CheckBackendAliveAsync(string connectionString, CancellationToken ct)
     {
         var probeConnectionString = new MySqlConnectionStringBuilder(connectionString) { Database = "" }.ToString();
         await using var conn = new MySqlConnection(probeConnectionString);
         await conn.OpenAsync(ct);
-        return await AnyBackendAliveAsync(conn, ct);
-    }
-
-    private static async Task<bool> AnyBackendAliveAsync(MySqlConnection conn, CancellationToken ct = default)
-    {
-        await using var cmd = new MySqlCommand("SHOW BACKENDS", conn);
-        await using var reader = await cmd.ExecuteReaderAsync(ct);
-        var aliveOrdinal = -1;
-        while (await reader.ReadAsync(ct))
-        {
-            if (aliveOrdinal < 0)
-                aliveOrdinal = reader.GetOrdinal("Alive");
-
-            if (string.Equals(reader.GetString(aliveOrdinal), "true", StringComparison.OrdinalIgnoreCase))
-                return true;
-        }
-
-        return false;
+        return await StarRocksHealthChecker.AnyBackendAliveAsync(conn, ct);
     }
 
     private static object? JsonElementToObject(JsonElement el) => el.ValueKind switch

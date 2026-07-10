@@ -2,22 +2,8 @@ using Qdrant.Client.Grpc;
 
 namespace Iverson.Vector;
 
-public interface IVectorService
+public interface IVectorQueryService
 {
-    Task EnsureCollectionAsync(
-        string collectionName,
-        ulong vectorSize);
-    Task ApplyCollectionAsync(CollectionSchema schema);
-    Task UpsertAsync(
-        string collectionName,
-        ulong id,
-        float[] vector,
-        IReadOnlyDictionary<string, object>? payload = null);
-    Task UpsertNamedAsync(
-        string collectionName,
-        ulong id,
-        IReadOnlyDictionary<string, float[]> namedVectors,
-        IReadOnlyDictionary<string, object>? payload = null);
     Task<IReadOnlyList<VectorSearchResult>> SearchAsync(
         string collectionName,
         float[] queryVector,
@@ -28,6 +14,26 @@ public interface IVectorService
         float[] queryVector,
         ulong limit = 10,
         Filter? filter = null);
+}
+
+public interface IVectorSchemaManager
+{
+    Task EnsureCollectionAsync(string collectionName, ulong vectorSize);
+    Task ApplyCollectionAsync(CollectionSchema schema);
+}
+
+public interface IVectorWriteService
+{
+    Task UpsertAsync(
+        string collectionName,
+        ulong id,
+        float[] vector,
+        IReadOnlyDictionary<string, object>? payload = null);
+    Task UpsertNamedAsync(
+        string collectionName,
+        ulong id,
+        IReadOnlyDictionary<string, float[]> namedVectors,
+        IReadOnlyDictionary<string, object>? payload = null);
     Task DeleteAsync(string collectionName, ulong id);
     Task DeleteByFilterAsync(string collectionName, Filter filter);
 }

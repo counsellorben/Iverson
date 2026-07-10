@@ -17,20 +17,20 @@ namespace Iverson.Api.Tests.Grpc;
 
 public class ObjectSearchGrpcServiceTests
 {
-    private readonly IPostgresRepository _sql;
+    private readonly IPostgresQueryExecutor _sql;
     private readonly SchemaRegistry _registry;
-    private readonly IStarRocksRepository _sr;
-    private readonly IVectorService _vector;
+    private readonly IStarRocksQueryExecutor _sr;
+    private readonly IVectorQueryService _vector;
     private readonly IEmbeddingService _embedding;
     private readonly ObjectSearchGrpcService _sut;
 
     public ObjectSearchGrpcServiceTests()
     {
-        _sql = Substitute.For<IPostgresRepository>();
+        _sql = Substitute.For<IPostgresQueryExecutor>();
         _sql.ExecuteAsync(Arg.Any<string>(), Arg.Any<object?>()).Returns(0);
         _registry  = new SchemaRegistry(_sql, NullLogger<SchemaRegistry>.Instance);
-        _sr        = Substitute.For<IStarRocksRepository>();
-        _vector    = Substitute.For<IVectorService>();
+        _sr        = Substitute.For<IStarRocksQueryExecutor>();
+        _vector    = Substitute.For<IVectorQueryService>();
         _embedding = Substitute.For<IEmbeddingService>();
 
         _sr.QueryAsync<dynamic>(Arg.Any<string>(), Arg.Any<object?>())
@@ -418,7 +418,7 @@ public class ObjectSearchGrpcServiceTests
         // NB: Arg.Do does not fire inside Received() verification on this project's NSubstitute
         // version (see project-test-coverage memory) — use ReceivedCalls()/GetArguments() instead.
         var call = _vector.ReceivedCalls()
-            .Should().ContainSingle(c => c.GetMethodInfo().Name == nameof(IVectorService.SearchNamedAsync))
+            .Should().ContainSingle(c => c.GetMethodInfo().Name == nameof(IVectorQueryService.SearchNamedAsync))
             .Subject;
         var captured = (Filter?)call.GetArguments()[4];
         captured.Should().NotBeNull();
@@ -548,7 +548,7 @@ public class ObjectSearchGrpcServiceTests
         // NB: Arg.Do does not fire inside Received() verification on this project's NSubstitute
         // version (see project-test-coverage memory) — use ReceivedCalls()/GetArguments() instead.
         var call = _vector.ReceivedCalls()
-            .Should().ContainSingle(c => c.GetMethodInfo().Name == nameof(IVectorService.SearchNamedAsync))
+            .Should().ContainSingle(c => c.GetMethodInfo().Name == nameof(IVectorQueryService.SearchNamedAsync))
             .Subject;
         var captured = (Filter?)call.GetArguments()[4];
         captured.Should().NotBeNull();

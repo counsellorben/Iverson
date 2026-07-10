@@ -11,7 +11,7 @@ public class DlqMonitorConsumerTests
     [Fact]
     public async Task HandleAsync_RecordsMessageWithHeaderMetadata()
     {
-        var sql = Substitute.For<IPostgresRepository>();
+        var sql = Substitute.For<IPostgresQueryExecutor>();
         var sut = new Iverson.Api.Reconciliation.DlqMonitorConsumer(
             Substitute.For<Iverson.Events.IEventConsumer>(), sql,
             Microsoft.Extensions.Logging.Abstractions.NullLogger<Iverson.Api.Reconciliation.DlqMonitorConsumer>.Instance);
@@ -39,7 +39,7 @@ public class DlqMonitorConsumerTests
     [Fact]
     public async Task HandleAsync_MissingOptionalHeaders_StillRecordsWithNullExceptionFields()
     {
-        var sql = Substitute.For<IPostgresRepository>();
+        var sql = Substitute.For<IPostgresQueryExecutor>();
         var sut = new Iverson.Api.Reconciliation.DlqMonitorConsumer(
             Substitute.For<Iverson.Events.IEventConsumer>(), sql,
             Microsoft.Extensions.Logging.Abstractions.NullLogger<Iverson.Api.Reconciliation.DlqMonitorConsumer>.Instance);

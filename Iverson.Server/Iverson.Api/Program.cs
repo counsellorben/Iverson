@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Text.Json;
+using Iverson.Api;
 using Iverson.Api.Consumers;
 using Iverson.Api.Grpc;
 using Iverson.Api.Schema;
@@ -98,6 +99,9 @@ builder.Services.AddQdrant(
 builder.Services.AddKafka(cfg);
 
 builder.Services.AddSingleton<SchemaRegistry>();
+builder.Services.AddSingleton<IRelationValidator, RelationValidator>();
+builder.Services.AddSingleton<IEntityKeyAccessor, EntityKeyAccessor>();
+builder.Services.AddSingleton<IOutboxWriter, OutboxWriter>();
 builder.Services.AddSingleton<Iverson.Api.Reconciliation.ReconciliationService>();
 
 builder.Services.AddEmbeddings(cfg);
@@ -147,9 +151,9 @@ app.Use(async (context, next) =>
 app.MapGet("/health/live", () => Results.Ok(new { status = "alive" })).WithName("HealthLive");
 
 app.MapGet("/health", async (
-    IPostgresRepository db,
-    IStarRocksRepository sr,
-    IVectorService vector,
+    IPostgresQueryExecutor db,
+    IStarRocksHealthCheck sr,
+    IVectorSchemaManager vector,
     IEventProducer kafka) =>
 {
     var pgTask     = db.QuerySingleOrDefaultAsync<int>("SELECT 1").ContinueWith(t => t.IsCompletedSuccessfully && t.Result == 1);
@@ -169,34 +173,27 @@ app.MapGet("/health", async (
         kafka     = kafkaTask.Result
     };
 
-    // StarRocks "auth pending" is expected during a fresh install: the create-user post-install
-    // hook can only run after --wait succeeds on this very readiness probe, so failing readiness
-    // on AuthPending would deadlock every first install forever. It's still reported unhealthy
-    // in the body (checks.starrocks stays false) for real observability — only the k8s-facing
-    // readiness verdict (the HTTP status code) tolerates it.
-    var readinessHealthy = checks.postgres && checks.qdrant && checks.kafka
-        && srStatus != StarRocksHealthStatus.Unhealthy;
-    var fullyHealthy = readinessHealthy && checks.starrocks;
+    var readiness = ReadinessPolicy.Evaluate(checks.postgres, srStatus, checks.qdrant, checks.kafka);
 
-    return readinessHealthy
-        ? Results.Ok(new { status = fullyHealthy ? "healthy" : "degraded", checks })
+    return readiness.Ready
+        ? Results.Ok(new { status = readiness.FullyHealthy ? "healthy" : "degraded", checks })
         : Results.Json(new { status = "degraded", checks }, statusCode: 503);
 })
 .WithName("Health");
 
-app.MapGet("/probe/sql", async (IPostgresRepository db) =>
+app.MapGet("/probe/sql", async (IPostgresQueryExecutor db) =>
 {
     var result = await db.QuerySingleOrDefaultAsync<int>("SELECT 1");
     return Results.Ok(new { connected = result == 1, traceId = Activity.Current?.TraceId.ToString() });
 }).WithName("ProbeSql");
 
-app.MapGet("/probe/starrocks", async (IStarRocksRepository sr) =>
+app.MapGet("/probe/starrocks", async (IStarRocksHealthCheck sr) =>
 {
     var healthy = await sr.IsHealthyAsync();
     return Results.Ok(new { connected = healthy, traceId = Activity.Current?.TraceId.ToString() });
 }).WithName("ProbeStarRocks");
 
-app.MapGet("/probe/vector", async (IVectorService vector) =>
+app.MapGet("/probe/vector", async (IVectorSchemaManager vector) =>
 {
     await vector.EnsureCollectionAsync("iverson-probe", 4);
     return Results.Ok(new { connected = true, collection = "iverson-probe", traceId = Activity.Current?.TraceId.ToString() });
@@ -219,7 +216,7 @@ app.MapPost("/admin/reconcile/{typeName}", async (
         : Results.Ok(new { reconciledCount = count, typeName });
 }).WithName("Reconcile");
 
-app.MapGet("/admin/dlq", async (IPostgresRepository db) =>
+app.MapGet("/admin/dlq", async (IPostgresQueryExecutor db) =>
 {
     var rows = await db.QueryAsync<DlqRow>(
         $"""
@@ -233,7 +230,7 @@ app.MapGet("/admin/dlq", async (IPostgresRepository db) =>
     return Results.Ok(rows);
 }).WithName("ListDlq");
 
-app.MapPost("/admin/dlq/{id}/replay", async (Guid id, IPostgresRepository db, IEventProducer events) =>
+app.MapPost("/admin/dlq/{id}/replay", async (Guid id, IPostgresQueryExecutor db, IEventProducer events) =>
 {
     var row = await db.QuerySingleOrDefaultAsync<DlqReplayRow>(
         $"""
@@ -256,8 +253,8 @@ app.MapPost("/admin/dlq/{id}/replay", async (Guid id, IPostgresRepository db, IE
 // ── Schema hydration ───────────────────────────────────────────────────────────
 await app.Services.GetRequiredService<IEmbeddingService>().InitializeAsync();
 await app.Services.GetRequiredService<SchemaRegistry>().LoadAsync();
-await app.Services.GetRequiredService<IPostgresRepository>().ApplySchemaAsync(Iverson.Api.Reconciliation.ReconciliationSchema.Table);
-await app.Services.GetRequiredService<IPostgresRepository>().ApplySchemaAsync(Iverson.Api.Reconciliation.DlqSchema.Table);
+await app.Services.GetRequiredService<IPostgresSchemaManager>().ApplySchemaAsync(Iverson.Api.Reconciliation.ReconciliationSchema.Table);
+await app.Services.GetRequiredService<IPostgresSchemaManager>().ApplySchemaAsync(Iverson.Api.Reconciliation.DlqSchema.Table);
 
 // ── gRPC endpoints ─────────────────────────────────────────────────────────────
 if (workloadRole == "api")
