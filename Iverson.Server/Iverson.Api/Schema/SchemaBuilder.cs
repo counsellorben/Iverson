@@ -113,22 +113,6 @@ internal static class SchemaBuilder
         SortKey = d.SearchKeyColumns
     };
 
-    internal static string ClrTypeToStarRocksType(string sqlType) => sqlType.ToUpperInvariant() switch
-    {
-        "UUID"             => "VARCHAR(36)",
-        "UUID[]"           => "STRING",
-        "TEXT"             => "STRING",
-        "INTEGER"          => "INT",
-        "BIGINT"           => "BIGINT",
-        "REAL"             => "FLOAT",
-        "REAL[]"           => "STRING",
-        "DOUBLE PRECISION" => "DOUBLE",
-        "BOOLEAN"          => "BOOLEAN",
-        "TIMESTAMPTZ"      => "DATETIME",
-        "BYTEA"            => "VARBINARY",
-        _                  => "STRING"
-    };
-
     internal static CollectionSchema ToChunkCollectionSchema(SchemaDescriptor d) => new(
         d.CollectionName! + "_chunks",
         d.ChunkFields.Select(c => new NamedVector($"{c.PropertyName.ToSnakeCase()}_vector", c.Dimension)).ToList(),
@@ -144,33 +128,60 @@ internal static class SchemaBuilder
             .Concat(d.FkColumns.Select(fk => new PayloadIndex(ToCamelCase(fk.ColumnName), PayloadIndexKind.Keyword)))
             .ToList());
 
-    internal static string ClrTypeToSql(ClrType t, bool isArray) => (t, isArray) switch
-    {
-        (ClrType.ClrGuid,     false) => "UUID",
-        (ClrType.ClrGuid,     true)  => "UUID[]",
-        (ClrType.ClrString,   _)     => "TEXT",
-        (ClrType.ClrInt32,    _)     => "INTEGER",
-        (ClrType.ClrInt64,    _)     => "BIGINT",
-        (ClrType.ClrFloat,    true)  => "REAL[]",
-        (ClrType.ClrFloat,    false) => "REAL",
-        (ClrType.ClrDouble,   _)     => "DOUBLE PRECISION",
-        (ClrType.ClrBool,     _)     => "BOOLEAN",
-        (ClrType.ClrDatetime, _)     => "TIMESTAMPTZ",
-        (ClrType.ClrBytes,    _)     => "BYTEA",
-        _                            => "TEXT"
-    };
+    private readonly record struct ClrTypeMapping(string SqlType, string StarRocksType, PayloadIndexKind PayloadKind);
 
-    internal static PayloadIndexKind SqlTypeToPayloadKind(string sqlType) => sqlType.ToUpperInvariant() switch
+    // Single source of truth for scalar ClrType → (SQL type, StarRocks type, Qdrant payload
+    // index kind). Adding a new ClrType means adding one entry here — ClrTypeToSql,
+    // ClrTypeToStarRocksType, and SqlTypeToPayloadKind all derive from this one table instead
+    // of three independently-maintained switches.
+    private static readonly IReadOnlyDictionary<ClrType, ClrTypeMapping> ScalarTypeMap =
+        new Dictionary<ClrType, ClrTypeMapping>
+        {
+            [ClrType.ClrGuid]     = new("UUID", "VARCHAR(36)", PayloadIndexKind.Keyword),
+            [ClrType.ClrString]   = new("TEXT", "STRING", PayloadIndexKind.Keyword),
+            [ClrType.ClrInt32]    = new("INTEGER", "INT", PayloadIndexKind.Integer),
+            [ClrType.ClrInt64]    = new("BIGINT", "BIGINT", PayloadIndexKind.Integer),
+            [ClrType.ClrFloat]    = new("REAL", "FLOAT", PayloadIndexKind.Float),
+            [ClrType.ClrDouble]   = new("DOUBLE PRECISION", "DOUBLE", PayloadIndexKind.Float),
+            [ClrType.ClrBool]     = new("BOOLEAN", "BOOLEAN", PayloadIndexKind.Boolean),
+            [ClrType.ClrDatetime] = new("TIMESTAMPTZ", "DATETIME", PayloadIndexKind.Datetime),
+            [ClrType.ClrBytes]    = new("BYTEA", "VARBINARY", PayloadIndexKind.Keyword)
+        };
+
+    // Only ClrGuid and ClrFloat have array-specific SQL/StarRocks representations distinct
+    // from their scalar form (preserves the exact prior behavior of the three switches this
+    // table replaces — every other ClrType's array variant reused its scalar mapping).
+    private static readonly IReadOnlyDictionary<ClrType, ClrTypeMapping> ArrayTypeOverrides =
+        new Dictionary<ClrType, ClrTypeMapping>
+        {
+            [ClrType.ClrGuid]  = new("UUID[]", "STRING", PayloadIndexKind.Keyword),
+            [ClrType.ClrFloat] = new("REAL[]", "STRING", PayloadIndexKind.Keyword)
+        };
+
+    // Derived from ScalarTypeMap + ArrayTypeOverrides at static-init time, keyed by the SQL
+    // type string, so ClrTypeToStarRocksType/SqlTypeToPayloadKind — which only ever receive a
+    // persisted SQL-type string, never the original ClrType (ColumnDescriptor.SqlType is what's
+    // serialized into the _iverson_schema table) — stay consistent with ClrTypeToSql by
+    // construction instead of by separately-maintained switch.
+    private static readonly IReadOnlyDictionary<string, ClrTypeMapping> SqlTypeMap =
+        ScalarTypeMap.Values
+            .Concat(ArrayTypeOverrides.Values)
+            .ToDictionary(m => m.SqlType, m => m, StringComparer.OrdinalIgnoreCase);
+
+    internal static string ClrTypeToSql(ClrType t, bool isArray)
     {
-        "UUID"             => PayloadIndexKind.Keyword,
-        "UUID[]"           => PayloadIndexKind.Keyword,
-        "TEXT"             => PayloadIndexKind.Keyword,
-        "INTEGER"          => PayloadIndexKind.Integer,
-        "BIGINT"           => PayloadIndexKind.Integer,
-        "REAL"             => PayloadIndexKind.Float,
-        "DOUBLE PRECISION" => PayloadIndexKind.Float,
-        "BOOLEAN"          => PayloadIndexKind.Boolean,
-        "TIMESTAMPTZ"      => PayloadIndexKind.Datetime,
-        _                  => PayloadIndexKind.Keyword
-    };
+        if (isArray && ArrayTypeOverrides.TryGetValue(t, out var arrayMapping))
+            return arrayMapping.SqlType;
+
+        return ScalarTypeMap.TryGetValue(t, out var mapping)
+            ? mapping.SqlType
+            : throw new ArgumentOutOfRangeException(nameof(t), t,
+                $"Unhandled {nameof(ClrType)} value — add an entry to {nameof(SchemaBuilder)}.{nameof(ScalarTypeMap)}.");
+    }
+
+    internal static string ClrTypeToStarRocksType(string sqlType) =>
+        SqlTypeMap.TryGetValue(sqlType, out var mapping) ? mapping.StarRocksType : "STRING";
+
+    internal static PayloadIndexKind SqlTypeToPayloadKind(string sqlType) =>
+        SqlTypeMap.TryGetValue(sqlType, out var mapping) ? mapping.PayloadKind : PayloadIndexKind.Keyword;
 }

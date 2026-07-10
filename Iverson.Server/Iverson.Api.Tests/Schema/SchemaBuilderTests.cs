@@ -3,6 +3,7 @@ using Iverson.Api.Schema;
 using Iverson.Api.Tests.Helpers;
 using Iverson.Client.Contracts;
 using Iverson.Embeddings;
+using Iverson.Vector;
 using NSubstitute;
 using Xunit;
 
@@ -146,5 +147,39 @@ public class SchemaBuilderTests
         var descriptor = SchemaBuilder.BuildDescriptor(td, embedding);
 
         descriptor.Relations.Single().Kind.Should().Be(Iverson.Api.Schema.RelationKind.ManyToMany);
+    }
+
+    [Theory]
+    [InlineData(ClrType.ClrGuid,     false, "UUID",             "VARCHAR(36)", PayloadIndexKind.Keyword)]
+    [InlineData(ClrType.ClrGuid,     true,  "UUID[]",           "STRING",      PayloadIndexKind.Keyword)]
+    [InlineData(ClrType.ClrString,   false, "TEXT",             "STRING",      PayloadIndexKind.Keyword)]
+    [InlineData(ClrType.ClrInt32,    false, "INTEGER",          "INT",         PayloadIndexKind.Integer)]
+    [InlineData(ClrType.ClrInt64,    false, "BIGINT",           "BIGINT",      PayloadIndexKind.Integer)]
+    [InlineData(ClrType.ClrFloat,    false, "REAL",             "FLOAT",       PayloadIndexKind.Float)]
+    [InlineData(ClrType.ClrFloat,    true,  "REAL[]",           "STRING",      PayloadIndexKind.Keyword)]
+    [InlineData(ClrType.ClrDouble,   false, "DOUBLE PRECISION", "DOUBLE",      PayloadIndexKind.Float)]
+    [InlineData(ClrType.ClrBool,     false, "BOOLEAN",          "BOOLEAN",     PayloadIndexKind.Boolean)]
+    [InlineData(ClrType.ClrDatetime, false, "TIMESTAMPTZ",      "DATETIME",    PayloadIndexKind.Datetime)]
+    [InlineData(ClrType.ClrBytes,    false, "BYTEA",            "VARBINARY",   PayloadIndexKind.Keyword)]
+    public void TypeMapping_IsConsistentAcrossAllThreeConversions(
+        ClrType clrType, bool isArray, string expectedSql, string expectedStarRocksType, PayloadIndexKind expectedPayloadKind)
+    {
+        var sql = SchemaBuilder.ClrTypeToSql(clrType, isArray);
+
+        sql.Should().Be(expectedSql);
+        SchemaBuilder.ClrTypeToStarRocksType(sql).Should().Be(expectedStarRocksType);
+        SchemaBuilder.SqlTypeToPayloadKind(sql).Should().Be(expectedPayloadKind);
+    }
+
+    [Fact]
+    public void ClrTypeToStarRocksType_UnknownSqlType_FallsBackToString()
+    {
+        SchemaBuilder.ClrTypeToStarRocksType("NOT_A_REAL_TYPE").Should().Be("STRING");
+    }
+
+    [Fact]
+    public void SqlTypeToPayloadKind_UnknownSqlType_FallsBackToKeyword()
+    {
+        SchemaBuilder.SqlTypeToPayloadKind("NOT_A_REAL_TYPE").Should().Be(PayloadIndexKind.Keyword);
     }
 }
