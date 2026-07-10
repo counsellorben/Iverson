@@ -324,28 +324,7 @@ internal static class StarRocksQueryBuilder
 
             var pName = $"{paramPrefix}{nextIdx++}";
 
-            var condition = clause.Operator switch
-            {
-                SearchOperator.Equals => BuildEq(quotedCol, pName, clause.Value, param),
-                SearchOperator.NotEquals =>
-                    Condition($"{quotedCol} <> @{pName}", pName, GetScalarValue(clause.Value), param),
-                SearchOperator.Contains =>
-                    Condition($"{quotedCol} LIKE @{pName}", pName, $"%{clause.Value?.StringVal}%", param),
-                SearchOperator.StartsWith =>
-                    Condition($"{quotedCol} LIKE @{pName}", pName, $"{clause.Value?.StringVal}%", param),
-                SearchOperator.EndsWith =>
-                    Condition($"{quotedCol} LIKE @{pName}", pName, $"%{clause.Value?.StringVal}", param),
-                SearchOperator.GreaterThan =>
-                    Condition($"{quotedCol} > @{pName}", pName, GetScalarValue(clause.Value), param),
-                SearchOperator.GreaterThanOrEquals =>
-                    Condition($"{quotedCol} >= @{pName}", pName, GetScalarValue(clause.Value), param),
-                SearchOperator.LessThan =>
-                    Condition($"{quotedCol} < @{pName}", pName, GetScalarValue(clause.Value), param),
-                SearchOperator.LessThanOrEquals =>
-                    Condition($"{quotedCol} <= @{pName}", pName, GetScalarValue(clause.Value), param),
-                SearchOperator.In => BuildIn(quotedCol, pName, clause.Value, param),
-                _ => null
-            };
+            var condition = BuildCondition(quotedCol, pName, clause, param);
 
             if (condition is null) continue;
 
@@ -394,28 +373,7 @@ internal static class StarRocksQueryBuilder
 
             var pName = $"{paramPrefix}{nextIdx++}";
 
-            var condition = clause.Operator switch
-            {
-                SearchOperator.Equals => BuildEq(quotedCol, pName, clause.Value, param),
-                SearchOperator.NotEquals =>
-                    Condition($"{quotedCol} <> @{pName}", pName, GetScalarValue(clause.Value), param),
-                SearchOperator.Contains =>
-                    Condition($"{quotedCol} LIKE @{pName}", pName, $"%{clause.Value?.StringVal}%", param),
-                SearchOperator.StartsWith =>
-                    Condition($"{quotedCol} LIKE @{pName}", pName, $"{clause.Value?.StringVal}%", param),
-                SearchOperator.EndsWith =>
-                    Condition($"{quotedCol} LIKE @{pName}", pName, $"%{clause.Value?.StringVal}", param),
-                SearchOperator.GreaterThan =>
-                    Condition($"{quotedCol} > @{pName}", pName, GetScalarValue(clause.Value), param),
-                SearchOperator.GreaterThanOrEquals =>
-                    Condition($"{quotedCol} >= @{pName}", pName, GetScalarValue(clause.Value), param),
-                SearchOperator.LessThan =>
-                    Condition($"{quotedCol} < @{pName}", pName, GetScalarValue(clause.Value), param),
-                SearchOperator.LessThanOrEquals =>
-                    Condition($"{quotedCol} <= @{pName}", pName, GetScalarValue(clause.Value), param),
-                SearchOperator.In => BuildIn(quotedCol, pName, clause.Value, param),
-                _ => null
-            };
+            var condition = BuildCondition(quotedCol, pName, clause, param);
 
             if (condition is null) continue;
 
@@ -602,6 +560,37 @@ internal static class StarRocksQueryBuilder
         return $"SELECT CASE {string.Join(" ", cases)} END AS bucket_key, " +
                $"COUNT(*) AS doc_count {from}{wc} GROUP BY bucket_key{hc}";
     }
+
+    /// <summary>
+    /// Maps one <see cref="SearchClause"/> to a SQL condition fragment, given an already-resolved
+    /// and fully-quoted column identifier. Shared by <see cref="BuildWhere(Func{string, string?}, IEnumerable{SearchClause}?, SearchLogic, DynamicParameters, string, out int)"/>
+    /// and <see cref="BuildHaving"/> — the only difference between the two call sites is how
+    /// <paramref name="quotedCol"/> was produced (schema/tableMap-resolved for WHERE, used
+    /// verbatim for HAVING); the operator-to-SQL mapping itself is identical.
+    /// </summary>
+    private static string? BuildCondition(string quotedCol, string pName, SearchClause clause, DynamicParameters param) =>
+        clause.Operator switch
+        {
+            SearchOperator.Equals => BuildEq(quotedCol, pName, clause.Value, param),
+            SearchOperator.NotEquals =>
+                Condition($"{quotedCol} <> @{pName}", pName, GetScalarValue(clause.Value), param),
+            SearchOperator.Contains =>
+                Condition($"{quotedCol} LIKE @{pName}", pName, $"%{clause.Value?.StringVal}%", param),
+            SearchOperator.StartsWith =>
+                Condition($"{quotedCol} LIKE @{pName}", pName, $"{clause.Value?.StringVal}%", param),
+            SearchOperator.EndsWith =>
+                Condition($"{quotedCol} LIKE @{pName}", pName, $"%{clause.Value?.StringVal}", param),
+            SearchOperator.GreaterThan =>
+                Condition($"{quotedCol} > @{pName}", pName, GetScalarValue(clause.Value), param),
+            SearchOperator.GreaterThanOrEquals =>
+                Condition($"{quotedCol} >= @{pName}", pName, GetScalarValue(clause.Value), param),
+            SearchOperator.LessThan =>
+                Condition($"{quotedCol} < @{pName}", pName, GetScalarValue(clause.Value), param),
+            SearchOperator.LessThanOrEquals =>
+                Condition($"{quotedCol} <= @{pName}", pName, GetScalarValue(clause.Value), param),
+            SearchOperator.In => BuildIn(quotedCol, pName, clause.Value, param),
+            _ => null
+        };
 
     /// <summary>
     /// <paramref name="quotedCol"/> must already be a fully-quoted, ready-to-embed SQL
