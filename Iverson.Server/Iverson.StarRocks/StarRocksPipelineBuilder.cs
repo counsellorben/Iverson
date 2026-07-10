@@ -14,7 +14,7 @@ internal sealed record StepColumns(string Name, Dictionary<string, string> Colum
 /// <summary>
 /// Compiles a <see cref="PipelineRequest"/> into a single StarRocks CTE-chain query.
 /// Pass 1 (<see cref="TrackAndValidate"/>) computes every step's output column set and
-/// rejects invalid references as gRPC InvalidArgument before any SQL is built.
+/// rejects invalid references via <see cref="StarRocksQueryTranslationException"/> before any SQL is built.
 /// </summary>
 public static class StarRocksPipelineBuilder
 {
