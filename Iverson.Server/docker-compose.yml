@@ -37,7 +37,7 @@ services:
       start_period: 60s
 
   qdrant:
-    image: qdrant/qdrant:latest
+    image: qdrant/qdrant:v1.18.2
     container_name: iverson-qdrant
     restart: unless-stopped
     ports:
