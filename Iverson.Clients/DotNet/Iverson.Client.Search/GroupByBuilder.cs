@@ -141,9 +141,15 @@ public sealed class GroupByBuilder
         foreach (var m in _metrics)
             if (!aliasSet.Add(m.Name))
                 throw new InvalidOperationException($"Duplicate metric alias '{m.Name}'.");
+
+        var keySet = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var k in _keys)
+        {
+            if (!keySet.Add(k))
+                throw new InvalidOperationException($"Duplicate key '{k}'.");
             if (!aliasSet.Add(k))
                 throw new InvalidOperationException($"Key '{k}' collides with an existing metric alias.");
+        }
 
         foreach (var h in _having)
             if (!aliasSet.Contains(h.Property))

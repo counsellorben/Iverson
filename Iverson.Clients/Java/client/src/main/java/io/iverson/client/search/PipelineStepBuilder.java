@@ -46,7 +46,7 @@ public final class PipelineStepBuilder {
     public PipelineStepBuilder reads(String stepName) {
         boolean known = earlierSteps.stream().anyMatch(s -> s.equalsIgnoreCase(stepName));
         if (!known)
-            throw new IllegalArgumentException(
+            throw new IllegalStateException(
                 "Step '" + name + "': reads '" + stepName + "' does not name an earlier step.");
         step.setReads(stepName);
         return this;
@@ -218,13 +218,13 @@ public final class PipelineStepBuilder {
             || built.getMetricsCount() > 0 || built.getHavingCount() > 0;
 
         if (built.getWindowsCount() > 0 && isAggregate)
-            throw new IllegalArgumentException(
+            throw new IllegalStateException(
                 "Step '" + name + "': window functions and GROUP BY/metrics/HAVING cannot share a step.");
         if ((built.getMetricsCount() > 0 || built.getHavingCount() > 0) && built.getGroupByCount() == 0)
-            throw new IllegalArgumentException(
+            throw new IllegalStateException(
                 "Step '" + name + "': metrics/HAVING require at least one groupBy key.");
         if (built.getJoinsCount() > 0 && built.getSelectCount() == 0)
-            throw new IllegalArgumentException(
+            throw new IllegalStateException(
                 "Step '" + name + "': a step with joins requires a select projection.");
 
         Set<String> aliases = new HashSet<>();
@@ -239,7 +239,7 @@ public final class PipelineStepBuilder {
 
     private void requireUnique(Set<String> seen, String alias) {
         if (!seen.add(alias.toLowerCase(Locale.ROOT)))
-            throw new IllegalArgumentException(
+            throw new IllegalStateException(
                 "Step '" + name + "': duplicate output alias '" + alias + "'.");
     }
 

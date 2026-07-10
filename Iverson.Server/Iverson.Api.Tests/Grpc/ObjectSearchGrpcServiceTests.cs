@@ -422,7 +422,7 @@ public class ObjectSearchGrpcServiceTests
             .Subject;
         var captured = (Filter?)call.GetArguments()[4];
         captured.Should().NotBeNull();
-        captured!.Must.Should().ContainSingle();
+        captured!.Must.Should().ContainSingle(c => c.Field.Key == "authorId");
     }
 
     [Fact]
@@ -552,7 +552,8 @@ public class ObjectSearchGrpcServiceTests
             .Subject;
         var captured = (Filter?)call.GetArguments()[4];
         captured.Should().NotBeNull();
-        captured!.Must.Should().ContainSingle();
+        captured!.Must.Should().ContainSingle(c =>
+            c.Field.Key == "parent_id" && c.Field.Match.Keyword == "parent-123");
     }
 
     [Fact]
@@ -590,6 +591,48 @@ public class ObjectSearchGrpcServiceTests
 
         (await act.Should().ThrowAsync<RpcException>())
             .Where(e => e.Status.StatusCode == StatusCode.InvalidArgument);
+    }
+
+    [Fact]
+    public async Task SearchChunks_NonEqualsOperator_ThrowsInvalidArgument()
+    {
+        await _registry.RegisterAsync(SchemaFixtures.ArticleSchema());
+        _embedding.EmbedAsync("q", Arg.Any<CancellationToken>()).Returns(new float[768]);
+
+        var request = new SearchChunksRequest { TypeName = "Article", Property = "Body", Query = "q", TopK = 5 };
+        request.Filter.Add(new SearchClause
+        {
+            Property = "Id", Operator = SearchOperator.NotEquals,
+            Value = new SearchValue { StringVal = "parent-123" }, ClauseType = SearchClauseType.Filter
+        });
+
+        var (writer, _) = MakeStream<ChunkSearchResponse>();
+        var act = async () => await _sut.SearchChunks(request, writer, TestServerCallContext.Create());
+
+        (await act.Should().ThrowAsync<RpcException>())
+            .Where(e => e.Status.StatusCode == StatusCode.InvalidArgument
+                     && e.Status.Detail.Contains("MUST_NOT"));
+    }
+
+    [Fact]
+    public async Task SearchChunks_MustNotClauseType_ThrowsInvalidArgument()
+    {
+        await _registry.RegisterAsync(SchemaFixtures.ArticleSchema());
+        _embedding.EmbedAsync("q", Arg.Any<CancellationToken>()).Returns(new float[768]);
+
+        var request = new SearchChunksRequest { TypeName = "Article", Property = "Body", Query = "q", TopK = 5 };
+        request.Filter.Add(new SearchClause
+        {
+            Property = "Id", Operator = SearchOperator.Equals,
+            Value = new SearchValue { StringVal = "parent-123" }, ClauseType = SearchClauseType.MustNot
+        });
+
+        var (writer, _) = MakeStream<ChunkSearchResponse>();
+        var act = async () => await _sut.SearchChunks(request, writer, TestServerCallContext.Create());
+
+        (await act.Should().ThrowAsync<RpcException>())
+            .Where(e => e.Status.StatusCode == StatusCode.InvalidArgument
+                     && e.Status.Detail.Contains("MUST_NOT"));
     }
 
     // ── Pipeline ──────────────────────────────────────────────────────────────

@@ -16,7 +16,7 @@ public sealed class QuerySimilarBuilder<T> where T : class
     private string _query = string.Empty;
     private uint _topK = 10;
     private SearchLogic _logic = SearchLogic.And;
-    private readonly List<SearchClause> _filter = [];
+    private readonly List<SearchClause> _filters = [];
 
     internal QuerySimilarBuilder(string typeName, string property)
     {
@@ -37,9 +37,9 @@ public sealed class QuerySimilarBuilder<T> where T : class
                 $"Operator '{op}' is not supported by SearchSimilar filters. Supported operators: " +
                 "Equals, NotEquals, GreaterThan, LessThan, GreaterThanOrEquals, LessThanOrEquals, In.");
 
-        _filter.Add(new SearchClause
+        _filters.Add(new SearchClause
         {
-            Property   = PropertyName(property),
+            Property   = PropertyNameExtractor.PropertyName(property),
             Operator   = op,
             Value      = SearchValueConverter.ToSearchValue(value),
             ClauseType = SearchClauseType.Filter
@@ -58,12 +58,7 @@ public sealed class QuerySimilarBuilder<T> where T : class
             FilterLogic = _logic,
             TraceId     = traceId ?? string.Empty
         };
-        request.Filter.AddRange(_filter);
+        request.Filter.AddRange(_filters);
         return request;
     }
-
-    private static string PropertyName<TValue>(Expression<Func<T, TValue>> expr) =>
-        expr.Body is MemberExpression member
-            ? member.Member.Name
-            : throw new ArgumentException("Expression must be a direct property access, e.g. x => x.Title");
 }

@@ -104,7 +104,7 @@ public sealed class ObjectSearchGrpcService(
                 ValidateFilterProperty(schema, c.Property, "SearchSimilar");
                 return new SearchClause
                 {
-                    Property   = ToCamelCase(c.Property),
+                    Property   = c.Property.ToCamelCase(),
                     Operator   = c.Operator,
                     Value      = c.Value,
                     ClauseType = c.ClauseType
@@ -383,8 +383,6 @@ public sealed class ObjectSearchGrpcService(
             throw new RpcException(new Status(StatusCode.InvalidArgument,
                 $"{rpcName}: filter property '{property}' is not a scalar or foreign-key column on '{schema.TypeName}'."));
     }
-
-    private static string ToCamelCase(string name) => char.ToLowerInvariant(name[0]) + name[1..];
 
     private static Filter? BuildChunksFilter(SchemaDescriptor schema, SearchChunksRequest request)
     {

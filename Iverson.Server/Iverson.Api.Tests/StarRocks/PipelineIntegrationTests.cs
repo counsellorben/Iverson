@@ -206,8 +206,8 @@ public sealed class PipelineIntegrationTests : IClassFixture<StarRocksContainerF
         foreach (var row in (IEnumerable<dynamic>)rows)
         {
             var authorId = (string)row.AuthorId;
-            var articles = Convert.ToInt32(row.articles);
-            (authorId == "A" ? 4 : 2).Should().Be(articles);
+            int articles = Convert.ToInt32(row.articles);
+            articles.Should().Be(authorId == "A" ? 4 : 2);
         }
     }
 }

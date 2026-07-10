@@ -38,7 +38,7 @@ public sealed class QueryChunksBuilder<T> where T : class
 
         _filters.Add(new SearchClause
         {
-            Property   = PropertyName(property),
+            Property   = PropertyNameExtractor.PropertyName(property),
             Operator   = op,
             Value      = SearchValueConverter.ToSearchValue(value),
             ClauseType = SearchClauseType.Filter
@@ -62,9 +62,4 @@ public sealed class QueryChunksBuilder<T> where T : class
         request.Filter.AddRange(_filters);
         return request;
     }
-
-    private static string PropertyName<TValue>(Expression<Func<T, TValue>> expr) =>
-        expr.Body is MemberExpression member
-            ? member.Member.Name
-            : throw new ArgumentException("Expression must be a direct property access, e.g. x => x.Body");
 }

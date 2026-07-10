@@ -229,8 +229,13 @@ func (g *GroupByBuilder) Build(traceId ...string) (*pb.GroupByRequest, error) {
 		}
 		aliases[key] = true
 	}
+	keys := map[string]bool{}
 	for _, k := range g.keys {
 		key := strings.ToLower(k)
+		if keys[key] {
+			return nil, fmt.Errorf("duplicate key %q", k)
+		}
+		keys[key] = true
 		if aliases[key] {
 			return nil, fmt.Errorf("key %q collides with an existing metric alias", k)
 		}

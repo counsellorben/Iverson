@@ -138,6 +138,13 @@ public class QdrantFilterBuilderTests
         filter.Should.Should().HaveCount(2);
         filter.Must.Should().BeEmpty();
         filter.MustNot.Should().BeEmpty();
+
+        // The negated clause must be nested (a Filter-typed Condition wrapping the original
+        // in MustNot), not a bare positive condition — proves the `!` operator was actually applied,
+        // not just that something landed in Should.
+        var negatedEntry = filter.Should[1];
+        negatedEntry.Filter.Should().NotBeNull();
+        negatedEntry.Filter.MustNot.Should().ContainSingle(c => c.Field.Key == "category");
     }
 
     [Theory]
