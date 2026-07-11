@@ -133,7 +133,7 @@ internal sealed class ReconciliationService(
     /// Replays a delete-typed row: the entity is already gone from Postgres by the time the
     /// worker polls, so this republishes the pre-delete JSON snapshot captured in
     /// <see cref="ReconciliationQueueRow.Payload"/> at enqueue time
-    /// (<see cref="ReconciliationSchema.EnqueueDeleteOutboxRowAsync"/>) instead of re-fetching —
+    /// (<see cref="Iverson.Sql.IOutboxWriter.EnqueueDeleteOutboxRowAsync"/>) instead of re-fetching —
     /// same attempts/backoff/exhaustion shape as the upsert-replay path.
     /// </summary>
     private async Task ProcessDeleteRowAsync(ReconciliationQueueRow row)

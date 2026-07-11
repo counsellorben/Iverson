@@ -132,7 +132,7 @@ public sealed class ObjectMappingGrpcService(
 
         var payloadJson = StructSerializer.SerializePayload(request.Payload);
 
-        var outboxRowId = await _outboxWriter.UpsertAndEnqueueOutboxAsync(schema, request.TypeName, key, payloadJson);
+        var outboxRowId = await _outboxWriter.UpsertAndEnqueueOutboxAsync(SchemaBuilder.ToTableSchema(schema), request.TypeName, key, payloadJson);
         var targetStores = StoreTargeting.DetermineTargetStores(schema);
 
         // Opportunistic fast-path publish: the durability guarantee already exists (the
@@ -191,7 +191,7 @@ public sealed class ObjectMappingGrpcService(
 
         var payloadJson = StructSerializer.SerializePayload(request.Payload);
 
-        var outboxRowId = await _outboxWriter.UpsertAndEnqueueOutboxAsync(schema, request.TypeName, key, payloadJson);
+        var outboxRowId = await _outboxWriter.UpsertAndEnqueueOutboxAsync(SchemaBuilder.ToTableSchema(schema), request.TypeName, key, payloadJson);
         var targetStores = StoreTargeting.DetermineTargetStores(schema);
 
         // Opportunistic fast-path publish: the durability guarantee already exists (the
@@ -256,7 +256,7 @@ public sealed class ObjectMappingGrpcService(
         {
             await _entities.DeleteAsync(tx, SchemaBuilder.ToTableSchema(schema), request.Key);
 
-            await ReconciliationSchema.EnqueueDeleteOutboxRowAsync(
+            await _outboxWriter.EnqueueDeleteOutboxRowAsync(
                 tx, outboxRowId, request.TypeName, request.Key, rowJson);
         });
 

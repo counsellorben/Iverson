@@ -4,6 +4,7 @@ using Iverson.Api.Reconciliation;
 using Iverson.Api.Schema;
 using Iverson.Client.Contracts;
 using Iverson.Events;
+using Iverson.Sql;
 
 namespace Iverson.Api.Grpc;
 
@@ -42,7 +43,7 @@ public sealed class ObjectPersistenceGrpcService(
             logger.LogInformation("[Persistence.Post] type={Type} key={Key} stores={Stores}",
                 request.TypeName, key, targetStores);
 
-        var outboxRowId = await outboxWriter.UpsertAndEnqueueOutboxAsync(schema, request.TypeName, key, payloadJson);
+        var outboxRowId = await outboxWriter.UpsertAndEnqueueOutboxAsync(SchemaBuilder.ToTableSchema(schema), request.TypeName, key, payloadJson);
 
         // Opportunistic fast-path publish: the durability guarantee already exists (the
         // outbox row committed above, in the same transaction as the entity write), so a
@@ -108,7 +109,7 @@ public sealed class ObjectPersistenceGrpcService(
             logger.LogInformation("[Persistence.Update] type={Type} key={Key} stores={Stores}",
                 request.TypeName, key, targetStores);
 
-        var outboxRowId = await outboxWriter.UpsertAndEnqueueOutboxAsync(schema, request.TypeName, key, payloadJson);
+        var outboxRowId = await outboxWriter.UpsertAndEnqueueOutboxAsync(SchemaBuilder.ToTableSchema(schema), request.TypeName, key, payloadJson);
 
         // Opportunistic fast-path publish: the durability guarantee already exists (the
         // outbox row committed above, in the same transaction as the entity write), so a

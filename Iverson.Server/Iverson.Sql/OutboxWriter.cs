@@ -1,23 +1,21 @@
-using Iverson.Api.Reconciliation;
-using Iverson.Api.Schema;
-using Iverson.Sql;
-
-namespace Iverson.Api.Grpc;
+namespace Iverson.Sql;
 
 public interface IOutboxWriter
 {
-    Task<Guid> UpsertAndEnqueueOutboxAsync(SchemaDescriptor schema, string typeName, string key, string payloadJson);
+    Task<Guid> UpsertAndEnqueueOutboxAsync(TableSchema schema, string typeName, string key, string payloadJson);
     Task DeleteOutboxRowIfPresentAsync(Guid outboxRowId);
+    Task EnqueueDeleteOutboxRowAsync(IDbTransactionContext tx, Guid id, string typeName, string key, string payload);
 }
 
 public sealed class OutboxWriter(
+    string outboxTableName,
     IRecordStoreQueryExecutor sql,
     IRecordStoreTransactionRunner txRunner) : IOutboxWriter
 {
     public async Task<Guid> UpsertAndEnqueueOutboxAsync(
-        SchemaDescriptor schema, string typeName, string key, string payloadJson)
+        TableSchema schema, string typeName, string key, string payloadJson)
     {
-        var allCols   = schema.ScalarColumns.Select(c => c.Name).ToList();
+        var allCols   = schema.Columns.Select(c => c.Name).ToList();
         var updateSet = allCols.Count > 0
             ? string.Join(", ", allCols.Select(c => $"\"{c}\" = EXCLUDED.\"{c}\""))
             : $"\"{schema.KeyColumn.Name}\" = EXCLUDED.\"{schema.KeyColumn.Name}\"";
@@ -31,7 +29,7 @@ public sealed class OutboxWriter(
 
         var outboxSql =
             $"""
-            INSERT INTO "{ReconciliationSchema.TableName}"
+            INSERT INTO "{outboxTableName}"
                 ("Id", "TypeName", "EntityKey", "EnqueuedAt", "Attempts", "LastError", "LastAttemptAt")
             VALUES
                 (@Id, @TypeName, @EntityKey, @EnqueuedAt, 0, null, null)
@@ -57,8 +55,26 @@ public sealed class OutboxWriter(
     public Task DeleteOutboxRowIfPresentAsync(Guid outboxRowId) =>
         sql.ExecuteAsync(
             $"""
-            DELETE FROM "{ReconciliationSchema.TableName}"
+            DELETE FROM "{outboxTableName}"
             WHERE "Id" = @Id
             """,
             new { Id = outboxRowId });
+
+    public Task EnqueueDeleteOutboxRowAsync(
+        IDbTransactionContext tx, Guid id, string typeName, string key, string payload) =>
+        tx.ExecuteAsync(
+            $"""
+            INSERT INTO "{outboxTableName}"
+                ("Id", "TypeName", "EntityKey", "EnqueuedAt", "Attempts", "LastError", "LastAttemptAt", "EventType", "Payload")
+            VALUES
+                (@Id, @TypeName, @EntityKey, @EnqueuedAt, 0, null, null, 'Deleted', @Payload)
+            """,
+            new
+            {
+                Id = id,
+                TypeName = typeName,
+                EntityKey = key,
+                EnqueuedAt = DateTimeOffset.UtcNow,
+                Payload = payload
+            });
 }

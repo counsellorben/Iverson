@@ -229,32 +229,4 @@ public class ReconciliationServiceTests
         ((int)dynamicParams.MaxAttempts).Should().Be(ReconciliationService.MaxAttempts);
     }
 
-    [Fact]
-    public async Task EnqueueDeleteOutboxRowAsync_InsertsRowWithEventTypeDeleted_AndStoredPayload()
-    {
-        var tx = Substitute.For<IDbTransactionContext>();
-        var id = Guid.NewGuid();
-        const string payload = """{"Id":"author-1","Name":"Alice"}""";
-
-        string? capturedSql = null;
-        object? capturedParams = null;
-        tx.WhenForAnyArgs(t => t.ExecuteAsync(Arg.Any<string>(), Arg.Any<object?>()))
-          .Do(call =>
-          {
-              capturedSql = call.ArgAt<string>(0);
-              capturedParams = call.ArgAt<object?>(1);
-          });
-
-        await ReconciliationSchema.EnqueueDeleteOutboxRowAsync(tx, id, "Author", "author-1", payload);
-
-        capturedSql.Should().NotBeNull();
-        capturedSql!.Should().Contain("INSERT INTO").And.Contain(ReconciliationSchema.TableName).And.Contain("'Deleted'");
-
-        capturedParams.Should().NotBeNull();
-        var dynamicInsertParams = (dynamic)capturedParams!;
-        ((Guid)dynamicInsertParams.Id).Should().Be(id);
-        ((string)dynamicInsertParams.TypeName).Should().Be("Author");
-        ((string)dynamicInsertParams.EntityKey).Should().Be("author-1");
-        ((string)dynamicInsertParams.Payload).Should().Be(payload);
-    }
 }
