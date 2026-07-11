@@ -57,11 +57,13 @@ spec:
             exec: { command: ["ak", "healthcheck"] }
             initialDelaySeconds: 30
             periodSeconds: 15
+            timeoutSeconds: 5
             failureThreshold: 5
           livenessProbe:
             exec: { command: ["ak", "healthcheck"] }
             initialDelaySeconds: 60
             periodSeconds: 30
+            timeoutSeconds: 5
             failureThreshold: 5
           volumeMounts:
             - name: blueprints
