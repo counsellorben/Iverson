@@ -69,6 +69,8 @@ internal sealed class ReconciliationService(
         }
     }
 
+    public Task<int> CountPendingAsync() => queue.CountPendingAsync();
+
     private async Task ProcessOneAsync(ReconciliationQueueRow row)
     {
         if (row.EventType == "Deleted")

@@ -45,6 +45,7 @@ public interface IReconciliationQueueRepository
 {
     Task<IEnumerable<ReconciliationQueueRow>> PollQueuedFailuresAsync(int maxAttempts, int batchSize);
     Task<int> CountExhaustedAsync(int maxAttempts);
+    Task<int> CountPendingAsync();
     Task RecordFailureAsync(Guid id, int attempts, string lastError);
     Task DeleteRowAsync(Guid id);
 }
@@ -55,6 +56,7 @@ public interface IDlqRepository
     Task<IEnumerable<DlqRow>> ListUnreplayedAsync(int limit);
     Task<DlqReplayRow?> GetUnreplayedByIdAsync(Guid id);
     Task MarkReplayedAsync(Guid id);
+    Task<int> CountUnreplayedAsync();
 }
 
 public sealed record TableSchema(

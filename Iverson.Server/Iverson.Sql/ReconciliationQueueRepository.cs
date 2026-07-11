@@ -20,6 +20,9 @@ public sealed class ReconciliationQueueRepository(
             $"""SELECT COUNT(*) FROM "{tableName}" WHERE "Attempts" >= @MaxAttempts""",
             new { MaxAttempts = maxAttempts });
 
+    public Task<int> CountPendingAsync() =>
+        sql.QuerySingleOrDefaultAsync<int>($"""SELECT COUNT(*) FROM "{tableName}" """);
+
     public Task RecordFailureAsync(Guid id, int attempts, string lastError) =>
         sql.ExecuteAsync(
             $"""

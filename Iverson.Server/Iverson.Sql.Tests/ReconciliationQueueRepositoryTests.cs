@@ -63,4 +63,19 @@ public class ReconciliationQueueRepositoryTests
         await sql.Received(1).ExecuteAsync(
             Arg.Is<string>(s => s.Contains("DELETE FROM \"IversonReconciliationQueue\"")), Arg.Any<object?>());
     }
+
+    [Fact]
+    public async Task CountPendingAsync_CountsEveryRow()
+    {
+        var sql = Substitute.For<IRecordStoreQueryExecutor>();
+        sql.QuerySingleOrDefaultAsync<int>(Arg.Any<string>(), Arg.Any<object?>()).Returns(7);
+        var repo = new ReconciliationQueueRepository(TableName, sql);
+
+        var count = await repo.CountPendingAsync();
+
+        count.Should().Be(7);
+        await sql.Received(1).QuerySingleOrDefaultAsync<int>(
+            Arg.Is<string>(s => s.Contains("SELECT COUNT(*) FROM")),
+            Arg.Any<object?>());
+    }
 }

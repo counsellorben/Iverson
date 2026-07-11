@@ -52,4 +52,8 @@ public sealed class DlqRepository(
         sql.ExecuteAsync(
             $"""UPDATE "{tableName}" SET "Replayed" = true WHERE "Id" = @Id""",
             new { Id = id });
+
+    public Task<int> CountUnreplayedAsync() =>
+        sql.QuerySingleOrDefaultAsync<int>(
+            $"""SELECT COUNT(*) FROM "{tableName}" WHERE "Replayed" = false""");
 }

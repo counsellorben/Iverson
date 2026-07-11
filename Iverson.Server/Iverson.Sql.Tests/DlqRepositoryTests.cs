@@ -64,4 +64,18 @@ public class DlqRepositoryTests
         await sql.Received(1).ExecuteAsync(
             Arg.Is<string>(s => s.Contains("SET \"Replayed\" = true WHERE \"Id\" = @Id")), Arg.Any<object?>());
     }
+
+    [Fact]
+    public async Task CountUnreplayedAsync_CountsRowsWhereReplayedFalse()
+    {
+        var sql = Substitute.For<IRecordStoreQueryExecutor>();
+        sql.QuerySingleOrDefaultAsync<int>(Arg.Any<string>(), Arg.Any<object?>()).Returns(4);
+        var repo = new DlqRepository(TableName, sql);
+
+        var count = await repo.CountUnreplayedAsync();
+
+        count.Should().Be(4);
+        await sql.Received(1).QuerySingleOrDefaultAsync<int>(
+            Arg.Is<string>(s => s.Contains("\"Replayed\" = false")), Arg.Any<object?>());
+    }
 }

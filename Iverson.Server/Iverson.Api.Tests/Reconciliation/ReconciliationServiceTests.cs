@@ -189,4 +189,14 @@ public class ReconciliationServiceTests
         await _queue.Received(1).CountExhaustedAsync(ReconciliationService.MaxAttempts);
     }
 
+    [Fact]
+    public async Task CountPendingAsync_DelegatesToQueueRepository()
+    {
+        _queue.CountPendingAsync().Returns(5);
+
+        var count = await _sut.CountPendingAsync();
+
+        count.Should().Be(5);
+    }
+
 }
