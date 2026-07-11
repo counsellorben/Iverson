@@ -889,7 +889,29 @@ In `docker-compose.yml`, modify the `postgres` service's `volumes:`:
       retries: 5
 ```
 
-- [ ] **Step 3: Add a new `# ── Identity ──` section with `redis`, `authentik-server`, and
+- [ ] **Step 3: If your local `postgres_data` volume already exists, create the `authentik`
+      role/database manually**
+
+`docker-entrypoint-initdb.d/*.sql` scripts only run against a completely empty data directory, so
+Step 1's script has no effect if you've run `docker compose up` in this repo before this task. Check
+first:
+
+```bash
+docker volume ls -q | grep -q "$(basename "$(pwd)")_postgres_data" && echo "volume exists — run the commands below" || echo "volume is new — Step 1's init script will handle it"
+```
+
+If it exists, bring up just `postgres` and run the same two statements from Step 1's script by hand,
+once:
+
+```bash
+docker compose up -d postgres
+docker compose exec postgres psql -U iverson -c "CREATE USER authentik WITH PASSWORD 'authentik';"
+docker compose exec postgres psql -U iverson -c "CREATE DATABASE authentik OWNER authentik;"
+```
+
+(Skip this step entirely on a fresh clone/volume — Step 1's mounted script already covers it.)
+
+- [ ] **Step 4: Add a new `# ── Identity ──` section with `redis`, `authentik-server`, and
       `authentik-worker` services**
 
 In `docker-compose.yml`, add this new section after `# ── Observability ──`'s `prometheus:`
@@ -976,7 +998,7 @@ provably configured identically from the same source files. No `user: root` / Do
 unlike Authentik's own reference compose file — that's only needed for its optional
 Docker-outpost integration, which this deployment doesn't use.)
 
-- [ ] **Step 4: Verify the compose file parses**
+- [ ] **Step 5: Verify the compose file parses**
 
 ```bash
 docker compose config --quiet
@@ -984,7 +1006,7 @@ docker compose config --quiet
 
 Expected: no output, exit code 0.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 6: Commit**
 
 ```bash
 git add deploy/postgres/init-authentik-db.sql docker-compose.yml
