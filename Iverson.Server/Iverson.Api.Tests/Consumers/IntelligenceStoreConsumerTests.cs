@@ -72,6 +72,7 @@ public class IntelligenceStoreConsumerTests
 
         var payload = """{"Title":"Great Title","Body":"Some body text","AuthorId":"00000000-0000-0000-0000-000000000001"}""";
         var ev = new EntityEvent(
+            EventType:     EntityEventType.Created,
             TypeName:      "Article",
             Key:           Guid.NewGuid().ToString(),
             PayloadJson:   payload,
@@ -102,6 +103,7 @@ public class IntelligenceStoreConsumerTests
         var longBody = new string('x', 3000);
         var payload  = $$$"""{"Title":"Test","Body":"{{{longBody}}}","AuthorId":"00000000-0000-0000-0000-000000000001"}""";
         var ev = new EntityEvent(
+            EventType:     EntityEventType.Created,
             TypeName:      "Article",
             Key:           Guid.NewGuid().ToString(),
             PayloadJson:   payload,
@@ -128,6 +130,7 @@ public class IntelligenceStoreConsumerTests
 
         var key = Guid.NewGuid().ToString();
         var ev = new EntityEvent(
+            EventType:     EntityEventType.Deleted,
             TypeName:      "Article",
             Key:           key,
             PayloadJson:   "{}",
@@ -148,6 +151,7 @@ public class IntelligenceStoreConsumerTests
         await _registry.RegisterAsync(SchemaFixtures.ArticleSchema()); // has ChunkFields (Body)
 
         var ev = new EntityEvent(
+            EventType:     EntityEventType.Deleted,
             TypeName:      "Article",
             Key:           "article-123",
             PayloadJson:   "{}",
@@ -171,6 +175,7 @@ public class IntelligenceStoreConsumerTests
         await _registry.RegisterAsync(SchemaFixtures.ArticleSchema());
 
         var ev = new EntityEvent(
+            EventType:     EntityEventType.Created,
             TypeName:      "Article",
             Key:           Guid.NewGuid().ToString(),
             PayloadJson:   """{"Title":"Test"}""",
@@ -198,6 +203,7 @@ public class IntelligenceStoreConsumerTests
         // Title is empty string — should not embed
         var payload = """{"Title":"","Body":"some body","AuthorId":"00000000-0000-0000-0000-000000000001"}""";
         var ev = new EntityEvent(
+            EventType:     EntityEventType.Created,
             TypeName:      "Article",
             Key:           Guid.NewGuid().ToString(),
             PayloadJson:   payload,
@@ -222,6 +228,7 @@ public class IntelligenceStoreConsumerTests
 
         var payload = """{"Title":"Test Title","Body":"Some body","AuthorId":"00000000-0000-0000-0000-000000000001"}""";
         var ev = new EntityEvent(
+            EventType:     EntityEventType.Created,
             TypeName:      "Article",
             Key:           Guid.NewGuid().ToString(),
             PayloadJson:   payload,
@@ -245,6 +252,7 @@ public class IntelligenceStoreConsumerTests
         var titleText = "My Test Title";
         var payload   = $$$"""{"Title":"{{{titleText}}}","Body":"Some body text","AuthorId":"00000000-0000-0000-0000-000000000001"}""";
         var ev = new EntityEvent(
+            EventType:     EntityEventType.Created,
             TypeName:      "Article",
             Key:           entityKey,
             PayloadJson:   payload,
@@ -296,6 +304,7 @@ public class IntelligenceStoreConsumerTests
 
         var payload = """{"Title":"Hello","Summary":"World","Id":"00000000-0000-0000-0000-000000000001"}""";
         var ev = new EntityEvent(
+            EventType:     EntityEventType.Created,
             TypeName:      "Doc",
             Key:           Guid.NewGuid().ToString(),
             PayloadJson:   payload,
@@ -334,6 +343,7 @@ public class IntelligenceStoreConsumerTests
         var longBody = new string('a', 3000);
         var payload  = $$$"""{"Body":"{{{longBody}}}"}""";
         var ev = new EntityEvent(
+            EventType:     EntityEventType.Created,
             TypeName:      "Doc",
             Key:           Guid.NewGuid().ToString(),
             PayloadJson:   payload,
@@ -369,6 +379,7 @@ public class IntelligenceStoreConsumerTests
         var authorId   = "00000000-0000-0000-0000-000000000001";
         var payload    = $$$"""{"Title":"T","Body":"B","AuthorId":"{{{authorId}}}"}""";
         var ev = new EntityEvent(
+            EventType:     EntityEventType.Created,
             TypeName:      "Article",
             Key:           entityKey,
             PayloadJson:   payload,

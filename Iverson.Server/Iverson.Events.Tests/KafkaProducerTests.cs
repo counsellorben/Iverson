@@ -27,6 +27,7 @@ public sealed class KafkaProducerTests
     {
         var (producer, kafkaProducer) = CreateProducer();
         var entityEvent = new EntityEvent(
+            EventType: EntityEventType.Created,
             TypeName: "Player",
             Key: "player-1",
             PayloadJson: """{"score":42}""",

@@ -58,6 +58,7 @@ public sealed class ObjectPersistenceGrpcService(
                 EntityTopics.Created,
                 key,
                 new EntityEvent(
+                    EntityEventType.Created,
                     request.TypeName,
                     key,
                     payloadJson,
@@ -124,6 +125,7 @@ public sealed class ObjectPersistenceGrpcService(
                 EntityTopics.Updated,
                 key,
                 new EntityEvent(
+                    EntityEventType.Updated,
                     request.TypeName,
                     key,
                     payloadJson,

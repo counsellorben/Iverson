@@ -11,6 +11,7 @@ public sealed class EntityEventTests
     public void EntityEvent_Roundtrips_ThroughJsonSerialization()
     {
         var original = new EntityEvent(
+            EventType: EntityEventType.Created,
             TypeName: "Player",
             Key: "player-42",
             PayloadJson: """{"name":"Allen Iverson"}""",

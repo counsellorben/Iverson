@@ -10,14 +10,22 @@ public enum StoreTarget
     All = Engagement | Intelligence
 }
 
+public enum EntityEventType
+{
+    Created,
+    Updated,
+    Deleted
+}
+
 public sealed record EntityEvent(
-    string         TypeName,
-    string         Key,
-    string         PayloadJson,
-    string         TraceId,
-    string         SchemaVersion,
-    DateTimeOffset OccurredAt,
-    StoreTarget    TargetStores = StoreTarget.All);
+    EntityEventType EventType,
+    string          TypeName,
+    string          Key,
+    string          PayloadJson,
+    string          TraceId,
+    string          SchemaVersion,
+    DateTimeOffset  OccurredAt,
+    StoreTarget     TargetStores = StoreTarget.All);
 
 public static class EntityTopics
 {

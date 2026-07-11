@@ -50,6 +50,7 @@ public class EngagementStoreConsumerTests
         await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
 
         var ev = new EntityEvent(
+            EventType:     EntityEventType.Created,
             TypeName:      "Author",
             Key:           Guid.NewGuid().ToString(),
             PayloadJson:   """{"Name":"Alice"}""",
@@ -72,6 +73,7 @@ public class EngagementStoreConsumerTests
         var key = Guid.NewGuid().ToString();
 
         var ev = new EntityEvent(
+            EventType:     EntityEventType.Deleted,
             TypeName:      "Author",
             Key:           key,
             PayloadJson:   "{}",
@@ -91,6 +93,7 @@ public class EngagementStoreConsumerTests
         await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
 
         var ev = new EntityEvent(
+            EventType:     EntityEventType.Created,
             TypeName:      "Author",
             Key:           Guid.NewGuid().ToString(),
             PayloadJson:   """{"Name":"Alice"}""",
@@ -119,6 +122,7 @@ public class EngagementStoreConsumerTests
     public async Task DropsEvent_WhenSchemaNotRegistered()
     {
         var ev = new EntityEvent(
+            EventType:     EntityEventType.Created,
             TypeName:      "Unknown",
             Key:           Guid.NewGuid().ToString(),
             PayloadJson:   "{}",

@@ -42,7 +42,7 @@ internal sealed class ReconciliationService(
             await events.ProduceAsync(
                 EntityTopics.Updated,
                 key,
-                new EntityEvent(typeName, key, rowJson, traceId, "1", DateTimeOffset.UtcNow, targetStores));
+                new EntityEvent(EntityEventType.Updated, typeName, key, rowJson, traceId, "1", DateTimeOffset.UtcNow, targetStores));
             count++;
         }
 
@@ -103,7 +103,7 @@ internal sealed class ReconciliationService(
             await events.ProduceAsync(
                 EntityTopics.Updated,
                 row.EntityKey,
-                new EntityEvent(row.TypeName, row.EntityKey, rowJson, string.Empty, "1", DateTimeOffset.UtcNow, targetStores));
+                new EntityEvent(EntityEventType.Updated, row.TypeName, row.EntityKey, rowJson, string.Empty, "1", DateTimeOffset.UtcNow, targetStores));
 
             await DeleteQueueRowAsync(row.Id);
             logger.LogInformation(
@@ -135,7 +135,7 @@ internal sealed class ReconciliationService(
             await events.ProduceAsync(
                 EntityTopics.Deleted,
                 row.EntityKey,
-                new EntityEvent(row.TypeName, row.EntityKey, row.Payload!, string.Empty, "1", DateTimeOffset.UtcNow, targetStores));
+                new EntityEvent(EntityEventType.Deleted, row.TypeName, row.EntityKey, row.Payload!, string.Empty, "1", DateTimeOffset.UtcNow, targetStores));
 
             await DeleteQueueRowAsync(row.Id);
             logger.LogInformation(

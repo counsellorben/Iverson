@@ -148,6 +148,7 @@ public sealed class ObjectMappingGrpcService(
                 EntityTopics.Created,
                 key,
                 new EntityEvent(
+                    EntityEventType.Created,
                     request.TypeName,
                     key,
                     payloadJson,
@@ -207,6 +208,7 @@ public sealed class ObjectMappingGrpcService(
                 EntityTopics.Updated,
                 key,
                 new EntityEvent(
+                    EntityEventType.Updated,
                     request.TypeName,
                     key,
                     payloadJson,
@@ -274,6 +276,7 @@ public sealed class ObjectMappingGrpcService(
                 EntityTopics.Deleted,
                 request.Key,
                 new EntityEvent(
+                    EntityEventType.Deleted,
                     request.TypeName,
                     request.Key,
                     rowJson,
