@@ -5,6 +5,7 @@ using Confluent.Kafka.Admin;
 using Dapper;
 using Grpc.Core;
 using Iverson.Client.Core;
+using Iverson.Events;
 using Iverson.LoadTest.Entities;
 using Iverson.LoadTest.Reporting;
 using Iverson.LoadTest.Seeding;
@@ -202,6 +203,9 @@ internal static class WritePathRunner
 
         var groups = new[]
         {
+            // No consumer in the codebase uses this group name; retained because no reason to
+            // remove it was found during the 2026-07-11 final-review fix-up. Out of scope for
+            // that fix — flagged here for a future cleanup pass.
             "iverson.consumer.record",
             "iverson.consumer.engagement",
             "iverson.consumer.intelligence",
@@ -209,8 +213,7 @@ internal static class WritePathRunner
 
         var topics = new[]
         {
-            "iverson.entity.created",
-            "iverson.entity.updated",
+            EntityTopics.Events,
         };
 
         var opts = new ListConsumerGroupOffsetsOptions();
