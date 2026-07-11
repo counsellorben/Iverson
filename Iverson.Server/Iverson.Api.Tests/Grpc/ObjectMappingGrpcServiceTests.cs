@@ -20,6 +20,7 @@ namespace Iverson.Api.Tests.Grpc;
 public class ObjectMappingGrpcServiceTests
 {
     private readonly IRecordStoreQueryExecutor _sql;
+    private readonly IEntityRepository _entities;
     private readonly IRecordStoreTransactionRunner _txRunner;
     private readonly IRecordStoreSchemaManager _schemaManager;
     private readonly IVectorSchemaManager _vector;
@@ -36,12 +37,13 @@ public class ObjectMappingGrpcServiceTests
 
     public ObjectMappingGrpcServiceTests()
     {
-        _sql    = Substitute.For<IRecordStoreQueryExecutor>();
-        _vector = Substitute.For<IVectorSchemaManager>();
-        _events = Substitute.For<IEventProducer>();
+        _sql      = Substitute.For<IRecordStoreQueryExecutor>();
+        _entities = Substitute.For<IEntityRepository>();
+        _vector   = Substitute.For<IVectorSchemaManager>();
+        _events   = Substitute.For<IEventProducer>();
 
         _sql.ExecuteAsync(Arg.Any<string>(), Arg.Any<object?>()).Returns(1);
-        _sql.QueryAsync<string>(Arg.Any<string>(), Arg.Any<object?>())
+        _entities.FetchByColumnAsync(Arg.Any<TableSchema>(), Arg.Any<string>(), Arg.Any<string>())
             .Returns(Task.FromResult(Enumerable.Empty<string>()));
 
         _txRunner = Substitute.For<IRecordStoreTransactionRunner>();
@@ -59,7 +61,7 @@ public class ObjectMappingGrpcServiceTests
 
         _registry = new SchemaRegistry(_sql, NullLogger<SchemaRegistry>.Instance);
         _sut = new ObjectMappingGrpcService(
-            _sql, _txRunner, _schemaManager, _vector, _events, _registry, _embedding, _starRocks,
+            _entities, _txRunner, _schemaManager, _vector, _events, _registry, _embedding, _starRocks,
             new RelationValidator(_registry), new EntityKeyAccessor(), new OutboxWriter(_sql, _txRunner),
             NullLogger<ObjectMappingGrpcService>.Instance);
     }
@@ -426,7 +428,7 @@ public class ObjectMappingGrpcServiceTests
     public async Task Get_WhenEntityExists_ReturnsSuccessWithParsedData()
     {
         await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
-        _sql.QuerySingleOrDefaultAsync<string>(Arg.Any<string>(), Arg.Any<object?>())
+        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>())
             .Returns(AuthorJson);
 
         var response = await _sut.Get(
@@ -441,7 +443,7 @@ public class ObjectMappingGrpcServiceTests
     public async Task Get_WhenEntityNotFound_ReturnsFailureResponse()
     {
         await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
-        _sql.QuerySingleOrDefaultAsync<string>(Arg.Any<string>(), Arg.Any<object?>())
+        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>())
             .Returns((string?)null);
 
         var response = await _sut.Get(
@@ -469,11 +471,11 @@ public class ObjectMappingGrpcServiceTests
         await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
         await _registry.RegisterAsync(SchemaFixtures.ArticleSchema());
 
-        _sql.QuerySingleOrDefaultAsync<string>(
-                Arg.Is<string>(s => s.Contains("\"articles\"")), Arg.Any<object?>())
+        _entities.FetchByKeyAsync(
+                Arg.Is<TableSchema>(s => s.TableName == "articles"), Arg.Any<string>())
             .Returns(ArticleJson);
-        _sql.QuerySingleOrDefaultAsync<string>(
-                Arg.Is<string>(s => s.Contains("\"authors\"")), Arg.Any<object?>())
+        _entities.FetchByKeyAsync(
+                Arg.Is<TableSchema>(s => s.TableName == "authors"), Arg.Any<string>())
             .Returns(AuthorJson);
 
         var response = await _sut.Get(
@@ -491,7 +493,7 @@ public class ObjectMappingGrpcServiceTests
         await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
         await _registry.RegisterAsync(SchemaFixtures.ArticleSchema());
 
-        _sql.QuerySingleOrDefaultAsync<string>(Arg.Any<string>(), Arg.Any<object?>())
+        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>())
             .Returns(ArticleJson);
 
         var response = await _sut.Get(
@@ -500,7 +502,7 @@ public class ObjectMappingGrpcServiceTests
 
         response.Success.Should().BeTrue();
         response.Data.Fields.Should().NotContainKey("Author");
-        await _sql.Received(1).QuerySingleOrDefaultAsync<string>(Arg.Any<string>(), Arg.Any<object?>());
+        await _entities.Received(1).FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>());
     }
 
     // ── ResolveManyToMany ─────────────────────────────────────────────────────
@@ -516,22 +518,22 @@ public class ObjectMappingGrpcServiceTests
         await _registry.RegisterAsync(SchemaFixtures.TagSchema());
 
         var postJson = $$"""{"Id":"{{postId}}","Title":"Hello","TagIds":["{{tagId1}}","{{tagId2}}"]}""";
-        _sql.QuerySingleOrDefaultAsync<string>(
-                Arg.Is<string>(s => s.Contains("\"posts\"")), Arg.Any<object?>())
+        _entities.FetchByKeyAsync(
+                Arg.Is<TableSchema>(s => s.TableName == "posts"), Arg.Any<string>())
             .Returns(postJson);
 
         var tag1Json = $$"""{"Id":"{{tagId1}}","Label":"dotnet"}""";
         var tag2Json = $$"""{"Id":"{{tagId2}}","Label":"csharp"}""";
-        _sql.QueryAsync<KeyedRow>(Arg.Any<string>(), Arg.Any<object?>())
+        _entities.FetchManyByKeysAsync(Arg.Any<TableSchema>(), Arg.Any<IReadOnlyList<string>>())
             .Returns(new[] { new KeyedRow(tagId1, tag1Json), new KeyedRow(tagId2, tag2Json) });
 
         var response = await _sut.Get(
             new MappingGetRequest { TypeName = "Post", Key = postId, Depth = 1 },
             MakeContext());
 
-        await _sql.Received(1).QueryAsync<KeyedRow>(
-            Arg.Is<string>(s => s.Contains("= ANY(") && !s.Contains("::uuid[]")),
-            Arg.Any<object?>());
+        await _entities.Received(1).FetchManyByKeysAsync(
+            Arg.Any<TableSchema>(),
+            Arg.Is<IReadOnlyList<string>>(keys => keys.Count == 2));
 
         response.Success.Should().BeTrue();
         response.Data.Fields["Tags"].ListValue.Values.Should().HaveCount(2);
@@ -643,9 +645,8 @@ public class ObjectMappingGrpcServiceTests
     public async Task Delete_WhenEntityExists_DeletesFromSqlAndEmitsEvent()
     {
         await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
-        _sql.QuerySingleOrDefaultAsync<string>(Arg.Any<string>(), Arg.Any<object?>())
+        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>())
             .Returns(AuthorJson);
-        var executedSql = CaptureTransactionalSql();
 
         EntityEvent? evt = null;
         _events.When(e => e.ProduceAsync(EntityTopics.Deleted, Arg.Any<string>(), Arg.Any<EntityEvent>()))
@@ -656,7 +657,10 @@ public class ObjectMappingGrpcServiceTests
             TestServerCallContext.Create());
 
         response.Success.Should().BeTrue();
-        executedSql.Should().Contain(s => s.Contains("DELETE FROM"));
+        await _entities.Received(1).DeleteAsync(
+            Arg.Any<IDbTransactionContext>(),
+            Arg.Is<TableSchema>(s => s.TableName == "authors"),
+            AuthorId);
         evt!.TypeName.Should().Be("Author");
         evt.Key.Should().Be(AuthorId);
     }
@@ -665,7 +669,7 @@ public class ObjectMappingGrpcServiceTests
     public async Task Delete_WhenEntityNotFound_ReturnsFailureWithoutEmittingEvent()
     {
         await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
-        _sql.QuerySingleOrDefaultAsync<string>(Arg.Any<string>(), Arg.Any<object?>())
+        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>())
             .Returns((string?)null);
 
         var response = await _sut.Delete(
@@ -682,7 +686,7 @@ public class ObjectMappingGrpcServiceTests
     public async Task Delete_InsertsDeleteOutboxRowInSameTransactionAsDelete_WithEventTypeAndSnapshotPayload()
     {
         await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
-        _sql.QuerySingleOrDefaultAsync<string>(Arg.Any<string>(), Arg.Any<object?>())
+        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>())
             .Returns(AuthorJson);
 
         var capturedWork = default(Func<IDbTransactionContext, Task>);
@@ -696,9 +700,11 @@ public class ObjectMappingGrpcServiceTests
         capturedWork.Should().NotBeNull();
 
         // Execute the captured transactional work against a fake transaction context,
-        // recording both the SQL and the bound parameter object for each statement, so we
-        // can assert the outbox row is inserted as EventType='Deleted' with the pre-delete
-        // JSON snapshot as its Payload — not merely that some INSERT happened.
+        // recording both the SQL and the bound parameter object for each statement it issues
+        // directly (the entity delete itself now goes through _entities.DeleteAsync, which is
+        // its own unit under EntityRepositoryTests — verified separately below), so we can
+        // assert the outbox row is inserted as EventType='Deleted' with the pre-delete JSON
+        // snapshot as its Payload — not merely that some INSERT happened.
         var calls = new List<(string Sql, object? Params)>();
         var fakeTx = Substitute.For<IDbTransactionContext>();
         fakeTx.ExecuteAsync(Arg.Do<string>(sql => { }), Arg.Any<object?>()).Returns(0);
@@ -707,7 +713,8 @@ public class ObjectMappingGrpcServiceTests
 
         await capturedWork!(fakeTx);
 
-        calls.Should().Contain(c => c.Sql.Contains("DELETE FROM \"authors\""));
+        await _entities.Received(1).DeleteAsync(
+            fakeTx, Arg.Is<TableSchema>(s => s.TableName == "authors"), AuthorId);
 
         var outboxCall = calls.Should().ContainSingle(
             c => c.Sql.Contains($"INSERT INTO \"{ReconciliationSchema.TableName}\"")).Subject;

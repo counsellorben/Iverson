@@ -21,7 +21,7 @@ namespace Iverson.Api.Grpc;
 /// the server's entity schema — the client is ignorant of this mapping.
 /// </summary>
 public sealed class ObjectMappingGrpcService(
-    IRecordStoreQueryExecutor _sql,
+    IEntityRepository _entities,
     IRecordStoreTransactionRunner _txRunner,
     IRecordStoreSchemaManager _schemaManager,
     IVectorSchemaManager _vector,
@@ -254,9 +254,7 @@ public sealed class ObjectMappingGrpcService(
 
         await _txRunner.ExecuteInTransactionAsync(async tx =>
         {
-            await tx.ExecuteAsync(
-                $"DELETE FROM \"{schema.TableName}\" WHERE \"{schema.KeyColumn.Name}\" = @Key::uuid",
-                new { Key = request.Key });
+            await _entities.DeleteAsync(tx, SchemaBuilder.ToTableSchema(schema), request.Key);
 
             await ReconciliationSchema.EnqueueDeleteOutboxRowAsync(
                 tx, outboxRowId, request.TypeName, request.Key, rowJson);
@@ -308,10 +306,8 @@ public sealed class ObjectMappingGrpcService(
         _registry.Get(typeName) ?? throw new RpcException(new Status(StatusCode.FailedPrecondition,
             $"No schema registered for '{typeName}'. Call RegisterSchema first."));
 
-    private async Task<string?> FetchByKeyAsync(SchemaDescriptor schema, string key) =>
-        await _sql.QuerySingleOrDefaultAsync<string>(
-            $"SELECT row_to_json(t)::text FROM \"{schema.TableName}\" t WHERE \"{schema.KeyColumn.Name}\" = @Key::uuid",
-            new { Key = key });
+    private Task<string?> FetchByKeyAsync(SchemaDescriptor schema, string key) =>
+        _entities.FetchByKeyAsync(SchemaBuilder.ToTableSchema(schema), key);
 
     // ── Relation resolution ───────────────────────────────────────────────────
 
@@ -372,13 +368,7 @@ public sealed class ObjectMappingGrpcService(
         var relatedSchema = _registry.Get(relation.RelatedTypeName);
         if (relatedSchema is null) return;
 
-        var idGuids = ids.Select(Guid.Parse).ToArray();
-        var rows = await _sql.QueryAsync<KeyedRow>(
-            $"SELECT \"{relatedSchema.KeyColumn.Name}\"::text AS key, " +
-            $"row_to_json(t)::text AS data " +
-            $"FROM \"{relatedSchema.TableName}\" t " +
-            $"WHERE \"{relatedSchema.KeyColumn.Name}\" = ANY(@ids)",
-            new { ids = idGuids });
+        var rows = await _entities.FetchManyByKeysAsync(SchemaBuilder.ToTableSchema(relatedSchema), ids);
 
         var rowsByKey = rows.ToDictionary(r => r.Key, StringComparer.OrdinalIgnoreCase);
 
@@ -405,9 +395,8 @@ public sealed class ObjectMappingGrpcService(
         var relatedSchema = _registry.Get(relation.RelatedTypeName);
         if (relatedSchema is null) return;
 
-        var rows = await _sql.QueryAsync<string>(
-            $"SELECT row_to_json(t)::text FROM \"{relatedSchema.TableName}\" t WHERE \"{relation.ForeignKey}\" = @Key::uuid",
-            new { Key = keyValue });
+        var rows = await _entities.FetchByColumnAsync(
+            SchemaBuilder.ToTableSchema(relatedSchema), relation.ForeignKey, keyValue);
 
         var items = new List<Value>();
         foreach (var rowJson in rows)

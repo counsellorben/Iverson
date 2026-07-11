@@ -22,6 +22,9 @@ public static class ServiceCollectionExtensions
         });
         services.AddSingleton<IRecordStoreSchemaManager>(sp => sp.GetRequiredService<PostgresSchemaManager>());
 
+        services.AddSingleton<IEntityRepository>(sp =>
+            new EntityRepository(sp.GetRequiredService<IRecordStoreQueryExecutor>()));
+
         return services;
     }
 }

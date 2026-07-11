@@ -24,6 +24,15 @@ public interface IDbTransactionContext
     Task<T?> QuerySingleOrDefaultAsync<T>(string sql, object? param = null);
 }
 
+public interface IEntityRepository
+{
+    Task<string?> FetchByKeyAsync(TableSchema schema, string key);
+    Task<IEnumerable<KeyedRow>> FetchManyByKeysAsync(TableSchema schema, IReadOnlyList<string> keys);
+    Task<IEnumerable<string>> FetchByColumnAsync(TableSchema schema, string columnName, string value);
+    Task<IEnumerable<string>> FetchAllAsync(TableSchema schema);
+    Task DeleteAsync(IDbTransactionContext tx, TableSchema schema, string key);
+}
+
 public sealed record TableSchema(
     string TableName,
     ColumnSchema KeyColumn,

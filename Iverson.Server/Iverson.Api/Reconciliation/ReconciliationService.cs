@@ -19,6 +19,7 @@ internal sealed record ReconciliationQueueRow(
 internal sealed class ReconciliationService(
     SchemaRegistry registry,
     IRecordStoreQueryExecutor db,
+    IEntityRepository entities,
     IEventProducer events,
     ILogger<ReconciliationService> logger)
 {
@@ -30,8 +31,7 @@ internal sealed class ReconciliationService(
         var schema = registry.Get(typeName);
         if (schema is null) return null;
 
-        var rowJsons = await db.QueryAsync<string>(
-            $"""SELECT row_to_json(t)::text FROM "{schema.TableName}" t""", null);
+        var rowJsons = await entities.FetchAllAsync(SchemaBuilder.ToTableSchema(schema));
 
         var targetStores = StoreTargeting.DetermineTargetStores(schema);
         var traceId = Activity.Current?.TraceId.ToString() ?? string.Empty;
@@ -100,9 +100,7 @@ internal sealed class ReconciliationService(
             return;
         }
 
-        var rowJson = await db.QuerySingleOrDefaultAsync<string>(
-            $"""SELECT row_to_json(t)::text FROM "{schema.TableName}" t WHERE "{schema.KeyColumn.Name}" = @Key::uuid""",
-            new { Key = row.EntityKey });
+        var rowJson = await entities.FetchByKeyAsync(SchemaBuilder.ToTableSchema(schema), row.EntityKey);
 
         if (rowJson is null)
         {

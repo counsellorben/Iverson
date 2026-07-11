@@ -13,6 +13,7 @@ namespace Iverson.Api.Tests.Reconciliation;
 public class ReconciliationServiceTests
 {
     private readonly IRecordStoreQueryExecutor _sql;
+    private readonly IEntityRepository _entities;
     private readonly IEventProducer _events;
     private readonly SchemaRegistry _registry;
     private readonly ReconciliationService _sut;
@@ -21,9 +22,11 @@ public class ReconciliationServiceTests
     {
         _sql = Substitute.For<IRecordStoreQueryExecutor>();
         _sql.ExecuteAsync(Arg.Any<string>(), Arg.Any<object?>()).Returns(0);
+        _entities = Substitute.For<IEntityRepository>();
         _events = Substitute.For<IEventProducer>();
         _registry = new SchemaRegistry(_sql, NullLogger<SchemaRegistry>.Instance);
-        _sut = new ReconciliationService(_registry, _sql, _events, NullLogger<ReconciliationService>.Instance);
+        _sut = new ReconciliationService(
+            _registry, _sql, _entities, _events, NullLogger<ReconciliationService>.Instance);
     }
 
     [Fact]
@@ -38,7 +41,7 @@ public class ReconciliationServiceTests
     public async Task ReconcileTypeAsync_RepublishesEveryRow_ReturnsCount()
     {
         await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
-        _sql.QueryAsync<string>(Arg.Is<string>(s => s.Contains("\"authors\"")), Arg.Any<object?>())
+        _entities.FetchAllAsync(Arg.Is<TableSchema>(s => s.TableName == "authors"))
             .Returns(new[]
             {
                 """{"Id":"11111111-1111-1111-1111-111111111111","Name":"Alice"}""",
@@ -62,8 +65,8 @@ public class ReconciliationServiceTests
         _sql.QueryAsync<ReconciliationQueueRow>(
                 Arg.Is<string>(s => s.Contains(ReconciliationSchema.TableName)), Arg.Any<object?>())
             .Returns(new[] { new ReconciliationQueueRow(queueId, "Author", "author-1", 0) });
-        _sql.QuerySingleOrDefaultAsync<string>(
-                Arg.Is<string>(s => s.Contains("\"authors\"")), Arg.Any<object?>())
+        _entities.FetchByKeyAsync(
+                Arg.Is<TableSchema>(s => s.TableName == "authors"), Arg.Any<string>())
             .Returns("""{"Id":"author-1","Name":"Alice"}""");
 
         await _sut.ProcessQueuedFailuresAsync(CancellationToken.None);
@@ -86,7 +89,7 @@ public class ReconciliationServiceTests
         _sql.QueryAsync<ReconciliationQueueRow>(
                 Arg.Is<string>(s => s.Contains(ReconciliationSchema.TableName)), Arg.Any<object?>())
             .Returns(new[] { new ReconciliationQueueRow(queueId, "Author", "author-missing", 0) });
-        _sql.QuerySingleOrDefaultAsync<string>(Arg.Any<string>(), Arg.Any<object?>())
+        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>())
             .Returns((string?)null);
 
         await _sut.ProcessQueuedFailuresAsync(CancellationToken.None);
@@ -105,7 +108,7 @@ public class ReconciliationServiceTests
         _sql.QueryAsync<ReconciliationQueueRow>(
                 Arg.Is<string>(s => s.Contains(ReconciliationSchema.TableName)), Arg.Any<object?>())
             .Returns(new[] { new ReconciliationQueueRow(queueId, "Author", "author-1", 3) });
-        _sql.QuerySingleOrDefaultAsync<string>(Arg.Any<string>(), Arg.Any<object?>())
+        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>())
             .Returns("""{"Id":"author-1","Name":"Alice"}""");
         _events.ProduceAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<EntityEvent>())
                .Returns<Task>(_ => throw new InvalidOperationException("kafka still down"));
@@ -148,7 +151,7 @@ public class ReconciliationServiceTests
                 e.TypeName == "Author" && e.Key == "author-1" && e.PayloadJson == payload &&
                 e.TargetStores == StoreTarget.Engagement));
 
-        await _sql.DidNotReceiveWithAnyArgs().QuerySingleOrDefaultAsync<string>(Arg.Any<string>(), Arg.Any<object?>());
+        await _entities.DidNotReceiveWithAnyArgs().FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>());
 
         await _sql.Received(1).ExecuteAsync(
             Arg.Is<string>(s => s.Contains("DELETE") && s.Contains(ReconciliationSchema.TableName)),

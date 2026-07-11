@@ -15,6 +15,7 @@ namespace Iverson.Api.Tests.Grpc;
 public class ObjectRetrievalGrpcServiceTests
 {
     private readonly IRecordStoreQueryExecutor _sql;
+    private readonly IEntityRepository _entities;
     private readonly SchemaRegistry _registry;
     private readonly ObjectRetrievalGrpcService _sut;
 
@@ -26,9 +27,10 @@ public class ObjectRetrievalGrpcServiceTests
     {
         _sql = Substitute.For<IRecordStoreQueryExecutor>();
         _sql.ExecuteAsync(Arg.Any<string>(), Arg.Any<object?>()).Returns(0);
+        _entities = Substitute.For<IEntityRepository>();
 
         _registry = new SchemaRegistry(_sql, NullLogger<SchemaRegistry>.Instance);
-        _sut = new ObjectRetrievalGrpcService(_sql, _registry,
+        _sut = new ObjectRetrievalGrpcService(_entities, _registry,
             NullLogger<ObjectRetrievalGrpcService>.Instance);
     }
 
@@ -38,7 +40,7 @@ public class ObjectRetrievalGrpcServiceTests
     public async Task Get_WhenEntityExists_ReturnsFoundWithParsedData()
     {
         await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
-        _sql.QuerySingleOrDefaultAsync<string>(Arg.Any<string>(), Arg.Any<object?>())
+        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>())
             .Returns(AuthorJson);
 
         var response = await _sut.Get(
@@ -54,7 +56,7 @@ public class ObjectRetrievalGrpcServiceTests
     public async Task Get_WhenEntityNotFound_ReturnsNotFound()
     {
         await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
-        _sql.QuerySingleOrDefaultAsync<string>(Arg.Any<string>(), Arg.Any<object?>())
+        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>())
             .Returns((string?)null);
 
         var response = await _sut.Get(
@@ -73,31 +75,31 @@ public class ObjectRetrievalGrpcServiceTests
             TestServerCallContext.Create());
 
         response.Found.Should().BeFalse();
-        await _sql.DidNotReceive().QuerySingleOrDefaultAsync<string>(
-            Arg.Any<string>(), Arg.Any<object?>());
+        await _entities.DidNotReceive().FetchByKeyAsync(
+            Arg.Any<TableSchema>(), Arg.Any<string>());
     }
 
     [Fact]
     public async Task Get_QueriesCorrectTable_UsingKeyColumnAndTypeName()
     {
         await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
-        _sql.QuerySingleOrDefaultAsync<string>(Arg.Any<string>(), Arg.Any<object?>())
+        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>())
             .Returns(AuthorJson);
 
         await _sut.Get(
             new RetrievalRequest { TypeName = "Author", Key = AuthorId },
             TestServerCallContext.Create());
 
-        await _sql.Received(1).QuerySingleOrDefaultAsync<string>(
-            Arg.Is<string>(s => s.Contains("\"authors\"") && s.Contains("\"Id\"")),
-            Arg.Any<object?>());
+        await _entities.Received(1).FetchByKeyAsync(
+            Arg.Is<TableSchema>(s => s.TableName == "authors" && s.KeyColumn.Name == "Id"),
+            AuthorId);
     }
 
     [Fact]
     public async Task Get_PreservesTraceId_InResponse()
     {
         await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
-        _sql.QuerySingleOrDefaultAsync<string>(Arg.Any<string>(), Arg.Any<object?>())
+        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>())
             .Returns((string?)null);
 
         var response = await _sut.Get(
@@ -113,7 +115,7 @@ public class ObjectRetrievalGrpcServiceTests
     public async Task GetMany_StreamsFoundResponseForEachKey()
     {
         await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
-        _sql.QueryAsync<KeyedRow>(Arg.Any<string>(), Arg.Any<object?>())
+        _entities.FetchManyByKeysAsync(Arg.Any<TableSchema>(), Arg.Any<IReadOnlyList<string>>())
             .Returns(new[] { new KeyedRow(AuthorId, AuthorJson), new KeyedRow(AuthorId2, AuthorJson) });
 
         var stream = MakeStream<RetrievalResponse>();
@@ -129,7 +131,7 @@ public class ObjectRetrievalGrpcServiceTests
     public async Task GetMany_WhenEntityMissing_StreamsNotFoundForThatKey()
     {
         await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
-        _sql.QueryAsync<KeyedRow>(Arg.Any<string>(), Arg.Any<object?>())
+        _entities.FetchManyByKeysAsync(Arg.Any<TableSchema>(), Arg.Any<IReadOnlyList<string>>())
             .Returns(new[] { new KeyedRow(AuthorId, AuthorJson) }); // AuthorId2 absent
 
         var stream = MakeStream<RetrievalResponse>();
@@ -151,14 +153,15 @@ public class ObjectRetrievalGrpcServiceTests
 
         stream.Written.Should().HaveCount(2);
         stream.Written.Should().AllSatisfy(r => r.Found.Should().BeFalse());
-        await _sql.DidNotReceive().QueryAsync<KeyedRow>(Arg.Any<string>(), Arg.Any<object?>());
+        await _entities.DidNotReceive().FetchManyByKeysAsync(
+            Arg.Any<TableSchema>(), Arg.Any<IReadOnlyList<string>>());
     }
 
     [Fact]
     public async Task GetMany_PreservesTraceId_InEachResponse()
     {
         await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
-        _sql.QueryAsync<KeyedRow>(Arg.Any<string>(), Arg.Any<object?>())
+        _entities.FetchManyByKeysAsync(Arg.Any<TableSchema>(), Arg.Any<IReadOnlyList<string>>())
             .Returns(new[] { new KeyedRow(AuthorId, AuthorJson) });
 
         var stream = MakeStream<RetrievalResponse>();
@@ -173,7 +176,7 @@ public class ObjectRetrievalGrpcServiceTests
     public async Task GetMany_IssuesSingleBatchQuery_RegardlessOfKeyCount()
     {
         await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
-        _sql.QueryAsync<KeyedRow>(Arg.Any<string>(), Arg.Any<object?>())
+        _entities.FetchManyByKeysAsync(Arg.Any<TableSchema>(), Arg.Any<IReadOnlyList<string>>())
             .Returns(Array.Empty<KeyedRow>());
 
         var stream = MakeStream<RetrievalResponse>();
@@ -181,9 +184,9 @@ public class ObjectRetrievalGrpcServiceTests
             new RetrievalManyRequest { TypeName = "Author", Keys = { AuthorId, AuthorId2 } },
             stream, TestServerCallContext.Create());
 
-        await _sql.Received(1).QueryAsync<KeyedRow>(
-            Arg.Is<string>(s => s.Contains("= ANY(") && !s.Contains("::uuid[]")),
-            Arg.Any<object?>());
+        await _entities.Received(1).FetchManyByKeysAsync(
+            Arg.Any<TableSchema>(),
+            Arg.Is<IReadOnlyList<string>>(keys => keys.Count == 2));
     }
 
     // ── stream helper ────────────────────────────────────────────────────────
