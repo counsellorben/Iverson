@@ -20,6 +20,7 @@ internal sealed class ReconciliationQueueWorker(
         while (!ct.IsCancellationRequested)
         {
             await reconciliation.ProcessQueuedFailuresAsync(ct);
+            ReconciliationTelemetry.ReconciliationQueueDepth = await reconciliation.CountPendingAsync();
             await Task.Delay(PollInterval, ct);
         }
     }
