@@ -14,6 +14,7 @@ services:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
+      - ./deploy/postgres/init-authentik-db.sql:/docker-entrypoint-initdb.d/init-authentik-db.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U iverson"]
       interval: 10s
@@ -143,6 +144,80 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+
+  # ── Identity ────────────────────────────────────────────────────────────────
+
+  redis:
+    image: redis:7.4-alpine
+    container_name: iverson-redis
+    restart: unless-stopped
+    command: ["redis-server", "--save", ""]   # cache-only, no volume mounted — matches the Helm
+                                               # subchart's identical reasoning (Task 1)
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  authentik-server:
+    image: ghcr.io/goauthentik/server:2026.5.3
+    container_name: iverson-authentik-server
+    restart: unless-stopped
+    command: server
+    environment:
+      AUTHENTIK_SECRET_KEY: "dev-only-not-for-production-use-0123456789abcdef"
+      AUTHENTIK_REDIS__HOST: redis
+      AUTHENTIK_POSTGRESQL__HOST: postgres
+      AUTHENTIK_POSTGRESQL__NAME: authentik
+      AUTHENTIK_POSTGRESQL__USER: authentik
+      AUTHENTIK_POSTGRESQL__PASSWORD: authentik
+      AUTHENTIK_BOOTSTRAP_EMAIL: admin@iverson.local
+      AUTHENTIK_BOOTSTRAP_PASSWORD: dev-admin-password
+      AUTHENTIK_BOOTSTRAP_TOKEN: dev-bootstrap-token-0123456789
+    ports:
+      - "9000:9000"
+    volumes:
+      - ./deploy/helm/iverson/charts/authentik/blueprints:/blueprints/custom:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "ak", "healthcheck"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
+
+  authentik-worker:
+    image: ghcr.io/goauthentik/server:2026.5.3
+    container_name: iverson-authentik-worker
+    restart: unless-stopped
+    command: worker
+    environment:
+      AUTHENTIK_SECRET_KEY: "dev-only-not-for-production-use-0123456789abcdef"
+      AUTHENTIK_REDIS__HOST: redis
+      AUTHENTIK_POSTGRESQL__HOST: postgres
+      AUTHENTIK_POSTGRESQL__NAME: authentik
+      AUTHENTIK_POSTGRESQL__USER: authentik
+      AUTHENTIK_POSTGRESQL__PASSWORD: authentik
+      AUTHENTIK_BOOTSTRAP_EMAIL: admin@iverson.local
+      AUTHENTIK_BOOTSTRAP_PASSWORD: dev-admin-password
+      AUTHENTIK_BOOTSTRAP_TOKEN: dev-bootstrap-token-0123456789
+    volumes:
+      - ./deploy/helm/iverson/charts/authentik/blueprints:/blueprints/custom:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "ak", "healthcheck"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
 
   # ── Application ─────────────────────────────────────────────────────────────
 
