@@ -121,6 +121,8 @@ spec:
     - from:
         - podSelector: { matchLabels: { app: {{ .Release.Name }}-api } }
         - podSelector: { matchLabels: { app: {{ .Release.Name }}-worker } }
+        - podSelector: { matchLabels: { app: {{ .Release.Name }}-authentik-server } }
+        - podSelector: { matchLabels: { app: {{ .Release.Name }}-authentik-worker } }
       ports: [{ protocol: TCP, port: 5432 }]
 ---
 apiVersion: networking.k8s.io/v1
@@ -428,4 +430,64 @@ spec:
         - podSelector: { matchLabels: { app: {{ .Release.Name }}-api } }
         - podSelector: { matchLabels: { app: {{ .Release.Name }}-worker } }
       ports: [{ protocol: TCP, port: 8081 }]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ .Release.Name }}-authentik-ingress
+spec:
+  podSelector:
+    matchLabels: { app: {{ .Release.Name }}-authentik-server }
+  policyTypes: ["Ingress"]
+  ingress:
+    - from: []   # kubelet readiness/liveness probes: same any-source reasoning as api-ingress's
+               # kubelet-probe rule — authentik's server process serves both app traffic and its
+               # own health endpoints (/-/health/live/, /-/health/ready/) on the same port, so
+               # there's no separate dedicated health port to scope this to.
+      ports: [{ protocol: TCP, port: 9000 }]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ .Release.Name }}-authentik-egress
+spec:
+  podSelector:
+    matchExpressions:
+      - key: app
+        operator: In
+        values: ["{{ .Release.Name }}-authentik-server", "{{ .Release.Name }}-authentik-worker"]
+  policyTypes: ["Egress"]
+  egress:
+    - to: []   # DNS
+      ports: [{ protocol: UDP, port: 53 }, { protocol: TCP, port: 53 }]
+    - to: [{ podSelector: { matchLabels: { cnpg.io/cluster: {{ .Release.Name }}-postgres } } }]
+      ports: [{ protocol: TCP, port: 5432 }]
+    - to: [{ podSelector: { matchLabels: { app: {{ .Release.Name }}-redis } } }]
+      ports: [{ protocol: TCP, port: 6379 }]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ .Release.Name }}-redis-ingress
+spec:
+  podSelector:
+    matchLabels: { app: {{ .Release.Name }}-redis }
+  policyTypes: ["Ingress"]
+  ingress:
+    - from:
+        - podSelector: { matchLabels: { app: {{ .Release.Name }}-authentik-server } }
+        - podSelector: { matchLabels: { app: {{ .Release.Name }}-authentik-worker } }
+      ports: [{ protocol: TCP, port: 6379 }]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ .Release.Name }}-redis-egress
+spec:
+  podSelector:
+    matchLabels: { app: {{ .Release.Name }}-redis }
+  policyTypes: ["Egress"]
+  egress:
+    - to: []   # DNS
+      ports: [{ protocol: UDP, port: 53 }, { protocol: TCP, port: 53 }]
 {{- end }}
