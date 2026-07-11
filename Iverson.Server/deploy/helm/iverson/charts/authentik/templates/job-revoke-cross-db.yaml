@@ -81,7 +81,12 @@ spec:
               # to the one role that legitimately needs it (`iverson`, used by both the api and
               # worker Deployments — see charts/api and charts/worker's ConnectionStrings__Postgres).
               # This also closes the door for any future role, not just `authentik`.
-              psql -c "REVOKE CONNECT ON DATABASE iverson FROM PUBLIC;" \
+              # -v ON_ERROR_STOP=1: without it, a server-side SQL error inside a `psql -c`
+              # batch is printed to stderr but the process still exits 0 as long as the
+              # connection itself stayed alive — `set -e` above only observes psql's own exit
+              # code, so a failed REVOKE/GRANT would otherwise leave this Job reporting
+              # "Completed" while silently never enforcing the isolation this fix exists for.
+              psql -v ON_ERROR_STOP=1 -c "REVOKE CONNECT ON DATABASE iverson FROM PUBLIC;" \
                    -c "GRANT CONNECT ON DATABASE iverson TO iverson;"
       volumes:
         - name: tmp
