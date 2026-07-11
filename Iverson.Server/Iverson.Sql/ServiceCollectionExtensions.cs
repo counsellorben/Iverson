@@ -25,6 +25,9 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<IEntityRepository>(sp =>
             new EntityRepository(sp.GetRequiredService<IRecordStoreQueryExecutor>()));
 
+        services.AddSingleton<ISchemaRegistryRepository>(sp =>
+            new SchemaRegistryRepository(sp.GetRequiredService<IRecordStoreQueryExecutor>()));
+
         return services;
     }
 }

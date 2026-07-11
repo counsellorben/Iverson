@@ -33,6 +33,14 @@ public interface IEntityRepository
     Task DeleteAsync(IDbTransactionContext tx, TableSchema schema, string key);
 }
 
+public interface ISchemaRegistryRepository
+{
+    Task EnsureTableAsync();
+    Task<IEnumerable<(string TypeName, string SchemaJson)>> LoadAllAsync();
+    Task UpsertAsync(string typeName, string schemaJson);
+    Task DeleteAsync(string typeName);
+}
+
 public sealed record TableSchema(
     string TableName,
     ColumnSchema KeyColumn,

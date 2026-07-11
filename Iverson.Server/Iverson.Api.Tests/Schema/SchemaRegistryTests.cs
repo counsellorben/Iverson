@@ -10,15 +10,13 @@ namespace Iverson.Api.Tests.Schema;
 
 public class SchemaRegistryTests
 {
-    private readonly IRecordStoreQueryExecutor _sql;
+    private readonly ISchemaRegistryRepository _repository;
     private readonly SchemaRegistry _sut;
 
     public SchemaRegistryTests()
     {
-        _sql = Substitute.For<IRecordStoreQueryExecutor>();
-        // ExecuteAsync is used for EnsureMetadataTableAsync and SQL operations — default to no-op
-        _sql.ExecuteAsync(Arg.Any<string>(), Arg.Any<object?>()).Returns(0);
-        _sut = new SchemaRegistry(_sql, NullLogger<SchemaRegistry>.Instance);
+        _repository = Substitute.For<ISchemaRegistryRepository>();
+        _sut = new SchemaRegistry(_repository, NullLogger<SchemaRegistry>.Instance);
     }
 
     [Fact]
@@ -77,9 +75,8 @@ public class SchemaRegistryTests
         // LoadAsync's query only returns "Author" (matching what UnregisterAsync's DELETE
         // would leave behind in Postgres), even though this instance's in-memory copy still
         // has "Article" from the RegisterAsync call above.
-        _sql.QueryAsync<(string type_name, string schema_json)>(
-                Arg.Is<string>(s => s.Contains("_iverson_schema")), Arg.Any<object?>())
-            .Returns(new List<(string, string)>
+        _repository.LoadAllAsync()
+            .Returns(new List<(string TypeName, string SchemaJson)>
             {
                 ("Author", System.Text.Json.JsonSerializer.Serialize(
                     SchemaFixtures.AuthorSchema(),

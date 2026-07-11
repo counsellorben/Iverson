@@ -59,7 +59,7 @@ public class ObjectMappingGrpcServiceTests
         _starRocks = Substitute.For<IEngagementStoreSchemaManager>();
         _starRocks.ApplyTableAsync(Arg.Any<StarRocksTableSchema>()).Returns(Task.CompletedTask);
 
-        _registry = new SchemaRegistry(_sql, NullLogger<SchemaRegistry>.Instance);
+        _registry = new SchemaRegistry(new SchemaRegistryRepository(_sql), NullLogger<SchemaRegistry>.Instance);
         _sut = new ObjectMappingGrpcService(
             _entities, _txRunner, _schemaManager, _vector, _events, _registry, _embedding, _starRocks,
             new RelationValidator(_registry), new EntityKeyAccessor(), new OutboxWriter(_sql, _txRunner),

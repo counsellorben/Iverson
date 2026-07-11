@@ -36,7 +36,7 @@ public class EngagementStoreConsumerTests
         _sr.DeleteAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<string>())
            .Returns(Task.CompletedTask);
 
-        _registry = new Api.Schema.SchemaRegistry(_sql, NullLogger<Api.Schema.SchemaRegistry>.Instance);
+        _registry = new Api.Schema.SchemaRegistry(new SchemaRegistryRepository(_sql), NullLogger<Api.Schema.SchemaRegistry>.Instance);
     }
 
     private string Serialize(EntityEvent ev) => JsonSerializer.Serialize(ev, JsonOptions);

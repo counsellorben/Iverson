@@ -29,7 +29,7 @@ public class ObjectRetrievalGrpcServiceTests
         _sql.ExecuteAsync(Arg.Any<string>(), Arg.Any<object?>()).Returns(0);
         _entities = Substitute.For<IEntityRepository>();
 
-        _registry = new SchemaRegistry(_sql, NullLogger<SchemaRegistry>.Instance);
+        _registry = new SchemaRegistry(new SchemaRegistryRepository(_sql), NullLogger<SchemaRegistry>.Instance);
         _sut = new ObjectRetrievalGrpcService(_entities, _registry,
             NullLogger<ObjectRetrievalGrpcService>.Instance);
     }

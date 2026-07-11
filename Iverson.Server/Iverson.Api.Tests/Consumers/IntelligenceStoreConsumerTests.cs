@@ -53,7 +53,7 @@ public class IntelligenceStoreConsumerTests
         _embedding.EmbedAsync(Arg.Any<string>(), Arg.Any<CancellationToken>())
                   .Returns(new float[768]);
 
-        _registry = new SchemaRegistry(_sql, NullLogger<SchemaRegistry>.Instance);
+        _registry = new SchemaRegistry(new SchemaRegistryRepository(_sql), NullLogger<SchemaRegistry>.Instance);
     }
 
     private string Serialize(EntityEvent ev) => JsonSerializer.Serialize(ev, JsonOptions);

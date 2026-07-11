@@ -30,7 +30,7 @@ public class ObjectSearchGrpcServiceTests
     {
         _sql = Substitute.For<IRecordStoreQueryExecutor>();
         _sql.ExecuteAsync(Arg.Any<string>(), Arg.Any<object?>()).Returns(0);
-        _registry  = new SchemaRegistry(_sql, NullLogger<SchemaRegistry>.Instance);
+        _registry  = new SchemaRegistry(new SchemaRegistryRepository(_sql), NullLogger<SchemaRegistry>.Instance);
         _search    = Substitute.For<IEngagementStoreSearchService>();
         _vector    = Substitute.For<IVectorQueryService>();
         _embedding = Substitute.For<IEmbeddingService>();

@@ -70,7 +70,7 @@ public sealed class ReconciliationQueuePostgresIntegrationTests(ReconciliationQu
             new { Id = authorId, Name = "Alice" });
 
         var schema = SchemaFixtures.AuthorSchema() with { TableName = authorsTable };
-        var registry = new SchemaRegistry(_repo, NullLogger<SchemaRegistry>.Instance);
+        var registry = new SchemaRegistry(new SchemaRegistryRepository(_repo), NullLogger<SchemaRegistry>.Instance);
         await registry.RegisterAsync(schema);
 
         var events = Substitute.For<IEventProducer>();

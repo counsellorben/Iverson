@@ -5,7 +5,7 @@ using Iverson.Sql;
 namespace Iverson.Api.Schema;
 
 public sealed class SchemaRegistry(
-    IRecordStoreQueryExecutor sql,
+    ISchemaRegistryRepository repository,
     ILogger<SchemaRegistry> logger)
 {
     private readonly ConcurrentDictionary<string, SchemaDescriptor> _schemas = new(StringComparer.OrdinalIgnoreCase);
@@ -19,10 +19,9 @@ public sealed class SchemaRegistry(
 
     public async Task LoadAsync(CancellationToken ct = default)
     {
-        await EnsureMetadataTableAsync();
+        await repository.EnsureTableAsync();
 
-        var rows = await sql.QueryAsync<(string type_name, string schema_json)>(
-            "SELECT type_name, schema_json FROM _iverson_schema");
+        var rows = await repository.LoadAllAsync();
 
         var loadedTypeNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
@@ -47,19 +46,10 @@ public sealed class SchemaRegistry(
 
     public async Task RegisterAsync(SchemaDescriptor descriptor)
     {
-        await EnsureMetadataTableAsync();
+        await repository.EnsureTableAsync();
 
         var json = JsonSerializer.Serialize(descriptor, s_jsonOptions);
-
-        await sql.ExecuteAsync(
-            """
-            INSERT INTO _iverson_schema (type_name, schema_json, updated_at)
-            VALUES (@TypeName, @Json::jsonb, now())
-            ON CONFLICT (type_name) DO UPDATE
-                SET schema_json = EXCLUDED.schema_json,
-                    updated_at  = EXCLUDED.updated_at
-            """,
-            new { TypeName = descriptor.TypeName, Json = json });
+        await repository.UpsertAsync(descriptor.TypeName, json);
 
         _schemas[descriptor.TypeName] = descriptor;
         logger.LogInformation("Registered schema for {TypeName}", descriptor.TypeName);
@@ -67,24 +57,10 @@ public sealed class SchemaRegistry(
 
     public async Task UnregisterAsync(string typeName)
     {
-        await sql.ExecuteAsync(
-            "DELETE FROM _iverson_schema WHERE type_name = @TypeName",
-            new { TypeName = typeName });
+        await repository.DeleteAsync(typeName);
 
         _schemas.TryRemove(typeName, out _);
         logger.LogInformation("Unregistered schema for {TypeName}", typeName);
-    }
-
-    private async Task EnsureMetadataTableAsync()
-    {
-        await sql.ExecuteAsync(
-            """
-            CREATE TABLE IF NOT EXISTS _iverson_schema (
-                type_name  TEXT PRIMARY KEY,
-                schema_json JSONB NOT NULL,
-                updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
-            )
-            """);
     }
 
     private static readonly JsonSerializerOptions s_jsonOptions = new()

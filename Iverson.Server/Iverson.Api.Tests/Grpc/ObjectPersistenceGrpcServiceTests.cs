@@ -34,7 +34,7 @@ public class ObjectPersistenceGrpcServiceTests
         _txRunner.ExecuteInTransactionAsync(Arg.Any<Func<IDbTransactionContext, Task>>())
             .Returns(ci => ci.Arg<Func<IDbTransactionContext, Task>>()(Substitute.For<IDbTransactionContext>()));
 
-        _registry = new SchemaRegistry(_sql, NullLogger<SchemaRegistry>.Instance);
+        _registry = new SchemaRegistry(new SchemaRegistryRepository(_sql), NullLogger<SchemaRegistry>.Instance);
         _sut = new ObjectPersistenceGrpcService(
             _events, _registry,
             new RelationValidator(_registry), new EntityKeyAccessor(), new OutboxWriter(_sql, _txRunner),
