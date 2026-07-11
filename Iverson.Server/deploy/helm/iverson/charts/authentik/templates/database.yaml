@@ -1,0 +1,9 @@
+apiVersion: postgresql.cnpg.io/v1
+kind: Database
+metadata:
+  name: {{ .Release.Name }}-authentik
+spec:
+  name: authentik
+  owner: authentik
+  cluster:
+    name: {{ .Release.Name }}-postgres

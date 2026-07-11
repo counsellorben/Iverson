@@ -1,0 +1,6 @@
+apiVersion: v2
+name: authentik
+description: Authentik identity provider for Iverson (SAML/OAuth2+PKCE/MFA)
+type: application
+version: 0.1.0
+appVersion: "2026.5.3"
