@@ -123,6 +123,11 @@ spec:
         - podSelector: { matchLabels: { app: {{ .Release.Name }}-worker } }
         - podSelector: { matchLabels: { app: {{ .Release.Name }}-authentik-server } }
         - podSelector: { matchLabels: { app: {{ .Release.Name }}-authentik-worker } }
+        - podSelector: { matchLabels: { job-name: {{ .Release.Name }}-authentik-revoke-cross-db } }
+               # the revoke-cross-db job's own egress rule (below) already allows it to *send*
+               # to postgres on 5432, but that's only half of a NetworkPolicy: without a
+               # matching ingress rule here too, postgres never accepts the connection — same
+               # asymmetry as the starrocks create-user job's ingress/egress pairing.
       ports: [{ protocol: TCP, port: 5432 }]
 ---
 apiVersion: networking.k8s.io/v1
@@ -327,6 +332,28 @@ spec:
                # BE — see the starrocks-egress note above on app.starrocks.io/cluster vs the
                # operator's real app.starrocks.ownerreference/name label.
       ports: [{ protocol: TCP, port: 9030 }]
+---
+# The post-install/post-upgrade revoke-cross-db Job
+# (charts/authentik/templates/job-revoke-cross-db.yaml) runs as a plain Job pod, not part of
+# the postgres CNPG Cluster CR — it only carries `job-name`, not `cnpg.io/cluster`, so none of
+# the policies above cover it. Under default-deny that means zero egress, including DNS, so
+# its `psql`-based wait loop never resolves the `<release>-postgres-rw` hostname and spins
+# forever ("waiting for authentik role to exist..." with no useful error, since the script
+# redirects psql's stderr to /dev/null) — same failure mode as the starrocks create-user job
+# above, before its own dedicated egress rule was added.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ .Release.Name }}-authentik-revoke-cross-db-egress
+spec:
+  podSelector:
+    matchLabels: { job-name: {{ .Release.Name }}-authentik-revoke-cross-db }
+  policyTypes: ["Egress"]
+  egress:
+    - to: []   # DNS
+      ports: [{ protocol: UDP, port: 53 }, { protocol: TCP, port: 53 }]
+    - to: [{ podSelector: { matchLabels: { cnpg.io/cluster: {{ .Release.Name }}-postgres } } }]
+      ports: [{ protocol: TCP, port: 5432 }]
 ---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy

@@ -1,0 +1,88 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ .Release.Name }}-authentik-revoke-cross-db
+  annotations:
+    "helm.sh/hook": post-install,post-upgrade
+    "helm.sh/hook-weight": "0"
+    "helm.sh/hook-delete-policy": before-hook-creation
+automountServiceAccountToken: false
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ .Release.Name }}-authentik-revoke-cross-db
+  annotations:
+    "helm.sh/hook": post-install,post-upgrade
+    "helm.sh/hook-weight": "1"
+    "helm.sh/hook-delete-policy": before-hook-creation
+spec:
+  backoffLimit: 6
+  template:
+    spec:
+      restartPolicy: Never
+      serviceAccountName: {{ .Release.Name }}-authentik-revoke-cross-db
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 999
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: revoke-cross-db
+          image: "postgres:16"
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
+          resources:
+            requests: { cpu: "100m", memory: "128Mi", ephemeral-storage: "256Mi" }
+            limits: { cpu: "250m", memory: "256Mi", ephemeral-storage: "512Mi" }
+          env:
+            - name: PGPASSWORD
+              valueFrom: { secretKeyRef: { name: {{ .Release.Name }}-postgres-app, key: password } }
+            - name: PGHOST
+              value: "{{ .Release.Name }}-postgres-rw"
+            - name: PGPORT
+              value: "5432"
+            - name: PGUSER
+              value: "iverson"
+            - name: PGDATABASE
+              value: "iverson"
+            - name: HOME
+              value: "/tmp"
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+          command: ["sh", "-c"]
+          args:
+            - |
+              set -e
+              # The `authentik` role is provisioned asynchronously by CNPG's own
+              # `managed.roles` reconciler (charts/postgres/templates/cluster.yaml), not by a
+              # plain Helm-templated resource applied synchronously before this post-install
+              # hook fires — so on a fresh install this Job can race ahead of that
+              # reconciliation. Poll until the role exists before revoking anything on it.
+              until psql -tAc "SELECT 1 FROM pg_roles WHERE rolname='authentik';" 2>/dev/null | grep -q 1; do
+                echo "waiting for authentik role to exist..."; sleep 5
+              done
+              # Connecting to the `iverson` database as the `iverson` role (its owner) is
+              # required here: enableSuperuserAccess is false on this cluster, so there is no
+              # accessible Postgres superuser, and only a database's owner can REVOKE
+              # privileges on it. This is idempotent — revoking/granting an already-set
+              # privilege is a no-op, not an error — so it is safe to run on every upgrade.
+              #
+              # `REVOKE CONNECT ... FROM authentik` alone is NOT sufficient: PostgreSQL grants
+              # CONNECT on every database to the PUBLIC pseudo-role by default, and every role
+              # (including `authentik`) is implicitly a member of PUBLIC, so it would still be
+              # able to connect via that PUBLIC-held grant regardless of any REVOKE targeted at
+              # it by name — confirmed empirically against this cluster (the negative-connect
+              # test below still succeeded after a REVOKE ... FROM authentik alone). The only
+              # correct fix is to revoke CONNECT from PUBLIC itself, then explicitly re-grant it
+              # to the one role that legitimately needs it (`iverson`, used by both the api and
+              # worker Deployments — see charts/api and charts/worker's ConnectionStrings__Postgres).
+              # This also closes the door for any future role, not just `authentik`.
+              psql -c "REVOKE CONNECT ON DATABASE iverson FROM PUBLIC;" \
+                   -c "GRANT CONNECT ON DATABASE iverson TO iverson;"
+      volumes:
+        - name: tmp
+          emptyDir: {}
