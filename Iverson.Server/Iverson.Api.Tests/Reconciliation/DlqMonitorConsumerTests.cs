@@ -11,9 +11,9 @@ public class DlqMonitorConsumerTests
     [Fact]
     public async Task HandleAsync_RecordsMessageWithHeaderMetadata()
     {
-        var sql = Substitute.For<IRecordStoreQueryExecutor>();
+        var dlq = Substitute.For<IDlqRepository>();
         var sut = new Iverson.Api.Reconciliation.DlqMonitorConsumer(
-            Substitute.For<Iverson.Events.IEventConsumer>(), sql,
+            Substitute.For<Iverson.Events.IEventConsumer>(), dlq,
             Microsoft.Extensions.Logging.Abstractions.NullLogger<Iverson.Api.Reconciliation.DlqMonitorConsumer>.Instance);
 
         var headers = new Headers
@@ -28,20 +28,19 @@ public class DlqMonitorConsumerTests
 
         await sut.HandleAsync("article-123", "{\"foo\":\"bar\"}", headers, CancellationToken.None);
 
-        await sql.Received(1).ExecuteAsync(
-            Arg.Is<string>(s => s.Contains($"INSERT INTO \"{Iverson.Api.Reconciliation.DlqSchema.TableName}\"")),
-            Arg.Is<object>(o =>
-                (string)o.GetType().GetProperty("SourceTopic")!.GetValue(o)! == "iverson.entity.created" &&
-                (string)o.GetType().GetProperty("ExceptionType")!.GetValue(o)! == "System.InvalidOperationException" &&
-                (int)o.GetType().GetProperty("Attempts")!.GetValue(o)! == 3));
+        await dlq.Received(1).InsertAsync(Arg.Is<DlqMessage>(m =>
+            m.MessageKey == "article-123" &&
+            m.SourceTopic == "iverson.entity.created" &&
+            m.ExceptionType == "System.InvalidOperationException" &&
+            m.Attempts == 3));
     }
 
     [Fact]
     public async Task HandleAsync_MissingOptionalHeaders_StillRecordsWithNullExceptionFields()
     {
-        var sql = Substitute.For<IRecordStoreQueryExecutor>();
+        var dlq = Substitute.For<IDlqRepository>();
         var sut = new Iverson.Api.Reconciliation.DlqMonitorConsumer(
-            Substitute.For<Iverson.Events.IEventConsumer>(), sql,
+            Substitute.For<Iverson.Events.IEventConsumer>(), dlq,
             Microsoft.Extensions.Logging.Abstractions.NullLogger<Iverson.Api.Reconciliation.DlqMonitorConsumer>.Instance);
 
         var headers = new Headers
@@ -54,9 +53,8 @@ public class DlqMonitorConsumerTests
 
         await sut.HandleAsync("article-456", "{}", headers, CancellationToken.None);
 
-        await sql.Received(1).ExecuteAsync(
-            Arg.Is<string>(s => s.Contains($"INSERT INTO \"{Iverson.Api.Reconciliation.DlqSchema.TableName}\"")),
-            Arg.Is<object>(o =>
-                o.GetType().GetProperty("ExceptionType")!.GetValue(o) == null));
+        await dlq.Received(1).InsertAsync(Arg.Is<DlqMessage>(m =>
+            m.MessageKey == "article-456" &&
+            m.ExceptionType == null));
     }
 }

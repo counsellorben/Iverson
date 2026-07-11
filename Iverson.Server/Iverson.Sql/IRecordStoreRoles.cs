@@ -49,6 +49,14 @@ public interface IReconciliationQueueRepository
     Task DeleteRowAsync(Guid id);
 }
 
+public interface IDlqRepository
+{
+    Task InsertAsync(DlqMessage message);
+    Task<IEnumerable<DlqRow>> ListUnreplayedAsync(int limit);
+    Task<DlqReplayRow?> GetUnreplayedByIdAsync(Guid id);
+    Task MarkReplayedAsync(Guid id);
+}
+
 public sealed record TableSchema(
     string TableName,
     ColumnSchema KeyColumn,

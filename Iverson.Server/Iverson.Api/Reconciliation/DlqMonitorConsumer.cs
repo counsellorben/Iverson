@@ -7,7 +7,7 @@ namespace Iverson.Api.Reconciliation;
 
 internal sealed class DlqMonitorConsumer(
     IEventConsumer consumer,
-    IRecordStoreQueryExecutor sql,
+    IDlqRepository dlq,
     ILogger<DlqMonitorConsumer> logger) : BackgroundService
 {
     private const string GroupId = "iverson.consumer.dlq-monitor";
@@ -28,27 +28,15 @@ internal sealed class DlqMonitorConsumer(
         var attemptsRaw = Header("dlq.attempts");
         var failedAtRaw = Header("dlq.failed_at");
 
-        await sql.ExecuteAsync(
-            $"""
-            INSERT INTO "{DlqSchema.TableName}"
-                ("Id", "SourceTopic", "ConsumerGroup", "MessageKey", "MessageValue",
-                 "ExceptionType", "ExceptionMessage", "Attempts", "FailedAt", "Replayed")
-            VALUES
-                (@Id, @SourceTopic, @ConsumerGroup, @MessageKey, @MessageValue,
-                 @ExceptionType, @ExceptionMessage, @Attempts, @FailedAt, false)
-            """,
-            new
-            {
-                Id = Guid.CreateVersion7(),
-                SourceTopic = Header("dlq.source_topic") ?? "",
-                ConsumerGroup = Header("dlq.consumer_group") ?? "",
-                MessageKey = key,
-                MessageValue = value,
-                ExceptionType = Header("dlq.exception_type"),
-                ExceptionMessage = Header("dlq.exception_message"),
-                Attempts = int.TryParse(attemptsRaw, out var a) ? a : 0,
-                FailedAt = DateTimeOffset.TryParse(failedAtRaw, out var f) ? f : DateTimeOffset.UtcNow
-            });
+        await dlq.InsertAsync(new DlqMessage(
+            SourceTopic: Header("dlq.source_topic") ?? "",
+            ConsumerGroup: Header("dlq.consumer_group") ?? "",
+            MessageKey: key,
+            MessageValue: value,
+            ExceptionType: Header("dlq.exception_type"),
+            ExceptionMessage: Header("dlq.exception_message"),
+            Attempts: int.TryParse(attemptsRaw, out var a) ? a : 0,
+            FailedAt: DateTimeOffset.TryParse(failedAtRaw, out var f) ? f : DateTimeOffset.UtcNow));
 
         logger.LogInformation("[DlqMonitor] Recorded DLQ message key={Key} sourceTopic={SourceTopic}",
             key, Header("dlq.source_topic"));
