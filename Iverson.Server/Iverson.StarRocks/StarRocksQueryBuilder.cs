@@ -12,12 +12,12 @@ namespace Iverson.StarRocks;
 /// </summary>
 internal sealed record JoinContext(string TableName, StarRocksQuerySchema Schema, string Alias);
 
-public static class StarRocksQueryBuilder
+internal static class StarRocksQueryBuilder
 {
     private static readonly ConditionalWeakTable<
         StarRocksQuerySchema,
         Dictionary<string, string>> _columnCache = new();
-    public static (string Sql, DynamicParameters Param) BuildSearch(
+    internal static (string Sql, DynamicParameters Param) BuildSearch(
         string tableName,
         StarRocksQuerySchema schema,
         SearchQuery? query,
@@ -87,7 +87,7 @@ public static class StarRocksQueryBuilder
         return string.Join(", ", resolved.Select(Quote));
     }
 
-    public static (string Sql, DynamicParameters Param) BuildAggregate(
+    internal static (string Sql, DynamicParameters Param) BuildAggregate(
         string tableName,
         StarRocksQuerySchema schema,
         SearchQuery? query,
@@ -181,7 +181,7 @@ public static class StarRocksQueryBuilder
     /// query per <see cref="AggregationDescriptor"/>, this emits one query for the whole
     /// <see cref="GroupByRequest"/>.
     /// </summary>
-    public static (string Sql, DynamicParameters Param) BuildGroupBy(
+    internal static (string Sql, DynamicParameters Param) BuildGroupBy(
         string primaryTable,
         StarRocksQuerySchema schema,
         GroupByRequest request,
@@ -294,7 +294,7 @@ public static class StarRocksQueryBuilder
     /// <paramref name="paramPrefix"/> names the Dapper parameters ("p" for plain queries;
     /// pipeline steps pass "s{i}_p" so multiple steps can share one DynamicParameters).
     /// </summary>
-    public static string BuildWhere(
+    internal static string BuildWhere(
         Func<string, string?> resolveQuoted,
         IEnumerable<SearchClause>? clauses,
         SearchLogic logic,
@@ -344,7 +344,7 @@ public static class StarRocksQueryBuilder
     /// DynamicParameters instance without name collisions when a query has both a filter and a
     /// HAVING clause; pipeline steps pass "s{i}_h" so multiple steps can share one instance too.
     /// </summary>
-    public static string BuildHaving(
+    internal static string BuildHaving(
         IEnumerable<SearchClause>? clauses,
         SearchLogic logic,
         DynamicParameters param,
@@ -384,7 +384,7 @@ public static class StarRocksQueryBuilder
         return string.Join(sep, parts);
     }
 
-    public static string? ResolveColumn(StarRocksQuerySchema schema, string property)
+    internal static string? ResolveColumn(StarRocksQuerySchema schema, string property)
     {
         var index = _columnCache.GetValue(schema, static s =>
             s.ColumnNames

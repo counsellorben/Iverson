@@ -16,7 +16,7 @@ internal sealed record StepColumns(string Name, Dictionary<string, string> Colum
 /// Pass 1 (<see cref="TrackAndValidate"/>) computes every step's output column set and
 /// rejects invalid references via <see cref="StarRocksQueryTranslationException"/> before any SQL is built.
 /// </summary>
-public static class StarRocksPipelineBuilder
+internal static class StarRocksPipelineBuilder
 {
     internal const string BaseStepName = "base";
 
@@ -299,7 +299,7 @@ public static class StarRocksPipelineBuilder
     private static StarRocksQueryTranslationException Invalid(string message) =>
         new(message);
 
-    public static (string Sql, DynamicParameters Param) Build(
+    internal static (string Sql, DynamicParameters Param) Build(
         StarRocksQuerySchema schema,
         PipelineRequest request,
         Func<string, StarRocksQuerySchema?> registry)
