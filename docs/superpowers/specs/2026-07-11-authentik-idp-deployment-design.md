@@ -100,6 +100,14 @@ addition, not a new cluster or a new operator.
   the existing pattern (named volumes where applicable, healthchecks, `restart: unless-stopped`).
   Server port published (e.g. `9000:9000`) so the admin UI is reachable at
   `http://localhost:9000`, alongside Jaeger (`16686`) and Prometheus (`9090`).
+- **Postgres provisioning for docker-compose**: the `postgres` service's stock image only
+  bootstraps `POSTGRES_DB=iverson` on first init and has no built-in multi-database support. A new
+  `docker-entrypoint-initdb.d/init-authentik.sql` script, mounted read-only into the `postgres`
+  service, creates the `authentik` role and database (`CREATE ROLE authentik ...; CREATE DATABASE
+  authentik OWNER authentik;`) — matching the role/database names used on the CNPG side. Because
+  Postgres only runs `docker-entrypoint-initdb.d` scripts against an empty data directory, this
+  only takes effect on a fresh `postgres_data` volume; existing local dev environments run the
+  same two `CREATE` statements once via `docker compose exec postgres psql -U iverson`.
 - **`deploy/kind/`**: no kind-specific work needed beyond what already exists — the new subcharts
   are picked up automatically by the documented `setup.sh`/`build-and-load-image.sh`/`helm
   upgrade --install` pipeline, same as the Prometheus subchart before it.
