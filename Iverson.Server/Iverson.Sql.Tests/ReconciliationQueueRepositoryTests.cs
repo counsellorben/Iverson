@@ -75,7 +75,7 @@ public class ReconciliationQueueRepositoryTests
 
         count.Should().Be(7);
         await sql.Received(1).QuerySingleOrDefaultAsync<int>(
-            Arg.Is<string>(s => s.Contains("SELECT COUNT(*) FROM")),
+            Arg.Is<string>(s => s.Contains($"""SELECT COUNT(*) FROM "{TableName}" """)),
             Arg.Any<object?>());
     }
 }
