@@ -35,13 +35,25 @@ public sealed class IntelligenceStoreConsumer(
 
     protected override Task ExecuteAsync(CancellationToken ct) =>
         ConsumerResilience.RunWithRestartAsync(
-            () => Task.WhenAll(
-                consumer.ConsumeAsync(EntityTopics.Created, GroupId, HandleAsync, ct),
-                consumer.ConsumeAsync(EntityTopics.Updated, GroupId, HandleAsync, ct),
-                consumer.ConsumeAsync(EntityTopics.Deleted, GroupId + ".delete", HandleDeleteAsync, ct)),
+            () => consumer.ConsumeAsync(EntityTopics.Events, GroupId, DispatchAsync, ct),
             logger,
             "Intelligence",
             ct);
+
+    internal async Task DispatchAsync(string key, string value, CancellationToken ct)
+    {
+        var ev = Deserialize(key, value);
+        switch (ev.EventType)
+        {
+            case EntityEventType.Created:
+            case EntityEventType.Updated:
+                await HandleAsync(key, value, ct);
+                break;
+            case EntityEventType.Deleted:
+                await HandleDeleteAsync(key, value, ct);
+                break;
+        }
+    }
 
     internal async Task HandleAsync(string key, string value, CancellationToken ct)
     {

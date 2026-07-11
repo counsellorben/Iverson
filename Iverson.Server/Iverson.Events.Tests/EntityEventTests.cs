@@ -39,20 +39,14 @@ public sealed class EntityEventTests
     }
 
     [Fact]
-    public void EntityTopics_Created_HasExpectedValue()
+    public void EntityTopics_Events_HasExpectedValue()
     {
-        EntityTopics.Created.Should().Be("iverson.entity.created");
+        EntityTopics.Events.Should().Be("iverson.entity.events");
     }
 
     [Fact]
-    public void EntityTopics_Updated_HasExpectedValue()
+    public void EntityTopics_Dlq_HasExpectedValue()
     {
-        EntityTopics.Updated.Should().Be("iverson.entity.updated");
-    }
-
-    [Fact]
-    public void EntityTopics_Deleted_HasExpectedValue()
-    {
-        EntityTopics.Deleted.Should().Be("iverson.entity.deleted");
+        EntityTopics.Dlq.Should().Be("iverson.entity.dlq");
     }
 }

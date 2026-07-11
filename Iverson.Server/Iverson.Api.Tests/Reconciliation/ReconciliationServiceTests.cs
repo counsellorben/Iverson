@@ -54,9 +54,9 @@ public class ReconciliationServiceTests
 
         count.Should().Be(2);
         await _events.Received(2).ProduceAsync(
-            EntityTopics.Updated,
+            EntityTopics.Events,
             Arg.Any<string>(),
-            Arg.Is<EntityEvent>(e => e.TypeName == "Author"));
+            Arg.Is<EntityEvent>(e => e.TypeName == "Author" && e.EventType == EntityEventType.Updated));
     }
 
     [Fact]
@@ -73,7 +73,7 @@ public class ReconciliationServiceTests
         await _sut.ProcessQueuedFailuresAsync(CancellationToken.None);
 
         await _events.Received(1).ProduceAsync(
-            EntityTopics.Updated,
+            EntityTopics.Events,
             "author-1",
             Arg.Is<EntityEvent>(e => e.TypeName == "Author" && e.Key == "author-1"));
 
@@ -128,11 +128,11 @@ public class ReconciliationServiceTests
         await _sut.ProcessQueuedFailuresAsync(CancellationToken.None);
 
         await _events.Received(1).ProduceAsync(
-            EntityTopics.Deleted,
+            EntityTopics.Events,
             "author-1",
             Arg.Is<EntityEvent>(e =>
                 e.TypeName == "Author" && e.Key == "author-1" && e.PayloadJson == payload &&
-                e.TargetStores == StoreTarget.Engagement));
+                e.TargetStores == StoreTarget.Engagement && e.EventType == EntityEventType.Deleted));
 
         await _entities.DidNotReceiveWithAnyArgs().FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>());
 
@@ -152,7 +152,7 @@ public class ReconciliationServiceTests
         await _sut.ProcessQueuedFailuresAsync(CancellationToken.None);
 
         await _events.Received(1).ProduceAsync(
-            EntityTopics.Deleted,
+            EntityTopics.Events,
             "ghost-1",
             Arg.Is<EntityEvent>(e => e.TargetStores == StoreTarget.All));
     }
@@ -164,7 +164,7 @@ public class ReconciliationServiceTests
         const string payload = """{"Id":"author-1","Name":"Alice"}""";
         _queue.PollQueuedFailuresAsync(Arg.Any<int>(), Arg.Any<int>())
             .Returns(new[] { new ReconciliationQueueRow(queueId, "Author", "author-1", 3, "Deleted", payload) });
-        _events.ProduceAsync(EntityTopics.Deleted, Arg.Any<string>(), Arg.Any<EntityEvent>())
+        _events.ProduceAsync(EntityTopics.Events, Arg.Any<string>(), Arg.Any<EntityEvent>())
                .Returns<Task>(_ => throw new InvalidOperationException("kafka still down"));
 
         await _sut.ProcessQueuedFailuresAsync(CancellationToken.None);

@@ -40,7 +40,7 @@ internal sealed class ReconciliationService(
             if (string.IsNullOrEmpty(key)) continue;
 
             await events.ProduceAsync(
-                EntityTopics.Updated,
+                EntityTopics.Events,
                 key,
                 new EntityEvent(EntityEventType.Updated, typeName, key, rowJson, traceId, "1", DateTimeOffset.UtcNow, targetStores));
             count++;
@@ -101,7 +101,7 @@ internal sealed class ReconciliationService(
         {
             var targetStores = StoreTargeting.DetermineTargetStores(schema);
             await events.ProduceAsync(
-                EntityTopics.Updated,
+                EntityTopics.Events,
                 row.EntityKey,
                 new EntityEvent(EntityEventType.Updated, row.TypeName, row.EntityKey, rowJson, string.Empty, "1", DateTimeOffset.UtcNow, targetStores));
 
@@ -133,7 +133,7 @@ internal sealed class ReconciliationService(
                 : StoreTarget.All;
 
             await events.ProduceAsync(
-                EntityTopics.Deleted,
+                EntityTopics.Events,
                 row.EntityKey,
                 new EntityEvent(EntityEventType.Deleted, row.TypeName, row.EntityKey, row.Payload!, string.Empty, "1", DateTimeOffset.UtcNow, targetStores));
 

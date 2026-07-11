@@ -35,10 +35,10 @@ public sealed class KafkaProducerTests
             SchemaVersion: "1.0",
             OccurredAt: DateTimeOffset.UtcNow);
 
-        await producer.ProduceAsync(EntityTopics.Created, entityEvent.Key, entityEvent);
+        await producer.ProduceAsync(EntityTopics.Events, entityEvent.Key, entityEvent);
 
         await kafkaProducer.Received(1).ProduceAsync(
-            Arg.Is(EntityTopics.Created),
+            Arg.Is(EntityTopics.Events),
             Arg.Any<Message<string, string>>());
 
         var call = kafkaProducer.ReceivedCalls()

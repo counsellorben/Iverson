@@ -55,7 +55,7 @@ public sealed class ObjectPersistenceGrpcService(
         try
         {
             await events.ProduceAsync(
-                EntityTopics.Created,
+                EntityTopics.Events,
                 key,
                 new EntityEvent(
                     EntityEventType.Created,
@@ -122,7 +122,7 @@ public sealed class ObjectPersistenceGrpcService(
         try
         {
             await events.ProduceAsync(
-                EntityTopics.Updated,
+                EntityTopics.Events,
                 key,
                 new EntityEvent(
                     EntityEventType.Updated,

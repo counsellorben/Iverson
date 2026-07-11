@@ -15,13 +15,25 @@ public sealed class EngagementStoreConsumer(
 
     protected override Task ExecuteAsync(CancellationToken ct) =>
         ConsumerResilience.RunWithRestartAsync(
-            () => Task.WhenAll(
-                consumer.ConsumeAsync(EntityTopics.Created, GroupId, HandleUpsertAsync, ct),
-                consumer.ConsumeAsync(EntityTopics.Updated, GroupId, HandleUpsertAsync, ct),
-                consumer.ConsumeAsync(EntityTopics.Deleted, GroupId + ".delete", HandleDeleteAsync, ct)),
+            () => consumer.ConsumeAsync(EntityTopics.Events, GroupId, DispatchAsync, ct),
             logger,
             "Engagement",
             ct);
+
+    internal async Task DispatchAsync(string key, string value, CancellationToken ct)
+    {
+        var ev = Deserialize(key, value);
+        switch (ev.EventType)
+        {
+            case EntityEventType.Created:
+            case EntityEventType.Updated:
+                await HandleUpsertAsync(key, value, ct);
+                break;
+            case EntityEventType.Deleted:
+                await HandleDeleteAsync(key, value, ct);
+                break;
+        }
+    }
 
     internal async Task HandleUpsertAsync(string key, string value, CancellationToken ct)
     {

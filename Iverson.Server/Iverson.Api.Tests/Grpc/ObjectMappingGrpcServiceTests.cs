@@ -257,7 +257,7 @@ public class ObjectMappingGrpcServiceTests
             .Returns(AuthorJson);
 
         EntityEvent? evt = null;
-        _events.When(e => e.ProduceAsync(EntityTopics.Created, Arg.Any<string>(), Arg.Any<EntityEvent>()))
+        _events.When(e => e.ProduceAsync(EntityTopics.Events, Arg.Any<string>(), Arg.Any<EntityEvent>()))
                .Do(call => evt = call.ArgAt<EntityEvent>(2));
 
         var payload = MakePayload(new() { ["Name"] = Value.ForString("Alice") });
@@ -278,7 +278,7 @@ public class ObjectMappingGrpcServiceTests
             .Returns(AuthorJson);
 
         EntityEvent? evt = null;
-        _events.When(e => e.ProduceAsync(EntityTopics.Created, Arg.Any<string>(), Arg.Any<EntityEvent>()))
+        _events.When(e => e.ProduceAsync(EntityTopics.Events, Arg.Any<string>(), Arg.Any<EntityEvent>()))
                .Do(call => evt = call.ArgAt<EntityEvent>(2));
 
         var payload = MakePayload(new()
@@ -354,7 +354,7 @@ public class ObjectMappingGrpcServiceTests
             .Returns(AuthorJson);
 
         EntityEvent? evt = null;
-        _events.When(e => e.ProduceAsync(EntityTopics.Created, Arg.Any<string>(), Arg.Any<EntityEvent>()))
+        _events.When(e => e.ProduceAsync(EntityTopics.Events, Arg.Any<string>(), Arg.Any<EntityEvent>()))
                .Do(call => evt = call.ArgAt<EntityEvent>(2));
 
         var payload = MakePayload(new()
@@ -369,6 +369,7 @@ public class ObjectMappingGrpcServiceTests
         evt.Should().NotBeNull();
         evt!.TypeName.Should().Be("Author");
         evt.Key.Should().Be(AuthorId);
+        evt.EventType.Should().Be(EntityEventType.Created);
     }
 
     [Fact]
@@ -548,7 +549,7 @@ public class ObjectMappingGrpcServiceTests
         await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
 
         EntityEvent? evt = null;
-        _events.When(e => e.ProduceAsync(EntityTopics.Updated, Arg.Any<string>(), Arg.Any<EntityEvent>()))
+        _events.When(e => e.ProduceAsync(EntityTopics.Events, Arg.Any<string>(), Arg.Any<EntityEvent>()))
                .Do(call => evt = call.ArgAt<EntityEvent>(2));
 
         var payload = MakePayload(new()
@@ -562,6 +563,7 @@ public class ObjectMappingGrpcServiceTests
 
         response.Success.Should().BeTrue();
         evt!.Key.Should().Be(AuthorId);
+        evt.EventType.Should().Be(EntityEventType.Updated);
     }
 
     [Fact]
@@ -650,7 +652,7 @@ public class ObjectMappingGrpcServiceTests
             .Returns(AuthorJson);
 
         EntityEvent? evt = null;
-        _events.When(e => e.ProduceAsync(EntityTopics.Deleted, Arg.Any<string>(), Arg.Any<EntityEvent>()))
+        _events.When(e => e.ProduceAsync(EntityTopics.Events, Arg.Any<string>(), Arg.Any<EntityEvent>()))
                .Do(call => evt = call.ArgAt<EntityEvent>(2));
 
         var response = await _sut.Delete(
@@ -664,6 +666,7 @@ public class ObjectMappingGrpcServiceTests
             AuthorId);
         evt!.TypeName.Should().Be("Author");
         evt.Key.Should().Be(AuthorId);
+        evt.EventType.Should().Be(EntityEventType.Deleted);
     }
 
     [Fact]
@@ -680,7 +683,7 @@ public class ObjectMappingGrpcServiceTests
         response.Success.Should().BeFalse();
         response.Error.Should().Contain("not found");
         await _events.DidNotReceive().ProduceAsync(
-            EntityTopics.Deleted, Arg.Any<string>(), Arg.Any<EntityEvent>());
+            EntityTopics.Events, Arg.Any<string>(), Arg.Any<EntityEvent>());
     }
 
     [Fact]

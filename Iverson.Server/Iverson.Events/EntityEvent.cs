@@ -29,8 +29,6 @@ public sealed record EntityEvent(
 
 public static class EntityTopics
 {
-    public const string Created = "iverson.entity.created";
-    public const string Updated = "iverson.entity.updated";
-    public const string Deleted = "iverson.entity.deleted";
-    public const string Dlq     = "iverson.entity.dlq";
+    public const string Events = "iverson.entity.events";
+    public const string Dlq    = "iverson.entity.dlq";
 }

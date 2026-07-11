@@ -135,4 +135,67 @@ public class EngagementStoreConsumerTests
 
         await _sr.DidNotReceive().UpsertAsync(Arg.Any<StarRocksTableSchema>(), Arg.Any<string>());
     }
+
+    [Fact]
+    public async Task DispatchAsync_CreatedEvent_RoutesToUpsert()
+    {
+        await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
+
+        var ev = new EntityEvent(
+            EventType:     EntityEventType.Created,
+            TypeName:      "Author",
+            Key:           Guid.NewGuid().ToString(),
+            PayloadJson:   """{"Name":"Alice"}""",
+            TraceId:       "trace-dispatch-1",
+            SchemaVersion: "1",
+            OccurredAt:    DateTimeOffset.UtcNow,
+            TargetStores:  StoreTarget.Engagement);
+
+        await BuildSut().DispatchAsync(ev.Key, Serialize(ev), CancellationToken.None);
+
+        await _sr.Received(1).UpsertAsync(Arg.Any<StarRocksTableSchema>(), Arg.Any<string>());
+        await _sr.DidNotReceive().DeleteAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<string>());
+    }
+
+    [Fact]
+    public async Task DispatchAsync_UpdatedEvent_RoutesToUpsert()
+    {
+        await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
+
+        var ev = new EntityEvent(
+            EventType:     EntityEventType.Updated,
+            TypeName:      "Author",
+            Key:           Guid.NewGuid().ToString(),
+            PayloadJson:   """{"Name":"Alice"}""",
+            TraceId:       "trace-dispatch-2",
+            SchemaVersion: "1",
+            OccurredAt:    DateTimeOffset.UtcNow,
+            TargetStores:  StoreTarget.Engagement);
+
+        await BuildSut().DispatchAsync(ev.Key, Serialize(ev), CancellationToken.None);
+
+        await _sr.Received(1).UpsertAsync(Arg.Any<StarRocksTableSchema>(), Arg.Any<string>());
+    }
+
+    [Fact]
+    public async Task DispatchAsync_DeletedEvent_RoutesToDelete()
+    {
+        await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
+        var key = Guid.NewGuid().ToString();
+
+        var ev = new EntityEvent(
+            EventType:     EntityEventType.Deleted,
+            TypeName:      "Author",
+            Key:           key,
+            PayloadJson:   "{}",
+            TraceId:       "trace-dispatch-3",
+            SchemaVersion: "1",
+            OccurredAt:    DateTimeOffset.UtcNow,
+            TargetStores:  StoreTarget.Engagement);
+
+        await BuildSut().DispatchAsync(ev.Key, Serialize(ev), CancellationToken.None);
+
+        await _sr.Received(1).DeleteAsync("authors", "Id", key);
+        await _sr.DidNotReceive().UpsertAsync(Arg.Any<StarRocksTableSchema>(), Arg.Any<string>());
+    }
 }

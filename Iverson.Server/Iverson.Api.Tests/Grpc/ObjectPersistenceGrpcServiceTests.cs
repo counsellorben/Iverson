@@ -156,7 +156,7 @@ public class ObjectPersistenceGrpcServiceTests
         await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
 
         EntityEvent? captured = null;
-        _events.When(e => e.ProduceAsync(EntityTopics.Created, Arg.Any<string>(), Arg.Any<EntityEvent>()))
+        _events.When(e => e.ProduceAsync(EntityTopics.Events, Arg.Any<string>(), Arg.Any<EntityEvent>()))
                .Do(call => captured = call.ArgAt<EntityEvent>(2));
 
         var payload = MakePayload(new() { ["Name"] = Value.ForString("Alice") });

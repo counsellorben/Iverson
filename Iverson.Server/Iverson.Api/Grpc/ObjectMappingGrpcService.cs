@@ -145,7 +145,7 @@ public sealed class ObjectMappingGrpcService(
         try
         {
             await _events.ProduceAsync(
-                EntityTopics.Created,
+                EntityTopics.Events,
                 key,
                 new EntityEvent(
                     EntityEventType.Created,
@@ -205,7 +205,7 @@ public sealed class ObjectMappingGrpcService(
         try
         {
             await _events.ProduceAsync(
-                EntityTopics.Updated,
+                EntityTopics.Events,
                 key,
                 new EntityEvent(
                     EntityEventType.Updated,
@@ -273,7 +273,7 @@ public sealed class ObjectMappingGrpcService(
         try
         {
             await _events.ProduceAsync(
-                EntityTopics.Deleted,
+                EntityTopics.Events,
                 request.Key,
                 new EntityEvent(
                     EntityEventType.Deleted,

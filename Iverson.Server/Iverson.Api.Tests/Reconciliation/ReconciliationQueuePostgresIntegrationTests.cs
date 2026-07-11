@@ -112,7 +112,7 @@ public sealed class ReconciliationQueuePostgresIntegrationTests(ReconciliationQu
         queuedCountAfter.Should().Be(0);
 
         await events.Received(1).ProduceAsync(
-            EntityTopics.Updated,
+            EntityTopics.Events,
             authorKey,
             Arg.Is<EntityEvent>(e =>
                 e.TypeName == "Author" &&

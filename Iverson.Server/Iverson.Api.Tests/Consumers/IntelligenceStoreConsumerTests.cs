@@ -501,4 +501,54 @@ public class IntelligenceStoreConsumerTests
 
         result.Should().Be(expected);
     }
+
+    [Fact]
+    public async Task DispatchAsync_CreatedEvent_RoutesToUpsert()
+    {
+        await _registry.RegisterAsync(SchemaFixtures.ArticleSchema());
+
+        var payload = """{"Title":"Great Title","Body":"Some body text","AuthorId":"00000000-0000-0000-0000-000000000001"}""";
+        var ev = new EntityEvent(
+            EventType:     EntityEventType.Created,
+            TypeName:      "Article",
+            Key:           Guid.NewGuid().ToString(),
+            PayloadJson:   payload,
+            TraceId:       "trace-dispatch-1",
+            SchemaVersion: "1",
+            OccurredAt:    DateTimeOffset.UtcNow,
+            TargetStores:  StoreTarget.Intelligence);
+
+        await BuildSut().DispatchAsync(ev.Key, Serialize(ev), CancellationToken.None);
+
+        await _vectorWrite.Received().UpsertNamedAsync(
+            "articles",
+            Arg.Any<ulong>(),
+            Arg.Any<IReadOnlyDictionary<string, float[]>>(),
+            Arg.Any<IReadOnlyDictionary<string, object>?>());
+        await _vectorWrite.DidNotReceive().DeleteAsync(Arg.Any<string>(), Arg.Any<ulong>());
+    }
+
+    [Fact]
+    public async Task DispatchAsync_DeletedEvent_RoutesToDelete()
+    {
+        await _registry.RegisterAsync(SchemaFixtures.ArticleSchema());
+        var key = Guid.NewGuid().ToString();
+
+        var ev = new EntityEvent(
+            EventType:     EntityEventType.Deleted,
+            TypeName:      "Article",
+            Key:           key,
+            PayloadJson:   "{}",
+            TraceId:       "trace-dispatch-2",
+            SchemaVersion: "1",
+            OccurredAt:    DateTimeOffset.UtcNow,
+            TargetStores:  StoreTarget.Intelligence);
+
+        await BuildSut().DispatchAsync(ev.Key, Serialize(ev), CancellationToken.None);
+
+        await _vectorWrite.Received(1).DeleteAsync("articles", Arg.Any<ulong>());
+        await _vectorWrite.DidNotReceive().UpsertNamedAsync(
+            Arg.Any<string>(), Arg.Any<ulong>(),
+            Arg.Any<IReadOnlyDictionary<string, float[]>>(), Arg.Any<IReadOnlyDictionary<string, object>?>());
+    }
 }
