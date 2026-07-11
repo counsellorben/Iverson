@@ -1,0 +1,72 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ .Release.Name }}-redis
+automountServiceAccountToken: false
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}-redis
+  annotations:
+    # single-replica, no clustering: cache-only with no durability requirement, same reasoning
+    # as charts/prometheus's kube-score ignore.
+    kube-score/ignore: deployment-replicas
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: {{ .Release.Name }}-redis
+  template:
+    metadata:
+      labels:
+        app: {{ .Release.Name }}-redis
+    spec:
+      serviceAccountName: {{ .Release.Name }}-redis
+      automountServiceAccountToken: false
+      nodeSelector:
+        {{- toYaml .Values.nodeSelector | nindent 8 }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 999
+        runAsGroup: 999
+        fsGroup: 999
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: redis
+          image: "redis:{{ .Values.imageTag }}"
+          # Disables RDB snapshotting entirely: this deployment mounts no volume at /data (no
+          # PVC, cache-only by design), so the image's default periodic `save` directives would
+          # otherwise fail every snapshot attempt against a read-only root filesystem with no
+          # writable /data — harmless to correctness (Redis keeps serving from memory) but noisy,
+          # recurring error logs. Explicit `--save ""` matches the "cache-only, no durability"
+          # decision instead of silently working around it.
+          args: ["--save", ""]
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
+          ports:
+            - containerPort: 6379
+              name: redis
+          resources:
+            requests:
+              cpu: {{ .Values.resources.requests.cpu | quote }}
+              memory: {{ .Values.resources.requests.memory | quote }}
+            limits:
+              cpu: {{ .Values.resources.limits.cpu | quote }}
+              memory: {{ .Values.resources.limits.memory | quote }}
+          readinessProbe:
+            exec: { command: ["redis-cli", "ping"] }
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            exec: { command: ["redis-cli", "ping"] }
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}

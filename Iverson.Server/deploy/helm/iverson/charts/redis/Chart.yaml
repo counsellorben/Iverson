@@ -1,0 +1,6 @@
+apiVersion: v2
+name: redis
+description: Redis cache/session broker for Authentik (Iverson identity provider)
+type: application
+version: 0.1.0
+appVersion: "7.4"
