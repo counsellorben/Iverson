@@ -15,7 +15,6 @@ namespace Iverson.Api.Reconciliation;
 /// </summary>
 internal sealed class ReconciliationService(
     SchemaRegistry registry,
-    IRecordStoreQueryExecutor db,
     IEntityRepository entities,
     IReconciliationQueueRepository queue,
     IEventProducer events,

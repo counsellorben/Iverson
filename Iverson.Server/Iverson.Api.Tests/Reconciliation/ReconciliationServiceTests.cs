@@ -28,7 +28,7 @@ public class ReconciliationServiceTests
         _events = Substitute.For<IEventProducer>();
         _registry = new SchemaRegistry(new SchemaRegistryRepository(_sql), NullLogger<SchemaRegistry>.Instance);
         _sut = new ReconciliationService(
-            _registry, _sql, _entities, _queue, _events, NullLogger<ReconciliationService>.Instance);
+            _registry, _entities, _queue, _events, NullLogger<ReconciliationService>.Instance);
     }
 
     [Fact]

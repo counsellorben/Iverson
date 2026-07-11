@@ -77,7 +77,7 @@ public sealed class ReconciliationQueuePostgresIntegrationTests(ReconciliationQu
         var entities = new EntityRepository(_repo);
         var queue = new ReconciliationQueueRepository(ReconciliationSchema.TableName, _repo);
         var service = new ReconciliationService(
-            registry, _repo, entities, queue, events, NullLogger<ReconciliationService>.Instance);
+            registry, entities, queue, events, NullLogger<ReconciliationService>.Instance);
 
         // 1+2: enqueue an upsert-style outbox row for this author directly — exercises the
         // uuid-typed INSERT the same way the (now-inlined) upsert-and-enqueue write path does.
