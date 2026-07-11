@@ -55,12 +55,14 @@ spec:
               memory: {{ .Values.resources.worker.limits.memory | quote }}
           readinessProbe:
             exec: { command: ["ak", "healthcheck"] }
-            initialDelaySeconds: 15
+            initialDelaySeconds: 30
             periodSeconds: 15
+            failureThreshold: 5
           livenessProbe:
             exec: { command: ["ak", "healthcheck"] }
-            initialDelaySeconds: 30
+            initialDelaySeconds: 60
             periodSeconds: 30
+            failureThreshold: 5
           volumeMounts:
             - name: blueprints
               mountPath: /blueprints/custom
