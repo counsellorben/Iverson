@@ -14,6 +14,7 @@ public class ReconciliationServiceTests
 {
     private readonly IRecordStoreQueryExecutor _sql;
     private readonly IEntityRepository _entities;
+    private readonly IReconciliationQueueRepository _queue;
     private readonly IEventProducer _events;
     private readonly SchemaRegistry _registry;
     private readonly ReconciliationService _sut;
@@ -23,10 +24,11 @@ public class ReconciliationServiceTests
         _sql = Substitute.For<IRecordStoreQueryExecutor>();
         _sql.ExecuteAsync(Arg.Any<string>(), Arg.Any<object?>()).Returns(0);
         _entities = Substitute.For<IEntityRepository>();
+        _queue = Substitute.For<IReconciliationQueueRepository>();
         _events = Substitute.For<IEventProducer>();
         _registry = new SchemaRegistry(new SchemaRegistryRepository(_sql), NullLogger<SchemaRegistry>.Instance);
         _sut = new ReconciliationService(
-            _registry, _sql, _entities, _events, NullLogger<ReconciliationService>.Instance);
+            _registry, _sql, _entities, _queue, _events, NullLogger<ReconciliationService>.Instance);
     }
 
     [Fact]
@@ -62,8 +64,7 @@ public class ReconciliationServiceTests
     {
         await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
         var queueId = Guid.NewGuid();
-        _sql.QueryAsync<ReconciliationQueueRow>(
-                Arg.Is<string>(s => s.Contains(ReconciliationSchema.TableName)), Arg.Any<object?>())
+        _queue.PollQueuedFailuresAsync(Arg.Any<int>(), Arg.Any<int>())
             .Returns(new[] { new ReconciliationQueueRow(queueId, "Author", "author-1", 0) });
         _entities.FetchByKeyAsync(
                 Arg.Is<TableSchema>(s => s.TableName == "authors"), Arg.Any<string>())
@@ -76,9 +77,7 @@ public class ReconciliationServiceTests
             "author-1",
             Arg.Is<EntityEvent>(e => e.TypeName == "Author" && e.Key == "author-1"));
 
-        await _sql.Received(1).ExecuteAsync(
-            Arg.Is<string>(s => s.Contains("DELETE") && s.Contains(ReconciliationSchema.TableName)),
-            Arg.Any<object>());
+        await _queue.Received(1).DeleteRowAsync(queueId);
     }
 
     [Fact]
@@ -86,8 +85,7 @@ public class ReconciliationServiceTests
     {
         await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
         var queueId = Guid.NewGuid();
-        _sql.QueryAsync<ReconciliationQueueRow>(
-                Arg.Is<string>(s => s.Contains(ReconciliationSchema.TableName)), Arg.Any<object?>())
+        _queue.PollQueuedFailuresAsync(Arg.Any<int>(), Arg.Any<int>())
             .Returns(new[] { new ReconciliationQueueRow(queueId, "Author", "author-missing", 0) });
         _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>())
             .Returns((string?)null);
@@ -95,9 +93,7 @@ public class ReconciliationServiceTests
         await _sut.ProcessQueuedFailuresAsync(CancellationToken.None);
 
         await _events.DidNotReceiveWithAnyArgs().ProduceAsync(default!, default!, Arg.Any<EntityEvent>());
-        await _sql.Received(1).ExecuteAsync(
-            Arg.Is<string>(s => s.Contains("DELETE") && s.Contains(ReconciliationSchema.TableName)),
-            Arg.Any<object>());
+        await _queue.Received(1).DeleteRowAsync(queueId);
     }
 
     [Fact]
@@ -105,28 +101,16 @@ public class ReconciliationServiceTests
     {
         await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
         var queueId = Guid.NewGuid();
-        _sql.QueryAsync<ReconciliationQueueRow>(
-                Arg.Is<string>(s => s.Contains(ReconciliationSchema.TableName)), Arg.Any<object?>())
+        _queue.PollQueuedFailuresAsync(Arg.Any<int>(), Arg.Any<int>())
             .Returns(new[] { new ReconciliationQueueRow(queueId, "Author", "author-1", 3) });
         _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>())
             .Returns("""{"Id":"author-1","Name":"Alice"}""");
         _events.ProduceAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<EntityEvent>())
                .Returns<Task>(_ => throw new InvalidOperationException("kafka still down"));
 
-        object? capturedUpdateParams = null;
-        _sql.WhenForAnyArgs(s => s.ExecuteAsync(Arg.Any<string>(), Arg.Any<object?>()))
-            .Do(call =>
-            {
-                var executedSql = call.ArgAt<string>(0);
-                if (executedSql.Contains("UPDATE") && executedSql.Contains(ReconciliationSchema.TableName))
-                    capturedUpdateParams = call.ArgAt<object?>(1);
-            });
-
         await _sut.ProcessQueuedFailuresAsync(CancellationToken.None);
 
-        capturedUpdateParams.Should().NotBeNull();
-        var dynamicParams = (dynamic)capturedUpdateParams!;
-        ((int)dynamicParams.Attempts).Should().Be(4);
+        await _queue.Received(1).RecordFailureAsync(queueId, 4, Arg.Any<string>());
     }
 
     [Fact]
@@ -138,8 +122,7 @@ public class ReconciliationServiceTests
         await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
         var queueId = Guid.NewGuid();
         const string payload = """{"Id":"author-1","Name":"Alice"}""";
-        _sql.QueryAsync<ReconciliationQueueRow>(
-                Arg.Is<string>(s => s.Contains(ReconciliationSchema.TableName)), Arg.Any<object?>())
+        _queue.PollQueuedFailuresAsync(Arg.Any<int>(), Arg.Any<int>())
             .Returns(new[] { new ReconciliationQueueRow(queueId, "Author", "author-1", 0, "Deleted", payload) });
 
         await _sut.ProcessQueuedFailuresAsync(CancellationToken.None);
@@ -153,9 +136,7 @@ public class ReconciliationServiceTests
 
         await _entities.DidNotReceiveWithAnyArgs().FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>());
 
-        await _sql.Received(1).ExecuteAsync(
-            Arg.Is<string>(s => s.Contains("DELETE") && s.Contains(ReconciliationSchema.TableName)),
-            Arg.Any<object>());
+        await _queue.Received(1).DeleteRowAsync(queueId);
     }
 
     [Fact]
@@ -165,8 +146,7 @@ public class ReconciliationServiceTests
         // preserve current behavior (target every store) rather than throw or narrow scope.
         var queueId = Guid.NewGuid();
         const string payload = """{"Id":"ghost-1","Name":"Ghost"}""";
-        _sql.QueryAsync<ReconciliationQueueRow>(
-                Arg.Is<string>(s => s.Contains(ReconciliationSchema.TableName)), Arg.Any<object?>())
+        _queue.PollQueuedFailuresAsync(Arg.Any<int>(), Arg.Any<int>())
             .Returns(new[] { new ReconciliationQueueRow(queueId, "NoSuchType", "ghost-1", 0, "Deleted", payload) });
 
         await _sut.ProcessQueuedFailuresAsync(CancellationToken.None);
@@ -182,26 +162,14 @@ public class ReconciliationServiceTests
     {
         var queueId = Guid.NewGuid();
         const string payload = """{"Id":"author-1","Name":"Alice"}""";
-        _sql.QueryAsync<ReconciliationQueueRow>(
-                Arg.Is<string>(s => s.Contains(ReconciliationSchema.TableName)), Arg.Any<object?>())
+        _queue.PollQueuedFailuresAsync(Arg.Any<int>(), Arg.Any<int>())
             .Returns(new[] { new ReconciliationQueueRow(queueId, "Author", "author-1", 3, "Deleted", payload) });
         _events.ProduceAsync(EntityTopics.Deleted, Arg.Any<string>(), Arg.Any<EntityEvent>())
                .Returns<Task>(_ => throw new InvalidOperationException("kafka still down"));
 
-        object? capturedUpdateParams = null;
-        _sql.WhenForAnyArgs(s => s.ExecuteAsync(Arg.Any<string>(), Arg.Any<object?>()))
-            .Do(call =>
-            {
-                var executedSql = call.ArgAt<string>(0);
-                if (executedSql.Contains("UPDATE") && executedSql.Contains(ReconciliationSchema.TableName))
-                    capturedUpdateParams = call.ArgAt<object?>(1);
-            });
-
         await _sut.ProcessQueuedFailuresAsync(CancellationToken.None);
 
-        capturedUpdateParams.Should().NotBeNull();
-        var dynamicParams = (dynamic)capturedUpdateParams!;
-        ((int)dynamicParams.Attempts).Should().Be(4);
+        await _queue.Received(1).RecordFailureAsync(queueId, 4, Arg.Any<string>());
     }
 
     [Fact]
@@ -209,24 +177,16 @@ public class ReconciliationServiceTests
     {
         // No precedent in this codebase for substituting ILogger to assert log calls (all existing
         // tests use NullLogger for ReconciliationService), so prove the observability behavior by
-        // asserting the exhausted-count query actually executes with the expected SQL/params,
+        // asserting the exhausted-count query actually executes with the expected params,
         // rather than intercepting the logger.
         await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
-        _sql.QueryAsync<ReconciliationQueueRow>(
-                Arg.Is<string>(s => s.Contains(ReconciliationSchema.TableName)), Arg.Any<object?>())
+        _queue.PollQueuedFailuresAsync(Arg.Any<int>(), Arg.Any<int>())
             .Returns(Array.Empty<ReconciliationQueueRow>());
-        _sql.QuerySingleOrDefaultAsync<int>(
-                Arg.Is<string>(s => s.Contains("COUNT(*)") && s.Contains(ReconciliationSchema.TableName)),
-                Arg.Any<object?>())
-            .Returns(3);
+        _queue.CountExhaustedAsync(Arg.Any<int>()).Returns(3);
 
         await _sut.ProcessQueuedFailuresAsync(CancellationToken.None);
 
-        var call = _sql.ReceivedCalls().Should().Contain(c =>
-            c.GetMethodInfo().Name == nameof(IRecordStoreQueryExecutor.QuerySingleOrDefaultAsync) &&
-            ((string)c.GetArguments()[0]!).Contains("COUNT(*)")).Subject;
-        var dynamicParams = (dynamic)call.GetArguments()[1]!;
-        ((int)dynamicParams.MaxAttempts).Should().Be(ReconciliationService.MaxAttempts);
+        await _queue.Received(1).CountExhaustedAsync(ReconciliationService.MaxAttempts);
     }
 
 }

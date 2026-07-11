@@ -41,6 +41,14 @@ public interface ISchemaRegistryRepository
     Task DeleteAsync(string typeName);
 }
 
+public interface IReconciliationQueueRepository
+{
+    Task<IEnumerable<ReconciliationQueueRow>> PollQueuedFailuresAsync(int maxAttempts, int batchSize);
+    Task<int> CountExhaustedAsync(int maxAttempts);
+    Task RecordFailureAsync(Guid id, int attempts, string lastError);
+    Task DeleteRowAsync(Guid id);
+}
+
 public sealed record TableSchema(
     string TableName,
     ColumnSchema KeyColumn,
