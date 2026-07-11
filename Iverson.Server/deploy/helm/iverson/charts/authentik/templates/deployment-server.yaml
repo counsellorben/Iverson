@@ -1,0 +1,87 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ .Release.Name }}-authentik
+automountServiceAccountToken: false
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}-authentik-server
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: {{ .Release.Name }}-authentik-server
+  template:
+    metadata:
+      labels:
+        app: {{ .Release.Name }}-authentik-server
+    spec:
+      serviceAccountName: {{ .Release.Name }}-authentik
+      automountServiceAccountToken: false
+      nodeSelector:
+        {{- toYaml .Values.nodeSelector | nindent 8 }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: server
+          image: "ghcr.io/goauthentik/server:{{ .Values.imageTag }}"
+          # `args`, not `command`: the image's own ENTRYPOINT already wraps every invocation in
+          # its `ak` lifecycle script — `args: ["server"]` overrides only the CMD, matching the
+          # official `command: server` docker-compose shorthand. Setting `command:` here instead
+          # would replace the ENTRYPOINT entirely and break startup.
+          args: ["server"]
+          securityContext:
+            allowPrivilegeEscalation: false
+            # Not read-only: Authentik writes to its own working directories at runtime and
+            # upstream doesn't document read-only-root-filesystem compatibility (unlike
+            # Prometheus/Redis above, where this was independently confirmed safe).
+            readOnlyRootFilesystem: false
+            capabilities: { drop: ["ALL"] }
+          envFrom:
+            - configMapRef:
+                name: {{ .Release.Name }}-authentik-config
+          env:
+            - name: AUTHENTIK_SECRET_KEY
+              valueFrom:
+                secretKeyRef: { name: {{ .Release.Name }}-authentik-app, key: secret-key }
+            - name: AUTHENTIK_POSTGRESQL__PASSWORD
+              valueFrom:
+                secretKeyRef: { name: {{ .Release.Name }}-authentik-postgres, key: password }
+            - name: AUTHENTIK_BOOTSTRAP_PASSWORD
+              valueFrom:
+                secretKeyRef: { name: {{ .Release.Name }}-authentik-app, key: bootstrap-password }
+            - name: AUTHENTIK_BOOTSTRAP_TOKEN
+              valueFrom:
+                secretKeyRef: { name: {{ .Release.Name }}-authentik-app, key: bootstrap-token }
+          ports:
+            - containerPort: 9000
+              name: http
+          resources:
+            requests:
+              cpu: {{ .Values.resources.server.requests.cpu | quote }}
+              memory: {{ .Values.resources.server.requests.memory | quote }}
+            limits:
+              cpu: {{ .Values.resources.server.limits.cpu | quote }}
+              memory: {{ .Values.resources.server.limits.memory | quote }}
+          readinessProbe:
+            httpGet: { path: /-/health/ready/, port: 9000 }
+            initialDelaySeconds: 15
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /-/health/live/, port: 9000 }
+            initialDelaySeconds: 30
+            periodSeconds: 30
+          volumeMounts:
+            - name: blueprints
+              mountPath: /blueprints/custom
+              readOnly: true
+      volumes:
+        - name: blueprints
+          configMap:
+            name: {{ .Release.Name }}-authentik-blueprints

@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Release.Name }}-authentik-config
+data:
+  AUTHENTIK_REDIS__HOST: "{{ .Release.Name }}-redis"
+  AUTHENTIK_POSTGRESQL__HOST: "{{ .Release.Name }}-postgres-rw"
+  AUTHENTIK_POSTGRESQL__NAME: "authentik"
+  AUTHENTIK_POSTGRESQL__USER: "authentik"
+  AUTHENTIK_LOG_LEVEL: "info"
+  AUTHENTIK_BOOTSTRAP_EMAIL: "{{ .Values.bootstrapEmail }}"

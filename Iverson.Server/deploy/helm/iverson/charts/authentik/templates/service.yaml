@@ -1,0 +1,10 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Release.Name }}-authentik
+spec:
+  selector:
+    app: {{ .Release.Name }}-authentik-server
+  ports:
+    - name: http
+      port: 9000

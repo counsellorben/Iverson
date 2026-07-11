@@ -1,0 +1,71 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}-authentik-worker
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: {{ .Release.Name }}-authentik-worker
+  template:
+    metadata:
+      labels:
+        app: {{ .Release.Name }}-authentik-worker
+    spec:
+      serviceAccountName: {{ .Release.Name }}-authentik
+      automountServiceAccountToken: false
+      nodeSelector:
+        {{- toYaml .Values.nodeSelector | nindent 8 }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: worker
+          image: "ghcr.io/goauthentik/server:{{ .Values.imageTag }}"
+          args: ["worker"]
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: false
+            capabilities: { drop: ["ALL"] }
+          envFrom:
+            - configMapRef:
+                name: {{ .Release.Name }}-authentik-config
+          env:
+            - name: AUTHENTIK_SECRET_KEY
+              valueFrom:
+                secretKeyRef: { name: {{ .Release.Name }}-authentik-app, key: secret-key }
+            - name: AUTHENTIK_POSTGRESQL__PASSWORD
+              valueFrom:
+                secretKeyRef: { name: {{ .Release.Name }}-authentik-postgres, key: password }
+            - name: AUTHENTIK_BOOTSTRAP_PASSWORD
+              valueFrom:
+                secretKeyRef: { name: {{ .Release.Name }}-authentik-app, key: bootstrap-password }
+            - name: AUTHENTIK_BOOTSTRAP_TOKEN
+              valueFrom:
+                secretKeyRef: { name: {{ .Release.Name }}-authentik-app, key: bootstrap-token }
+          resources:
+            requests:
+              cpu: {{ .Values.resources.worker.requests.cpu | quote }}
+              memory: {{ .Values.resources.worker.requests.memory | quote }}
+            limits:
+              cpu: {{ .Values.resources.worker.limits.cpu | quote }}
+              memory: {{ .Values.resources.worker.limits.memory | quote }}
+          readinessProbe:
+            exec: { command: ["ak", "healthcheck"] }
+            initialDelaySeconds: 15
+            periodSeconds: 15
+          livenessProbe:
+            exec: { command: ["ak", "healthcheck"] }
+            initialDelaySeconds: 30
+            periodSeconds: 30
+          volumeMounts:
+            - name: blueprints
+              mountPath: /blueprints/custom
+              readOnly: true
+      volumes:
+        - name: blueprints
+          configMap:
+            name: {{ .Release.Name }}-authentik-blueprints
