@@ -11,6 +11,7 @@ using Iverson.StarRocks;
 using Iverson.Vector;
 using OpenTelemetry.Exporter;
 using OpenTelemetry.Logs;
+using OpenTelemetry.Metrics;
 using OpenTelemetry.Resources;
 using OpenTelemetry.Trace;
 
@@ -56,7 +57,13 @@ builder.Services.AddOpenTelemetry()
         {
             o.Endpoint = new Uri(otelEndpoint);
             o.Protocol = OtlpExportProtocol.Grpc;
-        }));
+        }))
+    .WithMetrics(metrics => metrics
+        .SetResourceBuilder(resource)
+        .AddMeter("Iverson.Events", Iverson.Api.Reconciliation.ReconciliationTelemetry.MeterName)
+        .AddAspNetCoreInstrumentation()
+        .AddHttpClientInstrumentation()
+        .AddPrometheusExporter());
 
 builder.Logging.AddOpenTelemetry(o =>
 {
@@ -139,6 +146,7 @@ builder.Services.AddHostedService<Iverson.Api.Schema.SchemaRefreshWorker>();
 
 // ── Middleware ─────────────────────────────────────────────────────────────────
 var app = builder.Build();
+app.MapPrometheusScrapingEndpoint();
 
 if (app.Environment.IsDevelopment())
     app.MapOpenApi();
