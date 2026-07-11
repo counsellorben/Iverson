@@ -1015,10 +1015,10 @@ git commit -m "feat(observability): add Redis and Authentik services to docker-c
 
 ---
 
-## Task 6: Configure MFA/OAuth2/SAML and export as Blueprints
+## Task 6: Configure MFA/OAuth2/SAML via Authentik's REST API and commit as Blueprints
 
 **Files:**
-- Create: `deploy/helm/iverson/charts/authentik/blueprints/mfa-enforcement-flow.yaml`
+- Create: `deploy/helm/iverson/charts/authentik/blueprints/mfa-enforcement.yaml`
 - Create: `deploy/helm/iverson/charts/authentik/blueprints/oauth2-provider.yaml`
 - Create: `deploy/helm/iverson/charts/authentik/blueprints/saml-provider.yaml`
 - Delete: `deploy/helm/iverson/charts/authentik/blueprints/.gitkeep`
@@ -1029,102 +1029,172 @@ git commit -m "feat(observability): add Redis and Authentik services to docker-c
   (`.Files.Glob "blueprints/*.yaml"`) automatically picks up on the next `helm template`/`helm
   upgrade` — no further chart changes needed after this task.
 
-This task is interactive (Admin UI configuration), not scripted — capture the *result* as
-versioned files, which is what makes every future deploy reproducible.
+Rewritten from an original Admin-UI-click-path design after live verification against a running
+Authentik 2026.5.3 instance (via its REST API and OpenAPI schema at `/api/v3/schema/`) found: (1)
+Authentik already ships a built-in `default-authentication-mfa-validation` stage, already bound at
+the correct position (order=30, immediately after the password stage at order=20) in
+`default-authentication-flow` — MFA-enforcement is a matter of *modifying* this existing stage's
+config, not creating a new stage + binding; (2) Authentik already ships default
+`default-authenticator-totp-setup` / `default-authenticator-webauthn-setup` stages usable directly
+as `configuration_stages`; (3) Blueprint YAML supports a `!Find [model, [field, value]]` tag that
+resolves references to existing objects by any unique field (e.g. flow `slug`, stage `name`) at
+apply time — this avoids ever hardcoding a database pk (randomly generated per Authentik install,
+not portable across environments).
 
-- [ ] **Step 1: Bring up the stack and reach the Admin UI**
+- [ ] **Step 1: Bring up an isolated docker-compose stack**
+
+This repo's docker-compose project name defaults to the current directory's basename
+(`Iverson.Server`) when no `-p` is given. Every git worktree of this repo has a directory with
+that same basename, so running plain `docker compose up` from a worktree silently reuses the
+*main checkout's* shared `iversonserver_postgres_data` volume — which was never provisioned with
+the `authentik` role/database Task 5 added, causing `authentik-server` to fail Postgres
+authentication. Avoid this by giving the stack a project name unique to this task's verification
+run:
 
 ```bash
-docker compose up -d postgres redis authentik-server authentik-worker
+docker compose -p authentik-blueprint-verify up -d postgres redis authentik-server authentik-worker
 ```
 
-Wait for `docker compose ps` to show `authentik-server` as `healthy` (may take ~30-60s on first
-boot — Authentik runs its own database migrations before the healthcheck passes). Then open
-`http://localhost:9000/if/admin/` and log in with `admin@iverson.local` /
-`dev-admin-password` (the bootstrap credentials from Task 5's compose environment).
+Wait for `docker compose -p authentik-blueprint-verify ps` to show `authentik-server` as `healthy`
+(may take ~30-60s on first boot — Authentik runs its own database migrations before the
+healthcheck passes).
 
-- [ ] **Step 2: Create the MFA-enforcement authentication flow**
+- [ ] **Step 2: Write the MFA-enforcement blueprint**
 
-In the Admin UI, under **Flows & Stages → Stages**, create two enrollment stages (leave all other
-fields at their defaults unless noted):
-- An **Authenticator TOTP Setup Stage** (name: `totp-setup`).
-- An **Authenticator WebAuthn Setup Stage** (name: `webauthn-setup`, `resident_key_requirement`:
-  `preferred`).
+`deploy/helm/iverson/charts/authentik/blueprints/mfa-enforcement.yaml`:
 
-Under **Flows & Stages → Stages**, create one validation stage:
-- An **Authenticator Validation Stage** (name: `mfa-validation`), `device_classes`: both `totp`
-  and `webauthn` selected, `not_configured_action`: **configure** (this is what makes MFA
-  mandatory — a user with no enrolled factor is routed into enrollment rather than allowed
-  through), `configuration_stages`: both `totp-setup` and `webauthn-setup` bound (so "configure"
-  lets the user pick either method).
+```yaml
+version: 1
+metadata:
+  name: MFA enforcement (TOTP + WebAuthn required)
+entries:
+  - model: authentik_stages_authenticator_validate.authenticatorvalidatestage
+    identifiers:
+      name: default-authentication-mfa-validation
+    attrs:
+      not_configured_action: configure
+      device_classes:
+        - totp
+        - webauthn
+      configuration_stages:
+        - !Find [authentik_stages_authenticator_totp.authenticatortotpstage, [name, default-authenticator-totp-setup]]
+        - !Find [authentik_stages_authenticator_webauthn.authenticatorwebauthnstage, [name, default-authenticator-webauthn-setup]]
+```
 
-Under **Flows & Stages → Flows**, open the default authentication flow (`default-authentication-flow`), and add a new **Stage Binding** for `mfa-validation`, ordered immediately after the
-existing password-identification stage binding.
+(`identifiers: {name: default-authentication-mfa-validation}` targets Authentik's existing
+built-in stage — Blueprints match-or-create by `identifiers`, so this updates it in place rather
+than creating a duplicate. `not_configured_action: configure` is what makes MFA mandatory — a user
+with no enrolled factor is routed into enrollment rather than allowed through. `device_classes:
+[totp, webauthn]` narrows the built-in stage's default of all six device classes down to just
+these two, per the design's explicit "no SMS/email OTP" decision. The two `!Find` entries resolve
+to Authentik's own default enrollment stages by name at apply time — no new enrollment stages need
+to be created.)
 
-- [ ] **Step 3: Create the OAuth2/OIDC provider with PKCE**
+- [ ] **Step 3: Write the OAuth2/OIDC provider blueprint**
 
-Under **Applications → Providers → Create**, create an **OAuth2/OpenID Provider** (name:
-`iverson-oidc-default`), `authorization_flow`: the default provider-authorization flow,
-`client_type`: **Public** (so PKCE is the confidentiality mechanism, no client secret required),
-under its **Advanced protocol settings**, confirm PKCE is required (Authentik enforces S256 PKCE
-by default for Public clients — verify the created provider's detail page states this, don't just
-assume the default). No `Application` binding yet — this provider exists for a later project
-(Part 2/3) to point at.
+`deploy/helm/iverson/charts/authentik/blueprints/oauth2-provider.yaml`:
 
-- [ ] **Step 4: Create the SAML provider**
+```yaml
+version: 1
+metadata:
+  name: Default OAuth2/OIDC provider (PKCE, no application bound yet)
+entries:
+  - model: authentik_providers_oauth2.oauth2provider
+    identifiers:
+      name: iverson-oidc-default
+    attrs:
+      authorization_flow: !Find [authentik_flows.flow, [slug, default-provider-authorization-implicit-consent]]
+      invalidation_flow: !Find [authentik_flows.flow, [slug, default-provider-invalidation-flow]]
+      client_type: public
+      redirect_uris:
+        - matching_mode: strict
+          url: "http://localhost/placeholder-callback"
+          redirect_uri_type: authorization
+```
 
-Under **Applications → Providers → Create**, create a **SAML Provider** (name:
-`iverson-saml-default`), `authorization_flow`: the same default provider-authorization flow,
-leave ACS URL / other SP-specific fields at placeholder defaults (there is no relying-party
-application yet — this exists so Authentik is capable of acting as a SAML IdP once one does).
+(`client_type: public` means PKCE is the confidentiality mechanism, no client secret required —
+Authentik enforces S256 PKCE unconditionally for Public clients (confirmed: no separate PKCE
+toggle exists in the provider's schema). `redirect_uris` is a required field with no sensible real
+value yet since no relying application exists — the placeholder is intentional and gets replaced
+with the real callback URL when Part 2/3 defines an actual consumer. No `Application` binding —
+this provider exists for Part 2/3 to point at.)
 
-- [ ] **Step 5: Export each object as a Blueprint**
+- [ ] **Step 4: Write the SAML provider blueprint**
 
-Follow the current instructions at <https://docs.goauthentik.io/customize/blueprints/export/> to
-export: the `default-authentication-flow` (which now includes the new `mfa-validation` binding and
-both enrollment stages as bound dependencies), the `iverson-oidc-default` provider, and the
-`iverson-saml-default` provider. Save the three downloaded YAML files as:
-- `deploy/helm/iverson/charts/authentik/blueprints/mfa-enforcement-flow.yaml`
-- `deploy/helm/iverson/charts/authentik/blueprints/oauth2-provider.yaml`
-- `deploy/helm/iverson/charts/authentik/blueprints/saml-provider.yaml`
+`deploy/helm/iverson/charts/authentik/blueprints/saml-provider.yaml`:
 
-- [ ] **Step 6: Remove the now-unneeded placeholder**
+```yaml
+version: 1
+metadata:
+  name: Default SAML provider (no application bound yet)
+entries:
+  - model: authentik_providers_saml.samlprovider
+    identifiers:
+      name: iverson-saml-default
+    attrs:
+      authorization_flow: !Find [authentik_flows.flow, [slug, default-provider-authorization-implicit-consent]]
+      invalidation_flow: !Find [authentik_flows.flow, [slug, default-provider-invalidation-flow]]
+      acs_url: "http://localhost/placeholder-acs"
+```
+
+(`acs_url` is a required field on `SAMLProviderRequest`; same placeholder reasoning as the OAuth2
+provider's `redirect_uris` — no relying SAML Service Provider exists yet.)
+
+- [ ] **Step 5: Remove the now-unneeded placeholder**
 
 ```bash
 git rm deploy/helm/iverson/charts/authentik/blueprints/.gitkeep
 ```
 
-- [ ] **Step 7: Prove the blueprints are the actual source of truth — tear down and rebuild from scratch**
+- [ ] **Step 6: Verify each blueprint applies cleanly against the live instance**
+
+Register and apply all three via the API (using the bootstrap token from Task 5's compose
+environment):
 
 ```bash
-docker compose down -v   # -v: also drops postgres_data/redis's ephemeral state, forcing a
-                          # genuinely fresh first-boot, not a reuse of the manually-configured DB
-docker compose up -d postgres redis authentik-server authentik-worker
+for f in mfa-enforcement oauth2-provider saml-provider; do
+  PK=$(curl -s -X POST -H "Authorization: Bearer dev-bootstrap-token-0123456789" -H "Content-Type: application/json" \
+    -d "$(python3 -c "import json; print(json.dumps({'name': '$f', 'content': open('deploy/helm/iverson/charts/authentik/blueprints/$f.yaml').read(), 'enabled': True}))")" \
+    http://localhost:9000/api/v3/managed/blueprints/ | python3 -c "import json,sys; print(json.load(sys.stdin)['pk'])")
+  curl -s -X POST -H "Authorization: Bearer dev-bootstrap-token-0123456789" \
+    "http://localhost:9000/api/v3/managed/blueprints/$PK/apply/" > /dev/null
+  sleep 1
+  STATUS=$(curl -s -H "Authorization: Bearer dev-bootstrap-token-0123456789" \
+    "http://localhost:9000/api/v3/managed/blueprints/$PK/" | python3 -c "import json,sys; print(json.load(sys.stdin)['status'])")
+  echo "$f: $STATUS"
+done
 ```
 
-Wait for `authentik-server` to report `healthy` again, then verify via the API (using the
-bootstrap token — stable across this teardown since Task 5's compose file hardcodes it):
+Expected: `successful` printed for all three. Then confirm the actual objects reflect the intended
+config:
 
 ```bash
 curl -s -H "Authorization: Bearer dev-bootstrap-token-0123456789" \
-  http://localhost:9000/api/v3/flows/instances/?search=default-authentication-flow \
-  | grep -o '"slug":"[^"]*"'
+  "http://localhost:9000/api/v3/stages/authenticator/validate/?search=default-authentication-mfa-validation" \
+  | grep -o '"not_configured_action":"[^"]*"'
 curl -s -H "Authorization: Bearer dev-bootstrap-token-0123456789" \
-  http://localhost:9000/api/v3/providers/oauth2/?search=iverson-oidc-default \
-  | grep -o '"name":"[^"]*"'
+  "http://localhost:9000/api/v3/providers/oauth2/?search=iverson-oidc-default" | grep -o '"name":"[^"]*"'
 curl -s -H "Authorization: Bearer dev-bootstrap-token-0123456789" \
-  http://localhost:9000/api/v3/providers/saml/?search=iverson-saml-default \
-  | grep -o '"name":"[^"]*"'
+  "http://localhost:9000/api/v3/providers/saml/?search=iverson-saml-default" | grep -o '"name":"[^"]*"'
 ```
 
-Expected: all three commands return the expected slug/name, proving they were recreated purely
-from the mounted blueprint files on a database that had no manual configuration history at all.
+Expected: `"not_configured_action":"configure"`; both provider names returned.
+
+- [ ] **Step 7: Tear down the verification stack**
+
+```bash
+docker compose -p authentik-blueprint-verify down -v
+```
+
+This isolated stack (and its scratch volume) was only for verifying the blueprint files apply
+cleanly — the files are the deliverable, not this running instance. Task 7's kind smoke test is
+the real proof that these blueprints reproduce the configuration on a completely fresh install.
 
 - [ ] **Step 8: Commit**
 
 ```bash
 git add deploy/helm/iverson/charts/authentik/blueprints/
-git commit -m "feat(authentik): capture MFA-enforcement flow and default OAuth2/SAML providers as blueprints"
+git commit -m "feat(authentik): add MFA-enforcement, OAuth2, and SAML provider blueprints"
 ```
 
 ---
@@ -1195,17 +1265,18 @@ curl -s -H "Authorization: Bearer $TOKEN" \
   "http://localhost:9000/api/v3/flows/instances/default-authentication-flow/" \
   | grep -o '"slug":"[^"]*"'
 curl -s -H "Authorization: Bearer $TOKEN" \
-  "http://localhost:9000/api/v3/flows/bindings/?stage__name=mfa-validation" \
-  | grep -o '"pk":"[^"]*"'
+  "http://localhost:9000/api/v3/stages/authenticator/validate/?search=default-authentication-mfa-validation" \
+  | grep -o '"not_configured_action":"[^"]*"'
 kill %1
 ```
 
 Expected: the first two return the provider names; the third returns
-`"slug":"default-authentication-flow"`; the fourth returns at least one binding `pk`, confirming
-the `mfa-validation` stage is actually bound into the login flow — not just that the stage object
-exists in isolation. All four prove the blueprints reproduced the *complete* MFA-enforcement
-configuration (flow + binding + providers) on a cluster that never had any manual Admin UI
-configuration — this is the actual gate this whole plan exists to pass.
+`"slug":"default-authentication-flow"`; the fourth returns
+`"not_configured_action":"configure"`, confirming the blueprint's modification to Authentik's
+built-in MFA-validation stage (which is already bound into the login flow by default) actually
+applied — not just that a stray stage object exists in isolation. All four prove the blueprints
+reproduced the *complete* MFA-enforcement configuration on a cluster that never had any manual
+Admin UI configuration — this is the actual gate this whole plan exists to pass.
 
 - [ ] **Step 6: Leave the cluster running** (do not tear down — matches this repo's established
       practice of leaving a successful kind smoke-test cluster up for further manual inspection).
@@ -1227,12 +1298,10 @@ No commit for this task — it's pure verification of Tasks 1-6's already-commit
 - Zero Iverson application code changes → confirmed; no task touches any `.cs`/`.proto`/client-SDK
   file.
 
-**Placeholder scan:** no TBD/TODO; every file has complete content. Task 6's Step 5 references an
-external docs URL for the current click-path rather than hand-describing exact UI navigation — this
-is a deliberate, narrow exception (see the design spec's own reasoning for why hand-authoring
-Authentik's internal Blueprint model YAML from memory was rejected in favor of configure-then-export),
-not a stand-in for missing content: everything *around* that step (exact field values, exact stage
-names, exact file paths, exact verification commands) is fully specified.
+**Placeholder scan:** no TBD/TODO; every file has complete content. Task 6's blueprint YAML content
+was hand-authored and empirically verified (applied against a live Authentik 2026.5.3 instance,
+confirmed via its REST API) rather than described as an Admin-UI click-path — every field value,
+model name, and cross-reference is fully specified and was confirmed to work, not assumed.
 
 **Type/naming consistency:** `{{ .Release.Name }}-authentik-server` / `-worker` pod labels are used
 identically across Task 3 (Deployments), Task 4 (NetworkPolicy), and Task 7 (verification
