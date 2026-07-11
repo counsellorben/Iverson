@@ -1,0 +1,10 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Release.Name }}-worker
+spec:
+  selector:
+    app: {{ .Release.Name }}-worker
+  ports:
+    - name: http
+      port: 8081

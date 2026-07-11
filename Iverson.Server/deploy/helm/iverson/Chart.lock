@@ -23,5 +23,8 @@ dependencies:
 - name: jaeger
   repository: file://charts/jaeger
   version: 0.1.0
-digest: sha256:adaf0ef599cb4fda66c96fcd924ad89d6a2e4fc2dafd89a4d3b413867c0d3d92
-generated: "2026-07-07T09:10:43.61768545-04:00"
+- name: prometheus
+  repository: file://charts/prometheus
+  version: 0.1.0
+digest: sha256:3d151583df750659b07656850cf6a037b095124174bd7d2fdd46f6efe2e4f418
+generated: "2026-07-11T09:54:16.593720067-04:00"

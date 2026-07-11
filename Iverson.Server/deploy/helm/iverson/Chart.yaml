@@ -1,6 +1,6 @@
 apiVersion: v2
 name: iverson
-description: Iverson — cloud-agnostic Kubernetes deployment (Postgres, Kafka, StarRocks, Qdrant, Ollama, API, Jaeger)
+description: Iverson — cloud-agnostic Kubernetes deployment (Postgres, Kafka, StarRocks, Qdrant, Ollama, API, Jaeger, Prometheus)
 type: application
 version: 0.1.0
 appVersion: "1.0.0"
@@ -29,3 +29,6 @@ dependencies:
   - name: jaeger
     version: "0.1.0"
     repository: "file://charts/jaeger"
+  - name: prometheus
+    version: "0.1.0"
+    repository: "file://charts/prometheus"

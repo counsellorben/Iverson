@@ -83,3 +83,10 @@ jaeger:
   resources:
     requests: { cpu: "100m", memory: "256Mi" }
     limits: { cpu: "500m", memory: "512Mi" }
+
+prometheus:
+  storageSize: "2Gi"
+  storageClassName: "standard"
+  resources:
+    requests: { cpu: "100m", memory: "256Mi" }
+    limits: { cpu: "500m", memory: "512Mi" }

@@ -87,6 +87,19 @@ spec:
     - to: []   # DNS — every egress policy needs this or in-cluster name resolution breaks
       ports: [{ protocol: UDP, port: 53 }, { protocol: TCP, port: 53 }]
 ---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ .Release.Name }}-worker-ingress
+spec:
+  podSelector:
+    matchLabels: { app: {{ .Release.Name }}-worker }
+  policyTypes: ["Ingress"]
+  ingress:
+    - from:
+        - podSelector: { matchLabels: { app: {{ .Release.Name }}-prometheus } }
+      ports: [{ protocol: TCP, port: 8081 }]
+---
 # Every datastore/backing-service component: ingress only from api (and, where noted,
 # worker), on its own port. None of them need to initiate egress beyond DNS + their own
 # operator/peer traffic, which the operator's own NetworkPolicy (if any) or
@@ -399,4 +412,20 @@ spec:
   egress:
     - to: []   # DNS
       ports: [{ protocol: UDP, port: 53 }, { protocol: TCP, port: 53 }]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ .Release.Name }}-prometheus-egress
+spec:
+  podSelector:
+    matchLabels: { app: {{ .Release.Name }}-prometheus }
+  policyTypes: ["Egress"]
+  egress:
+    - to: []   # DNS
+      ports: [{ protocol: UDP, port: 53 }, { protocol: TCP, port: 53 }]
+    - to:
+        - podSelector: { matchLabels: { app: {{ .Release.Name }}-api } }
+        - podSelector: { matchLabels: { app: {{ .Release.Name }}-worker } }
+      ports: [{ protocol: TCP, port: 8081 }]
 {{- end }}
