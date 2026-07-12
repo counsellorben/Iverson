@@ -8,7 +8,7 @@
 
 **Tech Stack:** ASP.NET Core 10 / `Microsoft.AspNetCore.Authentication.JwtBearer`, Authentik (OIDC/OAuth2), Helm, grpc-dotnet / grpc-java / grpcio / grpc-go / `@grpc/grpc-js`.
 
-**Source spec:** `docs/superpowers/specs/2026-07-11-grpc-and-admin-authentication-design.md` (commit `bc41b95`, CDR round 1 applied)
+**Source spec:** `docs/superpowers/specs/2026-07-11-grpc-and-admin-authentication-design.md` (commit SHA: bc41b95)
 
 ## Global Constraints
 
@@ -21,6 +21,31 @@
 ## Inherited from spec (verified assumptions — NOT re-verified by this plan)
 
 See the spec's own 17-item `Verified assumptions` table for full citations. Key ones this plan depends on directly: `aud` = calling client's own `client_id` (#15); `scope` claim is a plain string (#5); `groups` claim is a JSON array exploded into multiple same-typed `Claim`s by .NET's JWT handler (confirmed separately during this plan's drafting, see Task 1); `FallbackPolicy` + `AllowAnonymous()` reliably exempts specific endpoints (#16); Helm `lookup` reads real Secret data during actual `helm install`/`upgrade`, always empty under `helm template` (#7); `.Files.Glob "blueprints/*.yaml"` is single-level (#8); Authentik's blueprint scan is recursive (#9); per-language call-credentials mechanisms differ and were each confirmed against a real listening server (#1).
+
+## Verified plan-level assumptions
+
+All verified empirically during plan drafting (real file reads, live cluster/registry/jar inspection, or scratch-project compiles) — not asserted from memory or documentation alone.
+
+| # | Assumption | Evidence |
+|---|---|---|
+| 1 | `Program.cs` line numbers (routes, admin routes, gRPC mapping) match the current repo state, zero drift since the design phase | Direct read: routes at 169-225, admin routes at 227-252, gRPC mapping at 263-266 — exact match |
+| 2 | No existing test exercises the real HTTP/auth pipeline for `/admin/*` or the gRPC services, so Task 1 breaks nothing existing | Direct grep of `Iverson.Api.Tests`: gRPC test files use `TestServerCallContext` (bypasses Kestrel/auth middleware entirely); no `WebApplicationFactory` anywhere in the test tree |
+| 3 | `ClaimsPrincipal.FindAll`/`FindFirst` are real BCL methods with the signatures Task 1 uses | Well-established, version-stable .NET BCL API (not a third-party package) |
+| 4 | Authentik blueprint model names `authentik_providers_oauth2.scopemapping` and `authentik_crypto.certificatekeypair` are correct | Live API query against the running Authentik instance: `meta_model_name` field confirmed as `authentik_providers_oauth2.scopemapping` on a real scope-mapping object |
+| 5 | A certificate keypair literally named `authentik Self-signed Certificate` exists on the target instance | Live query: `GET /api/v3/crypto/certificatekeypairs/?search=Self-signed` returned exactly that name |
+| 6 | Blueprint `attrs` cross-entry patch semantics (does a second blueprint entry with matching `identifiers` correctly patch fields onto an object a first entry created, leaving untouched fields alone?) | Tested live — result was flaky/inconclusive (async blueprint apply queue, one run hit a stray 400). **Plan was revised (Task 2) to avoid this dependency entirely** rather than trust an unverified mechanism: the human provider's full definition now lives in one complete blueprint entry instead of a two-entry correction. A single-entry, all-fields-at-once blueprint was separately confirmed to apply cleanly. |
+| 7 | Helm's `dict`/`list`/`index` Sprig functions render as intended in Task 2's range-loop template, including the not-found fallback branch | Real `helm template` render against a scratch throwaway chart reproducing the same pattern — both the found and fallback branches rendered correctly |
+| 8 | `blueprints/compose-only/` doesn't already exist (Task 4 collision check) | Direct `ls` — confirmed absent |
+| 9 | `.NET` SDK files (`ServiceCollectionExtensions.cs`, `Iverson.Client.Core.csproj`, `Iverson.Client.Sample/Program.cs`, `Iverson.LoadTest/Program.cs`) match Task 5's draft exactly; exactly 3 files in the repo reference `AddIversonClient` | Direct read of all 4 files + repo-wide grep for `AddIversonClient` |
+| 10 | `IdentityModel` 7.0.0 exists on NuGet and its `RequestClientCredentialsTokenAsync`/`ClientCredentialsTokenRequest` API shape compiles exactly as Task 5 uses it | Real scratch `dotnet new console` project, package installed via `dotnet add package`, the exact code from Task 5's `CachedClientCredentialsTokenProvider` compiled successfully (0 errors) |
+| 11 | Java's `IversonClient.java` matches Task 6's draft exactly; `withCallCredentials(io.grpc.CallCredentials)` exists on `AbstractStub` | Direct read of the file + `javap` inspection of the real `grpc-stub-1.71.0.jar` from the local Maven cache, confirming the exact method signature |
+| 12 | `com.google.code.gson:gson:2.11.0` resolves on Maven Central | Direct HTTP HEAD against `repo1.maven.org` — 200 |
+| 13 | Python's `core.py` matches Task 7's draft exactly (constructor at line 358, no existing `IversonClient(...)` call sites anywhere in the repo) | Direct read + repo-wide grep |
+| 14 | Go's `coordinator.go` matches Task 8's draft exactly; package name is `iverson`; `credentials.PerRPCCredentials`'s exact interface shape | Direct read of `coordinator.go` + direct inspection of the real `google.golang.org/grpc@v1.71.0` module cache's `credentials.go` |
+| 15 | TypeScript's `core.ts` has exactly 9 RPC call sites, all confined to that one file; the generated unary method's 4-arg `(request, metadata, options, callback)` overload exists; `grpc.credentials.createFromMetadataGenerator`/`generateMetadata` shape is correct | Direct read + a dedicated grep sweep across the whole SDK (confirming `search.ts`/`vector-search.ts` never construct or invoke `ObjectSearchServiceClient`) + direct inspection of `node_modules/@grpc/grpc-js/build/src/call-credentials.d.ts` and `generated/object_mapping.ts` |
+| 16 | `Iverson.LoadTest` has a real `seed` subcommand and a generically-parsed `--count` flag that `DirectSeeder.RunAsync(flags)` consumes | Direct read of `Program.cs`'s `switch (command)` block and `CommandFlags.Parse` |
+| 17 | Authentik picks up file-based blueprint ConfigMap changes without requiring a pod restart | **Not directly verified for the file-based path** — only the manual `/apply/` API path was tested live (and confirmed to work, asynchronously, within several seconds). Accepted on Part 1's precedent (its file-based blueprints already work in this exact repo) plus Task 10's explicit fallback step (`kubectl rollout restart deployment/iverson-authentik-worker` if not reflected within 2 minutes) as a safety net rather than a hard guarantee. |
+| 18 | Every task's `git commit`/`git add` file list matches that task's Create/Modify/Delete file list | Manual cross-check across all 10 tasks |
 
 ## Known issue inherited from spec (CDR-fixed)
 
