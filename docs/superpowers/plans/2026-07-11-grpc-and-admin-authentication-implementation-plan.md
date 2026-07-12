@@ -46,6 +46,7 @@ All verified empirically during plan drafting (real file reads, live cluster/reg
 | 16 | `Iverson.LoadTest` has a real `seed` subcommand and a generically-parsed `--count` flag that `DirectSeeder.RunAsync(flags)` consumes | Direct read of `Program.cs`'s `switch (command)` block and `CommandFlags.Parse` |
 | 17 | Authentik picks up file-based blueprint ConfigMap changes without requiring a pod restart | **Not directly verified for the file-based path** — only the manual `/apply/` API path was tested live (and confirmed to work, asynchronously, within several seconds). Accepted on Part 1's precedent (its file-based blueprints already work in this exact repo) plus Task 10's explicit fallback step (`kubectl rollout restart deployment/iverson-authentik-worker` if not reflected within 2 minutes) as a safety net rather than a hard guarantee. |
 | 18 | Every task's `git commit`/`git add` file list matches that task's Create/Modify/Delete file list | Manual cross-check across all 10 tasks |
+| 19 | Authentik's `client_credentials` grant does NOT automatically include a provider's bound `property_mappings` scopes in the issued token's `scope` claim — the token request must explicitly send `scope=<name>` | Live test against the running kind cluster: a throwaway confidential provider with the `admin`-equivalent scope mapping correctly bound to `property_mappings` returned `"scope": ""` when the token request omitted `scope=`; identical request `+&scope=cir-admin` returned `"scope": "cir-admin"` |
 
 ## Known issue inherited from spec (CDR-fixed)
 
@@ -627,8 +628,8 @@ git commit -m "feat(compose): add dev-only service-client OAuth2 providers for d
 - Modify: `Iverson.Server/Iverson.LoadTest/Program.cs`
 
 **Interfaces:**
-- Consumes: nothing from earlier tasks directly — the values it needs (`client_id`/`client_secret`/token endpoint) are operational config supplied at runtime, matching how `IVERSON_GRPC_URL` already works.
-- Produces: `IversonClientCredentials(string ClientId, string ClientSecret, string TokenEndpoint)` and a new optional parameter on `AddIversonClient`.
+- Consumes: nothing from earlier tasks directly — the values it needs (`client_id`/`client_secret`/token endpoint/scope) are operational config supplied at runtime, matching how `IVERSON_GRPC_URL` already works.
+- Produces: `IversonClientCredentials(string ClientId, string ClientSecret, string TokenEndpoint, string? Scope = null)` and a new optional parameter on `AddIversonClient`.
 
 - [ ] **Step 1: Add the `IdentityModel` package reference**
 
@@ -640,7 +641,7 @@ git commit -m "feat(compose): add dev-only service-client OAuth2 providers for d
 ```csharp
 namespace Iverson.Client.Core;
 
-public sealed record IversonClientCredentials(string ClientId, string ClientSecret, string TokenEndpoint);
+public sealed record IversonClientCredentials(string ClientId, string ClientSecret, string TokenEndpoint, string? Scope = null);
 ```
 
 - [ ] **Step 3: The cached token provider**
@@ -674,6 +675,7 @@ internal sealed class CachedClientCredentialsTokenProvider(IversonClientCredenti
                 Address = credentials.TokenEndpoint,
                 ClientId = credentials.ClientId,
                 ClientSecret = credentials.ClientSecret,
+                Scope = credentials.Scope,
             });
 
             if (response.IsError)
@@ -883,6 +885,7 @@ public final class OAuth2ClientCredentials extends CallCredentials {
     private final String clientId;
     private final String clientSecret;
     private final String tokenEndpoint;
+    private final String scope;
     private final HttpClient httpClient = HttpClient.newHttpClient();
     private final ReentrantLock lock = new ReentrantLock();
 
@@ -890,9 +893,14 @@ public final class OAuth2ClientCredentials extends CallCredentials {
     private volatile Instant expiresAt = Instant.MIN;
 
     public OAuth2ClientCredentials(String clientId, String clientSecret, String tokenEndpoint) {
+        this(clientId, clientSecret, tokenEndpoint, null);
+    }
+
+    public OAuth2ClientCredentials(String clientId, String clientSecret, String tokenEndpoint, String scope) {
         this.clientId = clientId;
         this.clientSecret = clientSecret;
         this.tokenEndpoint = tokenEndpoint;
+        this.scope = scope;
     }
 
     @Override
@@ -918,6 +926,9 @@ public final class OAuth2ClientCredentials extends CallCredentials {
                 return cachedToken;
             }
             String form = "grant_type=client_credentials&client_id=" + clientId + "&client_secret=" + clientSecret;
+            if (scope != null) {
+                form += "&scope=" + scope;
+            }
             HttpRequest request = HttpRequest.newBuilder()
                 .uri(URI.create(tokenEndpoint))
                 .header("Content-Type", "application/x-www-form-urlencoded")
@@ -1013,6 +1024,7 @@ class IversonClientCredentials:
     client_id: str
     client_secret: str
     token_endpoint: str
+    scope: str | None = None
 
 
 class _CachedTokenProvider:
@@ -1036,7 +1048,10 @@ class _CachedTokenProvider:
             body = (
                 f"grant_type=client_credentials&client_id={self._credentials.client_id}"
                 f"&client_secret={self._credentials.client_secret}"
-            ).encode("utf-8")
+            )
+            if self._credentials.scope:
+                body += f"&scope={self._credentials.scope}"
+            body = body.encode("utf-8")
             request = urllib.request.Request(
                 self._credentials.token_endpoint,
                 data=body,
@@ -1187,6 +1202,7 @@ type OAuth2ClientCredentials struct {
 	ClientID      string
 	ClientSecret  string
 	TokenEndpoint string
+	Scope         string
 
 	mu        sync.Mutex
 	token     string
@@ -1226,6 +1242,9 @@ func (c *OAuth2ClientCredentials) getToken(ctx context.Context) (string, error) 
 	form.Set("grant_type", "client_credentials")
 	form.Set("client_id", c.ClientID)
 	form.Set("client_secret", c.ClientSecret)
+	if c.Scope != "" {
+		form.Set("scope", c.Scope)
+	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.TokenEndpoint, strings.NewReader(form.Encode()))
 	if err != nil {
@@ -1354,6 +1373,7 @@ export function createOAuth2ClientCredentials(
     clientId: string,
     clientSecret: string,
     tokenEndpoint: string,
+    scope?: string,
 ): grpc.CallCredentials {
     let cachedToken: string | null = null;
     let expiresAt = 0;
@@ -1371,6 +1391,7 @@ export function createOAuth2ClientCredentials(
                 grant_type: 'client_credentials',
                 client_id: clientId,
                 client_secret: clientSecret,
+                ...(scope ? { scope } : {}),
             });
             const response = await fetch(tokenEndpoint, {
                 method: 'POST',
@@ -1548,7 +1569,7 @@ ADMIN_SECRET=$(kubectl -n iverson get secret iverson-authentik-admin-automation-
 LOADTEST_TOKEN=$(curl -s -X POST "http://localhost:9000/application/o/token/" \
   -d "grant_type=client_credentials&client_id=$LOADTEST_ID&client_secret=$LOADTEST_SECRET" | python3 -c "import json,sys; print(json.load(sys.stdin)['access_token'])")
 ADMIN_TOKEN=$(curl -s -X POST "http://localhost:9000/application/o/token/" \
-  -d "grant_type=client_credentials&client_id=$ADMIN_ID&client_secret=$ADMIN_SECRET" | python3 -c "import json,sys; print(json.load(sys.stdin)['access_token'])")
+  -d "grant_type=client_credentials&client_id=$ADMIN_ID&client_secret=$ADMIN_SECRET&scope=admin" | python3 -c "import json,sys; print(json.load(sys.stdin)['access_token'])")
 echo "loadtest token acquired: ${LOADTEST_TOKEN:0:20}..."
 echo "admin token acquired: ${ADMIN_TOKEN:0:20}..."
 ```
