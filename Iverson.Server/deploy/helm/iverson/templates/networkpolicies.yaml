@@ -55,6 +55,8 @@ spec:
       ports: [{ protocol: TCP, port: 11434 }]
     - to: [{ podSelector: { matchLabels: { app: {{ .Release.Name }}-jaeger } } }]
       ports: [{ protocol: TCP, port: 4317 }]
+    - to: [{ podSelector: { matchLabels: { app: {{ .Release.Name }}-authentik-server } } }]
+      ports: [{ protocol: TCP, port: 9000 }]
     - to: []   # DNS — every egress policy needs this or in-cluster name resolution breaks
       ports: [{ protocol: UDP, port: 53 }, { protocol: TCP, port: 53 }]
 ---
@@ -467,6 +469,9 @@ spec:
     matchLabels: { app: {{ .Release.Name }}-authentik-server }
   policyTypes: ["Ingress"]
   ingress:
+    - from:
+        - podSelector: { matchLabels: { app: {{ .Release.Name }}-api } }
+      ports: [{ protocol: TCP, port: 9000 }]
     - from: []   # kubelet readiness/liveness probes: same any-source reasoning as api-ingress's
                # kubelet-probe rule — authentik's server process serves both app traffic and its
                # own health endpoints (/-/health/live/, /-/health/ready/) on the same port, so

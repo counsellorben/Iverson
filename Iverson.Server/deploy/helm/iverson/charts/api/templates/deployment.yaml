@@ -112,6 +112,20 @@ spec:
               value: "http://{{ .Release.Name }}-ollama:11434"
             - name: Otel__Endpoint
               value: "http://{{ .Release.Name }}-jaeger:4317"
+            - name: Authentication__Authority
+              value: "http://{{ .Release.Name }}-authentik:9000/application/o/iverson-api/"
+            - name: Authentication__ValidAudiences__0
+              valueFrom:
+                secretKeyRef: { name: {{ .Release.Name }}-authentik-human-oidc-client, key: client-id }
+            - name: Authentication__ValidAudiences__1
+              valueFrom:
+                secretKeyRef: { name: {{ .Release.Name }}-authentik-loadtest-client, key: client-id }
+            - name: Authentication__ValidAudiences__2
+              valueFrom:
+                secretKeyRef: { name: {{ .Release.Name }}-authentik-webtest-client, key: client-id }
+            - name: Authentication__ValidAudiences__3
+              valueFrom:
+                secretKeyRef: { name: {{ .Release.Name }}-authentik-admin-automation-client, key: client-id }
           resources:
             requests:
               cpu: {{ .Values.resources.requests.cpu | quote }}

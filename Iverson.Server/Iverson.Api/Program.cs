@@ -88,6 +88,13 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
     {
         options.Authority = cfg["Authentication:Authority"];
         options.TokenValidationParameters.ValidAudiences = cfg.GetSection("Authentication:ValidAudiences").Get<string[]>();
+        // This entire deployment is plaintext h2c/HTTP with no TLS anywhere (see otelEndpoint,
+        // Kafka__BootstrapServers, etc. above) — Authentication:Authority points at Authentik's
+        // OIDC discovery endpoint over a plain http:// URL. RequireHttpsMetadata defaults to
+        // true in ASP.NET Core, which would make OIDC metadata discovery hard-fail against that
+        // plaintext authority at startup/first-token-validation. Disabling it here matches the
+        // rest of this deployment's no-TLS posture.
+        options.RequireHttpsMetadata = false;
     });
 
 builder.Services.AddAuthorization(options =>
