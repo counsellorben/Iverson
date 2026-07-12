@@ -41,6 +41,10 @@ data:
           grant_types: ["client_credentials"]
           signing_key: !Find [authentik_crypto.certificatekeypair, [name, "authentik Self-signed Certificate"]]
           issuer_mode: global
+{{- if eq $name "admin-automation" }}
+          property_mappings:
+            - !Find [authentik_providers_oauth2.scopemapping, [scope_name, admin]]
+{{- end }}
       - model: authentik_core.application
         identifiers:
           slug: iverson-{{ $name }}
@@ -48,12 +52,6 @@ data:
           name: iverson-{{ $name }}
           provider: !Find [authentik_providers_oauth2.oauth2provider, [name, iverson-{{ $name }}]]
 {{- end }}
-      - model: authentik_providers_oauth2.oauth2provider
-        identifiers:
-          name: iverson-admin-automation
-        attrs:
-          property_mappings:
-            - !Find [authentik_providers_oauth2.scopemapping, [scope_name, admin]]
       - model: authentik_providers_oauth2.oauth2provider
         identifiers:
           name: iverson-oidc-default
@@ -70,3 +68,9 @@ data:
           issuer_mode: global
           property_mappings:
             - !Find [authentik_providers_oauth2.scopemapping, [scope_name, groups]]
+      - model: authentik_core.application
+        identifiers:
+          slug: iverson-api
+        attrs:
+          name: iverson-api
+          provider: !Find [authentik_providers_oauth2.oauth2provider, [name, iverson-oidc-default]]
