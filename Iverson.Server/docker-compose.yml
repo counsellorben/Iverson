@@ -237,6 +237,11 @@ services:
       - Embeddings__BaseUrl=http://ollama:11434
       - Embeddings__ModelId=nomic-embed-text
       - Kafka__BootstrapServers=kafka:29092
+      - Authentication__Authority=http://authentik-server:9000/application/o/iverson-api/
+      - Authentication__ValidAudiences__0=dev-iverson-human-oidc-client-id
+      - Authentication__ValidAudiences__1=dev-iverson-loadtest-client-id
+      - Authentication__ValidAudiences__2=dev-iverson-webtest-client-id
+      - Authentication__ValidAudiences__3=dev-iverson-admin-automation-client-id
     depends_on:
       postgres:
         condition: service_healthy
@@ -247,6 +252,8 @@ services:
       kafka:
         condition: service_healthy
       jaeger:
+        condition: service_healthy
+      authentik-server:
         condition: service_healthy
       ollama-init:
         condition: service_completed_successfully
