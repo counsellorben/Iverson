@@ -36,7 +36,7 @@ internal sealed class DlqMonitorConsumer(
             ExceptionType: Header("dlq.exception_type"),
             ExceptionMessage: Header("dlq.exception_message"),
             Attempts: int.TryParse(attemptsRaw, out var a) ? a : 0,
-            FailedAt: DateTimeOffset.TryParse(failedAtRaw, out var f) ? f : DateTimeOffset.UtcNow));
+            FailedAt: DateTime.TryParse(failedAtRaw, out var f) ? f : DateTime.UtcNow));
 
         logger.LogInformation("[DlqMonitor] Recorded DLQ message key={Key} sourceTopic={SourceTopic}",
             key, Header("dlq.source_topic"));
