@@ -61,7 +61,7 @@ data:
           client_type: public
           redirect_uris:
             - matching_mode: strict
-              url: "http://localhost/placeholder-callback"
+              url: "https://{{ .Values.global.ingressHost }}/placeholder-callback"
               redirect_uri_type: authorization
           client_id: {{ if $humanOidc }}{{ index $humanOidc.data "client-id" | b64dec }}{{ else }}{{ randAlphaNum 40 }}{{ end }}
           signing_key: !Find [authentik_crypto.certificatekeypair, [name, "authentik Self-signed Certificate"]]
