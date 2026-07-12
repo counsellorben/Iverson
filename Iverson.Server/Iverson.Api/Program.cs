@@ -14,6 +14,8 @@ using OpenTelemetry.Logs;
 using OpenTelemetry.Metrics;
 using OpenTelemetry.Resources;
 using OpenTelemetry.Trace;
+using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.AspNetCore.Authorization;
 
 var builder = WebApplication.CreateBuilder(args);
 var cfg = builder.Configuration;
@@ -80,6 +82,24 @@ builder.Logging.AddOpenTelemetry(o =>
 // ── Application services ───────────────────────────────────────────────────────
 builder.Services.AddOpenApi();
 builder.Services.AddGrpc();
+
+builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
+    .AddJwtBearer(options =>
+    {
+        options.Authority = cfg["Authentication:Authority"];
+        options.TokenValidationParameters.ValidAudiences = cfg.GetSection("Authentication:ValidAudiences").Get<string[]>();
+    });
+
+builder.Services.AddAuthorization(options =>
+{
+    options.FallbackPolicy = new AuthorizationPolicyBuilder()
+        .RequireAuthenticatedUser()
+        .Build();
+    options.AddPolicy("Operator", policy => policy.RequireAssertion(context =>
+        OperatorAuthorizationPolicy.IsSatisfiedBy(
+            context.User.FindAll("groups").Select(c => c.Value),
+            context.User.FindFirst("scope")?.Value)));
+});
 
 builder.Services.AddPostgres(cfg.GetConnectionString("Postgres")
     ?? "Host=localhost;Port=5432;Database=iverson;Username=iverson;Password=iverson");
@@ -153,6 +173,9 @@ if (app.Environment.IsDevelopment())
 
 app.UseHttpsRedirection();
 
+app.UseAuthentication();
+app.UseAuthorization();
+
 // Expose the W3C trace-id on every response so callers can correlate logs
 app.Use(async (context, next) =>
 {
@@ -166,7 +189,7 @@ app.Use(async (context, next) =>
 });
 
 // ── Endpoints ──────────────────────────────────────────────────────────────────
-app.MapGet("/health/live", () => Results.Ok(new { status = "alive" })).WithName("HealthLive");
+app.MapGet("/health/live", () => Results.Ok(new { status = "alive" })).WithName("HealthLive").AllowAnonymous();
 
 app.MapGet("/health", async (
     IRecordStoreQueryExecutor db,
@@ -197,32 +220,33 @@ app.MapGet("/health", async (
         ? Results.Ok(new { status = readiness.FullyHealthy ? "healthy" : "degraded", checks })
         : Results.Json(new { status = "degraded", checks }, statusCode: 503);
 })
-.WithName("Health");
+.WithName("Health")
+.AllowAnonymous();
 
 app.MapGet("/probe/sql", async (IRecordStoreQueryExecutor db) =>
 {
     var result = await db.QuerySingleOrDefaultAsync<int>("SELECT 1");
     return Results.Ok(new { connected = result == 1, traceId = Activity.Current?.TraceId.ToString() });
-}).WithName("ProbeSql");
+}).WithName("ProbeSql").AllowAnonymous();
 
 app.MapGet("/probe/starrocks", async (IEngagementStoreHealthCheck sr) =>
 {
     var healthy = await sr.IsHealthyAsync();
     return Results.Ok(new { connected = healthy, traceId = Activity.Current?.TraceId.ToString() });
-}).WithName("ProbeStarRocks");
+}).WithName("ProbeStarRocks").AllowAnonymous();
 
 app.MapGet("/probe/vector", async (IVectorSchemaManager vector) =>
 {
     await vector.EnsureCollectionAsync("iverson-probe", 4);
     return Results.Ok(new { connected = true, collection = "iverson-probe", traceId = Activity.Current?.TraceId.ToString() });
-}).WithName("ProbeVector");
+}).WithName("ProbeVector").AllowAnonymous();
 
 app.MapPost("/probe/kafka", async (IEventProducer producer) =>
 {
     var traceId = Activity.Current?.TraceId.ToString();
     await producer.ProduceAsync("iverson.probe", "probe", new { timestamp = DateTime.UtcNow, traceId });
     return Results.Ok(new { produced = true, topic = "iverson.probe", traceId });
-}).WithName("ProbeKafka");
+}).WithName("ProbeKafka").AllowAnonymous();
 
 app.MapPost("/admin/reconcile/{typeName}", async (
     string typeName,
@@ -232,13 +256,13 @@ app.MapPost("/admin/reconcile/{typeName}", async (
     return count is null
         ? Results.NotFound(new { error = $"No schema registered for '{typeName}'" })
         : Results.Ok(new { reconciledCount = count, typeName });
-}).WithName("Reconcile");
+}).WithName("Reconcile").RequireAuthorization("Operator");
 
 app.MapGet("/admin/dlq", async (IDlqRepository dlq) =>
 {
     var rows = await dlq.ListUnreplayedAsync(200);
     return Results.Ok(rows);
-}).WithName("ListDlq");
+}).WithName("ListDlq").RequireAuthorization("Operator");
 
 app.MapPost("/admin/dlq/{id}/replay", async (Guid id, IDlqRepository dlq, IEventProducer events) =>
 {
@@ -249,7 +273,7 @@ app.MapPost("/admin/dlq/{id}/replay", async (Guid id, IDlqRepository dlq, IEvent
     await dlq.MarkReplayedAsync(id);
 
     return Results.Ok(new { replayed = true, id, topic = row.SourceTopic });
-}).WithName("ReplayDlq");
+}).WithName("ReplayDlq").RequireAuthorization("Operator");
 
 // ── Schema hydration ───────────────────────────────────────────────────────────
 await app.Services.GetRequiredService<IEmbeddingService>().InitializeAsync();
