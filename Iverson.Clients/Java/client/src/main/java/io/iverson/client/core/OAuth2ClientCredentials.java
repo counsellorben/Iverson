@@ -7,9 +7,11 @@ import io.grpc.Metadata;
 import io.grpc.Status;
 
 import java.net.URI;
+import java.net.URLEncoder;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.util.concurrent.Executor;
 import java.util.concurrent.locks.ReentrantLock;
@@ -63,9 +65,11 @@ public final class OAuth2ClientCredentials extends CallCredentials {
             if (cachedToken != null && Instant.now().isBefore(expiresAt)) {
                 return cachedToken;
             }
-            String form = "grant_type=client_credentials&client_id=" + clientId + "&client_secret=" + clientSecret;
+            String form = "grant_type=client_credentials"
+                + "&client_id=" + URLEncoder.encode(clientId, StandardCharsets.UTF_8)
+                + "&client_secret=" + URLEncoder.encode(clientSecret, StandardCharsets.UTF_8);
             if (scope != null) {
-                form += "&scope=" + scope;
+                form += "&scope=" + URLEncoder.encode(scope, StandardCharsets.UTF_8);
             }
             HttpRequest request = HttpRequest.newBuilder()
                 .uri(URI.create(tokenEndpoint))
