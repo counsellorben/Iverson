@@ -79,8 +79,21 @@ entries:
     identifiers:
       name: iverson-oidc-default
     attrs:
+      authorization_flow: !Find [authentik_flows.flow, [slug, default-provider-authorization-implicit-consent]]
+      invalidation_flow: !Find [authentik_flows.flow, [slug, default-provider-invalidation-flow]]
+      client_type: public
+      redirect_uris:
+        - matching_mode: strict
+          url: "http://localhost/placeholder-callback"
+          redirect_uri_type: authorization
       client_id: "dev-iverson-human-oidc-client-id"
       signing_key: !Find [authentik_crypto.certificatekeypair, [name, "authentik Self-signed Certificate"]]
       issuer_mode: global
       property_mappings:
         - !Find [authentik_providers_oauth2.scopemapping, [scope_name, groups]]
+  - model: authentik_core.application
+    identifiers:
+      slug: iverson-api
+    attrs:
+      name: iverson-api
+      provider: !Find [authentik_providers_oauth2.oauth2provider, [name, iverson-oidc-default]]
