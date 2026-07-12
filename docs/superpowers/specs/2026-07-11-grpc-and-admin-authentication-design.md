@@ -111,6 +111,10 @@ testing against a running Authentik instance, not assumed from documentation:
 3. **This same `signing_key`/`issuer_mode` correction also applies to the existing human provider**
    from Part 1 (`iverson-oidc-default`) — it was also left at the schema defaults (confirmed
    `signing_key: null`), so it needs the same explicit values for consistency with the other three.
+   It also needs an **explicit `client_id`**: confirmed live that Authentik auto-generated a random
+   `client_id` for this provider since Part 1's blueprint never set one, so — unlike the label
+   "known client_id value" in Section 3 assumed — there is no fixed, `lookup`-accessible value for
+   it today. No `client_secret` is needed (it stays `client_type: public`/PKCE).
 4. **A dedicated `admin` custom OAuth2 scope mapping**, granted only to
    `iverson-admin-automation`'s `property_mappings` — this is what the Operator policy's automation
    check looks for. `iverson-loadtest`/`iverson-webtest` don't get it.
@@ -128,22 +132,24 @@ Part 1's blueprint ConfigMap (`blueprints-configmap.yaml`) loads static files vi
 genuinely-templated mechanism alongside it, since the new providers need Secret-sourced values
 embedded into their Blueprint YAML:
 
-1. **Three new lookup-guarded Secrets** (`iverson-loadtest-client`, `iverson-webtest-client`,
-   `iverson-admin-automation-client`), each holding a generated `client-id`/`client-secret` pair —
-   same `randAlphaNum` + `lookup`-guard pattern used for every other secret in this repo (confirmed
-   `lookup` correctly reads real Secret `.data` values during an actual `helm install`/`upgrade` —
-   note `helm template` alone always returns an empty map for `lookup` by design, regardless of
-   cluster state; this is not itself a design problem, just a fact about how to *test* the
-   mechanism).
+1. **Four new lookup-guarded Secrets** (`iverson-loadtest-client`, `iverson-webtest-client`,
+   `iverson-admin-automation-client`, each holding a generated `client-id`/`client-secret` pair; and
+   `iverson-human-oidc-client`, holding only a generated `client-id` — no secret, since the human
+   provider stays `client_type: public`/PKCE — for the explicit `client_id` Section 2 point 3
+   requires) — same `randAlphaNum` + `lookup`-guard pattern used for every other secret in this repo
+   (confirmed `lookup` correctly reads real Secret `.data` values during an actual `helm
+   install`/`upgrade` — note `helm template` alone always returns an empty map for `lookup` by
+   design, regardless of cluster state; this is not itself a design problem, just a fact about how
+   to *test* the mechanism).
 2. **A second, templated ConfigMap** whose Blueprint YAML content embeds those values (plus the
    `grant_types`/`signing_key`/`issuer_mode` fields from Section 2) at Helm render time via
    `lookup`, so the created provider objects have the exact client_id/secret already in the
    Secrets — no "fetch the generated value back out of Authentik" step needed.
 3. Mounts into Authentik's blueprints directory alongside Part 1's static ConfigMap (a subdirectory,
    e.g. `/blueprints/custom/service-clients/` — confirmed Authentik's blueprint scan is recursive).
-4. **`Authentication:ValidAudiences`** (Section 1) is populated from the same four client_ids
-   (the three new Secrets' `client-id` keys, plus the existing human public client's known
-   `client_id` value) via the same `lookup` mechanism, rendered as the Helm-conventional indexed
+4. **`Authentication:ValidAudiences`** (Section 1) is populated from all four client_ids — the three
+   service/automation Secrets' `client-id` keys, plus the new `iverson-human-oidc-client` Secret's
+   `client-id` key — via the same `lookup` mechanism, rendered as the Helm-conventional indexed
    env-var list (`Authentication__ValidAudiences__0`, `__1`, ...).
 
 ### 4. Client-side changes, all 5 SDKs
@@ -244,6 +250,8 @@ Design section above. Summary list:
 | 13 | `signing_key` must be explicitly set or tokens are unvalidatable via JWKS | Decoded token header showed `HS256` when unset; `RS256` + matching JWKS entry when set |
 | 14 | `issuer_mode` must be `"global"` for consistent `iss` across providers | Decoded tokens from two different test Applications under both modes |
 | 15 | `aud` = calling client's own `client_id` | Decoded a real client_credentials token |
+| 16 | `FallbackPolicy` + `AllowAnonymous()` reliably exempts specific endpoints from a global auth requirement | Microsoft Learn (`aspnet/core/security/authorization/secure-data`): "action methods with an authorization attribute... use the applied authorization attribute rather than the fallback authorization policy" |
+| 17 | `api-egress` has zero path to Authentik; `authentik-ingress` accepts nothing from `api`/`worker` (only kubelet probes) | Fresh read of `templates/networkpolicies.yaml` against current `main` — no `authentik` reference in `api-egress`'s block; `authentik-ingress` still only has a `from: []` kubelet rule on port 9000 |
 
 ## Explicitly out of scope
 
