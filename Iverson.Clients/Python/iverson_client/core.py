@@ -362,6 +362,7 @@ class IversonClient:
         host: str = "localhost",
         port: int = 5000,
         use_tls: bool = False,
+        *,
         credentials: IversonClientCredentials | None = None,
     ) -> None:
         address = f"{host}:{port}"
