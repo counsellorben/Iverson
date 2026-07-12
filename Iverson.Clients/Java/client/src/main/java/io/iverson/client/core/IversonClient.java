@@ -1,5 +1,6 @@
 package io.iverson.client.core;
 
+import io.grpc.CallCredentials;
 import io.grpc.ManagedChannel;
 import io.grpc.ManagedChannelBuilder;
 import iverson.ObjectMappingServiceGrpc;
@@ -49,6 +50,28 @@ public final class IversonClient implements AutoCloseable {
         this.persistenceStub = ObjectPersistenceServiceGrpc.newBlockingStub(channel);
         this.retrievalStub   = ObjectRetrievalServiceGrpc.newBlockingStub(channel);
         this.searchStub      = ObjectSearchServiceGrpc.newBlockingStub(channel);
+    }
+
+    /**
+     * Creates a plain-text (h2c) channel to the given host and port, authenticating every
+     * call with the given credentials (e.g. {@link OAuth2ClientCredentials}).
+     */
+    public IversonClient(String host, int port, CallCredentials credentials) {
+        this(ManagedChannelBuilder.forAddress(host, port).usePlaintext().build(), credentials);
+    }
+
+    /**
+     * Creates a client using an already-configured channel, attaching the given call
+     * credentials to every stub. Confirmed via grpc-java's actual per-call invocation path
+     * that plaintext channels accept CallCredentials with no special configuration (unlike
+     * the .NET client, which requires an explicit insecure-channel opt-in).
+     */
+    public IversonClient(ManagedChannel channel, CallCredentials credentials) {
+        this.channel         = channel;
+        this.mappingStub     = ObjectMappingServiceGrpc.newBlockingStub(channel).withCallCredentials(credentials);
+        this.persistenceStub = ObjectPersistenceServiceGrpc.newBlockingStub(channel).withCallCredentials(credentials);
+        this.retrievalStub   = ObjectRetrievalServiceGrpc.newBlockingStub(channel).withCallCredentials(credentials);
+        this.searchStub      = ObjectSearchServiceGrpc.newBlockingStub(channel).withCallCredentials(credentials);
     }
 
     @Override
