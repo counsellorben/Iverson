@@ -10,6 +10,7 @@ from typing import Generic, List, Optional, TypeVar
 import grpc
 from google.protobuf import struct_pb2
 
+from iverson_client.auth import IversonClientCredentials, _CachedTokenProvider, _BearerTokenAuthPlugin
 from iverson_client.generated import (
     object_mapping_pb2 as mapping_pb,
     object_mapping_pb2_grpc as mapping_grpc,
@@ -353,6 +354,7 @@ class IversonClient:
         host: gRPC server host (default: ``localhost``).
         port: gRPC server port (default: ``5000``).
         use_tls: whether to use TLS (default: ``False`` for h2c).
+        credentials: optional OAuth2 client-credentials for authenticated calls.
     """
 
     def __init__(
@@ -360,9 +362,23 @@ class IversonClient:
         host: str = "localhost",
         port: int = 5000,
         use_tls: bool = False,
+        credentials: IversonClientCredentials | None = None,
     ) -> None:
         address = f"{host}:{port}"
-        if use_tls:
+
+        if credentials is not None:
+            provider = _CachedTokenProvider(credentials)
+            call_creds = grpc.metadata_call_credentials(_BearerTokenAuthPlugin(provider))
+            # grpcio rejects CallCredentials on a bare insecure_channel with
+            # "UNAUTHENTICATED: Established channel does not have a sufficient security
+            # level to transfer call credential" — confirmed live. local_channel_credentials()
+            # is a lightweight "trusted network" designation (not real TLS) that satisfies
+            # the check without requiring actual certificates.
+            channel_creds = grpc.composite_channel_credentials(
+                grpc.local_channel_credentials(), call_creds
+            )
+            self._channel = grpc.secure_channel(address, channel_creds)
+        elif use_tls:
             self._channel = grpc.secure_channel(address, grpc.ssl_channel_credentials())
         else:
             self._channel = grpc.insecure_channel(address)
