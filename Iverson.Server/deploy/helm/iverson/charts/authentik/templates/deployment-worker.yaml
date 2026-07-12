@@ -69,7 +69,13 @@ spec:
             - name: blueprints
               mountPath: /blueprints/custom
               readOnly: true
+            - name: blueprints-service-clients
+              mountPath: /blueprints/custom/service-clients
+              readOnly: true
       volumes:
         - name: blueprints
           configMap:
             name: {{ .Release.Name }}-authentik-blueprints
+        - name: blueprints-service-clients
+          configMap:
+            name: {{ .Release.Name }}-authentik-blueprints-service-clients
