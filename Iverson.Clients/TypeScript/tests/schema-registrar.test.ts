@@ -73,10 +73,12 @@ function makeSuccessResponse(): SchemaResponse {
 function makeStub(overrideResponse?: Partial<SchemaResponse>): ObjectMappingServiceClient {
     const response: SchemaResponse = { ...makeSuccessResponse(), ...overrideResponse };
     const stub = {
-        registerSchema: vi.fn((req: SchemaRequest, cb: (err: null, res: SchemaResponse) => void) => {
-            cb(null, response);
-            return {} as any;
-        }),
+        registerSchema: vi.fn(
+            (req: SchemaRequest, _metadata: unknown, _options: unknown, cb: (err: null, res: SchemaResponse) => void) => {
+                cb(null, response);
+                return {} as any;
+            },
+        ),
     } as unknown as ObjectMappingServiceClient;
     return stub;
 }
@@ -89,10 +91,12 @@ function makeFailingStub(errorMsg: string): ObjectMappingServiceClient {
         registered: [],
     };
     const stub = {
-        registerSchema: vi.fn((req: SchemaRequest, cb: (err: null, res: SchemaResponse) => void) => {
-            cb(null, response);
-            return {} as any;
-        }),
+        registerSchema: vi.fn(
+            (req: SchemaRequest, _metadata: unknown, _options: unknown, cb: (err: null, res: SchemaResponse) => void) => {
+                cb(null, response);
+                return {} as any;
+            },
+        ),
     } as unknown as ObjectMappingServiceClient;
     return stub;
 }

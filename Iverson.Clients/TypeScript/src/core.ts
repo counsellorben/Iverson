@@ -85,11 +85,18 @@ const RELATION_KIND_MAP: Record<RelationKindString, RelationKind> = {
 // ── Promisify callback-style gRPC calls ───────────────────────────────────────
 
 function callUnary<Req, Res>(
-    method: (req: Req, cb: (err: grpc.ServiceError | null, res: Res) => void) => grpc.ClientUnaryCall,
+    method: (
+        req: Req,
+        metadata: grpc.Metadata,
+        options: Partial<grpc.CallOptions>,
+        cb: (err: grpc.ServiceError | null, res: Res) => void,
+    ) => grpc.ClientUnaryCall,
     request: Req,
+    callCredentials?: grpc.CallCredentials,
 ): Promise<Res> {
     return new Promise((resolve, reject) => {
-        method(request, (err, res) => {
+        const options: Partial<grpc.CallOptions> = callCredentials ? { credentials: callCredentials } : {};
+        method(request, new grpc.Metadata(), options, (err, res) => {
             if (err) reject(err);
             else resolve(res as Res);
         });
@@ -106,6 +113,7 @@ export class SchemaRegistrar {
     constructor(
         private readonly _mappingClient: ObjectMappingServiceClient,
         private readonly _entityClasses: Function[],
+        private readonly _callCredentials?: grpc.CallCredentials,
     ) {}
 
     /** Register all entity schemas. */
@@ -113,8 +121,9 @@ export class SchemaRegistrar {
         for (const cls of this._entityClasses) {
             const request = this._buildRequest(cls, traceId);
             const response = await callUnary<SchemaRequest, SchemaResponse>(
-                (req, cb) => this._mappingClient.registerSchema(req, cb),
+                (req, metadata, options, cb) => this._mappingClient.registerSchema(req, metadata, options, cb),
                 request,
+                this._callCredentials,
             );
             if (!response.success) {
                 throw new Error(
@@ -278,8 +287,9 @@ export class EntityCoordinator<T extends object> {
             traceId,
         };
         const response = await callUnary<PersistRequest, PersistResponse>(
-            (req, cb) => this._persistence.post(req, cb),
+            (req, metadata, options, cb) => this._persistence.post(req, metadata, options, cb),
             request,
+            this._client._callCredentials,
         );
         if (!response.success) {
             throw new Error(`persist failed: ${response.error}`);
@@ -295,8 +305,9 @@ export class EntityCoordinator<T extends object> {
             traceId,
         };
         const response = await callUnary<PersistRequest, PersistResponse>(
-            (req, cb) => this._persistence.update(req, cb),
+            (req, metadata, options, cb) => this._persistence.update(req, metadata, options, cb),
             request,
+            this._client._callCredentials,
         );
         if (!response.success) {
             throw new Error(`update failed: ${response.error}`);
@@ -311,9 +322,14 @@ export class EntityCoordinator<T extends object> {
             traceId,
         };
         const response = await callUnary(
-            (req: MappingDeleteRequest, cb: (err: grpc.ServiceError | null, res: any) => void) =>
-                this._mapping.delete(req, cb),
+            (
+                req: MappingDeleteRequest,
+                metadata: grpc.Metadata,
+                options: Partial<grpc.CallOptions>,
+                cb: (err: grpc.ServiceError | null, res: any) => void,
+            ) => this._mapping.delete(req, metadata, options, cb),
             request,
+            this._client._callCredentials,
         );
         if (!response.success) {
             throw new Error(`delete failed: ${response.error}`);
@@ -328,8 +344,9 @@ export class EntityCoordinator<T extends object> {
             traceId,
         };
         const response = await callUnary<RetrievalRequest, RetrievalResponse>(
-            (req, cb) => this._retrieval.get(req, cb),
+            (req, metadata, options, cb) => this._retrieval.get(req, metadata, options, cb),
             request,
+            this._client._callCredentials,
         );
         if (!response.found) return null;
         return payloadToEntity(this._cls, (response.data ?? {}) as Record<string, unknown>);
@@ -343,7 +360,8 @@ export class EntityCoordinator<T extends object> {
                 keys: ids,
                 traceId,
             };
-            const stream = this._retrieval.getMany(request);
+            const stream = this._retrieval.getMany(request, new grpc.Metadata(),
+                this._client._callCredentials ? { credentials: this._client._callCredentials } : {});
             const results: T[] = [];
             stream.on('data', (response: RetrievalResponse) => {
                 if (response.found) {
@@ -365,11 +383,13 @@ export class IversonClient {
     readonly _mappingClient: ObjectMappingServiceClient;
     readonly _persistenceClient: ObjectPersistenceServiceClient;
     readonly _retrievalClient: ObjectRetrievalServiceClient;
+    readonly _callCredentials?: grpc.CallCredentials;
 
     constructor(
         host: string = 'localhost',
         port: number = 5000,
         useTls: boolean = false,
+        callCredentials?: grpc.CallCredentials,
     ) {
         const address = `${host}:${port}`;
         const credentials = useTls
@@ -379,6 +399,7 @@ export class IversonClient {
         this._mappingClient = new ObjectMappingServiceClient(address, credentials);
         this._persistenceClient = new ObjectPersistenceServiceClient(address, credentials);
         this._retrievalClient = new ObjectRetrievalServiceClient(address, credentials);
+        this._callCredentials = callCredentials;
     }
 
     /** Close all underlying gRPC clients. */
@@ -395,6 +416,6 @@ export class IversonClient {
 
     /** Return a SchemaRegistrar for the given entity classes. */
     registrar(...entityClasses: Function[]): SchemaRegistrar {
-        return new SchemaRegistrar(this._mappingClient, entityClasses);
+        return new SchemaRegistrar(this._mappingClient, entityClasses, this._callCredentials);
     }
 }
