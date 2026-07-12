@@ -43,7 +43,7 @@ public static class ServiceCollectionExtensions
 
         if (credentials is not null)
         {
-            services.AddSingleton(new CachedClientCredentialsTokenProvider(credentials));
+            services.AddSingleton(sp => new CachedClientCredentialsTokenProvider(credentials));
 
             AttachCredentials(mappingBuilder);
             AttachCredentials(persistenceBuilder);
