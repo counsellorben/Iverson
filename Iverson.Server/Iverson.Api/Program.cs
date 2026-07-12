@@ -166,7 +166,7 @@ builder.Services.AddHostedService<Iverson.Api.Schema.SchemaRefreshWorker>();
 
 // ── Middleware ─────────────────────────────────────────────────────────────────
 var app = builder.Build();
-app.MapPrometheusScrapingEndpoint();
+app.MapPrometheusScrapingEndpoint().AllowAnonymous();
 
 if (app.Environment.IsDevelopment())
     app.MapOpenApi();
