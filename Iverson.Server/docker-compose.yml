@@ -242,6 +242,8 @@ services:
       - Authentication__ValidAudiences__1=dev-iverson-loadtest-client-id
       - Authentication__ValidAudiences__2=dev-iverson-webtest-client-id
       - Authentication__ValidAudiences__3=dev-iverson-admin-automation-client-id
+      - Authentication__ActingUser__Authority=http://authentik-server:9000/application/o/iverson-api/
+      - Authentication__ActingUser__ValidAudiences__0=dev-iverson-loadtest-human-client-id
     depends_on:
       postgres:
         condition: service_healthy

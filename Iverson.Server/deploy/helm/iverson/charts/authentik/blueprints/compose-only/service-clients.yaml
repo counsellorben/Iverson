@@ -97,3 +97,32 @@ entries:
     attrs:
       name: iverson-api
       provider: !Find [authentik_providers_oauth2.oauth2provider, [name, iverson-oidc-default]]
+  - model: authentik_providers_oauth2.oauth2provider
+    identifiers:
+      name: iverson-loadtest-human
+    attrs:
+      authorization_flow: !Find [authentik_flows.flow, [slug, default-provider-authorization-implicit-consent]]
+      invalidation_flow: !Find [authentik_flows.flow, [slug, default-provider-invalidation-flow]]
+      client_type: public
+      redirect_uris:
+        - matching_mode: strict
+          url: "http://localhost/placeholder-callback"
+          redirect_uri_type: authorization
+      client_id: "dev-iverson-loadtest-human-client-id"
+      signing_key: !Find [authentik_crypto.certificatekeypair, [name, "authentik Self-signed Certificate"]]
+      issuer_mode: global
+  - model: authentik_core.application
+    identifiers:
+      slug: iverson-loadtest-human
+    attrs:
+      name: iverson-loadtest-human
+      provider: !Find [authentik_providers_oauth2.oauth2provider, [name, iverson-loadtest-human]]
+  - model: authentik_core.user
+    identifiers:
+      username: iverson-acting-user-smoke-test
+    attrs:
+      username: iverson-acting-user-smoke-test
+      name: "Iverson Acting-User Smoke Test"
+      email: iverson-acting-user-smoke-test@example.invalid
+      password: "dev-only-not-for-production-smoke-test-password-0123456789"
+      is_active: true
