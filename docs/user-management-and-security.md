@@ -29,29 +29,7 @@ no user database or login form of its own. This document covers:
 
 ## Architecture in one picture
 
-```
-                         ┌─────────────────────────┐
-  human operator ──────▶ │                         │
-  (browser + TOTP)       │       Authentik          │◀── service account
-                         │  (OAuth2 / OIDC provider) │    (client_credentials)
-  end user ─────────────▶│                         │
-  (browser/app + TOTP)   └─────────────────────────┘
-                                    │
-                        issues JWTs (all signing_key +
-                        issuer_mode: global, so every
-                        provider's tokens share one iss)
-                                    ▼
-                         ┌─────────────────────────┐
-   Authorization: Bearer │                         │
-   <service token>  ────▶│      Iverson.Api        │
-                         │  (ASP.NET Core JwtBearer) │
-   x-acting-user-        │                         │
-   authorization: ──────▶│  gRPC: any authenticated │
-   Bearer <acting-user   │  caller                  │
-   token> (Part 4)       │  /admin/*: "Operator"    │
-                         │  policy (groups/scope)   │
-                         └─────────────────────────┘
-```
+![Authentication architecture: human operators, end users, and service accounts all authenticate against Authentik, then present the resulting JWT directly to Iverson.Api](images/architecture.svg)
 
 Every caller — human or machine — authenticates against Authentik and
 presents the resulting JWT to `Iverson.Api` as a standard `Authorization:
