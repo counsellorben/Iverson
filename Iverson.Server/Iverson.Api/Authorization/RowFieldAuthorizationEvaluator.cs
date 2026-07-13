@@ -55,7 +55,11 @@ public sealed class RowFieldAuthorizationEvaluator : IRowFieldAuthorizationEvalu
 
             if (excluded.Count > 0)
             {
-                var allFields = new[] { schema.KeyColumn.Name }.Concat(schema.ScalarColumns.Select(c => c.Name));
+                var allFields = new[] { schema.KeyColumn.Name }
+                    .Concat(schema.ScalarColumns.Select(c => c.Name))
+                    .Concat(schema.FkColumns.Select(fk => fk.ColumnName))
+                    .Concat(schema.VectorFields.Select(v => v.PropertyName))
+                    .Concat(schema.ChunkFields.Select(c => c.PropertyName));
                 allowedFields = allFields.Where(f => !excluded.Contains(f)).ToHashSet();
             }
         }

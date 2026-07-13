@@ -343,6 +343,46 @@ public class RowFieldAuthorizationEvaluatorTests
     }
 
     [Fact]
+    public void Evaluate_FieldLevelExclusion_IncludesFkVectorAndChunkColumnsInAllowedFields()
+    {
+        var schema = new SchemaDescriptor
+        {
+            TypeName = "TestType",
+            TableName = "test_table",
+            KeyColumn = new ColumnDescriptor("Id", "INT", false),
+            ScalarColumns = new List<ColumnDescriptor>
+            {
+                new("Name", "VARCHAR(255)", false),
+                new("OwnerId", "VARCHAR(255)", false)
+            },
+            FkColumns = new List<ForeignKeyDescriptor> { new("AuthorId", "Author") },
+            VectorFields = new List<VectorDescriptor> { new("Title", 768, "test-model") },
+            ChunkFields = new List<ChunkDescriptor> { new("Body", 512, 64, "test-model", 768) },
+            Relations = [],
+            Authorization = new AuthorizationRules(
+                "OwnerId",
+                new List<RowPermission>
+                {
+                    new("admin", CanReadAll: true, CanWriteAll: false, CanDeleteAll: false)
+                },
+                new List<FieldPermission>
+                {
+                    new("Name", new List<string> { "premium" }, new List<string>())
+                })
+        };
+        var user = ActingUser("user123", "admin");
+
+        var result = _evaluator.Evaluate(schema, user, AuthorizationAction.Read);
+
+        result.Denied.Should().BeFalse();
+        result.AllowedFields.Should().NotBeNull();
+        result.AllowedFields.Should().Contain("AuthorId");
+        result.AllowedFields.Should().Contain("Title");
+        result.AllowedFields.Should().Contain("Body");
+        result.AllowedFields.Should().NotContain("Name");
+    }
+
+    [Fact]
     public void Evaluate_WriteActionUsesWritableRolesNotReadableRoles()
     {
         var rules = new AuthorizationRules(

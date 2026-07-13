@@ -18,4 +18,9 @@ public sealed record AuthorizationDecision(
     bool OwnershipRequired,
     string? OwnerFieldName,
     string? OwnerValue,
+    /// <summary>
+    /// Null means unrestricted. Non-null is the full set of field names the caller may access for
+    /// this action — the key column, every scalar column, every FK column, and every vector/chunk
+    /// field's source property name — minus whichever of those a <c>FieldPermission</c> excluded.
+    /// </summary>
     IReadOnlySet<string>? AllowedFields);
