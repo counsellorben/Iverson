@@ -1631,6 +1631,235 @@ No automated coverage for the human/browser OIDC + MFA + `operators` Group path 
 kill %1 %2 %3 2>/dev/null
 ```
 
+---
+
+### Task 11: Fix `DlqRow`/`DlqMessage`'s Dapper materialization bug (`GET /admin/dlq` 500s for any authenticated caller)
+
+**Context (found live during Task 10):** the admin-automation token correctly passed authentication
+and the "Operator" authorization check on `GET /admin/dlq`, but the request itself then 500'd with:
+```
+System.InvalidOperationException: A parameterless default constructor or one matching signature
+(System.Guid Id, System.String SourceTopic, System.String ConsumerGroup, System.String MessageKey,
+System.String ExceptionType, System.String ExceptionMessage, System.Int32 Attempts,
+System.DateTime FailedAt, System.Boolean Replayed) is required for Iverson.Sql.DlqRow materialization
+```
+Pre-existing bug (introduced in commit `603ae19`, long before this plan), unrelated to the auth work
+in Tasks 1-10 — it just happened to be the first time any *authenticated* caller ever reached this
+endpoint's actual query logic live. Not a regression from this plan; being fixed here because it was
+found during this plan's own live verification and directly blocks that endpoint for every real
+caller, including the operator-tier callers this plan just finished authorizing.
+
+**Root cause (confirmed by reading the schema + repository together):** `DlqSchema.Table`
+(`Iverson.Server/Iverson.Api/Reconciliation/DlqSchema.cs`) declares `"FailedAt"` as Postgres
+`timestamptz`. Npgsql 10.0.3's default CLR mapping for `timestamptz` is `System.DateTime` (UTC-kind),
+not `DateTimeOffset` — confirmed directly by the exception's own expected-constructor signature,
+which lists `System.DateTime FailedAt`. But `DlqRow`'s (and `DlqMessage`'s) `FailedAt` parameter is
+typed `DateTimeOffset`. Dapper's fast positional-record-construction path requires an *exact* type
+match against what the reader reports per column; since `DateTime != DateTimeOffset`, it falls back
+to needing a parameterless constructor or settable properties, which a `sealed record` with only a
+primary constructor doesn't expose — hence the crash on every `ListUnreplayedAsync` call.
+
+Every other place in this codebase with a `timestamptz` column (`ReconciliationQueueRow`,
+`ReconciliationSchema`'s `EnqueuedAt`/`LastAttemptAt`) either never reads that column back into a
+strongly-typed Dapper record at all, or only ever *writes* it via anonymous-object parameter binding
+(which isn't subject to this exact-type-match constraint) — `DlqRow` is the first place in the repo
+attempting to round-trip a `timestamptz` column through Dapper's record-materialization path, so
+there's no existing "correct" pattern to copy; this task establishes one.
+
+**Why the existing unit tests never caught this:** `Iverson.Sql.Tests/DlqRepositoryTests.cs` mocks
+`IRecordStoreQueryExecutor` entirely (NSubstitute) — `ListUnreplayedAsync_FiltersByReplayedFalse_OrdersByFailedAtDesc`
+returns a fabricated `List<DlqRow>` directly, never invoking Dapper's actual materialization at all.
+Only a real-Postgres integration test (the same class of gap this repo already closed for
+`ReconciliationQueueRow`'s uuid/string mismatch, see `ReconciliationQueuePostgresIntegrationTests.cs`)
+would have caught this.
+
+**Files:**
+- Modify: `Iverson.Server/Iverson.Sql/DlqRow.cs`
+- Modify: `Iverson.Server/Iverson.Api/Reconciliation/DlqMonitorConsumer.cs`
+- Modify: `Iverson.Server/Iverson.Sql.Tests/DlqRepositoryTests.cs`
+- Create: `Iverson.Server/Iverson.Sql.Tests/DlqRepositoryPostgresIntegrationTests.cs`
+
+**Interfaces:**
+- Changes: `DlqRow.FailedAt` and `DlqMessage.FailedAt` from `DateTimeOffset` to `DateTime` (matches
+  what Npgsql/Dapper actually round-trips for a `timestamptz` column). No change to either record's
+  other members, to `DlqSchema` (the column type itself is correct — `timestamptz` is the right
+  Postgres type for an always-UTC instant; only the .NET-side CLR type was wrong), or to any public
+  API surface outside these two records and their one real (non-test) consumer.
+
+- [ ] **Step 1: Fix the two records' `FailedAt` type**
+
+`Iverson.Server/Iverson.Sql/DlqRow.cs` — change both occurrences of `DateTimeOffset FailedAt` to
+`DateTime FailedAt`:
+```csharp
+public sealed record DlqRow(Guid Id, string SourceTopic, string ConsumerGroup, string MessageKey,
+    string? ExceptionType, string? ExceptionMessage, int Attempts, DateTime FailedAt, bool Replayed);
+
+public sealed record DlqReplayRow(string SourceTopic, string MessageKey, string MessageValue);
+
+public sealed record DlqMessage(
+    string SourceTopic, string ConsumerGroup, string MessageKey, string MessageValue,
+    string? ExceptionType, string? ExceptionMessage, int Attempts, DateTime FailedAt);
+```
+
+- [ ] **Step 2: Fix `DlqMonitorConsumer`'s only real construction site**
+
+`Iverson.Server/Iverson.Api/Reconciliation/DlqMonitorConsumer.cs` — `HandleAsync`'s `DlqMessage`
+construction currently parses the `dlq.failed_at` Kafka header as `DateTimeOffset`. Change to
+`DateTime`, keeping the same header-parsing/fallback shape:
+```csharp
+FailedAt: DateTime.TryParse(failedAtRaw, out var f) ? f : DateTime.UtcNow));
+```
+(Was `DateTimeOffset.TryParse(...)` / `DateTimeOffset.UtcNow`.)
+
+- [ ] **Step 3: Update the existing mocked unit tests**
+
+`Iverson.Server/Iverson.Sql.Tests/DlqRepositoryTests.cs` — both `DlqMessage`/`DlqRow` construction
+call sites (`InsertAsync_InsertsAsUnreplayed`, `ListUnreplayedAsync_FiltersByReplayedFalse_OrdersByFailedAtDesc`)
+currently pass `DateTimeOffset.UtcNow`. Change both to `DateTime.UtcNow` to match the new signatures
+— these are compile errors otherwise, not just stylistic.
+
+- [ ] **Step 4: Add a real-Postgres integration test that would have caught this**
+
+`Iverson.Server/Iverson.Sql.Tests/DlqRepositoryPostgresIntegrationTests.cs` (new file, same
+`Testcontainers.PostgreSql` + `IClassFixture` pattern as the existing
+`Iverson.Sql.Tests/PostgresIntegrationTests.cs` and
+`Iverson.Api.Tests/Reconciliation/ReconciliationQueuePostgresIntegrationTests.cs` — `Iverson.Sql.Tests`
+already references `Testcontainers.PostgreSql` 3.9.0, no new package needed). Needs its own fixture
+(not reusing `PostgresContainerFixture` from `PostgresIntegrationTests.cs`, since this table has a
+fixed name via `DlqSchema.TableName`, not the generic per-test-unique-table pattern that file uses):
+
+```csharp
+using FluentAssertions;
+using Iverson.Api.Reconciliation;
+using Microsoft.Extensions.Logging.Abstractions;
+using Testcontainers.PostgreSql;
+using Xunit;
+
+namespace Iverson.Sql.Tests;
+
+public sealed class DlqRepositoryPostgresContainerFixture : IAsyncLifetime
+{
+    private readonly PostgreSqlContainer _container = new PostgreSqlBuilder()
+        .WithImage("postgres:16-alpine")
+        .Build();
+
+    public PostgresRepository Repository { get; private set; } = null!;
+    public PostgresSchemaManager SchemaManager { get; private set; } = null!;
+
+    public async Task InitializeAsync()
+    {
+        await _container.StartAsync();
+        Repository = new PostgresRepository(
+            _container.GetConnectionString(),
+            NullLogger<PostgresRepository>.Instance);
+        SchemaManager = new PostgresSchemaManager(
+            _container.GetConnectionString(),
+            NullLogger<PostgresSchemaManager>.Instance);
+    }
+
+    public async Task DisposeAsync() => await _container.DisposeAsync();
+}
+
+public sealed class DlqRepositoryPostgresIntegrationTests(DlqRepositoryPostgresContainerFixture fixture)
+    : IClassFixture<DlqRepositoryPostgresContainerFixture>
+{
+    private readonly PostgresRepository _repo = fixture.Repository;
+    private readonly PostgresSchemaManager _schemaManager = fixture.SchemaManager;
+
+    [Fact]
+    public async Task InsertAsync_ThenListUnreplayedAsync_RoundTripsAgainstRealPostgres()
+    {
+        // DlqSchema.TableName is a fixed constant — DROP/recreate for a known-clean state
+        // regardless of test re-runs against the same container.
+        await _repo.ExecuteAsync($"""DROP TABLE IF EXISTS "{DlqSchema.TableName}" """);
+        await _schemaManager.ApplySchemaAsync(DlqSchema.Table);
+
+        var repo = new DlqRepository(DlqSchema.TableName, _repo);
+        var message = new DlqMessage(
+            "iverson.events.article", "iverson.consumer.intelligence-store", "article-123",
+            """{"id":"article-123"}""", "System.Exception", "boom", 3, DateTime.UtcNow);
+
+        await repo.InsertAsync(message);
+
+        // This is the exact call that 500'd live in Task 10 — it must not throw, and must
+        // actually materialize the row via Dapper's real reader, not a mock.
+        var rows = (await repo.ListUnreplayedAsync(10)).ToList();
+
+        rows.Should().ContainSingle();
+        rows[0].SourceTopic.Should().Be("iverson.events.article");
+        rows[0].MessageKey.Should().Be("article-123");
+        rows[0].Attempts.Should().Be(3);
+        rows[0].Replayed.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task MarkReplayedAsync_ExcludesRowFromListUnreplayedAsync()
+    {
+        await _repo.ExecuteAsync($"""DROP TABLE IF EXISTS "{DlqSchema.TableName}" """);
+        await _schemaManager.ApplySchemaAsync(DlqSchema.Table);
+
+        var repo = new DlqRepository(DlqSchema.TableName, _repo);
+        var message = new DlqMessage(
+            "topic", "group", "key-to-replay", "value", null, null, 1, DateTime.UtcNow);
+        await repo.InsertAsync(message);
+
+        var inserted = (await repo.ListUnreplayedAsync(10)).ToList();
+        inserted.Should().ContainSingle();
+
+        await repo.MarkReplayedAsync(inserted[0].Id);
+
+        var afterReplay = await repo.ListUnreplayedAsync(10);
+        afterReplay.Should().BeEmpty();
+    }
+}
+```
+Note: this new test class needs `DlqSchema` to be visible from `Iverson.Sql.Tests` — confirm during
+implementation whether `DlqSchema`'s `internal` accessibility (it's currently `internal static class`
+in `Iverson.Api`) needs an `InternalsVisibleTo` entry for `Iverson.Sql.Tests`, or whether the simpler
+fix is to inline an equivalent `TableSchema`/`ColumnSchema` literal directly in the test (matching
+`DlqSchema.Table`'s exact column list) instead of referencing the internal type cross-project. Prefer
+inlining if `InternalsVisibleTo` isn't already set up between these two projects, to avoid widening
+an internal type's visibility surface just for a test.
+
+- [ ] **Step 5: Build and test**
+```bash
+cd Iverson.Server
+dotnet build Iverson.Sql/Iverson.Sql.csproj
+dotnet build Iverson.Api/Iverson.Api.csproj
+dotnet test Iverson.Sql.Tests/Iverson.Sql.Tests.csproj --filter "FullyQualifiedName~DlqRepository"
+```
+Expected: build succeeds; both the updated mocked unit tests and the new integration tests pass. The
+new integration test requires a working Docker/Testcontainers environment — if run in a sandbox with
+the known podman/Testcontainers incompatibility (see Task 1's report), this specific test may hang;
+that's an environment limitation, not a reason to skip writing it (a real CI environment with Docker
+will run it correctly).
+
+- [ ] **Step 6: Commit**
+```bash
+git add Iverson.Server/Iverson.Sql/DlqRow.cs Iverson.Server/Iverson.Api/Reconciliation/DlqMonitorConsumer.cs Iverson.Server/Iverson.Sql.Tests/DlqRepositoryTests.cs Iverson.Server/Iverson.Sql.Tests/DlqRepositoryPostgresIntegrationTests.cs
+git commit -m "fix(sql): fix DlqRow/DlqMessage FailedAt type mismatch breaking Dapper materialization"
+```
+
+## Known gaps (flagged by the final whole-branch review, tracked as non-blocking follow-ups)
+
+- **Only the .NET SDK's credential attachment is verified end-to-end against a live server.** Task 10's
+  live smoke test drives the real gRPC auth pipeline exclusively through `Iverson.LoadTest` (the .NET
+  client) — confirmed both the unauthenticated-rejection and authenticated-success paths against a real
+  cluster. The Java/Python/Go/TypeScript SDKs (Tasks 6-9) each have unit tests covering their
+  token-fetch/cache logic (correct caching, 60s early refresh, correct form-encoding), but none of them
+  has been exercised against a real listening gRPC server to confirm the credential actually attaches to
+  an outgoing RPC and is accepted — that rests on the design phase's scratch verification (spec's
+  verified assumption #1: each language's call-credentials mechanism was confirmed to compile/attach
+  against a real listening server, but not specifically against *this* API's auth pipeline end-to-end).
+  This is acceptable today because only .NET callers exist in production, but it's a real, currently
+  untested surface — before any Go/Java/Python/TypeScript caller goes to production, integration-test
+  its credential attachment against a live (or Testcontainers-based) instance of `Iverson.Api` first,
+  don't assume the unit-tested token-fetch logic implies the attachment works.
+- **Cutover/first-install deployment mechanics are now documented** at
+  `docs/runbooks/grpc-admin-auth-cutover.md` (added post-review) — the two-pass `helm upgrade`
+  requirement, the "every existing caller needs a token before deploy" precondition, and the manual
+  human-operator verification step all live there now rather than only in this plan's Task 10 text.
+
 ## Explicitly out of scope (inherited from spec)
 
 - End-user identity propagation (Part 4) — this plan authenticates the *calling service*, not the human end-user acting through it.

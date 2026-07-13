@@ -57,4 +57,35 @@ public class DlqMonitorConsumerTests
             m.MessageKey == "article-456" &&
             m.ExceptionType == null));
     }
+
+    [Fact]
+    public async Task HandleAsync_OffsetBearingFailedAtHeader_ParsesToUtcKind()
+    {
+        // dlq.failed_at is always written via DateTimeOffset.UtcNow.ToString("O"), which
+        // includes an explicit "+00:00" offset. DateTime.TryParse with no DateTimeStyles
+        // converts offset-bearing strings to the host's *local* time zone (Kind=Local),
+        // which Npgsql then refuses to bind against a timestamptz column. The fix must
+        // always yield Kind=Utc regardless of the host's local time zone.
+        DlqMessage? captured = null;
+        var dlq = Substitute.For<IDlqRepository>();
+        dlq.InsertAsync(Arg.Do<DlqMessage>(m => captured = m)).Returns(Task.CompletedTask);
+        var sut = new Iverson.Api.Reconciliation.DlqMonitorConsumer(
+            Substitute.For<Iverson.Events.IEventConsumer>(), dlq,
+            Microsoft.Extensions.Logging.Abstractions.NullLogger<Iverson.Api.Reconciliation.DlqMonitorConsumer>.Instance);
+
+        var failedAt = new DateTimeOffset(2026, 7, 12, 16, 23, 52, TimeSpan.Zero);
+        var headers = new Headers
+        {
+            { "dlq.source_topic",      "iverson.entity.created"u8.ToArray() },
+            { "dlq.consumer_group",    "iverson.consumer.intelligence"u8.ToArray() },
+            { "dlq.attempts",          "1"u8.ToArray() },
+            { "dlq.failed_at",         System.Text.Encoding.UTF8.GetBytes(failedAt.ToString("O")) },
+        };
+
+        await sut.HandleAsync("article-789", "{}", headers, CancellationToken.None);
+
+        captured.Should().NotBeNull();
+        captured!.FailedAt.Kind.Should().Be(DateTimeKind.Utc);
+        captured.FailedAt.Should().Be(failedAt.UtcDateTime);
+    }
 }

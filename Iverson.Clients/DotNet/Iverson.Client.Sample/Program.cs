@@ -12,7 +12,7 @@ var services = new ServiceCollection()
     .AddLogging(b => b.AddConsole().SetMinimumLevel(LogLevel.Warning))
     .AddIversonClient(
         grpcEndpoint: "https://localhost:7142",
-        typeof(Article).Assembly)
+        entityAssemblies: [typeof(Article).Assembly])
     .BuildServiceProvider();
 
 await services.GetRequiredService<SchemaRegistrar>().RegisterAllAsync();

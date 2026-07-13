@@ -11,6 +11,7 @@ from iverson_client.annotations import (
     one_to_one,
     FieldMeta,
 )
+from iverson_client.auth import IversonClientCredentials
 from iverson_client.core import IversonClient, EntityCoordinator, SchemaRegistrar
 from iverson_client.group_by import GroupByBuilder
 from iverson_client.pipeline import PipelineBuilder, PipelineStepBuilder, pipeline
@@ -29,6 +30,7 @@ __all__ = [
     "one_to_one",
     "FieldMeta",
     "IversonClient",
+    "IversonClientCredentials",
     "EntityCoordinator",
     "SchemaRegistrar",
     "QueryBuilder",

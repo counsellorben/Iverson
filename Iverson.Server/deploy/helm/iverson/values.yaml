@@ -13,6 +13,14 @@
 networkPolicy:
   enabled: true
 
+# global values are visible to every subchart (unlike top-level keys like `api:`,
+# which are scoped only to the matching subchart) — used here so the authentik
+# subchart's blueprint (the human OIDC provider's redirect_uri) can reference the
+# same hostname as api.ingress.host without duplicating it out of sync. Keep this
+# in lockstep with api.ingress.host in every values-*.yaml file.
+global:
+  ingressHost: "iverson.local"
+
 postgres:
   instances: 2
   storageSize: 1500Gi

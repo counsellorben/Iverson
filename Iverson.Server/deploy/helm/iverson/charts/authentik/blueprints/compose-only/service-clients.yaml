@@ -1,0 +1,99 @@
+version: 1
+metadata:
+  name: Service/automation OAuth2 clients and human-provider correction (docker-compose dev values)
+entries:
+  - model: authentik_providers_oauth2.scopemapping
+    identifiers:
+      scope_name: admin
+    attrs:
+      name: "Iverson: admin operator scope"
+      description: Grants operator-tier access to Iverson's admin endpoints
+      expression: "return {}"
+  - model: authentik_providers_oauth2.scopemapping
+    identifiers:
+      scope_name: groups
+    attrs:
+      name: "Iverson: group membership"
+      description: Exposes the authenticated user's Authentik group names
+      expression: "return [group.name for group in user.ak_groups.all()]"
+  - model: authentik_providers_oauth2.oauth2provider
+    identifiers:
+      name: iverson-loadtest
+    attrs:
+      authorization_flow: !Find [authentik_flows.flow, [slug, default-provider-authorization-implicit-consent]]
+      invalidation_flow: !Find [authentik_flows.flow, [slug, default-provider-invalidation-flow]]
+      client_type: confidential
+      client_id: "dev-iverson-loadtest-client-id"
+      client_secret: "dev-only-not-for-production-loadtest-secret-0123456789"
+      redirect_uris: []
+      grant_types: ["client_credentials"]
+      signing_key: !Find [authentik_crypto.certificatekeypair, [name, "authentik Self-signed Certificate"]]
+      issuer_mode: global
+  - model: authentik_core.application
+    identifiers:
+      slug: iverson-loadtest
+    attrs:
+      name: iverson-loadtest
+      provider: !Find [authentik_providers_oauth2.oauth2provider, [name, iverson-loadtest]]
+  - model: authentik_providers_oauth2.oauth2provider
+    identifiers:
+      name: iverson-webtest
+    attrs:
+      authorization_flow: !Find [authentik_flows.flow, [slug, default-provider-authorization-implicit-consent]]
+      invalidation_flow: !Find [authentik_flows.flow, [slug, default-provider-invalidation-flow]]
+      client_type: confidential
+      client_id: "dev-iverson-webtest-client-id"
+      client_secret: "dev-only-not-for-production-webtest-secret-0123456789"
+      redirect_uris: []
+      grant_types: ["client_credentials"]
+      signing_key: !Find [authentik_crypto.certificatekeypair, [name, "authentik Self-signed Certificate"]]
+      issuer_mode: global
+  - model: authentik_core.application
+    identifiers:
+      slug: iverson-webtest
+    attrs:
+      name: iverson-webtest
+      provider: !Find [authentik_providers_oauth2.oauth2provider, [name, iverson-webtest]]
+  - model: authentik_providers_oauth2.oauth2provider
+    identifiers:
+      name: iverson-admin-automation
+    attrs:
+      authorization_flow: !Find [authentik_flows.flow, [slug, default-provider-authorization-implicit-consent]]
+      invalidation_flow: !Find [authentik_flows.flow, [slug, default-provider-invalidation-flow]]
+      client_type: confidential
+      client_id: "dev-iverson-admin-automation-client-id"
+      client_secret: "dev-only-not-for-production-admin-secret-0123456789"
+      redirect_uris: []
+      grant_types: ["client_credentials"]
+      signing_key: !Find [authentik_crypto.certificatekeypair, [name, "authentik Self-signed Certificate"]]
+      issuer_mode: global
+      property_mappings:
+        - !Find [authentik_providers_oauth2.scopemapping, [scope_name, admin]]
+  - model: authentik_core.application
+    identifiers:
+      slug: iverson-admin-automation
+    attrs:
+      name: iverson-admin-automation
+      provider: !Find [authentik_providers_oauth2.oauth2provider, [name, iverson-admin-automation]]
+  - model: authentik_providers_oauth2.oauth2provider
+    identifiers:
+      name: iverson-oidc-default
+    attrs:
+      authorization_flow: !Find [authentik_flows.flow, [slug, default-provider-authorization-implicit-consent]]
+      invalidation_flow: !Find [authentik_flows.flow, [slug, default-provider-invalidation-flow]]
+      client_type: public
+      redirect_uris:
+        - matching_mode: strict
+          url: "http://localhost/placeholder-callback"
+          redirect_uri_type: authorization
+      client_id: "dev-iverson-human-oidc-client-id"
+      signing_key: !Find [authentik_crypto.certificatekeypair, [name, "authentik Self-signed Certificate"]]
+      issuer_mode: global
+      property_mappings:
+        - !Find [authentik_providers_oauth2.scopemapping, [scope_name, groups]]
+  - model: authentik_core.application
+    identifiers:
+      slug: iverson-api
+    attrs:
+      name: iverson-api
+      provider: !Find [authentik_providers_oauth2.oauth2provider, [name, iverson-oidc-default]]

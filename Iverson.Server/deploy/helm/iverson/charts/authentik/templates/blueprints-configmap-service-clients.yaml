@@ -1,0 +1,76 @@
+{{- $loadtest := lookup "v1" "Secret" .Release.Namespace (printf "%s-authentik-loadtest-client" .Release.Name) }}
+{{- $webtest := lookup "v1" "Secret" .Release.Namespace (printf "%s-authentik-webtest-client" .Release.Name) }}
+{{- $adminAuto := lookup "v1" "Secret" .Release.Namespace (printf "%s-authentik-admin-automation-client" .Release.Name) }}
+{{- $humanOidc := lookup "v1" "Secret" .Release.Namespace (printf "%s-authentik-human-oidc-client" .Release.Name) }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Release.Name }}-authentik-blueprints-service-clients
+data:
+  service-clients.yaml: |
+    version: 1
+    metadata:
+      name: Service/automation OAuth2 clients and full human-provider definition
+    entries:
+      - model: authentik_providers_oauth2.scopemapping
+        identifiers:
+          scope_name: admin
+        attrs:
+          name: "Iverson: admin operator scope"
+          description: Grants operator-tier access to Iverson's admin endpoints
+          expression: "return {}"
+      - model: authentik_providers_oauth2.scopemapping
+        identifiers:
+          scope_name: groups
+        attrs:
+          name: "Iverson: group membership"
+          description: Exposes the authenticated user's Authentik group names
+          expression: "return [group.name for group in user.ak_groups.all()]"
+{{- range $name := list "loadtest" "webtest" "admin-automation" }}
+{{- $secret := index (dict "loadtest" $loadtest "webtest" $webtest "admin-automation" $adminAuto) $name }}
+      - model: authentik_providers_oauth2.oauth2provider
+        identifiers:
+          name: iverson-{{ $name }}
+        attrs:
+          authorization_flow: !Find [authentik_flows.flow, [slug, default-provider-authorization-implicit-consent]]
+          invalidation_flow: !Find [authentik_flows.flow, [slug, default-provider-invalidation-flow]]
+          client_type: confidential
+          client_id: {{ if $secret }}{{ index $secret.data "client-id" | b64dec }}{{ else }}{{ randAlphaNum 40 }}{{ end }}
+          client_secret: {{ if $secret }}{{ index $secret.data "client-secret" | b64dec }}{{ else }}{{ randAlphaNum 50 }}{{ end }}
+          redirect_uris: []
+          grant_types: ["client_credentials"]
+          signing_key: !Find [authentik_crypto.certificatekeypair, [name, "authentik Self-signed Certificate"]]
+          issuer_mode: global
+{{- if eq $name "admin-automation" }}
+          property_mappings:
+            - !Find [authentik_providers_oauth2.scopemapping, [scope_name, admin]]
+{{- end }}
+      - model: authentik_core.application
+        identifiers:
+          slug: iverson-{{ $name }}
+        attrs:
+          name: iverson-{{ $name }}
+          provider: !Find [authentik_providers_oauth2.oauth2provider, [name, iverson-{{ $name }}]]
+{{- end }}
+      - model: authentik_providers_oauth2.oauth2provider
+        identifiers:
+          name: iverson-oidc-default
+        attrs:
+          authorization_flow: !Find [authentik_flows.flow, [slug, default-provider-authorization-implicit-consent]]
+          invalidation_flow: !Find [authentik_flows.flow, [slug, default-provider-invalidation-flow]]
+          client_type: public
+          redirect_uris:
+            - matching_mode: strict
+              url: "https://{{ .Values.global.ingressHost }}/placeholder-callback"
+              redirect_uri_type: authorization
+          client_id: {{ if $humanOidc }}{{ index $humanOidc.data "client-id" | b64dec }}{{ else }}{{ randAlphaNum 40 }}{{ end }}
+          signing_key: !Find [authentik_crypto.certificatekeypair, [name, "authentik Self-signed Certificate"]]
+          issuer_mode: global
+          property_mappings:
+            - !Find [authentik_providers_oauth2.scopemapping, [scope_name, groups]]
+      - model: authentik_core.application
+        identifiers:
+          slug: iverson-api
+        attrs:
+          name: iverson-api
+          provider: !Find [authentik_providers_oauth2.oauth2provider, [name, iverson-oidc-default]]

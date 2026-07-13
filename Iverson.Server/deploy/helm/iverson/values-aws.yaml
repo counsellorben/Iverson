@@ -1,6 +1,11 @@
 # AWS EKS overlay — StorageClass names and node-pool labels match modules/operators
 # and modules/cluster-aws's fixed naming exactly (see Tasks 2 and 3 of this plan).
 
+# Keep in lockstep with api.ingress.host below — see values.yaml's global.ingressHost
+# comment for why this is a separate key instead of a single source of truth.
+global:
+  ingressHost: "iverson.example.com"
+
 postgres:
   storageClassName: "iverson-postgres"
   nodeSelector:
@@ -79,11 +84,50 @@ api:
       alb.ingress.kubernetes.io/ssl-redirect: "443"
     host: "iverson.example.com"
 
-# No worker: overlay here on purpose. The api subchart's only cloud-specific override
-# in this file is its Ingress (ALB annotations/class above); the worker subchart has no
-# Ingress and, like api, isn't wired to a dedicated node pool (compare postgres/kafka/
-# starrocks/qdrant/ollama above, which do get one). Its resources/hpa come from the
-# cloud-agnostic worker: block in values.yaml, same as api's do.
+# worker/prometheus/redis/authentik: none of these get a dedicated node pool in
+# modules/cluster-aws (only postgres/kafka/starrocks/qdrant/ollama do — confirmed
+# against the Terraform node-pool map) — they land on the untainted "general" pool,
+# same as api. Their resources below are unchanged from values.yaml's cloud-agnostic
+# defaults; restated explicitly here (rather than left to silent inheritance) so this
+# file is self-documenting and matches values-local.yaml's shape. Only authentik's
+# bootstrapEmail actually differs from base, to match this environment's real host.
+worker:
+  replicas: 2
+  resources:
+    requests: { cpu: "2", memory: "4Gi", ephemeral-storage: "1Gi" }
+    limits: { cpu: "2", memory: "4Gi", ephemeral-storage: "2Gi" }
+  hpa:
+    minReplicas: 2
+    maxReplicas: 5
+    targetCPUUtilization: 70
+
+prometheus:
+  imageTag: "v2.55.1"
+  storageSize: "20Gi"
+  storageClassName: ""
+  resources:
+    requests: { cpu: "250m", memory: "512Mi", ephemeral-storage: "512Mi" }
+    limits: { cpu: "500m", memory: "1Gi", ephemeral-storage: "1Gi" }
+  nodeSelector: {}
+
+redis:
+  imageTag: "7.4-alpine"
+  resources:
+    requests: { cpu: "100m", memory: "128Mi" }
+    limits: { cpu: "250m", memory: "256Mi" }
+  nodeSelector: {}
+
+authentik:
+  imageTag: "2026.5.3"
+  resources:
+    server:
+      requests: { cpu: "250m", memory: "512Mi" }
+      limits: { cpu: "500m", memory: "1Gi" }
+    worker:
+      requests: { cpu: "250m", memory: "512Mi" }
+      limits: { cpu: "500m", memory: "1Gi" }
+  nodeSelector: {}
+  bootstrapEmail: "admin@iverson.example.com"
 
 jaeger:
   nodeSelector: {}
