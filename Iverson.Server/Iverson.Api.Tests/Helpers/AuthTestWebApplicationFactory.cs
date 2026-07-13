@@ -1,5 +1,6 @@
 using Iverson.Embeddings;
 using Iverson.Sql;
+using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.Extensions.DependencyInjection;
@@ -40,6 +41,21 @@ public sealed class AuthTestWebApplicationFactory : WebApplicationFactory<Progra
 
             services.RemoveAll<IRecordStoreSchemaManager>();
             services.AddSingleton<IRecordStoreSchemaManager, NoOpRecordStoreSchemaManager>();
+
+            services.PostConfigure<JwtBearerOptions>(JwtBearerDefaults.AuthenticationScheme, options =>
+            {
+                options.Authority = null;
+                options.TokenValidationParameters.ValidateIssuer = false;
+                options.TokenValidationParameters.ValidAudiences = ["test-service-audience"];
+                options.TokenValidationParameters.IssuerSigningKey = TestJwtFactory.SigningKey;
+            });
+            services.PostConfigure<JwtBearerOptions>("ActingUser", options =>
+            {
+                options.Authority = null;
+                options.TokenValidationParameters.ValidateIssuer = false;
+                options.TokenValidationParameters.ValidAudiences = ["test-actinguser-audience"];
+                options.TokenValidationParameters.IssuerSigningKey = TestJwtFactory.SigningKey;
+            });
         });
     }
 }
