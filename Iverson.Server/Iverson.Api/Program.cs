@@ -123,6 +123,8 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
                 var header = context.Request.Headers["x-acting-user-authorization"].ToString();
                 if (header.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase))
                     context.Token = header["Bearer ".Length..];
+                else
+                    context.NoResult();
                 return Task.CompletedTask;
             }
         };
