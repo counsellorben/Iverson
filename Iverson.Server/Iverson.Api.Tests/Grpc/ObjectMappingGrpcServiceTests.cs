@@ -1,6 +1,7 @@
 using FluentAssertions;
 using Google.Protobuf.WellKnownTypes;
 using Grpc.Core;
+using Iverson.Api.Authorization;
 using Iverson.Api.Grpc;
 using Iverson.Api.Reconciliation;
 using Iverson.Api.Schema;
@@ -28,6 +29,8 @@ public class ObjectMappingGrpcServiceTests
     private readonly SchemaRegistry _registry;
     private readonly IEmbeddingService _embedding;
     private readonly IEngagementStoreSchemaManager _starRocks;
+    private readonly IActingUserAccessor _actingUserAccessor;
+    private readonly IRowFieldAuthorizationEvaluator _authEvaluator = new RowFieldAuthorizationEvaluator();
     private readonly ObjectMappingGrpcService _sut;
 
     private static readonly string AuthorId  = "11111111-0000-0000-0000-000000000001";
@@ -60,11 +63,14 @@ public class ObjectMappingGrpcServiceTests
         _starRocks.ApplyTableAsync(Arg.Any<StarRocksTableSchema>()).Returns(Task.CompletedTask);
 
         _registry = new SchemaRegistry(new SchemaRegistryRepository(_sql), NullLogger<SchemaRegistry>.Instance);
+        _actingUserAccessor = new ActingUserAccessor
+            { ActingUser = ActingUserFixtures.Principal("test-user", "test-bypass") };
         _sut = new ObjectMappingGrpcService(
             _entities, _txRunner, _schemaManager, _vector, _events, _registry, _embedding, _starRocks,
             new RelationValidator(_registry), new EntityKeyAccessor(),
             new OutboxWriter(ReconciliationSchema.TableName, _sql, _txRunner),
-            NullLogger<ObjectMappingGrpcService>.Instance);
+            NullLogger<ObjectMappingGrpcService>.Instance,
+            _actingUserAccessor, _authEvaluator);
     }
 
     // ── helpers ───────────────────────────────────────────────────────────────
@@ -85,7 +91,11 @@ public class ObjectMappingGrpcServiceTests
         FkColumns     = [],
         VectorFields  = [],
         ChunkFields   = [],
-        Relations     = []
+        Relations     = [],
+        Authorization = new Iverson.Api.Schema.AuthorizationRules(
+            null,
+            new List<Iverson.Api.Schema.RowPermission> { new("test-bypass", true, true, true) },
+            new List<Iverson.Api.Schema.FieldPermission>())
     };
 
     private static Struct MakePayload(string keyColumnName, string keyValue)

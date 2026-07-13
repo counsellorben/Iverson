@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using Grpc.Core;
+using Iverson.Api.Authorization;
 using Iverson.Api.Reconciliation;
 using Iverson.Api.Schema;
 using Iverson.Client.Contracts;
@@ -19,7 +20,10 @@ public sealed class ObjectPersistenceGrpcService(
     IRelationValidator relationValidator,
     IEntityKeyAccessor keyAccessor,
     IOutboxWriter outboxWriter,
-    ILogger<ObjectPersistenceGrpcService> logger)
+    ILogger<ObjectPersistenceGrpcService> logger,
+    IEntityRepository entities,
+    IActingUserAccessor actingUserAccessor,
+    IRowFieldAuthorizationEvaluator authEvaluator)
     : ObjectPersistenceService.ObjectPersistenceServiceBase
 {
     private const string SchemaVersion = "1";

@@ -1,6 +1,7 @@
 using DotNet.Testcontainers.Builders;
 using DotNet.Testcontainers.Containers;
 using FluentAssertions;
+using Iverson.Api.Authorization;
 using Iverson.Api.Grpc;
 using Iverson.Api.Schema;
 using Iverson.Api.Tests.Helpers;
@@ -214,7 +215,9 @@ public sealed class RegisterSchemaAuthorizationIntegrationTests(AllStoresContain
             Substitute.For<IRelationValidator>(),
             Substitute.For<IEntityKeyAccessor>(),
             Substitute.For<IOutboxWriter>(),
-            NullLogger<ObjectMappingGrpcService>.Instance);
+            NullLogger<ObjectMappingGrpcService>.Instance,
+            Substitute.For<IActingUserAccessor>(),
+            Substitute.For<IRowFieldAuthorizationEvaluator>());
 
         var typeDesc = SimpleType("ArticleWithAuth", "Title", "OwnerId");
         typeDesc.Authorization = new Client.Contracts.AuthorizationRules

@@ -1,6 +1,7 @@
 using FluentAssertions;
 using Google.Protobuf.WellKnownTypes;
 using Grpc.Core;
+using Iverson.Api.Authorization;
 using Iverson.Api.Grpc;
 using Iverson.Api.Schema;
 using Iverson.Api.Tests.Helpers;
@@ -17,6 +18,8 @@ public class ObjectRetrievalGrpcServiceTests
     private readonly IRecordStoreQueryExecutor _sql;
     private readonly IEntityRepository _entities;
     private readonly SchemaRegistry _registry;
+    private readonly IActingUserAccessor _actingUserAccessor;
+    private readonly IRowFieldAuthorizationEvaluator _authEvaluator = new RowFieldAuthorizationEvaluator();
     private readonly ObjectRetrievalGrpcService _sut;
 
     private static readonly string AuthorId   = "11111111-0000-0000-0000-000000000001";
@@ -30,8 +33,11 @@ public class ObjectRetrievalGrpcServiceTests
         _entities = Substitute.For<IEntityRepository>();
 
         _registry = new SchemaRegistry(new SchemaRegistryRepository(_sql), NullLogger<SchemaRegistry>.Instance);
+        _actingUserAccessor = new ActingUserAccessor
+            { ActingUser = ActingUserFixtures.Principal("test-user", "test-bypass") };
         _sut = new ObjectRetrievalGrpcService(_entities, _registry,
-            NullLogger<ObjectRetrievalGrpcService>.Instance);
+            NullLogger<ObjectRetrievalGrpcService>.Instance,
+            _actingUserAccessor, _authEvaluator);
     }
 
     // ── Get ───────────────────────────────────────────────────────────────────

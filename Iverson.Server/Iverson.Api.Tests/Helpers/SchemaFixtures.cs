@@ -4,6 +4,12 @@ namespace Iverson.Api.Tests.Helpers;
 
 public static class SchemaFixtures
 {
+    // Permissive bypass: existing tests don't configure Authorization, so every fixture
+    // grants "test-bypass" full read/write/delete access, short-circuiting ownership and
+    // field-level checks once enforcement is wired into the RPC methods (Tasks 2-6).
+    private static AuthorizationRules BypassAuthorization() =>
+        new(null, new List<RowPermission> { new("test-bypass", true, true, true) }, new List<FieldPermission>());
+
     // Author: no relations, no vector/chunk fields → Record + Engagement only
     public static SchemaDescriptor AuthorSchema() => new()
     {
@@ -15,7 +21,8 @@ public static class SchemaFixtures
         FkColumns      = [],
         VectorFields   = [],
         ChunkFields    = [],
-        Relations      = []
+        Relations      = [],
+        Authorization  = BypassAuthorization()
     };
 
     // Article: ManyToOne(Author), vector on Title, chunk on Body → Record + Engagement + Intelligence
@@ -29,7 +36,8 @@ public static class SchemaFixtures
         FkColumns      = [new ForeignKeyDescriptor("AuthorId", "Author")],
         VectorFields   = [new VectorDescriptor("Title", 768, "nomic-embed-text")],
         ChunkFields    = [new ChunkDescriptor("Body", 512, 64, "nomic-embed-text", 768)],
-        Relations      = [new RelationDescriptor("Author", RelationKind.ManyToOne, "Author", "AuthorId")]
+        Relations      = [new RelationDescriptor("Author", RelationKind.ManyToOne, "Author", "AuthorId")],
+        Authorization  = BypassAuthorization()
     };
 
     // Article with a OneToMany — makes it NOT Engagement-eligible
@@ -46,7 +54,8 @@ public static class SchemaFixtures
         Relations      = [
             new RelationDescriptor("Author",      RelationKind.ManyToOne, "Author",      "AuthorId"),
             new RelationDescriptor("UserArticles", RelationKind.OneToMany, "UserArticle", "ArticleId")
-        ]
+        ],
+        Authorization  = BypassAuthorization()
     };
 
     // UserArticle: two ManyToOne relations → Engagement eligible
@@ -63,7 +72,8 @@ public static class SchemaFixtures
         Relations      = [
             new RelationDescriptor("User",    RelationKind.ManyToOne, "User",    "UserId"),
             new RelationDescriptor("Article", RelationKind.ManyToOne, "Article", "ArticleId")
-        ]
+        ],
+        Authorization  = BypassAuthorization()
     };
 
     // Post with ManyToMany → Tags (for ResolveManyToManyAsync tests)
@@ -77,7 +87,8 @@ public static class SchemaFixtures
         FkColumns      = [new ForeignKeyDescriptor("TagIds", "Tag")],
         VectorFields   = [],
         ChunkFields    = [],
-        Relations      = [new RelationDescriptor("Tags", RelationKind.ManyToMany, "Tag", "TagIds")]
+        Relations      = [new RelationDescriptor("Tags", RelationKind.ManyToMany, "Tag", "TagIds")],
+        Authorization  = BypassAuthorization()
     };
 
     public static SchemaDescriptor TagSchema() => new()
@@ -90,7 +101,8 @@ public static class SchemaFixtures
         FkColumns      = [],
         VectorFields   = [],
         ChunkFields    = [],
-        Relations      = []
+        Relations      = [],
+        Authorization  = BypassAuthorization()
     };
 
     public static SchemaDescriptor ArticleWithProjectionSchema() => new()
@@ -112,6 +124,7 @@ public static class SchemaFixtures
         ChunkFields  = [],
         Relations    = [],
         SearchKeyColumns  = ["Category", "PublishedAt"],
-        LargeFieldColumns = ["Body"]
+        LargeFieldColumns = ["Body"],
+        Authorization = BypassAuthorization()
     };
 }

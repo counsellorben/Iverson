@@ -2,6 +2,7 @@ using System.Diagnostics;
 using Google.Protobuf;
 using Google.Protobuf.WellKnownTypes;
 using Grpc.Core;
+using Iverson.Api.Authorization;
 using Iverson.Api.Reconciliation;
 using Iverson.Api.Schema;
 using Iverson.Client.Contracts;
@@ -32,7 +33,9 @@ public sealed class ObjectMappingGrpcService(
     IRelationValidator _relationValidator,
     IEntityKeyAccessor _keyAccessor,
     IOutboxWriter _outboxWriter,
-    ILogger<ObjectMappingGrpcService> _logger)
+    ILogger<ObjectMappingGrpcService> _logger,
+    IActingUserAccessor _actingUserAccessor,
+    IRowFieldAuthorizationEvaluator _authEvaluator)
     : ObjectMappingService.ObjectMappingServiceBase
 {
     private const string SchemaVersion = "1";

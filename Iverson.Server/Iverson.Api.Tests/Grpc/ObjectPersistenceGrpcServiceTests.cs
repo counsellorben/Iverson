@@ -2,6 +2,7 @@ using System.Text.Json;
 using FluentAssertions;
 using Google.Protobuf.WellKnownTypes;
 using Grpc.Core;
+using Iverson.Api.Authorization;
 using Iverson.Api.Grpc;
 using Iverson.Api.Reconciliation;
 using Iverson.Api.Schema;
@@ -21,6 +22,9 @@ public class ObjectPersistenceGrpcServiceTests
     private readonly IRecordStoreQueryExecutor _sql;
     private readonly IRecordStoreTransactionRunner _txRunner;
     private readonly SchemaRegistry _registry;
+    private readonly IEntityRepository _entities = Substitute.For<IEntityRepository>();
+    private readonly IActingUserAccessor _actingUserAccessor;
+    private readonly IRowFieldAuthorizationEvaluator _authEvaluator = new RowFieldAuthorizationEvaluator();
     private readonly ObjectPersistenceGrpcService _sut;
 
     public ObjectPersistenceGrpcServiceTests()
@@ -35,11 +39,14 @@ public class ObjectPersistenceGrpcServiceTests
             .Returns(ci => ci.Arg<Func<IDbTransactionContext, Task>>()(Substitute.For<IDbTransactionContext>()));
 
         _registry = new SchemaRegistry(new SchemaRegistryRepository(_sql), NullLogger<SchemaRegistry>.Instance);
+        _actingUserAccessor = new ActingUserAccessor
+            { ActingUser = ActingUserFixtures.Principal("test-user", "test-bypass") };
         _sut = new ObjectPersistenceGrpcService(
             _events, _registry,
             new RelationValidator(_registry), new EntityKeyAccessor(),
             new OutboxWriter(ReconciliationSchema.TableName, _sql, _txRunner),
-            NullLogger<ObjectPersistenceGrpcService>.Instance);
+            NullLogger<ObjectPersistenceGrpcService>.Instance,
+            _entities, _actingUserAccessor, _authEvaluator);
     }
 
     private static Struct MakePayload(Dictionary<string, Value> fields)

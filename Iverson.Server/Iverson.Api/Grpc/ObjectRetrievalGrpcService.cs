@@ -1,6 +1,7 @@
 using Google.Protobuf;
 using Google.Protobuf.WellKnownTypes;
 using Grpc.Core;
+using Iverson.Api.Authorization;
 using Iverson.Api.Schema;
 using Iverson.Client.Contracts;
 using Iverson.Sql;
@@ -14,7 +15,9 @@ namespace Iverson.Api.Grpc;
 public sealed class ObjectRetrievalGrpcService(
     IEntityRepository _entities,
     SchemaRegistry registry,
-    ILogger<ObjectRetrievalGrpcService> logger)
+    ILogger<ObjectRetrievalGrpcService> logger,
+    IActingUserAccessor actingUserAccessor,
+    IRowFieldAuthorizationEvaluator authEvaluator)
     : ObjectRetrievalService.ObjectRetrievalServiceBase
 {
     public override async Task<RetrievalResponse> Get(
