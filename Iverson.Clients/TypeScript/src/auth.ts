@@ -67,3 +67,15 @@ export function createOAuth2ClientCredentials(
             .catch((err) => callback(err));
     });
 }
+
+export const ACTING_USER_METADATA_KEY = 'x-acting-user-authorization';
+
+/**
+ * Per-call metadata carrying the acting-user's own Authentik-issued token.
+ * Merge into a call's metadata argument alongside the service credential.
+ */
+export function createActingUserMetadata(token: string): grpc.Metadata {
+    const metadata = new grpc.Metadata();
+    metadata.add(ACTING_USER_METADATA_KEY, `Bearer ${token}`);
+    return metadata;
+}
