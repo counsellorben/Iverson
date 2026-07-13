@@ -91,6 +91,8 @@ data:
           signing_key: !Find [authentik_crypto.certificatekeypair, [name, "authentik Self-signed Certificate"]]
           issuer_mode: global
           grant_types: ["authorization_code", "refresh_token"]
+          property_mappings:
+            - !Find [authentik_providers_oauth2.scopemapping, [scope_name, groups]]
       - model: authentik_core.application
         identifiers:
           slug: iverson-loadtest-human

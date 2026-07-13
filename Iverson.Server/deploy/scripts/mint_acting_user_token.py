@@ -306,7 +306,7 @@ def authorize_and_get_code(
             "client_id": client_id,
             "redirect_uri": redirect_uri,
             "response_type": "code",
-            "scope": "openid",
+            "scope": "openid groups",
             "code_challenge": code_challenge,
             "code_challenge_method": "S256",
             "state": state,
@@ -473,6 +473,12 @@ def main() -> int:
         return run(args, base_url, host_header, client_id, password, redirect_uri)
 
 
+def decode_jwt_claims(token: str) -> dict:
+    payload_b64 = token.split(".")[1]
+    padded = payload_b64 + "=" * (-len(payload_b64) % 4)
+    return json.loads(base64.urlsafe_b64decode(padded))
+
+
 def run(args, base_url: str, host_header: str | None, client_id: str, password: str, redirect_uri: str) -> int:
     log(f"target={args.target} base_url={base_url} host_header={host_header!r} client_id={client_id}")
 
@@ -492,6 +498,11 @@ def run(args, base_url: str, host_header: str | None, client_id: str, password: 
         return 1
 
     log("success -- printing access token to stdout")
+    claims = decode_jwt_claims(access_token)
+    if not claims.get("groups"):
+        log(f"WARNING: minted token has no non-empty 'groups' claim: {claims.get('groups')!r}")
+    else:
+        log(f"groups claim present: {claims['groups']!r}")
     print(access_token)
     return 0
 
