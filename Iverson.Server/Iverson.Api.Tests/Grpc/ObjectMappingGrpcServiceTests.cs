@@ -145,6 +145,19 @@ public class ObjectMappingGrpcServiceTests
     }
 
     [Fact]
+    public async Task RegisterSchema_WithInvalidOwnerField_ThrowsInvalidArgument()
+    {
+        var td = SimpleType("Widget", "Name");
+        td.Authorization = new Client.Contracts.AuthorizationRules { OwnerField = "DoesNotExist" };
+
+        var act = () => _sut.RegisterSchema(
+            new SchemaRequest { RootType = td }, TestServerCallContext.Create());
+
+        var ex = await act.Should().ThrowAsync<RpcException>();
+        ex.Which.StatusCode.Should().Be(StatusCode.InvalidArgument);
+    }
+
+    [Fact]
     public async Task RegisterSchema_CallsApplyTableAsync_WithMatchingTableName()
     {
         var request = new SchemaRequest { RootType = SimpleType("Author", "Name") };

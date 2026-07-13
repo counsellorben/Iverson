@@ -5,6 +5,12 @@ using Iverson.StarRocks;
 using Iverson.Vector;
 using ContractsRelationKind = Iverson.Client.Contracts.RelationKind;
 using SchemaRelationKind    = Iverson.Api.Schema.RelationKind;
+using ContractsAuthorizationRules = Iverson.Client.Contracts.AuthorizationRules;
+using SchemaAuthorizationRules    = Iverson.Api.Schema.AuthorizationRules;
+using ContractsRowPermission      = Iverson.Client.Contracts.RowPermission;
+using SchemaRowPermission         = Iverson.Api.Schema.RowPermission;
+using ContractsFieldPermission    = Iverson.Client.Contracts.FieldPermission;
+using SchemaFieldPermission       = Iverson.Api.Schema.FieldPermission;
 
 namespace Iverson.Api.Schema;
 
@@ -79,6 +85,16 @@ internal static class SchemaBuilder
             r.ForeignKey
         )).ToList();
 
+        ContractsAuthorizationRules? contractsAuthorization = typeDesc.Authorization;
+        var authorization = contractsAuthorization is null
+            ? null
+            : new SchemaAuthorizationRules(
+                contractsAuthorization.OwnerField,
+                contractsAuthorization.RowPermissions.Select((ContractsRowPermission rp) => new SchemaRowPermission(
+                    rp.Role, rp.CanReadAll, rp.CanWriteAll, rp.CanDeleteAll)).ToList(),
+                contractsAuthorization.FieldPermissions.Select((ContractsFieldPermission fp) => new SchemaFieldPermission(
+                    fp.FieldName, fp.ReadableRoles.ToList(), fp.WritableRoles.ToList())).ToList());
+
         return new SchemaDescriptor
         {
             TypeName          = typeDesc.TypeName,
@@ -91,7 +107,8 @@ internal static class SchemaBuilder
             ChunkFields       = chunks,
             Relations         = relations,
             SearchKeyColumns  = searchKeysSorted.ConvertAll(sk => sk.Name),
-            LargeFieldColumns = largeFields
+            LargeFieldColumns = largeFields,
+            Authorization     = authorization
         };
     }
 

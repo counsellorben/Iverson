@@ -55,6 +55,14 @@ public sealed class ObjectMappingGrpcService(
         {
             var descriptor = SchemaBuilder.BuildDescriptor(typeDesc, _embedding);
 
+            var ownerField = descriptor.Authorization?.OwnerField;
+            if (!string.IsNullOrEmpty(ownerField) &&
+                !descriptor.ScalarColumns.Any(c => string.Equals(c.Name, ownerField, StringComparison.OrdinalIgnoreCase)))
+            {
+                throw new RpcException(new Status(StatusCode.InvalidArgument,
+                    $"owner_field '{ownerField}' on '{descriptor.TypeName}' does not match any declared scalar property."));
+            }
+
             await _schemaManager.ApplySchemaAsync(SchemaBuilder.ToTableSchema(descriptor));
 
             try

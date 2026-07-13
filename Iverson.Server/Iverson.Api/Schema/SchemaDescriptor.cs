@@ -15,6 +15,8 @@ public sealed record SchemaDescriptor
 
     public List<string>      SearchKeyColumns  { get; init; } = [];
     public HashSet<string>   LargeFieldColumns { get; init; } = [];
+
+    public AuthorizationRules? Authorization { get; init; }
 }
 
 public sealed record ColumnDescriptor(string Name, string SqlType, bool IsNullable);
@@ -32,3 +34,15 @@ public sealed record RelationDescriptor(
     string ForeignKey);
 
 public enum RelationKind { OneToOne, OneToMany, ManyToOne, ManyToMany }
+
+public sealed record AuthorizationRules(
+    string? OwnerField,
+    IReadOnlyList<RowPermission> RowPermissions,
+    IReadOnlyList<FieldPermission> FieldPermissions);
+
+public sealed record RowPermission(string Role, bool CanReadAll, bool CanWriteAll, bool CanDeleteAll);
+
+public sealed record FieldPermission(
+    string FieldName,
+    IReadOnlyList<string> ReadableRoles,
+    IReadOnlyList<string> WritableRoles);

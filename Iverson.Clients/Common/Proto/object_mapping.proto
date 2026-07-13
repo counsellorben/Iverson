@@ -66,10 +66,30 @@ message RelationDescriptor {
     string       foreign_key      = 4;  // resolved FK column (convention or explicit)
 }
 
+message RowPermission {
+    string role          = 1;  // free-form; matches an Authentik group name
+    bool   can_read_all  = 2;  // bypasses ownership for Read
+    bool   can_write_all = 3;  // bypasses ownership for Write
+    bool   can_delete_all = 4; // bypasses ownership for Delete
+}
+
+message FieldPermission {
+    string          field_name     = 1;
+    repeated string readable_roles = 2;  // empty = inherits row-level decision
+    repeated string writable_roles = 3;  // empty = inherits row-level decision
+}
+
+message AuthorizationRules {
+    string                    owner_field       = 1;  // optional; empty = no ownership dimension
+    repeated RowPermission    row_permissions   = 2;
+    repeated FieldPermission  field_permissions = 3;
+}
+
 message TypeDescriptor {
     string                    type_name   = 1;
     repeated PropertyDescriptor properties = 2;
     repeated RelationDescriptor relations  = 3;
+    AuthorizationRules         authorization = 4;
 }
 
 message SchemaRequest {
