@@ -95,6 +95,37 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
         // plaintext authority at startup/first-token-validation. Disabling it here matches the
         // rest of this deployment's no-TLS posture.
         options.RequireHttpsMetadata = false;
+        // Without this, ASP.NET Core's default claim-type mapping silently renames the "sub"
+        // claim to ClaimTypes.NameIdentifier (a legacy WS-Federation-era remapping table that
+        // JwtBearerOptions.MapInboundClaims applies by default) — ActingUserInterceptor's
+        // FindFirst("sub") would then always return null. Confirmed: this repo's only other
+        // direct-claim-read code (OperatorAuthorizationPolicy) reads "groups"/"scope", neither
+        // of which is in that remapping table, which is why this was never hit before.
+        options.MapInboundClaims = false;
+    })
+    .AddJwtBearer("ActingUser", options =>
+    {
+        options.Authority = cfg["Authentication:ActingUser:Authority"];
+        options.TokenValidationParameters.ValidAudiences = cfg.GetSection("Authentication:ActingUser:ValidAudiences").Get<string[]>();
+        options.RequireHttpsMetadata = false;
+        options.MapInboundClaims = false;
+        // gRPC metadata IS the HTTP/2 header set — same mechanism the default scheme already
+        // relies on for the "authorization" key. This scheme reads a different key so it
+        // doesn't collide with the service credential on the same call.
+        options.Events = new JwtBearerEvents
+        {
+            OnMessageReceived = context =>
+            {
+                // "x-acting-user-authorization" is the Global Constraints' metadata key,
+                // also defined as ActingUserInterceptor.MetadataKey (Task 2) — kept as a
+                // literal here rather than referencing that constant so this task builds
+                // standalone without a forward dependency on Task 2's file.
+                var header = context.Request.Headers["x-acting-user-authorization"].ToString();
+                if (header.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase))
+                    context.Token = header["Bearer ".Length..];
+                return Task.CompletedTask;
+            }
+        };
     });
 
 builder.Services.AddAuthorization(options =>
@@ -107,6 +138,8 @@ builder.Services.AddAuthorization(options =>
             context.User.FindAll("groups").Select(c => c.Value),
             context.User.FindFirst("scope")?.Value)));
 });
+
+builder.Services.AddScoped<IActingUserAccessor, ActingUserAccessor>();
 
 builder.Services.AddPostgres(cfg.GetConnectionString("Postgres")
     ?? "Host=localhost;Port=5432;Database=iverson;Username=iverson;Password=iverson");
