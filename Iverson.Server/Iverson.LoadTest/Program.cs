@@ -1,4 +1,6 @@
 using Dapper;
+using Grpc.Core;
+using Iverson.Client.Contracts;
 using Iverson.Client.Core;
 using Iverson.Events;
 using Iverson.LoadTest.Entities;
@@ -25,6 +27,7 @@ var tokenEndpoint = Environment.GetEnvironmentVariable("IVERSON_TOKEN_ENDPOINT")
 var postgresCs   = Env("IVERSON_POSTGRES_CS",     "Host=localhost;Port=5432;Database=iverson;Username=iverson;Password=iverson");
 var starRocksCs  = Env("IVERSON_STARROCKS_CS",    "Server=127.0.0.1;Port=9030;Database=iverson;Uid=root;Pwd=;");
 var kafkaBoots   = Env("IVERSON_KAFKA_BOOTSTRAP", "localhost:9092");
+var actingUserToken = Environment.GetEnvironmentVariable("IVERSON_ACTING_USER_TOKEN");
 
 var config = new LoadTestConfig(postgresCs, starRocksCs, kafkaBoots);
 
@@ -105,6 +108,26 @@ switch (command)
     case "reset-starrocks":
         await ResetStarRocksAsync(config.StarRocksCs, config.PostgresCs);
         break;
+    case "acting-user-smoke-test":
+        if (actingUserToken is null)
+        {
+            Console.Error.WriteLine("acting-user-smoke-test requires IVERSON_ACTING_USER_TOKEN.");
+            return 1;
+        }
+        var searchClient = services.GetRequiredService<ObjectSearchService.ObjectSearchServiceClient>();
+        var headers = new Metadata().WithActingUser(actingUserToken);
+        try
+        {
+            await searchClient.AggregateAsync(new AggregateRequest(), headers);
+        }
+        catch (RpcException ex) when (ex.StatusCode != StatusCode.Unauthenticated)
+        {
+            // Expected: an empty AggregateRequest fails business-logic validation
+            // (RequireSchema/FailedPrecondition). The auth layer already accepted the
+            // call by the time this throws — that's what this command is checking.
+        }
+        Console.WriteLine("acting-user-smoke-test: call passed the auth layer — check API logs for the structured log line.");
+        break;
     default:
         Console.WriteLine("""
             Usage: dotnet run -- <command> [options]
@@ -115,6 +138,8 @@ switch (command)
               read-path      Benchmark GetMany / Search / Aggregate via gRPC
               all            Run seed → write-path → read-path in sequence
               reset-starrocks  Drop all StarRocks tables and truncate Postgres benchmark tables for greenfield re-registration
+              acting-user-smoke-test  Exercise the acting-user auth layer with an Aggregate call carrying
+                                      IVERSON_ACTING_USER_TOKEN via the x-acting-user-authorization metadata header
 
             Options:
               --force-reseed         Truncate and re-seed even if data already present

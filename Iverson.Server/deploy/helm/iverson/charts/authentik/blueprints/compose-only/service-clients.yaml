@@ -111,6 +111,7 @@ entries:
       client_id: "dev-iverson-loadtest-human-client-id"
       signing_key: !Find [authentik_crypto.certificatekeypair, [name, "authentik Self-signed Certificate"]]
       issuer_mode: global
+      grant_types: ["authorization_code", "refresh_token"]
   - model: authentik_core.application
     identifiers:
       slug: iverson-loadtest-human
