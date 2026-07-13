@@ -80,6 +80,10 @@ The same umbrella Helm chart deploys everywhere — laptop to cloud:
 | `deploy/kind/` | A real Kubernetes cluster locally: Calico-enforced NetworkPolicy, operators (CloudNativePG, Strimzi, StarRocks), TLS+SCRAM Kafka, `api`/`worker` as separate Deployments |
 | `deploy/terraform/` + `deploy/helm/` | Production clusters on **AWS, Azure, or GCP** — Terraform provisions EKS/AKS/GKE, node pools, and operators; Helm values overlays per cloud |
 
+Every deployment target ships its own [Authentik](https://goauthentik.io/) IdP.
+For how to create users and service accounts, assign claims, and issue and use
+tokens against the API, see [`docs/user-management-and-security.md`](docs/user-management-and-security.md).
+
 ---
 
 ## Getting started
