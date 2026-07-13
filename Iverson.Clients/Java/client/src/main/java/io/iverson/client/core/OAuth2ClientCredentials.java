@@ -32,6 +32,10 @@ public final class OAuth2ClientCredentials extends CallCredentials {
     private volatile String cachedToken;
     private volatile Instant expiresAt = Instant.MIN;
 
+    public static final io.grpc.CallOptions.Key<String> ACTING_USER_TOKEN =
+        io.grpc.CallOptions.Key.create("acting-user-token");
+    public static final String ACTING_USER_METADATA_KEY = "x-acting-user-authorization";
+
     public OAuth2ClientCredentials(String clientId, String clientSecret, String tokenEndpoint) {
         this(clientId, clientSecret, tokenEndpoint, null);
     }
@@ -49,6 +53,10 @@ public final class OAuth2ClientCredentials extends CallCredentials {
             try {
                 Metadata headers = new Metadata();
                 headers.put(Metadata.Key.of("Authorization", Metadata.ASCII_STRING_MARSHALLER), "Bearer " + getToken());
+                String actingUserToken = requestInfo.getCallOptions().getOption(ACTING_USER_TOKEN);
+                if (actingUserToken != null) {
+                    headers.put(Metadata.Key.of(ACTING_USER_METADATA_KEY, Metadata.ASCII_STRING_MARSHALLER), "Bearer " + actingUserToken);
+                }
                 applier.apply(headers);
             } catch (Exception e) {
                 applier.fail(Status.UNAUTHENTICATED.withCause(e));
