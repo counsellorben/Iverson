@@ -11,6 +11,19 @@ import (
 	"time"
 )
 
+type actingUserTokenKey struct{}
+
+// ActingUserMetadataKey is the gRPC metadata key carrying the acting-user's
+// own Authentik-issued access token, set via WithActingUserToken.
+const ActingUserMetadataKey = "x-acting-user-authorization"
+
+// WithActingUserToken attaches a per-call acting-user token to ctx, read by
+// OAuth2ClientCredentials.GetRequestMetadata and forwarded as a second gRPC
+// metadata entry alongside the service credential.
+func WithActingUserToken(ctx context.Context, token string) context.Context {
+	return context.WithValue(ctx, actingUserTokenKey{}, token)
+}
+
 // OAuth2ClientCredentials implements credentials.PerRPCCredentials, attaching an
 // OAuth2 client-credentials Bearer token to every RPC. The token is fetched lazily
 // and cached in memory, refreshing 60 seconds before expiry.
@@ -35,7 +48,11 @@ func (c *OAuth2ClientCredentials) GetRequestMetadata(ctx context.Context, _ ...s
 	if err != nil {
 		return nil, err
 	}
-	return map[string]string{"authorization": "Bearer " + token}, nil
+	md := map[string]string{"authorization": "Bearer " + token}
+	if actingUserToken, ok := ctx.Value(actingUserTokenKey{}).(string); ok && actingUserToken != "" {
+		md[ActingUserMetadataKey] = "Bearer " + actingUserToken
+	}
+	return md, nil
 }
 
 // RequireTransportSecurity returns false: this repo's deployment is plaintext h2c with
