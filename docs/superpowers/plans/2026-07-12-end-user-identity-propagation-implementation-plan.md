@@ -87,8 +87,9 @@ The following were verified by `thorough-brainstorming` at spec-write time and a
 | 14 | Sibling-set sweep | All 5 SDKs' new per-call mechanisms use the **same** metadata key string (`x-acting-user-authorization`) and the **same** `Bearer <token>` value format — checked each of the 5 code blocks below for the literal string; no language uses a different key or omits the `Bearer ` prefix | Cross-read all 5 draft code blocks against the Global Constraints' metadata key |
 | 15 | Sibling-set sweep | Both blueprint targets (compose-only, helm) provision `iverson-loadtest-human` as `client_type: public` with PKCE and no `client_secret` (public clients never have one) — checked both YAML blocks for this; the compose-only block uses a fixed dev `client_id`, the helm block uses `randAlphaNum`/`lookup`, matching each file's own existing convention for `iverson-oidc-default` | Re-read both existing `iverson-oidc-default` entries as the templates for the new entries |
 | 16 | Code validity | `ObjectSearchGrpcService`'s `Search`, `SearchSimilar`, `SearchChunks`, and `GroupBy` are all server-streaming (`Task`-returning, `IServerStreamWriter<T>` parameter); `Aggregate` is the sole true-unary RPC (`Task<AggregateResponse>`) — Tasks 3 and 11 use `Aggregate`, not `Search`, for auth-layer-only assertions | `grep -n "public override.*Search\|public override.*Aggregate" ObjectSearchGrpcService.cs` → confirmed signatures |
-| 17 | Code validity | `Aggregate` calls `RequireSchema(request.TypeName)` before anything else, throwing `RpcException(NotFound, ...)` for an empty/unregistered `TypeName` — an empty `AggregateRequest()` therefore always throws a **non**-`Unauthenticated` `RpcException` once past the auth layer, which is exactly the signal Task 3/11's assertions rely on (not "no exception at all") | Read `ObjectSearchGrpcService.cs:217-243` (`Aggregate` method body) |
+| 17 | Code validity | `Aggregate` calls `RequireSchema(request.TypeName)` before anything else, throwing `RpcException(StatusCode.FailedPrecondition, ...)` for an empty/unregistered `TypeName` — an empty `AggregateRequest()` therefore always throws a **non**-`Unauthenticated` `RpcException` once past the auth layer, which is exactly the signal Task 3/11's assertions rely on (not "no exception at all") | Read `ObjectSearchGrpcService.cs:217-243` (`Aggregate` method body) and `:354-356` (`RequireSchema`'s own throw) |
 | 18 | Consumer impact | `Program.cs`'s top-level command dispatch (`switch (command)`) already calls `services.GetRequiredService<T>()` directly for every case (e.g. `"seed"` → `GetRequiredService<DirectSeeder>()`); constructor injection is the convention for the *scenario classes themselves* (e.g. `ReadPathScenario`'s primary constructor), not for `Program.cs`'s dispatch — Task 11's new case matches the dispatch-level convention | Read `Iverson.LoadTest/Program.cs` (dispatch `switch`) and `Scenarios/ReadPathScenario.cs:1-15` (constructor) |
+| 19 | Code validity | `JwtBearerOptions.MapInboundClaims` defaults to `true`, which remaps the JWT `"sub"` claim to `ClaimTypes.NameIdentifier` on the resulting `ClaimsPrincipal` — without explicitly setting it `false` on both schemes, Task 2's `FindFirst("sub")` calls always return `null`. Round-1 critical-implementation-review finding; fixed by setting `options.MapInboundClaims = false` on both `AddJwtBearer` registrations in Task 1. | Confirmed via Microsoft Learn's `JwtBearerOptions.MapInboundClaims` docs (default `true`, current through ASP.NET Core 10.0) and cross-checked that `OperatorAuthorizationPolicy.cs`'s existing `"groups"`/`"scope"` claim reads were never affected because neither name is in the default remapping table |
 
 ## Tasks
 
@@ -145,12 +146,20 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
         options.Authority = cfg["Authentication:Authority"];
         options.TokenValidationParameters.ValidAudiences = cfg.GetSection("Authentication:ValidAudiences").Get<string[]>();
         options.RequireHttpsMetadata = false;
+        // Without this, ASP.NET Core's default claim-type mapping silently renames the "sub"
+        // claim to ClaimTypes.NameIdentifier (a legacy WS-Federation-era remapping table that
+        // JwtBearerOptions.MapInboundClaims applies by default) — ActingUserInterceptor's
+        // FindFirst("sub") would then always return null. Confirmed: this repo's only other
+        // direct-claim-read code (OperatorAuthorizationPolicy) reads "groups"/"scope", neither
+        // of which is in that remapping table, which is why this was never hit before.
+        options.MapInboundClaims = false;
     })
     .AddJwtBearer("ActingUser", options =>
     {
         options.Authority = cfg["Authentication:ActingUser:Authority"];
         options.TokenValidationParameters.ValidAudiences = cfg.GetSection("Authentication:ActingUser:ValidAudiences").Get<string[]>();
         options.RequireHttpsMetadata = false;
+        options.MapInboundClaims = false;
         // gRPC metadata IS the HTTP/2 header set — same mechanism the default scheme already
         // relies on for the "authorization" key. This scheme reads a different key so it
         // doesn't collide with the service credential on the same call.
@@ -349,7 +358,7 @@ Add `using Microsoft.AspNetCore.Authentication.JwtBearer;` to the file's usings.
 - [ ] **Step 4: Write the interceptor tests**
 
 `Iverson.Server/Iverson.Api.Tests/Grpc/ActingUserInterceptorTests.cs`:
-`Aggregate` is the one true-unary RPC on `ObjectSearchGrpcService` (`Search`/`SearchSimilar`/`SearchChunks`/`GroupBy` are all server-streaming — confirmed by reading `ObjectSearchGrpcService.cs`'s method signatures), so it's the simplest call for auth-layer-only assertions. An empty `AggregateRequest` fails business-logic validation inside the service method (`RequireSchema` throws `NotFound` for an empty `TypeName`) — that's expected and irrelevant here; these tests assert only on the **auth layer's** behavior (does the call reach business logic at all, i.e. does it *not* fail with `Unauthenticated`), not on a clean business-logic result:
+`Aggregate` is the one true-unary RPC on `ObjectSearchGrpcService` (`Search`/`SearchSimilar`/`SearchChunks`/`GroupBy` are all server-streaming — confirmed by reading `ObjectSearchGrpcService.cs`'s method signatures), so it's the simplest call for auth-layer-only assertions. An empty `AggregateRequest` fails business-logic validation inside the service method (`RequireSchema` throws `FailedPrecondition` for an empty `TypeName`) — that's expected and irrelevant here; these tests assert only on the **auth layer's** behavior (does the call reach business logic at all, i.e. does it *not* fail with `Unauthenticated`), not on a clean business-logic result:
 ```csharp
 using FluentAssertions;
 using Grpc.Core;
@@ -397,7 +406,7 @@ public class ActingUserInterceptorTests : IClassFixture<AuthTestWebApplicationFa
     {
         var ex = await TryAggregateAsync(ServiceOnlyHeaders());
 
-        ex.Should().NotBeNull(); // NotFound from RequireSchema — expected, business logic not auth
+        ex.Should().NotBeNull(); // FailedPrecondition from RequireSchema — expected, business logic not auth
         ex!.StatusCode.Should().NotBe(StatusCode.Unauthenticated);
     }
 
@@ -842,13 +851,32 @@ git commit -m "feat(ts-client): add per-call acting-user metadata helper"
 `default-authentication-mfa-validation` (enrolling TOTP on first run, solving
 on subsequent runs) → Authorization Code + PKCE against `iverson-loadtest-human`,
 against the flow-executor API (`/api/v3/flows/executor/<slug>/`), printing the
-resulting access token to stdout. Implementer note: base this on the exact
-challenge/response JSON shapes returned by a live Authentik instance — confirm
-each stage's `component`/field names against `GET
-/api/v3/flows/executor/default-authentication-flow/` on the target environment
-(docker-compose or kind) before finalizing the script, since the design spec's
+resulting access token to stdout.
+
+The script must accept a `--target compose|kind` selector, since the two
+environments differ in every one of the following (needed regardless of the
+live JSON-shape question below):
+- **Base URL:** `compose` → `http://localhost:9000` directly (matches the
+  existing Part 2+3 precedent, which already mints service-credential tokens
+  this way against docker-compose with no Host-header override needed).
+  `kind` → reached via `kubectl port-forward`, requiring the same Host-header
+  override already documented in `docs/runbooks/kind-cluster-troubleshooting.md`
+  for the admin-operator human-login path (Authentik derives the `iss` claim
+  from the request's Host header).
+- **`client_id` for the PKCE flow:** `compose` → the fixed dev value
+  `dev-iverson-loadtest-human-client-id` (Task 4). `kind` → not known until
+  deploy time; retrieve via `kubectl get secret
+  <release>-authentik-loadtest-human-client -o jsonpath='{.data.client-id}' |
+  base64 -d` (Task 5).
+
+Implementer note: the *response-parsing* side (exact challenge/response JSON
+field names) still needs to be confirmed against a live Authentik instance —
+`GET /api/v3/flows/executor/default-authentication-flow/` on the target
+environment before finalizing the script — since the design spec's
 verification confirmed the *mechanism* (get-challenge/solve-challenge, TOTP
-secret in `config_url`) but not this repo's exact live JSON payloads.
+secret in `config_url`) but not this repo's exact live JSON payloads. This is
+a separate, narrower gap than the target-selection interface above, which
+this plan can and does specify without needing live access.
 
 - [ ] **Step 2: Add a LoadTest command to exercise it**
 
@@ -873,8 +901,8 @@ Add one more `case` to the `switch (command)` block. `Aggregate` is used for the
         catch (RpcException ex) when (ex.StatusCode != StatusCode.Unauthenticated)
         {
             // Expected: an empty AggregateRequest fails business-logic validation
-            // (RequireSchema/NotFound). The auth layer already accepted the call by
-            // the time this throws — that's what this command is checking.
+            // (RequireSchema/FailedPrecondition). The auth layer already accepted the
+            // call by the time this throws — that's what this command is checking.
         }
         Console.WriteLine("acting-user-smoke-test: call passed the auth layer — check API logs for the structured log line.");
         break;
