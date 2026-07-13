@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Text.Json;
 using Iverson.Api;
+using Iverson.Api.Authorization;
 using Iverson.Api.Consumers;
 using Iverson.Api.Grpc;
 using Iverson.Api.Schema;
@@ -169,6 +170,7 @@ builder.Services.AddKafka(cfg);
 
 builder.Services.AddSingleton<SchemaRegistry>();
 builder.Services.AddSingleton<IRelationValidator, RelationValidator>();
+builder.Services.AddSingleton<IRowFieldAuthorizationEvaluator, RowFieldAuthorizationEvaluator>();
 builder.Services.AddSingleton<IEntityKeyAccessor, EntityKeyAccessor>();
 builder.Services.AddSingleton<IOutboxWriter>(sp => new OutboxWriter(
     Iverson.Api.Reconciliation.ReconciliationSchema.TableName,
