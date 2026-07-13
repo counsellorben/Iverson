@@ -34,10 +34,22 @@ public sealed class ObjectRetrievalGrpcService(
         if (rowJson is null)
             return new RetrievalResponse { Found = false, TraceId = request.TraceId };
 
+        var data = JsonParser.Default.Parse<Struct>(rowJson);
+
+        var decision = authEvaluator.Evaluate(schema, actingUserAccessor.ActingUser, AuthorizationAction.Read);
+        if (decision.Denied ||
+            (decision.OwnershipRequired &&
+             StructFieldAccess.GetFieldString(data, decision.OwnerFieldName!) != decision.OwnerValue))
+        {
+            return new RetrievalResponse { Found = false, TraceId = request.TraceId };
+        }
+
+        AuthorizationFieldMasking.MaskDisallowedFields(data, decision.AllowedFields);
+
         return new RetrievalResponse
         {
             Found   = true,
-            Data    = JsonParser.Default.Parse<Struct>(rowJson),
+            Data    = data,
             TraceId = request.TraceId
         };
     }
@@ -60,23 +72,36 @@ public sealed class ObjectRetrievalGrpcService(
             return;
         }
 
+        var decision = authEvaluator.Evaluate(schema, actingUserAccessor.ActingUser, AuthorizationAction.Read);
         var keys = request.Keys.Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
-        var rows = await _entities.FetchManyByKeysAsync(SchemaBuilder.ToTableSchema(schema), keys);
 
+        if (decision.Denied)
+        {
+            foreach (var key in keys)
+                await responseStream.WriteAsync(new RetrievalResponse { Found = false, TraceId = request.TraceId });
+            return;
+        }
+
+        var rows = await _entities.FetchManyByKeysAsync(SchemaBuilder.ToTableSchema(schema), keys);
         var rowsByKey = rows.ToDictionary(r => r.Key, StringComparer.OrdinalIgnoreCase);
 
         foreach (var key in keys)
         {
             if (context.CancellationToken.IsCancellationRequested) break;
-            await responseStream.WriteAsync(
-                rowsByKey.TryGetValue(key, out var row)
-                    ? new RetrievalResponse
-                      {
-                          Found   = true,
-                          Data    = JsonParser.Default.Parse<Struct>(row.Data),
-                          TraceId = request.TraceId
-                      }
-                    : new RetrievalResponse { Found = false, TraceId = request.TraceId });
+            if (!rowsByKey.TryGetValue(key, out var row))
+            {
+                await responseStream.WriteAsync(new RetrievalResponse { Found = false, TraceId = request.TraceId });
+                continue;
+            }
+            var data = JsonParser.Default.Parse<Struct>(row.Data);
+            if (decision.OwnershipRequired &&
+                StructFieldAccess.GetFieldString(data, decision.OwnerFieldName!) != decision.OwnerValue)
+            {
+                await responseStream.WriteAsync(new RetrievalResponse { Found = false, TraceId = request.TraceId });
+                continue;
+            }
+            AuthorizationFieldMasking.MaskDisallowedFields(data, decision.AllowedFields);
+            await responseStream.WriteAsync(new RetrievalResponse { Found = true, Data = data, TraceId = request.TraceId });
         }
     }
 }

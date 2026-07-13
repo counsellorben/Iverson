@@ -195,6 +195,258 @@ public class ObjectRetrievalGrpcServiceTests
             Arg.Is<IReadOnlyList<string>>(keys => keys.Count == 2));
     }
 
+    // ── authorization fixtures ───────────────────────────────────────────────
+
+    private static SchemaDescriptor OwnedAuthorSchema(bool withBypassRole = false) => new()
+    {
+        TypeName       = "Author",
+        TableName      = "authors",
+        CollectionName = null,
+        KeyColumn      = new ColumnDescriptor("Id", "uuid", false),
+        ScalarColumns  =
+        [
+            new ColumnDescriptor("Name", "text", false),
+            new ColumnDescriptor("OwnerId", "text", false)
+        ],
+        FkColumns     = [],
+        VectorFields  = [],
+        ChunkFields   = [],
+        Relations     = [],
+        Authorization = new Iverson.Api.Schema.AuthorizationRules(
+            "OwnerId",
+            withBypassRole
+                ? new List<Iverson.Api.Schema.RowPermission> { new("test-bypass", true, true, true) }
+                : new List<Iverson.Api.Schema.RowPermission>(),
+            new List<Iverson.Api.Schema.FieldPermission>())
+    };
+
+    // ── Get authorization ────────────────────────────────────────────────────
+
+    [Fact]
+    public async Task Get_WithNoAuthorizationRulesConfigured_ReturnsNotFound()
+    {
+        var schema = SchemaFixtures.AuthorSchema() with { Authorization = null };
+        await _registry.RegisterAsync(schema);
+        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>())
+            .Returns(AuthorJson);
+
+        var response = await _sut.Get(
+            new RetrievalRequest { TypeName = "Author", Key = AuthorId },
+            TestServerCallContext.Create());
+
+        response.Found.Should().BeFalse();
+        response.Data.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task Get_WithNoActingUser_ReturnsNotFound()
+    {
+        await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
+        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>())
+            .Returns(AuthorJson);
+        _actingUserAccessor.ActingUser = null;
+
+        var response = await _sut.Get(
+            new RetrievalRequest { TypeName = "Author", Key = AuthorId },
+            TestServerCallContext.Create());
+
+        response.Found.Should().BeFalse();
+        response.Data.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task Get_WithMatchingOwner_ReturnsFound()
+    {
+        await _registry.RegisterAsync(OwnedAuthorSchema());
+        var ownedJson = $$"""{"Id":"{{AuthorId}}","Name":"Alice","OwnerId":"test-user"}""";
+        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>())
+            .Returns(ownedJson);
+
+        var response = await _sut.Get(
+            new RetrievalRequest { TypeName = "Author", Key = AuthorId },
+            TestServerCallContext.Create());
+
+        response.Found.Should().BeTrue();
+        response.Data.Fields["Name"].StringValue.Should().Be("Alice");
+    }
+
+    [Fact]
+    public async Task Get_WithBypassRole_ReturnsFound_EvenWhenNotOwner()
+    {
+        await _registry.RegisterAsync(OwnedAuthorSchema(withBypassRole: true));
+        var ownedJson = $$"""{"Id":"{{AuthorId}}","Name":"Alice","OwnerId":"someone-else"}""";
+        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>())
+            .Returns(ownedJson);
+
+        var response = await _sut.Get(
+            new RetrievalRequest { TypeName = "Author", Key = AuthorId },
+            TestServerCallContext.Create());
+
+        response.Found.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task Get_WithNonMatchingOwner_ReturnsNotFound()
+    {
+        await _registry.RegisterAsync(OwnedAuthorSchema());
+        var ownedJson = $$"""{"Id":"{{AuthorId}}","Name":"Alice","OwnerId":"someone-else"}""";
+        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>())
+            .Returns(ownedJson);
+
+        var response = await _sut.Get(
+            new RetrievalRequest { TypeName = "Author", Key = AuthorId },
+            TestServerCallContext.Create());
+
+        response.Found.Should().BeFalse();
+        response.Data.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task Get_WithRestrictedField_OmitsFieldFromResponse()
+    {
+        var schema = SchemaFixtures.AuthorSchema() with
+        {
+            Authorization = new Iverson.Api.Schema.AuthorizationRules(
+                null,
+                new List<Iverson.Api.Schema.RowPermission> { new("test-bypass", true, true, true) },
+                new List<Iverson.Api.Schema.FieldPermission>
+                {
+                    new("Bio", new List<string> { "premium" }, new List<string>())
+                })
+        };
+        await _registry.RegisterAsync(schema);
+        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>())
+            .Returns(AuthorJson);
+
+        var response = await _sut.Get(
+            new RetrievalRequest { TypeName = "Author", Key = AuthorId },
+            TestServerCallContext.Create());
+
+        response.Found.Should().BeTrue();
+        response.Data.Fields.Should().ContainKey("Name");
+        response.Data.Fields.Should().NotContainKey("Bio");
+    }
+
+    // ── GetMany authorization ────────────────────────────────────────────────
+
+    [Fact]
+    public async Task GetMany_WithNoAuthorizationRulesConfigured_StreamsNotFoundForAllKeys()
+    {
+        var schema = SchemaFixtures.AuthorSchema() with { Authorization = null };
+        await _registry.RegisterAsync(schema);
+        _entities.FetchManyByKeysAsync(Arg.Any<TableSchema>(), Arg.Any<IReadOnlyList<string>>())
+            .Returns(new[] { new KeyedRow(AuthorId, AuthorJson), new KeyedRow(AuthorId2, AuthorJson) });
+
+        var stream = MakeStream<RetrievalResponse>();
+        await _sut.GetMany(
+            new RetrievalManyRequest { TypeName = "Author", Keys = { AuthorId, AuthorId2 } },
+            stream, TestServerCallContext.Create());
+
+        stream.Written.Should().HaveCount(2);
+        stream.Written.Should().AllSatisfy(r => r.Found.Should().BeFalse());
+        await _entities.DidNotReceive().FetchManyByKeysAsync(
+            Arg.Any<TableSchema>(), Arg.Any<IReadOnlyList<string>>());
+    }
+
+    [Fact]
+    public async Task GetMany_WithNoActingUser_StreamsNotFoundForAllKeys()
+    {
+        await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
+        _entities.FetchManyByKeysAsync(Arg.Any<TableSchema>(), Arg.Any<IReadOnlyList<string>>())
+            .Returns(new[] { new KeyedRow(AuthorId, AuthorJson), new KeyedRow(AuthorId2, AuthorJson) });
+        _actingUserAccessor.ActingUser = null;
+
+        var stream = MakeStream<RetrievalResponse>();
+        await _sut.GetMany(
+            new RetrievalManyRequest { TypeName = "Author", Keys = { AuthorId, AuthorId2 } },
+            stream, TestServerCallContext.Create());
+
+        stream.Written.Should().HaveCount(2);
+        stream.Written.Should().AllSatisfy(r => r.Found.Should().BeFalse());
+        await _entities.DidNotReceive().FetchManyByKeysAsync(
+            Arg.Any<TableSchema>(), Arg.Any<IReadOnlyList<string>>());
+    }
+
+    [Fact]
+    public async Task GetMany_WithMatchingOwner_StreamsFound()
+    {
+        await _registry.RegisterAsync(OwnedAuthorSchema());
+        var ownedJson = $$"""{"Id":"{{AuthorId}}","Name":"Alice","OwnerId":"test-user"}""";
+        _entities.FetchManyByKeysAsync(Arg.Any<TableSchema>(), Arg.Any<IReadOnlyList<string>>())
+            .Returns(new[] { new KeyedRow(AuthorId, ownedJson) });
+
+        var stream = MakeStream<RetrievalResponse>();
+        await _sut.GetMany(
+            new RetrievalManyRequest { TypeName = "Author", Keys = { AuthorId } },
+            stream, TestServerCallContext.Create());
+
+        stream.Written.Should().HaveCount(1);
+        stream.Written[0].Found.Should().BeTrue();
+        stream.Written[0].Data.Fields["Name"].StringValue.Should().Be("Alice");
+    }
+
+    [Fact]
+    public async Task GetMany_WithBypassRole_StreamsFound_EvenWhenNotOwner()
+    {
+        await _registry.RegisterAsync(OwnedAuthorSchema(withBypassRole: true));
+        var ownedJson = $$"""{"Id":"{{AuthorId}}","Name":"Alice","OwnerId":"someone-else"}""";
+        _entities.FetchManyByKeysAsync(Arg.Any<TableSchema>(), Arg.Any<IReadOnlyList<string>>())
+            .Returns(new[] { new KeyedRow(AuthorId, ownedJson) });
+
+        var stream = MakeStream<RetrievalResponse>();
+        await _sut.GetMany(
+            new RetrievalManyRequest { TypeName = "Author", Keys = { AuthorId } },
+            stream, TestServerCallContext.Create());
+
+        stream.Written.Should().HaveCount(1);
+        stream.Written[0].Found.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task GetMany_WithNonMatchingOwner_StreamsNotFound()
+    {
+        await _registry.RegisterAsync(OwnedAuthorSchema());
+        var ownedJson = $$"""{"Id":"{{AuthorId}}","Name":"Alice","OwnerId":"someone-else"}""";
+        _entities.FetchManyByKeysAsync(Arg.Any<TableSchema>(), Arg.Any<IReadOnlyList<string>>())
+            .Returns(new[] { new KeyedRow(AuthorId, ownedJson) });
+
+        var stream = MakeStream<RetrievalResponse>();
+        await _sut.GetMany(
+            new RetrievalManyRequest { TypeName = "Author", Keys = { AuthorId } },
+            stream, TestServerCallContext.Create());
+
+        stream.Written.Should().HaveCount(1);
+        stream.Written[0].Found.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task GetMany_WithRestrictedField_OmitsFieldFromResponse()
+    {
+        var schema = SchemaFixtures.AuthorSchema() with
+        {
+            Authorization = new Iverson.Api.Schema.AuthorizationRules(
+                null,
+                new List<Iverson.Api.Schema.RowPermission> { new("test-bypass", true, true, true) },
+                new List<Iverson.Api.Schema.FieldPermission>
+                {
+                    new("Bio", new List<string> { "premium" }, new List<string>())
+                })
+        };
+        await _registry.RegisterAsync(schema);
+        _entities.FetchManyByKeysAsync(Arg.Any<TableSchema>(), Arg.Any<IReadOnlyList<string>>())
+            .Returns(new[] { new KeyedRow(AuthorId, AuthorJson) });
+
+        var stream = MakeStream<RetrievalResponse>();
+        await _sut.GetMany(
+            new RetrievalManyRequest { TypeName = "Author", Keys = { AuthorId } },
+            stream, TestServerCallContext.Create());
+
+        stream.Written.Should().HaveCount(1);
+        stream.Written[0].Found.Should().BeTrue();
+        stream.Written[0].Data.Fields.Should().ContainKey("Name");
+        stream.Written[0].Data.Fields.Should().NotContainKey("Bio");
+    }
+
     // ── stream helper ────────────────────────────────────────────────────────
 
     private static FakeStream<T> MakeStream<T>() => new();
