@@ -1840,6 +1840,26 @@ git add Iverson.Server/Iverson.Sql/DlqRow.cs Iverson.Server/Iverson.Api/Reconcil
 git commit -m "fix(sql): fix DlqRow/DlqMessage FailedAt type mismatch breaking Dapper materialization"
 ```
 
+## Known gaps (flagged by the final whole-branch review, tracked as non-blocking follow-ups)
+
+- **Only the .NET SDK's credential attachment is verified end-to-end against a live server.** Task 10's
+  live smoke test drives the real gRPC auth pipeline exclusively through `Iverson.LoadTest` (the .NET
+  client) — confirmed both the unauthenticated-rejection and authenticated-success paths against a real
+  cluster. The Java/Python/Go/TypeScript SDKs (Tasks 6-9) each have unit tests covering their
+  token-fetch/cache logic (correct caching, 60s early refresh, correct form-encoding), but none of them
+  has been exercised against a real listening gRPC server to confirm the credential actually attaches to
+  an outgoing RPC and is accepted — that rests on the design phase's scratch verification (spec's
+  verified assumption #1: each language's call-credentials mechanism was confirmed to compile/attach
+  against a real listening server, but not specifically against *this* API's auth pipeline end-to-end).
+  This is acceptable today because only .NET callers exist in production, but it's a real, currently
+  untested surface — before any Go/Java/Python/TypeScript caller goes to production, integration-test
+  its credential attachment against a live (or Testcontainers-based) instance of `Iverson.Api` first,
+  don't assume the unit-tested token-fetch logic implies the attachment works.
+- **Cutover/first-install deployment mechanics are now documented** at
+  `docs/runbooks/grpc-admin-auth-cutover.md` (added post-review) — the two-pass `helm upgrade`
+  requirement, the "every existing caller needs a token before deploy" precondition, and the manual
+  human-operator verification step all live there now rather than only in this plan's Task 10 text.
+
 ## Explicitly out of scope (inherited from spec)
 
 - End-user identity propagation (Part 4) — this plan authenticates the *calling service*, not the human end-user acting through it.
