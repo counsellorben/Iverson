@@ -67,6 +67,7 @@ Verified by `thorough-brainstorming` at spec-write time; not re-verified here:
 | 11 | Code validity | `Grpc.Core.StatusCode.PermissionDenied` exists (needed for every write-path denial `RpcException`) | `grep -n "PermissionDenied" .../grpc.core.api/2.64.0/lib/netstandard2.1/Grpc.Core.Api.xml` → `F:Grpc.Core.StatusCode.PermissionDenied` |
 | 12 | Commit convention | This repo's commit messages for this exact feature use `feat(api): ...`/`fix(api): ...`/`test(api): ...` prefixes | `git log --oneline -15` → `fix(api): include FK/vector/chunk columns in AllowedFields`, `feat(api): add shared row/field authorization evaluator`, `test(api): add TestContainers integration test for schema authorization provisioning`, `feat(api): add schema authorization metadata (...)` |
 | 13 | Drift check | Spec's last-modifying commit (`79eacc1`) equals current repo HEAD — no drift since the spec was written | `git log -1 --format=%H HEAD` and `git log -1 --format=%H -- docs/superpowers/specs/2026-07-13-postgres-authorization-enforcement-design.md` both return `79eacc1ad7a3b39a9307de204287607c6243b01c` |
+| 14 | Consumer impact (Cat 6) | `SchemaFixtures.cs` (modified by Task 1 Step 4) is also consumed by 9 test files beyond this plan's File Structure list — none exercise the 3 services this plan touches, and the two most likely to do `Authorization`-sensitive assertions only check unrelated fields | `grep -rl "SchemaFixtures\." Iverson.Server/Iverson.Api.Tests/` → 9 additional files (`EngagementStoreConsumerKafkaOrderingTests.cs`, `EngagementStoreConsumerTests.cs`, `IntelligenceStoreConsumerTests.cs`, `ObjectSearchGrpcServiceTests.cs`, `ObjectSearchVectorIntegrationTests.cs`, `ReconciliationQueuePostgresIntegrationTests.cs`, `ReconciliationServiceTests.cs`, `SchemaBuilderTests.cs`, `SchemaRegistryTests.cs`); direct read of `SchemaBuilderTests.cs:123,136` and `SchemaRegistryTests.cs:33-89` confirms neither does `Authorization`-sensitive equality/comparison — they assert on `TypeName`/`ColumnNames`/`PayloadIndexes`/`IsRegistered` only |
 
 ## Tasks
 
@@ -284,7 +285,41 @@ git commit -m "feat(api): enforce row/field authorization on ObjectMappingGrpcSe
 After the existing `if (rowJson is null) return ...;` check (`:31-32`) and before constructing the success response, parse the struct, evaluate `Evaluate(schema, actingUserAccessor.ActingUser, AuthorizationAction.Read)`, and on `Denied` or ownership mismatch return `new RetrievalResponse { Found = false, TraceId = request.TraceId }` — same shape as the existing not-found path. Otherwise mask fields via `AuthorizationFieldMasking.MaskDisallowedFields` before returning `Found = true`.
 
 - [ ] **Step 2: Enforce in `GetMany`**
-After `var schema = registry.Get(request.TypeName);`'s null-check (`:50-58`, unchanged) and before the streaming loop, call `Evaluate` **once**: `var decision = authEvaluator.Evaluate(schema, actingUserAccessor.ActingUser, AuthorizationAction.Read);`. Inside the existing `foreach (var key in keys)` loop (`:65-77`): if `decision.Denied`, stream `Found = false` for every key (same as the schema-not-registered path) — the loop can short-circuit to the not-found branch for all keys without calling `_entities.FetchManyByKeysAsync` at all if `Denied`, mirroring `Get`'s not-found reuse. Otherwise, for each row found, check ownership (`decision.OwnershipRequired` against that row's own owner-field value) per-row, mask via `MaskDisallowedFields`, then stream.
+After `var schema = registry.Get(request.TypeName);`'s null-check (`:50-58`, unchanged) and before the streaming loop, evaluate once (the decision doesn't vary per key — only per caller/schema/action) and branch *before* the fetch, so a denied caller never triggers `_entities.FetchManyByKeysAsync` at all:
+```csharp
+var decision = authEvaluator.Evaluate(schema, actingUserAccessor.ActingUser, AuthorizationAction.Read);
+var keys = request.Keys.Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+
+if (decision.Denied)
+{
+    foreach (var key in keys)
+        await responseStream.WriteAsync(new RetrievalResponse { Found = false, TraceId = request.TraceId });
+    return;
+}
+
+var rows = await _entities.FetchManyByKeysAsync(SchemaBuilder.ToTableSchema(schema), keys);
+var rowsByKey = rows.ToDictionary(r => r.Key, StringComparer.OrdinalIgnoreCase);
+
+foreach (var key in keys)
+{
+    if (context.CancellationToken.IsCancellationRequested) break;
+    if (!rowsByKey.TryGetValue(key, out var row))
+    {
+        await responseStream.WriteAsync(new RetrievalResponse { Found = false, TraceId = request.TraceId });
+        continue;
+    }
+    var data = JsonParser.Default.Parse<Struct>(row.Data);
+    if (decision.OwnershipRequired &&
+        StructFieldAccess.GetFieldString(data, decision.OwnerFieldName!) != decision.OwnerValue)
+    {
+        await responseStream.WriteAsync(new RetrievalResponse { Found = false, TraceId = request.TraceId });
+        continue;
+    }
+    AuthorizationFieldMasking.MaskDisallowedFields(data, decision.AllowedFields);
+    await responseStream.WriteAsync(new RetrievalResponse { Found = true, Data = data, TraceId = request.TraceId });
+}
+```
+Every per-row outcome (missing / ownership-denied / masked-and-found) now has an explicit `Found` value, and the existing key-deduplication (`request.Keys.Distinct(...)`) is preserved unchanged, just hoisted above the new branch.
 
 - [ ] **Step 3: Add unit tests**
 Per the spec's Testing plan: denied (no rules), denied (no identity), owner-match allowed, bypass-role allowed, non-owner denied, restricted-field-absent-from-read-response — for both `Get` and `GetMany`.
