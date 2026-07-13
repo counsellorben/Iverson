@@ -126,6 +126,11 @@ spec:
             - name: Authentication__ValidAudiences__3
               valueFrom:
                 secretKeyRef: { name: {{ .Release.Name }}-authentik-admin-automation-client, key: client-id }
+            - name: Authentication__ActingUser__Authority
+              value: "http://{{ .Release.Name }}-authentik:9000/application/o/iverson-api/"
+            - name: Authentication__ActingUser__ValidAudiences__0
+              valueFrom:
+                secretKeyRef: { name: {{ .Release.Name }}-authentik-loadtest-human-client, key: client-id }
           resources:
             requests:
               cpu: {{ .Values.resources.requests.cpu | quote }}

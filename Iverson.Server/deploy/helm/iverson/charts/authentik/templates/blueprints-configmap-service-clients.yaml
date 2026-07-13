@@ -2,6 +2,8 @@
 {{- $webtest := lookup "v1" "Secret" .Release.Namespace (printf "%s-authentik-webtest-client" .Release.Name) }}
 {{- $adminAuto := lookup "v1" "Secret" .Release.Namespace (printf "%s-authentik-admin-automation-client" .Release.Name) }}
 {{- $humanOidc := lookup "v1" "Secret" .Release.Namespace (printf "%s-authentik-human-oidc-client" .Release.Name) }}
+{{- $loadtestHuman := lookup "v1" "Secret" .Release.Namespace (printf "%s-authentik-loadtest-human-client" .Release.Name) }}
+{{- $smokeTestUser := lookup "v1" "Secret" .Release.Namespace (printf "%s-authentik-smoke-test-user" .Release.Name) }}
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -74,3 +76,32 @@ data:
         attrs:
           name: iverson-api
           provider: !Find [authentik_providers_oauth2.oauth2provider, [name, iverson-oidc-default]]
+      - model: authentik_providers_oauth2.oauth2provider
+        identifiers:
+          name: iverson-loadtest-human
+        attrs:
+          authorization_flow: !Find [authentik_flows.flow, [slug, default-provider-authorization-implicit-consent]]
+          invalidation_flow: !Find [authentik_flows.flow, [slug, default-provider-invalidation-flow]]
+          client_type: public
+          redirect_uris:
+            - matching_mode: strict
+              url: "https://{{ .Values.global.ingressHost }}/placeholder-callback"
+              redirect_uri_type: authorization
+          client_id: {{ if $loadtestHuman }}{{ index $loadtestHuman.data "client-id" | b64dec }}{{ else }}{{ randAlphaNum 40 }}{{ end }}
+          signing_key: !Find [authentik_crypto.certificatekeypair, [name, "authentik Self-signed Certificate"]]
+          issuer_mode: global
+      - model: authentik_core.application
+        identifiers:
+          slug: iverson-loadtest-human
+        attrs:
+          name: iverson-loadtest-human
+          provider: !Find [authentik_providers_oauth2.oauth2provider, [name, iverson-loadtest-human]]
+      - model: authentik_core.user
+        identifiers:
+          username: iverson-acting-user-smoke-test
+        attrs:
+          username: iverson-acting-user-smoke-test
+          name: "Iverson Acting-User Smoke Test"
+          email: iverson-acting-user-smoke-test@example.invalid
+          password: {{ if $smokeTestUser }}{{ index $smokeTestUser.data "password" | b64dec }}{{ else }}{{ randAlphaNum 32 }}{{ end }}
+          is_active: true
