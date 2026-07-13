@@ -81,7 +81,7 @@ builder.Logging.AddOpenTelemetry(o =>
 
 // ── Application services ───────────────────────────────────────────────────────
 builder.Services.AddOpenApi();
-builder.Services.AddGrpc();
+builder.Services.AddGrpc(options => options.Interceptors.Add<ActingUserInterceptor>());
 
 builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
     .AddJwtBearer(options =>
