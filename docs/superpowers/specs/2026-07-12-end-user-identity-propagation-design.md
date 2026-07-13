@@ -75,7 +75,16 @@ sharing one common validation method between them (confirmed via `Grpc.Core.Inte
 - `x-acting-user-authorization` metadata key absent → proceed exactly as today. No acting user.
 - Present and valid (signature, expiry, issuer, and audience all check out against the `ActingUser`
   scheme) → populate the identity (see below) and log one structured line:
-  `service {ServiceClientId} acting as user {ActingUserSub} called {Method}`.
+  `service {ServiceAccountSubject} acting as user {ActingUserSub} called {Method}`, where
+  `ServiceAccountSubject` is the default scheme's `sub` claim — **not** the configured OAuth2
+  `client_id`. Authentik synthesizes a service account (named `ak-<provider_name>-client_credentials`,
+  e.g. `ak-iverson-loadtest-client_credentials`) for every `client_secret`-based `client_credentials`
+  grant and issues the token to that account, so `sub` never equals the literal `client_id` string
+  used elsewhere in this design's config (`ValidAudiences`, blueprint `client_id` attrs). This is
+  sufficient for the log line's purpose — proving the plumbing works end-to-end — since it still
+  uniquely and deterministically identifies which provider (calling service) made the call, requires
+  no new per-service provisioning, and doesn't depend on any scope being requested at token-mint time
+  (unlike an alternative custom-claim approach — see Verified assumptions).
 - Present and invalid (expired, bad signature, wrong issuer, audience not in the allowlist) →
   reject the call with `RpcException(StatusCode.Unauthenticated, ...)`. A calling service sending a
   malformed acting-user assertion is either buggy or misconfigured, and since Part 5 will eventually
@@ -156,7 +165,8 @@ dedicated test human user, provisioned via blueprint with a known plaintext `pas
    token.
 4. That token is fed into a LoadTest invocation carrying both the service credential and the
    acting-user token, confirming the interceptor accepts it, populates the accessor, and emits the
-   structured log line.
+   structured log line (`service ak-iverson-loadtest-client_credentials acting as user <sub> called
+   <Method>`).
 
 The dedicated test user and its TOTP enrollment are one-time bootstrap state, re-usable across
 future runs of the script.
@@ -206,6 +216,24 @@ future runs of the script.
   `CallCredentials`-supplied metadata rather than overwriting it. *Standard, foundational gRPC
   `CallCredentials` semantics across mature implementations — this is the abstraction's entire
   purpose (augment outgoing metadata, never replace caller-supplied metadata).*
+- Authentik's `client_credentials` grant (for a `confidential` client authenticating with
+  `client_secret` — exactly how `iverson-loadtest`/`iverson-webtest`/`iverson-admin-automation` are
+  configured) issues the token to an automatically-generated service account named
+  `ak-<provider_name>-client_credentials`, not to an account whose identifier is the literal
+  `client_id`. *Confirmed directly against Authentik's own client_credentials provider docs
+  (`docs.goauthentik.io/add-secure-apps/providers/oauth2/client_credentials/`) — round-1 critical
+  review finding, resolved by using this confirmed value (`sub`) as `ServiceAccountSubject` rather
+  than asserting an unverified `client_id` claim.*
+- A custom `client_id` claim via a `ScopeMapping` was considered as an alternative and rejected:
+  `ScopeMapping.evaluate()` is called with `provider=<the OAuth2Provider instance>` (which does carry
+  `client_id`), so the claim is technically producible — but scope-mapped claims are only added for
+  scopes actually requested at token-mint time, and `loadtest`/`webtest` request no scope today
+  (only `admin-automation` does, requesting `scope=admin`). Adopting this path would require adding a
+  new required provisioning step (request a specific scope) to every calling service's token-minting
+  call, untested by anything in this repo today — more moving parts than the log line needs.
+  *Confirmed via Authentik's `ScopeMapping.evaluate()` call signature; cross-checked against this
+  repo's own blueprint, where only `admin-automation` passes a `scope=admin` parameter (see
+  `2026-07-11-grpc-and-admin-authentication-implementation-plan.md`'s smoke-test curl commands).*
 
 ## Self-review
 
