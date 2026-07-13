@@ -74,3 +74,14 @@ class _BearerTokenAuthPlugin(grpc.AuthMetadataPlugin):
             callback((("authorization", f"Bearer {token}"),), None)
         except Exception as e:
             callback(None, e)
+
+
+ACTING_USER_METADATA_KEY = "x-acting-user-authorization"
+
+
+def acting_user_metadata(token: str) -> tuple[tuple[str, str], ...]:
+    """Per-call metadata tuple carrying the acting-user's own Authentik-issued
+    token. Pass via a stub call's `metadata=` kwarg alongside the service
+    credential, e.g. `stub.Search(request, metadata=acting_user_metadata(token))`.
+    """
+    return ((ACTING_USER_METADATA_KEY, f"Bearer {token}"),)
