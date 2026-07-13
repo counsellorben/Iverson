@@ -564,6 +564,187 @@ public class ObjectMappingGrpcServiceTests
         response.Data.Fields["Tags"].ListValue.Values.Should().HaveCount(2);
     }
 
+    // ── Get authorization ────────────────────────────────────────────────────
+
+    private static SchemaDescriptor OwnedAuthorSchema(bool withBypassRole = false) => new()
+    {
+        TypeName       = "Author",
+        TableName      = "authors",
+        CollectionName = null,
+        KeyColumn      = new ColumnDescriptor("Id", "uuid", false),
+        ScalarColumns  =
+        [
+            new ColumnDescriptor("Name", "text", false),
+            new ColumnDescriptor("OwnerId", "text", false)
+        ],
+        FkColumns     = [],
+        VectorFields  = [],
+        ChunkFields   = [],
+        Relations     = [],
+        Authorization = new Iverson.Api.Schema.AuthorizationRules(
+            "OwnerId",
+            withBypassRole
+                ? new List<Iverson.Api.Schema.RowPermission> { new("test-bypass", true, true, true) }
+                : new List<Iverson.Api.Schema.RowPermission>(),
+            new List<Iverson.Api.Schema.FieldPermission>())
+    };
+
+    private static SchemaDescriptor OwnedTagSchema() => new()
+    {
+        TypeName       = "Tag",
+        TableName      = "tags",
+        CollectionName = null,
+        KeyColumn      = new ColumnDescriptor("Id", "uuid", false),
+        ScalarColumns  =
+        [
+            new ColumnDescriptor("Label", "text", false),
+            new ColumnDescriptor("OwnerId", "text", false)
+        ],
+        FkColumns     = [],
+        VectorFields  = [],
+        ChunkFields   = [],
+        Relations     = [],
+        Authorization = new Iverson.Api.Schema.AuthorizationRules(
+            "OwnerId",
+            new List<Iverson.Api.Schema.RowPermission>(),
+            new List<Iverson.Api.Schema.FieldPermission>())
+    };
+
+    [Fact]
+    public async Task Get_WithNoAuthorizationRulesConfigured_ReturnsNotFound()
+    {
+        var schema = SchemaFixtures.AuthorSchema() with { Authorization = null };
+        await _registry.RegisterAsync(schema);
+        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>())
+            .Returns(AuthorJson);
+
+        var response = await _sut.Get(
+            new MappingGetRequest { TypeName = "Author", Key = AuthorId },
+            TestServerCallContext.Create());
+
+        response.Success.Should().BeFalse();
+        response.Error.Should().Contain("not found");
+    }
+
+    [Fact]
+    public async Task Get_WithNoActingUser_ReturnsNotFound()
+    {
+        await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
+        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>())
+            .Returns(AuthorJson);
+        _actingUserAccessor.ActingUser = null;
+
+        var response = await _sut.Get(
+            new MappingGetRequest { TypeName = "Author", Key = AuthorId },
+            TestServerCallContext.Create());
+
+        response.Success.Should().BeFalse();
+        response.Error.Should().Contain("not found");
+    }
+
+    [Fact]
+    public async Task Get_WithMatchingOwner_ReturnsSuccess()
+    {
+        await _registry.RegisterAsync(OwnedAuthorSchema());
+        var ownedJson = $$"""{"Id":"{{AuthorId}}","Name":"Alice","OwnerId":"test-user"}""";
+        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>())
+            .Returns(ownedJson);
+
+        var response = await _sut.Get(
+            new MappingGetRequest { TypeName = "Author", Key = AuthorId },
+            TestServerCallContext.Create());
+
+        response.Success.Should().BeTrue();
+        response.Data.Fields["Name"].StringValue.Should().Be("Alice");
+    }
+
+    [Fact]
+    public async Task Get_WithBypassRole_ReturnsSuccess_EvenWhenNotOwner()
+    {
+        await _registry.RegisterAsync(OwnedAuthorSchema(withBypassRole: true));
+        var ownedJson = $$"""{"Id":"{{AuthorId}}","Name":"Alice","OwnerId":"someone-else"}""";
+        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>())
+            .Returns(ownedJson);
+
+        var response = await _sut.Get(
+            new MappingGetRequest { TypeName = "Author", Key = AuthorId },
+            TestServerCallContext.Create());
+
+        response.Success.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task Get_WithNonMatchingOwner_ReturnsNotFound()
+    {
+        await _registry.RegisterAsync(OwnedAuthorSchema());
+        var ownedJson = $$"""{"Id":"{{AuthorId}}","Name":"Alice","OwnerId":"someone-else"}""";
+        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>())
+            .Returns(ownedJson);
+
+        var response = await _sut.Get(
+            new MappingGetRequest { TypeName = "Author", Key = AuthorId },
+            TestServerCallContext.Create());
+
+        response.Success.Should().BeFalse();
+        response.Error.Should().Contain("not found");
+    }
+
+    [Fact]
+    public async Task Get_WithRestrictedField_OmitsFieldFromResponse()
+    {
+        var schema = SchemaFixtures.AuthorSchema() with
+        {
+            Authorization = new Iverson.Api.Schema.AuthorizationRules(
+                null,
+                new List<Iverson.Api.Schema.RowPermission> { new("test-bypass", true, true, true) },
+                new List<Iverson.Api.Schema.FieldPermission>
+                {
+                    new("Bio", new List<string> { "premium" }, new List<string>())
+                })
+        };
+        await _registry.RegisterAsync(schema);
+        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>())
+            .Returns(AuthorJson);
+
+        var response = await _sut.Get(
+            new MappingGetRequest { TypeName = "Author", Key = AuthorId },
+            TestServerCallContext.Create());
+
+        response.Success.Should().BeTrue();
+        response.Data.Fields.Should().ContainKey("Name");
+        response.Data.Fields.Should().NotContainKey("Bio");
+    }
+
+    [Fact]
+    public async Task Get_WithRelatedEntities_OmitsDeniedRelatedEntity_KeepsAllowedOne()
+    {
+        var postId = "33333333-0000-0000-0000-000000000003";
+        var allowedTagId = "44444444-0000-0000-0000-000000000004";
+        var deniedTagId  = "44444444-0000-0000-0000-000000000005";
+
+        await _registry.RegisterAsync(SchemaFixtures.PostWithTagsSchema());
+        await _registry.RegisterAsync(OwnedTagSchema());
+
+        var postJson = $$"""{"Id":"{{postId}}","Title":"Hello","TagIds":["{{allowedTagId}}","{{deniedTagId}}"]}""";
+        _entities.FetchByKeyAsync(
+                Arg.Is<TableSchema>(s => s.TableName == "posts"), Arg.Any<string>())
+            .Returns(postJson);
+
+        var allowedTagJson = $$"""{"Id":"{{allowedTagId}}","Label":"dotnet","OwnerId":"test-user"}""";
+        var deniedTagJson  = $$"""{"Id":"{{deniedTagId}}","Label":"csharp","OwnerId":"someone-else"}""";
+        _entities.FetchManyByKeysAsync(Arg.Any<TableSchema>(), Arg.Any<IReadOnlyList<string>>())
+            .Returns(new[] { new KeyedRow(allowedTagId, allowedTagJson), new KeyedRow(deniedTagId, deniedTagJson) });
+
+        var response = await _sut.Get(
+            new MappingGetRequest { TypeName = "Post", Key = postId, Depth = 1 },
+            MakeContext());
+
+        response.Success.Should().BeTrue();
+        var tags = response.Data.Fields["Tags"].ListValue.Values;
+        tags.Should().ContainSingle();
+        tags[0].StructValue.Fields["Label"].StringValue.Should().Be("dotnet");
+    }
+
     // ── Update ────────────────────────────────────────────────────────────────
 
     [Fact]

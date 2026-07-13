@@ -118,6 +118,21 @@ public sealed class ObjectMappingGrpcService(
 
         var entityStruct = JsonParser.Default.Parse<Struct>(rowJson);
 
+        var decision = _authEvaluator.Evaluate(schema, _actingUserAccessor.ActingUser, AuthorizationAction.Read);
+        if (decision.Denied ||
+            (decision.OwnershipRequired &&
+             StructFieldAccess.GetFieldString(entityStruct, decision.OwnerFieldName!) != decision.OwnerValue))
+        {
+            return new MappingResponse
+            {
+                Success = false,
+                Error   = $"'{request.TypeName}:{request.Key}' not found.",
+                TraceId = request.TraceId
+            };
+        }
+
+        AuthorizationFieldMasking.MaskDisallowedFields(entityStruct, decision.AllowedFields);
+
         if (request.Depth > 0)
             await ResolveRelationsAsync(entityStruct, schema, request.Depth, context.CancellationToken);
 
@@ -365,6 +380,14 @@ public sealed class ObjectMappingGrpcService(
         if (rowJson is null) return;
 
         var relatedStruct = JsonParser.Default.Parse<Struct>(rowJson);
+
+        var decision = _authEvaluator.Evaluate(relatedSchema, _actingUserAccessor.ActingUser, AuthorizationAction.Read);
+        if (decision.Denied ||
+            (decision.OwnershipRequired &&
+             StructFieldAccess.GetFieldString(relatedStruct, decision.OwnerFieldName!) != decision.OwnerValue))
+            return;
+        AuthorizationFieldMasking.MaskDisallowedFields(relatedStruct, decision.AllowedFields);
+
         if (depth > 1)
             await ResolveRelationsAsync(relatedStruct, relatedSchema, depth - 1, ct);
 
@@ -386,12 +409,21 @@ public sealed class ObjectMappingGrpcService(
 
         var rowsByKey = rows.ToDictionary(r => r.Key, StringComparer.OrdinalIgnoreCase);
 
+        var decision = _authEvaluator.Evaluate(relatedSchema, _actingUserAccessor.ActingUser, AuthorizationAction.Read);
+
         var items = new List<Value>();
         foreach (var id in ids)
         {
             if (ct.IsCancellationRequested) break;
             if (!rowsByKey.TryGetValue(id, out var row)) continue;
             var relatedStruct = JsonParser.Default.Parse<Struct>(row.Data);
+
+            if (decision.Denied ||
+                (decision.OwnershipRequired &&
+                 StructFieldAccess.GetFieldString(relatedStruct, decision.OwnerFieldName!) != decision.OwnerValue))
+                continue;
+            AuthorizationFieldMasking.MaskDisallowedFields(relatedStruct, decision.AllowedFields);
+
             if (depth > 1)
                 await ResolveRelationsAsync(relatedStruct, relatedSchema, depth - 1, ct);
             items.Add(Value.ForStruct(relatedStruct));
@@ -412,11 +444,20 @@ public sealed class ObjectMappingGrpcService(
         var rows = await _entities.FetchByColumnAsync(
             SchemaBuilder.ToTableSchema(relatedSchema), relation.ForeignKey, keyValue);
 
+        var decision = _authEvaluator.Evaluate(relatedSchema, _actingUserAccessor.ActingUser, AuthorizationAction.Read);
+
         var items = new List<Value>();
         foreach (var rowJson in rows)
         {
             if (ct.IsCancellationRequested) break;
             var relatedStruct = JsonParser.Default.Parse<Struct>(rowJson);
+
+            if (decision.Denied ||
+                (decision.OwnershipRequired &&
+                 StructFieldAccess.GetFieldString(relatedStruct, decision.OwnerFieldName!) != decision.OwnerValue))
+                continue;
+            AuthorizationFieldMasking.MaskDisallowedFields(relatedStruct, decision.AllowedFields);
+
             if (depth > 1)
                 await ResolveRelationsAsync(relatedStruct, relatedSchema, depth - 1, ct);
             items.Add(Value.ForStruct(relatedStruct));
