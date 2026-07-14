@@ -893,6 +893,44 @@ public class ObjectMappingGrpcServiceTests
         tags[0].StructValue.Fields["Label"].StringValue.Should().Be("dotnet");
     }
 
+    [Fact]
+    public async Task Get_WithFieldPermissionExcludingFkColumn_OmitsRelatedEntity()
+    {
+        // Regression test: AllowedFields normally always includes every FK column (so recursive
+        // relation resolution keeps working by default), but nothing stops a FieldPermission from
+        // explicitly excluding an FK column by name. When that happens, the FK column gets masked
+        // out of the entity struct before relation resolution runs, so the relation must be
+        // correctly omitted — not throw, not return partial/broken data.
+        var schema = SchemaFixtures.ArticleSchema() with
+        {
+            Authorization = new Iverson.Api.Schema.AuthorizationRules(
+                null,
+                new List<Iverson.Api.Schema.RowPermission> { new("test-bypass", true, true, true) },
+                new List<Iverson.Api.Schema.FieldPermission>
+                {
+                    new("AuthorId", new List<string> { "premium" }, new List<string>())
+                })
+        };
+        await _registry.RegisterAsync(schema);
+        await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
+
+        _entities.FetchByKeyAsync(
+                Arg.Is<TableSchema>(s => s.TableName == "articles"), Arg.Any<string>())
+            .Returns(ArticleJson);
+        _entities.FetchByKeyAsync(
+                Arg.Is<TableSchema>(s => s.TableName == "authors"), Arg.Any<string>())
+            .Returns(AuthorJson);
+
+        var response = await _sut.Get(
+            new MappingGetRequest { TypeName = "Article", Key = ArticleId, Depth = 1 },
+            TestServerCallContext.Create());
+
+        response.Success.Should().BeTrue();
+        response.Data.Fields.Should().ContainKey("Title");
+        response.Data.Fields.Should().NotContainKey("AuthorId");
+        response.Data.Fields.Should().NotContainKey("Author");
+    }
+
     // ── Update ────────────────────────────────────────────────────────────────
 
     [Fact]
