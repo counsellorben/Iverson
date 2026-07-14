@@ -71,6 +71,7 @@ The following were verified by `thorough-brainstorming` at spec-write time (see 
 | 14 | Consumer impact (Cat 6) | `TokenRx`/`DeriveWhitelist` (currently `private static readonly` in `StarRocksPipelineBuilder`) have no references anywhere outside that file — safe to widen to `internal` with no naming collision or unintended-exposure risk | `grep -rn "TokenRx\|DeriveWhitelist"` across `Iverson.Server` |
 | 15 | Commit convention | `feat(starrocks): ...` / `feat(api): ...` / `test(starrocks): ...` prefixes are the established convention for this project | `git log --oneline` — recent commits use this shape; `git log --oneline --all \| grep "starrocks)"` confirms the `starrocks` scope specifically |
 | 16 | Task ordering | `BuildGroupBy` declares `param` *after* its `BuildFromWithJoins` call (unlike `BuildSearch`/`BuildAggregate`, which declare it before) — Task 4 must reorder these two lines before threading `param` into `BuildFromWithJoins`, or the code doesn't compile | Read `StarRocksQueryBuilder.cs:190-192` (`BuildFromWithJoins` call) vs. `:99` / `:30` (`param` declared first in `BuildAggregate`/`BuildSearch`) — caught during this plan's self-review pass |
+| 17 | Function signature | Task 1 Step 4's alias-to-owning-type resolution is a shared `StarRocksQueryBuilder.IsFieldAllowed(...)` helper (not an inline closure private to `BuildWhere`), callable directly by `BuildAggregate`/`BuildGroupBy`/`BuildMetricExpr` (Tasks 3/4), none of which call `BuildWhere` themselves | Traced `BuildGroupBy`'s `keyCols` (`ResolveColumn(tableMap, k)`, `StarRocksQueryBuilder.cs:196-200`) and `BuildMetricExpr`'s `metric.Field` branch (`ResolveColumn(tableMap, metric.Field)`, `:258`) — both produce `"alias.column"` strings needing the same type-resolution `IsFieldAllowed` now provides. (Resolved via CIR round 1 §2.1 — the original inline closure had no callable form for Tasks 3/4 to reuse.) |
 
 ## Tasks
 
@@ -111,25 +112,39 @@ Each of the 4 methods in `StarRocksRepository.cs` gains the same trailing `authz
 
 - [ ] **Step 4: Filter-clause field check in the shared `BuildWhere` overload**
 
-In `StarRocksQueryBuilder.cs`, the `BuildWhere(StarRocksQuerySchema schema, IEnumerable<SearchClause>? clauses, SearchLogic logic, DynamicParameters param, out int nextIdx, IReadOnlyDictionary<string, JoinContext>? tableMap = null)` overload gains a trailing `IReadOnlyDictionary<string, AuthorizationConstraint>? authz = null` parameter. Its `resolve` closure construction becomes:
+In `StarRocksQueryBuilder.cs`, add a shared helper that resolves a column's owning type and checks it against that type's `AllowedFields` in one call — Tasks 3 and 4 call this same helper directly for their own field-checks, rather than each reimplementing the alias-to-type-name resolution:
+```csharp
+internal static bool IsFieldAllowed(
+    string resolvedColumnOrAliasDotColumn,
+    StarRocksQuerySchema schema,
+    IReadOnlyDictionary<string, JoinContext>? tableMap,
+    IReadOnlyDictionary<string, AuthorizationConstraint>? authz,
+    out string typeName)
+{
+    var dotIdx = tableMap is null ? -1 : resolvedColumnOrAliasDotColumn.LastIndexOf('.');
+    typeName = dotIdx < 0
+        ? schema.TypeName
+        : tableMap!.Values.First(v => v.Alias == resolvedColumnOrAliasDotColumn[..dotIdx]).Schema.TypeName;
+    var bareField = dotIdx < 0 ? resolvedColumnOrAliasDotColumn : resolvedColumnOrAliasDotColumn[(dotIdx + 1)..];
+    return authz is null || !authz.TryGetValue(typeName, out var constraint) || constraint.AllowedFields is null
+        || constraint.AllowedFields.Contains(bareField);
+}
+```
+The `BuildWhere(StarRocksQuerySchema schema, IEnumerable<SearchClause>? clauses, SearchLogic logic, DynamicParameters param, out int nextIdx, IReadOnlyDictionary<string, JoinContext>? tableMap = null)` overload gains a trailing `IReadOnlyDictionary<string, AuthorizationConstraint>? authz = null` parameter. Its `resolve` closure construction becomes:
 ```csharp
 Func<string, string?> resolve = tableMap is not null
     ? p =>
     {
         if (ResolveColumn(tableMap, p) is not { } qc) return null;
-        var dotIdx = qc.LastIndexOf('.');
-        var typeName = dotIdx < 0 ? schema.TypeName : tableMap.Values.First(v => v.Alias == qc[..dotIdx]).Schema.TypeName;
-        if (authz is not null && authz.TryGetValue(typeName, out var c) && c.AllowedFields is not null
-            && !c.AllowedFields.Contains(dotIdx < 0 ? qc : qc[(dotIdx + 1)..]))
+        if (!IsFieldAllowed(qc, schema, tableMap, authz, out var typeName))
             throw new StarRocksQueryTranslationException($"Filter property '{p}' on '{typeName}' is not authorized for this caller.");
         return QuoteQualified(qc);
     }
     : p =>
     {
         if (ResolveColumn(schema, p) is not { } c) return null;
-        if (authz is not null && authz.TryGetValue(schema.TypeName, out var constraint) && constraint.AllowedFields is not null
-            && !constraint.AllowedFields.Contains(c))
-            throw new StarRocksQueryTranslationException($"Filter property '{p}' on '{schema.TypeName}' is not authorized for this caller.");
+        if (!IsFieldAllowed(c, schema, null, authz, out var typeName))
+            throw new StarRocksQueryTranslationException($"Filter property '{p}' on '{typeName}' is not authorized for this caller.");
         return $"`{c}`";
     };
 return BuildWhere(resolve, clauses, logic, param, "p", out nextIdx);
@@ -291,7 +306,7 @@ Same wrap-and-AND pattern as Task 2 Step 1, applied to `BuildAggregate`'s own `w
 
 - [ ] **Step 2: Field reject-on-reference + `Expression` check**
 
-Before building SQL, resolve `spec.Field` (when set) and each entry of `spec.GroupByFields` (when set) to its owning type via the same alias-qualified-name-to-type-name logic introduced in Task 1 Step 4, and reject (`StarRocksQueryTranslationException`, naming the field) if that type's `AllowedFields` excludes it. When `spec.Expression` is set instead of `spec.Field`, tokenize it using `StarRocksPipelineBuilder.TokenRx`/`DeriveWhitelist` (now `internal`, per Task 1 Step 5): every identifier token not in `DeriveWhitelist` must resolve to a column present in the schema (or, if joined, `tableMap`) *and* not excluded by that column's owning type's `AllowedFields`; an unresolvable or disallowed token throws the same way a disallowed `Field` does.
+Before building SQL, resolve `spec.Field` (when set) and each entry of `spec.GroupByFields` (when set) the same way the existing `Resolve` local function does (`ResolveColumn(tableMap, ...)` when joined, `ResolveColumn(schema, ...)` otherwise), then call `StarRocksQueryBuilder.IsFieldAllowed(resolvedColumn, schema, tableMap, authz, out var typeName)` (Task 1 Step 4) on each; reject (`StarRocksQueryTranslationException`, naming `typeName` and the field) when it returns `false`. When `spec.Expression` is set instead of `spec.Field`, tokenize it using `StarRocksPipelineBuilder.TokenRx`/`DeriveWhitelist` (now `internal`, per Task 1 Step 5): every identifier token not in `DeriveWhitelist` must resolve to a column (via `ResolveColumn`) that `IsFieldAllowed` also confirms; an unresolvable or disallowed token throws the same way a disallowed `Field` does.
 
 - [ ] **Step 3: Denied-caller handling**
 
@@ -328,7 +343,7 @@ Then apply the same wrap-and-AND pattern to `BuildGroupBy`'s own `where` variabl
 
 - [ ] **Step 2: Field reject-on-reference + `Expression` check**
 
-Resolve each entry of `request.Keys` and each `MetricSpec.Field` (via `ResolveColumn(tableMap, ...)`, already tableMap-aware) to its owning type, rejecting on a disallowed reference. `BuildMetricExpr`'s `metric.Expression` branch gets the same tokenize-and-check treatment as Task 3 Step 2, reusing the same `TokenRx`/`DeriveWhitelist`.
+Each entry of `request.Keys` and each `MetricSpec.Field` already resolves via `ResolveColumn(tableMap, ...)` (`keyCols`; `BuildMetricExpr`'s `metric.Field` branch) — call `StarRocksQueryBuilder.IsFieldAllowed(resolvedColumn, schema, tableMap, authz, out var typeName)` (Task 1 Step 4) on each and reject (`StarRocksQueryTranslationException`, naming `typeName` and the field) when it returns `false`. `BuildMetricExpr`'s `metric.Expression` branch gets the same tokenize-and-check treatment as Task 3 Step 2 (`TokenRx`/`DeriveWhitelist` + `IsFieldAllowed` per token), reusing the same helpers.
 
 - [ ] **Step 3: Denied-caller handling**
 
