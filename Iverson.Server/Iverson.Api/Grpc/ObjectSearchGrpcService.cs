@@ -203,6 +203,10 @@ public sealed class ObjectSearchGrpcService(
     {
         var schema = RequireSchema(request.TypeName);
 
+        var decision = authEvaluator.Evaluate(schema, actingUserAccessor.ActingUser, AuthorizationAction.Read);
+        if (decision.Denied)
+            return; // empty stream — Qdrant never queried
+
         var chunkDesc = schema.ChunkFields.FirstOrDefault(c =>
             string.Equals(c.PropertyName, request.Property, StringComparison.OrdinalIgnoreCase))
             ?? throw new RpcException(new Status(StatusCode.InvalidArgument,
@@ -212,7 +216,17 @@ public sealed class ObjectSearchGrpcService(
             throw new RpcException(new Status(StatusCode.FailedPrecondition,
                 $"Type '{request.TypeName}' has no Qdrant collection."));
 
+        if (decision.AllowedFields is not null && !decision.AllowedFields.Contains(chunkDesc.PropertyName))
+            throw new RpcException(new Status(StatusCode.InvalidArgument,
+                $"Property '{request.Property}' on '{request.TypeName}' is not authorized for this caller."));
+
         var filter = BuildChunksFilter(schema, request);
+
+        if (decision.OwnershipRequired)
+        {
+            filter ??= new Filter();
+            filter.Must.Add(Conditions.MatchKeyword(schema.Authorization!.OwnerField!.ToCamelCase(), decision.OwnerValue!));
+        }
 
         logger.LogInformation("[SearchChunks] type={Type} property={Prop} topK={K} filtered={Filtered}",
             request.TypeName, request.Property, request.TopK, filter is not null);

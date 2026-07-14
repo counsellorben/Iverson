@@ -1172,7 +1172,7 @@ public class ObjectSearchGrpcServiceTests
         written[0].Data.Fields.Should().NotContainKey("secret");
     }
 
-    // ── SearchChunks — Qdrant path unchanged ──────────────────────────────────
+    // ── SearchChunks — authorization ───────────────────────────────────────────
 
     [Fact]
     public async Task SearchChunks_ThrowsRpcException_WhenSchemaNotRegistered()
@@ -1360,6 +1360,102 @@ public class ObjectSearchGrpcServiceTests
         (await act.Should().ThrowAsync<RpcException>())
             .Where(e => e.Status.StatusCode == StatusCode.InvalidArgument
                      && e.Status.Detail.Contains("MUST_NOT"));
+    }
+
+    [Fact]
+    public async Task SearchChunks_NoAuthorizationRules_ReturnsEmptyStream_WithoutQueryingQdrant()
+    {
+        var schema = SchemaFixtures.ArticleSchema() with { Authorization = null };
+        await _registry.RegisterAsync(schema);
+
+        var (writer, written) = MakeStream<ChunkSearchResponse>();
+        await _sut.SearchChunks(
+            new SearchChunksRequest { TypeName = "Article", Property = "Body", Query = "q" },
+            writer, TestServerCallContext.Create());
+
+        written.Should().BeEmpty();
+        await _vector.DidNotReceive().SearchNamedAsync(
+            Arg.Any<string>(), Arg.Any<string>(), Arg.Any<float[]>(), Arg.Any<ulong>(), Arg.Any<Filter>());
+    }
+
+    [Fact]
+    public async Task SearchChunks_NoActingUserIdentity_ReturnsEmptyStream()
+    {
+        await _registry.RegisterAsync(OwnedQdrantSchema("Owned", "OwnerId"));
+        _actingUserAccessor.ActingUser = null;
+
+        var (writer, written) = MakeStream<ChunkSearchResponse>();
+        await _sut.SearchChunks(
+            new SearchChunksRequest { TypeName = "Owned", Property = "Secret", Query = "q" },
+            writer, TestServerCallContext.Create());
+
+        written.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task SearchChunks_RestrictedSearchedProperty_ThrowsInvalidArgument()
+    {
+        var fieldPermissions = new List<Iverson.Api.Schema.FieldPermission> { new("Secret", ["admin"], []) };
+        await _registry.RegisterAsync(OwnedQdrantSchema("Owned", null, fieldPermissions));
+
+        var (writer, _) = MakeStream<ChunkSearchResponse>();
+        var act = async () => await _sut.SearchChunks(
+            new SearchChunksRequest { TypeName = "Owned", Property = "Secret", Query = "q" },
+            writer, TestServerCallContext.Create());
+
+        (await act.Should().ThrowAsync<RpcException>())
+            .Where(e => e.Status.StatusCode == StatusCode.InvalidArgument);
+    }
+
+    [Fact]
+    public async Task SearchChunks_KeyColumnFilterClause_NeverRejected_RegardlessOfAllowedFields()
+    {
+        // "Name" is restricted, but the request neither searches nor filters on it — proves
+        // BuildChunksFilter's single EQUALS-on-key-column clause needs no AllowedFields check.
+        var fieldPermissions = new List<Iverson.Api.Schema.FieldPermission> { new("Name", ["admin"], []) };
+        await _registry.RegisterAsync(OwnedQdrantSchema("Owned", null, fieldPermissions));
+        _embedding.EmbedAsync("q", Arg.Any<CancellationToken>()).Returns(new float[768]);
+        _vector.SearchNamedAsync("owneds_chunks", "secret_vector", Arg.Any<float[]>(), Arg.Any<ulong>(), Arg.Any<Filter>())
+               .Returns(new List<VectorSearchResult>().AsReadOnly());
+
+        var request = new SearchChunksRequest { TypeName = "Owned", Property = "Secret", Query = "q" };
+        request.Filter.Add(new SearchClause
+        {
+            Property = "Id", Operator = SearchOperator.Equals,
+            Value = new SearchValue { StringVal = "parent-1" }, ClauseType = SearchClauseType.Filter
+        });
+
+        var (writer, _) = MakeStream<ChunkSearchResponse>();
+        var act = async () => await _sut.SearchChunks(request, writer, TestServerCallContext.Create());
+
+        await act.Should().NotThrowAsync();
+    }
+
+    [Fact]
+    public async Task SearchChunks_OwnershipRequired_MergesMatchKeywordConditionWithKeyFilter()
+    {
+        await _registry.RegisterAsync(OwnedQdrantSchema("Owned", "OwnerId", bypassRole: "other-bypass"));
+        _embedding.EmbedAsync("q", Arg.Any<CancellationToken>()).Returns(new float[768]);
+        _vector.SearchNamedAsync("owneds_chunks", "secret_vector", Arg.Any<float[]>(), Arg.Any<ulong>(), Arg.Any<Filter>())
+               .Returns(new List<VectorSearchResult>().AsReadOnly());
+
+        var request = new SearchChunksRequest { TypeName = "Owned", Property = "Secret", Query = "q" };
+        request.Filter.Add(new SearchClause
+        {
+            Property = "Id", Operator = SearchOperator.Equals,
+            Value = new SearchValue { StringVal = "parent-1" }, ClauseType = SearchClauseType.Filter
+        });
+
+        var (writer, _) = MakeStream<ChunkSearchResponse>();
+        await _sut.SearchChunks(request, writer, TestServerCallContext.Create());
+
+        var call = _vector.ReceivedCalls()
+            .Should().ContainSingle(c => c.GetMethodInfo().Name == nameof(IVectorQueryService.SearchNamedAsync))
+            .Subject;
+        var captured = (Filter?)call.GetArguments()[4];
+        captured.Should().NotBeNull();
+        captured!.Must.Should().Contain(c => c.Field.Key == "ownerId" && c.Field.Match.Keyword == "test-user");
+        captured.Must.Should().Contain(c => c.Field.Key == "parent_id" && c.Field.Match.Keyword == "parent-1");
     }
 
     // ── GroupBy — authorization ─────────────────────────────────────────────────
