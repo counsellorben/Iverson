@@ -8,6 +8,7 @@ using Iverson.StarRocks;
 using Iverson.Vector;
 
 using Filter      = Qdrant.Client.Grpc.Filter;
+using Conditions  = Qdrant.Client.Grpc.Conditions;
 using SrAggKind   = Iverson.StarRocks.AggregationKind;
 using SrAggSpec   = Iverson.StarRocks.AggregationDescriptor;
 using SrAggResult = Iverson.StarRocks.AggregationResult;
@@ -105,6 +106,10 @@ public sealed class ObjectSearchGrpcService(
     {
         var schema = RequireSchema(request.TypeName);
 
+        var decision = authEvaluator.Evaluate(schema, actingUserAccessor.ActingUser, AuthorizationAction.Read);
+        if (decision.Denied)
+            return; // empty stream — Qdrant never queried
+
         var vectorDesc = schema.VectorFields.FirstOrDefault(v =>
             string.Equals(v.PropertyName, request.Property, StringComparison.OrdinalIgnoreCase))
             ?? throw new RpcException(new Status(StatusCode.InvalidArgument,
@@ -114,12 +119,19 @@ public sealed class ObjectSearchGrpcService(
             throw new RpcException(new Status(StatusCode.FailedPrecondition,
                 $"Type '{request.TypeName}' has no Qdrant collection."));
 
+        if (decision.AllowedFields is not null && !decision.AllowedFields.Contains(vectorDesc.PropertyName))
+            throw new RpcException(new Status(StatusCode.InvalidArgument,
+                $"Property '{request.Property}' on '{request.TypeName}' is not authorized for this caller."));
+
         Filter? filter = null;
         if (request.Filter.Count > 0)
         {
             var camelCased = request.Filter.Select(c =>
             {
                 ValidateFilterProperty(schema, c.Property, "SearchSimilar");
+                if (decision.AllowedFields is not null && !decision.AllowedFields.Contains(c.Property))
+                    throw new RpcException(new Status(StatusCode.InvalidArgument,
+                        $"SearchSimilar: filter property '{c.Property}' is not authorized for this caller."));
                 return new SearchClause
                 {
                     Property   = c.Property.ToCamelCase(),
@@ -137,6 +149,12 @@ public sealed class ObjectSearchGrpcService(
             {
                 throw new RpcException(new Status(StatusCode.InvalidArgument, ex.Message));
             }
+        }
+
+        if (decision.OwnershipRequired)
+        {
+            filter ??= new Filter();
+            filter.Must.Add(Conditions.MatchKeyword(schema.Authorization!.OwnerField!.ToCamelCase(), decision.OwnerValue!));
         }
 
         logger.LogInformation("[SearchSimilar] type={Type} property={Prop} topK={K} filtered={Filtered}",
@@ -162,6 +180,8 @@ public sealed class ObjectSearchGrpcService(
             var protoStruct = new Struct();
             foreach (var kvp in r.Payload)
                 protoStruct.Fields[kvp.Key] = Value.ForString(kvp.Value);
+
+            AuthorizationFieldMasking.MaskDisallowedFields(protoStruct, decision.AllowedFields, exemptField: "Key");
 
             await responseStream.WriteAsync(
                 new SearchResponse

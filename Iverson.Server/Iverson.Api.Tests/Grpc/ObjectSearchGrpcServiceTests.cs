@@ -192,6 +192,25 @@ public class ObjectSearchGrpcServiceTests
             fieldPermissions?.ToList() ?? [])
     };
 
+    private static SchemaDescriptor OwnedQdrantSchema(
+        string typeName, string? ownerField, IReadOnlyList<Iverson.Api.Schema.FieldPermission>? fieldPermissions = null,
+        string bypassRole = "test-bypass") => new()
+    {
+        TypeName       = typeName,
+        TableName      = typeName.ToLowerInvariant() + "s",
+        CollectionName = typeName.ToLowerInvariant() + "s",
+        KeyColumn      = new ColumnDescriptor("Id", "uuid", false),
+        ScalarColumns  = [new ColumnDescriptor("Name", "text", false), new ColumnDescriptor("Secret", "text", true)],
+        FkColumns      = [],
+        VectorFields   = [new VectorDescriptor("Name", 768, "nomic-embed-text")],
+        ChunkFields    = [new ChunkDescriptor("Secret", 512, 64, "nomic-embed-text", 768)],
+        Relations      = [],
+        Authorization  = new Iverson.Api.Schema.AuthorizationRules(
+            ownerField,
+            new List<Iverson.Api.Schema.RowPermission> { new(bypassRole, true, true, true) },
+            fieldPermissions?.ToList() ?? [])
+    };
+
     [Fact]
     public async Task Search_NoAuthorizationRules_ReturnsEmptyStream_WithoutQueryingSearchService()
     {
@@ -888,7 +907,7 @@ public class ObjectSearchGrpcServiceTests
         capturedFields!.Should().Contain(["Category", "PublishedAt"]);
     }
 
-    // ── SearchSimilar / SearchChunks — Qdrant paths unchanged ─────────────────
+    // ── SearchSimilar — authorization ──────────────────────────────────────────
 
     [Fact]
     public async Task SearchSimilar_ThrowsRpcException_WhenSchemaNotRegistered()
@@ -930,7 +949,11 @@ public class ObjectSearchGrpcServiceTests
             FkColumns      = [],
             VectorFields   = [new VectorDescriptor("Title", 1536, "text-embedding-3-small")],
             ChunkFields    = [],
-            Relations      = []
+            Relations      = [],
+            Authorization  = new Iverson.Api.Schema.AuthorizationRules(
+                null,
+                new List<Iverson.Api.Schema.RowPermission> { new("test-bypass", true, true, true) },
+                new List<Iverson.Api.Schema.FieldPermission>())
         };
         await _registry.RegisterAsync(schema);
 
@@ -1016,6 +1039,137 @@ public class ObjectSearchGrpcServiceTests
 
         (await act.Should().ThrowAsync<RpcException>())
             .Where(e => e.Status.StatusCode == StatusCode.InvalidArgument && e.Status.Detail.Contains("Nope"));
+    }
+
+    [Fact]
+    public async Task SearchSimilar_NoAuthorizationRules_ReturnsEmptyStream_WithoutQueryingQdrant()
+    {
+        var schema = SchemaFixtures.ArticleSchema() with { Authorization = null };
+        await _registry.RegisterAsync(schema);
+
+        var (writer, written) = MakeStream<SearchResponse>();
+        await _sut.SearchSimilar(
+            new SearchSimilarRequest { TypeName = "Article", Property = "Title", Query = "q" },
+            writer, TestServerCallContext.Create());
+
+        written.Should().BeEmpty();
+        await _vector.DidNotReceive().SearchNamedAsync(
+            Arg.Any<string>(), Arg.Any<string>(), Arg.Any<float[]>(), Arg.Any<ulong>(), Arg.Any<Filter>());
+    }
+
+    [Fact]
+    public async Task SearchSimilar_NoActingUserIdentity_ReturnsEmptyStream()
+    {
+        await _registry.RegisterAsync(OwnedQdrantSchema("Owned", "OwnerId"));
+        _actingUserAccessor.ActingUser = null;
+
+        var (writer, written) = MakeStream<SearchResponse>();
+        await _sut.SearchSimilar(
+            new SearchSimilarRequest { TypeName = "Owned", Property = "Name", Query = "q" },
+            writer, TestServerCallContext.Create());
+
+        written.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task SearchSimilar_OwnershipRequired_AddsMatchKeywordConditionToFilter()
+    {
+        // No caller-supplied filter clause — also proves a fresh Filter is constructed when none exists.
+        await _registry.RegisterAsync(OwnedQdrantSchema("Owned", "OwnerId", bypassRole: "other-bypass"));
+        _embedding.EmbedAsync("q", Arg.Any<CancellationToken>()).Returns(new float[768]);
+        _vector.SearchNamedAsync("owneds", "name_vector", Arg.Any<float[]>(), Arg.Any<ulong>(), Arg.Any<Filter>())
+               .Returns(new List<VectorSearchResult>().AsReadOnly());
+
+        var (writer, _) = MakeStream<SearchResponse>();
+        await _sut.SearchSimilar(
+            new SearchSimilarRequest { TypeName = "Owned", Property = "Name", Query = "q" },
+            writer, TestServerCallContext.Create());
+
+        var call = _vector.ReceivedCalls()
+            .Should().ContainSingle(c => c.GetMethodInfo().Name == nameof(IVectorQueryService.SearchNamedAsync))
+            .Subject;
+        var captured = (Filter?)call.GetArguments()[4];
+        captured.Should().NotBeNull();
+        captured!.Must.Should().ContainSingle(c => c.Field.Key == "ownerId" && c.Field.Match.Keyword == "test-user");
+    }
+
+    [Fact]
+    public async Task SearchSimilar_BypassRole_NoOwnershipFilterAdded()
+    {
+        await _registry.RegisterAsync(OwnedQdrantSchema("Owned", "OwnerId")); // bypassRole defaults to "test-bypass"
+        _embedding.EmbedAsync("q", Arg.Any<CancellationToken>()).Returns(new float[768]);
+        _vector.SearchNamedAsync("owneds", "name_vector", Arg.Any<float[]>(), Arg.Any<ulong>(), Arg.Any<Filter>())
+               .Returns(new List<VectorSearchResult>().AsReadOnly());
+
+        var (writer, _) = MakeStream<SearchResponse>();
+        await _sut.SearchSimilar(
+            new SearchSimilarRequest { TypeName = "Owned", Property = "Name", Query = "q" },
+            writer, TestServerCallContext.Create());
+
+        var call = _vector.ReceivedCalls()
+            .Should().ContainSingle(c => c.GetMethodInfo().Name == nameof(IVectorQueryService.SearchNamedAsync))
+            .Subject;
+        ((Filter?)call.GetArguments()[4]).Should().BeNull();
+    }
+
+    [Fact]
+    public async Task SearchSimilar_RestrictedSearchedProperty_ThrowsInvalidArgument()
+    {
+        var fieldPermissions = new List<Iverson.Api.Schema.FieldPermission> { new("Name", ["admin"], []) };
+        await _registry.RegisterAsync(OwnedQdrantSchema("Owned", null, fieldPermissions));
+
+        var (writer, _) = MakeStream<SearchResponse>();
+        var act = async () => await _sut.SearchSimilar(
+            new SearchSimilarRequest { TypeName = "Owned", Property = "Name", Query = "q" },
+            writer, TestServerCallContext.Create());
+
+        (await act.Should().ThrowAsync<RpcException>())
+            .Where(e => e.Status.StatusCode == StatusCode.InvalidArgument);
+    }
+
+    [Fact]
+    public async Task SearchSimilar_RestrictedFilterClauseProperty_ThrowsInvalidArgument()
+    {
+        var fieldPermissions = new List<Iverson.Api.Schema.FieldPermission> { new("Secret", ["admin"], []) };
+        await _registry.RegisterAsync(OwnedQdrantSchema("Owned", null, fieldPermissions));
+        _embedding.EmbedAsync("q", Arg.Any<CancellationToken>()).Returns(new float[768]);
+
+        var request = new SearchSimilarRequest { TypeName = "Owned", Property = "Name", Query = "q" };
+        request.Filter.Add(new SearchClause
+        {
+            Property = "Secret", Operator = SearchOperator.Equals,
+            Value = new SearchValue { StringVal = "x" }, ClauseType = SearchClauseType.Filter
+        });
+
+        var (writer, _) = MakeStream<SearchResponse>();
+        var act = async () => await _sut.SearchSimilar(request, writer, TestServerCallContext.Create());
+
+        (await act.Should().ThrowAsync<RpcException>())
+            .Where(e => e.Status.StatusCode == StatusCode.InvalidArgument);
+    }
+
+    [Fact]
+    public async Task SearchSimilar_RestrictedField_MaskedFromResponse_ButKeyEntrySurvives()
+    {
+        var fieldPermissions = new List<Iverson.Api.Schema.FieldPermission> { new("Secret", ["admin"], []) };
+        await _registry.RegisterAsync(OwnedQdrantSchema("Owned", null, fieldPermissions));
+        _embedding.EmbedAsync("q", Arg.Any<CancellationToken>()).Returns(new float[768]);
+
+        var vectorResult = new VectorSearchResult(
+            Id: 1, Score: 0.9,
+            Payload: new Dictionary<string, string> { ["key"] = "point-key-1", ["name"] = "visible", ["secret"] = "hidden" });
+        _vector.SearchNamedAsync("owneds", "name_vector", Arg.Any<float[]>(), Arg.Any<ulong>())
+               .Returns(new List<VectorSearchResult> { vectorResult }.AsReadOnly());
+
+        var (writer, written) = MakeStream<SearchResponse>();
+        await _sut.SearchSimilar(
+            new SearchSimilarRequest { TypeName = "Owned", Property = "Name", Query = "q" },
+            writer, TestServerCallContext.Create());
+
+        written.Should().HaveCount(1);
+        written[0].Data.Fields.Should().ContainKey("key");   // schema's real key column is "Id", not "Key" — survives via the fixed exemptField constant
+        written[0].Data.Fields.Should().ContainKey("name");
+        written[0].Data.Fields.Should().NotContainKey("secret");
     }
 
     // ── SearchChunks — Qdrant path unchanged ──────────────────────────────────
