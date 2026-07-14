@@ -151,10 +151,11 @@ public sealed class StarRocksRepository(
         int pageSize,
         IReadOnlyList<string>? fields = null,
         IReadOnlyList<JoinSpec>? joins = null,
-        Func<string, StarRocksQuerySchema?>? registry = null)
+        Func<string, StarRocksQuerySchema?>? registry = null,
+        IReadOnlyDictionary<string, AuthorizationConstraint>? authz = null)
     {
         var (sql, param) = StarRocksQueryBuilder.BuildSearch(
-            schema.TableName, schema, query, page, pageSize, fields, joins, registry);
+            schema.TableName, schema, query, page, pageSize, fields, joins, registry, authz);
         return await QueryAsync<dynamic>(sql, param);
     }
 
@@ -164,14 +165,15 @@ public sealed class StarRocksRepository(
         AggregationDescriptor spec,
         SearchQuery? having = null,
         IReadOnlyList<JoinSpec>? joins = null,
-        Func<string, StarRocksQuerySchema?>? registry = null)
+        Func<string, StarRocksQuerySchema?>? registry = null,
+        IReadOnlyDictionary<string, AuthorizationConstraint>? authz = null)
     {
         if (spec.GroupByFields is { Count: > 1 })
             throw new StarRocksQueryTranslationException(
                 "Multi-key GROUP BY (group_by_fields with more than one entry) is not yet supported via the Aggregate RPC's result decoding; use a single field or wait for the GroupByRequest RPC.");
 
         var (sql, param) = StarRocksQueryBuilder.BuildAggregate(
-            schema.TableName, schema, query, spec, having, joins, registry);
+            schema.TableName, schema, query, spec, having, joins, registry, authz);
 
         var rows = (await QueryAsync<dynamic>(sql, param)).ToList();
 
@@ -205,18 +207,20 @@ public sealed class StarRocksRepository(
     public async Task<IEnumerable<dynamic>> GroupByAsync(
         StarRocksQuerySchema schema,
         GroupByRequest request,
-        Func<string, StarRocksQuerySchema?> registry)
+        Func<string, StarRocksQuerySchema?> registry,
+        IReadOnlyDictionary<string, AuthorizationConstraint>? authz = null)
     {
-        var (sql, param) = StarRocksQueryBuilder.BuildGroupBy(schema.TableName, schema, request, registry);
+        var (sql, param) = StarRocksQueryBuilder.BuildGroupBy(schema.TableName, schema, request, registry, authz);
         return await QueryAsync<dynamic>(sql, param);
     }
 
     public async Task<IEnumerable<dynamic>> PipelineAsync(
         StarRocksQuerySchema schema,
         PipelineRequest request,
-        Func<string, StarRocksQuerySchema?> registry)
+        Func<string, StarRocksQuerySchema?> registry,
+        IReadOnlyDictionary<string, AuthorizationConstraint>? authz = null)
     {
-        var (sql, param) = StarRocksPipelineBuilder.Build(schema, request, registry);
+        var (sql, param) = StarRocksPipelineBuilder.Build(schema, request, registry, authz);
         return await QueryAsync<dynamic>(sql, param);
     }
 

@@ -34,7 +34,8 @@ public interface IEngagementStoreSearchService
         int pageSize,
         IReadOnlyList<string>? fields = null,
         IReadOnlyList<JoinSpec>? joins = null,
-        Func<string, StarRocksQuerySchema?>? registry = null);
+        Func<string, StarRocksQuerySchema?>? registry = null,
+        IReadOnlyDictionary<string, AuthorizationConstraint>? authz = null);
 
     Task<AggregationResult?> AggregateAsync(
         StarRocksQuerySchema schema,
@@ -42,15 +43,18 @@ public interface IEngagementStoreSearchService
         AggregationDescriptor spec,
         SearchQuery? having = null,
         IReadOnlyList<JoinSpec>? joins = null,
-        Func<string, StarRocksQuerySchema?>? registry = null);
+        Func<string, StarRocksQuerySchema?>? registry = null,
+        IReadOnlyDictionary<string, AuthorizationConstraint>? authz = null);
 
     Task<IEnumerable<dynamic>> GroupByAsync(
         StarRocksQuerySchema schema,
         GroupByRequest request,
-        Func<string, StarRocksQuerySchema?> registry);
+        Func<string, StarRocksQuerySchema?> registry,
+        IReadOnlyDictionary<string, AuthorizationConstraint>? authz = null);
 
     Task<IEnumerable<dynamic>> PipelineAsync(
         StarRocksQuerySchema schema,
         PipelineRequest request,
-        Func<string, StarRocksQuerySchema?> registry);
+        Func<string, StarRocksQuerySchema?> registry,
+        IReadOnlyDictionary<string, AuthorizationConstraint>? authz = null);
 }

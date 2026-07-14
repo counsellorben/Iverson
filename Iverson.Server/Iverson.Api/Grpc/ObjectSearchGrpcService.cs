@@ -1,5 +1,6 @@
 using Google.Protobuf.WellKnownTypes;
 using Grpc.Core;
+using Iverson.Api.Authorization;
 using Iverson.Api.Schema;
 using Iverson.Client.Contracts;
 using Iverson.Embeddings;
@@ -29,7 +30,9 @@ public sealed class ObjectSearchGrpcService(
     IEngagementStoreSearchService search,
     IVectorQueryService vector,
     IEmbeddingService embedding,
-    ILogger<ObjectSearchGrpcService> logger)
+    ILogger<ObjectSearchGrpcService> logger,
+    IActingUserAccessor actingUserAccessor,
+    IRowFieldAuthorizationEvaluator authEvaluator)
     : ObjectSearchService.ObjectSearchServiceBase
 {
     // ── SQL Search ─────────────────────────────────────────────────────────────
@@ -354,6 +357,35 @@ public sealed class ObjectSearchGrpcService(
     private SchemaDescriptor RequireSchema(string typeName) =>
         registry.Get(typeName) ?? throw new RpcException(new Status(StatusCode.FailedPrecondition,
             $"No schema registered for '{typeName}'. Call RegisterSchema first."));
+
+    private sealed record AuthzResult(
+        bool PrimaryDenied,
+        string? DeniedJoinedType,
+        IReadOnlyDictionary<string, AuthorizationConstraint> Constraints);
+
+    private AuthzResult EvaluateAuthorization(SchemaDescriptor primary, IEnumerable<string> joinedTypeNames)
+    {
+        var constraints = new Dictionary<string, AuthorizationConstraint>();
+
+        var primaryDecision = authEvaluator.Evaluate(primary, actingUserAccessor.ActingUser, AuthorizationAction.Read);
+        if (primaryDecision.Denied)
+            return new AuthzResult(true, null, constraints);
+        constraints[primary.TypeName] = new AuthorizationConstraint(
+            primaryDecision.AllowedFields, primaryDecision.OwnerFieldName, primaryDecision.OwnerValue);
+
+        foreach (var typeName in joinedTypeNames.Distinct().Where(t => t != primary.TypeName))
+        {
+            var joinedSchema = registry.Get(typeName)
+                ?? throw new RpcException(new Status(StatusCode.FailedPrecondition, $"No schema registered for '{typeName}'."));
+            var decision = authEvaluator.Evaluate(joinedSchema, actingUserAccessor.ActingUser, AuthorizationAction.Read);
+            if (decision.Denied)
+                return new AuthzResult(false, typeName, constraints);
+            constraints[typeName] = new AuthorizationConstraint(
+                decision.AllowedFields, decision.OwnerFieldName, decision.OwnerValue);
+        }
+
+        return new AuthzResult(false, null, constraints);
+    }
 
     private static void ValidateFilterProperty(SchemaDescriptor schema, string property, string rpcName)
     {

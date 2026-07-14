@@ -1,6 +1,7 @@
 using DotNet.Testcontainers.Builders;
 using FluentAssertions;
 using Grpc.Core;
+using Iverson.Api.Authorization;
 using Iverson.Api.Grpc;
 using Iverson.Api.Schema;
 using Iverson.Api.Tests.Helpers;
@@ -62,7 +63,9 @@ public sealed class ObjectSearchVectorIntegrationTests : IClassFixture<QdrantGrp
 
     private ObjectSearchGrpcService BuildSut() =>
         new(_registry, Substitute.For<IEngagementStoreSearchService>(), _vector, _embedding,
-            NullLogger<ObjectSearchGrpcService>.Instance);
+            NullLogger<ObjectSearchGrpcService>.Instance,
+            new ActingUserAccessor { ActingUser = ActingUserFixtures.Principal("test-user", "test-bypass") },
+            new RowFieldAuthorizationEvaluator());
 
     private static (IServerStreamWriter<T> writer, List<T> written) MakeStream<T>()
     {

@@ -21,11 +21,11 @@ internal static class StarRocksPipelineBuilder
     internal const string BaseStepName = "base";
 
     private static readonly Regex IdentifierRx = new("^[A-Za-z_][A-Za-z0-9_]*$", RegexOptions.Compiled);
-    private static readonly Regex TokenRx      = new("[A-Za-z_][A-Za-z0-9_]*", RegexOptions.Compiled);
+    internal static readonly Regex TokenRx      = new("[A-Za-z_][A-Za-z0-9_]*", RegexOptions.Compiled);
 
     // Identifiers a Derive expression may use besides input columns. Anything else —
     // including SELECT/FROM/WHERE, which blocks subqueries — fails validation.
-    private static readonly HashSet<string> DeriveWhitelist = new(StringComparer.OrdinalIgnoreCase)
+    internal static readonly HashSet<string> DeriveWhitelist = new(StringComparer.OrdinalIgnoreCase)
     {
         "SUM", "AVG", "MIN", "MAX", "COUNT", "OVER", "PARTITION", "BY", "ORDER",
         "ASC", "DESC", "COALESCE", "NULLIF", "ROUND", "ABS", "AND", "OR", "NOT", "NULL"
@@ -302,7 +302,8 @@ internal static class StarRocksPipelineBuilder
     internal static (string Sql, DynamicParameters Param) Build(
         StarRocksQuerySchema schema,
         PipelineRequest request,
-        Func<string, StarRocksQuerySchema?> registry)
+        Func<string, StarRocksQuerySchema?> registry,
+        IReadOnlyDictionary<string, AuthorizationConstraint>? authz = null)
     {
         var tracked = TrackAndValidate(schema, request, registry);
         var byName  = tracked.ToDictionary(s => s.Name, StringComparer.OrdinalIgnoreCase);

@@ -1,5 +1,6 @@
 using FluentAssertions;
 using Grpc.Core;
+using Iverson.Api.Authorization;
 using Iverson.Api.Grpc;
 using Iverson.Api.Schema;
 using Iverson.Api.Tests.Helpers;
@@ -24,6 +25,8 @@ public class ObjectSearchGrpcServiceTests
     private readonly IEngagementStoreSearchService _search;
     private readonly IVectorQueryService _vector;
     private readonly IEmbeddingService _embedding;
+    private readonly IActingUserAccessor _actingUserAccessor;
+    private readonly IRowFieldAuthorizationEvaluator _authEvaluator = new RowFieldAuthorizationEvaluator();
     private readonly ObjectSearchGrpcService _sut;
 
     public ObjectSearchGrpcServiceTests()
@@ -38,23 +41,30 @@ public class ObjectSearchGrpcServiceTests
         _search.SearchAsync(
                 Arg.Any<StarRocksQuerySchema>(), Arg.Any<SearchQuery?>(), Arg.Any<int>(), Arg.Any<int>(),
                 Arg.Any<IReadOnlyList<string>?>(), Arg.Any<IReadOnlyList<JoinSpec>?>(),
-                Arg.Any<Func<string, StarRocksQuerySchema?>?>())
+                Arg.Any<Func<string, StarRocksQuerySchema?>?>(),
+                Arg.Any<IReadOnlyDictionary<string, AuthorizationConstraint>?>())
             .Returns(Enumerable.Empty<dynamic>());
         _search.AggregateAsync(
                 Arg.Any<StarRocksQuerySchema>(), Arg.Any<SearchQuery?>(), Arg.Any<AggregationDescriptor>(),
                 Arg.Any<SearchQuery?>(), Arg.Any<IReadOnlyList<JoinSpec>?>(),
-                Arg.Any<Func<string, StarRocksQuerySchema?>?>())
+                Arg.Any<Func<string, StarRocksQuerySchema?>?>(),
+                Arg.Any<IReadOnlyDictionary<string, AuthorizationConstraint>?>())
             .Returns((SrAggResult?)null);
         _search.GroupByAsync(
-                Arg.Any<StarRocksQuerySchema>(), Arg.Any<GroupByRequest>(), Arg.Any<Func<string, StarRocksQuerySchema?>>())
+                Arg.Any<StarRocksQuerySchema>(), Arg.Any<GroupByRequest>(), Arg.Any<Func<string, StarRocksQuerySchema?>>(),
+                Arg.Any<IReadOnlyDictionary<string, AuthorizationConstraint>?>())
             .Returns(Enumerable.Empty<dynamic>());
         _search.PipelineAsync(
-                Arg.Any<StarRocksQuerySchema>(), Arg.Any<PipelineRequest>(), Arg.Any<Func<string, StarRocksQuerySchema?>>())
+                Arg.Any<StarRocksQuerySchema>(), Arg.Any<PipelineRequest>(), Arg.Any<Func<string, StarRocksQuerySchema?>>(),
+                Arg.Any<IReadOnlyDictionary<string, AuthorizationConstraint>?>())
             .Returns(Enumerable.Empty<dynamic>());
 
+        _actingUserAccessor = new ActingUserAccessor
+            { ActingUser = ActingUserFixtures.Principal("test-user", "test-bypass") };
         _sut = new ObjectSearchGrpcService(
             _registry, _search, _vector, _embedding,
-            NullLogger<ObjectSearchGrpcService>.Instance);
+            NullLogger<ObjectSearchGrpcService>.Instance,
+            _actingUserAccessor, _authEvaluator);
     }
 
     private static (IServerStreamWriter<T> writer, List<T> written) MakeStream<T>()

@@ -25,7 +25,8 @@ internal static class StarRocksQueryBuilder
         int pageSize,
         IReadOnlyList<string>? fields = null,
         IReadOnlyList<JoinSpec>? joins = null,
-        Func<string, StarRocksQuerySchema?>? registry = null)
+        Func<string, StarRocksQuerySchema?>? registry = null,
+        IReadOnlyDictionary<string, AuthorizationConstraint>? authz = null)
     {
         var param = new DynamicParameters();
 
@@ -39,7 +40,7 @@ internal static class StarRocksQueryBuilder
         if (joins is { Count: > 0 })
         {
             from = BuildFromWithJoins(schema, joins, registry!, out var tableMap);
-            where = BuildWhere(schema, query?.Clauses, query?.Logic ?? SearchLogic.And, param, out _, tableMap);
+            where = BuildWhere(schema, query?.Clauses, query?.Logic ?? SearchLogic.And, param, out _, tableMap, authz);
 
             // The primary table's own columns must be qualified with its alias once a JOIN is
             // in play — an unqualified `Id` (or any other column name shared with a joined
@@ -53,7 +54,7 @@ internal static class StarRocksQueryBuilder
         else
         {
             from = $"FROM `{tableName}`";
-            where = BuildWhere(schema, query?.Clauses, query?.Logic ?? SearchLogic.And, param, out _);
+            where = BuildWhere(schema, query?.Clauses, query?.Logic ?? SearchLogic.And, param, out _, null, authz);
             selectCols = BuildSelectColumns(schema, fields);
         }
 
@@ -94,7 +95,8 @@ internal static class StarRocksQueryBuilder
         AggregationDescriptor spec,
         SearchQuery? having = null,
         IReadOnlyList<JoinSpec>? joins = null,
-        Func<string, StarRocksQuerySchema?>? registry = null)
+        Func<string, StarRocksQuerySchema?>? registry = null,
+        IReadOnlyDictionary<string, AuthorizationConstraint>? authz = null)
     {
         var param = new DynamicParameters();
 
@@ -123,8 +125,8 @@ internal static class StarRocksQueryBuilder
         string Quote(string c) => tableMap is not null ? QuoteQualified(c) : $"`{c}`";
 
         var where = tableMap is not null
-            ? BuildWhere(schema, query?.Clauses, query?.Logic ?? SearchLogic.And, param, out _, tableMap)
-            : BuildWhere(schema, query?.Clauses, query?.Logic ?? SearchLogic.And, param, out _);
+            ? BuildWhere(schema, query?.Clauses, query?.Logic ?? SearchLogic.And, param, out _, tableMap, authz)
+            : BuildWhere(schema, query?.Clauses, query?.Logic ?? SearchLogic.And, param, out _, null, authz);
         var col = Resolve(spec.Field);
         var wc    = where.Length > 0 ? $" WHERE {where}" : "";
 
@@ -185,12 +187,13 @@ internal static class StarRocksQueryBuilder
         string primaryTable,
         StarRocksQuerySchema schema,
         GroupByRequest request,
-        Func<string, StarRocksQuerySchema?> registry)
+        Func<string, StarRocksQuerySchema?> registry,
+        IReadOnlyDictionary<string, AuthorizationConstraint>? authz = null)
     {
         var from = BuildFromWithJoins(schema, request.Joins, registry, out var tableMap);
 
         var param = new DynamicParameters();
-        var where = BuildWhere(schema, request.Query?.Clauses, request.Query?.Logic ?? SearchLogic.And, param, out _, tableMap);
+        var where = BuildWhere(schema, request.Query?.Clauses, request.Query?.Logic ?? SearchLogic.And, param, out _, tableMap, authz);
         var wc = where.Length > 0 ? $" WHERE {where}" : "";
 
         var keyCols = request.Keys
@@ -275,7 +278,8 @@ internal static class StarRocksQueryBuilder
         SearchLogic logic,
         DynamicParameters param,
         out int nextIdx,
-        IReadOnlyDictionary<string, JoinContext>? tableMap = null)
+        IReadOnlyDictionary<string, JoinContext>? tableMap = null,
+        IReadOnlyDictionary<string, AuthorizationConstraint>? authz = null)
     {
         // Single quoting decision point: resolve + fully quote the column into one
         // ready-to-embed SQL identifier. Cross-schema (tableMap present) columns are
@@ -283,9 +287,44 @@ internal static class StarRocksQueryBuilder
         // parts) — a single backtick pair around "alias.field" is invalid SQL (see
         // QuoteQualified's doc comment).
         Func<string, string?> resolve = tableMap is not null
-            ? p => ResolveColumn(tableMap, p) is { } qc ? QuoteQualified(qc) : null
-            : p => ResolveColumn(schema, p) is { } c ? $"`{c}`" : null;
+            ? p =>
+            {
+                if (ResolveColumn(tableMap, p) is not { } qc) return null;
+                if (!IsFieldAllowed(qc, schema, tableMap, authz, out var typeName))
+                    throw new StarRocksQueryTranslationException($"Filter property '{p}' on '{typeName}' is not authorized for this caller.");
+                return QuoteQualified(qc);
+            }
+            : p =>
+            {
+                if (ResolveColumn(schema, p) is not { } c) return null;
+                if (!IsFieldAllowed(c, schema, null, authz, out var typeName))
+                    throw new StarRocksQueryTranslationException($"Filter property '{p}' on '{typeName}' is not authorized for this caller.");
+                return $"`{c}`";
+            };
         return BuildWhere(resolve, clauses, logic, param, "p", out nextIdx);
+    }
+
+    /// <summary>
+    /// Resolves a column's owning type and checks it against that type's <see cref="AuthorizationConstraint.AllowedFields"/>
+    /// in one call. Shared by the <see cref="BuildWhere(StarRocksQuerySchema, IEnumerable{SearchClause}?, SearchLogic, DynamicParameters, out int, IReadOnlyDictionary{string, JoinContext}?, IReadOnlyDictionary{string, AuthorizationConstraint}?)"/>
+    /// overload's own filter-clause check above, and directly by other call sites that need the
+    /// same alias-to-type-name resolution (e.g. SELECT-column and JOIN-condition authorization
+    /// checks) rather than reimplementing it.
+    /// </summary>
+    internal static bool IsFieldAllowed(
+        string resolvedColumnOrAliasDotColumn,
+        StarRocksQuerySchema schema,
+        IReadOnlyDictionary<string, JoinContext>? tableMap,
+        IReadOnlyDictionary<string, AuthorizationConstraint>? authz,
+        out string typeName)
+    {
+        var dotIdx = tableMap is null ? -1 : resolvedColumnOrAliasDotColumn.LastIndexOf('.');
+        typeName = dotIdx < 0
+            ? schema.TypeName
+            : tableMap!.Values.First(v => v.Alias == resolvedColumnOrAliasDotColumn[..dotIdx]).Schema.TypeName;
+        var bareField = dotIdx < 0 ? resolvedColumnOrAliasDotColumn : resolvedColumnOrAliasDotColumn[(dotIdx + 1)..];
+        return authz is null || !authz.TryGetValue(typeName, out var constraint) || constraint.AllowedFields is null
+            || constraint.AllowedFields.Contains(bareField);
     }
 
     /// <summary>
