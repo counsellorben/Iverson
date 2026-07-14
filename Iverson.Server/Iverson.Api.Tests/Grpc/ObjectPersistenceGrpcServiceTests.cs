@@ -34,6 +34,14 @@ public class ObjectPersistenceGrpcServiceTests
         _sql = Substitute.For<IRecordStoreQueryExecutor>();
         _sql.ExecuteAsync(Arg.Any<string>(), Arg.Any<object?>()).Returns(0);
 
+        // NSubstitute's auto-value for an unconfigured Task<string?> member is Task.FromResult(""),
+        // not null — default every FetchByKeyAsync call to "row not found" so Update's new
+        // pre-fetch (Task 6) doesn't try to JSON-parse an empty string in tests that don't care
+        // about the pre-existing-row branch. Individual tests override this with .Returns(...)
+        // for the specific TableSchema/key they need.
+        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>())
+            .Returns((string?)null);
+
         _txRunner = Substitute.For<IRecordStoreTransactionRunner>();
         _txRunner.ExecuteInTransactionAsync(Arg.Any<Func<IDbTransactionContext, Task>>())
             .Returns(ci => ci.Arg<Func<IDbTransactionContext, Task>>()(Substitute.For<IDbTransactionContext>()));
@@ -445,6 +453,249 @@ public class ObjectPersistenceGrpcServiceTests
 
         await act.Should().ThrowAsync<RpcException>()
             .Where(e => e.Status.StatusCode == StatusCode.FailedPrecondition);
+    }
+
+    // ── Update authorization ──────────────────────────────────────────────────
+
+    [Fact]
+    public async Task Update_WithNoAuthorizationRulesConfigured_ThrowsPermissionDenied()
+    {
+        var schema = SchemaFixtures.AuthorSchema() with { Authorization = null };
+        await _registry.RegisterAsync(schema);
+
+        var payload = MakePayload(new()
+        {
+            ["Id"]   = Value.ForString(Guid.NewGuid().ToString()),
+            ["Name"] = Value.ForString("Alice Updated")
+        });
+        var request = new PersistRequest { TypeName = "Author", Payload = payload };
+
+        var act = async () => await _sut.Update(request, TestServerCallContext.Create());
+
+        await act.Should().ThrowAsync<RpcException>()
+            .Where(e => e.Status.StatusCode == StatusCode.PermissionDenied);
+    }
+
+    [Fact]
+    public async Task Update_WithNoActingUser_ThrowsPermissionDenied()
+    {
+        await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
+        _actingUserAccessor.ActingUser = null;
+
+        var payload = MakePayload(new()
+        {
+            ["Id"]   = Value.ForString(Guid.NewGuid().ToString()),
+            ["Name"] = Value.ForString("Alice Updated")
+        });
+        var request = new PersistRequest { TypeName = "Author", Payload = payload };
+
+        var act = async () => await _sut.Update(request, TestServerCallContext.Create());
+
+        await act.Should().ThrowAsync<RpcException>()
+            .Where(e => e.Status.StatusCode == StatusCode.PermissionDenied);
+    }
+
+    [Fact]
+    public async Task Update_WithMatchingOwner_ReturnsSuccess()
+    {
+        await _registry.RegisterAsync(OwnedAuthorSchema());
+        var authorId = Guid.NewGuid().ToString();
+        var ownedJson = $$"""{"Id":"{{authorId}}","Name":"Alice","OwnerId":"test-user"}""";
+        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>())
+            .Returns(ownedJson);
+
+        var payload = MakePayload(new()
+        {
+            ["Id"]      = Value.ForString(authorId),
+            ["Name"]    = Value.ForString("Alice Updated"),
+            ["OwnerId"] = Value.ForString("test-user")
+        });
+        var request = new PersistRequest { TypeName = "Author", Payload = payload };
+
+        var response = await _sut.Update(request, TestServerCallContext.Create());
+
+        response.Success.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task Update_WithBypassRole_ReturnsSuccess_EvenWhenNotOwner()
+    {
+        await _registry.RegisterAsync(OwnedAuthorSchema(withBypassRole: true));
+        var authorId = Guid.NewGuid().ToString();
+        var ownedJson = $$"""{"Id":"{{authorId}}","Name":"Alice","OwnerId":"someone-else"}""";
+        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>())
+            .Returns(ownedJson);
+
+        var payload = MakePayload(new()
+        {
+            ["Id"]      = Value.ForString(authorId),
+            ["Name"]    = Value.ForString("Alice Updated"),
+            ["OwnerId"] = Value.ForString("someone-else")
+        });
+        var request = new PersistRequest { TypeName = "Author", Payload = payload };
+
+        var response = await _sut.Update(request, TestServerCallContext.Create());
+
+        response.Success.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task Update_WithNonMatchingOwner_ThrowsPermissionDenied()
+    {
+        await _registry.RegisterAsync(OwnedAuthorSchema());
+        var authorId = Guid.NewGuid().ToString();
+        var ownedJson = $$"""{"Id":"{{authorId}}","Name":"Alice","OwnerId":"someone-else"}""";
+        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>())
+            .Returns(ownedJson);
+
+        var payload = MakePayload(new()
+        {
+            ["Id"]      = Value.ForString(authorId),
+            ["Name"]    = Value.ForString("Alice Updated"),
+            ["OwnerId"] = Value.ForString("someone-else")
+        });
+        var request = new PersistRequest { TypeName = "Author", Payload = payload };
+
+        var act = async () => await _sut.Update(request, TestServerCallContext.Create());
+
+        await act.Should().ThrowAsync<RpcException>()
+            .Where(e => e.Status.StatusCode == StatusCode.PermissionDenied);
+    }
+
+    [Fact]
+    public async Task Update_WithRestrictedFieldInWritePayload_ThrowsInvalidArgument()
+    {
+        var schema = SchemaFixtures.AuthorSchema() with
+        {
+            Authorization = new Iverson.Api.Schema.AuthorizationRules(
+                null,
+                new List<Iverson.Api.Schema.RowPermission> { new("test-bypass", true, true, true) },
+                new List<Iverson.Api.Schema.FieldPermission>
+                {
+                    new("Bio", new List<string>(), new List<string> { "premium" })
+                })
+        };
+        await _registry.RegisterAsync(schema);
+        var authorId = Guid.NewGuid().ToString();
+        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>())
+            .Returns($$"""{"Id":"{{authorId}}","Name":"Alice","Bio":"Writer"}""");
+
+        var payload = MakePayload(new()
+        {
+            ["Id"]   = Value.ForString(authorId),
+            ["Name"] = Value.ForString("Alice"),
+            ["Bio"]  = Value.ForString("Writer")
+        });
+        var request = new PersistRequest { TypeName = "Author", Payload = payload };
+
+        var act = async () => await _sut.Update(request, TestServerCallContext.Create());
+
+        await act.Should().ThrowAsync<RpcException>()
+            .Where(e => e.Status.StatusCode == StatusCode.InvalidArgument);
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("someone-else")]
+    public async Task Update_ForOrdinaryCaller_WhenRowDoesNotExistYet_ForceSetsOwnerFieldToActingUserSub(string? clientSuppliedOwnerId)
+    {
+        await _registry.RegisterAsync(OwnedAuthorSchema(withBypassRole: false));
+        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>())
+            .Returns((string?)null);
+
+        var fields = new Dictionary<string, Value>
+        {
+            ["Id"]   = Value.ForString(Guid.NewGuid().ToString()),
+            ["Name"] = Value.ForString("Alice")
+        };
+        if (clientSuppliedOwnerId is not null)
+            fields["OwnerId"] = Value.ForString(clientSuppliedOwnerId);
+        var payload = MakePayload(fields);
+        var request = new PersistRequest { TypeName = "Author", Payload = payload };
+
+        var response = await _sut.Update(request, TestServerCallContext.Create());
+
+        response.Success.Should().BeTrue();
+        payload.Fields["OwnerId"].StringValue.Should().Be("test-user");
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("someone-else")]
+    public async Task Update_WithBypassRole_WhenRowDoesNotExistYet_LeavesOwnerFieldUntouched(string? clientSuppliedOwnerId)
+    {
+        await _registry.RegisterAsync(OwnedAuthorSchema(withBypassRole: true));
+        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>())
+            .Returns((string?)null);
+
+        var fields = new Dictionary<string, Value>
+        {
+            ["Id"]   = Value.ForString(Guid.NewGuid().ToString()),
+            ["Name"] = Value.ForString("Alice")
+        };
+        if (clientSuppliedOwnerId is not null)
+            fields["OwnerId"] = Value.ForString(clientSuppliedOwnerId);
+        var payload = MakePayload(fields);
+        var request = new PersistRequest { TypeName = "Author", Payload = payload };
+
+        var response = await _sut.Update(request, TestServerCallContext.Create());
+
+        response.Success.Should().BeTrue();
+        if (clientSuppliedOwnerId is null)
+            payload.Fields.Should().NotContainKey("OwnerId");
+        else
+            payload.Fields["OwnerId"].StringValue.Should().Be(clientSuppliedOwnerId);
+    }
+
+    [Fact]
+    public async Task Update_WithNonBypassCaller_AttemptingToChangeOwnerField_ThrowsPermissionDenied()
+    {
+        await _registry.RegisterAsync(OwnedAuthorSchema(withBypassRole: false));
+        var authorId = Guid.NewGuid().ToString();
+        var ownedJson = $$"""{"Id":"{{authorId}}","Name":"Alice","OwnerId":"test-user"}""";
+        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>())
+            .Returns(ownedJson);
+
+        var payload = MakePayload(new()
+        {
+            ["Id"]      = Value.ForString(authorId),
+            ["Name"]    = Value.ForString("Alice Updated"),
+            ["OwnerId"] = Value.ForString("someone-else")
+        });
+        var request = new PersistRequest { TypeName = "Author", Payload = payload };
+
+        var act = async () => await _sut.Update(request, TestServerCallContext.Create());
+
+        var ex = await act.Should().ThrowAsync<RpcException>();
+        ex.Which.Status.StatusCode.Should().Be(StatusCode.PermissionDenied);
+        ex.Which.Status.Detail.Should().Contain("immutable");
+    }
+
+    [Fact]
+    public async Task Update_WithBypassRoleCaller_AttemptingToChangeOwnerField_ThrowsPermissionDenied()
+    {
+        // CDR-fixed case: bypass callers have decision.OwnerFieldName == null (since ownership
+        // is not required for them), so the immutability check must source the owner field name
+        // from schema.Authorization?.OwnerField, not decision.OwnerFieldName, or this would never fire.
+        await _registry.RegisterAsync(OwnedAuthorSchema(withBypassRole: true));
+        var authorId = Guid.NewGuid().ToString();
+        var ownedJson = $$"""{"Id":"{{authorId}}","Name":"Alice","OwnerId":"someone-else"}""";
+        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>())
+            .Returns(ownedJson);
+
+        var payload = MakePayload(new()
+        {
+            ["Id"]      = Value.ForString(authorId),
+            ["Name"]    = Value.ForString("Alice Updated"),
+            ["OwnerId"] = Value.ForString("yet-another-user")
+        });
+        var request = new PersistRequest { TypeName = "Author", Payload = payload };
+
+        var act = async () => await _sut.Update(request, TestServerCallContext.Create());
+
+        var ex = await act.Should().ThrowAsync<RpcException>();
+        ex.Which.Status.StatusCode.Should().Be(StatusCode.PermissionDenied);
+        ex.Which.Status.Detail.Should().Contain("immutable");
     }
 
     [Fact]

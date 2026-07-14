@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using Google.Protobuf;
 using Google.Protobuf.WellKnownTypes;
 using Grpc.Core;
 using Iverson.Api.Authorization;
@@ -113,6 +114,36 @@ public sealed class ObjectPersistenceGrpcService(
         if (string.IsNullOrWhiteSpace(key) || key == Guid.Empty.ToString())
             throw new RpcException(new Status(StatusCode.InvalidArgument,
                 $"Update requires a non-empty '{schema.KeyColumn.Name}' in the payload."));
+
+        var existingRowJson = await entities.FetchByKeyAsync(SchemaBuilder.ToTableSchema(schema), key);
+        var decision = authEvaluator.Evaluate(schema, actingUserAccessor.ActingUser, AuthorizationAction.Write);
+        if (decision.Denied)
+            throw new RpcException(new Status(StatusCode.PermissionDenied, "Not authorized to update this entity."));
+
+        if (existingRowJson is null)
+        {
+            // Row doesn't exist yet — the UPSERT will create it. Same owner-field bypass/force-set
+            // logic as Post (Task 4): force-set for ownership-required callers, leave untouched for bypass.
+            if (decision.OwnershipRequired)
+                request.Payload.Fields[decision.OwnerFieldName!] = Value.ForString(decision.OwnerValue!);
+        }
+        else
+        {
+            var existingStruct = JsonParser.Default.Parse<Struct>(existingRowJson);
+            if (decision.OwnershipRequired &&
+                StructFieldAccess.GetFieldString(existingStruct, decision.OwnerFieldName!) != decision.OwnerValue)
+                throw new RpcException(new Status(StatusCode.PermissionDenied, "Not authorized to update this entity."));
+
+            var ownerFieldName = schema.Authorization?.OwnerField;
+            if (!string.IsNullOrEmpty(ownerFieldName))
+            {
+                var attemptedOwnerValue = StructFieldAccess.GetFieldString(request.Payload, ownerFieldName);
+                if (attemptedOwnerValue is not null &&
+                    attemptedOwnerValue != StructFieldAccess.GetFieldString(existingStruct, ownerFieldName))
+                    throw new RpcException(new Status(StatusCode.PermissionDenied, "Owner field is immutable after creation."));
+            }
+        }
+        AuthorizationFieldMasking.RejectDisallowedFields(request.Payload, decision.AllowedFields, exemptField: decision.OwnerFieldName);
 
         relationValidator.ValidateRelations(request.Payload, schema);
 
