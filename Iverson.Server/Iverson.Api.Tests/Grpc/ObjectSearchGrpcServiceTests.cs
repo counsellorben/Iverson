@@ -385,6 +385,34 @@ public class ObjectSearchGrpcServiceTests
     }
 
     [Fact]
+    public async Task Search_RestrictedSortFieldRejectedByBuilder_TranslatesToInvalidArgument()
+    {
+        // Simulates what BuildOrder (StarRocksQueryTranslationException on a disallowed
+        // query.Sort entry — see StarRocksQueryBuilderTests) causes the real search service to
+        // throw; proves ObjectSearchGrpcService.Search still surfaces it as InvalidArgument.
+        // Closes a whole-branch-review gap: sort was previously ungated even though Search's
+        // filter clauses already were.
+        await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
+
+        _search.SearchAsync(
+                Arg.Any<StarRocksQuerySchema>(), Arg.Any<SearchQuery?>(), Arg.Any<int>(), Arg.Any<int>(),
+                Arg.Any<IReadOnlyList<string>?>(), Arg.Any<IReadOnlyList<JoinSpec>?>(),
+                Arg.Any<Func<string, StarRocksQuerySchema?>?>(),
+                Arg.Any<IReadOnlyDictionary<string, AuthorizationConstraint>?>())
+            .Returns<Task<IEnumerable<dynamic>>>(_ => throw new StarRocksQueryTranslationException(
+                "Sort property 'Bio' on 'Author' is not authorized for this caller."));
+
+        var request = new SearchRequest { TypeName = "Author", Query = new SearchQuery() };
+        request.Query.Sort.Add(new SearchSort { Property = "Bio" });
+
+        var (writer, _) = MakeStream<SearchResponse>();
+        var act = async () => await _sut.Search(request, writer, TestServerCallContext.Create());
+
+        (await act.Should().ThrowAsync<RpcException>())
+            .Where(e => e.Status.StatusCode == StatusCode.InvalidArgument && e.Status.Detail.Contains("Bio"));
+    }
+
+    [Fact]
     public async Task Search_LeftJoin_JoinedTypeOwnerRestricted_NonMatchingSideNullsOut_RowNotDropped()
     {
         // Simulates what a correctly-generated LEFT JOIN + ON-clause-appended owner predicate
@@ -1381,6 +1409,33 @@ public class ObjectSearchGrpcServiceTests
 
         var request = new GroupByRequest { TypeName = "Author", Keys = { "Name" } };
         request.Metrics.Add(new MetricSpec { Name = "revenue", Type = AggregationType.Sum, Expression = "Bio * 2" });
+
+        var (writer, _) = MakeStream<SearchResponse>();
+        var act = async () => await _sut.GroupBy(request, writer, TestServerCallContext.Create());
+
+        (await act.Should().ThrowAsync<RpcException>())
+            .Where(e => e.Status.StatusCode == StatusCode.InvalidArgument && e.Status.Detail.Contains("Bio"));
+    }
+
+    [Fact]
+    public async Task GroupBy_RestrictedOrderByFieldRejectedByBuilder_TranslatesToInvalidArgument()
+    {
+        // Simulates what BuildGroupBy's orderSql gate (StarRocksQueryTranslationException on a
+        // disallowed request.OrderBy entry — see StarRocksQueryBuilderTests) causes the real
+        // search service to throw; proves ObjectSearchGrpcService.GroupBy still surfaces it as
+        // InvalidArgument. Closes a whole-branch-review gap: OrderBy was previously ungated even
+        // though Keys/Metrics on this same request already were.
+        await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
+
+        _search.GroupByAsync(
+                Arg.Any<StarRocksQuerySchema>(), Arg.Any<GroupByRequest>(), Arg.Any<Func<string, StarRocksQuerySchema?>>(),
+                Arg.Any<IReadOnlyDictionary<string, AuthorizationConstraint>?>())
+            .Returns<Task<IEnumerable<dynamic>>>(_ => throw new StarRocksQueryTranslationException(
+                "ORDER BY property 'Bio' on 'Author' is not authorized for this caller."));
+
+        var request = new GroupByRequest { TypeName = "Author", Keys = { "Name" } };
+        request.Metrics.Add(new MetricSpec { Name = "cnt", Type = AggregationType.Count });
+        request.OrderBy.Add(new SearchSort { Property = "Bio" });
 
         var (writer, _) = MakeStream<SearchResponse>();
         var act = async () => await _sut.GroupBy(request, writer, TestServerCallContext.Create());

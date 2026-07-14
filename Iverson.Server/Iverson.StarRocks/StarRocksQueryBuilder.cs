@@ -33,11 +33,11 @@ internal static class StarRocksQueryBuilder
 
         var limit  = pageSize > 0 ? pageSize : 50;
         var offset = page > 0 ? page * limit : 0;
-        var order = BuildOrder(schema, query?.Sort);
 
         string from;
         string where;
         string selectCols;
+        string order;
         if (joins is { Count: > 0 })
         {
             from = BuildFromWithJoins(schema, joins, registry!, param, out var tableMap, authz);
@@ -52,6 +52,12 @@ internal static class StarRocksQueryBuilder
             var primaryAlias = tableMap[schema.TypeName].Alias;
             selectCols = BuildSelectColumns(schema, fields, primaryAlias);
 
+            // ORDER BY must be resolved and field-gated against the same tableMap as WHERE —
+            // see BuildOrder's remarks for why an unrestricted sort would otherwise leak a
+            // restricted field's relative ordering (a side channel WHERE-clause gating alone
+            // does not close).
+            order = BuildOrder(schema, query?.Sort, tableMap, authz);
+
             if (authz is not null && authz.TryGetValue(schema.TypeName, out var primaryConstraint) && primaryConstraint.OwnerColumn is not null)
             {
                 var ownerPredicate = $"`{primaryAlias}`.`{primaryConstraint.OwnerColumn}` = @__ownerVal";
@@ -64,6 +70,7 @@ internal static class StarRocksQueryBuilder
             from = $"FROM `{tableName}`";
             where = BuildWhere(schema, query?.Clauses, query?.Logic ?? SearchLogic.And, param, out _, null, authz);
             selectCols = BuildSelectColumns(schema, fields);
+            order = BuildOrder(schema, query?.Sort, null, authz);
 
             if (authz is not null && authz.TryGetValue(schema.TypeName, out var primaryConstraint) && primaryConstraint.OwnerColumn is not null)
             {
@@ -308,8 +315,18 @@ internal static class StarRocksQueryBuilder
         var havingSql = BuildHaving(request.Having?.Clauses, request.Having?.Logic ?? SearchLogic.And, param);
         var hc = havingSql.Length > 0 ? $" HAVING {havingSql}" : "";
 
+        // Field reject-on-reference: an ORDER BY over a disallowed field would leak that field's
+        // relative ordering across rows — a side channel WHERE-clause field gating alone does not
+        // close (mirrors keyCols' treatment above, and BuildSearch/BuildOrder's equivalent gate).
         var orderSql = request.OrderBy
-            .Select(s => (col: ResolveColumn(tableMap, s.Property) ?? s.Property, s.Descending))
+            .Select(s =>
+            {
+                var resolved = ResolveColumn(tableMap, s.Property) ?? s.Property;
+                if (!IsFieldAllowed(resolved, schema, tableMap, authz, out var typeName))
+                    throw new StarRocksQueryTranslationException(
+                        $"ORDER BY property '{s.Property}' on '{typeName}' is not authorized for this caller.");
+                return (col: resolved, s.Descending);
+            })
             .Select(x => $"{QuoteQualified(x.col)} {(x.Descending ? "DESC" : "ASC")}")
             .ToList();
         var oc = orderSql.Count > 0 ? $" ORDER BY {string.Join(", ", orderSql)}" : "";
@@ -704,13 +721,35 @@ internal static class StarRocksQueryBuilder
         return sb.ToString();
     }
 
-    private static string BuildOrder(StarRocksQuerySchema schema, IEnumerable<SearchSort>? sorts)
+    /// <summary>
+    /// Builds an ORDER BY clause from <see cref="SearchQuery.Sort"/>. Unresolvable sort
+    /// properties are silently skipped (matching the pre-existing behavior), but a
+    /// resolved-but-disallowed field throws — an unrestricted sort would otherwise let a caller
+    /// infer a restricted field's relative ordering across rows, a side channel that WHERE-clause
+    /// field gating (<see cref="BuildWhere(StarRocksQuerySchema, IEnumerable{SearchClause}?, SearchLogic, DynamicParameters, out int, IReadOnlyDictionary{string, JoinContext}?, IReadOnlyDictionary{string, AuthorizationConstraint}?)"/>)
+    /// alone does not close.
+    /// </summary>
+    private static string BuildOrder(
+        StarRocksQuerySchema schema,
+        IEnumerable<SearchSort>? sorts,
+        IReadOnlyDictionary<string, JoinContext>? tableMap,
+        IReadOnlyDictionary<string, AuthorizationConstraint>? authz)
     {
         if (sorts is null) return "";
-        var parts = sorts
-            .Select(s => (col: ResolveColumn(schema, s.Property), s.Descending))
-            .Where(x => x.col is not null)
-            .Select(x => $"`{x.col}` {(x.Descending ? "DESC" : "ASC")}");
+
+        var parts = new List<string>();
+        foreach (var s in sorts)
+        {
+            var resolved = tableMap is not null ? ResolveColumn(tableMap, s.Property) : ResolveColumn(schema, s.Property);
+            if (resolved is null) continue;
+
+            if (!IsFieldAllowed(resolved, schema, tableMap, authz, out var typeName))
+                throw new StarRocksQueryTranslationException(
+                    $"Sort property '{s.Property}' on '{typeName}' is not authorized for this caller.");
+
+            var quoted = tableMap is not null ? QuoteQualified(resolved) : $"`{resolved}`";
+            parts.Add($"{quoted} {(s.Descending ? "DESC" : "ASC")}");
+        }
         return string.Join(", ", parts);
     }
 

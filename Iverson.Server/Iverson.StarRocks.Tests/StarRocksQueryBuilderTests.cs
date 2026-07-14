@@ -1055,6 +1055,97 @@ public class StarRocksQueryBuilderTests
         lookup["__ownerVal"].Should().Be("user-1");
     }
 
+    // ── BuildSearch — ORDER BY field reject-on-reference ───────────────────────
+    // Closes a whole-branch-review gap: BuildOrder (unlike BuildWhere's `resolve` closures and
+    // BuildAggregate/BuildGroupBy's field checks) previously resolved sort columns via
+    // ResolveColumn with no IsFieldAllowed gate, letting a caller infer a restricted field's
+    // relative row ordering even though they could not select, filter, or aggregate on it.
+
+    [Fact]
+    public void BuildSearch_Sort_AllowedField_ProducesOrderBy()
+    {
+        var query = new SearchQuery();
+        query.Sort.Add(new SearchSort { Property = "Rating", Descending = true });
+        var authz = new Dictionary<string, AuthorizationConstraint>
+        {
+            ["Author"] = new(AllowedFields: new HashSet<string> { "Id", "Name", "Rating" }, OwnerColumn: null, OwnerValue: null)
+        };
+
+        var (sql, _) = StarRocksQueryBuilder.BuildSearch("authors", AuthorSchema(), query, 0, 10, authz: authz);
+
+        sql.Should().Contain("ORDER BY `Rating` DESC");
+    }
+
+    [Fact]
+    public void BuildSearch_Sort_RestrictedField_ThrowsTranslationException()
+    {
+        var query = new SearchQuery();
+        query.Sort.Add(new SearchSort { Property = "Bio" });
+        var authz = new Dictionary<string, AuthorizationConstraint>
+        {
+            ["Author"] = new(AllowedFields: new HashSet<string> { "Id", "Name" }, OwnerColumn: null, OwnerValue: null)
+        };
+
+        var act = () => StarRocksQueryBuilder.BuildSearch("authors", AuthorSchema(), query, 0, 10, authz: authz);
+
+        act.Should().Throw<StarRocksQueryTranslationException>().WithMessage("*Bio*");
+    }
+
+    [Fact]
+    public void BuildSearch_Sort_RestrictedField_ViaJoinedType_ThrowsTranslationException()
+    {
+        var registry = BuildRegistry(AuthorSchema(), ArticleSchema());
+        var joins = new List<JoinSpec>
+        {
+            new() { LeftType = "Author", RightType = "Article", LeftField = "Id", RightField = "Id", Kind = JoinKind.Inner }
+        };
+        var query = new SearchQuery();
+        query.Sort.Add(new SearchSort { Property = "Article.Body" });
+        var authz = new Dictionary<string, AuthorizationConstraint>
+        {
+            ["Article"] = new(AllowedFields: new HashSet<string> { "Id", "Title" }, OwnerColumn: null, OwnerValue: null)
+        };
+
+        var act = () => StarRocksQueryBuilder.BuildSearch(
+            "authors", AuthorSchema(), query, 0, 10, joins: joins, registry: registry, authz: authz);
+
+        var thrown = act.Should().Throw<StarRocksQueryTranslationException>().Which;
+        thrown.Message.Should().Contain("Body");
+        thrown.Message.Should().Contain("Article");
+    }
+
+    [Fact]
+    public void BuildSearch_Sort_AllowedField_ViaJoinedType_ProducesQualifiedOrderBy()
+    {
+        var registry = BuildRegistry(AuthorSchema(), ArticleSchema());
+        var joins = new List<JoinSpec>
+        {
+            new() { LeftType = "Author", RightType = "Article", LeftField = "Id", RightField = "Id", Kind = JoinKind.Inner }
+        };
+        var query = new SearchQuery();
+        query.Sort.Add(new SearchSort { Property = "Article.Title" });
+        var authz = new Dictionary<string, AuthorizationConstraint>
+        {
+            ["Article"] = new(AllowedFields: new HashSet<string> { "Id", "Title" }, OwnerColumn: null, OwnerValue: null)
+        };
+
+        var (sql, _) = StarRocksQueryBuilder.BuildSearch(
+            "authors", AuthorSchema(), query, 0, 10, joins: joins, registry: registry, authz: authz);
+
+        sql.Should().Contain("ORDER BY `articles`.`Title` ASC");
+    }
+
+    [Fact]
+    public void BuildSearch_Sort_NoAuthz_DoesNotEnforceFieldRestrictions()
+    {
+        var query = new SearchQuery();
+        query.Sort.Add(new SearchSort { Property = "Bio" });
+
+        var act = () => StarRocksQueryBuilder.BuildSearch("authors", AuthorSchema(), query, 0, 10);
+
+        act.Should().NotThrow();
+    }
+
     // ── BuildFromWithJoins ─────────────────────────────────────────────────────
 
     private static Func<string, StarRocksQuerySchema?> BuildRegistry(params StarRocksQuerySchema[] schemas)
@@ -1804,6 +1895,84 @@ public class StarRocksQueryBuilderTests
         var registry = BuildRegistry(AuthorSchema());
         var request = new GroupByRequest { TypeName = "Author", Keys = { "Bio" } };
         request.Metrics.Add(new MetricSpec { Name = "by_bio", Type = AggregationType.Max, Field = "Bio" });
+
+        var act = () => StarRocksQueryBuilder.BuildGroupBy("authors", AuthorSchema(), request, registry);
+
+        act.Should().NotThrow();
+    }
+
+    // ── BuildGroupBy — ORDER BY field reject-on-reference ──────────────────────
+    // Closes the same whole-branch-review gap as BuildSearch's Sort tests above: OrderBy's
+    // resolution previously had no IsFieldAllowed gate, unlike Keys/Metrics on this same request.
+
+    [Fact]
+    public void BuildGroupBy_OrderBy_AllowedField_ProducesOrderBy()
+    {
+        var registry = BuildRegistry(AuthorSchema());
+        var request = new GroupByRequest { TypeName = "Author", Keys = { "Name" } };
+        request.Metrics.Add(new MetricSpec { Name = "cnt", Type = AggregationType.Count });
+        request.OrderBy.Add(new SearchSort { Property = "Rating", Descending = true });
+        var authz = new Dictionary<string, AuthorizationConstraint>
+        {
+            ["Author"] = new(AllowedFields: new HashSet<string> { "Id", "Name", "Rating" }, OwnerColumn: null, OwnerValue: null)
+        };
+
+        var (sql, _) = StarRocksQueryBuilder.BuildGroupBy("authors", AuthorSchema(), request, registry, authz: authz);
+
+        sql.Should().Contain("ORDER BY `authors`.`Rating` DESC");
+    }
+
+    [Fact]
+    public void BuildGroupBy_OrderBy_RestrictedField_ThrowsTranslationException()
+    {
+        var registry = BuildRegistry(AuthorSchema());
+        var request = new GroupByRequest { TypeName = "Author", Keys = { "Name" } };
+        request.Metrics.Add(new MetricSpec { Name = "cnt", Type = AggregationType.Count });
+        request.OrderBy.Add(new SearchSort { Property = "Bio" });
+        var authz = new Dictionary<string, AuthorizationConstraint>
+        {
+            ["Author"] = new(AllowedFields: new HashSet<string> { "Id", "Name" }, OwnerColumn: null, OwnerValue: null)
+        };
+
+        var act = () => StarRocksQueryBuilder.BuildGroupBy("authors", AuthorSchema(), request, registry, authz: authz);
+
+        act.Should().Throw<StarRocksQueryTranslationException>().WithMessage("*Bio*");
+    }
+
+    [Fact]
+    public void BuildGroupBy_OrderBy_RestrictedField_ViaJoinedType_ThrowsTranslationException()
+    {
+        var registry = BuildRegistry(AuthorSchema(), ArticleSchema());
+        var request = new GroupByRequest
+        {
+            TypeName = "Author",
+            Keys     = { "Name" },
+            Joins =
+            {
+                new JoinSpec { LeftType = "Author", RightType = "Article", LeftField = "Id", RightField = "Id", Kind = JoinKind.Inner }
+            }
+        };
+        request.Metrics.Add(new MetricSpec { Name = "cnt", Type = AggregationType.Count });
+        request.OrderBy.Add(new SearchSort { Property = "Article.Body" });
+        var authz = new Dictionary<string, AuthorizationConstraint>
+        {
+            ["Article"] = new(AllowedFields: new HashSet<string> { "Id", "Title" }, OwnerColumn: null, OwnerValue: null)
+        };
+
+        var act = () => StarRocksQueryBuilder.BuildGroupBy("authors", AuthorSchema(), request, registry, authz: authz);
+
+        var thrown = act.Should().Throw<StarRocksQueryTranslationException>().Which;
+        thrown.Message.Should().Contain("Body");
+        thrown.Message.Should().Contain("Article");
+    }
+
+    [Fact]
+    public void BuildGroupBy_OrderBy_NoAuthz_DoesNotEnforceFieldRestrictions()
+    {
+        var registry = BuildRegistry(AuthorSchema());
+        var request = new GroupByRequest { TypeName = "Author", Keys = { "Name" } };
+        request.Metrics.Add(new MetricSpec { Name = "cnt", Type = AggregationType.Count });
+        request.OrderBy.Add(new SearchSort { Property = "Bio" });
 
         var act = () => StarRocksQueryBuilder.BuildGroupBy("authors", AuthorSchema(), request, registry);
 
