@@ -1,4 +1,5 @@
 using FluentAssertions;
+using Google.Protobuf.WellKnownTypes;
 using Grpc.Core;
 using Iverson.Api.Authorization;
 using Iverson.Api.Grpc;
@@ -339,6 +340,50 @@ public class ObjectSearchGrpcServiceTests
         captured.Should().NotBeNull();
         captured!["Article"].OwnerColumn.Should().Be("OwnerId");
         captured["Article"].OwnerValue.Should().Be("test-user"); // default fixture's sub claim
+    }
+
+    [Fact]
+    public async Task Search_LeftJoin_JoinedTypeOwnerRestricted_NonMatchingSideNullsOut_RowNotDropped()
+    {
+        // Simulates what a correctly-generated LEFT JOIN + ON-clause-appended owner predicate
+        // (StarRocksQueryBuilderTests' BuildFromWithJoins_LeftJoin_* SQL-shape tests) actually
+        // produces at execution time: every primary-side row survives regardless of whether the
+        // caller is authorized to see a matching Article row, because the owner check lives in
+        // the JOIN's ON clause rather than the outer WHERE. Had it been placed in WHERE instead,
+        // the LEFT JOIN would have silently degraded to INNER JOIN behavior and row 2 below (no
+        // authorized Article match) would have been dropped entirely instead of surfacing with
+        // its joined-side column null. This test proves the RPC layer forwards such a result set
+        // unchanged — no extra row-dropping or error on the null side.
+        await _registry.RegisterAsync(SchemaFixtures.AuthorSchema()); // bypass role "test-bypass"
+        await _registry.RegisterAsync(OwnedSchema("Article", "OwnerId", bypassRole: "other-bypass"));
+
+        var ownerMatchRow    = new Dictionary<string, object?> { ["Id"] = "1", ["Name"] = "Alice", ["Title"] = "Owned Article" };
+        var nonMatchRow      = new Dictionary<string, object?> { ["Id"] = "2", ["Name"] = "Bob", ["Title"] = null };
+        _search.SearchAsync(
+                Arg.Any<StarRocksQuerySchema>(), Arg.Any<SearchQuery?>(), Arg.Any<int>(), Arg.Any<int>(),
+                Arg.Any<IReadOnlyList<string>?>(), Arg.Any<IReadOnlyList<JoinSpec>?>(),
+                Arg.Any<Func<string, StarRocksQuerySchema?>?>(),
+                Arg.Any<IReadOnlyDictionary<string, AuthorizationConstraint>?>())
+            .Returns(new[] { (dynamic)ownerMatchRow, (dynamic)nonMatchRow }.AsEnumerable());
+
+        var request = new SearchRequest { TypeName = "Author" };
+        request.Joins.Add(new JoinSpec
+        {
+            LeftType = "Author", RightType = "Article", LeftField = "Id", RightField = "AuthorId", Kind = JoinKind.Left
+        });
+
+        var (writer, written) = MakeStream<SearchResponse>();
+        await _sut.Search(request, writer, TestServerCallContext.Create());
+
+        // Row count preserved: the non-owned-Article row is NOT dropped.
+        written.Should().HaveCount(2);
+
+        var alice = written.Single(r => r.Data.Fields["Name"].StringValue == "Alice");
+        alice.Data.Fields["Title"].StringValue.Should().Be("Owned Article");
+
+        var bob = written.Single(r => r.Data.Fields["Name"].StringValue == "Bob");
+        bob.Data.Fields.Should().ContainKey("Title");
+        bob.Data.Fields["Title"].KindCase.Should().Be(Value.KindOneofCase.NullValue);
     }
 
     // ── Aggregate ─────────────────────────────────────────────────────────────
