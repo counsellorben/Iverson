@@ -1084,4 +1084,110 @@ public class ObjectMappingGrpcServiceTests
         var ex = await act.Should().ThrowAsync<RpcException>();
         ex.Which.StatusCode.Should().Be(StatusCode.FailedPrecondition);
     }
+
+    // ── Delete authorization ──────────────────────────────────────────────────
+
+    [Fact]
+    public async Task Delete_WithNoAuthorizationRulesConfigured_ReturnsNotFound()
+    {
+        var schema = SchemaFixtures.AuthorSchema() with { Authorization = null };
+        await _registry.RegisterAsync(schema);
+        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>())
+            .Returns(AuthorJson);
+
+        var response = await _sut.Delete(
+            new MappingDeleteRequest { TypeName = "Author", Key = AuthorId },
+            TestServerCallContext.Create());
+
+        response.Success.Should().BeFalse();
+        response.Error.Should().Contain("not found");
+        await _events.DidNotReceive().ProduceAsync(
+            EntityTopics.Events, Arg.Any<string>(), Arg.Any<EntityEvent>());
+    }
+
+    [Fact]
+    public async Task Delete_WithNoActingUser_ReturnsNotFound()
+    {
+        await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
+        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>())
+            .Returns(AuthorJson);
+        _actingUserAccessor.ActingUser = null;
+
+        var response = await _sut.Delete(
+            new MappingDeleteRequest { TypeName = "Author", Key = AuthorId },
+            TestServerCallContext.Create());
+
+        response.Success.Should().BeFalse();
+        response.Error.Should().Contain("not found");
+        await _events.DidNotReceive().ProduceAsync(
+            EntityTopics.Events, Arg.Any<string>(), Arg.Any<EntityEvent>());
+    }
+
+    [Fact]
+    public async Task Delete_WithMatchingOwner_ReturnsSuccess()
+    {
+        await _registry.RegisterAsync(OwnedAuthorSchema());
+        var ownedJson = $$"""{"Id":"{{AuthorId}}","Name":"Alice","OwnerId":"test-user"}""";
+        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>())
+            .Returns(ownedJson);
+
+        EntityEvent? evt = null;
+        _events.When(e => e.ProduceAsync(EntityTopics.Events, Arg.Any<string>(), Arg.Any<EntityEvent>()))
+               .Do(call => evt = call.ArgAt<EntityEvent>(2));
+
+        var response = await _sut.Delete(
+            new MappingDeleteRequest { TypeName = "Author", Key = AuthorId },
+            TestServerCallContext.Create());
+
+        response.Success.Should().BeTrue();
+        await _entities.Received(1).DeleteAsync(
+            Arg.Any<IDbTransactionContext>(),
+            Arg.Is<TableSchema>(s => s.TableName == "authors"),
+            AuthorId);
+        evt!.TypeName.Should().Be("Author");
+        evt.EventType.Should().Be(EntityEventType.Deleted);
+    }
+
+    [Fact]
+    public async Task Delete_WithBypassRole_ReturnsSuccess_EvenWhenNotOwner()
+    {
+        await _registry.RegisterAsync(OwnedAuthorSchema(withBypassRole: true));
+        var ownedJson = $$"""{"Id":"{{AuthorId}}","Name":"Alice","OwnerId":"someone-else"}""";
+        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>())
+            .Returns(ownedJson);
+
+        EntityEvent? evt = null;
+        _events.When(e => e.ProduceAsync(EntityTopics.Events, Arg.Any<string>(), Arg.Any<EntityEvent>()))
+               .Do(call => evt = call.ArgAt<EntityEvent>(2));
+
+        var response = await _sut.Delete(
+            new MappingDeleteRequest { TypeName = "Author", Key = AuthorId },
+            TestServerCallContext.Create());
+
+        response.Success.Should().BeTrue();
+        await _entities.Received(1).DeleteAsync(
+            Arg.Any<IDbTransactionContext>(),
+            Arg.Is<TableSchema>(s => s.TableName == "authors"),
+            AuthorId);
+        evt!.TypeName.Should().Be("Author");
+        evt.EventType.Should().Be(EntityEventType.Deleted);
+    }
+
+    [Fact]
+    public async Task Delete_WithNonMatchingOwner_ReturnsNotFound()
+    {
+        await _registry.RegisterAsync(OwnedAuthorSchema());
+        var ownedJson = $$"""{"Id":"{{AuthorId}}","Name":"Alice","OwnerId":"someone-else"}""";
+        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>())
+            .Returns(ownedJson);
+
+        var response = await _sut.Delete(
+            new MappingDeleteRequest { TypeName = "Author", Key = AuthorId },
+            TestServerCallContext.Create());
+
+        response.Success.Should().BeFalse();
+        response.Error.Should().Contain("not found");
+        await _events.DidNotReceive().ProduceAsync(
+            EntityTopics.Events, Arg.Any<string>(), Arg.Any<EntityEvent>());
+    }
 }

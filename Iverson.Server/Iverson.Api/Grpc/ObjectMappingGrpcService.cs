@@ -286,6 +286,19 @@ public sealed class ObjectMappingGrpcService(
                 TraceId = request.TraceId
             };
 
+        var decision = _authEvaluator.Evaluate(schema, _actingUserAccessor.ActingUser, AuthorizationAction.Delete);
+        if (decision.Denied ||
+            (decision.OwnershipRequired &&
+             StructFieldAccess.GetFieldString(JsonParser.Default.Parse<Struct>(rowJson), decision.OwnerFieldName!) != decision.OwnerValue))
+        {
+            return new MappingDeleteResponse
+            {
+                Success = false,
+                Error   = $"'{request.TypeName}:{request.Key}' not found.",
+                TraceId = request.TraceId
+            };
+        }
+
         var targetStores = StoreTargeting.DetermineTargetStores(schema);
         var outboxRowId  = Guid.CreateVersion7();
 
