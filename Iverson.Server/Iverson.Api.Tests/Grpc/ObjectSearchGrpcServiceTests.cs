@@ -1138,6 +1138,215 @@ public class ObjectSearchGrpcServiceTests
                      && e.Status.Detail.Contains("MUST_NOT"));
     }
 
+    // ── GroupBy — authorization ─────────────────────────────────────────────────
+    //
+    // Reject-on-reference for Keys/MetricSpec.Field/MetricSpec.Expression (including the
+    // Field-vs-Expression independent-check regression) is StarRocksQueryBuilder's concern
+    // (covered end-to-end, with real thrown exceptions, by StarRocksQueryBuilderTests'
+    // "BuildGroupBy — ownership + field reject-on-reference" section). Since `_search` is a
+    // mock here, these RPC-level tests instead cover what actually lives in
+    // ObjectSearchGrpcService.GroupBy: denied-caller short-circuiting, InvalidArgument
+    // translation, and that the correct AuthorizationConstraint (the input BuildGroupBy's
+    // ownership/field checks act on) is computed and forwarded.
+
+    [Fact]
+    public async Task GroupBy_NoAuthorizationRules_ReturnsEmptyStream_WithoutQueryingSearchService()
+    {
+        var schema = SchemaFixtures.AuthorSchema() with { Authorization = null };
+        await _registry.RegisterAsync(schema);
+
+        var request = new GroupByRequest { TypeName = "Author", Keys = { "Name" } };
+        request.Metrics.Add(new MetricSpec { Name = "cnt", Type = AggregationType.Count });
+
+        var (writer, written) = MakeStream<SearchResponse>();
+        await _sut.GroupBy(request, writer, TestServerCallContext.Create());
+
+        written.Should().BeEmpty();
+        _search.ReceivedCalls().Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task GroupBy_NoActingUser_ReturnsEmptyStream_WithoutQueryingSearchService()
+    {
+        await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
+        _actingUserAccessor.ActingUser = null;
+
+        var request = new GroupByRequest { TypeName = "Author", Keys = { "Name" } };
+        request.Metrics.Add(new MetricSpec { Name = "cnt", Type = AggregationType.Count });
+
+        var (writer, written) = MakeStream<SearchResponse>();
+        await _sut.GroupBy(request, writer, TestServerCallContext.Create());
+
+        written.Should().BeEmpty();
+        _search.ReceivedCalls().Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task GroupBy_JoinedTypeWithNoAuthorizationRules_ThrowsInvalidArgument_WithoutQueryingSearchService()
+    {
+        await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
+        await _registry.RegisterAsync(SchemaFixtures.ArticleSchema() with { Authorization = null });
+
+        var request = new GroupByRequest { TypeName = "Author", Keys = { "Name" } };
+        request.Joins.Add(new JoinSpec
+        {
+            LeftType = "Author", RightType = "Article", LeftField = "Id", RightField = "AuthorId", Kind = JoinKind.Inner
+        });
+        request.Metrics.Add(new MetricSpec { Name = "cnt", Type = AggregationType.Count });
+
+        var (writer, _) = MakeStream<SearchResponse>();
+        var act = async () => await _sut.GroupBy(request, writer, TestServerCallContext.Create());
+
+        (await act.Should().ThrowAsync<RpcException>())
+            .Where(e => e.Status.StatusCode == StatusCode.InvalidArgument && e.Status.Detail.Contains("Article"));
+        _search.ReceivedCalls().Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task GroupBy_BypassCaller_ForwardsUnrestrictedConstraint_NoOwnerFilter()
+    {
+        await _registry.RegisterAsync(OwnedSchema("Owned", "OwnerId"));
+
+        IReadOnlyDictionary<string, AuthorizationConstraint>? captured = null;
+        _search.GroupByAsync(
+                Arg.Any<StarRocksQuerySchema>(), Arg.Any<GroupByRequest>(), Arg.Any<Func<string, StarRocksQuerySchema?>>(),
+                Arg.Do<IReadOnlyDictionary<string, AuthorizationConstraint>?>(a => captured = a))
+            .Returns(Enumerable.Empty<dynamic>());
+
+        var request = new GroupByRequest { TypeName = "Owned", Keys = { "Name" } };
+        request.Metrics.Add(new MetricSpec { Name = "cnt", Type = AggregationType.Count });
+
+        var (writer, _) = MakeStream<SearchResponse>();
+        await _sut.GroupBy(request, writer, TestServerCallContext.Create());
+
+        captured.Should().NotBeNull();
+        captured!["Owned"].OwnerColumn.Should().BeNull();
+        captured["Owned"].AllowedFields.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task GroupBy_OwnerRestrictedCaller_ForwardsOwnerColumnAndCallerIdAsOwnerValue()
+    {
+        // This is the input that makes BuildGroupBy's primary-ownership wrap-and-AND (covered
+        // in StarRocksQueryBuilderTests) actually filter rows for this caller: proves the RPC
+        // computes and forwards it correctly.
+        await _registry.RegisterAsync(OwnedSchema("Owned", "OwnerId"));
+        _actingUserAccessor.ActingUser = ActingUserFixtures.Principal("alice", "member");
+
+        IReadOnlyDictionary<string, AuthorizationConstraint>? captured = null;
+        _search.GroupByAsync(
+                Arg.Any<StarRocksQuerySchema>(), Arg.Any<GroupByRequest>(), Arg.Any<Func<string, StarRocksQuerySchema?>>(),
+                Arg.Do<IReadOnlyDictionary<string, AuthorizationConstraint>?>(a => captured = a))
+            .Returns(Enumerable.Empty<dynamic>());
+
+        var request = new GroupByRequest { TypeName = "Owned", Keys = { "Name" } };
+        request.Metrics.Add(new MetricSpec { Name = "cnt", Type = AggregationType.Count });
+
+        var (writer, _) = MakeStream<SearchResponse>();
+        await _sut.GroupBy(request, writer, TestServerCallContext.Create());
+
+        captured.Should().NotBeNull();
+        captured!["Owned"].OwnerColumn.Should().Be("OwnerId");
+        captured["Owned"].OwnerValue.Should().Be("alice");
+    }
+
+    [Fact]
+    public async Task GroupBy_JoinedTypeOwnerRestricted_ForwardsOwnerConstraintForJoinedType()
+    {
+        await _registry.RegisterAsync(SchemaFixtures.AuthorSchema()); // bypass role "test-bypass"
+        await _registry.RegisterAsync(OwnedSchema("Article", "OwnerId", bypassRole: "other-bypass"));
+
+        IReadOnlyDictionary<string, AuthorizationConstraint>? captured = null;
+        _search.GroupByAsync(
+                Arg.Any<StarRocksQuerySchema>(), Arg.Any<GroupByRequest>(), Arg.Any<Func<string, StarRocksQuerySchema?>>(),
+                Arg.Do<IReadOnlyDictionary<string, AuthorizationConstraint>?>(a => captured = a))
+            .Returns(Enumerable.Empty<dynamic>());
+
+        var request = new GroupByRequest { TypeName = "Author", Keys = { "Name" } };
+        request.Joins.Add(new JoinSpec
+        {
+            LeftType = "Author", RightType = "Article", LeftField = "Id", RightField = "AuthorId", Kind = JoinKind.Left
+        });
+        request.Metrics.Add(new MetricSpec { Name = "cnt", Type = AggregationType.Count });
+
+        var (writer, _) = MakeStream<SearchResponse>();
+        await _sut.GroupBy(request, writer, TestServerCallContext.Create());
+
+        captured.Should().NotBeNull();
+        captured!["Article"].OwnerColumn.Should().Be("OwnerId");
+        captured["Article"].OwnerValue.Should().Be("test-user"); // default fixture's sub claim
+    }
+
+    [Fact]
+    public async Task GroupBy_RestrictedKeyRejectedByBuilder_TranslatesToInvalidArgument()
+    {
+        // Simulates what BuildGroupBy (StarRocksQueryTranslationException on a disallowed
+        // request.Keys entry — see StarRocksQueryBuilderTests) causes the real search service
+        // to throw; proves ObjectSearchGrpcService.GroupBy still surfaces it as InvalidArgument
+        // even though authorization is now evaluated before dispatch.
+        await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
+
+        _search.GroupByAsync(
+                Arg.Any<StarRocksQuerySchema>(), Arg.Any<GroupByRequest>(), Arg.Any<Func<string, StarRocksQuerySchema?>>(),
+                Arg.Any<IReadOnlyDictionary<string, AuthorizationConstraint>?>())
+            .Returns<Task<IEnumerable<dynamic>>>(_ => throw new StarRocksQueryTranslationException(
+                "GROUP BY key 'Bio' on 'Author' is not authorized for this caller."));
+
+        var request = new GroupByRequest { TypeName = "Author", Keys = { "Bio" } };
+        request.Metrics.Add(new MetricSpec { Name = "cnt", Type = AggregationType.Count });
+
+        var (writer, _) = MakeStream<SearchResponse>();
+        var act = async () => await _sut.GroupBy(request, writer, TestServerCallContext.Create());
+
+        (await act.Should().ThrowAsync<RpcException>())
+            .Where(e => e.Status.StatusCode == StatusCode.InvalidArgument && e.Status.Detail.Contains("Bio"));
+    }
+
+    [Fact]
+    public async Task GroupBy_RestrictedMetricFieldRejectedByBuilder_TranslatesToInvalidArgument()
+    {
+        await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
+
+        _search.GroupByAsync(
+                Arg.Any<StarRocksQuerySchema>(), Arg.Any<GroupByRequest>(), Arg.Any<Func<string, StarRocksQuerySchema?>>(),
+                Arg.Any<IReadOnlyDictionary<string, AuthorizationConstraint>?>())
+            .Returns<Task<IEnumerable<dynamic>>>(_ => throw new StarRocksQueryTranslationException(
+                "Field 'Bio' on 'Author' referenced by metric 'by_bio' is not authorized for this caller."));
+
+        var request = new GroupByRequest { TypeName = "Author", Keys = { "Name" } };
+        request.Metrics.Add(new MetricSpec { Name = "by_bio", Type = AggregationType.Max, Field = "Bio" });
+
+        var (writer, _) = MakeStream<SearchResponse>();
+        var act = async () => await _sut.GroupBy(request, writer, TestServerCallContext.Create());
+
+        (await act.Should().ThrowAsync<RpcException>())
+            .Where(e => e.Status.StatusCode == StatusCode.InvalidArgument && e.Status.Detail.Contains("Bio"));
+    }
+
+    [Fact]
+    public async Task GroupBy_RestrictedMetricExpressionRejectedByBuilder_TranslatesToInvalidArgument()
+    {
+        // Same as above but for the metric.Expression path — proves the bypass (routing a
+        // disallowed column through Expression instead of Field) is closed all the way up
+        // through the RPC layer, not just at StarRocksQueryBuilder's unit level.
+        await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
+
+        _search.GroupByAsync(
+                Arg.Any<StarRocksQuerySchema>(), Arg.Any<GroupByRequest>(), Arg.Any<Func<string, StarRocksQuerySchema?>>(),
+                Arg.Any<IReadOnlyDictionary<string, AuthorizationConstraint>?>())
+            .Returns<Task<IEnumerable<dynamic>>>(_ => throw new StarRocksQueryTranslationException(
+                "Field 'Bio' on 'Author' referenced by metric 'revenue' expression is not authorized for this caller."));
+
+        var request = new GroupByRequest { TypeName = "Author", Keys = { "Name" } };
+        request.Metrics.Add(new MetricSpec { Name = "revenue", Type = AggregationType.Sum, Expression = "Bio * 2" });
+
+        var (writer, _) = MakeStream<SearchResponse>();
+        var act = async () => await _sut.GroupBy(request, writer, TestServerCallContext.Create());
+
+        (await act.Should().ThrowAsync<RpcException>())
+            .Where(e => e.Status.StatusCode == StatusCode.InvalidArgument && e.Status.Detail.Contains("Bio"));
+    }
+
     // ── Pipeline ──────────────────────────────────────────────────────────────
 
     [Fact]

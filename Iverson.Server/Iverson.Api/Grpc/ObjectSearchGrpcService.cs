@@ -301,6 +301,13 @@ public sealed class ObjectSearchGrpcService(
     {
         var schema = RequireSchema(request.TypeName);
 
+        var joinedTypes = request.Joins.SelectMany(j => new[] { j.LeftType, j.RightType });
+        var auth = EvaluateAuthorization(schema, joinedTypes);
+        if (auth.PrimaryDenied)
+            return; // empty stream — StarRocks never queried
+        if (auth.DeniedJoinedType is not null)
+            throw new RpcException(new Status(StatusCode.InvalidArgument, $"Not authorized to join '{auth.DeniedJoinedType}'."));
+
         if (logger.IsEnabled(LogLevel.Information))
             logger.LogInformation("[GroupBy] type={Type} keys={Keys} metrics={Metrics}",
                 request.TypeName, request.Keys.Count, request.Metrics.Count);
@@ -310,7 +317,8 @@ public sealed class ObjectSearchGrpcService(
         {
             rows = await search.GroupByAsync(
                 SchemaBuilder.ToStarRocksQuerySchema(schema), request,
-                t => registry.Get(t) is { } d ? SchemaBuilder.ToStarRocksQuerySchema(d) : null);
+                t => registry.Get(t) is { } d ? SchemaBuilder.ToStarRocksQuerySchema(d) : null,
+                authz: auth.Constraints);
         }
         catch (StarRocksQueryTranslationException ex)
         {

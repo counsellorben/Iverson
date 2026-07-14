@@ -1314,7 +1314,11 @@ public class StarRocksQueryBuilderTests
         request.Metrics.Add(new MetricSpec { Name = "count_star",   Type = AggregationType.Count });
         request.Metrics.Add(new MetricSpec { Name = "net_rating",   Type = AggregationType.Sum,   Expression = "Rating * (1 - 0)" });
         request.Metrics.Add(new MetricSpec { Name = "charge",       Type = AggregationType.Sum,   Expression = "Rating * (1 - 0) * (1 + 0)" });
-        request.Metrics.Add(new MetricSpec { Name = "avg_name_len", Type = AggregationType.Avg,   Expression = "LENGTH(Name)" });
+        // COALESCE is a DeriveWhitelist-recognized function (unlike LENGTH, which the new
+        // authz-driven expression-token check below would now reject as an unresolvable,
+        // non-whitelisted identifier) — swapped in here so this pre-existing structural test
+        // keeps passing under Task 4's stricter Expression validation.
+        request.Metrics.Add(new MetricSpec { Name = "avg_name_len", Type = AggregationType.Avg,   Expression = "COALESCE(Rating, 0)" });
         request.OrderBy.Add(new SearchSort { Property = "Name" });
         request.OrderBy.Add(new SearchSort { Property = "Rating", Descending = true });
         return request;
@@ -1342,7 +1346,7 @@ public class StarRocksQueryBuilderTests
         sql.Should().Contain("COUNT(*) AS `count_star`");
         sql.Should().Contain("SUM(Rating * (1 - 0)) AS `net_rating`");
         sql.Should().Contain("SUM(Rating * (1 - 0) * (1 + 0)) AS `charge`");
-        sql.Should().Contain("AVG(LENGTH(Name)) AS `avg_name_len`");
+        sql.Should().Contain("AVG(COALESCE(Rating, 0)) AS `avg_name_len`");
         sql.Should().Contain("FROM `authors`");
         sql.Should().Contain("GROUP BY `authors`.`Name`, `authors`.`Rating`");
         sql.Should().Contain("ORDER BY `authors`.`Name` ASC, `authors`.`Rating` DESC");
@@ -1555,6 +1559,255 @@ public class StarRocksQueryBuilderTests
 
         var lookup = (SqlMapper.IParameterLookup)param;
         lookup["p0"].Should().Be("Foo");
+    }
+
+    // ── BuildGroupBy — ownership + field reject-on-reference ──────────────────
+
+    [Fact]
+    public void BuildGroupBy_PrimaryOwnership_AppendsWrapAndAndPredicate()
+    {
+        var registry = BuildRegistry(AuthorSchema());
+        var request = new GroupByRequest { TypeName = "Author", Keys = { "Name" } };
+        request.Metrics.Add(new MetricSpec { Name = "cnt", Type = AggregationType.Count });
+        var authz = new Dictionary<string, AuthorizationConstraint>
+        {
+            ["Author"] = new(AllowedFields: null, OwnerColumn: "OwnerId", OwnerValue: "alice")
+        };
+
+        var (sql, param) = StarRocksQueryBuilder.BuildGroupBy("authors", AuthorSchema(), request, registry, authz: authz);
+
+        sql.Should().Contain("WHERE `authors`.`OwnerId` = @__ownerVal");
+        var lookup = (SqlMapper.IParameterLookup)param;
+        lookup["__ownerVal"].Should().Be("alice");
+    }
+
+    [Fact]
+    public void BuildGroupBy_JoinedTypeOwnership_AppendsOwnerConditionToJoinOn()
+    {
+        // Proves GroupBy now threads authz into BuildFromWithJoins so a joined type's ownership
+        // condition lands on its own JOIN's ON clause (never the outer WHERE, to avoid
+        // collapsing LEFT/RIGHT/FULL joins) — same mechanism BuildSearch/BuildAggregate rely on.
+        var registry = BuildRegistry(AuthorSchema(), ArticleSchema());
+        var request = new GroupByRequest
+        {
+            TypeName = "Author",
+            Keys     = { "Name" },
+            Joins =
+            {
+                new JoinSpec { LeftType = "Author", RightType = "Article", LeftField = "Id", RightField = "Id", Kind = JoinKind.Left }
+            }
+        };
+        request.Metrics.Add(new MetricSpec { Name = "cnt", Type = AggregationType.Count });
+        var authz = new Dictionary<string, AuthorizationConstraint>
+        {
+            ["Article"] = new(AllowedFields: null, OwnerColumn: "OwnerId", OwnerValue: "alice")
+        };
+
+        var (sql, _) = StarRocksQueryBuilder.BuildGroupBy("authors", AuthorSchema(), request, registry, authz: authz);
+
+        sql.Should().Contain("ON `authors`.`Id` = `articles`.`Id` AND `articles`.`OwnerId` = @__owner1");
+    }
+
+    [Fact]
+    public void BuildGroupBy_RestrictedKey_ThrowsTranslationException()
+    {
+        var registry = BuildRegistry(AuthorSchema());
+        var request = new GroupByRequest { TypeName = "Author", Keys = { "Bio" } };
+        request.Metrics.Add(new MetricSpec { Name = "cnt", Type = AggregationType.Count });
+        var authz = new Dictionary<string, AuthorizationConstraint>
+        {
+            ["Author"] = new(AllowedFields: new HashSet<string> { "Id", "Name" }, OwnerColumn: null, OwnerValue: null)
+        };
+
+        var act = () => StarRocksQueryBuilder.BuildGroupBy("authors", AuthorSchema(), request, registry, authz: authz);
+
+        act.Should().Throw<StarRocksQueryTranslationException>().WithMessage("*Bio*");
+    }
+
+    [Fact]
+    public void BuildGroupBy_AllowedKey_DoesNotThrow()
+    {
+        var registry = BuildRegistry(AuthorSchema());
+        var request = new GroupByRequest { TypeName = "Author", Keys = { "Name" } };
+        request.Metrics.Add(new MetricSpec { Name = "cnt", Type = AggregationType.Count });
+        var authz = new Dictionary<string, AuthorizationConstraint>
+        {
+            ["Author"] = new(AllowedFields: new HashSet<string> { "Id", "Name" }, OwnerColumn: null, OwnerValue: null)
+        };
+
+        var act = () => StarRocksQueryBuilder.BuildGroupBy("authors", AuthorSchema(), request, registry, authz: authz);
+
+        act.Should().NotThrow();
+    }
+
+    [Fact]
+    public void BuildGroupBy_RestrictedKey_ViaJoinedType_ThrowsTranslationException()
+    {
+        var registry = BuildRegistry(AuthorSchema(), ArticleSchema());
+        var request = new GroupByRequest
+        {
+            TypeName = "Author",
+            Keys     = { "Article.Body" },
+            Joins =
+            {
+                new JoinSpec { LeftType = "Author", RightType = "Article", LeftField = "Id", RightField = "Id", Kind = JoinKind.Inner }
+            }
+        };
+        request.Metrics.Add(new MetricSpec { Name = "cnt", Type = AggregationType.Count });
+        var authz = new Dictionary<string, AuthorizationConstraint>
+        {
+            ["Article"] = new(AllowedFields: new HashSet<string> { "Id", "Title" }, OwnerColumn: null, OwnerValue: null)
+        };
+
+        var act = () => StarRocksQueryBuilder.BuildGroupBy("authors", AuthorSchema(), request, registry, authz: authz);
+
+        var thrown = act.Should().Throw<StarRocksQueryTranslationException>().Which;
+        thrown.Message.Should().Contain("Body");
+        thrown.Message.Should().Contain("Article");
+    }
+
+    [Fact]
+    public void BuildGroupBy_RestrictedMetricField_ThrowsTranslationException()
+    {
+        var registry = BuildRegistry(AuthorSchema());
+        var request = new GroupByRequest { TypeName = "Author", Keys = { "Name" } };
+        request.Metrics.Add(new MetricSpec { Name = "by_bio", Type = AggregationType.Max, Field = "Bio" });
+        var authz = new Dictionary<string, AuthorizationConstraint>
+        {
+            ["Author"] = new(AllowedFields: new HashSet<string> { "Id", "Name" }, OwnerColumn: null, OwnerValue: null)
+        };
+
+        var act = () => StarRocksQueryBuilder.BuildGroupBy("authors", AuthorSchema(), request, registry, authz: authz);
+
+        act.Should().Throw<StarRocksQueryTranslationException>().WithMessage("*Bio*");
+    }
+
+    [Fact]
+    public void BuildGroupBy_RestrictedMetricField_ViaJoinedType_ThrowsTranslationException()
+    {
+        var registry = BuildRegistry(AuthorSchema(), ArticleSchema());
+        var request = new GroupByRequest
+        {
+            TypeName = "Author",
+            Keys     = { "Name" },
+            Joins =
+            {
+                new JoinSpec { LeftType = "Author", RightType = "Article", LeftField = "Id", RightField = "Id", Kind = JoinKind.Inner }
+            }
+        };
+        request.Metrics.Add(new MetricSpec { Name = "by_body", Type = AggregationType.Max, Field = "Article.Body" });
+        var authz = new Dictionary<string, AuthorizationConstraint>
+        {
+            ["Article"] = new(AllowedFields: new HashSet<string> { "Id", "Title" }, OwnerColumn: null, OwnerValue: null)
+        };
+
+        var act = () => StarRocksQueryBuilder.BuildGroupBy("authors", AuthorSchema(), request, registry, authz: authz);
+
+        var thrown = act.Should().Throw<StarRocksQueryTranslationException>().Which;
+        thrown.Message.Should().Contain("Body");
+        thrown.Message.Should().Contain("Article");
+    }
+
+    [Fact]
+    public void BuildGroupBy_RestrictedMetricField_ViaExpression_ThrowsTranslationException()
+    {
+        // Proves the reject-on-reference check tokenizes metric.Expression the same way
+        // BuildAggregate's spec.Expression check does — closing off the bypass where a caller
+        // routes a disallowed column through Expression instead of Field.
+        var registry = BuildRegistry(AuthorSchema());
+        var request = new GroupByRequest { TypeName = "Author", Keys = { "Name" } };
+        request.Metrics.Add(new MetricSpec { Name = "revenue", Type = AggregationType.Sum, Expression = "Bio * 2" });
+        var authz = new Dictionary<string, AuthorizationConstraint>
+        {
+            ["Author"] = new(AllowedFields: new HashSet<string> { "Id", "Name", "Rating" }, OwnerColumn: null, OwnerValue: null)
+        };
+
+        var act = () => StarRocksQueryBuilder.BuildGroupBy("authors", AuthorSchema(), request, registry, authz: authz);
+
+        act.Should().Throw<StarRocksQueryTranslationException>().WithMessage("*Bio*");
+    }
+
+    [Fact]
+    public void BuildGroupBy_DisallowedFieldWithAllowedExpression_StillThrows()
+    {
+        // Regression test mirroring Task 3's reviewer-found bypass in BuildAggregate:
+        // BuildMetricExpr's own SQL-emission branches use Field and Expression mutually
+        // exclusively (Expression, when set, is preferred — Field's resolved column never
+        // reaches the emitted SQL text in that case). MetricSpec has no mutual exclusivity
+        // between Field and Expression at the proto level, so without an independent check a
+        // caller could reference a disallowed Field and pair it with an innocuous, allowed
+        // Expression to suppress the Field check entirely. Field must still be rejected even
+        // though Expression is also set and is itself allowed — proving the checks on Field and
+        // on Expression are independent (not else-if).
+        var registry = BuildRegistry(AuthorSchema());
+        var request = new GroupByRequest { TypeName = "Author", Keys = { "Name" } };
+        request.Metrics.Add(new MetricSpec { Name = "by_bio", Type = AggregationType.Sum, Field = "Bio", Expression = "Rating" });
+        var authz = new Dictionary<string, AuthorizationConstraint>
+        {
+            ["Author"] = new(AllowedFields: new HashSet<string> { "Id", "Name", "Rating" }, OwnerColumn: null, OwnerValue: null)
+        };
+
+        var act = () => StarRocksQueryBuilder.BuildGroupBy("authors", AuthorSchema(), request, registry, authz: authz);
+
+        act.Should().Throw<StarRocksQueryTranslationException>().WithMessage("*Bio*");
+    }
+
+    [Fact]
+    public void BuildGroupBy_AllowedExpression_DoesNotThrow()
+    {
+        var registry = BuildRegistry(AuthorSchema());
+        var request = new GroupByRequest { TypeName = "Author", Keys = { "Name" } };
+        request.Metrics.Add(new MetricSpec { Name = "revenue", Type = AggregationType.Sum, Expression = "Rating * 2" });
+        var authz = new Dictionary<string, AuthorizationConstraint>
+        {
+            ["Author"] = new(AllowedFields: new HashSet<string> { "Id", "Name", "Rating" }, OwnerColumn: null, OwnerValue: null)
+        };
+
+        var act = () => StarRocksQueryBuilder.BuildGroupBy("authors", AuthorSchema(), request, registry, authz: authz);
+
+        act.Should().NotThrow();
+    }
+
+    [Fact]
+    public void BuildGroupBy_ExpressionReferencesUnknownColumn_ThrowsTranslationException()
+    {
+        // No authz restriction at all — this must still be rejected because the identifier
+        // doesn't resolve to any known column (nor is it a whitelisted SQL keyword/function).
+        var registry = BuildRegistry(AuthorSchema());
+        var request = new GroupByRequest { TypeName = "Author", Keys = { "Name" } };
+        request.Metrics.Add(new MetricSpec { Name = "revenue", Type = AggregationType.Sum, Expression = "NoSuchColumn * 2" });
+
+        var act = () => StarRocksQueryBuilder.BuildGroupBy("authors", AuthorSchema(), request, registry);
+
+        act.Should().Throw<StarRocksQueryTranslationException>().WithMessage("*NoSuchColumn*");
+    }
+
+    [Fact]
+    public void BuildGroupBy_ExpressionUsesWhitelistedFunction_DoesNotThrow()
+    {
+        var registry = BuildRegistry(AuthorSchema());
+        var request = new GroupByRequest { TypeName = "Author", Keys = { "Name" } };
+        request.Metrics.Add(new MetricSpec { Name = "revenue", Type = AggregationType.Sum, Expression = "COALESCE(Rating, 0)" });
+        var authz = new Dictionary<string, AuthorizationConstraint>
+        {
+            ["Author"] = new(AllowedFields: new HashSet<string> { "Id", "Name", "Rating" }, OwnerColumn: null, OwnerValue: null)
+        };
+
+        var act = () => StarRocksQueryBuilder.BuildGroupBy("authors", AuthorSchema(), request, registry, authz: authz);
+
+        act.Should().NotThrow();
+    }
+
+    [Fact]
+    public void BuildGroupBy_NoAuthz_DoesNotEnforceFieldRestrictions()
+    {
+        var registry = BuildRegistry(AuthorSchema());
+        var request = new GroupByRequest { TypeName = "Author", Keys = { "Bio" } };
+        request.Metrics.Add(new MetricSpec { Name = "by_bio", Type = AggregationType.Max, Field = "Bio" });
+
+        var act = () => StarRocksQueryBuilder.BuildGroupBy("authors", AuthorSchema(), request, registry);
+
+        act.Should().NotThrow();
     }
 
     // ── BuildWhere/BuildHaving — resolver + prefix overloads ──────────────────

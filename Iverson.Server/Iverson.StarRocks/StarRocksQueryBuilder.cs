@@ -264,19 +264,42 @@ internal static class StarRocksQueryBuilder
         IReadOnlyDictionary<string, AuthorizationConstraint>? authz = null)
     {
         var param = new DynamicParameters();
-        // Ownership predicates for joined types in GroupBy are wired in a later task (Tasks 3/4);
-        // this call only threads the required `param` argument through for now.
-        var from = BuildFromWithJoins(schema, request.Joins, registry, param, out var tableMap);
+        // Joined-type ownership predicates are appended to each JOIN's own ON clause inside
+        // BuildFromWithJoins (never the outer WHERE — see that method's remarks for why).
+        var from = BuildFromWithJoins(schema, request.Joins, registry, param, out var tableMap, authz);
         var where = BuildWhere(schema, request.Query?.Clauses, request.Query?.Logic ?? SearchLogic.And, param, out _, tableMap, authz);
+
+        // Primary-type row-ownership: same wrap-and-AND predicate BuildSearch/BuildAggregate
+        // append to their own `where`, qualified with the primary alias (BuildGroupBy always
+        // has a tableMap — even with zero joins — so this is unconditional, unlike BuildSearch's
+        // join/no-join split).
+        if (authz is not null && authz.TryGetValue(schema.TypeName, out var primaryConstraint) && primaryConstraint.OwnerColumn is not null)
+        {
+            var ownerPredicate = $"`{tableMap[schema.TypeName].Alias}`.`{primaryConstraint.OwnerColumn}` = @__ownerVal";
+            param.Add("__ownerVal", primaryConstraint.OwnerValue);
+            where = where.Length > 0 ? $"({where}) AND {ownerPredicate}" : ownerPredicate;
+        }
+
         var wc = where.Length > 0 ? $" WHERE {where}" : "";
 
+        // Field reject-on-reference: a GROUP BY key or metric over a disallowed field would
+        // leak its distribution through bucket keys or metric values, so any reference to one
+        // throws instead (mirrors BuildAggregate's spec.Field/spec.Expression/spec.GroupByFields
+        // treatment in Task 3).
         var keyCols = request.Keys
-            .Select(k => ResolveColumn(tableMap, k)
-                ?? throw new StarRocksQueryTranslationException(
-                    $"Unknown or ambiguous GROUP BY key '{k}'."))
+            .Select(k =>
+            {
+                var resolved = ResolveColumn(tableMap, k)
+                    ?? throw new StarRocksQueryTranslationException(
+                        $"Unknown or ambiguous GROUP BY key '{k}'.");
+                if (!IsFieldAllowed(resolved, schema, tableMap, authz, out var typeName))
+                    throw new StarRocksQueryTranslationException(
+                        $"GROUP BY key '{k}' on '{typeName}' is not authorized for this caller.");
+                return resolved;
+            })
             .ToList();
 
-        var metricExprs = request.Metrics.Select(m => BuildMetricExpr(m, tableMap)).ToList();
+        var metricExprs = request.Metrics.Select(m => BuildMetricExpr(m, schema, tableMap, authz)).ToList();
 
         var selectCols = keyCols.Select(QuoteQualified)
             .Concat(metricExprs)
@@ -302,10 +325,14 @@ internal static class StarRocksQueryBuilder
 
     // metric.expression, when set, is raw StarRocks SQL supplied by a trusted server-side
     // caller (e.g. TPC-H DSL translation) and is spliced directly into the aggregate
-    // function — NOT user input, no escaping is performed.
+    // function — NOT user input, no escaping is performed. It is, however, still subject to
+    // the same field reject-on-reference check as metric.Field below (see remarks ahead of
+    // that check for why the two are validated independently).
     private static string BuildMetricExpr(
         MetricSpec metric,
-        IReadOnlyDictionary<string, JoinContext> tableMap)
+        StarRocksQuerySchema schema,
+        IReadOnlyDictionary<string, JoinContext> tableMap,
+        IReadOnlyDictionary<string, AuthorizationConstraint>? authz)
     {
         var isCountAll = metric.Type == AggregationType.Count
             && string.IsNullOrEmpty(metric.Field)
@@ -327,16 +354,46 @@ internal static class StarRocksQueryBuilder
                 $"Metric '{metric.Name}' has unsupported type '{metric.Type}'; GroupBy metrics must be AVG, SUM, MIN, MAX, or COUNT.")
         };
 
+        // Field reject-on-reference: metric.Field and metric.Expression are checked
+        // independently below (NOT else-if) even though the SQL-emission branches further
+        // down use them mutually exclusively (Expression, when set, is preferred over Field
+        // and Field's resolved column never reaches the emitted SQL text in that case).
+        // MetricSpec has no mutual exclusivity between Field and Expression, so without an
+        // independent check here a caller could reference a disallowed Field and simply pair
+        // it with an innocuous, allowed Expression to suppress the Field check entirely — the
+        // exact shape of bug Task 3's review round found in BuildAggregate. Reject-on-reference
+        // means any reference to a disallowed field is rejected, regardless of whether that
+        // particular combination of Field+Expression would have actually spliced it into SQL.
+        string? resolvedField = null;
+        if (!string.IsNullOrEmpty(metric.Field))
+        {
+            resolvedField = ResolveColumn(tableMap, metric.Field)
+                ?? throw new StarRocksQueryTranslationException(
+                    $"Unknown or ambiguous field '{metric.Field}' referenced by metric '{metric.Name}'.");
+            if (!IsFieldAllowed(resolvedField, schema, tableMap, authz, out var typeName))
+                throw new StarRocksQueryTranslationException(
+                    $"Field '{metric.Field}' on '{typeName}' referenced by metric '{metric.Name}' is not authorized for this caller.");
+        }
+
+        if (!string.IsNullOrEmpty(metric.Expression))
+        {
+            foreach (Match m in StarRocksPipelineBuilder.TokenRx.Matches(metric.Expression))
+            {
+                if (StarRocksPipelineBuilder.DeriveWhitelist.Contains(m.Value)) continue;
+                var resolvedToken = ResolveColumn(tableMap, m.Value)
+                    ?? throw new StarRocksQueryTranslationException(
+                        $"Metric '{metric.Name}' expression references unknown field '{m.Value}'.");
+                if (!IsFieldAllowed(resolvedToken, schema, tableMap, authz, out var typeName))
+                    throw new StarRocksQueryTranslationException(
+                        $"Field '{m.Value}' on '{typeName}' referenced by metric '{metric.Name}' expression is not authorized for this caller.");
+            }
+        }
+
         if (!string.IsNullOrEmpty(metric.Expression))
             return $"{fn}({metric.Expression}) AS {quotedName}";
 
-        if (!string.IsNullOrEmpty(metric.Field))
-        {
-            var col = ResolveColumn(tableMap, metric.Field)
-                ?? throw new StarRocksQueryTranslationException(
-                    $"Unknown or ambiguous field '{metric.Field}' referenced by metric '{metric.Name}'.");
-            return $"{fn}({QuoteQualified(col)}) AS {quotedName}";
-        }
+        if (resolvedField is not null)
+            return $"{fn}({QuoteQualified(resolvedField)}) AS {quotedName}";
 
         // Both Field and Expression are empty/null. COUNT(*) is the one legitimate case for
         // this (handled above via isCountAll); every other metric kind requires a column
