@@ -415,7 +415,7 @@ public sealed class ObjectSearchGrpcService(
 
     private AuthzResult EvaluateAuthorization(SchemaDescriptor primary, IEnumerable<string> joinedTypeNames)
     {
-        var constraints = new Dictionary<string, AuthorizationConstraint>();
+        var constraints = new Dictionary<string, AuthorizationConstraint>(StringComparer.OrdinalIgnoreCase);
 
         var primaryDecision = authEvaluator.Evaluate(primary, actingUserAccessor.ActingUser, AuthorizationAction.Read);
         if (primaryDecision.Denied)
@@ -423,7 +423,7 @@ public sealed class ObjectSearchGrpcService(
         constraints[primary.TypeName] = new AuthorizationConstraint(
             primaryDecision.AllowedFields, primaryDecision.OwnerFieldName, primaryDecision.OwnerValue);
 
-        foreach (var typeName in joinedTypeNames.Distinct().Where(t => t != primary.TypeName))
+        foreach (var typeName in joinedTypeNames.Distinct().Where(t => !string.Equals(t, primary.TypeName, StringComparison.OrdinalIgnoreCase)))
         {
             var joinedSchema = registry.Get(typeName)
                 ?? throw new RpcException(new Status(StatusCode.FailedPrecondition, $"No schema registered for '{typeName}'."));

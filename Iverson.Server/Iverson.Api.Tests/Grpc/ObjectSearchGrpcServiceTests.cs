@@ -343,6 +343,48 @@ public class ObjectSearchGrpcServiceTests
     }
 
     [Fact]
+    public async Task Search_JoinedTypeOwnerRestricted_CaseInsensitiveJoinTypeName_StillForwardsOwnerConstraint()
+    {
+        // Regression test for a whole-branch review finding: EvaluateAuthorization's constraints
+        // dictionary used to be keyed with the default case-sensitive comparer, and joined-type
+        // keys come from the raw request-supplied JoinSpec.LeftType/RightType string. Meanwhile
+        // every downstream StarRocks builder (StarRocksQueryBuilder.IsFieldAllowed,
+        // StarRocksPipelineBuilder.ResolveJoinSources/EmitStep) looks constraints up by the
+        // *canonical* SchemaRegistry TypeName, and SchemaRegistry.Get resolves case-insensitively.
+        // So a caller could send a join naming the type differently-cased than its canonical
+        // registration (e.g. "article" instead of "Article") — the join would still resolve and
+        // execute, but the case-sensitive constraints lookup would silently miss, bypassing
+        // ownership/field restriction entirely for that joined type. This test proves the
+        // constraint the RPC layer forwards is reachable under the canonical casing even when the
+        // request supplied a differently-cased join type name.
+        await _registry.RegisterAsync(SchemaFixtures.AuthorSchema()); // bypass role "test-bypass"
+        await _registry.RegisterAsync(OwnedSchema("Article", "OwnerId", bypassRole: "other-bypass"));
+
+        IReadOnlyDictionary<string, AuthorizationConstraint>? captured = null;
+        _search.SearchAsync(
+                Arg.Any<StarRocksQuerySchema>(), Arg.Any<SearchQuery?>(), Arg.Any<int>(), Arg.Any<int>(),
+                Arg.Any<IReadOnlyList<string>?>(), Arg.Any<IReadOnlyList<JoinSpec>?>(),
+                Arg.Any<Func<string, StarRocksQuerySchema?>?>(),
+                Arg.Do<IReadOnlyDictionary<string, AuthorizationConstraint>?>(a => captured = a))
+            .Returns(Enumerable.Empty<dynamic>());
+
+        var request = new SearchRequest { TypeName = "Author" };
+        request.Joins.Add(new JoinSpec
+        {
+            // Registered canonically as "Article"; the request supplies different casing.
+            LeftType = "Author", RightType = "article", LeftField = "Id", RightField = "AuthorId", Kind = JoinKind.Left
+        });
+
+        var (writer, _) = MakeStream<SearchResponse>();
+        await _sut.Search(request, writer, TestServerCallContext.Create());
+
+        captured.Should().NotBeNull();
+        // Looked up under the canonical casing, exactly as StarRocksQueryBuilder/StarRocksPipelineBuilder do.
+        captured!["Article"].OwnerColumn.Should().Be("OwnerId");
+        captured["Article"].OwnerValue.Should().Be("test-user"); // default fixture's sub claim
+    }
+
+    [Fact]
     public async Task Search_LeftJoin_JoinedTypeOwnerRestricted_NonMatchingSideNullsOut_RowNotDropped()
     {
         // Simulates what a correctly-generated LEFT JOIN + ON-clause-appended owner predicate
