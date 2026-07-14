@@ -1,0 +1,89 @@
+# Qdrant Authorization Enforcement (Part 5d)
+
+## Context
+
+Part 5 of the identity-management initiative adds row/field-level authorization to Iverson's three data stores. Part 5a built the shared foundation (`AuthorizationRules` schema metadata, `IRowFieldAuthorizationEvaluator`). Part 5b wired that evaluator into Postgres's write/read gRPC surfaces. Part 5c wired it into `ObjectSearchGrpcService`'s StarRocks-backed read surfaces (`Search`/`Aggregate`/`GroupBy`/`Pipeline`). This part (5d) wires the same evaluator into `ObjectSearchGrpcService`'s two Qdrant-backed read surfaces: `SearchSimilar` and `SearchChunks`. This is the last part of Part 5.
+
+Unlike 5c, neither RPC here has a join concept (verified: neither `SearchSimilarRequest` nor `SearchChunksRequest` has a `Joins`-style field in `object_search.proto`), so this part has no joined-type ownership/denial case to design for — only a single registered type per call.
+
+## Goals
+
+- A caller's row-level ownership restriction is enforced as a genuine Qdrant `Filter` predicate on both `SearchSimilar` and `SearchChunks`.
+- A caller's field-level restriction is enforced on: the vector/chunk property being searched (reject-on-reference), any user-supplied filter clause (reject-on-reference), and `SearchSimilar`'s response payload (post-fetch masking).
+- Enforcement reuses the existing `IRowFieldAuthorizationEvaluator` and `AuthorizationFieldMasking` helpers unchanged in their core logic — `MaskDisallowedFields` gains one new optional parameter (see below), but no new evaluator variant or duplicated authorization logic.
+
+## Non-goals
+
+- Any change to `IRowFieldAuthorizationEvaluator`'s own logic or `AuthorizationDecision` shape (Part 5a's contract is reused as-is).
+- A backfill mechanism for Qdrant data written before this change ships (see Known issues).
+- Fixing the pre-existing, cross-cutting gap (discovered during this design's verification pass, not introduced by it) where `RowFieldAuthorizationEvaluator`'s `AllowedFields` construction doesn't protect the key column from exclusion if a schema admin configures a `FieldPermission` naming it — this affects 5b's and 5c's already-shipped masking/reject-on-reference code equally and is out of scope for this part (see Known issues).
+
+## Design
+
+### 1. Row-level ownership
+
+**`SearchSimilar`**: `SearchSimilar`'s Qdrant payload already includes every scalar column via the existing per-scalar-column write loop in `IntelligenceStoreConsumer` (verified — the owner field, when configured, is always a scalar column per `RegisterSchema`'s validation), and `SchemaBuilder.ToCollectionSchema` already creates a Qdrant payload index for every scalar column, so the owner field is already indexed with no extra work. When `decision.OwnershipRequired`, build `Conditions.MatchKeyword(schema.Authorization!.OwnerField!.ToCamelCase(), decision.OwnerValue!)` and add it to the Qdrant `Filter.Must` list — merging with any user-supplied filter clauses' conditions (which populate `Must`/`Should`/`MustNot` today) rather than replacing them. If the caller supplied no filter at all, a fresh `Filter` containing just the ownership condition is constructed instead of leaving `filter` as `null`.
+
+Unlike StarRocks's SQL `WHERE`, this requires no wrap-and-AND-with-parens treatment: Qdrant's `Filter` message has independent `Must`/`Should`/`MustNot` repeated fields (verified — `QdrantFilterBuilder.Build`/`MatchParentId` already append to these three lists directly), and `Must` is always evaluated conjunctively regardless of what's in `Should`. There is no SQL-style "appending an AND predicate silently changes an OR's meaning" hazard here.
+
+**`SearchChunks`**: chunk points in Qdrant do not carry the owner field today — the chunk-upsert payload in `IntelligenceStoreConsumer` is `{text, parent_id, field, chunk_index}` only (verified). Per your decision, `IntelligenceStoreConsumer`'s chunk-upsert loop is extended: when `schema.Authorization?.OwnerField` is non-null, extract its value from the already-parsed entity payload via the existing `ExtractString` helper (the same helper already used for vector-field text extraction; owner values are always strings per 5a's design) and add it to each chunk point's payload under `ownerField.ToCamelCase()` — the same key-naming convention `ToCollectionSchema` already uses for scalar columns. `SchemaBuilder.ToChunkCollectionSchema` gains a matching `PayloadIndex(ownerField.ToCamelCase(), PayloadIndexKind.Keyword)` entry (conditional on `Authorization?.OwnerField` being set), mirroring `ToCollectionSchema`'s existing per-scalar-column indexing.
+
+`SearchChunks` then builds and merges its ownership `Must` condition exactly as `SearchSimilar` does, merged with `BuildChunksFilter`'s existing single key-column condition.
+
+### 2. Field-level reject-on-reference
+
+**The searched property** (`request.Property` — the `[IversonEmbedding]`/`[IversonChunk]`-annotated field being searched): after resolving `vectorDesc`/`chunkDesc` (as today) and evaluating authorization, check `decision.AllowedFields is null || decision.AllowedFields.Contains(vectorDesc.PropertyName)` (or `chunkDesc.PropertyName` for `SearchChunks`). If disallowed, throw `RpcException(InvalidArgument, ...)` directly — same placement and style as the existing "has no [IversonEmbedding] annotation" check immediately above it. This matches `AuthorizationDecision.AllowedFields`'s own XML doc, which explicitly states it enumerates vector/chunk field source property names as part of the restrictable set: a restricted embedding/chunk field means the whole similarity search on it is rejected. There's nothing to mask here — the field only ever manifests as a search *operand*, never a response value, so reject-on-reference is the only enforcement shape that applies.
+
+**`SearchSimilar`'s general filter clauses** (`request.Filter`): alongside the existing `ValidateFilterProperty(schema, c.Property, "SearchSimilar")` call (which checks the property is a *known* scalar/FK column and already throws `RpcException` directly, not via `FilterTranslationException` — verified), add a sibling check against `decision.AllowedFields`, throwing `RpcException(InvalidArgument, ...)` the same way. This closes the same boolean-oracle leak class 5c's design already closed for SQL `WHERE` clauses: a caller filtering on a restricted field they can't see the value of would otherwise be able to infer something about it from whether rows come back.
+
+**`SearchChunks`' single filter clause**: no additional check. `BuildChunksFilter` already hard-constrains this to an `EQUALS` match on `schema.KeyColumn.Name` specifically (verified). Supplying a key *value* to look something up is not the same as reading the key field back — the same reasoning `ObjectRetrievalGrpcService.Get`/`GetMany` (5b) already rely on, which never check a caller-supplied key value against `AllowedFields` either (verified — both call sites only mask the *response*, never the key parameter). Note this is a different, stronger justification than "the key column can never be excluded from `AllowedFields`" — that broader claim is false in general (see Known issues); this section's conclusion doesn't depend on it.
+
+### 3. Field-level masking
+
+**`SearchSimilar`'s response**: after building `protoStruct` from the Qdrant payload dict, call `AuthorizationFieldMasking.MaskDisallowedFields(protoStruct, decision.AllowedFields, exemptField: "Key")`. `MaskDisallowedFields` gains the same optional `exemptField` parameter `RejectDisallowedFields` already has (currently `MaskDisallowedFields` takes only `payload`/`allowedFields` — verified; the new parameter is additive and doesn't affect any of `MaskDisallowedFields`'s 6 existing call sites, all in `ObjectMappingGrpcService.cs`/`ObjectRetrievalGrpcService.cs`, all 2-arg).
+
+The `exemptField: "Key"` argument is a **fixed constant**, not derived per-schema. It exists because the Qdrant entity-collection payload's point-identifier is always written under the literal string `"key"` (verified — `IntelligenceStoreConsumer.cs`: `pointPayload["key"] = ev.Key`, distinct from `schema.KeyColumn`'s own name, which is never separately written into this payload), which canonicalizes to `"Key"` via `StructSerializer.UpperFirst` — a string that essentially never matches a schema's real key-column name (e.g. `"ArticleId"`). Exempting it unconditionally preserves the point identifier every response needs, regardless of what `AllowedFields` does or doesn't contain.
+
+**`SearchChunks`' response** (`ChunkSearchResponse { ParentKey, ChunkText, Score, TraceId }`): no masking applies. There's no generic per-field payload in this response shape — just the fixed fields already returned today — and the search itself is already gated on the source field's own reject-on-reference check (Section 2).
+
+### 4. Denied-caller handling
+
+Both RPCs are server-streaming (`IServerStreamWriter<SearchResponse>` / `IServerStreamWriter<ChunkSearchResponse>`). `Denied` (no `AuthorizationRules` configured, or rules configured but no acting-user identity present) → return immediately, writing zero rows, evaluated before the embedding call and before any Qdrant query — matching `Search`/`GroupBy`/`Pipeline`'s precedent from 5c exactly. There is no joined-type-denial case for either RPC (see Context).
+
+## Verified assumptions
+
+| # | Assumption | Verified |
+|---|---|---|
+| 1 | `AuthorizationDecision` has `Denied`/`OwnershipRequired`/`OwnerFieldName`/`OwnerValue`/`AllowedFields` fields, unchanged from 5a/5c | Read `IRowFieldAuthorizationEvaluator.cs` |
+| 2 | `RegisterSchema` validates `owner_field` against `descriptor.ScalarColumns` — the owner field, when configured, is always a real scalar column | Read `ObjectMappingGrpcService.cs`'s `RegisterSchema` |
+| 3 | Qdrant's `Filter` message has independent `Must`/`Should`/`MustNot` repeated fields; appending to `Must` is always AND'd regardless of `Should`'s contents | Read `QdrantFilterBuilder.Build`/`MatchParentId`'s existing `filter.Must.Add(...)`/`filter.Should.Add(...)`/`filter.MustNot.Add(...)` usage |
+| 4 | `Conditions.MatchKeyword(string, string)` exists and returns a `Condition` | Confirmed via 2 existing call sites in `QdrantFilterBuilder.cs` (`MatchParentId`, `BuildEqualityCondition`) |
+| 5 | Chunk-collection payload today is exactly `{text, parent_id, field, chunk_index}` — no owner field | Read `IntelligenceStoreConsumer.cs`'s chunk-upsert loop |
+| 6 | `SearchSimilar`'s entity-collection payload includes every scalar column (so the owner field, when configured, is always present when non-null) | Read `IntelligenceStoreConsumer.cs`'s vector-upsert `pointPayload` construction — `foreach (var col in schema.ScalarColumns) ... pointPayload[col.Name.ToCamelCase()] = val` |
+| 7 | `SchemaBuilder.ToCollectionSchema` already creates a `PayloadIndex` per scalar column | Read `SchemaBuilder.cs` — `d.ScalarColumns.Select(c => new PayloadIndex(c.Name.ToCamelCase(), ...))` |
+| 8 | `SchemaBuilder.ToChunkCollectionSchema` only indexes `parent_id` today | Read `SchemaBuilder.cs` |
+| 9 | The entity-collection payload's point-identifier is always the literal string `"key"`, never `schema.KeyColumn.Name.ToCamelCase()`, and flows unmodified into `SearchSimilar`'s response `Struct` | Read `IntelligenceStoreConsumer.cs` (`pointPayload["key"] = ev.Key`) and `ObjectSearchGrpcService.SearchSimilar`'s response loop (`foreach (var kvp in r.Payload) protoStruct.Fields[kvp.Key] = ...`) — no remapping in between |
+| 10 (corrected) | `AllowedFields` always contains `schema.KeyColumn.Name` | **False in general** — `RowFieldAuthorizationEvaluator.Evaluate` has no special protection excluding the key column from a `FieldPermission`'s exclusion set; only `StarRocksPipelineBuilder.ColumnsFor` (5c, Pipeline-specific) defensively re-seeds the key column before applying the filter. This part's design doesn't depend on the stronger (false) claim — see Sections 2–3's corrected justifications, and Known issues |
+| 11 | `StructSerializer.UpperFirst` (in `ProtoPayloadHelper.cs`, despite the filename) is the canonicalization function `MaskDisallowedFields`/`RejectDisallowedFields` use | Read `AuthorizationFieldMasking.cs` and `ProtoPayloadHelper.cs` |
+| 12 | `RejectDisallowedFields` already has an `exemptField` parameter with `canonical != exemptField` semantics; `MaskDisallowedFields` currently takes only 2 params | Read `AuthorizationFieldMasking.cs` in full |
+| 13 | `ValidateFilterProperty` throws `RpcException` directly (not `FilterTranslationException`); `QdrantFilterBuilder`'s own internal errors use `FilterTranslationException`, mapped to `InvalidArgument` in `SearchSimilar`'s catch block | Read `ObjectSearchGrpcService.cs`'s `SearchSimilar`/`ValidateFilterProperty` |
+| 14 | `BuildChunksFilter` hard-constrains `SearchChunks`' single filter clause to an `EQUALS` match on `schema.KeyColumn.Name` | Read `ObjectSearchGrpcService.cs`'s `BuildChunksFilter` |
+| 15 | Neither `SearchSimilarRequest` nor `SearchChunksRequest` has a `Joins`-style field | Read `object_search.proto` |
+| 16 | `ObjectSearchGrpcService`'s constructor already has `IActingUserAccessor`/`IRowFieldAuthorizationEvaluator` wired (from 5c) | Read the constructor signature |
+| 17 | `ExtractString(payload, propertyName)` tries the PascalCase name first, then a camelCase fallback | Read `IntelligenceStoreConsumer.cs`'s `ExtractString` |
+| 18 | `CollectionSchema` record shape: `(string CollectionName, IReadOnlyList<NamedVector> Vectors, IReadOnlyList<PayloadIndex> PayloadIndexes)` | Read `CollectionSchema.cs` |
+| 19 | No caller of `MaskDisallowedFields` breaks from an added optional trailing parameter | Grepped all 6 call sites (4 in `ObjectMappingGrpcService.cs`, 2 in `ObjectRetrievalGrpcService.cs`) — all 2-arg; a new optional 3rd parameter is additive in C# |
+| 20 | `IntelligenceStoreConsumerTests.cs` already has a precedent for bespoke inline `SchemaDescriptor` construction for one-off test scenarios (not only the shared `SchemaFixtures.cs`) | Read the file — `twoVectorSchema`/`customSchema` inline constructions already exist |
+| 21 | `ObjectSearchGrpcServiceTests.cs`'s existing `SearchSimilar`/`SearchChunks` tests use `SchemaFixtures.ArticleSchema()`/`AuthorSchema()`, both carrying a permissive bypass `AuthorizationRules` from 5a/5b/5c's fixture convention | Read the file — its own comment states these Qdrant-path tests were untouched by 5c ("Qdrant paths unchanged") |
+
+## Testing plan
+
+- `ObjectSearchGrpcServiceTests.cs`: denied (no rules)/denied (no identity) → empty stream, per RPC; owner-match rows included for `SearchSimilar`; non-owner rows excluded; bypass-role sees all; restricted searched-property (`request.Property`) → `InvalidArgument`, for both RPCs; restricted field referenced in a `SearchSimilar` filter clause → `InvalidArgument`; restricted field masked from `SearchSimilar`'s response, with the payload's `"key"` entry surviving the mask even when the schema's real key-column name isn't literally `"Key"`; `SearchChunks`' single key-column filter clause never rejected regardless of `AllowedFields`.
+- `IntelligenceStoreConsumerTests.cs`: chunk-upsert payload includes the owner field's value (camelCased) when `Authorization.OwnerField` is set; omits it when not set (existing behavior, unchanged).
+- `SchemaBuilderTests.cs`: `ToChunkCollectionSchema` includes a `PayloadIndex` for the owner field when configured; omits it when not configured.
+
+## Known issues / accepted as out of scope
+
+- **Stale Qdrant data lacks the owner field.** Data written to Qdrant before this change ships (or before a schema had `AuthorizationRules` configured at all) won't have the owner field in its payload, for either `SearchSimilar` or `SearchChunks` — it will fail the ownership filter and be excluded from results until the source entity is next created/updated (re-triggering `IntelligenceStoreConsumer` ingestion). No backfill mechanism is built in this part, per your decision.
+- **Same 2 pre-existing consequences as 5a/5b/5c**: a schema with no `AuthorizationRules` rejects every call; a rules-configured schema with no acting-user identity also rejects. Neither is new or fixed here.
+- **Cross-cutting gap discovered during verification, not introduced here, not fixed here**: `RowFieldAuthorizationEvaluator.Evaluate`'s `AllowedFields` construction has no special protection preventing a `FieldPermission` from naming the key column and thereby excluding it. If a schema admin ever configured this, 5b's `ObjectMapping`/`ObjectRetrieval` response masking and 5c's `Search` response masking would silently strip the key column from their responses too — the only place in the codebase that defends against this is `StarRocksPipelineBuilder.ColumnsFor`'s own defensive re-seeding (5c, Pipeline-specific). This part's own masking (the `exemptField: "Key"` constant) is unaffected by this gap since it doesn't rely on `AllowedFields` containing the key column's name at all. Fixing the underlying gap would touch already-shipped, already-reviewed code in 5b and 5c and is out of scope for this part; flagged here for awareness, not for action.
