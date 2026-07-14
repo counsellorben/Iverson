@@ -447,6 +447,118 @@ public class ObjectMappingGrpcServiceTests
         ex.Which.StatusCode.Should().Be(StatusCode.InvalidArgument);
     }
 
+    // ── Post authorization ───────────────────────────────────────────────────
+
+    [Fact]
+    public async Task Post_WithNoAuthorizationRulesConfigured_ThrowsPermissionDenied()
+    {
+        var schema = SchemaFixtures.AuthorSchema() with { Authorization = null };
+        await _registry.RegisterAsync(schema);
+
+        var payload = MakePayload(new() { ["Name"] = Value.ForString("Alice") });
+        var act = () => _sut.Post(
+            new MappingWriteRequest { TypeName = "Author", Payload = payload },
+            TestServerCallContext.Create());
+
+        var ex = await act.Should().ThrowAsync<RpcException>();
+        ex.Which.StatusCode.Should().Be(StatusCode.PermissionDenied);
+    }
+
+    [Fact]
+    public async Task Post_WithNoActingUser_ThrowsPermissionDenied()
+    {
+        await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
+        _actingUserAccessor.ActingUser = null;
+
+        var payload = MakePayload(new() { ["Name"] = Value.ForString("Alice") });
+        var act = () => _sut.Post(
+            new MappingWriteRequest { TypeName = "Author", Payload = payload },
+            TestServerCallContext.Create());
+
+        var ex = await act.Should().ThrowAsync<RpcException>();
+        ex.Which.StatusCode.Should().Be(StatusCode.PermissionDenied);
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("someone-else")]
+    public async Task Post_ForOrdinaryCaller_ForceSetsOwnerFieldToActingUserSub(string? clientSuppliedOwnerId)
+    {
+        await _registry.RegisterAsync(OwnedAuthorSchema(withBypassRole: false));
+
+        var fields = new Dictionary<string, Value>
+        {
+            ["Id"]   = Value.ForString(AuthorId),
+            ["Name"] = Value.ForString("Alice")
+        };
+        if (clientSuppliedOwnerId is not null)
+            fields["OwnerId"] = Value.ForString(clientSuppliedOwnerId);
+        var payload = MakePayload(fields);
+
+        var response = await _sut.Post(
+            new MappingWriteRequest { TypeName = "Author", Payload = payload },
+            TestServerCallContext.Create());
+
+        response.Success.Should().BeTrue();
+        response.Data.Fields["OwnerId"].StringValue.Should().Be("test-user");
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("someone-else")]
+    public async Task Post_WithBypassRole_LeavesOwnerFieldUntouched(string? clientSuppliedOwnerId)
+    {
+        await _registry.RegisterAsync(OwnedAuthorSchema(withBypassRole: true));
+
+        var fields = new Dictionary<string, Value>
+        {
+            ["Id"]   = Value.ForString(AuthorId),
+            ["Name"] = Value.ForString("Alice")
+        };
+        if (clientSuppliedOwnerId is not null)
+            fields["OwnerId"] = Value.ForString(clientSuppliedOwnerId);
+        var payload = MakePayload(fields);
+
+        var response = await _sut.Post(
+            new MappingWriteRequest { TypeName = "Author", Payload = payload },
+            TestServerCallContext.Create());
+
+        response.Success.Should().BeTrue();
+        if (clientSuppliedOwnerId is null)
+            response.Data.Fields.Should().NotContainKey("OwnerId");
+        else
+            response.Data.Fields["OwnerId"].StringValue.Should().Be(clientSuppliedOwnerId);
+    }
+
+    [Fact]
+    public async Task Post_WithRestrictedFieldInWritePayload_ThrowsInvalidArgument()
+    {
+        var schema = SchemaFixtures.AuthorSchema() with
+        {
+            Authorization = new Iverson.Api.Schema.AuthorizationRules(
+                null,
+                new List<Iverson.Api.Schema.RowPermission> { new("test-bypass", true, true, true) },
+                new List<Iverson.Api.Schema.FieldPermission>
+                {
+                    new("Bio", new List<string>(), new List<string> { "premium" })
+                })
+        };
+        await _registry.RegisterAsync(schema);
+
+        var payload = MakePayload(new()
+        {
+            ["Id"]   = Value.ForString(AuthorId),
+            ["Name"] = Value.ForString("Alice"),
+            ["Bio"]  = Value.ForString("Writer")
+        });
+        var act = () => _sut.Post(
+            new MappingWriteRequest { TypeName = "Author", Payload = payload },
+            TestServerCallContext.Create());
+
+        var ex = await act.Should().ThrowAsync<RpcException>();
+        ex.Which.StatusCode.Should().Be(StatusCode.InvalidArgument);
+    }
+
     // ── Get ───────────────────────────────────────────────────────────────────
 
     [Fact]

@@ -56,6 +56,29 @@ public class ObjectPersistenceGrpcServiceTests
         return s;
     }
 
+    private static SchemaDescriptor OwnedAuthorSchema(bool withBypassRole = false) => new()
+    {
+        TypeName       = "Author",
+        TableName      = "authors",
+        CollectionName = null,
+        KeyColumn      = new ColumnDescriptor("Id", "uuid", false),
+        ScalarColumns  =
+        [
+            new ColumnDescriptor("Name", "text", false),
+            new ColumnDescriptor("OwnerId", "text", false)
+        ],
+        FkColumns     = [],
+        VectorFields  = [],
+        ChunkFields   = [],
+        Relations     = [],
+        Authorization = new Iverson.Api.Schema.AuthorizationRules(
+            "OwnerId",
+            withBypassRole
+                ? new List<Iverson.Api.Schema.RowPermission> { new("test-bypass", true, true, true) }
+                : new List<Iverson.Api.Schema.RowPermission>(),
+            new List<Iverson.Api.Schema.FieldPermission>())
+    };
+
     private EntityEvent? CaptureFireAndForgetEvent(string topic)
     {
         EntityEvent? captured = null;
@@ -252,6 +275,107 @@ public class ObjectPersistenceGrpcServiceTests
 
         await act.Should().ThrowAsync<RpcException>()
             .Where(e => e.Status.StatusCode == StatusCode.FailedPrecondition);
+    }
+
+    // ── Post authorization ───────────────────────────────────────────────────
+
+    [Fact]
+    public async Task Post_WithNoAuthorizationRulesConfigured_ThrowsPermissionDenied()
+    {
+        var schema = SchemaFixtures.AuthorSchema() with { Authorization = null };
+        await _registry.RegisterAsync(schema);
+
+        var payload = MakePayload(new() { ["Name"] = Value.ForString("Alice") });
+        var request = new PersistRequest { TypeName = "Author", Payload = payload };
+
+        var act = async () => await _sut.Post(request, TestServerCallContext.Create());
+
+        await act.Should().ThrowAsync<RpcException>()
+            .Where(e => e.Status.StatusCode == StatusCode.PermissionDenied);
+    }
+
+    [Fact]
+    public async Task Post_WithNoActingUser_ThrowsPermissionDenied()
+    {
+        await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
+        _actingUserAccessor.ActingUser = null;
+
+        var payload = MakePayload(new() { ["Name"] = Value.ForString("Alice") });
+        var request = new PersistRequest { TypeName = "Author", Payload = payload };
+
+        var act = async () => await _sut.Post(request, TestServerCallContext.Create());
+
+        await act.Should().ThrowAsync<RpcException>()
+            .Where(e => e.Status.StatusCode == StatusCode.PermissionDenied);
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("someone-else")]
+    public async Task Post_ForOrdinaryCaller_ForceSetsOwnerFieldToActingUserSub(string? clientSuppliedOwnerId)
+    {
+        await _registry.RegisterAsync(OwnedAuthorSchema(withBypassRole: false));
+
+        var fields = new Dictionary<string, Value> { ["Name"] = Value.ForString("Alice") };
+        if (clientSuppliedOwnerId is not null)
+            fields["OwnerId"] = Value.ForString(clientSuppliedOwnerId);
+        var payload = MakePayload(fields);
+
+        var response = await _sut.Post(
+            new PersistRequest { TypeName = "Author", Payload = payload }, TestServerCallContext.Create());
+
+        response.Success.Should().BeTrue();
+        payload.Fields["OwnerId"].StringValue.Should().Be("test-user");
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("someone-else")]
+    public async Task Post_WithBypassRole_LeavesOwnerFieldUntouched(string? clientSuppliedOwnerId)
+    {
+        await _registry.RegisterAsync(OwnedAuthorSchema(withBypassRole: true));
+
+        var fields = new Dictionary<string, Value> { ["Name"] = Value.ForString("Alice") };
+        if (clientSuppliedOwnerId is not null)
+            fields["OwnerId"] = Value.ForString(clientSuppliedOwnerId);
+        var payload = MakePayload(fields);
+
+        var response = await _sut.Post(
+            new PersistRequest { TypeName = "Author", Payload = payload }, TestServerCallContext.Create());
+
+        response.Success.Should().BeTrue();
+        if (clientSuppliedOwnerId is null)
+            payload.Fields.Should().NotContainKey("OwnerId");
+        else
+            payload.Fields["OwnerId"].StringValue.Should().Be(clientSuppliedOwnerId);
+    }
+
+    [Fact]
+    public async Task Post_WithRestrictedFieldInWritePayload_ThrowsInvalidArgument()
+    {
+        var schema = SchemaFixtures.AuthorSchema() with
+        {
+            Authorization = new Iverson.Api.Schema.AuthorizationRules(
+                null,
+                new List<Iverson.Api.Schema.RowPermission> { new("test-bypass", true, true, true) },
+                new List<Iverson.Api.Schema.FieldPermission>
+                {
+                    new("Bio", new List<string>(), new List<string> { "premium" })
+                })
+        };
+        await _registry.RegisterAsync(schema);
+
+        var payload = MakePayload(new()
+        {
+            ["Name"] = Value.ForString("Alice"),
+            ["Bio"]  = Value.ForString("Writer")
+        });
+        var request = new PersistRequest { TypeName = "Author", Payload = payload };
+
+        var act = async () => await _sut.Post(request, TestServerCallContext.Create());
+
+        await act.Should().ThrowAsync<RpcException>()
+            .Where(e => e.Status.StatusCode == StatusCode.InvalidArgument);
     }
 
     [Fact]

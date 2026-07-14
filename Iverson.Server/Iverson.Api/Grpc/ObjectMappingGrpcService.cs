@@ -147,6 +147,15 @@ public sealed class ObjectMappingGrpcService(
 
         var schema = RequireSchema(request.TypeName);
 
+        var decision = _authEvaluator.Evaluate(schema, _actingUserAccessor.ActingUser, AuthorizationAction.Write);
+        if (decision.Denied)
+            throw new RpcException(new Status(StatusCode.PermissionDenied, "Not authorized to create this entity."));
+
+        if (decision.OwnershipRequired)
+            request.Payload.Fields[decision.OwnerFieldName!] = Value.ForString(decision.OwnerValue!);
+
+        AuthorizationFieldMasking.RejectDisallowedFields(request.Payload, decision.AllowedFields, exemptField: decision.OwnerFieldName);
+
         _relationValidator.ValidateRelations(request.Payload, schema);
 
         var key = _keyAccessor.ExtractKey(request.Payload, schema.KeyColumn.Name);

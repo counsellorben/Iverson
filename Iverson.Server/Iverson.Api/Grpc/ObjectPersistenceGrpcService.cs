@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using Google.Protobuf.WellKnownTypes;
 using Grpc.Core;
 using Iverson.Api.Authorization;
 using Iverson.Api.Reconciliation;
@@ -32,6 +33,15 @@ public sealed class ObjectPersistenceGrpcService(
         PersistRequest request, ServerCallContext context)
     {
         var schema = RequireSchema(request.TypeName);
+
+        var decision = authEvaluator.Evaluate(schema, actingUserAccessor.ActingUser, AuthorizationAction.Write);
+        if (decision.Denied)
+            throw new RpcException(new Status(StatusCode.PermissionDenied, "Not authorized to create this entity."));
+
+        if (decision.OwnershipRequired)
+            request.Payload.Fields[decision.OwnerFieldName!] = Value.ForString(decision.OwnerValue!);
+
+        AuthorizationFieldMasking.RejectDisallowedFields(request.Payload, decision.AllowedFields, exemptField: decision.OwnerFieldName);
 
         relationValidator.ValidateRelations(request.Payload, schema);
 
