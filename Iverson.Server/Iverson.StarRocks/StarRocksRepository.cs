@@ -222,14 +222,25 @@ public sealed class StarRocksRepository(
     {
         var (sql, param, lastCols) = StarRocksPipelineBuilder.Build(schema, request, registry, authz);
         var rows = await QueryAsync<dynamic>(sql, param);
+        return MaskPipelineRows(rows, lastCols);
+    }
 
-        // Layer 2 (post-fetch) masking: every intermediate/final CTE's actual physical columns
-        // can be broader than lastCols (the base CTE and any unqualified "select *" passthrough
-        // both select every raw table column, restricted or not — see StarRocksPipelineBuilder.
-        // Build's remarks) so the final row must still be stripped down to exactly the tracked,
-        // already-authorization-filtered column set before it leaves Iverson.StarRocks. A no-op
-        // when authz is null/unrestricted, since lastCols then already contains every column.
-        return rows
+    /// <summary>
+    /// Layer 2 (post-fetch) masking for <see cref="PipelineAsync"/>: every intermediate/final CTE's
+    /// actual physical columns can be broader than <paramref name="lastCols"/> (the base CTE and any
+    /// unqualified "select *" passthrough both select every raw table column, restricted or not —
+    /// see <see cref="StarRocksPipelineBuilder.Build"/>'s remarks) so each row must still be
+    /// stripped down to exactly the tracked, already-authorization-filtered column set before it
+    /// leaves <c>Iverson.StarRocks</c>. A no-op when <paramref name="lastCols"/> contains every
+    /// column (the unrestricted/no-authz case). Extracted as its own internal static method — rather
+    /// than left inline in <see cref="PipelineAsync"/> — specifically so this transformation has a
+    /// unit-testable seam that doesn't require a live StarRocks connection (<see cref="QueryAsync{T}"/>
+    /// is not virtual and this class is sealed, so <see cref="PipelineAsync"/> itself cannot be
+    /// exercised without a real backend).
+    /// </summary>
+    internal static IEnumerable<dynamic> MaskPipelineRows(
+        IEnumerable<dynamic> rows, IReadOnlyDictionary<string, string> lastCols) =>
+        rows
             .Select(row =>
             {
                 var dict = (IDictionary<string, object>)row;
@@ -238,7 +249,6 @@ public sealed class StarRocksRepository(
                 return (dynamic)row;
             })
             .ToList();
-    }
 
     private static async Task<bool> CheckBackendAliveAsync(string connectionString, CancellationToken ct)
     {
