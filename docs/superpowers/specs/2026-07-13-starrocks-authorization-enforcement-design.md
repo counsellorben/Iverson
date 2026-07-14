@@ -1,0 +1,119 @@
+# StarRocks Authorization Enforcement (Part 5c)
+
+## Context
+
+Part 5 of the identity-management initiative adds row/field-level authorization to Iverson's three data stores. Part 5a built the shared foundation (`AuthorizationRules` schema metadata, `IRowFieldAuthorizationEvaluator`). Part 5b wired that evaluator into Postgres's write/read gRPC surfaces (`ObjectMappingGrpcService`, `ObjectPersistenceGrpcService`, `ObjectRetrievalGrpcService`). This part (5c) wires the same evaluator into `ObjectSearchGrpcService`'s StarRocks-backed read surfaces: `Search`, `Aggregate`, `GroupBy`, `Pipeline`.
+
+`SearchSimilar` and `SearchChunks` (Qdrant-backed vector search) are explicitly out of scope — that is Part 5d.
+
+## Goals
+
+- A caller's row-level ownership restriction (from `AuthorizationRules.OwnerField` + `RowPermission`) is enforced as a genuine SQL-level row filter on every StarRocks query these 4 RPCs can generate, including joined types.
+- A caller's field-level restriction (`FieldPermission`) is enforced on every field these RPCs can expose or compute over, including joined types.
+- Enforcement reuses the existing `IRowFieldAuthorizationEvaluator` unchanged — no new evaluator variant, no duplicated authorization logic.
+- `Iverson.StarRocks` (which has zero dependency on `Iverson.Api.Authorization`/`Iverson.Api.Schema` today) stays that way — all `ClaimsPrincipal`/evaluator logic lives in `Iverson.Api`; only plain, decoupled data crosses the project boundary.
+
+## Non-goals
+
+- `SearchSimilar`/`SearchChunks` (Qdrant) — Part 5d.
+- Any change to `IRowFieldAuthorizationEvaluator`'s own logic or `AuthorizationDecision` shape (Part 5a's contract is reused as-is).
+- Migrating/backfilling `AuthorizationRules` onto existing registered schemas (same accepted-out-of-scope position as 5a/5b).
+
+## Design
+
+### 1. New decoupled type: `AuthorizationConstraint`
+
+Owned by `Iverson.StarRocks`, no reference to `Iverson.Api.Authorization`:
+
+```csharp
+namespace Iverson.StarRocks;
+
+public sealed record AuthorizationConstraint(
+    IReadOnlySet<string>? AllowedFields,   // null = unrestricted
+    string? OwnerColumn,                    // null = no ownership predicate needed
+    string? OwnerValue);
+```
+
+`ObjectSearchGrpcService` calls the existing `IRowFieldAuthorizationEvaluator.Evaluate(schema, actingUser, AuthorizationAction.Read)` once per involved registered type — the primary type named in the request, plus each distinct type referenced by a `JoinSpec`/`PipelineJoin` — and converts each resulting `AuthorizationDecision` into an `AuthorizationConstraint`. These are collected into `IReadOnlyDictionary<string, AuthorizationConstraint>` (keyed by `TypeName`) and passed as a new optional parameter into `IEngagementStoreSearchService`'s 4 methods. `Iverson.StarRocks` only ever consumes this plain data — the same boundary-crossing pattern `SchemaBuilder.ToStarRocksQuerySchema` already establishes for schema info.
+
+### 2. Row-level ownership filtering
+
+**Primary type** (Search/Aggregate/GroupBy's base table; Pipeline's `base_where`): build the WHERE clause exactly as today, then — if the primary type's constraint has a non-null `OwnerColumn` — wrap it and AND on the ownership predicate:
+
+```
+(<existing where>) AND `ownerCol` = @ownerVal
+```
+
+Skipped entirely when `OwnerColumn` is null (bypass or unrestricted caller). Applied at:
+- `StarRocksQueryBuilder.BuildSearch`'s `where` (both the join and no-join branch)
+- `StarRocksQueryBuilder.BuildAggregate`'s `where` (both branches)
+- `StarRocksQueryBuilder.BuildGroupBy`'s `where`
+- `StarRocksPipelineBuilder`'s `baseWhere` (the implicit `base` CTE)
+
+**Joined types** (`JoinSpec` on Search/Aggregate/GroupBy; `PipelineJoin` on Pipeline steps): the ownership predicate is appended to the **join's own `ON` clause**, never the outer `WHERE`. `JoinSpec`/`PipelineJoin` support `LEFT`/`RIGHT`/`FULL` in addition to `INNER` (verified: `JoinKind` proto enum); an ownership condition added to the outer `WHERE` would silently collapse a `LEFT JOIN` into an `INNER JOIN` (a non-matching or unauthorized right-side row would drop the *entire* combined row instead of just nulling out the right side) — the classic SQL "outer join defeated by a WHERE-clause predicate on the outer side" bug. Appending to `ON` preserves whatever join-kind semantics the caller specified, uniformly:
+
+```
+... LEFT JOIN `authors` AS `Author` ON `Article`.`AuthorId` = `Author`.`Id` AND `Author`.`OwnerId` = @ownerVal
+```
+
+Applied at:
+- `StarRocksQueryBuilder.BuildFromWithJoins` (shared by Search/Aggregate/GroupBy) — verified: its join-emission is a single `sb.Append($" {kind} JOIN ...")` call producing one complete `ON` clause per join, straightforwardly extensible with `AND <predicate>`.
+- `StarRocksPipelineBuilder`'s per-step join emission (`EmitStep`, non-aggregate branch) — verified: same single-`ON`-clause-per-join shape (`sb.Append($" {kind} JOIN {target} ON {string.Join(" AND ", conds)}")`).
+
+**Explicitly excluded from row-filter treatment** (verified, no ownership/field logic needed):
+- `BuildHaving` (used by Aggregate's `having` and Pipeline steps' `having`) — its own doc comment confirms HAVING clauses reference SQL *output aliases* (`doc_count`, `metric_val`, a step's own metric alias), never raw schema columns. A HAVING clause can't itself leak a raw restricted column — whatever it references was already validated (or masked) at the point that alias's underlying field/metric was defined.
+- Pipeline steps' own `where`/`nonAggWhere` (post-base steps) — verified: these resolve exclusively against the *prior step's already-filtered* output columns (`input.Columns`), never a fresh join source. Ownership was already applied once, upstream, at the base step or at whichever step first joined that type.
+
+### 3. Field-level enforcement (differs per RPC, matching how each exposes fields)
+
+**Search** — verified: `StarRocksQueryBuilder.BuildSelectColumns`'s joined-query branch resolves columns only against the primary `schema` parameter, never `tableMap` — a joined type's columns never appear in a `Search` response regardless of `JoinSpec`. Field masking only needs the **primary type's** `AllowedFields`: fetch the row exactly as today, then strip any key not in `AllowedFields` from the resulting dict before building the response `Struct` — same post-fetch masking mechanism as Part 5b's Postgres `Get`.
+
+**Aggregate & GroupBy** — every output field is an explicit reference (`AggregationSpec.Field`/`GroupByFields`, `GroupByRequest.Keys`/`MetricSpec.Field`), resolved via the existing `ResolveColumn(tableMap, ...)` helper that already spans primary + joined types. Resolve each referenced field to its owning type first, then — if that type's `AllowedFields` is non-null and excludes it — reject the whole call: `RpcException(InvalidArgument, ...)` naming the field. (`Expression` fields are trusted server-side raw SQL per the existing code comment, not user field references — no check applies.)
+
+**Pipeline** — two layers:
+1. **Explicit references** (`select` items, `group_by` keys, `metrics` fields, `window` fields/`order_by`/`partition_by`, `derive` expression tokens, `join.on` conditions) are exactly what `StarRocksPipelineBuilder.TrackAndValidate`'s existing pre-SQL validation pass already resolves (verified: it walks every one of these before any SQL is built, throwing `StarRocksQueryTranslationException` on an invalid reference). Extend that same pass: whenever it resolves a column to a source type (the base type, or a fresh `PipelineJoin` target), check the constraint's `AllowedFields`; a disallowed reference throws the same exception type, which the grpc service already maps to `InvalidArgument`. An `all: true` select item against a source whose `AllowedFields` is non-null is treated as a disallowed reference too — a wildcard can't be resolved into "just the allowed subset" without contradicting the reject-on-reference behavior chosen everywhere else in this design.
+2. **Implicit passthrough** (a step with no explicit `select` — only possible for base-type columns, since any step with joins is required to have an explicit `select`) reaches the final output unchecked by layer 1. The Pipeline's final `SELECT * FROM <last step>` gets the same post-fetch masking as Search, against the base type's `AllowedFields`. This is a safety net: anything already validated by layer 1 is already allowed, so re-masking it is a no-op; it only ever catches a base-type column that was never explicitly named.
+
+### 4. Denied-caller handling
+
+**Primary type Denied** (no `AuthorizationRules` configured, or no acting-user identity) — evaluated once per RPC in `ObjectSearchGrpcService`, before calling into `IEngagementStoreSearchService`:
+- `Search`/`GroupBy`/`Pipeline`: close the response stream having written zero rows (StarRocks is never queried).
+- `Aggregate`: return `AggregateResponse { Results = { } }` (empty).
+
+This mirrors 5b's "denial looks like absence, not an error" principle — it doesn't distinguish "no rows matched" from "you're not authorized," avoiding a signal that the type/schema exists or has rules configured.
+
+**Joined type Denied** — a join is structural (baked into `FROM`/`ON`, or a `GROUP BY` key), unlike Get's nested relations which can be gracefully omitted. Reject the whole call: `RpcException(InvalidArgument, ...)` naming the joined type. Evaluated for every distinct type referenced by a `JoinSpec`/`PipelineJoin` before the call proceeds.
+
+### 5. Wiring changes
+
+- `ObjectSearchGrpcService` gains `IActingUserAccessor` + `IRowFieldAuthorizationEvaluator` constructor parameters (same pattern as the 3 Postgres-facing services in 5b). Both are already DI-registered (`Program.cs`) and require no new registration.
+- `IEngagementStoreSearchService`'s 4 methods (`SearchAsync`/`AggregateAsync`/`GroupByAsync`/`PipelineAsync`) each gain one new optional parameter: `IReadOnlyDictionary<string, AuthorizationConstraint>? authz = null`. Implemented in `StarRocksRepository`, threaded into `StarRocksQueryBuilder`/`StarRocksPipelineBuilder`.
+- `ObjectSearchGrpcServiceTests.cs` (the only direct-construction site besides DI) needs its constructor call updated for the 2 new params, plus a default `ActingUser` (group `"test-bypass"`) added — matching the pattern the other 3 grpc test files already use. Its existing schema fixtures (`SchemaFixtures.AuthorSchema()`/`ArticleSchema()`/etc.) already carry a permissive bypass `AuthorizationRules` from 5a/5b's fixture fix, so no further fixture changes are needed there. The one inline `new SchemaDescriptor { ... }` in this file (`SearchSimilar_ThrowsRpcException_WhenNoCollection`) exercises `SearchSimilar`, which is out of scope for 5c and unaffected.
+
+## Verified assumptions
+
+| # | Assumption | Verified |
+|---|---|---|
+| 1 | `Iverson.StarRocks.csproj` has no project reference to `Iverson.Api` | Read the `.csproj` — only references `Iverson.Client.Contracts` |
+| 2 | `BuildSelectColumns`'s joined branch resolves only against the primary schema, never `tableMap` | Read the method: `ResolveColumn(schema, f)`, `schema` is always the primary param |
+| 3 | `JoinSpec`/`PipelineJoin` support Left/Right/Full/Inner | Read `object_search.proto`'s `JoinKind` enum |
+| 4 | `BuildFromWithJoins`'s per-join `ON` clause is a single, extensible string | Read the method's `sb.Append($" {kind} JOIN ...")` call |
+| 5 | `StarRocksPipelineBuilder.EmitStep`'s per-join `ON` clause is the same shape | Read the method's equivalent `sb.Append` call |
+| 6 | `IRowFieldAuthorizationEvaluator`/`RowFieldAuthorizationEvaluator` DI-registered, reusable as-is | Read `Program.cs`'s `AddSingleton<IRowFieldAuthorizationEvaluator, ...>` |
+| 7 | `IActingUserAccessor.ActingUser` is `ClaimsPrincipal?`, matching the evaluator's parameter | Read `IActingUserAccessor.cs` |
+| 8 | Only one non-DI construction site of `ObjectSearchGrpcService` exists | Grepped the repo for `new ObjectSearchGrpcService(` — one hit, in the test file |
+| 9 | `SchemaRegistry.Get(typeName)` returns the full `SchemaDescriptor` (incl. `Authorization`) for any registered type name | Read `SchemaRegistry.cs`'s `Get` signature |
+| 10 | `TrackAndValidate` performs a full pre-SQL pass resolving every column reference across all step constructs | Read the full method |
+| 11 | `StarRocksQueryTranslationException` is caught and mapped to `InvalidArgument` in all 4 RPC methods | Read `ObjectSearchGrpcService.cs`'s try/catch blocks around `Search`/`RunAggregationAsync`/`GroupBy`/`Pipeline` |
+| 12 | Aggregate/GroupBy field references resolve via the same `ResolveColumn(tableMap, ...)` helper | Read `BuildAggregate`'s `Resolve` local function and `BuildGroupBy`'s `keyCols`/`metricExprs` construction |
+| 13 | Existing `ObjectSearchGrpcServiceTests.cs` schemas already carry bypass `AuthorizationRules` from 5a/5b's fixture fix | Read `SchemaFixtures.cs` — every factory method sets `Authorization = BypassAuthorization()` |
+| 14 (recurrence) | Every WHERE/HAVING-shaped surface across all 4 RPCs is accounted for | Enumerated: `BuildSearch`/`BuildAggregate`/`BuildGroupBy`'s `where`, Pipeline's `baseWhere` (all need primary-type ownership); `BuildFromWithJoins`/`EmitStep`'s join `ON` clauses (joined-type ownership); `BuildHaving` and post-base Pipeline step `where` confirmed exempt (alias-only / already-filtered-upstream) |
+
+## Testing plan
+
+- `ObjectSearchGrpcServiceTests.cs`: denied (no rules)/denied (no identity) → empty result, per RPC; owner-match rows included; non-owner rows excluded; bypass-role sees all; restricted field masked from `Search` response; restricted field referenced by an `AggregationSpec`/`GroupByRequest` key or metric → `InvalidArgument`; joined type denied → `InvalidArgument`; joined type ownership-restricted → only matching joined rows survive (via a `LEFT JOIN`, confirming the non-matching side nulls out rather than dropping the whole row).
+- `Iverson.StarRocks.Tests`: `StarRocksQueryBuilder`/`StarRocksPipelineBuilder` unit tests for the new `authz` parameter — wrap-and-AND SQL shape for primary-type ownership, `ON`-clause-appended predicate for joined-type ownership (including a `LEFT JOIN` case proving row-preservation), `TrackAndValidate` rejecting a disallowed field/`all: true` reference with the new constraint present.
+
+## Known issues / accepted as out of scope
+
+Same 2 pre-existing consequences 5a/5b already documented, unaffected by this part: schemas with no `AuthorizationRules` reject every call; a rules-configured schema with no acting-user identity also rejects. Neither is fixed here.
