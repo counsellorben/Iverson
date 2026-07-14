@@ -136,10 +136,17 @@ internal static class SchemaBuilder
         d.KeyColumn.Name,
         d.ScalarColumns.Select(c => c.Name).ToList());
 
-    internal static CollectionSchema ToChunkCollectionSchema(SchemaDescriptor d) => new(
-        d.CollectionName! + "_chunks",
-        d.ChunkFields.Select(c => new NamedVector($"{c.PropertyName.ToSnakeCase()}_vector", c.Dimension)).ToList(),
-        [new PayloadIndex("parent_id", PayloadIndexKind.Keyword)]);
+    internal static CollectionSchema ToChunkCollectionSchema(SchemaDescriptor d)
+    {
+        var indexes = new List<PayloadIndex> { new("parent_id", PayloadIndexKind.Keyword) };
+        if (d.Authorization?.OwnerField is { } ownerField)
+            indexes.Add(new PayloadIndex(ownerField.ToCamelCase(), PayloadIndexKind.Keyword));
+
+        return new CollectionSchema(
+            d.CollectionName! + "_chunks",
+            d.ChunkFields.Select(c => new NamedVector($"{c.PropertyName.ToSnakeCase()}_vector", c.Dimension)).ToList(),
+            indexes);
+    }
 
     internal static CollectionSchema ToCollectionSchema(SchemaDescriptor d) => new(
         d.CollectionName!,

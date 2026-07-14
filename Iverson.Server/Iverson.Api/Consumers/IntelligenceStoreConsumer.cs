@@ -135,6 +135,10 @@ public sealed class IntelligenceStoreConsumer(
             var chunksCollection = schema.CollectionName + "_chunks";
             await EnsureChunkCollectionAsync(chunksCollection, schema, ct);
 
+            var ownerValue = schema.Authorization?.OwnerField is { } ownerField
+                ? ExtractString(payload, ownerField)
+                : null;
+
             foreach (var cf in schema.ChunkFields)
             {
                 var text = ExtractString(payload, cf.PropertyName);
@@ -155,17 +159,21 @@ public sealed class IntelligenceStoreConsumer(
 
                 foreach (var (chunkVector, chunkId, chunkText, chunkIndex) in chunkResults)
                 {
+                    var chunkPayload = new Dictionary<string, object>
+                    {
+                        ["text"]        = chunkText,
+                        ["parent_id"]   = ev.Key,
+                        ["field"]       = cf.PropertyName,
+                        ["chunk_index"] = chunkIndex.ToString()
+                    };
+                    if (ownerValue is not null)
+                        chunkPayload[schema.Authorization!.OwnerField!.ToCamelCase()] = ownerValue;
+
                     await vectorWrite.UpsertNamedAsync(
                         chunksCollection,
                         chunkId,
                         new Dictionary<string, float[]> { [vectorName] = chunkVector },
-                        new Dictionary<string, object>
-                        {
-                            ["text"]        = chunkText,
-                            ["parent_id"]   = ev.Key,
-                            ["field"]       = cf.PropertyName,
-                            ["chunk_index"] = chunkIndex.ToString()
-                        });
+                        chunkPayload);
                 }
 
                 logger.LogInformation("[Intelligence] Ingested {Count} chunk(s) for {Type}:{Key} field={Field}",

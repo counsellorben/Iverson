@@ -66,6 +66,38 @@ public sealed class ObjectMappingGrpcService(
                     $"owner_field '{ownerField}' on '{descriptor.TypeName}' does not match any declared scalar property."));
             }
 
+            if (!string.IsNullOrEmpty(ownerField))
+            {
+                var ownerColumn = descriptor.ScalarColumns.First(c =>
+                    string.Equals(c.Name, ownerField, StringComparison.OrdinalIgnoreCase));
+
+                // Allow-list, not a reject-list: IntelligenceStoreConsumer.ExtractTypedValue's default branch
+                // only produces a clean scalar string for these 4 SqlTypes. Every other SqlType — including
+                // the array variants UUID[]/REAL[] that SchemaBuilder.ArrayTypeOverrides can also produce for
+                // a scalar column — falls through to JsonElement.ToString(), which for a non-string JSON value
+                // (a number, bool, or array) produces something that can never equal a real caller's identity
+                // value, silently excluding every caller (including the legitimate owner) from every result.
+                var stringValuedSqlTypes = new[] { "TEXT", "UUID", "BYTEA", "TIMESTAMPTZ" };
+                if (!stringValuedSqlTypes.Contains(ownerColumn.SqlType.ToUpperInvariant()))
+                {
+                    throw new RpcException(new Status(StatusCode.InvalidArgument,
+                        $"owner_field '{ownerField}' on '{descriptor.TypeName}' has SqlType '{ownerColumn.SqlType}', " +
+                        "which is not string-valued; Qdrant ownership filtering requires a string-valued owner field."));
+                }
+
+                if (descriptor.ChunkFields.Count > 0)
+                {
+                    var reservedChunkKeys = new[] { "text", "parent_id", "field", "chunk_index" };
+                    var camelOwnerField = ownerField.ToCamelCase();
+                    if (reservedChunkKeys.Contains(camelOwnerField))
+                    {
+                        throw new RpcException(new Status(StatusCode.InvalidArgument,
+                            $"owner_field '{ownerField}' on '{descriptor.TypeName}' camelCases to '{camelOwnerField}', " +
+                            $"which collides with a reserved chunk-payload key ({string.Join(", ", reservedChunkKeys)})."));
+                    }
+                }
+            }
+
             await _schemaManager.ApplySchemaAsync(SchemaBuilder.ToTableSchema(descriptor));
 
             try

@@ -70,12 +70,12 @@ internal static class AuthorizationFieldMasking
         RejectDisallowedFields(payload, decision.AllowedFields, exemptField: decision.OwnerFieldName);
     }
 
-    public static void MaskDisallowedFields(Struct payload, IReadOnlySet<string>? allowedFields)
+    public static void MaskDisallowedFields(Struct payload, IReadOnlySet<string>? allowedFields, string? exemptField = null)
     {
         if (allowedFields is null) return;
 
         var toRemove = payload.Fields.Keys
-            .Where(key => !allowedFields.Contains(StructSerializer.UpperFirst(key)))
+            .Where(key => !allowedFields.Contains(StructSerializer.UpperFirst(key)) && StructSerializer.UpperFirst(key) != exemptField)
             .ToList();
         foreach (var key in toRemove)
             payload.Fields.Remove(key);

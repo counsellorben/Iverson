@@ -124,6 +124,61 @@ public class IntelligenceStoreConsumerTests
     }
 
     [Fact]
+    public async Task HandleCreated_WithChunkFieldAndOwnerField_WritesOwnerValueIntoChunkPayload()
+    {
+        var schema = SchemaFixtures.ArticleSchema() with
+        {
+            Authorization = new Iverson.Api.Schema.AuthorizationRules(
+                "AuthorId",
+                new List<Iverson.Api.Schema.RowPermission> { new("test-bypass", true, true, true) },
+                new List<Iverson.Api.Schema.FieldPermission>())
+        };
+        await _registry.RegisterAsync(schema);
+
+        var longBody = new string('x', 3000);
+        var payload  = $$$"""{"Title":"Test","Body":"{{{longBody}}}","AuthorId":"00000000-0000-0000-0000-000000000001"}""";
+        var ev = new EntityEvent(
+            EventType: EntityEventType.Created, TypeName: "Article", Key: Guid.NewGuid().ToString(),
+            PayloadJson: payload, TraceId: "trace-owner", SchemaVersion: "1",
+            OccurredAt: DateTimeOffset.UtcNow, TargetStores: StoreTarget.Intelligence);
+
+        IReadOnlyDictionary<string, object>? capturedPayload = null;
+        _vectorWrite.UpsertNamedAsync(
+                "articles_chunks", Arg.Any<ulong>(), Arg.Any<IReadOnlyDictionary<string, float[]>>(),
+                Arg.Do<IReadOnlyDictionary<string, object>?>(p => capturedPayload = p))
+            .Returns(Task.CompletedTask);
+
+        await BuildSut().HandleAsync(ev.Key, Serialize(ev), CancellationToken.None);
+
+        capturedPayload.Should().NotBeNull();
+        capturedPayload!["authorId"].Should().Be("00000000-0000-0000-0000-000000000001");
+    }
+
+    [Fact]
+    public async Task HandleCreated_WithChunkFieldAndNoOwnerField_OmitsOwnerKeyFromChunkPayload()
+    {
+        await _registry.RegisterAsync(SchemaFixtures.ArticleSchema()); // BypassAuthorization() has OwnerField == null
+
+        var longBody = new string('x', 3000);
+        var payload  = $$$"""{"Title":"Test","Body":"{{{longBody}}}","AuthorId":"00000000-0000-0000-0000-000000000001"}""";
+        var ev = new EntityEvent(
+            EventType: EntityEventType.Created, TypeName: "Article", Key: Guid.NewGuid().ToString(),
+            PayloadJson: payload, TraceId: "trace-no-owner", SchemaVersion: "1",
+            OccurredAt: DateTimeOffset.UtcNow, TargetStores: StoreTarget.Intelligence);
+
+        IReadOnlyDictionary<string, object>? capturedPayload = null;
+        _vectorWrite.UpsertNamedAsync(
+                "articles_chunks", Arg.Any<ulong>(), Arg.Any<IReadOnlyDictionary<string, float[]>>(),
+                Arg.Do<IReadOnlyDictionary<string, object>?>(p => capturedPayload = p))
+            .Returns(Task.CompletedTask);
+
+        await BuildSut().HandleAsync(ev.Key, Serialize(ev), CancellationToken.None);
+
+        capturedPayload.Should().NotBeNull();
+        capturedPayload!.Should().NotContainKey("authorId");
+    }
+
+    [Fact]
     public async Task HandleDeleted_CallsVectorDelete()
     {
         await _registry.RegisterAsync(SchemaFixtures.ArticleSchema());

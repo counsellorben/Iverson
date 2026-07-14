@@ -175,6 +175,52 @@ public class ObjectMappingGrpcServiceTests
     }
 
     [Fact]
+    public async Task RegisterSchema_WithNonStringOwnerFieldSqlType_ThrowsInvalidArgument()
+    {
+        var td = new TypeDescriptor { TypeName = "Widget" };
+        td.Properties.Add(new PropertyDescriptor { Name = "Id", ClrType = ClrType.ClrGuid, IsKey = true });
+        td.Properties.Add(new PropertyDescriptor { Name = "Count", ClrType = ClrType.ClrInt32 });
+        td.Authorization = new Client.Contracts.AuthorizationRules { OwnerField = "Count" };
+
+        var act = () => _sut.RegisterSchema(
+            new SchemaRequest { RootType = td }, TestServerCallContext.Create());
+
+        var ex = await act.Should().ThrowAsync<RpcException>();
+        ex.Which.StatusCode.Should().Be(StatusCode.InvalidArgument);
+    }
+
+    [Fact]
+    public async Task RegisterSchema_WithOwnerFieldCollidingWithReservedChunkPayloadKey_ThrowsInvalidArgument()
+    {
+        var td = new TypeDescriptor { TypeName = "Widget" };
+        td.Properties.Add(new PropertyDescriptor { Name = "Id", ClrType = ClrType.ClrGuid, IsKey = true });
+        td.Properties.Add(new PropertyDescriptor { Name = "Text", ClrType = ClrType.ClrString });
+        td.Properties.Add(new PropertyDescriptor
+            { Name = "Body", ClrType = ClrType.ClrString, IsChunk = true, ChunkMaxTokens = 512, ChunkOverlap = 64 });
+        td.Authorization = new Client.Contracts.AuthorizationRules { OwnerField = "Text" }; // "Text".ToCamelCase() == "text"
+
+        var act = () => _sut.RegisterSchema(
+            new SchemaRequest { RootType = td }, TestServerCallContext.Create());
+
+        var ex = await act.Should().ThrowAsync<RpcException>();
+        ex.Which.StatusCode.Should().Be(StatusCode.InvalidArgument);
+    }
+
+    [Fact]
+    public async Task RegisterSchema_WithGuidTypedOwnerField_DoesNotThrow()
+    {
+        var td = new TypeDescriptor { TypeName = "Widget" };
+        td.Properties.Add(new PropertyDescriptor { Name = "Id", ClrType = ClrType.ClrGuid, IsKey = true });
+        td.Properties.Add(new PropertyDescriptor { Name = "OwnerId", ClrType = ClrType.ClrGuid });
+        td.Authorization = new Client.Contracts.AuthorizationRules { OwnerField = "OwnerId" };
+
+        var response = await _sut.RegisterSchema(
+            new SchemaRequest { RootType = td }, TestServerCallContext.Create());
+
+        response.Success.Should().BeTrue();
+    }
+
+    [Fact]
     public async Task RegisterSchema_CallsApplyTableAsync_WithMatchingTableName()
     {
         var request = new SchemaRequest { RootType = SimpleType("Author", "Name") };

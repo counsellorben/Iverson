@@ -142,6 +142,32 @@ public class SchemaBuilderTests
     }
 
     [Fact]
+    public void ToChunkCollectionSchema_IncludesPayloadIndex_ForOwnerField_WhenConfigured()
+    {
+        var descriptor = SchemaFixtures.ArticleSchema() with
+        {
+            Authorization = new Iverson.Api.Schema.AuthorizationRules(
+                "Title",
+                new List<Iverson.Api.Schema.RowPermission> { new("test-bypass", true, true, true) },
+                new List<Iverson.Api.Schema.FieldPermission>())
+        };
+
+        var schema = SchemaBuilder.ToChunkCollectionSchema(descriptor);
+
+        schema.PayloadIndexes.Should().ContainSingle(p => p.FieldName == "title" && p.Kind == PayloadIndexKind.Keyword);
+    }
+
+    [Fact]
+    public void ToChunkCollectionSchema_OmitsOwnerFieldIndex_WhenNotConfigured()
+    {
+        var descriptor = SchemaFixtures.ArticleSchema(); // BypassAuthorization() has OwnerField == null
+
+        var schema = SchemaBuilder.ToChunkCollectionSchema(descriptor);
+
+        schema.PayloadIndexes.Should().ContainSingle(p => p.FieldName == "parent_id");
+    }
+
+    [Fact]
     public void BuildDescriptor_ManyToManyRelation_MapsToInternalManyToMany()
     {
         var td = new TypeDescriptor { TypeName = "Article" };
