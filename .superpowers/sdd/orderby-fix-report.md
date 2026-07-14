@@ -198,4 +198,5 @@ tests). `BuildAggregate` and `StarRocksPipelineBuilder.cs` remain untouched.
 
 ### Follow-up commit
 
-`<pending — see final report>`
+`6422821` — `fix(starrocks): throw on unresolvable BuildGroupBy OrderBy property instead of
+crashing IsFieldAllowed`
