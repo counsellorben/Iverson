@@ -44,6 +44,13 @@ public sealed class ObjectSearchGrpcService(
     {
         var schema = RequireSchema(request.TypeName);
 
+        var joinedTypes = request.Joins.SelectMany(j => new[] { j.LeftType, j.RightType });
+        var auth = EvaluateAuthorization(schema, joinedTypes);
+        if (auth.PrimaryDenied)
+            return; // empty stream — StarRocks never queried
+        if (auth.DeniedJoinedType is not null)
+            throw new RpcException(new Status(StatusCode.InvalidArgument, $"Not authorized to join '{auth.DeniedJoinedType}'."));
+
         if (logger.IsEnabled(LogLevel.Information))
             logger.LogInformation("[Search] type={Type} clauses={Clauses} page={Page}/{Size}",
                 request.TypeName, request.Query?.Clauses.Count ?? 0, request.Page, request.PageSize);
@@ -55,7 +62,8 @@ public sealed class ObjectSearchGrpcService(
                 SchemaBuilder.ToStarRocksQuerySchema(schema), request.Query, request.Page, request.PageSize,
                 fields: request.Fields.Count > 0 ? request.Fields : null,
                 joins: request.Joins,
-                registry: t => registry.Get(t) is { } d ? SchemaBuilder.ToStarRocksQuerySchema(d) : null);
+                registry: t => registry.Get(t) is { } d ? SchemaBuilder.ToStarRocksQuerySchema(d) : null,
+                authz: auth.Constraints);
         }
         catch (StarRocksQueryTranslationException ex)
         {
@@ -66,10 +74,17 @@ public sealed class ObjectSearchGrpcService(
             throw new RpcException(new Status(StatusCode.Unavailable, $"StarRocks is not ready: {ex.Message}"));
         }
 
+        var primaryConstraint = auth.Constraints.TryGetValue(schema.TypeName, out var pc) ? pc : null;
+
         foreach (var row in rows)
         {
             var dict = ((IDictionary<string, object>)row)
                 .ToDictionary(kv => kv.Key, kv => (object?)kv.Value);
+
+            if (primaryConstraint?.AllowedFields is not null)
+                foreach (var key in dict.Keys.Where(k => !primaryConstraint.AllowedFields.Contains(k)).ToList())
+                    dict.Remove(key);
+
             await responseStream.WriteAsync(
                 new SearchResponse
                 {

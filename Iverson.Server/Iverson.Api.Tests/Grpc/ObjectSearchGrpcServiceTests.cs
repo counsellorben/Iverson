@@ -98,7 +98,8 @@ public class ObjectSearchGrpcServiceTests
         _search.SearchAsync(
                 Arg.Any<StarRocksQuerySchema>(), Arg.Any<SearchQuery?>(), Arg.Any<int>(), Arg.Any<int>(),
                 Arg.Any<IReadOnlyList<string>?>(), Arg.Any<IReadOnlyList<JoinSpec>?>(),
-                Arg.Any<Func<string, StarRocksQuerySchema?>?>())
+                Arg.Any<Func<string, StarRocksQuerySchema?>?>(),
+                Arg.Any<IReadOnlyDictionary<string, AuthorizationConstraint>?>())
             .Returns(new[] { (dynamic)fakeRow }.AsEnumerable());
 
         var (writer, written) = MakeStream<SearchResponse>();
@@ -108,7 +109,8 @@ public class ObjectSearchGrpcServiceTests
         await _search.Received(1).SearchAsync(
             Arg.Any<StarRocksQuerySchema>(), Arg.Any<SearchQuery?>(), Arg.Any<int>(), Arg.Any<int>(),
             Arg.Any<IReadOnlyList<string>?>(), Arg.Any<IReadOnlyList<JoinSpec>?>(),
-            Arg.Any<Func<string, StarRocksQuerySchema?>?>());
+            Arg.Any<Func<string, StarRocksQuerySchema?>?>(),
+            Arg.Any<IReadOnlyDictionary<string, AuthorizationConstraint>?>());
     }
 
     [Fact]
@@ -124,7 +126,8 @@ public class ObjectSearchGrpcServiceTests
         _search.SearchAsync(
                 Arg.Do<StarRocksQuerySchema>(s => capturedSchema = s), Arg.Any<SearchQuery?>(), Arg.Any<int>(),
                 Arg.Any<int>(), Arg.Any<IReadOnlyList<string>?>(), Arg.Any<IReadOnlyList<JoinSpec>?>(),
-                Arg.Any<Func<string, StarRocksQuerySchema?>?>())
+                Arg.Any<Func<string, StarRocksQuerySchema?>?>(),
+                Arg.Any<IReadOnlyDictionary<string, AuthorizationConstraint>?>())
             .Returns(Enumerable.Empty<dynamic>());
 
         var (writer, _) = MakeStream<SearchResponse>();
@@ -146,7 +149,8 @@ public class ObjectSearchGrpcServiceTests
         _search.SearchAsync(
                 Arg.Any<StarRocksQuerySchema>(), Arg.Do<SearchQuery?>(q => capturedQuery = q), Arg.Any<int>(),
                 Arg.Any<int>(), Arg.Any<IReadOnlyList<string>?>(), Arg.Any<IReadOnlyList<JoinSpec>?>(),
-                Arg.Any<Func<string, StarRocksQuerySchema?>?>())
+                Arg.Any<Func<string, StarRocksQuerySchema?>?>(),
+                Arg.Any<IReadOnlyDictionary<string, AuthorizationConstraint>?>())
             .Returns(Enumerable.Empty<dynamic>());
 
         var request = new SearchRequest { TypeName = "Author", Query = new SearchQuery() };
@@ -164,6 +168,177 @@ public class ObjectSearchGrpcServiceTests
         capturedQuery.Should().NotBeNull();
         capturedQuery!.Clauses.Should().ContainSingle(c =>
             c.Property == "Name" && c.Operator == SearchOperator.Contains);
+    }
+
+    // ── Search — authorization ────────────────────────────────────────────────
+
+    private static SchemaDescriptor OwnedSchema(
+        string typeName, string? ownerField, IReadOnlyList<Iverson.Api.Schema.FieldPermission>? fieldPermissions = null,
+        string bypassRole = "test-bypass") => new()
+    {
+        TypeName       = typeName,
+        TableName      = typeName.ToLowerInvariant() + "s",
+        CollectionName = null,
+        KeyColumn      = new ColumnDescriptor("Id", "uuid", false),
+        ScalarColumns  = [new ColumnDescriptor("Name", "text", false), new ColumnDescriptor("Secret", "text", true)],
+        FkColumns      = [],
+        VectorFields   = [],
+        ChunkFields    = [],
+        Relations      = [],
+        Authorization  = new Iverson.Api.Schema.AuthorizationRules(
+            ownerField,
+            new List<Iverson.Api.Schema.RowPermission> { new(bypassRole, true, true, true) },
+            fieldPermissions?.ToList() ?? [])
+    };
+
+    [Fact]
+    public async Task Search_NoAuthorizationRules_ReturnsEmptyStream_WithoutQueryingSearchService()
+    {
+        var schema = SchemaFixtures.AuthorSchema() with { Authorization = null };
+        await _registry.RegisterAsync(schema);
+
+        var (writer, written) = MakeStream<SearchResponse>();
+        await _sut.Search(new SearchRequest { TypeName = "Author" }, writer, TestServerCallContext.Create());
+
+        written.Should().BeEmpty();
+        _search.ReceivedCalls().Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task Search_NoActingUser_ReturnsEmptyStream_WithoutQueryingSearchService()
+    {
+        await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
+        _actingUserAccessor.ActingUser = null;
+
+        var (writer, written) = MakeStream<SearchResponse>();
+        await _sut.Search(new SearchRequest { TypeName = "Author" }, writer, TestServerCallContext.Create());
+
+        written.Should().BeEmpty();
+        _search.ReceivedCalls().Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task Search_BypassCaller_ForwardsUnrestrictedConstraint_NoOwnerFilter()
+    {
+        // Caller is in the row-permission's bypass role, even though the schema declares an
+        // OwnerField — bypass must short-circuit ownership, so the forwarded constraint carries
+        // a null OwnerColumn (i.e. "sees all rows", no WHERE-clause owner predicate added).
+        await _registry.RegisterAsync(OwnedSchema("Owned", "OwnerId"));
+
+        IReadOnlyDictionary<string, AuthorizationConstraint>? captured = null;
+        _search.SearchAsync(
+                Arg.Any<StarRocksQuerySchema>(), Arg.Any<SearchQuery?>(), Arg.Any<int>(), Arg.Any<int>(),
+                Arg.Any<IReadOnlyList<string>?>(), Arg.Any<IReadOnlyList<JoinSpec>?>(),
+                Arg.Any<Func<string, StarRocksQuerySchema?>?>(),
+                Arg.Do<IReadOnlyDictionary<string, AuthorizationConstraint>?>(a => captured = a))
+            .Returns(Enumerable.Empty<dynamic>());
+
+        var (writer, _) = MakeStream<SearchResponse>();
+        await _sut.Search(new SearchRequest { TypeName = "Owned" }, writer, TestServerCallContext.Create());
+
+        captured.Should().NotBeNull();
+        captured!["Owned"].OwnerColumn.Should().BeNull();
+        captured["Owned"].AllowedFields.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task Search_OwnerRestrictedCaller_ForwardsOwnerColumnAndCallerIdAsOwnerValue()
+    {
+        // Caller is NOT in the bypass role, and the schema requires ownership — the forwarded
+        // constraint must carry the owner column and the caller's own identity as the value that
+        // BuildSearch/BuildFromWithJoins will use to filter rows.
+        await _registry.RegisterAsync(OwnedSchema("Owned", "OwnerId"));
+        _actingUserAccessor.ActingUser = ActingUserFixtures.Principal("alice", "member");
+
+        IReadOnlyDictionary<string, AuthorizationConstraint>? captured = null;
+        _search.SearchAsync(
+                Arg.Any<StarRocksQuerySchema>(), Arg.Any<SearchQuery?>(), Arg.Any<int>(), Arg.Any<int>(),
+                Arg.Any<IReadOnlyList<string>?>(), Arg.Any<IReadOnlyList<JoinSpec>?>(),
+                Arg.Any<Func<string, StarRocksQuerySchema?>?>(),
+                Arg.Do<IReadOnlyDictionary<string, AuthorizationConstraint>?>(a => captured = a))
+            .Returns(Enumerable.Empty<dynamic>());
+
+        var (writer, _) = MakeStream<SearchResponse>();
+        await _sut.Search(new SearchRequest { TypeName = "Owned" }, writer, TestServerCallContext.Create());
+
+        captured.Should().NotBeNull();
+        captured!["Owned"].OwnerColumn.Should().Be("OwnerId");
+        captured["Owned"].OwnerValue.Should().Be("alice");
+    }
+
+    [Fact]
+    public async Task Search_RestrictedFields_MasksDisallowedFieldFromResponse()
+    {
+        var fieldPermissions = new List<Iverson.Api.Schema.FieldPermission> { new("Secret", ["admin"], []) };
+        await _registry.RegisterAsync(OwnedSchema("Owned", "OwnerId", fieldPermissions));
+        _actingUserAccessor.ActingUser = ActingUserFixtures.Principal("alice", "member"); // not "admin", not bypass
+
+        var fakeRow = new Dictionary<string, object> { ["Id"] = "1", ["Name"] = "visible", ["Secret"] = "hidden" };
+        _search.SearchAsync(
+                Arg.Any<StarRocksQuerySchema>(), Arg.Any<SearchQuery?>(), Arg.Any<int>(), Arg.Any<int>(),
+                Arg.Any<IReadOnlyList<string>?>(), Arg.Any<IReadOnlyList<JoinSpec>?>(),
+                Arg.Any<Func<string, StarRocksQuerySchema?>?>(),
+                Arg.Any<IReadOnlyDictionary<string, AuthorizationConstraint>?>())
+            .Returns(new[] { (dynamic)fakeRow }.AsEnumerable());
+
+        var (writer, written) = MakeStream<SearchResponse>();
+        await _sut.Search(new SearchRequest { TypeName = "Owned" }, writer, TestServerCallContext.Create());
+
+        written.Should().HaveCount(1);
+        written[0].Data.Fields.Should().ContainKey("Name");
+        written[0].Data.Fields.Should().ContainKey("Id");
+        written[0].Data.Fields.Should().NotContainKey("Secret");
+    }
+
+    [Fact]
+    public async Task Search_JoinedTypeWithNoAuthorizationRules_ThrowsInvalidArgument_WithoutQueryingSearchService()
+    {
+        await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
+        await _registry.RegisterAsync(SchemaFixtures.ArticleSchema() with { Authorization = null });
+
+        var request = new SearchRequest { TypeName = "Author" };
+        request.Joins.Add(new JoinSpec
+        {
+            LeftType = "Author", RightType = "Article", LeftField = "Id", RightField = "AuthorId", Kind = JoinKind.Inner
+        });
+
+        var (writer, _) = MakeStream<SearchResponse>();
+        var act = async () => await _sut.Search(request, writer, TestServerCallContext.Create());
+
+        (await act.Should().ThrowAsync<RpcException>())
+            .Where(e => e.Status.StatusCode == StatusCode.InvalidArgument && e.Status.Detail.Contains("Article"));
+        _search.ReceivedCalls().Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task Search_JoinedTypeOwnerRestricted_ForwardsOwnerConstraintForJoinedType()
+    {
+        // Primary type's rules bypass the default caller; the joined type's rules do not (different
+        // bypass role) — the caller's own identity must still flow into the joined type's constraint
+        // so BuildFromWithJoins can append the ownership condition to that JOIN's ON clause.
+        await _registry.RegisterAsync(SchemaFixtures.AuthorSchema()); // bypass role "test-bypass"
+        await _registry.RegisterAsync(OwnedSchema("Article", "OwnerId", bypassRole: "other-bypass"));
+
+        IReadOnlyDictionary<string, AuthorizationConstraint>? captured = null;
+        _search.SearchAsync(
+                Arg.Any<StarRocksQuerySchema>(), Arg.Any<SearchQuery?>(), Arg.Any<int>(), Arg.Any<int>(),
+                Arg.Any<IReadOnlyList<string>?>(), Arg.Any<IReadOnlyList<JoinSpec>?>(),
+                Arg.Any<Func<string, StarRocksQuerySchema?>?>(),
+                Arg.Do<IReadOnlyDictionary<string, AuthorizationConstraint>?>(a => captured = a))
+            .Returns(Enumerable.Empty<dynamic>());
+
+        var request = new SearchRequest { TypeName = "Author" };
+        request.Joins.Add(new JoinSpec
+        {
+            LeftType = "Author", RightType = "Article", LeftField = "Id", RightField = "AuthorId", Kind = JoinKind.Left
+        });
+
+        var (writer, _) = MakeStream<SearchResponse>();
+        await _sut.Search(request, writer, TestServerCallContext.Create());
+
+        captured.Should().NotBeNull();
+        captured!["Article"].OwnerColumn.Should().Be("OwnerId");
+        captured["Article"].OwnerValue.Should().Be("test-user"); // default fixture's sub claim
     }
 
     // ── Aggregate ─────────────────────────────────────────────────────────────
@@ -381,7 +556,8 @@ public class ObjectSearchGrpcServiceTests
         _search.SearchAsync(
                 Arg.Any<StarRocksQuerySchema>(), Arg.Any<SearchQuery?>(), Arg.Any<int>(), Arg.Any<int>(),
                 Arg.Do<IReadOnlyList<string>?>(f => capturedFields = f), Arg.Any<IReadOnlyList<JoinSpec>?>(),
-                Arg.Any<Func<string, StarRocksQuerySchema?>?>())
+                Arg.Any<Func<string, StarRocksQuerySchema?>?>(),
+                Arg.Any<IReadOnlyDictionary<string, AuthorizationConstraint>?>())
             .Returns(Enumerable.Empty<dynamic>());
 
         var req = new SearchRequest

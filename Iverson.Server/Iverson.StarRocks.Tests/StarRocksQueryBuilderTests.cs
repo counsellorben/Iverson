@@ -708,6 +708,84 @@ public class StarRocksQueryBuilderTests
         sql.Should().NotContain("`authors`.`Name`");
     }
 
+    // ── BuildSearch — authorization (row ownership) ────────────────────────────
+
+    [Fact]
+    public void BuildSearch_NoJoins_OwnerConstraint_WrapsExistingWhereWithOwnerPredicate()
+    {
+        var query = new SearchQuery();
+        query.Clauses.Add(new SearchClause
+        {
+            Property = "Name", Operator = SearchOperator.Equals,
+            Value = new SearchValue { StringVal = "Alice" }, ClauseType = SearchClauseType.Filter
+        });
+
+        var authz = new Dictionary<string, AuthorizationConstraint>
+        {
+            ["Author"] = new(AllowedFields: null, OwnerColumn: "OwnerId", OwnerValue: "user-1")
+        };
+
+        var (sql, param) = StarRocksQueryBuilder.BuildSearch(
+            "authors", AuthorSchema(), query, 0, 10, authz: authz);
+
+        sql.Should().Contain("WHERE (`Name` = @p0) AND `OwnerId` = @__ownerVal");
+        var lookup = (SqlMapper.IParameterLookup)param;
+        lookup["__ownerVal"].Should().Be("user-1");
+    }
+
+    [Fact]
+    public void BuildSearch_NoJoins_OwnerConstraint_NoExistingWhere_UsesOwnerPredicateAlone()
+    {
+        var authz = new Dictionary<string, AuthorizationConstraint>
+        {
+            ["Author"] = new(AllowedFields: null, OwnerColumn: "OwnerId", OwnerValue: "user-1")
+        };
+
+        var (sql, param) = StarRocksQueryBuilder.BuildSearch(
+            "authors", AuthorSchema(), null, 0, 10, authz: authz);
+
+        sql.Should().Contain("WHERE `OwnerId` = @__ownerVal");
+        var lookup = (SqlMapper.IParameterLookup)param;
+        lookup["__ownerVal"].Should().Be("user-1");
+    }
+
+    [Fact]
+    public void BuildSearch_NoJoins_NoOwnerColumn_DoesNotAddOwnerPredicate()
+    {
+        var authz = new Dictionary<string, AuthorizationConstraint>
+        {
+            ["Author"] = new(AllowedFields: null, OwnerColumn: null, OwnerValue: null)
+        };
+
+        var (sql, _) = StarRocksQueryBuilder.BuildSearch(
+            "authors", AuthorSchema(), null, 0, 10, authz: authz);
+
+        sql.Should().NotContain("@__ownerVal");
+        sql.Should().NotContain("WHERE");
+    }
+
+    [Fact]
+    public void BuildSearch_WithJoins_OwnerConstraint_QualifiesOwnerColumnWithPrimaryAlias()
+    {
+        var registry = BuildRegistry(AuthorSchema(), ArticleSchema());
+        var joins = new List<JoinSpec>
+        {
+            new() { LeftType = "Author", RightType = "Article", LeftField = "Id", RightField = "Id", Kind = JoinKind.Inner }
+        };
+
+        var authz = new Dictionary<string, AuthorizationConstraint>
+        {
+            ["Author"] = new(AllowedFields: null, OwnerColumn: "OwnerId", OwnerValue: "user-1")
+        };
+
+        var (sql, param) = StarRocksQueryBuilder.BuildSearch(
+            "authors", AuthorSchema(), null, 0, 10, joins: joins, registry: registry, authz: authz);
+
+        sql.Should().Contain("WHERE `authors`.`OwnerId` = @__ownerVal");
+        var lookup = (SqlMapper.IParameterLookup)param;
+        lookup["__ownerVal"].Should().Be("user-1");
+    }
+
     // ── BuildFromWithJoins ─────────────────────────────────────────────────────
 
     private static Func<string, StarRocksQuerySchema?> BuildRegistry(params StarRocksQuerySchema[] schemas)
@@ -733,7 +811,7 @@ public class StarRocksQueryBuilderTests
             }
         };
 
-        var from = StarRocksQueryBuilder.BuildFromWithJoins(AuthorSchema(), joins, registry, out var tableMap);
+        var from = StarRocksQueryBuilder.BuildFromWithJoins(AuthorSchema(), joins, registry, new DynamicParameters(), out var tableMap);
 
         from.Should().Be("FROM `authors` INNER JOIN `articles` ON `authors`.`Id` = `articles`.`Id`");
         tableMap.Should().ContainKey("Author");
@@ -759,7 +837,7 @@ public class StarRocksQueryBuilderTests
             }
         };
 
-        var from = StarRocksQueryBuilder.BuildFromWithJoins(AuthorSchema(), joins, registry, out _);
+        var from = StarRocksQueryBuilder.BuildFromWithJoins(AuthorSchema(), joins, registry, new DynamicParameters(), out _);
 
         from.Should().Contain("LEFT JOIN `articles`");
         from.Should().NotContain("INNER JOIN");
@@ -782,7 +860,7 @@ public class StarRocksQueryBuilderTests
             }
         };
 
-        var from = StarRocksQueryBuilder.BuildFromWithJoins(AuthorSchema(), joins, registry, out _);
+        var from = StarRocksQueryBuilder.BuildFromWithJoins(AuthorSchema(), joins, registry, new DynamicParameters(), out _);
 
         from.Should().Contain("RIGHT JOIN `articles`");
         from.Should().NotContain("INNER JOIN");
@@ -805,7 +883,7 @@ public class StarRocksQueryBuilderTests
             }
         };
 
-        var from = StarRocksQueryBuilder.BuildFromWithJoins(AuthorSchema(), joins, registry, out var tableMap);
+        var from = StarRocksQueryBuilder.BuildFromWithJoins(AuthorSchema(), joins, registry, new DynamicParameters(), out var tableMap);
 
         from.Should().Be("FROM `authors` FULL JOIN `articles` ON `authors`.`Id` = `articles`.`Id`");
         tableMap.Should().ContainKey("Author");
@@ -829,7 +907,7 @@ public class StarRocksQueryBuilderTests
             }
         };
 
-        var act = () => StarRocksQueryBuilder.BuildFromWithJoins(AuthorSchema(), joins, registry, out _);
+        var act = () => StarRocksQueryBuilder.BuildFromWithJoins(AuthorSchema(), joins, registry, new DynamicParameters(), out _);
 
         act.Should().Throw<StarRocksQueryTranslationException>()
             .WithMessage("*NoSuchType*");
@@ -840,7 +918,7 @@ public class StarRocksQueryBuilderTests
     {
         var registry = BuildRegistry(AuthorSchema());
 
-        var from = StarRocksQueryBuilder.BuildFromWithJoins(AuthorSchema(), [], registry, out var tableMap);
+        var from = StarRocksQueryBuilder.BuildFromWithJoins(AuthorSchema(), [], registry, new DynamicParameters(), out var tableMap);
 
         from.Should().Be("FROM `authors`");
         tableMap.Should().ContainKey("Author");
@@ -865,11 +943,88 @@ public class StarRocksQueryBuilderTests
             }
         };
 
-        StarRocksQueryBuilder.BuildFromWithJoins(AuthorSchema(), joins, registry, out var tableMap);
+        StarRocksQueryBuilder.BuildFromWithJoins(AuthorSchema(), joins, registry, new DynamicParameters(), out var tableMap);
 
         var col = StarRocksQueryBuilder.ResolveColumn(tableMap, "Article.Title");
 
         col.Should().Be("articles.Title");
+    }
+
+    // ── BuildFromWithJoins — joined-type authorization ─────────────────────────
+
+    [Fact]
+    public void BuildFromWithJoins_JoinedTypeOwnerConstraint_AppendsConditionToOnClause_NotWhere()
+    {
+        var registry = BuildRegistry(AuthorSchema(), ArticleSchema());
+        var joins = new List<JoinSpec>
+        {
+            new() { LeftType = "Author", RightType = "Article", LeftField = "Id", RightField = "Id", Kind = JoinKind.Inner }
+        };
+        var authz = new Dictionary<string, AuthorizationConstraint>
+        {
+            ["Article"] = new(AllowedFields: null, OwnerColumn: "OwnerId", OwnerValue: "user-1")
+        };
+        var param = new DynamicParameters();
+
+        var from = StarRocksQueryBuilder.BuildFromWithJoins(AuthorSchema(), joins, registry, param, out _, authz);
+
+        // The condition must live inside the ON clause of the Article JOIN, never spliced onto
+        // an outer WHERE — see the method's <remarks> for why that placement matters for
+        // non-INNER joins.
+        from.Should().Be(
+            "FROM `authors` INNER JOIN `articles` ON `authors`.`Id` = `articles`.`Id` " +
+            "AND `articles`.`OwnerId` = @__owner1");
+        from.Should().NotContain("WHERE");
+
+        var lookup = (SqlMapper.IParameterLookup)param;
+        lookup["__owner1"].Should().Be("user-1");
+    }
+
+    [Fact]
+    public void BuildFromWithJoins_LeftJoin_JoinedTypeOwnerConstraint_ConditionInOnClause_PreservesLeftJoinKind()
+    {
+        var registry = BuildRegistry(AuthorSchema(), ArticleSchema());
+        var joins = new List<JoinSpec>
+        {
+            new() { LeftType = "Author", RightType = "Article", LeftField = "Id", RightField = "Id", Kind = JoinKind.Left }
+        };
+        var authz = new Dictionary<string, AuthorizationConstraint>
+        {
+            ["Article"] = new(AllowedFields: null, OwnerColumn: "OwnerId", OwnerValue: "user-1")
+        };
+        var param = new DynamicParameters();
+
+        var from = StarRocksQueryBuilder.BuildFromWithJoins(AuthorSchema(), joins, registry, param, out _, authz);
+
+        // Putting the owner check in the ON clause (rather than WHERE) is what keeps this a real
+        // LEFT JOIN: a non-owned/non-matching Article row surfaces as a row with NULLs on the
+        // Article side, rather than being dropped as WHERE-clause placement would cause (which
+        // would silently degrade the LEFT JOIN to INNER JOIN behavior).
+        from.Should().Be(
+            "FROM `authors` LEFT JOIN `articles` ON `authors`.`Id` = `articles`.`Id` " +
+            "AND `articles`.`OwnerId` = @__owner1");
+        from.Should().Contain("LEFT JOIN");
+        from.Should().NotContain("WHERE");
+    }
+
+    [Fact]
+    public void BuildFromWithJoins_NoConstraintForJoinedType_OmitsOwnerCondition()
+    {
+        var registry = BuildRegistry(AuthorSchema(), ArticleSchema());
+        var joins = new List<JoinSpec>
+        {
+            new() { LeftType = "Author", RightType = "Article", LeftField = "Id", RightField = "Id", Kind = JoinKind.Inner }
+        };
+        // authz has a constraint for a type that isn't part of this join — must not affect it.
+        var authz = new Dictionary<string, AuthorizationConstraint>
+        {
+            ["Author"] = new(AllowedFields: null, OwnerColumn: "OwnerId", OwnerValue: "user-1")
+        };
+        var param = new DynamicParameters();
+
+        var from = StarRocksQueryBuilder.BuildFromWithJoins(AuthorSchema(), joins, registry, param, out _, authz);
+
+        from.Should().Be("FROM `authors` INNER JOIN `articles` ON `authors`.`Id` = `articles`.`Id`");
     }
 
     // ── BuildGroupBy ───────────────────────────────────────────────────────────

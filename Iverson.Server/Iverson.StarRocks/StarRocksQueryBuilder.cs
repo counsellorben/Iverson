@@ -39,7 +39,7 @@ internal static class StarRocksQueryBuilder
         string selectCols;
         if (joins is { Count: > 0 })
         {
-            from = BuildFromWithJoins(schema, joins, registry!, out var tableMap);
+            from = BuildFromWithJoins(schema, joins, registry!, param, out var tableMap, authz);
             where = BuildWhere(schema, query?.Clauses, query?.Logic ?? SearchLogic.And, param, out _, tableMap, authz);
 
             // The primary table's own columns must be qualified with its alias once a JOIN is
@@ -50,12 +50,26 @@ internal static class StarRocksQueryBuilder
             // same treatment for BuildSearch's plain column list.
             var primaryAlias = tableMap[schema.TypeName].Alias;
             selectCols = BuildSelectColumns(schema, fields, primaryAlias);
+
+            if (authz is not null && authz.TryGetValue(schema.TypeName, out var primaryConstraint) && primaryConstraint.OwnerColumn is not null)
+            {
+                var ownerPredicate = $"`{primaryAlias}`.`{primaryConstraint.OwnerColumn}` = @__ownerVal";
+                param.Add("__ownerVal", primaryConstraint.OwnerValue);
+                where = where.Length > 0 ? $"({where}) AND {ownerPredicate}" : ownerPredicate;
+            }
         }
         else
         {
             from = $"FROM `{tableName}`";
             where = BuildWhere(schema, query?.Clauses, query?.Logic ?? SearchLogic.And, param, out _, null, authz);
             selectCols = BuildSelectColumns(schema, fields);
+
+            if (authz is not null && authz.TryGetValue(schema.TypeName, out var primaryConstraint) && primaryConstraint.OwnerColumn is not null)
+            {
+                var ownerPredicate = $"`{primaryConstraint.OwnerColumn}` = @__ownerVal";
+                param.Add("__ownerVal", primaryConstraint.OwnerValue);
+                where = where.Length > 0 ? $"({where}) AND {ownerPredicate}" : ownerPredicate;
+            }
         }
 
         var sb = new StringBuilder($"SELECT {selectCols} {from}");
@@ -104,7 +118,9 @@ internal static class StarRocksQueryBuilder
         IReadOnlyDictionary<string, JoinContext>? tableMap;
         if (joins is { Count: > 0 })
         {
-            from = BuildFromWithJoins(schema, joins, registry!, out var tm);
+            // Ownership predicates for joined types in Aggregate are wired in a later task
+            // (Tasks 3/4); this call only threads the required `param` argument through for now.
+            from = BuildFromWithJoins(schema, joins, registry!, param, out var tm);
             tableMap = tm;
         }
         else
@@ -190,9 +206,10 @@ internal static class StarRocksQueryBuilder
         Func<string, StarRocksQuerySchema?> registry,
         IReadOnlyDictionary<string, AuthorizationConstraint>? authz = null)
     {
-        var from = BuildFromWithJoins(schema, request.Joins, registry, out var tableMap);
-
         var param = new DynamicParameters();
+        // Ownership predicates for joined types in GroupBy are wired in a later task (Tasks 3/4);
+        // this call only threads the required `param` argument through for now.
+        var from = BuildFromWithJoins(schema, request.Joins, registry, param, out var tableMap);
         var where = BuildWhere(schema, request.Query?.Clauses, request.Query?.Logic ?? SearchLogic.And, param, out _, tableMap, authz);
         var wc = where.Length > 0 ? $" WHERE {where}" : "";
 
@@ -494,11 +511,21 @@ internal static class StarRocksQueryBuilder
     /// mapped to its resolved <see cref="JoinContext"/> so callers can later qualify columns
     /// per-table — including in the no-join case.
     /// </summary>
+    /// <remarks>
+    /// When <paramref name="authz"/> carries an ownership constraint for a joined type, that
+    /// type's owner condition is appended to its own JOIN's <c>ON</c> clause — never spliced into
+    /// the outer <c>WHERE</c>. For an INNER JOIN either placement is equivalent, but for LEFT/RIGHT/FULL
+    /// a WHERE-clause condition on the joined side would silently collapse the join to INNER
+    /// semantics (rows with no matching/authorized joined row would be dropped entirely instead of
+    /// surfacing with NULLs on the joined side).
+    /// </remarks>
     internal static string BuildFromWithJoins(
         StarRocksQuerySchema primarySchema,
         IReadOnlyList<JoinSpec> joins,
         Func<string, StarRocksQuerySchema?> registry,
-        out IReadOnlyDictionary<string, JoinContext> tableMap)
+        DynamicParameters param,
+        out IReadOnlyDictionary<string, JoinContext> tableMap,
+        IReadOnlyDictionary<string, AuthorizationConstraint>? authz = null)
     {
         var map = new Dictionary<string, JoinContext>(StringComparer.OrdinalIgnoreCase);
         var sb = new StringBuilder($"FROM `{primarySchema.TableName}`");
@@ -544,9 +571,17 @@ internal static class StarRocksQueryBuilder
                 _              => "INNER"
             };
 
+            var ownerCond = "";
+            if (authz is not null && authz.TryGetValue(join.RightType, out var joinedConstraint) && joinedConstraint.OwnerColumn is not null)
+            {
+                var pName = $"__owner{map.Count}";
+                param.Add(pName, joinedConstraint.OwnerValue);
+                ownerCond = $" AND `{rightCtx.Alias}`.`{joinedConstraint.OwnerColumn}` = @{pName}";
+            }
+
             sb.Append(
                 $" {kind} JOIN `{rightCtx.TableName}` ON " +
-                $"`{leftCtx.Alias}`.`{leftCol}` = `{rightCtx.Alias}`.`{rightCol}`");
+                $"`{leftCtx.Alias}`.`{leftCol}` = `{rightCtx.Alias}`.`{rightCol}`{ownerCond}");
 
             map[join.RightType] = rightCtx;
         }
