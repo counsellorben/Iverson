@@ -152,7 +152,13 @@ internal static class StarRocksQueryBuilder
         // Field reject-on-reference: unlike Search's post-fetch masking, an aggregate over a
         // disallowed field would still leak its distribution through bucket keys or metric
         // values, so any reference to one — via spec.Field, spec.GroupByFields, or
-        // spec.Expression — throws instead.
+        // spec.Expression — throws instead. spec.Field and spec.Expression are checked
+        // independently (NOT else-if): AggregationDescriptor/AggregationSpec has no mutual
+        // exclusivity between the two, and SQL generation for Terms/DateHistogram/Range always
+        // uses spec.Field (via Resolve/col below) regardless of whether spec.Expression is also
+        // set — only Avg/Sum/Min/Max/Count fall back to spec.Expression ?? Quote(col). Checking
+        // only whichever one happened to be "primary" would let a caller smuggle a disallowed
+        // Field past validation by also setting an innocuous, allowed Expression.
         void CheckFieldAllowed(string field)
         {
             var resolved = ResolveStrict(field)
@@ -162,6 +168,10 @@ internal static class StarRocksQueryBuilder
                     $"Aggregation field '{field}' on '{typeName}' is not authorized for this caller.");
         }
 
+        if (!string.IsNullOrEmpty(spec.Field))
+        {
+            CheckFieldAllowed(spec.Field);
+        }
         if (!string.IsNullOrEmpty(spec.Expression))
         {
             foreach (Match m in StarRocksPipelineBuilder.TokenRx.Matches(spec.Expression))
@@ -169,10 +179,6 @@ internal static class StarRocksQueryBuilder
                 if (StarRocksPipelineBuilder.DeriveWhitelist.Contains(m.Value)) continue;
                 CheckFieldAllowed(m.Value);
             }
-        }
-        else if (!string.IsNullOrEmpty(spec.Field))
-        {
-            CheckFieldAllowed(spec.Field);
         }
 
         if (spec.GroupByFields is { Count: > 0 })

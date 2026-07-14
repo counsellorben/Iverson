@@ -515,6 +515,29 @@ public class StarRocksQueryBuilderTests
     }
 
     [Fact]
+    public void BuildAggregate_Terms_DisallowedFieldWithAllowedExpression_StillThrows()
+    {
+        // Regression test (reviewer-found bypass): Terms/DateHistogram/Range SQL generation
+        // always uses spec.Field (via Resolve/col), never spec.Expression — Expression only
+        // overrides Field's SQL for Avg/Sum/Min/Max/Count. AggregationDescriptor/AggregationSpec
+        // has no mutual exclusivity between the two, so a caller could set a disallowed Field
+        // alongside an innocuous, allowed Expression. Field must still be rejected even though
+        // Expression is also set and is itself allowed — proving the check on Field and the
+        // check on Expression are independent (not else-if), since only the Field check can
+        // catch this for a Terms spec.
+        var spec = new AggregationDescriptor(
+            "by_bio", AggregationKind.Terms, "Bio", Expression: "Rating");
+        var authz = new Dictionary<string, AuthorizationConstraint>
+        {
+            ["Author"] = new(AllowedFields: new HashSet<string> { "Id", "Name", "Rating" }, OwnerColumn: null, OwnerValue: null)
+        };
+
+        var act = () => StarRocksQueryBuilder.BuildAggregate("authors", AuthorSchema(), null, spec, authz: authz);
+
+        act.Should().Throw<StarRocksQueryTranslationException>().WithMessage("*Bio*");
+    }
+
+    [Fact]
     public void BuildAggregate_AllowedExpression_DoesNotThrow()
     {
         var spec = new AggregationDescriptor(
