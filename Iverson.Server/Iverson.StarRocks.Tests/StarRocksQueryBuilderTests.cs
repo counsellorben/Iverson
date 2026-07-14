@@ -1146,6 +1146,25 @@ public class StarRocksQueryBuilderTests
         act.Should().NotThrow();
     }
 
+    [Fact]
+    public void BuildSearch_Sort_UnresolvableProperty_IsSilentlySkipped_NoException()
+    {
+        // Confirmation test (companion to BuildGroupBy's regression fix for the same class of
+        // bug): BuildOrder's loop does `if (resolved is null) continue;` BEFORE ever calling
+        // IsFieldAllowed, so an unresolvable property (typo'd field, or — in the joined case — a
+        // nonexistent type) never reaches IsFieldAllowed's tableMap!.Values.First(...) lookup and
+        // never risks an uncaught InvalidOperationException. This is the correct pattern;
+        // BuildGroupBy's orderSql construction did NOT follow it until the fix, and is now
+        // aligned via a resolve-or-throw StarRocksQueryTranslationException instead (see
+        // BuildGroupBy_OrderBy_UnresolvableProperty_ThrowsTranslationException_NotInvalidOperationException).
+        var query = new SearchQuery();
+        query.Sort.Add(new SearchSort { Property = "NoSuchType.Field" });
+
+        var (sql, _) = StarRocksQueryBuilder.BuildSearch("authors", AuthorSchema(), query, 0, 10);
+
+        sql.Should().NotContain("ORDER BY");
+    }
+
     // ── BuildFromWithJoins ─────────────────────────────────────────────────────
 
     private static Func<string, StarRocksQuerySchema?> BuildRegistry(params StarRocksQuerySchema[] schemas)
@@ -1977,6 +1996,29 @@ public class StarRocksQueryBuilderTests
         var act = () => StarRocksQueryBuilder.BuildGroupBy("authors", AuthorSchema(), request, registry);
 
         act.Should().NotThrow();
+    }
+
+    [Fact]
+    public void BuildGroupBy_OrderBy_UnresolvableProperty_ThrowsTranslationException_NotInvalidOperationException()
+    {
+        // Regression test (reviewer-found bypass in the initial OrderBy fix): an unresolvable
+        // dot-qualified property (typo'd field, or nonexistent type) must not fall through to
+        // IsFieldAllowed with the raw, un-resolved string — IsFieldAllowed sees the dot and does
+        // tableMap!.Values.First(v => v.Alias == <text before the dot>), which throws
+        // InvalidOperationException (uncaught by ObjectSearchGrpcService.GroupBy, surfacing as an
+        // unhandled/Internal gRPC error) because JoinContext.Alias is the physical table name
+        // (e.g. "authors"), never the TypeName ("Author"). Mirrors keyCols' "resolve-or-throw"
+        // pattern just above in this method: an unresolvable property must throw
+        // StarRocksQueryTranslationException, the one mandated exception type, same as every
+        // other reject-on-reference check in this file.
+        var registry = BuildRegistry(AuthorSchema());
+        var request = new GroupByRequest { TypeName = "Author", Keys = { "Name" } };
+        request.Metrics.Add(new MetricSpec { Name = "cnt", Type = AggregationType.Count });
+        request.OrderBy.Add(new SearchSort { Property = "NoSuchType.Field" });
+
+        var act = () => StarRocksQueryBuilder.BuildGroupBy("authors", AuthorSchema(), request, registry);
+
+        act.Should().Throw<StarRocksQueryTranslationException>().WithMessage("*NoSuchType.Field*");
     }
 
     // ── BuildWhere/BuildHaving — resolver + prefix overloads ──────────────────

@@ -321,7 +321,9 @@ internal static class StarRocksQueryBuilder
         var orderSql = request.OrderBy
             .Select(s =>
             {
-                var resolved = ResolveColumn(tableMap, s.Property) ?? s.Property;
+                var resolved = ResolveColumn(tableMap, s.Property)
+                    ?? throw new StarRocksQueryTranslationException(
+                        $"Unknown or ambiguous ORDER BY property '{s.Property}'.");
                 if (!IsFieldAllowed(resolved, schema, tableMap, authz, out var typeName))
                     throw new StarRocksQueryTranslationException(
                         $"ORDER BY property '{s.Property}' on '{typeName}' is not authorized for this caller.");
