@@ -559,6 +559,35 @@ public class ObjectMappingGrpcServiceTests
         ex.Which.StatusCode.Should().Be(StatusCode.InvalidArgument);
     }
 
+    [Fact]
+    public async Task Post_ForOrdinaryCaller_WithFieldPermissionRestrictingOwnerColumn_StillForceSetsOwnerField()
+    {
+        var schema = OwnedAuthorSchema(withBypassRole: false) with
+        {
+            Authorization = new Iverson.Api.Schema.AuthorizationRules(
+                "OwnerId",
+                new List<Iverson.Api.Schema.RowPermission>(),
+                new List<Iverson.Api.Schema.FieldPermission>
+                {
+                    new("OwnerId", new List<string>(), new List<string> { "premium" })
+                })
+        };
+        await _registry.RegisterAsync(schema);
+
+        var payload = MakePayload(new()
+        {
+            ["Id"]   = Value.ForString(AuthorId),
+            ["Name"] = Value.ForString("Alice")
+        });
+
+        var response = await _sut.Post(
+            new MappingWriteRequest { TypeName = "Author", Payload = payload },
+            TestServerCallContext.Create());
+
+        response.Success.Should().BeTrue();
+        response.Data.Fields["OwnerId"].StringValue.Should().Be("test-user");
+    }
+
     // ── Get ───────────────────────────────────────────────────────────────────
 
     [Fact]

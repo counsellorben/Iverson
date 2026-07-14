@@ -379,6 +379,30 @@ public class ObjectPersistenceGrpcServiceTests
     }
 
     [Fact]
+    public async Task Post_ForOrdinaryCaller_WithFieldPermissionRestrictingOwnerColumn_StillForceSetsOwnerField()
+    {
+        var schema = OwnedAuthorSchema(withBypassRole: false) with
+        {
+            Authorization = new Iverson.Api.Schema.AuthorizationRules(
+                "OwnerId",
+                new List<Iverson.Api.Schema.RowPermission>(),
+                new List<Iverson.Api.Schema.FieldPermission>
+                {
+                    new("OwnerId", new List<string>(), new List<string> { "premium" })
+                })
+        };
+        await _registry.RegisterAsync(schema);
+
+        var payload = MakePayload(new() { ["Name"] = Value.ForString("Alice") });
+
+        var response = await _sut.Post(
+            new PersistRequest { TypeName = "Author", Payload = payload }, TestServerCallContext.Create());
+
+        response.Success.Should().BeTrue();
+        payload.Fields["OwnerId"].StringValue.Should().Be("test-user");
+    }
+
+    [Fact]
     public async Task Update_ExecutesSqlUpsert_WithPayloadJson()
     {
         await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
