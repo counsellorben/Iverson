@@ -1372,7 +1372,8 @@ public class ObjectSearchGrpcServiceTests
         var fakeRow = new Dictionary<string, object> { ["Name"] = "Alice", ["n"] = 3L };
         _search.PipelineAsync(
                 Arg.Any<StarRocksQuerySchema>(), Arg.Do<PipelineRequest>(r => capturedRequest = r),
-                Arg.Any<Func<string, StarRocksQuerySchema?>>())
+                Arg.Any<Func<string, StarRocksQuerySchema?>>(),
+                Arg.Any<IReadOnlyDictionary<string, AuthorizationConstraint>?>())
             .Returns(new[] { (dynamic)fakeRow }.AsEnumerable());
 
         var step = new PipelineStep { Name = "by_name" };
@@ -1396,7 +1397,8 @@ public class ObjectSearchGrpcServiceTests
         await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
 
         _search.PipelineAsync(
-                Arg.Any<StarRocksQuerySchema>(), Arg.Any<PipelineRequest>(), Arg.Any<Func<string, StarRocksQuerySchema?>>())
+                Arg.Any<StarRocksQuerySchema>(), Arg.Any<PipelineRequest>(), Arg.Any<Func<string, StarRocksQuerySchema?>>(),
+                Arg.Any<IReadOnlyDictionary<string, AuthorizationConstraint>?>())
             .Returns<Task<IEnumerable<dynamic>>>(_ => throw new StarRocksQueryTranslationException(
                 "step 's' reads from unknown step 'nonexistent'"));
 
@@ -1416,7 +1418,8 @@ public class ObjectSearchGrpcServiceTests
     {
         await _registry.RegisterAsync(SchemaFixtures.ArticleWithProjectionSchema());
         _search.PipelineAsync(
-                Arg.Any<StarRocksQuerySchema>(), Arg.Any<PipelineRequest>(), Arg.Any<Func<string, StarRocksQuerySchema?>>())
+                Arg.Any<StarRocksQuerySchema>(), Arg.Any<PipelineRequest>(), Arg.Any<Func<string, StarRocksQuerySchema?>>(),
+                Arg.Any<IReadOnlyDictionary<string, AuthorizationConstraint>?>())
             .Returns<Task<IEnumerable<dynamic>>>(_ => throw new StarRocksNotReadyException("warming up"));
 
         var request = new PipelineRequest { TypeName = "Article" };
@@ -1433,7 +1436,8 @@ public class ObjectSearchGrpcServiceTests
     {
         await _registry.RegisterAsync(SchemaFixtures.ArticleWithProjectionSchema());
         _search.PipelineAsync(
-                Arg.Any<StarRocksQuerySchema>(), Arg.Any<PipelineRequest>(), Arg.Any<Func<string, StarRocksQuerySchema?>>())
+                Arg.Any<StarRocksQuerySchema>(), Arg.Any<PipelineRequest>(), Arg.Any<Func<string, StarRocksQuerySchema?>>(),
+                Arg.Any<IReadOnlyDictionary<string, AuthorizationConstraint>?>())
             .Returns(new List<dynamic> { new Dictionary<string, object?> { ["Title"] = "T" } });
 
         var request = new PipelineRequest { TypeName = "Article", TraceId = "trace-xyz" };
@@ -1442,5 +1446,173 @@ public class ObjectSearchGrpcServiceTests
         await _sut.Pipeline(request, writer, TestServerCallContext.Create());
 
         written.Should().ContainSingle(r => r.TraceId == "trace-xyz");
+    }
+
+    // ── Pipeline — authorization ─────────────────────────────────────────────────
+    //
+    // Column-introduction filtering / "all: true" scoping / MetricSpec.Expression reject-on-
+    // reference / ownership wrap-and-AND (baseWhere + per-join ON) / Layer 2 masking are all
+    // StarRocksPipelineBuilder's (and StarRocksRepository's) concern — covered end-to-end, with
+    // real thrown exceptions and real generated SQL, by StarRocksPipelineBuilderTests. Since
+    // `_search` is a mock here, these RPC-level tests instead cover what actually lives in
+    // ObjectSearchGrpcService.Pipeline: denied-caller short-circuiting, InvalidArgument
+    // translation, that a PipelineJoin.Source is only evaluated for authorization when it
+    // resolves to a registered type (never a prior step name), and that the correct
+    // AuthorizationConstraint map is computed and forwarded.
+
+    [Fact]
+    public async Task Pipeline_NoAuthorizationRules_ReturnsEmptyStream_WithoutQueryingSearchService()
+    {
+        var schema = SchemaFixtures.ArticleWithProjectionSchema() with { Authorization = null };
+        await _registry.RegisterAsync(schema);
+
+        var request = new PipelineRequest { TypeName = "Article" };
+        var (writer, written) = MakeStream<SearchResponse>();
+        await _sut.Pipeline(request, writer, TestServerCallContext.Create());
+
+        written.Should().BeEmpty();
+        _search.ReceivedCalls().Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task Pipeline_NoActingUser_ReturnsEmptyStream_WithoutQueryingSearchService()
+    {
+        await _registry.RegisterAsync(SchemaFixtures.ArticleWithProjectionSchema());
+        _actingUserAccessor.ActingUser = null;
+
+        var request = new PipelineRequest { TypeName = "Article" };
+        var (writer, written) = MakeStream<SearchResponse>();
+        await _sut.Pipeline(request, writer, TestServerCallContext.Create());
+
+        written.Should().BeEmpty();
+        _search.ReceivedCalls().Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task Pipeline_JoinedTypeWithNoAuthorizationRules_ThrowsInvalidArgument_WithoutQueryingSearchService()
+    {
+        await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
+        await _registry.RegisterAsync(SchemaFixtures.ArticleSchema() with { Authorization = null });
+
+        var step = new PipelineStep { Name = "j" };
+        var join = new PipelineJoin { Source = "Article", Kind = JoinKind.Inner };
+        join.On.Add(new JoinCondition { Left = "Id", Right = "AuthorId" });
+        step.Joins.Add(join);
+        step.Select.Add(new SelectItem { All = true });
+
+        var request = new PipelineRequest { TypeName = "Author" };
+        request.Steps.Add(step);
+
+        var (writer, _) = MakeStream<SearchResponse>();
+        var act = async () => await _sut.Pipeline(request, writer, TestServerCallContext.Create());
+
+        (await act.Should().ThrowAsync<RpcException>())
+            .Where(e => e.Status.StatusCode == StatusCode.InvalidArgument && e.Status.Detail.Contains("Article"));
+        _search.ReceivedCalls().Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task Pipeline_JoinSourceIsPriorStepName_NotEvaluatedAsRegisteredType()
+    {
+        // A PipelineJoin.Source can name either a registered type or a prior step (CTE). If the
+        // RPC naively evaluated authorization for every join Source without filtering to
+        // registry-resolvable ones first, a step-to-step join (here "enriched" joins its own
+        // prior aggregate step "by_author") would incorrectly throw FailedPrecondition trying to
+        // look up "by_author" as a registered schema — breaking every multi-step pipeline that
+        // joins across its own steps.
+        await _registry.RegisterAsync(SchemaFixtures.ArticleWithProjectionSchema());
+
+        var agg = new PipelineStep { Name = "by_author" };
+        agg.GroupBy.Add(new GroupKey { Field = "Category" });
+        agg.Metrics.Add(new MetricSpec { Name = "n", Type = AggregationType.Count });
+
+        var enriched = new PipelineStep { Name = "enriched", Reads = "base" };
+        var join = new PipelineJoin { Source = "by_author", Kind = JoinKind.Inner };
+        join.On.Add(new JoinCondition { Left = "Category", Right = "Category" });
+        enriched.Joins.Add(join);
+        enriched.Select.Add(new SelectItem { All = true });
+
+        var request = new PipelineRequest { TypeName = "Article" };
+        request.Steps.Add(agg);
+        request.Steps.Add(enriched);
+
+        var (writer, _) = MakeStream<SearchResponse>();
+        var act = async () => await _sut.Pipeline(request, writer, TestServerCallContext.Create());
+
+        await act.Should().NotThrowAsync();
+        _search.ReceivedCalls().Should().NotBeEmpty(); // reached the search service — not denied, not blocked
+    }
+
+    [Fact]
+    public async Task Pipeline_OwnerRestrictedCaller_ForwardsOwnerColumnAndCallerIdAsOwnerValue()
+    {
+        // This is the input that makes Build's primary-ownership wrap-and-AND (covered in
+        // StarRocksPipelineBuilderTests) actually filter rows for this caller: proves the RPC
+        // computes and forwards it correctly.
+        await _registry.RegisterAsync(OwnedSchema("Owned", "OwnerId"));
+        _actingUserAccessor.ActingUser = ActingUserFixtures.Principal("alice", "member");
+
+        IReadOnlyDictionary<string, AuthorizationConstraint>? captured = null;
+        _search.PipelineAsync(
+                Arg.Any<StarRocksQuerySchema>(), Arg.Any<PipelineRequest>(), Arg.Any<Func<string, StarRocksQuerySchema?>>(),
+                Arg.Do<IReadOnlyDictionary<string, AuthorizationConstraint>?>(a => captured = a))
+            .Returns(Enumerable.Empty<dynamic>());
+
+        var request = new PipelineRequest { TypeName = "Owned" };
+        var (writer, _) = MakeStream<SearchResponse>();
+        await _sut.Pipeline(request, writer, TestServerCallContext.Create());
+
+        captured.Should().NotBeNull();
+        captured!["Owned"].OwnerColumn.Should().Be("OwnerId");
+        captured["Owned"].OwnerValue.Should().Be("alice");
+    }
+
+    [Fact]
+    public async Task Pipeline_BypassCaller_ForwardsUnrestrictedConstraint_NoOwnerFilter()
+    {
+        await _registry.RegisterAsync(OwnedSchema("Owned", "OwnerId"));
+
+        IReadOnlyDictionary<string, AuthorizationConstraint>? captured = null;
+        _search.PipelineAsync(
+                Arg.Any<StarRocksQuerySchema>(), Arg.Any<PipelineRequest>(), Arg.Any<Func<string, StarRocksQuerySchema?>>(),
+                Arg.Do<IReadOnlyDictionary<string, AuthorizationConstraint>?>(a => captured = a))
+            .Returns(Enumerable.Empty<dynamic>());
+
+        var request = new PipelineRequest { TypeName = "Owned" };
+        var (writer, _) = MakeStream<SearchResponse>();
+        await _sut.Pipeline(request, writer, TestServerCallContext.Create());
+
+        captured.Should().NotBeNull();
+        captured!["Owned"].OwnerColumn.Should().BeNull();
+        captured["Owned"].AllowedFields.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task Pipeline_JoinedTypeOwnerRestricted_ForwardsOwnerConstraintForJoinedType()
+    {
+        await _registry.RegisterAsync(SchemaFixtures.AuthorSchema()); // bypass role "test-bypass"
+        await _registry.RegisterAsync(OwnedSchema("Article", "OwnerId", bypassRole: "other-bypass"));
+
+        IReadOnlyDictionary<string, AuthorizationConstraint>? captured = null;
+        _search.PipelineAsync(
+                Arg.Any<StarRocksQuerySchema>(), Arg.Any<PipelineRequest>(), Arg.Any<Func<string, StarRocksQuerySchema?>>(),
+                Arg.Do<IReadOnlyDictionary<string, AuthorizationConstraint>?>(a => captured = a))
+            .Returns(Enumerable.Empty<dynamic>());
+
+        var step = new PipelineStep { Name = "j" };
+        var join = new PipelineJoin { Source = "Article", Kind = JoinKind.Left };
+        join.On.Add(new JoinCondition { Left = "Id", Right = "AuthorId" });
+        step.Joins.Add(join);
+        step.Select.Add(new SelectItem { All = true });
+
+        var request = new PipelineRequest { TypeName = "Author" };
+        request.Steps.Add(step);
+
+        var (writer, _) = MakeStream<SearchResponse>();
+        await _sut.Pipeline(request, writer, TestServerCallContext.Create());
+
+        captured.Should().NotBeNull();
+        captured!["Article"].OwnerColumn.Should().Be("OwnerId");
+        captured["Article"].OwnerValue.Should().Be("test-user"); // default fixture's sub claim
     }
 }

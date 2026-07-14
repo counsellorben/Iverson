@@ -352,6 +352,21 @@ public sealed class ObjectSearchGrpcService(
     {
         var schema = RequireSchema(request.TypeName);
 
+        // A PipelineJoin.Source can name either a registered type or a prior step (CTE) — only
+        // the former needs an authorization check here; a step name is validated later by
+        // StarRocksPipelineBuilder itself. Evaluated once across every step's joins, same as
+        // Search/Aggregate/GroupBy evaluate once across their own request-level Joins.
+        var joinedTypes = request.Steps
+            .SelectMany(s => s.Joins)
+            .Select(j => j.Source)
+            .Distinct()
+            .Where(src => registry.Get(src) is not null);
+        var auth = EvaluateAuthorization(schema, joinedTypes);
+        if (auth.PrimaryDenied)
+            return; // empty stream — StarRocks never queried
+        if (auth.DeniedJoinedType is not null)
+            throw new RpcException(new Status(StatusCode.InvalidArgument, $"Not authorized to join '{auth.DeniedJoinedType}'."));
+
         if (logger.IsEnabled(LogLevel.Information))
             logger.LogInformation("[Pipeline] type={Type} steps={Steps}",
                 request.TypeName, request.Steps.Count);
@@ -361,7 +376,8 @@ public sealed class ObjectSearchGrpcService(
         {
             rows = await search.PipelineAsync(
                 SchemaBuilder.ToStarRocksQuerySchema(schema), request,
-                t => registry.Get(t) is { } d ? SchemaBuilder.ToStarRocksQuerySchema(d) : null);
+                t => registry.Get(t) is { } d ? SchemaBuilder.ToStarRocksQuerySchema(d) : null,
+                authz: auth.Constraints);
         }
         catch (StarRocksQueryTranslationException ex)
         {

@@ -31,24 +31,36 @@ internal static class StarRocksPipelineBuilder
         "ASC", "DESC", "COALESCE", "NULLIF", "ROUND", "ABS", "AND", "OR", "NOT", "NULL"
     };
 
-    private static Dictionary<string, string> ColumnsFor(StarRocksQuerySchema schema)
+    // Column-introduction filtering (authorization Task 5, Step 1): when constraint carries a
+    // non-null AllowedFields, any column name not in it is omitted from the returned dictionary
+    // so it can never be referenced downstream (select/where/derive/join/etc.) — the key column
+    // is never excluded, per IRowFieldAuthorizationEvaluator's existing contract (a caller always
+    // sees the primary key even under field restriction).
+    private static Dictionary<string, string> ColumnsFor(
+        StarRocksQuerySchema schema, AuthorizationConstraint? constraint = null)
     {
         var cols = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
         {
             [schema.KeyColumnName] = schema.KeyColumnName
         };
-        foreach (var c in schema.ColumnNames) cols[c] = c;
+        foreach (var c in schema.ColumnNames)
+        {
+            if (constraint?.AllowedFields is not null && !constraint.AllowedFields.Contains(c)) continue;
+            cols[c] = c;
+        }
         return cols;
     }
 
     internal static IReadOnlyList<StepColumns> TrackAndValidate(
         StarRocksQuerySchema schema,
         PipelineRequest request,
-        Func<string, StarRocksQuerySchema?> registry)
+        Func<string, StarRocksQuerySchema?> registry,
+        IReadOnlyDictionary<string, AuthorizationConstraint>? authz = null)
     {
         var steps = new List<StepColumns>();
 
-        var baseColumns = ColumnsFor(schema);
+        var primaryConstraint = authz is not null && authz.TryGetValue(schema.TypeName, out var pc) ? pc : null;
+        var baseColumns = ColumnsFor(schema, primaryConstraint);
         steps.Add(new StepColumns(BaseStepName, baseColumns));
 
         foreach (var clause in request.BaseWhere)
@@ -58,7 +70,7 @@ internal static class StarRocksPipelineBuilder
         {
             ValidateStepName(step, steps, registry);
             var input = ResolveInput(step, steps);
-            var output = ValidateStepAndComputeOutput(step, input, steps, registry);
+            var output = ValidateStepAndComputeOutput(step, input, steps, registry, authz);
             steps.Add(new StepColumns(step.Name, output));
         }
 
@@ -99,7 +111,8 @@ internal static class StarRocksPipelineBuilder
         PipelineStep step,
         StepColumns input,
         List<StepColumns> earlier,
-        Func<string, StarRocksQuerySchema?> registry)
+        Func<string, StarRocksQuerySchema?> registry,
+        IReadOnlyDictionary<string, AuthorizationConstraint>? authz = null)
     {
         var isAggregate = step.GroupBy.Count > 0 || step.Metrics.Count > 0 || step.Having.Count > 0;
 
@@ -123,7 +136,7 @@ internal static class StarRocksPipelineBuilder
             RequireColumn(step.Name, input.Columns, clause.Property);
 
         // Join sources — resolution against prior steps or the schema registry.
-        var joinSources = ResolveJoinSources(step, earlier, registry);
+        var joinSources = ResolveJoinSources(step, earlier, registry, authz);
 
         foreach (var join in step.Joins)
         {
@@ -156,10 +169,28 @@ internal static class StarRocksPipelineBuilder
             {
                 if (string.IsNullOrEmpty(m.Name) || !IdentifierRx.IsMatch(m.Name))
                     throw Invalid($"Step '{step.Name}': metric alias '{m.Name}' is not a valid identifier.");
+                // Field and Expression are checked independently (NOT else-if) even though
+                // EmitMetric's own SQL-emission prefers Expression over Field when both are set
+                // (Field's resolved column then never reaches the emitted SQL text). MetricSpec
+                // has no mutual exclusivity between the two, so without an independent check here
+                // a caller could reference a disallowed column via Field and pair it with an
+                // innocuous, allowed Expression to suppress the Field check entirely — the exact
+                // shape of bypass Task 3's review round found in BuildAggregate, and the same
+                // defense-in-depth Task 4 applied to BuildMetricExpr for this identical type.
                 if (!string.IsNullOrEmpty(m.Field))
                     RequireColumn(step.Name, input.Columns, m.Field);
                 else if (string.IsNullOrEmpty(m.Expression) && m.Type != AggregationType.Count)
                     throw Invalid($"Step '{step.Name}': metric '{m.Name}' requires a field or expression.");
+                if (!string.IsNullOrEmpty(m.Expression))
+                {
+                    foreach (Match tok in TokenRx.Matches(m.Expression))
+                    {
+                        if (DeriveWhitelist.Contains(tok.Value)) continue;
+                        if (!input.Columns.ContainsKey(tok.Value))
+                            throw Invalid($"Step '{step.Name}': metric '{m.Name}' expression references " +
+                                          $"'{tok.Value}', which is neither an input column nor a whitelisted function.");
+                    }
+                }
                 AddOutput(m.Name);
             }
             var metricAliases = new Dictionary<string, string>(output, StringComparer.OrdinalIgnoreCase);
@@ -176,6 +207,22 @@ internal static class StarRocksPipelineBuilder
                 var source = ResolveSelectSource(step, item, input, joinSources);
                 if (item.All)
                 {
+                    // "all: true" scoping (Step 2): a fresh join target (a registered type,
+                    // resolvable via the registry — NOT a prior step; step outputs are already
+                    // filtered per Step 1) whose constraint restricts AllowedFields cannot be
+                    // wildcard-expanded — that would either silently narrow the result to fewer
+                    // columns than the caller asked for, or (via EmitSelectItem's `alias.*`
+                    // emission) leak the source's raw physical columns past the restriction.
+                    // Fail loudly instead of guessing. A prior-step source needs no such check:
+                    // its Columns dictionary already only contains allowed names.
+                    var isFreshRestrictedType =
+                        registry(source.Name) is not null &&
+                        earlier.All(s => !s.Name.Equals(source.Name, StringComparison.OrdinalIgnoreCase)) &&
+                        authz is not null && authz.TryGetValue(source.Name, out var srcConstraint) &&
+                        srcConstraint.AllowedFields is not null;
+                    if (isFreshRestrictedType)
+                        throw Invalid($"Step '{step.Name}': 'all: true' against '{source.Name}' is not " +
+                                      "permitted for this caller (restricted field set); select individual columns instead.");
                     foreach (var col in source.Columns.Values) AddOutput(col);
                 }
                 else
@@ -214,7 +261,8 @@ internal static class StarRocksPipelineBuilder
     }
 
     private static Dictionary<string, StepColumns> ResolveJoinSources(
-        PipelineStep step, List<StepColumns> earlier, Func<string, StarRocksQuerySchema?> registry)
+        PipelineStep step, List<StepColumns> earlier, Func<string, StarRocksQuerySchema?> registry,
+        IReadOnlyDictionary<string, AuthorizationConstraint>? authz = null)
     {
         var sources = new Dictionary<string, StepColumns>(StringComparer.OrdinalIgnoreCase);
         foreach (var join in step.Joins)
@@ -230,7 +278,8 @@ internal static class StarRocksPipelineBuilder
             var joinedSchema = registry(join.Source)
                 ?? throw Invalid($"Step '{step.Name}': join source '{join.Source}' is neither " +
                                  "an earlier step nor a registered type.");
-            sources[joinedSchema.TypeName] = new StepColumns(joinedSchema.TypeName, ColumnsFor(joinedSchema));
+            var constraint = authz is not null && authz.TryGetValue(joinedSchema.TypeName, out var c) ? c : null;
+            sources[joinedSchema.TypeName] = new StepColumns(joinedSchema.TypeName, ColumnsFor(joinedSchema, constraint));
         }
         return sources;
     }
@@ -299,13 +348,22 @@ internal static class StarRocksPipelineBuilder
     private static StarRocksQueryTranslationException Invalid(string message) =>
         new(message);
 
-    internal static (string Sql, DynamicParameters Param) Build(
+    /// <summary>
+    /// Compiles the request into one SQL statement. <c>LastCols</c> is the final step's tracked
+    /// (already field-restriction-filtered, per Step 1) output-column dictionary — the caller
+    /// (<see cref="StarRocksRepository.PipelineAsync"/>) uses it as a Layer 2 (post-fetch) mask:
+    /// every intermediate/final CTE's actual physical columns can be broader than this tracked
+    /// set (the base CTE and any unqualified "select *" passthrough both select every raw table
+    /// column, restricted or not), so the final result row must still be stripped down to exactly
+    /// this set before it leaves <c>Iverson.StarRocks</c>.
+    /// </summary>
+    internal static (string Sql, DynamicParameters Param, Dictionary<string, string> LastCols) Build(
         StarRocksQuerySchema schema,
         PipelineRequest request,
         Func<string, StarRocksQuerySchema?> registry,
         IReadOnlyDictionary<string, AuthorizationConstraint>? authz = null)
     {
-        var tracked = TrackAndValidate(schema, request, registry);
+        var tracked = TrackAndValidate(schema, request, registry, authz);
         var byName  = tracked.ToDictionary(s => s.Name, StringComparer.OrdinalIgnoreCase);
 
         var param = new DynamicParameters();
@@ -314,6 +372,16 @@ internal static class StarRocksPipelineBuilder
         var baseWhere = StarRocksQueryBuilder.BuildWhere(
             p => StarRocksQueryBuilder.ResolveColumn(schema, p) is { } c ? $"`{c}`" : null,
             request.BaseWhere, request.BaseLogic, param, "s0_p", out _);
+
+        // Primary-type row-ownership: same wrap-and-AND predicate BuildSearch/BuildAggregate/
+        // BuildGroupBy append to their own WHERE — see StarRocksQueryBuilder for the rationale.
+        if (authz is not null && authz.TryGetValue(schema.TypeName, out var primaryConstraint) && primaryConstraint.OwnerColumn is not null)
+        {
+            var ownerPredicate = $"`{primaryConstraint.OwnerColumn}` = @__ownerVal";
+            param.Add("__ownerVal", primaryConstraint.OwnerValue);
+            baseWhere = baseWhere.Length > 0 ? $"({baseWhere}) AND {ownerPredicate}" : ownerPredicate;
+        }
+
         sb.Append($"WITH `{BaseStepName}` AS (SELECT * FROM `{schema.TableName}`");
         if (baseWhere.Length > 0) sb.Append($" WHERE {baseWhere}");
         sb.Append(')');
@@ -325,7 +393,7 @@ internal static class StarRocksPipelineBuilder
             var step  = request.Steps[i];
             var input = byName[string.IsNullOrEmpty(step.Reads) ? prev : step.Reads];
             sb.Append($", `{step.Name}` AS (");
-            EmitStep(sb, step, input, emitted, registry, param, stepIdx: i + 1);
+            EmitStep(sb, step, input, emitted, registry, param, stepIdx: i + 1, authz);
             sb.Append(')');
             prev = step.Name;
             emitted.Add(byName[step.Name]);
@@ -342,7 +410,7 @@ internal static class StarRocksPipelineBuilder
         var limit = request.Limit > 0 ? request.Limit : 10_000;
         sb.Append($" LIMIT {limit}");
 
-        return (sb.ToString(), param);
+        return (sb.ToString(), param, lastCols);
     }
 
     private static void EmitStep(
@@ -352,7 +420,8 @@ internal static class StarRocksPipelineBuilder
         List<StepColumns> emitted,
         Func<string, StarRocksQuerySchema?> registry,
         DynamicParameters param,
-        int stepIdx)
+        int stepIdx,
+        IReadOnlyDictionary<string, AuthorizationConstraint>? authz = null)
     {
         var isAggregate = step.GroupBy.Count > 0 || step.Metrics.Count > 0;
 
@@ -393,7 +462,7 @@ internal static class StarRocksPipelineBuilder
         }
 
         // Non-aggregate step.
-        var joinSources = ResolveJoinSources(step, emitted, registry);
+        var joinSources = ResolveJoinSources(step, emitted, registry, authz);
         var hasJoins = step.Joins.Count > 0;
 
         var nonAggWhere = StarRocksQueryBuilder.BuildWhere(
@@ -416,6 +485,7 @@ internal static class StarRocksPipelineBuilder
 
         sb.Append($"SELECT {string.Join(", ", selectParts)} FROM `{input.Name}`");
 
+        var joinIdx = 0;
         foreach (var join in step.Joins)
         {
             var src = joinSources[join.Source];
@@ -429,12 +499,30 @@ internal static class StarRocksPipelineBuilder
             // Entity sources join the physical table aliased as the type name;
             // step sources are CTEs joined by their own name (no alias needed).
             var joinedSchema = registry(src.Name);
-            var target = joinedSchema is not null && emitted.All(s => !s.Name.Equals(src.Name, StringComparison.OrdinalIgnoreCase))
-                ? $"`{joinedSchema.TableName}` AS `{src.Name}`"
+            var isFreshType = joinedSchema is not null && emitted.All(s => !s.Name.Equals(src.Name, StringComparison.OrdinalIgnoreCase));
+            var target = isFreshType
+                ? $"`{joinedSchema!.TableName}` AS `{src.Name}`"
                 : $"`{src.Name}`";
             var conds = join.On.Select(c =>
                 $"`{input.Name}`.`{input.Columns[c.Left]}` = `{src.Name}`.`{src.Columns[c.Right]}`");
-            sb.Append($" {kind} JOIN {target} ON {string.Join(" AND ", conds)}");
+
+            // Joined-type ownership: appended to this JOIN's own ON clause (never the outer
+            // WHERE) — same reasoning as BuildFromWithJoins in StarRocksQueryBuilder (a WHERE-
+            // clause condition on the joined side would collapse LEFT/RIGHT/FULL to INNER
+            // semantics). Only applies to a fresh registered type, never a prior step — a
+            // step-to-step join needs no new predicate; that source was already filtered
+            // upstream (same "already filtered upstream" reasoning already established for
+            // Pipeline steps' own `where`).
+            var ownerCond = "";
+            if (isFreshType && authz is not null && authz.TryGetValue(src.Name, out var joinedConstraint) && joinedConstraint.OwnerColumn is not null)
+            {
+                var pName = $"s{stepIdx}_j{joinIdx}_owner";
+                param.Add(pName, joinedConstraint.OwnerValue);
+                ownerCond = $" AND `{src.Name}`.`{joinedConstraint.OwnerColumn}` = @{pName}";
+            }
+
+            sb.Append($" {kind} JOIN {target} ON {string.Join(" AND ", conds)}{ownerCond}");
+            joinIdx++;
         }
 
         if (nonAggWhere.Length > 0) sb.Append($" WHERE {nonAggWhere}");

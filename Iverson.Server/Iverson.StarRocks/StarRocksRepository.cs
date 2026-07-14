@@ -220,8 +220,24 @@ public sealed class StarRocksRepository(
         Func<string, StarRocksQuerySchema?> registry,
         IReadOnlyDictionary<string, AuthorizationConstraint>? authz = null)
     {
-        var (sql, param) = StarRocksPipelineBuilder.Build(schema, request, registry, authz);
-        return await QueryAsync<dynamic>(sql, param);
+        var (sql, param, lastCols) = StarRocksPipelineBuilder.Build(schema, request, registry, authz);
+        var rows = await QueryAsync<dynamic>(sql, param);
+
+        // Layer 2 (post-fetch) masking: every intermediate/final CTE's actual physical columns
+        // can be broader than lastCols (the base CTE and any unqualified "select *" passthrough
+        // both select every raw table column, restricted or not — see StarRocksPipelineBuilder.
+        // Build's remarks) so the final row must still be stripped down to exactly the tracked,
+        // already-authorization-filtered column set before it leaves Iverson.StarRocks. A no-op
+        // when authz is null/unrestricted, since lastCols then already contains every column.
+        return rows
+            .Select(row =>
+            {
+                var dict = (IDictionary<string, object>)row;
+                foreach (var key in dict.Keys.Where(k => !lastCols.ContainsKey(k)).ToList())
+                    dict.Remove(key);
+                return (dynamic)row;
+            })
+            .ToList();
     }
 
     private static async Task<bool> CheckBackendAliveAsync(string connectionString, CancellationToken ct)
