@@ -1,5 +1,6 @@
 using System.Runtime.CompilerServices;
 using System.Text;
+using System.Text.RegularExpressions;
 using Dapper;
 using Iverson.Client.Contracts;
 
@@ -118,9 +119,9 @@ internal static class StarRocksQueryBuilder
         IReadOnlyDictionary<string, JoinContext>? tableMap;
         if (joins is { Count: > 0 })
         {
-            // Ownership predicates for joined types in Aggregate are wired in a later task
-            // (Tasks 3/4); this call only threads the required `param` argument through for now.
-            from = BuildFromWithJoins(schema, joins, registry!, param, out var tm);
+            // Joined-type ownership predicates are appended to each JOIN's own ON clause inside
+            // BuildFromWithJoins (never the outer WHERE — see that method's remarks for why).
+            from = BuildFromWithJoins(schema, joins, registry!, param, out var tm, authz);
             tableMap = tm;
         }
         else
@@ -135,14 +136,64 @@ internal static class StarRocksQueryBuilder
         string Resolve(string f) =>
             (tableMap is not null ? ResolveColumn(tableMap, f) : ResolveColumn(schema, f)) ?? f;
 
+        // Same tableMap-or-not resolution split as Resolve above, but WITHOUT its "?? f"
+        // fallback: used only by the authorization check below, which must be able to tell an
+        // unresolvable field apart from a resolved-but-disallowed one. Passing an unresolved raw
+        // property straight into IsFieldAllowed would risk its tableMap!.Values.First(...) throwing
+        // an unhandled InvalidOperationException for a dotted-but-unmatched "Type.Field" string.
+        string? ResolveStrict(string f) =>
+            tableMap is not null ? ResolveColumn(tableMap, f) : ResolveColumn(schema, f);
+
         // Quotes an already-resolved column: two separately-backtick-quoted "alias"."field"
         // parts when joined (see QuoteQualified's doc comment for why a single backtick pair
         // around "alias.field" is invalid SQL), or a bare single-backtick pair otherwise.
         string Quote(string c) => tableMap is not null ? QuoteQualified(c) : $"`{c}`";
 
+        // Field reject-on-reference: unlike Search's post-fetch masking, an aggregate over a
+        // disallowed field would still leak its distribution through bucket keys or metric
+        // values, so any reference to one — via spec.Field, spec.GroupByFields, or
+        // spec.Expression — throws instead.
+        void CheckFieldAllowed(string field)
+        {
+            var resolved = ResolveStrict(field)
+                ?? throw new StarRocksQueryTranslationException($"Unknown aggregation field '{field}'.");
+            if (!IsFieldAllowed(resolved, schema, tableMap, authz, out var typeName))
+                throw new StarRocksQueryTranslationException(
+                    $"Aggregation field '{field}' on '{typeName}' is not authorized for this caller.");
+        }
+
+        if (!string.IsNullOrEmpty(spec.Expression))
+        {
+            foreach (Match m in StarRocksPipelineBuilder.TokenRx.Matches(spec.Expression))
+            {
+                if (StarRocksPipelineBuilder.DeriveWhitelist.Contains(m.Value)) continue;
+                CheckFieldAllowed(m.Value);
+            }
+        }
+        else if (!string.IsNullOrEmpty(spec.Field))
+        {
+            CheckFieldAllowed(spec.Field);
+        }
+
+        if (spec.GroupByFields is { Count: > 0 })
+            foreach (var f in spec.GroupByFields)
+                CheckFieldAllowed(f);
+
         var where = tableMap is not null
             ? BuildWhere(schema, query?.Clauses, query?.Logic ?? SearchLogic.And, param, out _, tableMap, authz)
             : BuildWhere(schema, query?.Clauses, query?.Logic ?? SearchLogic.And, param, out _, null, authz);
+
+        // Primary-type row-ownership: same wrap-and-AND predicate BuildSearch appends to its own
+        // `where`, qualified with the primary alias when joined.
+        if (authz is not null && authz.TryGetValue(schema.TypeName, out var primaryConstraint) && primaryConstraint.OwnerColumn is not null)
+        {
+            var ownerPredicate = tableMap is not null
+                ? $"`{tableMap[schema.TypeName].Alias}`.`{primaryConstraint.OwnerColumn}` = @__ownerVal"
+                : $"`{primaryConstraint.OwnerColumn}` = @__ownerVal";
+            param.Add("__ownerVal", primaryConstraint.OwnerValue);
+            where = where.Length > 0 ? $"({where}) AND {ownerPredicate}" : ownerPredicate;
+        }
+
         var col = Resolve(spec.Field);
         var wc    = where.Length > 0 ? $" WHERE {where}" : "";
 

@@ -422,7 +422,8 @@ public class ObjectSearchGrpcServiceTests
         _search.AggregateAsync(
                 Arg.Any<StarRocksQuerySchema>(), Arg.Any<SearchQuery?>(), Arg.Any<AggregationDescriptor>(),
                 Arg.Any<SearchQuery?>(), Arg.Any<IReadOnlyList<JoinSpec>?>(),
-                Arg.Any<Func<string, StarRocksQuerySchema?>?>())
+                Arg.Any<Func<string, StarRocksQuerySchema?>?>(),
+                Arg.Any<IReadOnlyDictionary<string, AuthorizationConstraint>?>())
             .Returns<Task<SrAggResult?>>(_ => throw new StarRocksQueryTranslationException(
                 "Multi-key GROUP BY (group_by_fields with more than one entry) is not yet supported"));
 
@@ -451,7 +452,8 @@ public class ObjectSearchGrpcServiceTests
         _search.AggregateAsync(
                 Arg.Any<StarRocksQuerySchema>(), Arg.Any<SearchQuery?>(), Arg.Any<AggregationDescriptor>(),
                 Arg.Any<SearchQuery?>(), Arg.Any<IReadOnlyList<JoinSpec>?>(),
-                Arg.Any<Func<string, StarRocksQuerySchema?>?>())
+                Arg.Any<Func<string, StarRocksQuerySchema?>?>(),
+                Arg.Any<IReadOnlyDictionary<string, AuthorizationConstraint>?>())
             .Returns(new SrAggResult("name_terms", AggregationKind.Terms,
                 Buckets: [new SrAggBucket("Alice", 10), new SrAggBucket("Bob", 5)]));
 
@@ -478,7 +480,8 @@ public class ObjectSearchGrpcServiceTests
         _search.AggregateAsync(
                 Arg.Any<StarRocksQuerySchema>(), Arg.Any<SearchQuery?>(), Arg.Any<AggregationDescriptor>(),
                 Arg.Any<SearchQuery?>(), Arg.Any<IReadOnlyList<JoinSpec>?>(),
-                Arg.Any<Func<string, StarRocksQuerySchema?>?>())
+                Arg.Any<Func<string, StarRocksQuerySchema?>?>(),
+                Arg.Any<IReadOnlyDictionary<string, AuthorizationConstraint>?>())
             .Returns(new SrAggResult("bio_avg", AggregationKind.Avg, MetricValue: 42.5));
 
         var request = new AggregateRequest { TypeName = "Author" };
@@ -501,7 +504,8 @@ public class ObjectSearchGrpcServiceTests
         _search.AggregateAsync(
                 Arg.Any<StarRocksQuerySchema>(), Arg.Any<SearchQuery?>(), Arg.Any<AggregationDescriptor>(),
                 Arg.Any<SearchQuery?>(), Arg.Any<IReadOnlyList<JoinSpec>?>(),
-                Arg.Any<Func<string, StarRocksQuerySchema?>?>())
+                Arg.Any<Func<string, StarRocksQuerySchema?>?>(),
+                Arg.Any<IReadOnlyDictionary<string, AuthorizationConstraint>?>())
             .Returns(new SrAggResult("name_terms", AggregationKind.Terms,
                 Buckets: [new SrAggBucket("Alice", 3)]));
 
@@ -529,7 +533,8 @@ public class ObjectSearchGrpcServiceTests
         _search.AggregateAsync(
                 Arg.Any<StarRocksQuerySchema>(), Arg.Do<SearchQuery?>(q => capturedQuery = q),
                 Arg.Any<AggregationDescriptor>(), Arg.Any<SearchQuery?>(), Arg.Any<IReadOnlyList<JoinSpec>?>(),
-                Arg.Any<Func<string, StarRocksQuerySchema?>?>())
+                Arg.Any<Func<string, StarRocksQuerySchema?>?>(),
+                Arg.Any<IReadOnlyDictionary<string, AuthorizationConstraint>?>())
             .Returns((SrAggResult?)null);
 
         var query = new SearchQuery();
@@ -564,7 +569,8 @@ public class ObjectSearchGrpcServiceTests
         _search.AggregateAsync(
                 Arg.Any<StarRocksQuerySchema>(), Arg.Any<SearchQuery?>(), Arg.Any<AggregationDescriptor>(),
                 Arg.Any<SearchQuery?>(), Arg.Any<IReadOnlyList<JoinSpec>?>(),
-                Arg.Any<Func<string, StarRocksQuerySchema?>?>())
+                Arg.Any<Func<string, StarRocksQuerySchema?>?>(),
+                Arg.Any<IReadOnlyDictionary<string, AuthorizationConstraint>?>())
             .Returns(_ =>
             {
                 System.Threading.Interlocked.Increment(ref callCount);
@@ -587,6 +593,198 @@ public class ObjectSearchGrpcServiceTests
 
         callCount.Should().Be(3);
         response.Results.Should().HaveCount(3);
+    }
+
+    // ── Aggregate — authorization ───────────────────────────────────────────────
+    //
+    // Reject-on-reference for spec.Field/GroupByFields/Expression is StarRocksQueryBuilder's
+    // concern (covered end-to-end, with real thrown exceptions, by StarRocksQueryBuilderTests'
+    // "BuildAggregate — field reject-on-reference" section — including the Expression-tokenizer
+    // bypass-closure case). Since `_search` is a mock here, these RPC-level tests instead cover
+    // what actually lives in ObjectSearchGrpcService.Aggregate: denied-caller short-circuiting,
+    // InvalidArgument translation, and that the correct AuthorizationConstraint (the input
+    // BuildAggregate's ownership/field checks act on) is computed and forwarded.
+
+    [Fact]
+    public async Task Aggregate_NoAuthorizationRules_ReturnsEmptyResults_WithoutQueryingSearchService()
+    {
+        var schema = SchemaFixtures.AuthorSchema() with { Authorization = null };
+        await _registry.RegisterAsync(schema);
+
+        var request = new AggregateRequest { TypeName = "Author" };
+        request.Aggregations.Add(new AggregationSpec { Name = "by_name", Type = AggregationType.Terms, Field = "Name" });
+
+        var response = await _sut.Aggregate(request, TestServerCallContext.Create());
+
+        response.Results.Should().BeEmpty();
+        _search.ReceivedCalls().Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task Aggregate_NoActingUser_ReturnsEmptyResults_WithoutQueryingSearchService()
+    {
+        await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
+        _actingUserAccessor.ActingUser = null;
+
+        var request = new AggregateRequest { TypeName = "Author" };
+        request.Aggregations.Add(new AggregationSpec { Name = "by_name", Type = AggregationType.Terms, Field = "Name" });
+
+        var response = await _sut.Aggregate(request, TestServerCallContext.Create());
+
+        response.Results.Should().BeEmpty();
+        _search.ReceivedCalls().Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task Aggregate_JoinedTypeWithNoAuthorizationRules_ThrowsInvalidArgument_WithoutQueryingSearchService()
+    {
+        await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
+        await _registry.RegisterAsync(SchemaFixtures.ArticleSchema() with { Authorization = null });
+
+        var request = new AggregateRequest { TypeName = "Author" };
+        request.Joins.Add(new JoinSpec
+        {
+            LeftType = "Author", RightType = "Article", LeftField = "Id", RightField = "AuthorId", Kind = JoinKind.Inner
+        });
+        request.Aggregations.Add(new AggregationSpec { Name = "by_name", Type = AggregationType.Terms, Field = "Name" });
+
+        var act = async () => await _sut.Aggregate(request, TestServerCallContext.Create());
+
+        (await act.Should().ThrowAsync<RpcException>())
+            .Where(e => e.Status.StatusCode == StatusCode.InvalidArgument && e.Status.Detail.Contains("Article"));
+        _search.ReceivedCalls().Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task Aggregate_BypassCaller_ForwardsUnrestrictedConstraint_NoOwnerFilter()
+    {
+        await _registry.RegisterAsync(OwnedSchema("Owned", "OwnerId"));
+
+        IReadOnlyDictionary<string, AuthorizationConstraint>? captured = null;
+        _search.AggregateAsync(
+                Arg.Any<StarRocksQuerySchema>(), Arg.Any<SearchQuery?>(), Arg.Any<AggregationDescriptor>(),
+                Arg.Any<SearchQuery?>(), Arg.Any<IReadOnlyList<JoinSpec>?>(),
+                Arg.Any<Func<string, StarRocksQuerySchema?>?>(),
+                Arg.Do<IReadOnlyDictionary<string, AuthorizationConstraint>?>(a => captured = a))
+            .Returns((SrAggResult?)null);
+
+        var request = new AggregateRequest { TypeName = "Owned" };
+        request.Aggregations.Add(new AggregationSpec { Name = "by_name", Type = AggregationType.Terms, Field = "Name" });
+
+        await _sut.Aggregate(request, TestServerCallContext.Create());
+
+        captured.Should().NotBeNull();
+        captured!["Owned"].OwnerColumn.Should().BeNull();
+        captured["Owned"].AllowedFields.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task Aggregate_OwnerRestrictedCaller_ForwardsOwnerColumnAndCallerIdAsOwnerValue()
+    {
+        // This is the input that makes BuildAggregate's primary-ownership wrap-and-AND (covered
+        // in StarRocksQueryBuilderTests) actually filter rows for this caller: proves the RPC
+        // computes and forwards it correctly.
+        await _registry.RegisterAsync(OwnedSchema("Owned", "OwnerId"));
+        _actingUserAccessor.ActingUser = ActingUserFixtures.Principal("alice", "member");
+
+        IReadOnlyDictionary<string, AuthorizationConstraint>? captured = null;
+        _search.AggregateAsync(
+                Arg.Any<StarRocksQuerySchema>(), Arg.Any<SearchQuery?>(), Arg.Any<AggregationDescriptor>(),
+                Arg.Any<SearchQuery?>(), Arg.Any<IReadOnlyList<JoinSpec>?>(),
+                Arg.Any<Func<string, StarRocksQuerySchema?>?>(),
+                Arg.Do<IReadOnlyDictionary<string, AuthorizationConstraint>?>(a => captured = a))
+            .Returns((SrAggResult?)null);
+
+        var request = new AggregateRequest { TypeName = "Owned" };
+        request.Aggregations.Add(new AggregationSpec { Name = "by_name", Type = AggregationType.Terms, Field = "Name" });
+
+        await _sut.Aggregate(request, TestServerCallContext.Create());
+
+        captured.Should().NotBeNull();
+        captured!["Owned"].OwnerColumn.Should().Be("OwnerId");
+        captured["Owned"].OwnerValue.Should().Be("alice");
+    }
+
+    [Fact]
+    public async Task Aggregate_JoinedTypeOwnerRestricted_ForwardsOwnerConstraintForJoinedType()
+    {
+        await _registry.RegisterAsync(SchemaFixtures.AuthorSchema()); // bypass role "test-bypass"
+        await _registry.RegisterAsync(OwnedSchema("Article", "OwnerId", bypassRole: "other-bypass"));
+
+        IReadOnlyDictionary<string, AuthorizationConstraint>? captured = null;
+        _search.AggregateAsync(
+                Arg.Any<StarRocksQuerySchema>(), Arg.Any<SearchQuery?>(), Arg.Any<AggregationDescriptor>(),
+                Arg.Any<SearchQuery?>(), Arg.Any<IReadOnlyList<JoinSpec>?>(),
+                Arg.Any<Func<string, StarRocksQuerySchema?>?>(),
+                Arg.Do<IReadOnlyDictionary<string, AuthorizationConstraint>?>(a => captured = a))
+            .Returns((SrAggResult?)null);
+
+        var request = new AggregateRequest { TypeName = "Author" };
+        request.Joins.Add(new JoinSpec
+        {
+            LeftType = "Author", RightType = "Article", LeftField = "Id", RightField = "AuthorId", Kind = JoinKind.Left
+        });
+        request.Aggregations.Add(new AggregationSpec { Name = "by_name", Type = AggregationType.Terms, Field = "Name" });
+
+        await _sut.Aggregate(request, TestServerCallContext.Create());
+
+        captured.Should().NotBeNull();
+        captured!["Article"].OwnerColumn.Should().Be("OwnerId");
+        captured["Article"].OwnerValue.Should().Be("test-user"); // default fixture's sub claim
+    }
+
+    [Fact]
+    public async Task Aggregate_RestrictedFieldRejectedByBuilder_TranslatesToInvalidArgument()
+    {
+        // Simulates what BuildAggregate (StarRocksQueryTranslationException on a disallowed
+        // spec.Field — see StarRocksQueryBuilderTests) causes the real search service to throw;
+        // proves ObjectSearchGrpcService.Aggregate still surfaces it as InvalidArgument even
+        // though authorization is now evaluated before dispatch.
+        await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
+
+        _search.AggregateAsync(
+                Arg.Any<StarRocksQuerySchema>(), Arg.Any<SearchQuery?>(), Arg.Any<AggregationDescriptor>(),
+                Arg.Any<SearchQuery?>(), Arg.Any<IReadOnlyList<JoinSpec>?>(),
+                Arg.Any<Func<string, StarRocksQuerySchema?>?>(),
+                Arg.Any<IReadOnlyDictionary<string, AuthorizationConstraint>?>())
+            .Returns<Task<SrAggResult?>>(_ => throw new StarRocksQueryTranslationException(
+                "Aggregation field 'Bio' on 'Author' is not authorized for this caller."));
+
+        var request = new AggregateRequest { TypeName = "Author" };
+        request.Aggregations.Add(new AggregationSpec { Name = "by_bio", Type = AggregationType.Terms, Field = "Bio" });
+
+        var act = async () => await _sut.Aggregate(request, TestServerCallContext.Create());
+
+        (await act.Should().ThrowAsync<RpcException>())
+            .Where(e => e.Status.StatusCode == StatusCode.InvalidArgument && e.Status.Detail.Contains("Bio"));
+    }
+
+    [Fact]
+    public async Task Aggregate_RestrictedExpressionFieldRejectedByBuilder_TranslatesToInvalidArgument()
+    {
+        // Same as above but for the spec.Expression path — proves the bypass (routing a
+        // disallowed column through Expression instead of Field) is closed all the way up
+        // through the RPC layer, not just at StarRocksQueryBuilder's unit level.
+        await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
+
+        _search.AggregateAsync(
+                Arg.Any<StarRocksQuerySchema>(), Arg.Any<SearchQuery?>(), Arg.Any<AggregationDescriptor>(),
+                Arg.Any<SearchQuery?>(), Arg.Any<IReadOnlyList<JoinSpec>?>(),
+                Arg.Any<Func<string, StarRocksQuerySchema?>?>(),
+                Arg.Any<IReadOnlyDictionary<string, AuthorizationConstraint>?>())
+            .Returns<Task<SrAggResult?>>(_ => throw new StarRocksQueryTranslationException(
+                "Aggregation expression references field 'Bio' on 'Author', which is not authorized for this caller."));
+
+        var request = new AggregateRequest { TypeName = "Author" };
+        request.Aggregations.Add(new AggregationSpec
+        {
+            Name = "revenue", Type = AggregationType.Sum, Field = "Rating", Expression = "Bio * 2"
+        });
+
+        var act = async () => await _sut.Aggregate(request, TestServerCallContext.Create());
+
+        (await act.Should().ThrowAsync<RpcException>())
+            .Where(e => e.Status.StatusCode == StatusCode.InvalidArgument && e.Status.Detail.Contains("Bio"));
     }
 
     [Fact]

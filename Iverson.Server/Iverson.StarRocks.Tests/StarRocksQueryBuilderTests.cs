@@ -321,6 +321,252 @@ public class StarRocksQueryBuilderTests
         sql.Should().Contain("COUNT(DISTINCT `Rating`)");
     }
 
+    // ── BuildAggregate — authorization (row ownership) ─────────────────────────
+
+    [Fact]
+    public void BuildAggregate_NoJoins_OwnerConstraint_WrapsExistingWhereWithOwnerPredicate()
+    {
+        var query = new SearchQuery();
+        query.Clauses.Add(new SearchClause
+        {
+            Property = "Name", Operator = SearchOperator.Equals,
+            Value = new SearchValue { StringVal = "Alice" }, ClauseType = SearchClauseType.Filter
+        });
+        var spec = new AggregationDescriptor("by_name", AggregationKind.Terms, "Name");
+        var authz = new Dictionary<string, AuthorizationConstraint>
+        {
+            ["Author"] = new(AllowedFields: null, OwnerColumn: "OwnerId", OwnerValue: "user-1")
+        };
+
+        var (sql, param) = StarRocksQueryBuilder.BuildAggregate(
+            "authors", AuthorSchema(), query, spec, authz: authz);
+
+        sql.Should().Contain("WHERE (`Name` = @p0) AND `OwnerId` = @__ownerVal");
+        var lookup = (SqlMapper.IParameterLookup)param;
+        lookup["__ownerVal"].Should().Be("user-1");
+    }
+
+    [Fact]
+    public void BuildAggregate_NoJoins_OwnerConstraint_NoExistingWhere_UsesOwnerPredicateAlone()
+    {
+        var spec = new AggregationDescriptor("by_name", AggregationKind.Terms, "Name");
+        var authz = new Dictionary<string, AuthorizationConstraint>
+        {
+            ["Author"] = new(AllowedFields: null, OwnerColumn: "OwnerId", OwnerValue: "user-1")
+        };
+
+        var (sql, param) = StarRocksQueryBuilder.BuildAggregate(
+            "authors", AuthorSchema(), null, spec, authz: authz);
+
+        sql.Should().Contain("WHERE `OwnerId` = @__ownerVal");
+        var lookup = (SqlMapper.IParameterLookup)param;
+        lookup["__ownerVal"].Should().Be("user-1");
+    }
+
+    [Fact]
+    public void BuildAggregate_NoJoins_NoOwnerColumn_DoesNotAddOwnerPredicate()
+    {
+        var spec = new AggregationDescriptor("by_name", AggregationKind.Terms, "Name");
+        var authz = new Dictionary<string, AuthorizationConstraint>
+        {
+            ["Author"] = new(AllowedFields: null, OwnerColumn: null, OwnerValue: null)
+        };
+
+        var (sql, _) = StarRocksQueryBuilder.BuildAggregate(
+            "authors", AuthorSchema(), null, spec, authz: authz);
+
+        sql.Should().NotContain("@__ownerVal");
+        sql.Should().NotContain("WHERE");
+    }
+
+    [Fact]
+    public void BuildAggregate_WithJoins_OwnerConstraint_QualifiesOwnerColumnWithPrimaryAlias()
+    {
+        var registry = BuildRegistry(AuthorSchema(), ArticleSchema());
+        var joins = new List<JoinSpec>
+        {
+            new() { LeftType = "Author", RightType = "Article", LeftField = "Id", RightField = "Id", Kind = JoinKind.Inner }
+        };
+        var spec = new AggregationDescriptor("by_title", AggregationKind.Terms, "Article.Title");
+        var authz = new Dictionary<string, AuthorizationConstraint>
+        {
+            ["Author"] = new(AllowedFields: null, OwnerColumn: "OwnerId", OwnerValue: "user-1")
+        };
+
+        var (sql, param) = StarRocksQueryBuilder.BuildAggregate(
+            "authors", AuthorSchema(), null, spec, joins: joins, registry: registry, authz: authz);
+
+        sql.Should().Contain("WHERE `authors`.`OwnerId` = @__ownerVal");
+        var lookup = (SqlMapper.IParameterLookup)param;
+        lookup["__ownerVal"].Should().Be("user-1");
+    }
+
+    [Fact]
+    public void BuildAggregate_WithJoins_JoinedTypeOwnerConstraint_AppendsConditionToOnClause_NotWhere()
+    {
+        // Proves BuildAggregate's join branch now threads `authz` all the way into
+        // BuildFromWithJoins (Task 2's mechanism), rather than only Search doing so.
+        var registry = BuildRegistry(AuthorSchema(), ArticleSchema());
+        var joins = new List<JoinSpec>
+        {
+            new() { LeftType = "Author", RightType = "Article", LeftField = "Id", RightField = "Id", Kind = JoinKind.Inner }
+        };
+        var spec = new AggregationDescriptor("by_title", AggregationKind.Terms, "Article.Title");
+        var authz = new Dictionary<string, AuthorizationConstraint>
+        {
+            ["Article"] = new(AllowedFields: null, OwnerColumn: "OwnerId", OwnerValue: "user-1")
+        };
+
+        var (sql, param) = StarRocksQueryBuilder.BuildAggregate(
+            "authors", AuthorSchema(), null, spec, joins: joins, registry: registry, authz: authz);
+
+        sql.Should().Contain(
+            "FROM `authors` INNER JOIN `articles` ON `authors`.`Id` = `articles`.`Id` " +
+            "AND `articles`.`OwnerId` = @__owner1");
+        sql.Should().NotContain("WHERE");
+        var lookup = (SqlMapper.IParameterLookup)param;
+        lookup["__owner1"].Should().Be("user-1");
+    }
+
+    // ── BuildAggregate — field reject-on-reference ─────────────────────────────
+
+    [Fact]
+    public void BuildAggregate_RestrictedField_ThrowsTranslationException()
+    {
+        var spec = new AggregationDescriptor("by_secret", AggregationKind.Terms, "Bio");
+        var authz = new Dictionary<string, AuthorizationConstraint>
+        {
+            ["Author"] = new(AllowedFields: new HashSet<string> { "Id", "Name" }, OwnerColumn: null, OwnerValue: null)
+        };
+
+        var act = () => StarRocksQueryBuilder.BuildAggregate("authors", AuthorSchema(), null, spec, authz: authz);
+
+        act.Should().Throw<StarRocksQueryTranslationException>().WithMessage("*Bio*");
+    }
+
+    [Fact]
+    public void BuildAggregate_AllowedField_DoesNotThrow()
+    {
+        var spec = new AggregationDescriptor("by_name", AggregationKind.Terms, "Name");
+        var authz = new Dictionary<string, AuthorizationConstraint>
+        {
+            ["Author"] = new(AllowedFields: new HashSet<string> { "Id", "Name" }, OwnerColumn: null, OwnerValue: null)
+        };
+
+        var act = () => StarRocksQueryBuilder.BuildAggregate("authors", AuthorSchema(), null, spec, authz: authz);
+
+        act.Should().NotThrow();
+    }
+
+    [Fact]
+    public void BuildAggregate_RestrictedGroupByField_ThrowsTranslationException()
+    {
+        var spec = new AggregationDescriptor(
+            "by_name_bio", AggregationKind.Terms, "Name", GroupByFields: ["Name", "Bio"]);
+        var authz = new Dictionary<string, AuthorizationConstraint>
+        {
+            ["Author"] = new(AllowedFields: new HashSet<string> { "Id", "Name" }, OwnerColumn: null, OwnerValue: null)
+        };
+
+        var act = () => StarRocksQueryBuilder.BuildAggregate("authors", AuthorSchema(), null, spec, authz: authz);
+
+        act.Should().Throw<StarRocksQueryTranslationException>().WithMessage("*Bio*");
+    }
+
+    [Fact]
+    public void BuildAggregate_RestrictedField_ViaJoinedType_ThrowsTranslationException()
+    {
+        var registry = BuildRegistry(AuthorSchema(), ArticleSchema());
+        var joins = new List<JoinSpec>
+        {
+            new() { LeftType = "Author", RightType = "Article", LeftField = "Id", RightField = "Id", Kind = JoinKind.Inner }
+        };
+        var spec = new AggregationDescriptor("by_body", AggregationKind.Terms, "Article.Body");
+        var authz = new Dictionary<string, AuthorizationConstraint>
+        {
+            ["Article"] = new(AllowedFields: new HashSet<string> { "Id", "Title" }, OwnerColumn: null, OwnerValue: null)
+        };
+
+        var act = () => StarRocksQueryBuilder.BuildAggregate(
+            "authors", AuthorSchema(), null, spec, joins: joins, registry: registry, authz: authz);
+
+        var thrown = act.Should().Throw<StarRocksQueryTranslationException>().Which;
+        thrown.Message.Should().Contain("Body");
+        thrown.Message.Should().Contain("Article");
+    }
+
+    [Fact]
+    public void BuildAggregate_RestrictedField_ViaExpression_ThrowsTranslationException()
+    {
+        // Proves the reject-on-reference check tokenizes spec.Expression the same way
+        // StarRocksPipelineBuilder's Derive validation does, rather than only checking
+        // spec.Field — closing off the bypass where a caller routes a disallowed column
+        // through Expression instead of Field.
+        var spec = new AggregationDescriptor(
+            "revenue", AggregationKind.Sum, "Rating", Expression: "Bio * 2");
+        var authz = new Dictionary<string, AuthorizationConstraint>
+        {
+            ["Author"] = new(AllowedFields: new HashSet<string> { "Id", "Name", "Rating" }, OwnerColumn: null, OwnerValue: null)
+        };
+
+        var act = () => StarRocksQueryBuilder.BuildAggregate("authors", AuthorSchema(), null, spec, authz: authz);
+
+        act.Should().Throw<StarRocksQueryTranslationException>().WithMessage("*Bio*");
+    }
+
+    [Fact]
+    public void BuildAggregate_AllowedExpression_DoesNotThrow()
+    {
+        var spec = new AggregationDescriptor(
+            "revenue", AggregationKind.Sum, "Rating", Expression: "Rating * 2");
+        var authz = new Dictionary<string, AuthorizationConstraint>
+        {
+            ["Author"] = new(AllowedFields: new HashSet<string> { "Id", "Name", "Rating" }, OwnerColumn: null, OwnerValue: null)
+        };
+
+        var act = () => StarRocksQueryBuilder.BuildAggregate("authors", AuthorSchema(), null, spec, authz: authz);
+
+        act.Should().NotThrow();
+    }
+
+    [Fact]
+    public void BuildAggregate_ExpressionReferencesUnknownColumn_ThrowsTranslationException()
+    {
+        // No authz restriction at all — this must still be rejected because the identifier
+        // doesn't resolve to any known column (nor is it a whitelisted SQL keyword/function).
+        var spec = new AggregationDescriptor(
+            "revenue", AggregationKind.Sum, "Rating", Expression: "NoSuchColumn * 2");
+
+        var act = () => StarRocksQueryBuilder.BuildAggregate("authors", AuthorSchema(), null, spec);
+
+        act.Should().Throw<StarRocksQueryTranslationException>().WithMessage("*NoSuchColumn*");
+    }
+
+    [Fact]
+    public void BuildAggregate_ExpressionUsesWhitelistedFunction_DoesNotThrow()
+    {
+        var spec = new AggregationDescriptor(
+            "revenue", AggregationKind.Sum, "Rating", Expression: "COALESCE(Rating, 0)");
+        var authz = new Dictionary<string, AuthorizationConstraint>
+        {
+            ["Author"] = new(AllowedFields: new HashSet<string> { "Id", "Name", "Rating" }, OwnerColumn: null, OwnerValue: null)
+        };
+
+        var act = () => StarRocksQueryBuilder.BuildAggregate("authors", AuthorSchema(), null, spec, authz: authz);
+
+        act.Should().NotThrow();
+    }
+
+    [Fact]
+    public void BuildAggregate_NoAuthz_DoesNotEnforceFieldRestrictions()
+    {
+        var spec = new AggregationDescriptor("by_bio", AggregationKind.Terms, "Bio");
+
+        var act = () => StarRocksQueryBuilder.BuildAggregate("authors", AuthorSchema(), null, spec);
+
+        act.Should().NotThrow();
+    }
+
     // ── BuildSearch — Equals clause (parameterization) ─────────────────────────
 
     [Fact]

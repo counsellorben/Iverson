@@ -242,6 +242,15 @@ public sealed class ObjectSearchGrpcService(
             throw new RpcException(new Status(StatusCode.InvalidArgument,
                 "At least one aggregation spec is required."));
 
+        // AggregationSpec entries don't carry their own join info — only the request-level
+        // Joins does — so authorization is evaluated once for the whole request, same as Search.
+        var joinedTypes = request.Joins.SelectMany(j => new[] { j.LeftType, j.RightType });
+        var auth = EvaluateAuthorization(schema, joinedTypes);
+        if (auth.PrimaryDenied)
+            return new AggregateResponse { TraceId = request.TraceId }; // empty Results — StarRocks never queried
+        if (auth.DeniedJoinedType is not null)
+            throw new RpcException(new Status(StatusCode.InvalidArgument, $"Not authorized to join '{auth.DeniedJoinedType}'."));
+
         if (logger.IsEnabled(LogLevel.Information))
             logger.LogInformation("[Aggregate] type={Type} aggs={Count}", request.TypeName, request.Aggregations.Count);
 
@@ -250,7 +259,7 @@ public sealed class ObjectSearchGrpcService(
         var having = request.Having;
 
         var aggTasks = request.Aggregations
-            .Select(spec => RunAggregationAsync(schema, request.Query, ProtoToSrSpec(spec), having, request.Joins))
+            .Select(spec => RunAggregationAsync(schema, request.Query, ProtoToSrSpec(spec), having, request.Joins, auth.Constraints))
             .ToList();
 
         var aggResults = await Task.WhenAll(aggTasks);
@@ -263,13 +272,15 @@ public sealed class ObjectSearchGrpcService(
 
     private async Task<SrAggResult?> RunAggregationAsync(
         SchemaDescriptor schema, SearchQuery? query, SrAggSpec spec, SearchQuery? having = null,
-        IReadOnlyList<JoinSpec>? joins = null)
+        IReadOnlyList<JoinSpec>? joins = null,
+        IReadOnlyDictionary<string, AuthorizationConstraint>? authz = null)
     {
         try
         {
             return await search.AggregateAsync(
                 SchemaBuilder.ToStarRocksQuerySchema(schema), query, spec, having, joins,
-                t => registry.Get(t) is { } d ? SchemaBuilder.ToStarRocksQuerySchema(d) : null);
+                t => registry.Get(t) is { } d ? SchemaBuilder.ToStarRocksQuerySchema(d) : null,
+                authz);
         }
         catch (StarRocksQueryTranslationException ex)
         {
