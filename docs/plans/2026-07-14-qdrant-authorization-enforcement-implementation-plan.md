@@ -76,6 +76,7 @@ The following were verified by `thorough-brainstorming` at spec-write time (see 
 | 12 | Function signature | `RowFieldAuthorizationEvaluator.Evaluate`'s field-exclusion logic only excludes a field when its `FieldPermission.ReadableRoles.Count > 0` **and** the caller's groups don't intersect — an empty `ReadableRoles` list does *not* restrict the field. New tests constructing a "restricted field" `FieldPermission` must use a non-empty `ReadableRoles` naming a role the test's acting user lacks (e.g. `new("Name", ["admin"], [])`), matching the existing `Search_RestrictedFields_MasksDisallowedFieldFromResponse` precedent | Read `RowFieldAuthorizationEvaluator.cs`'s `excluded` computation; read `ObjectSearchGrpcServiceTests.cs:271-292` |
 | 13 | Function signature | `ActingUserFixtures.Principal(sub, params groups)` sets the `"sub"` claim to `sub` and `"groups"` claims to `groups`; the test constructor's default acting user is `Principal("test-user", "test-bypass")`, so `decision.OwnerValue` for an ownership-required, non-bypass test caller is the literal string `"test-user"` | Read `ActingUserFixtures.cs`; read `ObjectSearchGrpcServiceTests.cs:63-64` |
 | 14 | Sibling sweep — `NamingExtensions.ToCamelCase()` reachability | Of the 4 reserved chunk-payload keys (`text`, `parent_id`, `field`, `chunk_index`), only `text`/`field` are reachable as a `ToCamelCase()` output of a PascalCase owner-field name (`"Text"`/`"Field"`) — `parent_id`/`chunk_index` contain underscores, which `ToCamelCase` (lowercases only the first character, no underscore insertion) can never produce. The new `RegisterSchema` collision test uses `OwnerField = "Text"` accordingly | Read `NamingExtensions.cs:12-13`; matches the design spec's own already-flagged observation (same file, "General lesson" section of `project-qdrant-authorization-enforcement` memory) |
+| 15 | Function signature / compile validity | Adding a bare `using Qdrant.Client.Grpc;` to `ObjectSearchGrpcService.cs` fails to compile — `Qdrant.Client.Grpc.Struct`/`Value` collide with `Google.Protobuf.WellKnownTypes.Struct`/`Value`, already used unqualified in `SearchSimilar`. A narrow `using Conditions = Qdrant.Client.Grpc.Conditions;` alias avoids the collision (mirrors the file's existing `Filter` alias and `QdrantFilterBuilder.cs`'s `Range` alias) | Compiled a throwaway `net10.0` project referencing `Qdrant.Client` 1.18.1 with both usings plus unqualified `Struct`/`Value.ForString` — `CS0104` ambiguous-reference error on both types |
 
 ## Tasks
 
@@ -103,8 +104,14 @@ if (!string.IsNullOrEmpty(ownerField))
     var ownerColumn = descriptor.ScalarColumns.First(c =>
         string.Equals(c.Name, ownerField, StringComparison.OrdinalIgnoreCase));
 
-    var nonStringSqlTypes = new[] { "INTEGER", "BIGINT", "REAL", "DOUBLE PRECISION", "BOOLEAN" };
-    if (nonStringSqlTypes.Contains(ownerColumn.SqlType.ToUpperInvariant()))
+    // Allow-list, not a reject-list: IntelligenceStoreConsumer.ExtractTypedValue's default branch
+    // only produces a clean scalar string for these 4 SqlTypes. Every other SqlType — including
+    // the array variants UUID[]/REAL[] that SchemaBuilder.ArrayTypeOverrides can also produce for
+    // a scalar column — falls through to JsonElement.ToString(), which for a non-string JSON value
+    // (a number, bool, or array) produces something that can never equal a real caller's identity
+    // value, silently excluding every caller (including the legitimate owner) from every result.
+    var stringValuedSqlTypes = new[] { "TEXT", "UUID", "BYTEA", "TIMESTAMPTZ" };
+    if (!stringValuedSqlTypes.Contains(ownerColumn.SqlType.ToUpperInvariant()))
     {
         throw new RpcException(new Status(StatusCode.InvalidArgument,
             $"owner_field '{ownerField}' on '{descriptor.TypeName}' has SqlType '{ownerColumn.SqlType}', " +
@@ -388,9 +395,9 @@ git commit -m "feat(api): harden owner_field registration, write owner value int
 **Interfaces:**
 - Consumes: `MaskDisallowedFields`'s `exemptField` parameter (Task 1)
 
-- [ ] **Step 1: Add `Conditions` import**
+- [ ] **Step 1: Add `Conditions` alias**
 
-In `ObjectSearchGrpcService.cs`, add `using Qdrant.Client.Grpc;` to the top-level `using` block (coexists with the existing `using Filter = Qdrant.Client.Grpc.Filter;` alias — the alias takes priority for `Filter`, and the bare `using` brings `Conditions` into scope).
+In `ObjectSearchGrpcService.cs`, add `using Conditions = Qdrant.Client.Grpc.Conditions;` to the top-level `using` block. A bare `using Qdrant.Client.Grpc;` cannot be used here: that namespace defines its own `Struct`/`Value` types, which collide with `Google.Protobuf.WellKnownTypes.Struct`/`Value` — already imported in this file and already used unqualified in `SearchSimilar`'s existing body (`new Struct()`, `Value.ForString(...)`). This mirrors the file's own existing `using Filter = Qdrant.Client.Grpc.Filter;` alias and `QdrantFilterBuilder.cs`'s `using Range = Qdrant.Client.Grpc.Range;` alias, both narrow aliases used for the identical reason.
 
 - [ ] **Step 2: Rewrite `SearchSimilar`**
 
