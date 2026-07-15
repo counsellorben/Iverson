@@ -29,7 +29,7 @@ jobs:
           - language: go
             build-mode: autobuild
           - language: java-kotlin
-            build-mode: autobuild
+            build-mode: manual
           - language: javascript-typescript
             build-mode: none
           - language: python
@@ -63,6 +63,13 @@ jobs:
         with:
           languages: ${{ matrix.language }}
           build-mode: ${{ matrix.build-mode }}
+
+      # autobuild can't find this: the reactor pom.xml lives under
+      # Iverson.Clients/Java/, not the repo root, so autodetection gives up
+      # before descending into it.
+      - name: Build Java client (manual build mode)
+        if: matrix.language == 'java-kotlin'
+        run: mvn -B -f Iverson.Clients/Java/pom.xml -DskipTests clean install
 
       - name: Perform CodeQL Analysis
         uses: github/codeql-action/analyze@v3
