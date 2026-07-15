@@ -35,7 +35,7 @@ public sealed class QdrantGrpcContainerFixture : IAsyncLifetime
     {
         await _container.StartAsync();
         var client = new QdrantClient(_container.Hostname, _container.GetMappedPublicPort(GrpcPort), https: false);
-        Service           = new QdrantVectorService(client, NullLogger<QdrantVectorService>.Instance);
+        Service           = new QdrantVectorService(client);
         CollectionManager = new QdrantCollectionManager(client, NullLogger<QdrantCollectionManager>.Instance);
     }
 

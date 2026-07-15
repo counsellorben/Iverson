@@ -32,7 +32,7 @@ public sealed class QdrantContainerFixture : IAsyncLifetime
         var mappedPort = _container.GetMappedPublicPort(GrpcPort);
 
         var qdrantClient  = new QdrantClient(host, mappedPort, https: false);
-        Service           = new QdrantVectorService(qdrantClient, NullLogger<QdrantVectorService>.Instance);
+        Service           = new QdrantVectorService(qdrantClient);
         CollectionManager = new QdrantCollectionManager(qdrantClient, NullLogger<QdrantCollectionManager>.Instance);
     }
 

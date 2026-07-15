@@ -1,13 +1,10 @@
 using System.Diagnostics;
-using Microsoft.Extensions.Logging;
 using Qdrant.Client;
 using Qdrant.Client.Grpc;
 
 namespace Iverson.Vector;
 
-public class QdrantVectorService(
-    QdrantClient client,
-    ILogger<QdrantVectorService> logger) : IVectorQueryService, IVectorWriteService
+public class QdrantVectorService(QdrantClient client) : IVectorQueryService, IVectorWriteService
 {
     public async Task UpsertAsync(
         string collectionName,
