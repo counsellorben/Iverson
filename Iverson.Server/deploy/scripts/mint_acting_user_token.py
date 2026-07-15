@@ -105,7 +105,11 @@ def parse_totp_secret(config_url: str) -> str:
     qs = urllib.parse.parse_qs(parsed.query)
     secrets = qs.get("secret")
     if not secrets:
-        raise RuntimeError(f"config_url has no 'secret' param: {config_url}")
+        # Never echo the raw config_url: even here (the "no secret param" branch)
+        # its query string may carry other otpauth:// credentials, and it's a
+        # source CodeQL treats as secret-bearing regardless of branch.
+        redacted = parsed._replace(query="").geturl()
+        raise RuntimeError(f"config_url has no 'secret' param (query redacted): {redacted}")
     return secrets[0]
 
 
@@ -136,9 +140,12 @@ def load_cached_totp_secret(target: str, username: str) -> str | None:
 def save_cached_totp_secret(target: str, username: str, secret: str) -> None:
     os.makedirs(CACHE_DIR, exist_ok=True)
     path = totp_cache_path(target, username)
-    with open(path, "w") as f:
+    # Create with 0600 from the first syscall (O_CREAT|mode is atomic) rather
+    # than open()-then-chmod(), which leaves the secret at the umask-derived
+    # (often world/group-readable) mode for a brief window before chmod runs.
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
         f.write(secret + "\n")
-    os.chmod(path, 0o600)
     log(f"Cached new TOTP secret for future runs at {path}")
 
 

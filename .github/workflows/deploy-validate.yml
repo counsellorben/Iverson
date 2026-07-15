@@ -5,6 +5,12 @@ on:
     paths:
       - "Iverson.Server/deploy/**"
 
+# Least-privilege default: every job here only checks out the repo and runs
+# read-only linters/validators (helm lint, kubeconform, kube-score, tfsec,
+# terraform validate) against it -- none need to write anywhere.
+permissions:
+  contents: read
+
 jobs:
   helm-lint:
     runs-on: ubuntu-latest

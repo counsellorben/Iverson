@@ -3,6 +3,7 @@ package iverson
 import (
 	"context"
 	"fmt"
+	"math"
 	"reflect"
 
 	pb "github.com/iverson/clients/go/generated"
@@ -66,18 +67,30 @@ func (r *SchemaRegistrar) buildRequest(e interface{}, traceID string) (*pb.Schem
 			continue
 		}
 		clrType := goTypeToClr(sf.Type)
+		searchKeyOrder, err := int32FromInt(fm.SearchKeyOrder)
+		if err != nil {
+			return nil, fmt.Errorf("field %s: SearchKeyOrder %w", fm.Name, err)
+		}
+		chunkMaxTokens, err := int32FromInt(fm.ChunkMaxTokens)
+		if err != nil {
+			return nil, fmt.Errorf("field %s: ChunkMaxTokens %w", fm.Name, err)
+		}
+		chunkOverlap, err := int32FromInt(fm.ChunkOverlap)
+		if err != nil {
+			return nil, fmt.Errorf("field %s: ChunkOverlap %w", fm.Name, err)
+		}
 		prop := &pb.PropertyDescriptor{
 			Name:           fm.Name,
 			ClrType:        clrType,
 			IsKey:          fm.Kind == KindKey,
 			IsNullable:     fm.Kind != KindKey,
 			IsSearchKey:    fm.Kind == KindSearchKey,
-			SearchKeyOrder: int32(fm.SearchKeyOrder),
+			SearchKeyOrder: searchKeyOrder,
 			IsLargeField:   fm.Kind == KindLargeField,
 			IsEmbedding:    fm.Kind == KindEmbedding,
 			IsChunk:        fm.Kind == KindChunk,
-			ChunkMaxTokens: int32(fm.ChunkMaxTokens),
-			ChunkOverlap:   int32(fm.ChunkOverlap),
+			ChunkMaxTokens: chunkMaxTokens,
+			ChunkOverlap:   chunkOverlap,
 		}
 		properties = append(properties, prop)
 	}
@@ -105,6 +118,16 @@ func (r *SchemaRegistrar) buildRequest(e interface{}, traceID string) (*pb.Schem
 		RootType: typeDesc,
 		TraceId:  traceID,
 	}, nil
+}
+
+// int32FromInt narrows a platform int to int32, rejecting values that would
+// silently truncate (e.g. a chunk/order value from a hand-written struct tag
+// that overflows int32).
+func int32FromInt(v int) (int32, error) {
+	if v < math.MinInt32 || v > math.MaxInt32 {
+		return 0, fmt.Errorf("value %d overflows int32", v)
+	}
+	return int32(v), nil
 }
 
 // goTypeToClr maps a reflect.Type to a ClrType proto enum value.
