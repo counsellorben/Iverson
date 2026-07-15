@@ -405,4 +405,48 @@ public class RowFieldAuthorizationEvaluatorTests
         result.AllowedFields.Should().NotBeNull();
         result.AllowedFields.Should().NotContain("Name");
     }
+
+    [Fact]
+    public void Evaluate_OwnershipRequiredWithNoSubClaim_ReturnsDenied()
+    {
+        var rules = new AuthorizationRules(
+            "OwnerId",
+            new List<RowPermission>(),
+            new List<FieldPermission>());
+        var schema = SchemaWithAuthorization(rules);
+        var user = new ClaimsPrincipal(new ClaimsIdentity(new List<Claim> { new("groups", "admin") }, "test"));
+
+        var result = _evaluator.Evaluate(schema, user, AuthorizationAction.Read);
+
+        result.Denied.Should().BeTrue();
+        result.OwnershipRequired.Should().BeFalse();
+        result.OwnerFieldName.Should().BeNull();
+        result.OwnerValue.Should().BeNull();
+        result.AllowedFields.Should().BeNull();
+    }
+
+    [Fact]
+    public void Evaluate_FieldLevelExclusionTargetingKeyColumn_NeverExcludesKeyColumn()
+    {
+        var rules = new AuthorizationRules(
+            "OwnerId",
+            new List<RowPermission>
+            {
+                new("admin", CanReadAll: true, CanWriteAll: false, CanDeleteAll: false)
+            },
+            new List<FieldPermission>
+            {
+                new("Id", new List<string> { "superadmin" }, new List<string>()),
+                new("Name", new List<string> { "superadmin" }, new List<string>())
+            });
+        var schema = SchemaWithAuthorization(rules);
+        var user = ActingUser("user123", "admin");
+
+        var result = _evaluator.Evaluate(schema, user, AuthorizationAction.Read);
+
+        result.Denied.Should().BeFalse();
+        result.AllowedFields.Should().NotBeNull();
+        result.AllowedFields.Should().Contain("Id");
+        result.AllowedFields.Should().NotContain("Name");
+    }
 }

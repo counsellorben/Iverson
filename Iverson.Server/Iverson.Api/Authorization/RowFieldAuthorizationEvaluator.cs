@@ -32,9 +32,13 @@ public sealed class RowFieldAuthorizationEvaluator : IRowFieldAuthorizationEvalu
         }
         else if (!string.IsNullOrEmpty(rules.OwnerField))
         {
+            var sub = actingUser.FindFirst("sub")?.Value;
+            if (string.IsNullOrEmpty(sub))
+                return new AuthorizationDecision(true, false, null, null, null);
+
             ownershipRequired = true;
             ownerFieldName = rules.OwnerField;
-            ownerValue = actingUser.FindFirst("sub")?.Value;
+            ownerValue = sub;
         }
         else
         {
@@ -51,6 +55,7 @@ public sealed class RowFieldAuthorizationEvaluator : IRowFieldAuthorizationEvalu
                     return roles.Count > 0 && !roles.Any(userGroups.Contains);
                 })
                 .Select(fp => fp.FieldName)
+                .Where(f => !string.Equals(f, schema.KeyColumn.Name, StringComparison.OrdinalIgnoreCase))
                 .ToHashSet();
 
             if (excluded.Count > 0)
