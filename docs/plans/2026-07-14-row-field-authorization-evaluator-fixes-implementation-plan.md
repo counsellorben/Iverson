@@ -213,7 +213,7 @@ public void Evaluate_FieldLevelExclusionTargetingKeyColumn_NeverExcludesKeyColum
 cd Iverson.Server
 dotnet build Iverson.Api.Tests/Iverson.Api.Tests.csproj
 dotnet test Iverson.Api.Tests/Iverson.Api.Tests.csproj --filter "FullyQualifiedName~RowFieldAuthorizationEvaluatorTests"
-git add Iverson.Server/Iverson.Api/Authorization/RowFieldAuthorizationEvaluator.cs Iverson.Server/Iverson.Api/Authorization/IRowFieldAuthorizationEvaluator.cs Iverson.Server/Iverson.Api.Tests/Authorization/RowFieldAuthorizationEvaluatorTests.cs
+git add Iverson.Api/Authorization/RowFieldAuthorizationEvaluator.cs Iverson.Api/Authorization/IRowFieldAuthorizationEvaluator.cs Iverson.Api.Tests/Authorization/RowFieldAuthorizationEvaluatorTests.cs
 git commit -m "fix(api): guard against null OwnerValue and key-column exclusion in RowFieldAuthorizationEvaluator"
 ```
 
