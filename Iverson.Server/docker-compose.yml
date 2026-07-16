@@ -1,3 +1,25 @@
+# ────────────────────────────────────────────────────────────────────────────
+# SECURITY NOTE: LOCAL-ONLY DEVELOPMENT
+# ────────────────────────────────────────────────────────────────────────────
+#
+# This file defines a complete Iverson stack for local development, including
+# several services with intentionally static, hardcoded default credentials:
+#   - PostgreSQL: user/password = iverson/iverson
+#   - Authentik: admin password = dev-admin-password, bootstrap token = dev-bootstrap-token-0123456789
+#   - Service OAuth2 client secrets (see deploy/helm/iverson/charts/authentik/blueprints/compose-only/service-clients.yaml)
+#   - And other dev-convenience values marked dev-only-not-for-production
+#
+# THIS DOCKER-COMPOSE STACK MUST NEVER BE EXPOSED BEYOND LOCALHOST OR USED IN:
+#   - Shared/collaborative environments
+#   - CI/CD pipelines
+#   - Production or production-like (staging, test) deployments
+#   - Any network-accessible endpoint
+#
+# For deployment beyond a local developer's machine, use Kubernetes (deploy/kind/ or deploy/terraform/ + deploy/helm/).
+# All Kubernetes deployment targets generate real per-release secrets at deploy-time and never commit static credentials.
+#
+# ────────────────────────────────────────────────────────────────────────────
+
 services:
 
   # ── Infrastructure ──────────────────────────────────────────────────────────

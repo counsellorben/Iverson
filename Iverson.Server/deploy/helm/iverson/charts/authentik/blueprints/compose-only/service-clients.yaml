@@ -1,6 +1,24 @@
 version: 1
 metadata:
   name: Service/automation OAuth2 clients and human-provider correction (docker-compose dev values)
+#
+# ── SECURITY NOTE: LOCAL-ONLY DEVELOPMENT ────────────────────────────────────
+#
+# This file contains intentionally static, hardcoded OAuth2 client secrets and
+# default user passwords. These values are committed to source control for
+# local-development convenience ONLY.
+#
+# THIS DOCKER-COMPOSE STACK MUST NEVER BE EXPOSED BEYOND LOCALHOST OR USED IN:
+#   - Shared/collaborative environments
+#   - CI/CD pipelines
+#   - Production or production-like (staging, test) deployments
+#   - Any network-accessible endpoint
+#
+# If deployment requirements ever change such that this compose target must be
+# accessible beyond a single developer's local machine, immediately stop and
+# rotate these values. Secrets must be generated at deploy-time instead, using
+# the same pattern as deploy/helm/iverson/charts/authentik/templates/secret-service-clients.yaml.
+#
 entries:
   - model: authentik_providers_oauth2.scopemapping
     identifiers:
