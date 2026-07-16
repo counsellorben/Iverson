@@ -44,7 +44,7 @@ services:
       retries: 5
 
   starrocks:
-    image: starrocks/allin1-ubuntu:latest
+    image: starrocks/allin1-ubuntu:4.1.1
     container_name: iverson-starrocks
     restart: unless-stopped
     ports:
@@ -75,7 +75,7 @@ services:
       retries: 5
 
   ollama:
-    image: ollama/ollama:latest
+    image: ollama/ollama:0.5.0
     container_name: iverson-ollama
     restart: unless-stopped
     ports:
@@ -89,7 +89,7 @@ services:
       retries: 10
 
   ollama-init:
-    image: curlimages/curl:latest
+    image: curlimages/curl:8.18.0
     container_name: iverson-ollama-init
     depends_on:
       ollama:
@@ -137,7 +137,7 @@ services:
   # ── Observability ────────────────────────────────────────────────────────────
 
   jaeger:
-    image: jaegertracing/all-in-one:latest
+    image: jaegertracing/all-in-one:1.62.0
     container_name: iverson-jaeger
     restart: unless-stopped
     environment:
