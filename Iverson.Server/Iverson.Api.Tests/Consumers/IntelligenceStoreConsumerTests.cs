@@ -22,6 +22,7 @@ public class IntelligenceStoreConsumerTests
     private readonly IVectorWriteService _vectorWrite;
     private readonly IEmbeddingService _embedding;
     private readonly IRecordStoreQueryExecutor _sql;
+    private readonly IEntityRepository _entities;
     private readonly SchemaRegistry _registry;
 
     private static readonly JsonSerializerOptions JsonOptions = new()
@@ -53,13 +54,19 @@ public class IntelligenceStoreConsumerTests
         _embedding.EmbedAsync(Arg.Any<string>(), Arg.Any<CancellationToken>())
                   .Returns(new float[768]);
 
+        _entities = Substitute.For<IEntityRepository>();
+        // Default: authoritative row agrees with the event payload's owner value used across
+        // the pre-existing (non-adversarial) tests in this file.
+        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>())
+                 .Returns("""{"AuthorId":"00000000-0000-0000-0000-000000000001"}""");
+
         _registry = new SchemaRegistry(new SchemaRegistryRepository(_sql), NullLogger<SchemaRegistry>.Instance);
     }
 
     private string Serialize(EntityEvent ev) => JsonSerializer.Serialize(ev, JsonOptions);
 
     private IntelligenceStoreConsumer BuildSut() =>
-        new(_consumer, _vectorSchema, _vectorWrite, _embedding, _registry, NullLogger<IntelligenceStoreConsumer>.Instance);
+        new(_consumer, _vectorSchema, _vectorWrite, _embedding, _registry, _entities, NullLogger<IntelligenceStoreConsumer>.Instance);
 
     [Fact]
     public async Task HandleCreated_WithVectorField_CallsEmbedAndUpsertNamed()
@@ -176,6 +183,149 @@ public class IntelligenceStoreConsumerTests
 
         capturedPayload.Should().NotBeNull();
         capturedPayload!.Should().NotContainKey("authorId");
+    }
+
+    [Fact]
+    public async Task HandleCreated_WithForgedOwnerValueInPayload_ChunkPayloadUsesAuthoritativeValueNotPayloadValue()
+    {
+        // CSR #7 regression: a forged/stale event whose payload owner value disagrees with the
+        // authoritative Postgres row must NOT propagate the payload's (untrusted) value into Qdrant.
+        var schema = SchemaFixtures.ArticleSchema() with
+        {
+            Authorization = new AuthorizationRules(
+                "AuthorId",
+                new List<RowPermission> { new("test-bypass", true, true, true) },
+                new List<FieldPermission>())
+        };
+        await _registry.RegisterAsync(schema);
+
+        const string forgedOwner = "00000000-0000-0000-0000-000000000FED";
+        const string realOwner   = "00000000-0000-0000-0000-000000000001";
+        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>())
+                 .Returns($$"""{"AuthorId":"{{realOwner}}"}""");
+
+        var longBody = new string('x', 3000);
+        var payload  = $$$"""{"Title":"Test","Body":"{{{longBody}}}","AuthorId":"{{{forgedOwner}}}"}""";
+        var ev = new EntityEvent(
+            EventType: EntityEventType.Created, TypeName: "Article", Key: Guid.NewGuid().ToString(),
+            PayloadJson: payload, TraceId: "trace-forged-owner", SchemaVersion: "1",
+            OccurredAt: DateTimeOffset.UtcNow, TargetStores: StoreTarget.Intelligence);
+
+        IReadOnlyDictionary<string, object>? capturedPayload = null;
+        _vectorWrite.UpsertNamedAsync(
+                "articles_chunks", Arg.Any<ulong>(), Arg.Any<IReadOnlyDictionary<string, float[]>>(),
+                Arg.Do<IReadOnlyDictionary<string, object>?>(p => capturedPayload = p))
+            .Returns(Task.CompletedTask);
+
+        await BuildSut().HandleAsync(ev.Key, Serialize(ev), CancellationToken.None);
+
+        capturedPayload.Should().NotBeNull();
+        capturedPayload!["authorId"].Should().Be(realOwner);
+        capturedPayload["authorId"].Should().NotBe(forgedOwner);
+    }
+
+    [Fact]
+    public async Task HandleCreated_WithForgedOwnerValueInPayload_PointPayloadUsesAuthoritativeValueNotPayloadValue()
+    {
+        // Same CSR #7 regression, but for the named-vector pointPayload path — exercised with a
+        // schema where the owner field is a genuine scalar column (matching the real registration
+        // invariant enforced by ObjectMappingGrpcService: OwnerField must be a ScalarColumns member).
+        var schema = new SchemaDescriptor
+        {
+            TypeName       = "Doc",
+            TableName      = "docs",
+            CollectionName = "docs",
+            KeyColumn      = new ColumnDescriptor("Id", "uuid", false),
+            ScalarColumns  = [new ColumnDescriptor("Title", "text", false), new ColumnDescriptor("OwnerId", "text", false)],
+            FkColumns      = [],
+            VectorFields   = [new VectorDescriptor("Title", 768, "nomic-embed-text")],
+            ChunkFields    = [],
+            Relations      = [],
+            Authorization  = new AuthorizationRules(
+                "OwnerId",
+                new List<RowPermission> { new("test-bypass", true, true, true) },
+                new List<FieldPermission>())
+        };
+        await _registry.RegisterAsync(schema);
+
+        const string forgedOwner = "forged-owner";
+        const string realOwner   = "real-owner";
+        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>())
+                 .Returns($$"""{"OwnerId":"{{realOwner}}"}""");
+
+        var entityKey = Guid.NewGuid().ToString();
+        var payload   = $$$"""{"Title":"Hello","OwnerId":"{{{forgedOwner}}}"}""";
+        var ev = new EntityEvent(
+            EventType: EntityEventType.Created, TypeName: "Doc", Key: entityKey,
+            PayloadJson: payload, TraceId: "trace-forged-owner-point", SchemaVersion: "1",
+            OccurredAt: DateTimeOffset.UtcNow, TargetStores: StoreTarget.Intelligence);
+
+        IReadOnlyDictionary<string, object>? capturedPayload = null;
+        _vectorWrite.UpsertNamedAsync(
+                "docs", Arg.Any<ulong>(), Arg.Any<IReadOnlyDictionary<string, float[]>>(),
+                Arg.Do<IReadOnlyDictionary<string, object>?>(p => capturedPayload = p))
+            .Returns(Task.CompletedTask);
+
+        await BuildSut().HandleAsync(ev.Key, Serialize(ev), CancellationToken.None);
+
+        capturedPayload.Should().NotBeNull();
+        capturedPayload!["ownerId"].Should().Be(realOwner);
+        capturedPayload["ownerId"].Should().NotBe(forgedOwner);
+    }
+
+    [Fact]
+    public async Task HandleCreated_WithOwnerFieldAndNoAuthoritativeRow_OmitsOwnerKeyFromChunkPayload()
+    {
+        // Fail-closed: if the authoritative row can't be found (e.g. a delete-then-recreate race),
+        // do NOT fall back to the event payload's unvalidated owner value — omit the key entirely.
+        var schema = SchemaFixtures.ArticleSchema() with
+        {
+            Authorization = new AuthorizationRules(
+                "AuthorId",
+                new List<RowPermission> { new("test-bypass", true, true, true) },
+                new List<FieldPermission>())
+        };
+        await _registry.RegisterAsync(schema);
+
+        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>())
+                 .Returns((string?)null);
+
+        var longBody = new string('x', 3000);
+        var payload  = $$$"""{"Title":"Test","Body":"{{{longBody}}}","AuthorId":"00000000-0000-0000-0000-000000000001"}""";
+        var ev = new EntityEvent(
+            EventType: EntityEventType.Created, TypeName: "Article", Key: Guid.NewGuid().ToString(),
+            PayloadJson: payload, TraceId: "trace-missing-row", SchemaVersion: "1",
+            OccurredAt: DateTimeOffset.UtcNow, TargetStores: StoreTarget.Intelligence);
+
+        IReadOnlyDictionary<string, object>? capturedPayload = null;
+        _vectorWrite.UpsertNamedAsync(
+                "articles_chunks", Arg.Any<ulong>(), Arg.Any<IReadOnlyDictionary<string, float[]>>(),
+                Arg.Do<IReadOnlyDictionary<string, object>?>(p => capturedPayload = p))
+            .Returns(Task.CompletedTask);
+
+        await BuildSut().HandleAsync(ev.Key, Serialize(ev), CancellationToken.None);
+
+        capturedPayload.Should().NotBeNull();
+        capturedPayload!.Should().NotContainKey("authorId");
+    }
+
+    [Fact]
+    public async Task HandleCreated_WithNoOwnerFieldConfigured_NeverCallsFetchByKeyAsync()
+    {
+        // Efficiency/correctness: schemas without ownership (OwnerField == null) must not pay the
+        // extra Postgres read at all.
+        await _registry.RegisterAsync(SchemaFixtures.ArticleSchema()); // BypassAuthorization() has OwnerField == null
+
+        var longBody = new string('x', 3000);
+        var payload  = $$$"""{"Title":"Test","Body":"{{{longBody}}}","AuthorId":"00000000-0000-0000-0000-000000000001"}""";
+        var ev = new EntityEvent(
+            EventType: EntityEventType.Created, TypeName: "Article", Key: Guid.NewGuid().ToString(),
+            PayloadJson: payload, TraceId: "trace-no-owner-field", SchemaVersion: "1",
+            OccurredAt: DateTimeOffset.UtcNow, TargetStores: StoreTarget.Intelligence);
+
+        await BuildSut().HandleAsync(ev.Key, Serialize(ev), CancellationToken.None);
+
+        await _entities.DidNotReceive().FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>());
     }
 
     [Fact]

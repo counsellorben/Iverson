@@ -3,6 +3,7 @@ using System.Text.Json;
 using Iverson.Api.Schema;
 using Iverson.Embeddings;
 using Iverson.Events;
+using Iverson.Sql;
 using Iverson.Vector;
 
 namespace Iverson.Api.Consumers;
@@ -26,6 +27,7 @@ public sealed class IntelligenceStoreConsumer(
     IVectorWriteService vectorWrite,
     IEmbeddingService embedding,
     SchemaRegistry registry,
+    IEntityRepository entities,
     ILogger<IntelligenceStoreConsumer> logger) : BackgroundService
 {
     private const string GroupId = "iverson.consumer.intelligence";
@@ -86,6 +88,14 @@ public sealed class IntelligenceStoreConsumer(
 
         var pointId = KeyToUlong(ev.Key);
 
+        // Re-derive the ownership value from the authoritative Postgres row rather than
+        // trusting the event payload's own value for it — the payload is unsigned JSON
+        // and this value feeds Qdrant's read-time row authorization filtering (CSR #7).
+        var ownerField = schema.Authorization?.OwnerField;
+        var authoritativeOwnerValue = ownerField is not null
+            ? await FetchAuthoritativeOwnerValueAsync(schema, ownerField, ev.Key, ct)
+            : null;
+
         // ── Named vector upsert (entity-level embeddings) ──────────────────────
         if (schema.VectorFields.Count > 0)
         {
@@ -115,7 +125,11 @@ public sealed class IntelligenceStoreConsumer(
                 }
                 foreach (var col in schema.ScalarColumns)
                 {
-                    var val = ExtractTypedValue(payload, col.Name, col.SqlType);
+                    var isOwnerColumn = ownerField is not null &&
+                        string.Equals(col.Name, ownerField, StringComparison.OrdinalIgnoreCase);
+                    var val = isOwnerColumn
+                        ? authoritativeOwnerValue
+                        : ExtractTypedValue(payload, col.Name, col.SqlType);
                     if (val is not null) pointPayload[col.Name.ToCamelCase()] = val;
                 }
                 foreach (var fk in schema.FkColumns)
@@ -134,10 +148,6 @@ public sealed class IntelligenceStoreConsumer(
         {
             var chunksCollection = schema.CollectionName + "_chunks";
             await EnsureChunkCollectionAsync(chunksCollection, schema, ct);
-
-            var ownerValue = schema.Authorization?.OwnerField is { } ownerField
-                ? ExtractString(payload, ownerField)
-                : null;
 
             foreach (var cf in schema.ChunkFields)
             {
@@ -166,8 +176,8 @@ public sealed class IntelligenceStoreConsumer(
                         ["field"]       = cf.PropertyName,
                         ["chunk_index"] = chunkIndex.ToString()
                     };
-                    if (ownerValue is not null)
-                        chunkPayload[schema.Authorization!.OwnerField!.ToCamelCase()] = ownerValue;
+                    if (authoritativeOwnerValue is not null)
+                        chunkPayload[schema.Authorization!.OwnerField!.ToCamelCase()] = authoritativeOwnerValue;
 
                     await vectorWrite.UpsertNamedAsync(
                         chunksCollection,
@@ -214,6 +224,27 @@ public sealed class IntelligenceStoreConsumer(
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────────
+
+    // Re-derives the ownership value from the authoritative Postgres row instead of trusting
+    // the event payload's own value for it (CSR #7 — event JSON is unsigned and this value
+    // feeds Qdrant's read-time row authorization filtering). Fails closed: if the row can't be
+    // found (e.g. a delete-then-recreate race), the owner value is treated as absent rather
+    // than falling back to the unvalidated payload value.
+    private async Task<string?> FetchAuthoritativeOwnerValueAsync(
+        SchemaDescriptor schema, string ownerField, string key, CancellationToken ct)
+    {
+        var rowJson = await entities.FetchByKeyAsync(SchemaBuilder.ToTableSchema(schema), key);
+        if (rowJson is null)
+        {
+            logger.LogWarning(
+                "[Intelligence] Owner re-derivation found no authoritative row for type={Type} key={Key} — omitting owner value.",
+                schema.TypeName.SanitizeForLog(), key);
+            return null;
+        }
+
+        using var doc = JsonDocument.Parse(rowJson);
+        return ExtractString(doc.RootElement, ownerField);
+    }
 
     private async Task EnsureChunkCollectionAsync(string name, SchemaDescriptor schema, CancellationToken ct)
     {
