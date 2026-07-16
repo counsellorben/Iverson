@@ -89,6 +89,13 @@ spec:
                   key: app-password
             - name: ConnectionStrings__StarRocks
               value: "Server={{ .Release.Name }}-starrocks-fe-service;Port=9030;Database=iverson;User Id=iverson_app;Password=$(STARROCKS_APP_PASSWORD);AllowPublicKeyRetrieval=true;"
+            - name: QDRANT_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Release.Name }}-qdrant-api-key
+                  key: api-key
+            - name: Qdrant__ApiKey
+              value: "$(QDRANT_API_KEY)"
             - name: Qdrant__Host
               value: "{{ .Release.Name }}-qdrant"
             - name: Qdrant__Port

@@ -7,6 +7,8 @@
 #   - PostgreSQL: user/password = iverson/iverson
 #   - Authentik: admin password = dev-admin-password, bootstrap token = dev-bootstrap-token-0123456789
 #   - Service OAuth2 client secrets (see deploy/helm/iverson/charts/authentik/blueprints/compose-only/service-clients.yaml)
+#   - Qdrant: API key = dev-only-not-for-production-qdrant-key-0123456789 (shared by the qdrant
+#     and iverson-api services below)
 #   - And other dev-convenience values marked dev-only-not-for-production
 #
 # THIS DOCKER-COMPOSE STACK MUST NEVER BE EXPOSED BEYOND LOCALHOST OR USED IN:
@@ -63,6 +65,8 @@ services:
     image: qdrant/qdrant:v1.18.2
     container_name: iverson-qdrant
     restart: unless-stopped
+    environment:
+      QDRANT__SERVICE__API_KEY: "dev-only-not-for-production-qdrant-key-0123456789"
     ports:
       - "6333:6333"   # REST API
       - "6334:6334"   # gRPC
@@ -260,6 +264,7 @@ services:
       - Embeddings__BaseUrl=http://ollama:11434
       - Embeddings__ModelId=nomic-embed-text
       - Kafka__BootstrapServers=kafka:29092
+      - Qdrant__ApiKey=dev-only-not-for-production-qdrant-key-0123456789
       - Authentication__Authority=http://authentik-server:9000/application/o/iverson-api/
       - Authentication__ValidAudiences__0=dev-iverson-human-oidc-client-id
       - Authentication__ValidAudiences__1=dev-iverson-loadtest-client-id

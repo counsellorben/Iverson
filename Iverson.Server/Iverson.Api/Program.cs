@@ -168,7 +168,8 @@ builder.Services.AddStarRocks(
 
 builder.Services.AddQdrant(
     cfg["Qdrant:Host"] ?? "localhost",
-    int.Parse(cfg["Qdrant:Port"] ?? "6334"));
+    int.Parse(cfg["Qdrant:Port"] ?? "6334"),
+    cfg["Qdrant:ApiKey"]);
 
 builder.Services.AddKafka(cfg);
 
