@@ -158,7 +158,7 @@ public sealed class ObjectSearchGrpcService(
         }
 
         logger.LogInformation("[SearchSimilar] type={Type} property={Prop} topK={K} filtered={Filtered}",
-            request.TypeName.SanitizeForLog(), request.Property, request.TopK, filter is not null);
+            request.TypeName.SanitizeForLog(), request.Property.SanitizeForLog(), request.TopK, filter is not null);
 
         float[] queryVector;
         try
@@ -229,7 +229,7 @@ public sealed class ObjectSearchGrpcService(
         }
 
         logger.LogInformation("[SearchChunks] type={Type} property={Prop} topK={K} filtered={Filtered}",
-            request.TypeName.SanitizeForLog(), request.Property, request.TopK, filter is not null);
+            request.TypeName.SanitizeForLog(), request.Property.SanitizeForLog(), request.TopK, filter is not null);
 
         float[] queryVector;
         try
