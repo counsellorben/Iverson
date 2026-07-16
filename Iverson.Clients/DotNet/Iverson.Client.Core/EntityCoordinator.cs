@@ -95,7 +95,7 @@ public sealed class EntityCoordinator<T>(
     // ── Object Persistence ─────────────────────────────────────────────────────
     // Lightweight writes — no relation traversal on the server.
 
-    public async Task<string?> PersistAsync(T entity, CancellationToken ct = default)
+    public async Task<string?> PersistAsync(T entity, Metadata? headers = null, CancellationToken ct = default)
     {
         logger.LogDebug("ObjectPersistence.Post {Entity}", _descriptor.EntityName);
         var response = await persistence.PostAsync(
@@ -105,7 +105,7 @@ public sealed class EntityCoordinator<T>(
                 Payload  = StructConverter.ToStruct(entity),
                 TraceId  = CurrentTraceId()
             },
-            cancellationToken: ct);
+            headers, cancellationToken: ct);
 
         if (!response.Success) { LogError(response.Error); return null; }
         return response.Key;

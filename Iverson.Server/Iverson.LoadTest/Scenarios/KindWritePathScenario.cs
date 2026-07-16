@@ -1,5 +1,6 @@
 using Iverson.Client.Core;
 using Iverson.Events;
+using Iverson.LoadTest.Auth;
 using Iverson.LoadTest.Entities;
 using Microsoft.Extensions.Logging;
 
@@ -17,9 +18,10 @@ public sealed class KindWritePathScenario(
     EntityCoordinator<BenchmarkArticle> articles,
     EntityCoordinator<BenchmarkAuthor>  authors,
     EntityCoordinator<BenchmarkTag>     tags,
+    ActingUserIdentities                identities,
     ILogger<KindWritePathScenario>      logger)
 {
     public Task RunAsync(CommandFlags flags, CancellationToken ct = default) =>
-        WritePathRunner.RunAsync(config, articles, authors, tags, logger, flags,
+        WritePathRunner.RunAsync(config, articles, authors, tags, identities, logger, flags,
             applyKafkaSecurity: c => KafkaClientConfigFactory.ApplySecurity(c, kafkaOptions), ct);
 }

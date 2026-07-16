@@ -6,6 +6,7 @@ using Dapper;
 using Grpc.Core;
 using Iverson.Client.Core;
 using Iverson.Events;
+using Iverson.LoadTest.Auth;
 using Iverson.LoadTest.Entities;
 using Iverson.LoadTest.Reporting;
 using Iverson.LoadTest.Seeding;
@@ -30,6 +31,7 @@ internal static class WritePathRunner
         EntityCoordinator<BenchmarkArticle> articles,
         EntityCoordinator<BenchmarkAuthor> authors,
         EntityCoordinator<BenchmarkTag> tags,
+        ActingUserIdentities identities,
         ILogger logger,
         CommandFlags flags,
         Action<ClientConfig>? applyKafkaSecurity,
@@ -54,6 +56,7 @@ internal static class WritePathRunner
 
         var report     = new BenchmarkReport();
         var postedKeys = new System.Collections.Concurrent.ConcurrentBag<string>();
+        long fieldRejections = 0;
 
         // ── Post wave ──────────────────────────────────────────────────────────
         var sw      = Stopwatch.StartNew();
@@ -66,9 +69,14 @@ internal static class WritePathRunner
                 ct.ThrowIfCancellationRequested();
                 var seed = taskIdx * perTask + i;
 
+                var identity = identities.PickRandom();
                 try
                 {
                     var t0 = BenchmarkReport.NowMicros();
+                    var headers = new Grpc.Core.Metadata().WithActingUser(await identity.GetTokenAsync(ct));
+                    // The server force-sets OwnerId for the owner-restricted identity on create; the
+                    // bypass identity's writes are never ownership-checked, so it must set its own OwnerId.
+                    var ownerId = identity == identities.Bypass ? await identity.GetSubAsync(ct) : "";
                     string key;
 
                     switch (flags.Type)
@@ -76,12 +84,13 @@ internal static class WritePathRunner
                         case "Author":
                             var u = new BenchmarkAuthor
                             {
-                                Id    = Guid.NewGuid(),
-                                Name  = $"WPAuthor {seed}",
-                                Email = $"wpauthor{seed}@benchmark.dev",
-                                Bio   = new string('x', 200),
+                                Id      = Guid.NewGuid(),
+                                Name    = $"WPAuthor {seed}",
+                                Email   = $"wpauthor{seed}@benchmark.dev",
+                                Bio     = new string('x', 200),
+                                OwnerId = ownerId,
                             };
-                            await authors.PersistAsync(u, ct);
+                            await authors.PersistAsync(u, headers, ct);
                             key = u.Id.ToString();
                             break;
 
@@ -91,8 +100,9 @@ internal static class WritePathRunner
                                 Id       = Guid.NewGuid(),
                                 Name     = $"wptag-{seed}",
                                 Category = Categories[seed % Categories.Length],
+                                OwnerId  = ownerId,
                             };
-                            await tags.PersistAsync(tg, ct);
+                            await tags.PersistAsync(tg, headers, ct);
                             key = tg.Id.ToString();
                             break;
 
@@ -108,14 +118,22 @@ internal static class WritePathRunner
                                 Category          = Categories[seed % Categories.Length],
                                 WordCount         = seed % 1000,
                                 PublishedAt       = DateTimeOffset.UtcNow,
+                                OwnerId           = ownerId,
                             };
-                            await articles.PersistAsync(a, ct);
+                            await articles.PersistAsync(a, headers, ct);
                             key = a.Id.ToString();
                             break;
                     }
 
                     report.Record(BenchmarkReport.NowMicros() - t0);
                     postedKeys.Add(key);
+                }
+                catch (RpcException ex) when (ex.StatusCode == StatusCode.InvalidArgument)
+                {
+                    // Expected: the owner-restricted identity's write always includes the field
+                    // restricted to the bypass role, which the server rejects — tracked separately
+                    // from genuine failures, not mixed into `report`'s error count.
+                    Interlocked.Increment(ref fieldRejections);
                 }
                 catch (RpcException ex)
                 {
@@ -129,6 +147,7 @@ internal static class WritePathRunner
         sw.Stop();
 
         Console.WriteLine($"[write-path] Post wave complete — {flags.Count:N0} records in {sw.Elapsed.TotalSeconds:F1}s");
+        Console.WriteLine($"[write-path] Expected field-rejections (owner-restricted identity writing a bypass-only field): {Interlocked.Read(ref fieldRejections):N0}");
 
         // ── Print gRPC Post report ─────────────────────────────────────────────
         var path = BenchmarkReport.ResultsPath($"write-path-{flags.Type.ToLower()}");
