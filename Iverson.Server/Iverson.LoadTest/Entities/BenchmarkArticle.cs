@@ -12,6 +12,7 @@ public sealed class BenchmarkArticle
     [IversonSearchKey(0)] public string          Category        { get; set; } = "";
     public int                                   WordCount       { get; set; }
     [IversonSearchKey(1)] public DateTimeOffset  PublishedAt     { get; set; }
+    public string OwnerId { get; set; } = "";
 
     [ManyToOne(typeof(BenchmarkAuthor))]
     public BenchmarkAuthor? Author { get; set; }

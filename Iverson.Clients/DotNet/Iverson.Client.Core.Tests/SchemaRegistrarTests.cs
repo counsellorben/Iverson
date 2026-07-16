@@ -374,4 +374,66 @@ public class SchemaRegistrarTests
         await act.Should().ThrowAsync<RpcException>()
             .Where(ex => ex.StatusCode == StatusCode.Unavailable);
     }
+
+    [Fact]
+    public async Task RegisterAllAsync_SetsAuthorization_WhenSupplementProvidesEntry()
+    {
+        SchemaRequest? authorRequest = null;
+        _mappingClient
+            .RegisterSchemaAsync(
+                Arg.Do<SchemaRequest>(r =>
+                {
+                    if (r.RootType?.TypeName == "SchemaTestAuthor") authorRequest = r;
+                }),
+                Arg.Any<Metadata>(),
+                Arg.Any<DateTime?>(),
+                Arg.Any<CancellationToken>())
+            .Returns(new AsyncUnaryCall<SchemaResponse>(
+                Task.FromResult(new SchemaResponse { Success = true }),
+                Task.FromResult(new Metadata()),
+                () => Status.DefaultSuccess,
+                () => new Metadata(),
+                () => { }));
+
+        var rules = new AuthorizationRules
+        {
+            OwnerField = "OwnerId",
+            RowPermissions = { new RowPermission { Role = "test-bypass", CanReadAll = true } },
+        };
+
+        await _sut.RegisterAllAsync(
+            authorizationByTypeName: new Dictionary<string, AuthorizationRules> { ["SchemaTestAuthor"] = rules });
+
+        authorRequest.Should().NotBeNull();
+        authorRequest!.RootType!.Authorization.Should().NotBeNull();
+        authorRequest.RootType.Authorization.OwnerField.Should().Be("OwnerId");
+        authorRequest.RootType.Authorization.RowPermissions.Single().Role.Should().Be("test-bypass");
+    }
+
+    [Fact]
+    public async Task RegisterAllAsync_LeavesAuthorizationUnset_WhenSupplementHasNoEntryForType()
+    {
+        SchemaRequest? tagRequest = null;
+        _mappingClient
+            .RegisterSchemaAsync(
+                Arg.Do<SchemaRequest>(r =>
+                {
+                    if (r.RootType?.TypeName == "SchemaTestTag") tagRequest = r;
+                }),
+                Arg.Any<Metadata>(),
+                Arg.Any<DateTime?>(),
+                Arg.Any<CancellationToken>())
+            .Returns(new AsyncUnaryCall<SchemaResponse>(
+                Task.FromResult(new SchemaResponse { Success = true }),
+                Task.FromResult(new Metadata()),
+                () => Status.DefaultSuccess,
+                () => new Metadata(),
+                () => { }));
+
+        await _sut.RegisterAllAsync(
+            authorizationByTypeName: new Dictionary<string, AuthorizationRules> { ["SchemaTestAuthor"] = new() });
+
+        tagRequest.Should().NotBeNull();
+        tagRequest!.RootType!.Authorization.Should().BeNull();
+    }
 }
