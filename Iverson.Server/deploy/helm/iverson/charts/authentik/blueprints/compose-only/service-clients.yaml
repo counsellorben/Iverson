@@ -112,6 +112,7 @@ entries:
       signing_key: !Find [authentik_crypto.certificatekeypair, [name, "authentik Self-signed Certificate"]]
       issuer_mode: global
       grant_types: ["authorization_code", "refresh_token"]
+      access_token_validity: "hours=2"
       property_mappings:
         - !Find [authentik_providers_oauth2.scopemapping, [scope_name, groups]]
   - model: authentik_core.application
@@ -129,3 +130,18 @@ entries:
       email: iverson-acting-user-smoke-test@example.invalid
       password: "dev-only-not-for-production-smoke-test-password-0123456789"
       is_active: true
+  - model: authentik_core.group
+    identifiers:
+      name: iverson-loadtest-bypass
+    attrs: {}
+  - model: authentik_core.user
+    identifiers:
+      username: iverson-loadtest-bypass-user
+    attrs:
+      username: iverson-loadtest-bypass-user
+      name: "Iverson LoadTest Bypass"
+      email: iverson-loadtest-bypass-user@example.invalid
+      password: "dev-only-not-for-production-bypass-password-0123456789"
+      is_active: true
+      groups:
+        - !Find [authentik_core.group, [name, iverson-loadtest-bypass]]
