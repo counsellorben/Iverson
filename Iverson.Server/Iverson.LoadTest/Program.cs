@@ -136,8 +136,8 @@ switch (command)
         await RunWritePathAsync();
         await services.GetRequiredService<ReadPathScenario>().RunAsync(flags);
         break;
-    case "reset-starrocks":
-        await ResetStarRocksAsync(config.StarRocksCs, config.PostgresCs);
+    case "clear-data":
+        await ClearDataAsync(config.StarRocksCs, config.PostgresCs);
         break;
     case "acting-user-smoke-test":
         if (actingUserToken is null)
@@ -168,7 +168,7 @@ switch (command)
               write-path     Benchmark gRPC Post → Kafka → consumer pipeline
               read-path      Benchmark GetMany / Search / Aggregate via gRPC
               all            Run seed → write-path → read-path in sequence
-              reset-starrocks  Drop all StarRocks tables and truncate Postgres benchmark tables for greenfield re-registration
+              clear-data     Drop all StarRocks tables and truncate Postgres benchmark tables for greenfield re-registration
               acting-user-smoke-test  Exercise the acting-user auth layer with an Aggregate call carrying
                                       IVERSON_ACTING_USER_TOKEN via the x-acting-user-authorization metadata header
 
@@ -210,7 +210,7 @@ static AuthorizationRules BuildAuthorizationRules(string restrictedField) => new
     },
 };
 
-static async Task ResetStarRocksAsync(string starRocksCs, string postgresCs)
+static async Task ClearDataAsync(string starRocksCs, string postgresCs)
 {
     await using var sr = new MySqlConnection(starRocksCs);
     await sr.OpenAsync();
