@@ -7,6 +7,17 @@ COPY ["Iverson.Sql/Iverson.Sql.csproj", "Iverson.Sql/"]
 RUN dotnet restore "Iverson.Sql/Iverson.Sql.csproj"
 
 COPY Iverson.Sql/ Iverson.Sql/
+
+# Non-root user for the build/publish stages (defense-in-depth / lint convention —
+# see CSR finding #8). The final stage below is `FROM scratch`, which has no OS or
+# user model, so this has no effect on anything that actually runs; it's here for
+# static Dockerfile-lint conventions (e.g. hadolint DL3002) and consistency with the
+# other first-party Dockerfiles, not because it closes any real attack surface.
+# mcr.microsoft.com/dotnet/sdk:10.0 already ships a built-in non-root "ubuntu" user
+# at uid=1000/gid=1000, so we reuse it instead of creating a new one.
+RUN mkdir -p /app/build && chown -R 1000:1000 /src /app
+USER ubuntu
+
 RUN dotnet build "Iverson.Sql/Iverson.Sql.csproj" -c Release -o /app/build
 
 FROM build AS publish

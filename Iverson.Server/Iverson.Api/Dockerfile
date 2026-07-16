@@ -18,5 +18,13 @@ WORKDIR /app
 EXPOSE 8080
 EXPOSE 8081
 
-COPY --from=build /app/publish .
+# mcr.microsoft.com/dotnet/aspnet:10.0 already ships a built-in non-root
+# "ubuntu" user at uid=1000/gid=1000 (verified via `docker run ... id ubuntu`),
+# which matches the Helm chart's securityContext (runAsUser/runAsGroup: 1000)
+# exactly, so we reuse it rather than creating a new user. This gives parity
+# between docker-compose / ad-hoc `docker run` and the kind/cloud deployment
+# target.
+COPY --from=build --chown=1000:1000 /app/publish .
+
+USER ubuntu
 ENTRYPOINT ["dotnet", "Iverson.Api.dll"]
