@@ -317,13 +317,28 @@ internal static class StarRocksPipelineBuilder
             RequireColumn(stepName, input, w.Field);
     }
 
+    /// <summary>
+    /// Rejects a raw SQL fragment that contains a semicolon, quote, backtick, or SQL comment
+    /// sequence — characters that a token-shaped identifier allow-list (<see cref="TokenRx"/>/
+    /// <see cref="DeriveWhitelist"/>) alone would never inspect, since none of them ever match
+    /// an identifier pattern in the first place. Shared by every raw-expression field spliced
+    /// into generated SQL (<see cref="ValidateDeriveExpr"/> below, and
+    /// <c>StarRocksQueryBuilder.BuildAggregate</c>/<c>BuildMetricExpr</c>) so all such fields
+    /// get the same defense-in-depth denylist, not just whichever one a reviewer happened to
+    /// look at most recently.
+    /// </summary>
+    internal static void RejectForbiddenCharacters(string expr, string errorContext)
+    {
+        if (expr.Contains(';') || expr.Contains('\'') || expr.Contains('`') ||
+            expr.Contains("--") || expr.Contains("/*") || expr.Contains("*/"))
+            throw Invalid($"{errorContext} contains a forbidden character " +
+                          "(no semicolons, quotes, backticks, or SQL comment sequences).");
+    }
+
     private static void ValidateDeriveExpr(
         string stepName, DeriveColumn d, Dictionary<string, string> available)
     {
-        if (d.Expr.Contains(';') || d.Expr.Contains('\'') || d.Expr.Contains('`') ||
-            d.Expr.Contains("--") || d.Expr.Contains("/*") || d.Expr.Contains("*/"))
-            throw Invalid($"Step '{stepName}': derive '{d.Alias}' contains a forbidden character " +
-                          "(no semicolons, quotes, backticks, or SQL comment sequences).");
+        RejectForbiddenCharacters(d.Expr, $"Step '{stepName}': derive '{d.Alias}'");
         foreach (Match m in TokenRx.Matches(d.Expr))
         {
             if (DeriveWhitelist.Contains(m.Value)) continue;

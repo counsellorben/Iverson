@@ -580,6 +580,65 @@ public class StarRocksQueryBuilderTests
         act.Should().NotThrow();
     }
 
+    // ── BuildAggregate — Expression forbidden-character denylist (CSR Finding #3) ──
+    // spec.Expression previously only ran the TokenRx identifier allow-list check (see the
+    // tests above), which inspects identifier-shaped substrings only — punctuation, quotes,
+    // semicolons, and SQL comment sequences pass through unchecked because they never match
+    // TokenRx in the first place. These tests lock in the stricter denylist (shared with
+    // StarRocksPipelineBuilder.ValidateDeriveExpr via RejectForbiddenCharacters) that closes
+    // that gap.
+
+    [Theory]
+    [InlineData("Rating -- drop everything")]
+    [InlineData("Rating; DROP TABLE authors")]
+    [InlineData("Rating /* comment */ + 1")]
+    public void BuildAggregate_ExpressionWithForbiddenSequence_ThrowsTranslationException(string expr)
+    {
+        var spec = new AggregationDescriptor(
+            "avg_rating", AggregationKind.Avg, "Rating", Expression: expr);
+
+        var act = () => StarRocksQueryBuilder.BuildAggregate("authors", AuthorSchema(), null, spec);
+
+        act.Should().Throw<StarRocksQueryTranslationException>()
+            .Where(e => e.Message.Contains("forbidden character"));
+    }
+
+    [Fact]
+    public void BuildAggregate_ExpressionCommentAttemptsToStripOwnershipPredicate_ThrowsInsteadOfProducingUnsafeSql()
+    {
+        // The CSR-specified regression case: spec.Expression is spliced directly into the
+        // aggregate function BEFORE the WHERE clause (see AggregationKind.Avg's SQL template),
+        // so an unescaped "--" here would previously comment out everything after it on the
+        // generated single-line SQL string — including the ownership predicate appended below.
+        // Proves the fix actually closes the bypass (throws), not merely that the character
+        // sequence is flagged in isolation.
+        var authz = new Dictionary<string, AuthorizationConstraint>
+        {
+            ["Author"] = new(AllowedFields: null, OwnerColumn: "OwnerId", OwnerValue: "user-1")
+        };
+        var spec = new AggregationDescriptor(
+            "avg_rating", AggregationKind.Avg, "Rating", Expression: "Rating) -- ");
+
+        var act = () => StarRocksQueryBuilder.BuildAggregate("authors", AuthorSchema(), null, spec, authz: authz);
+
+        act.Should().Throw<StarRocksQueryTranslationException>()
+            .Where(e => e.Message.Contains("forbidden character"));
+    }
+
+    [Fact]
+    public void BuildAggregate_NormalExpression_StillProducesExpectedSql()
+    {
+        // Non-adversarial expression referencing a real column: confirms the new denylist
+        // check does not regress the legitimate use case.
+        var schema = ArticleWithProjectionSchema();
+        var spec = new AggregationDescriptor(
+            "double_wordcount", AggregationKind.Sum, "WordCount", Expression: "WordCount * 2");
+
+        var (sql, _) = StarRocksQueryBuilder.BuildAggregate("articles", schema, null, spec);
+
+        sql.Should().Contain("SUM(WordCount * 2) AS metric_val");
+    }
+
     [Fact]
     public void BuildAggregate_NoAuthz_DoesNotEnforceFieldRestrictions()
     {
@@ -1515,6 +1574,56 @@ public class StarRocksQueryBuilderTests
 
         sql.Should().Contain("SUM(Rating * 2) AS `revenue`");
         sql.Should().NotContain("SUM(`Rating`)");
+    }
+
+    // ── BuildGroupBy — MetricSpec.expression forbidden-character denylist (CSR Finding #3) ──
+    // Same gap as BuildAggregate's spec.Expression above: metric.Expression previously only
+    // ran the TokenRx identifier allow-list, which never inspects punctuation/quotes/semicolons/
+    // comment sequences because they don't match the identifier pattern to begin with.
+
+    [Fact]
+    public void BuildGroupBy_MetricExpressionWithSqlComment_ThrowsTranslationException()
+    {
+        var registry = BuildRegistry(AuthorSchema());
+        var request = new GroupByRequest { TypeName = "Author", Keys = { "Name" } };
+        request.Metrics.Add(new MetricSpec
+        {
+            Name       = "revenue",
+            Type       = AggregationType.Sum,
+            Expression = "Rating -- comment"
+        });
+
+        var act = () => StarRocksQueryBuilder.BuildGroupBy("authors", AuthorSchema(), request, registry);
+
+        act.Should().Throw<StarRocksQueryTranslationException>()
+            .Where(e => e.Message.Contains("forbidden character"));
+    }
+
+    [Fact]
+    public void BuildGroupBy_MetricExpressionCommentAttemptsToStripOwnershipPredicate_ThrowsInsteadOfProducingUnsafeSql()
+    {
+        // CSR-specified regression case for the GroupBy/MetricSpec side: metric.Expression is
+        // spliced directly into the aggregate function ahead of the compound SELECT's own WHERE
+        // clause (which carries the ownership predicate below), so an unescaped "/* */" here
+        // could otherwise be used to try to neutralize trailing SQL. Proves the fix throws
+        // rather than producing SQL with the ownership predicate compromised.
+        var registry = BuildRegistry(AuthorSchema());
+        var request = new GroupByRequest { TypeName = "Author", Keys = { "Name" } };
+        request.Metrics.Add(new MetricSpec
+        {
+            Name       = "revenue",
+            Type       = AggregationType.Sum,
+            Expression = "Rating) /* "
+        });
+        var authz = new Dictionary<string, AuthorizationConstraint>
+        {
+            ["Author"] = new(AllowedFields: null, OwnerColumn: "OwnerId", OwnerValue: "alice")
+        };
+
+        var act = () => StarRocksQueryBuilder.BuildGroupBy("authors", AuthorSchema(), request, registry, authz: authz);
+
+        act.Should().Throw<StarRocksQueryTranslationException>()
+            .Where(e => e.Message.Contains("forbidden character"));
     }
 
     [Fact]

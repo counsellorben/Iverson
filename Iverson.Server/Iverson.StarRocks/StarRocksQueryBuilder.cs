@@ -181,6 +181,7 @@ internal static class StarRocksQueryBuilder
         }
         if (!string.IsNullOrEmpty(spec.Expression))
         {
+            StarRocksPipelineBuilder.RejectForbiddenCharacters(spec.Expression, $"Aggregation '{spec.Name}' expression");
             foreach (Match m in StarRocksPipelineBuilder.TokenRx.Matches(spec.Expression))
             {
                 if (StarRocksPipelineBuilder.DeriveWhitelist.Contains(m.Value)) continue;
@@ -241,9 +242,12 @@ internal static class StarRocksQueryBuilder
 
             AggregationKind.Range => BuildRangeSql(from, Quote(col), spec.RangeBuckets, wc, hc),
 
-            // spec.Expression, when set, is raw StarRocks SQL supplied by a trusted
-            // server-side caller (e.g. TPC-H DSL translation) and is spliced directly
-            // into the aggregate function — NOT user input, no escaping is performed.
+            // spec.Expression is a client-settable field on the public AggregateRequest proto
+            // contract (object_search.proto's AggregationSpec.expression) — it IS reachable by
+            // any caller with read access to this type via the Aggregate RPC. Validated above via
+            // RejectForbiddenCharacters + the TokenRx/DeriveWhitelist identifier allow-list before
+            // being spliced into the aggregate function; do not weaken either check based on an
+            // assumption that this field is trusted or server-only.
             AggregationKind.Avg   => $"SELECT AVG({spec.Expression ?? Quote(col)}) AS metric_val {from}{wc}{hc}",
             AggregationKind.Sum   => $"SELECT SUM({spec.Expression ?? Quote(col)}) AS metric_val {from}{wc}{hc}",
             AggregationKind.Min   => $"SELECT MIN({spec.Expression ?? Quote(col)}) AS metric_val {from}{wc}{hc}",
@@ -342,11 +346,13 @@ internal static class StarRocksQueryBuilder
         return (sql, param);
     }
 
-    // metric.expression, when set, is raw StarRocks SQL supplied by a trusted server-side
-    // caller (e.g. TPC-H DSL translation) and is spliced directly into the aggregate
-    // function — NOT user input, no escaping is performed. It is, however, still subject to
-    // the same field reject-on-reference check as metric.Field below (see remarks ahead of
-    // that check for why the two are validated independently).
+    // metric.expression is a client-settable field on the public GroupByRequest proto contract
+    // (object_search.proto's MetricSpec.expression) — it IS reachable by any caller with read
+    // access to this type via the GroupBy RPC. Validated below via RejectForbiddenCharacters +
+    // the TokenRx/DeriveWhitelist identifier allow-list, and subject to the same field
+    // reject-on-reference check as metric.Field (see remarks ahead of that check for why the
+    // two are validated independently); do not weaken any of these based on an assumption that
+    // this field is trusted or server-only.
     private static string BuildMetricExpr(
         MetricSpec metric,
         StarRocksQuerySchema schema,
@@ -396,6 +402,7 @@ internal static class StarRocksQueryBuilder
 
         if (!string.IsNullOrEmpty(metric.Expression))
         {
+            StarRocksPipelineBuilder.RejectForbiddenCharacters(metric.Expression, $"Metric '{metric.Name}' expression");
             foreach (Match m in StarRocksPipelineBuilder.TokenRx.Matches(metric.Expression))
             {
                 if (StarRocksPipelineBuilder.DeriveWhitelist.Contains(m.Value)) continue;
