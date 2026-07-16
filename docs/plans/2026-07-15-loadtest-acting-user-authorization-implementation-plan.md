@@ -438,8 +438,7 @@ Drives `GET {BaseUrl}/api/v3/flows/executor/{FlowSlug}/` repeatedly, branching o
     private async Task DriveAuthenticationFlowAsync(string flowUrl)
     {
         string? cachedSecret = null;
-        int? lastTotpCounter = null;
-        var totpAttempts = 0;
+        var totpState = new TotpAttemptState();
 
         for (var i = 0; i < MaxFlowStages; i++)
         {
@@ -475,7 +474,7 @@ Drives `GET {BaseUrl}/api/v3/flows/executor/{FlowSlug}/` repeatedly, branching o
                                 $"cached secret exists at {CachePath}. Authentik never re-exposes an enrolled " +
                                 "device's secret — restore the cached secret file, or reset the user's TOTP " +
                                 "device in Authentik to force re-enrollment.");
-                        await SubmitTotpCodeAsync(flowUrl, cachedSecret, ref lastTotpCounter, ref totpAttempts);
+                        await SubmitTotpCodeAsync(flowUrl, cachedSecret, totpState);
                         continue;
                     }
 
@@ -506,7 +505,7 @@ Drives `GET {BaseUrl}/api/v3/flows/executor/{FlowSlug}/` repeatedly, branching o
                     var secret = ParseTotpSecretFromConfigUrl(configUrl);
                     SaveCachedTotpSecret(secret);
                     cachedSecret = secret;
-                    await SubmitTotpCodeAsync(flowUrl, secret, ref lastTotpCounter, ref totpAttempts);
+                    await SubmitTotpCodeAsync(flowUrl, secret, totpState);
                     continue;
                 }
 
@@ -518,27 +517,36 @@ Drives `GET {BaseUrl}/api/v3/flows/executor/{FlowSlug}/` repeatedly, branching o
         throw new InvalidOperationException($"Authentication flow did not complete after {MaxFlowStages} stages");
     }
 
+    // Tracks TOTP replay-window state across DriveAuthenticationFlowAsync's loop. A plain class
+    // (not `ref` locals) because async methods cannot have `ref`/`out`/`in` parameters in C#
+    // (CS1988) — mirrors mint_acting_user_token.py's own TotpAttemptState class.
+    private sealed class TotpAttemptState
+    {
+        public int? LastCounter;
+        public int Attempts;
+    }
+
     // Authentik marks a TOTP code "used" on any submission attempt within its 30s window, success
     // or failure — so submitting twice in the same window always fails the second time. Wait out
     // the rest of the window rather than misreport that as a real validation failure.
-    private async Task SubmitTotpCodeAsync(string flowUrl, string secret, ref int? lastCounter, ref int attempts)
+    private async Task SubmitTotpCodeAsync(string flowUrl, string secret, TotpAttemptState state)
     {
-        if (attempts >= MaxTotpAttempts)
+        if (state.Attempts >= MaxTotpAttempts)
             throw new InvalidOperationException(
                 $"TOTP code was rejected {MaxTotpAttempts} times in a row; giving up. If this isn't just " +
                 "window-reuse, the cached secret is likely stale.");
 
         var now = DateTimeOffset.UtcNow;
         var counter = (int)(now.ToUnixTimeSeconds() / 30);
-        if (lastCounter == counter)
+        if (state.LastCounter == counter)
         {
             var waitMs = (int)((counter + 1) * 30 - now.ToUnixTimeSeconds()) * 1000 + 500;
             logger.LogInformation("Waiting {Ms}ms for a fresh TOTP time-step...", waitMs);
             await Task.Delay(waitMs);
         }
         var code = Totp(secret);
-        lastCounter = (int)(DateTimeOffset.UtcNow.ToUnixTimeSeconds() / 30);
-        attempts++;
+        state.LastCounter = (int)(DateTimeOffset.UtcNow.ToUnixTimeSeconds() / 30);
+        state.Attempts++;
         await SendAsync(HttpMethod.Post, flowUrl, JsonBody(new { code }));
     }
 
