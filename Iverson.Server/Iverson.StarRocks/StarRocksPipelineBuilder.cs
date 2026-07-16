@@ -183,6 +183,7 @@ internal static class StarRocksPipelineBuilder
                     throw Invalid($"Step '{step.Name}': metric '{m.Name}' requires a field or expression.");
                 if (!string.IsNullOrEmpty(m.Expression))
                 {
+                    RejectForbiddenCharacters(m.Expression, $"Step '{step.Name}': metric '{m.Name}' expression");
                     foreach (Match tok in TokenRx.Matches(m.Expression))
                     {
                         if (DeriveWhitelist.Contains(tok.Value)) continue;
@@ -560,8 +561,13 @@ internal static class StarRocksPipelineBuilder
             _ => throw new StarRocksQueryTranslationException(
                 $"Metric '{m.Name}' has unsupported type '{m.Type}'.")
         };
-        // m.Expression is raw trusted SQL — same posture as BuildMetricExpr in
-        // StarRocksQueryBuilder; see the comment there.
+        // m.Expression is a client-settable field on the public PipelineStep.metrics proto
+        // contract (reuses MetricSpec, same as GroupByRequest.metrics) — it IS reachable by any
+        // caller with read access to this type via the Pipeline RPC. Validated during step
+        // processing (ValidateStepAndComputeOutput, called from TrackAndValidate — always run
+        // before Build reaches this method) via RejectForbiddenCharacters + the
+        // TokenRx/DeriveWhitelist identifier allow-list; do not weaken either check based on an
+        // assumption that this field is trusted or server-only.
         var arg = !string.IsNullOrEmpty(m.Expression) ? m.Expression : $"`{input[m.Field]}`";
         return $"{fn}({arg}) AS {quotedName}";
     }

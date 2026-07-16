@@ -695,6 +695,63 @@ public class StarRocksPipelineBuilderTests
                      && e.Message.Contains("SQL comment sequences"));
     }
 
+    // ── Metric expression forbidden-character denylist (Task 9 / CSR Finding #3) ──
+    // m.Expression previously only ran the TokenRx identifier allow-list check (see the
+    // "Authorization — metric MetricSpec.Expression check" tests below), which inspects
+    // identifier-shaped substrings only — punctuation, quotes, semicolons, and SQL comment
+    // sequences pass through unchecked because they never match TokenRx in the first place.
+    // These tests lock in the stricter denylist (RejectForbiddenCharacters, shared with
+    // ValidateDeriveExpr and StarRocksQueryBuilder's BuildAggregate/BuildMetricExpr) applied
+    // to this third call site.
+
+    [Theory]
+    [InlineData("WordCount -- drop everything")]
+    [InlineData("WordCount; DROP TABLE authors")]
+    [InlineData("WordCount /* comment */ + 1")]
+    public void Validate_MetricExpressionWithForbiddenSequence_Throws(string expr)
+    {
+        var step = new PipelineStep { Name = "agg" };
+        step.GroupBy.Add(new GroupKey { Field = "AuthorId" });
+        step.Metrics.Add(new MetricSpec { Name = "m", Type = AggregationType.Sum, Expression = expr });
+
+        AssertInvalid(() => StarRocksPipelineBuilder.TrackAndValidate(
+            ArticleSchema(), Request(step), EmptyRegistry()), "forbidden character");
+    }
+
+    [Fact]
+    public void Build_MetricExpressionCommentAttemptsToCloseAggregateAndStripTrailingSql_ThrowsInsteadOfProducingUnsafeSql()
+    {
+        // The CSR-specified regression case, adapted for Pipeline: m.Expression is spliced
+        // directly into the aggregate function by EmitMetric, ahead of GROUP BY/HAVING for this
+        // step and — because Pipeline compiles a *chain* of CTEs into one generated SQL string —
+        // every subsequent step in the chain too. An unescaped ") -- " here would previously
+        // close the aggregate call early and comment out everything after it on the generated
+        // single-line SQL string. Proves the fix throws rather than producing SQL with anything
+        // after the injection point silently stripped.
+        var step = new PipelineStep { Name = "agg" };
+        step.GroupBy.Add(new GroupKey { Field = "AuthorId" });
+        step.Metrics.Add(new MetricSpec { Name = "m", Type = AggregationType.Sum, Expression = "WordCount) -- " });
+
+        var act = () => StarRocksPipelineBuilder.Build(ArticleSchema(), Request(step), EmptyRegistry());
+
+        act.Should().Throw<StarRocksQueryTranslationException>()
+            .Where(e => e.Message.Contains("forbidden character"));
+    }
+
+    [Fact]
+    public void Build_NormalMetricExpression_StillProducesExpectedSql()
+    {
+        // Non-adversarial expression referencing a real input column: confirms the new denylist
+        // check does not regress the legitimate use case.
+        var step = new PipelineStep { Name = "agg" };
+        step.GroupBy.Add(new GroupKey { Field = "AuthorId" });
+        step.Metrics.Add(new MetricSpec { Name = "wc2", Type = AggregationType.Sum, Expression = "WordCount * 2" });
+
+        var (sql, _, _) = StarRocksPipelineBuilder.Build(ArticleSchema(), Request(step), EmptyRegistry());
+
+        NormalizeWs(sql).Should().Contain("SUM(WordCount * 2) AS `wc2`");
+    }
+
     // ── Authorization — column-introduction filtering (Step 1) ─────────────────
 
     [Fact]
