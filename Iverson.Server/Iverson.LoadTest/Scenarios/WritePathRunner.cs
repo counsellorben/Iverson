@@ -72,11 +72,11 @@ internal static class WritePathRunner
                 var identity = identities.PickRandom();
                 try
                 {
-                    var t0 = BenchmarkReport.NowMicros();
                     var headers = new Grpc.Core.Metadata().WithActingUser(await identity.GetTokenAsync(ct));
                     // The server force-sets OwnerId for the owner-restricted identity on create; the
                     // bypass identity's writes are never ownership-checked, so it must set its own OwnerId.
                     var ownerId = identity == identities.Bypass ? await identity.GetSubAsync(ct) : "";
+                    var t0 = BenchmarkReport.NowMicros();
                     string key;
 
                     switch (flags.Type)
