@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Text;
 using Dapper;
+using Iverson.LoadTest.Auth;
 using Microsoft.Extensions.Logging;
 using MySqlConnector;
 using Npgsql;
@@ -8,7 +9,7 @@ using NpgsqlTypes;
 
 namespace Iverson.LoadTest.Seeding;
 
-public sealed class DirectSeeder(LoadTestConfig config)
+public sealed class DirectSeeder(LoadTestConfig config, ActingUserIdentities identities)
 {
     private const int ArticleTarget = 400_000;
     private const int AuthorTarget  =  50_000;
@@ -49,6 +50,8 @@ public sealed class DirectSeeder(LoadTestConfig config)
             return await LoadAuthorIdsAsync(pg);
         }
 
+        var ownerSub = await identities.Regular.GetSubAsync(ct);
+
         if (force)
         {
             await pg.ExecuteAsync("TRUNCATE TABLE benchmark_authors CASCADE");
@@ -60,27 +63,30 @@ public sealed class DirectSeeder(LoadTestConfig config)
 
         // ── Postgres COPY ──
         await using var writer = await pg.BeginBinaryImportAsync(
-            "COPY benchmark_authors (\"Id\", \"Name\", \"Email\", \"Bio\") FROM STDIN (FORMAT BINARY)",
+            "COPY benchmark_authors (\"Id\", \"Name\", \"Email\", \"Bio\", \"OwnerId\") FROM STDIN (FORMAT BINARY)",
             ct);
 
         for (var i = 0; i < AuthorTarget; i++)
         {
             ids[i] = Guid.NewGuid();
+            var ownerId = i % 100 == 0 ? ownerSub : Guid.NewGuid().ToString();
             await writer.StartRowAsync(ct);
             await writer.WriteAsync(ids[i],                      NpgsqlDbType.Uuid, ct);
             await writer.WriteAsync($"Author {i}",               NpgsqlDbType.Text, ct);
             await writer.WriteAsync($"author{i}@benchmark.dev",  NpgsqlDbType.Text, ct);
             await writer.WriteAsync(new string('x', 200),        NpgsqlDbType.Text, ct);
+            await writer.WriteAsync(ownerId,                     NpgsqlDbType.Text, ct);
             if (i % 5_000 == 0) PrintProgress("Authors", i, AuthorTarget, sw);
         }
         await writer.CompleteAsync(ct);
 
         // ── StarRocks batch INSERT ──
         await SrBatchInsertAsync(sr, "benchmark_authors",
-            ["Id", "Name", "Email", "Bio"],
+            ["Id", "Name", "Email", "Bio", "OwnerId"],
             ids.Select((id, i) => new object[]
             {
-                id.ToString(), $"Author {i}", $"author{i}@benchmark.dev", new string('x', 200)
+                id.ToString(), $"Author {i}", $"author{i}@benchmark.dev", new string('x', 200),
+                i % 100 == 0 ? ownerSub : Guid.NewGuid().ToString()
             }),
             sw, ct);
 
@@ -102,6 +108,8 @@ public sealed class DirectSeeder(LoadTestConfig config)
             return;
         }
 
+        var ownerSub = await identities.Regular.GetSubAsync(ct);
+
         if (force)
         {
             await pg.ExecuteAsync("TRUNCATE TABLE benchmark_tags CASCADE");
@@ -112,24 +120,27 @@ public sealed class DirectSeeder(LoadTestConfig config)
         var sw  = Stopwatch.StartNew();
 
         await using var writer = await pg.BeginBinaryImportAsync(
-            "COPY benchmark_tags (\"Id\", \"Name\", \"Category\") FROM STDIN (FORMAT BINARY)",
+            "COPY benchmark_tags (\"Id\", \"Name\", \"Category\", \"OwnerId\") FROM STDIN (FORMAT BINARY)",
             ct);
 
         for (var i = 0; i < TagTarget; i++)
         {
             ids[i] = Guid.NewGuid();
+            var ownerId = i % 100 == 0 ? ownerSub : Guid.NewGuid().ToString();
             await writer.StartRowAsync(ct);
             await writer.WriteAsync(ids[i],                       NpgsqlDbType.Uuid, ct);
             await writer.WriteAsync($"tag-{i}",                   NpgsqlDbType.Text, ct);
             await writer.WriteAsync(Categories[i % Categories.Length], NpgsqlDbType.Text, ct);
+            await writer.WriteAsync(ownerId,                      NpgsqlDbType.Text, ct);
         }
         await writer.CompleteAsync(ct);
 
         await SrBatchInsertAsync(sr, "benchmark_tags",
-            ["Id", "Name", "Category"],
+            ["Id", "Name", "Category", "OwnerId"],
             ids.Select((id, i) => new object[]
             {
-                id.ToString(), $"tag-{i}", Categories[i % Categories.Length]
+                id.ToString(), $"tag-{i}", Categories[i % Categories.Length],
+                i % 100 == 0 ? ownerSub : Guid.NewGuid().ToString()
             }),
             sw, ct);
 
@@ -150,6 +161,8 @@ public sealed class DirectSeeder(LoadTestConfig config)
             return;
         }
 
+        var ownerSub = await identities.Regular.GetSubAsync(ct);
+
         if (force)
         {
             await pg.ExecuteAsync("TRUNCATE TABLE benchmark_articles CASCADE");
@@ -162,7 +175,7 @@ public sealed class DirectSeeder(LoadTestConfig config)
 
         await using var writer = await pg.BeginBinaryImportAsync(
             "COPY benchmark_articles " +
-            "(\"Id\", \"Title\", \"Body\", \"BenchmarkAuthorId\", \"Category\", \"WordCount\", \"PublishedAt\") " +
+            "(\"Id\", \"Title\", \"Body\", \"BenchmarkAuthorId\", \"Category\", \"WordCount\", \"PublishedAt\", \"OwnerId\") " +
             "FROM STDIN (FORMAT BINARY)",
             ct);
 
@@ -171,6 +184,7 @@ public sealed class DirectSeeder(LoadTestConfig config)
             ids[i] = Guid.NewGuid();
             var cat  = Categories[i % Categories.Length];
             var body = GenerateBody(i);
+            var ownerId = i % 100 == 0 ? ownerSub : Guid.NewGuid().ToString();
 
             await writer.StartRowAsync(ct);
             await writer.WriteAsync(ids[i],                           NpgsqlDbType.Uuid,        ct);
@@ -180,6 +194,7 @@ public sealed class DirectSeeder(LoadTestConfig config)
             await writer.WriteAsync(cat,                              NpgsqlDbType.Text,        ct);
             await writer.WriteAsync(body.Length / 5,                  NpgsqlDbType.Integer,     ct);
             await writer.WriteAsync(baseDate.AddDays(i % 2190),       NpgsqlDbType.TimestampTz, ct);
+            await writer.WriteAsync(ownerId,                          NpgsqlDbType.Text,        ct);
 
             if (i % 10_000 == 0) PrintProgress("Articles", i, ArticleTarget, sw);
         }
@@ -189,7 +204,7 @@ public sealed class DirectSeeder(LoadTestConfig config)
 
         var srSw = Stopwatch.StartNew();
         await SrBatchInsertAsync(sr, "benchmark_articles",
-            ["Id", "Title", "BenchmarkAuthorId", "Category", "WordCount", "PublishedAt"],
+            ["Id", "Title", "BenchmarkAuthorId", "Category", "WordCount", "PublishedAt", "OwnerId"],
             ids.Select((id, i) =>
             {
                 var cat = Categories[i % Categories.Length];
@@ -201,6 +216,7 @@ public sealed class DirectSeeder(LoadTestConfig config)
                     cat,
                     GenerateBody(i).Length / 5,
                     baseDate.AddDays(i % 2190).ToString("yyyy-MM-dd HH:mm:ss"),
+                    i % 100 == 0 ? ownerSub : Guid.NewGuid().ToString(),
                 };
             }),
             srSw, ct);
