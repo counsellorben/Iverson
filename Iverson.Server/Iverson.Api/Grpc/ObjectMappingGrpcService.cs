@@ -232,13 +232,13 @@ public sealed class ObjectMappingGrpcService(
         {
             _logger.LogWarning(ex,
                 "[Mapping.Post] Opportunistic publish failed for type={Type} key={Key} — " +
-                "ReconciliationQueueWorker will retry from the durable outbox row", request.TypeName, key);
+                "ReconciliationQueueWorker will retry from the durable outbox row", request.TypeName.SanitizeForLog(), key);
         }
         catch (Exception ex)
         {
             _logger.LogWarning(ex,
                 "[Mapping.Post] Publish succeeded but outbox cleanup failed for type={Type} key={Key} — " +
-                "ReconciliationQueueWorker will harmlessly re-publish from the durable outbox row", request.TypeName, key);
+                "ReconciliationQueueWorker will harmlessly re-publish from the durable outbox row", request.TypeName.SanitizeForLog(), key);
         }
 
         return new MappingResponse { Success = true, Data = request.Payload, TraceId = request.TraceId };
@@ -297,13 +297,13 @@ public sealed class ObjectMappingGrpcService(
         {
             _logger.LogWarning(ex,
                 "[Mapping.Update] Opportunistic publish failed for type={Type} key={Key} — " +
-                "ReconciliationQueueWorker will retry from the durable outbox row", request.TypeName, key);
+                "ReconciliationQueueWorker will retry from the durable outbox row", request.TypeName.SanitizeForLog(), key);
         }
         catch (Exception ex)
         {
             _logger.LogWarning(ex,
                 "[Mapping.Update] Publish succeeded but outbox cleanup failed for type={Type} key={Key} — " +
-                "ReconciliationQueueWorker will harmlessly re-publish from the durable outbox row", request.TypeName, key);
+                "ReconciliationQueueWorker will harmlessly re-publish from the durable outbox row", request.TypeName.SanitizeForLog(), key);
         }
 
         return new MappingResponse { Success = true, Data = request.Payload, TraceId = request.TraceId };
@@ -378,13 +378,13 @@ public sealed class ObjectMappingGrpcService(
         {
             _logger.LogWarning(ex,
                 "[Mapping.Delete] Opportunistic publish failed for type={Type} key={Key} — " +
-                "ReconciliationQueueWorker will retry from the durable outbox row", request.TypeName, request.Key);
+                "ReconciliationQueueWorker will retry from the durable outbox row", request.TypeName.SanitizeForLog(), request.Key);
         }
         catch (Exception ex)
         {
             _logger.LogWarning(ex,
                 "[Mapping.Delete] Publish succeeded but outbox cleanup failed for type={Type} key={Key} — " +
-                "ReconciliationQueueWorker will harmlessly re-publish from the durable outbox row", request.TypeName, request.Key);
+                "ReconciliationQueueWorker will harmlessly re-publish from the durable outbox row", request.TypeName.SanitizeForLog(), request.Key);
         }
 
         return new MappingDeleteResponse { Success = true, TraceId = request.TraceId };

@@ -82,13 +82,13 @@ public sealed class ObjectPersistenceGrpcService(
         {
             logger.LogWarning(ex,
                 "[Persistence.Post] Opportunistic publish failed for type={Type} key={Key} — " +
-                "ReconciliationQueueWorker will retry from the durable outbox row", request.TypeName, key);
+                "ReconciliationQueueWorker will retry from the durable outbox row", request.TypeName.SanitizeForLog(), key);
         }
         catch (Exception ex)
         {
             logger.LogWarning(ex,
                 "[Persistence.Post] Publish succeeded but outbox cleanup failed for type={Type} key={Key} — " +
-                "ReconciliationQueueWorker will harmlessly re-publish from the durable outbox row", request.TypeName, key);
+                "ReconciliationQueueWorker will harmlessly re-publish from the durable outbox row", request.TypeName.SanitizeForLog(), key);
         }
 
         return new PersistResponse
@@ -154,13 +154,13 @@ public sealed class ObjectPersistenceGrpcService(
         {
             logger.LogWarning(ex,
                 "[Persistence.Update] Opportunistic publish failed for type={Type} key={Key} — " +
-                "ReconciliationQueueWorker will retry from the durable outbox row", request.TypeName, key);
+                "ReconciliationQueueWorker will retry from the durable outbox row", request.TypeName.SanitizeForLog(), key);
         }
         catch (Exception ex)
         {
             logger.LogWarning(ex,
                 "[Persistence.Update] Publish succeeded but outbox cleanup failed for type={Type} key={Key} — " +
-                "ReconciliationQueueWorker will harmlessly re-publish from the durable outbox row", request.TypeName, key);
+                "ReconciliationQueueWorker will harmlessly re-publish from the durable outbox row", request.TypeName.SanitizeForLog(), key);
         }
 
         return new PersistResponse
