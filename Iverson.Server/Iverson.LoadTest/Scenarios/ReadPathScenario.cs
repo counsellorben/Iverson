@@ -2,6 +2,8 @@ using Dapper;
 using System.Diagnostics;
 using Grpc.Core;
 using Iverson.Client.Contracts;
+using Iverson.Client.Core;
+using Iverson.LoadTest.Auth;
 using Iverson.LoadTest.Reporting;
 using Microsoft.Extensions.Logging;
 using Npgsql;
@@ -12,6 +14,7 @@ public sealed class ReadPathScenario(
     LoadTestConfig                                      config,
     ObjectRetrievalService.ObjectRetrievalServiceClient retrieval,
     ObjectSearchService.ObjectSearchServiceClient       search,
+    ActingUserIdentities                                identities,
     ILogger<ReadPathScenario>                           logger)
 {
     private static readonly int[] GetManyBatches    = [1, 10, 100, 500];
@@ -59,10 +62,13 @@ public sealed class ReadPathScenario(
                 };
                 req.Keys.AddRange(keys.Select(k => k.ToString()));
 
+                var identity = identities.PickRandom();
+                var headers  = new Metadata().WithActingUser(await identity.GetTokenAsync(ct));
+
                 var t0 = BenchmarkReport.NowMicros();
                 try
                 {
-                    var call = retrieval.GetMany(req);
+                    var call = retrieval.GetMany(req, headers);
                     await foreach (var _ in call.ResponseStream.ReadAllAsync(ct)) { }
                     report.Record(BenchmarkReport.NowMicros() - t0);
                 }
@@ -74,6 +80,56 @@ public sealed class ReadPathScenario(
             }
 
             report.Print($"GetMany | batch={batchSize} | iterations={flags.Iterations}", file);
+        }
+
+        // ── GetMany — BenchmarkAuthor / BenchmarkTag (per CDR round 1 §3.1: read-path must
+        // exercise all three entities' authorization rules, not just BenchmarkArticle's) ──
+        foreach (var (typeName, tableName) in new[]
+                 { ("BenchmarkAuthor", "benchmark_authors"), ("BenchmarkTag", "benchmark_tags") })
+        {
+            Guid[] ids;
+            await using (var pg = new NpgsqlConnection(config.PostgresCs))
+            {
+                await pg.OpenAsync(ct);
+                ids = [.. (await pg.QueryAsync<Guid>($"SELECT \"Id\" FROM {tableName} LIMIT 10000"))];
+            }
+            if (ids.Length == 0)
+            {
+                Console.WriteLine($"[GetMany] no {tableName} found — skipping.");
+                continue;
+            }
+
+            foreach (var batchSize in GetManyBatches)
+            {
+                var report = new BenchmarkReport();
+                Console.WriteLine($"[GetMany] type={typeName} batch={batchSize} iterations={flags.Iterations}...");
+
+                for (var iter = 0; iter < flags.Iterations; iter++)
+                {
+                    ct.ThrowIfCancellationRequested();
+                    var keys = SampleKeys(ids, batchSize, iter);
+                    var req  = new RetrievalManyRequest { TypeName = typeName, TraceId = Guid.NewGuid().ToString() };
+                    req.Keys.AddRange(keys.Select(k => k.ToString()));
+
+                    var identity = identities.PickRandom();
+                    var headers  = new Metadata().WithActingUser(await identity.GetTokenAsync(ct));
+
+                    var t0 = BenchmarkReport.NowMicros();
+                    try
+                    {
+                        var call = retrieval.GetMany(req, headers);
+                        await foreach (var _ in call.ResponseStream.ReadAllAsync(ct)) { }
+                        report.Record(BenchmarkReport.NowMicros() - t0);
+                    }
+                    catch (RpcException ex)
+                    {
+                        report.RecordError();
+                        logger.LogDebug(ex, "GetMany failed for {Type}", typeName);
+                    }
+                }
+
+                report.Print($"GetMany | type={typeName} | batch={batchSize} | iterations={flags.Iterations}", file);
+            }
         }
 
         // ── Search — filter profiles ───────────────────────────────────────────
@@ -170,10 +226,13 @@ public sealed class ReadPathScenario(
                 };
                 req.Fields.AddRange(searchFields);
 
+                var identity = identities.PickRandom();
+                var headers  = new Metadata().WithActingUser(await identity.GetTokenAsync(ct));
+
                 var t0 = BenchmarkReport.NowMicros();
                 try
                 {
-                    var call = search.Search(req);
+                    var call = search.Search(req, headers);
                     await foreach (var _ in call.ResponseStream.ReadAllAsync(ct)) { }
                     report.Record(BenchmarkReport.NowMicros() - t0);
                 }
@@ -235,10 +294,13 @@ public sealed class ReadPathScenario(
                 };
                 req.Aggregations.AddRange(allSpecs.Take(specCount));
 
+                var identity = identities.PickRandom();
+                var headers  = new Metadata().WithActingUser(await identity.GetTokenAsync(ct));
+
                 var t0 = BenchmarkReport.NowMicros();
                 try
                 {
-                    await search.AggregateAsync(req, cancellationToken: ct);
+                    await search.AggregateAsync(req, headers, cancellationToken: ct);
                     report.Record(BenchmarkReport.NowMicros() - t0);
                 }
                 catch (RpcException ex)

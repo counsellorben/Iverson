@@ -4,6 +4,7 @@
 {{- $humanOidc := lookup "v1" "Secret" .Release.Namespace (printf "%s-authentik-human-oidc-client" .Release.Name) }}
 {{- $loadtestHuman := lookup "v1" "Secret" .Release.Namespace (printf "%s-authentik-loadtest-human-client" .Release.Name) }}
 {{- $smokeTestUser := lookup "v1" "Secret" .Release.Namespace (printf "%s-authentik-smoke-test-user" .Release.Name) }}
+{{- $bypassUser := lookup "v1" "Secret" .Release.Namespace (printf "%s-authentik-bypass-user" .Release.Name) }}
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -91,6 +92,7 @@ data:
           signing_key: !Find [authentik_crypto.certificatekeypair, [name, "authentik Self-signed Certificate"]]
           issuer_mode: global
           grant_types: ["authorization_code", "refresh_token"]
+          access_token_validity: "hours=2"
           property_mappings:
             - !Find [authentik_providers_oauth2.scopemapping, [scope_name, groups]]
       - model: authentik_core.application
@@ -108,3 +110,18 @@ data:
           email: iverson-acting-user-smoke-test@example.invalid
           password: {{ if $smokeTestUser }}{{ index $smokeTestUser.data "password" | b64dec }}{{ else }}{{ randAlphaNum 32 }}{{ end }}
           is_active: true
+      - model: authentik_core.group
+        identifiers:
+          name: iverson-loadtest-bypass
+        attrs: {}
+      - model: authentik_core.user
+        identifiers:
+          username: iverson-loadtest-bypass-user
+        attrs:
+          username: iverson-loadtest-bypass-user
+          name: "Iverson LoadTest Bypass"
+          email: iverson-loadtest-bypass-user@example.invalid
+          password: {{ if $bypassUser }}{{ index $bypassUser.data "password" | b64dec }}{{ else }}{{ randAlphaNum 32 }}{{ end }}
+          is_active: true
+          groups:
+            - !Find [authentik_core.group, [name, iverson-loadtest-bypass]]

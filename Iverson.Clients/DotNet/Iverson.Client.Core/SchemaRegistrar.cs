@@ -16,11 +16,18 @@ public sealed class SchemaRegistrar(
     ObjectMappingService.ObjectMappingServiceClient mapping,
     ILogger<SchemaRegistrar> logger)
 {
-    public async Task RegisterAllAsync(CancellationToken ct = default)
+    public async Task RegisterAllAsync(
+        IReadOnlyDictionary<string, AuthorizationRules>? authorizationByTypeName = null,
+        CancellationToken ct = default)
     {
         foreach (var descriptor in registry.All)
         {
             var typeDesc = BuildTypeDescriptor(descriptor);
+            if (authorizationByTypeName is not null &&
+                authorizationByTypeName.TryGetValue(descriptor.EntityName, out var authorization))
+            {
+                typeDesc.Authorization = authorization;
+            }
             try
             {
                 var response = await mapping.RegisterSchemaAsync(

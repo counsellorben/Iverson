@@ -3,6 +3,7 @@ using Grpc.Core;
 using Iverson.Client.Contracts;
 using Iverson.Client.Core;
 using Iverson.Events;
+using Iverson.LoadTest.Auth;
 using Iverson.LoadTest.Entities;
 using Iverson.LoadTest.Seeding;
 using Iverson.LoadTest.Scenarios;
@@ -28,6 +29,19 @@ var postgresCs   = Env("IVERSON_POSTGRES_CS",     "Host=localhost;Port=5432;Data
 var starRocksCs  = Env("IVERSON_STARROCKS_CS",    "Server=127.0.0.1;Port=9030;Database=iverson;Uid=root;Pwd=;");
 var kafkaBoots   = Env("IVERSON_KAFKA_BOOTSTRAP", "localhost:9092");
 var actingUserToken = Environment.GetEnvironmentVariable("IVERSON_ACTING_USER_TOKEN");
+var actingUserHostHeader = Environment.GetEnvironmentVariable("IVERSON_ACTING_USER_HOST_HEADER") ?? "authentik-server:9000";
+// Compose-fixed defaults; kind requires an explicit override (client_id and redirect_uri are
+// randomly-generated/ingress-derived per Helm release for kind — see the blueprint templates).
+var actingUserClientId    = Environment.GetEnvironmentVariable("IVERSON_ACTING_USER_CLIENT_ID")    ?? "dev-iverson-loadtest-human-client-id";
+var actingUserRedirectUri = Environment.GetEnvironmentVariable("IVERSON_ACTING_USER_REDIRECT_URI") ?? "http://localhost/placeholder-callback";
+var actingUserUsername = Environment.GetEnvironmentVariable("IVERSON_ACTING_USER_USERNAME") ?? "iverson-acting-user-smoke-test";
+var actingUserPassword = Environment.GetEnvironmentVariable("IVERSON_ACTING_USER_PASSWORD") ?? "dev-only-not-for-production-smoke-test-password-0123456789";
+var actingUserBypassUsername = Environment.GetEnvironmentVariable("IVERSON_ACTING_USER_BYPASS_USERNAME") ?? "iverson-loadtest-bypass-user";
+var actingUserBypassPassword = Environment.GetEnvironmentVariable("IVERSON_ACTING_USER_BYPASS_PASSWORD") ?? "dev-only-not-for-production-bypass-password-0123456789";
+var actingUserCacheTarget = flags.Target == "kind" ? "kind" : "compose"; // maps LoadTest's own "containers"/"kind" to the Python script's "compose"/"kind" cache-path vocabulary
+var actingUserBaseUrl = tokenEndpoint is not null
+    ? tokenEndpoint[..tokenEndpoint.IndexOf("/application/o/token/", StringComparison.Ordinal)]
+    : "http://localhost:9000";
 
 var config = new LoadTestConfig(postgresCs, starRocksCs, kafkaBoots);
 
@@ -63,6 +77,17 @@ var services = new ServiceCollection()
     .AddIversonClient(grpcUrl, clientCredentials, entityAssemblies: [typeof(BenchmarkArticle).Assembly])
     .AddSingleton(config)
     .AddSingleton(kafkaOptions)
+    .AddSingleton(sp => new ActingUserIdentities(
+        new ActingUserTokenProvider(new AuthentikFlowExecutorClient(
+            new AuthentikIdentityConfig(
+                actingUserUsername, actingUserPassword, actingUserClientId, actingUserRedirectUri,
+                actingUserBaseUrl, actingUserHostHeader, actingUserCacheTarget),
+            sp.GetRequiredService<ILogger<AuthentikFlowExecutorClient>>())),
+        new ActingUserTokenProvider(new AuthentikFlowExecutorClient(
+            new AuthentikIdentityConfig(
+                actingUserBypassUsername, actingUserBypassPassword, actingUserClientId, actingUserRedirectUri,
+                actingUserBaseUrl, actingUserHostHeader, actingUserCacheTarget),
+            sp.GetRequiredService<ILogger<AuthentikFlowExecutorClient>>()))))
     .AddSingleton<DirectSeeder>()
     .AddSingleton<WritePathScenario>()
     .AddSingleton<KindWritePathScenario>()
@@ -74,7 +99,13 @@ if (command is "seed" or "write-path" or "read-path" or "all")
     Console.WriteLine("Registering schemas...");
     try
     {
-        await services.GetRequiredService<SchemaRegistrar>().RegisterAllAsync();
+        var authorizationByTypeName = new Dictionary<string, AuthorizationRules>
+        {
+            ["BenchmarkArticle"] = BuildAuthorizationRules("Body"),
+            ["BenchmarkAuthor"]  = BuildAuthorizationRules("Email"),
+            ["BenchmarkTag"]     = BuildAuthorizationRules("Category"),
+        };
+        await services.GetRequiredService<SchemaRegistrar>().RegisterAllAsync(authorizationByTypeName);
         Console.WriteLine("Schemas registered.\n");
     }
     catch (Exception ex)
@@ -160,6 +191,24 @@ return 0;
 
 static string Env(string key, string def) =>
     Environment.GetEnvironmentVariable(key) ?? def;
+
+static AuthorizationRules BuildAuthorizationRules(string restrictedField) => new()
+{
+    OwnerField = "OwnerId",
+    RowPermissions =
+    {
+        new RowPermission { Role = "iverson-loadtest-bypass", CanReadAll = true, CanWriteAll = true, CanDeleteAll = true },
+    },
+    FieldPermissions =
+    {
+        new FieldPermission
+        {
+            FieldName = restrictedField,
+            ReadableRoles = { "iverson-loadtest-bypass" },
+            WritableRoles = { "iverson-loadtest-bypass" },
+        },
+    },
+};
 
 static async Task ResetStarRocksAsync(string starRocksCs, string postgresCs)
 {

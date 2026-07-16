@@ -1,4 +1,5 @@
 using Iverson.Client.Core;
+using Iverson.LoadTest.Auth;
 using Iverson.LoadTest.Entities;
 using Microsoft.Extensions.Logging;
 
@@ -13,8 +14,9 @@ public sealed class WritePathScenario(
     EntityCoordinator<BenchmarkArticle> articles,
     EntityCoordinator<BenchmarkAuthor>  authors,
     EntityCoordinator<BenchmarkTag>     tags,
+    ActingUserIdentities                identities,
     ILogger<WritePathScenario>          logger)
 {
     public Task RunAsync(CommandFlags flags, CancellationToken ct = default) =>
-        WritePathRunner.RunAsync(config, articles, authors, tags, logger, flags, applyKafkaSecurity: null, ct);
+        WritePathRunner.RunAsync(config, articles, authors, tags, identities, logger, flags, applyKafkaSecurity: null, ct);
 }
