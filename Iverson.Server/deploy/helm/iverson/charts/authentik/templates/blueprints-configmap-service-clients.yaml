@@ -24,6 +24,13 @@ data:
           expression: "return {}"
       - model: authentik_providers_oauth2.scopemapping
         identifiers:
+          scope_name: schema_admin
+        attrs:
+          name: "Iverson: schema admin scope"
+          description: Grants rights to register/redefine entity schemas
+          expression: "return {}"
+      - model: authentik_providers_oauth2.scopemapping
+        identifiers:
           scope_name: groups
         attrs:
           name: "Iverson: group membership"
@@ -47,6 +54,10 @@ data:
 {{- if eq $name "admin-automation" }}
           property_mappings:
             - !Find [authentik_providers_oauth2.scopemapping, [scope_name, admin]]
+            - !Find [authentik_providers_oauth2.scopemapping, [scope_name, schema_admin]]
+{{- else if eq $name "loadtest" }}
+          property_mappings:
+            - !Find [authentik_providers_oauth2.scopemapping, [scope_name, schema_admin]]
 {{- end }}
       - model: authentik_core.application
         identifiers:

@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Text.RegularExpressions;
 using Google.Protobuf;
 using Google.Protobuf.WellKnownTypes;
 using Grpc.Core;
@@ -11,6 +12,7 @@ using Iverson.Events;
 using Iverson.Sql;
 using Iverson.StarRocks;
 using Iverson.Vector;
+using Microsoft.AspNetCore.Authorization;
 using SchemaRelationKind       = Iverson.Api.Schema.RelationKind;
 using SchemaRelationDescriptor = Iverson.Api.Schema.RelationDescriptor;
 
@@ -42,6 +44,7 @@ public sealed class ObjectMappingGrpcService(
 
     // ── Schema registration ────────────────────────────────────────────────────
 
+    [Authorize(Policy = "SchemaAdmin")]
     public override async Task<SchemaResponse> RegisterSchema(
         SchemaRequest request,
         ServerCallContext context)
@@ -56,6 +59,10 @@ public sealed class ObjectMappingGrpcService(
 
         foreach (var typeDesc in new[] { request.RootType }.Concat(request.Dependents))
         {
+            ValidateIdentifier(typeDesc.TypeName, "type_name");
+            foreach (var property in typeDesc.Properties)
+                ValidateIdentifier(property.Name, $"property name on type '{typeDesc.TypeName}'");
+
             var descriptor = SchemaBuilder.BuildDescriptor(typeDesc, _embedding);
 
             var ownerField = descriptor.Authorization?.OwnerField;
@@ -381,6 +388,25 @@ public sealed class ObjectMappingGrpcService(
         }
 
         return new MappingDeleteResponse { Success = true, TraceId = request.TraceId };
+    }
+
+    // ── Identifier validation ────────────────────────────────────────────────
+
+    // TypeName/property names are string-interpolated unescaped into CREATE TABLE/ALTER TABLE
+    // DDL by PostgresSchemaManager/StarRocksSchemaManager after only a case transformation
+    // (NamingExtensions.ToSnakeCase, which does not escape or reject anything). Validate at
+    // the source — every descriptor that reaches SchemaBuilder.BuildDescriptor must already be
+    // a safe DDL identifier. No underscores are permitted in the input because ToSnakeCase
+    // inserts its own; this pattern also naturally rejects an empty string.
+    private static readonly Regex IdentifierPattern = new("^[A-Za-z][A-Za-z0-9]*$", RegexOptions.Compiled);
+
+    private static void ValidateIdentifier(string name, string context)
+    {
+        if (!IdentifierPattern.IsMatch(name))
+        {
+            throw new RpcException(new Status(StatusCode.InvalidArgument,
+                $"{context} '{name}' is not a valid identifier — it must start with a letter and contain only letters and digits."));
+        }
     }
 
     // ── SQL helpers ───────────────────────────────────────────────────────────

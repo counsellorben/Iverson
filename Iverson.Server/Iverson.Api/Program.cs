@@ -140,6 +140,10 @@ builder.Services.AddAuthorization(options =>
         OperatorAuthorizationPolicy.IsSatisfiedBy(
             context.User.FindAll("groups").Select(c => c.Value),
             context.User.FindFirst("scope")?.Value)));
+    options.AddPolicy("SchemaAdmin", policy => policy.RequireAssertion(context =>
+        SchemaAdminAuthorizationPolicy.IsSatisfiedBy(
+            context.User.FindAll("groups").Select(c => c.Value),
+            context.User.FindFirst("scope")?.Value)));
 });
 
 builder.Services.AddScoped<IActingUserAccessor, ActingUserAccessor>();

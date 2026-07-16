@@ -11,6 +11,13 @@ entries:
       expression: "return {}"
   - model: authentik_providers_oauth2.scopemapping
     identifiers:
+      scope_name: schema_admin
+    attrs:
+      name: "Iverson: schema admin scope"
+      description: Grants rights to register/redefine entity schemas
+      expression: "return {}"
+  - model: authentik_providers_oauth2.scopemapping
+    identifiers:
       scope_name: groups
     attrs:
       name: "Iverson: group membership"
@@ -29,6 +36,8 @@ entries:
       grant_types: ["client_credentials"]
       signing_key: !Find [authentik_crypto.certificatekeypair, [name, "authentik Self-signed Certificate"]]
       issuer_mode: global
+      property_mappings:
+        - !Find [authentik_providers_oauth2.scopemapping, [scope_name, schema_admin]]
   - model: authentik_core.application
     identifiers:
       slug: iverson-loadtest
@@ -69,6 +78,7 @@ entries:
       issuer_mode: global
       property_mappings:
         - !Find [authentik_providers_oauth2.scopemapping, [scope_name, admin]]
+        - !Find [authentik_providers_oauth2.scopemapping, [scope_name, schema_admin]]
   - model: authentik_core.application
     identifiers:
       slug: iverson-admin-automation

@@ -10,12 +10,16 @@ public static class TestJwtFactory
     public static readonly SymmetricSecurityKey SigningKey =
         new(Encoding.UTF8.GetBytes("test-signing-key-at-least-32-bytes-long-for-hs256"));
 
-    public static string CreateToken(string audience, string subject, DateTime? expires = null)
+    public static string CreateToken(
+        string audience, string subject, DateTime? expires = null, IEnumerable<Claim>? extraClaims = null)
     {
         var credentials = new SigningCredentials(SigningKey, SecurityAlgorithms.HmacSha256);
+        var claims = new List<Claim> { new("sub", subject) };
+        if (extraClaims is not null)
+            claims.AddRange(extraClaims);
         var token = new JwtSecurityToken(
             audience: audience,
-            claims: [new Claim("sub", subject)],
+            claims: claims,
             expires: expires ?? DateTime.UtcNow.AddMinutes(5),
             signingCredentials: credentials);
         return new JwtSecurityTokenHandler().WriteToken(token);

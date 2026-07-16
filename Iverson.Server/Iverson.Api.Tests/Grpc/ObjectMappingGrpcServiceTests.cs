@@ -244,6 +244,62 @@ public class ObjectMappingGrpcServiceTests
     }
 
     [Fact]
+    public async Task RegisterSchema_WithInjectionRelevantTypeName_ThrowsInvalidArgument()
+    {
+        var request = new SchemaRequest
+        {
+            RootType = SimpleType("Foo\"; DROP TABLE x; --", "Name")
+        };
+
+        var act = () => _sut.RegisterSchema(request, TestServerCallContext.Create());
+
+        var ex = await act.Should().ThrowAsync<RpcException>();
+        ex.Which.StatusCode.Should().Be(StatusCode.InvalidArgument);
+    }
+
+    [Fact]
+    public async Task RegisterSchema_WithInjectionRelevantPropertyName_ThrowsInvalidArgument()
+    {
+        var request = new SchemaRequest
+        {
+            RootType = SimpleType("Widget", "Name\"; DROP TABLE x; --")
+        };
+
+        var act = () => _sut.RegisterSchema(request, TestServerCallContext.Create());
+
+        var ex = await act.Should().ThrowAsync<RpcException>();
+        ex.Which.StatusCode.Should().Be(StatusCode.InvalidArgument);
+    }
+
+    [Fact]
+    public async Task RegisterSchema_WithUnderscoreInTypeName_ThrowsInvalidArgument()
+    {
+        // Underscores aren't SQL-injection-relevant, but they're excluded per the allow-list
+        // design: ToSnakeCase already inserts its own underscores, so accepting caller-supplied
+        // ones would let a caller collide with or otherwise manipulate the generated identifier.
+        var request = new SchemaRequest
+        {
+            RootType = SimpleType("Foo_Bar", "Name")
+        };
+
+        var act = () => _sut.RegisterSchema(request, TestServerCallContext.Create());
+
+        var ex = await act.Should().ThrowAsync<RpcException>();
+        ex.Which.StatusCode.Should().Be(StatusCode.InvalidArgument);
+    }
+
+    [Fact]
+    public async Task RegisterSchema_WithNormalAlphanumericNames_DoesNotThrow()
+    {
+        var request = new SchemaRequest { RootType = SimpleType("Widget2", "Name2") };
+
+        var response = await _sut.RegisterSchema(request, TestServerCallContext.Create());
+
+        response.Success.Should().BeTrue();
+        response.Registered.Should().Contain("Widget2");
+    }
+
+    [Fact]
     public async Task RegisterSchema_WithManyToOneRelation_DoesNotThrow()
     {
         var td = SimpleType("Comment", "Body", "ArticleId");
