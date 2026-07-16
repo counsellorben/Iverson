@@ -99,7 +99,10 @@ public sealed class EngagementStoreConsumerKafkaOrderingTests(KafkaOrderingConta
             cfg => new ConsumerBuilder<string, string>(cfg).Build(),
             cfg => new AdminClientBuilder(cfg).Build());
 
-        var sut = new EngagementStoreConsumer(consumer, sr, registry, NullLogger<EngagementStoreConsumer>.Instance);
+        // SchemaFixtures.AuthorSchema() uses BypassAuthorization (OwnerField == null), so the owner
+        // re-derivation path is never exercised here — no stubbing needed on this substitute.
+        var entities = Substitute.For<IEntityRepository>();
+        var sut = new EngagementStoreConsumer(consumer, sr, registry, entities, NullLogger<EngagementStoreConsumer>.Instance);
 
         await sut.StartAsync(CancellationToken.None);
         try

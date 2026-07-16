@@ -1,6 +1,7 @@
 using System.Text.Json;
 using FluentAssertions;
 using Iverson.Api.Consumers;
+using Iverson.Api.Schema;
 using Iverson.Api.Tests.Helpers;
 using Iverson.Events;
 using Iverson.Sql;
@@ -16,6 +17,7 @@ public class EngagementStoreConsumerTests
     private readonly IEventConsumer _consumer;
     private readonly IEngagementStoreEntityStore _sr;
     private readonly IRecordStoreQueryExecutor _sql;
+    private readonly IEntityRepository _entities;
     private readonly Api.Schema.SchemaRegistry _registry;
 
     private static readonly JsonSerializerOptions JsonOptions = new()
@@ -29,12 +31,19 @@ public class EngagementStoreConsumerTests
         _consumer = Substitute.For<IEventConsumer>();
         _sr       = Substitute.For<IEngagementStoreEntityStore>();
         _sql      = Substitute.For<IRecordStoreQueryExecutor>();
+        _entities = Substitute.For<IEntityRepository>();
 
         _sql.ExecuteAsync(Arg.Any<string>(), Arg.Any<object?>()).Returns(0);
         _sr.UpsertAsync(Arg.Any<StarRocksTableSchema>(), Arg.Any<string>())
            .Returns(Task.CompletedTask);
         _sr.DeleteAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<string>())
            .Returns(Task.CompletedTask);
+        // Default: authoritative row agrees with the event payload's owner value used across
+        // the pre-existing (non-adversarial) tests in this file. None of those tests configure
+        // Authorization.OwnerField though (SchemaFixtures.AuthorSchema() uses BypassAuthorization,
+        // OwnerField == null), so this stub is never actually exercised by them.
+        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>())
+                 .Returns("""{"Name":"Alice"}""");
 
         _registry = new Api.Schema.SchemaRegistry(new SchemaRegistryRepository(_sql), NullLogger<Api.Schema.SchemaRegistry>.Instance);
     }
@@ -42,7 +51,7 @@ public class EngagementStoreConsumerTests
     private string Serialize(EntityEvent ev) => JsonSerializer.Serialize(ev, JsonOptions);
 
     private EngagementStoreConsumer BuildSut() =>
-        new(_consumer, _sr, _registry, NullLogger<EngagementStoreConsumer>.Instance);
+        new(_consumer, _sr, _registry, _entities, NullLogger<EngagementStoreConsumer>.Instance);
 
     [Fact]
     public async Task HandleUpsert_WithEngagementFlag_CallsUpsertAsync()
@@ -197,5 +206,112 @@ public class EngagementStoreConsumerTests
 
         await _sr.Received(1).DeleteAsync("authors", "Id", key);
         await _sr.DidNotReceive().UpsertAsync(Arg.Any<StarRocksTableSchema>(), Arg.Any<string>());
+    }
+
+    [Fact]
+    public async Task HandleUpsert_WithForgedOwnerValueInPayload_UpsertsAuthoritativeValueNotPayloadValue()
+    {
+        // CSR #7 (StarRocks sibling) regression: a forged/stale event whose payload owner value
+        // disagrees with the authoritative Postgres row must NOT propagate the payload's
+        // (untrusted) value into StarRocks, since StarRocks's read-time row authorization
+        // filters on this column's stored value.
+        var schema = SchemaFixtures.AuthorSchema() with
+        {
+            Authorization = new AuthorizationRules(
+                "Name",
+                new List<RowPermission> { new("test-bypass", true, true, true) },
+                new List<FieldPermission>())
+        };
+        await _registry.RegisterAsync(schema);
+
+        const string forgedOwner = "Forged";
+        const string realOwner   = "RealOwner";
+        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>())
+                 .Returns($$"""{"Name":"{{realOwner}}"}""");
+
+        var ev = new EntityEvent(
+            EventType:     EntityEventType.Created,
+            TypeName:      "Author",
+            Key:           Guid.NewGuid().ToString(),
+            PayloadJson:   $$"""{"Name":"{{forgedOwner}}"}""",
+            TraceId:       "trace-forged-owner",
+            SchemaVersion: "1",
+            OccurredAt:    DateTimeOffset.UtcNow,
+            TargetStores:  StoreTarget.Engagement);
+
+        string? capturedJson = null;
+        _sr.UpsertAsync(Arg.Any<StarRocksTableSchema>(), Arg.Do<string>(j => capturedJson = j))
+           .Returns(Task.CompletedTask);
+
+        await BuildSut().HandleUpsertAsync(ev.Key, Serialize(ev), CancellationToken.None);
+
+        capturedJson.Should().NotBeNull();
+        using var doc = JsonDocument.Parse(capturedJson!);
+        doc.RootElement.GetProperty("Name").GetString().Should().Be(realOwner);
+    }
+
+    [Fact]
+    public async Task HandleUpsert_WithOwnerFieldAndNoAuthoritativeRow_OmitsOwnerKeyFromPayload()
+    {
+        // Fail-closed: if the authoritative row can't be found (e.g. a delete-then-recreate race),
+        // do NOT fall back to the event payload's unvalidated owner value — omit the key entirely.
+        var schema = SchemaFixtures.AuthorSchema() with
+        {
+            Authorization = new AuthorizationRules(
+                "Name",
+                new List<RowPermission> { new("test-bypass", true, true, true) },
+                new List<FieldPermission>())
+        };
+        await _registry.RegisterAsync(schema);
+
+        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>())
+                 .Returns((string?)null);
+
+        var ev = new EntityEvent(
+            EventType:     EntityEventType.Created,
+            TypeName:      "Author",
+            Key:           Guid.NewGuid().ToString(),
+            PayloadJson:   """{"Name":"Alice"}""",
+            TraceId:       "trace-missing-row",
+            SchemaVersion: "1",
+            OccurredAt:    DateTimeOffset.UtcNow,
+            TargetStores:  StoreTarget.Engagement);
+
+        string? capturedJson = null;
+        _sr.UpsertAsync(Arg.Any<StarRocksTableSchema>(), Arg.Do<string>(j => capturedJson = j))
+           .Returns(Task.CompletedTask);
+
+        await BuildSut().HandleUpsertAsync(ev.Key, Serialize(ev), CancellationToken.None);
+
+        capturedJson.Should().NotBeNull();
+        using var doc = JsonDocument.Parse(capturedJson!);
+        doc.RootElement.TryGetProperty("Name", out _).Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task HandleUpsert_WithNoOwnerFieldConfigured_PassesPayloadUnchangedAndNeverCallsFetchByKeyAsync()
+    {
+        // Efficiency/correctness: schemas without ownership (OwnerField == null) must not pay the
+        // extra Postgres read at all, and must pass the event payload through byte-for-byte.
+        await _registry.RegisterAsync(SchemaFixtures.AuthorSchema()); // BypassAuthorization() has OwnerField == null
+
+        var ev = new EntityEvent(
+            EventType:     EntityEventType.Created,
+            TypeName:      "Author",
+            Key:           Guid.NewGuid().ToString(),
+            PayloadJson:   """{"Name":"Alice"}""",
+            TraceId:       "trace-no-owner-field",
+            SchemaVersion: "1",
+            OccurredAt:    DateTimeOffset.UtcNow,
+            TargetStores:  StoreTarget.Engagement);
+
+        string? capturedJson = null;
+        _sr.UpsertAsync(Arg.Any<StarRocksTableSchema>(), Arg.Do<string>(j => capturedJson = j))
+           .Returns(Task.CompletedTask);
+
+        await BuildSut().HandleUpsertAsync(ev.Key, Serialize(ev), CancellationToken.None);
+
+        capturedJson.Should().Be(ev.PayloadJson);
+        await _entities.DidNotReceive().FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>());
     }
 }
