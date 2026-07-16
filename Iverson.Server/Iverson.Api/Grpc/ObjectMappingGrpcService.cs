@@ -50,7 +50,7 @@ public sealed class ObjectMappingGrpcService(
         ServerCallContext context)
     {
         _logger.LogInformation("[RegisterSchema] root={Type} dependents={Deps}",
-            request.RootType?.TypeName, request.Dependents.Count);
+            request.RootType?.TypeName?.SanitizeForLog(), request.Dependents.Count);
 
         if (request.RootType is null)
             throw new RpcException(new Status(StatusCode.InvalidArgument, "root_type is required."));
@@ -142,7 +142,7 @@ public sealed class ObjectMappingGrpcService(
         ServerCallContext context)
     {
         _logger.LogInformation("[Mapping.Get] type={Type} key={Key} depth={Depth}",
-            request.TypeName, request.Key, request.Depth);
+            request.TypeName.SanitizeForLog(), request.Key, request.Depth);
 
         var schema = RequireSchema(request.TypeName);
 
@@ -182,7 +182,7 @@ public sealed class ObjectMappingGrpcService(
         MappingWriteRequest request,
         ServerCallContext context)
     {
-        _logger.LogInformation("[Mapping.Post] type={Type}", request.TypeName);
+        _logger.LogInformation("[Mapping.Post] type={Type}", request.TypeName.SanitizeForLog());
 
         var schema = RequireSchema(request.TypeName);
 
@@ -248,7 +248,7 @@ public sealed class ObjectMappingGrpcService(
         MappingWriteRequest request,
         ServerCallContext context)
     {
-        _logger.LogInformation("[Mapping.Update] type={Type}", request.TypeName);
+        _logger.LogInformation("[Mapping.Update] type={Type}", request.TypeName.SanitizeForLog());
 
         var schema = RequireSchema(request.TypeName);
 
@@ -312,7 +312,7 @@ public sealed class ObjectMappingGrpcService(
     public override async Task<MappingDeleteResponse> Delete(
         MappingDeleteRequest request, ServerCallContext context)
     {
-        _logger.LogInformation("[Mapping.Delete] type={Type} key={Key}", request.TypeName, request.Key);
+        _logger.LogInformation("[Mapping.Delete] type={Type} key={Key}", request.TypeName.SanitizeForLog(), request.Key);
 
         var schema = RequireSchema(request.TypeName);
 

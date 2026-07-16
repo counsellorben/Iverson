@@ -54,7 +54,7 @@ public sealed class ObjectSearchGrpcService(
 
         if (logger.IsEnabled(LogLevel.Information))
             logger.LogInformation("[Search] type={Type} clauses={Clauses} page={Page}/{Size}",
-                request.TypeName, request.Query?.Clauses.Count ?? 0, request.Page, request.PageSize);
+                request.TypeName.SanitizeForLog(), request.Query?.Clauses.Count ?? 0, request.Page, request.PageSize);
 
         IEnumerable<dynamic> rows;
         try
@@ -158,7 +158,7 @@ public sealed class ObjectSearchGrpcService(
         }
 
         logger.LogInformation("[SearchSimilar] type={Type} property={Prop} topK={K} filtered={Filtered}",
-            request.TypeName, request.Property, request.TopK, filter is not null);
+            request.TypeName.SanitizeForLog(), request.Property, request.TopK, filter is not null);
 
         float[] queryVector;
         try
@@ -229,7 +229,7 @@ public sealed class ObjectSearchGrpcService(
         }
 
         logger.LogInformation("[SearchChunks] type={Type} property={Prop} topK={K} filtered={Filtered}",
-            request.TypeName, request.Property, request.TopK, filter is not null);
+            request.TypeName.SanitizeForLog(), request.Property, request.TopK, filter is not null);
 
         float[] queryVector;
         try
@@ -286,7 +286,7 @@ public sealed class ObjectSearchGrpcService(
             throw new RpcException(new Status(StatusCode.InvalidArgument, $"Not authorized to join '{auth.DeniedJoinedType}'."));
 
         if (logger.IsEnabled(LogLevel.Information))
-            logger.LogInformation("[Aggregate] type={Type} aggs={Count}", request.TypeName, request.Aggregations.Count);
+            logger.LogInformation("[Aggregate] type={Type} aggs={Count}", request.TypeName.SanitizeForLog(), request.Aggregations.Count);
 
         var response = new AggregateResponse { TraceId = request.TraceId };
 
@@ -344,7 +344,7 @@ public sealed class ObjectSearchGrpcService(
 
         if (logger.IsEnabled(LogLevel.Information))
             logger.LogInformation("[GroupBy] type={Type} keys={Keys} metrics={Metrics}",
-                request.TypeName, request.Keys.Count, request.Metrics.Count);
+                request.TypeName.SanitizeForLog(), request.Keys.Count, request.Metrics.Count);
 
         IEnumerable<dynamic> rows;
         try
@@ -403,7 +403,7 @@ public sealed class ObjectSearchGrpcService(
 
         if (logger.IsEnabled(LogLevel.Information))
             logger.LogInformation("[Pipeline] type={Type} steps={Steps}",
-                request.TypeName, request.Steps.Count);
+                request.TypeName.SanitizeForLog(), request.Steps.Count);
 
         IEnumerable<dynamic> rows;
         try

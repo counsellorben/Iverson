@@ -50,7 +50,7 @@ public sealed class ObjectPersistenceGrpcService(
 
         if (logger.IsEnabled(LogLevel.Information))
             logger.LogInformation("[Persistence.Post] type={Type} key={Key} stores={Stores}",
-                request.TypeName, key, targetStores);
+                request.TypeName.SanitizeForLog(), key, targetStores);
 
         var outboxRowId = await outboxWriter.UpsertAndEnqueueOutboxAsync(SchemaBuilder.ToTableSchema(schema), request.TypeName, key, payloadJson);
 
@@ -122,7 +122,7 @@ public sealed class ObjectPersistenceGrpcService(
 
         if (logger.IsEnabled(LogLevel.Information))
             logger.LogInformation("[Persistence.Update] type={Type} key={Key} stores={Stores}",
-                request.TypeName, key, targetStores);
+                request.TypeName.SanitizeForLog(), key, targetStores);
 
         var outboxRowId = await outboxWriter.UpsertAndEnqueueOutboxAsync(SchemaBuilder.ToTableSchema(schema), request.TypeName, key, payloadJson);
 

@@ -46,7 +46,7 @@ internal sealed class ReconciliationService(
             count++;
         }
 
-        logger.LogInformation("[Reconcile] Re-projected {Count} {Type} records to Kafka", count, typeName.ReplaceLineEndings(""));
+        logger.LogInformation("[Reconcile] Re-projected {Count} {Type} records to Kafka", count, typeName.SanitizeForLog());
         return count;
     }
 

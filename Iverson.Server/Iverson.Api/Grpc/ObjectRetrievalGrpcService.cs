@@ -23,7 +23,7 @@ public sealed class ObjectRetrievalGrpcService(
     public override async Task<RetrievalResponse> Get(
         RetrievalRequest request, ServerCallContext context)
     {
-        logger.LogInformation("[Retrieval.Get] type={Type} key={Key}", request.TypeName, request.Key);
+        logger.LogInformation("[Retrieval.Get] type={Type} key={Key}", request.TypeName.SanitizeForLog(), request.Key);
 
         var schema = registry.Get(request.TypeName);
         if (schema is null)
@@ -60,7 +60,7 @@ public sealed class ObjectRetrievalGrpcService(
         ServerCallContext context)
     {
         logger.LogInformation("[Retrieval.GetMany] type={Type} count={Count}",
-            request.TypeName, request.Keys.Count);
+            request.TypeName.SanitizeForLog(), request.Keys.Count);
 
         var schema = registry.Get(request.TypeName);
 
