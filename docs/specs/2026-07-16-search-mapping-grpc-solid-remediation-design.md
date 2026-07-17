@@ -164,14 +164,15 @@ public sealed class EntityRelationResolver(
         return true;
     }
 
-    // FetchByKeyAsync-equivalent private helper moves here too — only this collaborator's
-    // methods still call it after the move.
+    // FetchByKeyAsync does NOT move — Get/Update/Delete keep calling ObjectMappingGrpcService's
+    // own copy (3 of its 4 original callers). ResolveSingleRelationAsync instead inlines the
+    // one-liner directly: entities.FetchByKeyAsync(SchemaBuilder.ToTableSchema(relatedSchema), fkValue).
 }
 ```
 
 `ObjectMappingGrpcService.Get` changes its `if (request.Depth > 0)` branch to call `await relationResolver.ResolveRelationsAsync(entityStruct, schema, request.Depth, context.CancellationToken);`.
 
-**Verified:** no caller outside `ObjectMappingGrpcService` references `ResolveRelationsAsync` or its siblings (`grep` across the whole repo, excluding the file itself, returned no matches) — safe to move wholesale. `StructFieldAccess` and `AuthorizationFieldMasking` are both `internal static class` in `Iverson.Api.Grpc` — accessible from the new sibling class in the same assembly/namespace.
+**Verified:** no caller outside `ObjectMappingGrpcService` references `ResolveRelationsAsync` or its siblings (`grep` across the whole repo, excluding the file itself, returned no matches) — safe to move wholesale. `StructFieldAccess` and `AuthorizationFieldMasking` are both `internal static class` in `Iverson.Api.Grpc` — accessible from the new sibling class in the same assembly/namespace. `FetchByKeyAsync` specifically has 4 callers, not 1 — `Get`/`Update`/`Delete` (staying in `ObjectMappingGrpcService`) plus `ResolveSingleRelationAsync` (moving) — so it does not move; see the inlined replacement above.
 
 **Tests:** the 3 existing tests in `ObjectMappingGrpcServiceTests.cs` (`Get_WithDepth1_ResolvesManyToOneRelation`, `Get_WithDepth0_DoesNotResolveRelations`, `Get_WithManyToManyRelation_IssuesSingleBatchQuery`) move to a new `EntityRelationResolverTests.cs`, now calling `ResolveRelationsAsync` directly. Verified these tests construct the service directly with NSubstitute mocks (not `WebApplicationFactory`), so porting them to construct the new collaborator directly is a mechanical change of what's mocked, not a rewrite. `ObjectMappingGrpcServiceTests` keeps those 3 as thin checks that `Get` calls the resolver when `Depth > 0` and skips it at `Depth == 0`.
 
