@@ -68,6 +68,7 @@ The following were verified by `thorough-brainstorming` at spec-write time and a
 | 18 | Consumer impact (test) | Beyond the 3 tests the spec names, 2 more existing tests (`Get_WithRelatedEntities_OmitsDeniedRelatedEntity_KeepsAllowedOne`, `Get_WithFieldPermissionExcludingFkColumn_OmitsRelatedEntity`) call `_sut.Get(..., Depth = 1)` and assert on real recursive relation-resolution/masking output — the shared `_sut` must keep a **real** `EntityRelationResolver`, not a mock | `grep -n "Depth = 1"` in `ObjectMappingGrpcServiceTests.cs` — 5 hits total (744/757, 766/775, 786/806 already known; 969/989 and 999/1027 are the 2 additional ones), read of both additional tests confirms real-data assertions |
 | 19 | Mechanical correction | Spec cites `ObjectPersistenceGrpcService.Post`'s block as lines 63-90; the actual block (from `var published = false;` through the second `catch`'s closing brace) is lines 63-92 | Read of `ObjectPersistenceGrpcService.cs:63-92` |
 | 20 | Mechanical correction | Spec's testing note undercounts by one: 15 `RegisterSchema_*` tests exist in `ObjectMappingGrpcServiceTests.cs`, not 13+2=15 as implied — 14 non-null-guard tests exist, not 13 | `grep -n "public.*RegisterSchema_"` — 15 matches enumerated and read in full (lines 156-379) |
+| 21 | Consumer impact / DI lifetime | `EntityRelationResolver`'s 3 constructor dependencies (`SchemaRegistry`, `IEntityRepository`, `IRowFieldAuthorizationEvaluator`) are all `AddSingleton` — safe for its own `AddSingleton` registration. `IActingUserAccessor` is `AddScoped` (`Program.cs:149`, holds mutable per-request identity) and is deliberately excluded from the constructor for this reason — passed as a call-time `ClaimsPrincipal?` parameter instead (Task 3 Step 1) | `critical-implementation-review` round 1, finding 2.1 + §3.1 resolution (option b); `Program.cs:149` (`AddScoped<IActingUserAccessor, ActingUserAccessor>`) |
 
 ## Tasks
 
@@ -417,14 +418,15 @@ git commit -m "refactor(api): extract OutboxPublisher, dedupe publish-block acro
 - Modify: `Iverson.Server/Iverson.Api.Tests/Grpc/ObjectMappingGrpcServiceTests.cs`
 
 **Interfaces:**
-- Consumes: `SchemaRegistry`, `IEntityRepository`, `IRowFieldAuthorizationEvaluator`, `IActingUserAccessor` — all already present in `ObjectMappingGrpcServiceTests`'s shared test fields
+- Consumes: `SchemaRegistry`, `IEntityRepository`, `IRowFieldAuthorizationEvaluator` as constructor dependencies — all already present in `ObjectMappingGrpcServiceTests`'s shared test fields. `IActingUserAccessor` is deliberately **not** a constructor dependency (see the DI-lifetime note in Step 1) — the caller passes `ClaimsPrincipal? actingUser` explicitly into `ResolveRelationsAsync` instead.
 - Produces: `IEntityRelationResolver` — used only within this task; no later task depends on it
 
 - [ ] **Step 1: Implement `EntityRelationResolver.cs`**
 
-Move `ResolveRelationsAsync`, `ResolveSingleRelationAsync`, `ResolveManyToManyAsync`, `ResolveOneToManyAsync` (current lines 423-547) verbatim into the new class, with two changes: `ResolveSingleRelationAsync`'s inline auth-check-and-mask block collapses to a `TryAuthorizeAndMask` helper, and its `FetchByKeyAsync(relatedSchema, fkValue)` call (currently the private helper) becomes `entities.FetchByKeyAsync(SchemaBuilder.ToTableSchema(relatedSchema), fkValue)` directly, since the private helper stays on `ObjectMappingGrpcService` and isn't visible here.
+Move `ResolveRelationsAsync`, `ResolveSingleRelationAsync`, `ResolveManyToManyAsync`, `ResolveOneToManyAsync` (current lines 423-547) verbatim into the new class, with three changes: `ResolveSingleRelationAsync`'s inline auth-check-and-mask block collapses to a `TryAuthorizeAndMask` helper; its `FetchByKeyAsync(relatedSchema, fkValue)` call (currently the private helper) becomes `entities.FetchByKeyAsync(SchemaBuilder.ToTableSchema(relatedSchema), fkValue)` directly, since the private helper stays on `ObjectMappingGrpcService` and isn't visible here; and `IActingUserAccessor` is **not** taken as a constructor dependency — `ResolveRelationsAsync` and all 3 siblings instead take `ClaimsPrincipal? actingUser` as a method parameter, threaded through every recursive call. This is a deliberate deviation from `IActingUserAccessor`-as-constructor-dependency: that service is registered `AddScoped` (`Program.cs:149`, holds genuinely mutable per-request identity state set by `ActingUserInterceptor`), and `EntityRelationResolver` is registered `AddSingleton` (Step 3) — capturing a Scoped dependency in a Singleton's constructor is a captive-dependency bug (crashes under DI scope validation, or silently freezes the first caller's identity into every later call otherwise). Taking `actingUser` as a call-time parameter instead — the same pattern `IRowFieldAuthorizationEvaluator.Evaluate` itself already uses — keeps this collaborator genuinely stateless and safe to register `AddSingleton`, consistent with the other 3 cited "existing convention" singletons.
 
 ```csharp
+using System.Security.Claims;
 using Google.Protobuf;
 using Google.Protobuf.WellKnownTypes;
 using Iverson.Api.Authorization;
@@ -437,17 +439,16 @@ namespace Iverson.Api.Grpc;
 
 public interface IEntityRelationResolver
 {
-    Task ResolveRelationsAsync(Struct entityStruct, SchemaDescriptor schema, int depth, CancellationToken ct);
+    Task ResolveRelationsAsync(Struct entityStruct, SchemaDescriptor schema, int depth, ClaimsPrincipal? actingUser, CancellationToken ct);
 }
 
 public sealed class EntityRelationResolver(
     SchemaRegistry registry,
     IEntityRepository entities,
-    IRowFieldAuthorizationEvaluator authEvaluator,
-    IActingUserAccessor actingUserAccessor)
+    IRowFieldAuthorizationEvaluator authEvaluator)
     : IEntityRelationResolver
 {
-    public async Task ResolveRelationsAsync(Struct entityStruct, SchemaDescriptor schema, int depth, CancellationToken ct)
+    public async Task ResolveRelationsAsync(Struct entityStruct, SchemaDescriptor schema, int depth, ClaimsPrincipal? actingUser, CancellationToken ct)
     {
         foreach (var relation in schema.Relations)
         {
@@ -455,13 +456,13 @@ public sealed class EntityRelationResolver(
             {
                 case SchemaRelationKind.ManyToOne:
                 case SchemaRelationKind.OneToOne:
-                    await ResolveSingleRelationAsync(entityStruct, relation, depth, ct);
+                    await ResolveSingleRelationAsync(entityStruct, relation, depth, actingUser, ct);
                     break;
                 case SchemaRelationKind.ManyToMany:
-                    await ResolveManyToManyAsync(entityStruct, relation, depth, ct);
+                    await ResolveManyToManyAsync(entityStruct, relation, depth, actingUser, ct);
                     break;
                 case SchemaRelationKind.OneToMany:
-                    await ResolveOneToManyAsync(entityStruct, schema, relation, depth, ct);
+                    await ResolveOneToManyAsync(entityStruct, schema, relation, depth, actingUser, ct);
                     break;
                 default:
                     throw new ArgumentOutOfRangeException(nameof(relation.Kind), relation.Kind,
@@ -481,7 +482,7 @@ public sealed class EntityRelationResolver(
     }
 
     private async Task ResolveSingleRelationAsync(
-        Struct entityStruct, SchemaRelationDescriptor relation, int depth, CancellationToken ct)
+        Struct entityStruct, SchemaRelationDescriptor relation, int depth, ClaimsPrincipal? actingUser, CancellationToken ct)
     {
         var fkValue = StructFieldAccess.GetFieldString(entityStruct, relation.ForeignKey);
         if (string.IsNullOrWhiteSpace(fkValue)) return;
@@ -494,17 +495,17 @@ public sealed class EntityRelationResolver(
 
         var relatedStruct = JsonParser.Default.Parse<Struct>(rowJson);
 
-        var decision = authEvaluator.Evaluate(relatedSchema, actingUserAccessor.ActingUser, AuthorizationAction.Read);
+        var decision = authEvaluator.Evaluate(relatedSchema, actingUser, AuthorizationAction.Read);
         if (!TryAuthorizeAndMask(relatedStruct, decision)) return;
 
         if (depth > 1)
-            await ResolveRelationsAsync(relatedStruct, relatedSchema, depth - 1, ct);
+            await ResolveRelationsAsync(relatedStruct, relatedSchema, depth - 1, actingUser, ct);
 
         entityStruct.Fields[relation.PropertyName] = Value.ForStruct(relatedStruct);
     }
 
     private async Task ResolveManyToManyAsync(
-        Struct entityStruct, SchemaRelationDescriptor relation, int depth, CancellationToken ct)
+        Struct entityStruct, SchemaRelationDescriptor relation, int depth, ClaimsPrincipal? actingUser, CancellationToken ct)
     {
         var ids = StructFieldAccess.GetFieldStringList(entityStruct, relation.ForeignKey)
             .Distinct(StringComparer.OrdinalIgnoreCase)
@@ -517,7 +518,7 @@ public sealed class EntityRelationResolver(
         var rows = await entities.FetchManyByKeysAsync(SchemaBuilder.ToTableSchema(relatedSchema), ids);
         var rowsByKey = rows.ToDictionary(r => r.Key, StringComparer.OrdinalIgnoreCase);
 
-        var decision = authEvaluator.Evaluate(relatedSchema, actingUserAccessor.ActingUser, AuthorizationAction.Read);
+        var decision = authEvaluator.Evaluate(relatedSchema, actingUser, AuthorizationAction.Read);
 
         var items = new List<Value>();
         foreach (var id in ids)
@@ -529,7 +530,7 @@ public sealed class EntityRelationResolver(
             if (!TryAuthorizeAndMask(relatedStruct, decision)) continue;
 
             if (depth > 1)
-                await ResolveRelationsAsync(relatedStruct, relatedSchema, depth - 1, ct);
+                await ResolveRelationsAsync(relatedStruct, relatedSchema, depth - 1, actingUser, ct);
             items.Add(Value.ForStruct(relatedStruct));
         }
 
@@ -537,7 +538,7 @@ public sealed class EntityRelationResolver(
     }
 
     private async Task ResolveOneToManyAsync(
-        Struct entityStruct, SchemaDescriptor schema, SchemaRelationDescriptor relation, int depth, CancellationToken ct)
+        Struct entityStruct, SchemaDescriptor schema, SchemaRelationDescriptor relation, int depth, ClaimsPrincipal? actingUser, CancellationToken ct)
     {
         var keyValue = StructFieldAccess.GetFieldString(entityStruct, schema.KeyColumn.Name);
         if (string.IsNullOrWhiteSpace(keyValue)) return;
@@ -548,7 +549,7 @@ public sealed class EntityRelationResolver(
         var rows = await entities.FetchByColumnAsync(
             SchemaBuilder.ToTableSchema(relatedSchema), relation.ForeignKey, keyValue);
 
-        var decision = authEvaluator.Evaluate(relatedSchema, actingUserAccessor.ActingUser, AuthorizationAction.Read);
+        var decision = authEvaluator.Evaluate(relatedSchema, actingUser, AuthorizationAction.Read);
 
         var items = new List<Value>();
         foreach (var rowJson in rows)
@@ -559,7 +560,7 @@ public sealed class EntityRelationResolver(
             if (!TryAuthorizeAndMask(relatedStruct, decision)) continue;
 
             if (depth > 1)
-                await ResolveRelationsAsync(relatedStruct, relatedSchema, depth - 1, ct);
+                await ResolveRelationsAsync(relatedStruct, relatedSchema, depth - 1, actingUser, ct);
             items.Add(Value.ForStruct(relatedStruct));
         }
 
@@ -572,7 +573,7 @@ Note: `TryAuthorizeAndMask` is a genuine behavior-preserving simplification of t
 
 - [ ] **Step 2: Update `ObjectMappingGrpcService.cs`**
 
-Remove `ResolveRelationsAsync`/`ResolveSingleRelationAsync`/`ResolveManyToManyAsync`/`ResolveOneToManyAsync` (lines 423-547) and the now-unused `SchemaRelationKind`/`SchemaRelationDescriptor` using-aliases (lines 16-17) if nothing else in the file uses them (verify via `grep -n "SchemaRelationKind\|SchemaRelationDescriptor"` after removal — expect zero remaining hits). Add `IEntityRelationResolver _relationResolver` as a new final parameter, appended after the existing last parameter (`_authEvaluator`). Replace `Get`'s line 175-176:
+Remove `ResolveRelationsAsync`/`ResolveSingleRelationAsync`/`ResolveManyToManyAsync`/`ResolveOneToManyAsync` (lines 423-547) and the now-unused `SchemaRelationKind`/`SchemaRelationDescriptor` using-aliases (lines 16-17) if nothing else in the file uses them (verify via `grep -n "SchemaRelationKind\|SchemaRelationDescriptor"` after removal — expect zero remaining hits). Add `IEntityRelationResolver _relationResolver` as a new final parameter, appended after the existing last parameter (`_authEvaluator`) — `ObjectMappingGrpcService` itself keeps `IActingUserAccessor _actingUserAccessor` unchanged (already a constructor dependency; unaffected by Step 1's change) and now passes `_actingUserAccessor.ActingUser` explicitly at the call site. Replace `Get`'s line 175-176:
 ```csharp
         if (request.Depth > 0)
             await ResolveRelationsAsync(entityStruct, schema, request.Depth, context.CancellationToken);
@@ -580,7 +581,7 @@ Remove `ResolveRelationsAsync`/`ResolveSingleRelationAsync`/`ResolveManyToManyAs
 with:
 ```csharp
         if (request.Depth > 0)
-            await _relationResolver.ResolveRelationsAsync(entityStruct, schema, request.Depth, context.CancellationToken);
+            await _relationResolver.ResolveRelationsAsync(entityStruct, schema, request.Depth, _actingUserAccessor.ActingUser, context.CancellationToken);
 ```
 
 - [ ] **Step 3: Register in `Program.cs`**
@@ -595,6 +596,7 @@ builder.Services.AddSingleton<IEntityRelationResolver, EntityRelationResolver>()
 Move the 3 named tests (`Get_WithDepth1_ResolvesManyToOneRelation`, `Get_WithDepth0_DoesNotResolveRelations`, `Get_WithManyToManyRelation_IssuesSingleBatchQuery`) from `ObjectMappingGrpcServiceTests.cs`, retargeted to construct `EntityRelationResolver` directly and call `ResolveRelationsAsync` on a `Struct` built from the parsed JSON, instead of going through `_sut.Get(...)`. Worked example for the first:
 
 ```csharp
+using System.Security.Claims;
 using FluentAssertions;
 using Google.Protobuf;
 using Google.Protobuf.WellKnownTypes;
@@ -614,10 +616,10 @@ public class EntityRelationResolverTests
     private readonly IRecordStoreQueryExecutor _sql = Substitute.For<IRecordStoreQueryExecutor>();
     private readonly IEntityRepository _entities = Substitute.For<IEntityRepository>();
     private readonly SchemaRegistry _registry;
-    private readonly IActingUserAccessor _actingUserAccessor;
     private readonly IRowFieldAuthorizationEvaluator _authEvaluator = new RowFieldAuthorizationEvaluator();
     private readonly EntityRelationResolver _sut;
 
+    private static readonly ClaimsPrincipal ActingUser = ActingUserFixtures.Principal("test-user", "test-bypass");
     private static readonly string AuthorId  = "11111111-0000-0000-0000-000000000001";
     private static readonly string ArticleId = "22222222-0000-0000-0000-000000000002";
     private static readonly string AuthorJson  = $$"""{"Id":"{{AuthorId}}","Name":"Alice","Bio":"Writer"}""";
@@ -626,9 +628,7 @@ public class EntityRelationResolverTests
     public EntityRelationResolverTests()
     {
         _registry = new SchemaRegistry(new SchemaRegistryRepository(_sql), NullLogger<SchemaRegistry>.Instance);
-        _actingUserAccessor = new ActingUserAccessor
-            { ActingUser = ActingUserFixtures.Principal("test-user", "test-bypass") };
-        _sut = new EntityRelationResolver(_registry, _entities, _authEvaluator, _actingUserAccessor);
+        _sut = new EntityRelationResolver(_registry, _entities, _authEvaluator);
     }
 
     [Fact]
@@ -644,7 +644,7 @@ public class EntityRelationResolverTests
         var entityStruct = JsonParser.Default.Parse<Struct>(ArticleJson);
         var schema = _registry.Get("Article")!;
 
-        await _sut.ResolveRelationsAsync(entityStruct, schema, depth: 1, CancellationToken.None);
+        await _sut.ResolveRelationsAsync(entityStruct, schema, depth: 1, ActingUser, CancellationToken.None);
 
         entityStruct.Fields.Should().ContainKey("Author");
         entityStruct.Fields["Author"].StructValue.Fields["Name"].StringValue.Should().Be("Alice");
@@ -668,7 +668,7 @@ private readonly IEntityRelationResolver _relationResolver;
 ```
 In the constructor, before `_sut = new ObjectMappingGrpcService(...)`:
 ```csharp
-_relationResolver = new EntityRelationResolver(_registry, _entities, _authEvaluator, _actingUserAccessor);
+_relationResolver = new EntityRelationResolver(_registry, _entities, _authEvaluator);
 ```
 and pass `_relationResolver` as the new final argument to `_sut`'s constructor — a **real** instance, not a mock, since `Get_WithRelatedEntities_OmitsDeniedRelatedEntity_KeepsAllowedOne` and `Get_WithFieldPermissionExcludingFkColumn_OmitsRelatedEntity` (assumption #18) assert on real recursive resolution output through the shared `_sut`. At this point in the task sequence (after Task 2, before Task 4), `_sut`'s full constructor call is:
 ```csharp
@@ -680,7 +680,7 @@ _sut = new ObjectMappingGrpcService(
     _actingUserAccessor, _authEvaluator, _relationResolver);
 ```
 
-Replace the 3 removed tests' role with 2 thin delegation checks using a **separate, locally-constructed** `sut` with a mocked `IEntityRelationResolver` (NSubstitute call-verification needs a mock reference, which the shared `_sut`'s real resolver can't provide — every other argument reuses the class's real fields, matching the block above):
+Replace the 3 removed tests' role with 2 thin delegation checks using a **separate, locally-constructed** `sut` with a mocked `IEntityRelationResolver` (NSubstitute call-verification needs a mock reference, which the shared `_sut`'s real resolver can't provide — every other argument reuses the class's real fields, matching the block above). Add `using System.Security.Claims;` to this file's using list — needed for `Arg.Any<ClaimsPrincipal?>()` below, matching `IEntityRelationResolver.ResolveRelationsAsync`'s updated signature from Step 1:
 
 ```csharp
 [Fact]
@@ -700,7 +700,7 @@ public async Task Get_WithDepthGreaterThanZero_CallsRelationResolver()
     await sut.Get(new MappingGetRequest { TypeName = "Article", Key = ArticleId, Depth = 1 }, TestServerCallContext.Create());
 
     await mockResolver.Received(1).ResolveRelationsAsync(
-        Arg.Any<Struct>(), Arg.Any<SchemaDescriptor>(), 1, Arg.Any<CancellationToken>());
+        Arg.Any<Struct>(), Arg.Any<SchemaDescriptor>(), 1, Arg.Any<ClaimsPrincipal?>(), Arg.Any<CancellationToken>());
 }
 
 [Fact]
@@ -720,7 +720,7 @@ public async Task Get_WithDepthZero_DoesNotCallRelationResolver()
     await sut.Get(new MappingGetRequest { TypeName = "Article", Key = ArticleId, Depth = 0 }, TestServerCallContext.Create());
 
     await mockResolver.DidNotReceiveWithAnyArgs().ResolveRelationsAsync(
-        default!, default!, default, default);
+        default!, default!, default, default, default);
 }
 ```
 
