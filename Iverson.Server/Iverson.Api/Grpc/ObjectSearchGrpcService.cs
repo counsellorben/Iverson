@@ -151,11 +151,7 @@ public sealed class ObjectSearchGrpcService(
             }
         }
 
-        if (decision.OwnershipRequired)
-        {
-            filter ??= new Filter();
-            filter.Must.Add(Conditions.MatchKeyword(schema.Authorization!.OwnerField!.ToCamelCase(), decision.OwnerValue!));
-        }
+        filter = QdrantFilterBuilder.ApplyOwnership(filter, decision.OwnershipRequired, schema.Authorization?.OwnerField?.ToCamelCase(), decision.OwnerValue);
 
         logger.LogInformation("[SearchSimilar] type={Type} property={Prop} topK={K} filtered={Filtered}",
             request.TypeName.SanitizeForLog(), request.Property.SanitizeForLog(), request.TopK, filter is not null);
@@ -221,12 +217,7 @@ public sealed class ObjectSearchGrpcService(
                 $"Property '{request.Property}' on '{request.TypeName}' is not authorized for this caller."));
 
         var filter = BuildChunksFilter(schema, request);
-
-        if (decision.OwnershipRequired)
-        {
-            filter ??= new Filter();
-            filter.Must.Add(Conditions.MatchKeyword(schema.Authorization!.OwnerField!.ToCamelCase(), decision.OwnerValue!));
-        }
+        filter = QdrantFilterBuilder.ApplyOwnership(filter, decision.OwnershipRequired, schema.Authorization?.OwnerField?.ToCamelCase(), decision.OwnerValue);
 
         logger.LogInformation("[SearchChunks] type={Type} property={Prop} topK={K} filtered={Filtered}",
             request.TypeName.SanitizeForLog(), request.Property.SanitizeForLog(), request.TopK, filter is not null);

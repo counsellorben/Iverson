@@ -205,4 +205,47 @@ public class QdrantFilterBuilderTests
         filter.Should.Should().BeEmpty();
         filter.MustNot.Should().BeEmpty();
     }
+
+    [Fact]
+    public void ApplyOwnership_NotRequired_NullFilter_ReturnsNull()
+    {
+        var result = QdrantFilterBuilder.ApplyOwnership(null, ownershipRequired: false, "ownerId", "owner-1");
+
+        result.Should().BeNull();
+    }
+
+    [Fact]
+    public void ApplyOwnership_NotRequired_ExistingFilter_ReturnsSameFilterUnchanged()
+    {
+        var original = new Filter();
+        original.Must.Add(Conditions.MatchKeyword("category", "Tech"));
+
+        var result = QdrantFilterBuilder.ApplyOwnership(original, ownershipRequired: false, "ownerId", "owner-1");
+
+        result.Should().BeSameAs(original);
+        result!.Must.Should().ContainSingle();
+    }
+
+    [Fact]
+    public void ApplyOwnership_Required_NullFilter_CreatesFilterWithMatchKeywordCondition()
+    {
+        var result = QdrantFilterBuilder.ApplyOwnership(null, ownershipRequired: true, "ownerId", "owner-1");
+
+        result.Should().NotBeNull();
+        result!.Must.Should().ContainSingle();
+        result.Must[0].Field.Key.Should().Be("ownerId");
+        result.Must[0].Field.Match.Keyword.Should().Be("owner-1");
+    }
+
+    [Fact]
+    public void ApplyOwnership_Required_ExistingFilter_AppendsConditionPreservingExisting()
+    {
+        var original = new Filter();
+        original.Must.Add(Conditions.MatchKeyword("category", "Tech"));
+
+        var result = QdrantFilterBuilder.ApplyOwnership(original, ownershipRequired: true, "ownerId", "owner-1");
+
+        result.Should().BeSameAs(original);
+        result!.Must.Should().HaveCount(2);
+    }
 }

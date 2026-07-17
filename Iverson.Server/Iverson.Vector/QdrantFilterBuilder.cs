@@ -51,6 +51,14 @@ public static class QdrantFilterBuilder
         return filter;
     }
 
+    public static Filter? ApplyOwnership(Filter? filter, bool ownershipRequired, string? ownerFieldCamelCase, string? ownerValue)
+    {
+        if (!ownershipRequired) return filter;
+        filter ??= new Filter();
+        filter.Must.Add(Conditions.MatchKeyword(ownerFieldCamelCase!, ownerValue!));
+        return filter;
+    }
+
     private static (Condition Condition, bool Negate) BuildCondition(SearchClause clause, string rpcName) =>
         clause.Operator switch
         {
