@@ -25,6 +25,7 @@ public class ObjectPersistenceGrpcServiceTests
     private readonly IEntityRepository _entities = Substitute.For<IEntityRepository>();
     private readonly IActingUserAccessor _actingUserAccessor;
     private readonly IRowFieldAuthorizationEvaluator _authEvaluator = new RowFieldAuthorizationEvaluator();
+    private readonly IOutboxPublisher _outboxPublisher;
     private readonly ObjectPersistenceGrpcService _sut;
 
     public ObjectPersistenceGrpcServiceTests()
@@ -49,8 +50,9 @@ public class ObjectPersistenceGrpcServiceTests
         _registry = new SchemaRegistry(new SchemaRegistryRepository(_sql), NullLogger<SchemaRegistry>.Instance);
         _actingUserAccessor = new ActingUserAccessor
             { ActingUser = ActingUserFixtures.Principal("test-user", "test-bypass") };
+        _outboxPublisher = new OutboxPublisher(_events, new OutboxWriter(ReconciliationSchema.TableName, _sql, _txRunner), NullLogger<OutboxPublisher>.Instance);
         _sut = new ObjectPersistenceGrpcService(
-            _events, _registry,
+            _outboxPublisher, _registry,
             new RelationValidator(_registry), new EntityKeyAccessor(),
             new OutboxWriter(ReconciliationSchema.TableName, _sql, _txRunner),
             NullLogger<ObjectPersistenceGrpcService>.Instance,

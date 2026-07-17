@@ -31,6 +31,7 @@ public class ObjectMappingGrpcServiceTests
     private readonly IEngagementStoreSchemaManager _starRocks;
     private readonly IActingUserAccessor _actingUserAccessor;
     private readonly IRowFieldAuthorizationEvaluator _authEvaluator = new RowFieldAuthorizationEvaluator();
+    private readonly IOutboxPublisher _outboxPublisher;
     private readonly ObjectMappingGrpcService _sut;
 
     private static readonly string AuthorId  = "11111111-0000-0000-0000-000000000001";
@@ -72,8 +73,9 @@ public class ObjectMappingGrpcServiceTests
         _registry = new SchemaRegistry(new SchemaRegistryRepository(_sql), NullLogger<SchemaRegistry>.Instance);
         _actingUserAccessor = new ActingUserAccessor
             { ActingUser = ActingUserFixtures.Principal("test-user", "test-bypass") };
+        _outboxPublisher = new OutboxPublisher(_events, new OutboxWriter(ReconciliationSchema.TableName, _sql, _txRunner), NullLogger<OutboxPublisher>.Instance);
         _sut = new ObjectMappingGrpcService(
-            _entities, _txRunner, _schemaManager, _vector, _events, _registry, _embedding, _starRocks,
+            _entities, _txRunner, _schemaManager, _vector, _outboxPublisher, _registry, _embedding, _starRocks,
             new RelationValidator(_registry), new EntityKeyAccessor(),
             new OutboxWriter(ReconciliationSchema.TableName, _sql, _txRunner),
             NullLogger<ObjectMappingGrpcService>.Instance,

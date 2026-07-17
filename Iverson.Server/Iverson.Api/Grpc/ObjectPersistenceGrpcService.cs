@@ -16,7 +16,7 @@ namespace Iverson.Api.Grpc;
 /// an EntityEvent for StarRocks and Qdrant to consume via their consumer groups.
 /// </summary>
 public sealed class ObjectPersistenceGrpcService(
-    IEventProducer events,
+    IOutboxPublisher outboxPublisher,
     SchemaRegistry registry,
     IRelationValidator relationValidator,
     IEntityKeyAccessor keyAccessor,
@@ -27,8 +27,6 @@ public sealed class ObjectPersistenceGrpcService(
     IRowFieldAuthorizationEvaluator authEvaluator)
     : ObjectPersistenceService.ObjectPersistenceServiceBase
 {
-    private const string SchemaVersion = "1";
-
     public override async Task<PersistResponse> Post(
         PersistRequest request, ServerCallContext context)
     {
@@ -60,36 +58,8 @@ public sealed class ObjectPersistenceGrpcService(
         // polls unconditionally-inserted outbox rows, not just failure-recorded ones — see
         // Task 5's updated ReconciliationSchema doc comment) will pick this row up on its
         // next poll. This just keeps the common case's projection latency low.
-        var published = false;
-        try
-        {
-            await events.ProduceAsync(
-                EntityTopics.Events,
-                key,
-                new EntityEvent(
-                    EntityEventType.Created,
-                    request.TypeName,
-                    key,
-                    payloadJson,
-                    request.TraceId.NullIfEmpty() ?? Activity.Current?.TraceId.ToString() ?? string.Empty,
-                    SchemaVersion,
-                    DateTimeOffset.UtcNow,
-                    targetStores));
-            published = true;
-            await outboxWriter.DeleteOutboxRowIfPresentAsync(outboxRowId);
-        }
-        catch (Exception ex) when (!published)
-        {
-            logger.LogWarning(ex,
-                "[Persistence.Post] Opportunistic publish failed for type={Type} key={Key} — " +
-                "ReconciliationQueueWorker will retry from the durable outbox row", request.TypeName.SanitizeForLog(), key);
-        }
-        catch (Exception ex)
-        {
-            logger.LogWarning(ex,
-                "[Persistence.Post] Publish succeeded but outbox cleanup failed for type={Type} key={Key} — " +
-                "ReconciliationQueueWorker will harmlessly re-publish from the durable outbox row", request.TypeName.SanitizeForLog(), key);
-        }
+        await outboxPublisher.PublishAsync(EntityEventType.Created, request.TypeName, key, payloadJson,
+            request.TraceId, targetStores, outboxRowId, "Persistence.Post");
 
         return new PersistResponse
         {
@@ -132,36 +102,8 @@ public sealed class ObjectPersistenceGrpcService(
         // polls unconditionally-inserted outbox rows, not just failure-recorded ones — see
         // Task 5's updated ReconciliationSchema doc comment) will pick this row up on its
         // next poll. This just keeps the common case's projection latency low.
-        var published = false;
-        try
-        {
-            await events.ProduceAsync(
-                EntityTopics.Events,
-                key,
-                new EntityEvent(
-                    EntityEventType.Updated,
-                    request.TypeName,
-                    key,
-                    payloadJson,
-                    request.TraceId.NullIfEmpty() ?? Activity.Current?.TraceId.ToString() ?? string.Empty,
-                    SchemaVersion,
-                    DateTimeOffset.UtcNow,
-                    targetStores));
-            published = true;
-            await outboxWriter.DeleteOutboxRowIfPresentAsync(outboxRowId);
-        }
-        catch (Exception ex) when (!published)
-        {
-            logger.LogWarning(ex,
-                "[Persistence.Update] Opportunistic publish failed for type={Type} key={Key} — " +
-                "ReconciliationQueueWorker will retry from the durable outbox row", request.TypeName.SanitizeForLog(), key);
-        }
-        catch (Exception ex)
-        {
-            logger.LogWarning(ex,
-                "[Persistence.Update] Publish succeeded but outbox cleanup failed for type={Type} key={Key} — " +
-                "ReconciliationQueueWorker will harmlessly re-publish from the durable outbox row", request.TypeName.SanitizeForLog(), key);
-        }
+        await outboxPublisher.PublishAsync(EntityEventType.Updated, request.TypeName, key, payloadJson,
+            request.TraceId, targetStores, outboxRowId, "Persistence.Update");
 
         return new PersistResponse
         {
@@ -174,10 +116,4 @@ public sealed class ObjectPersistenceGrpcService(
     private SchemaDescriptor RequireSchema(string typeName) =>
         registry.Get(typeName) ?? throw new RpcException(new Status(StatusCode.FailedPrecondition,
             $"No schema registered for '{typeName}'. Call RegisterSchema first."));
-}
-
-file static class StringExtensions
-{
-    internal static string? NullIfEmpty(this string? s) =>
-        string.IsNullOrWhiteSpace(s) ? null : s;
 }

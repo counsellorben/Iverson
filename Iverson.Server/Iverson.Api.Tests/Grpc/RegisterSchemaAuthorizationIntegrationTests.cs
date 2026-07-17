@@ -208,7 +208,7 @@ public sealed class RegisterSchemaAuthorizationIntegrationTests(AllStoresContain
             Substitute.For<IRecordStoreTransactionRunner>(),
             fixture.PostgresSchemaManager,
             fixture.QdrantCollectionManager,
-            Substitute.For<IEventProducer>(),
+            Substitute.For<IOutboxPublisher>(),
             registry,
             Substitute.For<IEmbeddingService>(),
             fixture.StarRocksSchemaManager,

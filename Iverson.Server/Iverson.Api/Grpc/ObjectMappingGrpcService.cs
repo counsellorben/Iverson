@@ -28,7 +28,7 @@ public sealed class ObjectMappingGrpcService(
     IRecordStoreTransactionRunner _txRunner,
     IRecordStoreSchemaManager _schemaManager,
     IVectorSchemaManager _vector,
-    IEventProducer _events,
+    IOutboxPublisher _outboxPublisher,
     SchemaRegistry _registry,
     IEmbeddingService _embedding,
     IEngagementStoreSchemaManager _starRocks,
@@ -40,8 +40,6 @@ public sealed class ObjectMappingGrpcService(
     IRowFieldAuthorizationEvaluator _authEvaluator)
     : ObjectMappingService.ObjectMappingServiceBase
 {
-    private const string SchemaVersion = "1";
-
     // ── Schema registration ────────────────────────────────────────────────────
 
     [Authorize(Policy = "SchemaAdmin")]
@@ -210,36 +208,8 @@ public sealed class ObjectMappingGrpcService(
         // polls unconditionally-inserted outbox rows, not just failure-recorded ones — see
         // Task 5's updated ReconciliationSchema doc comment) will pick this row up on its
         // next poll. This just keeps the common case's projection latency low.
-        var published = false;
-        try
-        {
-            await _events.ProduceAsync(
-                EntityTopics.Events,
-                key,
-                new EntityEvent(
-                    EntityEventType.Created,
-                    request.TypeName,
-                    key,
-                    payloadJson,
-                    request.TraceId.NullIfEmpty() ?? Activity.Current?.TraceId.ToString() ?? string.Empty,
-                    SchemaVersion,
-                    DateTimeOffset.UtcNow,
-                    targetStores));
-            published = true;
-            await _outboxWriter.DeleteOutboxRowIfPresentAsync(outboxRowId);
-        }
-        catch (Exception ex) when (!published)
-        {
-            _logger.LogWarning(ex,
-                "[Mapping.Post] Opportunistic publish failed for type={Type} key={Key} — " +
-                "ReconciliationQueueWorker will retry from the durable outbox row", request.TypeName.SanitizeForLog(), key);
-        }
-        catch (Exception ex)
-        {
-            _logger.LogWarning(ex,
-                "[Mapping.Post] Publish succeeded but outbox cleanup failed for type={Type} key={Key} — " +
-                "ReconciliationQueueWorker will harmlessly re-publish from the durable outbox row", request.TypeName.SanitizeForLog(), key);
-        }
+        await _outboxPublisher.PublishAsync(EntityEventType.Created, request.TypeName, key, payloadJson,
+            request.TraceId, targetStores, outboxRowId, "Mapping.Post");
 
         return new MappingResponse { Success = true, Data = request.Payload, TraceId = request.TraceId };
     }
@@ -275,36 +245,8 @@ public sealed class ObjectMappingGrpcService(
         // polls unconditionally-inserted outbox rows, not just failure-recorded ones — see
         // Task 5's updated ReconciliationSchema doc comment) will pick this row up on its
         // next poll. This just keeps the common case's projection latency low.
-        var published = false;
-        try
-        {
-            await _events.ProduceAsync(
-                EntityTopics.Events,
-                key,
-                new EntityEvent(
-                    EntityEventType.Updated,
-                    request.TypeName,
-                    key,
-                    payloadJson,
-                    request.TraceId.NullIfEmpty() ?? Activity.Current?.TraceId.ToString() ?? string.Empty,
-                    SchemaVersion,
-                    DateTimeOffset.UtcNow,
-                    targetStores));
-            published = true;
-            await _outboxWriter.DeleteOutboxRowIfPresentAsync(outboxRowId);
-        }
-        catch (Exception ex) when (!published)
-        {
-            _logger.LogWarning(ex,
-                "[Mapping.Update] Opportunistic publish failed for type={Type} key={Key} — " +
-                "ReconciliationQueueWorker will retry from the durable outbox row", request.TypeName.SanitizeForLog(), key);
-        }
-        catch (Exception ex)
-        {
-            _logger.LogWarning(ex,
-                "[Mapping.Update] Publish succeeded but outbox cleanup failed for type={Type} key={Key} — " +
-                "ReconciliationQueueWorker will harmlessly re-publish from the durable outbox row", request.TypeName.SanitizeForLog(), key);
-        }
+        await _outboxPublisher.PublishAsync(EntityEventType.Updated, request.TypeName, key, payloadJson,
+            request.TraceId, targetStores, outboxRowId, "Mapping.Update");
 
         return new MappingResponse { Success = true, Data = request.Payload, TraceId = request.TraceId };
     }
@@ -356,36 +298,8 @@ public sealed class ObjectMappingGrpcService(
         // see Task 5's updated ReconciliationSchema doc comment) will pick this row up on its
         // next poll and replay it from the stored pre-delete snapshot. This just keeps the
         // common case's projection latency low.
-        var published = false;
-        try
-        {
-            await _events.ProduceAsync(
-                EntityTopics.Events,
-                request.Key,
-                new EntityEvent(
-                    EntityEventType.Deleted,
-                    request.TypeName,
-                    request.Key,
-                    rowJson,
-                    request.TraceId.NullIfEmpty() ?? Activity.Current?.TraceId.ToString() ?? string.Empty,
-                    SchemaVersion,
-                    DateTimeOffset.UtcNow,
-                    targetStores));
-            published = true;
-            await _outboxWriter.DeleteOutboxRowIfPresentAsync(outboxRowId);
-        }
-        catch (Exception ex) when (!published)
-        {
-            _logger.LogWarning(ex,
-                "[Mapping.Delete] Opportunistic publish failed for type={Type} key={Key} — " +
-                "ReconciliationQueueWorker will retry from the durable outbox row", request.TypeName.SanitizeForLog(), request.Key);
-        }
-        catch (Exception ex)
-        {
-            _logger.LogWarning(ex,
-                "[Mapping.Delete] Publish succeeded but outbox cleanup failed for type={Type} key={Key} — " +
-                "ReconciliationQueueWorker will harmlessly re-publish from the durable outbox row", request.TypeName.SanitizeForLog(), request.Key);
-        }
+        await _outboxPublisher.PublishAsync(EntityEventType.Deleted, request.TypeName, request.Key, rowJson,
+            request.TraceId, targetStores, outboxRowId, "Mapping.Delete");
 
         return new MappingDeleteResponse { Success = true, TraceId = request.TraceId };
     }
@@ -545,10 +459,4 @@ public sealed class ObjectMappingGrpcService(
 
         entityStruct.Fields[relation.PropertyName] = Value.ForList(items.ToArray());
     }
-}
-
-file static class StringExtensions
-{
-    internal static string? NullIfEmpty(this string? s) =>
-        string.IsNullOrWhiteSpace(s) ? null : s;
 }
