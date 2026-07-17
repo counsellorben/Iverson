@@ -220,7 +220,7 @@ public sealed class IntelligenceStoreConsumer(
             await vectorWrite.DeleteByFilterAsync(schema.CollectionName + "_chunks", chunkFilter);
         }
 
-        logger.LogInformation("[Intelligence] Deleted vector for {Type}:{Key}", ev.TypeName, ev.Key);
+        logger.LogInformation("[Intelligence] Deleted vector for {Type}:{Key}", ev.TypeName.SanitizeForLog(), ev.Key);
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────────

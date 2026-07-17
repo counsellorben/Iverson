@@ -46,7 +46,7 @@ public sealed class EngagementStoreConsumer(
         var schema = registry.Get(ev.TypeName);
         if (schema is null)
         {
-            logger.LogError("[Engagement] Dropped upsert — no schema for type={Type} key={Key}", ev.TypeName, key);
+            logger.LogError("[Engagement] Dropped upsert — no schema for type={Type} key={Key}", ev.TypeName.SanitizeForLog(), key);
             return;
         }
 
@@ -71,7 +71,7 @@ public sealed class EngagementStoreConsumer(
 
         var srSchema = SchemaBuilder.ToStarRocksTableSchema(schema);
         await sr.UpsertAsync(srSchema, payloadJson);
-        logger.LogInformation("[Engagement] Upserted {Type}:{Key}", ev.TypeName, key);
+        logger.LogInformation("[Engagement] Upserted {Type}:{Key}", ev.TypeName.SanitizeForLog(), key);
     }
 
     internal async Task HandleDeleteAsync(string key, string value, CancellationToken ct)
@@ -82,12 +82,12 @@ public sealed class EngagementStoreConsumer(
         var schema = registry.Get(ev.TypeName);
         if (schema is null)
         {
-            logger.LogError("[Engagement] Dropped delete — no schema for type={Type} key={Key}", ev.TypeName, key);
+            logger.LogError("[Engagement] Dropped delete — no schema for type={Type} key={Key}", ev.TypeName.SanitizeForLog(), key);
             return;
         }
 
         await sr.DeleteAsync(schema.TableName, schema.KeyColumn.Name, ev.Key);
-        logger.LogInformation("[Engagement] Deleted {Type}:{Key}", ev.TypeName, key);
+        logger.LogInformation("[Engagement] Deleted {Type}:{Key}", ev.TypeName.SanitizeForLog(), key);
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────────
