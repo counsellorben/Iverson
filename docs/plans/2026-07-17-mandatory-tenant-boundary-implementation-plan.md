@@ -281,7 +281,7 @@ git commit -m "feat(api): enforce tenant boundary on Postgres read/write/delete 
 
 - [ ] **Step 2: Pass tenant through at both construction sites** in `ObjectSearchGrpcService.EvaluateAuthorization` (`:448` primary, `:458` joined): add `primaryDecision.TenantColumn, primaryDecision.TenantValue` / `decision.TenantColumn, decision.TenantValue`. The `OrdinalIgnoreCase` dict keying stays as-is (do not change it).
 
-- [ ] **Step 3: AND the tenant predicate at each ownership site in `StarRocksQueryBuilder`.** Wherever the builder currently appends `` `alias`.`OwnerColumn` = @__ownerVal `` for a constraint whose `OwnerColumn is not null`, add — for a constraint whose `TenantColumn is not null` — the analogous `` `alias`.`TenantColumn` = @__tenantVal `` with a distinct `@__tenantVal` parameter. For the primary type this ANDs onto its `WHERE`; for joined types it appends to that join's own `ON` clause (never the outer `WHERE`) — identical placement to the ownership predicate, to preserve outer-join semantics. Tenant applies even when `OwnerColumn is null` (bypass callers), so gate the tenant predicate on `TenantColumn is not null` independently of the ownership block.
+- [ ] **Step 3: AND the tenant predicate at each ownership site in `StarRocksQueryBuilder`.** Wherever the builder currently appends `` `alias`.`OwnerColumn` = @__ownerVal `` for a constraint whose `OwnerColumn is not null`, add — for a constraint whose `TenantColumn is not null` — the analogous `` `alias`.`TenantColumn` = @<param> `` predicate. **Mirror the owner parameter-naming split exactly:** the primary type uses a fixed `@__tenantVal` (paralleling `@__ownerVal` at `:61-63,76-78`); each joined type uses a per-join unique name `$"__tenant{map.Count}"` (paralleling `$"__owner{map.Count}"` at `:715-716`), added to `param` and interpolated into that join's `ON`. A single fixed name across joined types would collide, since tenant is mandatory on every joined type. For the primary type this ANDs onto its `WHERE`; for joined types it appends to that join's own `ON` clause (never the outer `WHERE`) — identical placement to the ownership predicate, to preserve outer-join semantics. Tenant applies even when `OwnerColumn is null` (bypass callers), so gate the tenant predicate on `TenantColumn is not null` independently of the ownership block.
 
 - [ ] **Step 4: Tests.** In `StarRocksQueryBuilderTests`, assert the generated SQL for Search/Aggregate/GroupBy/Pipeline includes the tenant predicate in the correct clause (primary `WHERE`, joined `ON`) with a bound parameter. Add an adversarial-join regression mirroring the existing 5c test: a joined type's tenant predicate lands on the `ON`, not the outer `WHERE`. In `ObjectSearchGrpcServiceTests`, assert a cross-tenant caller with `CanReadAll` gets an empty result.
 
@@ -332,6 +332,7 @@ git commit -m "feat(vector): enforce tenant boundary on SearchSimilar/SearchChun
 **Files:**
 - Modify: `Iverson.Server/deploy/helm/iverson/charts/authentik/blueprints/compose-only/service-clients.yaml`
 - Modify: `Iverson.Server/deploy/helm/iverson/charts/authentik/templates/blueprints-configmap-service-clients.yaml`
+- Modify: `Iverson.Server/deploy/scripts/mint_acting_user_token.py:316` — add `tenant_id` to the requested `scope`.
 
 **Interfaces:**
 - Consumes: nothing (blueprint-only). Independent of Tasks 3–5's code; enables end-to-end enforcement.
@@ -346,7 +347,7 @@ git commit -m "feat(vector): enforce tenant boundary on SearchSimilar/SearchChun
     description: The caller's tenant identifier for data isolation
     expression: 'return {"tenant_id": request.user.attributes.get("tenant_id")}'
 ```
-Bind it to the human providers (`iverson-oidc-default`, `iverson-loadtest-human`) via `property_mappings`, and add a `tenant_id` attribute to the seeded human users' `attrs`.
+Bind it to the human providers (`iverson-oidc-default`, `iverson-loadtest-human`) via `property_mappings`, and add a `tenant_id` attribute to the seeded human users' `attrs`. The `tenant_id` claim is only issued when the token request sends `scope=tenant_id` (the same Authentik behavior handled for service clients in Step 2). Update `mint_acting_user_token.py`'s requested scope (`:316`, currently `"openid groups"`) to include `tenant_id`, and note that any human OIDC login (e.g. the operator flow via `iverson-oidc-default`) must likewise request the `tenant_id` scope for the claim to be issued.
 
 - [ ] **Step 2: Per-client constant `tenant_id` scope-mappings** for the service clients (user-confirmed: constant per client, avoids the unverifiable service-account-attribute path). One mapping per service client, each returning that client's fixed tenant, bound only to that provider — e.g.:
 ```yaml
