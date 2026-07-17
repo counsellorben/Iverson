@@ -7,7 +7,6 @@ using Iverson.Api.Schema;
 using Iverson.Api.Tests.Helpers;
 using Iverson.Client.Contracts;
 using Iverson.Embeddings;
-using Iverson.Events;
 using Iverson.Sql;
 using Iverson.StarRocks;
 using Iverson.Vector;

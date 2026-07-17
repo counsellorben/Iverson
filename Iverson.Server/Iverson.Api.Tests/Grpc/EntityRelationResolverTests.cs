@@ -53,7 +53,7 @@ public class EntityRelationResolverTests
     }
 
     // Note: "Get_WithDepth0_DoesNotResolveRelations" was NOT moved here (deliberate deviation
-    // from the task brief's Step 4 — see task-3-report.md). ResolveRelationsAsync has no
+    // from the task brief's Step 4). ResolveRelationsAsync has no
     // depth==0 early-return of its own — that gate lives entirely in
     // ObjectMappingGrpcService.Get's `if (request.Depth > 0)` check, both before and after this
     // extraction. Inside this resolver, `depth` only gates recursion to a *second* level
