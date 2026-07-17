@@ -217,7 +217,8 @@ public sealed class RegisterSchemaAuthorizationIntegrationTests(AllStoresContain
             Substitute.For<IOutboxWriter>(),
             NullLogger<ObjectMappingGrpcService>.Instance,
             Substitute.For<IActingUserAccessor>(),
-            Substitute.For<IRowFieldAuthorizationEvaluator>());
+            Substitute.For<IRowFieldAuthorizationEvaluator>(),
+            Substitute.For<IEntityRelationResolver>());
 
         var typeDesc = SimpleType("ArticleWithAuth", "Title", "OwnerId");
         typeDesc.Authorization = new Client.Contracts.AuthorizationRules

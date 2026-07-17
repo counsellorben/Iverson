@@ -1,3 +1,4 @@
+using System.Security.Claims;
 using FluentAssertions;
 using Google.Protobuf.WellKnownTypes;
 using Grpc.Core;
@@ -32,6 +33,7 @@ public class ObjectMappingGrpcServiceTests
     private readonly IActingUserAccessor _actingUserAccessor;
     private readonly IRowFieldAuthorizationEvaluator _authEvaluator = new RowFieldAuthorizationEvaluator();
     private readonly IOutboxPublisher _outboxPublisher;
+    private readonly IEntityRelationResolver _relationResolver;
     private readonly ObjectMappingGrpcService _sut;
 
     private static readonly string AuthorId  = "11111111-0000-0000-0000-000000000001";
@@ -74,12 +76,13 @@ public class ObjectMappingGrpcServiceTests
         _actingUserAccessor = new ActingUserAccessor
             { ActingUser = ActingUserFixtures.Principal("test-user", "test-bypass") };
         _outboxPublisher = new OutboxPublisher(_events, new OutboxWriter(ReconciliationSchema.TableName, _sql, _txRunner), NullLogger<OutboxPublisher>.Instance);
+        _relationResolver = new EntityRelationResolver(_registry, _entities, _authEvaluator);
         _sut = new ObjectMappingGrpcService(
             _entities, _txRunner, _schemaManager, _vector, _outboxPublisher, _registry, _embedding, _starRocks,
             new RelationValidator(_registry), new EntityKeyAccessor(),
             new OutboxWriter(ReconciliationSchema.TableName, _sql, _txRunner),
             NullLogger<ObjectMappingGrpcService>.Instance,
-            _actingUserAccessor, _authEvaluator);
+            _actingUserAccessor, _authEvaluator, _relationResolver);
     }
 
     // ── helpers ───────────────────────────────────────────────────────────────
@@ -743,77 +746,43 @@ public class ObjectMappingGrpcServiceTests
     }
 
     [Fact]
-    public async Task Get_WithDepth1_ResolvesManyToOneRelation()
+    public async Task Get_WithDepthGreaterThanZero_CallsRelationResolver()
     {
-        await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
         await _registry.RegisterAsync(SchemaFixtures.ArticleSchema());
+        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>()).Returns(ArticleJson);
 
-        _entities.FetchByKeyAsync(
-                Arg.Is<TableSchema>(s => s.TableName == "articles"), Arg.Any<string>())
-            .Returns(ArticleJson);
-        _entities.FetchByKeyAsync(
-                Arg.Is<TableSchema>(s => s.TableName == "authors"), Arg.Any<string>())
-            .Returns(AuthorJson);
+        var mockResolver = Substitute.For<IEntityRelationResolver>();
+        var sut = new ObjectMappingGrpcService(
+            _entities, _txRunner, _schemaManager, _vector, _outboxPublisher, _registry, _embedding, _starRocks,
+            new RelationValidator(_registry), new EntityKeyAccessor(),
+            new OutboxWriter(ReconciliationSchema.TableName, _sql, _txRunner),
+            NullLogger<ObjectMappingGrpcService>.Instance,
+            _actingUserAccessor, _authEvaluator, mockResolver);
 
-        var response = await _sut.Get(
-            new MappingGetRequest { TypeName = "Article", Key = ArticleId, Depth = 1 },
-            TestServerCallContext.Create());
+        await sut.Get(new MappingGetRequest { TypeName = "Article", Key = ArticleId, Depth = 1 }, TestServerCallContext.Create());
 
-        response.Success.Should().BeTrue();
-        response.Data.Fields.Should().ContainKey("Author");
-        response.Data.Fields["Author"].StructValue.Fields["Name"].StringValue.Should().Be("Alice");
+        await mockResolver.Received(1).ResolveRelationsAsync(
+            Arg.Any<Struct>(), Arg.Any<SchemaDescriptor>(), 1, Arg.Any<ClaimsPrincipal?>(), Arg.Any<CancellationToken>());
     }
 
     [Fact]
-    public async Task Get_WithDepth0_DoesNotResolveRelations()
+    public async Task Get_WithDepthZero_DoesNotCallRelationResolver()
     {
-        await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
         await _registry.RegisterAsync(SchemaFixtures.ArticleSchema());
+        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>()).Returns(ArticleJson);
 
-        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>())
-            .Returns(ArticleJson);
+        var mockResolver = Substitute.For<IEntityRelationResolver>();
+        var sut = new ObjectMappingGrpcService(
+            _entities, _txRunner, _schemaManager, _vector, _outboxPublisher, _registry, _embedding, _starRocks,
+            new RelationValidator(_registry), new EntityKeyAccessor(),
+            new OutboxWriter(ReconciliationSchema.TableName, _sql, _txRunner),
+            NullLogger<ObjectMappingGrpcService>.Instance,
+            _actingUserAccessor, _authEvaluator, mockResolver);
 
-        var response = await _sut.Get(
-            new MappingGetRequest { TypeName = "Article", Key = ArticleId, Depth = 0 },
-            TestServerCallContext.Create());
+        await sut.Get(new MappingGetRequest { TypeName = "Article", Key = ArticleId, Depth = 0 }, TestServerCallContext.Create());
 
-        response.Success.Should().BeTrue();
-        response.Data.Fields.Should().NotContainKey("Author");
-        await _entities.Received(1).FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>());
-    }
-
-    // ── ResolveManyToMany ─────────────────────────────────────────────────────
-
-    [Fact]
-    public async Task Get_WithManyToManyRelation_IssuesSingleBatchQuery()
-    {
-        var postId = "33333333-0000-0000-0000-000000000003";
-        var tagId1 = "44444444-0000-0000-0000-000000000004";
-        var tagId2 = "44444444-0000-0000-0000-000000000005";
-
-        await _registry.RegisterAsync(SchemaFixtures.PostWithTagsSchema());
-        await _registry.RegisterAsync(SchemaFixtures.TagSchema());
-
-        var postJson = $$"""{"Id":"{{postId}}","Title":"Hello","TagIds":["{{tagId1}}","{{tagId2}}"]}""";
-        _entities.FetchByKeyAsync(
-                Arg.Is<TableSchema>(s => s.TableName == "posts"), Arg.Any<string>())
-            .Returns(postJson);
-
-        var tag1Json = $$"""{"Id":"{{tagId1}}","Label":"dotnet"}""";
-        var tag2Json = $$"""{"Id":"{{tagId2}}","Label":"csharp"}""";
-        _entities.FetchManyByKeysAsync(Arg.Any<TableSchema>(), Arg.Any<IReadOnlyList<string>>())
-            .Returns(new[] { new KeyedRow(tagId1, tag1Json), new KeyedRow(tagId2, tag2Json) });
-
-        var response = await _sut.Get(
-            new MappingGetRequest { TypeName = "Post", Key = postId, Depth = 1 },
-            MakeContext());
-
-        await _entities.Received(1).FetchManyByKeysAsync(
-            Arg.Any<TableSchema>(),
-            Arg.Is<IReadOnlyList<string>>(keys => keys.Count == 2));
-
-        response.Success.Should().BeTrue();
-        response.Data.Fields["Tags"].ListValue.Values.Should().HaveCount(2);
+        await mockResolver.DidNotReceiveWithAnyArgs().ResolveRelationsAsync(
+            default!, default!, default, default, default);
     }
 
     // ── Get authorization ────────────────────────────────────────────────────

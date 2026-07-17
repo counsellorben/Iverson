@@ -13,8 +13,6 @@ using Iverson.Sql;
 using Iverson.StarRocks;
 using Iverson.Vector;
 using Microsoft.AspNetCore.Authorization;
-using SchemaRelationKind       = Iverson.Api.Schema.RelationKind;
-using SchemaRelationDescriptor = Iverson.Api.Schema.RelationDescriptor;
 
 namespace Iverson.Api.Grpc;
 
@@ -37,7 +35,8 @@ public sealed class ObjectMappingGrpcService(
     IOutboxWriter _outboxWriter,
     ILogger<ObjectMappingGrpcService> _logger,
     IActingUserAccessor _actingUserAccessor,
-    IRowFieldAuthorizationEvaluator _authEvaluator)
+    IRowFieldAuthorizationEvaluator _authEvaluator,
+    IEntityRelationResolver _relationResolver)
     : ObjectMappingService.ObjectMappingServiceBase
 {
     // ── Schema registration ────────────────────────────────────────────────────
@@ -171,7 +170,7 @@ public sealed class ObjectMappingGrpcService(
         AuthorizationFieldMasking.MaskDisallowedFields(entityStruct, decision.AllowedFields);
 
         if (request.Depth > 0)
-            await ResolveRelationsAsync(entityStruct, schema, request.Depth, context.CancellationToken);
+            await _relationResolver.ResolveRelationsAsync(entityStruct, schema, request.Depth, _actingUserAccessor.ActingUser, context.CancellationToken);
 
         return new MappingResponse { Success = true, Data = entityStruct, TraceId = request.TraceId };
     }
@@ -331,132 +330,4 @@ public sealed class ObjectMappingGrpcService(
 
     private Task<string?> FetchByKeyAsync(SchemaDescriptor schema, string key) =>
         _entities.FetchByKeyAsync(SchemaBuilder.ToTableSchema(schema), key);
-
-    // ── Relation resolution ───────────────────────────────────────────────────
-
-    private async Task ResolveRelationsAsync(
-        Struct entityStruct, SchemaDescriptor schema, int depth, CancellationToken ct)
-    {
-        foreach (var relation in schema.Relations)
-        {
-            switch (relation.Kind)
-            {
-                case SchemaRelationKind.ManyToOne:
-                case SchemaRelationKind.OneToOne:
-                    await ResolveSingleRelationAsync(entityStruct, relation, depth, ct);
-                    break;
-
-                case SchemaRelationKind.ManyToMany:
-                    await ResolveManyToManyAsync(entityStruct, relation, depth, ct);
-                    break;
-
-                case SchemaRelationKind.OneToMany:
-                    await ResolveOneToManyAsync(entityStruct, schema, relation, depth, ct);
-                    break;
-
-                default:
-                    throw new ArgumentOutOfRangeException(nameof(relation.Kind), relation.Kind,
-                        $"Unhandled {nameof(SchemaRelationKind)} value in relation resolution — add a case above.");
-            }
-        }
-    }
-
-    private async Task ResolveSingleRelationAsync(
-        Struct entityStruct, SchemaRelationDescriptor relation, int depth, CancellationToken ct)
-    {
-        var fkValue = StructFieldAccess.GetFieldString(entityStruct, relation.ForeignKey);
-        if (string.IsNullOrWhiteSpace(fkValue)) return;
-
-        var relatedSchema = _registry.Get(relation.RelatedTypeName);
-        if (relatedSchema is null) return;
-
-        var rowJson = await FetchByKeyAsync(relatedSchema, fkValue);
-        if (rowJson is null) return;
-
-        var relatedStruct = JsonParser.Default.Parse<Struct>(rowJson);
-
-        var decision = _authEvaluator.Evaluate(relatedSchema, _actingUserAccessor.ActingUser, AuthorizationAction.Read);
-        if (decision.Denied ||
-            (decision.OwnershipRequired &&
-             StructFieldAccess.GetFieldString(relatedStruct, decision.OwnerFieldName!) != decision.OwnerValue))
-            return;
-        AuthorizationFieldMasking.MaskDisallowedFields(relatedStruct, decision.AllowedFields);
-
-        if (depth > 1)
-            await ResolveRelationsAsync(relatedStruct, relatedSchema, depth - 1, ct);
-
-        entityStruct.Fields[relation.PropertyName] = Value.ForStruct(relatedStruct);
-    }
-
-    private async Task ResolveManyToManyAsync(
-        Struct entityStruct, SchemaRelationDescriptor relation, int depth, CancellationToken ct)
-    {
-        var ids = StructFieldAccess.GetFieldStringList(entityStruct, relation.ForeignKey)
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .ToList();
-        if (ids.Count == 0) return;
-
-        var relatedSchema = _registry.Get(relation.RelatedTypeName);
-        if (relatedSchema is null) return;
-
-        var rows = await _entities.FetchManyByKeysAsync(SchemaBuilder.ToTableSchema(relatedSchema), ids);
-
-        var rowsByKey = rows.ToDictionary(r => r.Key, StringComparer.OrdinalIgnoreCase);
-
-        var decision = _authEvaluator.Evaluate(relatedSchema, _actingUserAccessor.ActingUser, AuthorizationAction.Read);
-
-        var items = new List<Value>();
-        foreach (var id in ids)
-        {
-            if (ct.IsCancellationRequested) break;
-            if (!rowsByKey.TryGetValue(id, out var row)) continue;
-            var relatedStruct = JsonParser.Default.Parse<Struct>(row.Data);
-
-            if (decision.Denied ||
-                (decision.OwnershipRequired &&
-                 StructFieldAccess.GetFieldString(relatedStruct, decision.OwnerFieldName!) != decision.OwnerValue))
-                continue;
-            AuthorizationFieldMasking.MaskDisallowedFields(relatedStruct, decision.AllowedFields);
-
-            if (depth > 1)
-                await ResolveRelationsAsync(relatedStruct, relatedSchema, depth - 1, ct);
-            items.Add(Value.ForStruct(relatedStruct));
-        }
-
-        entityStruct.Fields[relation.PropertyName] = Value.ForList(items.ToArray());
-    }
-
-    private async Task ResolveOneToManyAsync(
-        Struct entityStruct, SchemaDescriptor schema, SchemaRelationDescriptor relation, int depth, CancellationToken ct)
-    {
-        var keyValue = StructFieldAccess.GetFieldString(entityStruct, schema.KeyColumn.Name);
-        if (string.IsNullOrWhiteSpace(keyValue)) return;
-
-        var relatedSchema = _registry.Get(relation.RelatedTypeName);
-        if (relatedSchema is null) return;
-
-        var rows = await _entities.FetchByColumnAsync(
-            SchemaBuilder.ToTableSchema(relatedSchema), relation.ForeignKey, keyValue);
-
-        var decision = _authEvaluator.Evaluate(relatedSchema, _actingUserAccessor.ActingUser, AuthorizationAction.Read);
-
-        var items = new List<Value>();
-        foreach (var rowJson in rows)
-        {
-            if (ct.IsCancellationRequested) break;
-            var relatedStruct = JsonParser.Default.Parse<Struct>(rowJson);
-
-            if (decision.Denied ||
-                (decision.OwnershipRequired &&
-                 StructFieldAccess.GetFieldString(relatedStruct, decision.OwnerFieldName!) != decision.OwnerValue))
-                continue;
-            AuthorizationFieldMasking.MaskDisallowedFields(relatedStruct, decision.AllowedFields);
-
-            if (depth > 1)
-                await ResolveRelationsAsync(relatedStruct, relatedSchema, depth - 1, ct);
-            items.Add(Value.ForStruct(relatedStruct));
-        }
-
-        entityStruct.Fields[relation.PropertyName] = Value.ForList(items.ToArray());
-    }
 }
