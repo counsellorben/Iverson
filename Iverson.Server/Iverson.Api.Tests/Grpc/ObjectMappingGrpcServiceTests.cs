@@ -79,7 +79,7 @@ public class ObjectMappingGrpcServiceTests
         _outboxPublisher = new OutboxPublisher(_events, new OutboxWriter(ReconciliationSchema.TableName, _sql, _txRunner), NullLogger<OutboxPublisher>.Instance);
         _relationResolver = new EntityRelationResolver(_registry, _entities, _authEvaluator);
         _schemaRegistration = new SchemaRegistrationOrchestrator(
-            _schemaManager, _vector, _starRocks, _embedding, _registry, NullLogger<SchemaRegistrationOrchestrator>.Instance);
+            _schemaManager, _vector, _starRocks, _embedding, _registry);
         _sut = new ObjectMappingGrpcService(
             _entities, _txRunner, _outboxPublisher, _registry,
             new RelationValidator(_registry), new EntityKeyAccessor(),

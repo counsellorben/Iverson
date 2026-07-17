@@ -212,8 +212,7 @@ public sealed class RegisterSchemaAuthorizationIntegrationTests(AllStoresContain
             fixture.QdrantCollectionManager,
             fixture.StarRocksSchemaManager,
             Substitute.For<IEmbeddingService>(),
-            registry,
-            NullLogger<SchemaRegistrationOrchestrator>.Instance);
+            registry);
 
         var sut = new ObjectMappingGrpcService(
             Substitute.For<IEntityRepository>(),

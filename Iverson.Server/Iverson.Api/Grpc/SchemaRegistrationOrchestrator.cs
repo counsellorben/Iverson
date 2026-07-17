@@ -19,8 +19,7 @@ public sealed class SchemaRegistrationOrchestrator(
     IVectorSchemaManager vector,
     IEngagementStoreSchemaManager starRocks,
     IEmbeddingService embedding,
-    SchemaRegistry registry,
-    ILogger<SchemaRegistrationOrchestrator> logger)
+    SchemaRegistry registry)
     : ISchemaRegistrationOrchestrator
 {
     // TypeName/property names are string-interpolated unescaped into CREATE TABLE/ALTER TABLE

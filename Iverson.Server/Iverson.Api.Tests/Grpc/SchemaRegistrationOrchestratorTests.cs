@@ -30,8 +30,7 @@ public class SchemaRegistrationOrchestratorTests
         _starRocks.ApplyTableAsync(Arg.Any<StarRocksTableSchema>()).Returns(Task.CompletedTask);
         _registry = new SchemaRegistry(new SchemaRegistryRepository(_sql), NullLogger<SchemaRegistry>.Instance);
         _sut = new SchemaRegistrationOrchestrator(
-            _schemaManager, _vector, _starRocks, _embedding, _registry,
-            NullLogger<SchemaRegistrationOrchestrator>.Instance);
+            _schemaManager, _vector, _starRocks, _embedding, _registry);
     }
 
     private static TypeDescriptor SimpleType(string name, params string[] extraScalars)
