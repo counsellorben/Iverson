@@ -32,8 +32,10 @@ public static Filter? ApplyOwnership(Filter? filter, bool ownershipRequired, str
 
 Call sites become:
 ```csharp
-filter = QdrantFilterBuilder.ApplyOwnership(filter, decision.OwnershipRequired, schema.Authorization!.OwnerField!.ToCamelCase(), decision.OwnerValue);
+filter = QdrantFilterBuilder.ApplyOwnership(filter, decision.OwnershipRequired, schema.Authorization?.OwnerField?.ToCamelCase(), decision.OwnerValue);
 ```
+
+**Note the `?.`, not `!.`:** C# evaluates all method arguments eagerly, so `schema.Authorization!.OwnerField!.ToCamelCase()` would dereference unconditionally even when `OwnershipRequired` is false — and `Authorization`/`OwnerField` are independently nullable (a schema can have bypass `RowPermissions` with no `OwnerField` at all), so a bypass-role caller on such a schema would hit a `NullReferenceException`. `?.` lets a null flow through harmlessly as the argument value; `ApplyOwnership`'s own internal `if (!ownershipRequired) return filter;` guard means the null is never dereferenced (the evaluator guarantees `OwnershipRequired == true` implies `OwnerField` is non-empty, so `ApplyOwnership`'s existing `!` usage on that path stays correct).
 
 No DTO type introduced — 3 scalars used at exactly 2 call sites doesn't earn one (field-masking already goes through the separate, existing `AuthorizationFieldMasking.MaskDisallowedFields`, so `ApplyOwnership` never needs `AllowedFields`).
 
@@ -197,6 +199,9 @@ public sealed class SchemaRegistrationOrchestrator(
 {
     private static readonly Regex IdentifierPattern = new("^[A-Za-z][A-Za-z0-9]*$", RegexOptions.Compiled);
 
+    // Deliberately does NOT log "[RegisterSchema] root=... dependents=..." — that line stays in
+    // ObjectMappingGrpcService.RegisterSchema (see the prose above this sketch), since it reads
+    // directly off the raw request and needs nothing this orchestrator owns.
     public async Task<IReadOnlyList<string>> RegisterAsync(SchemaRequest request, CancellationToken ct)
     {
         var registered = new List<string>();
@@ -212,7 +217,7 @@ public sealed class SchemaRegistrationOrchestrator(
 }
 ```
 
-`ObjectMappingGrpcService.RegisterSchema` shrinks to: the `request.RootType is null` guard, `await schemaRegistration.RegisterAsync(request, context.CancellationToken)`, and building the `SchemaResponse`. The `[Authorize(Policy = "SchemaAdmin")]` attribute stays on the gRPC method (ASP.NET Core's authorization pipeline, not the orchestrator's concern).
+`ObjectMappingGrpcService.RegisterSchema` shrinks to: the existing pre-loop `_logger.LogInformation("[RegisterSchema] root={Type} dependents={Deps}", ...)` line (kept first, in its current position — it reads directly off the raw `request` and needs nothing from the orchestrator), the `request.RootType is null` guard, `await schemaRegistration.RegisterAsync(request, context.CancellationToken)`, and building the `SchemaResponse`. The `[Authorize(Policy = "SchemaAdmin")]` attribute stays on the gRPC method (ASP.NET Core's authorization pipeline, not the orchestrator's concern).
 
 **Convention confirmed:** `RelationValidator` (an existing extracted collaborator) throws `RpcException` directly rather than a translated domain exception (confirmed via grep). `EntityRelationResolver` and `SchemaRegistrationOrchestrator` follow the same convention — no new exception-translation layer introduced.
 
