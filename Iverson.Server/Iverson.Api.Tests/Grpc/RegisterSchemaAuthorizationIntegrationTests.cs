@@ -203,22 +203,31 @@ public sealed class RegisterSchemaAuthorizationIntegrationTests(AllStoresContain
             new SchemaRegistryRepository(fixture.PostgresRepository),
             NullLogger<SchemaRegistry>.Instance);
 
+        // A real orchestrator (not a mock) is required here: this test's entire purpose is to
+        // prove RegisterSchema provisions all 3 real backing stores end to end, so the DDL/schema
+        // registration work it delegates to ISchemaRegistrationOrchestrator must actually run
+        // against the fixture's real Postgres/StarRocks/Qdrant managers.
+        var schemaRegistration = new SchemaRegistrationOrchestrator(
+            fixture.PostgresSchemaManager,
+            fixture.QdrantCollectionManager,
+            fixture.StarRocksSchemaManager,
+            Substitute.For<IEmbeddingService>(),
+            registry,
+            NullLogger<SchemaRegistrationOrchestrator>.Instance);
+
         var sut = new ObjectMappingGrpcService(
             Substitute.For<IEntityRepository>(),
             Substitute.For<IRecordStoreTransactionRunner>(),
-            fixture.PostgresSchemaManager,
-            fixture.QdrantCollectionManager,
             Substitute.For<IOutboxPublisher>(),
             registry,
-            Substitute.For<IEmbeddingService>(),
-            fixture.StarRocksSchemaManager,
             Substitute.For<IRelationValidator>(),
             Substitute.For<IEntityKeyAccessor>(),
             Substitute.For<IOutboxWriter>(),
             NullLogger<ObjectMappingGrpcService>.Instance,
             Substitute.For<IActingUserAccessor>(),
             Substitute.For<IRowFieldAuthorizationEvaluator>(),
-            Substitute.For<IEntityRelationResolver>());
+            Substitute.For<IEntityRelationResolver>(),
+            schemaRegistration);
 
         var typeDesc = SimpleType("ArticleWithAuth", "Title", "OwnerId");
         typeDesc.Authorization = new Client.Contracts.AuthorizationRules

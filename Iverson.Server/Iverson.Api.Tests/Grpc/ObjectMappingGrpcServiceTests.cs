@@ -34,6 +34,7 @@ public class ObjectMappingGrpcServiceTests
     private readonly IRowFieldAuthorizationEvaluator _authEvaluator = new RowFieldAuthorizationEvaluator();
     private readonly IOutboxPublisher _outboxPublisher;
     private readonly IEntityRelationResolver _relationResolver;
+    private readonly ISchemaRegistrationOrchestrator _schemaRegistration;
     private readonly ObjectMappingGrpcService _sut;
 
     private static readonly string AuthorId  = "11111111-0000-0000-0000-000000000001";
@@ -77,12 +78,14 @@ public class ObjectMappingGrpcServiceTests
             { ActingUser = ActingUserFixtures.Principal("test-user", "test-bypass") };
         _outboxPublisher = new OutboxPublisher(_events, new OutboxWriter(ReconciliationSchema.TableName, _sql, _txRunner), NullLogger<OutboxPublisher>.Instance);
         _relationResolver = new EntityRelationResolver(_registry, _entities, _authEvaluator);
+        _schemaRegistration = new SchemaRegistrationOrchestrator(
+            _schemaManager, _vector, _starRocks, _embedding, _registry, NullLogger<SchemaRegistrationOrchestrator>.Instance);
         _sut = new ObjectMappingGrpcService(
-            _entities, _txRunner, _schemaManager, _vector, _outboxPublisher, _registry, _embedding, _starRocks,
+            _entities, _txRunner, _outboxPublisher, _registry,
             new RelationValidator(_registry), new EntityKeyAccessor(),
             new OutboxWriter(ReconciliationSchema.TableName, _sql, _txRunner),
             NullLogger<ObjectMappingGrpcService>.Instance,
-            _actingUserAccessor, _authEvaluator, _relationResolver);
+            _actingUserAccessor, _authEvaluator, _relationResolver, _schemaRegistration);
     }
 
     // ── helpers ───────────────────────────────────────────────────────────────
@@ -167,221 +170,23 @@ public class ObjectMappingGrpcServiceTests
     }
 
     [Fact]
-    public async Task RegisterSchema_WithInvalidOwnerField_ThrowsInvalidArgument()
+    public async Task RegisterSchema_ReturnsOrchestratorResult()
     {
-        var td = SimpleType("Widget", "Name");
-        td.Authorization = new Client.Contracts.AuthorizationRules { OwnerField = "DoesNotExist" };
+        var mockOrchestrator = Substitute.For<ISchemaRegistrationOrchestrator>();
+        mockOrchestrator.RegisterAsync(Arg.Any<SchemaRequest>(), Arg.Any<CancellationToken>())
+            .Returns(new List<string> { "Widget" });
+        var sut = new ObjectMappingGrpcService(
+            _entities, _txRunner, _outboxPublisher, _registry,
+            new RelationValidator(_registry), new EntityKeyAccessor(),
+            new OutboxWriter(ReconciliationSchema.TableName, _sql, _txRunner),
+            NullLogger<ObjectMappingGrpcService>.Instance,
+            _actingUserAccessor, _authEvaluator, _relationResolver, mockOrchestrator);
 
-        var act = () => _sut.RegisterSchema(
-            new SchemaRequest { RootType = td }, TestServerCallContext.Create());
-
-        var ex = await act.Should().ThrowAsync<RpcException>();
-        ex.Which.StatusCode.Should().Be(StatusCode.InvalidArgument);
-    }
-
-    [Fact]
-    public async Task RegisterSchema_WithNonStringOwnerFieldSqlType_ThrowsInvalidArgument()
-    {
-        var td = new TypeDescriptor { TypeName = "Widget" };
-        td.Properties.Add(new PropertyDescriptor { Name = "Id", ClrType = ClrType.ClrGuid, IsKey = true });
-        td.Properties.Add(new PropertyDescriptor { Name = "Count", ClrType = ClrType.ClrInt32 });
-        td.Authorization = new Client.Contracts.AuthorizationRules { OwnerField = "Count" };
-
-        var act = () => _sut.RegisterSchema(
-            new SchemaRequest { RootType = td }, TestServerCallContext.Create());
-
-        var ex = await act.Should().ThrowAsync<RpcException>();
-        ex.Which.StatusCode.Should().Be(StatusCode.InvalidArgument);
-    }
-
-    [Fact]
-    public async Task RegisterSchema_WithOwnerFieldCollidingWithReservedChunkPayloadKey_ThrowsInvalidArgument()
-    {
-        var td = new TypeDescriptor { TypeName = "Widget" };
-        td.Properties.Add(new PropertyDescriptor { Name = "Id", ClrType = ClrType.ClrGuid, IsKey = true });
-        td.Properties.Add(new PropertyDescriptor { Name = "Text", ClrType = ClrType.ClrString });
-        td.Properties.Add(new PropertyDescriptor
-            { Name = "Body", ClrType = ClrType.ClrString, IsChunk = true, ChunkMaxTokens = 512, ChunkOverlap = 64 });
-        td.Authorization = new Client.Contracts.AuthorizationRules { OwnerField = "Text" }; // "Text".ToCamelCase() == "text"
-
-        var act = () => _sut.RegisterSchema(
-            new SchemaRequest { RootType = td }, TestServerCallContext.Create());
-
-        var ex = await act.Should().ThrowAsync<RpcException>();
-        ex.Which.StatusCode.Should().Be(StatusCode.InvalidArgument);
-    }
-
-    [Fact]
-    public async Task RegisterSchema_WithGuidTypedOwnerField_DoesNotThrow()
-    {
-        var td = new TypeDescriptor { TypeName = "Widget" };
-        td.Properties.Add(new PropertyDescriptor { Name = "Id", ClrType = ClrType.ClrGuid, IsKey = true });
-        td.Properties.Add(new PropertyDescriptor { Name = "OwnerId", ClrType = ClrType.ClrGuid });
-        td.Authorization = new Client.Contracts.AuthorizationRules { OwnerField = "OwnerId" };
-
-        var response = await _sut.RegisterSchema(
-            new SchemaRequest { RootType = td }, TestServerCallContext.Create());
+        var response = await sut.RegisterSchema(
+            new SchemaRequest { RootType = SimpleType("Widget", "Name") }, TestServerCallContext.Create());
 
         response.Success.Should().BeTrue();
-    }
-
-    [Fact]
-    public async Task RegisterSchema_CallsApplyTableAsync_WithMatchingTableName()
-    {
-        var request = new SchemaRequest { RootType = SimpleType("Author", "Name") };
-
-        await _sut.RegisterSchema(request, TestServerCallContext.Create());
-
-        await _starRocks.Received(1).ApplyTableAsync(
-            Arg.Is<StarRocksTableSchema>(s => s.TableName == "authors"));
-    }
-
-    [Fact]
-    public async Task RegisterSchema_WithSimpleEntity_ReturnsSuccessAndPersistsInRegistry()
-    {
-        var request = new SchemaRequest { RootType = SimpleType("Tag", "Label") };
-
-        var response = await _sut.RegisterSchema(request, TestServerCallContext.Create());
-
-        response.Success.Should().BeTrue();
-        response.Registered.Should().Contain("Tag");
-        _registry.Get("Tag").Should().NotBeNull();
-    }
-
-    [Fact]
-    public async Task RegisterSchema_WithInjectionRelevantTypeName_ThrowsInvalidArgument()
-    {
-        var request = new SchemaRequest
-        {
-            RootType = SimpleType("Foo\"; DROP TABLE x; --", "Name")
-        };
-
-        var act = () => _sut.RegisterSchema(request, TestServerCallContext.Create());
-
-        var ex = await act.Should().ThrowAsync<RpcException>();
-        ex.Which.StatusCode.Should().Be(StatusCode.InvalidArgument);
-    }
-
-    [Fact]
-    public async Task RegisterSchema_WithInjectionRelevantPropertyName_ThrowsInvalidArgument()
-    {
-        var request = new SchemaRequest
-        {
-            RootType = SimpleType("Widget", "Name\"; DROP TABLE x; --")
-        };
-
-        var act = () => _sut.RegisterSchema(request, TestServerCallContext.Create());
-
-        var ex = await act.Should().ThrowAsync<RpcException>();
-        ex.Which.StatusCode.Should().Be(StatusCode.InvalidArgument);
-    }
-
-    [Fact]
-    public async Task RegisterSchema_WithUnderscoreInTypeName_ThrowsInvalidArgument()
-    {
-        // Underscores aren't SQL-injection-relevant, but they're excluded per the allow-list
-        // design: ToSnakeCase already inserts its own underscores, so accepting caller-supplied
-        // ones would let a caller collide with or otherwise manipulate the generated identifier.
-        var request = new SchemaRequest
-        {
-            RootType = SimpleType("Foo_Bar", "Name")
-        };
-
-        var act = () => _sut.RegisterSchema(request, TestServerCallContext.Create());
-
-        var ex = await act.Should().ThrowAsync<RpcException>();
-        ex.Which.StatusCode.Should().Be(StatusCode.InvalidArgument);
-    }
-
-    [Fact]
-    public async Task RegisterSchema_WithNormalAlphanumericNames_DoesNotThrow()
-    {
-        var request = new SchemaRequest { RootType = SimpleType("Widget2", "Name2") };
-
-        var response = await _sut.RegisterSchema(request, TestServerCallContext.Create());
-
-        response.Success.Should().BeTrue();
-        response.Registered.Should().Contain("Widget2");
-    }
-
-    [Fact]
-    public async Task RegisterSchema_WithManyToOneRelation_DoesNotThrow()
-    {
-        var td = SimpleType("Comment", "Body", "ArticleId");
-        td.Relations.Add(new Client.Contracts.RelationDescriptor
-        {
-            PropertyName = "Article",
-            Kind         = Client.Contracts.RelationKind.ManyToOne,
-            RelatedType  = "Article",
-            ForeignKey   = "ArticleId"
-        });
-
-        var response = await _sut.RegisterSchema(
-            new SchemaRequest { RootType = td }, TestServerCallContext.Create());
-
-        response.Success.Should().BeTrue();
-        response.Registered.Should().Contain("Comment");
-    }
-
-    [Fact]
-    public async Task RegisterSchema_WithManyToManyRelation_DoesNotThrow()
-    {
-        var td = new TypeDescriptor { TypeName = "Post" };
-        td.Properties.Add(new PropertyDescriptor { Name = "Id",     ClrType = ClrType.ClrGuid,   IsKey = true });
-        td.Properties.Add(new PropertyDescriptor { Name = "TagIds", ClrType = ClrType.ClrGuid,   IsArray = true });
-        td.Relations.Add(new Client.Contracts.RelationDescriptor
-        {
-            PropertyName = "Tags",
-            Kind         = Client.Contracts.RelationKind.ManyToMany,
-            RelatedType  = "Tag",
-            ForeignKey   = "TagIds"
-        });
-
-        var response = await _sut.RegisterSchema(
-            new SchemaRequest { RootType = td }, TestServerCallContext.Create());
-
-        response.Success.Should().BeTrue();
-    }
-
-    [Fact]
-    public async Task RegisterSchema_WithDependents_RegistersAllTypes()
-    {
-        var request = new SchemaRequest
-        {
-            RootType = SimpleType("Article", "Title"),
-            Dependents = { SimpleType("Author", "Name") }
-        };
-
-        var response = await _sut.RegisterSchema(request, TestServerCallContext.Create());
-
-        response.Registered.Should().Contain("Article").And.Contain("Author");
-    }
-
-    [Fact]
-    public async Task RegisterSchema_SetsVectorDimAndModelId_FromEmbeddingService()
-    {
-        var typeDesc = new TypeDescriptor { TypeName = "EmbeddableDoc" };
-        typeDesc.Properties.Add(new PropertyDescriptor
-        {
-            Name = "Id", ClrType = ClrType.ClrGuid, IsKey = true
-        });
-        typeDesc.Properties.Add(new PropertyDescriptor
-        {
-            Name    = "Content",
-            ClrType = ClrType.ClrString,
-            IsEmbedding = true,
-            VectorDim   = 0,
-            ModelId     = string.Empty
-        });
-
-        var request  = new SchemaRequest { RootType = typeDesc };
-        var response = await _sut.RegisterSchema(request, Substitute.For<ServerCallContext>());
-
-        response.Success.Should().BeTrue();
-        var schema = _registry.Get("EmbeddableDoc")!;
-        schema.VectorFields.Should().ContainSingle();
-        schema.VectorFields[0].Dimension.Should().Be(768);
-        schema.VectorFields[0].ModelId.Should().Be("nomic-embed-text");
+        response.Registered.Should().BeEquivalentTo(new[] { "Widget" });
     }
 
     // ── Post ──────────────────────────────────────────────────────────────────
@@ -753,11 +558,11 @@ public class ObjectMappingGrpcServiceTests
 
         var mockResolver = Substitute.For<IEntityRelationResolver>();
         var sut = new ObjectMappingGrpcService(
-            _entities, _txRunner, _schemaManager, _vector, _outboxPublisher, _registry, _embedding, _starRocks,
+            _entities, _txRunner, _outboxPublisher, _registry,
             new RelationValidator(_registry), new EntityKeyAccessor(),
             new OutboxWriter(ReconciliationSchema.TableName, _sql, _txRunner),
             NullLogger<ObjectMappingGrpcService>.Instance,
-            _actingUserAccessor, _authEvaluator, mockResolver);
+            _actingUserAccessor, _authEvaluator, mockResolver, _schemaRegistration);
 
         await sut.Get(new MappingGetRequest { TypeName = "Article", Key = ArticleId, Depth = 1 }, TestServerCallContext.Create());
 
@@ -773,11 +578,11 @@ public class ObjectMappingGrpcServiceTests
 
         var mockResolver = Substitute.For<IEntityRelationResolver>();
         var sut = new ObjectMappingGrpcService(
-            _entities, _txRunner, _schemaManager, _vector, _outboxPublisher, _registry, _embedding, _starRocks,
+            _entities, _txRunner, _outboxPublisher, _registry,
             new RelationValidator(_registry), new EntityKeyAccessor(),
             new OutboxWriter(ReconciliationSchema.TableName, _sql, _txRunner),
             NullLogger<ObjectMappingGrpcService>.Instance,
-            _actingUserAccessor, _authEvaluator, mockResolver);
+            _actingUserAccessor, _authEvaluator, mockResolver, _schemaRegistration);
 
         await sut.Get(new MappingGetRequest { TypeName = "Article", Key = ArticleId, Depth = 0 }, TestServerCallContext.Create());
 

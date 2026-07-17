@@ -183,6 +183,7 @@ builder.Services.AddSingleton<IOutboxWriter>(sp => new OutboxWriter(
     sp.GetRequiredService<IRecordStoreTransactionRunner>()));
 builder.Services.AddSingleton<IOutboxPublisher, OutboxPublisher>();
 builder.Services.AddSingleton<IEntityRelationResolver, EntityRelationResolver>();
+builder.Services.AddSingleton<ISchemaRegistrationOrchestrator, SchemaRegistrationOrchestrator>();
 builder.Services.AddSingleton<IReconciliationQueueRepository>(sp => new ReconciliationQueueRepository(
     Iverson.Api.Reconciliation.ReconciliationSchema.TableName,
     sp.GetRequiredService<IRecordStoreQueryExecutor>()));
