@@ -105,7 +105,13 @@ if (command is "seed" or "write-path" or "read-path" or "all")
             ["BenchmarkAuthor"]  = BuildAuthorizationRules("Email"),
             ["BenchmarkTag"]     = BuildAuthorizationRules("Category"),
         };
-        await services.GetRequiredService<SchemaRegistrar>().RegisterAllAsync(authorizationByTypeName);
+        var tenantFieldByTypeName = new Dictionary<string, string>
+        {
+            ["BenchmarkArticle"] = "TenantId",
+            ["BenchmarkAuthor"]  = "TenantId",
+            ["BenchmarkTag"]     = "TenantId",
+        };
+        await services.GetRequiredService<SchemaRegistrar>().RegisterAllAsync(authorizationByTypeName, tenantFieldByTypeName);
         Console.WriteLine("Schemas registered.\n");
     }
     catch (Exception ex)

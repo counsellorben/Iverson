@@ -436,4 +436,58 @@ public class SchemaRegistrarTests
         tagRequest.Should().NotBeNull();
         tagRequest!.RootType!.Authorization.Should().BeNull();
     }
+
+    [Fact]
+    public async Task RegisterAllAsync_SetsTenantField_WhenSupplementProvidesEntry()
+    {
+        SchemaRequest? authorRequest = null;
+        _mappingClient
+            .RegisterSchemaAsync(
+                Arg.Do<SchemaRequest>(r =>
+                {
+                    if (r.RootType?.TypeName == "SchemaTestAuthor") authorRequest = r;
+                }),
+                Arg.Any<Metadata>(),
+                Arg.Any<DateTime?>(),
+                Arg.Any<CancellationToken>())
+            .Returns(new AsyncUnaryCall<SchemaResponse>(
+                Task.FromResult(new SchemaResponse { Success = true }),
+                Task.FromResult(new Metadata()),
+                () => Status.DefaultSuccess,
+                () => new Metadata(),
+                () => { }));
+
+        await _sut.RegisterAllAsync(
+            tenantFieldByTypeName: new Dictionary<string, string> { ["SchemaTestAuthor"] = "TenantId" });
+
+        authorRequest.Should().NotBeNull();
+        authorRequest!.RootType!.TenantField.Should().Be("TenantId");
+    }
+
+    [Fact]
+    public async Task RegisterAllAsync_LeavesTenantFieldEmpty_WhenSupplementHasNoEntryForType()
+    {
+        SchemaRequest? tagRequest = null;
+        _mappingClient
+            .RegisterSchemaAsync(
+                Arg.Do<SchemaRequest>(r =>
+                {
+                    if (r.RootType?.TypeName == "SchemaTestTag") tagRequest = r;
+                }),
+                Arg.Any<Metadata>(),
+                Arg.Any<DateTime?>(),
+                Arg.Any<CancellationToken>())
+            .Returns(new AsyncUnaryCall<SchemaResponse>(
+                Task.FromResult(new SchemaResponse { Success = true }),
+                Task.FromResult(new Metadata()),
+                () => Status.DefaultSuccess,
+                () => new Metadata(),
+                () => { }));
+
+        await _sut.RegisterAllAsync(
+            tenantFieldByTypeName: new Dictionary<string, string> { ["SchemaTestAuthor"] = "TenantId" });
+
+        tagRequest.Should().NotBeNull();
+        tagRequest!.RootType!.TenantField.Should().BeEmpty();
+    }
 }

@@ -90,6 +90,7 @@ message TypeDescriptor {
     repeated PropertyDescriptor properties = 2;
     repeated RelationDescriptor relations  = 3;
     AuthorizationRules         authorization = 4;
+    string                     tenant_field = 5;  // REQUIRED; names a declared scalar property holding the row's tenant id
 }
 
 message SchemaRequest {

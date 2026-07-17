@@ -22,7 +22,8 @@ public static class SchemaFixtures
         VectorFields   = [],
         ChunkFields    = [],
         Relations      = [],
-        Authorization  = BypassAuthorization()
+        Authorization  = BypassAuthorization(),
+        TenantColumn   = "TenantId"
     };
 
     // Article: ManyToOne(Author), vector on Title, chunk on Body → Record + Engagement + Intelligence
@@ -37,7 +38,8 @@ public static class SchemaFixtures
         VectorFields   = [new VectorDescriptor("Title", 768, "nomic-embed-text")],
         ChunkFields    = [new ChunkDescriptor("Body", 512, 64, "nomic-embed-text", 768)],
         Relations      = [new RelationDescriptor("Author", RelationKind.ManyToOne, "Author", "AuthorId")],
-        Authorization  = BypassAuthorization()
+        Authorization  = BypassAuthorization(),
+        TenantColumn   = "TenantId"
     };
 
     // Article with a OneToMany — makes it NOT Engagement-eligible
@@ -55,7 +57,8 @@ public static class SchemaFixtures
             new RelationDescriptor("Author",      RelationKind.ManyToOne, "Author",      "AuthorId"),
             new RelationDescriptor("UserArticles", RelationKind.OneToMany, "UserArticle", "ArticleId")
         ],
-        Authorization  = BypassAuthorization()
+        Authorization  = BypassAuthorization(),
+        TenantColumn   = "TenantId"
     };
 
     // UserArticle: two ManyToOne relations → Engagement eligible
@@ -73,7 +76,8 @@ public static class SchemaFixtures
             new RelationDescriptor("User",    RelationKind.ManyToOne, "User",    "UserId"),
             new RelationDescriptor("Article", RelationKind.ManyToOne, "Article", "ArticleId")
         ],
-        Authorization  = BypassAuthorization()
+        Authorization  = BypassAuthorization(),
+        TenantColumn   = "TenantId"
     };
 
     // Post with ManyToMany → Tags (for ResolveManyToManyAsync tests)
@@ -88,7 +92,8 @@ public static class SchemaFixtures
         VectorFields   = [],
         ChunkFields    = [],
         Relations      = [new RelationDescriptor("Tags", RelationKind.ManyToMany, "Tag", "TagIds")],
-        Authorization  = BypassAuthorization()
+        Authorization  = BypassAuthorization(),
+        TenantColumn   = "TenantId"
     };
 
     public static SchemaDescriptor TagSchema() => new()
@@ -102,7 +107,8 @@ public static class SchemaFixtures
         VectorFields   = [],
         ChunkFields    = [],
         Relations      = [],
-        Authorization  = BypassAuthorization()
+        Authorization  = BypassAuthorization(),
+        TenantColumn   = "TenantId"
     };
 
     public static SchemaDescriptor ArticleWithProjectionSchema() => new()

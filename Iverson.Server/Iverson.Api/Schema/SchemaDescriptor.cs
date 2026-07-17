@@ -17,6 +17,12 @@ public sealed record SchemaDescriptor
     public HashSet<string>   LargeFieldColumns { get; init; } = [];
 
     public AuthorizationRules? Authorization { get; init; }
+
+    // Nullable, not required: SchemaRegistry.LoadAsync deserializes pre-change _iverson_schema
+    // rows via JsonSerializer; a required member missing from legacy JSON would throw at startup.
+    // A null TenantColumn means a legacy (pre-cutover) schema — the evaluator denies all access
+    // to it until it is re-registered with a tenant_field.
+    public string? TenantColumn { get; init; }
 }
 
 public sealed record ColumnDescriptor(string Name, string SqlType, bool IsNullable);

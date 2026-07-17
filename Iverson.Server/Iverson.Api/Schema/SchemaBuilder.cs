@@ -108,7 +108,8 @@ internal static class SchemaBuilder
             Relations         = relations,
             SearchKeyColumns  = searchKeysSorted.ConvertAll(sk => sk.Name),
             LargeFieldColumns = largeFields,
-            Authorization     = authorization
+            Authorization     = authorization,
+            TenantColumn      = string.IsNullOrEmpty(typeDesc.TenantField) ? null : typeDesc.TenantField
         };
     }
 

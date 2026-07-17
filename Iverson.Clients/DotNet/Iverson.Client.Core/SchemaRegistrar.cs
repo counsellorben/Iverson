@@ -18,6 +18,7 @@ public sealed class SchemaRegistrar(
 {
     public async Task RegisterAllAsync(
         IReadOnlyDictionary<string, AuthorizationRules>? authorizationByTypeName = null,
+        IReadOnlyDictionary<string, string>? tenantFieldByTypeName = null,
         CancellationToken ct = default)
     {
         foreach (var descriptor in registry.All)
@@ -27,6 +28,14 @@ public sealed class SchemaRegistrar(
                 authorizationByTypeName.TryGetValue(descriptor.EntityName, out var authorization))
             {
                 typeDesc.Authorization = authorization;
+            }
+            // tenant_field is REQUIRED by the server (RegisterSchema rejects a schema without
+            // one) — mirrors authorizationByTypeName's out-of-band, per-type-name mechanism
+            // since tenant_field, like owner_field, isn't attribute-derived.
+            if (tenantFieldByTypeName is not null &&
+                tenantFieldByTypeName.TryGetValue(descriptor.EntityName, out var tenantField))
+            {
+                typeDesc.TenantField = tenantField;
             }
             try
             {

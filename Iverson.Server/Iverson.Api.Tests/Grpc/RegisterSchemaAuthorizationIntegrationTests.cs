@@ -227,12 +227,13 @@ public sealed class RegisterSchemaAuthorizationIntegrationTests(AllStoresContain
             Substitute.For<IEntityRelationResolver>(),
             schemaRegistration);
 
-        var typeDesc = SimpleType("ArticleWithAuth", "Title", "OwnerId");
+        var typeDesc = SimpleType("ArticleWithAuth", "Title", "OwnerId", "TenantId");
         typeDesc.Authorization = new Client.Contracts.AuthorizationRules
         {
             OwnerField = "OwnerId",
             RowPermissions = { new Client.Contracts.RowPermission { Role = "admin", CanReadAll = true } }
         };
+        typeDesc.TenantField = "TenantId";
 
         var response = await sut.RegisterSchema(
             new SchemaRequest { RootType = typeDesc },
