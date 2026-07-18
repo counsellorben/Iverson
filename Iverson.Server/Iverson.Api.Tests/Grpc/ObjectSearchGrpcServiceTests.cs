@@ -1074,7 +1074,7 @@ public class ObjectSearchGrpcServiceTests
             Id: 1, Score: 0.95,
             Payload: new Dictionary<string, string> { ["title"] = "Great Article" });
 
-        _vector.SearchNamedAsync("articles", "title_vector", fakeVector, Arg.Any<ulong>())
+        _vector.SearchNamedAsync("articles", "title_vector", fakeVector, Arg.Any<ulong>(), Arg.Any<Filter>())
                .Returns(new List<VectorSearchResult> { vectorResult }.AsReadOnly());
 
         var (writer, written) = MakeStream<SearchResponse>();
@@ -1171,6 +1171,7 @@ public class ObjectSearchGrpcServiceTests
     public async Task SearchSimilar_OwnershipRequired_AddsMatchKeywordConditionToFilter()
     {
         // No caller-supplied filter clause — also proves a fresh Filter is constructed when none exists.
+        // Both ownership and tenant conditions are added (ownership for restricted caller, tenant for boundary).
         await _registry.RegisterAsync(OwnedQdrantSchema("Owned", "OwnerId", bypassRole: "other-bypass"));
         _embedding.EmbedAsync("q", Arg.Any<CancellationToken>()).Returns(new float[768]);
         _vector.SearchNamedAsync("owneds", "name_vector", Arg.Any<float[]>(), Arg.Any<ulong>(), Arg.Any<Filter>())
@@ -1186,12 +1187,16 @@ public class ObjectSearchGrpcServiceTests
             .Subject;
         var captured = (Filter?)call.GetArguments()[4];
         captured.Should().NotBeNull();
-        captured!.Must.Should().ContainSingle(c => c.Field.Key == "ownerId" && c.Field.Match.Keyword == "test-user");
+        captured!.Must.Should().HaveCount(2);
+        captured.Must.Should().Contain(c => c.Field.Key == "ownerId" && c.Field.Match.Keyword == "test-user");
+        captured.Must.Should().Contain(c => c.Field.Key == "tenantId" && c.Field.Match.Keyword == "test-tenant");
     }
 
     [Fact]
     public async Task SearchSimilar_BypassRole_NoOwnershipFilterAdded()
     {
+        // Bypass role short-circuits ownership filtering, but tenant boundary is additive and still applies
+        // — the filter must contain the tenant condition without an ownership condition.
         await _registry.RegisterAsync(OwnedQdrantSchema("Owned", "OwnerId")); // bypassRole defaults to "test-bypass"
         _embedding.EmbedAsync("q", Arg.Any<CancellationToken>()).Returns(new float[768]);
         _vector.SearchNamedAsync("owneds", "name_vector", Arg.Any<float[]>(), Arg.Any<ulong>(), Arg.Any<Filter>())
@@ -1205,7 +1210,9 @@ public class ObjectSearchGrpcServiceTests
         var call = _vector.ReceivedCalls()
             .Should().ContainSingle(c => c.GetMethodInfo().Name == nameof(IVectorQueryService.SearchNamedAsync))
             .Subject;
-        ((Filter?)call.GetArguments()[4]).Should().BeNull();
+        var captured = (Filter?)call.GetArguments()[4];
+        captured.Should().NotBeNull();
+        captured!.Must.Should().ContainSingle(c => c.Field.Key == "tenantId" && c.Field.Match.Keyword == "test-tenant");
     }
 
     [Fact]
@@ -1254,7 +1261,7 @@ public class ObjectSearchGrpcServiceTests
         var vectorResult = new VectorSearchResult(
             Id: 1, Score: 0.9,
             Payload: new Dictionary<string, string> { ["key"] = "point-key-1", ["name"] = "visible", ["secret"] = "hidden" });
-        _vector.SearchNamedAsync("owneds", "name_vector", Arg.Any<float[]>(), Arg.Any<ulong>())
+        _vector.SearchNamedAsync("owneds", "name_vector", Arg.Any<float[]>(), Arg.Any<ulong>(), Arg.Any<Filter>())
                .Returns(new List<VectorSearchResult> { vectorResult }.AsReadOnly());
 
         var (writer, written) = MakeStream<SearchResponse>();
@@ -1308,7 +1315,7 @@ public class ObjectSearchGrpcServiceTests
             Id: 42, Score: 0.88,
             Payload: new Dictionary<string, string> { ["text"] = "passage text", ["parent_id"] = "parent-id-123" });
 
-        _vector.SearchNamedAsync("articles_chunks", "body_vector", fakeVector, Arg.Any<ulong>())
+        _vector.SearchNamedAsync("articles_chunks", "body_vector", fakeVector, Arg.Any<ulong>(), Arg.Any<Filter>())
                .Returns(new List<VectorSearchResult> { chunkResult }.AsReadOnly());
 
         var (writer, written) = MakeStream<ChunkSearchResponse>();
@@ -1317,7 +1324,7 @@ public class ObjectSearchGrpcServiceTests
             writer, TestServerCallContext.Create());
 
         await _vector.Received(1).SearchNamedAsync(
-            "articles_chunks", Arg.Any<string>(), Arg.Any<float[]>(), Arg.Any<ulong>());
+            "articles_chunks", Arg.Any<string>(), Arg.Any<float[]>(), Arg.Any<ulong>(), Arg.Any<Filter>());
         written.Should().HaveCount(1);
     }
 
@@ -1337,7 +1344,7 @@ public class ObjectSearchGrpcServiceTests
                 ["parent_id"] = "parent-id-123"
             });
 
-        _vector.SearchNamedAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<float[]>(), Arg.Any<ulong>())
+        _vector.SearchNamedAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<float[]>(), Arg.Any<ulong>(), Arg.Any<Filter>())
                .Returns(new List<VectorSearchResult> { chunkResult }.AsReadOnly());
 
         var (writer, written) = MakeStream<ChunkSearchResponse>();
@@ -1375,8 +1382,12 @@ public class ObjectSearchGrpcServiceTests
             .Subject;
         var captured = (Filter?)call.GetArguments()[4];
         captured.Should().NotBeNull();
-        captured!.Must.Should().ContainSingle(c =>
+        // Both parent_id filter (from user-supplied filter) and tenant filter (from authorization boundary)
+        captured!.Must.Should().HaveCount(2);
+        captured.Must.Should().Contain(c =>
             c.Field.Key == "parent_id" && c.Field.Match.Keyword == "parent-123");
+        captured.Must.Should().Contain(c =>
+            c.Field.Key == "tenantId" && c.Field.Match.Keyword == "test-tenant");
     }
 
     [Fact]

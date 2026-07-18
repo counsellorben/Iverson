@@ -152,6 +152,7 @@ public sealed class ObjectSearchGrpcService(
         }
 
         filter = QdrantFilterBuilder.ApplyOwnership(filter, decision.OwnershipRequired, schema.Authorization?.OwnerField?.ToCamelCase(), decision.OwnerValue);
+        filter = QdrantFilterBuilder.ApplyTenant(filter, decision.TenantColumn is not null, decision.TenantColumn?.ToCamelCase(), decision.TenantValue);
 
         logger.LogInformation("[SearchSimilar] type={Type} property={Prop} topK={K} filtered={Filtered}",
             request.TypeName.SanitizeForLog(), request.Property.SanitizeForLog(), request.TopK, filter is not null);
@@ -218,6 +219,7 @@ public sealed class ObjectSearchGrpcService(
 
         var filter = BuildChunksFilter(schema, request);
         filter = QdrantFilterBuilder.ApplyOwnership(filter, decision.OwnershipRequired, schema.Authorization?.OwnerField?.ToCamelCase(), decision.OwnerValue);
+        filter = QdrantFilterBuilder.ApplyTenant(filter, decision.TenantColumn is not null, decision.TenantColumn?.ToCamelCase(), decision.TenantValue);
 
         logger.LogInformation("[SearchChunks] type={Type} property={Prop} topK={K} filtered={Filtered}",
             request.TypeName.SanitizeForLog(), request.Property.SanitizeForLog(), request.TopK, filter is not null);

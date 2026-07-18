@@ -59,6 +59,14 @@ public static class QdrantFilterBuilder
         return filter;
     }
 
+    public static Filter? ApplyTenant(Filter? filter, bool tenantRequired, string? tenantFieldCamelCase, string? tenantValue)
+    {
+        if (!tenantRequired) return filter;
+        filter ??= new Filter();
+        filter.Must.Add(Conditions.MatchKeyword(tenantFieldCamelCase!, tenantValue!));
+        return filter;
+    }
+
     private static (Condition Condition, bool Negate) BuildCondition(SearchClause clause, string rpcName) =>
         clause.Operator switch
         {

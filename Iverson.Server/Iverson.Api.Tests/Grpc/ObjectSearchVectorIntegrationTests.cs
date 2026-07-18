@@ -96,10 +96,10 @@ public sealed class ObjectSearchVectorIntegrationTests : IClassFixture<QdrantGrp
 
         await _vector.UpsertNamedAsync(collection, 1,
             new Dictionary<string, float[]> { ["title_vector"] = vec },
-            new Dictionary<string, object> { ["wordCount"] = 100L });
+            new Dictionary<string, object> { ["wordCount"] = 100L, ["tenantId"] = "test-tenant" });
         await _vector.UpsertNamedAsync(collection, 2,
             new Dictionary<string, float[]> { ["title_vector"] = vec },
-            new Dictionary<string, object> { ["wordCount"] = 900L });
+            new Dictionary<string, object> { ["wordCount"] = 900L, ["tenantId"] = "test-tenant" });
 
         var sut = BuildSut();
         var request = new SearchSimilarRequest { TypeName = "Article", Property = "Title", Query = "q", TopK = 10 };
@@ -132,10 +132,10 @@ public sealed class ObjectSearchVectorIntegrationTests : IClassFixture<QdrantGrp
 
         await _vector.UpsertNamedAsync(chunksCollection, 1,
             new Dictionary<string, float[]> { ["body_vector"] = vec },
-            new Dictionary<string, object> { ["text"] = "chunk from parent A", ["parent_id"] = "parent-a" });
+            new Dictionary<string, object> { ["text"] = "chunk from parent A", ["parent_id"] = "parent-a", ["tenantId"] = "test-tenant" });
         await _vector.UpsertNamedAsync(chunksCollection, 2,
             new Dictionary<string, float[]> { ["body_vector"] = vec },
-            new Dictionary<string, object> { ["text"] = "chunk from parent B", ["parent_id"] = "parent-b" });
+            new Dictionary<string, object> { ["text"] = "chunk from parent B", ["parent_id"] = "parent-b", ["tenantId"] = "test-tenant" });
 
         var sut = BuildSut();
         var request = new SearchChunksRequest { TypeName = "Article", Property = "Body", Query = "q", TopK = 10 };
