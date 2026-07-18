@@ -50,14 +50,14 @@ public class ObjectMappingGrpcServiceTests
         _events   = Substitute.For<IEventProducer>();
 
         _sql.ExecuteAsync(Arg.Any<string>(), Arg.Any<object?>()).Returns(1);
-        _entities.FetchByColumnAsync(Arg.Any<TableSchema>(), Arg.Any<string>(), Arg.Any<string>())
+        _entities.FetchByColumnAsync(Arg.Any<TableSchema>(), Arg.Any<string>(), Arg.Any<string>(), Arg.Any<bool>(), Arg.Any<string?>())
             .Returns(Task.FromResult(Enumerable.Empty<string>()));
         // NSubstitute's auto-value for an unconfigured Task<string?> member is Task.FromResult(""),
         // not null — default every FetchByKeyAsync call to "row not found" so Update's new
         // pre-fetch (Task 6) doesn't try to JSON-parse an empty string in tests that don't care
         // about the pre-existing-row branch. Individual tests override this with .Returns(...)
         // for the specific TableSchema/key they need.
-        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>())
+        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>(), Arg.Any<bool>(), Arg.Any<string?>())
             .Returns((string?)null);
 
         _txRunner = Substitute.For<IRecordStoreTransactionRunner>();
@@ -555,7 +555,7 @@ public class ObjectMappingGrpcServiceTests
     public async Task Get_WhenEntityExists_ReturnsSuccessWithParsedData()
     {
         await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
-        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>())
+        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>(), Arg.Any<bool>(), Arg.Any<string?>())
             .Returns(AuthorJson);
 
         var response = await _sut.Get(
@@ -570,7 +570,7 @@ public class ObjectMappingGrpcServiceTests
     public async Task Get_WhenEntityNotFound_ReturnsFailureResponse()
     {
         await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
-        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>())
+        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>(), Arg.Any<bool>(), Arg.Any<string?>())
             .Returns((string?)null);
 
         var response = await _sut.Get(
@@ -596,7 +596,7 @@ public class ObjectMappingGrpcServiceTests
     public async Task Get_WithDepthGreaterThanZero_CallsRelationResolver()
     {
         await _registry.RegisterAsync(SchemaFixtures.ArticleSchema());
-        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>()).Returns(ArticleJson);
+        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>(), Arg.Any<bool>(), Arg.Any<string?>()).Returns(ArticleJson);
 
         var mockResolver = Substitute.For<IEntityRelationResolver>();
         var sut = new ObjectMappingGrpcService(
@@ -616,7 +616,7 @@ public class ObjectMappingGrpcServiceTests
     public async Task Get_WithDepthZero_DoesNotCallRelationResolver()
     {
         await _registry.RegisterAsync(SchemaFixtures.ArticleSchema());
-        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>()).Returns(ArticleJson);
+        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>(), Arg.Any<bool>(), Arg.Any<string?>()).Returns(ArticleJson);
 
         var mockResolver = Substitute.For<IEntityRelationResolver>();
         var sut = new ObjectMappingGrpcService(
@@ -686,7 +686,7 @@ public class ObjectMappingGrpcServiceTests
     {
         var schema = SchemaFixtures.AuthorSchema() with { Authorization = null };
         await _registry.RegisterAsync(schema);
-        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>())
+        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>(), Arg.Any<bool>(), Arg.Any<string?>())
             .Returns(AuthorJson);
 
         var response = await _sut.Get(
@@ -701,7 +701,7 @@ public class ObjectMappingGrpcServiceTests
     public async Task Get_WithNoActingUser_ReturnsNotFound()
     {
         await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
-        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>())
+        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>(), Arg.Any<bool>(), Arg.Any<string?>())
             .Returns(AuthorJson);
         _actingUserAccessor.ActingUser = null;
 
@@ -718,7 +718,7 @@ public class ObjectMappingGrpcServiceTests
     {
         await _registry.RegisterAsync(OwnedAuthorSchema());
         var ownedJson = $$"""{"Id":"{{AuthorId}}","Name":"Alice","OwnerId":"test-user","TenantId":"test-tenant"}""";
-        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>())
+        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>(), Arg.Any<bool>(), Arg.Any<string?>())
             .Returns(ownedJson);
 
         var response = await _sut.Get(
@@ -734,7 +734,7 @@ public class ObjectMappingGrpcServiceTests
     {
         await _registry.RegisterAsync(OwnedAuthorSchema(withBypassRole: true));
         var ownedJson = $$"""{"Id":"{{AuthorId}}","Name":"Alice","OwnerId":"someone-else","TenantId":"test-tenant"}""";
-        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>())
+        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>(), Arg.Any<bool>(), Arg.Any<string?>())
             .Returns(ownedJson);
 
         var response = await _sut.Get(
@@ -749,7 +749,7 @@ public class ObjectMappingGrpcServiceTests
     {
         await _registry.RegisterAsync(OwnedAuthorSchema());
         var ownedJson = $$"""{"Id":"{{AuthorId}}","Name":"Alice","OwnerId":"someone-else","TenantId":"test-tenant"}""";
-        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>())
+        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>(), Arg.Any<bool>(), Arg.Any<string?>())
             .Returns(ownedJson);
 
         var response = await _sut.Get(
@@ -765,7 +765,7 @@ public class ObjectMappingGrpcServiceTests
     {
         await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
         var crossTenantJson = $$"""{"Id":"{{AuthorId}}","Name":"Alice","Bio":"Writer","TenantId":"other-tenant"}""";
-        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>())
+        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>(), Arg.Any<bool>(), Arg.Any<string?>())
             .Returns(crossTenantJson);
 
         var response = await _sut.Get(
@@ -783,7 +783,7 @@ public class ObjectMappingGrpcServiceTests
         // from the tenant boundary.
         await _registry.RegisterAsync(OwnedAuthorSchema(withBypassRole: true));
         var crossTenantJson = $$"""{"Id":"{{AuthorId}}","Name":"Alice","OwnerId":"someone-else","TenantId":"other-tenant"}""";
-        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>())
+        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>(), Arg.Any<bool>(), Arg.Any<string?>())
             .Returns(crossTenantJson);
 
         var response = await _sut.Get(
@@ -808,7 +808,7 @@ public class ObjectMappingGrpcServiceTests
                 })
         };
         await _registry.RegisterAsync(schema);
-        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>())
+        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>(), Arg.Any<bool>(), Arg.Any<string?>())
             .Returns(AuthorJson);
 
         var response = await _sut.Get(
@@ -832,12 +832,12 @@ public class ObjectMappingGrpcServiceTests
 
         var postJson = $$"""{"Id":"{{postId}}","Title":"Hello","TagIds":["{{allowedTagId}}","{{deniedTagId}}"],"TenantId":"test-tenant"}""";
         _entities.FetchByKeyAsync(
-                Arg.Is<TableSchema>(s => s.TableName == "posts"), Arg.Any<string>())
+                Arg.Is<TableSchema>(s => s.TableName == "posts"), Arg.Any<string>(), Arg.Any<bool>(), Arg.Any<string?>())
             .Returns(postJson);
 
         var allowedTagJson = $$"""{"Id":"{{allowedTagId}}","Label":"dotnet","OwnerId":"test-user","TenantId":"test-tenant"}""";
         var deniedTagJson  = $$"""{"Id":"{{deniedTagId}}","Label":"csharp","OwnerId":"someone-else","TenantId":"test-tenant"}""";
-        _entities.FetchManyByKeysAsync(Arg.Any<TableSchema>(), Arg.Any<IReadOnlyList<string>>())
+        _entities.FetchManyByKeysAsync(Arg.Any<TableSchema>(), Arg.Any<IReadOnlyList<string>>(), Arg.Any<bool>(), Arg.Any<string?>())
             .Returns(new[] { new KeyedRow(allowedTagId, allowedTagJson), new KeyedRow(deniedTagId, deniedTagJson) });
 
         var response = await _sut.Get(
@@ -865,12 +865,12 @@ public class ObjectMappingGrpcServiceTests
 
         var postJson = $$"""{"Id":"{{postId}}","Title":"Hello","TagIds":["{{sameTenantTagId}}","{{crossTenantTagId}}"],"TenantId":"test-tenant"}""";
         _entities.FetchByKeyAsync(
-                Arg.Is<TableSchema>(s => s.TableName == "posts"), Arg.Any<string>())
+                Arg.Is<TableSchema>(s => s.TableName == "posts"), Arg.Any<string>(), Arg.Any<bool>(), Arg.Any<string?>())
             .Returns(postJson);
 
         var sameTenantTagJson  = $$"""{"Id":"{{sameTenantTagId}}","Label":"dotnet","TenantId":"test-tenant"}""";
         var crossTenantTagJson = $$"""{"Id":"{{crossTenantTagId}}","Label":"csharp","TenantId":"other-tenant"}""";
-        _entities.FetchManyByKeysAsync(Arg.Any<TableSchema>(), Arg.Any<IReadOnlyList<string>>())
+        _entities.FetchManyByKeysAsync(Arg.Any<TableSchema>(), Arg.Any<IReadOnlyList<string>>(), Arg.Any<bool>(), Arg.Any<string?>())
             .Returns(new[] { new KeyedRow(sameTenantTagId, sameTenantTagJson), new KeyedRow(crossTenantTagId, crossTenantTagJson) });
 
         var response = await _sut.Get(
@@ -905,10 +905,10 @@ public class ObjectMappingGrpcServiceTests
         await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
 
         _entities.FetchByKeyAsync(
-                Arg.Is<TableSchema>(s => s.TableName == "articles"), Arg.Any<string>())
+                Arg.Is<TableSchema>(s => s.TableName == "articles"), Arg.Any<string>(), Arg.Any<bool>(), Arg.Any<string?>())
             .Returns(ArticleJson);
         _entities.FetchByKeyAsync(
-                Arg.Is<TableSchema>(s => s.TableName == "authors"), Arg.Any<string>())
+                Arg.Is<TableSchema>(s => s.TableName == "authors"), Arg.Any<string>(), Arg.Any<bool>(), Arg.Any<string?>())
             .Returns(AuthorJson);
 
         var response = await _sut.Get(
@@ -1067,7 +1067,7 @@ public class ObjectMappingGrpcServiceTests
     {
         await _registry.RegisterAsync(OwnedAuthorSchema());
         var ownedJson = $$"""{"Id":"{{AuthorId}}","Name":"Alice","OwnerId":"test-user","TenantId":"test-tenant"}""";
-        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>())
+        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>(), Arg.Any<bool>(), Arg.Any<string?>())
             .Returns(ownedJson);
 
         var payload = MakePayload(new()
@@ -1088,7 +1088,7 @@ public class ObjectMappingGrpcServiceTests
     {
         await _registry.RegisterAsync(OwnedAuthorSchema(withBypassRole: true));
         var ownedJson = $$"""{"Id":"{{AuthorId}}","Name":"Alice","OwnerId":"someone-else","TenantId":"test-tenant"}""";
-        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>())
+        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>(), Arg.Any<bool>(), Arg.Any<string?>())
             .Returns(ownedJson);
 
         var payload = MakePayload(new()
@@ -1109,7 +1109,7 @@ public class ObjectMappingGrpcServiceTests
     {
         await _registry.RegisterAsync(OwnedAuthorSchema());
         var ownedJson = $$"""{"Id":"{{AuthorId}}","Name":"Alice","OwnerId":"someone-else","TenantId":"test-tenant"}""";
-        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>())
+        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>(), Arg.Any<bool>(), Arg.Any<string?>())
             .Returns(ownedJson);
 
         var payload = MakePayload(new()
@@ -1131,7 +1131,7 @@ public class ObjectMappingGrpcServiceTests
     {
         await _registry.RegisterAsync(OwnedAuthorSchema());
         var crossTenantJson = $$"""{"Id":"{{AuthorId}}","Name":"Alice","OwnerId":"test-user","TenantId":"other-tenant"}""";
-        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>())
+        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>(), Arg.Any<bool>(), Arg.Any<string?>())
             .Returns(crossTenantJson);
 
         var payload = MakePayload(new()
@@ -1155,7 +1155,7 @@ public class ObjectMappingGrpcServiceTests
         // from the tenant boundary.
         await _registry.RegisterAsync(OwnedAuthorSchema(withBypassRole: true));
         var crossTenantJson = $$"""{"Id":"{{AuthorId}}","Name":"Alice","OwnerId":"someone-else","TenantId":"other-tenant"}""";
-        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>())
+        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>(), Arg.Any<bool>(), Arg.Any<string?>())
             .Returns(crossTenantJson);
 
         var payload = MakePayload(new()
@@ -1177,7 +1177,7 @@ public class ObjectMappingGrpcServiceTests
     {
         await _registry.RegisterAsync(OwnedAuthorSchema());
         var ownedJson = $$"""{"Id":"{{AuthorId}}","Name":"Alice","OwnerId":"test-user","TenantId":"test-tenant"}""";
-        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>())
+        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>(), Arg.Any<bool>(), Arg.Any<string?>())
             .Returns(ownedJson);
 
         var payload = MakePayload(new()
@@ -1203,7 +1203,7 @@ public class ObjectMappingGrpcServiceTests
         // from the tenant-immutability check.
         await _registry.RegisterAsync(OwnedAuthorSchema(withBypassRole: true));
         var ownedJson = $$"""{"Id":"{{AuthorId}}","Name":"Alice","OwnerId":"someone-else","TenantId":"test-tenant"}""";
-        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>())
+        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>(), Arg.Any<bool>(), Arg.Any<string?>())
             .Returns(ownedJson);
 
         var payload = MakePayload(new()
@@ -1236,7 +1236,7 @@ public class ObjectMappingGrpcServiceTests
                 })
         };
         await _registry.RegisterAsync(schema);
-        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>())
+        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>(), Arg.Any<bool>(), Arg.Any<string?>())
             .Returns(AuthorJson);
 
         var payload = MakePayload(new()
@@ -1259,7 +1259,7 @@ public class ObjectMappingGrpcServiceTests
     public async Task Update_ForOrdinaryCaller_WhenRowDoesNotExistYet_ForceSetsOwnerFieldToActingUserSub(string? clientSuppliedOwnerId)
     {
         await _registry.RegisterAsync(OwnedAuthorSchema(withBypassRole: false));
-        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>())
+        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>(), Arg.Any<bool>(), Arg.Any<string?>())
             .Returns((string?)null);
 
         var fields = new Dictionary<string, Value>
@@ -1285,7 +1285,7 @@ public class ObjectMappingGrpcServiceTests
     public async Task Update_WithBypassRole_WhenRowDoesNotExistYet_LeavesOwnerFieldUntouched(string? clientSuppliedOwnerId)
     {
         await _registry.RegisterAsync(OwnedAuthorSchema(withBypassRole: true));
-        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>())
+        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>(), Arg.Any<bool>(), Arg.Any<string?>())
             .Returns((string?)null);
 
         var fields = new Dictionary<string, Value>
@@ -1313,7 +1313,7 @@ public class ObjectMappingGrpcServiceTests
     {
         await _registry.RegisterAsync(OwnedAuthorSchema(withBypassRole: false));
         var ownedJson = $$"""{"Id":"{{AuthorId}}","Name":"Alice","OwnerId":"test-user","TenantId":"test-tenant"}""";
-        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>())
+        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>(), Arg.Any<bool>(), Arg.Any<string?>())
             .Returns(ownedJson);
 
         var payload = MakePayload(new()
@@ -1339,7 +1339,7 @@ public class ObjectMappingGrpcServiceTests
         // from schema.Authorization?.OwnerField, not decision.OwnerFieldName, or this would never fire.
         await _registry.RegisterAsync(OwnedAuthorSchema(withBypassRole: true));
         var ownedJson = $$"""{"Id":"{{AuthorId}}","Name":"Alice","OwnerId":"someone-else","TenantId":"test-tenant"}""";
-        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>())
+        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>(), Arg.Any<bool>(), Arg.Any<string?>())
             .Returns(ownedJson);
 
         var payload = MakePayload(new()
@@ -1363,7 +1363,7 @@ public class ObjectMappingGrpcServiceTests
     public async Task Delete_WhenEntityExists_DeletesFromSqlAndEmitsEvent()
     {
         await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
-        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>())
+        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>(), Arg.Any<bool>(), Arg.Any<string?>())
             .Returns(AuthorJson);
 
         EntityEvent? evt = null;
@@ -1378,7 +1378,7 @@ public class ObjectMappingGrpcServiceTests
         await _entities.Received(1).DeleteAsync(
             Arg.Any<IDbTransactionContext>(),
             Arg.Is<TableSchema>(s => s.TableName == "authors"),
-            AuthorId);
+            AuthorId, Arg.Any<bool>(), Arg.Any<string?>());
         evt!.TypeName.Should().Be("Author");
         evt.Key.Should().Be(AuthorId);
         evt.EventType.Should().Be(EntityEventType.Deleted);
@@ -1388,7 +1388,7 @@ public class ObjectMappingGrpcServiceTests
     public async Task Delete_WhenEntityNotFound_ReturnsFailureWithoutEmittingEvent()
     {
         await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
-        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>())
+        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>(), Arg.Any<bool>(), Arg.Any<string?>())
             .Returns((string?)null);
 
         var response = await _sut.Delete(
@@ -1405,7 +1405,7 @@ public class ObjectMappingGrpcServiceTests
     public async Task Delete_InsertsDeleteOutboxRowInSameTransactionAsDelete_WithEventTypeAndSnapshotPayload()
     {
         await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
-        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>())
+        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>(), Arg.Any<bool>(), Arg.Any<string?>())
             .Returns(AuthorJson);
 
         var capturedWork = default(Func<IDbTransactionContext, Task>);
@@ -1433,7 +1433,8 @@ public class ObjectMappingGrpcServiceTests
         await capturedWork!(fakeTx);
 
         await _entities.Received(1).DeleteAsync(
-            fakeTx, Arg.Is<TableSchema>(s => s.TableName == "authors"), AuthorId);
+            fakeTx, Arg.Is<TableSchema>(s => s.TableName == "authors"), AuthorId,
+            Arg.Any<bool>(), Arg.Any<string?>());
 
         var outboxCall = calls.Should().ContainSingle(
             c => c.Sql.Contains($"INSERT INTO \"{ReconciliationSchema.TableName}\"")).Subject;
@@ -1462,7 +1463,7 @@ public class ObjectMappingGrpcServiceTests
     {
         var schema = SchemaFixtures.AuthorSchema() with { Authorization = null };
         await _registry.RegisterAsync(schema);
-        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>())
+        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>(), Arg.Any<bool>(), Arg.Any<string?>())
             .Returns(AuthorJson);
 
         var response = await _sut.Delete(
@@ -1479,7 +1480,7 @@ public class ObjectMappingGrpcServiceTests
     public async Task Delete_WithNoActingUser_ReturnsNotFound()
     {
         await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
-        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>())
+        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>(), Arg.Any<bool>(), Arg.Any<string?>())
             .Returns(AuthorJson);
         _actingUserAccessor.ActingUser = null;
 
@@ -1498,7 +1499,7 @@ public class ObjectMappingGrpcServiceTests
     {
         await _registry.RegisterAsync(OwnedAuthorSchema());
         var ownedJson = $$"""{"Id":"{{AuthorId}}","Name":"Alice","OwnerId":"test-user","TenantId":"test-tenant"}""";
-        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>())
+        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>(), Arg.Any<bool>(), Arg.Any<string?>())
             .Returns(ownedJson);
 
         EntityEvent? evt = null;
@@ -1513,7 +1514,7 @@ public class ObjectMappingGrpcServiceTests
         await _entities.Received(1).DeleteAsync(
             Arg.Any<IDbTransactionContext>(),
             Arg.Is<TableSchema>(s => s.TableName == "authors"),
-            AuthorId);
+            AuthorId, Arg.Any<bool>(), Arg.Any<string?>());
         evt!.TypeName.Should().Be("Author");
         evt.EventType.Should().Be(EntityEventType.Deleted);
     }
@@ -1523,7 +1524,7 @@ public class ObjectMappingGrpcServiceTests
     {
         await _registry.RegisterAsync(OwnedAuthorSchema(withBypassRole: true));
         var ownedJson = $$"""{"Id":"{{AuthorId}}","Name":"Alice","OwnerId":"someone-else","TenantId":"test-tenant"}""";
-        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>())
+        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>(), Arg.Any<bool>(), Arg.Any<string?>())
             .Returns(ownedJson);
 
         EntityEvent? evt = null;
@@ -1538,7 +1539,7 @@ public class ObjectMappingGrpcServiceTests
         await _entities.Received(1).DeleteAsync(
             Arg.Any<IDbTransactionContext>(),
             Arg.Is<TableSchema>(s => s.TableName == "authors"),
-            AuthorId);
+            AuthorId, Arg.Any<bool>(), Arg.Any<string?>());
         evt!.TypeName.Should().Be("Author");
         evt.EventType.Should().Be(EntityEventType.Deleted);
     }
@@ -1548,7 +1549,7 @@ public class ObjectMappingGrpcServiceTests
     {
         await _registry.RegisterAsync(OwnedAuthorSchema());
         var ownedJson = $$"""{"Id":"{{AuthorId}}","Name":"Alice","OwnerId":"someone-else","TenantId":"test-tenant"}""";
-        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>())
+        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>(), Arg.Any<bool>(), Arg.Any<string?>())
             .Returns(ownedJson);
 
         var response = await _sut.Delete(
@@ -1566,7 +1567,7 @@ public class ObjectMappingGrpcServiceTests
     {
         await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
         var crossTenantJson = $$"""{"Id":"{{AuthorId}}","Name":"Alice","Bio":"Writer","TenantId":"other-tenant"}""";
-        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>())
+        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>(), Arg.Any<bool>(), Arg.Any<string?>())
             .Returns(crossTenantJson);
 
         var response = await _sut.Delete(
@@ -1576,7 +1577,8 @@ public class ObjectMappingGrpcServiceTests
         response.Success.Should().BeFalse();
         response.Error.Should().Contain("not found");
         await _entities.DidNotReceive().DeleteAsync(
-            Arg.Any<IDbTransactionContext>(), Arg.Any<TableSchema>(), Arg.Any<string>());
+            Arg.Any<IDbTransactionContext>(), Arg.Any<TableSchema>(), Arg.Any<string>(),
+            Arg.Any<bool>(), Arg.Any<string?>());
         await _events.DidNotReceive().ProduceAsync(
             EntityTopics.Events, Arg.Any<string>(), Arg.Any<EntityEvent>());
     }
@@ -1588,7 +1590,7 @@ public class ObjectMappingGrpcServiceTests
         // from the tenant boundary.
         await _registry.RegisterAsync(OwnedAuthorSchema(withBypassRole: true));
         var crossTenantJson = $$"""{"Id":"{{AuthorId}}","Name":"Alice","OwnerId":"someone-else","TenantId":"other-tenant"}""";
-        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>())
+        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>(), Arg.Any<bool>(), Arg.Any<string?>())
             .Returns(crossTenantJson);
 
         var response = await _sut.Delete(
@@ -1598,7 +1600,8 @@ public class ObjectMappingGrpcServiceTests
         response.Success.Should().BeFalse();
         response.Error.Should().Contain("not found");
         await _entities.DidNotReceive().DeleteAsync(
-            Arg.Any<IDbTransactionContext>(), Arg.Any<TableSchema>(), Arg.Any<string>());
+            Arg.Any<IDbTransactionContext>(), Arg.Any<TableSchema>(), Arg.Any<string>(),
+            Arg.Any<bool>(), Arg.Any<string?>());
         await _events.DidNotReceive().ProduceAsync(
             EntityTopics.Events, Arg.Any<string>(), Arg.Any<EntityEvent>());
     }

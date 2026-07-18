@@ -29,7 +29,10 @@ public sealed class ObjectRetrievalGrpcService(
         if (schema is null)
             return new RetrievalResponse { Found = false, TraceId = request.TraceId };
 
-        var rowJson = await _entities.FetchByKeyAsync(SchemaBuilder.ToTableSchema(schema), request.Key);
+        var rowJson = await _entities.FetchByKeyAsync(
+            SchemaBuilder.ToTableSchema(schema), request.Key,
+            tenantScoped: schema.TenantColumn is not null,
+            tenantId: actingUserAccessor.ActingUser?.FindFirst("tenant_id")?.Value);
 
         if (rowJson is null)
             return new RetrievalResponse { Found = false, TraceId = request.TraceId };
@@ -84,7 +87,10 @@ public sealed class ObjectRetrievalGrpcService(
             return;
         }
 
-        var rows = await _entities.FetchManyByKeysAsync(SchemaBuilder.ToTableSchema(schema), keys);
+        var rows = await _entities.FetchManyByKeysAsync(
+            SchemaBuilder.ToTableSchema(schema), keys,
+            tenantScoped: decision.TenantColumn is not null,
+            tenantId: decision.TenantValue);
         var rowsByKey = rows.ToDictionary(r => r.Key, StringComparer.OrdinalIgnoreCase);
 
         foreach (var key in keys)

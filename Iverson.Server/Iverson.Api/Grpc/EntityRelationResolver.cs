@@ -64,7 +64,10 @@ public sealed class EntityRelationResolver(
         var relatedSchema = registry.Get(relation.RelatedTypeName);
         if (relatedSchema is null) return;
 
-        var rowJson = await entities.FetchByKeyAsync(SchemaBuilder.ToTableSchema(relatedSchema), fkValue);
+        var rowJson = await entities.FetchByKeyAsync(
+            SchemaBuilder.ToTableSchema(relatedSchema), fkValue,
+            tenantScoped: relatedSchema.TenantColumn is not null,
+            tenantId: actingUser?.FindFirst("tenant_id")?.Value);
         if (rowJson is null) return;
 
         var relatedStruct = JsonParser.Default.Parse<Struct>(rowJson);
@@ -89,7 +92,10 @@ public sealed class EntityRelationResolver(
         var relatedSchema = registry.Get(relation.RelatedTypeName);
         if (relatedSchema is null) return;
 
-        var rows = await entities.FetchManyByKeysAsync(SchemaBuilder.ToTableSchema(relatedSchema), ids);
+        var rows = await entities.FetchManyByKeysAsync(
+            SchemaBuilder.ToTableSchema(relatedSchema), ids,
+            tenantScoped: relatedSchema.TenantColumn is not null,
+            tenantId: actingUser?.FindFirst("tenant_id")?.Value);
         var rowsByKey = rows.ToDictionary(r => r.Key, StringComparer.OrdinalIgnoreCase);
 
         var decision = authEvaluator.Evaluate(relatedSchema, actingUser, AuthorizationAction.Read);
@@ -121,7 +127,9 @@ public sealed class EntityRelationResolver(
         if (relatedSchema is null) return;
 
         var rows = await entities.FetchByColumnAsync(
-            SchemaBuilder.ToTableSchema(relatedSchema), relation.ForeignKey, keyValue);
+            SchemaBuilder.ToTableSchema(relatedSchema), relation.ForeignKey, keyValue,
+            tenantScoped: relatedSchema.TenantColumn is not null,
+            tenantId: actingUser?.FindFirst("tenant_id")?.Value);
 
         var decision = authEvaluator.Evaluate(relatedSchema, actingUser, AuthorizationAction.Read);
 

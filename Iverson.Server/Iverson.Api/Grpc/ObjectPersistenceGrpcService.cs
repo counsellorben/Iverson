@@ -49,7 +49,10 @@ public sealed class ObjectPersistenceGrpcService(
             logger.LogInformation("[Persistence.Post] type={Type} key={Key} stores={Stores}",
                 request.TypeName.SanitizeForLog(), key, targetStores);
 
-        var outboxRowId = await outboxWriter.UpsertAndEnqueueOutboxAsync(SchemaBuilder.ToTableSchema(schema), request.TypeName, key, payloadJson);
+        var decision = authEvaluator.Evaluate(schema, actingUserAccessor.ActingUser, AuthorizationAction.Write);
+        var outboxRowId = await outboxWriter.UpsertAndEnqueueOutboxAsync(
+            SchemaBuilder.ToTableSchema(schema), request.TypeName, key, payloadJson,
+            tenantId: decision.TenantValue);
 
         // Opportunistic fast-path publish: the durability guarantee already exists (the
         // outbox row committed above, in the same transaction as the entity write), so a
@@ -93,7 +96,10 @@ public sealed class ObjectPersistenceGrpcService(
             logger.LogInformation("[Persistence.Update] type={Type} key={Key} stores={Stores}",
                 request.TypeName.SanitizeForLog(), key, targetStores);
 
-        var outboxRowId = await outboxWriter.UpsertAndEnqueueOutboxAsync(SchemaBuilder.ToTableSchema(schema), request.TypeName, key, payloadJson);
+        var decision = authEvaluator.Evaluate(schema, actingUserAccessor.ActingUser, AuthorizationAction.Write);
+        var outboxRowId = await outboxWriter.UpsertAndEnqueueOutboxAsync(
+            SchemaBuilder.ToTableSchema(schema), request.TypeName, key, payloadJson,
+            tenantId: decision.TenantValue);
 
         // Opportunistic fast-path publish: the durability guarantee already exists (the
         // outbox row committed above, in the same transaction as the entity write), so a

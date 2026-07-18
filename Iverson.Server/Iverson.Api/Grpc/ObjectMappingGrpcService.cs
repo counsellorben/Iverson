@@ -65,7 +65,9 @@ public sealed class ObjectMappingGrpcService(
 
         var schema = RequireSchema(request.TypeName);
 
-        var rowJson = await FetchByKeyAsync(schema, request.Key);
+        var rowJson = await FetchByKeyAsync(schema, request.Key,
+            tenantScoped: schema.TenantColumn is not null,
+            tenantId: _actingUserAccessor.ActingUser?.FindFirst("tenant_id")?.Value);
         if (rowJson is null)
             return new MappingResponse
             {
@@ -122,7 +124,10 @@ public sealed class ObjectMappingGrpcService(
 
         var payloadJson = StructSerializer.SerializePayload(request.Payload);
 
-        var outboxRowId = await _outboxWriter.UpsertAndEnqueueOutboxAsync(SchemaBuilder.ToTableSchema(schema), request.TypeName, key, payloadJson);
+        var decision = _authEvaluator.Evaluate(schema, _actingUserAccessor.ActingUser, AuthorizationAction.Write);
+        var outboxRowId = await _outboxWriter.UpsertAndEnqueueOutboxAsync(
+            SchemaBuilder.ToTableSchema(schema), request.TypeName, key, payloadJson,
+            tenantId: decision.TenantValue);
         var targetStores = StoreTargeting.DetermineTargetStores(schema);
 
         // Opportunistic fast-path publish: the durability guarantee already exists (the
@@ -159,7 +164,10 @@ public sealed class ObjectMappingGrpcService(
 
         var payloadJson = StructSerializer.SerializePayload(request.Payload);
 
-        var outboxRowId = await _outboxWriter.UpsertAndEnqueueOutboxAsync(SchemaBuilder.ToTableSchema(schema), request.TypeName, key, payloadJson);
+        var decision = _authEvaluator.Evaluate(schema, _actingUserAccessor.ActingUser, AuthorizationAction.Write);
+        var outboxRowId = await _outboxWriter.UpsertAndEnqueueOutboxAsync(
+            SchemaBuilder.ToTableSchema(schema), request.TypeName, key, payloadJson,
+            tenantId: decision.TenantValue);
         var targetStores = StoreTargeting.DetermineTargetStores(schema);
 
         // Opportunistic fast-path publish: the durability guarantee already exists (the
@@ -181,7 +189,9 @@ public sealed class ObjectMappingGrpcService(
 
         var schema = RequireSchema(request.TypeName);
 
-        var rowJson = await FetchByKeyAsync(schema, request.Key);
+        var rowJson = await FetchByKeyAsync(schema, request.Key,
+            tenantScoped: schema.TenantColumn is not null,
+            tenantId: _actingUserAccessor.ActingUser?.FindFirst("tenant_id")?.Value);
         if (rowJson is null)
             return new MappingDeleteResponse
             {
@@ -210,7 +220,10 @@ public sealed class ObjectMappingGrpcService(
 
         await _txRunner.ExecuteInTransactionAsync(async tx =>
         {
-            await _entities.DeleteAsync(tx, SchemaBuilder.ToTableSchema(schema), request.Key);
+            await _entities.DeleteAsync(
+                tx, SchemaBuilder.ToTableSchema(schema), request.Key,
+                tenantScoped: decision.TenantColumn is not null,
+                tenantId: decision.TenantValue);
 
             await _outboxWriter.EnqueueDeleteOutboxRowAsync(
                 tx, outboxRowId, request.TypeName, request.Key, rowJson);
@@ -235,6 +248,7 @@ public sealed class ObjectMappingGrpcService(
         _registry.Get(typeName) ?? throw new RpcException(new Status(StatusCode.FailedPrecondition,
             $"No schema registered for '{typeName}'. Call RegisterSchema first."));
 
-    private Task<string?> FetchByKeyAsync(SchemaDescriptor schema, string key) =>
-        _entities.FetchByKeyAsync(SchemaBuilder.ToTableSchema(schema), key);
+    private Task<string?> FetchByKeyAsync(
+        SchemaDescriptor schema, string key, bool tenantScoped = false, string? tenantId = null) =>
+        _entities.FetchByKeyAsync(SchemaBuilder.ToTableSchema(schema), key, tenantScoped, tenantId);
 }
