@@ -23,7 +23,7 @@
 ## File Structure
 
 **Modify:**
-- `Iverson.Server/Iverson.Sql/IRecordStoreRoles.cs` — `TableSchema` gains `TenantColumn`; `IEntityRepository`'s 5 methods and `IOutboxWriter.UpsertAndEnqueueOutboxAsync` gain a nullable `tenantId` parameter; `IRecordStoreQueryExecutor`'s 3 ad-hoc methods gain an optional `tenantId` parameter (default `null`).
+- `Iverson.Server/Iverson.Sql/IRecordStoreRoles.cs` — `TableSchema` gains `TenantColumn`; `IEntityRepository`'s 5 methods and `IRecordStoreQueryExecutor`'s 3 ad-hoc methods gain a `bool tenantScoped` parameter (whether the call switches roles at all) alongside a nullable `string? tenantId` value (what to set the session to); `IOutboxWriter.UpsertAndEnqueueOutboxAsync` gains only a nullable `tenantId` parameter (its callers are always post-authorization, where the ambiguity the `tenantScoped` split resolves doesn't arise).
 - `Iverson.Server/Iverson.Api/Schema/SchemaBuilder.cs` — `ToTableSchema` populates the new field.
 - `Iverson.Server/Iverson.Sql/PostgresSchemaManager.cs` — idempotent `iverson_runtime` role bootstrap; `CREATE POLICY`/`ENABLE ROW LEVEL SECURITY`/`GRANT` added to `ApplySchemaAsync`.
 - `Iverson.Server/Iverson.Sql/PostgresRepository.cs` — `QueryAsync`/`ExecuteAsync`/`QuerySingleOrDefaultAsync` wrap in `BEGIN`/`SET LOCAL ROLE`/`set_config`/`COMMIT` when a tenant value is supplied.
@@ -247,7 +247,7 @@ public async Task<Guid> UpsertAndEnqueueOutboxAsync(
 }
 ```
 
-- [ ] **Step 4: Tests.** Using `PostgresContainerFixture`: a raw query as `iverson_runtime` for tenant A cannot see tenant B's rows in a tenant-scoped table (proves the DB backstop independent of any app `WHERE` clause); a `null`/unset tenant value returns zero rows for a tenant-scoped table (fail-closed); a legacy no-`TenantColumn` table raises a Postgres permission error under `iverson_runtime` (no grant exists), not an empty result; `OutboxWriter.UpsertAndEnqueueOutboxAsync` with a tenant value completes correctly, with the entity write visible as `iverson_runtime` for the right tenant and the outbox row present regardless (correct privilege level per statement); existing `DlqRepositoryTests`/`ReconciliationQueueRepositoryTests`/`SchemaRegistryRepositoryTests` still pass unchanged (confirms the optional-parameter default is non-breaking).
+- [ ] **Step 4: Tests.** Using `PostgresContainerFixture`: a raw query as `iverson_runtime` for tenant A cannot see tenant B's rows in a tenant-scoped table (proves the DB backstop independent of any app `WHERE` clause); a `null`/unset tenant value returns zero rows for a tenant-scoped table (fail-closed); a legacy no-`TenantColumn` table raises a Postgres permission error under `iverson_runtime` (no grant exists), not an empty result; `OutboxWriter.UpsertAndEnqueueOutboxAsync` with a tenant value completes correctly, with the entity write visible as `iverson_runtime` for the right tenant and the outbox row present regardless (correct privilege level per statement); existing `DlqRepositoryTests`/`ReconciliationQueueRepositoryTests`/`SchemaRegistryRepositoryTests` still pass unchanged (confirms the optional-parameter default is non-breaking). **Explicitly**: calling the layer with `tenantScoped: true, tenantId: null` against a tenant-scoped table returns zero rows (proves it took the `iverson_runtime` transactional path and hit RLS's fail-closed exclusion, distinct from `tenantScoped: false` against the same table, which returns the unfiltered result) — this is the regression test for the `tenantScoped`/`tenantId` split itself.
 
 - [ ] **Step 5: Run tests and commit.**
 ```bash
@@ -267,8 +267,11 @@ git commit -m "feat(sql): switch to iverson_runtime role for tenant-scoped queri
 - Modify: `Iverson.Server/Iverson.Api/Consumers/IntelligenceStoreConsumer.cs`
 - Modify: `Iverson.Server/Iverson.Api/Consumers/EngagementStoreConsumer.cs`
 
+**Test:**
+- `Iverson.Server/Iverson.Api.Tests/Grpc/ObjectRetrievalGrpcServiceTests.cs`, `ObjectMappingGrpcServiceTests.cs`, `ObjectPersistenceGrpcServiceTests.cs`, `EntityRelationResolverTests.cs` — updated by Step 11 to account for the new parameters.
+
 **Interfaces:**
-- Consumes: the nullable `tenantId` parameters from Task 2.
+- Consumes: the `tenantScoped`/`tenantId` parameters from Task 2.
 
 - [ ] **Step 1: `ObjectRetrievalGrpcService.Get`** (`:32`, fetch precedes decision). Pass `tenantScoped: schema.TenantColumn is not null` and `tenantId: actingUserAccessor.ActingUser.FindFirst("tenant_id")?.Value` as `FetchByKeyAsync`'s new arguments — `tenantScoped` switches roles whenever the schema requires it, independent of whether the claim itself is present, so a claim-less caller on a tenant-scoped schema still gets RLS's fail-closed exclusion rather than an unfiltered read on `iverson`.
 
