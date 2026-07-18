@@ -146,6 +146,7 @@ are missing.
 |---|---|
 | `IVERSON_GRPC_URL` | `http://localhost:8080` |
 | `IVERSON_CLIENT_ID` / `IVERSON_CLIENT_SECRET` / `IVERSON_TOKEN_ENDPOINT` | unset (client-credentials auth for the gRPC client itself; optional) |
+| `IVERSON_CLIENT_SCOPE` | unset (optional space-separated scope list for the `client_credentials` token request above, e.g. `"schema_admin tenant_id_loadtest"` — must match the scopes bound to whichever OIDC provider `IVERSON_CLIENT_ID` names) |
 | `IVERSON_POSTGRES_CS` | `Host=localhost;Port=5432;Database=iverson;Username=iverson;Password=iverson` |
 | `IVERSON_STARROCKS_CS` | `Server=127.0.0.1;Port=9030;Database=iverson;Uid=root;Pwd=;` |
 | `IVERSON_KAFKA_BOOTSTRAP` | `localhost:9092` |

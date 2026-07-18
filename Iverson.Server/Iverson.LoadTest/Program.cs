@@ -25,6 +25,7 @@ var grpcUrl       = Env("IVERSON_GRPC_URL",        "http://localhost:8080");
 var clientId      = Environment.GetEnvironmentVariable("IVERSON_CLIENT_ID");
 var clientSecret  = Environment.GetEnvironmentVariable("IVERSON_CLIENT_SECRET");
 var tokenEndpoint = Environment.GetEnvironmentVariable("IVERSON_TOKEN_ENDPOINT");
+var clientScope   = Environment.GetEnvironmentVariable("IVERSON_CLIENT_SCOPE");
 var postgresCs   = Env("IVERSON_POSTGRES_CS",     "Host=localhost;Port=5432;Database=iverson;Username=iverson;Password=iverson");
 var starRocksCs  = Env("IVERSON_STARROCKS_CS",    "Server=127.0.0.1;Port=9030;Database=iverson;Uid=root;Pwd=;");
 var kafkaBoots   = Env("IVERSON_KAFKA_BOOTSTRAP", "localhost:9092");
@@ -69,7 +70,7 @@ if (flags.Target == "kind" && string.IsNullOrWhiteSpace(kafkaOptions.SecurityPro
 }
 
 var clientCredentials = clientId is not null && clientSecret is not null && tokenEndpoint is not null
-    ? new IversonClientCredentials(clientId, clientSecret, tokenEndpoint)
+    ? new IversonClientCredentials(clientId, clientSecret, tokenEndpoint, clientScope)
     : null;
 
 var services = new ServiceCollection()
