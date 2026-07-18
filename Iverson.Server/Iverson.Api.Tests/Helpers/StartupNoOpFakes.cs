@@ -34,4 +34,5 @@ internal sealed class NoOpSchemaRegistryRepository : ISchemaRegistryRepository
 internal sealed class NoOpRecordStoreSchemaManager : IRecordStoreSchemaManager
 {
     public Task ApplySchemaAsync(TableSchema schema) => Task.CompletedTask;
+    public Task EnsureRuntimeRoleAsync() => Task.CompletedTask;
 }

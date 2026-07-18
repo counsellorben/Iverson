@@ -86,6 +86,32 @@ public sealed class PostgresSchemaManager(
                     """);
             }
 
+            if (schema.TenantColumn is not null)
+            {
+                var policyName = $"{schema.TableName}_tenant_isolation";
+                var policyExists = await conn.QuerySingleOrDefaultAsync<bool>(
+                    "SELECT EXISTS (SELECT 1 FROM pg_policies WHERE tablename = @Table AND policyname = @Policy)",
+                    new { Table = schema.TableName, Policy = policyName });
+
+                if (!policyExists)
+                {
+                    try
+                    {
+                        await conn.ExecuteAsync($"""
+                            CREATE POLICY "{policyName}" ON "{schema.TableName}"
+                            USING ("{schema.TenantColumn}" = current_setting('app.tenant_id', true))
+                            """);
+                    }
+                    catch (PostgresException ex) when (ex.SqlState == "42710")
+                    {
+                        // Another replica created it concurrently between our check and this CREATE — fine.
+                    }
+                }
+
+                await conn.ExecuteAsync($"""ALTER TABLE "{schema.TableName}" ENABLE ROW LEVEL SECURITY""");
+                await conn.ExecuteAsync($"""GRANT SELECT, INSERT, UPDATE, DELETE ON "{schema.TableName}" TO iverson_runtime""");
+            }
+
             activity?.SetStatus(ActivityStatusCode.Ok);
         }
         catch (Exception ex)
@@ -93,6 +119,27 @@ public sealed class PostgresSchemaManager(
             activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
             activity?.RecordException(ex);
             throw;
+        }
+    }
+
+    public async Task EnsureRuntimeRoleAsync()
+    {
+        await using var conn = CreateConnection();
+        await conn.OpenAsync();
+
+        var exists = await conn.QuerySingleOrDefaultAsync<bool>(
+            "SELECT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'iverson_runtime')");
+        if (!exists)
+        {
+            try
+            {
+                await conn.ExecuteAsync("CREATE ROLE iverson_runtime NOLOGIN");
+            }
+            catch (PostgresException ex) when (ex.SqlState == "42710")
+            {
+                // Another replica created it concurrently between our check and this CREATE
+                // (this deployment runs multiple API replicas) — fine, it exists now either way.
+            }
         }
     }
 

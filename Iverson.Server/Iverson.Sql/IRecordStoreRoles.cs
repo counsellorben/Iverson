@@ -10,6 +10,7 @@ public interface IRecordStoreQueryExecutor
 public interface IRecordStoreSchemaManager
 {
     Task ApplySchemaAsync(TableSchema schema);
+    Task EnsureRuntimeRoleAsync();
 }
 
 public interface IRecordStoreTransactionRunner
@@ -62,6 +63,7 @@ public interface IDlqRepository
 public sealed record TableSchema(
     string TableName,
     ColumnSchema KeyColumn,
-    IReadOnlyList<ColumnSchema> Columns);
+    IReadOnlyList<ColumnSchema> Columns,
+    string? TenantColumn = null);
 
 public sealed record ColumnSchema(string Name, string SqlType, bool IsNullable);

@@ -71,6 +71,11 @@ public sealed class AllStoresContainerFixture : IAsyncLifetime
         PostgresSchemaManager = new PostgresSchemaManager(
             ConnectionString, NullLogger<PostgresSchemaManager>.Instance);
 
+        // Mirrors Program.cs startup ordering: the iverson_runtime role must exist before any
+        // ApplySchemaAsync call that GRANTs to it for a tenant-scoped table (this fixture's tests
+        // register schemas with a TenantField set).
+        await PostgresSchemaManager.EnsureRuntimeRoleAsync();
+
         var qdrantClient = new QdrantClient(
             _qdrant.Hostname, _qdrant.GetMappedPublicPort(QdrantGrpcPort), https: false);
         QdrantCollectionManager = new QdrantCollectionManager(

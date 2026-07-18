@@ -329,9 +329,20 @@ app.MapPost("/admin/dlq/{id}/replay", async (Guid id, IDlqRepository dlq, IEvent
 
 // ── Schema hydration ───────────────────────────────────────────────────────────
 await app.Services.GetRequiredService<IEmbeddingService>().InitializeAsync();
-await app.Services.GetRequiredService<SchemaRegistry>().LoadAsync();
-await app.Services.GetRequiredService<IRecordStoreSchemaManager>().ApplySchemaAsync(Iverson.Api.Reconciliation.ReconciliationSchema.Table);
-await app.Services.GetRequiredService<IRecordStoreSchemaManager>().ApplySchemaAsync(Iverson.Api.Reconciliation.DlqSchema.Table);
+var schemaRegistry = app.Services.GetRequiredService<SchemaRegistry>();
+await schemaRegistry.LoadAsync();
+
+// EnsureRuntimeRoleAsync must run before any ApplySchemaAsync call for a tenant-scoped table,
+// since that DDL GRANTs to iverson_runtime — the role has to exist first.
+var schemaManager = app.Services.GetRequiredService<IRecordStoreSchemaManager>();
+await schemaManager.EnsureRuntimeRoleAsync();
+await schemaManager.ApplySchemaAsync(Iverson.Api.Reconciliation.ReconciliationSchema.Table);
+await schemaManager.ApplySchemaAsync(Iverson.Api.Reconciliation.DlqSchema.Table);
+
+// Self-heal RLS state for tables whose descriptor was registered before this change shipped —
+// their physical DDL predates the tenant policy/RLS/grant this schema manager now applies.
+foreach (var descriptor in schemaRegistry.All.Values)
+    await schemaManager.ApplySchemaAsync(SchemaBuilder.ToTableSchema(descriptor));
 
 // ── gRPC endpoints ─────────────────────────────────────────────────────────────
 if (workloadRole == "api")

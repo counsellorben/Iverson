@@ -116,7 +116,8 @@ internal static class SchemaBuilder
     internal static TableSchema ToTableSchema(SchemaDescriptor d) => new(
         d.TableName,
         ToColumnSchema(d.KeyColumn),
-        d.ScalarColumns.Select(ToColumnSchema).ToList());
+        d.ScalarColumns.Select(ToColumnSchema).ToList(),
+        d.TenantColumn);
 
     internal static ColumnSchema ToColumnSchema(ColumnDescriptor c) =>
         new(c.Name, c.SqlType, c.IsNullable);

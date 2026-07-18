@@ -25,6 +25,10 @@ public sealed class PostgresContainerFixture : IAsyncLifetime
         SchemaManager = new PostgresSchemaManager(
             _container.GetConnectionString(),
             NullLogger<PostgresSchemaManager>.Instance);
+
+        // Mirrors Program.cs startup ordering: the iverson_runtime role must exist before any
+        // ApplySchemaAsync call that GRANTs to it for a tenant-scoped table.
+        await SchemaManager.EnsureRuntimeRoleAsync();
     }
 
     public async Task DisposeAsync() => await _container.DisposeAsync();
@@ -301,5 +305,127 @@ public sealed class PostgresIntegrationTests(PostgresContainerFixture fixture)
 
         var thrown = await act.Should().ThrowAsync<InvalidOperationException>();
         thrown.Which.Message.Should().Be("original failure");
+    }
+
+    // ── Row-Level Security bootstrap (Part B1) ───────────────────────────────
+
+    private async Task<bool> PolicyExistsAsync(string table, string policyName) =>
+        await _repo.QuerySingleOrDefaultAsync<bool>(
+            "SELECT EXISTS (SELECT 1 FROM pg_policies WHERE tablename = @Table AND policyname = @Policy)",
+            new { Table = table, Policy = policyName });
+
+    private async Task<bool> RlsEnabledAsync(string table) =>
+        await _repo.QuerySingleOrDefaultAsync<bool>(
+            "SELECT rowsecurity FROM pg_tables WHERE tablename = @Table",
+            new { Table = table });
+
+    private async Task<int> RuntimeGrantCountAsync(string table) =>
+        await _repo.QuerySingleOrDefaultAsync<int>(
+            """
+            SELECT COUNT(*) FROM information_schema.role_table_grants
+            WHERE table_name = @Table AND grantee = 'iverson_runtime'
+            """,
+            new { Table = table });
+
+    [Fact]
+    public async Task EnsureRuntimeRoleAsync_IsIdempotent_WhenCalledTwice()
+    {
+        var act = async () => await _schemaManager.EnsureRuntimeRoleAsync();
+        await act.Should().NotThrowAsync();
+    }
+
+    [Fact]
+    public async Task ApplySchemaAsync_TenantScopedTable_GetsPolicyRlsAndGrant()
+    {
+        var table = UniqueTable();
+        var schema = new TableSchema(
+            table,
+            new ColumnSchema("id", "uuid", IsNullable: false),
+            [
+                new ColumnSchema("name", "text", IsNullable: false),
+                new ColumnSchema("tenant_id", "text", IsNullable: false),
+            ],
+            TenantColumn: "tenant_id");
+
+        await _schemaManager.ApplySchemaAsync(schema);
+
+        (await PolicyExistsAsync(table, $"{table}_tenant_isolation")).Should().BeTrue();
+        (await RlsEnabledAsync(table)).Should().BeTrue();
+        (await RuntimeGrantCountAsync(table)).Should().Be(4); // SELECT, INSERT, UPDATE, DELETE
+    }
+
+    [Fact]
+    public async Task ApplySchemaAsync_NonTenantScopedTable_GetsNoPolicyRlsOrGrant()
+    {
+        var table = UniqueTable();
+        var schema = new TableSchema(
+            table,
+            new ColumnSchema("id", "uuid", IsNullable: false),
+            [new ColumnSchema("name", "text", IsNullable: false)]);
+
+        await _schemaManager.ApplySchemaAsync(schema);
+
+        (await PolicyExistsAsync(table, $"{table}_tenant_isolation")).Should().BeFalse();
+        (await RlsEnabledAsync(table)).Should().BeFalse();
+        (await RuntimeGrantCountAsync(table)).Should().Be(0);
+    }
+
+    [Fact]
+    public async Task ApplySchemaAsync_ReRegisteringTenantScopedTable_DoesNotThrow()
+    {
+        var table = UniqueTable();
+        var schema = new TableSchema(
+            table,
+            new ColumnSchema("id", "uuid", IsNullable: false),
+            [
+                new ColumnSchema("name", "text", IsNullable: false),
+                new ColumnSchema("tenant_id", "text", IsNullable: false),
+            ],
+            TenantColumn: "tenant_id");
+
+        await _schemaManager.ApplySchemaAsync(schema);
+
+        var act = async () => await _schemaManager.ApplySchemaAsync(schema);
+        await act.Should().NotThrowAsync();
+
+        (await PolicyExistsAsync(table, $"{table}_tenant_isolation")).Should().BeTrue();
+        (await RlsEnabledAsync(table)).Should().BeTrue();
+        (await RuntimeGrantCountAsync(table)).Should().Be(4);
+    }
+
+    [Fact]
+    public async Task ApplySchemaAsync_SelfHealsPreB1Table_WhenTenantColumnAddedAfterPhysicalTableExisted()
+    {
+        var table = UniqueTable();
+
+        // Simulate a table whose descriptor already carried a TenantColumn under Part A but
+        // whose physical DDL predates this change — construct it via a raw CREATE TABLE that
+        // bypasses ApplySchemaAsync's tenant-DDL branch entirely, so no policy/RLS/grant exist.
+        await _repo.ExecuteAsync($"""
+            CREATE TABLE "{table}" (
+                "id" uuid PRIMARY KEY,
+                "name" text NOT NULL,
+                "tenant_id" text NOT NULL
+            )
+            """);
+
+        (await PolicyExistsAsync(table, $"{table}_tenant_isolation")).Should().BeFalse();
+        (await RlsEnabledAsync(table)).Should().BeFalse();
+        (await RuntimeGrantCountAsync(table)).Should().Be(0);
+
+        var schema = new TableSchema(
+            table,
+            new ColumnSchema("id", "uuid", IsNullable: false),
+            [
+                new ColumnSchema("name", "text", IsNullable: false),
+                new ColumnSchema("tenant_id", "text", IsNullable: false),
+            ],
+            TenantColumn: "tenant_id");
+
+        await _schemaManager.ApplySchemaAsync(schema);
+
+        (await PolicyExistsAsync(table, $"{table}_tenant_isolation")).Should().BeTrue();
+        (await RlsEnabledAsync(table)).Should().BeTrue();
+        (await RuntimeGrantCountAsync(table)).Should().Be(4);
     }
 }
