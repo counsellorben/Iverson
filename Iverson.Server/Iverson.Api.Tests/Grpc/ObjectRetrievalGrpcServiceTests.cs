@@ -24,7 +24,7 @@ public class ObjectRetrievalGrpcServiceTests
 
     private static readonly string AuthorId   = "11111111-0000-0000-0000-000000000001";
     private static readonly string AuthorId2  = "11111111-0000-0000-0000-000000000002";
-    private static readonly string AuthorJson = $$"""{"Id":"{{AuthorId}}","Name":"Alice","Bio":"Writer"}""";
+    private static readonly string AuthorJson = $$"""{"Id":"{{AuthorId}}","Name":"Alice","Bio":"Writer","TenantId":"test-tenant"}""";
 
     public ObjectRetrievalGrpcServiceTests()
     {
@@ -206,7 +206,8 @@ public class ObjectRetrievalGrpcServiceTests
         ScalarColumns  =
         [
             new ColumnDescriptor("Name", "text", false),
-            new ColumnDescriptor("OwnerId", "text", false)
+            new ColumnDescriptor("OwnerId", "text", false),
+            new ColumnDescriptor("TenantId", "text", false)
         ],
         FkColumns     = [],
         VectorFields  = [],
@@ -259,7 +260,7 @@ public class ObjectRetrievalGrpcServiceTests
     public async Task Get_WithMatchingOwner_ReturnsFound()
     {
         await _registry.RegisterAsync(OwnedAuthorSchema());
-        var ownedJson = $$"""{"Id":"{{AuthorId}}","Name":"Alice","OwnerId":"test-user"}""";
+        var ownedJson = $$"""{"Id":"{{AuthorId}}","Name":"Alice","OwnerId":"test-user","TenantId":"test-tenant"}""";
         _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>())
             .Returns(ownedJson);
 
@@ -275,7 +276,7 @@ public class ObjectRetrievalGrpcServiceTests
     public async Task Get_WithBypassRole_ReturnsFound_EvenWhenNotOwner()
     {
         await _registry.RegisterAsync(OwnedAuthorSchema(withBypassRole: true));
-        var ownedJson = $$"""{"Id":"{{AuthorId}}","Name":"Alice","OwnerId":"someone-else"}""";
+        var ownedJson = $$"""{"Id":"{{AuthorId}}","Name":"Alice","OwnerId":"someone-else","TenantId":"test-tenant"}""";
         _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>())
             .Returns(ownedJson);
 
@@ -290,9 +291,43 @@ public class ObjectRetrievalGrpcServiceTests
     public async Task Get_WithNonMatchingOwner_ReturnsNotFound()
     {
         await _registry.RegisterAsync(OwnedAuthorSchema());
-        var ownedJson = $$"""{"Id":"{{AuthorId}}","Name":"Alice","OwnerId":"someone-else"}""";
+        var ownedJson = $$"""{"Id":"{{AuthorId}}","Name":"Alice","OwnerId":"someone-else","TenantId":"test-tenant"}""";
         _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>())
             .Returns(ownedJson);
+
+        var response = await _sut.Get(
+            new RetrievalRequest { TypeName = "Author", Key = AuthorId },
+            TestServerCallContext.Create());
+
+        response.Found.Should().BeFalse();
+        response.Data.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task Get_WithNonMatchingTenant_ReturnsNotFound()
+    {
+        await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
+        var crossTenantJson = $$"""{"Id":"{{AuthorId}}","Name":"Alice","Bio":"Writer","TenantId":"other-tenant"}""";
+        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>())
+            .Returns(crossTenantJson);
+
+        var response = await _sut.Get(
+            new RetrievalRequest { TypeName = "Author", Key = AuthorId },
+            TestServerCallContext.Create());
+
+        response.Found.Should().BeFalse();
+        response.Data.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task Get_WithBypassRoleAndNonMatchingTenant_ReturnsNotFound()
+    {
+        // Tenant is strictly additive: a CanReadAll bypass role must not exempt the caller
+        // from the tenant boundary.
+        await _registry.RegisterAsync(OwnedAuthorSchema(withBypassRole: true));
+        var crossTenantJson = $$"""{"Id":"{{AuthorId}}","Name":"Alice","OwnerId":"someone-else","TenantId":"other-tenant"}""";
+        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>())
+            .Returns(crossTenantJson);
 
         var response = await _sut.Get(
             new RetrievalRequest { TypeName = "Author", Key = AuthorId },
@@ -372,7 +407,7 @@ public class ObjectRetrievalGrpcServiceTests
     public async Task GetMany_WithMatchingOwner_StreamsFound()
     {
         await _registry.RegisterAsync(OwnedAuthorSchema());
-        var ownedJson = $$"""{"Id":"{{AuthorId}}","Name":"Alice","OwnerId":"test-user"}""";
+        var ownedJson = $$"""{"Id":"{{AuthorId}}","Name":"Alice","OwnerId":"test-user","TenantId":"test-tenant"}""";
         _entities.FetchManyByKeysAsync(Arg.Any<TableSchema>(), Arg.Any<IReadOnlyList<string>>())
             .Returns(new[] { new KeyedRow(AuthorId, ownedJson) });
 
@@ -390,7 +425,7 @@ public class ObjectRetrievalGrpcServiceTests
     public async Task GetMany_WithBypassRole_StreamsFound_EvenWhenNotOwner()
     {
         await _registry.RegisterAsync(OwnedAuthorSchema(withBypassRole: true));
-        var ownedJson = $$"""{"Id":"{{AuthorId}}","Name":"Alice","OwnerId":"someone-else"}""";
+        var ownedJson = $$"""{"Id":"{{AuthorId}}","Name":"Alice","OwnerId":"someone-else","TenantId":"test-tenant"}""";
         _entities.FetchManyByKeysAsync(Arg.Any<TableSchema>(), Arg.Any<IReadOnlyList<string>>())
             .Returns(new[] { new KeyedRow(AuthorId, ownedJson) });
 
@@ -407,9 +442,45 @@ public class ObjectRetrievalGrpcServiceTests
     public async Task GetMany_WithNonMatchingOwner_StreamsNotFound()
     {
         await _registry.RegisterAsync(OwnedAuthorSchema());
-        var ownedJson = $$"""{"Id":"{{AuthorId}}","Name":"Alice","OwnerId":"someone-else"}""";
+        var ownedJson = $$"""{"Id":"{{AuthorId}}","Name":"Alice","OwnerId":"someone-else","TenantId":"test-tenant"}""";
         _entities.FetchManyByKeysAsync(Arg.Any<TableSchema>(), Arg.Any<IReadOnlyList<string>>())
             .Returns(new[] { new KeyedRow(AuthorId, ownedJson) });
+
+        var stream = MakeStream<RetrievalResponse>();
+        await _sut.GetMany(
+            new RetrievalManyRequest { TypeName = "Author", Keys = { AuthorId } },
+            stream, TestServerCallContext.Create());
+
+        stream.Written.Should().HaveCount(1);
+        stream.Written[0].Found.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task GetMany_WithNonMatchingTenant_StreamsNotFound()
+    {
+        await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
+        var crossTenantJson = $$"""{"Id":"{{AuthorId}}","Name":"Alice","Bio":"Writer","TenantId":"other-tenant"}""";
+        _entities.FetchManyByKeysAsync(Arg.Any<TableSchema>(), Arg.Any<IReadOnlyList<string>>())
+            .Returns(new[] { new KeyedRow(AuthorId, crossTenantJson) });
+
+        var stream = MakeStream<RetrievalResponse>();
+        await _sut.GetMany(
+            new RetrievalManyRequest { TypeName = "Author", Keys = { AuthorId } },
+            stream, TestServerCallContext.Create());
+
+        stream.Written.Should().HaveCount(1);
+        stream.Written[0].Found.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task GetMany_WithBypassRoleAndNonMatchingTenant_StreamsNotFound()
+    {
+        // Tenant is strictly additive: a CanReadAll bypass role must not exempt the caller
+        // from the tenant boundary.
+        await _registry.RegisterAsync(OwnedAuthorSchema(withBypassRole: true));
+        var crossTenantJson = $$"""{"Id":"{{AuthorId}}","Name":"Alice","OwnerId":"someone-else","TenantId":"other-tenant"}""";
+        _entities.FetchManyByKeysAsync(Arg.Any<TableSchema>(), Arg.Any<IReadOnlyList<string>>())
+            .Returns(new[] { new KeyedRow(AuthorId, crossTenantJson) });
 
         var stream = MakeStream<RetrievalResponse>();
         await _sut.GetMany(

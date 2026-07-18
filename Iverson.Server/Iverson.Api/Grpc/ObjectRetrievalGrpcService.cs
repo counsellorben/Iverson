@@ -39,7 +39,9 @@ public sealed class ObjectRetrievalGrpcService(
         var decision = authEvaluator.Evaluate(schema, actingUserAccessor.ActingUser, AuthorizationAction.Read);
         if (decision.Denied ||
             (decision.OwnershipRequired &&
-             StructFieldAccess.GetFieldString(data, decision.OwnerFieldName!) != decision.OwnerValue))
+             StructFieldAccess.GetFieldString(data, decision.OwnerFieldName!) != decision.OwnerValue) ||
+            (decision.TenantColumn is not null &&
+             StructFieldAccess.GetFieldString(data, decision.TenantColumn) != decision.TenantValue))
         {
             return new RetrievalResponse { Found = false, TraceId = request.TraceId };
         }
@@ -94,8 +96,10 @@ public sealed class ObjectRetrievalGrpcService(
                 continue;
             }
             var data = JsonParser.Default.Parse<Struct>(row.Data);
-            if (decision.OwnershipRequired &&
-                StructFieldAccess.GetFieldString(data, decision.OwnerFieldName!) != decision.OwnerValue)
+            if ((decision.OwnershipRequired &&
+                 StructFieldAccess.GetFieldString(data, decision.OwnerFieldName!) != decision.OwnerValue) ||
+                (decision.TenantColumn is not null &&
+                 StructFieldAccess.GetFieldString(data, decision.TenantColumn) != decision.TenantValue))
             {
                 await responseStream.WriteAsync(new RetrievalResponse { Found = false, TraceId = request.TraceId });
                 continue;

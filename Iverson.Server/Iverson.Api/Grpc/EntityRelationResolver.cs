@@ -47,7 +47,9 @@ public sealed class EntityRelationResolver(
     {
         if (decision.Denied ||
             (decision.OwnershipRequired &&
-             StructFieldAccess.GetFieldString(relatedStruct, decision.OwnerFieldName!) != decision.OwnerValue))
+             StructFieldAccess.GetFieldString(relatedStruct, decision.OwnerFieldName!) != decision.OwnerValue) ||
+            (decision.TenantColumn is not null &&
+             StructFieldAccess.GetFieldString(relatedStruct, decision.TenantColumn) != decision.TenantValue))
             return false;
         AuthorizationFieldMasking.MaskDisallowedFields(relatedStruct, decision.AllowedFields);
         return true;

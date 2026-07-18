@@ -79,7 +79,9 @@ public sealed class ObjectMappingGrpcService(
         var decision = _authEvaluator.Evaluate(schema, _actingUserAccessor.ActingUser, AuthorizationAction.Read);
         if (decision.Denied ||
             (decision.OwnershipRequired &&
-             StructFieldAccess.GetFieldString(entityStruct, decision.OwnerFieldName!) != decision.OwnerValue))
+             StructFieldAccess.GetFieldString(entityStruct, decision.OwnerFieldName!) != decision.OwnerValue) ||
+            (decision.TenantColumn is not null &&
+             StructFieldAccess.GetFieldString(entityStruct, decision.TenantColumn) != decision.TenantValue))
         {
             return new MappingResponse
             {
@@ -191,7 +193,9 @@ public sealed class ObjectMappingGrpcService(
         var decision = _authEvaluator.Evaluate(schema, _actingUserAccessor.ActingUser, AuthorizationAction.Delete);
         if (decision.Denied ||
             (decision.OwnershipRequired &&
-             StructFieldAccess.GetFieldString(JsonParser.Default.Parse<Struct>(rowJson), decision.OwnerFieldName!) != decision.OwnerValue))
+             StructFieldAccess.GetFieldString(JsonParser.Default.Parse<Struct>(rowJson), decision.OwnerFieldName!) != decision.OwnerValue) ||
+            (decision.TenantColumn is not null &&
+             StructFieldAccess.GetFieldString(JsonParser.Default.Parse<Struct>(rowJson), decision.TenantColumn) != decision.TenantValue))
         {
             return new MappingDeleteResponse
             {

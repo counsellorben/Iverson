@@ -24,8 +24,8 @@ public class EntityRelationResolverTests
     private static readonly ClaimsPrincipal ActingUser = ActingUserFixtures.Principal("test-user", "test-bypass");
     private static readonly string AuthorId  = "11111111-0000-0000-0000-000000000001";
     private static readonly string ArticleId = "22222222-0000-0000-0000-000000000002";
-    private static readonly string AuthorJson  = $$"""{"Id":"{{AuthorId}}","Name":"Alice","Bio":"Writer"}""";
-    private static readonly string ArticleJson = $$"""{"Id":"{{ArticleId}}","Title":"Hello","Body":"World","AuthorId":"{{AuthorId}}"}""";
+    private static readonly string AuthorJson  = $$"""{"Id":"{{AuthorId}}","Name":"Alice","Bio":"Writer","TenantId":"test-tenant"}""";
+    private static readonly string ArticleJson = $$"""{"Id":"{{ArticleId}}","Title":"Hello","Body":"World","AuthorId":"{{AuthorId}}","TenantId":"test-tenant"}""";
 
     public EntityRelationResolverTests()
     {
@@ -75,10 +75,10 @@ public class EntityRelationResolverTests
         await _registry.RegisterAsync(SchemaFixtures.PostWithTagsSchema());
         await _registry.RegisterAsync(SchemaFixtures.TagSchema());
 
-        var postJson = $$"""{"Id":"{{postId}}","Title":"Hello","TagIds":["{{tagId1}}","{{tagId2}}"]}""";
+        var postJson = $$"""{"Id":"{{postId}}","Title":"Hello","TagIds":["{{tagId1}}","{{tagId2}}"],"TenantId":"test-tenant"}""";
 
-        var tag1Json = $$"""{"Id":"{{tagId1}}","Label":"dotnet"}""";
-        var tag2Json = $$"""{"Id":"{{tagId2}}","Label":"csharp"}""";
+        var tag1Json = $$"""{"Id":"{{tagId1}}","Label":"dotnet","TenantId":"test-tenant"}""";
+        var tag2Json = $$"""{"Id":"{{tagId2}}","Label":"csharp","TenantId":"test-tenant"}""";
         _entities.FetchManyByKeysAsync(Arg.Any<TableSchema>(), Arg.Any<IReadOnlyList<string>>())
             .Returns(new[] { new KeyedRow(tagId1, tag1Json), new KeyedRow(tagId2, tag2Json) });
 

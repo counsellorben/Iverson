@@ -41,14 +41,30 @@ internal static class AuthorizationFieldMasking
         if (existingRowJson is null)
         {
             // No pre-existing row — either a pure create (Post) or an Update whose key
-            // doesn't exist yet and will be created by the upsert. Force-set the owner
-            // field for ownership-required callers; leave it untouched for bypass callers.
+            // doesn't exist yet and will be created by the upsert. Force-set the tenant
+            // column unconditionally (tenant is strictly additive — it applies to bypass
+            // callers too, unlike ownership below). Force-set the owner field for
+            // ownership-required callers; leave it untouched for bypass callers.
+            if (decision.TenantColumn is not null)
+                payload.Fields[decision.TenantColumn] = Value.ForString(decision.TenantValue!);
             if (decision.OwnershipRequired)
                 payload.Fields[decision.OwnerFieldName!] = Value.ForString(decision.OwnerValue!);
         }
         else
         {
             var existingStruct = JsonParser.Default.Parse<Struct>(existingRowJson);
+
+            // Tenant match + immutability are unconditional — they apply even to bypass
+            // callers, unlike the ownership check below.
+            if (decision.TenantColumn is not null)
+            {
+                if (StructFieldAccess.GetFieldString(existingStruct, decision.TenantColumn) != decision.TenantValue)
+                    throw new RpcException(new Status(StatusCode.PermissionDenied, deniedMessage));
+                var attemptedTenant = StructFieldAccess.GetFieldString(payload, decision.TenantColumn);
+                if (attemptedTenant is not null && attemptedTenant != decision.TenantValue)
+                    throw new RpcException(new Status(StatusCode.PermissionDenied, "Tenant field is immutable."));
+            }
+
             if (decision.OwnershipRequired &&
                 StructFieldAccess.GetFieldString(existingStruct, decision.OwnerFieldName!) != decision.OwnerValue)
                 throw new RpcException(new Status(StatusCode.PermissionDenied, deniedMessage));

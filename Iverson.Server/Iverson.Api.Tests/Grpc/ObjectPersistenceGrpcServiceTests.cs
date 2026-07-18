@@ -75,7 +75,8 @@ public class ObjectPersistenceGrpcServiceTests
         ScalarColumns  =
         [
             new ColumnDescriptor("Name", "text", false),
-            new ColumnDescriptor("OwnerId", "text", false)
+            new ColumnDescriptor("OwnerId", "text", false),
+            new ColumnDescriptor("TenantId", "text", false)
         ],
         FkColumns     = [],
         VectorFields  = [],
@@ -362,6 +363,37 @@ public class ObjectPersistenceGrpcServiceTests
     }
 
     [Fact]
+    public async Task Post_ForOrdinaryCaller_StampsTenantOntoPayload()
+    {
+        await _registry.RegisterAsync(OwnedAuthorSchema(withBypassRole: false));
+
+        var payload = MakePayload(new() { ["Name"] = Value.ForString("Alice") });
+
+        var response = await _sut.Post(
+            new PersistRequest { TypeName = "Author", Payload = payload }, TestServerCallContext.Create());
+
+        response.Success.Should().BeTrue();
+        payload.Fields["TenantId"].StringValue.Should().Be("test-tenant");
+    }
+
+    [Fact]
+    public async Task Post_WithBypassRole_StillStampsTenantOntoPayload()
+    {
+        // Tenant is strictly additive: a CanWriteAll bypass role must not exempt the caller
+        // from the tenant boundary (unlike OwnerId, which is intentionally left untouched for
+        // bypass callers).
+        await _registry.RegisterAsync(OwnedAuthorSchema(withBypassRole: true));
+
+        var payload = MakePayload(new() { ["Name"] = Value.ForString("Alice") });
+
+        var response = await _sut.Post(
+            new PersistRequest { TypeName = "Author", Payload = payload }, TestServerCallContext.Create());
+
+        response.Success.Should().BeTrue();
+        payload.Fields["TenantId"].StringValue.Should().Be("test-tenant");
+    }
+
+    [Fact]
     public async Task Post_WithRestrictedFieldInWritePayload_ThrowsInvalidArgument()
     {
         var schema = SchemaFixtures.AuthorSchema() with
@@ -503,7 +535,7 @@ public class ObjectPersistenceGrpcServiceTests
     {
         await _registry.RegisterAsync(OwnedAuthorSchema());
         var authorId = Guid.NewGuid().ToString();
-        var ownedJson = $$"""{"Id":"{{authorId}}","Name":"Alice","OwnerId":"test-user"}""";
+        var ownedJson = $$"""{"Id":"{{authorId}}","Name":"Alice","OwnerId":"test-user","TenantId":"test-tenant"}""";
         _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>())
             .Returns(ownedJson);
 
@@ -525,7 +557,7 @@ public class ObjectPersistenceGrpcServiceTests
     {
         await _registry.RegisterAsync(OwnedAuthorSchema(withBypassRole: true));
         var authorId = Guid.NewGuid().ToString();
-        var ownedJson = $$"""{"Id":"{{authorId}}","Name":"Alice","OwnerId":"someone-else"}""";
+        var ownedJson = $$"""{"Id":"{{authorId}}","Name":"Alice","OwnerId":"someone-else","TenantId":"test-tenant"}""";
         _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>())
             .Returns(ownedJson);
 
@@ -547,7 +579,7 @@ public class ObjectPersistenceGrpcServiceTests
     {
         await _registry.RegisterAsync(OwnedAuthorSchema());
         var authorId = Guid.NewGuid().ToString();
-        var ownedJson = $$"""{"Id":"{{authorId}}","Name":"Alice","OwnerId":"someone-else"}""";
+        var ownedJson = $$"""{"Id":"{{authorId}}","Name":"Alice","OwnerId":"someone-else","TenantId":"test-tenant"}""";
         _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>())
             .Returns(ownedJson);
 
@@ -581,7 +613,7 @@ public class ObjectPersistenceGrpcServiceTests
         await _registry.RegisterAsync(schema);
         var authorId = Guid.NewGuid().ToString();
         _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>())
-            .Returns($$"""{"Id":"{{authorId}}","Name":"Alice","Bio":"Writer"}""");
+            .Returns($$"""{"Id":"{{authorId}}","Name":"Alice","Bio":"Writer","TenantId":"test-tenant"}""");
 
         var payload = MakePayload(new()
         {
@@ -655,7 +687,7 @@ public class ObjectPersistenceGrpcServiceTests
     {
         await _registry.RegisterAsync(OwnedAuthorSchema(withBypassRole: false));
         var authorId = Guid.NewGuid().ToString();
-        var ownedJson = $$"""{"Id":"{{authorId}}","Name":"Alice","OwnerId":"test-user"}""";
+        var ownedJson = $$"""{"Id":"{{authorId}}","Name":"Alice","OwnerId":"test-user","TenantId":"test-tenant"}""";
         _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>())
             .Returns(ownedJson);
 
@@ -682,7 +714,7 @@ public class ObjectPersistenceGrpcServiceTests
         // from schema.Authorization?.OwnerField, not decision.OwnerFieldName, or this would never fire.
         await _registry.RegisterAsync(OwnedAuthorSchema(withBypassRole: true));
         var authorId = Guid.NewGuid().ToString();
-        var ownedJson = $$"""{"Id":"{{authorId}}","Name":"Alice","OwnerId":"someone-else"}""";
+        var ownedJson = $$"""{"Id":"{{authorId}}","Name":"Alice","OwnerId":"someone-else","TenantId":"test-tenant"}""";
         _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>())
             .Returns(ownedJson);
 

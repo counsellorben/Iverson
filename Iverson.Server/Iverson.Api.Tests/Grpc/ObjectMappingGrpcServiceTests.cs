@@ -39,8 +39,8 @@ public class ObjectMappingGrpcServiceTests
 
     private static readonly string AuthorId  = "11111111-0000-0000-0000-000000000001";
     private static readonly string ArticleId = "22222222-0000-0000-0000-000000000002";
-    private static readonly string AuthorJson  = $$"""{"Id":"{{AuthorId}}","Name":"Alice","Bio":"Writer"}""";
-    private static readonly string ArticleJson = $$"""{"Id":"{{ArticleId}}","Title":"Hello","Body":"World","AuthorId":"{{AuthorId}}"}""";
+    private static readonly string AuthorJson  = $$"""{"Id":"{{AuthorId}}","Name":"Alice","Bio":"Writer","TenantId":"test-tenant"}""";
+    private static readonly string ArticleJson = $$"""{"Id":"{{ArticleId}}","Title":"Hello","Body":"World","AuthorId":"{{AuthorId}}","TenantId":"test-tenant"}""";
 
     public ObjectMappingGrpcServiceTests()
     {
@@ -451,6 +451,47 @@ public class ObjectMappingGrpcServiceTests
     }
 
     [Fact]
+    public async Task Post_ForOrdinaryCaller_StampsTenantOntoPayload()
+    {
+        await _registry.RegisterAsync(OwnedAuthorSchema(withBypassRole: false));
+
+        var payload = MakePayload(new()
+        {
+            ["Id"]   = Value.ForString(AuthorId),
+            ["Name"] = Value.ForString("Alice")
+        });
+
+        var response = await _sut.Post(
+            new MappingWriteRequest { TypeName = "Author", Payload = payload },
+            TestServerCallContext.Create());
+
+        response.Success.Should().BeTrue();
+        response.Data.Fields["TenantId"].StringValue.Should().Be("test-tenant");
+    }
+
+    [Fact]
+    public async Task Post_WithBypassRole_StillStampsTenantOntoPayload()
+    {
+        // Tenant is strictly additive: a CanWriteAll bypass role must not exempt the caller
+        // from the tenant boundary (unlike OwnerId, which is intentionally left untouched for
+        // bypass callers).
+        await _registry.RegisterAsync(OwnedAuthorSchema(withBypassRole: true));
+
+        var payload = MakePayload(new()
+        {
+            ["Id"]   = Value.ForString(AuthorId),
+            ["Name"] = Value.ForString("Alice")
+        });
+
+        var response = await _sut.Post(
+            new MappingWriteRequest { TypeName = "Author", Payload = payload },
+            TestServerCallContext.Create());
+
+        response.Success.Should().BeTrue();
+        response.Data.Fields["TenantId"].StringValue.Should().Be("test-tenant");
+    }
+
+    [Fact]
     public async Task Post_WithRestrictedFieldInWritePayload_ThrowsInvalidArgument()
     {
         var schema = SchemaFixtures.AuthorSchema() with
@@ -602,7 +643,8 @@ public class ObjectMappingGrpcServiceTests
         ScalarColumns  =
         [
             new ColumnDescriptor("Name", "text", false),
-            new ColumnDescriptor("OwnerId", "text", false)
+            new ColumnDescriptor("OwnerId", "text", false),
+            new ColumnDescriptor("TenantId", "text", false)
         ],
         FkColumns     = [],
         VectorFields  = [],
@@ -675,7 +717,7 @@ public class ObjectMappingGrpcServiceTests
     public async Task Get_WithMatchingOwner_ReturnsSuccess()
     {
         await _registry.RegisterAsync(OwnedAuthorSchema());
-        var ownedJson = $$"""{"Id":"{{AuthorId}}","Name":"Alice","OwnerId":"test-user"}""";
+        var ownedJson = $$"""{"Id":"{{AuthorId}}","Name":"Alice","OwnerId":"test-user","TenantId":"test-tenant"}""";
         _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>())
             .Returns(ownedJson);
 
@@ -691,7 +733,7 @@ public class ObjectMappingGrpcServiceTests
     public async Task Get_WithBypassRole_ReturnsSuccess_EvenWhenNotOwner()
     {
         await _registry.RegisterAsync(OwnedAuthorSchema(withBypassRole: true));
-        var ownedJson = $$"""{"Id":"{{AuthorId}}","Name":"Alice","OwnerId":"someone-else"}""";
+        var ownedJson = $$"""{"Id":"{{AuthorId}}","Name":"Alice","OwnerId":"someone-else","TenantId":"test-tenant"}""";
         _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>())
             .Returns(ownedJson);
 
@@ -706,9 +748,43 @@ public class ObjectMappingGrpcServiceTests
     public async Task Get_WithNonMatchingOwner_ReturnsNotFound()
     {
         await _registry.RegisterAsync(OwnedAuthorSchema());
-        var ownedJson = $$"""{"Id":"{{AuthorId}}","Name":"Alice","OwnerId":"someone-else"}""";
+        var ownedJson = $$"""{"Id":"{{AuthorId}}","Name":"Alice","OwnerId":"someone-else","TenantId":"test-tenant"}""";
         _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>())
             .Returns(ownedJson);
+
+        var response = await _sut.Get(
+            new MappingGetRequest { TypeName = "Author", Key = AuthorId },
+            TestServerCallContext.Create());
+
+        response.Success.Should().BeFalse();
+        response.Error.Should().Contain("not found");
+    }
+
+    [Fact]
+    public async Task Get_WithNonMatchingTenant_ReturnsNotFound()
+    {
+        await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
+        var crossTenantJson = $$"""{"Id":"{{AuthorId}}","Name":"Alice","Bio":"Writer","TenantId":"other-tenant"}""";
+        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>())
+            .Returns(crossTenantJson);
+
+        var response = await _sut.Get(
+            new MappingGetRequest { TypeName = "Author", Key = AuthorId },
+            TestServerCallContext.Create());
+
+        response.Success.Should().BeFalse();
+        response.Error.Should().Contain("not found");
+    }
+
+    [Fact]
+    public async Task Get_WithBypassRoleAndNonMatchingTenant_ReturnsNotFound()
+    {
+        // Tenant is strictly additive: a CanReadAll bypass role must not exempt the caller
+        // from the tenant boundary.
+        await _registry.RegisterAsync(OwnedAuthorSchema(withBypassRole: true));
+        var crossTenantJson = $$"""{"Id":"{{AuthorId}}","Name":"Alice","OwnerId":"someone-else","TenantId":"other-tenant"}""";
+        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>())
+            .Returns(crossTenantJson);
 
         var response = await _sut.Get(
             new MappingGetRequest { TypeName = "Author", Key = AuthorId },
@@ -754,15 +830,48 @@ public class ObjectMappingGrpcServiceTests
         await _registry.RegisterAsync(SchemaFixtures.PostWithTagsSchema());
         await _registry.RegisterAsync(OwnedTagSchema());
 
-        var postJson = $$"""{"Id":"{{postId}}","Title":"Hello","TagIds":["{{allowedTagId}}","{{deniedTagId}}"]}""";
+        var postJson = $$"""{"Id":"{{postId}}","Title":"Hello","TagIds":["{{allowedTagId}}","{{deniedTagId}}"],"TenantId":"test-tenant"}""";
         _entities.FetchByKeyAsync(
                 Arg.Is<TableSchema>(s => s.TableName == "posts"), Arg.Any<string>())
             .Returns(postJson);
 
-        var allowedTagJson = $$"""{"Id":"{{allowedTagId}}","Label":"dotnet","OwnerId":"test-user"}""";
-        var deniedTagJson  = $$"""{"Id":"{{deniedTagId}}","Label":"csharp","OwnerId":"someone-else"}""";
+        var allowedTagJson = $$"""{"Id":"{{allowedTagId}}","Label":"dotnet","OwnerId":"test-user","TenantId":"test-tenant"}""";
+        var deniedTagJson  = $$"""{"Id":"{{deniedTagId}}","Label":"csharp","OwnerId":"someone-else","TenantId":"test-tenant"}""";
         _entities.FetchManyByKeysAsync(Arg.Any<TableSchema>(), Arg.Any<IReadOnlyList<string>>())
             .Returns(new[] { new KeyedRow(allowedTagId, allowedTagJson), new KeyedRow(deniedTagId, deniedTagJson) });
+
+        var response = await _sut.Get(
+            new MappingGetRequest { TypeName = "Post", Key = postId, Depth = 1 },
+            MakeContext());
+
+        response.Success.Should().BeTrue();
+        var tags = response.Data.Fields["Tags"].ListValue.Values;
+        tags.Should().ContainSingle();
+        tags[0].StructValue.Fields["Label"].StringValue.Should().Be("dotnet");
+    }
+
+    [Fact]
+    public async Task Get_WithRelatedEntities_OmitsCrossTenantRelatedEntity_KeepsSameTenantOne()
+    {
+        // Relation traversal (depth>0) must not surface a related row belonging to another
+        // tenant, even though PostWithTagsSchema/TagSchema grant "test-bypass" full row access
+        // (tenant is strictly additive — it must win over row-level bypass here too).
+        var postId          = "33333333-0000-0000-0000-000000000006";
+        var sameTenantTagId  = "44444444-0000-0000-0000-000000000006";
+        var crossTenantTagId = "44444444-0000-0000-0000-000000000007";
+
+        await _registry.RegisterAsync(SchemaFixtures.PostWithTagsSchema());
+        await _registry.RegisterAsync(SchemaFixtures.TagSchema());
+
+        var postJson = $$"""{"Id":"{{postId}}","Title":"Hello","TagIds":["{{sameTenantTagId}}","{{crossTenantTagId}}"],"TenantId":"test-tenant"}""";
+        _entities.FetchByKeyAsync(
+                Arg.Is<TableSchema>(s => s.TableName == "posts"), Arg.Any<string>())
+            .Returns(postJson);
+
+        var sameTenantTagJson  = $$"""{"Id":"{{sameTenantTagId}}","Label":"dotnet","TenantId":"test-tenant"}""";
+        var crossTenantTagJson = $$"""{"Id":"{{crossTenantTagId}}","Label":"csharp","TenantId":"other-tenant"}""";
+        _entities.FetchManyByKeysAsync(Arg.Any<TableSchema>(), Arg.Any<IReadOnlyList<string>>())
+            .Returns(new[] { new KeyedRow(sameTenantTagId, sameTenantTagJson), new KeyedRow(crossTenantTagId, crossTenantTagJson) });
 
         var response = await _sut.Get(
             new MappingGetRequest { TypeName = "Post", Key = postId, Depth = 1 },
@@ -957,7 +1066,7 @@ public class ObjectMappingGrpcServiceTests
     public async Task Update_WithMatchingOwner_ReturnsSuccess()
     {
         await _registry.RegisterAsync(OwnedAuthorSchema());
-        var ownedJson = $$"""{"Id":"{{AuthorId}}","Name":"Alice","OwnerId":"test-user"}""";
+        var ownedJson = $$"""{"Id":"{{AuthorId}}","Name":"Alice","OwnerId":"test-user","TenantId":"test-tenant"}""";
         _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>())
             .Returns(ownedJson);
 
@@ -978,7 +1087,7 @@ public class ObjectMappingGrpcServiceTests
     public async Task Update_WithBypassRole_ReturnsSuccess_EvenWhenNotOwner()
     {
         await _registry.RegisterAsync(OwnedAuthorSchema(withBypassRole: true));
-        var ownedJson = $$"""{"Id":"{{AuthorId}}","Name":"Alice","OwnerId":"someone-else"}""";
+        var ownedJson = $$"""{"Id":"{{AuthorId}}","Name":"Alice","OwnerId":"someone-else","TenantId":"test-tenant"}""";
         _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>())
             .Returns(ownedJson);
 
@@ -999,7 +1108,7 @@ public class ObjectMappingGrpcServiceTests
     public async Task Update_WithNonMatchingOwner_ThrowsPermissionDenied()
     {
         await _registry.RegisterAsync(OwnedAuthorSchema());
-        var ownedJson = $$"""{"Id":"{{AuthorId}}","Name":"Alice","OwnerId":"someone-else"}""";
+        var ownedJson = $$"""{"Id":"{{AuthorId}}","Name":"Alice","OwnerId":"someone-else","TenantId":"test-tenant"}""";
         _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>())
             .Returns(ownedJson);
 
@@ -1015,6 +1124,102 @@ public class ObjectMappingGrpcServiceTests
 
         var ex = await act.Should().ThrowAsync<RpcException>();
         ex.Which.StatusCode.Should().Be(StatusCode.PermissionDenied);
+    }
+
+    [Fact]
+    public async Task Update_WithNonMatchingTenant_ThrowsPermissionDenied()
+    {
+        await _registry.RegisterAsync(OwnedAuthorSchema());
+        var crossTenantJson = $$"""{"Id":"{{AuthorId}}","Name":"Alice","OwnerId":"test-user","TenantId":"other-tenant"}""";
+        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>())
+            .Returns(crossTenantJson);
+
+        var payload = MakePayload(new()
+        {
+            ["Id"]      = Value.ForString(AuthorId),
+            ["Name"]    = Value.ForString("Alice Updated"),
+            ["OwnerId"] = Value.ForString("test-user")
+        });
+        var act = () => _sut.Update(
+            new MappingWriteRequest { TypeName = "Author", Payload = payload },
+            TestServerCallContext.Create());
+
+        var ex = await act.Should().ThrowAsync<RpcException>();
+        ex.Which.StatusCode.Should().Be(StatusCode.PermissionDenied);
+    }
+
+    [Fact]
+    public async Task Update_WithBypassRoleAndNonMatchingTenant_ThrowsPermissionDenied()
+    {
+        // Tenant is strictly additive: a CanWriteAll bypass role must not exempt the caller
+        // from the tenant boundary.
+        await _registry.RegisterAsync(OwnedAuthorSchema(withBypassRole: true));
+        var crossTenantJson = $$"""{"Id":"{{AuthorId}}","Name":"Alice","OwnerId":"someone-else","TenantId":"other-tenant"}""";
+        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>())
+            .Returns(crossTenantJson);
+
+        var payload = MakePayload(new()
+        {
+            ["Id"]      = Value.ForString(AuthorId),
+            ["Name"]    = Value.ForString("Alice Updated"),
+            ["OwnerId"] = Value.ForString("someone-else")
+        });
+        var act = () => _sut.Update(
+            new MappingWriteRequest { TypeName = "Author", Payload = payload },
+            TestServerCallContext.Create());
+
+        var ex = await act.Should().ThrowAsync<RpcException>();
+        ex.Which.StatusCode.Should().Be(StatusCode.PermissionDenied);
+    }
+
+    [Fact]
+    public async Task Update_AttemptingToChangeTenantField_ThrowsPermissionDenied()
+    {
+        await _registry.RegisterAsync(OwnedAuthorSchema());
+        var ownedJson = $$"""{"Id":"{{AuthorId}}","Name":"Alice","OwnerId":"test-user","TenantId":"test-tenant"}""";
+        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>())
+            .Returns(ownedJson);
+
+        var payload = MakePayload(new()
+        {
+            ["Id"]       = Value.ForString(AuthorId),
+            ["Name"]     = Value.ForString("Alice Updated"),
+            ["OwnerId"]  = Value.ForString("test-user"),
+            ["TenantId"] = Value.ForString("other-tenant")
+        });
+        var act = () => _sut.Update(
+            new MappingWriteRequest { TypeName = "Author", Payload = payload },
+            TestServerCallContext.Create());
+
+        var ex = await act.Should().ThrowAsync<RpcException>();
+        ex.Which.StatusCode.Should().Be(StatusCode.PermissionDenied);
+        ex.Which.Status.Detail.Should().Contain("immutable");
+    }
+
+    [Fact]
+    public async Task Update_WithBypassRoleCaller_AttemptingToChangeTenantField_ThrowsPermissionDenied()
+    {
+        // Tenant is strictly additive: a CanWriteAll bypass role must not exempt the caller
+        // from the tenant-immutability check.
+        await _registry.RegisterAsync(OwnedAuthorSchema(withBypassRole: true));
+        var ownedJson = $$"""{"Id":"{{AuthorId}}","Name":"Alice","OwnerId":"someone-else","TenantId":"test-tenant"}""";
+        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>())
+            .Returns(ownedJson);
+
+        var payload = MakePayload(new()
+        {
+            ["Id"]       = Value.ForString(AuthorId),
+            ["Name"]     = Value.ForString("Alice Updated"),
+            ["OwnerId"]  = Value.ForString("someone-else"),
+            ["TenantId"] = Value.ForString("other-tenant")
+        });
+        var act = () => _sut.Update(
+            new MappingWriteRequest { TypeName = "Author", Payload = payload },
+            TestServerCallContext.Create());
+
+        var ex = await act.Should().ThrowAsync<RpcException>();
+        ex.Which.StatusCode.Should().Be(StatusCode.PermissionDenied);
+        ex.Which.Status.Detail.Should().Contain("immutable");
     }
 
     [Fact]
@@ -1107,7 +1312,7 @@ public class ObjectMappingGrpcServiceTests
     public async Task Update_WithNonBypassCaller_AttemptingToChangeOwnerField_ThrowsPermissionDenied()
     {
         await _registry.RegisterAsync(OwnedAuthorSchema(withBypassRole: false));
-        var ownedJson = $$"""{"Id":"{{AuthorId}}","Name":"Alice","OwnerId":"test-user"}""";
+        var ownedJson = $$"""{"Id":"{{AuthorId}}","Name":"Alice","OwnerId":"test-user","TenantId":"test-tenant"}""";
         _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>())
             .Returns(ownedJson);
 
@@ -1133,7 +1338,7 @@ public class ObjectMappingGrpcServiceTests
         // is not required for them), so the immutability check must source the owner field name
         // from schema.Authorization?.OwnerField, not decision.OwnerFieldName, or this would never fire.
         await _registry.RegisterAsync(OwnedAuthorSchema(withBypassRole: true));
-        var ownedJson = $$"""{"Id":"{{AuthorId}}","Name":"Alice","OwnerId":"someone-else"}""";
+        var ownedJson = $$"""{"Id":"{{AuthorId}}","Name":"Alice","OwnerId":"someone-else","TenantId":"test-tenant"}""";
         _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>())
             .Returns(ownedJson);
 
@@ -1292,7 +1497,7 @@ public class ObjectMappingGrpcServiceTests
     public async Task Delete_WithMatchingOwner_ReturnsSuccess()
     {
         await _registry.RegisterAsync(OwnedAuthorSchema());
-        var ownedJson = $$"""{"Id":"{{AuthorId}}","Name":"Alice","OwnerId":"test-user"}""";
+        var ownedJson = $$"""{"Id":"{{AuthorId}}","Name":"Alice","OwnerId":"test-user","TenantId":"test-tenant"}""";
         _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>())
             .Returns(ownedJson);
 
@@ -1317,7 +1522,7 @@ public class ObjectMappingGrpcServiceTests
     public async Task Delete_WithBypassRole_ReturnsSuccess_EvenWhenNotOwner()
     {
         await _registry.RegisterAsync(OwnedAuthorSchema(withBypassRole: true));
-        var ownedJson = $$"""{"Id":"{{AuthorId}}","Name":"Alice","OwnerId":"someone-else"}""";
+        var ownedJson = $$"""{"Id":"{{AuthorId}}","Name":"Alice","OwnerId":"someone-else","TenantId":"test-tenant"}""";
         _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>())
             .Returns(ownedJson);
 
@@ -1342,7 +1547,7 @@ public class ObjectMappingGrpcServiceTests
     public async Task Delete_WithNonMatchingOwner_ReturnsNotFound()
     {
         await _registry.RegisterAsync(OwnedAuthorSchema());
-        var ownedJson = $$"""{"Id":"{{AuthorId}}","Name":"Alice","OwnerId":"someone-else"}""";
+        var ownedJson = $$"""{"Id":"{{AuthorId}}","Name":"Alice","OwnerId":"someone-else","TenantId":"test-tenant"}""";
         _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>())
             .Returns(ownedJson);
 
@@ -1352,6 +1557,48 @@ public class ObjectMappingGrpcServiceTests
 
         response.Success.Should().BeFalse();
         response.Error.Should().Contain("not found");
+        await _events.DidNotReceive().ProduceAsync(
+            EntityTopics.Events, Arg.Any<string>(), Arg.Any<EntityEvent>());
+    }
+
+    [Fact]
+    public async Task Delete_WithNonMatchingTenant_ReturnsNotFound()
+    {
+        await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
+        var crossTenantJson = $$"""{"Id":"{{AuthorId}}","Name":"Alice","Bio":"Writer","TenantId":"other-tenant"}""";
+        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>())
+            .Returns(crossTenantJson);
+
+        var response = await _sut.Delete(
+            new MappingDeleteRequest { TypeName = "Author", Key = AuthorId },
+            TestServerCallContext.Create());
+
+        response.Success.Should().BeFalse();
+        response.Error.Should().Contain("not found");
+        await _entities.DidNotReceive().DeleteAsync(
+            Arg.Any<IDbTransactionContext>(), Arg.Any<TableSchema>(), Arg.Any<string>());
+        await _events.DidNotReceive().ProduceAsync(
+            EntityTopics.Events, Arg.Any<string>(), Arg.Any<EntityEvent>());
+    }
+
+    [Fact]
+    public async Task Delete_WithBypassRoleAndNonMatchingTenant_ReturnsNotFound()
+    {
+        // Tenant is strictly additive: a CanDeleteAll bypass role must not exempt the caller
+        // from the tenant boundary.
+        await _registry.RegisterAsync(OwnedAuthorSchema(withBypassRole: true));
+        var crossTenantJson = $$"""{"Id":"{{AuthorId}}","Name":"Alice","OwnerId":"someone-else","TenantId":"other-tenant"}""";
+        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>())
+            .Returns(crossTenantJson);
+
+        var response = await _sut.Delete(
+            new MappingDeleteRequest { TypeName = "Author", Key = AuthorId },
+            TestServerCallContext.Create());
+
+        response.Success.Should().BeFalse();
+        response.Error.Should().Contain("not found");
+        await _entities.DidNotReceive().DeleteAsync(
+            Arg.Any<IDbTransactionContext>(), Arg.Any<TableSchema>(), Arg.Any<string>());
         await _events.DidNotReceive().ProduceAsync(
             EntityTopics.Events, Arg.Any<string>(), Arg.Any<EntityEvent>());
     }
