@@ -246,7 +246,7 @@ public sealed class AuthentikFlowExecutorClient(
 
         var query = $"client_id={Uri.EscapeDataString(identity.ClientId)}" +
                     $"&redirect_uri={Uri.EscapeDataString(identity.RedirectUri)}" +
-                    "&response_type=code&scope=openid%20groups%20offline_access" +
+                    "&response_type=code&scope=openid%20groups%20tenant_id%20offline_access" +
                     $"&code_challenge={challenge}&code_challenge_method=S256&state={state}";
         var authorizeResp = await SendAsync(HttpMethod.Get, $"{identity.BaseUrl}/application/o/authorize/?{query}");
         if (authorizeResp.StatusCode != System.Net.HttpStatusCode.Redirect &&

@@ -313,7 +313,7 @@ def authorize_and_get_code(
             "client_id": client_id,
             "redirect_uri": redirect_uri,
             "response_type": "code",
-            "scope": "openid groups",
+            "scope": "openid groups tenant_id",
             "code_challenge": code_challenge,
             "code_challenge_method": "S256",
             "state": state,

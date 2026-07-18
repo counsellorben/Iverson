@@ -41,6 +41,34 @@ entries:
       name: "Iverson: group membership"
       description: Exposes the authenticated user's Authentik group names
       expression: "return [group.name for group in user.ak_groups.all()]"
+  - model: authentik_providers_oauth2.scopemapping
+    identifiers:
+      scope_name: tenant_id
+    attrs:
+      name: "Iverson: tenant id"
+      description: The caller's tenant identifier for data isolation
+      expression: 'return {"tenant_id": request.user.attributes.get("tenant_id")}'
+  - model: authentik_providers_oauth2.scopemapping
+    identifiers:
+      scope_name: tenant_id_loadtest
+    attrs:
+      name: "Iverson: loadtest tenant id"
+      description: Fixed tenant identifier issued to the loadtest service client
+      expression: 'return {"tenant_id": "tenant-loadtest"}'
+  - model: authentik_providers_oauth2.scopemapping
+    identifiers:
+      scope_name: tenant_id_webtest
+    attrs:
+      name: "Iverson: webtest tenant id"
+      description: Fixed tenant identifier issued to the webtest service client
+      expression: 'return {"tenant_id": "tenant-webtest"}'
+  - model: authentik_providers_oauth2.scopemapping
+    identifiers:
+      scope_name: tenant_id_admin
+    attrs:
+      name: "Iverson: admin automation tenant id"
+      description: Fixed tenant identifier issued to the admin-automation service client
+      expression: 'return {"tenant_id": "tenant-admin"}'
   - model: authentik_providers_oauth2.oauth2provider
     identifiers:
       name: iverson-loadtest
@@ -56,6 +84,7 @@ entries:
       issuer_mode: global
       property_mappings:
         - !Find [authentik_providers_oauth2.scopemapping, [scope_name, schema_admin]]
+        - !Find [authentik_providers_oauth2.scopemapping, [scope_name, tenant_id_loadtest]]
   - model: authentik_core.application
     identifiers:
       slug: iverson-loadtest
@@ -75,6 +104,8 @@ entries:
       grant_types: ["client_credentials"]
       signing_key: !Find [authentik_crypto.certificatekeypair, [name, "authentik Self-signed Certificate"]]
       issuer_mode: global
+      property_mappings:
+        - !Find [authentik_providers_oauth2.scopemapping, [scope_name, tenant_id_webtest]]
   - model: authentik_core.application
     identifiers:
       slug: iverson-webtest
@@ -97,6 +128,7 @@ entries:
       property_mappings:
         - !Find [authentik_providers_oauth2.scopemapping, [scope_name, admin]]
         - !Find [authentik_providers_oauth2.scopemapping, [scope_name, schema_admin]]
+        - !Find [authentik_providers_oauth2.scopemapping, [scope_name, tenant_id_admin]]
   - model: authentik_core.application
     identifiers:
       slug: iverson-admin-automation
@@ -119,6 +151,7 @@ entries:
       issuer_mode: global
       property_mappings:
         - !Find [authentik_providers_oauth2.scopemapping, [scope_name, groups]]
+        - !Find [authentik_providers_oauth2.scopemapping, [scope_name, tenant_id]]
   - model: authentik_core.application
     identifiers:
       slug: iverson-api
@@ -143,6 +176,7 @@ entries:
       access_token_validity: "hours=2"
       property_mappings:
         - !Find [authentik_providers_oauth2.scopemapping, [scope_name, groups]]
+        - !Find [authentik_providers_oauth2.scopemapping, [scope_name, tenant_id]]
   - model: authentik_core.application
     identifiers:
       slug: iverson-loadtest-human
@@ -158,6 +192,8 @@ entries:
       email: iverson-acting-user-smoke-test@example.invalid
       password: "dev-only-not-for-production-smoke-test-password-0123456789"
       is_active: true
+      attributes:
+        tenant_id: "tenant-smoke-test"
   - model: authentik_core.group
     identifiers:
       name: iverson-loadtest-bypass
@@ -171,5 +207,7 @@ entries:
       email: iverson-loadtest-bypass-user@example.invalid
       password: "dev-only-not-for-production-bypass-password-0123456789"
       is_active: true
+      attributes:
+        tenant_id: "tenant-bypass"
       groups:
         - !Find [authentik_core.group, [name, iverson-loadtest-bypass]]
