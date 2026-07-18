@@ -64,6 +64,17 @@ internal static class StarRocksQueryBuilder
                 param.Add("__ownerVal", primaryConstraint.OwnerValue);
                 where = where.Length > 0 ? $"({where}) AND {ownerPredicate}" : ownerPredicate;
             }
+
+            // Tenant boundary is additive and unconditional — gated only on TenantColumn being
+            // present, independently of the ownership block above (which is skipped for
+            // CanReadAll callers). Every constraint is guaranteed to carry a tenant column now,
+            // so this always fires for a registered type.
+            if (authz is not null && authz.TryGetValue(schema.TypeName, out var tenantConstraint) && tenantConstraint.TenantColumn is not null)
+            {
+                var tenantPredicate = $"`{primaryAlias}`.`{tenantConstraint.TenantColumn}` = @__tenantVal";
+                param.Add("__tenantVal", tenantConstraint.TenantValue);
+                where = where.Length > 0 ? $"({where}) AND {tenantPredicate}" : tenantPredicate;
+            }
         }
         else
         {
@@ -77,6 +88,16 @@ internal static class StarRocksQueryBuilder
                 var ownerPredicate = $"`{primaryConstraint.OwnerColumn}` = @__ownerVal";
                 param.Add("__ownerVal", primaryConstraint.OwnerValue);
                 where = where.Length > 0 ? $"({where}) AND {ownerPredicate}" : ownerPredicate;
+            }
+
+            // Tenant boundary is additive and unconditional — gated only on TenantColumn being
+            // present, independently of the ownership block above (which is skipped for
+            // CanReadAll callers).
+            if (authz is not null && authz.TryGetValue(schema.TypeName, out var tenantConstraint) && tenantConstraint.TenantColumn is not null)
+            {
+                var tenantPredicate = $"`{tenantConstraint.TenantColumn}` = @__tenantVal";
+                param.Add("__tenantVal", tenantConstraint.TenantValue);
+                where = where.Length > 0 ? $"({where}) AND {tenantPredicate}" : tenantPredicate;
             }
         }
 
@@ -208,6 +229,18 @@ internal static class StarRocksQueryBuilder
             where = where.Length > 0 ? $"({where}) AND {ownerPredicate}" : ownerPredicate;
         }
 
+        // Tenant boundary is additive and unconditional — gated only on TenantColumn being
+        // present, independently of the ownership block above (which is skipped for CanReadAll
+        // callers).
+        if (authz is not null && authz.TryGetValue(schema.TypeName, out var tenantConstraint) && tenantConstraint.TenantColumn is not null)
+        {
+            var tenantPredicate = tableMap is not null
+                ? $"`{tableMap[schema.TypeName].Alias}`.`{tenantConstraint.TenantColumn}` = @__tenantVal"
+                : $"`{tenantConstraint.TenantColumn}` = @__tenantVal";
+            param.Add("__tenantVal", tenantConstraint.TenantValue);
+            where = where.Length > 0 ? $"({where}) AND {tenantPredicate}" : tenantPredicate;
+        }
+
         var col = Resolve(spec.Field);
         var wc    = where.Length > 0 ? $" WHERE {where}" : "";
 
@@ -289,6 +322,16 @@ internal static class StarRocksQueryBuilder
             var ownerPredicate = $"`{tableMap[schema.TypeName].Alias}`.`{primaryConstraint.OwnerColumn}` = @__ownerVal";
             param.Add("__ownerVal", primaryConstraint.OwnerValue);
             where = where.Length > 0 ? $"({where}) AND {ownerPredicate}" : ownerPredicate;
+        }
+
+        // Tenant boundary is additive and unconditional — gated only on TenantColumn being
+        // present, independently of the ownership block above (which is skipped for CanReadAll
+        // callers).
+        if (authz is not null && authz.TryGetValue(schema.TypeName, out var tenantConstraint) && tenantConstraint.TenantColumn is not null)
+        {
+            var tenantPredicate = $"`{tableMap[schema.TypeName].Alias}`.`{tenantConstraint.TenantColumn}` = @__tenantVal";
+            param.Add("__tenantVal", tenantConstraint.TenantValue);
+            where = where.Length > 0 ? $"({where}) AND {tenantPredicate}" : tenantPredicate;
         }
 
         var wc = where.Length > 0 ? $" WHERE {where}" : "";
@@ -719,9 +762,21 @@ internal static class StarRocksQueryBuilder
                 ownerCond = $" AND `{rightCtx.Alias}`.`{joinedConstraint.OwnerColumn}` = @{pName}";
             }
 
+            // Tenant boundary is additive and unconditional — gated only on TenantColumn being
+            // present, independently of the ownership block above. Every joined type is now
+            // guaranteed to carry a tenant column, so a fixed parameter name would collide across
+            // joins; mirror the owner predicate's per-join unique naming (map.Count) exactly.
+            var tenantCond = "";
+            if (authz is not null && authz.TryGetValue(join.RightType, out var joinedTenantConstraint) && joinedTenantConstraint.TenantColumn is not null)
+            {
+                var tName = $"__tenant{map.Count}";
+                param.Add(tName, joinedTenantConstraint.TenantValue);
+                tenantCond = $" AND `{rightCtx.Alias}`.`{joinedTenantConstraint.TenantColumn}` = @{tName}";
+            }
+
             sb.Append(
                 $" {kind} JOIN `{rightCtx.TableName}` ON " +
-                $"`{leftCtx.Alias}`.`{leftCol}` = `{rightCtx.Alias}`.`{rightCol}`{ownerCond}");
+                $"`{leftCtx.Alias}`.`{leftCol}` = `{rightCtx.Alias}`.`{rightCol}`{ownerCond}{tenantCond}");
 
             map[join.RightType] = rightCtx;
         }

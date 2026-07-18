@@ -25,6 +25,12 @@ public class StarRocksPipelineBuilderTests
     private static Func<string, StarRocksQuerySchema?> RegistryWithAuthor() =>
         BuildRegistry(AuthorSchemaLocal());
 
+    private static StarRocksQuerySchema TagSchemaLocal() => new(
+        "Tag", "tags", "Id", ["Label"]);
+
+    private static Func<string, StarRocksQuerySchema?> RegistryWithAuthorAndTag() =>
+        BuildRegistry(AuthorSchemaLocal(), TagSchemaLocal());
+
     private static PipelineRequest Request(params PipelineStep[] steps)
     {
         var r = new PipelineRequest { TypeName = "Article" };
@@ -473,6 +479,19 @@ public class StarRocksPipelineBuilderTests
         step.Joins.Add(join);
         step.Select.Add(new SelectItem { All = true });                       // input.*
         step.Select.Add(new SelectItem { Source = "Author", Column = "Name", Alias = "author_name" });
+        return step;
+    }
+
+    private static PipelineStep TwoJoinStep()
+    {
+        var step = new PipelineStep { Name = "named" };
+        var joinAuthor = new PipelineJoin { Source = "Author", Kind = JoinKind.Inner };
+        joinAuthor.On.Add(new JoinCondition { Left = "AuthorId", Right = "Id" });
+        var joinTag = new PipelineJoin { Source = "Tag", Kind = JoinKind.Inner };
+        joinTag.On.Add(new JoinCondition { Left = "AuthorId", Right = "Id" });
+        step.Joins.Add(joinAuthor);
+        step.Joins.Add(joinTag);
+        step.Select.Add(new SelectItem { All = true });
         return step;
     }
 
@@ -1068,6 +1087,134 @@ public class StarRocksPipelineBuilderTests
         var authz = new Dictionary<string, AuthorizationConstraint>
         {
             ["Author"] = new(AllowedFields: null, OwnerColumn: "OwnerId", OwnerValue: "alice")
+        };
+
+        var (sql, _, _) = StarRocksPipelineBuilder.Build(
+            ArticleSchema(), Request(agg, enriched), EmptyRegistry(), authz);
+
+        var n = NormalizeWs(sql);
+        n.Should().Contain(
+            "`enriched` AS (SELECT `base`.*, `by_author`.`articles` FROM `base` " +
+            "LEFT JOIN `by_author` ON `base`.`AuthorId` = `by_author`.`AuthorId`)");
+    }
+
+    // ── Authorization — tenant boundary ──────────────────────────────────────────
+
+    [Fact]
+    public void Build_PrimaryTenant_AppendsWrapAndAndPredicateToBaseWhere()
+    {
+        var authz = new Dictionary<string, AuthorizationConstraint>
+        {
+            ["Article"] = new(AllowedFields: null, OwnerColumn: null, OwnerValue: null, TenantColumn: "TenantId", TenantValue: "tenant-1")
+        };
+
+        var (sql, param, _) = StarRocksPipelineBuilder.Build(
+            ArticleSchema(), Request(), EmptyRegistry(), authz);
+
+        sql.Should().Contain("WHERE `TenantId` = @__tenantVal");
+        var lookup = (SqlMapper.IParameterLookup)param;
+        lookup["__tenantVal"].Should().Be("tenant-1");
+    }
+
+    [Fact]
+    public void Build_PrimaryTenant_CombinesWithBaseWhereViaWrapAndAnd()
+    {
+        var authz = new Dictionary<string, AuthorizationConstraint>
+        {
+            ["Article"] = new(AllowedFields: null, OwnerColumn: null, OwnerValue: null, TenantColumn: "TenantId", TenantValue: "tenant-1")
+        };
+        var request = Request();
+        request.BaseWhere.Add(new SearchClause
+        {
+            Property = "IsPublished", Operator = SearchOperator.Equals,
+            Value = new SearchValue { BoolVal = true }, ClauseType = SearchClauseType.Filter
+        });
+
+        var (sql, _, _) = StarRocksPipelineBuilder.Build(
+            ArticleSchema(), request, EmptyRegistry(), authz);
+
+        NormalizeWs(sql).Should().Contain("WHERE (`IsPublished` = @s0_p0) AND `TenantId` = @__tenantVal");
+    }
+
+    [Fact]
+    public void Build_PrimaryOwnerAndTenant_BothPredicatesApplyIndependently()
+    {
+        // Additive, unconditional: a caller subject to ownership filtering gets both predicates,
+        // wrap-and-AND'd together in the order owner-then-tenant.
+        var authz = new Dictionary<string, AuthorizationConstraint>
+        {
+            ["Article"] = new(AllowedFields: null, OwnerColumn: "OwnerId", OwnerValue: "alice", TenantColumn: "TenantId", TenantValue: "tenant-1")
+        };
+
+        var (sql, param, _) = StarRocksPipelineBuilder.Build(
+            ArticleSchema(), Request(), EmptyRegistry(), authz);
+
+        sql.Should().Contain("WHERE (`OwnerId` = @__ownerVal) AND `TenantId` = @__tenantVal");
+        var lookup = (SqlMapper.IParameterLookup)param;
+        lookup["__ownerVal"].Should().Be("alice");
+        lookup["__tenantVal"].Should().Be("tenant-1");
+    }
+
+    [Fact]
+    public void Build_JoinedTypeTenant_AppendsTenantConditionToJoinOn()
+    {
+        var authz = new Dictionary<string, AuthorizationConstraint>
+        {
+            ["Author"] = new(AllowedFields: null, OwnerColumn: null, OwnerValue: null, TenantColumn: "TenantId", TenantValue: "tenant-1")
+        };
+
+        var (sql, param, _) = StarRocksPipelineBuilder.Build(
+            ArticleSchema(), Request(JoinedStep()), RegistryWithAuthor(), authz);
+
+        var n = NormalizeWs(sql);
+        n.Should().Contain("ON `base`.`AuthorId` = `Author`.`Id` AND `Author`.`TenantId` = @s1_j0_tenant");
+        var lookup = (SqlMapper.IParameterLookup)param;
+        lookup["s1_j0_tenant"].Should().Be("tenant-1");
+    }
+
+    [Fact]
+    public void Build_TwoJoinsInSameStep_EachJoinedTypeTenantConstraint_UsesDistinctParameterNames()
+    {
+        // Mirrors the StarRocksQueryBuilder collision guard: every joined type now mandatorily
+        // carries a tenant column, so a fixed parameter name would collide across two joins in
+        // the same step. Here the step/join-indexed name (s{stepIdx}_j{joinIdx}_tenant) is already
+        // structurally unique per join — this proves that holds in practice for two joins.
+        var authz = new Dictionary<string, AuthorizationConstraint>
+        {
+            ["Author"] = new(AllowedFields: null, OwnerColumn: null, OwnerValue: null, TenantColumn: "TenantId", TenantValue: "tenant-author"),
+            ["Tag"]    = new(AllowedFields: null, OwnerColumn: null, OwnerValue: null, TenantColumn: "TenantId", TenantValue: "tenant-tag")
+        };
+
+        var (sql, param, _) = StarRocksPipelineBuilder.Build(
+            ArticleSchema(), Request(TwoJoinStep()), RegistryWithAuthorAndTag(), authz);
+
+        var n = NormalizeWs(sql);
+        n.Should().Contain("ON `base`.`AuthorId` = `Author`.`Id` AND `Author`.`TenantId` = @s1_j0_tenant");
+        n.Should().Contain("ON `base`.`AuthorId` = `Tag`.`Id` AND `Tag`.`TenantId` = @s1_j1_tenant");
+        var lookup = (SqlMapper.IParameterLookup)param;
+        lookup["s1_j0_tenant"].Should().Be("tenant-author");
+        lookup["s1_j1_tenant"].Should().Be("tenant-tag");
+    }
+
+    [Fact]
+    public void Build_JoinAgainstPriorCte_NoTenantPredicateAppendedEvenWhenAuthzHasThatType()
+    {
+        // Same reasoning as the ownership variant: a step-to-step join must never look its
+        // source name up in authz as if it were a registered type.
+        var agg = new PipelineStep { Name = "by_author" };
+        agg.GroupBy.Add(new GroupKey { Field = "AuthorId" });
+        agg.Metrics.Add(new MetricSpec { Name = "articles", Type = AggregationType.Count });
+
+        var enriched = new PipelineStep { Name = "enriched", Reads = "base" };
+        var join = new PipelineJoin { Source = "by_author", Kind = JoinKind.Left };
+        join.On.Add(new JoinCondition { Left = "AuthorId", Right = "AuthorId" });
+        enriched.Joins.Add(join);
+        enriched.Select.Add(new SelectItem { All = true });
+        enriched.Select.Add(new SelectItem { Source = "by_author", Column = "articles" });
+
+        var authz = new Dictionary<string, AuthorizationConstraint>
+        {
+            ["Author"] = new(AllowedFields: null, OwnerColumn: null, OwnerValue: null, TenantColumn: "TenantId", TenantValue: "tenant-1")
         };
 
         var (sql, _, _) = StarRocksPipelineBuilder.Build(

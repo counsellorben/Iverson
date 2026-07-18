@@ -398,6 +398,16 @@ internal static class StarRocksPipelineBuilder
             baseWhere = baseWhere.Length > 0 ? $"({baseWhere}) AND {ownerPredicate}" : ownerPredicate;
         }
 
+        // Tenant boundary is additive and unconditional — gated only on TenantColumn being
+        // present, independently of the ownership block above (which is skipped for CanReadAll
+        // callers).
+        if (authz is not null && authz.TryGetValue(schema.TypeName, out var tenantConstraint) && tenantConstraint.TenantColumn is not null)
+        {
+            var tenantPredicate = $"`{tenantConstraint.TenantColumn}` = @__tenantVal";
+            param.Add("__tenantVal", tenantConstraint.TenantValue);
+            baseWhere = baseWhere.Length > 0 ? $"({baseWhere}) AND {tenantPredicate}" : tenantPredicate;
+        }
+
         sb.Append($"WITH `{BaseStepName}` AS (SELECT * FROM `{schema.TableName}`");
         if (baseWhere.Length > 0) sb.Append($" WHERE {baseWhere}");
         sb.Append(')');
@@ -537,7 +547,19 @@ internal static class StarRocksPipelineBuilder
                 ownerCond = $" AND `{src.Name}`.`{joinedConstraint.OwnerColumn}` = @{pName}";
             }
 
-            sb.Append($" {kind} JOIN {target} ON {string.Join(" AND ", conds)}{ownerCond}");
+            // Tenant boundary is additive and unconditional — gated only on TenantColumn being
+            // present, independently of the ownership block above. Every joined type is now
+            // guaranteed to carry a tenant column; the step/join-indexed parameter name is
+            // already unique per join, mirroring the owner predicate's discipline.
+            var tenantCond = "";
+            if (isFreshType && authz is not null && authz.TryGetValue(src.Name, out var joinedTenantConstraint) && joinedTenantConstraint.TenantColumn is not null)
+            {
+                var tName = $"s{stepIdx}_j{joinIdx}_tenant";
+                param.Add(tName, joinedTenantConstraint.TenantValue);
+                tenantCond = $" AND `{src.Name}`.`{joinedTenantConstraint.TenantColumn}` = @{tName}";
+            }
+
+            sb.Append($" {kind} JOIN {target} ON {string.Join(" AND ", conds)}{ownerCond}{tenantCond}");
             joinIdx++;
         }
 

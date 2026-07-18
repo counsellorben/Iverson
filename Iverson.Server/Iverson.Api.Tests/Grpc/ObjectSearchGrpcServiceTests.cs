@@ -264,6 +264,67 @@ public class ObjectSearchGrpcServiceTests
     }
 
     [Fact]
+    public async Task Search_BypassCaller_ForwardsTenantConstraint_EvenThoughOwnerColumnIsNull()
+    {
+        // The tenant boundary is strictly additive (Tasks 2/3's design): it must be forwarded
+        // even for a bypass-role (CanReadAll) caller whose ownership predicate is skipped. This
+        // proves the tenant constraint is gated independently of the ownership block, at the RPC
+        // layer that feeds StarRocksQueryBuilder/StarRocksPipelineBuilder.
+        await _registry.RegisterAsync(OwnedSchema("Owned", "OwnerId")); // bypass role "test-bypass"
+
+        IReadOnlyDictionary<string, AuthorizationConstraint>? captured = null;
+        _search.SearchAsync(
+                Arg.Any<StarRocksQuerySchema>(), Arg.Any<SearchQuery?>(), Arg.Any<int>(), Arg.Any<int>(),
+                Arg.Any<IReadOnlyList<string>?>(), Arg.Any<IReadOnlyList<JoinSpec>?>(),
+                Arg.Any<Func<string, StarRocksQuerySchema?>?>(),
+                Arg.Do<IReadOnlyDictionary<string, AuthorizationConstraint>?>(a => captured = a))
+            .Returns(Enumerable.Empty<dynamic>());
+
+        var (writer, _) = MakeStream<SearchResponse>();
+        await _sut.Search(new SearchRequest { TypeName = "Owned" }, writer, TestServerCallContext.Create());
+
+        captured.Should().NotBeNull();
+        captured!["Owned"].OwnerColumn.Should().BeNull(); // bypass still short-circuits ownership
+        captured["Owned"].TenantColumn.Should().Be("TenantId");
+        captured["Owned"].TenantValue.Should().Be("test-tenant"); // default fixture's tenant_id claim
+    }
+
+    [Fact]
+    public async Task Search_BypassCaller_CrossTenant_StreamsEmptyResult()
+    {
+        // CanReadAll grants unrestricted row access WITHIN a tenant, but the tenant boundary is
+        // additive and applies even to bypass-role callers — no operator bypass. This simulates,
+        // at the RPC layer, what the real `WHERE `TenantId` = @__tenantVal` predicate (already
+        // proven correct at the SQL-generation level in StarRocksQueryBuilderTests) does at
+        // execution time: the fake search-service stands in for the real database and only
+        // "returns" the row when the forwarded constraint's tenant value matches the row's own
+        // tenant, so a caller from a different tenant sees nothing even though their role would
+        // otherwise grant full read access.
+        await _registry.RegisterAsync(OwnedSchema("Owned", "OwnerId")); // bypass role "test-bypass"
+        _actingUserAccessor.ActingUser = ActingUserFixtures.PrincipalWithTenant("test-user", "tenant-b", "test-bypass");
+
+        var rowOwnedByTenantA = new Dictionary<string, object> { ["Id"] = "1", ["Name"] = "Alice" };
+        _search.SearchAsync(
+                Arg.Any<StarRocksQuerySchema>(), Arg.Any<SearchQuery?>(), Arg.Any<int>(), Arg.Any<int>(),
+                Arg.Any<IReadOnlyList<string>?>(), Arg.Any<IReadOnlyList<JoinSpec>?>(),
+                Arg.Any<Func<string, StarRocksQuerySchema?>?>(),
+                Arg.Any<IReadOnlyDictionary<string, AuthorizationConstraint>?>())
+            .Returns(callInfo =>
+            {
+                var authz = callInfo.ArgAt<IReadOnlyDictionary<string, AuthorizationConstraint>?>(7);
+                var matches = authz is not null && authz["Owned"].TenantValue == "tenant-a";
+                return matches
+                    ? new[] { (dynamic)rowOwnedByTenantA }.AsEnumerable()
+                    : Enumerable.Empty<dynamic>();
+            });
+
+        var (writer, written) = MakeStream<SearchResponse>();
+        await _sut.Search(new SearchRequest { TypeName = "Owned" }, writer, TestServerCallContext.Create());
+
+        written.Should().BeEmpty();
+    }
+
+    [Fact]
     public async Task Search_OwnerRestrictedCaller_ForwardsOwnerColumnAndCallerIdAsOwnerValue()
     {
         // Caller is NOT in the bypass role, and the schema requires ownership — the forwarded
@@ -361,6 +422,38 @@ public class ObjectSearchGrpcServiceTests
         captured.Should().NotBeNull();
         captured!["Article"].OwnerColumn.Should().Be("OwnerId");
         captured["Article"].OwnerValue.Should().Be("test-user"); // default fixture's sub claim
+    }
+
+    [Fact]
+    public async Task Search_JoinedTypeTenantConstraint_ForwardsTenantColumnAndCallerTenantAsValue()
+    {
+        // Same reasoning as the joined-type ownership test above, but for the tenant boundary:
+        // the joined type's constraint must carry the caller's own tenant_id claim so
+        // BuildFromWithJoins can append the tenant condition to that JOIN's ON clause (with its
+        // own per-join unique parameter name to avoid colliding with any other joined type).
+        await _registry.RegisterAsync(SchemaFixtures.AuthorSchema()); // bypass role "test-bypass"
+        await _registry.RegisterAsync(OwnedSchema("Article", "OwnerId", bypassRole: "other-bypass"));
+
+        IReadOnlyDictionary<string, AuthorizationConstraint>? captured = null;
+        _search.SearchAsync(
+                Arg.Any<StarRocksQuerySchema>(), Arg.Any<SearchQuery?>(), Arg.Any<int>(), Arg.Any<int>(),
+                Arg.Any<IReadOnlyList<string>?>(), Arg.Any<IReadOnlyList<JoinSpec>?>(),
+                Arg.Any<Func<string, StarRocksQuerySchema?>?>(),
+                Arg.Do<IReadOnlyDictionary<string, AuthorizationConstraint>?>(a => captured = a))
+            .Returns(Enumerable.Empty<dynamic>());
+
+        var request = new SearchRequest { TypeName = "Author" };
+        request.Joins.Add(new JoinSpec
+        {
+            LeftType = "Author", RightType = "Article", LeftField = "Id", RightField = "AuthorId", Kind = JoinKind.Left
+        });
+
+        var (writer, _) = MakeStream<SearchResponse>();
+        await _sut.Search(request, writer, TestServerCallContext.Create());
+
+        captured.Should().NotBeNull();
+        captured!["Article"].TenantColumn.Should().Be("TenantId");
+        captured["Article"].TenantValue.Should().Be("test-tenant"); // default fixture's tenant_id claim
     }
 
     [Fact]

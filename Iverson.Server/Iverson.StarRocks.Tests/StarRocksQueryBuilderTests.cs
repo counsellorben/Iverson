@@ -18,6 +18,9 @@ public class StarRocksQueryBuilderTests
     private static StarRocksQuerySchema ArticleWithProjectionSchema() => new(
         "Article", "articles", "Id", ["Title", "Category", "WordCount", "PublishedAt", "Body"]);
 
+    private static StarRocksQuerySchema TagSchema() => new(
+        "Tag", "tags", "Id", ["Label"]);
+
     // ── BuildAggregate — Terms ─────────────────────────────────────────────────
 
     [Fact]
@@ -426,6 +429,115 @@ public class StarRocksQueryBuilderTests
         sql.Should().NotContain("WHERE");
         var lookup = (SqlMapper.IParameterLookup)param;
         lookup["__owner1"].Should().Be("user-1");
+    }
+
+    // ── BuildAggregate — authorization (tenant boundary) ───────────────────────
+
+    [Fact]
+    public void BuildAggregate_NoJoins_TenantConstraint_WrapsExistingWhereWithTenantPredicate()
+    {
+        var query = new SearchQuery();
+        query.Clauses.Add(new SearchClause
+        {
+            Property = "Name", Operator = SearchOperator.Equals,
+            Value = new SearchValue { StringVal = "Alice" }, ClauseType = SearchClauseType.Filter
+        });
+        var spec = new AggregationDescriptor("by_name", AggregationKind.Terms, "Name");
+        var authz = new Dictionary<string, AuthorizationConstraint>
+        {
+            ["Author"] = new(AllowedFields: null, OwnerColumn: null, OwnerValue: null, TenantColumn: "TenantId", TenantValue: "tenant-1")
+        };
+
+        var (sql, param) = StarRocksQueryBuilder.BuildAggregate(
+            "authors", AuthorSchema(), query, spec, authz: authz);
+
+        sql.Should().Contain("WHERE (`Name` = @p0) AND `TenantId` = @__tenantVal");
+        var lookup = (SqlMapper.IParameterLookup)param;
+        lookup["__tenantVal"].Should().Be("tenant-1");
+    }
+
+    [Fact]
+    public void BuildAggregate_NoJoins_TenantConstraint_AppliesEvenWhenOwnerColumnIsNull()
+    {
+        // Tenant boundary is additive and unconditional: it must apply even for a bypass-role
+        // caller whose OwnerColumn is null (the ownership predicate is skipped, but tenant never
+        // is).
+        var spec = new AggregationDescriptor("by_name", AggregationKind.Terms, "Name");
+        var authz = new Dictionary<string, AuthorizationConstraint>
+        {
+            ["Author"] = new(AllowedFields: null, OwnerColumn: null, OwnerValue: null, TenantColumn: "TenantId", TenantValue: "tenant-1")
+        };
+
+        var (sql, param) = StarRocksQueryBuilder.BuildAggregate(
+            "authors", AuthorSchema(), null, spec, authz: authz);
+
+        sql.Should().Contain("WHERE `TenantId` = @__tenantVal");
+        sql.Should().NotContain("@__ownerVal");
+        var lookup = (SqlMapper.IParameterLookup)param;
+        lookup["__tenantVal"].Should().Be("tenant-1");
+    }
+
+    [Fact]
+    public void BuildAggregate_NoJoins_NoTenantColumn_DoesNotAddTenantPredicate()
+    {
+        var spec = new AggregationDescriptor("by_name", AggregationKind.Terms, "Name");
+        var authz = new Dictionary<string, AuthorizationConstraint>
+        {
+            ["Author"] = new(AllowedFields: null, OwnerColumn: null, OwnerValue: null, TenantColumn: null, TenantValue: null)
+        };
+
+        var (sql, _) = StarRocksQueryBuilder.BuildAggregate(
+            "authors", AuthorSchema(), null, spec, authz: authz);
+
+        sql.Should().NotContain("@__tenantVal");
+        sql.Should().NotContain("WHERE");
+    }
+
+    [Fact]
+    public void BuildAggregate_WithJoins_TenantConstraint_QualifiesTenantColumnWithPrimaryAlias()
+    {
+        var registry = BuildRegistry(AuthorSchema(), ArticleSchema());
+        var joins = new List<JoinSpec>
+        {
+            new() { LeftType = "Author", RightType = "Article", LeftField = "Id", RightField = "Id", Kind = JoinKind.Inner }
+        };
+        var spec = new AggregationDescriptor("by_title", AggregationKind.Terms, "Article.Title");
+        var authz = new Dictionary<string, AuthorizationConstraint>
+        {
+            ["Author"] = new(AllowedFields: null, OwnerColumn: null, OwnerValue: null, TenantColumn: "TenantId", TenantValue: "tenant-1")
+        };
+
+        var (sql, param) = StarRocksQueryBuilder.BuildAggregate(
+            "authors", AuthorSchema(), null, spec, joins: joins, registry: registry, authz: authz);
+
+        sql.Should().Contain("WHERE `authors`.`TenantId` = @__tenantVal");
+        var lookup = (SqlMapper.IParameterLookup)param;
+        lookup["__tenantVal"].Should().Be("tenant-1");
+    }
+
+    [Fact]
+    public void BuildAggregate_WithJoins_JoinedTypeTenantConstraint_AppendsConditionToOnClause_NotWhere()
+    {
+        var registry = BuildRegistry(AuthorSchema(), ArticleSchema());
+        var joins = new List<JoinSpec>
+        {
+            new() { LeftType = "Author", RightType = "Article", LeftField = "Id", RightField = "Id", Kind = JoinKind.Inner }
+        };
+        var spec = new AggregationDescriptor("by_title", AggregationKind.Terms, "Article.Title");
+        var authz = new Dictionary<string, AuthorizationConstraint>
+        {
+            ["Article"] = new(AllowedFields: null, OwnerColumn: null, OwnerValue: null, TenantColumn: "TenantId", TenantValue: "tenant-1")
+        };
+
+        var (sql, param) = StarRocksQueryBuilder.BuildAggregate(
+            "authors", AuthorSchema(), null, spec, joins: joins, registry: registry, authz: authz);
+
+        sql.Should().Contain(
+            "FROM `authors` INNER JOIN `articles` ON `authors`.`Id` = `articles`.`Id` " +
+            "AND `articles`.`TenantId` = @__tenant1");
+        sql.Should().NotContain("WHERE");
+        var lookup = (SqlMapper.IParameterLookup)param;
+        lookup["__tenant1"].Should().Be("tenant-1");
     }
 
     // ── BuildAggregate — field reject-on-reference ─────────────────────────────
@@ -1114,6 +1226,141 @@ public class StarRocksQueryBuilderTests
         lookup["__ownerVal"].Should().Be("user-1");
     }
 
+    // ── BuildSearch — authorization (tenant boundary) ──────────────────────────
+
+    [Fact]
+    public void BuildSearch_NoJoins_TenantConstraint_WrapsExistingWhereWithTenantPredicate()
+    {
+        var query = new SearchQuery();
+        query.Clauses.Add(new SearchClause
+        {
+            Property = "Name", Operator = SearchOperator.Equals,
+            Value = new SearchValue { StringVal = "Alice" }, ClauseType = SearchClauseType.Filter
+        });
+
+        var authz = new Dictionary<string, AuthorizationConstraint>
+        {
+            ["Author"] = new(AllowedFields: null, OwnerColumn: null, OwnerValue: null, TenantColumn: "TenantId", TenantValue: "tenant-1")
+        };
+
+        var (sql, param) = StarRocksQueryBuilder.BuildSearch(
+            "authors", AuthorSchema(), query, 0, 10, authz: authz);
+
+        sql.Should().Contain("WHERE (`Name` = @p0) AND `TenantId` = @__tenantVal");
+        var lookup = (SqlMapper.IParameterLookup)param;
+        lookup["__tenantVal"].Should().Be("tenant-1");
+    }
+
+    [Fact]
+    public void BuildSearch_NoJoins_TenantConstraint_NoExistingWhere_UsesTenantPredicateAlone()
+    {
+        var authz = new Dictionary<string, AuthorizationConstraint>
+        {
+            ["Author"] = new(AllowedFields: null, OwnerColumn: null, OwnerValue: null, TenantColumn: "TenantId", TenantValue: "tenant-1")
+        };
+
+        var (sql, param) = StarRocksQueryBuilder.BuildSearch(
+            "authors", AuthorSchema(), null, 0, 10, authz: authz);
+
+        sql.Should().Contain("WHERE `TenantId` = @__tenantVal");
+        var lookup = (SqlMapper.IParameterLookup)param;
+        lookup["__tenantVal"].Should().Be("tenant-1");
+    }
+
+    [Fact]
+    public void BuildSearch_NoJoins_NoTenantColumn_DoesNotAddTenantPredicate()
+    {
+        var authz = new Dictionary<string, AuthorizationConstraint>
+        {
+            ["Author"] = new(AllowedFields: null, OwnerColumn: null, OwnerValue: null, TenantColumn: null, TenantValue: null)
+        };
+
+        var (sql, _) = StarRocksQueryBuilder.BuildSearch(
+            "authors", AuthorSchema(), null, 0, 10, authz: authz);
+
+        sql.Should().NotContain("@__tenantVal");
+        sql.Should().NotContain("WHERE");
+    }
+
+    [Fact]
+    public void BuildSearch_NoJoins_OwnerAndTenantConstraint_BothPredicatesApplyIndependently()
+    {
+        // The "additive, not gated on ownership" requirement: a caller who IS subject to
+        // ownership filtering must get BOTH predicates ANDed together, and a caller who bypasses
+        // ownership (CanReadAll, OwnerColumn null) must still get the tenant predicate alone —
+        // covered by the OwnerColumn:null cases above. This test proves the non-bypass case: both
+        // fire together without one crowding out the other.
+        var authz = new Dictionary<string, AuthorizationConstraint>
+        {
+            ["Author"] = new(AllowedFields: null, OwnerColumn: "OwnerId", OwnerValue: "user-1", TenantColumn: "TenantId", TenantValue: "tenant-1")
+        };
+
+        var (sql, param) = StarRocksQueryBuilder.BuildSearch(
+            "authors", AuthorSchema(), null, 0, 10, authz: authz);
+
+        sql.Should().Contain("WHERE (`OwnerId` = @__ownerVal) AND `TenantId` = @__tenantVal");
+        var lookup = (SqlMapper.IParameterLookup)param;
+        lookup["__ownerVal"].Should().Be("user-1");
+        lookup["__tenantVal"].Should().Be("tenant-1");
+    }
+
+    [Fact]
+    public void BuildSearch_WithJoins_TenantConstraint_QualifiesTenantColumnWithPrimaryAlias()
+    {
+        var registry = BuildRegistry(AuthorSchema(), ArticleSchema());
+        var joins = new List<JoinSpec>
+        {
+            new() { LeftType = "Author", RightType = "Article", LeftField = "Id", RightField = "Id", Kind = JoinKind.Inner }
+        };
+
+        var authz = new Dictionary<string, AuthorizationConstraint>
+        {
+            ["Author"] = new(AllowedFields: null, OwnerColumn: null, OwnerValue: null, TenantColumn: "TenantId", TenantValue: "tenant-1")
+        };
+
+        var (sql, param) = StarRocksQueryBuilder.BuildSearch(
+            "authors", AuthorSchema(), null, 0, 10, joins: joins, registry: registry, authz: authz);
+
+        sql.Should().Contain("WHERE `authors`.`TenantId` = @__tenantVal");
+        var lookup = (SqlMapper.IParameterLookup)param;
+        lookup["__tenantVal"].Should().Be("tenant-1");
+    }
+
+    [Fact]
+    public void BuildSearch_WithTwoJoins_EachJoinedTypeTenantConstraint_UsesDistinctParameterNames()
+    {
+        // The most safety-critical detail in this feature: every joined type now mandatorily
+        // carries a tenant column, so a single fixed parameter name across joined types would
+        // collide on any multi-join query (duplicate parameter, wrong-value binding, or a driver
+        // exception). This proves the per-join unique naming (mirroring the owner predicate's
+        // `$"__owner{map.Count}"` scheme) actually holds across two joins.
+        var registry = BuildRegistry(AuthorSchema(), ArticleSchema(), TagSchema());
+        var joins = new List<JoinSpec>
+        {
+            new() { LeftType = "Author", RightType = "Article", LeftField = "Id", RightField = "Id", Kind = JoinKind.Inner },
+            new() { LeftType = "Article", RightType = "Tag", LeftField = "Id", RightField = "Id", Kind = JoinKind.Inner }
+        };
+
+        var authz = new Dictionary<string, AuthorizationConstraint>
+        {
+            ["Article"] = new(AllowedFields: null, OwnerColumn: null, OwnerValue: null, TenantColumn: "TenantId", TenantValue: "tenant-article"),
+            ["Tag"]     = new(AllowedFields: null, OwnerColumn: null, OwnerValue: null, TenantColumn: "TenantId", TenantValue: "tenant-tag")
+        };
+
+        var (sql, param) = StarRocksQueryBuilder.BuildSearch(
+            "authors", AuthorSchema(), null, 0, 10, joins: joins, registry: registry, authz: authz);
+
+        sql.Should().Contain(
+            "INNER JOIN `articles` ON `authors`.`Id` = `articles`.`Id` AND `articles`.`TenantId` = @__tenant1");
+        sql.Should().Contain(
+            "INNER JOIN `tags` ON `articles`.`Id` = `tags`.`Id` AND `tags`.`TenantId` = @__tenant2");
+        sql.Should().NotContain("WHERE");
+
+        var lookup = (SqlMapper.IParameterLookup)param;
+        lookup["__tenant1"].Should().Be("tenant-article");
+        lookup["__tenant2"].Should().Be("tenant-tag");
+    }
+
     // ── BuildSearch — ORDER BY field reject-on-reference ───────────────────────
     // Closes a whole-branch-review gap: BuildOrder (unlike BuildWhere's `resolve` closures and
     // BuildAggregate/BuildGroupBy's field checks) previously resolved sort columns via
@@ -1463,6 +1710,112 @@ public class StarRocksQueryBuilderTests
         var from = StarRocksQueryBuilder.BuildFromWithJoins(AuthorSchema(), joins, registry, param, out _, authz);
 
         from.Should().Be("FROM `authors` INNER JOIN `articles` ON `authors`.`Id` = `articles`.`Id`");
+    }
+
+    // ── BuildFromWithJoins — joined-type tenant boundary ────────────────────────
+
+    [Fact]
+    public void BuildFromWithJoins_JoinedTypeTenantConstraint_AppendsConditionToOnClause_NotWhere()
+    {
+        var registry = BuildRegistry(AuthorSchema(), ArticleSchema());
+        var joins = new List<JoinSpec>
+        {
+            new() { LeftType = "Author", RightType = "Article", LeftField = "Id", RightField = "Id", Kind = JoinKind.Inner }
+        };
+        var authz = new Dictionary<string, AuthorizationConstraint>
+        {
+            ["Article"] = new(AllowedFields: null, OwnerColumn: null, OwnerValue: null, TenantColumn: "TenantId", TenantValue: "tenant-1")
+        };
+        var param = new DynamicParameters();
+
+        var from = StarRocksQueryBuilder.BuildFromWithJoins(AuthorSchema(), joins, registry, param, out _, authz);
+
+        // Same reasoning as the ownership variant of this test: the condition must live inside
+        // the ON clause, never spliced onto an outer WHERE, to preserve non-INNER join semantics.
+        from.Should().Be(
+            "FROM `authors` INNER JOIN `articles` ON `authors`.`Id` = `articles`.`Id` " +
+            "AND `articles`.`TenantId` = @__tenant1");
+        from.Should().NotContain("WHERE");
+
+        var lookup = (SqlMapper.IParameterLookup)param;
+        lookup["__tenant1"].Should().Be("tenant-1");
+    }
+
+    [Fact]
+    public void BuildFromWithJoins_LeftJoin_JoinedTypeTenantConstraint_ConditionInOnClause_PreservesLeftJoinKind()
+    {
+        var registry = BuildRegistry(AuthorSchema(), ArticleSchema());
+        var joins = new List<JoinSpec>
+        {
+            new() { LeftType = "Author", RightType = "Article", LeftField = "Id", RightField = "Id", Kind = JoinKind.Left }
+        };
+        var authz = new Dictionary<string, AuthorizationConstraint>
+        {
+            ["Article"] = new(AllowedFields: null, OwnerColumn: null, OwnerValue: null, TenantColumn: "TenantId", TenantValue: "tenant-1")
+        };
+        var param = new DynamicParameters();
+
+        var from = StarRocksQueryBuilder.BuildFromWithJoins(AuthorSchema(), joins, registry, param, out _, authz);
+
+        from.Should().Be(
+            "FROM `authors` LEFT JOIN `articles` ON `authors`.`Id` = `articles`.`Id` " +
+            "AND `articles`.`TenantId` = @__tenant1");
+        from.Should().Contain("LEFT JOIN");
+        from.Should().NotContain("WHERE");
+    }
+
+    [Fact]
+    public void BuildFromWithJoins_JoinedTypeOwnerAndTenantConstraint_BothConditionsAppendToOnClause()
+    {
+        // Proves the owner and tenant conditions for the SAME joined type coexist on the same ON
+        // clause without either overwriting or displacing the other.
+        var registry = BuildRegistry(AuthorSchema(), ArticleSchema());
+        var joins = new List<JoinSpec>
+        {
+            new() { LeftType = "Author", RightType = "Article", LeftField = "Id", RightField = "Id", Kind = JoinKind.Inner }
+        };
+        var authz = new Dictionary<string, AuthorizationConstraint>
+        {
+            ["Article"] = new(AllowedFields: null, OwnerColumn: "OwnerId", OwnerValue: "user-1", TenantColumn: "TenantId", TenantValue: "tenant-1")
+        };
+        var param = new DynamicParameters();
+
+        var from = StarRocksQueryBuilder.BuildFromWithJoins(AuthorSchema(), joins, registry, param, out _, authz);
+
+        from.Should().Be(
+            "FROM `authors` INNER JOIN `articles` ON `authors`.`Id` = `articles`.`Id` " +
+            "AND `articles`.`OwnerId` = @__owner1 AND `articles`.`TenantId` = @__tenant1");
+
+        var lookup = (SqlMapper.IParameterLookup)param;
+        lookup["__owner1"].Should().Be("user-1");
+        lookup["__tenant1"].Should().Be("tenant-1");
+    }
+
+    [Fact]
+    public void BuildFromWithJoins_TwoJoins_EachJoinedTypeTenantConstraint_UsesDistinctParameterNames()
+    {
+        var registry = BuildRegistry(AuthorSchema(), ArticleSchema(), TagSchema());
+        var joins = new List<JoinSpec>
+        {
+            new() { LeftType = "Author", RightType = "Article", LeftField = "Id", RightField = "Id", Kind = JoinKind.Inner },
+            new() { LeftType = "Article", RightType = "Tag", LeftField = "Id", RightField = "Id", Kind = JoinKind.Inner }
+        };
+        var authz = new Dictionary<string, AuthorizationConstraint>
+        {
+            ["Article"] = new(AllowedFields: null, OwnerColumn: null, OwnerValue: null, TenantColumn: "TenantId", TenantValue: "tenant-article"),
+            ["Tag"]     = new(AllowedFields: null, OwnerColumn: null, OwnerValue: null, TenantColumn: "TenantId", TenantValue: "tenant-tag")
+        };
+        var param = new DynamicParameters();
+
+        var from = StarRocksQueryBuilder.BuildFromWithJoins(AuthorSchema(), joins, registry, param, out _, authz);
+
+        from.Should().Be(
+            "FROM `authors` INNER JOIN `articles` ON `authors`.`Id` = `articles`.`Id` AND `articles`.`TenantId` = @__tenant1" +
+            " INNER JOIN `tags` ON `articles`.`Id` = `tags`.`Id` AND `tags`.`TenantId` = @__tenant2");
+
+        var lookup = (SqlMapper.IParameterLookup)param;
+        lookup["__tenant1"].Should().Be("tenant-article");
+        lookup["__tenant2"].Should().Be("tenant-tag");
     }
 
     // ── BuildGroupBy ───────────────────────────────────────────────────────────
@@ -1825,6 +2178,80 @@ public class StarRocksQueryBuilderTests
         var (sql, _) = StarRocksQueryBuilder.BuildGroupBy("authors", AuthorSchema(), request, registry, authz: authz);
 
         sql.Should().Contain("ON `authors`.`Id` = `articles`.`Id` AND `articles`.`OwnerId` = @__owner1");
+    }
+
+    // ── BuildGroupBy — tenant boundary ──────────────────────────────────────────
+
+    [Fact]
+    public void BuildGroupBy_PrimaryTenantConstraint_AppendsWrapAndAndPredicate()
+    {
+        var registry = BuildRegistry(AuthorSchema());
+        var request = new GroupByRequest { TypeName = "Author", Keys = { "Name" } };
+        request.Metrics.Add(new MetricSpec { Name = "cnt", Type = AggregationType.Count });
+        var authz = new Dictionary<string, AuthorizationConstraint>
+        {
+            ["Author"] = new(AllowedFields: null, OwnerColumn: null, OwnerValue: null, TenantColumn: "TenantId", TenantValue: "tenant-1")
+        };
+
+        var (sql, param) = StarRocksQueryBuilder.BuildGroupBy("authors", AuthorSchema(), request, registry, authz: authz);
+
+        sql.Should().Contain("WHERE `authors`.`TenantId` = @__tenantVal");
+        var lookup = (SqlMapper.IParameterLookup)param;
+        lookup["__tenantVal"].Should().Be("tenant-1");
+    }
+
+    [Fact]
+    public void BuildGroupBy_JoinedTypeTenantConstraint_AppendsTenantConditionToJoinOn()
+    {
+        var registry = BuildRegistry(AuthorSchema(), ArticleSchema());
+        var request = new GroupByRequest
+        {
+            TypeName = "Author",
+            Keys     = { "Name" },
+            Joins =
+            {
+                new JoinSpec { LeftType = "Author", RightType = "Article", LeftField = "Id", RightField = "Id", Kind = JoinKind.Left }
+            }
+        };
+        request.Metrics.Add(new MetricSpec { Name = "cnt", Type = AggregationType.Count });
+        var authz = new Dictionary<string, AuthorizationConstraint>
+        {
+            ["Article"] = new(AllowedFields: null, OwnerColumn: null, OwnerValue: null, TenantColumn: "TenantId", TenantValue: "tenant-1")
+        };
+
+        var (sql, _) = StarRocksQueryBuilder.BuildGroupBy("authors", AuthorSchema(), request, registry, authz: authz);
+
+        sql.Should().Contain("ON `authors`.`Id` = `articles`.`Id` AND `articles`.`TenantId` = @__tenant1");
+    }
+
+    [Fact]
+    public void BuildGroupBy_TwoJoins_EachJoinedTypeTenantConstraint_UsesDistinctParameterNames()
+    {
+        var registry = BuildRegistry(AuthorSchema(), ArticleSchema(), TagSchema());
+        var request = new GroupByRequest
+        {
+            TypeName = "Author",
+            Keys     = { "Name" },
+            Joins =
+            {
+                new JoinSpec { LeftType = "Author", RightType = "Article", LeftField = "Id", RightField = "Id", Kind = JoinKind.Inner },
+                new JoinSpec { LeftType = "Article", RightType = "Tag", LeftField = "Id", RightField = "Id", Kind = JoinKind.Inner }
+            }
+        };
+        request.Metrics.Add(new MetricSpec { Name = "cnt", Type = AggregationType.Count });
+        var authz = new Dictionary<string, AuthorizationConstraint>
+        {
+            ["Article"] = new(AllowedFields: null, OwnerColumn: null, OwnerValue: null, TenantColumn: "TenantId", TenantValue: "tenant-article"),
+            ["Tag"]     = new(AllowedFields: null, OwnerColumn: null, OwnerValue: null, TenantColumn: "TenantId", TenantValue: "tenant-tag")
+        };
+
+        var (sql, param) = StarRocksQueryBuilder.BuildGroupBy("authors", AuthorSchema(), request, registry, authz: authz);
+
+        sql.Should().Contain("ON `authors`.`Id` = `articles`.`Id` AND `articles`.`TenantId` = @__tenant1");
+        sql.Should().Contain("ON `articles`.`Id` = `tags`.`Id` AND `tags`.`TenantId` = @__tenant2");
+        var lookup = (SqlMapper.IParameterLookup)param;
+        lookup["__tenant1"].Should().Be("tenant-article");
+        lookup["__tenant2"].Should().Be("tenant-tag");
     }
 
     [Fact]

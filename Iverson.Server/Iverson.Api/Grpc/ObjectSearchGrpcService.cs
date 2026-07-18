@@ -446,7 +446,8 @@ public sealed class ObjectSearchGrpcService(
         if (primaryDecision.Denied)
             return new AuthzResult(true, null, constraints);
         constraints[primary.TypeName] = new AuthorizationConstraint(
-            primaryDecision.AllowedFields, primaryDecision.OwnerFieldName, primaryDecision.OwnerValue);
+            primaryDecision.AllowedFields, primaryDecision.OwnerFieldName, primaryDecision.OwnerValue,
+            primaryDecision.TenantColumn, primaryDecision.TenantValue);
 
         foreach (var typeName in joinedTypeNames.Distinct().Where(t => !string.Equals(t, primary.TypeName, StringComparison.OrdinalIgnoreCase)))
         {
@@ -456,7 +457,8 @@ public sealed class ObjectSearchGrpcService(
             if (decision.Denied)
                 return new AuthzResult(false, typeName, constraints);
             constraints[typeName] = new AuthorizationConstraint(
-                decision.AllowedFields, decision.OwnerFieldName, decision.OwnerValue);
+                decision.AllowedFields, decision.OwnerFieldName, decision.OwnerValue,
+                decision.TenantColumn, decision.TenantValue);
         }
 
         return new AuthzResult(false, null, constraints);
