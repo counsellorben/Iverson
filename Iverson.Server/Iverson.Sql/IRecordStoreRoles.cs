@@ -2,9 +2,9 @@ namespace Iverson.Sql;
 
 public interface IRecordStoreQueryExecutor
 {
-    Task<IEnumerable<T>> QueryAsync<T>(string sql, object? param = null);
-    Task<int> ExecuteAsync(string sql, object? param = null);
-    Task<T?> QuerySingleOrDefaultAsync<T>(string sql, object? param = null);
+    Task<IEnumerable<T>> QueryAsync<T>(string sql, object? param = null, bool tenantScoped = false, string? tenantId = null);
+    Task<int> ExecuteAsync(string sql, object? param = null, bool tenantScoped = false, string? tenantId = null);
+    Task<T?> QuerySingleOrDefaultAsync<T>(string sql, object? param = null, bool tenantScoped = false, string? tenantId = null);
 }
 
 public interface IRecordStoreSchemaManager
@@ -27,11 +27,11 @@ public interface IDbTransactionContext
 
 public interface IEntityRepository
 {
-    Task<string?> FetchByKeyAsync(TableSchema schema, string key);
-    Task<IEnumerable<KeyedRow>> FetchManyByKeysAsync(TableSchema schema, IReadOnlyList<string> keys);
-    Task<IEnumerable<string>> FetchByColumnAsync(TableSchema schema, string columnName, string value);
-    Task<IEnumerable<string>> FetchAllAsync(TableSchema schema);
-    Task DeleteAsync(IDbTransactionContext tx, TableSchema schema, string key);
+    Task<string?> FetchByKeyAsync(TableSchema schema, string key, bool tenantScoped = false, string? tenantId = null);
+    Task<IEnumerable<KeyedRow>> FetchManyByKeysAsync(TableSchema schema, IReadOnlyList<string> keys, bool tenantScoped = false, string? tenantId = null);
+    Task<IEnumerable<string>> FetchByColumnAsync(TableSchema schema, string columnName, string value, bool tenantScoped = false, string? tenantId = null);
+    Task<IEnumerable<string>> FetchAllAsync(TableSchema schema, bool tenantScoped = false, string? tenantId = null);
+    Task DeleteAsync(IDbTransactionContext tx, TableSchema schema, string key, bool tenantScoped = false, string? tenantId = null);
 }
 
 public interface ISchemaRegistryRepository

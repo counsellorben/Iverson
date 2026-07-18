@@ -2,7 +2,7 @@ namespace Iverson.Sql;
 
 public interface IOutboxWriter
 {
-    Task<Guid> UpsertAndEnqueueOutboxAsync(TableSchema schema, string typeName, string key, string payloadJson);
+    Task<Guid> UpsertAndEnqueueOutboxAsync(TableSchema schema, string typeName, string key, string payloadJson, string? tenantId = null);
     Task DeleteOutboxRowIfPresentAsync(Guid outboxRowId);
     Task EnqueueDeleteOutboxRowAsync(IDbTransactionContext tx, Guid id, string typeName, string key, string payload);
 }
@@ -13,7 +13,7 @@ public sealed class OutboxWriter(
     IRecordStoreTransactionRunner txRunner) : IOutboxWriter
 {
     public async Task<Guid> UpsertAndEnqueueOutboxAsync(
-        TableSchema schema, string typeName, string key, string payloadJson)
+        TableSchema schema, string typeName, string key, string payloadJson, string? tenantId = null)
     {
         var allCols   = schema.Columns.Select(c => c.Name).ToList();
         var updateSet = allCols.Count > 0
@@ -39,7 +39,14 @@ public sealed class OutboxWriter(
 
         await txRunner.ExecuteInTransactionAsync(async tx =>
         {
+            if (tenantId is not null)
+            {
+                await tx.ExecuteAsync("SET LOCAL ROLE iverson_runtime");
+                await tx.ExecuteAsync("SELECT set_config('app.tenant_id', @TenantId, true)", new { TenantId = tenantId });
+            }
             await tx.ExecuteAsync(upsertSql, new { Json = payloadJson });
+            if (tenantId is not null)
+                await tx.ExecuteAsync("RESET ROLE");
             await tx.ExecuteAsync(outboxSql, new
             {
                 Id = outboxRowId,

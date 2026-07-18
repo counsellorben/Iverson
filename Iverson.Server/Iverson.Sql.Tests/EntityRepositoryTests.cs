@@ -81,4 +81,98 @@ public class EntityRepositoryTests
         await tx.Received(1).ExecuteAsync(Arg.Is<string>(s => s.Contains("DELETE FROM \"articles\"")), Arg.Any<object?>());
         await sql.DidNotReceive().ExecuteAsync(Arg.Any<string>(), Arg.Any<object?>());
     }
+
+    // ── tenantScoped/tenantId threading (Part B1, Task 2) ─────────────────────
+
+    [Fact]
+    public async Task FetchByKeyAsync_ThreadsTenantScopedAndTenantId_IntoQueryExecutor()
+    {
+        var sql = Substitute.For<IRecordStoreQueryExecutor>();
+        sql.QuerySingleOrDefaultAsync<string>(Arg.Any<string>(), Arg.Any<object?>(), Arg.Any<bool>(), Arg.Any<string?>())
+           .Returns("{}");
+        var repo = new EntityRepository(sql);
+
+        await repo.FetchByKeyAsync(ArticleSchema, "k1", tenantScoped: true, tenantId: "tenant-a");
+
+        await sql.Received(1).QuerySingleOrDefaultAsync<string>(
+            Arg.Any<string>(), Arg.Any<object?>(), true, "tenant-a");
+    }
+
+    [Fact]
+    public async Task FetchManyByKeysAsync_ThreadsTenantScopedAndTenantId_IntoQueryExecutor()
+    {
+        var sql = Substitute.For<IRecordStoreQueryExecutor>();
+        sql.QueryAsync<KeyedRow>(Arg.Any<string>(), Arg.Any<object?>(), Arg.Any<bool>(), Arg.Any<string?>())
+           .Returns(new List<KeyedRow>());
+        var repo = new EntityRepository(sql);
+        var key = Guid.NewGuid().ToString();
+
+        await repo.FetchManyByKeysAsync(ArticleSchema, [key], tenantScoped: true, tenantId: "tenant-a");
+
+        await sql.Received(1).QueryAsync<KeyedRow>(
+            Arg.Any<string>(), Arg.Any<object?>(), true, "tenant-a");
+    }
+
+    [Fact]
+    public async Task FetchByColumnAsync_ThreadsTenantScopedAndTenantId_IntoQueryExecutor()
+    {
+        var sql = Substitute.For<IRecordStoreQueryExecutor>();
+        sql.QueryAsync<string>(Arg.Any<string>(), Arg.Any<object?>(), Arg.Any<bool>(), Arg.Any<string?>())
+           .Returns(new List<string>());
+        var repo = new EntityRepository(sql);
+
+        await repo.FetchByColumnAsync(ArticleSchema, "AuthorId", "a1", tenantScoped: true, tenantId: "tenant-a");
+
+        await sql.Received(1).QueryAsync<string>(
+            Arg.Any<string>(), Arg.Any<object?>(), true, "tenant-a");
+    }
+
+    [Fact]
+    public async Task FetchAllAsync_ThreadsTenantScopedAndTenantId_IntoQueryExecutor()
+    {
+        var sql = Substitute.For<IRecordStoreQueryExecutor>();
+        sql.QueryAsync<string>(Arg.Any<string>(), Arg.Any<object?>(), Arg.Any<bool>(), Arg.Any<string?>())
+           .Returns(new List<string>());
+        var repo = new EntityRepository(sql);
+
+        await repo.FetchAllAsync(ArticleSchema, tenantScoped: true, tenantId: "tenant-a");
+
+        await sql.Received(1).QueryAsync<string>(
+            Arg.Any<string>(), Arg.Any<object?>(), true, "tenant-a");
+    }
+
+    [Fact]
+    public async Task DeleteAsync_TenantScopedTrue_IssuesSetLocalRoleAndSetConfig_BeforeDelete_EvenWhenTenantIdIsNull()
+    {
+        // The critical case for the tenantScoped/tenantId split: tenantScoped:true must switch
+        // roles even when tenantId is null (fail-closed on the DB side), not skip the switch.
+        var sql = Substitute.For<IRecordStoreQueryExecutor>();
+        var tx = Substitute.For<IDbTransactionContext>();
+        var calls = new List<string>();
+        tx.WhenForAnyArgs(t => t.ExecuteAsync(Arg.Any<string>(), Arg.Any<object?>()))
+          .Do(call => calls.Add(call.ArgAt<string>(0)));
+        var repo = new EntityRepository(sql);
+
+        await repo.DeleteAsync(tx, ArticleSchema, "k1", tenantScoped: true, tenantId: null);
+
+        calls.Should().HaveCount(3);
+        calls[0].Should().Contain("SET LOCAL ROLE iverson_runtime");
+        calls[1].Should().Contain("set_config");
+        calls[2].Should().Contain("DELETE FROM \"articles\"");
+    }
+
+    [Fact]
+    public async Task DeleteAsync_TenantScopedFalse_DoesNotIssueSetLocalRoleOrSetConfig()
+    {
+        var sql = Substitute.For<IRecordStoreQueryExecutor>();
+        var tx = Substitute.For<IDbTransactionContext>();
+        var calls = new List<string>();
+        tx.WhenForAnyArgs(t => t.ExecuteAsync(Arg.Any<string>(), Arg.Any<object?>()))
+          .Do(call => calls.Add(call.ArgAt<string>(0)));
+        var repo = new EntityRepository(sql);
+
+        await repo.DeleteAsync(tx, ArticleSchema, "k1");
+
+        calls.Should().ContainSingle().Which.Should().Contain("DELETE FROM \"articles\"");
+    }
 }
