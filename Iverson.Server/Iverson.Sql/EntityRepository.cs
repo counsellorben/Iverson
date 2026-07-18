@@ -31,11 +31,18 @@ public sealed class EntityRepository(IRecordStoreQueryExecutor sql) : IEntityRep
     {
         if (tenantScoped)
         {
-            await tx.ExecuteAsync("SET LOCAL ROLE iverson_runtime");
-            await tx.ExecuteAsync("SELECT set_config('app.tenant_id', @TenantId, true)", new { TenantId = tenantId });
+            await tx.EnterTenantScopeAsync(tenantId);
         }
         await tx.ExecuteAsync(
             $"DELETE FROM \"{schema.TableName}\" WHERE \"{schema.KeyColumn.Name}\" = @Key::uuid",
             new { Key = key });
+        if (tenantScoped)
+        {
+            // SET LOCAL ROLE persists for the rest of the transaction, not just this statement.
+            // Callers (e.g. ObjectMappingGrpcService.Delete) go on to write to plumbing tables
+            // (the reconciliation/outbox queue) in this same transaction, and iverson_runtime has
+            // no grant on those — reset back to the superuser role before returning.
+            await tx.ExitTenantScopeAsync();
+        }
     }
 }

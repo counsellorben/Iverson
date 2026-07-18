@@ -41,12 +41,11 @@ public sealed class OutboxWriter(
         {
             if (tenantId is not null)
             {
-                await tx.ExecuteAsync("SET LOCAL ROLE iverson_runtime");
-                await tx.ExecuteAsync("SELECT set_config('app.tenant_id', @TenantId, true)", new { TenantId = tenantId });
+                await tx.EnterTenantScopeAsync(tenantId);
             }
             await tx.ExecuteAsync(upsertSql, new { Json = payloadJson });
             if (tenantId is not null)
-                await tx.ExecuteAsync("RESET ROLE");
+                await tx.ExitTenantScopeAsync();
             await tx.ExecuteAsync(outboxSql, new
             {
                 Id = outboxRowId,

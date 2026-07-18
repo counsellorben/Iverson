@@ -188,4 +188,58 @@ public sealed class TenantScopedAccessIntegrationTests(PostgresContainerFixture 
             $"SELECT COUNT(*) FROM \"{outboxTable}\" WHERE \"Id\" = @Id", new { Id = outboxRowId });
         outboxCount.Should().Be(1);
     }
+
+    // ── EntityRepository.DeleteAsync + plumbing-table write, one transaction ──
+
+    [Fact]
+    public async Task DeleteAsync_TenantScoped_ThenPlumbingTableInsert_InSameTransaction_Commits()
+    {
+        // Regression test for the Critical bug this fix closes: EntityRepository.DeleteAsync used
+        // to switch to iverson_runtime (via SET LOCAL ROLE) for the tenant-scoped DELETE and never
+        // reset it. Since SET LOCAL ROLE persists for the rest of the transaction, a subsequent
+        // statement in the same transaction against a plumbing table with no iverson_runtime grant
+        // (e.g. IversonReconciliationQueue, shaped here without a TenantColumn — mirrors
+        // ObjectMappingGrpcService.Delete's real call sequence: EntityRepository.DeleteAsync
+        // followed by OutboxWriter.EnqueueDeleteOutboxRowAsync in one ExecuteInTransactionAsync)
+        // would fail with 42501 insufficient_privilege, rolling back the whole transaction — every
+        // tenant-scoped entity delete failed at runtime. This proves the role is reset before the
+        // plumbing insert, so the transaction commits.
+        var entityTable = await SeedTenantScopedTableAsync();
+        var plumbingTable = UniqueTable();
+        // No TenantColumn: mirrors ReconciliationSchema.Table, which never gets an iverson_runtime
+        // GRANT (Task 1's ApplySchemaAsync branch) — only the superuser `iverson` role can write here.
+        await _schemaManager.ApplySchemaAsync(new TableSchema(
+            plumbingTable,
+            new ColumnSchema("id", "uuid", IsNullable: false),
+            [new ColumnSchema("note", "text", IsNullable: false)]));
+
+        var deletedId = await _repo.QuerySingleOrDefaultAsync<Guid>(
+            $"SELECT id FROM \"{entityTable}\" WHERE tenant_id = @Tenant",
+            new { Tenant = "tenant-a" });
+
+        var entityRepo = new EntityRepository(_repo);
+        var plumbingRowId = Guid.NewGuid();
+
+        var act = async () => await _repo.ExecuteInTransactionAsync(async tx =>
+        {
+            await entityRepo.DeleteAsync(
+                tx, TenantScopedSchema(entityTable), deletedId.ToString(),
+                tenantScoped: true, tenantId: "tenant-a");
+
+            // The plumbing-table write: must run as the superuser role, i.e. after the reset.
+            await tx.ExecuteAsync(
+                $"INSERT INTO \"{plumbingTable}\" (id, note) VALUES (@Id, @Note)",
+                new { Id = plumbingRowId, Note = "delete-replay" });
+        });
+
+        await act.Should().NotThrowAsync();
+
+        var remaining = await _repo.QuerySingleOrDefaultAsync<int>(
+            $"SELECT COUNT(*) FROM \"{entityTable}\" WHERE id = @Id", new { Id = deletedId });
+        remaining.Should().Be(0);
+
+        var plumbingCount = await _repo.QuerySingleOrDefaultAsync<int>(
+            $"SELECT COUNT(*) FROM \"{plumbingTable}\" WHERE id = @Id", new { Id = plumbingRowId });
+        plumbingCount.Should().Be(1);
+    }
 }

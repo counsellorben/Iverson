@@ -25,6 +25,27 @@ public interface IDbTransactionContext
     Task<T?> QuerySingleOrDefaultAsync<T>(string sql, object? param = null);
 }
 
+/// <summary>
+/// Enter/exit the non-superuser <c>iverson_runtime</c> role + RLS tenant GUC for the remainder of
+/// an in-flight transaction. <c>SET LOCAL ROLE</c> persists for the rest of the transaction, not
+/// just the next statement, so any subsequent statement in the same transaction against a plumbing
+/// table with no <c>iverson_runtime</c> grant (e.g. the reconciliation/outbox queue) must run after
+/// <see cref="ExitTenantScopeAsync"/> resets back to the superuser role. Callers that switch into
+/// tenant scope mid-transaction must always pair it with a reset — hand-duplicating this sequence
+/// is exactly how that pairing gets missed.
+/// </summary>
+public static class TenantScopeTransactionExtensions
+{
+    public static async Task EnterTenantScopeAsync(this IDbTransactionContext tx, string? tenantId)
+    {
+        await tx.ExecuteAsync("SET LOCAL ROLE iverson_runtime");
+        await tx.ExecuteAsync("SELECT set_config('app.tenant_id', @TenantId, true)", new { TenantId = tenantId });
+    }
+
+    public static Task ExitTenantScopeAsync(this IDbTransactionContext tx) =>
+        tx.ExecuteAsync("RESET ROLE");
+}
+
 public interface IEntityRepository
 {
     Task<string?> FetchByKeyAsync(TableSchema schema, string key, bool tenantScoped = false, string? tenantId = null);
