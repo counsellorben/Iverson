@@ -81,6 +81,7 @@ public class ObjectPersistenceGrpcServiceTests
         VectorFields  = [],
         ChunkFields   = [],
         Relations     = [],
+        TenantColumn  = "TenantId",
         Authorization = new Iverson.Api.Schema.AuthorizationRules(
             "OwnerId",
             withBypassRole

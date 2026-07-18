@@ -9,10 +9,17 @@ public sealed class RowFieldAuthorizationEvaluator : IRowFieldAuthorizationEvalu
     {
         var rules = schema.Authorization;
         if (rules is null)
-            return new AuthorizationDecision(true, false, null, null, null);
+            return new AuthorizationDecision(true, false, null, null, null, null, null);
 
         if (actingUser is null)
-            return new AuthorizationDecision(true, false, null, null, null);
+            return new AuthorizationDecision(true, false, null, null, null, null, null);
+
+        // Tenant is strictly additive: all non-denied paths must have a tenant_id claim and the schema must have a tenant column
+        if (string.IsNullOrEmpty(schema.TenantColumn))
+            return new AuthorizationDecision(true, false, null, null, null, null, null);
+        var tenantId = actingUser.FindFirst("tenant_id")?.Value;
+        if (string.IsNullOrEmpty(tenantId))
+            return new AuthorizationDecision(true, false, null, null, null, null, null);
 
         var userGroups = actingUser.FindAll("groups").Select(c => c.Value).ToHashSet();
         var bypass = rules.RowPermissions.Any(p => userGroups.Contains(p.Role) && action switch
@@ -34,7 +41,7 @@ public sealed class RowFieldAuthorizationEvaluator : IRowFieldAuthorizationEvalu
         {
             var sub = actingUser.FindFirst("sub")?.Value;
             if (string.IsNullOrEmpty(sub))
-                return new AuthorizationDecision(true, false, null, null, null);
+                return new AuthorizationDecision(true, false, null, null, null, null, null);
 
             ownershipRequired = true;
             ownerFieldName = rules.OwnerField;
@@ -42,7 +49,7 @@ public sealed class RowFieldAuthorizationEvaluator : IRowFieldAuthorizationEvalu
         }
         else
         {
-            return new AuthorizationDecision(true, false, null, null, null);
+            return new AuthorizationDecision(true, false, null, null, null, null, null);
         }
 
         IReadOnlySet<string>? allowedFields = null;
@@ -69,6 +76,7 @@ public sealed class RowFieldAuthorizationEvaluator : IRowFieldAuthorizationEvalu
             }
         }
 
-        return new AuthorizationDecision(false, ownershipRequired, ownerFieldName, ownerValue, allowedFields);
+        return new AuthorizationDecision(false, ownershipRequired, ownerFieldName, ownerValue, allowedFields,
+            schema.TenantColumn, tenantId);
     }
 }

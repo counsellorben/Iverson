@@ -186,6 +186,7 @@ public class ObjectSearchGrpcServiceTests
         VectorFields   = [],
         ChunkFields    = [],
         Relations      = [],
+        TenantColumn   = "TenantId",
         Authorization  = new Iverson.Api.Schema.AuthorizationRules(
             ownerField,
             new List<Iverson.Api.Schema.RowPermission> { new(bypassRole, true, true, true) },
@@ -205,6 +206,7 @@ public class ObjectSearchGrpcServiceTests
         VectorFields   = [new VectorDescriptor("Name", 768, "nomic-embed-text")],
         ChunkFields    = [new ChunkDescriptor("Secret", 512, 64, "nomic-embed-text", 768)],
         Relations      = [],
+        TenantColumn   = "TenantId",
         Authorization  = new Iverson.Api.Schema.AuthorizationRules(
             ownerField,
             new List<Iverson.Api.Schema.RowPermission> { new(bypassRole, true, true, true) },
@@ -950,6 +952,7 @@ public class ObjectSearchGrpcServiceTests
             VectorFields   = [new VectorDescriptor("Title", 1536, "text-embedding-3-small")],
             ChunkFields    = [],
             Relations      = [],
+            TenantColumn   = "TenantId",
             Authorization  = new Iverson.Api.Schema.AuthorizationRules(
                 null,
                 new List<Iverson.Api.Schema.RowPermission> { new("test-bypass", true, true, true) },

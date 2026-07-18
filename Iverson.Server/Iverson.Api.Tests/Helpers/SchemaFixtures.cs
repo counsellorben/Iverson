@@ -131,6 +131,7 @@ public static class SchemaFixtures
         Relations    = [],
         SearchKeyColumns  = ["Category", "PublishedAt"],
         LargeFieldColumns = ["Body"],
-        Authorization = BypassAuthorization()
+        Authorization = BypassAuthorization(),
+        TenantColumn  = "TenantId"
     };
 }

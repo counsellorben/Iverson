@@ -24,4 +24,6 @@ public sealed record AuthorizationDecision(
     /// field's source property name — minus whichever of those a <c>FieldPermission</c> excluded.
     /// The key column itself is always included, even if a <c>FieldPermission</c> names it.
     /// </summary>
-    IReadOnlySet<string>? AllowedFields);
+    IReadOnlySet<string>? AllowedFields,
+    string? TenantColumn,
+    string? TenantValue);

@@ -107,6 +107,7 @@ public class ObjectMappingGrpcServiceTests
         VectorFields  = [],
         ChunkFields   = [],
         Relations     = [],
+        TenantColumn  = "TenantId",
         Authorization = new Iverson.Api.Schema.AuthorizationRules(
             null,
             new List<Iverson.Api.Schema.RowPermission> { new("test-bypass", true, true, true) },
@@ -607,6 +608,7 @@ public class ObjectMappingGrpcServiceTests
         VectorFields  = [],
         ChunkFields   = [],
         Relations     = [],
+        TenantColumn  = "TenantId",
         Authorization = new Iverson.Api.Schema.AuthorizationRules(
             "OwnerId",
             withBypassRole
@@ -630,6 +632,7 @@ public class ObjectMappingGrpcServiceTests
         VectorFields  = [],
         ChunkFields   = [],
         Relations     = [],
+        TenantColumn  = "TenantId",
         Authorization = new Iverson.Api.Schema.AuthorizationRules(
             "OwnerId",
             new List<Iverson.Api.Schema.RowPermission>(),

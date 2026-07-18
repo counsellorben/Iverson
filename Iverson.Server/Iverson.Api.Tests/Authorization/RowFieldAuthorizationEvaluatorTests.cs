@@ -12,12 +12,19 @@ public class RowFieldAuthorizationEvaluatorTests
 
     private static ClaimsPrincipal ActingUser(string sub, params string[] groups)
     {
+        return ActingUserWithTenant(sub, "test-tenant", groups);  // Default tenant_id
+    }
+
+    private static ClaimsPrincipal ActingUserWithTenant(string sub, string? tenantId, params string[] groups)
+    {
         var claims = new List<Claim> { new("sub", sub) };
+        if (tenantId is not null)
+            claims.Add(new("tenant_id", tenantId));
         claims.AddRange(groups.Select(g => new Claim("groups", g)));
         return new ClaimsPrincipal(new ClaimsIdentity(claims, "test"));
     }
 
-    private static SchemaDescriptor SchemaWithAuthorization(AuthorizationRules? authorization = null)
+    private static SchemaDescriptor SchemaWithAuthorization(AuthorizationRules? authorization = null, string? tenantColumn = "tenant_id")  // Default tenantColumn
     {
         return new SchemaDescriptor
         {
@@ -33,7 +40,8 @@ public class RowFieldAuthorizationEvaluatorTests
             VectorFields = [],
             ChunkFields = [],
             Relations = [],
-            Authorization = authorization
+            Authorization = authorization,
+            TenantColumn = tenantColumn
         };
     }
 
@@ -368,9 +376,10 @@ public class RowFieldAuthorizationEvaluatorTests
                 new List<FieldPermission>
                 {
                     new("Name", new List<string> { "premium" }, new List<string>())
-                })
+                }),
+            TenantColumn = "tenant_id"  // Default tenant column to match evaluator requirements
         };
-        var user = ActingUser("user123", "admin");
+        var user = ActingUser("user123", "admin");  // Uses default tenant_id from ActingUser()
 
         var result = _evaluator.Evaluate(schema, user, AuthorizationAction.Read);
 
@@ -448,5 +457,80 @@ public class RowFieldAuthorizationEvaluatorTests
         result.AllowedFields.Should().NotBeNull();
         result.AllowedFields.Should().Contain("Id");
         result.AllowedFields.Should().NotContain("Name");
+    }
+
+    [Fact]
+    public void Evaluate_TenantPresentWithCanReadAllRole_CarriesTenantColumnAndValue()
+    {
+        var rules = new AuthorizationRules(
+            "OwnerId",
+            new List<RowPermission>
+            {
+                new("admin", CanReadAll: true, CanWriteAll: false, CanDeleteAll: false)
+            },
+            new List<FieldPermission>());
+        var schema = SchemaWithAuthorization(rules, "TenantId");
+        var user = ActingUserWithTenant("user123", "tenant-abc", "admin");
+
+        var result = _evaluator.Evaluate(schema, user, AuthorizationAction.Read);
+
+        result.Denied.Should().BeFalse();
+        result.TenantColumn.Should().Be("TenantId");
+        result.TenantValue.Should().Be("tenant-abc");
+    }
+
+    [Fact]
+    public void Evaluate_NoTenantIdClaim_ReturnsDenied()
+    {
+        var rules = new AuthorizationRules(
+            "OwnerId",
+            new List<RowPermission>(),
+            new List<FieldPermission>());
+        var schema = SchemaWithAuthorization(rules, "TenantId");
+        var user = ActingUserWithTenant("user123", null);  // Explicitly no tenant_id claim
+
+        var result = _evaluator.Evaluate(schema, user, AuthorizationAction.Read);
+
+        result.Denied.Should().BeTrue();
+        result.TenantColumn.Should().BeNull();
+        result.TenantValue.Should().BeNull();
+    }
+
+    [Fact]
+    public void Evaluate_SchemaTenantColumnNull_ReturnsDenied()
+    {
+        var rules = new AuthorizationRules(
+            "OwnerId",
+            new List<RowPermission>(),
+            new List<FieldPermission>());
+        var schema = SchemaWithAuthorization(rules, null);
+        var user = ActingUserWithTenant("user123", "tenant-abc");
+
+        var result = _evaluator.Evaluate(schema, user, AuthorizationAction.Read);
+
+        result.Denied.Should().BeTrue();
+        result.TenantColumn.Should().BeNull();
+        result.TenantValue.Should().BeNull();
+    }
+
+    [Fact]
+    public void Evaluate_BypassRoleStillCarriesTenantBoundary()
+    {
+        var rules = new AuthorizationRules(
+            "OwnerId",
+            new List<RowPermission>
+            {
+                new("admin", CanReadAll: true, CanWriteAll: false, CanDeleteAll: false)
+            },
+            new List<FieldPermission>());
+        var schema = SchemaWithAuthorization(rules, "TenantId");
+        var user = ActingUserWithTenant("user123", "tenant-xyz", "admin");
+
+        var result = _evaluator.Evaluate(schema, user, AuthorizationAction.Read);
+
+        result.Denied.Should().BeFalse();
+        result.OwnershipRequired.Should().BeFalse();
+        result.TenantColumn.Should().Be("TenantId");
+        result.TenantValue.Should().Be("tenant-xyz");
     }
 }

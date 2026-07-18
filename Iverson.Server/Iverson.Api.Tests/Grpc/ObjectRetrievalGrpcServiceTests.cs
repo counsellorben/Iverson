@@ -212,6 +212,7 @@ public class ObjectRetrievalGrpcServiceTests
         VectorFields  = [],
         ChunkFields   = [],
         Relations     = [],
+        TenantColumn  = "TenantId",
         Authorization = new Iverson.Api.Schema.AuthorizationRules(
             "OwnerId",
             withBypassRole
