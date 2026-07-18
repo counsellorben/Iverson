@@ -105,7 +105,17 @@ public async Task EnsureRuntimeRoleAsync()
     var exists = await conn.QuerySingleOrDefaultAsync<bool>(
         "SELECT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'iverson_runtime')");
     if (!exists)
-        await conn.ExecuteAsync("CREATE ROLE iverson_runtime NOLOGIN");
+    {
+        try
+        {
+            await conn.ExecuteAsync("CREATE ROLE iverson_runtime NOLOGIN");
+        }
+        catch (PostgresException ex) when (ex.SqlState == "42710")
+        {
+            // Another replica created it concurrently between our check and this CREATE
+            // (this deployment runs multiple API replicas) — fine, it exists now either way.
+        }
+    }
 }
 ```
 Add this to `IRecordStoreSchemaManager` (`IRecordStoreRoles.cs`) so it's callable via DI, matching how `ApplySchemaAsync` is already exposed.
@@ -120,10 +130,19 @@ if (schema.TenantColumn is not null)
         new { Table = schema.TableName, Policy = policyName });
 
     if (!policyExists)
-        await conn.ExecuteAsync($"""
-            CREATE POLICY "{policyName}" ON "{schema.TableName}"
-            USING ("{schema.TenantColumn}" = current_setting('app.tenant_id', true))
-            """);
+    {
+        try
+        {
+            await conn.ExecuteAsync($"""
+                CREATE POLICY "{policyName}" ON "{schema.TableName}"
+                USING ("{schema.TenantColumn}" = current_setting('app.tenant_id', true))
+                """);
+        }
+        catch (PostgresException ex) when (ex.SqlState == "42710")
+        {
+            // Another replica created it concurrently between our check and this CREATE — fine.
+        }
+    }
 
     await conn.ExecuteAsync($"""ALTER TABLE "{schema.TableName}" ENABLE ROW LEVEL SECURITY""");
     await conn.ExecuteAsync($"""GRANT SELECT, INSERT, UPDATE, DELETE ON "{schema.TableName}" TO iverson_runtime""");
@@ -133,7 +152,7 @@ if (schema.TenantColumn is not null)
 
 - [ ] **Step 5: Wire role bootstrap and the rollout self-heal loop into `Program.cs`.** Before the two existing fixed-table `ApplySchemaAsync` calls (`Program.cs:333-334`), call `EnsureRuntimeRoleAsync()`. Immediately after `SchemaRegistry.LoadAsync()` (`Program.cs:332`), add a loop over every loaded descriptor calling `ApplySchemaAsync(SchemaBuilder.ToTableSchema(descriptor))` — self-healing RLS state for tables registered before this change shipped.
 
-- [ ] **Step 6: Tests.** Using `PostgresContainerFixture`: role bootstrap is idempotent (calling `EnsureRuntimeRoleAsync` twice doesn't error); a table registered with a `TenantColumn` gets the policy, `ENABLE ROW LEVEL SECURITY`, and the grant; a table with no `TenantColumn` gets neither; re-registering an already-registered tenant-scoped type doesn't error on the new DDL; the self-heal loop applies RLS to a table simulating pre-B1 registration (create the table via `ApplySchemaAsync` with a schema lacking the new DDL path, then re-run `ApplySchemaAsync` with `TenantColumn` set and confirm the policy now exists).
+- [ ] **Step 6: Tests.** Using `PostgresContainerFixture`: role bootstrap is idempotent (calling `EnsureRuntimeRoleAsync` twice doesn't error); a table registered with a `TenantColumn` gets the policy, `ENABLE ROW LEVEL SECURITY`, and the grant; a table with no `TenantColumn` gets neither; re-registering an already-registered tenant-scoped type doesn't error on the new DDL; the self-heal loop applies RLS to a table simulating pre-B1 registration — construct the pre-B1 state via a raw `CREATE TABLE` (bypassing `ApplySchemaAsync`'s tenant-DDL branch entirely, so no policy/RLS/grant exist yet — this simulates a table whose descriptor already had `TenantColumn` set under Part A but whose physical DDL predates this change), then call `ApplySchemaAsync` with the real, tenant-scoped `TableSchema` and assert the policy, `ENABLE ROW LEVEL SECURITY`, and grant now exist where they didn't before.
 
 - [ ] **Step 7: Run tests and commit.**
 ```bash
@@ -153,15 +172,15 @@ git commit -m "feat(sql): add RLS policy/role DDL and startup bootstrap for tena
 
 **Interfaces:**
 - Consumes: `TableSchema.TenantColumn` (Task 1).
-- Produces: the nullable `tenantId` parameter on `IEntityRepository`'s 5 methods and `IOutboxWriter.UpsertAndEnqueueOutboxAsync` (consumed by Task 3's call sites).
+- Produces: a `bool tenantScoped` parameter (whether this call switches roles at all) alongside the nullable `string? tenantId` value (what to set the session to) on `IEntityRepository`'s 5 methods and `IRecordStoreQueryExecutor`'s 3 ad-hoc methods — separating "should switch" from "what value," so a tenant-scoped call with a missing claim still switches to `iverson_runtime` with an unset session value (RLS's fail-closed exclusion) rather than skipping the switch entirely (an unfiltered read on `iverson`). The nullable-only `tenantId` parameter on `IOutboxWriter.UpsertAndEnqueueOutboxAsync` is unaffected — its callers are always post-authorization, where `decision.TenantValue` is guaranteed non-null whenever the schema is tenant-scoped, so this ambiguity doesn't arise there. Consumed by Task 3's call sites.
 
-- [ ] **Step 1: Add an optional `tenantId` parameter to `IRecordStoreQueryExecutor`'s 3 ad-hoc methods**, with a default of `null`:
+- [ ] **Step 1: Add an optional `tenantScoped`/`tenantId` parameter pair to `IRecordStoreQueryExecutor`'s 3 ad-hoc methods**, defaulting to `false`/`null`. The two are separate on purpose: `tenantScoped` decides whether this call switches roles at all (`false` for background/system callers, who never should); `tenantId` is the value to set when it does switch — which can itself be `null` (an interactive, tenant-scoped caller whose claim happens to be missing still switches to `iverson_runtime`, just with an unset session value, so RLS's fail-closed exclusion applies instead of the call silently running unfiltered on `iverson`):
 ```csharp
-Task<IEnumerable<T>> QueryAsync<T>(string sql, object? param = null, string? tenantId = null);
-Task<int> ExecuteAsync(string sql, object? param = null, string? tenantId = null);
-Task<T?> QuerySingleOrDefaultAsync<T>(string sql, object? param = null, string? tenantId = null);
+Task<IEnumerable<T>> QueryAsync<T>(string sql, object? param = null, bool tenantScoped = false, string? tenantId = null);
+Task<int> ExecuteAsync(string sql, object? param = null, bool tenantScoped = false, string? tenantId = null);
+Task<T?> QuerySingleOrDefaultAsync<T>(string sql, object? param = null, bool tenantScoped = false, string? tenantId = null);
 ```
-In `PostgresRepository`'s implementations: when `tenantId is null`, behavior is unchanged (today's single ad-hoc statement on a plain-opened connection, no transaction). When `tenantId is not null`, wrap the statement in a transaction, mirroring `ExecuteInTransactionAsync`'s existing `BeginTransactionAsync`/commit/rollback structure (`PostgresRepository.cs:102-131`) and its positional-argument Dapper convention (`conn.ExecuteAsync(sql, param, tx)`, `PostgresRepository.cs:86`):
+In `PostgresRepository`'s implementations: when `tenantScoped` is `false` (the default), behavior is unchanged (today's single ad-hoc statement on a plain-opened connection, no transaction). When `tenantScoped` is `true` — regardless of whether `tenantId` itself is `null` or a real value — wrap the statement in a transaction, mirroring `ExecuteInTransactionAsync`'s existing `BeginTransactionAsync`/commit/rollback structure (`PostgresRepository.cs:102-131`) and its positional-argument Dapper convention (`conn.ExecuteAsync(sql, param, tx)`, `PostgresRepository.cs:86`):
 ```csharp
 await using var conn = CreateConnection();
 await conn.OpenAsync();
@@ -181,18 +200,18 @@ catch
 }
 ```
 
-- [ ] **Step 2: Add a nullable `tenantId` parameter to `IEntityRepository`'s 5 methods** in `IRecordStoreRoles.cs`, and thread it into `EntityRepository`'s corresponding `sql.*Async(...)` calls (Step 1's new parameter):
+- [ ] **Step 2: Add `tenantScoped`/`tenantId` parameters to `IEntityRepository`'s 5 methods** in `IRecordStoreRoles.cs`, and thread both into `EntityRepository`'s corresponding `sql.*Async(...)` calls (Step 1's new parameters):
 ```csharp
-public Task<string?> FetchByKeyAsync(TableSchema schema, string key, string? tenantId = null) =>
+public Task<string?> FetchByKeyAsync(TableSchema schema, string key, bool tenantScoped = false, string? tenantId = null) =>
     sql.QuerySingleOrDefaultAsync<string>(
         $"SELECT row_to_json(t)::text FROM \"{schema.TableName}\" t WHERE \"{schema.KeyColumn.Name}\" = @Key::uuid",
-        new { Key = key }, tenantId);
+        new { Key = key }, tenantScoped, tenantId);
 ```
-(Mirror this pattern for `FetchManyByKeysAsync`, `FetchByColumnAsync`, `FetchAllAsync`.) For `DeleteAsync` (operates on an already-open `IDbTransactionContext tx`, not `IRecordStoreQueryExecutor`): when `tenantId is not null`, issue `SET LOCAL ROLE`/`set_config` via `tx.ExecuteAsync(...)` immediately before the `DELETE` statement:
+(Mirror this pattern for `FetchManyByKeysAsync`, `FetchByColumnAsync`, `FetchAllAsync`.) For `DeleteAsync` (operates on an already-open `IDbTransactionContext tx`, not `IRecordStoreQueryExecutor`): when `tenantScoped` is `true` (regardless of whether `tenantId` is null), issue `SET LOCAL ROLE`/`set_config` via `tx.ExecuteAsync(...)` immediately before the `DELETE` statement:
 ```csharp
-public async Task DeleteAsync(IDbTransactionContext tx, TableSchema schema, string key, string? tenantId = null)
+public async Task DeleteAsync(IDbTransactionContext tx, TableSchema schema, string key, bool tenantScoped = false, string? tenantId = null)
 {
-    if (tenantId is not null)
+    if (tenantScoped)
     {
         await tx.ExecuteAsync("SET LOCAL ROLE iverson_runtime");
         await tx.ExecuteAsync("SELECT set_config('app.tenant_id', @TenantId, true)", new { TenantId = tenantId });
@@ -251,31 +270,33 @@ git commit -m "feat(sql): switch to iverson_runtime role for tenant-scoped queri
 **Interfaces:**
 - Consumes: the nullable `tenantId` parameters from Task 2.
 
-- [ ] **Step 1: `ObjectRetrievalGrpcService.Get`** (`:32`, fetch precedes decision). Pass `schema.TenantColumn is not null ? actingUserAccessor.ActingUser.FindFirst("tenant_id")?.Value : null` as `FetchByKeyAsync`'s new argument.
+- [ ] **Step 1: `ObjectRetrievalGrpcService.Get`** (`:32`, fetch precedes decision). Pass `tenantScoped: schema.TenantColumn is not null` and `tenantId: actingUserAccessor.ActingUser.FindFirst("tenant_id")?.Value` as `FetchByKeyAsync`'s new arguments — `tenantScoped` switches roles whenever the schema requires it, independent of whether the claim itself is present, so a claim-less caller on a tenant-scoped schema still gets RLS's fail-closed exclusion rather than an unfiltered read on `iverson`.
 
-- [ ] **Step 2: `ObjectRetrievalGrpcService.GetMany`** (`:77` decision, `:87` fetch — decision precedes fetch here). Pass `decision.TenantValue` to `FetchManyByKeysAsync`.
+- [ ] **Step 2: `ObjectRetrievalGrpcService.GetMany`** (`:77` decision, `:87` fetch — decision precedes fetch here). Pass `tenantScoped: decision.TenantColumn is not null` and `tenantId: decision.TenantValue` to `FetchManyByKeysAsync`.
 
 - [ ] **Step 3: `ObjectMappingGrpcService.Get`** (`:68` fetch, `:79` decision). Same raw-claim sourcing as Step 1.
 
-- [ ] **Step 4: `ObjectMappingGrpcService.Update`'s pre-check fetch** (`:153`). Pass `null` explicitly — the carve-out; must see the true row regardless of tenant.
+- [ ] **Step 4: `ObjectMappingGrpcService.Update`'s pre-check fetch** (`:153`). Pass no tenant arguments (defaults: `tenantScoped: false`) — the carve-out; must see the true row regardless of tenant.
 
-- [ ] **Step 5: `ObjectMappingGrpcService.Delete`'s pre-check fetch** (`:184`, fetch precedes decision at `:193`). Pass the raw-claim value (same sourcing as Step 1) — unlike `Update`, "not found" is the correct outcome here either way.
+- [ ] **Step 5: `ObjectMappingGrpcService.Delete`'s pre-check fetch** (`:184`, fetch precedes decision at `:193`). Same sourcing as Step 1 — unlike `Update`, "not found" is the correct outcome here either way.
 
-- [ ] **Step 6: `ObjectMappingGrpcService.Delete`'s `DeleteAsync` inside the transaction** (`:213`, decision already computed at `:193`). Pass `decision.TenantValue`.
+- [ ] **Step 6: `ObjectMappingGrpcService.Delete`'s `DeleteAsync` inside the transaction** (`:213`, decision already computed at `:193`). Pass `tenantScoped: decision.TenantColumn is not null` and `tenantId: decision.TenantValue`.
 
-- [ ] **Step 7: `ObjectPersistenceGrpcService.Update`'s pre-check fetch** (`:80`). Pass `null` (same carve-out as Step 4).
+- [ ] **Step 7: `ObjectPersistenceGrpcService.Update`'s pre-check fetch** (`:80`). Pass no tenant arguments (same carve-out as Step 4).
 
 - [ ] **Step 8: All 4 `Post`/`Update` calls to `OutboxWriter.UpsertAndEnqueueOutboxAsync`** (`ObjectMappingGrpcService.cs:125,162`; `ObjectPersistenceGrpcService.cs:58,94`). Pass `decision.TenantValue` — authorization has already succeeded by this point in every case.
 
-- [ ] **Step 9: `EntityRelationResolver`'s 3 methods** (`ResolveSingleRelationAsync:67`, `ResolveManyToManyAsync:92`, `ResolveOneToManyAsync:123` — all fetch before decision). Pass `relatedSchema.TenantColumn is not null ? actingUser?.FindFirst("tenant_id")?.Value : null` to each fetch call.
+- [ ] **Step 9: `EntityRelationResolver`'s 3 methods** (`ResolveSingleRelationAsync:67`, `ResolveManyToManyAsync:92`, `ResolveOneToManyAsync:123` — all fetch before decision). Pass `tenantScoped: relatedSchema.TenantColumn is not null` and `tenantId: actingUser?.FindFirst("tenant_id")?.Value` to each fetch call.
 
-- [ ] **Step 10: `ReconciliationService.FetchAllAsync`** (`:31`), **`IntelligenceStoreConsumer`'s `FetchByKeyAsync`** (`:236`), **`EngagementStoreConsumer`'s `FetchByKeyAsync`** (`:103`). Pass `null` explicitly at each — no acting-user context; these compile with no other changes needed since Task 2's parameter is optional.
+- [ ] **Step 10: `ReconciliationService.FetchAllAsync`** (`:31`), **`IntelligenceStoreConsumer`'s `FetchByKeyAsync`** (`:236`), **`EngagementStoreConsumer`'s `FetchByKeyAsync`** (`:103`). Pass no tenant arguments at each (defaults: `tenantScoped: false`) — no acting-user context; these compile with no other changes needed since Task 2's parameters are optional.
 
-- [ ] **Step 11: Run the full existing test suite to confirm no behavioral regression** (RLS is a backstop, not a behavior change — every existing test for these 7 files should still pass unchanged).
+- [ ] **Step 11: Update existing `IEntityRepository` NSubstitute setups for the new parameters.** Adding `tenantScoped`/`tenantId` to `IEntityRepository`'s methods means every existing mock setup/verification of the form `Arg.Any<TableSchema>(), Arg.Any<string>())` — compiled today against the 2-parameter interface — implicitly records the omitted new parameters as concrete `false`/`null`, and will silently stop matching once production code passes a real `tenantScoped: true` (which it now does at every call site above, since the shared `ActingUserFixtures.Principal` test fixture carries a real `tenant_id` claim). Update every such setup/verification in `ObjectRetrievalGrpcServiceTests.cs`, `ObjectMappingGrpcServiceTests.cs`, `ObjectPersistenceGrpcServiceTests.cs`, and `EntityRelationResolverTests.cs` to add `Arg.Any<bool>(), Arg.Any<string?>()` (or the appropriate concrete/matcher values where a test specifically asserts on them) so they continue to match regardless of what tenant arguments flow through.
 
-- [ ] **Step 12: Run tests and commit.**
+- [ ] **Step 12: Run the full existing test suite to confirm no behavioral regression** (RLS is a backstop, not a behavior change — every existing test for these 7 files, plus the 4 test files updated in Step 11, should pass).
+
+- [ ] **Step 13: Run tests and commit.**
 ```bash
 dotnet test Iverson.Server/Iverson.Api.Tests --filter "Category!=Integration"
-git add Iverson.Server/Iverson.Api/Grpc/ObjectRetrievalGrpcService.cs Iverson.Server/Iverson.Api/Grpc/ObjectMappingGrpcService.cs Iverson.Server/Iverson.Api/Grpc/ObjectPersistenceGrpcService.cs Iverson.Server/Iverson.Api/Grpc/EntityRelationResolver.cs Iverson.Server/Iverson.Api/Reconciliation/ReconciliationService.cs Iverson.Server/Iverson.Api/Consumers/IntelligenceStoreConsumer.cs Iverson.Server/Iverson.Api/Consumers/EngagementStoreConsumer.cs
+git add Iverson.Server/Iverson.Api/Grpc/ObjectRetrievalGrpcService.cs Iverson.Server/Iverson.Api/Grpc/ObjectMappingGrpcService.cs Iverson.Server/Iverson.Api/Grpc/ObjectPersistenceGrpcService.cs Iverson.Server/Iverson.Api/Grpc/EntityRelationResolver.cs Iverson.Server/Iverson.Api/Reconciliation/ReconciliationService.cs Iverson.Server/Iverson.Api/Consumers/IntelligenceStoreConsumer.cs Iverson.Server/Iverson.Api/Consumers/EngagementStoreConsumer.cs Iverson.Server/Iverson.Api.Tests/Grpc/ObjectRetrievalGrpcServiceTests.cs Iverson.Server/Iverson.Api.Tests/Grpc/ObjectMappingGrpcServiceTests.cs Iverson.Server/Iverson.Api.Tests/Grpc/ObjectPersistenceGrpcServiceTests.cs Iverson.Server/Iverson.Api.Tests/Grpc/EntityRelationResolverTests.cs
 git commit -m "feat(api): thread tenant value into RLS-scoped calls at every read/write call site"
 ```
