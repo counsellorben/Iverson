@@ -32,8 +32,8 @@ public sealed class IntelligenceStoreConsumer(
 {
     private const string GroupId = "iverson.consumer.intelligence";
 
-    // Tracks which chunk collections have been ensured this session
-    private readonly HashSet<string> _ensuredChunkCollections = [];
+    // Tracks which collections have been ensured this session
+    private readonly HashSet<string> _ensuredCollections = [];
 
     protected override Task ExecuteAsync(CancellationToken ct) =>
         ConsumerResilience.RunWithRestartAsync(
@@ -147,7 +147,12 @@ public sealed class IntelligenceStoreConsumer(
         if (schema.ChunkFields.Count > 0)
         {
             var chunksCollection = schema.CollectionName + "_chunks";
-            await EnsureChunkCollectionAsync(chunksCollection, schema, ct);
+            await EnsureCollectionAsync(new CollectionSchema(
+                chunksCollection,
+                schema.ChunkFields
+                    .Select(c => new NamedVector($"{c.PropertyName.ToSnakeCase()}_vector", c.Dimension))
+                    .ToList(),
+                [new PayloadIndex("parent_id", PayloadIndexKind.Keyword)]));
 
             foreach (var cf in schema.ChunkFields)
             {
@@ -246,19 +251,11 @@ public sealed class IntelligenceStoreConsumer(
         return ExtractString(doc.RootElement, ownerField);
     }
 
-    private async Task EnsureChunkCollectionAsync(string name, SchemaDescriptor schema, CancellationToken ct)
+    private async Task EnsureCollectionAsync(CollectionSchema collectionSchema)
     {
-        if (_ensuredChunkCollections.Contains(name)) return;
-
-        var collectionSchema = new CollectionSchema(
-            name,
-            schema.ChunkFields
-                .Select(c => new NamedVector($"{c.PropertyName.ToSnakeCase()}_vector", c.Dimension))
-                .ToList(),
-            [new PayloadIndex("parent_id", PayloadIndexKind.Keyword)]);
-
+        if (_ensuredCollections.Contains(collectionSchema.CollectionName)) return;
         await vectorSchema.ApplyCollectionAsync(collectionSchema);
-        _ensuredChunkCollections.Add(name);
+        _ensuredCollections.Add(collectionSchema.CollectionName);
     }
 
     // Splits text into overlapping windows. Token approximation: 1 token ≈ 4 characters.

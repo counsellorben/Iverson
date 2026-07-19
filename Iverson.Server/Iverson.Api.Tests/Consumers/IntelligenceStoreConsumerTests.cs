@@ -708,6 +708,41 @@ public class IntelligenceStoreConsumerTests
     }
 
     [Fact]
+    public async Task EnsureCollectionAsync_CalledTwiceWithSameSchema_AppliesCollectionOnlyOnce()
+    {
+        var sut = BuildSut();
+        var method = typeof(IntelligenceStoreConsumer).GetMethod(
+            "EnsureCollectionAsync", BindingFlags.NonPublic | BindingFlags.Instance)!;
+
+        var schema = new CollectionSchema("test_collection", [new NamedVector("v", 768)], []);
+
+        await (Task)method.Invoke(sut, [schema])!;
+        await (Task)method.Invoke(sut, [schema])!;
+
+        await _vectorSchema.Received(1).ApplyCollectionAsync(
+            Arg.Is<CollectionSchema>(s => s.CollectionName == "test_collection"));
+    }
+
+    [Fact]
+    public async Task EnsureCollectionAsync_CalledWithTwoDifferentNamedSchemas_AppliesBoth()
+    {
+        var sut = BuildSut();
+        var method = typeof(IntelligenceStoreConsumer).GetMethod(
+            "EnsureCollectionAsync", BindingFlags.NonPublic | BindingFlags.Instance)!;
+
+        var schemaA = new CollectionSchema("collection_a", [new NamedVector("v", 768)], []);
+        var schemaB = new CollectionSchema("collection_b", [new NamedVector("v", 768)], []);
+
+        await (Task)method.Invoke(sut, [schemaA])!;
+        await (Task)method.Invoke(sut, [schemaB])!;
+
+        await _vectorSchema.Received(1).ApplyCollectionAsync(
+            Arg.Is<CollectionSchema>(s => s.CollectionName == "collection_a"));
+        await _vectorSchema.Received(1).ApplyCollectionAsync(
+            Arg.Is<CollectionSchema>(s => s.CollectionName == "collection_b"));
+    }
+
+    [Fact]
     public async Task DispatchAsync_CreatedEvent_RoutesToUpsert()
     {
         await _registry.RegisterAsync(SchemaFixtures.ArticleSchema());

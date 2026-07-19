@@ -67,6 +67,7 @@ services:
     restart: unless-stopped
     environment:
       QDRANT__SERVICE__API_KEY: "dev-only-not-for-production-qdrant-key-0123456789"
+      QDRANT__SERVICE__JWT_RBAC: "true"
     ports:
       - "6333:6333"   # REST API
       - "6334:6334"   # gRPC

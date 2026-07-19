@@ -66,6 +66,8 @@ spec:
                 secretKeyRef:
                   name: {{ .Release.Name }}-qdrant-api-key
                   key: api-key
+            - name: QDRANT__SERVICE__JWT_RBAC
+              value: "true"
           command:
             - "./qdrant"
             - "--uri"

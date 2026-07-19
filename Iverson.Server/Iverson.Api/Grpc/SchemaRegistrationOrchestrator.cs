@@ -68,12 +68,6 @@ public sealed class SchemaRegistrationOrchestrator(
                     $"StarRocks is not ready: {ex.Message}"));
             }
 
-            if (descriptor.VectorFields.Count > 0)
-                await vector.ApplyCollectionAsync(SchemaBuilder.ToCollectionSchema(descriptor));
-
-            if (descriptor.ChunkFields.Count > 0)
-                await vector.ApplyCollectionAsync(SchemaBuilder.ToChunkCollectionSchema(descriptor));
-
             await registry.RegisterAsync(descriptor);
             registered.Add(descriptor.TypeName);
         }
