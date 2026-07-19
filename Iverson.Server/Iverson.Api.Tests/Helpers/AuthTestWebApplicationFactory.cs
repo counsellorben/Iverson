@@ -27,6 +27,18 @@ public sealed class AuthTestWebApplicationFactory : WebApplicationFactory<Progra
         // (fs.inotify.max_user_instances) is already exhausted by other tooling, and the test
         // host doesn't need hot-reload, so disable it outright.
         Environment.SetEnvironmentVariable("DOTNET_hostBuilder__reloadConfigOnChange", "false");
+
+        // Same "too late" problem as above, for the same reason: Program.cs calls
+        // `builder.Services.AddQdrant(..., cfg["Qdrant:ApiKey"], ...)` directly against
+        // `builder.Configuration` before `builder.Build()` ever runs, so a ConfigureWebHost /
+        // ConfigureAppConfiguration override below would arrive too late to be read. AddQdrant
+        // now throws at startup if Qdrant:ApiKey is unconfigured (it doubles as the JWT signing
+        // secret for QdrantTenantScope), and appsettings.json ships no default (production
+        // supplies it via the Qdrant__ApiKey env var / K8s secret) — so the test host needs its
+        // own fake value set via env var before Program.Main runs. The Qdrant client
+        // registration itself stays inert per the class comment above: nothing here causes a
+        // real connection attempt.
+        Environment.SetEnvironmentVariable("Qdrant__ApiKey", "test-auth-pipeline-signing-key-0123456789abcdef");
     }
 
     protected override void ConfigureWebHost(IWebHostBuilder builder)

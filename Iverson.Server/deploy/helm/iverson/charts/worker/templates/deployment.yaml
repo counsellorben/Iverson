@@ -82,10 +82,19 @@ spec:
                   key: app-password
             - name: ConnectionStrings__StarRocks
               value: "Server={{ .Release.Name }}-starrocks-fe-service;Port=9030;Database=iverson;User Id=iverson_app;Password=$(STARROCKS_APP_PASSWORD);AllowPublicKeyRetrieval=true;"
+            - name: QDRANT_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Release.Name }}-qdrant-api-key
+                  key: api-key
+            - name: Qdrant__ApiKey
+              value: "$(QDRANT_API_KEY)"
             - name: Qdrant__Host
               value: "{{ .Release.Name }}-qdrant"
             - name: Qdrant__Port
               value: "6334"
+            - name: Qdrant__CertPath
+              value: "/etc/qdrant-tls/cert.pem"
             - name: Kafka__BootstrapServers
               value: "{{ .Release.Name }}-kafka-kafka-bootstrap:9093"
             - name: Kafka__SecurityProtocol
@@ -131,11 +140,20 @@ spec:
             - name: kafka-ca
               mountPath: /etc/kafka-ca
               readOnly: true
+            - name: qdrant-tls
+              mountPath: /etc/qdrant-tls
+              readOnly: true
             - name: tmp
               mountPath: /tmp
       volumes:
         - name: kafka-ca
           secret:
             secretName: {{ .Release.Name }}-kafka-cluster-ca-cert
+        - name: qdrant-tls
+          secret:
+            secretName: {{ .Release.Name }}-qdrant-tls
+            items:
+              - key: cert.pem
+                path: cert.pem
         - name: tmp
           emptyDir: {}

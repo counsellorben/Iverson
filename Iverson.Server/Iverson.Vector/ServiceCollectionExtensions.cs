@@ -16,6 +16,13 @@ public static class ServiceCollectionExtensions
         string? apiKey = null,
         string? certPath = null)
     {
+        if (apiKey is null)
+        {
+            throw new ArgumentException(
+                "Qdrant:ApiKey is required (used both as the admin API key and the JWT signing secret)",
+                nameof(apiKey));
+        }
+
         services.AddSingleton(_ =>
         {
             if (certPath is not null)
@@ -35,10 +42,10 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<IVectorWriteService>(sp => sp.GetRequiredService<QdrantVectorService>());
 
         services.AddSingleton(sp => new QdrantCollectionManager(
-            sp.GetRequiredService<QdrantClient>(), apiKey!, sp.GetRequiredService<ILogger<QdrantCollectionManager>>()));
+            sp.GetRequiredService<QdrantClient>(), apiKey, sp.GetRequiredService<ILogger<QdrantCollectionManager>>()));
         services.AddSingleton<IVectorSchemaManager>(sp => sp.GetRequiredService<QdrantCollectionManager>());
 
-        services.AddSingleton(new QdrantTenantScope(apiKey!));
+        services.AddSingleton(new QdrantTenantScope(apiKey));
 
         return services;
     }
