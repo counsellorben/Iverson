@@ -17,6 +17,7 @@
 - **Additive backstop, not a replacement.** This does not change Part A's application-level enforcement. `ApplyOwnership`'s filtering is unaffected — only `ApplyTenant` (now redundant) is removed.
 - **No new credential beyond the existing `Qdrant:ApiKey`.** It becomes doubly-purposed: still the raw admin key for collection management, now also the JWT HS256 signing secret.
 - **Fail-closed.** A tenant-scoped call reached with a null tenant value must still fail — never fall through to an unfiltered or unscoped result. This governs both the read path (mint a JWT scoped to a permanently-nonexistent sentinel name) and the write path (skip lazy-create for that same sentinel name, so it's never actually created).
+- **The shared `QdrantClient` carries no static admin credential.** `Qdrant.Client`'s per-call `RequestHeaders.Use` header adds a second `api-key` metadata entry rather than replacing the client's static one, and Qdrant honors whichever value arrives first — the static one, since `QdrantChannel.CreateCallInvoker()` adds it before the per-call value (empirically confirmed against a live `jwt_rbac`-enabled container). A static admin key on the shared client would therefore silently defeat every one of Task 3's scoped JWTs. Fix (CIR round 1 Finding 1 / forced decision, user-resolved): the client is constructed with no static key at all; every caller — admin-only collection management (`QdrantCollectionManager`) included — wraps its own calls in `RequestHeaders.Use`.
 - **docker-compose stays plaintext; only the Helm deployment gets TLS.** `Qdrant:CertPath` is unset in docker-compose (unchanged plaintext client construction) and set via a mounted Secret in Helm.
 - **Commit convention:** lowercase imperative summary, no Conventional-Commits prefix — matches this repo's actual git history (confirmed: `add qdrant-tenant-collection-isolation design spec`, `applied 4 fixes from ...`, and the sibling Postgres RLS plan's corrected commits after that plan's own CDR round 1 caught a Conventional-Commits-prefix defect).
 
@@ -33,7 +34,8 @@
 - `Iverson.Server/Iverson.Vector/QdrantFilterBuilder.cs` — delete the now-unused `ApplyTenant` method.
 - `Iverson.Server/Iverson.Vector.Tests/QdrantFilterBuilderTests.cs` — delete the 4 `ApplyTenant` unit tests.
 - `Iverson.Server/Iverson.Vector/Iverson.Vector.csproj` — add `System.IdentityModel.Tokens.Jwt` package reference.
-- `Iverson.Server/Iverson.Vector/ServiceCollectionExtensions.cs` — `AddQdrant` gains an optional `certPath` parameter; branches between the existing plaintext constructor and a new TLS channel constructor.
+- `Iverson.Server/Iverson.Vector/ServiceCollectionExtensions.cs` — `AddQdrant` gains an optional `certPath` parameter; branches between the existing plaintext constructor and a new TLS channel constructor; the shared `QdrantClient` is constructed with no static admin key (`apiKey: null`) in both branches; `QdrantCollectionManager`'s registration becomes a factory that also supplies the raw admin key.
+- `Iverson.Server/Iverson.Vector/QdrantCollectionManager.cs` — constructor gains the raw admin API key; `EnsureCollectionAsync`/`ApplyCollectionAsync` each wrap their body in `RequestHeaders.Use("api-key", apiKey)`, since the shared client itself no longer carries a static credential.
 - `Iverson.Server/Iverson.Api/Program.cs` — read a new `Qdrant:CertPath` config value and pass it to `AddQdrant`; enable `jwt_rbac`-aware startup is not needed here (server-side config only, no app-side gate).
 - `Iverson.Server/docker-compose.yml` — add `QDRANT__SERVICE__JWT_RBAC: "true"` to the qdrant service.
 - `Iverson.Server/deploy/helm/iverson/charts/qdrant/templates/secret.yaml` — add a self-signed cert/key pair (Sprig `genSelfSignedCert`, same `lookup`+`keep` idiom as the existing `api-key` entry).
@@ -79,6 +81,7 @@ Newly introduced by this plan and verified at plan-write time:
 | 11 | Code validity | `QdrantVectorService` (`QdrantVectorService.cs:7`) has no `Task.Run`/thread-hop in its call chain — plain async methods calling `QdrantClient` directly — so `RequestHeaders.Use`'s `AsyncLocal` state set at a gRPC-service/consumer call site correctly flows through the `IVectorQueryService`/`IVectorWriteService` interface call into the singleton `QdrantClient`'s actual gRPC call, per standard .NET `AsyncLocal` semantics | Read directly, confirmed no `Task.Run`/`ConfigureAwait` calls that would suppress flow |
 | 12 | Test command | `dotnet test Iverson.Server/Iverson.Vector.Tests` and `dotnet test Iverson.Server/Iverson.Api.Tests --filter "Category!=Integration"` are valid, current invocations, matching the convention already used in the sibling `2026-07-18-postgres-row-level-security-implementation-plan.md` | Ran `--list-tests` for both; succeeded |
 | 13 | Task ordering | Task 1 (collection lifecycle) and Task 2 (`QdrantTenantScope`) have no cross-dependency on each other; Task 3 (call-site wiring) depends on both; Task 4 (TLS) is independent of Tasks 1-3 (pure transport-level config, no tenant-logic dependency) | Derived from reading all 4 tasks' file lists — no import/call from Task 1 or 2's new code into the other, confirmed by design |
+| 14 | Consumer impact (Cat 6) | `QdrantCollectionManager` (`QdrantCollectionManager.cs`) has exactly 2 public methods (`EnsureCollectionAsync`, `ApplyCollectionAsync`); its private helpers (`MigrateCollectionAsync`, `CopyPointsAsync`, `CreateNamedVectorCollectionAsync`, `ApplyPayloadIndexesAsync`, `ResolvePhysicalCollectionAsync`) are only ever called from within `ApplyCollectionAsync`'s own async call chain, so wrapping only the 2 public entry points in `RequestHeaders.Use` is sufficient — the `AsyncLocal` value flows through to every private helper the same way Assumption #11 already established for the tenant-scoped paths | Read `QdrantCollectionManager.cs` in full directly (CIR round 1 follow-up) |
 
 ## Tasks
 
@@ -127,10 +130,13 @@ git commit -m "enable qdrant jwt_rbac and generalize lazy collection creation to
 **Files:**
 - Create: `Iverson.Server/Iverson.Vector/QdrantTenantScope.cs`
 - Modify: `Iverson.Server/Iverson.Vector/Iverson.Vector.csproj`
+- Modify: `Iverson.Server/Iverson.Vector/ServiceCollectionExtensions.cs`
+- Modify: `Iverson.Server/Iverson.Vector/QdrantCollectionManager.cs`
 - Test: `Iverson.Server/Iverson.Vector.Tests/QdrantTenantScopeTests.cs`
 
 **Interfaces:**
 - Produces: `QdrantTenantScope` — a DI-registered singleton (constructed with the Qdrant API key baked in, since neither `ObjectSearchGrpcService` nor `IntelligenceStoreConsumer` has any existing way to access that config value otherwise — confirmed via grep, `ObjectSearchGrpcService.cs` has no `IConfiguration`/API-key-related dependency today). Instance methods `ResolveCollectionName(string baseName, string? tenantId, bool isChunks)` and `MintScopedApiKey(string collectionName, bool readOnly)` — matching the spec's exact signature (no `apiKey` parameter — it's captured at construction) — consumed by Task 3's call-site wiring via constructor injection.
+- Also removes the shared `QdrantClient`'s static admin credential and moves it into an explicit per-call wrap inside `QdrantCollectionManager` (resolves CIR round 1 Finding 1 and the forced decision it raised).
 
 - [ ] **Step 1: Add the `System.IdentityModel.Tokens.Jwt` package.** In `Iverson.Vector.csproj`, add:
 ```xml
@@ -183,12 +189,45 @@ services.AddSingleton(new QdrantTenantScope(apiKey!));
 ```
 (`apiKey` is already `AddQdrant`'s existing parameter — confirm it's non-null in practice for any environment where JWT minting is actually exercised; the null-forgiving operator matches this file's existing style for this parameter.)
 
-- [ ] **Step 5: Tests.** `ResolveCollectionName`: real tenant (main and chunks variants), null tenant (sentinel, main and chunks variants) — assert the exact expected strings match the spec's naming scheme. `MintScopedApiKey`: decode the returned JWT (e.g. via `JwtSecurityTokenHandler().ReadJwtToken(...)`) and assert its `exp` claim is ~30s in the future, its `access` claim contains exactly one entry with the given collection name and `"r"`/`"rw"` per the `readOnly` argument, and that validating the token with `TokenValidationParameters` against the same signing key succeeds (proving the signature is genuinely verifiable, not just shaped correctly).
+- [ ] **Step 5: Remove the shared client's static admin credential; wrap admin-only Qdrant calls explicitly instead.** (Resolves CIR round 1 Finding 1 and the forced decision it raised.) `Qdrant.Client`'s per-call `RequestHeaders.Use` header does not replace a client's static `api-key` — it adds a second `api-key` metadata entry alongside it, and Qdrant honors whichever one arrives first: the static one, since `QdrantChannel.CreateCallInvoker()` adds it before the per-call value. With the client's static key still set, every one of Task 3's scoped-JWT wraps would be silently inert (the admin key would win on every call). Fix: the shared `QdrantClient` must never carry a static admin key; every caller — admin-only collection management included — wraps its own calls in `RequestHeaders.Use`.
 
-- [ ] **Step 6: Run tests and commit.**
+  In `ServiceCollectionExtensions.cs`, change the plaintext client construction from `apiKey: apiKey` to `apiKey: null`:
+```csharp
+services.AddSingleton(_ => new QdrantClient(host, port, https: false, apiKey: null));
+```
+  Change `QdrantCollectionManager`'s registration from `services.AddSingleton<QdrantCollectionManager>();` to a factory that also supplies the raw admin key:
+```csharp
+services.AddSingleton(sp => new QdrantCollectionManager(
+    sp.GetRequiredService<QdrantClient>(), apiKey!, sp.GetRequiredService<ILogger<QdrantCollectionManager>>()));
+```
+  In `QdrantCollectionManager.cs`, add `apiKey` to the primary constructor and wrap the body of each of its two public methods in the admin-key header scope — its private helpers (`MigrateCollectionAsync`, `CopyPointsAsync`, etc., see Verified plan-level assumption #14) are called from within `ApplyCollectionAsync`'s own async call chain and inherit the same `RequestHeaders.Current` `AsyncLocal` value, so only the two public entry points need the explicit wrap:
+```csharp
+public class QdrantCollectionManager(
+    QdrantClient client,
+    string apiKey,
+    ILogger<QdrantCollectionManager> logger) : IVectorSchemaManager
+{
+    public async Task EnsureCollectionAsync(string collectionName, ulong vectorSize)
+    {
+        using var _ = RequestHeaders.Use("api-key", apiKey);
+        // ...existing body unchanged...
+    }
+
+    public async Task ApplyCollectionAsync(CollectionSchema schema)
+    {
+        using var _ = RequestHeaders.Use("api-key", apiKey);
+        // ...existing body unchanged...
+    }
+}
+```
+  `Qdrant.Client` (for `RequestHeaders`) is already imported in this file — no new `using` needed. Real verification that this wrap actually supplies a working credential is covered by Task 3 Step 9's live-container integration tests, not invented here — `QdrantClient` itself isn't mockable.
+
+- [ ] **Step 6: Tests.** `ResolveCollectionName`: real tenant (main and chunks variants), null tenant (sentinel, main and chunks variants) — assert the exact expected strings match the spec's naming scheme. `MintScopedApiKey`: decode the returned JWT (e.g. via `JwtSecurityTokenHandler().ReadJwtToken(...)`) and assert its `exp` claim is ~30s in the future, its `access` claim contains exactly one entry with the given collection name and `"r"`/`"rw"` per the `readOnly` argument, and that validating the token with `TokenValidationParameters` against the same signing key succeeds (proving the signature is genuinely verifiable, not just shaped correctly).
+
+- [ ] **Step 7: Run tests and commit.**
 ```bash
 dotnet test Iverson.Server/Iverson.Vector.Tests
-git add Iverson.Server/Iverson.Vector/QdrantTenantScope.cs Iverson.Server/Iverson.Vector/Iverson.Vector.csproj Iverson.Server/Iverson.Vector/ServiceCollectionExtensions.cs Iverson.Server/Iverson.Vector.Tests/QdrantTenantScopeTests.cs
+git add Iverson.Server/Iverson.Vector/QdrantTenantScope.cs Iverson.Server/Iverson.Vector/Iverson.Vector.csproj Iverson.Server/Iverson.Vector/ServiceCollectionExtensions.cs Iverson.Server/Iverson.Vector/QdrantCollectionManager.cs Iverson.Server/Iverson.Vector.Tests/QdrantTenantScopeTests.cs
 git commit -m "add QdrantTenantScope for tenant-qualified collection naming and scoped JWT minting"
 ```
 
@@ -226,9 +265,11 @@ Remove the `ApplyTenant` call at line 155.
 
 - [ ] **Step 7: Delete `QdrantFilterBuilder.ApplyTenant`** (`QdrantFilterBuilder.cs:62-68`) and its 4 unit tests in `QdrantFilterBuilderTests.cs` (`ApplyTenant_NotRequired_NullFilter_ReturnsNull`, `ApplyTenant_NotRequired_ExistingFilter_ReturnsSameFilterUnchanged`, `ApplyTenant_Required_NullFilter_CreatesFilterWithMatchKeywordCondition`, `ApplyTenant_Required_ExistingFilter_AppendsConditionPreservingExisting`). Confirmed via repo-wide grep: no other callers exist anywhere. `ApplyOwnership` and its tests are untouched.
 
-- [ ] **Step 8: Update existing NSubstitute mocks in `ObjectSearchGrpcServiceTests.cs` and `IntelligenceStoreConsumerTests.cs`.** Existing `SearchNamedAsync`/`UpsertNamedAsync`/`DeleteAsync`/`DeleteByFilterAsync` setups/verifications that assert on the old (non-tenant-qualified) collection name need updating to the new tenant-qualified name, or relaxed to `Arg.Any<string>()` where the test doesn't specifically assert on naming.
+- [ ] **Step 8: Update existing NSubstitute mocks in `ObjectSearchGrpcServiceTests.cs` and `IntelligenceStoreConsumerTests.cs`.** Existing `SearchNamedAsync`/`UpsertNamedAsync`/`DeleteAsync`/`DeleteByFilterAsync` setups/verifications that assert on the old (non-tenant-qualified) collection name need updating to the new tenant-qualified name, or relaxed to `Arg.Any<string>()` where the test doesn't specifically assert on naming. `ObjectSearchGrpcServiceTests.cs` needs no fixture-data changes beyond this — `ActingUserFixtures.Principal` already sets a `tenant_id` claim ("test-tenant") for every test principal.
 
-- [ ] **Step 9: New integration tests** (real Qdrant container, per the spec's testing approach): a JWT scoped to tenant A's collection cannot read or write tenant B's collection; the fail-closed sentinel path on both read and write (explicitly: `IntelligenceStoreConsumer` skips lazy-create when tenant is null, and the subsequent write against the still-nonexistent sentinel collection fails); the delete path correctly sources tenant from `ev.PayloadJson` and removes the point from the real tenant's collection, not the sentinel; a read against a tenant with no collection yet returns empty, not an error; lazy collection creation is idempotent across two events for the same (type, tenant) pair; a read-scoped JWT cannot write, a write-scoped JWT can; `ApplyOwnership` continues to filter correctly within a tenant's collection.
+  `IntelligenceStoreConsumerTests.cs` needs more than assertion updates (CIR round 1 Finding 2): its `_entities.FetchByKeyAsync` stub (constructor default at line 61, plus per-test overrides at lines 205, 254, 291) and every delete-path `EntityEvent.PayloadJson` fixture (currently `"{}"`, at lines 341, 362, 746) carry no `TenantId` value. Since Task 3's tenant re-derivation resolves `null` when the fixture data has no `TenantId` key, every one of these tests would silently route to the fail-closed sentinel collection name regardless of what the assertion strings are updated to. Add a `"TenantId":"<value>"` key to each of those fixtures (matching whatever literal tenant value the updated assertions expect). Additionally, rewrite `HandleCreated_WithNoOwnerFieldConfigured_NeverCallsFetchByKeyAsync` (line 313): its premise — "no owner field configured ⇒ zero `FetchByKeyAsync` calls" — no longer holds, since tenant re-derivation now calls `FetchByKeyAsync` unconditionally (independent of whether `OwnerField` is configured). Change its assertion from `_entities.DidNotReceive().FetchByKeyAsync(...)` to `_entities.Received(1).FetchByKeyAsync(...)`, reflecting that only the *owner*-value fetch is skipped when `OwnerField` is null, not the *tenant*-value fetch.
+
+- [ ] **Step 9: New integration tests** (real Qdrant container, per the spec's testing approach): a JWT scoped to tenant A's collection cannot read or write tenant B's collection; the fail-closed sentinel path on both read and write (explicitly: `IntelligenceStoreConsumer` skips lazy-create when tenant is null, and the subsequent write against the still-nonexistent sentinel collection fails); the delete path correctly sources tenant from `ev.PayloadJson` and removes the point from the real tenant's collection, not the sentinel; a read against a tenant with no collection yet returns empty, not an error; lazy collection creation is idempotent across two events for the same (type, tenant) pair; a read-scoped JWT cannot write, a write-scoped JWT can; `ApplyOwnership` continues to filter correctly within a tenant's collection; `QdrantCollectionManager`'s admin-only operations (`EnsureCollectionAsync`/`ApplyCollectionAsync`) still succeed against a `jwt_rbac`-enabled server purely from their own `RequestHeaders.Use(adminKey)` wrap, confirming the shared client's static credential removal (Task 2 Step 5) didn't silently break collection management.
 
 - [ ] **Step 10: Run tests and commit.**
 ```bash
@@ -289,14 +330,14 @@ services.AddSingleton(_ =>
         var thumbprint = cert.GetCertHashString(HashAlgorithmName.SHA256);
         var channel = QdrantChannel.ForAddress($"https://{host}:{port}", new ClientConfiguration
         {
-            ApiKey = apiKey,
             CertificateThumbprint = thumbprint
         });
         return new QdrantClient(new QdrantGrpcClient(channel));
     }
-    return new QdrantClient(host, port, https: false, apiKey: apiKey);
+    return new QdrantClient(host, port, https: false, apiKey: null);
 });
 ```
+(No static `ApiKey` in either branch — consistent with Task 2 Step 5: the shared client never carries a static admin credential; `RequestHeaders.Use` supplies the credential per-call for every caller, admin or tenant-scoped.)
 
 - [ ] **Step 5: Wire the new config value.** In `Program.cs`, read `cfg["Qdrant:CertPath"]` and pass it as `AddQdrant`'s new argument (`null` when unset, matching docker-compose's unset `Qdrant__CertPath`).
 
