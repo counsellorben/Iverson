@@ -68,6 +68,12 @@ spec:
                   key: api-key
             - name: QDRANT__SERVICE__JWT_RBAC
               value: "true"
+            - name: QDRANT__SERVICE__ENABLE_TLS
+              value: "true"
+            - name: QDRANT__TLS__CERT
+              value: "/qdrant-tls/cert.pem"
+            - name: QDRANT__TLS__KEY
+              value: "/qdrant-tls/key.pem"
           command:
             - "./qdrant"
             - "--uri"
@@ -85,6 +91,7 @@ spec:
             httpGet:
               path: /readyz
               port: 6333
+              scheme: HTTPS
             initialDelaySeconds: 5
           volumeMounts:
             - name: qdrant-storage
@@ -93,11 +100,17 @@ spec:
               mountPath: /qdrant/snapshots
             - name: tmp
               mountPath: /tmp
+            - name: qdrant-tls
+              mountPath: /qdrant-tls
+              readOnly: true
       volumes:
         - name: snapshots
           emptyDir: {}
         - name: tmp
           emptyDir: {}
+        - name: qdrant-tls
+          secret:
+            secretName: {{ .Release.Name }}-qdrant-tls
   volumeClaimTemplates:
     - metadata:
         name: qdrant-storage
