@@ -6,7 +6,6 @@ using Iverson.Client.Contracts;
 using Iverson.Embeddings;
 using Iverson.Sql;
 using Iverson.StarRocks;
-using Iverson.Vector;
 using Microsoft.Extensions.Logging.Abstractions;
 using NSubstitute;
 using Xunit;
@@ -17,7 +16,6 @@ public class SchemaRegistrationOrchestratorTests
 {
     private readonly IRecordStoreQueryExecutor _sql = Substitute.For<IRecordStoreQueryExecutor>();
     private readonly IRecordStoreSchemaManager _schemaManager = Substitute.For<IRecordStoreSchemaManager>();
-    private readonly IVectorSchemaManager _vector = Substitute.For<IVectorSchemaManager>();
     private readonly IEngagementStoreSchemaManager _starRocks = Substitute.For<IEngagementStoreSchemaManager>();
     private readonly IEmbeddingService _embedding = Substitute.For<IEmbeddingService>();
     private readonly SchemaRegistry _registry;
@@ -30,7 +28,7 @@ public class SchemaRegistrationOrchestratorTests
         _starRocks.ApplyTableAsync(Arg.Any<StarRocksTableSchema>()).Returns(Task.CompletedTask);
         _registry = new SchemaRegistry(new SchemaRegistryRepository(_sql), NullLogger<SchemaRegistry>.Instance);
         _sut = new SchemaRegistrationOrchestrator(
-            _schemaManager, _vector, _starRocks, _embedding, _registry);
+            _schemaManager, _starRocks, _embedding, _registry);
     }
 
     private static TypeDescriptor SimpleType(string name, params string[] extraScalars)

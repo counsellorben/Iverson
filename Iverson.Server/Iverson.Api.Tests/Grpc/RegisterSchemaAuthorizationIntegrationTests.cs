@@ -213,7 +213,6 @@ public sealed class RegisterSchemaAuthorizationIntegrationTests(AllStoresContain
         // against the fixture's real Postgres/StarRocks/Qdrant managers.
         var schemaRegistration = new SchemaRegistrationOrchestrator(
             fixture.PostgresSchemaManager,
-            fixture.QdrantCollectionManager,
             fixture.StarRocksSchemaManager,
             Substitute.For<IEmbeddingService>(),
             registry);

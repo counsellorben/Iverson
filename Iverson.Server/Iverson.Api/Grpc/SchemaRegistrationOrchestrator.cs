@@ -4,7 +4,6 @@ using Iverson.Client.Contracts;
 using Iverson.Embeddings;
 using Iverson.Sql;
 using Iverson.StarRocks;
-using Iverson.Vector;
 using Grpc.Core;
 
 namespace Iverson.Api.Grpc;
@@ -16,7 +15,6 @@ public interface ISchemaRegistrationOrchestrator
 
 public sealed class SchemaRegistrationOrchestrator(
     IRecordStoreSchemaManager schemaManager,
-    IVectorSchemaManager vector,
     IEngagementStoreSchemaManager starRocks,
     IEmbeddingService embedding,
     SchemaRegistry registry)

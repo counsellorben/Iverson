@@ -12,7 +12,6 @@ using Iverson.Embeddings;
 using Iverson.Events;
 using Iverson.Sql;
 using Iverson.StarRocks;
-using Iverson.Vector;
 using Microsoft.Extensions.Logging.Abstractions;
 using NSubstitute;
 using Xunit;
@@ -25,7 +24,6 @@ public class ObjectMappingGrpcServiceTests
     private readonly IEntityRepository _entities;
     private readonly IRecordStoreTransactionRunner _txRunner;
     private readonly IRecordStoreSchemaManager _schemaManager;
-    private readonly IVectorSchemaManager _vector;
     private readonly IEventProducer _events;
     private readonly SchemaRegistry _registry;
     private readonly IEmbeddingService _embedding;
@@ -46,7 +44,6 @@ public class ObjectMappingGrpcServiceTests
     {
         _sql      = Substitute.For<IRecordStoreQueryExecutor>();
         _entities = Substitute.For<IEntityRepository>();
-        _vector   = Substitute.For<IVectorSchemaManager>();
         _events   = Substitute.For<IEventProducer>();
 
         _sql.ExecuteAsync(Arg.Any<string>(), Arg.Any<object?>()).Returns(1);
@@ -79,7 +76,7 @@ public class ObjectMappingGrpcServiceTests
         _outboxPublisher = new OutboxPublisher(_events, new OutboxWriter(ReconciliationSchema.TableName, _sql, _txRunner), NullLogger<OutboxPublisher>.Instance);
         _relationResolver = new EntityRelationResolver(_registry, _entities, _authEvaluator);
         _schemaRegistration = new SchemaRegistrationOrchestrator(
-            _schemaManager, _vector, _starRocks, _embedding, _registry);
+            _schemaManager, _starRocks, _embedding, _registry);
         _sut = new ObjectMappingGrpcService(
             _entities, _txRunner, _outboxPublisher, _registry,
             new RelationValidator(_registry), new EntityKeyAccessor(),
