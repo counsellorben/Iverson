@@ -5,6 +5,7 @@ using Iverson.Embeddings;
 using Iverson.Events;
 using Iverson.Sql;
 using Iverson.Vector;
+using Qdrant.Client;
 
 namespace Iverson.Api.Consumers;
 
@@ -28,6 +29,7 @@ public sealed class IntelligenceStoreConsumer(
     IEmbeddingService embedding,
     SchemaRegistry registry,
     IEntityRepository entities,
+    QdrantTenantScope tenantScope,
     ILogger<IntelligenceStoreConsumer> logger) : BackgroundService
 {
     private const string GroupId = "iverson.consumer.intelligence";
@@ -96,6 +98,15 @@ public sealed class IntelligenceStoreConsumer(
             ? await FetchAuthoritativeOwnerValueAsync(schema, ownerField, ev.Key, ct)
             : null;
 
+        // Same re-derivation, for the tenant boundary (qdrant-tenant-collection-isolation):
+        // the tenant value routes which physical Qdrant collection this point is written to,
+        // so it must come from the authoritative Postgres row, not the unsigned event payload.
+        // Computed unconditionally (not gated on VectorFields.Count > 0) because a chunks-only
+        // schema needs it too — both the vector- and chunk-upsert blocks below reuse this value.
+        var authoritativeTenantValue = schema.TenantColumn is not null
+            ? await FetchAuthoritativeOwnerValueAsync(schema, schema.TenantColumn, ev.Key, ct)
+            : null;
+
         // ── Named vector upsert (entity-level embeddings) ──────────────────────
         if (schema.VectorFields.Count > 0)
         {
@@ -137,7 +148,14 @@ public sealed class IntelligenceStoreConsumer(
                     var val = ExtractTypedValue(payload, fk.ColumnName, "TEXT");
                     if (val is not null) pointPayload[fk.ColumnName.ToCamelCase()] = val;
                 }
-                await vectorWrite.UpsertNamedAsync(schema.CollectionName, pointId, namedVectors, pointPayload);
+                var collectionName = tenantScope.ResolveCollectionName(schema.CollectionName, authoritativeTenantValue, isChunks: false);
+                if (authoritativeTenantValue is not null)
+                    await EnsureCollectionAsync(SchemaBuilder.ToCollectionSchema(schema) with { CollectionName = collectionName });
+
+                using (RequestHeaders.Use("api-key", tenantScope.MintScopedApiKey(collectionName, readOnly: false)))
+                {
+                    await vectorWrite.UpsertNamedAsync(collectionName, pointId, namedVectors, pointPayload);
+                }
                 logger.LogInformation("[Intelligence] Upserted {Count} vector(s) for {Type}:{Key}",
                     namedVectors.Count, ev.TypeName, ev.Key);
             }
@@ -146,53 +164,52 @@ public sealed class IntelligenceStoreConsumer(
         // ── Chunk upsert (passage-level RAG embeddings) ────────────────────────
         if (schema.ChunkFields.Count > 0)
         {
-            var chunksCollection = schema.CollectionName + "_chunks";
-            await EnsureCollectionAsync(new CollectionSchema(
-                chunksCollection,
-                schema.ChunkFields
-                    .Select(c => new NamedVector($"{c.PropertyName.ToSnakeCase()}_vector", c.Dimension))
-                    .ToList(),
-                [new PayloadIndex("parent_id", PayloadIndexKind.Keyword)]));
+            var chunksCollectionName = tenantScope.ResolveCollectionName(schema.CollectionName, authoritativeTenantValue, isChunks: true);
+            if (authoritativeTenantValue is not null)
+                await EnsureCollectionAsync(SchemaBuilder.ToChunkCollectionSchema(schema) with { CollectionName = chunksCollectionName });
 
-            foreach (var cf in schema.ChunkFields)
+            using (RequestHeaders.Use("api-key", tenantScope.MintScopedApiKey(chunksCollectionName, readOnly: false)))
             {
-                var text = ExtractString(payload, cf.PropertyName);
-                if (string.IsNullOrWhiteSpace(text)) continue;
-
-                var vectorName = $"{cf.PropertyName.ToSnakeCase()}_vector";
-                var chunks     = SplitIntoChunks(text, cf.MaxTokens, cf.Overlap).ToList();
-
-                var chunkTasks = chunks.Select(async chunk =>
+                foreach (var cf in schema.ChunkFields)
                 {
-                    var (chunkText, chunkIndex) = chunk;
-                    var chunkVector = await embedding.EmbedAsync(chunkText, ct);
-                    var chunkId     = ComputeChunkPointId(pointId, cf.PropertyName, chunkIndex);
-                    return (chunkVector, chunkId, chunkText, chunkIndex);
-                }).ToList();
+                    var text = ExtractString(payload, cf.PropertyName);
+                    if (string.IsNullOrWhiteSpace(text)) continue;
 
-                var chunkResults = await Task.WhenAll(chunkTasks);
+                    var vectorName = $"{cf.PropertyName.ToSnakeCase()}_vector";
+                    var chunks     = SplitIntoChunks(text, cf.MaxTokens, cf.Overlap).ToList();
 
-                foreach (var (chunkVector, chunkId, chunkText, chunkIndex) in chunkResults)
-                {
-                    var chunkPayload = new Dictionary<string, object>
+                    var chunkTasks = chunks.Select(async chunk =>
                     {
-                        ["text"]        = chunkText,
-                        ["parent_id"]   = ev.Key,
-                        ["field"]       = cf.PropertyName,
-                        ["chunk_index"] = chunkIndex.ToString()
-                    };
-                    if (authoritativeOwnerValue is not null)
-                        chunkPayload[schema.Authorization!.OwnerField!.ToCamelCase()] = authoritativeOwnerValue;
+                        var (chunkText, chunkIndex) = chunk;
+                        var chunkVector = await embedding.EmbedAsync(chunkText, ct);
+                        var chunkId     = ComputeChunkPointId(pointId, cf.PropertyName, chunkIndex);
+                        return (chunkVector, chunkId, chunkText, chunkIndex);
+                    }).ToList();
 
-                    await vectorWrite.UpsertNamedAsync(
-                        chunksCollection,
-                        chunkId,
-                        new Dictionary<string, float[]> { [vectorName] = chunkVector },
-                        chunkPayload);
+                    var chunkResults = await Task.WhenAll(chunkTasks);
+
+                    foreach (var (chunkVector, chunkId, chunkText, chunkIndex) in chunkResults)
+                    {
+                        var chunkPayload = new Dictionary<string, object>
+                        {
+                            ["text"]        = chunkText,
+                            ["parent_id"]   = ev.Key,
+                            ["field"]       = cf.PropertyName,
+                            ["chunk_index"] = chunkIndex.ToString()
+                        };
+                        if (authoritativeOwnerValue is not null)
+                            chunkPayload[schema.Authorization!.OwnerField!.ToCamelCase()] = authoritativeOwnerValue;
+
+                        await vectorWrite.UpsertNamedAsync(
+                            chunksCollectionName,
+                            chunkId,
+                            new Dictionary<string, float[]> { [vectorName] = chunkVector },
+                            chunkPayload);
+                    }
+
+                    logger.LogInformation("[Intelligence] Ingested {Count} chunk(s) for {Type}:{Key} field={Field}",
+                        chunks.Count, ev.TypeName, ev.Key, cf.PropertyName);
                 }
-
-                logger.LogInformation("[Intelligence] Ingested {Count} chunk(s) for {Type}:{Key} field={Field}",
-                    chunks.Count, ev.TypeName, ev.Key, cf.PropertyName);
             }
         }
     }
@@ -215,14 +232,38 @@ public sealed class IntelligenceStoreConsumer(
             return;
         }
 
+        // Source the tenant value from the pre-delete row snapshot ObjectMappingGrpcService.Delete
+        // published in ev.PayloadJson — the row is already gone from Postgres by the time a delete
+        // event is consumed, so there is no authoritative row left to re-fetch (unlike HandleAsync).
+        JsonElement payload;
+        try
+        {
+            using var doc = JsonDocument.Parse(ev.PayloadJson);
+            payload = doc.RootElement.Clone();
+        }
+        catch (JsonException ex)
+        {
+            throw new PoisonMessageException($"[Intelligence] Malformed payload JSON type={ev.TypeName} key={key}", ex);
+        }
+
+        var tenantValue = schema.TenantColumn is not null ? ExtractString(payload, schema.TenantColumn) : null;
+
         var pointId = KeyToUlong(ev.Key);
 
-        await vectorWrite.DeleteAsync(schema.CollectionName, pointId);
+        var collectionName = tenantScope.ResolveCollectionName(schema.CollectionName, tenantValue, isChunks: false);
+        using (RequestHeaders.Use("api-key", tenantScope.MintScopedApiKey(collectionName, readOnly: false)))
+        {
+            await vectorWrite.DeleteAsync(collectionName, pointId);
+        }
 
         if (schema.ChunkFields.Count > 0)
         {
+            var chunksCollectionName = tenantScope.ResolveCollectionName(schema.CollectionName, tenantValue, isChunks: true);
             var chunkFilter = QdrantFilterBuilder.MatchParentId(ev.Key);
-            await vectorWrite.DeleteByFilterAsync(schema.CollectionName + "_chunks", chunkFilter);
+            using (RequestHeaders.Use("api-key", tenantScope.MintScopedApiKey(chunksCollectionName, readOnly: false)))
+            {
+                await vectorWrite.DeleteByFilterAsync(chunksCollectionName, chunkFilter);
+            }
         }
 
         logger.LogInformation("[Intelligence] Deleted vector for {Type}:{Key}", ev.TypeName.SanitizeForLog(), ev.Key);

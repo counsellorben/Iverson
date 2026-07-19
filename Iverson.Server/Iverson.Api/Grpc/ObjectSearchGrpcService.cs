@@ -6,6 +6,7 @@ using Iverson.Client.Contracts;
 using Iverson.Embeddings;
 using Iverson.StarRocks;
 using Iverson.Vector;
+using Qdrant.Client;
 
 using Filter      = Qdrant.Client.Grpc.Filter;
 using Conditions  = Qdrant.Client.Grpc.Conditions;
@@ -33,7 +34,8 @@ public sealed class ObjectSearchGrpcService(
     IEmbeddingService embedding,
     ILogger<ObjectSearchGrpcService> logger,
     IActingUserAccessor actingUserAccessor,
-    IRowFieldAuthorizationEvaluator authEvaluator)
+    IRowFieldAuthorizationEvaluator authEvaluator,
+    QdrantTenantScope tenantScope)
     : ObjectSearchService.ObjectSearchServiceBase
 {
     // ── SQL Search ─────────────────────────────────────────────────────────────
@@ -152,7 +154,6 @@ public sealed class ObjectSearchGrpcService(
         }
 
         filter = QdrantFilterBuilder.ApplyOwnership(filter, decision.OwnershipRequired, schema.Authorization?.OwnerField?.ToCamelCase(), decision.OwnerValue);
-        filter = QdrantFilterBuilder.ApplyTenant(filter, decision.TenantColumn is not null, decision.TenantColumn?.ToCamelCase(), decision.TenantValue);
 
         logger.LogInformation("[SearchSimilar] type={Type} property={Prop} topK={K} filtered={Filtered}",
             request.TypeName.SanitizeForLog(), request.Property.SanitizeForLog(), request.TopK, filter is not null);
@@ -168,9 +169,15 @@ public sealed class ObjectSearchGrpcService(
                 $"Embedding service unavailable: {ex.Message}"));
         }
 
-        var vectorName = vectorDesc.PropertyName.ToSnakeCase() + "_vector";
-        var topK       = (ulong)Math.Max(1, (int)request.TopK);
-        var results    = await vector.SearchNamedAsync(schema.CollectionName, vectorName, queryVector, topK, filter);
+        var vectorName     = vectorDesc.PropertyName.ToSnakeCase() + "_vector";
+        var topK           = (ulong)Math.Max(1, (int)request.TopK);
+        var collectionName = tenantScope.ResolveCollectionName(schema.CollectionName, decision.TenantValue, isChunks: false);
+
+        IReadOnlyList<VectorSearchResult> results;
+        using (RequestHeaders.Use("api-key", tenantScope.MintScopedApiKey(collectionName, readOnly: true)))
+        {
+            results = await vector.SearchNamedAsync(collectionName, vectorName, queryVector, topK, filter);
+        }
 
         foreach (var r in results)
         {
@@ -219,7 +226,6 @@ public sealed class ObjectSearchGrpcService(
 
         var filter = BuildChunksFilter(schema, request);
         filter = QdrantFilterBuilder.ApplyOwnership(filter, decision.OwnershipRequired, schema.Authorization?.OwnerField?.ToCamelCase(), decision.OwnerValue);
-        filter = QdrantFilterBuilder.ApplyTenant(filter, decision.TenantColumn is not null, decision.TenantColumn?.ToCamelCase(), decision.TenantValue);
 
         logger.LogInformation("[SearchChunks] type={Type} property={Prop} topK={K} filtered={Filtered}",
             request.TypeName.SanitizeForLog(), request.Property.SanitizeForLog(), request.TopK, filter is not null);
@@ -236,9 +242,14 @@ public sealed class ObjectSearchGrpcService(
         }
 
         var vectorName       = chunkDesc.PropertyName.ToSnakeCase() + "_vector";
-        var chunksCollection = schema.CollectionName + "_chunks";
+        var chunksCollection = tenantScope.ResolveCollectionName(schema.CollectionName, decision.TenantValue, isChunks: true);
         var topK             = (ulong)Math.Max(1, (int)request.TopK);
-        var results          = await vector.SearchNamedAsync(chunksCollection, vectorName, queryVector, topK, filter);
+
+        IReadOnlyList<VectorSearchResult> results;
+        using (RequestHeaders.Use("api-key", tenantScope.MintScopedApiKey(chunksCollection, readOnly: true)))
+        {
+            results = await vector.SearchNamedAsync(chunksCollection, vectorName, queryVector, topK, filter);
+        }
 
         foreach (var r in results)
         {

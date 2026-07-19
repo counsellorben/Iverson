@@ -248,47 +248,4 @@ public class QdrantFilterBuilderTests
         result.Should().BeSameAs(original);
         result!.Must.Should().HaveCount(2);
     }
-
-    [Fact]
-    public void ApplyTenant_NotRequired_NullFilter_ReturnsNull()
-    {
-        var result = QdrantFilterBuilder.ApplyTenant(null, tenantRequired: false, "tenantId", "tenant-1");
-
-        result.Should().BeNull();
-    }
-
-    [Fact]
-    public void ApplyTenant_NotRequired_ExistingFilter_ReturnsSameFilterUnchanged()
-    {
-        var original = new Filter();
-        original.Must.Add(Conditions.MatchKeyword("category", "Tech"));
-
-        var result = QdrantFilterBuilder.ApplyTenant(original, tenantRequired: false, "tenantId", "tenant-1");
-
-        result.Should().BeSameAs(original);
-        result!.Must.Should().ContainSingle();
-    }
-
-    [Fact]
-    public void ApplyTenant_Required_NullFilter_CreatesFilterWithMatchKeywordCondition()
-    {
-        var result = QdrantFilterBuilder.ApplyTenant(null, tenantRequired: true, "tenantId", "tenant-1");
-
-        result.Should().NotBeNull();
-        result!.Must.Should().ContainSingle();
-        result.Must[0].Field.Key.Should().Be("tenantId");
-        result.Must[0].Field.Match.Keyword.Should().Be("tenant-1");
-    }
-
-    [Fact]
-    public void ApplyTenant_Required_ExistingFilter_AppendsConditionPreservingExisting()
-    {
-        var original = new Filter();
-        original.Must.Add(Conditions.MatchKeyword("category", "Tech"));
-
-        var result = QdrantFilterBuilder.ApplyTenant(original, tenantRequired: true, "tenantId", "tenant-1");
-
-        result.Should().BeSameAs(original);
-        result!.Must.Should().HaveCount(2);
-    }
 }

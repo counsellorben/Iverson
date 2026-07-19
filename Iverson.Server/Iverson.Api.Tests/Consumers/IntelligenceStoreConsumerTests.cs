@@ -56,9 +56,11 @@ public class IntelligenceStoreConsumerTests
 
         _entities = Substitute.For<IEntityRepository>();
         // Default: authoritative row agrees with the event payload's owner value used across
-        // the pre-existing (non-adversarial) tests in this file.
+        // the pre-existing (non-adversarial) tests in this file. TenantId is included because
+        // tenant re-derivation (qdrant-tenant-collection-isolation) now reuses this same stub —
+        // "test-tenant" matches every SchemaFixtures descriptor's TenantColumn = "TenantId".
         _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>())
-                 .Returns("""{"AuthorId":"00000000-0000-0000-0000-000000000001"}""");
+                 .Returns("""{"AuthorId":"00000000-0000-0000-0000-000000000001","TenantId":"test-tenant"}""");
 
         _registry = new SchemaRegistry(new SchemaRegistryRepository(_sql), NullLogger<SchemaRegistry>.Instance);
     }
@@ -66,7 +68,8 @@ public class IntelligenceStoreConsumerTests
     private string Serialize(EntityEvent ev) => JsonSerializer.Serialize(ev, JsonOptions);
 
     private IntelligenceStoreConsumer BuildSut() =>
-        new(_consumer, _vectorSchema, _vectorWrite, _embedding, _registry, _entities, NullLogger<IntelligenceStoreConsumer>.Instance);
+        new(_consumer, _vectorSchema, _vectorWrite, _embedding, _registry, _entities,
+            new QdrantTenantScope("test-signing-key-0123456789abcdef"), NullLogger<IntelligenceStoreConsumer>.Instance);
 
     [Fact]
     public async Task HandleCreated_WithVectorField_CallsEmbedAndUpsertNamed()
@@ -96,7 +99,7 @@ public class IntelligenceStoreConsumerTests
             Arg.Any<CancellationToken>());
 
         await _vectorWrite.Received().UpsertNamedAsync(
-            "articles",
+            "articles_test-tenant",
             Arg.Any<ulong>(),
             Arg.Any<IReadOnlyDictionary<string, float[]>>(),
             Arg.Any<IReadOnlyDictionary<string, object>?>());
@@ -124,7 +127,7 @@ public class IntelligenceStoreConsumerTests
 
         // Should upsert at least once into the chunks collection
         await _vectorWrite.Received().UpsertNamedAsync(
-            "articles_chunks",
+            "articles_chunks_test-tenant",
             Arg.Any<ulong>(),
             Arg.Any<IReadOnlyDictionary<string, float[]>>(),
             Arg.Any<IReadOnlyDictionary<string, object>?>());
@@ -151,7 +154,7 @@ public class IntelligenceStoreConsumerTests
 
         IReadOnlyDictionary<string, object>? capturedPayload = null;
         _vectorWrite.UpsertNamedAsync(
-                "articles_chunks", Arg.Any<ulong>(), Arg.Any<IReadOnlyDictionary<string, float[]>>(),
+                "articles_chunks_test-tenant", Arg.Any<ulong>(), Arg.Any<IReadOnlyDictionary<string, float[]>>(),
                 Arg.Do<IReadOnlyDictionary<string, object>?>(p => capturedPayload = p))
             .Returns(Task.CompletedTask);
 
@@ -175,7 +178,7 @@ public class IntelligenceStoreConsumerTests
 
         IReadOnlyDictionary<string, object>? capturedPayload = null;
         _vectorWrite.UpsertNamedAsync(
-                "articles_chunks", Arg.Any<ulong>(), Arg.Any<IReadOnlyDictionary<string, float[]>>(),
+                "articles_chunks_test-tenant", Arg.Any<ulong>(), Arg.Any<IReadOnlyDictionary<string, float[]>>(),
                 Arg.Do<IReadOnlyDictionary<string, object>?>(p => capturedPayload = p))
             .Returns(Task.CompletedTask);
 
@@ -202,7 +205,7 @@ public class IntelligenceStoreConsumerTests
         const string forgedOwner = "00000000-0000-0000-0000-000000000FED";
         const string realOwner   = "00000000-0000-0000-0000-000000000001";
         _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>())
-                 .Returns($$"""{"AuthorId":"{{realOwner}}"}""");
+                 .Returns($$"""{"AuthorId":"{{realOwner}}","TenantId":"test-tenant"}""");
 
         var longBody = new string('x', 3000);
         var payload  = $$$"""{"Title":"Test","Body":"{{{longBody}}}","AuthorId":"{{{forgedOwner}}}"}""";
@@ -213,7 +216,7 @@ public class IntelligenceStoreConsumerTests
 
         IReadOnlyDictionary<string, object>? capturedPayload = null;
         _vectorWrite.UpsertNamedAsync(
-                "articles_chunks", Arg.Any<ulong>(), Arg.Any<IReadOnlyDictionary<string, float[]>>(),
+                "articles_chunks_test-tenant", Arg.Any<ulong>(), Arg.Any<IReadOnlyDictionary<string, float[]>>(),
                 Arg.Do<IReadOnlyDictionary<string, object>?>(p => capturedPayload = p))
             .Returns(Task.CompletedTask);
 
@@ -241,6 +244,7 @@ public class IntelligenceStoreConsumerTests
             VectorFields   = [new VectorDescriptor("Title", 768, "nomic-embed-text")],
             ChunkFields    = [],
             Relations      = [],
+            TenantColumn   = "TenantId",
             Authorization  = new AuthorizationRules(
                 "OwnerId",
                 new List<RowPermission> { new("test-bypass", true, true, true) },
@@ -251,7 +255,7 @@ public class IntelligenceStoreConsumerTests
         const string forgedOwner = "forged-owner";
         const string realOwner   = "real-owner";
         _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>())
-                 .Returns($$"""{"OwnerId":"{{realOwner}}"}""");
+                 .Returns($$"""{"OwnerId":"{{realOwner}}","TenantId":"test-tenant"}""");
 
         var entityKey = Guid.NewGuid().ToString();
         var payload   = $$$"""{"Title":"Hello","OwnerId":"{{{forgedOwner}}}"}""";
@@ -262,7 +266,7 @@ public class IntelligenceStoreConsumerTests
 
         IReadOnlyDictionary<string, object>? capturedPayload = null;
         _vectorWrite.UpsertNamedAsync(
-                "docs", Arg.Any<ulong>(), Arg.Any<IReadOnlyDictionary<string, float[]>>(),
+                "docs_test-tenant", Arg.Any<ulong>(), Arg.Any<IReadOnlyDictionary<string, float[]>>(),
                 Arg.Do<IReadOnlyDictionary<string, object>?>(p => capturedPayload = p))
             .Returns(Task.CompletedTask);
 
@@ -297,9 +301,11 @@ public class IntelligenceStoreConsumerTests
             PayloadJson: payload, TraceId: "trace-missing-row", SchemaVersion: "1",
             OccurredAt: DateTimeOffset.UtcNow, TargetStores: StoreTarget.Intelligence);
 
+        // The same stub now also serves the tenant fetch, so "no authoritative row found" means
+        // no tenant value either — the write fails closed to the sentinel (no-tenant) collection.
         IReadOnlyDictionary<string, object>? capturedPayload = null;
         _vectorWrite.UpsertNamedAsync(
-                "articles_chunks", Arg.Any<ulong>(), Arg.Any<IReadOnlyDictionary<string, float[]>>(),
+                "articles_chunks___no-tenant-claim__", Arg.Any<ulong>(), Arg.Any<IReadOnlyDictionary<string, float[]>>(),
                 Arg.Do<IReadOnlyDictionary<string, object>?>(p => capturedPayload = p))
             .Returns(Task.CompletedTask);
 
@@ -310,10 +316,11 @@ public class IntelligenceStoreConsumerTests
     }
 
     [Fact]
-    public async Task HandleCreated_WithNoOwnerFieldConfigured_NeverCallsFetchByKeyAsync()
+    public async Task HandleCreated_WithNoOwnerFieldConfigured_StillCallsFetchByKeyAsyncForTenant()
     {
-        // Efficiency/correctness: schemas without ownership (OwnerField == null) must not pay the
-        // extra Postgres read at all.
+        // Only the *owner*-value fetch is skipped when OwnerField is null — the *tenant*-value
+        // fetch (qdrant-tenant-collection-isolation) is unconditional on TenantColumn alone, so
+        // FetchByKeyAsync is still called exactly once for tenant re-derivation.
         await _registry.RegisterAsync(SchemaFixtures.ArticleSchema()); // BypassAuthorization() has OwnerField == null
 
         var longBody = new string('x', 3000);
@@ -325,7 +332,7 @@ public class IntelligenceStoreConsumerTests
 
         await BuildSut().HandleAsync(ev.Key, Serialize(ev), CancellationToken.None);
 
-        await _entities.DidNotReceive().FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>());
+        await _entities.Received(1).FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>());
     }
 
     [Fact]
@@ -338,7 +345,7 @@ public class IntelligenceStoreConsumerTests
             EventType:     EntityEventType.Deleted,
             TypeName:      "Article",
             Key:           key,
-            PayloadJson:   "{}",
+            PayloadJson:   """{"TenantId":"test-tenant"}""",
             TraceId:       "trace-3",
             SchemaVersion: "1",
             OccurredAt:    DateTimeOffset.UtcNow,
@@ -347,7 +354,7 @@ public class IntelligenceStoreConsumerTests
         var sut = BuildSut();
         await sut.HandleDeleteAsync(ev.Key, Serialize(ev), CancellationToken.None);
 
-        await _vectorWrite.Received(1).DeleteAsync("articles", Arg.Any<ulong>());
+        await _vectorWrite.Received(1).DeleteAsync("articles_test-tenant", Arg.Any<ulong>());
     }
 
     [Fact]
@@ -359,7 +366,7 @@ public class IntelligenceStoreConsumerTests
             EventType:     EntityEventType.Deleted,
             TypeName:      "Article",
             Key:           "article-123",
-            PayloadJson:   "{}",
+            PayloadJson:   """{"TenantId":"test-tenant"}""",
             TraceId:       "trace-chunk-delete",
             SchemaVersion: "1",
             OccurredAt:    DateTimeOffset.UtcNow,
@@ -369,7 +376,7 @@ public class IntelligenceStoreConsumerTests
         await sut.HandleDeleteAsync(ev.Key, Serialize(ev), CancellationToken.None);
 
         await _vectorWrite.Received(1).DeleteByFilterAsync(
-            "articles_chunks",
+            "articles_chunks_test-tenant",
             Arg.Is<Filter>(f => f.Must.Count == 1 && f.Must[0].Field.Key == "parent_id"
                               && f.Must[0].Field.Match.Keyword == "article-123"));
     }
@@ -468,7 +475,7 @@ public class IntelligenceStoreConsumerTests
 
         IReadOnlyDictionary<string, object>? capturedPayload = null;
         _vectorWrite.UpsertNamedAsync(
-            "articles",
+            "articles_test-tenant",
             Arg.Any<ulong>(),
             Arg.Any<IReadOnlyDictionary<string, float[]>>(),
             Arg.Do<IReadOnlyDictionary<string, object>?>(p => capturedPayload = p))
@@ -541,7 +548,8 @@ public class IntelligenceStoreConsumerTests
             FkColumns      = [],
             VectorFields   = [],
             ChunkFields    = [new ChunkDescriptor("Body", 50, 10, "text-embedding-3-small", 1536)],
-            Relations      = []
+            Relations      = [],
+            TenantColumn   = "TenantId"
         };
         await _registry.RegisterAsync(customSchema);
 
@@ -559,7 +567,7 @@ public class IntelligenceStoreConsumerTests
 
         var upsertCount = 0;
         _vectorWrite.UpsertNamedAsync(
-            "docs_chunks",
+            "docs_chunks_test-tenant",
             Arg.Any<ulong>(),
             Arg.Any<IReadOnlyDictionary<string, float[]>>(),
             Arg.Any<IReadOnlyDictionary<string, object>?>())
@@ -595,7 +603,7 @@ public class IntelligenceStoreConsumerTests
 
         IReadOnlyDictionary<string, object>? capturedPayload = null;
         _vectorWrite.UpsertNamedAsync(
-            "articles",
+            "articles_test-tenant",
             Arg.Any<ulong>(),
             Arg.Any<IReadOnlyDictionary<string, float[]>>(),
             Arg.Do<IReadOnlyDictionary<string, object>?>(p => capturedPayload = p))
@@ -761,7 +769,7 @@ public class IntelligenceStoreConsumerTests
         await BuildSut().DispatchAsync(ev.Key, Serialize(ev), CancellationToken.None);
 
         await _vectorWrite.Received().UpsertNamedAsync(
-            "articles",
+            "articles_test-tenant",
             Arg.Any<ulong>(),
             Arg.Any<IReadOnlyDictionary<string, float[]>>(),
             Arg.Any<IReadOnlyDictionary<string, object>?>());
@@ -778,7 +786,7 @@ public class IntelligenceStoreConsumerTests
             EventType:     EntityEventType.Deleted,
             TypeName:      "Article",
             Key:           key,
-            PayloadJson:   "{}",
+            PayloadJson:   """{"TenantId":"test-tenant"}""",
             TraceId:       "trace-dispatch-2",
             SchemaVersion: "1",
             OccurredAt:    DateTimeOffset.UtcNow,
@@ -786,7 +794,7 @@ public class IntelligenceStoreConsumerTests
 
         await BuildSut().DispatchAsync(ev.Key, Serialize(ev), CancellationToken.None);
 
-        await _vectorWrite.Received(1).DeleteAsync("articles", Arg.Any<ulong>());
+        await _vectorWrite.Received(1).DeleteAsync("articles_test-tenant", Arg.Any<ulong>());
         await _vectorWrite.DidNotReceive().UpsertNamedAsync(
             Arg.Any<string>(), Arg.Any<ulong>(),
             Arg.Any<IReadOnlyDictionary<string, float[]>>(), Arg.Any<IReadOnlyDictionary<string, object>?>());

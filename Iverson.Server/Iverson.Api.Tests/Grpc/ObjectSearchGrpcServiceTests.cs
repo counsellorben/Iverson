@@ -65,7 +65,7 @@ public class ObjectSearchGrpcServiceTests
         _sut = new ObjectSearchGrpcService(
             _registry, _search, _vector, _embedding,
             NullLogger<ObjectSearchGrpcService>.Instance,
-            _actingUserAccessor, _authEvaluator);
+            _actingUserAccessor, _authEvaluator, new QdrantTenantScope("test-signing-key-0123456789abcdef"));
     }
 
     private static (IServerStreamWriter<T> writer, List<T> written) MakeStream<T>()
@@ -1074,7 +1074,7 @@ public class ObjectSearchGrpcServiceTests
             Id: 1, Score: 0.95,
             Payload: new Dictionary<string, string> { ["title"] = "Great Article" });
 
-        _vector.SearchNamedAsync("articles", "title_vector", fakeVector, Arg.Any<ulong>(), Arg.Any<Filter>())
+        _vector.SearchNamedAsync("articles_test-tenant", "title_vector", fakeVector, Arg.Any<ulong>(), Arg.Any<Filter>())
                .Returns(new List<VectorSearchResult> { vectorResult }.AsReadOnly());
 
         var (writer, written) = MakeStream<SearchResponse>();
@@ -1093,7 +1093,7 @@ public class ObjectSearchGrpcServiceTests
 
         var fakeVector = new float[768];
         _embedding.EmbedAsync("test query", Arg.Any<CancellationToken>()).Returns(fakeVector);
-        _vector.SearchNamedAsync("articles", "title_vector", fakeVector, Arg.Any<ulong>(), Arg.Any<Filter>())
+        _vector.SearchNamedAsync("articles_test-tenant", "title_vector", fakeVector, Arg.Any<ulong>(), Arg.Any<Filter>())
                .Returns(new List<VectorSearchResult>().AsReadOnly());
 
         var request = new SearchSimilarRequest { TypeName = "Article", Property = "Title", Query = "test query", TopK = 5 };
@@ -1171,10 +1171,11 @@ public class ObjectSearchGrpcServiceTests
     public async Task SearchSimilar_OwnershipRequired_AddsMatchKeywordConditionToFilter()
     {
         // No caller-supplied filter clause — also proves a fresh Filter is constructed when none exists.
-        // Both ownership and tenant conditions are added (ownership for restricted caller, tenant for boundary).
+        // The tenant boundary is enforced by collection routing (Task 3), not by a query-time filter
+        // condition, so only the ownership condition is expected here.
         await _registry.RegisterAsync(OwnedQdrantSchema("Owned", "OwnerId", bypassRole: "other-bypass"));
         _embedding.EmbedAsync("q", Arg.Any<CancellationToken>()).Returns(new float[768]);
-        _vector.SearchNamedAsync("owneds", "name_vector", Arg.Any<float[]>(), Arg.Any<ulong>(), Arg.Any<Filter>())
+        _vector.SearchNamedAsync("owneds_test-tenant", "name_vector", Arg.Any<float[]>(), Arg.Any<ulong>(), Arg.Any<Filter>())
                .Returns(new List<VectorSearchResult>().AsReadOnly());
 
         var (writer, _) = MakeStream<SearchResponse>();
@@ -1187,19 +1188,18 @@ public class ObjectSearchGrpcServiceTests
             .Subject;
         var captured = (Filter?)call.GetArguments()[4];
         captured.Should().NotBeNull();
-        captured!.Must.Should().HaveCount(2);
-        captured.Must.Should().Contain(c => c.Field.Key == "ownerId" && c.Field.Match.Keyword == "test-user");
-        captured.Must.Should().Contain(c => c.Field.Key == "tenantId" && c.Field.Match.Keyword == "test-tenant");
+        captured!.Must.Should().ContainSingle(c => c.Field.Key == "ownerId" && c.Field.Match.Keyword == "test-user");
     }
 
     [Fact]
     public async Task SearchSimilar_BypassRole_NoOwnershipFilterAdded()
     {
-        // Bypass role short-circuits ownership filtering, but tenant boundary is additive and still applies
-        // — the filter must contain the tenant condition without an ownership condition.
+        // Bypass role short-circuits ownership filtering, and the tenant boundary is enforced by
+        // collection routing (Task 3) rather than a query-time filter condition — with no
+        // caller-supplied filter clause either, no Filter is built at all.
         await _registry.RegisterAsync(OwnedQdrantSchema("Owned", "OwnerId")); // bypassRole defaults to "test-bypass"
         _embedding.EmbedAsync("q", Arg.Any<CancellationToken>()).Returns(new float[768]);
-        _vector.SearchNamedAsync("owneds", "name_vector", Arg.Any<float[]>(), Arg.Any<ulong>(), Arg.Any<Filter>())
+        _vector.SearchNamedAsync("owneds_test-tenant", "name_vector", Arg.Any<float[]>(), Arg.Any<ulong>(), Arg.Any<Filter>())
                .Returns(new List<VectorSearchResult>().AsReadOnly());
 
         var (writer, _) = MakeStream<SearchResponse>();
@@ -1211,8 +1211,7 @@ public class ObjectSearchGrpcServiceTests
             .Should().ContainSingle(c => c.GetMethodInfo().Name == nameof(IVectorQueryService.SearchNamedAsync))
             .Subject;
         var captured = (Filter?)call.GetArguments()[4];
-        captured.Should().NotBeNull();
-        captured!.Must.Should().ContainSingle(c => c.Field.Key == "tenantId" && c.Field.Match.Keyword == "test-tenant");
+        captured.Should().BeNull();
     }
 
     [Fact]
@@ -1261,7 +1260,7 @@ public class ObjectSearchGrpcServiceTests
         var vectorResult = new VectorSearchResult(
             Id: 1, Score: 0.9,
             Payload: new Dictionary<string, string> { ["key"] = "point-key-1", ["name"] = "visible", ["secret"] = "hidden" });
-        _vector.SearchNamedAsync("owneds", "name_vector", Arg.Any<float[]>(), Arg.Any<ulong>(), Arg.Any<Filter>())
+        _vector.SearchNamedAsync("owneds_test-tenant", "name_vector", Arg.Any<float[]>(), Arg.Any<ulong>(), Arg.Any<Filter>())
                .Returns(new List<VectorSearchResult> { vectorResult }.AsReadOnly());
 
         var (writer, written) = MakeStream<SearchResponse>();
@@ -1315,7 +1314,7 @@ public class ObjectSearchGrpcServiceTests
             Id: 42, Score: 0.88,
             Payload: new Dictionary<string, string> { ["text"] = "passage text", ["parent_id"] = "parent-id-123" });
 
-        _vector.SearchNamedAsync("articles_chunks", "body_vector", fakeVector, Arg.Any<ulong>(), Arg.Any<Filter>())
+        _vector.SearchNamedAsync("articles_chunks_test-tenant", "body_vector", fakeVector, Arg.Any<ulong>(), Arg.Any<Filter>())
                .Returns(new List<VectorSearchResult> { chunkResult }.AsReadOnly());
 
         var (writer, written) = MakeStream<ChunkSearchResponse>();
@@ -1324,7 +1323,7 @@ public class ObjectSearchGrpcServiceTests
             writer, TestServerCallContext.Create());
 
         await _vector.Received(1).SearchNamedAsync(
-            "articles_chunks", Arg.Any<string>(), Arg.Any<float[]>(), Arg.Any<ulong>(), Arg.Any<Filter>());
+            "articles_chunks_test-tenant", Arg.Any<string>(), Arg.Any<float[]>(), Arg.Any<ulong>(), Arg.Any<Filter>());
         written.Should().HaveCount(1);
     }
 
@@ -1362,7 +1361,7 @@ public class ObjectSearchGrpcServiceTests
     {
         await _registry.RegisterAsync(SchemaFixtures.ArticleSchema());
         _embedding.EmbedAsync("q", Arg.Any<CancellationToken>()).Returns(new float[768]);
-        _vector.SearchNamedAsync("articles_chunks", "body_vector", Arg.Any<float[]>(), Arg.Any<ulong>(), Arg.Any<Filter>())
+        _vector.SearchNamedAsync("articles_chunks_test-tenant", "body_vector", Arg.Any<float[]>(), Arg.Any<ulong>(), Arg.Any<Filter>())
                .Returns(new List<VectorSearchResult>().AsReadOnly());
 
         var request = new SearchChunksRequest { TypeName = "Article", Property = "Body", Query = "q", TopK = 5 };
@@ -1382,12 +1381,10 @@ public class ObjectSearchGrpcServiceTests
             .Subject;
         var captured = (Filter?)call.GetArguments()[4];
         captured.Should().NotBeNull();
-        // Both parent_id filter (from user-supplied filter) and tenant filter (from authorization boundary)
-        captured!.Must.Should().HaveCount(2);
-        captured.Must.Should().Contain(c =>
+        // Only the user-supplied parent_id filter — the tenant boundary is enforced by collection
+        // routing (Task 3), not a query-time filter condition.
+        captured!.Must.Should().ContainSingle(c =>
             c.Field.Key == "parent_id" && c.Field.Match.Keyword == "parent-123");
-        captured.Must.Should().Contain(c =>
-            c.Field.Key == "tenantId" && c.Field.Match.Keyword == "test-tenant");
     }
 
     [Fact]
@@ -1522,7 +1519,7 @@ public class ObjectSearchGrpcServiceTests
         var fieldPermissions = new List<Iverson.Api.Schema.FieldPermission> { new("Name", ["admin"], []) };
         await _registry.RegisterAsync(OwnedQdrantSchema("Owned", null, fieldPermissions));
         _embedding.EmbedAsync("q", Arg.Any<CancellationToken>()).Returns(new float[768]);
-        _vector.SearchNamedAsync("owneds_chunks", "secret_vector", Arg.Any<float[]>(), Arg.Any<ulong>(), Arg.Any<Filter>())
+        _vector.SearchNamedAsync("owneds_chunks_test-tenant", "secret_vector", Arg.Any<float[]>(), Arg.Any<ulong>(), Arg.Any<Filter>())
                .Returns(new List<VectorSearchResult>().AsReadOnly());
 
         var request = new SearchChunksRequest { TypeName = "Owned", Property = "Secret", Query = "q" };
@@ -1543,7 +1540,7 @@ public class ObjectSearchGrpcServiceTests
     {
         await _registry.RegisterAsync(OwnedQdrantSchema("Owned", "OwnerId", bypassRole: "other-bypass"));
         _embedding.EmbedAsync("q", Arg.Any<CancellationToken>()).Returns(new float[768]);
-        _vector.SearchNamedAsync("owneds_chunks", "secret_vector", Arg.Any<float[]>(), Arg.Any<ulong>(), Arg.Any<Filter>())
+        _vector.SearchNamedAsync("owneds_chunks_test-tenant", "secret_vector", Arg.Any<float[]>(), Arg.Any<ulong>(), Arg.Any<Filter>())
                .Returns(new List<VectorSearchResult>().AsReadOnly());
 
         var request = new SearchChunksRequest { TypeName = "Owned", Property = "Secret", Query = "q" };

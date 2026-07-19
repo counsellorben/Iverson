@@ -49,6 +49,13 @@ public sealed class ObjectSearchVectorIntegrationTests : IClassFixture<QdrantGrp
     private readonly QdrantCollectionManager _mgr;
     private readonly IEmbeddingService _embedding = Substitute.For<IEmbeddingService>();
     private readonly SchemaRegistry _registry;
+    private readonly QdrantTenantScope _tenantScope = new("test-integration-signing-key-0123456789abcdef");
+
+    // Matches ActingUserFixtures.Principal's default tenant_id claim — every tenant-qualified
+    // collection name in this test file is resolved through _tenantScope with this value so
+    // direct test-setup writes land in the same physical collection SearchSimilar/SearchChunks
+    // will query via the RPC layer.
+    private const string TestTenant = "test-tenant";
 
     public ObjectSearchVectorIntegrationTests(QdrantGrpcContainerFixture fx)
     {
@@ -65,7 +72,7 @@ public sealed class ObjectSearchVectorIntegrationTests : IClassFixture<QdrantGrp
         new(_registry, Substitute.For<IEngagementStoreSearchService>(), _vector, _embedding,
             NullLogger<ObjectSearchGrpcService>.Instance,
             new ActingUserAccessor { ActingUser = ActingUserFixtures.Principal("test-user", "test-bypass") },
-            new RowFieldAuthorizationEvaluator());
+            new RowFieldAuthorizationEvaluator(), _tenantScope);
 
     private static (IServerStreamWriter<T> writer, List<T> written) MakeStream<T>()
     {
@@ -88,16 +95,17 @@ public sealed class ObjectSearchVectorIntegrationTests : IClassFixture<QdrantGrp
             ScalarColumns = [.. baseSchema.ScalarColumns, new ColumnDescriptor("WordCount", "integer", false)]
         };
         await _registry.RegisterAsync(schema);
+        var physicalCollection = _tenantScope.ResolveCollectionName(collection, TestTenant, isChunks: false);
         await _mgr.ApplyCollectionAsync(new CollectionSchema(
-            collection, [new NamedVector("title_vector", 4)], []));
+            physicalCollection, [new NamedVector("title_vector", 4)], []));
 
         var vec = new float[] { 0.1f, 0.2f, 0.3f, 0.4f };
         _embedding.EmbedAsync(Arg.Any<string>(), Arg.Any<CancellationToken>()).Returns(vec);
 
-        await _vector.UpsertNamedAsync(collection, 1,
+        await _vector.UpsertNamedAsync(physicalCollection, 1,
             new Dictionary<string, float[]> { ["title_vector"] = vec },
             new Dictionary<string, object> { ["wordCount"] = 100L, ["tenantId"] = "test-tenant" });
-        await _vector.UpsertNamedAsync(collection, 2,
+        await _vector.UpsertNamedAsync(physicalCollection, 2,
             new Dictionary<string, float[]> { ["title_vector"] = vec },
             new Dictionary<string, object> { ["wordCount"] = 900L, ["tenantId"] = "test-tenant" });
 
@@ -122,7 +130,7 @@ public sealed class ObjectSearchVectorIntegrationTests : IClassFixture<QdrantGrp
         var schema = SchemaFixtures.ArticleSchema() with { CollectionName = collection };
         await _registry.RegisterAsync(schema);
 
-        var chunksCollection = collection + "_chunks";
+        var chunksCollection = _tenantScope.ResolveCollectionName(collection, TestTenant, isChunks: true);
         await _mgr.ApplyCollectionAsync(new CollectionSchema(
             chunksCollection, [new NamedVector("body_vector", 4)],
             [new PayloadIndex("parent_id", PayloadIndexKind.Keyword)]));
