@@ -8,10 +8,12 @@ namespace Iverson.Vector;
 
 public class QdrantCollectionManager(
     QdrantClient client,
+    string apiKey,
     ILogger<QdrantCollectionManager> logger) : IVectorSchemaManager
 {
     public async Task EnsureCollectionAsync(string collectionName, ulong vectorSize)
     {
+        using var _ = RequestHeaders.Use("api-key", apiKey);
         using var activity = Telemetry.Source.StartActivity("qdrant.ensure_collection", ActivityKind.Client);
         activity?.SetTag("db.system", "qdrant");
         activity?.SetTag("qdrant.collection", collectionName);
@@ -38,6 +40,7 @@ public class QdrantCollectionManager(
 
     public async Task ApplyCollectionAsync(CollectionSchema schema)
     {
+        using var _ = RequestHeaders.Use("api-key", apiKey);
         using var activity = Telemetry.Source.StartActivity("qdrant.apply_collection", ActivityKind.Client);
         activity?.SetTag("db.system", "qdrant");
         activity?.SetTag("qdrant.collection", schema.CollectionName);

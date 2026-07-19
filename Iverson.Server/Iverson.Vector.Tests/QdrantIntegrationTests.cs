@@ -33,7 +33,7 @@ public sealed class QdrantContainerFixture : IAsyncLifetime
 
         var qdrantClient  = new QdrantClient(host, mappedPort, https: false);
         Service           = new QdrantVectorService(qdrantClient);
-        CollectionManager = new QdrantCollectionManager(qdrantClient, NullLogger<QdrantCollectionManager>.Instance);
+        CollectionManager = new QdrantCollectionManager(qdrantClient, "test-api-key", NullLogger<QdrantCollectionManager>.Instance);
     }
 
     public async Task DisposeAsync() => await _container.DisposeAsync();

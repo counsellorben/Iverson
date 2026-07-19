@@ -79,7 +79,7 @@ public sealed class AllStoresContainerFixture : IAsyncLifetime
         var qdrantClient = new QdrantClient(
             _qdrant.Hostname, _qdrant.GetMappedPublicPort(QdrantGrpcPort), https: false);
         QdrantCollectionManager = new QdrantCollectionManager(
-            qdrantClient, NullLogger<QdrantCollectionManager>.Instance);
+            qdrantClient, "test-api-key", NullLogger<QdrantCollectionManager>.Instance);
 
         var starRocksConnectionString = new MySqlConnectionStringBuilder
         {
