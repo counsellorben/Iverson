@@ -176,7 +176,17 @@ public sealed class ObjectSearchGrpcService(
         IReadOnlyList<VectorSearchResult> results;
         using (RequestHeaders.Use("api-key", tenantScope.MintScopedApiKey(collectionName, readOnly: true)))
         {
-            results = await vector.SearchNamedAsync(collectionName, vectorName, queryVector, topK, filter);
+            try
+            {
+                results = await vector.SearchNamedAsync(collectionName, vectorName, queryVector, topK, filter);
+            }
+            catch (RpcException ex) when (ex.StatusCode == StatusCode.NotFound)
+            {
+                // Tenant's collection was never created (no writes yet) — treat as empty result
+                // set rather than creating a collection just to search it. See design spec
+                // §"Reads against a tenant with no collection yet".
+                results = [];
+            }
         }
 
         foreach (var r in results)
@@ -248,7 +258,17 @@ public sealed class ObjectSearchGrpcService(
         IReadOnlyList<VectorSearchResult> results;
         using (RequestHeaders.Use("api-key", tenantScope.MintScopedApiKey(chunksCollection, readOnly: true)))
         {
-            results = await vector.SearchNamedAsync(chunksCollection, vectorName, queryVector, topK, filter);
+            try
+            {
+                results = await vector.SearchNamedAsync(chunksCollection, vectorName, queryVector, topK, filter);
+            }
+            catch (RpcException ex) when (ex.StatusCode == StatusCode.NotFound)
+            {
+                // Tenant's chunks collection was never created (no writes yet) — treat as empty
+                // result set rather than creating a collection just to search it. See design spec
+                // §"Reads against a tenant with no collection yet".
+                results = [];
+            }
         }
 
         foreach (var r in results)

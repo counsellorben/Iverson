@@ -1274,6 +1274,27 @@ public class ObjectSearchGrpcServiceTests
         written[0].Data.Fields.Should().NotContainKey("secret");
     }
 
+    [Fact]
+    public async Task SearchSimilar_QdrantThrowsNotFound_ReturnsEmptyStream()
+    {
+        // Design spec: a brand-new tenant whose collection was never created via
+        // EnsureCollectionAsync gets a Qdrant NotFound on its very first search — this must be
+        // treated as an empty result set, not surfaced as a raw RpcException to the caller.
+        await _registry.RegisterAsync(SchemaFixtures.ArticleSchema());
+
+        var fakeVector = new float[768];
+        _embedding.EmbedAsync("test query", Arg.Any<CancellationToken>()).Returns(fakeVector);
+        _vector.SearchNamedAsync("articles_test-tenant", "title_vector", fakeVector, Arg.Any<ulong>(), Arg.Any<Filter>())
+               .Returns<Task<IReadOnlyList<VectorSearchResult>>>(_ => throw new RpcException(new Status(StatusCode.NotFound, "collection not found")));
+
+        var (writer, written) = MakeStream<SearchResponse>();
+        await _sut.SearchSimilar(
+            new SearchSimilarRequest { TypeName = "Article", Property = "Title", Query = "test query", TopK = 5 },
+            writer, TestServerCallContext.Create());
+
+        written.Should().BeEmpty();
+    }
+
     // ── SearchChunks — authorization ───────────────────────────────────────────
 
     [Fact]
@@ -1325,6 +1346,27 @@ public class ObjectSearchGrpcServiceTests
         await _vector.Received(1).SearchNamedAsync(
             "articles_chunks_test-tenant", Arg.Any<string>(), Arg.Any<float[]>(), Arg.Any<ulong>(), Arg.Any<Filter>());
         written.Should().HaveCount(1);
+    }
+
+    [Fact]
+    public async Task SearchChunks_QdrantThrowsNotFound_ReturnsEmptyStream()
+    {
+        // Design spec: a brand-new tenant whose chunks collection was never created via
+        // EnsureCollectionAsync gets a Qdrant NotFound on its very first search — this must be
+        // treated as an empty result set, not surfaced as a raw RpcException to the caller.
+        await _registry.RegisterAsync(SchemaFixtures.ArticleSchema());
+
+        var fakeVector = new float[768];
+        _embedding.EmbedAsync("test query", Arg.Any<CancellationToken>()).Returns(fakeVector);
+        _vector.SearchNamedAsync("articles_chunks_test-tenant", "body_vector", fakeVector, Arg.Any<ulong>(), Arg.Any<Filter>())
+               .Returns<Task<IReadOnlyList<VectorSearchResult>>>(_ => throw new RpcException(new Status(StatusCode.NotFound, "collection not found")));
+
+        var (writer, written) = MakeStream<ChunkSearchResponse>();
+        await _sut.SearchChunks(
+            new SearchChunksRequest { TypeName = "Article", Property = "Body", Query = "test query", TopK = 5 },
+            writer, TestServerCallContext.Create());
+
+        written.Should().BeEmpty();
     }
 
     [Fact]
