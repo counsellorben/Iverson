@@ -5,7 +5,6 @@ using Iverson.Api.Schema;
 using Iverson.Client.Contracts;
 using Iverson.Embeddings;
 using Iverson.Sql;
-using Iverson.StarRocks;
 using Microsoft.Extensions.Logging.Abstractions;
 using NSubstitute;
 using Xunit;
@@ -16,7 +15,6 @@ public class SchemaRegistrationOrchestratorTests
 {
     private readonly IRecordStoreQueryExecutor _sql = Substitute.For<IRecordStoreQueryExecutor>();
     private readonly IRecordStoreSchemaManager _schemaManager = Substitute.For<IRecordStoreSchemaManager>();
-    private readonly IEngagementStoreSchemaManager _starRocks = Substitute.For<IEngagementStoreSchemaManager>();
     private readonly IEmbeddingService _embedding = Substitute.For<IEmbeddingService>();
     private readonly SchemaRegistry _registry;
     private readonly SchemaRegistrationOrchestrator _sut;
@@ -25,10 +23,9 @@ public class SchemaRegistrationOrchestratorTests
     {
         _embedding.Dimension.Returns(768);
         _embedding.ModelId.Returns("nomic-embed-text");
-        _starRocks.ApplyTableAsync(Arg.Any<StarRocksTableSchema>()).Returns(Task.CompletedTask);
         _registry = new SchemaRegistry(new SchemaRegistryRepository(_sql), NullLogger<SchemaRegistry>.Instance);
         _sut = new SchemaRegistrationOrchestrator(
-            _schemaManager, _starRocks, _embedding, _registry);
+            _schemaManager, _embedding, _registry);
     }
 
     private static TypeDescriptor SimpleType(string name, params string[] extraScalars)
@@ -132,17 +129,6 @@ public class SchemaRegistrationOrchestratorTests
         var act = () => _sut.RegisterAsync(new SchemaRequest { RootType = td }, CancellationToken.None);
 
         await act.Should().NotThrowAsync();
-    }
-
-    [Fact]
-    public async Task RegisterAsync_CallsApplyTableAsync_WithMatchingTableName()
-    {
-        var request = new SchemaRequest { RootType = SimpleType("Author", "Name") };
-
-        await _sut.RegisterAsync(request, CancellationToken.None);
-
-        await _starRocks.Received(1).ApplyTableAsync(
-            Arg.Is<StarRocksTableSchema>(s => s.TableName == "authors"));
     }
 
     [Fact]

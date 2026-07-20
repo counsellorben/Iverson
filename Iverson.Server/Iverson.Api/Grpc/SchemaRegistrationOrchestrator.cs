@@ -3,7 +3,6 @@ using Iverson.Api.Schema;
 using Iverson.Client.Contracts;
 using Iverson.Embeddings;
 using Iverson.Sql;
-using Iverson.StarRocks;
 using Grpc.Core;
 
 namespace Iverson.Api.Grpc;
@@ -15,7 +14,6 @@ public interface ISchemaRegistrationOrchestrator
 
 public sealed class SchemaRegistrationOrchestrator(
     IRecordStoreSchemaManager schemaManager,
-    IEngagementStoreSchemaManager starRocks,
     IEmbeddingService embedding,
     SchemaRegistry registry)
     : ISchemaRegistrationOrchestrator
@@ -55,16 +53,6 @@ public sealed class SchemaRegistrationOrchestrator(
             ValidateFieldReference(descriptor, descriptor.TenantColumn, "tenant_field");
 
             await schemaManager.ApplySchemaAsync(SchemaBuilder.ToTableSchema(descriptor));
-
-            try
-            {
-                await starRocks.ApplyTableAsync(SchemaBuilder.ToStarRocksTableSchema(descriptor));
-            }
-            catch (StarRocksNotReadyException ex)
-            {
-                throw new RpcException(new Status(StatusCode.Unavailable,
-                    $"StarRocks is not ready: {ex.Message}"));
-            }
 
             await registry.RegisterAsync(descriptor);
             registered.Add(descriptor.TypeName);

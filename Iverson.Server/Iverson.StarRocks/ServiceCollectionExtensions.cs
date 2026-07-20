@@ -19,13 +19,6 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<IEngagementStoreEntityStore>(sp => sp.GetRequiredService<StarRocksRepository>());
         services.AddSingleton<IEngagementStoreSearchService>(sp => sp.GetRequiredService<StarRocksRepository>());
 
-        services.AddSingleton(sp =>
-        {
-            var logger = sp.GetRequiredService<ILogger<StarRocksSchemaManager>>();
-            return new StarRocksSchemaManager(connectionString, logger, resilienceOptions);
-        });
-        services.AddSingleton<IEngagementStoreSchemaManager>(sp => sp.GetRequiredService<StarRocksSchemaManager>());
-
         services.AddSingleton(new StarRocksHealthChecker(connectionString));
         services.AddSingleton<IEngagementStoreHealthCheck>(sp => sp.GetRequiredService<StarRocksHealthChecker>());
 

@@ -68,10 +68,4 @@ public class StarRocksSchemaManagerTests
 
         ddl.Should().NotContain("ORDER BY");
     }
-
-    [Fact]
-    public void StarRocksSchemaManager_ImplementsIStarRocksSchemaManager()
-    {
-        typeof(StarRocksSchemaManager).Should().Implement<IEngagementStoreSchemaManager>();
-    }
 }

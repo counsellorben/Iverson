@@ -11,7 +11,6 @@ using Iverson.Client.Contracts;
 using Iverson.Embeddings;
 using Iverson.Events;
 using Iverson.Sql;
-using Iverson.StarRocks;
 using Microsoft.Extensions.Logging.Abstractions;
 using NSubstitute;
 using Xunit;
@@ -27,7 +26,6 @@ public class ObjectMappingGrpcServiceTests
     private readonly IEventProducer _events;
     private readonly SchemaRegistry _registry;
     private readonly IEmbeddingService _embedding;
-    private readonly IEngagementStoreSchemaManager _starRocks;
     private readonly IActingUserAccessor _actingUserAccessor;
     private readonly IRowFieldAuthorizationEvaluator _authEvaluator = new RowFieldAuthorizationEvaluator();
     private readonly IOutboxPublisher _outboxPublisher;
@@ -67,16 +65,13 @@ public class ObjectMappingGrpcServiceTests
         _embedding.Dimension.Returns(768);
         _embedding.ModelId.Returns("nomic-embed-text");
 
-        _starRocks = Substitute.For<IEngagementStoreSchemaManager>();
-        _starRocks.ApplyTableAsync(Arg.Any<StarRocksTableSchema>()).Returns(Task.CompletedTask);
-
         _registry = new SchemaRegistry(new SchemaRegistryRepository(_sql), NullLogger<SchemaRegistry>.Instance);
         _actingUserAccessor = new ActingUserAccessor
             { ActingUser = ActingUserFixtures.Principal("test-user", "test-bypass") };
         _outboxPublisher = new OutboxPublisher(_events, new OutboxWriter(ReconciliationSchema.TableName, _sql, _txRunner), NullLogger<OutboxPublisher>.Instance);
         _relationResolver = new EntityRelationResolver(_registry, _entities, _authEvaluator);
         _schemaRegistration = new SchemaRegistrationOrchestrator(
-            _schemaManager, _starRocks, _embedding, _registry);
+            _schemaManager, _embedding, _registry);
         _sut = new ObjectMappingGrpcService(
             _entities, _txRunner, _outboxPublisher, _registry,
             new RelationValidator(_registry), new EntityKeyAccessor(),

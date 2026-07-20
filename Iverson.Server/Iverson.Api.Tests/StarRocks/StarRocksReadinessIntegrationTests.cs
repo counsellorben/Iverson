@@ -49,20 +49,39 @@ public sealed class StarRocksReadinessIntegrationTests : IAsyncLifetime
         // FE/BE bootstrap may still be in progress — this is the exact race
         // StarRocksContainerFixture's WaitUntilQueryReadyAsync exists to hide from every
         // other integration test. Here we skip that external gate on purpose.
-        var schemaManager = new StarRocksSchemaManager(
-            _connectionString,
-            NullLogger<StarRocksSchemaManager>.Instance,
+        //
+        // Connect with no default database selected (mirrors the pre-Task-5
+        // StarRocksSchemaManager.EnsureDatabaseAsync, which used the same trick) so the very
+        // first statement executed through StarRocksRepository's readiness-gated RunAsync can
+        // itself be a CREATE DATABASE — proving the gate absorbs the FE-ready-but-BE-not-ready
+        // race for a real, data-touching operation without requiring the target database to
+        // already exist. (EnsureTenantProvisionedAsync is not used here: its GRANT statements
+        // require a pre-existing `iverson_app` user that this bare test container never creates.)
+        var adminConnectionString = new MySqlConnectionStringBuilder(_connectionString) { Database = "" }.ToString();
+        var repo = new StarRocksRepository(
+            adminConnectionString,
+            NullLogger<StarRocksRepository>.Instance,
             new StarRocksResilienceOptions { BackendReadyTimeout = TimeSpan.FromMinutes(3) });
 
-        var schema = new StarRocksTableSchema(
-            "readiness_probe",
-            new StarRocksColumnSchema("Id", "VARCHAR(36)", false),
-            [new StarRocksColumnSchema("Name", "STRING", false)]);
+        var qualifiedTable = "`iverson_readiness_test`.`readiness_probe`";
+        var createTableDdl = $"""
+            CREATE TABLE IF NOT EXISTS {qualifiedTable} (
+                `Id` VARCHAR(36) NOT NULL,
+                `Name` STRING NOT NULL
+            ) ENGINE=OLAP
+            PRIMARY KEY(`Id`)
+            DISTRIBUTED BY HASH(`Id`) BUCKETS 4
+            PROPERTIES ("replication_num" = "1")
+            """;
 
-        var act = async () => await schemaManager.ApplyTableAsync(schema);
+        var act = async () =>
+        {
+            await repo.ExecuteAsync("CREATE DATABASE IF NOT EXISTS `iverson_readiness_test`");
+            await repo.ExecuteAsync(createTableDdl);
+        };
 
         await act.Should().NotThrowAsync(
-            "the schema manager's own readiness gate should absorb the FE/BE startup race internally");
+            "the repository's own readiness gate should absorb the FE/BE startup race internally");
 
         var healthChecker = new StarRocksHealthChecker(_connectionString);
         var healthy = await healthChecker.IsHealthyAsync();

@@ -20,7 +20,6 @@ public sealed class StarRocksContainerFixture : IAsyncLifetime
 
     public string ConnectionString { get; private set; } = null!;
     public StarRocksRepository Repository { get; private set; } = null!;
-    public StarRocksSchemaManager SchemaManager { get; private set; } = null!;
 
     public async Task InitializeAsync()
     {
@@ -42,7 +41,6 @@ public sealed class StarRocksContainerFixture : IAsyncLifetime
         await WaitUntilQueryReadyAsync(TimeSpan.FromMinutes(3));
 
         Repository = new StarRocksRepository(ConnectionString, NullLogger<StarRocksRepository>.Instance);
-        SchemaManager = new StarRocksSchemaManager(ConnectionString, NullLogger<StarRocksSchemaManager>.Instance);
     }
 
     private async Task WaitUntilQueryReadyAsync(TimeSpan timeout)
@@ -64,11 +62,9 @@ public sealed class StarRocksContainerFixture : IAsyncLifetime
                 await using var cmd = new MySqlCommand("SELECT 1", conn);
                 await cmd.ExecuteScalarAsync();
 
-                // StarRocksRepository.ApplyTableAsync creates the target database lazily
-                // (via its own private EnsureDatabaseAsync), but plain QueryAsync/ExecuteAsync
-                // calls do not — they connect straight to `iverson_test`, which doesn't exist
-                // yet on a fresh container. Create it here so every later test (whether or
-                // not it goes through ApplyTableAsync first) can query against a real schema.
+                // Plain QueryAsync/ExecuteAsync calls connect straight to `iverson_test`, which
+                // doesn't exist yet on a fresh container. Create it here so every later test can
+                // query against a real schema.
                 await using var createCmd = new MySqlCommand($"CREATE DATABASE IF NOT EXISTS `{dbName}`", conn);
                 await createCmd.ExecuteNonQueryAsync();
 
@@ -123,7 +119,6 @@ public sealed class StarRocksIntegrationTests(StarRocksContainerFixture fixture)
     : IClassFixture<StarRocksContainerFixture>
 {
     private readonly StarRocksRepository _repo = fixture.Repository;
-    private readonly StarRocksSchemaManager _schemaManager = fixture.SchemaManager;
 
     // Use unique table names per test to avoid state leakage — the container and its
     // schema persist for the whole test class (IClassFixture), and StarRocks has no
@@ -147,7 +142,7 @@ public sealed class StarRocksIntegrationTests(StarRocksContainerFixture fixture)
                 new StarRocksColumnSchema("PublishedAt", "DATETIME", true),
             ]);
 
-        await _schemaManager.ApplyTableAsync(schema);
+        await repo.ExecuteAsync(StarRocksSchemaManager.BuildCreateTableDdl(schema, $"`{tableName}`"));
 
         foreach (var row in rows)
         {
@@ -280,7 +275,7 @@ public sealed class StarRocksIntegrationTests(StarRocksContainerFixture fixture)
                 new StarRocksColumnSchema("AuthorId", "VARCHAR(36)", false),
                 new StarRocksColumnSchema("Title",    "STRING",      false),
             ]);
-        await _schemaManager.ApplyTableAsync(articleSchema);
+        await _repo.ExecuteAsync(StarRocksSchemaManager.BuildCreateTableDdl(articleSchema, $"`{articlesTable}`"));
         await _repo.ExecuteAsync(
             $"INSERT INTO `{articlesTable}` VALUES " +
             $"('aaaaaaaa-1111-1111-1111-111111111111', '11111111-1111-1111-1111-111111111111', 'Alice''s First Post')");
@@ -317,7 +312,7 @@ public sealed class StarRocksIntegrationTests(StarRocksContainerFixture fixture)
                 new StarRocksColumnSchema("AuthorId", "VARCHAR(36)", false),
                 new StarRocksColumnSchema("Title",    "STRING",      false),
             ]);
-        await _schemaManager.ApplyTableAsync(articleSchema);
+        await _repo.ExecuteAsync(StarRocksSchemaManager.BuildCreateTableDdl(articleSchema, $"`{articlesTable}`"));
         await _repo.ExecuteAsync(
             $"INSERT INTO `{articlesTable}` VALUES " +
             $"('aaaaaaaa-1111-1111-1111-111111111111', '11111111-1111-1111-1111-111111111111', 'Alice''s First Post')");
@@ -530,7 +525,7 @@ public sealed class StarRocksIntegrationTests(StarRocksContainerFixture fixture)
                 new StarRocksColumnSchema("AuthorId", "VARCHAR(36)", false),
                 new StarRocksColumnSchema("Title",    "STRING",      false),
             ]);
-        await _schemaManager.ApplyTableAsync(articleSchema);
+        await _repo.ExecuteAsync(StarRocksSchemaManager.BuildCreateTableDdl(articleSchema, $"`{articlesTable}`"));
         await _repo.ExecuteAsync(
             $"INSERT INTO `{articlesTable}` VALUES " +
             $"('aaaaaaaa-1111-1111-1111-111111111111', '11111111-1111-1111-1111-111111111111', 'Wanted Title'), " +

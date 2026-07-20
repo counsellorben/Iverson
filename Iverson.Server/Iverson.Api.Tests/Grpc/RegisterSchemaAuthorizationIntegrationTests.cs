@@ -55,7 +55,6 @@ public sealed class AllStoresContainerFixture : IAsyncLifetime
     public string ConnectionString { get; private set; } = null!;
     public PostgresRepository PostgresRepository { get; private set; } = null!;
     public PostgresSchemaManager PostgresSchemaManager { get; private set; } = null!;
-    public StarRocksSchemaManager StarRocksSchemaManager { get; private set; } = null!;
     public QdrantCollectionManager QdrantCollectionManager { get; private set; } = null!;
 
     public async Task InitializeAsync()
@@ -97,9 +96,6 @@ public sealed class AllStoresContainerFixture : IAsyncLifetime
         // faithfully from Iverson.StarRocks.Tests/StarRocksIntegrationTests.cs's
         // StarRocksContainerFixture.WaitUntilQueryReadyAsync, which found this the hard way.
         await WaitUntilStarRocksQueryReadyAsync(starRocksConnectionString, TimeSpan.FromMinutes(3));
-
-        StarRocksSchemaManager = new StarRocksSchemaManager(
-            starRocksConnectionString, NullLogger<StarRocksSchemaManager>.Instance);
     }
 
     private static async Task WaitUntilStarRocksQueryReadyAsync(string connectionString, TimeSpan timeout)
@@ -121,10 +117,9 @@ public sealed class AllStoresContainerFixture : IAsyncLifetime
                 await using var cmd = new MySqlCommand("SELECT 1", conn);
                 await cmd.ExecuteScalarAsync();
 
-                // StarRocksSchemaManager.ApplyTableAsync creates the target database lazily,
-                // but plain queries connect straight to `iverson_test`, which doesn't exist yet
-                // on a fresh container. Create it here so RegisterSchema's later
-                // ApplyTableAsync call (and anything else) can rely on the database existing.
+                // Plain queries connect straight to `iverson_test`, which doesn't exist yet on a
+                // fresh container. Create it here so anything that later queries against it can
+                // rely on the database existing.
                 await using var createCmd = new MySqlCommand($"CREATE DATABASE IF NOT EXISTS `{dbName}`", conn);
                 await createCmd.ExecuteNonQueryAsync();
 
@@ -183,9 +178,11 @@ public sealed class AllStoresContainerFixture : IAsyncLifetime
 
 /// <summary>
 /// Proves that the new <see cref="TypeDescriptor.Authorization"/>/<see cref="SchemaDescriptor.Authorization"/>
-/// metadata (added in Task 1, not yet wired into any live RPC) does not break the existing 3-store
+/// metadata (added in Task 1, not yet wired into any live RPC) does not break the existing
 /// schema-provisioning pipeline that <see cref="ObjectMappingGrpcService.RegisterSchema"/> drives against real
-/// Postgres/StarRocks/Qdrant, and that the metadata survives a real Postgres-backed JSON round trip.
+/// Postgres, and that the metadata survives a real Postgres-backed JSON round trip. (StarRocks table
+/// provisioning is now lazy/per-tenant on first write — see StarRocksRepository.EnsureTenantProvisionedAsync —
+/// so RegisterSchema itself no longer eagerly provisions StarRocks or Qdrant.)
 /// </summary>
 [Trait("Category", "Integration")]
 public sealed class RegisterSchemaAuthorizationIntegrationTests(AllStoresContainerFixture fixture)
@@ -208,12 +205,11 @@ public sealed class RegisterSchemaAuthorizationIntegrationTests(AllStoresContain
             NullLogger<SchemaRegistry>.Instance);
 
         // A real orchestrator (not a mock) is required here: this test's entire purpose is to
-        // prove RegisterSchema provisions all 3 real backing stores end to end, so the DDL/schema
-        // registration work it delegates to ISchemaRegistrationOrchestrator must actually run
-        // against the fixture's real Postgres/StarRocks/Qdrant managers.
+        // prove RegisterSchema provisions Postgres end to end, so the DDL/schema registration
+        // work it delegates to ISchemaRegistrationOrchestrator must actually run against the
+        // fixture's real Postgres schema manager.
         var schemaRegistration = new SchemaRegistrationOrchestrator(
             fixture.PostgresSchemaManager,
-            fixture.StarRocksSchemaManager,
             Substitute.For<IEmbeddingService>(),
             registry);
 

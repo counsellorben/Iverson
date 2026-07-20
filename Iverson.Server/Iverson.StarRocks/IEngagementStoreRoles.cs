@@ -8,11 +8,6 @@ public interface IEngagementStoreQueryExecutor
     Task<int> ExecuteAsync(string sql, object? param = null);
 }
 
-public interface IEngagementStoreSchemaManager
-{
-    Task ApplyTableAsync(StarRocksTableSchema schema);
-}
-
 public interface IEngagementStoreHealthCheck
 {
     Task<StarRocksHealthStatus> CheckHealthAsync();
