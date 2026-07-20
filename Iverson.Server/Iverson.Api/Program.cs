@@ -178,6 +178,7 @@ builder.Services.AddSingleton<SchemaRegistry>();
 builder.Services.AddSingleton<IRelationValidator, RelationValidator>();
 builder.Services.AddSingleton<IRowFieldAuthorizationEvaluator, RowFieldAuthorizationEvaluator>();
 builder.Services.AddSingleton<IEntityKeyAccessor, EntityKeyAccessor>();
+builder.Services.AddSingleton<AuditLog>();
 builder.Services.AddSingleton<IOutboxWriter>(sp => new OutboxWriter(
     Iverson.Api.Reconciliation.ReconciliationSchema.TableName,
     sp.GetRequiredService<IRecordStoreQueryExecutor>(),
