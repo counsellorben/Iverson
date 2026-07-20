@@ -216,6 +216,18 @@ public sealed class StarRocksRepository(
                 await conn.ExecuteAsync($"GRANT SELECT, INSERT, UPDATE, DELETE ON `{dbName}`.* TO ROLE `{roleName}`");
                 await conn.ExecuteAsync($"GRANT CREATE TABLE ON DATABASE `{dbName}` TO ROLE `{roleName}`");
                 await conn.ExecuteAsync($"GRANT `{roleName}` TO USER 'iverson_app'@'%'");
+
+                // user_admin alone has no CREATE TABLE privilege on any database, including one it
+                // just created — it's StarRocks's built-in user/role/grant-management role, not a
+                // schema-DDL role, and (being a built-in system role) it cannot be granted one
+                // either ("role user_admin is not mutable!"). The CREATE TABLE grant just issued
+                // above went to the tenant role, not to user_admin, and a role granted mid-session
+                // is not auto-activated — so the tenant role must be explicitly activated alongside
+                // user_admin before CREATE TABLE can succeed. Verified empirically: single-role
+                // `SET ROLE user_admin` throughout fails on CREATE TABLE with "Access denied ...
+                // CREATE TABLE privilege(s) on DATABASE ... Current role(s): [user_admin]"; this
+                // multi-role reactivation fixes it.
+                await conn.ExecuteAsync($"SET ROLE user_admin, `{roleName}`");
                 await conn.ExecuteAsync(createTableDdl);
                 return true;
             }
