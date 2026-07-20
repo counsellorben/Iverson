@@ -88,7 +88,7 @@ message CreateTenantRequest {
 
 ### gRPC service 2: `TenantAdminGrpcService` (delegated per-tenant admin)
 
-Gated by a new `TenantAdmin` policy — `groups` contains `tenant-admins` (mirrors `OperatorAuthorizationPolicy.IsSatisfiedBy`'s shape, group-check only, no scope-based fallback). Every RPC additionally scopes to the **caller's own** `tenant_id` claim (read via the same `IActingUserAccessor`/`ClaimsPrincipal` pattern every other tenant check in this codebase uses) — no request message carries a caller-suppliable `tenant_id` field, so a tenant-admin has no way to even name a different tenant.
+Gated by a new `TenantAdmin` policy — `groups` contains `tenant-admins` (mirrors `OperatorAuthorizationPolicy.IsSatisfiedBy`'s shape, group-check only, no scope-based fallback). Every RPC additionally scopes to the **caller's own** `tenant_id` claim, read from the **primary** authenticated principal (`context.GetHttpContext().User` — the same source `RegisterSchema` and the 3 `/admin/*` endpoints already use for `AuditLog`, and the same source the `Operator`/`TenantAdmin` policies read `groups` from), **not** `IActingUserAccessor.ActingUser` — that accessor is only populated when an acting-user-impersonation header is present (Part 4's service-acting-on-behalf-of-an-end-user pattern), which a tenant-admin calling directly via grpc-web with their own JWT has no reason to ever send. `AuditLog.AdminOperation`'s `actor` parameter for this service's RPCs is sourced the same way. No request message carries a caller-suppliable `tenant_id` field, so a tenant-admin has no way to even name a different tenant.
 
 ```proto
 service TenantAdminGrpcService {
@@ -99,13 +99,15 @@ service TenantAdminGrpcService {
 }
 ```
 
-`InviteUser` creates a user stamped with the caller's own `tenant_id` (never a request-supplied one) and an initial password supplied by the caller (no SMTP). `ListUsers`/`RemoveUser`/`SetTenantAdmin` operate only against `IAuthentikAdminClient.ListUsersByTenantAsync(callerTenantId)`'s result set.
+`InviteUser` creates a user stamped with the caller's own `tenant_id` (never a request-supplied one) and an initial password supplied by the caller (no SMTP). `ListUsers` returns `IAuthentikAdminClient.ListUsersByTenantAsync(callerTenantId)`'s result set directly. `RemoveUser` and `SetTenantAdmin` each take a request-supplied `user_id` — before acting, both must verify that user's `tenant_id` attribute matches the caller's own tenant (e.g. checking membership in that same `ListUsersByTenantAsync(callerTenantId)` result, or an equivalent single-user lookup) and reject with `RpcException(PermissionDenied)` on a mismatch. Without this check, a request-supplied `user_id` — unlike `tenant_id`, never withheld from the caller — could name a user in a different tenant.
 
 ### Suspension enforcement
 
 Every `tenant_id` read for authorization purposes in the entire codebase (`RowFieldAuthorizationEvaluator`, `EntityRelationResolver`, `ObjectRetrievalGrpcService`, `ObjectMappingGrpcService`, `AuditLog` — confirmed by a repo-wide grep) goes through `IActingUserAccessor.ActingUser`, which is populated in exactly one place: `ActingUserInterceptor.ValidateActingUserAsync`. That one method — right after `result.Principal` is validated — gains a tenant-status check: a new `ITenantStatusCache` (`IMemoryCache`-backed, ~30s TTL; first use of `IMemoryCache` in this codebase, a standard built-in service requiring `builder.Services.AddMemoryCache()`) wraps `ITenantRepository.GetAsync`. A `suspended` or `deleted` status throws `RpcException(PermissionDenied)`. This single insertion point covers every downstream tenant check with no per-call-site changes.
 
 **Backfill requirement.** The registry starts empty, but 5 `tenant_id` values already exist in both blueprint files today (`tenant-loadtest`, `tenant-webtest`, `tenant-admin`, `tenant-smoke-test`, `tenant-bypass`) and were never created through `CreateTenant`. Since an unregistered `tenant_id` is denied (fail-closed, per explicit decision — see "Known limitation"), the same startup code that calls `ApplySchemaAsync(TenantSchema.Table)` must also seed these 5 rows as `Status='active'` (`INSERT ... ON CONFLICT (Id) DO NOTHING`), or every existing dev/test/loadtest flow breaks on first deploy.
+
+**Manual tenant-user creation is removed.** `docs/user-management-and-security.md`'s "Creating a human user and granting operator access" procedure currently documents creating a human user (steps 1-2) as a precursor to granting operator access (steps 3-5). Steps 1-2 are removed from that doc as part of this work — `CreateTenant`/`InviteUser` become the only way to create a new tenant user going forward, since any user created outside them has no `IversonTenants` registry row and is permanently denied by the fail-closed suspension check. Steps 3-5 (granting operator access to an existing user) are unaffected and remain a manual step, since Part D provides no alternative for operator provisioning.
 
 ### Audit logging integration
 
