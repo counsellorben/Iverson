@@ -23,6 +23,7 @@ public interface IEngagementStoreEntityStore
 {
     Task UpsertAsync(StarRocksTableSchema schema, string payloadJson, string tenantId);
     Task DeleteAsync(string tableName, string keyColumn, string keyValue, string tenantId);
+    Task EnsureTenantProvisionedAsync(string tenantId, StarRocksTableSchema schema);
 }
 
 public interface IEngagementStoreSearchService

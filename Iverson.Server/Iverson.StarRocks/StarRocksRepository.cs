@@ -191,6 +191,49 @@ public sealed class StarRocksRepository(
         await RunTenantScopedAsync("sr.execute", tenantId, sql, conn => conn.ExecuteAsync(sql, new { key = keyValue }));
     }
 
+    public async Task EnsureTenantProvisionedAsync(string tenantId, StarRocksTableSchema schema)
+    {
+        if (!TenantIdentifier.IsValid(tenantId)) return;
+
+        var dbName   = TenantIdentifier.DatabaseName(tenantId);
+        var roleName = TenantIdentifier.RoleName(tenantId);
+        var qualifiedTable = TenantIdentifier.Qualify(dbName, schema.TableName);
+        var createTableDdl = StarRocksSchemaManager.BuildCreateTableDdl(schema, qualifiedTable);
+
+        using var activity = Telemetry.Source.StartActivity("sr.provision_tenant", ActivityKind.Client);
+        activity?.SetTag("db.system", "starrocks");
+        activity?.SetTag("db.table", schema.TableName);
+
+        await RunAsync(async () =>
+        {
+            await using var conn = CreateConnection();
+            await conn.OpenAsync();
+            await conn.ExecuteAsync("SET ROLE user_admin");
+            try
+            {
+                await conn.ExecuteAsync($"CREATE DATABASE IF NOT EXISTS `{dbName}`");
+                await conn.ExecuteAsync($"CREATE ROLE IF NOT EXISTS `{roleName}`");
+                await conn.ExecuteAsync($"GRANT SELECT, INSERT, UPDATE, DELETE ON `{dbName}`.* TO ROLE `{roleName}`");
+                await conn.ExecuteAsync($"GRANT CREATE TABLE ON DATABASE `{dbName}` TO ROLE `{roleName}`");
+                await conn.ExecuteAsync($"GRANT `{roleName}` TO USER 'iverson_app'@'%'");
+                await conn.ExecuteAsync(createTableDdl);
+                return true;
+            }
+            finally
+            {
+                try
+                {
+                    await conn.ExecuteAsync("SET ROLE NONE");
+                }
+                catch (Exception ex)
+                {
+                    logger.LogWarning(ex, "SET ROLE NONE failed while releasing a tenant-provisioning StarRocks connection");
+                }
+            }
+        });
+        activity?.SetStatus(ActivityStatusCode.Ok);
+    }
+
     public async Task<IEnumerable<dynamic>> SearchAsync(
         StarRocksQuerySchema schema,
         SearchQuery? query,

@@ -42,7 +42,7 @@ public sealed class StarRocksSchemaManager(
         }
     }
 
-    internal static string BuildCreateTableDdl(StarRocksTableSchema schema)
+    internal static string BuildCreateTableDdl(StarRocksTableSchema schema, string qualifiedTableName)
     {
         var keySql  = $"`{schema.KeyColumn.Name}` {schema.KeyColumn.SrType} NOT NULL";
         var colsSql = schema.Columns.Select(c =>
@@ -53,7 +53,7 @@ public sealed class StarRocksSchemaManager(
             : "";
 
         return $"""
-            CREATE TABLE IF NOT EXISTS `{schema.TableName}` (
+            CREATE TABLE IF NOT EXISTS {qualifiedTableName} (
                 {keySql},
                 {string.Join(",\n    ", colsSql)}
             ) ENGINE=OLAP
@@ -81,7 +81,7 @@ public sealed class StarRocksSchemaManager(
 
             if (exists == 0)
             {
-                await conn.ExecuteAsync(BuildCreateTableDdl(schema));
+                await conn.ExecuteAsync(BuildCreateTableDdl(schema, $"`{schema.TableName}`"));
                 logger.LogInformation("Created StarRocks table {Table}", schema.TableName);
             }
             else

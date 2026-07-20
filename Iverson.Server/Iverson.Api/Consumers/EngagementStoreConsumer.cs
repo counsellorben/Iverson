@@ -16,6 +16,8 @@ public sealed class EngagementStoreConsumer(
 {
     private const string GroupId = "iverson.consumer.engagement";
 
+    private readonly HashSet<(string TenantId, string TableName)> _provisioned = [];
+
     protected override Task ExecuteAsync(CancellationToken ct) =>
         ConsumerResilience.RunWithRestartAsync(
             () => consumer.ConsumeAsync(EntityTopics.Events, GroupId, DispatchAsync, ct),
@@ -50,6 +52,24 @@ public sealed class EngagementStoreConsumer(
             return;
         }
 
+        // tenant_field is mandatory on every registered schema (Part A) — schema.TenantColumn is
+        // never null here for a schema that reached this point (SchemaRegistrationOrchestrator
+        // rejects registration otherwise).
+        var authoritativeTenantValue = await FetchAuthoritativeOwnerValueAsync(schema, schema.TenantColumn!, ev.Key, ct);
+        if (authoritativeTenantValue is null)
+        {
+            logger.LogWarning("[Engagement] Dropped upsert — no authoritative tenant value for type={Type} key={Key}", ev.TypeName.SanitizeForLog(), key);
+            return;
+        }
+
+        var srSchema = SchemaBuilder.ToStarRocksTableSchema(schema);
+
+        if (!_provisioned.Contains((authoritativeTenantValue, srSchema.TableName)))
+        {
+            await sr.EnsureTenantProvisionedAsync(authoritativeTenantValue, srSchema);
+            _provisioned.Add((authoritativeTenantValue, srSchema.TableName));
+        }
+
         // Re-derive the ownership value from the authoritative Postgres row rather than trusting
         // the event payload's own value for it — the payload is unsigned JSON and this value
         // feeds StarRocks's read-time row authorization filtering (CSR #7, StarRocks sibling).
@@ -69,8 +89,7 @@ public sealed class EngagementStoreConsumer(
             }
         }
 
-        var srSchema = SchemaBuilder.ToStarRocksTableSchema(schema);
-        await sr.UpsertAsync(srSchema, payloadJson);
+        await sr.UpsertAsync(srSchema, payloadJson, authoritativeTenantValue);
         logger.LogInformation("[Engagement] Upserted {Type}:{Key}", ev.TypeName.SanitizeForLog(), key);
     }
 
@@ -86,7 +105,17 @@ public sealed class EngagementStoreConsumer(
             return;
         }
 
-        await sr.DeleteAsync(schema.TableName, schema.KeyColumn.Name, ev.Key);
+        using var doc = JsonDocument.Parse(ev.PayloadJson);
+        var tenantValue = doc.RootElement.TryGetProperty(schema.TenantColumn!, out var v)
+            ? (v.ValueKind == JsonValueKind.String ? v.GetString() : v.ToString())
+            : null;
+        if (tenantValue is null)
+        {
+            logger.LogWarning("[Engagement] Dropped delete — no tenant value in payload for type={Type} key={Key}", ev.TypeName.SanitizeForLog(), key);
+            return;
+        }
+
+        await sr.DeleteAsync(schema.TableName, schema.KeyColumn.Name, ev.Key, tenantValue);
         logger.LogInformation("[Engagement] Deleted {Type}:{Key}", ev.TypeName.SanitizeForLog(), key);
     }
 

@@ -65,7 +65,7 @@ public sealed class EngagementStoreConsumerKafkaOrderingTests(KafkaOrderingConta
         var producer = new KafkaProducer(kafkaProducer, NullLogger<KafkaProducer>.Instance);
 
         var key = Guid.NewGuid().ToString();
-        var payload = $$"""{"Id":"{{key}}","Name":"Alice"}""";
+        var payload = $$"""{"Id":"{{key}}","Name":"Alice","TenantId":"tenant-a"}""";
 
         var createdEvent = new EntityEvent(
             EntityEventType.Created, "Author", key, payload,
@@ -82,8 +82,9 @@ public sealed class EngagementStoreConsumerKafkaOrderingTests(KafkaOrderingConta
         await producer.ProduceAsync(EntityTopics.Events, key, deletedEvent);
 
         var sr = Substitute.For<IEngagementStoreEntityStore>();
-        sr.UpsertAsync(Arg.Any<StarRocksTableSchema>(), Arg.Any<string>()).Returns(Task.CompletedTask);
-        sr.DeleteAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<string>()).Returns(Task.CompletedTask);
+        sr.UpsertAsync(Arg.Any<StarRocksTableSchema>(), Arg.Any<string>(), Arg.Any<string>()).Returns(Task.CompletedTask);
+        sr.DeleteAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<string>(), Arg.Any<string>()).Returns(Task.CompletedTask);
+        sr.EnsureTenantProvisionedAsync(Arg.Any<string>(), Arg.Any<StarRocksTableSchema>()).Returns(Task.CompletedTask);
 
         var sql = Substitute.For<IRecordStoreQueryExecutor>();
         sql.ExecuteAsync(Arg.Any<string>(), Arg.Any<object?>()).Returns(0);
@@ -99,9 +100,13 @@ public sealed class EngagementStoreConsumerKafkaOrderingTests(KafkaOrderingConta
             cfg => new ConsumerBuilder<string, string>(cfg).Build(),
             cfg => new AdminClientBuilder(cfg).Build());
 
-        // SchemaFixtures.AuthorSchema() uses BypassAuthorization (OwnerField == null), so the owner
-        // re-derivation path is never exercised here — no stubbing needed on this substitute.
+        // SchemaFixtures.AuthorSchema() uses BypassAuthorization (OwnerField == null), so the
+        // owner-value re-derivation path is never exercised here — but tenant re-derivation is
+        // mandatory regardless of OwnerField, so FetchByKeyAsync must still be stubbed to return
+        // a row carrying the tenant value.
         var entities = Substitute.For<IEntityRepository>();
+        entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>())
+                .Returns("""{"Name":"Alice","TenantId":"tenant-a"}""");
         var sut = new EngagementStoreConsumer(consumer, sr, registry, entities, NullLogger<EngagementStoreConsumer>.Instance);
 
         await sut.StartAsync(CancellationToken.None);
@@ -120,8 +125,8 @@ public sealed class EngagementStoreConsumerKafkaOrderingTests(KafkaOrderingConta
 
         Received.InOrder(() =>
         {
-            sr.UpsertAsync(Arg.Any<StarRocksTableSchema>(), Arg.Any<string>());
-            sr.DeleteAsync(Arg.Any<string>(), Arg.Any<string>(), key);
+            sr.UpsertAsync(Arg.Any<StarRocksTableSchema>(), Arg.Any<string>(), Arg.Any<string>());
+            sr.DeleteAsync(Arg.Any<string>(), Arg.Any<string>(), key, Arg.Any<string>());
         });
     }
 
