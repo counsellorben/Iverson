@@ -146,6 +146,8 @@ builder.Services.AddAuthorization(options =>
             context.User.FindFirst("scope")?.Value)));
 });
 
+builder.Services.AddSingleton<IAuthorizationMiddlewareResultHandler, AuditingAuthorizationMiddlewareResultHandler>();
+
 builder.Services.AddScoped<IActingUserAccessor, ActingUserAccessor>();
 
 builder.Services.AddPostgres(cfg.GetConnectionString("Postgres")
