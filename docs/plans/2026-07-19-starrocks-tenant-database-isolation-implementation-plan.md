@@ -14,7 +14,7 @@
 
 ## Global Constraints
 
-- Tenant IDs must pass the allowlist `^[A-Za-z0-9_-]{1,52}$` before being spliced into any database name, role name, or `SET ROLE`/`GRANT` statement fragment. A tenant ID that fails this check is treated as absent (fail-closed).
+- Tenant IDs must pass `TenantIdentifier.IsValid` (`^(?!.*--)([A-Za-z0-9_-]{1,52})$` — the negative lookahead was added during Task 1's implementation after the literal `^[A-Za-z0-9_-]{1,52}$` was found to not actually reject the `--` SQL-comment sequence it was meant to) before being spliced into any database name, role name, or `SET ROLE`/`GRANT` statement fragment. A tenant ID that fails this check is treated as absent (fail-closed). Downstream tasks must call `TenantIdentifier.IsValid` rather than re-deriving this pattern.
 - Database name: `iverson_tenant_{tenantId}`. Role name: `role_tenant_{tenantId}`.
 - `SET ROLE`/`SET ROLE NONE` must run on the same physical connection as the operation it scopes, and that connection must not have `USE`'d a tenant database — every physical-table SQL reference must be fully qualified with the tenant database name instead.
 - Provisioning uses `user_admin` only (never `db_admin` — verified over-broad during spec brainstorming).
@@ -107,7 +107,10 @@ namespace Iverson.StarRocks;
 
 internal static class TenantIdentifier
 {
-    private static readonly Regex AllowedPattern = new("^[A-Za-z0-9_-]{1,52}$", RegexOptions.Compiled);
+    // The literal `^[A-Za-z0-9_-]{1,52}$` pattern this design started from does not reject
+    // the `--` SQL-comment sequence, even though rejecting it is the pattern's whole purpose —
+    // `-` is itself an allowed character. The lookahead closes that gap.
+    private static readonly Regex AllowedPattern = new("^(?!.*--)([A-Za-z0-9_-]{1,52})$", RegexOptions.Compiled);
 
     internal static bool IsValid(string tenantId) => AllowedPattern.IsMatch(tenantId);
 
