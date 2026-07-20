@@ -13,7 +13,7 @@ public class StarRocksSchemaManagerTests
             new StarRocksColumnSchema("Id", "VARCHAR(36)", false),
             [new StarRocksColumnSchema("Title", "STRING", false)]);
 
-        var ddl = StarRocksSchemaManager.BuildCreateTableDdl(schema);
+        var ddl = StarRocksSchemaManager.BuildCreateTableDdl(schema, $"`{schema.TableName}`");
 
         ddl.Should().Contain("PRIMARY KEY(`Id`)");
         ddl.Should().NotContain("UNIQUE KEY");
@@ -30,7 +30,7 @@ public class StarRocksSchemaManagerTests
             new StarRocksColumnSchema("Id",  "VARCHAR(36)", false),
             [new StarRocksColumnSchema("Bio", "STRING",     true)]);
 
-        var ddl = StarRocksSchemaManager.BuildCreateTableDdl(schema);
+        var ddl = StarRocksSchemaManager.BuildCreateTableDdl(schema, $"`{schema.TableName}`");
 
         ddl.Should().Contain("`Bio` STRING\n");
         ddl.Should().NotContain("`Bio` STRING NOT NULL");
@@ -50,7 +50,7 @@ public class StarRocksSchemaManagerTests
             SortKey = ["Category", "PublishedAt"]
         };
 
-        var ddl = StarRocksSchemaManager.BuildCreateTableDdl(schema);
+        var ddl = StarRocksSchemaManager.BuildCreateTableDdl(schema, $"`{schema.TableName}`");
 
         ddl.Should().Contain("ORDER BY (`Category`, `PublishedAt`)");
         ddl.Should().Contain("PRIMARY KEY(`Id`)");
@@ -64,7 +64,7 @@ public class StarRocksSchemaManagerTests
             new StarRocksColumnSchema("Id", "VARCHAR(36)", false),
             [new StarRocksColumnSchema("Name", "STRING", false)]);
 
-        var ddl = StarRocksSchemaManager.BuildCreateTableDdl(schema);
+        var ddl = StarRocksSchemaManager.BuildCreateTableDdl(schema, $"`{schema.TableName}`");
 
         ddl.Should().NotContain("ORDER BY");
     }

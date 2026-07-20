@@ -52,10 +52,14 @@ public sealed class EngagementStoreConsumer(
             return;
         }
 
-        // tenant_field is mandatory on every registered schema (Part A) — schema.TenantColumn is
-        // never null here for a schema that reached this point (SchemaRegistrationOrchestrator
-        // rejects registration otherwise).
-        var authoritativeTenantValue = await FetchAuthoritativeOwnerValueAsync(schema, schema.TenantColumn!, ev.Key, ct);
+        // tenant_field is mandatory on every newly-registered schema (Part A), but
+        // schema.TenantColumn can still be null for a legacy pre-cutover schema — e.g. when
+        // ReconciliationService.ReconcileTypeAsync republishes events for such a schema,
+        // bypassing the normal authorization evaluator that would otherwise deny them. Treat a
+        // null TenantColumn the same as a failed re-derivation: fail closed rather than throw.
+        var authoritativeTenantValue = schema.TenantColumn is not null
+            ? await FetchAuthoritativeOwnerValueAsync(schema, schema.TenantColumn, ev.Key, ct)
+            : null;
         if (authoritativeTenantValue is null)
         {
             logger.LogWarning("[Engagement] Dropped upsert — no authoritative tenant value for type={Type} key={Key}", ev.TypeName.SanitizeForLog(), key);
@@ -105,8 +109,18 @@ public sealed class EngagementStoreConsumer(
             return;
         }
 
-        using var doc = JsonDocument.Parse(ev.PayloadJson);
-        var tenantValue = doc.RootElement.TryGetProperty(schema.TenantColumn!, out var v)
+        JsonElement payload;
+        try
+        {
+            using var doc = JsonDocument.Parse(ev.PayloadJson);
+            payload = doc.RootElement.Clone();
+        }
+        catch (JsonException ex)
+        {
+            throw new PoisonMessageException($"[Engagement] Malformed payload JSON type={ev.TypeName} key={key}", ex);
+        }
+
+        var tenantValue = schema.TenantColumn is not null && payload.TryGetProperty(schema.TenantColumn, out var v)
             ? (v.ValueKind == JsonValueKind.String ? v.GetString() : v.ToString())
             : null;
         if (tenantValue is null)
