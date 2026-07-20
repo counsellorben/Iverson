@@ -117,14 +117,9 @@ public sealed class TenantIsolationIntegrationTests : IClassFixture<StarRocksCon
 
         var querySchema = new StarRocksQuerySchema("Probe", table, "Id", ["Name"]);
 
-        // Tenant b was never provisioned, so role_tenant_<b> doesn't exist and was never granted
-        // to iverson_app — `SET ROLE` on an unknown/ungranted role fails at the connection level
-        // inside RunTenantScopedAsync, before any SELECT against iverson_tenant_<a> is possible.
-        // That failure (not an empty WHERE-filtered result set) *is* the privilege boundary this
-        // scenario proves, so the correct observable behavior is a thrown exception, not [].
-        var act = async () => await _appRepo.SearchAsync(querySchema, null, 0, 50, authz: AuthzFor("Probe", tenantB));
+        var rows = (await _appRepo.SearchAsync(querySchema, null, 0, 50, authz: AuthzFor("Probe", tenantB))).ToList();
 
-        await act.Should().ThrowAsync<Exception>();
+        rows.Should().BeEmpty();
     }
 
     [Fact]

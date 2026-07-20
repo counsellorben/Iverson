@@ -97,6 +97,26 @@ public sealed class StarRocksRepository(
         }
     }
 
+    // A tenant that has never written data was never lazily provisioned by
+    // EnsureTenantProvisionedAsync, so its `role_tenant_{id}` either doesn't exist yet or was
+    // never granted to `iverson_app`. `SET ROLE` inside RunTenantScopedAsync then fails outright
+    // — matched here as a specific, verified StarRocks/MySqlConnector error shape (not a bare
+    // catch) so the 4 read paths can treat it the same as every other "no data" case in this
+    // repository (invalid tenant ID, missing tenant claim: both already return empty), while any
+    // other StarRocks failure (real outage, network issue, a different privilege problem) still
+    // propagates as an exception. Verified empirically against a live starrocks/allin1-ubuntu
+    // container: both "role doesn't exist" and "role exists but isn't granted to this user" raise
+    // MySqlConnector.MySqlException with ErrorCode == MySqlErrorCode.ParseError (StarRocks reuses
+    // MySQL's generic 1064 syntax-error code for this) and a message containing either
+    // "cannot find role" or "is not granted to". Deliberately scoped to the READ path only —
+    // UpsertAsync/DeleteAsync must keep throwing, since they're only ever called after
+    // EnsureTenantProvisionedAsync has already run in the same code path (EngagementStoreConsumer),
+    // so hitting this there would mean a real invariant violation, not a legitimate empty tenant.
+    private static bool IsUnprovisionedTenantRoleError(Exception ex) =>
+        ex is MySqlException { ErrorCode: MySqlErrorCode.ParseError } mex &&
+        (mex.Message.Contains("cannot find role", StringComparison.OrdinalIgnoreCase) ||
+         mex.Message.Contains("is not granted to", StringComparison.OrdinalIgnoreCase));
+
     private async Task<T> RunTenantScopedAsync<T>(
         string activityName, string tenantId, string sql, Func<MySqlConnection, Task<T>> operation)
     {
@@ -275,7 +295,14 @@ public sealed class StarRocksRepository(
             schema.TableName, schema, query, page, pageSize, fields, joins, registry, authz,
             TenantIdentifier.DatabaseName(tenantId));
 
-        return await RunTenantScopedAsync("sr.query", tenantId, sql, conn => conn.QueryAsync<dynamic>(sql, param));
+        try
+        {
+            return await RunTenantScopedAsync("sr.query", tenantId, sql, conn => conn.QueryAsync<dynamic>(sql, param));
+        }
+        catch (Exception ex) when (IsUnprovisionedTenantRoleError(ex))
+        {
+            return [];
+        }
     }
 
     public async Task<AggregationResult?> AggregateAsync(
@@ -307,7 +334,14 @@ public sealed class StarRocksRepository(
             var (sql, param) = StarRocksQueryBuilder.BuildAggregate(
                 schema.TableName, schema, query, spec, having, joins, registry, authz,
                 TenantIdentifier.DatabaseName(tenantId));
-            rows = (await RunTenantScopedAsync("sr.query", tenantId, sql, conn => conn.QueryAsync<dynamic>(sql, param))).ToList();
+            try
+            {
+                rows = (await RunTenantScopedAsync("sr.query", tenantId, sql, conn => conn.QueryAsync<dynamic>(sql, param))).ToList();
+            }
+            catch (Exception ex) when (IsUnprovisionedTenantRoleError(ex))
+            {
+                return null;
+            }
         }
 
         switch (spec.Kind)
@@ -358,7 +392,14 @@ public sealed class StarRocksRepository(
         var (sql, param) = StarRocksQueryBuilder.BuildGroupBy(
             schema.TableName, schema, request, registry, authz, TenantIdentifier.DatabaseName(tenantId));
 
-        return await RunTenantScopedAsync("sr.query", tenantId, sql, conn => conn.QueryAsync<dynamic>(sql, param));
+        try
+        {
+            return await RunTenantScopedAsync("sr.query", tenantId, sql, conn => conn.QueryAsync<dynamic>(sql, param));
+        }
+        catch (Exception ex) when (IsUnprovisionedTenantRoleError(ex))
+        {
+            return [];
+        }
     }
 
     public async Task<IEnumerable<dynamic>> PipelineAsync(
@@ -379,8 +420,15 @@ public sealed class StarRocksRepository(
             return [];
 
         var (sql, param, lastCols) = StarRocksPipelineBuilder.Build(schema, request, registry, authz, TenantIdentifier.DatabaseName(tenantId));
-        var rows = await RunTenantScopedAsync("sr.query", tenantId, sql, conn => conn.QueryAsync<dynamic>(sql, param));
-        return MaskPipelineRows(rows, lastCols);
+        try
+        {
+            var rows = await RunTenantScopedAsync("sr.query", tenantId, sql, conn => conn.QueryAsync<dynamic>(sql, param));
+            return MaskPipelineRows(rows, lastCols);
+        }
+        catch (Exception ex) when (IsUnprovisionedTenantRoleError(ex))
+        {
+            return [];
+        }
     }
 
     /// <summary>
