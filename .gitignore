@@ -67,3 +67,6 @@ override.tf.json
 
 # Helm dependency-build artifacts (packaged subcharts; re-created by `helm dependency build`)
 Iverson.Server/deploy/helm/**/charts/*.tgz
+
+# Local git worktrees (SDD isolation)
+.worktrees/
