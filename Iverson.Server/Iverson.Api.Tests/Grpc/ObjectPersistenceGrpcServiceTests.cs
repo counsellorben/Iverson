@@ -10,6 +10,7 @@ using Iverson.Api.Tests.Helpers;
 using Iverson.Client.Contracts;
 using Iverson.Events;
 using Iverson.Sql;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using NSubstitute;
 using Xunit;
@@ -26,6 +27,8 @@ public class ObjectPersistenceGrpcServiceTests
     private readonly IActingUserAccessor _actingUserAccessor;
     private readonly IRowFieldAuthorizationEvaluator _authEvaluator = new RowFieldAuthorizationEvaluator();
     private readonly IOutboxPublisher _outboxPublisher;
+    private readonly ILogger<AuditLog> _auditLogger = Substitute.For<ILogger<AuditLog>>();
+    private readonly AuditLog _auditLog;
     private readonly ObjectPersistenceGrpcService _sut;
 
     public ObjectPersistenceGrpcServiceTests()
@@ -51,12 +54,13 @@ public class ObjectPersistenceGrpcServiceTests
         _actingUserAccessor = new ActingUserAccessor
             { ActingUser = ActingUserFixtures.Principal("test-user", "test-bypass") };
         _outboxPublisher = new OutboxPublisher(_events, new OutboxWriter(ReconciliationSchema.TableName, _sql, _txRunner), NullLogger<OutboxPublisher>.Instance);
+        _auditLog = new AuditLog(_auditLogger);
         _sut = new ObjectPersistenceGrpcService(
             _outboxPublisher, _registry,
             new RelationValidator(_registry), new EntityKeyAccessor(),
             new OutboxWriter(ReconciliationSchema.TableName, _sql, _txRunner),
             NullLogger<ObjectPersistenceGrpcService>.Instance,
-            _entities, _actingUserAccessor, _authEvaluator);
+            _entities, _actingUserAccessor, _authEvaluator, _auditLog);
     }
 
     private static Struct MakePayload(Dictionary<string, Value> fields)
@@ -753,5 +757,123 @@ public class ObjectPersistenceGrpcServiceTests
         using var doc = JsonDocument.Parse(captured!.PayloadJson);
         doc.RootElement.TryGetProperty("IsPublished", out var prop).Should().BeTrue();
         prop.ValueKind.Should().Be(JsonValueKind.True);
+    }
+
+    // ── Post/Update audit logging ────────────────────────────────────────────
+
+    private void AssertAuditLogged(string expectedReasonSubstring) =>
+        _auditLogger.Received(1).Log(
+            LogLevel.Warning,
+            Arg.Any<EventId>(),
+            Arg.Is<object>(v => v.ToString()!.Contains(expectedReasonSubstring)),
+            Arg.Any<Exception>(),
+            Arg.Any<Func<object, Exception?, string>>());
+
+    [Fact]
+    public async Task Post_AccessDenied_LogsAuditDeniedWithAccessDenied()
+    {
+        var schema = SchemaFixtures.AuthorSchema() with { Authorization = null };
+        await _registry.RegisterAsync(schema);
+
+        var payload = MakePayload(new() { ["Name"] = Value.ForString("Alice") });
+        var request = new PersistRequest { TypeName = "Author", Payload = payload };
+
+        var act = async () => await _sut.Post(request, TestServerCallContext.Create());
+
+        await act.Should().ThrowAsync<RpcException>();
+        AssertAuditLogged("AccessDenied");
+    }
+
+    [Fact]
+    public async Task Update_TenantMismatch_LogsAuditDeniedWithTenantMismatch()
+    {
+        await _registry.RegisterAsync(OwnedAuthorSchema());
+        var authorId = Guid.NewGuid().ToString();
+        var crossTenantJson = $$"""{"Id":"{{authorId}}","Name":"Alice","OwnerId":"test-user","TenantId":"other-tenant"}""";
+        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>(), Arg.Any<bool>(), Arg.Any<string?>())
+            .Returns(crossTenantJson);
+
+        var payload = MakePayload(new()
+        {
+            ["Id"]      = Value.ForString(authorId),
+            ["Name"]    = Value.ForString("Alice Updated"),
+            ["OwnerId"] = Value.ForString("test-user")
+        });
+        var request = new PersistRequest { TypeName = "Author", Payload = payload };
+
+        var act = async () => await _sut.Update(request, TestServerCallContext.Create());
+
+        await act.Should().ThrowAsync<RpcException>();
+        AssertAuditLogged("TenantMismatch");
+    }
+
+    [Fact]
+    public async Task Update_TenantImmutable_LogsAuditDeniedWithTenantImmutable()
+    {
+        await _registry.RegisterAsync(OwnedAuthorSchema());
+        var authorId = Guid.NewGuid().ToString();
+        var ownedJson = $$"""{"Id":"{{authorId}}","Name":"Alice","OwnerId":"test-user","TenantId":"test-tenant"}""";
+        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>(), Arg.Any<bool>(), Arg.Any<string?>())
+            .Returns(ownedJson);
+
+        var payload = MakePayload(new()
+        {
+            ["Id"]       = Value.ForString(authorId),
+            ["Name"]     = Value.ForString("Alice Updated"),
+            ["OwnerId"]  = Value.ForString("test-user"),
+            ["TenantId"] = Value.ForString("other-tenant")
+        });
+        var request = new PersistRequest { TypeName = "Author", Payload = payload };
+
+        var act = async () => await _sut.Update(request, TestServerCallContext.Create());
+
+        await act.Should().ThrowAsync<RpcException>();
+        AssertAuditLogged("TenantImmutable");
+    }
+
+    [Fact]
+    public async Task Update_OwnerMismatch_LogsAuditDeniedWithOwnerMismatch()
+    {
+        await _registry.RegisterAsync(OwnedAuthorSchema());
+        var authorId = Guid.NewGuid().ToString();
+        var ownedJson = $$"""{"Id":"{{authorId}}","Name":"Alice","OwnerId":"someone-else","TenantId":"test-tenant"}""";
+        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>(), Arg.Any<bool>(), Arg.Any<string?>())
+            .Returns(ownedJson);
+
+        var payload = MakePayload(new()
+        {
+            ["Id"]      = Value.ForString(authorId),
+            ["Name"]    = Value.ForString("Alice Updated"),
+            ["OwnerId"] = Value.ForString("someone-else")
+        });
+        var request = new PersistRequest { TypeName = "Author", Payload = payload };
+
+        var act = async () => await _sut.Update(request, TestServerCallContext.Create());
+
+        await act.Should().ThrowAsync<RpcException>();
+        AssertAuditLogged("OwnerMismatch");
+    }
+
+    [Fact]
+    public async Task Update_OwnerImmutable_LogsAuditDeniedWithOwnerImmutable()
+    {
+        await _registry.RegisterAsync(OwnedAuthorSchema(withBypassRole: false));
+        var authorId = Guid.NewGuid().ToString();
+        var ownedJson = $$"""{"Id":"{{authorId}}","Name":"Alice","OwnerId":"test-user","TenantId":"test-tenant"}""";
+        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>(), Arg.Any<bool>(), Arg.Any<string?>())
+            .Returns(ownedJson);
+
+        var payload = MakePayload(new()
+        {
+            ["Id"]      = Value.ForString(authorId),
+            ["Name"]    = Value.ForString("Alice Updated"),
+            ["OwnerId"] = Value.ForString("someone-else")
+        });
+        var request = new PersistRequest { TypeName = "Author", Payload = payload };
+
+        var act = async () => await _sut.Update(request, TestServerCallContext.Create());
+
+        await act.Should().ThrowAsync<RpcException>();
+        AssertAuditLogged("OwnerImmutable");
     }
 }

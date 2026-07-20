@@ -23,7 +23,8 @@ public sealed class ObjectPersistenceGrpcService(
     ILogger<ObjectPersistenceGrpcService> logger,
     IEntityRepository entities,
     IActingUserAccessor actingUserAccessor,
-    IRowFieldAuthorizationEvaluator authEvaluator)
+    IRowFieldAuthorizationEvaluator authEvaluator,
+    AuditLog auditLog)
     : ObjectPersistenceService.ObjectPersistenceServiceBase
 {
     public override async Task<PersistResponse> Post(
@@ -33,7 +34,7 @@ public sealed class ObjectPersistenceGrpcService(
 
         AuthorizationFieldMasking.EnforceWriteAuthorization(
             authEvaluator, actingUserAccessor.ActingUser, schema, request.Payload,
-            AuthorizationAction.Write, "Not authorized to create this entity.", existingRowJson: null);
+            AuthorizationAction.Write, "Not authorized to create this entity.", existingRowJson: null, auditLog);
 
         relationValidator.ValidateRelations(request.Payload, schema);
 
@@ -84,7 +85,7 @@ public sealed class ObjectPersistenceGrpcService(
         var existingRowJson = await entities.FetchByKeyAsync(SchemaBuilder.ToTableSchema(schema), key);
         AuthorizationFieldMasking.EnforceWriteAuthorization(
             authEvaluator, actingUserAccessor.ActingUser, schema, request.Payload,
-            AuthorizationAction.Write, "Not authorized to update this entity.", existingRowJson);
+            AuthorizationAction.Write, "Not authorized to update this entity.", existingRowJson, auditLog);
 
         relationValidator.ValidateRelations(request.Payload, schema);
 

@@ -32,11 +32,18 @@ internal static class AuthorizationFieldMasking
         Struct payload,
         AuthorizationAction action,
         string deniedMessage,
-        string? existingRowJson)
+        string? existingRowJson,
+        AuditLog auditLog)
     {
+        var auditAction = existingRowJson is null ? "Create" : "Update";
+        var resourceKey = StructFieldAccess.GetFieldString(payload, schema.KeyColumn.Name);
+
         var decision = authEvaluator.Evaluate(schema, actingUser, action);
         if (decision.Denied)
+        {
+            auditLog.Denied(actingUser, auditAction, schema.TypeName, resourceKey, "AccessDenied");
             throw new RpcException(new Status(StatusCode.PermissionDenied, deniedMessage));
+        }
 
         if (existingRowJson is null)
         {
@@ -59,15 +66,24 @@ internal static class AuthorizationFieldMasking
             if (decision.TenantColumn is not null)
             {
                 if (StructFieldAccess.GetFieldString(existingStruct, decision.TenantColumn) != decision.TenantValue)
+                {
+                    auditLog.Denied(actingUser, auditAction, schema.TypeName, resourceKey, "TenantMismatch");
                     throw new RpcException(new Status(StatusCode.PermissionDenied, deniedMessage));
+                }
                 var attemptedTenant = StructFieldAccess.GetFieldString(payload, decision.TenantColumn);
                 if (attemptedTenant is not null && attemptedTenant != decision.TenantValue)
+                {
+                    auditLog.Denied(actingUser, auditAction, schema.TypeName, resourceKey, "TenantImmutable");
                     throw new RpcException(new Status(StatusCode.PermissionDenied, "Tenant field is immutable."));
+                }
             }
 
             if (decision.OwnershipRequired &&
                 StructFieldAccess.GetFieldString(existingStruct, decision.OwnerFieldName!) != decision.OwnerValue)
+            {
+                auditLog.Denied(actingUser, auditAction, schema.TypeName, resourceKey, "OwnerMismatch");
                 throw new RpcException(new Status(StatusCode.PermissionDenied, deniedMessage));
+            }
 
             // The owner field name for immutability purposes is sourced from the schema's
             // declared Authorization.OwnerField, NEVER from decision.OwnerFieldName — the
@@ -79,7 +95,10 @@ internal static class AuthorizationFieldMasking
                 var attemptedOwnerValue = StructFieldAccess.GetFieldString(payload, ownerFieldName);
                 if (attemptedOwnerValue is not null &&
                     attemptedOwnerValue != StructFieldAccess.GetFieldString(existingStruct, ownerFieldName))
+                {
+                    auditLog.Denied(actingUser, auditAction, schema.TypeName, resourceKey, "OwnerImmutable");
                     throw new RpcException(new Status(StatusCode.PermissionDenied, "Owner field is immutable after creation."));
+                }
             }
         }
 

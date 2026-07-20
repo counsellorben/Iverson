@@ -1408,6 +1408,112 @@ public class ObjectMappingGrpcServiceTests
         ex.Which.Status.Detail.Should().Contain("immutable");
     }
 
+    // ── Post/Update audit logging ────────────────────────────────────────────
+
+    [Fact]
+    public async Task Post_AccessDenied_LogsAuditDeniedWithAccessDenied()
+    {
+        var schema = SchemaFixtures.AuthorSchema() with { Authorization = null };
+        await _registry.RegisterAsync(schema);
+
+        var payload = MakePayload(new() { ["Name"] = Value.ForString("Alice") });
+        var act = () => _sut.Post(
+            new MappingWriteRequest { TypeName = "Author", Payload = payload },
+            TestServerCallContext.Create());
+
+        await act.Should().ThrowAsync<RpcException>();
+        AssertAuditLogged("AccessDenied");
+    }
+
+    [Fact]
+    public async Task Update_TenantMismatch_LogsAuditDeniedWithTenantMismatch()
+    {
+        await _registry.RegisterAsync(OwnedAuthorSchema());
+        var crossTenantJson = $$"""{"Id":"{{AuthorId}}","Name":"Alice","OwnerId":"test-user","TenantId":"other-tenant"}""";
+        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>(), Arg.Any<bool>(), Arg.Any<string?>())
+            .Returns(crossTenantJson);
+
+        var payload = MakePayload(new()
+        {
+            ["Id"]      = Value.ForString(AuthorId),
+            ["Name"]    = Value.ForString("Alice Updated"),
+            ["OwnerId"] = Value.ForString("test-user")
+        });
+        var act = () => _sut.Update(
+            new MappingWriteRequest { TypeName = "Author", Payload = payload },
+            TestServerCallContext.Create());
+
+        await act.Should().ThrowAsync<RpcException>();
+        AssertAuditLogged("TenantMismatch");
+    }
+
+    [Fact]
+    public async Task Update_TenantImmutable_LogsAuditDeniedWithTenantImmutable()
+    {
+        await _registry.RegisterAsync(OwnedAuthorSchema());
+        var ownedJson = $$"""{"Id":"{{AuthorId}}","Name":"Alice","OwnerId":"test-user","TenantId":"test-tenant"}""";
+        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>(), Arg.Any<bool>(), Arg.Any<string?>())
+            .Returns(ownedJson);
+
+        var payload = MakePayload(new()
+        {
+            ["Id"]       = Value.ForString(AuthorId),
+            ["Name"]     = Value.ForString("Alice Updated"),
+            ["OwnerId"]  = Value.ForString("test-user"),
+            ["TenantId"] = Value.ForString("other-tenant")
+        });
+        var act = () => _sut.Update(
+            new MappingWriteRequest { TypeName = "Author", Payload = payload },
+            TestServerCallContext.Create());
+
+        await act.Should().ThrowAsync<RpcException>();
+        AssertAuditLogged("TenantImmutable");
+    }
+
+    [Fact]
+    public async Task Update_OwnerMismatch_LogsAuditDeniedWithOwnerMismatch()
+    {
+        await _registry.RegisterAsync(OwnedAuthorSchema());
+        var ownedJson = $$"""{"Id":"{{AuthorId}}","Name":"Alice","OwnerId":"someone-else","TenantId":"test-tenant"}""";
+        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>(), Arg.Any<bool>(), Arg.Any<string?>())
+            .Returns(ownedJson);
+
+        var payload = MakePayload(new()
+        {
+            ["Id"]      = Value.ForString(AuthorId),
+            ["Name"]    = Value.ForString("Alice Updated"),
+            ["OwnerId"] = Value.ForString("someone-else")
+        });
+        var act = () => _sut.Update(
+            new MappingWriteRequest { TypeName = "Author", Payload = payload },
+            TestServerCallContext.Create());
+
+        await act.Should().ThrowAsync<RpcException>();
+        AssertAuditLogged("OwnerMismatch");
+    }
+
+    [Fact]
+    public async Task Update_OwnerImmutable_LogsAuditDeniedWithOwnerImmutable()
+    {
+        await _registry.RegisterAsync(OwnedAuthorSchema(withBypassRole: false));
+        var ownedJson = $$"""{"Id":"{{AuthorId}}","Name":"Alice","OwnerId":"test-user","TenantId":"test-tenant"}""";
+        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>(), Arg.Any<bool>(), Arg.Any<string?>())
+            .Returns(ownedJson);
+
+        var payload = MakePayload(new()
+        {
+            ["Id"]      = Value.ForString(AuthorId),
+            ["Name"]    = Value.ForString("Alice Updated"),
+            ["OwnerId"] = Value.ForString("someone-else")
+        });
+        var act = () => _sut.Update(
+            new MappingWriteRequest { TypeName = "Author", Payload = payload },
+            TestServerCallContext.Create());
+
+        await act.Should().ThrowAsync<RpcException>();
+        AssertAuditLogged("OwnerImmutable");
+    }
+
     // ── Delete ────────────────────────────────────────────────────────────────
 
     [Fact]

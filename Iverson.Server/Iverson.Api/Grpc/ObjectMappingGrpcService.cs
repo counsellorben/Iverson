@@ -114,7 +114,7 @@ public sealed class ObjectMappingGrpcService(
 
         AuthorizationFieldMasking.EnforceWriteAuthorization(
             _authEvaluator, _actingUserAccessor.ActingUser, schema, request.Payload,
-            AuthorizationAction.Write, "Not authorized to create this entity.", existingRowJson: null);
+            AuthorizationAction.Write, "Not authorized to create this entity.", existingRowJson: null, _auditLog);
 
         _relationValidator.ValidateRelations(request.Payload, schema);
 
@@ -161,7 +161,7 @@ public sealed class ObjectMappingGrpcService(
         var existingRowJson = await FetchByKeyAsync(schema, key);
         AuthorizationFieldMasking.EnforceWriteAuthorization(
             _authEvaluator, _actingUserAccessor.ActingUser, schema, request.Payload,
-            AuthorizationAction.Write, "Not authorized to update this entity.", existingRowJson);
+            AuthorizationAction.Write, "Not authorized to update this entity.", existingRowJson, _auditLog);
 
         _relationValidator.ValidateRelations(request.Payload, schema);
 
