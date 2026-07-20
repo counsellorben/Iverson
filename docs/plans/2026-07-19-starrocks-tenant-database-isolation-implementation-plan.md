@@ -82,8 +82,10 @@ Newly introduced by this plan and verified at plan-write time against the curren
 | 13 | Signature | `EngagementStoreConsumer`'s existing `WithOwnerValue(payloadJson, ownerField, authoritativeOwnerValue)` helper is field-name-generic despite its name — reusable verbatim for tenant-value splicing | `EngagementStoreConsumer.cs:124-133` |
 | 14 | File path / test convention | `StarRocksContainerFixture` (Testcontainers-based, connects as `root`) already exists and exposes a public `ConnectionString`/`Repository`; a new test class can reuse it unmodified, creating its own `iverson_app` user + grants via `fixture.Repository.ExecuteAsync(...)` (which runs as root) rather than duplicating the container-readiness-wait logic in a second fixture | `StarRocksIntegrationTests.cs:11-120` |
 | 15 | Command | Tests run via `dotnet test Iverson.Server/Iverson.StarRocks.Tests` and `dotnet test Iverson.Server/Iverson.Api.Tests`, matching this repo's established convention | `docs/plans/2026-07-17-mandatory-tenant-boundary-implementation-plan.md:131,180,264,291` |
-| 16 | Task ordering | Task 3 (write path) depends on Task 1 (`TenantIdentifier`); Task 4 (provisioning) depends on Task 3's `IEngagementStoreEntityStore` signature; Task 5 (orchestrator cleanup) is independent of Tasks 1-4 and can run any time after Task 4 lands (so `EnsureTenantProvisionedAsync` exists as the new table-creation path before the old eager one is removed); Task 7 depends on Tasks 1-4 being complete | Derived from each task's own file dependencies, listed per-task below |
+| 16 | Task ordering | Task 3 (write path) depends on Task 1 (`TenantIdentifier`); Task 4 (provisioning) depends on Task 3's `IEngagementStoreEntityStore` signature, and itself changes `StarRocksSchemaManager.BuildCreateTableDdl`'s signature to its qualified 2-arg form (moved here from Task 5 after CIR round 1 found Task 4's `EnsureTenantProvisionedAsync` calls that 2-arg overload before Task 5 would otherwise have introduced it); Task 5 (orchestrator cleanup) depends on Task 4 having already made that signature change, and otherwise only deletes now-dead code; Task 7 depends on Tasks 1-4 being complete | Derived from each task's own file dependencies, listed per-task below; corrected 2026-07-19 per critical-implementation-review round 1, §1 assumption 16 |
 | 17 | Commit convention | Existing commits use `type(scope): summary` (e.g. `feat(starrocks): ...`, `fix(api): ...`) | `git log --oneline -15` |
+| 18 | Runtime behavior | MySqlConnector (this repo's driver, `Iverson.StarRocks.csproj:17`) supports executing multiple semicolon-separated statements in a single `ExecuteAsync` call by default — no `AllowMultipleStatements`-style connection-string opt-in needed (unlike Oracle's Connector/NET) — needed by Task 7's constructor, which sends `CREATE USER IF NOT EXISTS ...; GRANT user_admin ...;` as one call | Confirmed via MySqlConnector's own documentation/community sources during critical-implementation-review round 1's span check |
+| 19 | Cross-assembly access | `Iverson.StarRocks.Tests` has `InternalsVisibleTo` access to `Iverson.StarRocks`'s `internal` members — needed by Task 1 (`TenantIdentifierTests.cs` testing `internal TenantIdentifier`) and Task 5 (`StarRocksIntegrationTests.cs` calling `internal StarRocksSchemaManager.BuildCreateTableDdl` directly) | `Iverson.StarRocks.csproj:8-10` (`[InternalsVisibleTo("Iverson.StarRocks.Tests")]`), confirmed during critical-implementation-review round 1's span check |
 
 ## Tasks
 
@@ -248,7 +250,33 @@ public async Task<IEnumerable<dynamic>> SearchAsync(
 }
 ```
 
-Apply the identical `authz is null` / `tenantId is null || !IsValid` / qualified-and-scoped pattern to `GroupByAsync` (`:207-215`) and `PipelineAsync` (`:217-226`, passing `tenantDatabase` to `StarRocksPipelineBuilder.Build` the same way) — both return `Task<IEnumerable<dynamic>>` like `SearchAsync`, so the fail-closed branch is `return [];` in both, identical in shape to the `SearchAsync` code above.
+Apply the identical `authz is null` / `tenantId is null || !IsValid` / qualified-and-scoped pattern to `GroupByAsync` (`:207-215`) — it returns `Task<IEnumerable<dynamic>>` like `SearchAsync`, so the fail-closed branch is `return [];`, identical in shape to the `SearchAsync` code above.
+
+`PipelineAsync` (`:217-226`) returns `Task<IEnumerable<dynamic>>` too, but its shape diverges from `SearchAsync`'s in two ways the generic pattern doesn't cover: `StarRocksPipelineBuilder.Build` returns a **3-tuple** `(Sql, Param, LastCols)`, not `BuildSearch`'s 2-tuple, and the existing method applies a mandatory post-processing step, `MaskPipelineRows(rows, lastCols)`, before returning — the Layer-2 authorization-masking safety net described at `StarRocksRepository.cs:228-240`. Both must be threaded through explicitly:
+
+```csharp
+public async Task<IEnumerable<dynamic>> PipelineAsync(
+    StarRocksQuerySchema schema,
+    PipelineRequest request,
+    Func<string, StarRocksQuerySchema?> registry,
+    IReadOnlyDictionary<string, AuthorizationConstraint>? authz = null)
+{
+    if (authz is null)
+    {
+        var (unscopedSql, unscopedParam, unscopedLastCols) = StarRocksPipelineBuilder.Build(schema, request, registry, authz);
+        var unscopedRows = await QueryAsync<dynamic>(unscopedSql, unscopedParam);
+        return MaskPipelineRows(unscopedRows, unscopedLastCols);
+    }
+
+    var tenantId = authz.GetValueOrDefault(schema.TypeName)?.TenantValue;
+    if (tenantId is null || !TenantIdentifier.IsValid(tenantId))
+        return [];
+
+    var (sql, param, lastCols) = StarRocksPipelineBuilder.Build(schema, request, registry, authz, TenantIdentifier.DatabaseName(tenantId));
+    var rows = await RunTenantScopedAsync("sr.query", tenantId, sql, conn => conn.QueryAsync<dynamic>(sql, param));
+    return MaskPipelineRows(rows, lastCols);
+}
+```
 
 `AggregateAsync` (`:162-205`) returns `Task<AggregationResult?>`, not `Task<IEnumerable<dynamic>>` — its fail-closed branch must return `null`, not `[]`. Only the query-building and execution portion (`:175-178`) changes; the aggregation-kind switch below (`:180-204`) stays unchanged, now operating on `rows` sourced from the tenant-scoped path:
 
@@ -419,12 +447,13 @@ git commit -m "feat(starrocks): tenant-scope the write path (UpsertAsync/DeleteA
 **Files:**
 - Modify: `Iverson.Server/Iverson.StarRocks/IEngagementStoreRoles.cs`
 - Modify: `Iverson.Server/Iverson.StarRocks/StarRocksRepository.cs`
+- Modify: `Iverson.Server/Iverson.StarRocks/StarRocksSchemaManager.cs`
 - Modify: `Iverson.Server/Iverson.Api/Consumers/EngagementStoreConsumer.cs`
 - Modify: `Iverson.Server/Iverson.Api.Tests/Consumers/EngagementStoreConsumerTests.cs`
 - Modify: `Iverson.Server/Iverson.Api.Tests/Consumers/EngagementStoreConsumerKafkaOrderingTests.cs`
 
 **Interfaces:**
-- Consumes: `TenantIdentifier` (Task 1), the Task 3 `UpsertAsync`/`DeleteAsync` signatures, `StarRocksSchemaManager.BuildCreateTableDdl` (unchanged location, qualified in this task — Task 5 later removes everything else from that class).
+- Consumes: `TenantIdentifier` (Task 1), the Task 3 `UpsertAsync`/`DeleteAsync` signatures. Produces the qualified 2-arg `StarRocksSchemaManager.BuildCreateTableDdl` signature this task's `EnsureTenantProvisionedAsync` needs — Task 5 later deletes everything else in that class but leaves this signature as this task establishes it.
 
 - [ ] **Step 1: Add `EnsureTenantProvisionedAsync` to `IEngagementStoreEntityStore`** (`IEngagementStoreRoles.cs`):
 
@@ -437,7 +466,34 @@ public interface IEngagementStoreEntityStore
 }
 ```
 
-- [ ] **Step 2: Implement `EnsureTenantProvisionedAsync` in `StarRocksRepository`**, using a plain `RunAsync`-wrapped connection (no tenant role needed — this runs as `user_admin`):
+- [ ] **Step 2: Change `StarRocksSchemaManager.BuildCreateTableDdl`'s signature to its qualified 2-arg form**, then implement `EnsureTenantProvisionedAsync` in `StarRocksRepository` using a plain `RunAsync`-wrapped connection (no tenant role needed — this runs as `user_admin`):
+
+`BuildCreateTableDdl` (`StarRocksSchemaManager.cs:45-64`) changes from `BuildCreateTableDdl(StarRocksTableSchema schema)` to:
+
+```csharp
+internal static string BuildCreateTableDdl(StarRocksTableSchema schema, string qualifiedTableName)
+{
+    var keySql  = $"`{schema.KeyColumn.Name}` {schema.KeyColumn.SrType} NOT NULL";
+    var colsSql = schema.Columns.Select(c =>
+        $"`{c.Name}` {c.SrType}{(c.IsNullable ? "" : " NOT NULL")}");
+
+    var orderBy = schema.SortKey.Count > 0
+        ? $"\nORDER BY ({string.Join(", ", schema.SortKey.Select(k => $"`{k}`"))})"
+        : "";
+
+    return $"""
+        CREATE TABLE IF NOT EXISTS {qualifiedTableName} (
+            {keySql},
+            {string.Join(",\n    ", colsSql)}
+        ) ENGINE=OLAP
+        PRIMARY KEY(`{schema.KeyColumn.Name}`)
+        DISTRIBUTED BY HASH(`{schema.KeyColumn.Name}`) BUCKETS 4{orderBy}
+        PROPERTIES ("replication_num" = "1")
+        """;
+}
+```
+
+(This is the only edit to `StarRocksSchemaManager.cs` in this task — everything else in that class is deleted later, in Task 5, which depends on this signature already being in place.)
 
 ```csharp
 public async Task EnsureTenantProvisionedAsync(string tenantId, StarRocksTableSchema schema)
@@ -484,8 +540,6 @@ public async Task EnsureTenantProvisionedAsync(string tenantId, StarRocksTableSc
 }
 ```
 
-Note: `BuildCreateTableDdl` gains a second parameter here (`qualifiedTable`, already-qualified) rather than a bare `tenantDatabase` — see Task 5 Step 1 for the exact signature change, since that method lives in `StarRocksSchemaManager` and this task only calls it.
-
 - [ ] **Step 3: Wire `EngagementStoreConsumer`** (`EngagementStoreConsumer.cs`):
 
 Add a per-process idempotency cache field, mirroring `IntelligenceStoreConsumer._ensuredCollections`:
@@ -521,8 +575,11 @@ internal async Task HandleUpsertAsync(string key, string value, CancellationToke
 
     var srSchema = SchemaBuilder.ToStarRocksTableSchema(schema);
 
-    if (_provisioned.Add((authoritativeTenantValue, srSchema.TableName)))
+    if (!_provisioned.Contains((authoritativeTenantValue, srSchema.TableName)))
+    {
         await sr.EnsureTenantProvisionedAsync(authoritativeTenantValue, srSchema);
+        _provisioned.Add((authoritativeTenantValue, srSchema.TableName));
+    }
 
     // Re-derive the ownership value from the authoritative Postgres row rather than trusting
     // the event payload's own value for it — the payload is unsigned JSON and this value
@@ -598,13 +655,14 @@ Add a stub for `entities.FetchByKeyAsync(...)` returning a JSON row with a `Tena
 
 - [ ] **Step 6: Build and run**
 ```bash
+dotnet build Iverson.Server/Iverson.StarRocks
 dotnet build Iverson.Server/Iverson.Api
 dotnet test Iverson.Server/Iverson.Api.Tests --filter "FullyQualifiedName~EngagementStoreConsumer"
 ```
 
 - [ ] **Step 7: Commit**
 ```bash
-git add Iverson.Server/Iverson.StarRocks/IEngagementStoreRoles.cs Iverson.Server/Iverson.StarRocks/StarRocksRepository.cs Iverson.Server/Iverson.Api/Consumers/EngagementStoreConsumer.cs Iverson.Server/Iverson.Api.Tests/Consumers/EngagementStoreConsumerTests.cs Iverson.Server/Iverson.Api.Tests/Consumers/EngagementStoreConsumerKafkaOrderingTests.cs
+git add Iverson.Server/Iverson.StarRocks/IEngagementStoreRoles.cs Iverson.Server/Iverson.StarRocks/StarRocksRepository.cs Iverson.Server/Iverson.StarRocks/StarRocksSchemaManager.cs Iverson.Server/Iverson.Api/Consumers/EngagementStoreConsumer.cs Iverson.Server/Iverson.Api.Tests/Consumers/EngagementStoreConsumerTests.cs Iverson.Server/Iverson.Api.Tests/Consumers/EngagementStoreConsumerKafkaOrderingTests.cs
 git commit -m "feat(api): lazily provision per-tenant StarRocks databases on first write"
 ```
 
@@ -621,7 +679,9 @@ git commit -m "feat(api): lazily provision per-tenant StarRocks databases on fir
 **Interfaces:**
 - Consumes: Task 4's `EnsureTenantProvisionedAsync` (the replacement table-creation path).
 
-- [ ] **Step 1: Collapse `StarRocksSchemaManager` to just `BuildCreateTableDdl`**, qualified:
+- [ ] **Step 1: Delete everything in `StarRocksSchemaManager` except `BuildCreateTableDdl`** (whose qualified 2-arg signature Task 4 Step 2 already established — this step doesn't touch that method's signature or body, only removes what's around it):
+
+Delete `ApplyTableAsync`, `EnsureDatabaseAsync`, `CheckBackendAliveAsync`, the constructor, `_dbName`, `_readinessGate`, `_pipeline`, `CreateConnection`, and the `using` statements they alone required (`Dapper`'s `ExecuteAsync`/`QuerySingleOrDefaultAsync`/`QueryAsync` extension usages, `Microsoft.Extensions.Logging`, `MySqlConnector`, `Polly`, `Polly.CircuitBreaker` — keep only what `BuildCreateTableDdl` itself needs, i.e. no `using` beyond the default namespace). The file's remaining shape:
 
 ```csharp
 namespace Iverson.StarRocks;
@@ -630,30 +690,12 @@ internal static class StarRocksSchemaManager
 {
     internal static string BuildCreateTableDdl(StarRocksTableSchema schema, string qualifiedTableName)
     {
-        var keySql  = $"`{schema.KeyColumn.Name}` {schema.KeyColumn.SrType} NOT NULL";
-        var colsSql = schema.Columns.Select(c =>
-            $"`{c.Name}` {c.SrType}{(c.IsNullable ? "" : " NOT NULL")}");
-
-        var orderBy = schema.SortKey.Count > 0
-            ? $"\nORDER BY ({string.Join(", ", schema.SortKey.Select(k => $"`{k}`"))})"
-            : "";
-
-        return $"""
-            CREATE TABLE IF NOT EXISTS {qualifiedTableName} (
-                {keySql},
-                {string.Join(",\n    ", colsSql)}
-            ) ENGINE=OLAP
-            PRIMARY KEY(`{schema.KeyColumn.Name}`)
-            DISTRIBUTED BY HASH(`{schema.KeyColumn.Name}`) BUCKETS 4{orderBy}
-            PROPERTIES ("replication_num" = "1")
-            """;
+        // unchanged from Task 4 Step 2 — shown here only for the resulting file's full shape
     }
 }
 ```
 
-Delete `ApplyTableAsync`, `EnsureDatabaseAsync`, `CheckBackendAliveAsync`, the constructor, `_dbName`, `_readinessGate`, `_pipeline`, `CreateConnection`, and the `using` statements they alone required (`Dapper`'s `ExecuteAsync`/`QuerySingleOrDefaultAsync`/`QueryAsync` extension usages, `Microsoft.Extensions.Logging`, `MySqlConnector`, `Polly`, `Polly.CircuitBreaker` — keep only what `BuildCreateTableDdl` itself needs, i.e. no `using` beyond the default namespace).
-
-Note the signature change from Task 4 Step 2's call: `BuildCreateTableDdl(schema, qualifiedTable)` where `qualifiedTable` is already the fully-qualified `` `db`.`table` `` string (built via `TenantIdentifier.Qualify` in `StarRocksRepository.EnsureTenantProvisionedAsync`) — this keeps `StarRocksSchemaManager` itself free of any `TenantIdentifier`/tenant-database dependency, matching its now-minimal, single-purpose shape.
+This keeps `StarRocksSchemaManager` itself free of any `TenantIdentifier`/tenant-database dependency, matching its now-minimal, single-purpose shape.
 
 - [ ] **Step 2: Delete `IEngagementStoreSchemaManager`** from `IEngagementStoreRoles.cs` (`:11-14`).
 
