@@ -97,38 +97,70 @@ public sealed class StarRocksRepository(
         }
     }
 
-    // A tenant that has never written data was never lazily provisioned by
-    // EnsureTenantProvisionedAsync, so its `role_tenant_{id}` either doesn't exist yet or was
-    // never granted to `iverson_app`. `SET ROLE` inside RunTenantScopedAsync then fails outright
-    // — matched here as a specific, verified StarRocks/MySqlConnector error shape (not a bare
-    // catch) so the 4 read paths can treat it the same as every other "no data" case in this
-    // repository (invalid tenant ID, missing tenant claim: both already return empty), while any
-    // other StarRocks failure (real outage, network issue, a different privilege problem) still
-    // propagates as an exception. Verified empirically against a live starrocks/allin1-ubuntu
-    // container: both "role doesn't exist" and "role exists but isn't granted to this user" raise
-    // MySqlConnector.MySqlException with ErrorCode == MySqlErrorCode.ParseError (StarRocks reuses
-    // MySQL's generic 1064 syntax-error code for this) and a message containing either
-    // "cannot find role" or "is not granted to". Deliberately scoped to the READ path only —
-    // UpsertAsync/DeleteAsync must keep throwing, since they're only ever called after
-    // EnsureTenantProvisionedAsync has already run in the same code path (EngagementStoreConsumer),
-    // so hitting this there would mean a real invariant violation, not a legitimate empty tenant.
-    private static bool IsUnprovisionedTenantRoleError(Exception ex) =>
-        ex is MySqlException { ErrorCode: MySqlErrorCode.ParseError } mex &&
-        (mex.Message.Contains("cannot find role", StringComparison.OrdinalIgnoreCase) ||
-         mex.Message.Contains("is not granted to", StringComparison.OrdinalIgnoreCase));
+    // Two distinct "no data yet" shapes on the read path, both treated as fail-closed-empty
+    // rather than propagated as exceptions:
+    //
+    // 1. Unprovisioned tenant: a tenant that has never written ANY data was never lazily
+    //    provisioned by EnsureTenantProvisionedAsync, so its `role_tenant_{id}` either doesn't
+    //    exist yet or was never granted to `iverson_app`. `SET ROLE` inside RunTenantScopedAsync
+    //    then fails outright. Verified empirically against a live starrocks/allin1-ubuntu
+    //    container: both "role doesn't exist" and "role exists but isn't granted to this user"
+    //    raise MySqlConnector.MySqlException with ErrorCode == MySqlErrorCode.ParseError
+    //    (StarRocks reuses MySQL's generic 1064 syntax-error code for this) and a message
+    //    containing either "cannot find role" or "is not granted to".
+    //
+    // 2. Unwritten type within a provisioned tenant: EnsureTenantProvisionedAsync creates exactly
+    //    one table per call (on that type's own first write), not every table a tenant will ever
+    //    use — so a tenant that has written type A but queries type B (never written) has a
+    //    perfectly valid role/database, but the specific table doesn't exist. Verified
+    //    empirically against the same container: querying a nonexistent table under a database
+    //    the active role legitimately has grants on raises MySqlException with ErrorCode 5502
+    //    (SqlState 42602 — StarRocks-specific, no named MySqlErrorCode member) and a message
+    //    containing "Unknown table". Deliberately distinct from — and must never accidentally
+    //    match — two adjacent error shapes that must keep propagating as real failures: querying
+    //    a wrong/nonexistent *database* name (a real bug, e.g. a tenant-ID-to-database-name
+    //    mapping defect) raises a different message, "Unknown database" (ErrorCode 5501); and an
+    //    actual permissions problem on a table that legitimately exists raises yet another
+    //    message, "Access denied ... privilege(s) on TABLE ..." (ErrorCode 5203). Confirmed both
+    //    do NOT contain "Unknown table" and so are correctly left unmatched here.
+    //
+    // Both cases are matched here as specific, verified StarRocks/MySqlConnector error shapes
+    // (not a bare catch) so the 4 read paths can treat them the same as every other "no data"
+    // case in this repository (invalid tenant ID, missing tenant claim: both already return
+    // empty), while any other StarRocks failure (real outage, network issue, a genuinely
+    // different privilege or schema problem) still propagates as an exception. Deliberately
+    // scoped to the READ path only — UpsertAsync/DeleteAsync must keep throwing, since they're
+    // only ever called after EnsureTenantProvisionedAsync has already run for that exact type in
+    // the same code path (EngagementStoreConsumer), so hitting either shape there would mean a
+    // real invariant violation, not a legitimate empty tenant.
+    private static bool IsExpectedMissingResourceError(Exception ex) =>
+        ex is MySqlException mex &&
+        ((mex.ErrorCode == MySqlErrorCode.ParseError &&
+          (mex.Message.Contains("cannot find role", StringComparison.OrdinalIgnoreCase) ||
+           mex.Message.Contains("is not granted to", StringComparison.OrdinalIgnoreCase))) ||
+         (mex.ErrorCode == (MySqlErrorCode)5502 &&
+          mex.Message.Contains("Unknown table", StringComparison.OrdinalIgnoreCase)));
 
     // isExpectedException: lets a read-path caller (SearchAsync/AggregateAsync/GroupByAsync/
-    // PipelineAsync) identify IsUnprovisionedTenantRoleError as a non-exceptional, expected
-    // outcome (a brand-new tenant's first-ever read) *before* this method's own Activity is
-    // stopped — the caller's own catch block runs after `using var activity` above has already
-    // disposed (and therefore exported) the Activity, so setting its status there is too late.
-    // Left null (the default) for UpsertAsync/DeleteAsync, which must keep marking Error: an
-    // unprovisioned tenant on the write path is a real invariant violation, not an expected case,
-    // and must not be masked from error-rate telemetry.
+    // PipelineAsync) identify IsExpectedMissingResourceError as a non-exceptional, expected
+    // outcome (a brand-new tenant's first-ever read, or a provisioned tenant's first-ever read of
+    // a type it has never written) *before* this method's own Activity is stopped — the caller's
+    // own catch block runs after `using var activity` above has already disposed (and therefore
+    // exported) the Activity, so setting its status there is too late. Left null (the default)
+    // for UpsertAsync/DeleteAsync, which must keep marking Error: either shape on the write path
+    // is a real invariant violation, not an expected case, and must not be masked from
+    // error-rate telemetry.
     private async Task<T> RunTenantScopedAsync<T>(
         string activityName, string tenantId, string sql, Func<MySqlConnection, Task<T>> operation,
         Func<Exception, bool>? isExpectedException = null)
     {
+        // Defensive re-validation: every current caller already checks TenantIdentifier.IsValid
+        // before calling in, so this never fires today. It exists purely so a future caller that
+        // forgets that check fails loudly and immediately, rather than splicing an unvalidated
+        // tenantId straight into the `SET ROLE` statement below.
+        if (!TenantIdentifier.IsValid(tenantId))
+            throw new ArgumentException($"Invalid tenant ID: '{tenantId}'", nameof(tenantId));
+
         using var activity = Telemetry.Source.StartActivity(activityName, ActivityKind.Client);
         activity?.SetTag("db.system", "starrocks");
         activity?.SetTag("db.statement", sql);
@@ -316,9 +348,9 @@ public sealed class StarRocksRepository(
         try
         {
             return await RunTenantScopedAsync(
-                "sr.query", tenantId, sql, conn => conn.QueryAsync<dynamic>(sql, param), IsUnprovisionedTenantRoleError);
+                "sr.query", tenantId, sql, conn => conn.QueryAsync<dynamic>(sql, param), IsExpectedMissingResourceError);
         }
-        catch (Exception ex) when (IsUnprovisionedTenantRoleError(ex))
+        catch (Exception ex) when (IsExpectedMissingResourceError(ex))
         {
             return [];
         }
@@ -356,9 +388,9 @@ public sealed class StarRocksRepository(
             try
             {
                 rows = (await RunTenantScopedAsync(
-                    "sr.query", tenantId, sql, conn => conn.QueryAsync<dynamic>(sql, param), IsUnprovisionedTenantRoleError)).ToList();
+                    "sr.query", tenantId, sql, conn => conn.QueryAsync<dynamic>(sql, param), IsExpectedMissingResourceError)).ToList();
             }
-            catch (Exception ex) when (IsUnprovisionedTenantRoleError(ex))
+            catch (Exception ex) when (IsExpectedMissingResourceError(ex))
             {
                 return null;
             }
@@ -415,9 +447,9 @@ public sealed class StarRocksRepository(
         try
         {
             return await RunTenantScopedAsync(
-                "sr.query", tenantId, sql, conn => conn.QueryAsync<dynamic>(sql, param), IsUnprovisionedTenantRoleError);
+                "sr.query", tenantId, sql, conn => conn.QueryAsync<dynamic>(sql, param), IsExpectedMissingResourceError);
         }
-        catch (Exception ex) when (IsUnprovisionedTenantRoleError(ex))
+        catch (Exception ex) when (IsExpectedMissingResourceError(ex))
         {
             return [];
         }
@@ -444,10 +476,10 @@ public sealed class StarRocksRepository(
         try
         {
             var rows = await RunTenantScopedAsync(
-                "sr.query", tenantId, sql, conn => conn.QueryAsync<dynamic>(sql, param), IsUnprovisionedTenantRoleError);
+                "sr.query", tenantId, sql, conn => conn.QueryAsync<dynamic>(sql, param), IsExpectedMissingResourceError);
             return MaskPipelineRows(rows, lastCols);
         }
-        catch (Exception ex) when (IsUnprovisionedTenantRoleError(ex))
+        catch (Exception ex) when (IsExpectedMissingResourceError(ex))
         {
             return [];
         }

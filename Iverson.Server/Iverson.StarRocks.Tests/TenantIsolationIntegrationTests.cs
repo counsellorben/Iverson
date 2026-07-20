@@ -208,6 +208,28 @@ public sealed class TenantIsolationIntegrationTests : IClassFixture<StarRocksCon
         ((string)rowsForC[0].Name).Should().Be("TenantCOwner");
     }
 
+    // The adjacent "no data yet" case to SearchAsync_ForOtherTenant_ReturnsNoRows: here the tenant
+    // IS provisioned (its role/database are real and granted) but has only ever written type A —
+    // EnsureTenantProvisionedAsync creates one table per call, not every table a tenant will ever
+    // use, so type B's table genuinely doesn't exist yet. Locks in StarRocksRepository's
+    // IsExpectedMissingResourceError "Unknown table" branch: this must return empty, not throw.
+    [Fact]
+    public async Task SearchAsync_ForNeverWrittenType_ReturnsNoRows()
+    {
+        var tenantId = UniqueTenantId();
+        var tableA = UniqueTable();
+        var tableB = UniqueTable(); // provisioned tenant, but this type is never written
+        var schemaA = ProbeSchema(tableA);
+
+        await _appRepo.EnsureTenantProvisionedAsync(tenantId, schemaA);
+        await _appRepo.UpsertAsync(schemaA, ProbePayload("11111111-2222-3333-4444-555555555555", "OnlyTypeAWritten"), tenantId);
+
+        var querySchemaB = new StarRocksQuerySchema("ProbeB", tableB, "Id", ["Name"]);
+        var rows = (await _appRepo.SearchAsync(querySchemaB, null, 0, 50, authz: AuthzFor("ProbeB", tenantId))).ToList();
+
+        rows.Should().BeEmpty();
+    }
+
     [Fact]
     public async Task EnsureTenantProvisionedAsync_CalledTwice_IsIdempotent()
     {
