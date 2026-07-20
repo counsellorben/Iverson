@@ -1,5 +1,6 @@
 using System.Text.Json;
 using FluentAssertions;
+using Iverson.Client.Contracts;
 using Microsoft.Extensions.Logging.Abstractions;
 using MySqlConnector;
 using Xunit;
@@ -120,6 +121,91 @@ public sealed class TenantIsolationIntegrationTests : IClassFixture<StarRocksCon
         var rows = (await _appRepo.SearchAsync(querySchema, null, 0, 50, authz: AuthzFor("Probe", tenantB))).ToList();
 
         rows.Should().BeEmpty();
+    }
+
+    // AggregateAsync/GroupByAsync/PipelineAsync got the identical unprovisioned-tenant fail-closed
+    // fix as SearchAsync (see StarRocksRepository.IsUnprovisionedTenantRoleError and its call
+    // sites), but only SearchAsync's fix was exercised against a live container before this test
+    // was added — these three lock in the same guarantee for the other three read methods.
+    [Fact]
+    public async Task AggregateAsync_ForUnprovisionedTenant_ReturnsNull()
+    {
+        var tenantB = UniqueTenantId(); // never provisioned
+        var table = UniqueTable();
+        var querySchema = new StarRocksQuerySchema("Probe", table, "Id", ["Name"]);
+        var spec = new AggregationDescriptor("cnt", AggregationKind.Count, "Name");
+
+        var result = await _appRepo.AggregateAsync(querySchema, null, spec, authz: AuthzFor("Probe", tenantB));
+
+        // AggregateAsync's fail-closed shape is Task<AggregationResult?>, not an empty collection —
+        // null is the correct "no access" result here, matching its existing null-return branches
+        // for an invalid/missing tenant value.
+        result.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task GroupByAsync_ForUnprovisionedTenant_ReturnsNoRows()
+    {
+        var tenantB = UniqueTenantId(); // never provisioned
+        var table = UniqueTable();
+        var querySchema = new StarRocksQuerySchema("Probe", table, "Id", ["Name"]);
+
+        var request = new GroupByRequest { TypeName = "Probe", Keys = { "Name" } };
+        request.Metrics.Add(new MetricSpec { Name = "cnt", Type = AggregationType.Count });
+
+        var registry = TestSchemaRegistry.BuildRegistry(querySchema);
+
+        var rows = (await _appRepo.GroupByAsync(querySchema, request, registry, authz: AuthzFor("Probe", tenantB))).ToList();
+
+        rows.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task PipelineAsync_ForUnprovisionedTenant_ReturnsNoRows()
+    {
+        var tenantB = UniqueTenantId(); // never provisioned
+        var table = UniqueTable();
+        var querySchema = new StarRocksQuerySchema("Probe", table, "Id", ["Name"]);
+
+        var request = new PipelineRequest { TypeName = "Probe" };
+        var registry = TestSchemaRegistry.BuildRegistry(querySchema);
+
+        var rows = (await _appRepo.PipelineAsync(querySchema, request, registry, authz: AuthzFor("Probe", tenantB))).ToList();
+
+        rows.Should().BeEmpty();
+    }
+
+    // The single most load-bearing guarantee of the whole 4-part tenant-isolation initiative:
+    // two tenants that are BOTH fully provisioned, BOTH holding real data of their own, cannot see
+    // each other's rows. SearchAsync_ForOtherTenant_ReturnsNoRows above only proves the weaker
+    // corollary (a tenant that was never provisioned at all has no role/access) — this test proves
+    // actual data isolation between two live, granted, populated tenants, which is the design's
+    // central claim and previously had zero automated coverage (only verified by hand with raw SQL
+    // during design brainstorming).
+    [Fact]
+    public async Task SearchAsync_BetweenTwoProvisionedTenants_EachSeesOnlyOwnData()
+    {
+        var tenantA = UniqueTenantId();
+        var tenantC = UniqueTenantId();
+        var table = UniqueTable();
+        var schema = ProbeSchema(table);
+
+        await _appRepo.EnsureTenantProvisionedAsync(tenantA, schema);
+        await _appRepo.EnsureTenantProvisionedAsync(tenantC, schema);
+
+        await _appRepo.UpsertAsync(schema, ProbePayload("88888888-8888-8888-8888-888888888888", "TenantAOwner"), tenantA);
+        await _appRepo.UpsertAsync(schema, ProbePayload("99999999-9999-9999-9999-999999999999", "TenantCOwner"), tenantC);
+
+        var querySchema = new StarRocksQuerySchema("Probe", table, "Id", ["Name"]);
+
+        var rowsForA = (await _appRepo.SearchAsync(querySchema, null, 0, 50, authz: AuthzFor("Probe", tenantA))).ToList();
+        var rowsForC = (await _appRepo.SearchAsync(querySchema, null, 0, 50, authz: AuthzFor("Probe", tenantC))).ToList();
+
+        rowsForA.Should().ContainSingle();
+        ((string)rowsForA[0].Name).Should().Be("TenantAOwner");
+
+        rowsForC.Should().ContainSingle();
+        ((string)rowsForC[0].Name).Should().Be("TenantCOwner");
     }
 
     [Fact]

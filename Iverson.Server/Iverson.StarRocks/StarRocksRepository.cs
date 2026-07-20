@@ -117,8 +117,17 @@ public sealed class StarRocksRepository(
         (mex.Message.Contains("cannot find role", StringComparison.OrdinalIgnoreCase) ||
          mex.Message.Contains("is not granted to", StringComparison.OrdinalIgnoreCase));
 
+    // isExpectedException: lets a read-path caller (SearchAsync/AggregateAsync/GroupByAsync/
+    // PipelineAsync) identify IsUnprovisionedTenantRoleError as a non-exceptional, expected
+    // outcome (a brand-new tenant's first-ever read) *before* this method's own Activity is
+    // stopped — the caller's own catch block runs after `using var activity` above has already
+    // disposed (and therefore exported) the Activity, so setting its status there is too late.
+    // Left null (the default) for UpsertAsync/DeleteAsync, which must keep marking Error: an
+    // unprovisioned tenant on the write path is a real invariant violation, not an expected case,
+    // and must not be masked from error-rate telemetry.
     private async Task<T> RunTenantScopedAsync<T>(
-        string activityName, string tenantId, string sql, Func<MySqlConnection, Task<T>> operation)
+        string activityName, string tenantId, string sql, Func<MySqlConnection, Task<T>> operation,
+        Func<Exception, bool>? isExpectedException = null)
     {
         using var activity = Telemetry.Source.StartActivity(activityName, ActivityKind.Client);
         activity?.SetTag("db.system", "starrocks");
@@ -155,8 +164,17 @@ public sealed class StarRocksRepository(
         }
         catch (Exception ex)
         {
-            activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
-            activity?.RecordException(ex);
+            if (isExpectedException?.Invoke(ex) == true)
+            {
+                // Still rethrown below so the caller's own catch-and-return-empty logic runs —
+                // only the telemetry verdict changes here, not the control flow.
+                activity?.SetStatus(ActivityStatusCode.Ok);
+            }
+            else
+            {
+                activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
+                activity?.RecordException(ex);
+            }
             throw;
         }
     }
@@ -297,7 +315,8 @@ public sealed class StarRocksRepository(
 
         try
         {
-            return await RunTenantScopedAsync("sr.query", tenantId, sql, conn => conn.QueryAsync<dynamic>(sql, param));
+            return await RunTenantScopedAsync(
+                "sr.query", tenantId, sql, conn => conn.QueryAsync<dynamic>(sql, param), IsUnprovisionedTenantRoleError);
         }
         catch (Exception ex) when (IsUnprovisionedTenantRoleError(ex))
         {
@@ -336,7 +355,8 @@ public sealed class StarRocksRepository(
                 TenantIdentifier.DatabaseName(tenantId));
             try
             {
-                rows = (await RunTenantScopedAsync("sr.query", tenantId, sql, conn => conn.QueryAsync<dynamic>(sql, param))).ToList();
+                rows = (await RunTenantScopedAsync(
+                    "sr.query", tenantId, sql, conn => conn.QueryAsync<dynamic>(sql, param), IsUnprovisionedTenantRoleError)).ToList();
             }
             catch (Exception ex) when (IsUnprovisionedTenantRoleError(ex))
             {
@@ -394,7 +414,8 @@ public sealed class StarRocksRepository(
 
         try
         {
-            return await RunTenantScopedAsync("sr.query", tenantId, sql, conn => conn.QueryAsync<dynamic>(sql, param));
+            return await RunTenantScopedAsync(
+                "sr.query", tenantId, sql, conn => conn.QueryAsync<dynamic>(sql, param), IsUnprovisionedTenantRoleError);
         }
         catch (Exception ex) when (IsUnprovisionedTenantRoleError(ex))
         {
@@ -422,7 +443,8 @@ public sealed class StarRocksRepository(
         var (sql, param, lastCols) = StarRocksPipelineBuilder.Build(schema, request, registry, authz, TenantIdentifier.DatabaseName(tenantId));
         try
         {
-            var rows = await RunTenantScopedAsync("sr.query", tenantId, sql, conn => conn.QueryAsync<dynamic>(sql, param));
+            var rows = await RunTenantScopedAsync(
+                "sr.query", tenantId, sql, conn => conn.QueryAsync<dynamic>(sql, param), IsUnprovisionedTenantRoleError);
             return MaskPipelineRows(rows, lastCols);
         }
         catch (Exception ex) when (IsUnprovisionedTenantRoleError(ex))
