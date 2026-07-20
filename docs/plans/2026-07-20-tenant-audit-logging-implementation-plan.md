@@ -72,6 +72,7 @@ The following were verified by `thorough-brainstorming` at spec-write time and a
 | 15 | Pattern reuse | The only existing precedent for asserting on structured log content in this codebase is `Substitute.For<ILogger<T>>()` + `.Received(1).Log(...)` | Read `Iverson.Api.Tests/Grpc/OutboxPublisherTests.cs:16,24-30` |
 | 16 | Function signature | `ServerCallContext.GetHttpContext()` is a valid, already-used extension for obtaining the service credential from a gRPC method (needed for `RegisterSchema`'s `AdminOperation` call) | Already used at `Iverson.Api/Grpc/ActingUserInterceptor.cs:36` |
 | 17 | Drift check | Spec's last-modifying commit equals current HEAD (no drift since spec-write time) | `git log -1 --format=%H -- docs/specs/2026-07-20-tenant-audit-logging-design.md` and `git log -1 --format=%H` both return `74a0dbf...` |
+| 18 | Code validity | `WebApplicationFactory<T>.WithWebHostBuilder(...)`'s derived factory composes with (rather than replaces) the base factory's own `ConfigureWebHost` override — load-bearing for Task 5's test, since `AuthTestWebApplicationFactory`'s JWT signing-key setup must still apply for `TestJwtFactory`-issued tokens to validate | `Microsoft.AspNetCore.Mvc.Testing.xml`'s doc text for `WithWebHostBuilder`: creates a factory "with an `IWebHostBuilder` that is further customized" — confirming composition, not replacement |
 
 ## Tasks
 
@@ -267,7 +268,46 @@ public sealed class ObjectMappingGrpcService(
     : ObjectMappingService.ObjectMappingServiceBase
 ```
 
-In `Get` (`:82-94`) and `Delete` (`:204-216`), apply the same restructuring as `ObjectRetrievalGrpcService.Get` above (action `"Read"` for `Get`, `"Delete"` for `Delete`; `resourceType`/`resourceKey` from `request.TypeName`/`request.Key`), calling `_auditLog.Denied(_actingUserAccessor.ActingUser, ...)`.
+In `Get`, replace `:82-94` with (note the existing local is named `entityStruct`, not `data`):
+```csharp
+var decision = _authEvaluator.Evaluate(schema, _actingUserAccessor.ActingUser, AuthorizationAction.Read);
+var ownerMismatch  = decision.OwnershipRequired &&
+    StructFieldAccess.GetFieldString(entityStruct, decision.OwnerFieldName!) != decision.OwnerValue;
+var tenantMismatch = decision.TenantColumn is not null &&
+    StructFieldAccess.GetFieldString(entityStruct, decision.TenantColumn) != decision.TenantValue;
+if (decision.Denied || ownerMismatch || tenantMismatch)
+{
+    _auditLog.Denied(_actingUserAccessor.ActingUser, "Read", request.TypeName, request.Key,
+        decision.Denied ? "AccessDenied" : ownerMismatch ? "OwnerMismatch" : "TenantMismatch");
+    return new MappingResponse
+    {
+        Success = false,
+        Error   = $"'{request.TypeName}:{request.Key}' not found.",
+        TraceId = request.TraceId
+    };
+}
+```
+
+In `Delete`, replace `:203-216` with (note this method has no named local for the parsed row today — it parses `rowJson` inline, twice; introduce `rowStruct` so it can be reused):
+```csharp
+var decision  = _authEvaluator.Evaluate(schema, _actingUserAccessor.ActingUser, AuthorizationAction.Delete);
+var rowStruct = JsonParser.Default.Parse<Struct>(rowJson);
+var ownerMismatch  = decision.OwnershipRequired &&
+    StructFieldAccess.GetFieldString(rowStruct, decision.OwnerFieldName!) != decision.OwnerValue;
+var tenantMismatch = decision.TenantColumn is not null &&
+    StructFieldAccess.GetFieldString(rowStruct, decision.TenantColumn) != decision.TenantValue;
+if (decision.Denied || ownerMismatch || tenantMismatch)
+{
+    _auditLog.Denied(_actingUserAccessor.ActingUser, "Delete", request.TypeName, request.Key,
+        decision.Denied ? "AccessDenied" : ownerMismatch ? "OwnerMismatch" : "TenantMismatch");
+    return new MappingDeleteResponse
+    {
+        Success = false,
+        Error   = $"'{request.TypeName}:{request.Key}' not found.",
+        TraceId = request.TraceId
+    };
+}
+```
 
 - [ ] **Step 3: Update existing tests' constructors**
 In both `ObjectRetrievalGrpcServiceTests.cs` and `ObjectMappingGrpcServiceTests.cs`, add:
