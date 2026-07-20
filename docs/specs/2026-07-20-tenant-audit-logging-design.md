@@ -42,25 +42,26 @@ Both log under the single `ILogger<AuditLog>` category regardless of which servi
 
 ### Component 1 call sites
 
-**Read-path masked denials** (currently silent `Found = false` / `Success = false` — no exception thrown today), 3 functions:
+**Read-path masked denials** (currently silent `Found = false` / `Success = false` — no exception thrown today), 4 functions:
 1. `ObjectRetrievalGrpcService.cs` `Get` (its auth-denial masked return, `:49`) — action `"Read"`.
-2. `ObjectMappingGrpcService.cs` `Get` (analogous masked return) — action `"Read"`.
-3. `ObjectMappingGrpcService.cs` `Delete` (`:204-216`) — action `"Delete"`.
+2. `ObjectRetrievalGrpcService.cs` `GetMany` — two sites: the `decision.Denied` early-return (`:83-88`, one call per rejected batch, reason `AccessDenied`) and the per-row tenant/owner mismatch check (`:105-109`, same reasons as `Get`'s tenant/owner check) — action `"Read"`.
+3. `ObjectMappingGrpcService.cs` `Get` (analogous masked return) — action `"Read"`.
+4. `ObjectMappingGrpcService.cs` `Delete` (`:204-216`) — action `"Delete"`.
 
-**Write-path thrown `PermissionDenied`**, 1 shared function (`AuthorizationFieldMasking.EnforceWriteAuthorization`, used by both `ObjectMappingGrpcService` and `ObjectPersistenceGrpcService`'s Post/Update — one set of `AuditLog.Denied` calls here covers all 4 of those call sites, not 4 separate additions) with 5 distinct checks inside it:
-4. `:38-39` — `decision.Denied` → reason `AccessDenied`, action `"Create"` or `"Update"` (passed in by the caller, since this function serves both).
-5. `:61-62` — tenant mismatch on existing row → reason `TenantMismatch`, action `"Update"`.
-6. `:64-65` — attempted tenant change → reason `TenantImmutable`, action `"Update"`.
-7. `:69-70` — owner mismatch on existing row → reason `OwnerMismatch`, action `"Update"`.
-8. `:81-82` — attempted owner change → reason `OwnerImmutable`, action `"Update"`.
+**Write-path thrown `PermissionDenied`**, 1 shared function (`AuthorizationFieldMasking.EnforceWriteAuthorization`, used by both `ObjectMappingGrpcService` and `ObjectPersistenceGrpcService`'s Post/Update — one set of `AuditLog.Denied` calls here covers all 4 of those call sites, not 4 separate additions) with 5 distinct checks inside it. `EnforceWriteAuthorization` is a static method taking every dependency as an explicit parameter (no constructor for DI to inject into) — `AuditLog auditLog` must be added to its signature the same way `authEvaluator` already is, and threaded through by its 4 callers (`ObjectMappingGrpcService.cs:112,159`; `ObjectPersistenceGrpcService.cs:34,85`):
+5. `:38-39` — `decision.Denied` → reason `AccessDenied`, action `"Create"` or `"Update"` (passed in by the caller, since this function serves both).
+6. `:61-62` — tenant mismatch on existing row → reason `TenantMismatch`, action `"Update"`.
+7. `:64-65` — attempted tenant change → reason `TenantImmutable`, action `"Update"`.
+8. `:69-70` — owner mismatch on existing row → reason `OwnerMismatch`, action `"Update"`.
+9. `:81-82` — attempted owner change → reason `OwnerImmutable`, action `"Update"`.
 
 **Admin operations** (`AuditLog.AdminOperation`, using the service credential — `httpContext.User`, not `ActingUser` — since these aren't tenant-scoped operations), 4 endpoints:
-9. `ObjectMappingGrpcService.cs` `RegisterSchema` (`[Authorize(Policy = "SchemaAdmin")]`).
-10. `Program.cs` `POST /admin/reconcile/{typeName}`.
-11. `Program.cs` `GET /admin/dlq`.
-12. `Program.cs` `POST /admin/dlq/{id}/replay`.
+10. `ObjectMappingGrpcService.cs` `RegisterSchema` (`[Authorize(Policy = "SchemaAdmin")]`).
+11. `Program.cs` `POST /admin/reconcile/{typeName}`.
+12. `Program.cs` `GET /admin/dlq`.
+13. `Program.cs` `POST /admin/dlq/{id}/replay`.
 
-In total: 3 read-path functions + 1 shared write-path function (covering 5 distinct denial checks and 4 upstream call sites) + 4 admin endpoints.
+In total: 4 read-path functions (one, `GetMany`, contributing two distinct denial branches) + 1 shared write-path function (covering 5 distinct denial checks and 4 upstream call sites) + 4 admin endpoints.
 
 ### Component 2: authorization-rejection audit hook
 
@@ -96,6 +97,8 @@ Because this is a single middleware choke point (not per-call-site), it covers `
 ### Known limitation
 
 The bare `RequireAuthenticatedUser()` fallback policy — which guards every data-plane gRPC call that has no explicit `[Authorize(Policy = ...)]` — is deliberately excluded from `AuditedPolicies`. A caller with a missing or invalid token hitting an ordinary data-plane endpoint is not logged by this component. This was an explicit scope decision (see "Scope and decomposition" above): auditing every malformed/unauthenticated request across all data-plane traffic would be high-volume and wasn't part of what this spec was asked to cover. If that need arises later, it's a one-line change to `AuditedPolicies` handling (or a separate, explicitly-scoped follow-up).
+
+Postgres Row-Level Security (added in Part B1) filters cross-tenant rows out of the query result before `ObjectRetrievalGrpcService.Get`/`GetMany` and `ObjectMappingGrpcService.Get`/`Delete` ever reach their in-application tenant-mismatch comparison — the tenant-scoped fetch simply returns no row, and execution takes the same masked "not found" path used for a genuinely nonexistent key. Consequence: a denied cross-tenant read/delete attempt at these four call sites will not produce a distinguishable `TenantMismatch` audit entry; it surfaces (if at all) only as an unremarkable "not found" outcome. Owner-mismatch denials at the same sites are unaffected (RLS scopes by tenant only), and the write path (`Update`, on both `ObjectMappingGrpcService` and `ObjectPersistenceGrpcService`) is unaffected — its existing-row fetch deliberately omits tenant scoping, so its `TenantMismatch` throw remains reliably audited. This is accepted as a known limitation rather than resolved by adding a second, unscoped existence probe, which would reintroduce the cross-tenant existence signal RLS's fail-closed design was built to suppress.
 
 ## Verified assumptions
 
