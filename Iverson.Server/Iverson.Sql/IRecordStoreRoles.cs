@@ -81,6 +81,18 @@ public interface IDlqRepository
     Task<int> CountUnreplayedAsync();
 }
 
+public interface ITenantRepository
+{
+    Task InsertAsync(string id, string displayName, string status);
+    Task SeedIfMissingAsync(string id, string displayName, string status);
+    Task<TenantRow?> GetAsync(string id);
+    Task<IEnumerable<TenantRow>> ListAsync();
+    Task UpdateStatusAsync(string id, string status);
+    Task DeleteAsync(string id);
+}
+
+public sealed record TenantRow(string Id, string DisplayName, string Status, DateTimeOffset CreatedAt);
+
 public sealed record TableSchema(
     string TableName,
     ColumnSchema KeyColumn,

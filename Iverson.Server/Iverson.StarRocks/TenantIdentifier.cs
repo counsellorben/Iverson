@@ -2,11 +2,11 @@ using System.Text.RegularExpressions;
 
 namespace Iverson.StarRocks;
 
-internal static class TenantIdentifier
+public static class TenantIdentifier
 {
     private static readonly Regex AllowedPattern = new("^(?!.*--)([A-Za-z0-9_-]{1,52})$", RegexOptions.Compiled);
 
-    internal static bool IsValid(string tenantId) => AllowedPattern.IsMatch(tenantId);
+    public static bool IsValid(string tenantId) => AllowedPattern.IsMatch(tenantId);
 
     internal static string DatabaseName(string tenantId) => $"iverson_tenant_{tenantId}";
 

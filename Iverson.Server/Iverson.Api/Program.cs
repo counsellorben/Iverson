@@ -194,6 +194,9 @@ builder.Services.AddSingleton<IReconciliationQueueRepository>(sp => new Reconcil
 builder.Services.AddSingleton<IDlqRepository>(sp => new DlqRepository(
     Iverson.Api.Reconciliation.DlqSchema.TableName,
     sp.GetRequiredService<IRecordStoreQueryExecutor>()));
+builder.Services.AddSingleton<ITenantRepository>(sp => new TenantRepository(
+    Iverson.Api.Tenancy.TenantSchema.TableName,
+    sp.GetRequiredService<IRecordStoreQueryExecutor>()));
 builder.Services.AddSingleton<Iverson.Api.Reconciliation.ReconciliationService>();
 
 builder.Services.AddEmbeddings(cfg);
@@ -348,6 +351,11 @@ var schemaManager = app.Services.GetRequiredService<IRecordStoreSchemaManager>()
 await schemaManager.EnsureRuntimeRoleAsync();
 await schemaManager.ApplySchemaAsync(Iverson.Api.Reconciliation.ReconciliationSchema.Table);
 await schemaManager.ApplySchemaAsync(Iverson.Api.Reconciliation.DlqSchema.Table);
+await schemaManager.ApplySchemaAsync(Iverson.Api.Tenancy.TenantSchema.Table);
+
+var tenantRepository = app.Services.GetRequiredService<ITenantRepository>();
+foreach (var legacyTenantId in new[] { "tenant-loadtest", "tenant-webtest", "tenant-admin", "tenant-smoke-test", "tenant-bypass" })
+    await tenantRepository.SeedIfMissingAsync(legacyTenantId, legacyTenantId, "active");
 
 // Self-heal RLS state for tables whose descriptor was registered before this change shipped —
 // their physical DDL predates the tenant policy/RLS/grant this schema manager now applies.
