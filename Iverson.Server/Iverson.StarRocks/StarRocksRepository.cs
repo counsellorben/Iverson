@@ -141,11 +141,13 @@ public sealed class StarRocksRepository(
         }
     }
 
-    public async Task UpsertAsync(StarRocksTableSchema schema, string payloadJson)
+    public async Task UpsertAsync(StarRocksTableSchema schema, string payloadJson, string tenantId)
     {
         using var activity = Telemetry.Source.StartActivity("sr.upsert", ActivityKind.Client);
         activity?.SetTag("db.system", "starrocks");
         activity?.SetTag("db.table", schema.TableName);
+
+        if (!TenantIdentifier.IsValid(tenantId)) return;
 
         var row = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(payloadJson)
             ?? new Dictionary<string, JsonElement>();
@@ -165,28 +167,29 @@ public sealed class StarRocksRepository(
 
         var colList   = string.Join(", ", entries.Select(e => $"`{e.Key}`"));
         var paramList = string.Join(", ", entries.Select((_, i) => $"@p{i}"));
+        var qualifiedTable = TenantIdentifier.Qualify(TenantIdentifier.DatabaseName(tenantId), schema.TableName);
 
         // StarRocks Primary Key model treats INSERT of an existing key as a FULL-ROW REPLACE:
-        // any column absent from the INSERT list is reset to its default/null.
-        // This is safe here because both ObjectPersistenceGrpcService.Update and
-        // ObjectMappingGrpcService.Update call StructSerializer.SerializePayload on
-        // request.Payload — which serialises the ENTIRE Struct the client sent —
-        // and the API contract requires clients to supply the complete entity on Update.
-        // If a partial-payload Update is ever introduced the producer must be changed first.
-        var sql       = $"INSERT INTO `{schema.TableName}` ({colList}) VALUES ({paramList})";
+        // any column absent from the INSERT list is reset to its default/null. (unchanged rationale
+        // from the pre-existing comment here — see git history.)
+        var sql = $"INSERT INTO {qualifiedTable} ({colList}) VALUES ({paramList})";
 
         var param = new DynamicParameters();
         for (var i = 0; i < entries.Count; i++)
             param.Add($"p{i}", JsonElementToObject(entries[i].Value));
 
-        await ExecuteAsync(sql, param);
+        await RunTenantScopedAsync("sr.execute", tenantId, sql, conn => conn.ExecuteAsync(sql, param));
         activity?.SetStatus(ActivityStatusCode.Ok);
     }
 
-    public Task DeleteAsync(string tableName, string keyColumn, string keyValue) =>
-        ExecuteAsync(
-            $"DELETE FROM `{tableName}` WHERE `{keyColumn}` = @key",
-            new { key = keyValue });
+    public async Task DeleteAsync(string tableName, string keyColumn, string keyValue, string tenantId)
+    {
+        if (!TenantIdentifier.IsValid(tenantId)) return;
+
+        var qualifiedTable = TenantIdentifier.Qualify(TenantIdentifier.DatabaseName(tenantId), tableName);
+        var sql = $"DELETE FROM {qualifiedTable} WHERE `{keyColumn}` = @key";
+        await RunTenantScopedAsync("sr.execute", tenantId, sql, conn => conn.ExecuteAsync(sql, new { key = keyValue }));
+    }
 
     public async Task<IEnumerable<dynamic>> SearchAsync(
         StarRocksQuerySchema schema,

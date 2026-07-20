@@ -21,8 +21,8 @@ public interface IEngagementStoreHealthCheck
 
 public interface IEngagementStoreEntityStore
 {
-    Task UpsertAsync(StarRocksTableSchema schema, string payloadJson);
-    Task DeleteAsync(string tableName, string keyColumn, string keyValue);
+    Task UpsertAsync(StarRocksTableSchema schema, string payloadJson, string tenantId);
+    Task DeleteAsync(string tableName, string keyColumn, string keyValue, string tenantId);
 }
 
 public interface IEngagementStoreSearchService
