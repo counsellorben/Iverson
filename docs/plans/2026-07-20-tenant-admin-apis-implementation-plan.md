@@ -393,7 +393,7 @@ git commit -m "feat(api): enforce tenant suspension in ActingUserInterceptor"
 **Interfaces:**
 - Produces: `IAuthentikAdminClient` — consumed by Tasks 4, 5.
 
-**Not fully verified** (mirrors the spec's own flagged caveat): Authentik's exact Core-API JSON field names for user creation/`attributes`/`groups`/`set_password` are grounded in Authentik's documented DRF conventions and a confirmed separate `set_password` endpoint, but not verified against a live instance — double-check against a running Authentik (or its OpenAPI schema at `/api/v3/schema/`) while implementing this task, and adjust field names if they differ.
+**Not fully verified** (mirrors the spec's own flagged caveat): Authentik's exact Core-API JSON field names for user creation/`attributes`/`groups`/`set_password`, and the blueprint's exact field name for granting superuser status (shown below as `is_superuser`, unverified against any existing blueprint in this repo), are grounded in Authentik's documented DRF conventions and a confirmed separate `set_password` endpoint, but not verified against a live instance — double-check against a running Authentik (or its OpenAPI schema at `/api/v3/schema/`) while implementing this task, and adjust field names if they differ.
 
 - [ ] **Step 1: Create `IAuthentikAdminClient.cs`**
 
@@ -417,8 +417,9 @@ public interface IAuthentikAdminClient
 
 - [ ] **Step 3: Wire into `Program.cs`** — register a named `HttpClient` (base address + bearer token from config) and `AddSingleton<IAuthentikAdminClient, AuthentikAdminClient>()`.
 
-- [ ] **Step 4: Blueprint changes** — in both files, add (mirroring the existing `iverson-loadtest-bypass` group + user pattern exactly):
+- [ ] **Step 4: Blueprint changes** — mirroring the existing `iverson-loadtest-bypass` group + user pattern exactly. The `authentik_core.group` and `authentik_core.user` entries are identical in both files; the `authentik_core.token` entry's `key` differs between compose (literal hardcoded value) and kind (Helm-templated), matching how every other secret-backed value in these two files already differs.
 
+**Compose** (`service-clients.yaml`):
 ```yaml
   - model: authentik_core.group
     identifiers:
@@ -437,12 +438,23 @@ public interface IAuthentikAdminClient
     identifiers:
       identifier: iverson-admin-orchestrator-token
     attrs:
-      key: <compose: hardcoded dev value / kind: randAlphaNum-generated, following secret-service-clients.yaml's pattern>
+      key: "dev-only-not-for-production-admin-orchestrator-token"
       user: !Find [authentik_core.user, [username, iverson-admin-orchestrator]]
       intent: api
 ```
 
-(kind template: add the corresponding `Secret` block to `secret-service-clients.yaml` and the `$existing`-lookup substitution to the ConfigMap template, mirroring the other 6 existing secret blocks exactly.)
+**Kind** (`blueprints-configmap-service-clients.yaml`): the same `authentik_core.group`/`authentik_core.user` entries, plus:
+```yaml
+  - model: authentik_core.token
+    identifiers:
+      identifier: iverson-admin-orchestrator-token
+    attrs:
+      key: {{ if $adminOrchestratorToken }}{{ index $adminOrchestratorToken.data "token-key" | b64dec }}{{ else }}{{ randAlphaNum 50 }}{{ end }}
+      user: !Find [authentik_core.user, [username, iverson-admin-orchestrator]]
+      intent: api
+```
+
+Add a paired `Secret` block to `secret-service-clients.yaml` (mirroring the other 6 exactly, storing a `token-key` data field) and its `$adminOrchestratorToken := lookup ...` declaration to the ConfigMap template, alongside the existing `$loadtest`/`$webtest`/etc. lookups.
 
 - [ ] **Step 5: Tests** — `AuthentikAdminClientTests.cs` using the `FakeHttpMessageHandler : HttpMessageHandler` + mocked `IHttpClientFactory` pattern from `EmbeddingServiceTests.cs`, covering each of the 6 client methods against a fixed fake response.
 
@@ -581,6 +593,8 @@ public sealed class TenantLifecycleGrpcService(
 
     public override async Task<Empty> DeleteTenant(DeleteTenantRequest request, ServerCallContext context)
     {
+        var tenant = await tenantRepository.GetAsync(request.TenantId)
+            ?? throw new RpcException(new Status(StatusCode.NotFound, $"Tenant '{request.TenantId}' not found."));
         await tenantRepository.UpdateStatusAsync(request.TenantId, "deleted");
         await authentikAdminClient.DeactivateAllUsersInTenantAsync(request.TenantId);
         auditLog.AdminOperation(context.GetHttpContext().User, "DeleteTenant", request.TenantId);
@@ -589,11 +603,11 @@ public sealed class TenantLifecycleGrpcService(
 
     private async Task<Tenant> SetStatusAsync(string tenantId, string status, string operation, ServerCallContext context)
     {
+        var existing = await tenantRepository.GetAsync(tenantId)
+            ?? throw new RpcException(new Status(StatusCode.NotFound, $"Tenant '{tenantId}' not found."));
         await tenantRepository.UpdateStatusAsync(tenantId, status);
         auditLog.AdminOperation(context.GetHttpContext().User, operation, tenantId);
-        var tenant = await tenantRepository.GetAsync(tenantId)
-            ?? throw new RpcException(new Status(StatusCode.NotFound, $"Tenant '{tenantId}' not found."));
-        return ToProto(tenant);
+        return ToProto(existing with { Status = status });
     }
 
     private static Tenant ToProto(TenantRow row) =>
