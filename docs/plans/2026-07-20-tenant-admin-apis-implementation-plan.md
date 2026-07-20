@@ -432,6 +432,7 @@ public interface IAuthentikAdminClient
       username: iverson-admin-orchestrator
       name: "Iverson Admin Orchestrator"
       email: iverson-admin-orchestrator@example.invalid
+      password: "dev-only-not-for-production-admin-orchestrator-password"
       is_active: true
       is_superuser: true
   - model: authentik_core.token
@@ -443,8 +444,18 @@ public interface IAuthentikAdminClient
       intent: api
 ```
 
-**Kind** (`blueprints-configmap-service-clients.yaml`): the same `authentik_core.group`/`authentik_core.user` entries, plus:
+**Kind** (`blueprints-configmap-service-clients.yaml`): the same `authentik_core.group` entry, plus:
 ```yaml
+  - model: authentik_core.user
+    identifiers:
+      username: iverson-admin-orchestrator
+    attrs:
+      username: iverson-admin-orchestrator
+      name: "Iverson Admin Orchestrator"
+      email: iverson-admin-orchestrator@example.invalid
+      password: {{ if $adminOrchestratorUser }}{{ index $adminOrchestratorUser.data "password" | b64dec }}{{ else }}{{ randAlphaNum 32 }}{{ end }}
+      is_active: true
+      is_superuser: true
   - model: authentik_core.token
     identifiers:
       identifier: iverson-admin-orchestrator-token
@@ -454,7 +465,7 @@ public interface IAuthentikAdminClient
       intent: api
 ```
 
-Add a paired `Secret` block to `secret-service-clients.yaml` (mirroring the other 6 exactly, storing a `token-key` data field) and its `$adminOrchestratorToken := lookup ...` declaration to the ConfigMap template, alongside the existing `$loadtest`/`$webtest`/etc. lookups.
+Add paired `Secret` blocks to `secret-service-clients.yaml` (mirroring the other 6 exactly — one storing a `password` data field for the user, one storing a `token-key` data field for the token) and their `$adminOrchestratorUser := lookup ...`/`$adminOrchestratorToken := lookup ...` declarations to the ConfigMap template, alongside the existing `$loadtest`/`$webtest`/etc. lookups.
 
 - [ ] **Step 5: Tests** — `AuthentikAdminClientTests.cs` using the `FakeHttpMessageHandler : HttpMessageHandler` + mocked `IHttpClientFactory` pattern from `EmbeddingServiceTests.cs`, covering each of the 6 client methods against a fixed fake response.
 
