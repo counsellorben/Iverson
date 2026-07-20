@@ -7,6 +7,7 @@ using Iverson.Api.Schema;
 using Iverson.Api.Tests.Helpers;
 using Iverson.Client.Contracts;
 using Iverson.Sql;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using NSubstitute;
 using Xunit;
@@ -20,6 +21,8 @@ public class ObjectRetrievalGrpcServiceTests
     private readonly SchemaRegistry _registry;
     private readonly IActingUserAccessor _actingUserAccessor;
     private readonly IRowFieldAuthorizationEvaluator _authEvaluator = new RowFieldAuthorizationEvaluator();
+    private readonly ILogger<AuditLog> _auditLogger = Substitute.For<ILogger<AuditLog>>();
+    private readonly AuditLog _auditLog;
     private readonly ObjectRetrievalGrpcService _sut;
 
     private static readonly string AuthorId   = "11111111-0000-0000-0000-000000000001";
@@ -35,9 +38,10 @@ public class ObjectRetrievalGrpcServiceTests
         _registry = new SchemaRegistry(new SchemaRegistryRepository(_sql), NullLogger<SchemaRegistry>.Instance);
         _actingUserAccessor = new ActingUserAccessor
             { ActingUser = ActingUserFixtures.Principal("test-user", "test-bypass") };
+        _auditLog = new AuditLog(_auditLogger);
         _sut = new ObjectRetrievalGrpcService(_entities, _registry,
             NullLogger<ObjectRetrievalGrpcService>.Instance,
-            _actingUserAccessor, _authEvaluator);
+            _actingUserAccessor, _authEvaluator, _auditLog);
     }
 
     // ── Get ───────────────────────────────────────────────────────────────────
@@ -363,6 +367,61 @@ public class ObjectRetrievalGrpcServiceTests
         response.Data.Fields.Should().NotContainKey("Bio");
     }
 
+    // ── Get audit logging ────────────────────────────────────────────────────
+
+    private void AssertAuditLogged(string expectedReasonSubstring) =>
+        _auditLogger.Received(1).Log(
+            LogLevel.Warning,
+            Arg.Any<EventId>(),
+            Arg.Is<object>(v => v.ToString()!.Contains(expectedReasonSubstring)),
+            Arg.Any<Exception>(),
+            Arg.Any<Func<object, Exception?, string>>());
+
+    [Fact]
+    public async Task Get_AccessDenied_LogsAuditDeniedWithAccessDenied()
+    {
+        var schema = SchemaFixtures.AuthorSchema() with { Authorization = null };
+        await _registry.RegisterAsync(schema);
+        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>(), Arg.Any<bool>(), Arg.Any<string?>())
+            .Returns(AuthorJson);
+
+        await _sut.Get(
+            new RetrievalRequest { TypeName = "Author", Key = AuthorId },
+            TestServerCallContext.Create());
+
+        AssertAuditLogged("AccessDenied");
+    }
+
+    [Fact]
+    public async Task Get_OwnerMismatch_LogsAuditDeniedWithOwnerMismatch()
+    {
+        await _registry.RegisterAsync(OwnedAuthorSchema());
+        var ownedJson = $$"""{"Id":"{{AuthorId}}","Name":"Alice","OwnerId":"someone-else","TenantId":"test-tenant"}""";
+        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>(), Arg.Any<bool>(), Arg.Any<string?>())
+            .Returns(ownedJson);
+
+        await _sut.Get(
+            new RetrievalRequest { TypeName = "Author", Key = AuthorId },
+            TestServerCallContext.Create());
+
+        AssertAuditLogged("OwnerMismatch");
+    }
+
+    [Fact]
+    public async Task Get_TenantMismatch_LogsAuditDeniedWithTenantMismatch()
+    {
+        await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
+        var crossTenantJson = $$"""{"Id":"{{AuthorId}}","Name":"Alice","Bio":"Writer","TenantId":"other-tenant"}""";
+        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>(), Arg.Any<bool>(), Arg.Any<string?>())
+            .Returns(crossTenantJson);
+
+        await _sut.Get(
+            new RetrievalRequest { TypeName = "Author", Key = AuthorId },
+            TestServerCallContext.Create());
+
+        AssertAuditLogged("TenantMismatch");
+    }
+
     // ── GetMany authorization ────────────────────────────────────────────────
 
     [Fact]
@@ -517,6 +576,56 @@ public class ObjectRetrievalGrpcServiceTests
         stream.Written[0].Found.Should().BeTrue();
         stream.Written[0].Data.Fields.Should().ContainKey("Name");
         stream.Written[0].Data.Fields.Should().NotContainKey("Bio");
+    }
+
+    // ── GetMany audit logging ────────────────────────────────────────────────
+
+    [Fact]
+    public async Task GetMany_AccessDenied_LogsAuditDeniedOnce()
+    {
+        var schema = SchemaFixtures.AuthorSchema() with { Authorization = null };
+        await _registry.RegisterAsync(schema);
+        _entities.FetchManyByKeysAsync(Arg.Any<TableSchema>(), Arg.Any<IReadOnlyList<string>>(), Arg.Any<bool>(), Arg.Any<string?>())
+            .Returns(new[] { new KeyedRow(AuthorId, AuthorJson), new KeyedRow(AuthorId2, AuthorJson) });
+
+        var stream = MakeStream<RetrievalResponse>();
+        await _sut.GetMany(
+            new RetrievalManyRequest { TypeName = "Author", Keys = { AuthorId, AuthorId2 } },
+            stream, TestServerCallContext.Create());
+
+        AssertAuditLogged("AccessDenied");
+    }
+
+    [Fact]
+    public async Task GetMany_OwnerMismatch_LogsAuditDeniedWithOwnerMismatch()
+    {
+        await _registry.RegisterAsync(OwnedAuthorSchema());
+        var ownedJson = $$"""{"Id":"{{AuthorId}}","Name":"Alice","OwnerId":"someone-else","TenantId":"test-tenant"}""";
+        _entities.FetchManyByKeysAsync(Arg.Any<TableSchema>(), Arg.Any<IReadOnlyList<string>>(), Arg.Any<bool>(), Arg.Any<string?>())
+            .Returns(new[] { new KeyedRow(AuthorId, ownedJson) });
+
+        var stream = MakeStream<RetrievalResponse>();
+        await _sut.GetMany(
+            new RetrievalManyRequest { TypeName = "Author", Keys = { AuthorId } },
+            stream, TestServerCallContext.Create());
+
+        AssertAuditLogged("OwnerMismatch");
+    }
+
+    [Fact]
+    public async Task GetMany_TenantMismatch_LogsAuditDeniedWithTenantMismatch()
+    {
+        await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
+        var crossTenantJson = $$"""{"Id":"{{AuthorId}}","Name":"Alice","Bio":"Writer","TenantId":"other-tenant"}""";
+        _entities.FetchManyByKeysAsync(Arg.Any<TableSchema>(), Arg.Any<IReadOnlyList<string>>(), Arg.Any<bool>(), Arg.Any<string?>())
+            .Returns(new[] { new KeyedRow(AuthorId, crossTenantJson) });
+
+        var stream = MakeStream<RetrievalResponse>();
+        await _sut.GetMany(
+            new RetrievalManyRequest { TypeName = "Author", Keys = { AuthorId } },
+            stream, TestServerCallContext.Create());
+
+        AssertAuditLogged("TenantMismatch");
     }
 
     // ── stream helper ────────────────────────────────────────────────────────

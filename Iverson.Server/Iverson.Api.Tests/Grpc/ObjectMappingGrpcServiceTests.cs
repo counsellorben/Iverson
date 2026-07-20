@@ -11,6 +11,7 @@ using Iverson.Client.Contracts;
 using Iverson.Embeddings;
 using Iverson.Events;
 using Iverson.Sql;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using NSubstitute;
 using Xunit;
@@ -31,6 +32,8 @@ public class ObjectMappingGrpcServiceTests
     private readonly IOutboxPublisher _outboxPublisher;
     private readonly IEntityRelationResolver _relationResolver;
     private readonly ISchemaRegistrationOrchestrator _schemaRegistration;
+    private readonly ILogger<AuditLog> _auditLogger = Substitute.For<ILogger<AuditLog>>();
+    private readonly AuditLog _auditLog;
     private readonly ObjectMappingGrpcService _sut;
 
     private static readonly string AuthorId  = "11111111-0000-0000-0000-000000000001";
@@ -72,12 +75,13 @@ public class ObjectMappingGrpcServiceTests
         _relationResolver = new EntityRelationResolver(_registry, _entities, _authEvaluator);
         _schemaRegistration = new SchemaRegistrationOrchestrator(
             _schemaManager, _embedding, _registry);
+        _auditLog = new AuditLog(_auditLogger);
         _sut = new ObjectMappingGrpcService(
             _entities, _txRunner, _outboxPublisher, _registry,
             new RelationValidator(_registry), new EntityKeyAccessor(),
             new OutboxWriter(ReconciliationSchema.TableName, _sql, _txRunner),
             NullLogger<ObjectMappingGrpcService>.Instance,
-            _actingUserAccessor, _authEvaluator, _relationResolver, _schemaRegistration);
+            _actingUserAccessor, _authEvaluator, _relationResolver, _schemaRegistration, _auditLog);
     }
 
     // ── helpers ───────────────────────────────────────────────────────────────
@@ -173,7 +177,7 @@ public class ObjectMappingGrpcServiceTests
             new RelationValidator(_registry), new EntityKeyAccessor(),
             new OutboxWriter(ReconciliationSchema.TableName, _sql, _txRunner),
             NullLogger<ObjectMappingGrpcService>.Instance,
-            _actingUserAccessor, _authEvaluator, _relationResolver, mockOrchestrator);
+            _actingUserAccessor, _authEvaluator, _relationResolver, mockOrchestrator, _auditLog);
 
         var response = await sut.RegisterSchema(
             new SchemaRequest { RootType = SimpleType("Widget", "Name") }, TestServerCallContext.Create());
@@ -596,7 +600,7 @@ public class ObjectMappingGrpcServiceTests
             new RelationValidator(_registry), new EntityKeyAccessor(),
             new OutboxWriter(ReconciliationSchema.TableName, _sql, _txRunner),
             NullLogger<ObjectMappingGrpcService>.Instance,
-            _actingUserAccessor, _authEvaluator, mockResolver, _schemaRegistration);
+            _actingUserAccessor, _authEvaluator, mockResolver, _schemaRegistration, _auditLog);
 
         await sut.Get(new MappingGetRequest { TypeName = "Article", Key = ArticleId, Depth = 1 }, TestServerCallContext.Create());
 
@@ -616,7 +620,7 @@ public class ObjectMappingGrpcServiceTests
             new RelationValidator(_registry), new EntityKeyAccessor(),
             new OutboxWriter(ReconciliationSchema.TableName, _sql, _txRunner),
             NullLogger<ObjectMappingGrpcService>.Instance,
-            _actingUserAccessor, _authEvaluator, mockResolver, _schemaRegistration);
+            _actingUserAccessor, _authEvaluator, mockResolver, _schemaRegistration, _auditLog);
 
         await sut.Get(new MappingGetRequest { TypeName = "Article", Key = ArticleId, Depth = 0 }, TestServerCallContext.Create());
 
@@ -911,6 +915,61 @@ public class ObjectMappingGrpcServiceTests
         response.Data.Fields.Should().ContainKey("Title");
         response.Data.Fields.Should().NotContainKey("AuthorId");
         response.Data.Fields.Should().NotContainKey("Author");
+    }
+
+    // ── Get audit logging ────────────────────────────────────────────────────
+
+    private void AssertAuditLogged(string expectedReasonSubstring) =>
+        _auditLogger.Received(1).Log(
+            LogLevel.Warning,
+            Arg.Any<EventId>(),
+            Arg.Is<object>(v => v.ToString()!.Contains(expectedReasonSubstring)),
+            Arg.Any<Exception>(),
+            Arg.Any<Func<object, Exception?, string>>());
+
+    [Fact]
+    public async Task Get_AccessDenied_LogsAuditDeniedWithAccessDenied()
+    {
+        var schema = SchemaFixtures.AuthorSchema() with { Authorization = null };
+        await _registry.RegisterAsync(schema);
+        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>(), Arg.Any<bool>(), Arg.Any<string?>())
+            .Returns(AuthorJson);
+
+        await _sut.Get(
+            new MappingGetRequest { TypeName = "Author", Key = AuthorId },
+            TestServerCallContext.Create());
+
+        AssertAuditLogged("AccessDenied");
+    }
+
+    [Fact]
+    public async Task Get_OwnerMismatch_LogsAuditDeniedWithOwnerMismatch()
+    {
+        await _registry.RegisterAsync(OwnedAuthorSchema());
+        var ownedJson = $$"""{"Id":"{{AuthorId}}","Name":"Alice","OwnerId":"someone-else","TenantId":"test-tenant"}""";
+        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>(), Arg.Any<bool>(), Arg.Any<string?>())
+            .Returns(ownedJson);
+
+        await _sut.Get(
+            new MappingGetRequest { TypeName = "Author", Key = AuthorId },
+            TestServerCallContext.Create());
+
+        AssertAuditLogged("OwnerMismatch");
+    }
+
+    [Fact]
+    public async Task Get_TenantMismatch_LogsAuditDeniedWithTenantMismatch()
+    {
+        await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
+        var crossTenantJson = $$"""{"Id":"{{AuthorId}}","Name":"Alice","Bio":"Writer","TenantId":"other-tenant"}""";
+        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>(), Arg.Any<bool>(), Arg.Any<string?>())
+            .Returns(crossTenantJson);
+
+        await _sut.Get(
+            new MappingGetRequest { TypeName = "Author", Key = AuthorId },
+            TestServerCallContext.Create());
+
+        AssertAuditLogged("TenantMismatch");
     }
 
     // ── Update ────────────────────────────────────────────────────────────────
@@ -1596,5 +1655,52 @@ public class ObjectMappingGrpcServiceTests
             Arg.Any<bool>(), Arg.Any<string?>());
         await _events.DidNotReceive().ProduceAsync(
             EntityTopics.Events, Arg.Any<string>(), Arg.Any<EntityEvent>());
+    }
+
+    // ── Delete audit logging ─────────────────────────────────────────────────
+
+    [Fact]
+    public async Task Delete_AccessDenied_LogsAuditDeniedWithAccessDenied()
+    {
+        var schema = SchemaFixtures.AuthorSchema() with { Authorization = null };
+        await _registry.RegisterAsync(schema);
+        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>(), Arg.Any<bool>(), Arg.Any<string?>())
+            .Returns(AuthorJson);
+
+        await _sut.Delete(
+            new MappingDeleteRequest { TypeName = "Author", Key = AuthorId },
+            TestServerCallContext.Create());
+
+        AssertAuditLogged("AccessDenied");
+    }
+
+    [Fact]
+    public async Task Delete_OwnerMismatch_LogsAuditDeniedWithOwnerMismatch()
+    {
+        await _registry.RegisterAsync(OwnedAuthorSchema());
+        var ownedJson = $$"""{"Id":"{{AuthorId}}","Name":"Alice","OwnerId":"someone-else","TenantId":"test-tenant"}""";
+        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>(), Arg.Any<bool>(), Arg.Any<string?>())
+            .Returns(ownedJson);
+
+        await _sut.Delete(
+            new MappingDeleteRequest { TypeName = "Author", Key = AuthorId },
+            TestServerCallContext.Create());
+
+        AssertAuditLogged("OwnerMismatch");
+    }
+
+    [Fact]
+    public async Task Delete_TenantMismatch_LogsAuditDeniedWithTenantMismatch()
+    {
+        await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
+        var crossTenantJson = $$"""{"Id":"{{AuthorId}}","Name":"Alice","Bio":"Writer","TenantId":"other-tenant"}""";
+        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>(), Arg.Any<bool>(), Arg.Any<string?>())
+            .Returns(crossTenantJson);
+
+        await _sut.Delete(
+            new MappingDeleteRequest { TypeName = "Author", Key = AuthorId },
+            TestServerCallContext.Create());
+
+        AssertAuditLogged("TenantMismatch");
     }
 }

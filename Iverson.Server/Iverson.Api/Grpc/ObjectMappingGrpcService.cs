@@ -28,7 +28,8 @@ public sealed class ObjectMappingGrpcService(
     IActingUserAccessor _actingUserAccessor,
     IRowFieldAuthorizationEvaluator _authEvaluator,
     IEntityRelationResolver _relationResolver,
-    ISchemaRegistrationOrchestrator _schemaRegistration)
+    ISchemaRegistrationOrchestrator _schemaRegistration,
+    AuditLog _auditLog)
     : ObjectMappingService.ObjectMappingServiceBase
 {
     // ── Schema registration ────────────────────────────────────────────────────
@@ -79,12 +80,14 @@ public sealed class ObjectMappingGrpcService(
         var entityStruct = JsonParser.Default.Parse<Struct>(rowJson);
 
         var decision = _authEvaluator.Evaluate(schema, _actingUserAccessor.ActingUser, AuthorizationAction.Read);
-        if (decision.Denied ||
-            (decision.OwnershipRequired &&
-             StructFieldAccess.GetFieldString(entityStruct, decision.OwnerFieldName!) != decision.OwnerValue) ||
-            (decision.TenantColumn is not null &&
-             StructFieldAccess.GetFieldString(entityStruct, decision.TenantColumn) != decision.TenantValue))
+        var ownerMismatch  = decision.OwnershipRequired &&
+            StructFieldAccess.GetFieldString(entityStruct, decision.OwnerFieldName!) != decision.OwnerValue;
+        var tenantMismatch = decision.TenantColumn is not null &&
+            StructFieldAccess.GetFieldString(entityStruct, decision.TenantColumn) != decision.TenantValue;
+        if (decision.Denied || ownerMismatch || tenantMismatch)
         {
+            _auditLog.Denied(_actingUserAccessor.ActingUser, "Read", request.TypeName, request.Key,
+                decision.Denied ? "AccessDenied" : ownerMismatch ? "OwnerMismatch" : "TenantMismatch");
             return new MappingResponse
             {
                 Success = false,
@@ -200,13 +203,16 @@ public sealed class ObjectMappingGrpcService(
                 TraceId = request.TraceId
             };
 
-        var decision = _authEvaluator.Evaluate(schema, _actingUserAccessor.ActingUser, AuthorizationAction.Delete);
-        if (decision.Denied ||
-            (decision.OwnershipRequired &&
-             StructFieldAccess.GetFieldString(JsonParser.Default.Parse<Struct>(rowJson), decision.OwnerFieldName!) != decision.OwnerValue) ||
-            (decision.TenantColumn is not null &&
-             StructFieldAccess.GetFieldString(JsonParser.Default.Parse<Struct>(rowJson), decision.TenantColumn) != decision.TenantValue))
+        var decision  = _authEvaluator.Evaluate(schema, _actingUserAccessor.ActingUser, AuthorizationAction.Delete);
+        var rowStruct = JsonParser.Default.Parse<Struct>(rowJson);
+        var ownerMismatch  = decision.OwnershipRequired &&
+            StructFieldAccess.GetFieldString(rowStruct, decision.OwnerFieldName!) != decision.OwnerValue;
+        var tenantMismatch = decision.TenantColumn is not null &&
+            StructFieldAccess.GetFieldString(rowStruct, decision.TenantColumn) != decision.TenantValue;
+        if (decision.Denied || ownerMismatch || tenantMismatch)
         {
+            _auditLog.Denied(_actingUserAccessor.ActingUser, "Delete", request.TypeName, request.Key,
+                decision.Denied ? "AccessDenied" : ownerMismatch ? "OwnerMismatch" : "TenantMismatch");
             return new MappingDeleteResponse
             {
                 Success = false,

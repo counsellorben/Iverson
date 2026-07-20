@@ -17,7 +17,8 @@ public sealed class ObjectRetrievalGrpcService(
     SchemaRegistry registry,
     ILogger<ObjectRetrievalGrpcService> logger,
     IActingUserAccessor actingUserAccessor,
-    IRowFieldAuthorizationEvaluator authEvaluator)
+    IRowFieldAuthorizationEvaluator authEvaluator,
+    AuditLog auditLog)
     : ObjectRetrievalService.ObjectRetrievalServiceBase
 {
     public override async Task<RetrievalResponse> Get(
@@ -40,12 +41,14 @@ public sealed class ObjectRetrievalGrpcService(
         var data = JsonParser.Default.Parse<Struct>(rowJson);
 
         var decision = authEvaluator.Evaluate(schema, actingUserAccessor.ActingUser, AuthorizationAction.Read);
-        if (decision.Denied ||
-            (decision.OwnershipRequired &&
-             StructFieldAccess.GetFieldString(data, decision.OwnerFieldName!) != decision.OwnerValue) ||
-            (decision.TenantColumn is not null &&
-             StructFieldAccess.GetFieldString(data, decision.TenantColumn) != decision.TenantValue))
+        var ownerMismatch  = decision.OwnershipRequired &&
+            StructFieldAccess.GetFieldString(data, decision.OwnerFieldName!) != decision.OwnerValue;
+        var tenantMismatch = decision.TenantColumn is not null &&
+            StructFieldAccess.GetFieldString(data, decision.TenantColumn) != decision.TenantValue;
+        if (decision.Denied || ownerMismatch || tenantMismatch)
         {
+            auditLog.Denied(actingUserAccessor.ActingUser, "Read", request.TypeName, request.Key,
+                decision.Denied ? "AccessDenied" : ownerMismatch ? "OwnerMismatch" : "TenantMismatch");
             return new RetrievalResponse { Found = false, TraceId = request.TraceId };
         }
 
@@ -82,6 +85,7 @@ public sealed class ObjectRetrievalGrpcService(
 
         if (decision.Denied)
         {
+            auditLog.Denied(actingUserAccessor.ActingUser, "Read", request.TypeName, null, "AccessDenied");
             foreach (var key in keys)
                 await responseStream.WriteAsync(new RetrievalResponse { Found = false, TraceId = request.TraceId });
             return;
@@ -102,11 +106,14 @@ public sealed class ObjectRetrievalGrpcService(
                 continue;
             }
             var data = JsonParser.Default.Parse<Struct>(row.Data);
-            if ((decision.OwnershipRequired &&
-                 StructFieldAccess.GetFieldString(data, decision.OwnerFieldName!) != decision.OwnerValue) ||
-                (decision.TenantColumn is not null &&
-                 StructFieldAccess.GetFieldString(data, decision.TenantColumn) != decision.TenantValue))
+            var ownerMismatch  = decision.OwnershipRequired &&
+                StructFieldAccess.GetFieldString(data, decision.OwnerFieldName!) != decision.OwnerValue;
+            var tenantMismatch = decision.TenantColumn is not null &&
+                StructFieldAccess.GetFieldString(data, decision.TenantColumn) != decision.TenantValue;
+            if (ownerMismatch || tenantMismatch)
             {
+                auditLog.Denied(actingUserAccessor.ActingUser, "Read", request.TypeName, key,
+                    ownerMismatch ? "OwnerMismatch" : "TenantMismatch");
                 await responseStream.WriteAsync(new RetrievalResponse { Found = false, TraceId = request.TraceId });
                 continue;
             }
