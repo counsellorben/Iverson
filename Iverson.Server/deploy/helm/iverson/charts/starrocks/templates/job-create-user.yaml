@@ -73,6 +73,7 @@ spec:
                 GRANT CREATE TABLE, DROP, ALTER ON DATABASE iverson TO 'iverson_app'@'%';
                 GRANT OPERATE ON SYSTEM TO 'iverson_app'@'%';
                 GRANT CREATE DATABASE ON CATALOG default_catalog TO 'iverson_app'@'%';
+                GRANT user_admin TO 'iverson_app'@'%';
               "
               # StarRocks' GRANT dialect isn't MySQL's: DDL privileges (CREATE TABLE/DROP/ALTER)
               # are scoped ON DATABASE, not ON db.*, and CREATE must be written as the two-word
