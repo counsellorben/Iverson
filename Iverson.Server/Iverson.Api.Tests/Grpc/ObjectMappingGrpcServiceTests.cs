@@ -180,10 +180,36 @@ public class ObjectMappingGrpcServiceTests
             _actingUserAccessor, _authEvaluator, _relationResolver, mockOrchestrator, _auditLog);
 
         var response = await sut.RegisterSchema(
-            new SchemaRequest { RootType = SimpleType("Widget", "Name") }, TestServerCallContext.Create());
+            new SchemaRequest { RootType = SimpleType("Widget", "Name") },
+            TestServerCallContext.Create(user: ActingUserFixtures.Principal("test-admin")));
 
         response.Success.Should().BeTrue();
         response.Registered.Should().BeEquivalentTo(new[] { "Widget" });
+    }
+
+    [Fact]
+    public async Task RegisterSchema_Succeeds_LogsAdminOperation()
+    {
+        var mockOrchestrator = Substitute.For<ISchemaRegistrationOrchestrator>();
+        mockOrchestrator.RegisterAsync(Arg.Any<SchemaRequest>(), Arg.Any<CancellationToken>())
+            .Returns(new List<string> { "Widget" });
+        var sut = new ObjectMappingGrpcService(
+            _entities, _txRunner, _outboxPublisher, _registry,
+            new RelationValidator(_registry), new EntityKeyAccessor(),
+            new OutboxWriter(ReconciliationSchema.TableName, _sql, _txRunner),
+            NullLogger<ObjectMappingGrpcService>.Instance,
+            _actingUserAccessor, _authEvaluator, _relationResolver, mockOrchestrator, _auditLog);
+
+        await sut.RegisterSchema(
+            new SchemaRequest { RootType = SimpleType("Widget", "Name") },
+            TestServerCallContext.Create(user: ActingUserFixtures.Principal("test-admin")));
+
+        _auditLogger.Received(1).Log(
+            LogLevel.Information,
+            Arg.Any<EventId>(),
+            Arg.Is<object>(v => v.ToString()!.Contains("RegisterSchema")),
+            Arg.Any<Exception>(),
+            Arg.Any<Func<object, Exception?, string>>());
     }
 
     // ── Post ──────────────────────────────────────────────────────────────────

@@ -47,6 +47,8 @@ public sealed class ObjectMappingGrpcService(
 
         var registered = await _schemaRegistration.RegisterAsync(request, context.CancellationToken);
 
+        _auditLog.AdminOperation(context.GetHttpContext().User, "RegisterSchema", request.RootType.TypeName);
+
         return new SchemaResponse
         {
             Success    = true,

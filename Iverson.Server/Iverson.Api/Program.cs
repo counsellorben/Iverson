@@ -304,27 +304,33 @@ app.MapPost("/probe/kafka", async (IEventProducer producer) =>
 
 app.MapPost("/admin/reconcile/{typeName}", async (
     string typeName,
-    Iverson.Api.Reconciliation.ReconciliationService reconciliation) =>
+    Iverson.Api.Reconciliation.ReconciliationService reconciliation,
+    AuditLog audit,
+    HttpContext httpContext) =>
 {
     var count = await reconciliation.ReconcileTypeAsync(typeName);
-    return count is null
-        ? Results.NotFound(new { error = $"No schema registered for '{typeName}'" })
-        : Results.Ok(new { reconciledCount = count, typeName });
+    if (count is null)
+        return Results.NotFound(new { error = $"No schema registered for '{typeName}'" });
+
+    audit.AdminOperation(httpContext.User, "Reconcile", typeName);
+    return Results.Ok(new { reconciledCount = count, typeName });
 }).WithName("Reconcile").RequireAuthorization("Operator");
 
-app.MapGet("/admin/dlq", async (IDlqRepository dlq) =>
+app.MapGet("/admin/dlq", async (IDlqRepository dlq, AuditLog audit, HttpContext httpContext) =>
 {
     var rows = await dlq.ListUnreplayedAsync(200);
+    audit.AdminOperation(httpContext.User, "ListDlq", null);
     return Results.Ok(rows);
 }).WithName("ListDlq").RequireAuthorization("Operator");
 
-app.MapPost("/admin/dlq/{id}/replay", async (Guid id, IDlqRepository dlq, IEventProducer events) =>
+app.MapPost("/admin/dlq/{id}/replay", async (Guid id, IDlqRepository dlq, IEventProducer events, AuditLog audit, HttpContext httpContext) =>
 {
     var row = await dlq.GetUnreplayedByIdAsync(id);
     if (row is null) return Results.NotFound(new { error = $"No unreplayed DLQ row with id '{id}'" });
 
     await events.ProduceAsync(row.SourceTopic, row.MessageKey, row.MessageValue);
     await dlq.MarkReplayedAsync(id);
+    audit.AdminOperation(httpContext.User, "ReplayDlq", id.ToString());
 
     return Results.Ok(new { replayed = true, id, topic = row.SourceTopic });
 }).WithName("ReplayDlq").RequireAuthorization("Operator");

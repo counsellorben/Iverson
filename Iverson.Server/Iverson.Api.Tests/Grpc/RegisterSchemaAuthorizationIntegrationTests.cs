@@ -238,7 +238,7 @@ public sealed class RegisterSchemaAuthorizationIntegrationTests(AllStoresContain
 
         var response = await sut.RegisterSchema(
             new SchemaRequest { RootType = typeDesc },
-            TestServerCallContext.Create());
+            TestServerCallContext.Create(user: ActingUserFixtures.Principal("test-admin")));
 
         response.Success.Should().BeTrue();
         response.Registered.Should().Contain("ArticleWithAuth");
