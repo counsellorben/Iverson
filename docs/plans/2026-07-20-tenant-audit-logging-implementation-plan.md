@@ -268,7 +268,7 @@ public sealed class ObjectMappingGrpcService(
     : ObjectMappingService.ObjectMappingServiceBase
 ```
 
-In `Get`, replace `:82-94` with (note the existing local is named `entityStruct`, not `data`):
+In `Get`, replace `:81-94` with (note the existing local is named `entityStruct`, not `data`):
 ```csharp
 var decision = _authEvaluator.Evaluate(schema, _actingUserAccessor.ActingUser, AuthorizationAction.Read);
 var ownerMismatch  = decision.OwnershipRequired &&
