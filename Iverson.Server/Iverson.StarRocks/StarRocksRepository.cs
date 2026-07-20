@@ -97,6 +97,50 @@ public sealed class StarRocksRepository(
         }
     }
 
+    private async Task<T> RunTenantScopedAsync<T>(
+        string activityName, string tenantId, string sql, Func<MySqlConnection, Task<T>> operation)
+    {
+        using var activity = Telemetry.Source.StartActivity(activityName, ActivityKind.Client);
+        activity?.SetTag("db.system", "starrocks");
+        activity?.SetTag("db.statement", sql);
+
+        try
+        {
+            var result = await RunAsync(async () =>
+            {
+                await using var conn = CreateConnection();
+                await conn.OpenAsync();
+                await conn.ExecuteAsync($"SET ROLE `{TenantIdentifier.RoleName(tenantId)}`");
+                try
+                {
+                    return await operation(conn);
+                }
+                finally
+                {
+                    try
+                    {
+                        await conn.ExecuteAsync("SET ROLE NONE");
+                    }
+                    catch (Exception ex)
+                    {
+                        // The connection is being disposed either way; a broken connection here must
+                        // never replace the operation's own result or exception — same discipline as
+                        // PostgresRepository.RunTenantScopedAsync's rollback-failure handling.
+                        logger.LogWarning(ex, "SET ROLE NONE failed while releasing a tenant-scoped StarRocks connection");
+                    }
+                }
+            });
+            activity?.SetStatus(ActivityStatusCode.Ok);
+            return result;
+        }
+        catch (Exception ex)
+        {
+            activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
+            activity?.RecordException(ex);
+            throw;
+        }
+    }
+
     public async Task UpsertAsync(StarRocksTableSchema schema, string payloadJson)
     {
         using var activity = Telemetry.Source.StartActivity("sr.upsert", ActivityKind.Client);
@@ -154,9 +198,26 @@ public sealed class StarRocksRepository(
         Func<string, StarRocksQuerySchema?>? registry = null,
         IReadOnlyDictionary<string, AuthorizationConstraint>? authz = null)
     {
+        // authz == null means the caller isn't going through Part A's authorization evaluation at
+        // all (e.g. a unit test exercising raw SQL generation) — preserve today's unscoped behavior.
+        // Production (ObjectSearchGrpcService) always passes a real authz dict and never reaches
+        // here with a missing tenant value (it denies upstream first) — verified at plan-write time.
+        if (authz is null)
+        {
+            var (unscopedSql, unscopedParam) = StarRocksQueryBuilder.BuildSearch(
+                schema.TableName, schema, query, page, pageSize, fields, joins, registry, authz);
+            return await QueryAsync<dynamic>(unscopedSql, unscopedParam);
+        }
+
+        var tenantId = authz.GetValueOrDefault(schema.TypeName)?.TenantValue;
+        if (tenantId is null || !TenantIdentifier.IsValid(tenantId))
+            return [];
+
         var (sql, param) = StarRocksQueryBuilder.BuildSearch(
-            schema.TableName, schema, query, page, pageSize, fields, joins, registry, authz);
-        return await QueryAsync<dynamic>(sql, param);
+            schema.TableName, schema, query, page, pageSize, fields, joins, registry, authz,
+            TenantIdentifier.DatabaseName(tenantId));
+
+        return await RunTenantScopedAsync("sr.query", tenantId, sql, conn => conn.QueryAsync<dynamic>(sql, param));
     }
 
     public async Task<AggregationResult?> AggregateAsync(
@@ -172,10 +233,24 @@ public sealed class StarRocksRepository(
             throw new StarRocksQueryTranslationException(
                 "Multi-key GROUP BY (group_by_fields with more than one entry) is not yet supported via the Aggregate RPC's result decoding; use a single field or wait for the GroupByRequest RPC.");
 
-        var (sql, param) = StarRocksQueryBuilder.BuildAggregate(
-            schema.TableName, schema, query, spec, having, joins, registry, authz);
+        List<dynamic> rows;
+        if (authz is null)
+        {
+            var (unscopedSql, unscopedParam) = StarRocksQueryBuilder.BuildAggregate(
+                schema.TableName, schema, query, spec, having, joins, registry, authz);
+            rows = (await QueryAsync<dynamic>(unscopedSql, unscopedParam)).ToList();
+        }
+        else
+        {
+            var tenantId = authz.GetValueOrDefault(schema.TypeName)?.TenantValue;
+            if (tenantId is null || !TenantIdentifier.IsValid(tenantId))
+                return null;
 
-        var rows = (await QueryAsync<dynamic>(sql, param)).ToList();
+            var (sql, param) = StarRocksQueryBuilder.BuildAggregate(
+                schema.TableName, schema, query, spec, having, joins, registry, authz,
+                TenantIdentifier.DatabaseName(tenantId));
+            rows = (await RunTenantScopedAsync("sr.query", tenantId, sql, conn => conn.QueryAsync<dynamic>(sql, param))).ToList();
+        }
 
         switch (spec.Kind)
         {
@@ -210,8 +285,22 @@ public sealed class StarRocksRepository(
         Func<string, StarRocksQuerySchema?> registry,
         IReadOnlyDictionary<string, AuthorizationConstraint>? authz = null)
     {
-        var (sql, param) = StarRocksQueryBuilder.BuildGroupBy(schema.TableName, schema, request, registry, authz);
-        return await QueryAsync<dynamic>(sql, param);
+        // authz == null means the caller isn't going through Part A's authorization evaluation at
+        // all (e.g. a unit test exercising raw SQL generation) — preserve today's unscoped behavior.
+        if (authz is null)
+        {
+            var (unscopedSql, unscopedParam) = StarRocksQueryBuilder.BuildGroupBy(schema.TableName, schema, request, registry, authz);
+            return await QueryAsync<dynamic>(unscopedSql, unscopedParam);
+        }
+
+        var tenantId = authz.GetValueOrDefault(schema.TypeName)?.TenantValue;
+        if (tenantId is null || !TenantIdentifier.IsValid(tenantId))
+            return [];
+
+        var (sql, param) = StarRocksQueryBuilder.BuildGroupBy(
+            schema.TableName, schema, request, registry, authz, TenantIdentifier.DatabaseName(tenantId));
+
+        return await RunTenantScopedAsync("sr.query", tenantId, sql, conn => conn.QueryAsync<dynamic>(sql, param));
     }
 
     public async Task<IEnumerable<dynamic>> PipelineAsync(
@@ -220,8 +309,19 @@ public sealed class StarRocksRepository(
         Func<string, StarRocksQuerySchema?> registry,
         IReadOnlyDictionary<string, AuthorizationConstraint>? authz = null)
     {
-        var (sql, param, lastCols) = StarRocksPipelineBuilder.Build(schema, request, registry, authz);
-        var rows = await QueryAsync<dynamic>(sql, param);
+        if (authz is null)
+        {
+            var (unscopedSql, unscopedParam, unscopedLastCols) = StarRocksPipelineBuilder.Build(schema, request, registry, authz);
+            var unscopedRows = await QueryAsync<dynamic>(unscopedSql, unscopedParam);
+            return MaskPipelineRows(unscopedRows, unscopedLastCols);
+        }
+
+        var tenantId = authz.GetValueOrDefault(schema.TypeName)?.TenantValue;
+        if (tenantId is null || !TenantIdentifier.IsValid(tenantId))
+            return [];
+
+        var (sql, param, lastCols) = StarRocksPipelineBuilder.Build(schema, request, registry, authz, TenantIdentifier.DatabaseName(tenantId));
+        var rows = await RunTenantScopedAsync("sr.query", tenantId, sql, conn => conn.QueryAsync<dynamic>(sql, param));
         return MaskPipelineRows(rows, lastCols);
     }
 

@@ -27,7 +27,8 @@ internal static class StarRocksQueryBuilder
         IReadOnlyList<string>? fields = null,
         IReadOnlyList<JoinSpec>? joins = null,
         Func<string, StarRocksQuerySchema?>? registry = null,
-        IReadOnlyDictionary<string, AuthorizationConstraint>? authz = null)
+        IReadOnlyDictionary<string, AuthorizationConstraint>? authz = null,
+        string? tenantDatabase = null)
     {
         var param = new DynamicParameters();
 
@@ -40,7 +41,7 @@ internal static class StarRocksQueryBuilder
         string order;
         if (joins is { Count: > 0 })
         {
-            from = BuildFromWithJoins(schema, joins, registry!, param, out var tableMap, authz);
+            from = BuildFromWithJoins(schema, joins, registry!, param, out var tableMap, authz, tenantDatabase);
             where = BuildWhere(schema, query?.Clauses, query?.Logic ?? SearchLogic.And, param, out _, tableMap, authz);
 
             // The primary table's own columns must be qualified with its alias once a JOIN is
@@ -78,7 +79,7 @@ internal static class StarRocksQueryBuilder
         }
         else
         {
-            from = $"FROM `{tableName}`";
+            from = $"FROM {TenantIdentifier.Qualify(tenantDatabase, tableName)}";
             where = BuildWhere(schema, query?.Clauses, query?.Logic ?? SearchLogic.And, param, out _, null, authz);
             selectCols = BuildSelectColumns(schema, fields);
             order = BuildOrder(schema, query?.Sort, null, authz);
@@ -139,7 +140,8 @@ internal static class StarRocksQueryBuilder
         SearchQuery? having = null,
         IReadOnlyList<JoinSpec>? joins = null,
         Func<string, StarRocksQuerySchema?>? registry = null,
-        IReadOnlyDictionary<string, AuthorizationConstraint>? authz = null)
+        IReadOnlyDictionary<string, AuthorizationConstraint>? authz = null,
+        string? tenantDatabase = null)
     {
         var param = new DynamicParameters();
 
@@ -149,12 +151,12 @@ internal static class StarRocksQueryBuilder
         {
             // Joined-type ownership predicates are appended to each JOIN's own ON clause inside
             // BuildFromWithJoins (never the outer WHERE — see that method's remarks for why).
-            from = BuildFromWithJoins(schema, joins, registry!, param, out var tm, authz);
+            from = BuildFromWithJoins(schema, joins, registry!, param, out var tm, authz, tenantDatabase);
             tableMap = tm;
         }
         else
         {
-            from = $"FROM `{tableName}`";
+            from = $"FROM {TenantIdentifier.Qualify(tenantDatabase, tableName)}";
             tableMap = null;
         }
 
@@ -305,12 +307,13 @@ internal static class StarRocksQueryBuilder
         StarRocksQuerySchema schema,
         GroupByRequest request,
         Func<string, StarRocksQuerySchema?> registry,
-        IReadOnlyDictionary<string, AuthorizationConstraint>? authz = null)
+        IReadOnlyDictionary<string, AuthorizationConstraint>? authz = null,
+        string? tenantDatabase = null)
     {
         var param = new DynamicParameters();
         // Joined-type ownership predicates are appended to each JOIN's own ON clause inside
         // BuildFromWithJoins (never the outer WHERE — see that method's remarks for why).
-        var from = BuildFromWithJoins(schema, request.Joins, registry, param, out var tableMap, authz);
+        var from = BuildFromWithJoins(schema, request.Joins, registry, param, out var tableMap, authz, tenantDatabase);
         var where = BuildWhere(schema, request.Query?.Clauses, request.Query?.Logic ?? SearchLogic.And, param, out _, tableMap, authz);
 
         // Primary-type row-ownership: same wrap-and-AND predicate BuildSearch/BuildAggregate
@@ -708,10 +711,11 @@ internal static class StarRocksQueryBuilder
         Func<string, StarRocksQuerySchema?> registry,
         DynamicParameters param,
         out IReadOnlyDictionary<string, JoinContext> tableMap,
-        IReadOnlyDictionary<string, AuthorizationConstraint>? authz = null)
+        IReadOnlyDictionary<string, AuthorizationConstraint>? authz = null,
+        string? tenantDatabase = null)
     {
         var map = new Dictionary<string, JoinContext>(StringComparer.OrdinalIgnoreCase);
-        var sb = new StringBuilder($"FROM `{primarySchema.TableName}`");
+        var sb = new StringBuilder($"FROM {TenantIdentifier.Qualify(tenantDatabase, primarySchema.TableName)}");
 
         // Always seed the map with the primary table's own schema, regardless of whether
         // there are any joins, so callers can resolve columns against tableMap unconditionally.
@@ -775,7 +779,7 @@ internal static class StarRocksQueryBuilder
             }
 
             sb.Append(
-                $" {kind} JOIN `{rightCtx.TableName}` ON " +
+                $" {kind} JOIN {TenantIdentifier.Qualify(tenantDatabase, rightCtx.TableName)} ON " +
                 $"`{leftCtx.Alias}`.`{leftCol}` = `{rightCtx.Alias}`.`{rightCol}`{ownerCond}{tenantCond}");
 
             map[join.RightType] = rightCtx;

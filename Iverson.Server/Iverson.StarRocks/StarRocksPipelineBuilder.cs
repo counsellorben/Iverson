@@ -377,7 +377,8 @@ internal static class StarRocksPipelineBuilder
         StarRocksQuerySchema schema,
         PipelineRequest request,
         Func<string, StarRocksQuerySchema?> registry,
-        IReadOnlyDictionary<string, AuthorizationConstraint>? authz = null)
+        IReadOnlyDictionary<string, AuthorizationConstraint>? authz = null,
+        string? tenantDatabase = null)
     {
         var tracked = TrackAndValidate(schema, request, registry, authz);
         var byName  = tracked.ToDictionary(s => s.Name, StringComparer.OrdinalIgnoreCase);
@@ -408,7 +409,7 @@ internal static class StarRocksPipelineBuilder
             baseWhere = baseWhere.Length > 0 ? $"({baseWhere}) AND {tenantPredicate}" : tenantPredicate;
         }
 
-        sb.Append($"WITH `{BaseStepName}` AS (SELECT * FROM `{schema.TableName}`");
+        sb.Append($"WITH `{BaseStepName}` AS (SELECT * FROM {TenantIdentifier.Qualify(tenantDatabase, schema.TableName)}");
         if (baseWhere.Length > 0) sb.Append($" WHERE {baseWhere}");
         sb.Append(')');
 
@@ -419,12 +420,15 @@ internal static class StarRocksPipelineBuilder
             var step  = request.Steps[i];
             var input = byName[string.IsNullOrEmpty(step.Reads) ? prev : step.Reads];
             sb.Append($", `{step.Name}` AS (");
-            EmitStep(sb, step, input, emitted, registry, param, stepIdx: i + 1, authz);
+            EmitStep(sb, step, input, emitted, registry, param, stepIdx: i + 1, authz, tenantDatabase);
             sb.Append(')');
             prev = step.Name;
             emitted.Add(byName[step.Name]);
         }
 
+        // `{prev}` here (and the two analogous `{input.Name}` sites in EmitStep below) refer to an
+        // in-query CTE step alias defined earlier in this same WITH ... SELECT statement, never a
+        // physical table — do NOT qualify these with TenantIdentifier.Qualify.
         sb.Append($" SELECT * FROM `{prev}`");
         var lastCols = byName[prev].Columns;
         if (request.OrderBy.Count > 0)
@@ -447,7 +451,8 @@ internal static class StarRocksPipelineBuilder
         Func<string, StarRocksQuerySchema?> registry,
         DynamicParameters param,
         int stepIdx,
-        IReadOnlyDictionary<string, AuthorizationConstraint>? authz = null)
+        IReadOnlyDictionary<string, AuthorizationConstraint>? authz = null,
+        string? tenantDatabase = null)
     {
         var isAggregate = step.GroupBy.Count > 0 || step.Metrics.Count > 0;
 
@@ -527,7 +532,7 @@ internal static class StarRocksPipelineBuilder
             var joinedSchema = registry(src.Name);
             var isFreshType = joinedSchema is not null && emitted.All(s => !s.Name.Equals(src.Name, StringComparison.OrdinalIgnoreCase));
             var target = isFreshType
-                ? $"`{joinedSchema!.TableName}` AS `{src.Name}`"
+                ? $"{TenantIdentifier.Qualify(tenantDatabase, joinedSchema!.TableName)} AS `{src.Name}`"
                 : $"`{src.Name}`";
             var conds = join.On.Select(c =>
                 $"`{input.Name}`.`{input.Columns[c.Left]}` = `{src.Name}`.`{src.Columns[c.Right]}`");
