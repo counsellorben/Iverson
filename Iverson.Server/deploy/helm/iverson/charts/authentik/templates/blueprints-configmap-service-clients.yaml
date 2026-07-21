@@ -145,6 +145,8 @@ data:
               --pf-global--BackgroundColor--100: #141414;
               --pf-global--BackgroundColor--light-100: #141414;
               --pf-global--BackgroundColor--dark-100: #141414;
+              --ak-c-login__main--Color: #F5F5F5;
+              --pf-global--Color--100: #F5F5F5;
               --ak-dark-background: #010101;
               --ak-dark-background-light: #0A0A0A;
               --ak-dark-background-lighter: #141414;
