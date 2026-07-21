@@ -87,6 +87,7 @@ Trusted as ground truth, not re-verified here (see spec's "Verified assumptions"
 | 17 | Consumer impact (Cat 6) | `AuthTestWebApplicationFactory.cs:63,70` sets `TokenValidationParameters.ValidateIssuer = false` for every existing auth-pipeline test — no existing test exercises `ValidIssuer`/`ValidIssuers` matching at all, and this codebase's convention is deliberately not to. Task 2's originally-drafted "add a test for the new issuer" step was dropped as unauthorized scope (the spec's Testing section never asked for backend issuer-validation coverage) rather than inventing new test infrastructure to cover one config line | Read `AuthTestWebApplicationFactory.cs:60-73` directly this session |
 | 18 | Frontend data shape | `oidc-client-ts`'s `user.profile.groups` is a genuine `string[]` (decoded straight from the raw ID token JWT) — distinct from `ClaimsPrincipal.FindAll("groups")`'s server-side "one Claim per array element" shape (`Program.cs:141`), which is a .NET-specific artifact of JWT-to-Claims mapping, not part of the token itself. Confirmed via Authentik's `groups` scope-mapping expression, which returns a Python list (`[group.name for group in user.ak_groups.all()]`), serializing as a JSON array | Read `Program.cs:141,145,149` and `RowFieldAuthorizationEvaluator.cs:24` directly this session; cross-checked against the scope-mapping expression documented in `docs/user-management-and-security.md` |
 | 19 | Task ordering / insertion point | The new `/v1/traces` route belongs inside the existing `if (workloadRole == "api") { ... }` block (`Program.cs:381-388`), after `TenantAdminGrpcService` — `worker` serves no inbound HTTP traffic today, so gating this alongside the other browser/client-facing endpoints is correct, not arbitrary | Read `Program.cs:375-391` directly this session |
+| 20 | External image default | `nginxinc/nginx-unprivileged`'s default listen port is 8080 (moved off 80 specifically for non-root binding), matching Task 6's `EXPOSE 8080`/Helm Service `targetPort` | Confirmed via the image's own documentation during CIR round 1 |
 
 ## Tasks
 
@@ -377,7 +378,7 @@ export const config = {
 - [ ] **Step 2: `.env.development`** (committed, compose's fixed dev literal):
 ```
 VITE_OIDC_CLIENT_ID=dev-iverson-human-oidc-client-id
-VITE_OIDC_AUTHORITY=http://authentik-server:9000/application/o/iverson-api/
+VITE_OIDC_AUTHORITY=http://localhost:9000/application/o/iverson-api/
 VITE_API_BASE_URL=http://localhost:8080
 ```
 
@@ -414,6 +415,8 @@ export const router = createBrowserRouter(
 );
 ```
 `AuthGate` (a small wrapper using `react-oidc-context`'s `useAuth()` to redirect to `signinRedirect()` when unauthenticated) is added in this step; `AppLayout` itself is Task 4's responsibility — Task 3 provides a placeholder here.
+
+This replaces the `path: "/"` route Task 1's `router.test.tsx` asserts against (that test rendered `<div>Admin UI</div>` for an unauthenticated render; this step's route now redirects instead) — update `router.test.tsx` in this same step to assert the new unauthenticated-redirect behavior instead of the stale "Admin UI" text assertion, before Step 9 runs `npm test`.
 
 - [ ] **Step 7: Wire logout** — a `signOutRedirect` call available via `useAuth()`, exposed for Task 4's header to call (no dedicated route needed).
 
@@ -468,6 +471,8 @@ git commit -m "feat(admin-ui): nav skeleton with role-filtered Tenants/Tenant Ad
 - Modify: `Iverson.Server/Iverson.Api/Program.cs` (named `HttpClient` + `/v1/traces` route)
 - Modify: `Iverson.Server/deploy/helm/iverson/charts/jaeger/templates/service.yaml`
 - Modify: `Iverson.Server/deploy/helm/iverson/templates/networkpolicies.yaml`
+- Modify: `Iverson.Server/docker-compose.yml`
+- Modify: `Iverson.Server/deploy/helm/iverson/charts/api/templates/deployment.yaml`
 
 **Interfaces:**
 - Consumes: Task 3's `useAuth()` access token (attached to the OTLP exporter's headers).
@@ -487,6 +492,7 @@ builder.Services.AddHttpClient("JaegerOtlpHttp", client =>
     client.BaseAddress = new Uri(cfg["Jaeger:OtlpHttpUrl"] ?? "http://iverson-jaeger:4318");
 });
 ```
+Wire the actual host explicitly in both environments rather than relying on this fallback (compose's Jaeger service is named `jaeger`, not `iverson-jaeger`; kind's is `{{ .Release.Name }}-jaeger`, which only coincidentally matches the fallback if the release happens to be named "iverson") — mirroring how `Authentik__BaseUrl` was wired for the same class of gap earlier this session: add `Jaeger__OtlpHttpUrl=http://jaeger:4318` to `docker-compose.yml`'s `iverson-api` environment block, and `Jaeger__OtlpHttpUrl=http://{{ .Release.Name }}-jaeger:4318` to `charts/api/templates/deployment.yaml`'s env block.
 
 - [ ] **Step 4: `Program.cs` — the `/v1/traces` relay route**, requiring authentication, byte-for-byte body relay:
 ```csharp
@@ -495,7 +501,7 @@ app.MapPost("/v1/traces", async (HttpContext ctx, IHttpClientFactory httpClientF
     var client = httpClientFactory.CreateClient("JaegerOtlpHttp");
     using var content = new StreamContent(ctx.Request.Body);
     content.Headers.ContentType = MediaTypeHeaderValue.Parse(ctx.Request.ContentType ?? "application/x-protobuf");
-    var response = await client.PostAsync("/v1/traces", content);
+    using var response = await client.PostAsync("/v1/traces", content);
     ctx.Response.StatusCode = (int)response.StatusCode;
     await response.Content.CopyToAsync(ctx.Response.Body);
 }).RequireAuthorization();
@@ -542,6 +548,7 @@ RUN npm run build
 FROM nginxinc/nginx-unprivileged:1.27-alpine AS runtime
 COPY --from=build /src/dist /usr/share/nginx/html
 COPY Iverson.AdminUI/docker-entrypoint.sh /docker-entrypoint.d/40-admin-ui-config.sh
+RUN chmod +x /docker-entrypoint.d/40-admin-ui-config.sh
 USER 101
 EXPOSE 8080
 ```
