@@ -26,6 +26,10 @@ dependencies:
   - name: worker
     version: "0.1.0"
     repository: "file://charts/worker"
+  - name: admin-ui
+    alias: adminUi
+    version: "0.1.0"
+    repository: "file://charts/admin-ui"
   - name: jaeger
     version: "0.1.0"
     repository: "file://charts/jaeger"

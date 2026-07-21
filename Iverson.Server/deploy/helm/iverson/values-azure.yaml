@@ -129,5 +129,16 @@ authentik:
     # real cert-manager-issued Secret name for the real host before applying.
     tlsSecretName: "iverson-authentik-tls"
 
+adminUi:
+  oidcAuthority: "http://authentik.iverson.example.com/application/o/iverson-api/"
+  apiBaseUrl: "https://iverson.example.com"
+  ingress:
+    className: "azure-application-gateway"
+    annotations: {}
+    # AGIC terminates TLS from a standard Kubernetes Secret referenced via
+    # the Ingress's tls: block, same as api/authentik above — replace with a
+    # real cert-manager-issued Secret name for the real host before applying.
+    tlsSecretName: "iverson-admin-ui-tls"
+
 jaeger:
   nodeSelector: {}

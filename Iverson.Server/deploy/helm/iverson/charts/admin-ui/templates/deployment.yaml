@@ -1,0 +1,82 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ .Release.Name }}-admin-ui
+automountServiceAccountToken: false
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}-admin-ui
+spec:
+  replicas: {{ .Values.replicas }}
+  selector:
+    matchLabels:
+      app: {{ .Release.Name }}-admin-ui
+  template:
+    metadata:
+      labels:
+        app: {{ .Release.Name }}-admin-ui
+    spec:
+      serviceAccountName: {{ .Release.Name }}-admin-ui
+      automountServiceAccountToken: false
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    app: {{ .Release.Name }}-admin-ui
+                topologyKey: kubernetes.io/hostname
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 101
+        runAsGroup: 101
+        fsGroup: 101
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: admin-ui
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            # Not readOnlyRootFilesystem, unlike every other Deployment in this chart —
+            # the Dockerfile's docker-entrypoint.d envsubst step writes config.js into
+            # /usr/share/nginx/html at container startup (see Dockerfile's comment for
+            # the empirically-verified permission fix that makes uid 101 able to write
+            # there at all); a read-only root filesystem would block that write outright
+            # and crash the container before nginx even starts.
+            readOnlyRootFilesystem: false
+            capabilities: { drop: ["ALL"] }
+          ports:
+            - containerPort: 8080
+              name: http
+          env:
+            - name: OIDC_CLIENT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Release.Name }}-authentik-human-oidc-client
+                  key: client-id
+            - name: OIDC_AUTHORITY
+              value: {{ .Values.oidcAuthority | quote }}
+            - name: API_BASE_URL
+              value: {{ .Values.apiBaseUrl | quote }}
+          resources:
+            requests:
+              cpu: {{ .Values.resources.requests.cpu | quote }}
+              memory: {{ .Values.resources.requests.memory | quote }}
+            limits:
+              cpu: {{ .Values.resources.limits.cpu | quote }}
+              memory: {{ .Values.resources.limits.memory | quote }}
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 8080
+            initialDelaySeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 8080
+            initialDelaySeconds: 15
+            periodSeconds: 15

@@ -1,0 +1,19 @@
+replicas: 2
+image:
+  repository: "iverson-admin-ui"
+  tag: "0.1.0"   # never "latest" — see Global Constraints
+  pullPolicy: IfNotPresent
+resources:
+  requests: { cpu: "100m", memory: "128Mi" }
+  limits: { cpu: "250m", memory: "256Mi" }
+
+# oidcAuthority/apiBaseUrl are static per environment (no secret involved) —
+# populated per environment in the parent chart's values*.yaml adminUi: block.
+# Defaults below match the kind profile.
+oidcAuthority: "http://authentik.iverson.local/application/o/iverson-api/"
+apiBaseUrl: "http://iverson.local"
+
+ingress:
+  className: ""
+  annotations: {}
+  tlsSecretName: ""   # set per-environment; empty disables the tls: block (kind only — see values-local.yaml)

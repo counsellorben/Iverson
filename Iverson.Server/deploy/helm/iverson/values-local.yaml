@@ -104,3 +104,15 @@ authentik:
     worker:
       requests: { cpu: "100m", memory: "256Mi" }
       limits: { cpu: "500m", memory: "512Mi" }
+
+adminUi:
+  replicas: 1
+  resources:
+    requests: { cpu: "50m", memory: "64Mi" }
+    limits: { cpu: "100m", memory: "128Mi" }
+  oidcAuthority: "http://authentik.iverson.local/application/o/iverson-api/"
+  apiBaseUrl: "http://iverson.local"
+  ingress:
+    className: "nginx"
+    annotations: {}
+    tlsSecretName: ""

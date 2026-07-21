@@ -1,0 +1,24 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ .Release.Name }}-admin-ui
+  annotations:
+    {{- toYaml .Values.ingress.annotations | nindent 4 }}
+spec:
+  ingressClassName: {{ .Values.ingress.className | quote }}
+{{- if .Values.ingress.tlsSecretName }}
+  tls:
+    - hosts: [{{ .Values.global.ingressHost | quote }}]
+      secretName: {{ .Values.ingress.tlsSecretName | quote }}
+{{- end }}
+  rules:
+    - host: {{ .Values.global.ingressHost | quote }}
+      http:
+        paths:
+          - path: /admin
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ .Release.Name }}-admin-ui
+                port:
+                  number: 8080
