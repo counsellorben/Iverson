@@ -169,6 +169,7 @@ entries:
       branding_title: "Iverson"
       branding_custom_css: |
         :root, html[data-theme=dark] {
+          color-scheme: dark;
           --pf-global--primary-color--100: #006BB6;
           --pf-global--primary-color--200: #006BB6;
           --pf-global--primary-color--300: #006BB6;
@@ -180,6 +181,7 @@ entries:
           --pf-global--BackgroundColor--dark-100: #141414;
           --ak-c-login__main--Color: #F5F5F5;
           --pf-global--Color--100: #F5F5F5;
+          --pf-global--Color--dark-100: #F5F5F5;
           --ak-dark-background: #010101;
           --ak-dark-background-light: #0A0A0A;
           --ak-dark-background-lighter: #141414;
