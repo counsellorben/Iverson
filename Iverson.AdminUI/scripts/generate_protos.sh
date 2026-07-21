@@ -3,11 +3,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ADMIN_UI_DIR="$(dirname "$SCRIPT_DIR")"
-
-# Find the main repository's Iverson.Clients directory
-# Since we may be in a git worktree, use git to find the main repo
-MAIN_REPO=$(git worktree list | grep '\[main\]' | awk '{print $1}')
-PROTO_DIR="$MAIN_REPO/Iverson.Clients/Common/Proto"
+PROTO_DIR="$(dirname "$ADMIN_UI_DIR")/Iverson.Clients/Common/Proto"
 
 cd "$ADMIN_UI_DIR"
 mkdir -p generated
