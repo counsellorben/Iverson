@@ -5,6 +5,8 @@
 {{- $loadtestHuman := lookup "v1" "Secret" .Release.Namespace (printf "%s-authentik-loadtest-human-client" .Release.Name) }}
 {{- $smokeTestUser := lookup "v1" "Secret" .Release.Namespace (printf "%s-authentik-smoke-test-user" .Release.Name) }}
 {{- $bypassUser := lookup "v1" "Secret" .Release.Namespace (printf "%s-authentik-bypass-user" .Release.Name) }}
+{{- $adminOrchestratorUser := lookup "v1" "Secret" .Release.Namespace (printf "%s-authentik-admin-orchestrator-user" .Release.Name) }}
+{{- $adminOrchestratorToken := lookup "v1" "Secret" .Release.Namespace (printf "%s-authentik-admin-orchestrator-token" .Release.Name) }}
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -175,3 +177,24 @@ data:
             tenant_id: "tenant-bypass"
           groups:
             - !Find [authentik_core.group, [name, iverson-loadtest-bypass]]
+      - model: authentik_core.group
+        identifiers:
+          name: tenant-admins
+        attrs: {}
+      - model: authentik_core.user
+        identifiers:
+          username: iverson-admin-orchestrator
+        attrs:
+          username: iverson-admin-orchestrator
+          name: "Iverson Admin Orchestrator"
+          email: iverson-admin-orchestrator@example.invalid
+          password: {{ if $adminOrchestratorUser }}{{ index $adminOrchestratorUser.data "password" | b64dec }}{{ else }}{{ randAlphaNum 32 }}{{ end }}
+          is_active: true
+          is_superuser: true
+      - model: authentik_core.token
+        identifiers:
+          identifier: iverson-admin-orchestrator-token
+        attrs:
+          key: {{ if $adminOrchestratorToken }}{{ index $adminOrchestratorToken.data "token-key" | b64dec }}{{ else }}{{ randAlphaNum 50 }}{{ end }}
+          user: !Find [authentik_core.user, [username, iverson-admin-orchestrator]]
+          intent: api

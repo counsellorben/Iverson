@@ -211,3 +211,24 @@ entries:
         tenant_id: "tenant-bypass"
       groups:
         - !Find [authentik_core.group, [name, iverson-loadtest-bypass]]
+  - model: authentik_core.group
+    identifiers:
+      name: tenant-admins
+    attrs: {}
+  - model: authentik_core.user
+    identifiers:
+      username: iverson-admin-orchestrator
+    attrs:
+      username: iverson-admin-orchestrator
+      name: "Iverson Admin Orchestrator"
+      email: iverson-admin-orchestrator@example.invalid
+      password: "dev-only-not-for-production-admin-orchestrator-password"
+      is_active: true
+      is_superuser: true
+  - model: authentik_core.token
+    identifiers:
+      identifier: iverson-admin-orchestrator-token
+    attrs:
+      key: "dev-only-not-for-production-admin-orchestrator-token"
+      user: !Find [authentik_core.user, [username, iverson-admin-orchestrator]]
+      intent: api

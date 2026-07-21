@@ -201,6 +201,16 @@ builder.Services.AddMemoryCache();
 builder.Services.AddSingleton<Iverson.Api.Tenancy.ITenantStatusCache, Iverson.Api.Tenancy.TenantStatusCache>();
 builder.Services.AddSingleton<Iverson.Api.Reconciliation.ReconciliationService>();
 
+builder.Services.AddHttpClient(Iverson.Api.Tenancy.AuthentikAdminClient.HttpClientName, client =>
+{
+    client.BaseAddress = new Uri(cfg["Authentik:BaseUrl"] ?? "http://authentik-server:9000");
+    var adminToken = cfg["Authentik:AdminToken"];
+    if (!string.IsNullOrEmpty(adminToken))
+        client.DefaultRequestHeaders.Authorization =
+            new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", adminToken);
+});
+builder.Services.AddSingleton<Iverson.Api.Tenancy.IAuthentikAdminClient, Iverson.Api.Tenancy.AuthentikAdminClient>();
+
 builder.Services.AddEmbeddings(cfg);
 
 // Defense-in-depth: ConsumerResilience.RunWithRestartAsync already catches and retries
