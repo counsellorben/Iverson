@@ -133,6 +133,14 @@ This exact procedure (with copy-pasteable verification commands) is also
 documented in `docs/runbooks/grpc-admin-auth-cutover.md`, since it's flagged
 there as the one path with no automated smoke-test coverage.
 
+> **Note:** As of the Tenant Admin APIs (Part D), manually editing a user's
+> `attributes.tenant_id` in the Authentik admin UI, outside `CreateTenant`/
+> `InviteUser`, is no longer a supported way to provision a tenant user — any
+> `tenant_id` introduced that way has no registry row and is permanently
+> denied by the platform's fail-closed tenant-suspension check. The steps
+> above (creating an operator) are unaffected and remain the sanctioned path
+> for operator onboarding specifically.
+
 ---
 
 ## Claims and scopes: how authorization decisions are made
