@@ -140,6 +140,11 @@ spec:
             - name: Authentication__ActingUser__ValidAudiences__0
               valueFrom:
                 secretKeyRef: { name: {{ .Release.Name }}-authentik-loadtest-human-client, key: client-id }
+            - name: Authentik__BaseUrl
+              value: "http://{{ .Release.Name }}-authentik:9000"
+            - name: Authentik__AdminToken
+              valueFrom:
+                secretKeyRef: { name: {{ .Release.Name }}-authentik-admin-orchestrator-token, key: token-key }
           resources:
             requests:
               cpu: {{ .Values.resources.requests.cpu | quote }}

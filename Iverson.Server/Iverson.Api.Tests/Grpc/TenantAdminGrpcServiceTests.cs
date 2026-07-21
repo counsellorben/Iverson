@@ -53,9 +53,13 @@ public class TenantAdminGrpcServiceTests
             Email = "bob@acme.example",
             InitialPassword = "correct-horse-battery-staple"
         };
+        _authentikAdminClient.CreateUserAsync(
+            "bob", "bob@acme.example", "correct-horse-battery-staple", "acme",
+            Arg.Is<IReadOnlyList<string>>(g => g.Count == 0)).Returns(Task.FromResult("user-1"));
 
         var response = await _sut.InviteUser(request, ContextForCallerTenant());
 
+        response.UserId.Should().Be("user-1");
         response.Username.Should().Be("bob");
         response.Email.Should().Be("bob@acme.example");
         await _authentikAdminClient.Received(1).CreateUserAsync(

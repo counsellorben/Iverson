@@ -24,9 +24,9 @@ public sealed class TenantAdminGrpcService(
     public override async Task<TenantUser> InviteUser(InviteUserRequest request, ServerCallContext context)
     {
         var tenantId = await RequireActiveTenantAsync(context);
-        await authentikAdminClient.CreateUserAsync(request.Username, request.Email, request.InitialPassword, tenantId, []);
+        var userId = await authentikAdminClient.CreateUserAsync(request.Username, request.Email, request.InitialPassword, tenantId, []);
         auditLog.AdminOperation(context.GetHttpContext().User, "InviteUser", request.Username);
-        return new TenantUser { Username = request.Username, Email = request.Email };
+        return new TenantUser { UserId = userId, Username = request.Username, Email = request.Email };
     }
 
     public override async Task<ListUsersResponse> ListUsers(ListUsersRequest request, ServerCallContext context)
