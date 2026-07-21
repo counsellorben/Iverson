@@ -93,6 +93,16 @@ Fix:
   so no existing service-to-service flow is affected. `MetadataAddress` stays
   pointed at the internal DNS name; the API pod never needs to reach
   Authentik externally.
+- **CORS on the Authentik ingress**: Authentik's token endpoint doesn't send
+  `Access-Control-Allow-Origin` by default, and the admin-ui
+  (`iverson.local/admin`) and Authentik (`authentik.iverson.local`) are now
+  different origins — the code-exchange and silent-renewal calls are
+  JS-initiated POSTs, not navigations, so both need CORS. The new Authentik
+  `Ingress` resource gets ingress-nginx's built-in CORS annotations
+  (`nginx.ingress.kubernetes.io/enable-cors: "true"` plus
+  `cors-allow-origin`/`cors-allow-methods`/`cors-allow-headers` scoped to the
+  admin-ui's origin and `POST`/`OPTIONS`) — no change to Authentik itself,
+  no reversal of the subdomain choice above.
 
 ### Redirect URIs
 
@@ -267,7 +277,9 @@ values file — no new TLS mechanism invented:
   ingress uses `authentik.` prefixed onto that same value
   (`authentik.iverson.example.com`), since its hostname is templated off
   `global.ingressHost` rather than hardcoded (see Auth Flow) — both follow
-  whatever real domain is configured per cloud, automatically.
+  whatever real domain is configured per cloud, automatically. The same CORS
+  annotation from the Auth Flow section applies to each cloud's Authentik
+  ingress entry too, since the origin split is identical there.
 - This does **not** produce a working end-to-end cloud deployment — exactly
   as true for the existing api ingress today. It keeps the new pieces
   consistent with that same, already-accepted, deliberately-incomplete
@@ -385,3 +397,9 @@ design, not taken on faith:
   multiple entries, not just one — confirmed via Authentik's own OAuth2
   provider documentation. Load-bearing since the design registers two
   entries (kind + local dev) on `iverson-oidc-default`.
+- Authentik's OAuth2 token endpoint does not send
+  `Access-Control-Allow-Origin` by default — confirmed via Authentik's own
+  issue tracker. Load-bearing once Authentik and the admin-ui are on
+  different origins (see Auth Flow's issuer fix): the code-exchange and
+  silent-renewal calls are cross-origin XHR/fetch, not navigations, so this
+  forced adding CORS annotations to the Authentik ingress.
