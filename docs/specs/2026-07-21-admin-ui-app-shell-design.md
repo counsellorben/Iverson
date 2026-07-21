@@ -37,9 +37,13 @@ local `npm run dev` and deployed in the kind cluster.
 
 - **React + Vite + TypeScript** — standard, fast dev iteration, standard
   production build for the Dockerfile to consume.
-- **React Router** (`createBrowserRouter`, `basename="/admin"`) for the nav
-  skeleton: a layout route (sidebar/header + `<Outlet/>`) wrapping placeholder
-  leaf routes.
+- **React Router** (`createBrowserRouter`) for the nav skeleton: a layout
+  route (sidebar/header + `<Outlet/>`) wrapping placeholder leaf routes.
+  `basename` is set conditionally, not fixed — `/admin` in the built app,
+  empty string in `npm run dev` (via `import.meta.env.DEV`) — since dev
+  serves the app at the Vite dev server's root while kind serves it under
+  the `/admin` ingress path. This is what lets the callback route (see Nav
+  Skeleton) resolve correctly in both environments.
 - **gRPC-web client generation via `ts-proto`**, consistent with
   `Iverson.Clients/TypeScript/scripts/generate_protos.sh`'s existing
   `protoc` + `ts-proto` invocation, rather than introducing a second,
@@ -135,6 +139,13 @@ Assumptions): `iverson-oidc-default`'s provider needs
 
 - Layout route (`/admin`), auth-gated: header (logged-in user identity +
   logout), sidebar nav, `<Outlet/>`.
+- A dedicated, unguarded callback route at the router-root-relative path
+  `/callback` — which resolves to `/admin/callback` under kind's `/admin`
+  basename and to `/callback` under dev's empty basename, matching both
+  registered redirect URIs exactly (see Auth Flow). It invokes
+  `oidc-client-ts`'s sign-in callback handling to complete the code
+  exchange; without it, Authentik's post-login redirect has nothing to
+  land on and login never completes.
 - **Always-visible**: `/admin/performance`, `/admin/storage` — no backend
   authorization model exists yet for either, so shown to any authenticated
   user.
@@ -199,6 +210,12 @@ path, distinct from the `envsubst`/`config.js` mechanism above:
   — a developer fetches it from the cluster secret (same
   `kubectl get secret ... -o jsonpath` pattern already used elsewhere in this
   repo's tooling) into their own gitignored Vite `.env.local`.
+
+Application code reads config through a single loader, not two separate code
+paths: it checks `window.__ADMIN_UI_CONFIG__` first (present in the built
+container) and falls back to `import.meta.env.VITE_*` when absent (dev,
+where no runtime-injected global exists) — one code path serves both
+environments.
 
 ## Browser OTel via API proxy
 
@@ -359,3 +376,12 @@ design, not taken on faith:
   `iverson-oidc-default`'s compose client-id is a fixed literal
   (`dev-iverson-human-oidc-client-id`), unlike kind's Helm-random value —
   resolves the local-dev config mechanism cleanly (see Deployment).
+- Authentik's scope-mapping claims (including `groups`) populate the ID
+  token, not just the access token — confirmed via Authentik's own
+  property-mappings documentation. Load-bearing for the Nav Skeleton's
+  role-based filtering, which reads `oidc-client-ts`'s `user.profile.groups`
+  (decoded from the ID token only).
+- Authentik's OAuth2 Provider `redirect_uris` field accepts a list of
+  multiple entries, not just one — confirmed via Authentik's own OAuth2
+  provider documentation. Load-bearing since the design registers two
+  entries (kind + local dev) on `iverson-oidc-default`.
