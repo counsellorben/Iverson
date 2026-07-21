@@ -418,6 +418,32 @@ spec:
                # target exists for an external registry.
       ports: [{ protocol: TCP, port: 443 }]
 ---
+# admin-ui is a static nginx server reachable from outside the namespace (via
+# ingress-nginx) — unlike api, it has no dedicated health port: its readiness/liveness
+# probes target the same port (8080) as its main ingress traffic. It needs no egress
+# rule of its own (the browser calls the API/Authentik directly, not this pod), so the
+# default-deny-all egress posture above is correct and sufficient.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ .Release.Name }}-admin-ui-ingress
+spec:
+  podSelector:
+    matchLabels: { app: {{ .Release.Name }}-admin-ui }
+  policyTypes: ["Ingress"]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels: { kubernetes.io/metadata.name: ingress-nginx }
+      ports:
+        - { protocol: TCP, port: 8080 }
+    - from: []   # kubelet readiness/liveness probes: the kubelet connects directly from the
+               # node, not from any pod/namespace, so there's no podSelector/namespaceSelector
+               # to scope this to — same any-source reasoning as the api-ingress rule above.
+               # Same port as the ingress rule above since admin-ui has no dedicated health port.
+      ports:
+        - { protocol: TCP, port: 8080 }
+---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:

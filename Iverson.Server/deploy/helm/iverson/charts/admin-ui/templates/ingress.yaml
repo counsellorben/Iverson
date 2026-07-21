@@ -3,7 +3,10 @@ kind: Ingress
 metadata:
   name: {{ .Release.Name }}-admin-ui
   annotations:
-    {{- toYaml .Values.ingress.annotations | nindent 4 }}
+    nginx.ingress.kubernetes.io/rewrite-target: /$2
+    {{- with .Values.ingress.annotations }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
 spec:
   ingressClassName: {{ .Values.ingress.className | quote }}
 {{- if .Values.ingress.tlsSecretName }}
@@ -15,8 +18,8 @@ spec:
     - host: {{ .Values.global.ingressHost | quote }}
       http:
         paths:
-          - path: /admin
-            pathType: Prefix
+          - path: /admin(/|$)(.*)
+            pathType: ImplementationSpecific
             backend:
               service:
                 name: {{ .Release.Name }}-admin-ui
