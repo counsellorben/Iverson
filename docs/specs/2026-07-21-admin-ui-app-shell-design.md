@@ -74,12 +74,14 @@ here since kind is in scope.
 Fix:
 - **New `Ingress` route for Authentik** (a template that doesn't exist yet,
   added to the existing `charts/authentik` chart): `host:
-  authentik.iverson.local` → the existing `authentik-server` Service. A
-  separate hostname avoids path-rewrite complexity with Authentik's own
-  internal routing. (Whoever tests this needs one more `/etc/hosts` line
-  alongside the existing `iverson.local` one — no existing doc covers browser
-  DNS resolution for `iverson.local` at all today, so this needs a short
-  setup note.)
+  authentik.{{ .Values.global.ingressHost }}` (i.e. `authentik.iverson.local`
+  for kind) → the existing `authentik-server` Service. A separate,
+  templated subdomain — not a hardcoded kind-only string — avoids
+  path-rewrite complexity with Authentik's own internal routing, and carries
+  over correctly to cloud (see Cloud Wiring). (Whoever tests this in kind
+  needs one more `/etc/hosts` line alongside the existing `iverson.local`
+  one — no existing doc covers browser DNS resolution for `iverson.local` at
+  all today, so this needs a short setup note.)
 - **`ValidIssuers` (plural), not a repoint**: the API's JWT validation gains a
   second acceptable issuer string
   (`http://authentik.iverson.local/application/o/iverson-api/`) alongside the
@@ -184,6 +186,20 @@ Assumptions): `iverson-oidc-default`'s provider needs
   resources, replicas) to `values.yaml`/`values-local.yaml`/
   `values-<cloud>.yaml`, matching the existing per-subchart structure.
 
+### Local dev config (separate from the container's runtime config)
+
+`npm run dev` never runs inside the container, so it needs its own config
+path, distinct from the `envsubst`/`config.js` mechanism above:
+- Targeting **compose**: `iverson-oidc-default`'s client-id there is a fixed
+  literal (`dev-iverson-human-oidc-client-id`, confirmed in
+  `blueprints/compose-only/service-clients.yaml`), safe to default in a
+  committed Vite `.env.development`-style file, matching how this repo
+  already treats other compose dev secrets as known literals.
+- Targeting **kind**: the client-id is Helm-random and not known in advance
+  — a developer fetches it from the cluster secret (same
+  `kubectl get secret ... -o jsonpath` pattern already used elsewhere in this
+  repo's tooling) into their own gitignored Vite `.env.local`.
+
 ## Browser OTel via API proxy
 
 - Jaeger's `jaegertracing/all-in-one:1.62.0` image (the version pinned in
@@ -229,8 +245,12 @@ values file — no new TLS mechanism invented:
   values (`iverson-admin-ui-tls`, `iverson-authentik-tls`), same
   "replace with a real cert-manager-issued secret" comment already used for
   `api.ingress.tlsSecretName`.
-- Both new ingress routes inherit `global.ingressHost`
-  (`iverson.example.com` for cloud), same as `api` does today.
+- The admin-ui ingress reuses `global.ingressHost` directly
+  (`iverson.example.com` for cloud), same as `api` does today. Authentik's
+  ingress uses `authentik.` prefixed onto that same value
+  (`authentik.iverson.example.com`), since its hostname is templated off
+  `global.ingressHost` rather than hardcoded (see Auth Flow) — both follow
+  whatever real domain is configured per cloud, automatically.
 - This does **not** produce a working end-to-end cloud deployment — exactly
   as true for the existing api ingress today. It keeps the new pieces
   consistent with that same, already-accepted, deliberately-incomplete
@@ -335,3 +355,7 @@ design, not taken on faith:
   to the api image/Dockerfile, only `tag`/`cluster-name` parameterized,
   including its podman-vs-docker re-tag logic that must be preserved when
   generalized.
+- `blueprints/compose-only/service-clients.yaml` — confirmed
+  `iverson-oidc-default`'s compose client-id is a fixed literal
+  (`dev-iverson-human-oidc-client-id`), unlike kind's Helm-random value —
+  resolves the local-dev config mechanism cleanly (see Deployment).
