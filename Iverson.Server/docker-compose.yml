@@ -205,6 +205,7 @@ services:
       - "9000:9000"
     volumes:
       - ./deploy/helm/iverson/charts/authentik/blueprints:/blueprints/custom:ro
+      - ./deploy/helm/iverson/charts/authentik/assets/fonts/fraunces-900.woff2:/web/dist/assets/fonts/Fraunces/fraunces-900.woff2:ro
     depends_on:
       postgres:
         condition: service_healthy

@@ -186,6 +186,16 @@ entries:
           --ak-font-family-sans-serif: 'Fraunces', serif;
           --ak-generic-display: 'Fraunces', serif;
         }
+        /* Fraunces isn't installed on this origin by default (it's self-hosted separately
+           by the admin UI's own bundle) -- @font-face registers it document-wide, including
+           for the shadow-DOM flow-executor, since font registration isn't shadow-scoped. */
+        @font-face {
+          font-family: 'Fraunces';
+          font-weight: 900;
+          font-style: normal;
+          font-display: swap;
+          src: url('/static/dist/assets/fonts/Fraunces/fraunces-900.woff2') format('woff2');
+        }
         /* branding_logo/branding_default_flow_background are validated FileFields that
            reject arbitrary strings (including data: URIs), so the stock authentik logo
            and background photo are removed here via CSS instead of the Brand model fields. */
