@@ -14,7 +14,9 @@
     "react-router-dom": "^6.28.0",
     "@improbable-eng/grpc-web": "^0.15.0",
     "google-protobuf": "^3.21.0",
-    "long": "^5.2.3"
+    "long": "^5.2.3",
+    "oidc-client-ts": "^3.5.0",
+    "react-oidc-context": "^3.3.1"
   },
   "devDependencies": {
     "@types/react": "^18.3.0",
