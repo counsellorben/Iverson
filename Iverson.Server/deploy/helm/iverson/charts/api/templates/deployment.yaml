@@ -147,6 +147,8 @@ spec:
             - name: Authentik__AdminToken
               valueFrom:
                 secretKeyRef: { name: {{ .Release.Name }}-authentik-admin-orchestrator-token, key: token-key }
+            - name: Jaeger__OtlpHttpUrl
+              value: "http://{{ .Release.Name }}-jaeger:4318"
           resources:
             requests:
               cpu: {{ .Values.resources.requests.cpu | quote }}

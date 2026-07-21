@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Net.Http.Headers;
 using System.Text.Json;
 using Iverson.Api;
 using Iverson.Api.Authorization;
@@ -219,6 +220,11 @@ builder.Services.AddHttpClient(Iverson.Api.Tenancy.AuthentikAdminClient.HttpClie
 });
 builder.Services.AddSingleton<Iverson.Api.Tenancy.IAuthentikAdminClient, Iverson.Api.Tenancy.AuthentikAdminClient>();
 
+builder.Services.AddHttpClient("JaegerOtlpHttp", client =>
+{
+    client.BaseAddress = new Uri(cfg["Jaeger:OtlpHttpUrl"] ?? "http://iverson-jaeger:4318");
+});
+
 builder.Services.AddEmbeddings(cfg);
 
 // Defense-in-depth: ConsumerResilience.RunWithRestartAsync already catches and retries
@@ -392,6 +398,21 @@ if (workloadRole == "api")
     app.MapGrpcService<ObjectSearchGrpcService>();
     app.MapGrpcService<TenantLifecycleGrpcService>().RequireAuthorization("Operator").EnableGrpcWeb();
     app.MapGrpcService<TenantAdminGrpcService>().RequireAuthorization("TenantAdmin").EnableGrpcWeb();
+
+    // Relays the admin-ui browser's OTel Web SDK spans to Jaeger's OTLP/HTTP endpoint.
+    // Same-origin so the browser never needs Jaeger's own network address, and
+    // authenticated so only signed-in admin-ui sessions can write traces through it.
+    // Body is relayed byte-for-byte (StreamContent straight from the request body) since
+    // it's OTLP protobuf, not JSON — this must not attempt to parse or re-serialize it.
+    app.MapPost("/v1/traces", async (HttpContext ctx, IHttpClientFactory httpClientFactory) =>
+    {
+        var client = httpClientFactory.CreateClient("JaegerOtlpHttp");
+        using var content = new StreamContent(ctx.Request.Body);
+        content.Headers.ContentType = MediaTypeHeaderValue.Parse(ctx.Request.ContentType ?? "application/x-protobuf");
+        using var response = await client.PostAsync("/v1/traces", content);
+        ctx.Response.StatusCode = (int)response.StatusCode;
+        await response.Content.CopyToAsync(ctx.Response.Body);
+    }).RequireAuthorization();
 }
 
 app.Lifetime.ApplicationStarted.Register(() =>

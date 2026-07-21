@@ -276,6 +276,7 @@ services:
       - Authentication__ActingUser__ValidAudiences__0=dev-iverson-loadtest-human-client-id
       - Authentik__BaseUrl=http://authentik-server:9000
       - Authentik__AdminToken=dev-only-not-for-production-admin-orchestrator-token
+      - Jaeger__OtlpHttpUrl=http://jaeger:4318
     depends_on:
       postgres:
         condition: service_healthy

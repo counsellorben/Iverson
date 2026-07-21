@@ -10,3 +10,5 @@ spec:
       port: 16686
     - name: otlp-grpc
       port: 4317
+    - name: otlp-http
+      port: 4318

@@ -16,7 +16,14 @@
     "google-protobuf": "^3.21.0",
     "long": "^5.2.3",
     "oidc-client-ts": "^3.5.0",
-    "react-oidc-context": "^3.3.1"
+    "react-oidc-context": "^3.3.1",
+    "@opentelemetry/api": "^1.9.1",
+    "@opentelemetry/resources": "^2.9.0",
+    "@opentelemetry/sdk-trace-web": "^2.9.0",
+    "@opentelemetry/instrumentation-fetch": "^0.220.0",
+    "@opentelemetry/instrumentation-document-load": "^0.65.0",
+    "@opentelemetry/exporter-trace-otlp-http": "^0.220.0",
+    "@opentelemetry/instrumentation": "^0.220.0"
   },
   "devDependencies": {
     "@types/react": "^18.3.0",
