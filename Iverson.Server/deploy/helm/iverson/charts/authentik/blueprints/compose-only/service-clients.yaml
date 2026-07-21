@@ -198,6 +198,26 @@ entries:
         ak-flow-executor::part(branding) {
           display: none !important;
         }
+  - model: authentik_flows.flow
+    identifiers:
+      slug: default-authentication-flow
+    attrs:
+      title: "Welcome to Iverson!"
+  - model: authentik_flows.flow
+    identifiers:
+      slug: default-source-authentication
+    attrs:
+      title: "Welcome to Iverson!"
+  - model: authentik_flows.flow
+    identifiers:
+      slug: default-source-enrollment
+    attrs:
+      title: "Welcome to Iverson! Please select a username."
+  - model: authentik_flows.flow
+    identifiers:
+      slug: initial-setup
+    attrs:
+      title: "Welcome to Iverson!"
   - model: authentik_providers_oauth2.oauth2provider
     identifiers:
       name: iverson-loadtest-human
