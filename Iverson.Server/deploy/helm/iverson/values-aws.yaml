@@ -128,6 +128,15 @@ authentik:
       limits: { cpu: "500m", memory: "1Gi" }
   nodeSelector: {}
   bootstrapEmail: "admin@iverson.example.com"
+  ingress:
+    className: "alb"
+    annotations:
+      # ALB terminates TLS using an ACM certificate referenced by ARN, not a
+      # Kubernetes Secret — tlsSecretName stays empty (chart default) same as
+      # api.ingress above. Replace <ACM_CERT_ARN> with a real certificate
+      # provisioned for the real host before applying — without it ALB will
+      # only serve HTTP.
+      alb.ingress.kubernetes.io/certificate-arn: "<ACM_CERT_ARN>"
 
 jaeger:
   nodeSelector: {}

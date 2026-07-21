@@ -8,3 +8,7 @@ resources:
     limits: { cpu: "500m", memory: "1Gi" }
 nodeSelector: {}
 bootstrapEmail: "admin@iverson.local"
+ingress:
+  className: "nginx"
+  annotations: {}
+  tlsSecretName: ""

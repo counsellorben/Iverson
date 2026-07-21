@@ -222,9 +222,9 @@ me a human token" endpoint by design — a human token is only ever obtained by
 a human actually authenticating (or, for automated testing, by scripting the
 same flow a human would go through — see below).
 
-For the admin-operator login, this happens through whatever frontend/tool
-initiates the `iverson-oidc-default` Application's Authorization Code flow;
-Authentik handles the login UI itself.
+For the admin-operator login, this happens through `Iverson.AdminUI` (the
+admin dashboard), which initiates the `iverson-oidc-default` Application's
+Authorization Code flow; Authentik handles the login UI itself.
 
 **For automated/scripted testing of a human-equivalent login** (used by the
 Part 4 acting-user smoke test, and adaptable for any other scripted

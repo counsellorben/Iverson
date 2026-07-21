@@ -121,6 +121,13 @@ authentik:
       limits: { cpu: "500m", memory: "1Gi" }
   nodeSelector: {}
   bootstrapEmail: "admin@iverson.example.com"
+  ingress:
+    className: "azure-application-gateway"
+    # AGIC terminates TLS from a standard Kubernetes Secret referenced via
+    # the Ingress's tls: block (the authentik subchart's Ingress template
+    # already renders one whenever tlsSecretName is set) — replace with a
+    # real cert-manager-issued Secret name for the real host before applying.
+    tlsSecretName: "iverson-authentik-tls"
 
 jaeger:
   nodeSelector: {}

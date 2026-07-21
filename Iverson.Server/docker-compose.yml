@@ -267,6 +267,7 @@ services:
       - Kafka__BootstrapServers=kafka:29092
       - Qdrant__ApiKey=dev-only-not-for-production-qdrant-key-0123456789
       - Authentication__Authority=http://authentik-server:9000/application/o/iverson-api/
+      - Authentication__ExternalIssuer=http://authentik.iverson.local/application/o/iverson-api/
       - Authentication__ValidAudiences__0=dev-iverson-human-oidc-client-id
       - Authentication__ValidAudiences__1=dev-iverson-loadtest-client-id
       - Authentication__ValidAudiences__2=dev-iverson-webtest-client-id

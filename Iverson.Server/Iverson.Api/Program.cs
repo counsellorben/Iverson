@@ -88,6 +88,11 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
     .AddJwtBearer(options =>
     {
         options.Authority = cfg["Authentication:Authority"];
+        options.TokenValidationParameters.ValidIssuers = new[]
+        {
+            cfg["Authentication:Authority"],
+            cfg["Authentication:ExternalIssuer"]
+        };
         options.TokenValidationParameters.ValidAudiences = cfg.GetSection("Authentication:ValidAudiences").Get<string[]>();
         // This entire deployment is plaintext h2c/HTTP with no TLS anywhere (see otelEndpoint,
         // Kafka__BootstrapServers, etc. above) — Authentication:Authority points at Authentik's
