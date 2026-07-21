@@ -54,6 +54,9 @@ public sealed class AuthTestWebApplicationFactory : WebApplicationFactory<Progra
             services.RemoveAll<IRecordStoreSchemaManager>();
             services.AddSingleton<IRecordStoreSchemaManager, NoOpRecordStoreSchemaManager>();
 
+            services.RemoveAll<ITenantRepository>();
+            services.AddSingleton<ITenantRepository, NoOpTenantRepository>();
+
             services.PostConfigure<JwtBearerOptions>(JwtBearerDefaults.AuthenticationScheme, options =>
             {
                 options.Authority = null;
