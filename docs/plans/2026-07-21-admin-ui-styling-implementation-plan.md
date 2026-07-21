@@ -332,7 +332,13 @@ cd Iverson.AdminUI && npm test && npm run build
 ```
 Expect all 3 existing test files (`Sidebar.test.tsx`, `router.test.tsx`, `AuthProvider.test.tsx`) to pass unchanged, and the build to complete without type/import errors.
 
-- [ ] **Step 4: Commit**
+- [ ] **Step 4: Visual check**
+```bash
+cd Iverson.AdminUI && npm run dev
+```
+Open `http://localhost:5173/` and confirm the AppBar/Drawer render in the dark palette (near-black background, `#006BB6` AppBar) with the "Iverson" title in Fraunces, before proceeding to commit.
+
+- [ ] **Step 5: Commit**
 ```bash
 git add Iverson.AdminUI/src/layout/AppLayout.tsx Iverson.AdminUI/src/layout/Sidebar.tsx
 git commit -m "feat(admin-ui): restyle app shell with MUI AppBar/Drawer"
@@ -344,7 +350,15 @@ git commit -m "feat(admin-ui): restyle app shell with MUI AppBar/Drawer"
 - Modify: `Iverson.Server/deploy/helm/iverson/charts/authentik/blueprints/compose-only/service-clients.yaml`
 - Modify: `Iverson.Server/deploy/helm/iverson/charts/authentik/templates/blueprints-configmap-service-clients.yaml`
 
-- [ ] **Step 1: Insert the Brand block into the compose blueprint**
+- [ ] **Step 1: Commit the pre-existing `grant_types` fix first**
+
+This file already has an unrelated uncommitted change from earlier this session (a fix for an Authentik login bug). Commit it on its own before touching the file for this task:
+```bash
+git add Iverson.Server/deploy/helm/iverson/charts/authentik/blueprints/compose-only/service-clients.yaml
+git commit -m "fix(deploy): add missing grant_types to iverson-oidc-default provider"
+```
+
+- [ ] **Step 2: Insert the Brand block into the compose blueprint**
 
 In `blueprints/compose-only/service-clients.yaml`, insert immediately after line 164 (the `iverson-api` application block's `provider:` line) and before line 165 (`  - model: authentik_providers_oauth2.oauth2provider`):
 ```yaml
@@ -369,7 +383,7 @@ In `blueprints/compose-only/service-clients.yaml`, insert immediately after line
         }
 ```
 
-- [ ] **Step 2: Insert the identical Brand block into the kind blueprint template**
+- [ ] **Step 3: Insert the identical Brand block into the kind blueprint template**
 
 In `templates/blueprints-configmap-service-clients.yaml`, insert immediately after line 131 (the `iverson-api` application block's `provider:` line) and before line 132 (`      - model: authentik_providers_oauth2.oauth2provider`), indented to match the surrounding 6-space list items:
 ```yaml
@@ -394,9 +408,10 @@ In `templates/blueprints-configmap-service-clients.yaml`, insert immediately aft
             }
 ```
 
-- [ ] **Step 3: Apply and verify against the running compose stack**
+- [ ] **Step 4: Apply and verify against the running compose stack**
 ```bash
 docker compose -f Iverson.Server/docker-compose.yml restart authentik-worker
+sleep 10
 ```
 Then confirm the change landed:
 ```bash
@@ -404,7 +419,7 @@ docker exec iverson-postgres psql -U authentik -d authentik -c "SELECT branding_
 ```
 Expect `Iverson`. Then load `http://localhost:9000/if/flow/default-authentication-flow/` and confirm the page's `<style data-id="brand-css">` tag contains the CSS above.
 
-- [ ] **Step 4: Commit**
+- [ ] **Step 5: Commit**
 ```bash
 git add Iverson.Server/deploy/helm/iverson/charts/authentik/blueprints/compose-only/service-clients.yaml Iverson.Server/deploy/helm/iverson/charts/authentik/templates/blueprints-configmap-service-clients.yaml
 git commit -m "feat(deploy): brand Authentik's login pages to match the admin UI"
