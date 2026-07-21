@@ -197,6 +197,8 @@ builder.Services.AddSingleton<IDlqRepository>(sp => new DlqRepository(
 builder.Services.AddSingleton<ITenantRepository>(sp => new TenantRepository(
     Iverson.Api.Tenancy.TenantSchema.TableName,
     sp.GetRequiredService<IRecordStoreQueryExecutor>()));
+builder.Services.AddMemoryCache();
+builder.Services.AddSingleton<Iverson.Api.Tenancy.ITenantStatusCache, Iverson.Api.Tenancy.TenantStatusCache>();
 builder.Services.AddSingleton<Iverson.Api.Reconciliation.ReconciliationService>();
 
 builder.Services.AddEmbeddings(cfg);

@@ -1,10 +1,13 @@
 using Grpc.Core;
 using Grpc.Core.Interceptors;
+using Iverson.Api.Tenancy;
 using Microsoft.AspNetCore.Authentication;
 
 namespace Iverson.Api.Grpc;
 
-public sealed class ActingUserInterceptor(ILogger<ActingUserInterceptor> logger) : Interceptor
+public sealed class ActingUserInterceptor(
+    ILogger<ActingUserInterceptor> logger,
+    ITenantStatusCache tenantStatusCache) : Interceptor
 {
     public const string MetadataKey = "x-acting-user-authorization";
 
@@ -37,6 +40,14 @@ public sealed class ActingUserInterceptor(ILogger<ActingUserInterceptor> logger)
         var result = await httpContext.AuthenticateAsync("ActingUser");
         if (!result.Succeeded || result.Principal is null)
             throw new RpcException(new Status(StatusCode.Unauthenticated, "Acting-user token is invalid."));
+
+        var tenantId = result.Principal.FindFirst("tenant_id")?.Value;
+        if (tenantId is not null)
+        {
+            var status = await tenantStatusCache.GetStatusAsync(tenantId);
+            if (status is null or "suspended" or "deleted")
+                throw new RpcException(new Status(StatusCode.PermissionDenied, $"Tenant '{tenantId}' is not active."));
+        }
 
         httpContext.RequestServices.GetRequiredService<IActingUserAccessor>().ActingUser = result.Principal;
 
