@@ -1,0 +1,40 @@
+syntax = "proto3";
+option csharp_namespace = "Iverson.Client.Contracts";
+package iverson;
+
+import "google/protobuf/empty.proto";
+
+service TenantAdminGrpcService {
+    rpc InviteUser     (InviteUserRequest)     returns (TenantUser);
+    rpc ListUsers      (ListUsersRequest)      returns (ListUsersResponse);
+    rpc RemoveUser     (RemoveUserRequest)     returns (google.protobuf.Empty);
+    rpc SetTenantAdmin (SetTenantAdminRequest) returns (TenantUser);
+}
+
+message InviteUserRequest {
+    string username         = 1;
+    string email            = 2;
+    string initial_password = 3;
+}
+
+message ListUsersRequest {
+}
+
+message ListUsersResponse {
+    repeated TenantUser users = 1;
+}
+
+message RemoveUserRequest {
+    string user_id = 1;
+}
+
+message SetTenantAdminRequest {
+    string user_id = 1;
+    bool   grant   = 2;
+}
+
+message TenantUser {
+    string user_id  = 1;
+    string username = 2;
+    string email    = 3;
+}

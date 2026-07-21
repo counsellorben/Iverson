@@ -144,6 +144,9 @@ builder.Services.AddAuthorization(options =>
         SchemaAdminAuthorizationPolicy.IsSatisfiedBy(
             context.User.FindAll("groups").Select(c => c.Value),
             context.User.FindFirst("scope")?.Value)));
+    options.AddPolicy("TenantAdmin", policy => policy.RequireAssertion(context =>
+        TenantAdminAuthorizationPolicy.IsSatisfiedBy(
+            context.User.FindAll("groups").Select(c => c.Value))));
 });
 
 builder.Services.AddSingleton<IAuthorizationMiddlewareResultHandler, AuditingAuthorizationMiddlewareResultHandler>();
@@ -383,6 +386,7 @@ if (workloadRole == "api")
     app.MapGrpcService<ObjectRetrievalGrpcService>();
     app.MapGrpcService<ObjectSearchGrpcService>();
     app.MapGrpcService<TenantLifecycleGrpcService>().RequireAuthorization("Operator").EnableGrpcWeb();
+    app.MapGrpcService<TenantAdminGrpcService>().RequireAuthorization("TenantAdmin").EnableGrpcWeb();
 }
 
 app.Lifetime.ApplicationStarted.Register(() =>

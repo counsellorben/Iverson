@@ -5,7 +5,7 @@ namespace Iverson.Api.Grpc;
 
 public sealed class AuditingAuthorizationMiddlewareResultHandler(AuditLog auditLog) : IAuthorizationMiddlewareResultHandler
 {
-    private static readonly HashSet<string> AuditedPolicies = ["SchemaAdmin", "Operator"];
+    private static readonly HashSet<string> AuditedPolicies = ["SchemaAdmin", "Operator", "TenantAdmin"];
     private readonly AuthorizationMiddlewareResultHandler _default = new();
 
     public async Task HandleAsync(RequestDelegate next, HttpContext context,
