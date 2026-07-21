@@ -142,6 +142,9 @@ data:
               --pf-global--primary-color--dark-100: #006BB6;
               --pf-global--primary-color--light-100: #006BB6;
               --pf-global--secondary-color--100: #ED174C;
+              --pf-global--BackgroundColor--100: #141414;
+              --pf-global--BackgroundColor--light-100: #141414;
+              --pf-global--BackgroundColor--dark-100: #141414;
               --ak-dark-background: #010101;
               --ak-dark-background-light: #0A0A0A;
               --ak-dark-background-lighter: #141414;
