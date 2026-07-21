@@ -13,6 +13,11 @@ import { config } from "./config";
 // silently miss the session react-oidc-context actually created.
 const userStore = new WebStorageStateStore({ store: window.sessionStorage });
 
+// URL for exporting traces to Iverson.Api; used by both the OTLPTraceExporter and
+// FetchInstrumentation's ignoreUrls to avoid instrumental feedback (fetch-instrumented
+// spans from the trace export endpoint being re-exported in the next batch).
+const OTLP_TRACES_URL = "/v1/traces";
+
 // Mirrors oidc-client-ts's internal UserManager._userStoreKey format
 // (`user:${authority}:${client_id}`, with the "oidc." prefix applied by the store itself) —
 // there is no public API to ask oidc-client-ts for "the current user" outside of a React hook,
@@ -47,7 +52,7 @@ export function initTelemetry(): void {
     spanProcessors: [
       new BatchSpanProcessor(
         new OTLPTraceExporter({
-          url: "/v1/traces",
+          url: OTLP_TRACES_URL,
           headers: getAuthHeaders,
         })
       ),
@@ -57,6 +62,11 @@ export function initTelemetry(): void {
   provider.register();
 
   registerInstrumentations({
-    instrumentations: [new FetchInstrumentation(), new DocumentLoadInstrumentation()],
+    instrumentations: [
+      new FetchInstrumentation({
+        ignoreUrls: [new RegExp(`${OTLP_TRACES_URL}$`)],
+      }),
+      new DocumentLoadInstrumentation(),
+    ],
   });
 }
