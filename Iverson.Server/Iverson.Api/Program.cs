@@ -246,6 +246,7 @@ app.UseHttpsRedirection();
 
 app.UseAuthentication();
 app.UseAuthorization();
+app.UseGrpcWeb();
 
 // Expose the W3C trace-id on every response so callers can correlate logs
 app.Use(async (context, next) =>
@@ -381,6 +382,7 @@ if (workloadRole == "api")
     app.MapGrpcService<ObjectPersistenceGrpcService>();
     app.MapGrpcService<ObjectRetrievalGrpcService>();
     app.MapGrpcService<ObjectSearchGrpcService>();
+    app.MapGrpcService<TenantLifecycleGrpcService>().RequireAuthorization("Operator").EnableGrpcWeb();
 }
 
 app.Lifetime.ApplicationStarted.Register(() =>
