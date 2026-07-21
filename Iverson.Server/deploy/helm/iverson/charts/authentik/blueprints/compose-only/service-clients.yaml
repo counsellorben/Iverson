@@ -162,6 +162,25 @@ entries:
     attrs:
       name: iverson-api
       provider: !Find [authentik_providers_oauth2.oauth2provider, [name, iverson-oidc-default]]
+  - model: authentik_brands.brand
+    identifiers:
+      domain: authentik-default
+    attrs:
+      branding_title: "Iverson"
+      branding_custom_css: |
+        :root, html[data-theme=dark] {
+          --pf-global--primary-color--100: #006BB6;
+          --pf-global--primary-color--200: #006BB6;
+          --pf-global--primary-color--300: #006BB6;
+          --pf-global--primary-color--dark-100: #006BB6;
+          --pf-global--primary-color--light-100: #006BB6;
+          --pf-global--secondary-color--100: #ED174C;
+          --ak-dark-background: #010101;
+          --ak-dark-background-light: #0A0A0A;
+          --ak-dark-background-lighter: #141414;
+          --ak-font-family-sans-serif: 'Fraunces', serif;
+          --ak-generic-display: 'Fraunces', serif;
+        }
   - model: authentik_providers_oauth2.oauth2provider
     identifiers:
       name: iverson-loadtest-human
