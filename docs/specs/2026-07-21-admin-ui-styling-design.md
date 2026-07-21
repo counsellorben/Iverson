@@ -19,7 +19,7 @@ Compared against Mantine and Ant Design (see "Library comparison" below); MUI is
 
 A single source of truth, `Iverson.AdminUI/src/theme/tokens.ts`, holds the brand's primitive values (colors, font). Two independent consumers read from it:
 
-1. **MUI theme** (`src/theme/theme.ts`) — `createTheme()` mapping tokens onto MUI's palette/typography, wired into `main.tsx` via `<ThemeProvider>` + `<CssBaseline>`.
+1. **MUI theme** (`src/theme/theme.ts`) — `createTheme()` mapping tokens onto MUI's palette/typography, with `palette.mode` set explicitly to `'dark'` (not left at MUI's default, which is `'light'`), wired into `main.tsx` via `<ThemeProvider>` + `<CssBaseline>`.
 2. **Authentik's Brand** — a new blueprint entry setting `branding_title`/`branding_custom_css` on the existing `authentik-default` Brand row, using the same token values by hand (no shared build step links a TS file to a Python-side YAML blueprint — this is a "change both, same values" convention).
 
 There is no automated mechanism keeping the two in sync; if the palette changes, both files need updating.
@@ -30,10 +30,11 @@ There is no automated mechanism keeping the two in sync; if the palette changes,
 |---|---|---|
 | `primary` | `#006BB6` | Buttons, active nav item, links |
 | `secondary` | `#ED174C` | Accents, secondary actions |
-| `background` (dark) | `#010101` | App shell surface |
+| `background` (dark) | `#010101` | App shell surface (`palette.background.default`) |
+| `background` (dark, paper) | `#141414` | Drawer/AppBar/Card surfaces (`palette.background.paper`) — matches the `--ak-dark-background-lighter` tier already used in the Authentik blueprint below |
 | `font` (heading) | Fraunces, Black (900) weight, self-hosted via `@fontsource/fraunces` | Placeholder for **ITC Clearface Black** — a commercial Monotype/ITC typeface with no license currently available. Fraunces is an open-source (SIL) display serif with a similar warm, high-contrast old-style character, used as a stand-in until licensed files/subscription exist. Swapping it in later is a one-line change to `tokens.ts`. |
 
-No dark/light toggle — not requested; the app is dark-only for now (`palette.mode` stays at MUI's default). Self-hosting the font (rather than a Google Fonts `<link>`) matches this repo's existing pattern of nothing calling out to an external host at runtime (local Ollama embeddings, no external API keys — see root `README.md`).
+No dark/light toggle — not requested; the app is dark-only for now, set explicitly via `palette.mode: 'dark'` (MUI's actual default is `'light'`, confirmed against the installed package — leaving it unset would render `background.paper` surfaces like the Sidebar's `Drawer` at MUI's light-mode default, `#fff`, against the dark page background). Self-hosting the font (rather than a Google Fonts `<link>`) matches this repo's existing pattern of nothing calling out to an external host at runtime (local Ollama embeddings, no external API keys — see root `README.md`).
 
 ### Dependencies added
 
@@ -122,6 +123,8 @@ All checked empirically against the actual codebase/running services before this
 8. **MUI's polymorphic `component` prop pattern works for the `ListItemButton` + react-router `Link` integration** — confirmed via source: `ButtonBase` (which `ListItemButton` is built on) accepts a `component` prop (default `'button'`, otherwise any component type with props forwarded through), the standard documented MUI pattern.
 9. **Authentik's `branding_custom_css` injection point and cascade precedence** — fetched the full rendered HTML of `/if/flow/default-authentication-flow/` and found a server-rendered `<style data-id="brand-css"></style>` element positioned after the `flow-2026.5.3.css` `<link>` in document order. Django renders the Brand's `branding_custom_css` value verbatim into this tag (not injected by client-side JS). Because it comes later in document order, equal-specificity rules (like our `:root`/`html[data-theme=dark]` overrides) win the cascade without needing `!important`.
 10. **No other admin-ui test breaks from this design** — enumerated all three test files in the project (`Sidebar.test.tsx`, `router.test.tsx`, `AuthProvider.test.tsx`; confirmed no others exist via `find`). `AuthProvider.test.tsx` renders `AuthGate` directly with a plain `<div>` child, never through `main.tsx`/`AppLayout`, so it's entirely unaffected by the `ThemeProvider` wrap or the shell restyle.
+
+11. **MUI's default `palette.mode` is `'light'`, not dark** — confirmed directly in the installed `@mui/material@9.2.0` package source (`styles/createPalette.js:210`, `mode = 'light'`). The design now sets `palette.mode: 'dark'` explicitly rather than relying on the default (caught in Critical Design Review round 1 — see `docs/criticalreviews/2026-07-21-admin-ui-styling-design-critical-review-1.md`).
 
 ## Known open item
 
