@@ -186,6 +186,18 @@ entries:
           --ak-font-family-sans-serif: 'Fraunces', serif;
           --ak-generic-display: 'Fraunces', serif;
         }
+        /* branding_logo/branding_default_flow_background are validated FileFields that
+           reject arbitrary strings (including data: URIs), so the stock authentik logo
+           and background photo are removed here via CSS instead of the Brand model fields. */
+        body {
+          background-color: #010101 !important;
+        }
+        body::before {
+          background-image: none !important;
+        }
+        ak-flow-executor::part(branding) {
+          display: none !important;
+        }
   - model: authentik_providers_oauth2.oauth2provider
     identifiers:
       name: iverson-loadtest-human
