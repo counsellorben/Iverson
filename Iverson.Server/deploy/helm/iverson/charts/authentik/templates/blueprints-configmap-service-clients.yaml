@@ -106,7 +106,10 @@ data:
           name: iverson-oidc-default
         attrs:
           authorization_flow: !Find [authentik_flows.flow, [slug, default-provider-authorization-implicit-consent]]
-          invalidation_flow: !Find [authentik_flows.flow, [slug, default-provider-invalidation-flow]]
+          # default-provider-invalidation-flow has no stages bound (no UserLogoutStage) -- it's a
+          # no-op that never actually ends the Authentik-level browser session, only the app-level
+          # OIDC session. default-invalidation-flow is the one with a real UserLogoutStage.
+          invalidation_flow: !Find [authentik_flows.flow, [slug, default-invalidation-flow]]
           client_type: public
           redirect_uris:
             - matching_mode: strict
