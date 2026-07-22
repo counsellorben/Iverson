@@ -107,6 +107,12 @@ if (needsTenantAndSchema && clientCredentials is not null)
         return 1;
     }
 }
+else if (needsTenantAndSchema)
+{
+    Console.WriteLine(
+        "Client credentials not configured (IVERSON_CLIENT_ID/IVERSON_CLIENT_SECRET/IVERSON_TOKEN_ENDPOINT) — " +
+        "skipping tenant provisioning and schema registration; StarRocks seeding will be empty.");
+}
 
 var services = new ServiceCollection()
     .AddLogging(b => b.AddConsole().SetMinimumLevel(LogLevel.Warning))

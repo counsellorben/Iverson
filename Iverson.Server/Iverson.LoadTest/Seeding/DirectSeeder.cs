@@ -248,14 +248,15 @@ public sealed class DirectSeeder(
         {
             var identity = i % 2 == 0 ? identities.Regular : identities.Bypass;
             var cat = Categories[i % Categories.Length];
+            var body = GenerateBody(i);
             var entity = new BenchmarkArticle
             {
                 Id                = Guid.NewGuid(),
                 Title             = $"Benchmark Article {i}: {cat}",
-                Body              = GenerateBody(i),
+                Body              = body,
                 BenchmarkAuthorId = authorIds[i % authorIds.Length],
                 Category          = cat,
-                WordCount         = GenerateBody(i).Length / 5,
+                WordCount         = body.Length / 5,
                 PublishedAt       = baseDate.AddDays(i % 2190),
                 OwnerId           = identity == identities.Bypass ? await identity.GetSubAsync(ct) : "",
             };
