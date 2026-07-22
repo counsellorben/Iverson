@@ -1,5 +1,7 @@
 using Dapper;
 using Grpc.Core;
+using Grpc.Net.Client;
+using IdentityModel.Client;
 using Iverson.Client.Contracts;
 using Iverson.Client.Core;
 using Iverson.Events;
@@ -39,6 +41,10 @@ var actingUserUsername = Environment.GetEnvironmentVariable("IVERSON_ACTING_USER
 var actingUserPassword = Environment.GetEnvironmentVariable("IVERSON_ACTING_USER_PASSWORD") ?? "dev-only-not-for-production-smoke-test-password-0123456789";
 var actingUserBypassUsername = Environment.GetEnvironmentVariable("IVERSON_ACTING_USER_BYPASS_USERNAME") ?? "iverson-loadtest-bypass-user";
 var actingUserBypassPassword = Environment.GetEnvironmentVariable("IVERSON_ACTING_USER_BYPASS_PASSWORD") ?? "dev-only-not-for-production-bypass-password-0123456789";
+var tenantProvisionId   = Environment.GetEnvironmentVariable("IVERSON_LOADTEST_TENANT_ID") ?? "iverson-loadtest-dynamic";
+var tenantAdminUsername = Environment.GetEnvironmentVariable("IVERSON_LOADTEST_TENANT_ADMIN_USERNAME") ?? "iverson-loadtest-tenant-admin";
+var tenantAdminEmail    = Environment.GetEnvironmentVariable("IVERSON_LOADTEST_TENANT_ADMIN_EMAIL") ?? "iverson-loadtest-tenant-admin@iverson.local";
+var tenantAdminPassword = Environment.GetEnvironmentVariable("IVERSON_LOADTEST_TENANT_ADMIN_PASSWORD") ?? "dev-only-not-for-production-tenant-admin-password-0123456789";
 var actingUserCacheTarget = flags.Target == "kind" ? "kind" : "compose"; // maps LoadTest's own "containers"/"kind" to the Python script's "compose"/"kind" cache-path vocabulary
 var actingUserBaseUrl = tokenEndpoint is not null
     ? tokenEndpoint[..tokenEndpoint.IndexOf("/application/o/token/", StringComparison.Ordinal)]
@@ -73,9 +79,41 @@ var clientCredentials = clientId is not null && clientSecret is not null && toke
     ? new IversonClientCredentials(clientId, clientSecret, tokenEndpoint, clientScope)
     : null;
 
+var needsTenantAndSchema = command is "seed" or "write-path" or "read-path" or "all";
+
+ActingUserTokenProvider? tenantAdminTokenProvider = null;
+if (needsTenantAndSchema && clientCredentials is not null)
+{
+    Console.WriteLine("Ensuring LoadTest tenant is provisioned...");
+    try
+    {
+        var adminToken = await MintClientCredentialsTokenAsync(clientCredentials);
+        await EnsureTenantProvisionedAsync(
+            grpcUrl, adminToken, tenantProvisionId, "Iverson LoadTest (dynamic)",
+            tenantAdminUsername, tenantAdminEmail, tenantAdminPassword);
+
+        var tenantAdminLoggerFactory = LoggerFactory.Create(b => b.AddConsole().SetMinimumLevel(LogLevel.Warning));
+        tenantAdminTokenProvider = new ActingUserTokenProvider(new AuthentikFlowExecutorClient(
+            new AuthentikIdentityConfig(
+                tenantAdminUsername, tenantAdminPassword, actingUserClientId, actingUserRedirectUri,
+                actingUserBaseUrl, actingUserHostHeader, actingUserCacheTarget),
+            tenantAdminLoggerFactory.CreateLogger<AuthentikFlowExecutorClient>()));
+        Console.WriteLine($"Tenant '{tenantProvisionId}' ready.\n");
+    }
+    catch (Exception ex)
+    {
+        Console.Error.WriteLine($"Tenant provisioning failed: {ex.Message}");
+        Console.Error.WriteLine("Is the Iverson API running, and does IVERSON_CLIENT_SCOPE include 'admin schema_admin'?");
+        return 1;
+    }
+}
+
 var services = new ServiceCollection()
     .AddLogging(b => b.AddConsole().SetMinimumLevel(LogLevel.Warning))
-    .AddIversonClient(grpcUrl, clientCredentials, entityAssemblies: [typeof(BenchmarkArticle).Assembly])
+    .AddIversonClient(
+        grpcUrl, clientCredentials,
+        tenantAdminTokenProvider is not null ? () => tenantAdminTokenProvider.GetTokenAsync() : null,
+        entityAssemblies: [typeof(BenchmarkArticle).Assembly])
     .AddSingleton(config)
     .AddSingleton(kafkaOptions)
     .AddSingleton(sp => new ActingUserIdentities(
@@ -95,7 +133,7 @@ var services = new ServiceCollection()
     .AddSingleton<ReadPathScenario>()
     .BuildServiceProvider();
 
-if (command is "seed" or "write-path" or "read-path" or "all")
+if (needsTenantAndSchema)
 {
     Console.WriteLine("Registering schemas...");
     try
@@ -198,6 +236,43 @@ return 0;
 
 static string Env(string key, string def) =>
     Environment.GetEnvironmentVariable(key) ?? def;
+
+static async Task<string> MintClientCredentialsTokenAsync(IversonClientCredentials creds)
+{
+    using var http = new HttpClient();
+    var response = await http.RequestClientCredentialsTokenAsync(new ClientCredentialsTokenRequest
+    {
+        Address      = creds.TokenEndpoint,
+        ClientId     = creds.ClientId,
+        ClientSecret = creds.ClientSecret,
+        Scope        = creds.Scope,
+    });
+    if (response.IsError)
+        throw new InvalidOperationException($"Failed to acquire admin-automation token: {response.Error}");
+    return response.AccessToken!;
+}
+
+static async Task EnsureTenantProvisionedAsync(
+    string grpcUrl, string adminToken, string tenantId, string displayName,
+    string adminUsername, string adminEmail, string adminPassword)
+{
+    using var channel = GrpcChannel.ForAddress(grpcUrl);
+    var client = new TenantLifecycleGrpcService.TenantLifecycleGrpcServiceClient(channel);
+    var headers = new Metadata { { "authorization", $"Bearer {adminToken}" } };
+
+    var existing = await client.ListTenantsAsync(new ListTenantsRequest(), headers);
+    if (existing.Tenants.Any(t => t.TenantId == tenantId))
+        return;
+
+    await client.CreateTenantAsync(new CreateTenantRequest
+    {
+        TenantId             = tenantId,
+        DisplayName          = displayName,
+        AdminUsername        = adminUsername,
+        AdminEmail           = adminEmail,
+        AdminInitialPassword = adminPassword,
+    }, headers);
+}
 
 static AuthorizationRules BuildAuthorizationRules(string restrictedField) => new()
 {
