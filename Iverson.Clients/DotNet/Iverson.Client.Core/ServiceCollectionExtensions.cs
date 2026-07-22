@@ -12,8 +12,14 @@ public static class ServiceCollectionExtensions
     /// <param name="services">The service collection.</param>
     /// <param name="grpcEndpoint">Base URI of the Iverson.Api gRPC endpoint.</param>
     /// <param name="credentials">
-    /// OAuth2 client-credentials identity to attach to every gRPC call as a Bearer token.
-    /// Omit only for calls to endpoints that don't require authentication.
+    /// OAuth2 client-credentials identity attached to the schema-registration (mapping) client as
+    /// a Bearer token, and as the data-plane fallback when <paramref name="dataPlaneTokenProvider"/>
+    /// is omitted. Omit only for calls to endpoints that don't require authentication.
+    /// </param>
+    /// <param name="dataPlaneTokenProvider">
+    /// Token source attached to the persistence/retrieval/search clients instead of
+    /// <paramref name="credentials"/>, when supplied. Lets a caller use a different identity
+    /// (e.g. a human/acting-user login) for data-plane calls than for schema registration.
     /// </param>
     /// <param name="entityAssemblies">
     /// Assemblies to scan for <c>[IversonEntity]</c> classes.
@@ -23,6 +29,7 @@ public static class ServiceCollectionExtensions
         this IServiceCollection services,
         string grpcEndpoint,
         IversonClientCredentials? credentials = null,
+        Func<Task<string>>? dataPlaneTokenProvider = null,
         params Assembly[] entityAssemblies)
     {
         var assemblies = entityAssemblies.Length > 0
@@ -44,11 +51,24 @@ public static class ServiceCollectionExtensions
         if (credentials is not null)
         {
             services.AddSingleton(sp => new CachedClientCredentialsTokenProvider(credentials));
+            AttachCredentials(mappingBuilder,
+                sp => sp.GetRequiredService<CachedClientCredentialsTokenProvider>().GetTokenAsync());
+        }
 
-            AttachCredentials(mappingBuilder);
-            AttachCredentials(persistenceBuilder);
-            AttachCredentials(retrievalBuilder);
-            AttachCredentials(searchBuilder);
+        if (dataPlaneTokenProvider is not null)
+        {
+            AttachCredentials(persistenceBuilder, _ => dataPlaneTokenProvider());
+            AttachCredentials(retrievalBuilder, _ => dataPlaneTokenProvider());
+            AttachCredentials(searchBuilder, _ => dataPlaneTokenProvider());
+        }
+        else if (credentials is not null)
+        {
+            AttachCredentials(persistenceBuilder,
+                sp => sp.GetRequiredService<CachedClientCredentialsTokenProvider>().GetTokenAsync());
+            AttachCredentials(retrievalBuilder,
+                sp => sp.GetRequiredService<CachedClientCredentialsTokenProvider>().GetTokenAsync());
+            AttachCredentials(searchBuilder,
+                sp => sp.GetRequiredService<CachedClientCredentialsTokenProvider>().GetTokenAsync());
         }
 
         services.AddTransient(typeof(EntityCoordinator<>));
@@ -58,7 +78,7 @@ public static class ServiceCollectionExtensions
         return services;
     }
 
-    private static void AttachCredentials(IHttpClientBuilder builder)
+    private static void AttachCredentials(IHttpClientBuilder builder, Func<IServiceProvider, Task<string>> getToken)
     {
         // Without UnsafeUseInsecureChannelCallCredentials=true, CallCredentials are silently
         // dropped over this repo's plaintext h2c channel — no exception, no Authorization
@@ -67,8 +87,7 @@ public static class ServiceCollectionExtensions
             .ConfigureChannel(o => o.UnsafeUseInsecureChannelCallCredentials = true)
             .AddCallCredentials(async (_, metadata, serviceProvider) =>
             {
-                var provider = serviceProvider.GetRequiredService<CachedClientCredentialsTokenProvider>();
-                var token = await provider.GetTokenAsync();
+                var token = await getToken(serviceProvider);
                 metadata.Add("Authorization", $"Bearer {token}");
             });
     }
