@@ -67,6 +67,7 @@ The following were verified by `thorough-brainstorming` at spec-write time and a
 | 21 | Sibling set | All 3 `SeedXAsync` methods (`SeedAuthorsAsync`/`SeedTagsAsync`/`SeedArticlesAsync`) follow the identical Postgres-COPY-then-`SrBatchInsertAsync` structure — the `TenantId`/gRPC-routing change must be applied to all 3, not just Articles | Full read of `DirectSeeder.cs` |
 | 22 | Entity fields | `BenchmarkArticle{Id,Title,Body,BenchmarkAuthorId,Category,WordCount,PublishedAt,OwnerId,TenantId}`, `BenchmarkAuthor{Id,Name,Email,Bio,OwnerId,TenantId}`, `BenchmarkTag{Id,Name,Category,OwnerId,TenantId}` | `Entities/BenchmarkArticle.cs`, `BenchmarkAuthor.cs`, `BenchmarkTag.cs` |
 | 23 | Task ordering | Task 2's code calls `AddIversonClient`'s new signature — must run after Task 1. Task 3 (DirectSeeder) uses only pre-existing `EntityCoordinator<T>`/`ActingUserIdentities`/`KafkaOptions` DI registrations, unaffected by Tasks 1-2 — independent, can run in parallel | Traced Task 2's and Task 3's actual code dependencies against Task 1's change |
+| 24 | Consumer impact | `EntityCoordinator<T>.PersistAsync` does not catch `RpcException` itself — it propagates to the caller uncaught; combined with `Program.cs`'s `BuildAuthorizationRules` restricting `Body`(Article)/`Email`(Author)/`Category`(Tag) to the bypass role only, any gRPC-posting loop that unconditionally sets those fields regardless of posting identity would see guaranteed rejections for the non-bypass identity's share of posts | `EntityCoordinator.cs:98-112` (no try/catch in `PersistAsync`); `Program.cs:105-107` (`BuildAuthorizationRules` call sites) — this is why Task 3's entity construction (Steps 5-7) only sets the restricted field when `identities.Bypass` is posting |
 
 ## Tasks
 
@@ -447,9 +448,10 @@ And update each method's own signature (bodies unchanged except where Steps 5-7 
 
 - [ ] **Step 4: Add the shared fan-out helper**
 
-Add as a new private static method (near the other helpers at the bottom of the class):
+Add as a new private static method (near the other helpers at the bottom of the class). Each individual post is wrapped in its own try/catch so one failure (transient or otherwise) doesn't stop the rest of the fan-out or crash the whole `seed` command:
 ```csharp
-    private static async Task PostToStarRocksAsync(int count, int concurrency, Func<int, Task> postOneAsync, CancellationToken ct)
+    private static async Task PostToStarRocksAsync(
+        int count, int concurrency, ILogger logger, Func<int, Task> postOneAsync, CancellationToken ct)
     {
         var perTask = count / concurrency;
         var tasks = Enumerable.Range(0, concurrency).Select(taskIdx => Task.Run(async () =>
@@ -457,7 +459,14 @@ Add as a new private static method (near the other helpers at the bottom of the 
             for (var i = 0; i < perTask; i++)
             {
                 ct.ThrowIfCancellationRequested();
-                await postOneAsync(taskIdx * perTask + i);
+                try
+                {
+                    await postOneAsync(taskIdx * perTask + i);
+                }
+                catch (RpcException ex)
+                {
+                    logger.LogDebug(ex, "StarRocks post failed at index {Index}", taskIdx * perTask + i);
+                }
             }
         }, ct));
         await Task.WhenAll(tasks);
@@ -527,14 +536,17 @@ Replace the `SrBatchInsertAsync` call:
 with:
 ```csharp
         // ── StarRocks via gRPC (server lazily provisions the per-tenant database) ──
-        await PostToStarRocksAsync(AuthorTarget, flags.Concurrency, async i =>
+        // Email is the field BuildAuthorizationRules restricts to the bypass role (Program.cs) —
+        // only set it when the bypass identity is posting, or identities.Regular's posts would
+        // always be rejected.
+        await PostToStarRocksAsync(AuthorTarget, flags.Concurrency, logger, async i =>
         {
             var identity = i % 2 == 0 ? identities.Regular : identities.Bypass;
             var entity = new BenchmarkAuthor
             {
                 Id      = Guid.NewGuid(),
                 Name    = $"Author {i}",
-                Email   = $"author{i}@benchmark.dev",
+                Email   = identity == identities.Bypass ? $"author{i}@benchmark.dev" : "",
                 Bio     = new string('x', 200),
                 OwnerId = identity == identities.Bypass ? await identity.GetSubAsync(ct) : "",
             };
@@ -547,16 +559,16 @@ with:
 
 - [ ] **Step 6: `SeedTagsAsync` — same pattern**
 
-Apply the identical shape from Step 5 to `SeedTagsAsync`: add `"TenantId"` to the COPY column list and a `tenantId = i % 2 == 0 ? "tenant-smoke-test" : "tenant-bypass"` write, and replace its `SrBatchInsertAsync` call with:
+Apply the identical shape from Step 5 to `SeedTagsAsync`: add `"TenantId"` to the COPY column list and a `tenantId = i % 2 == 0 ? "tenant-smoke-test" : "tenant-bypass"` write, and replace its `SrBatchInsertAsync` call with (`Category` is the field restricted to the bypass role for this entity — same conditional-set reasoning as `SeedAuthorsAsync`'s `Email`):
 ```csharp
-        await PostToStarRocksAsync(TagTarget, flags.Concurrency, async i =>
+        await PostToStarRocksAsync(TagTarget, flags.Concurrency, logger, async i =>
         {
             var identity = i % 2 == 0 ? identities.Regular : identities.Bypass;
             var entity = new BenchmarkTag
             {
                 Id       = Guid.NewGuid(),
                 Name     = $"tag-{i}",
-                Category = Categories[i % Categories.Length],
+                Category = identity == identities.Bypass ? Categories[i % Categories.Length] : "",
                 OwnerId  = identity == identities.Bypass ? await identity.GetSubAsync(ct) : "",
             };
             var headers = new Metadata().WithActingUser(await identity.GetTokenAsync(ct));
@@ -567,9 +579,9 @@ Apply the identical shape from Step 5 to `SeedTagsAsync`: add `"TenantId"` to th
 
 - [ ] **Step 7: `SeedArticlesAsync` — same pattern, referencing existing `authorIds`**
 
-Add `"TenantId"` to the COPY column list and the same per-row `tenantId` write. Replace its `SrBatchInsertAsync` call with:
+Add `"TenantId"` to the COPY column list and the same per-row `tenantId` write. Replace its `SrBatchInsertAsync` call with (`Body` is the field restricted to the bypass role for this entity — `Category` is a search-key field, not restricted, and stays unconditional):
 ```csharp
-        await PostToStarRocksAsync(ArticleTarget, flags.Concurrency, async i =>
+        await PostToStarRocksAsync(ArticleTarget, flags.Concurrency, logger, async i =>
         {
             var identity = i % 2 == 0 ? identities.Regular : identities.Bypass;
             var cat = Categories[i % Categories.Length];
@@ -577,7 +589,7 @@ Add `"TenantId"` to the COPY column list and the same per-row `tenantId` write. 
             {
                 Id                = Guid.NewGuid(),
                 Title             = $"Benchmark Article {i}: {cat}",
-                Body              = GenerateBody(i),
+                Body              = identity == identities.Bypass ? GenerateBody(i) : "",
                 BenchmarkAuthorId = authorIds[i % authorIds.Length],
                 Category          = cat,
                 WordCount         = GenerateBody(i).Length / 5,
