@@ -1,5 +1,7 @@
 # Iverson MCP Server — Design
 
+> **Superseded in part:** Phase A below (TypeScript's search-family execution + acting-user support) is superseded by `docs/specs/2026-07-22-client-search-execution-parity-design.md`, which covers the same TypeScript work as one slice of a 5-language parity effort (DotNet, Go, Java, Python, TypeScript). Phase A's content is unchanged — reproduced verbatim in that document's TypeScript section — this note exists so the two specs don't silently diverge. Phase B (the MCP server itself) is unaffected and resumes once that design lands.
+
 **Goal:** let an AI agent (Claude Desktop, Claude Code, or any other MCP client) query and write Iverson data conversationally, using the same tenant/row/field authorization the gRPC API already enforces for every other caller.
 
 **Capability scope:** read + write data — Search, GroupBy, Aggregate, Pipeline, SearchSimilar, SearchChunks, Get, Post, Update, Delete. Explicitly excludes schema registration and admin operations (reconcile, DLQ, tenant lifecycle) — those are a larger trust boundary than this design takes on.
