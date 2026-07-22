@@ -1,7 +1,13 @@
 using System.Diagnostics;
 using System.Text;
+using Confluent.Kafka;
 using Dapper;
+using Grpc.Core;
+using Iverson.Client.Core;
+using Iverson.Events;
 using Iverson.LoadTest.Auth;
+using Iverson.LoadTest.Entities;
+using Iverson.LoadTest.Scenarios;
 using Microsoft.Extensions.Logging;
 using MySqlConnector;
 using Npgsql;
@@ -9,12 +15,18 @@ using NpgsqlTypes;
 
 namespace Iverson.LoadTest.Seeding;
 
-public sealed class DirectSeeder(LoadTestConfig config, ActingUserIdentities identities)
+public sealed class DirectSeeder(
+    LoadTestConfig config,
+    ActingUserIdentities identities,
+    EntityCoordinator<BenchmarkArticle> articleCoordinator,
+    EntityCoordinator<BenchmarkAuthor> authorCoordinator,
+    EntityCoordinator<BenchmarkTag> tagCoordinator,
+    KafkaOptions kafkaOptions,
+    ILogger<DirectSeeder> logger)
 {
     private const int ArticleTarget = 400_000;
     private const int AuthorTarget  =  50_000;
     private const int TagTarget     =  10_000;
-    private const int SrBatchSize   =   1_000;
 
     private static readonly string[] Categories =
         ["sports", "tech", "culture", "science", "politics"];
@@ -26,9 +38,15 @@ public sealed class DirectSeeder(LoadTestConfig config, ActingUserIdentities ide
         await using var sr = new MySqlConnection(config.StarRocksCs);
         await sr.OpenAsync(ct);
 
-        var authorIds = await SeedAuthorsAsync(pg, sr, flags.ForceReseed, ct);
-        await SeedTagsAsync(pg, sr, flags.ForceReseed, ct);
-        await SeedArticlesAsync(pg, sr, authorIds, flags.ForceReseed, ct);
+        var authorIds = await SeedAuthorsAsync(pg, sr, flags, flags.ForceReseed, ct);
+        await SeedTagsAsync(pg, sr, flags, flags.ForceReseed, ct);
+        await SeedArticlesAsync(pg, sr, authorIds, flags, flags.ForceReseed, ct);
+
+        Console.WriteLine("\nWaiting for StarRocks projections to catch up...");
+        Action<Confluent.Kafka.ClientConfig>? applyKafkaSecurity = flags.Target == "kind"
+            ? c => KafkaClientConfigFactory.ApplySecurity(c, kafkaOptions)
+            : null;
+        await WritePathRunner.PrintKafkaLagAsync(config, logger, applyKafkaSecurity, file: null, ct);
 
         Console.WriteLine("\nSeeding complete.");
     }
@@ -39,7 +57,7 @@ public sealed class DirectSeeder(LoadTestConfig config, ActingUserIdentities ide
     // ── Authors ───────────────────────────────────────────────────────────────
 
     private async Task<Guid[]> SeedAuthorsAsync(
-        NpgsqlConnection pg, MySqlConnection sr, bool force, CancellationToken ct)
+        NpgsqlConnection pg, MySqlConnection sr, CommandFlags flags, bool force, CancellationToken ct)
     {
         var existing = await pg.QuerySingleAsync<int>(
             "SELECT COUNT(*) FROM benchmark_authors");
@@ -63,32 +81,47 @@ public sealed class DirectSeeder(LoadTestConfig config, ActingUserIdentities ide
 
         // ── Postgres COPY ──
         await using var writer = await pg.BeginBinaryImportAsync(
-            "COPY benchmark_authors (\"Id\", \"Name\", \"Email\", \"Bio\", \"OwnerId\") FROM STDIN (FORMAT BINARY)",
+            "COPY benchmark_authors (\"Id\", \"Name\", \"Email\", \"Bio\", \"OwnerId\", \"TenantId\") FROM STDIN (FORMAT BINARY)",
             ct);
 
         for (var i = 0; i < AuthorTarget; i++)
         {
             ids[i] = Guid.NewGuid();
-            var ownerId = i % 100 == 0 ? ownerSub : Guid.NewGuid().ToString();
+            var ownerId  = i % 100 == 0 ? ownerSub : Guid.NewGuid().ToString();
+            var tenantId = i % 2 == 0 ? "tenant-smoke-test" : "tenant-bypass";
             await writer.StartRowAsync(ct);
             await writer.WriteAsync(ids[i],                      NpgsqlDbType.Uuid, ct);
             await writer.WriteAsync($"Author {i}",               NpgsqlDbType.Text, ct);
             await writer.WriteAsync($"author{i}@benchmark.dev",  NpgsqlDbType.Text, ct);
             await writer.WriteAsync(new string('x', 200),        NpgsqlDbType.Text, ct);
             await writer.WriteAsync(ownerId,                     NpgsqlDbType.Text, ct);
+            await writer.WriteAsync(tenantId,                    NpgsqlDbType.Text, ct);
             if (i % 5_000 == 0) PrintProgress("Authors", i, AuthorTarget, sw);
         }
         await writer.CompleteAsync(ct);
 
-        // ── StarRocks batch INSERT ──
-        await SrBatchInsertAsync(sr, "benchmark_authors",
-            ["Id", "Name", "Email", "Bio", "OwnerId"],
-            ids.Select((id, i) => new object[]
+        // ── StarRocks via gRPC (server lazily provisions the per-tenant database) ──
+        // Email is the field BuildAuthorizationRules restricts to the bypass role (Program.cs).
+        // Setting it conditionally doesn't avoid the rejection — the server's field-permission
+        // check rejects based on whether the "Email" key is present in the payload at all, not
+        // its value, and every property (including an empty string) is always serialized. So
+        // identities.Regular's posts here are expected to be rejected with InvalidArgument;
+        // PostToStarRocksAsync's try/catch absorbs and logs them, and only identities.Bypass's
+        // half of AuthorTarget actually lands in StarRocks.
+        await PostToStarRocksAsync(AuthorTarget, flags.Concurrency, logger, async i =>
+        {
+            var identity = i % 2 == 0 ? identities.Regular : identities.Bypass;
+            var entity = new BenchmarkAuthor
             {
-                id.ToString(), $"Author {i}", $"author{i}@benchmark.dev", new string('x', 200),
-                i % 100 == 0 ? ownerSub : Guid.NewGuid().ToString()
-            }),
-            sw, ct);
+                Id      = Guid.NewGuid(),
+                Name    = $"Author {i}",
+                Email   = $"author{i}@benchmark.dev",
+                Bio     = new string('x', 200),
+                OwnerId = identity == identities.Bypass ? await identity.GetSubAsync(ct) : "",
+            };
+            var headers = new Grpc.Core.Metadata().WithActingUser(await identity.GetTokenAsync(ct));
+            await authorCoordinator.PersistAsync(entity, headers, ct);
+        }, ct);
 
         Console.WriteLine($"\n[Authors] Seeded {AuthorTarget:N0} rows — {sw.Elapsed.TotalSeconds:F1}s");
         return ids;
@@ -97,7 +130,7 @@ public sealed class DirectSeeder(LoadTestConfig config, ActingUserIdentities ide
     // ── Tags ──────────────────────────────────────────────────────────────────
 
     private async Task SeedTagsAsync(
-        NpgsqlConnection pg, MySqlConnection sr, bool force, CancellationToken ct)
+        NpgsqlConnection pg, MySqlConnection sr, CommandFlags flags, bool force, CancellationToken ct)
     {
         var existing = await pg.QuerySingleAsync<int>(
             "SELECT COUNT(*) FROM benchmark_tags");
@@ -120,29 +153,36 @@ public sealed class DirectSeeder(LoadTestConfig config, ActingUserIdentities ide
         var sw  = Stopwatch.StartNew();
 
         await using var writer = await pg.BeginBinaryImportAsync(
-            "COPY benchmark_tags (\"Id\", \"Name\", \"Category\", \"OwnerId\") FROM STDIN (FORMAT BINARY)",
+            "COPY benchmark_tags (\"Id\", \"Name\", \"Category\", \"OwnerId\", \"TenantId\") FROM STDIN (FORMAT BINARY)",
             ct);
 
         for (var i = 0; i < TagTarget; i++)
         {
             ids[i] = Guid.NewGuid();
-            var ownerId = i % 100 == 0 ? ownerSub : Guid.NewGuid().ToString();
+            var ownerId  = i % 100 == 0 ? ownerSub : Guid.NewGuid().ToString();
+            var tenantId = i % 2 == 0 ? "tenant-smoke-test" : "tenant-bypass";
             await writer.StartRowAsync(ct);
             await writer.WriteAsync(ids[i],                       NpgsqlDbType.Uuid, ct);
             await writer.WriteAsync($"tag-{i}",                   NpgsqlDbType.Text, ct);
             await writer.WriteAsync(Categories[i % Categories.Length], NpgsqlDbType.Text, ct);
             await writer.WriteAsync(ownerId,                      NpgsqlDbType.Text, ct);
+            await writer.WriteAsync(tenantId,                     NpgsqlDbType.Text, ct);
         }
         await writer.CompleteAsync(ct);
 
-        await SrBatchInsertAsync(sr, "benchmark_tags",
-            ["Id", "Name", "Category", "OwnerId"],
-            ids.Select((id, i) => new object[]
+        await PostToStarRocksAsync(TagTarget, flags.Concurrency, logger, async i =>
+        {
+            var identity = i % 2 == 0 ? identities.Regular : identities.Bypass;
+            var entity = new BenchmarkTag
             {
-                id.ToString(), $"tag-{i}", Categories[i % Categories.Length],
-                i % 100 == 0 ? ownerSub : Guid.NewGuid().ToString()
-            }),
-            sw, ct);
+                Id       = Guid.NewGuid(),
+                Name     = $"tag-{i}",
+                Category = Categories[i % Categories.Length],
+                OwnerId  = identity == identities.Bypass ? await identity.GetSubAsync(ct) : "",
+            };
+            var headers = new Grpc.Core.Metadata().WithActingUser(await identity.GetTokenAsync(ct));
+            await tagCoordinator.PersistAsync(entity, headers, ct);
+        }, ct);
 
         Console.WriteLine($"[Tags] Seeded {TagTarget:N0} rows — {sw.Elapsed.TotalSeconds:F1}s");
     }
@@ -150,7 +190,7 @@ public sealed class DirectSeeder(LoadTestConfig config, ActingUserIdentities ide
     // ── Articles ──────────────────────────────────────────────────────────────
 
     private async Task SeedArticlesAsync(
-        NpgsqlConnection pg, MySqlConnection sr, Guid[] authorIds, bool force, CancellationToken ct)
+        NpgsqlConnection pg, MySqlConnection sr, Guid[] authorIds, CommandFlags flags, bool force, CancellationToken ct)
     {
         var existing = await pg.QuerySingleAsync<int>(
             "SELECT COUNT(*) FROM benchmark_articles");
@@ -175,7 +215,7 @@ public sealed class DirectSeeder(LoadTestConfig config, ActingUserIdentities ide
 
         await using var writer = await pg.BeginBinaryImportAsync(
             "COPY benchmark_articles " +
-            "(\"Id\", \"Title\", \"Body\", \"BenchmarkAuthorId\", \"Category\", \"WordCount\", \"PublishedAt\", \"OwnerId\") " +
+            "(\"Id\", \"Title\", \"Body\", \"BenchmarkAuthorId\", \"Category\", \"WordCount\", \"PublishedAt\", \"OwnerId\", \"TenantId\") " +
             "FROM STDIN (FORMAT BINARY)",
             ct);
 
@@ -184,7 +224,8 @@ public sealed class DirectSeeder(LoadTestConfig config, ActingUserIdentities ide
             ids[i] = Guid.NewGuid();
             var cat  = Categories[i % Categories.Length];
             var body = GenerateBody(i);
-            var ownerId = i % 100 == 0 ? ownerSub : Guid.NewGuid().ToString();
+            var ownerId  = i % 100 == 0 ? ownerSub : Guid.NewGuid().ToString();
+            var tenantId = i % 2 == 0 ? "tenant-smoke-test" : "tenant-bypass";
 
             await writer.StartRowAsync(ct);
             await writer.WriteAsync(ids[i],                           NpgsqlDbType.Uuid,        ct);
@@ -195,6 +236,7 @@ public sealed class DirectSeeder(LoadTestConfig config, ActingUserIdentities ide
             await writer.WriteAsync(body.Length / 5,                  NpgsqlDbType.Integer,     ct);
             await writer.WriteAsync(baseDate.AddDays(i % 2190),       NpgsqlDbType.TimestampTz, ct);
             await writer.WriteAsync(ownerId,                          NpgsqlDbType.Text,        ct);
+            await writer.WriteAsync(tenantId,                         NpgsqlDbType.Text,        ct);
 
             if (i % 10_000 == 0) PrintProgress("Articles", i, ArticleTarget, sw);
         }
@@ -202,24 +244,24 @@ public sealed class DirectSeeder(LoadTestConfig config, ActingUserIdentities ide
 
         Console.WriteLine($"\n[Articles/Postgres] done — {sw.Elapsed.TotalSeconds:F1}s");
 
-        var srSw = Stopwatch.StartNew();
-        await SrBatchInsertAsync(sr, "benchmark_articles",
-            ["Id", "Title", "BenchmarkAuthorId", "Category", "WordCount", "PublishedAt", "OwnerId"],
-            ids.Select((id, i) =>
+        await PostToStarRocksAsync(ArticleTarget, flags.Concurrency, logger, async i =>
+        {
+            var identity = i % 2 == 0 ? identities.Regular : identities.Bypass;
+            var cat = Categories[i % Categories.Length];
+            var entity = new BenchmarkArticle
             {
-                var cat = Categories[i % Categories.Length];
-                return new object[]
-                {
-                    id.ToString(),
-                    $"Benchmark Article {i}: {cat}",
-                    authorIds[i % authorIds.Length].ToString(),
-                    cat,
-                    GenerateBody(i).Length / 5,
-                    baseDate.AddDays(i % 2190).ToString("yyyy-MM-dd HH:mm:ss"),
-                    i % 100 == 0 ? ownerSub : Guid.NewGuid().ToString(),
-                };
-            }),
-            srSw, ct);
+                Id                = Guid.NewGuid(),
+                Title             = $"Benchmark Article {i}: {cat}",
+                Body              = GenerateBody(i),
+                BenchmarkAuthorId = authorIds[i % authorIds.Length],
+                Category          = cat,
+                WordCount         = GenerateBody(i).Length / 5,
+                PublishedAt       = baseDate.AddDays(i % 2190),
+                OwnerId           = identity == identities.Bypass ? await identity.GetSubAsync(ct) : "",
+            };
+            var headers = new Grpc.Core.Metadata().WithActingUser(await identity.GetTokenAsync(ct));
+            await articleCoordinator.PersistAsync(entity, headers, ct);
+        }, ct);
 
         Console.WriteLine($"[Articles] Seeded {ArticleTarget:N0} rows — total {sw.Elapsed.TotalSeconds:F1}s");
     }
@@ -243,54 +285,25 @@ public sealed class DirectSeeder(LoadTestConfig config, ActingUserIdentities ide
         Console.Write($"\r[{label}] {done:N0} / {total:N0} ({pct:F1}%) — {rps:F0} rec/sec — ETA {eta:F0}s   ");
     }
 
-    private static async Task SrBatchInsertAsync(
-        MySqlConnection conn, string table, string[] cols,
-        IEnumerable<object[]> rows, Stopwatch sw, CancellationToken ct)
+    private static async Task PostToStarRocksAsync(
+        int count, int concurrency, ILogger logger, Func<int, Task> postOneAsync, CancellationToken ct)
     {
-        var colList = string.Join(", ", cols.Select(c => $"`{c}`"));
-        var batch   = new List<object[]>(SrBatchSize);
-        var total   = 0;
-
-        foreach (var row in rows)
+        var perTask = count / concurrency;
+        var tasks = Enumerable.Range(0, concurrency).Select(taskIdx => Task.Run(async () =>
         {
-            ct.ThrowIfCancellationRequested();
-            batch.Add(row);
-            if (batch.Count >= SrBatchSize)
+            for (var i = 0; i < perTask; i++)
             {
-                await FlushBatchAsync(conn, table, colList, batch);
-                total += batch.Count;
-                Console.Write($"\r[{table}/SR] {total:N0} rows — {sw.Elapsed.TotalSeconds:F1}s   ");
-                batch.Clear();
+                ct.ThrowIfCancellationRequested();
+                try
+                {
+                    await postOneAsync(taskIdx * perTask + i);
+                }
+                catch (RpcException ex)
+                {
+                    logger.LogDebug(ex, "StarRocks post failed at index {Index}", taskIdx * perTask + i);
+                }
             }
-        }
-        if (batch.Count > 0)
-        {
-            await FlushBatchAsync(conn, table, colList, batch);
-            total += batch.Count;
-        }
-    }
-
-    private static async Task FlushBatchAsync(
-        MySqlConnection conn, string table, string colList, List<object[]> batch)
-    {
-        var sb  = new StringBuilder($"INSERT INTO `{table}` ({colList}) VALUES ");
-        var cmd = new MySqlCommand { Connection = conn };
-
-        for (var i = 0; i < batch.Count; i++)
-        {
-            if (i > 0) sb.Append(',');
-            sb.Append('(');
-            for (var j = 0; j < batch[i].Length; j++)
-            {
-                if (j > 0) sb.Append(',');
-                var p = $"@p{i}_{j}";
-                sb.Append(p);
-                cmd.Parameters.AddWithValue(p, batch[i][j] ?? DBNull.Value);
-            }
-            sb.Append(')');
-        }
-
-        cmd.CommandText = sb.ToString();
-        await cmd.ExecuteNonQueryAsync();
+        }, ct));
+        await Task.WhenAll(tasks);
     }
 }

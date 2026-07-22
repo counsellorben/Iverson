@@ -199,11 +199,11 @@ internal static class WritePathRunner
         Console.WriteLine($"\nReport saved to {path}");
     }
 
-    private static async Task PrintKafkaLagAsync(
+    internal static async Task PrintKafkaLagAsync(
         LoadTestConfig config,
         ILogger logger,
         Action<ClientConfig>? applyKafkaSecurity,
-        StreamWriter file,
+        StreamWriter? file,
         CancellationToken ct)
     {
         var adminConfig = new AdminClientConfig { BootstrapServers = config.KafkaBootstrap };
@@ -274,7 +274,7 @@ internal static class WritePathRunner
 
             var line = $"  Kafka lag: {totalLag:N0} messages ({DateTime.UtcNow:HH:mm:ss})";
             Console.WriteLine(line);
-            file.WriteLine(line);
+            file?.WriteLine(line);
 
             if (totalLag == 0 && prevLag == 0) break;
             prevLag = totalLag;
