@@ -170,19 +170,31 @@ effect on what `Search`/`Aggregate` can see.
   `SrBatchInsertAsync` and instead posts them through the same gRPC write
   path `WritePathRunner` already uses (`EntityCoordinator<T>.PersistAsync`
   carrying the acting-user header), alternating between the `Regular`/
-  `Bypass` identities per row (same 50/50 split as the Postgres side, reusing
-  the same `Id` value per row so a given record shares one identity across
-  both stores). The server's existing lazy per-tenant-database provisioning
-  then creates and populates `iverson_tenant_tenant-smoke-test`/
-  `iverson_tenant_tenant-bypass` itself, auto-stamping `TenantId` from the
-  posting identity's own claim — the same mechanism `write-path` already
-  relies on, so `DirectSeeder` doesn't compute a `TenantId` value for these
-  rows itself. This trades `seed`'s previous raw-batched-`INSERT` StarRocks
-  throughput for per-record gRPC calls (exact concurrency/throughput is an
-  implementation-plan detail, not fixed here), and — like `write-path` — the
-  data isn't visible to `Search`/`Aggregate` until Kafka has caught up, so
-  `seed` should wait on the same Kafka-lag-probe convention
-  `WritePathScenario` already uses before reporting done.
+  `Bypass` identities per row (same 50/50 split as the Postgres side). The
+  server's existing lazy per-tenant-database provisioning then creates and
+  populates `iverson_tenant_tenant-smoke-test`/`iverson_tenant_tenant-bypass`
+  itself, auto-stamping `TenantId` from the posting identity's own claim —
+  the same mechanism `write-path` already relies on, so `DirectSeeder`
+  doesn't compute a `TenantId` value for these rows itself.
+  `ObjectPersistenceGrpcService.Post` always assigns its own server-generated
+  key (client-supplied `Id`s are ignored —
+  `Iverson.Server/Iverson.Api/Grpc/ObjectPersistenceGrpcService.cs:43-45`)
+  and unconditionally upserts the entity into Postgres in the same call,
+  regardless of which secondary stores `targetStores` names
+  (`Iverson.Server/Iverson.Api/Schema/StoreTargeting.cs:19-25` only gates the
+  Engagement/Intelligence Kafka projections, never Postgres) — so these
+  posts also create a second, independently-keyed population of Postgres
+  rows alongside `DirectSeeder`'s own COPY-inserted ones. This is harmless:
+  neither `GetMany` (which loads its key pool fresh from Postgres with no
+  correlation assumption) nor `Search`/`Aggregate` (which query by
+  category/word-count/date, never by a specific pre-known id) needs the two
+  stores' rows to share an identity. This trades `seed`'s previous
+  raw-batched-`INSERT` StarRocks throughput for per-record gRPC calls (exact
+  concurrency/throughput is an implementation-plan detail, not fixed here),
+  and — like `write-path` — the data isn't visible to `Search`/`Aggregate`
+  until Kafka has caught up, so `seed` should wait on the same
+  Kafka-lag-probe convention `WritePathScenario` already uses before
+  reporting done.
 
 Whichever store, the newly-provisioned tenant (`iverson-loadtest-dynamic`)
 does **not** need seeded data, since (per "Current state" above) it never
@@ -216,3 +228,4 @@ identity.
 | 12 | `Iverson.Client.Contracts` (tenant proto clients) already available to LoadTest transitively | `Iverson.Client.Core.csproj` → `Iverson.Client.Contracts.csproj` project reference |
 | 13 | `AuthentikFlowExecutorClient`'s TOTP enroll-or-solve logic is generic, not hardcoded to the 2 existing identities — works for a brand-new user with no prior enrollment | `AuthentikFlowExecutorClient.cs:140-183` (`ak-stage-authenticator-totp` case generates+saves a fresh secret for any identity) |
 | 14 | StarRocks tenant isolation is per-tenant physical databases (`iverson_tenant_{tenantId}`), not a column predicate on a shared table — provisioned lazily only via the gRPC write path | `Iverson.Server/Iverson.StarRocks/StarRocksRepository.cs:341-475` (`Search`/`Aggregate`/`GroupBy`/`Pipeline` qualify reads with `TenantIdentifier.DatabaseName(tenantId)` whenever a tenant claim is present), `TenantIdentifier.cs:11` |
+| 15 | `ObjectPersistenceGrpcService.Post` always assigns its own server-generated key (ignores client-supplied `Id`) and unconditionally writes the entity to Postgres regardless of `targetStores`, which only gates secondary Engagement/Intelligence Kafka projections | `Iverson.Server/Iverson.Api/Grpc/ObjectPersistenceGrpcService.cs:43-45,54-65`, `Iverson.Server/Iverson.Api/Schema/StoreTargeting.cs:19-25` |
