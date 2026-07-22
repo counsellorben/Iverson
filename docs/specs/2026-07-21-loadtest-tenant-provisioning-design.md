@@ -150,15 +150,44 @@ of `Iverson.Client.Core` needs to change.
 
 ### 4. `DirectSeeder` `TenantId` fix
 
-Every row `DirectSeeder` writes (articles, authors, tags) gets `TenantId`
-stamped alongside the existing `OwnerId` logic, split 50/50 between
-`tenant-smoke-test` and `tenant-bypass` — mirroring `PickRandom`'s existing
-50/50 split — so that whichever of the 2 acting-user identities
-`ReadPathScenario` picks per call, roughly half the seeded pool matches its
-tenant and read-path gets real (if partial) results instead of always empty.
-The newly-provisioned tenant does **not** need seeded data, since (per
-"Current state" above) it never gates read-path visibility — its role is
-limited to being the base channel identity.
+The two stores need different mechanisms, since only Postgres uses a shared
+table + column predicate for tenant scoping — StarRocks (per
+`project-starrocks-tenant-database-isolation`, already merged to `main`)
+isolates tenants as **separate physical databases**
+(`iverson_tenant_{tenantId}`; see `TenantIdentifier.DatabaseName` and
+`StarRocksRepository.cs`'s `Search`/`Aggregate`/`GroupBy`/`Pipeline` read
+paths, which qualify every read with that database once a tenant claim is
+present), lazily provisioned only through the gRPC write path. A `TenantId`
+*column value* on a row in the shared, unqualified StarRocks table has no
+effect on what `Search`/`Aggregate` can see.
+
+- **Postgres** — every row `DirectSeeder` writes (articles, authors, tags)
+  gets `TenantId` stamped alongside the existing `OwnerId` logic in its raw
+  `COPY` statements, split 50/50 between `tenant-smoke-test` and
+  `tenant-bypass` (mirroring `PickRandom`'s existing 50/50 split) — unchanged
+  from the original approach.
+- **StarRocks** — `DirectSeeder` stops writing these rows via
+  `SrBatchInsertAsync` and instead posts them through the same gRPC write
+  path `WritePathRunner` already uses (`EntityCoordinator<T>.PersistAsync`
+  carrying the acting-user header), alternating between the `Regular`/
+  `Bypass` identities per row (same 50/50 split as the Postgres side, reusing
+  the same `Id` value per row so a given record shares one identity across
+  both stores). The server's existing lazy per-tenant-database provisioning
+  then creates and populates `iverson_tenant_tenant-smoke-test`/
+  `iverson_tenant_tenant-bypass` itself, auto-stamping `TenantId` from the
+  posting identity's own claim — the same mechanism `write-path` already
+  relies on, so `DirectSeeder` doesn't compute a `TenantId` value for these
+  rows itself. This trades `seed`'s previous raw-batched-`INSERT` StarRocks
+  throughput for per-record gRPC calls (exact concurrency/throughput is an
+  implementation-plan detail, not fixed here), and — like `write-path` — the
+  data isn't visible to `Search`/`Aggregate` until Kafka has caught up, so
+  `seed` should wait on the same Kafka-lag-probe convention
+  `WritePathScenario` already uses before reporting done.
+
+Whichever store, the newly-provisioned tenant (`iverson-loadtest-dynamic`)
+does **not** need seeded data, since (per "Current state" above) it never
+gates read-path visibility — its role is limited to being the base channel
+identity.
 
 ## Out of scope
 
@@ -186,3 +215,4 @@ limited to being the base channel identity.
 | 11 | `CreateTenant` is not idempotent — a duplicate `tenant_id` throws | `TenantRepository.cs:10-16` (plain `INSERT`, no `ON CONFLICT`) |
 | 12 | `Iverson.Client.Contracts` (tenant proto clients) already available to LoadTest transitively | `Iverson.Client.Core.csproj` → `Iverson.Client.Contracts.csproj` project reference |
 | 13 | `AuthentikFlowExecutorClient`'s TOTP enroll-or-solve logic is generic, not hardcoded to the 2 existing identities — works for a brand-new user with no prior enrollment | `AuthentikFlowExecutorClient.cs:140-183` (`ak-stage-authenticator-totp` case generates+saves a fresh secret for any identity) |
+| 14 | StarRocks tenant isolation is per-tenant physical databases (`iverson_tenant_{tenantId}`), not a column predicate on a shared table — provisioned lazily only via the gRPC write path | `Iverson.Server/Iverson.StarRocks/StarRocksRepository.cs:341-475` (`Search`/`Aggregate`/`GroupBy`/`Pipeline` qualify reads with `TenantIdentifier.DatabaseName(tenantId)` whenever a tenant claim is present), `TenantIdentifier.cs:11` |
