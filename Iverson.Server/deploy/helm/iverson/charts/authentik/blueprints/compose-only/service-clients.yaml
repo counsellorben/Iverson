@@ -149,6 +149,9 @@ entries:
         - matching_mode: strict
           url: "http://localhost:5173/callback"
           redirect_uri_type: authorization
+        - matching_mode: strict
+          url: "http://localhost:5173/"
+          redirect_uri_type: logout
       client_id: "dev-iverson-human-oidc-client-id"
       signing_key: !Find [authentik_crypto.certificatekeypair, [name, "authentik Self-signed Certificate"]]
       issuer_mode: global

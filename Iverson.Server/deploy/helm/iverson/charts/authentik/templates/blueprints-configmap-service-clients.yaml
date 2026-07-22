@@ -115,6 +115,12 @@ data:
             - matching_mode: strict
               url: "http://localhost:5173/callback"
               redirect_uri_type: authorization
+            - matching_mode: strict
+              url: "http://{{ .Values.global.ingressHost }}/admin/"
+              redirect_uri_type: logout
+            - matching_mode: strict
+              url: "http://localhost:5173/"
+              redirect_uri_type: logout
           client_id: {{ if $humanOidc }}{{ index $humanOidc.data "client-id" | b64dec }}{{ else }}{{ randAlphaNum 40 }}{{ end }}
           signing_key: !Find [authentik_crypto.certificatekeypair, [name, "authentik Self-signed Certificate"]]
           issuer_mode: global
