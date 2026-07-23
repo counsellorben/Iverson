@@ -188,7 +188,7 @@ Reproduced from `docs/specs/2026-07-22-mcp-server-design.md` Phase A (unchanged;
 **Error handling:** unchanged from each language's existing convention (DotNet: log + null/empty on failure; Go: `fmt.Errorf` wrapping; Java: `StatusRuntimeException`; Python: `RuntimeError`; TypeScript: thrown `Error`). No new error-handling pattern introduced anywhere.
 
 **Out of scope:**
-- Retrofitting acting-user support onto already-working methods (DotNet's 4 existing search methods; any language's `persist`/`get`/`update`/`delete`).
+- Retrofitting acting-user support onto DotNet's 4 existing search methods. (Python's `persist`/`get`/`update`/`delete` inherit acting-user propagation automatically as a side effect of the channel-level composite-credentials mechanism, and TypeScript's `persist`/`get`/`update`/`delete`/`getMany` are explicitly threaded through `callUnary`'s new token param — both intentional, per each language's own section above, not retrofitting.)
 - Any change to the generated proto clients or `.proto` files themselves.
 - The MCP server itself (`Iverson.Clients/McpServer/`) — this design closes its prerequisite; that work resumes per `docs/specs/2026-07-22-mcp-server-design.md` Phase B once this lands.
 

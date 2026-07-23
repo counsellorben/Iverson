@@ -16,7 +16,7 @@
 
 - Every new `AggregateBuilder` mirrors that language's existing `GroupByBuilder` method names/shape exactly, using that language's own established instantiation pattern (public constructor for DotNet/Python/TypeScript classes; factory-function-only for Go; package-private constructor + `Query` factory method for Java).
 - `AggregationSpec`'s `group_by_fields`/`expression` override fields are explicitly NOT covered by any language's new builder — left for a future follow-up.
-- No retrofitting acting-user support onto already-working methods (DotNet's 4 existing search methods; any language's `persist`/`get`/`update`/`delete`).
+- No retrofitting acting-user support onto DotNet's 4 existing search methods. (Python's `persist`/`get`/`update`/`delete` inherit acting-user propagation automatically as a side effect of the channel-level composite-credentials mechanism (Task 4); TypeScript's `persist`/`get`/`update`/`delete`/`getMany` are explicitly threaded through `callUnary`'s new token param (Task 5, Step 4) — both intentional, not retrofitting.)
 - No changes to generated proto clients or `.proto` files.
 - No MCP server work (`Iverson.Clients/McpServer/` doesn't exist yet — out of scope).
 
@@ -310,6 +310,6 @@ git commit -m "feat(ts-client): add AggregateBuilder, 6 search-family execution 
 
 ## Tasks NOT in this plan
 
-- Retrofitting acting-user support onto already-working methods (DotNet's 4 existing search methods; any language's `persist`/`get`/`update`/`delete`).
+- Retrofitting acting-user support onto DotNet's 4 existing search methods. (Python's and TypeScript's CRUD methods intentionally inherit it — see Global Constraints.)
 - Any change to the generated proto clients or `.proto` files themselves.
 - The MCP server itself (`Iverson.Clients/McpServer/`) — this design closes its prerequisite; that work resumes per `docs/specs/2026-07-22-mcp-server-design.md` Phase B once this lands.
