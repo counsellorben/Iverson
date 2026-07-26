@@ -71,8 +71,8 @@ public sealed class TenantIsolationIntegrationTests : IClassFixture<StarRocksCon
     }
 
     private static EngagementTableSchema ProbeSchema(string tableName) =>
-        new(tableName, new StarRocksColumnSchema("Id", "VARCHAR(36)", false),
-            [new StarRocksColumnSchema("Name", "STRING", true)]);
+        new(tableName, new EngagementColumnSchema("Id", "VARCHAR(36)", false),
+            [new EngagementColumnSchema("Name", "STRING", true)]);
 
     // Unique per call so tests that provision a tenant/table never collide with each other, even
     // though (per xUnit's default sequential-within-a-class execution) they share one container.

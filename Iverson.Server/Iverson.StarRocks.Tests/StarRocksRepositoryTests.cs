@@ -31,8 +31,8 @@ public class EngagementRepositoryTests
     [Fact]
     public void EngagementTableSchema_StoresColumns()
     {
-        var key  = new StarRocksColumnSchema("Id", "VARCHAR(36)", false);
-        var cols = new List<StarRocksColumnSchema>
+        var key  = new EngagementColumnSchema("Id", "VARCHAR(36)", false);
+        var cols = new List<EngagementColumnSchema>
         {
             new("Name", "STRING", false),
             new("Bio",  "STRING", true)

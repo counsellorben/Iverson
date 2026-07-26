@@ -134,12 +134,12 @@ public sealed class StarRocksIntegrationTests(StarRocksContainerFixture fixture)
     {
         var schema = new EngagementTableSchema(
             tableName,
-            new StarRocksColumnSchema("Id", "VARCHAR(36)", false),
+            new EngagementColumnSchema("Id", "VARCHAR(36)", false),
             [
-                new StarRocksColumnSchema("Name",        "STRING",   false),
-                new StarRocksColumnSchema("Bio",         "STRING",   true),
-                new StarRocksColumnSchema("Rating",      "INT",      true),
-                new StarRocksColumnSchema("PublishedAt", "DATETIME", true),
+                new EngagementColumnSchema("Name",        "STRING",   false),
+                new EngagementColumnSchema("Bio",         "STRING",   true),
+                new EngagementColumnSchema("Rating",      "INT",      true),
+                new EngagementColumnSchema("PublishedAt", "DATETIME", true),
             ]);
 
         await repo.ExecuteAsync(StarRocksSchemaManager.BuildCreateTableDdl(schema, $"`{tableName}`"));
@@ -270,10 +270,10 @@ public sealed class StarRocksIntegrationTests(StarRocksContainerFixture fixture)
 
         var articleSchema = new EngagementTableSchema(
             articlesTable,
-            new StarRocksColumnSchema("Id", "VARCHAR(36)", false),
+            new EngagementColumnSchema("Id", "VARCHAR(36)", false),
             [
-                new StarRocksColumnSchema("AuthorId", "VARCHAR(36)", false),
-                new StarRocksColumnSchema("Title",    "STRING",      false),
+                new EngagementColumnSchema("AuthorId", "VARCHAR(36)", false),
+                new EngagementColumnSchema("Title",    "STRING",      false),
             ]);
         await _repo.ExecuteAsync(StarRocksSchemaManager.BuildCreateTableDdl(articleSchema, $"`{articlesTable}`"));
         await _repo.ExecuteAsync(
@@ -307,10 +307,10 @@ public sealed class StarRocksIntegrationTests(StarRocksContainerFixture fixture)
 
         var articleSchema = new EngagementTableSchema(
             articlesTable,
-            new StarRocksColumnSchema("Id", "VARCHAR(36)", false),
+            new EngagementColumnSchema("Id", "VARCHAR(36)", false),
             [
-                new StarRocksColumnSchema("AuthorId", "VARCHAR(36)", false),
-                new StarRocksColumnSchema("Title",    "STRING",      false),
+                new EngagementColumnSchema("AuthorId", "VARCHAR(36)", false),
+                new EngagementColumnSchema("Title",    "STRING",      false),
             ]);
         await _repo.ExecuteAsync(StarRocksSchemaManager.BuildCreateTableDdl(articleSchema, $"`{articlesTable}`"));
         await _repo.ExecuteAsync(
@@ -520,10 +520,10 @@ public sealed class StarRocksIntegrationTests(StarRocksContainerFixture fixture)
 
         var articleSchema = new EngagementTableSchema(
             articlesTable,
-            new StarRocksColumnSchema("Id", "VARCHAR(36)", false),
+            new EngagementColumnSchema("Id", "VARCHAR(36)", false),
             [
-                new StarRocksColumnSchema("AuthorId", "VARCHAR(36)", false),
-                new StarRocksColumnSchema("Title",    "STRING",      false),
+                new EngagementColumnSchema("AuthorId", "VARCHAR(36)", false),
+                new EngagementColumnSchema("Title",    "STRING",      false),
             ]);
         await _repo.ExecuteAsync(StarRocksSchemaManager.BuildCreateTableDdl(articleSchema, $"`{articlesTable}`"));
         await _repo.ExecuteAsync(

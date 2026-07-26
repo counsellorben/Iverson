@@ -10,8 +10,8 @@ public class StarRocksSchemaManagerTests
     {
         var schema = new EngagementTableSchema(
             "articles",
-            new StarRocksColumnSchema("Id", "VARCHAR(36)", false),
-            [new StarRocksColumnSchema("Title", "STRING", false)]);
+            new EngagementColumnSchema("Id", "VARCHAR(36)", false),
+            [new EngagementColumnSchema("Title", "STRING", false)]);
 
         var ddl = StarRocksSchemaManager.BuildCreateTableDdl(schema, $"`{schema.TableName}`");
 
@@ -27,8 +27,8 @@ public class StarRocksSchemaManagerTests
     {
         var schema = new EngagementTableSchema(
             "authors",
-            new StarRocksColumnSchema("Id",  "VARCHAR(36)", false),
-            [new StarRocksColumnSchema("Bio", "STRING",     true)]);
+            new EngagementColumnSchema("Id",  "VARCHAR(36)", false),
+            [new EngagementColumnSchema("Bio", "STRING",     true)]);
 
         var ddl = StarRocksSchemaManager.BuildCreateTableDdl(schema, $"`{schema.TableName}`");
 
@@ -41,10 +41,10 @@ public class StarRocksSchemaManagerTests
     {
         var schema = new EngagementTableSchema(
             "articles",
-            new StarRocksColumnSchema("Id", "VARCHAR(36)", false),
+            new EngagementColumnSchema("Id", "VARCHAR(36)", false),
             [
-                new StarRocksColumnSchema("Category",    "STRING",   false),
-                new StarRocksColumnSchema("PublishedAt", "DATETIME", false),
+                new EngagementColumnSchema("Category",    "STRING",   false),
+                new EngagementColumnSchema("PublishedAt", "DATETIME", false),
             ])
         {
             SortKey = ["Category", "PublishedAt"]
@@ -61,8 +61,8 @@ public class StarRocksSchemaManagerTests
     {
         var schema = new EngagementTableSchema(
             "authors",
-            new StarRocksColumnSchema("Id", "VARCHAR(36)", false),
-            [new StarRocksColumnSchema("Name", "STRING", false)]);
+            new EngagementColumnSchema("Id", "VARCHAR(36)", false),
+            [new EngagementColumnSchema("Name", "STRING", false)]);
 
         var ddl = StarRocksSchemaManager.BuildCreateTableDdl(schema, $"`{schema.TableName}`");
 
