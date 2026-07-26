@@ -253,7 +253,16 @@ public sealed class ObjectSearchGrpcService(
             throw new RpcException(new Status(StatusCode.InvalidArgument,
                 $"Property '{request.Property}' on '{request.TypeName}' is not authorized for this caller."));
 
-        var filter = BuildChunksFilter(schema, request, decision.AllowedFields);
+        Filter? filter;
+        try
+        {
+            filter = BuildChunksFilter(schema, request, decision.AllowedFields);
+        }
+        catch (FilterTranslationException ex)
+        {
+            throw new RpcException(new Status(StatusCode.InvalidArgument, ex.Message));
+        }
+
         filter = IntelligenceFilterBuilder.ApplyOwnership(
             filter,
             decision.OwnershipRequired,
@@ -591,17 +600,20 @@ public sealed class ObjectSearchGrpcService(
 
             if (string.Equals(clause.Property, schema.KeyColumn.Name, StringComparison.OrdinalIgnoreCase))
                 filter.Must.AddRange(IntelligenceFilterBuilder.MatchParentId(clause.Value.StringVal).Must);
-            else if (schema.MetadataColumns.Contains(clause.Property))
+            else if (schema.MetadataColumns.TryGetValue(clause.Property, out var canonicalName))
             {
                 // The key clause is exempt from field masking (see exemptField: "Key" on the
                 // SearchSimilar path, and parent_key is returned unconditionally here), but a
                 // metadata column can be field-restricted — filtering on one the caller cannot
                 // read would be a value oracle.
-                if (allowedFields is not null && !allowedFields.Contains(clause.Property))
+                // canonicalName is the schema's stored spelling; the caller's casing may differ
+                // (MetadataColumns is OrdinalIgnoreCase) and both the payload key written by
+                // IntelligenceStoreConsumer and AllowedFields use the schema's spelling.
+                if (allowedFields is not null && !allowedFields.Contains(canonicalName))
                     throw new RpcException(new Status(StatusCode.InvalidArgument,
                         $"SearchChunks: filter property '{clause.Property}' is not authorized for this caller."));
 
-                filter.Must.Add(IntelligenceFilterBuilder.MatchEquality(clause.Property.ToCamelCase(), clause.Value));
+                filter.Must.Add(IntelligenceFilterBuilder.MatchEquality(canonicalName.ToCamelCase(), clause.Value));
             }
             else
                 throw new RpcException(
