@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import re
 import uuid
+from dataclasses import dataclass
 from typing import Generic, List, Optional, TypeVar
 
 import grpc
@@ -223,6 +224,20 @@ def _struct_to_dict(s: struct_pb2.Struct) -> dict:
     return dict(s)
 
 
+# ── SearchResult ────────────────────────────────────────────────────────────────
+
+@dataclass(frozen=True)
+class SearchResult(Generic[T]):
+    """An entity paired with its relevance score from a search-family RPC.
+
+    Mirrors the DotNet ``SearchResult<T>`` record, Go ``SearchResult[T]`` struct,
+    and Java ``SearchResult<T>`` record.
+    """
+
+    entity: T
+    score: float
+
+
 # ── EntityCoordinator ──────────────────────────────────────────────────────────
 
 class EntityCoordinator(Generic[T]):
@@ -326,15 +341,23 @@ class EntityCoordinator(Generic[T]):
 
     # ── Search-family execution ────────────────────────────────────────────────
 
-    def search(self, request: search_pb.SearchRequest) -> List[T]:
+    def search(self, request: search_pb.SearchRequest) -> List[SearchResult[T]]:
         """Execute a Search request. Rows are genuinely ``T``-shaped, so each is
-        converted via ``_from_struct``."""
-        return [self._from_struct(row.data) for row in self._search.Search(request)]
+        converted via ``_from_struct`` and paired with its relevance score in a
+        ``SearchResult``."""
+        return [
+            SearchResult(self._from_struct(row.data), row.score)
+            for row in self._search.Search(request)
+        ]
 
-    def search_similar(self, request: search_pb.SearchSimilarRequest) -> List[T]:
+    def search_similar(self, request: search_pb.SearchSimilarRequest) -> List[SearchResult[T]]:
         """Execute a SearchSimilar (vector) request. Rows are genuinely ``T``-shaped,
-        so each is converted via ``_from_struct``."""
-        return [self._from_struct(row.data) for row in self._search.SearchSimilar(request)]
+        so each is converted via ``_from_struct`` and paired with its relevance score
+        in a ``SearchResult``."""
+        return [
+            SearchResult(self._from_struct(row.data), row.score)
+            for row in self._search.SearchSimilar(request)
+        ]
 
     def search_chunks(self, request: search_pb.SearchChunksRequest) -> List[search_pb.ChunkSearchResponse]:
         """Execute a SearchChunks request. Returns the flat chunk messages as-is."""
@@ -422,12 +445,16 @@ class IversonClient:
                 )
             # grpcio rejects CallCredentials on a bare insecure_channel with
             # "UNAUTHENTICATED: Established channel does not have a sufficient security
-            # level to transfer call credential" — confirmed live. local_channel_credentials()
-            # is a lightweight "trusted network" designation (not real TLS) that satisfies
-            # the check without requiring actual certificates.
-            channel_creds = grpc.composite_channel_credentials(
-                grpc.local_channel_credentials(), *call_creds_list
+            # level to transfer call credential" — confirmed live. Some ChannelCredentials
+            # is therefore always required as the base here. When use_tls is True we use
+            # real TLS via ssl_channel_credentials(); otherwise we fall back to
+            # local_channel_credentials(), a lightweight "trusted network" designation
+            # (NOT real TLS/encryption) that satisfies the check without requiring actual
+            # certificates.
+            base_creds = (
+                grpc.ssl_channel_credentials() if use_tls else grpc.local_channel_credentials()
             )
+            channel_creds = grpc.composite_channel_credentials(base_creds, *call_creds_list)
             self._channel = grpc.secure_channel(address, channel_creds)
         elif use_tls:
             self._channel = grpc.secure_channel(address, grpc.ssl_channel_credentials())

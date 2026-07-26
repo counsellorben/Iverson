@@ -78,3 +78,80 @@ def test_client_with_acting_user_token_only_uses_secure_channel_and_survives_fir
 
     assert result["error"] is None
     assert result["metadata"] == (("x-acting-user-authorization", "Bearer user-token-123"),)
+
+
+def test_client_with_use_tls_and_acting_user_token_uses_ssl_channel_credentials(monkeypatch):
+    """Regression test for the whole-branch review finding: use_tls=True was silently
+    ignored whenever credentials/acting_user_token was also set, because that branch
+    unconditionally based its composite channel credentials on
+    grpc.local_channel_credentials() (a "trusted local network" designation with NO
+    encryption) instead of grpc.ssl_channel_credentials(). Confirms the base channel
+    credentials actually fed into composite_channel_credentials() tracks use_tls."""
+    captured = {}
+    ssl_sentinel = object()
+    local_sentinel = object()
+
+    def fake_secure_channel(address, channel_creds):
+        captured["address"] = address
+        captured["channel_creds"] = channel_creds
+        return object()
+
+    def fake_composite_channel_credentials(base_creds, *call_creds):
+        captured["base_creds"] = base_creds
+        return object()
+
+    monkeypatch.setattr("iverson_client.core.grpc.secure_channel", fake_secure_channel)
+    monkeypatch.setattr("iverson_client.core.grpc.ssl_channel_credentials", lambda: ssl_sentinel)
+    monkeypatch.setattr("iverson_client.core.grpc.local_channel_credentials", lambda: local_sentinel)
+    monkeypatch.setattr(
+        "iverson_client.core.grpc.composite_channel_credentials", fake_composite_channel_credentials
+    )
+    monkeypatch.setattr(
+        "iverson_client.core.grpc.metadata_call_credentials", lambda plugin: plugin
+    )
+    monkeypatch.setattr(
+        "iverson_client.core.mapping_grpc.ObjectMappingServiceStub", lambda channel: object()
+    )
+
+    IversonClient(host="prod.example.com", port=5000, use_tls=True, acting_user_token="user-token-123")
+
+    # use_tls=True must select ssl_channel_credentials as the base, not the
+    # unencrypted local_channel_credentials.
+    assert captured["base_creds"] is ssl_sentinel
+    assert captured["base_creds"] is not local_sentinel
+
+
+def test_client_without_use_tls_and_acting_user_token_uses_local_channel_credentials(monkeypatch):
+    """Preserves today's default behavior: use_tls=False (the default) with
+    acting_user_token set must still use local_channel_credentials() as the base,
+    since grpcio rejects CallCredentials on a bare insecure_channel."""
+    captured = {}
+    ssl_sentinel = object()
+    local_sentinel = object()
+
+    def fake_secure_channel(address, channel_creds):
+        captured["address"] = address
+        captured["channel_creds"] = channel_creds
+        return object()
+
+    def fake_composite_channel_credentials(base_creds, *call_creds):
+        captured["base_creds"] = base_creds
+        return object()
+
+    monkeypatch.setattr("iverson_client.core.grpc.secure_channel", fake_secure_channel)
+    monkeypatch.setattr("iverson_client.core.grpc.ssl_channel_credentials", lambda: ssl_sentinel)
+    monkeypatch.setattr("iverson_client.core.grpc.local_channel_credentials", lambda: local_sentinel)
+    monkeypatch.setattr(
+        "iverson_client.core.grpc.composite_channel_credentials", fake_composite_channel_credentials
+    )
+    monkeypatch.setattr(
+        "iverson_client.core.grpc.metadata_call_credentials", lambda plugin: plugin
+    )
+    monkeypatch.setattr(
+        "iverson_client.core.mapping_grpc.ObjectMappingServiceStub", lambda channel: object()
+    )
+
+    IversonClient(host="localhost", port=5000, acting_user_token="user-token-123")
+
+    assert captured["base_creds"] is local_sentinel
+    assert captured["base_creds"] is not ssl_sentinel

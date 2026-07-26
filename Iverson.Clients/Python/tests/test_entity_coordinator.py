@@ -59,8 +59,9 @@ class TestEntityCoordinatorSearchFamily:
         results = coordinator.search(pb.SearchRequest(type_name="CoordArticle"))
 
         assert len(results) == 1
-        assert results[0].id == "1"
-        assert results[0].title == "Hello"
+        assert results[0].entity.id == "1"
+        assert results[0].entity.title == "Hello"
+        assert results[0].score == 1.0
 
     def test_search_similar_converts_rows_via_from_struct(self):
         coordinator = make_coordinator()
@@ -71,8 +72,9 @@ class TestEntityCoordinatorSearchFamily:
         )
 
         assert len(results) == 1
-        assert results[0].id == "2"
-        assert results[0].title == "World"
+        assert results[0].entity.id == "2"
+        assert results[0].entity.title == "World"
+        assert results[0].score == 1.0
 
     def test_group_by_converts_rows_via_struct_to_dict(self):
         coordinator = make_coordinator()
