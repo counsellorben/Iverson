@@ -170,6 +170,10 @@ export interface PropertyDescriptor {
   searchKeyOrder: number;
   /** [IversonLargeField] present — excluded from fast-path indices */
   isLargeField: boolean;
+  /** [IversonMetadata] present — denormalized onto chunk points */
+  isMetadata: boolean;
+  /** [IversonDescription] text; empty = none */
+  description: string;
 }
 
 export interface RelationDescriptor {
@@ -182,10 +186,43 @@ export interface RelationDescriptor {
   foreignKey: string;
 }
 
+export interface RowPermission {
+  /** free-form; matches an Authentik group name */
+  role: string;
+  /** bypasses ownership for Read */
+  canReadAll: boolean;
+  /** bypasses ownership for Write */
+  canWriteAll: boolean;
+  /** bypasses ownership for Delete */
+  canDeleteAll: boolean;
+}
+
+export interface FieldPermission {
+  fieldName: string;
+  /** empty = inherits row-level decision */
+  readableRoles: string[];
+  /** empty = inherits row-level decision */
+  writableRoles: string[];
+}
+
+export interface AuthorizationRules {
+  /** optional; empty = no ownership dimension */
+  ownerField: string;
+  rowPermissions: RowPermission[];
+  fieldPermissions: FieldPermission[];
+}
+
 export interface TypeDescriptor {
   typeName: string;
   properties: PropertyDescriptor[];
   relations: RelationDescriptor[];
+  authorization:
+    | AuthorizationRules
+    | undefined;
+  /** REQUIRED; names a declared scalar property holding the row's tenant id */
+  tenantField: string;
+  /** type-level [IversonDescription] text; empty = none */
+  description: string;
 }
 
 export interface SchemaRequest {
@@ -257,6 +294,8 @@ function createBasePropertyDescriptor(): PropertyDescriptor {
     isSearchKey: false,
     searchKeyOrder: 0,
     isLargeField: false,
+    isMetadata: false,
+    description: "",
   };
 }
 
@@ -309,6 +348,12 @@ export const PropertyDescriptor: MessageFns<PropertyDescriptor> = {
     }
     if (message.isLargeField !== false) {
       writer.uint32(128).bool(message.isLargeField);
+    }
+    if (message.isMetadata !== false) {
+      writer.uint32(136).bool(message.isMetadata);
+    }
+    if (message.description !== "") {
+      writer.uint32(146).string(message.description);
     }
     return writer;
   },
@@ -448,6 +493,22 @@ export const PropertyDescriptor: MessageFns<PropertyDescriptor> = {
           message.isLargeField = reader.bool();
           continue;
         }
+        case 17: {
+          if (tag !== 136) {
+            break;
+          }
+
+          message.isMetadata = reader.bool();
+          continue;
+        }
+        case 18: {
+          if (tag !== 146) {
+            break;
+          }
+
+          message.description = reader.string();
+          continue;
+        }
       }
       if ((tag & 7) === 4 || tag === 0) {
         break;
@@ -535,6 +596,12 @@ export const PropertyDescriptor: MessageFns<PropertyDescriptor> = {
         : isSet(object.is_large_field)
         ? globalThis.Boolean(object.is_large_field)
         : false,
+      isMetadata: isSet(object.isMetadata)
+        ? globalThis.Boolean(object.isMetadata)
+        : isSet(object.is_metadata)
+        ? globalThis.Boolean(object.is_metadata)
+        : false,
+      description: isSet(object.description) ? globalThis.String(object.description) : "",
     };
   },
 
@@ -588,6 +655,12 @@ export const PropertyDescriptor: MessageFns<PropertyDescriptor> = {
     if (message.isLargeField !== false) {
       obj.isLargeField = message.isLargeField;
     }
+    if (message.isMetadata !== false) {
+      obj.isMetadata = message.isMetadata;
+    }
+    if (message.description !== "") {
+      obj.description = message.description;
+    }
     return obj;
   },
 
@@ -612,6 +685,8 @@ export const PropertyDescriptor: MessageFns<PropertyDescriptor> = {
     message.isSearchKey = object.isSearchKey ?? false;
     message.searchKeyOrder = object.searchKeyOrder ?? 0;
     message.isLargeField = object.isLargeField ?? false;
+    message.isMetadata = object.isMetadata ?? false;
+    message.description = object.description ?? "";
     return message;
   },
 };
@@ -736,8 +811,336 @@ export const RelationDescriptor: MessageFns<RelationDescriptor> = {
   },
 };
 
+function createBaseRowPermission(): RowPermission {
+  return { role: "", canReadAll: false, canWriteAll: false, canDeleteAll: false };
+}
+
+export const RowPermission: MessageFns<RowPermission> = {
+  encode(message: RowPermission, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.role !== "") {
+      writer.uint32(10).string(message.role);
+    }
+    if (message.canReadAll !== false) {
+      writer.uint32(16).bool(message.canReadAll);
+    }
+    if (message.canWriteAll !== false) {
+      writer.uint32(24).bool(message.canWriteAll);
+    }
+    if (message.canDeleteAll !== false) {
+      writer.uint32(32).bool(message.canDeleteAll);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): RowPermission {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseRowPermission();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.role = reader.string();
+          continue;
+        }
+        case 2: {
+          if (tag !== 16) {
+            break;
+          }
+
+          message.canReadAll = reader.bool();
+          continue;
+        }
+        case 3: {
+          if (tag !== 24) {
+            break;
+          }
+
+          message.canWriteAll = reader.bool();
+          continue;
+        }
+        case 4: {
+          if (tag !== 32) {
+            break;
+          }
+
+          message.canDeleteAll = reader.bool();
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): RowPermission {
+    return {
+      role: isSet(object.role) ? globalThis.String(object.role) : "",
+      canReadAll: isSet(object.canReadAll)
+        ? globalThis.Boolean(object.canReadAll)
+        : isSet(object.can_read_all)
+        ? globalThis.Boolean(object.can_read_all)
+        : false,
+      canWriteAll: isSet(object.canWriteAll)
+        ? globalThis.Boolean(object.canWriteAll)
+        : isSet(object.can_write_all)
+        ? globalThis.Boolean(object.can_write_all)
+        : false,
+      canDeleteAll: isSet(object.canDeleteAll)
+        ? globalThis.Boolean(object.canDeleteAll)
+        : isSet(object.can_delete_all)
+        ? globalThis.Boolean(object.can_delete_all)
+        : false,
+    };
+  },
+
+  toJSON(message: RowPermission): unknown {
+    const obj: any = {};
+    if (message.role !== "") {
+      obj.role = message.role;
+    }
+    if (message.canReadAll !== false) {
+      obj.canReadAll = message.canReadAll;
+    }
+    if (message.canWriteAll !== false) {
+      obj.canWriteAll = message.canWriteAll;
+    }
+    if (message.canDeleteAll !== false) {
+      obj.canDeleteAll = message.canDeleteAll;
+    }
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<RowPermission>, I>>(base?: I): RowPermission {
+    return RowPermission.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<RowPermission>, I>>(object: I): RowPermission {
+    const message = createBaseRowPermission();
+    message.role = object.role ?? "";
+    message.canReadAll = object.canReadAll ?? false;
+    message.canWriteAll = object.canWriteAll ?? false;
+    message.canDeleteAll = object.canDeleteAll ?? false;
+    return message;
+  },
+};
+
+function createBaseFieldPermission(): FieldPermission {
+  return { fieldName: "", readableRoles: [], writableRoles: [] };
+}
+
+export const FieldPermission: MessageFns<FieldPermission> = {
+  encode(message: FieldPermission, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.fieldName !== "") {
+      writer.uint32(10).string(message.fieldName);
+    }
+    for (const v of message.readableRoles) {
+      writer.uint32(18).string(v!);
+    }
+    for (const v of message.writableRoles) {
+      writer.uint32(26).string(v!);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): FieldPermission {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseFieldPermission();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.fieldName = reader.string();
+          continue;
+        }
+        case 2: {
+          if (tag !== 18) {
+            break;
+          }
+
+          message.readableRoles.push(reader.string());
+          continue;
+        }
+        case 3: {
+          if (tag !== 26) {
+            break;
+          }
+
+          message.writableRoles.push(reader.string());
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): FieldPermission {
+    return {
+      fieldName: isSet(object.fieldName)
+        ? globalThis.String(object.fieldName)
+        : isSet(object.field_name)
+        ? globalThis.String(object.field_name)
+        : "",
+      readableRoles: globalThis.Array.isArray(object?.readableRoles)
+        ? object.readableRoles.map((e: any) => globalThis.String(e))
+        : globalThis.Array.isArray(object?.readable_roles)
+        ? object.readable_roles.map((e: any) => globalThis.String(e))
+        : [],
+      writableRoles: globalThis.Array.isArray(object?.writableRoles)
+        ? object.writableRoles.map((e: any) => globalThis.String(e))
+        : globalThis.Array.isArray(object?.writable_roles)
+        ? object.writable_roles.map((e: any) => globalThis.String(e))
+        : [],
+    };
+  },
+
+  toJSON(message: FieldPermission): unknown {
+    const obj: any = {};
+    if (message.fieldName !== "") {
+      obj.fieldName = message.fieldName;
+    }
+    if (message.readableRoles?.length) {
+      obj.readableRoles = message.readableRoles;
+    }
+    if (message.writableRoles?.length) {
+      obj.writableRoles = message.writableRoles;
+    }
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<FieldPermission>, I>>(base?: I): FieldPermission {
+    return FieldPermission.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<FieldPermission>, I>>(object: I): FieldPermission {
+    const message = createBaseFieldPermission();
+    message.fieldName = object.fieldName ?? "";
+    message.readableRoles = object.readableRoles?.map((e) => e) || [];
+    message.writableRoles = object.writableRoles?.map((e) => e) || [];
+    return message;
+  },
+};
+
+function createBaseAuthorizationRules(): AuthorizationRules {
+  return { ownerField: "", rowPermissions: [], fieldPermissions: [] };
+}
+
+export const AuthorizationRules: MessageFns<AuthorizationRules> = {
+  encode(message: AuthorizationRules, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.ownerField !== "") {
+      writer.uint32(10).string(message.ownerField);
+    }
+    for (const v of message.rowPermissions) {
+      RowPermission.encode(v!, writer.uint32(18).fork()).join();
+    }
+    for (const v of message.fieldPermissions) {
+      FieldPermission.encode(v!, writer.uint32(26).fork()).join();
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): AuthorizationRules {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseAuthorizationRules();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.ownerField = reader.string();
+          continue;
+        }
+        case 2: {
+          if (tag !== 18) {
+            break;
+          }
+
+          message.rowPermissions.push(RowPermission.decode(reader, reader.uint32()));
+          continue;
+        }
+        case 3: {
+          if (tag !== 26) {
+            break;
+          }
+
+          message.fieldPermissions.push(FieldPermission.decode(reader, reader.uint32()));
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): AuthorizationRules {
+    return {
+      ownerField: isSet(object.ownerField)
+        ? globalThis.String(object.ownerField)
+        : isSet(object.owner_field)
+        ? globalThis.String(object.owner_field)
+        : "",
+      rowPermissions: globalThis.Array.isArray(object?.rowPermissions)
+        ? object.rowPermissions.map((e: any) => RowPermission.fromJSON(e))
+        : globalThis.Array.isArray(object?.row_permissions)
+        ? object.row_permissions.map((e: any) => RowPermission.fromJSON(e))
+        : [],
+      fieldPermissions: globalThis.Array.isArray(object?.fieldPermissions)
+        ? object.fieldPermissions.map((e: any) => FieldPermission.fromJSON(e))
+        : globalThis.Array.isArray(object?.field_permissions)
+        ? object.field_permissions.map((e: any) => FieldPermission.fromJSON(e))
+        : [],
+    };
+  },
+
+  toJSON(message: AuthorizationRules): unknown {
+    const obj: any = {};
+    if (message.ownerField !== "") {
+      obj.ownerField = message.ownerField;
+    }
+    if (message.rowPermissions?.length) {
+      obj.rowPermissions = message.rowPermissions.map((e) => RowPermission.toJSON(e));
+    }
+    if (message.fieldPermissions?.length) {
+      obj.fieldPermissions = message.fieldPermissions.map((e) => FieldPermission.toJSON(e));
+    }
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<AuthorizationRules>, I>>(base?: I): AuthorizationRules {
+    return AuthorizationRules.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<AuthorizationRules>, I>>(object: I): AuthorizationRules {
+    const message = createBaseAuthorizationRules();
+    message.ownerField = object.ownerField ?? "";
+    message.rowPermissions = object.rowPermissions?.map((e) => RowPermission.fromPartial(e)) || [];
+    message.fieldPermissions = object.fieldPermissions?.map((e) => FieldPermission.fromPartial(e)) || [];
+    return message;
+  },
+};
+
 function createBaseTypeDescriptor(): TypeDescriptor {
-  return { typeName: "", properties: [], relations: [] };
+  return { typeName: "", properties: [], relations: [], authorization: undefined, tenantField: "", description: "" };
 }
 
 export const TypeDescriptor: MessageFns<TypeDescriptor> = {
@@ -750,6 +1153,15 @@ export const TypeDescriptor: MessageFns<TypeDescriptor> = {
     }
     for (const v of message.relations) {
       RelationDescriptor.encode(v!, writer.uint32(26).fork()).join();
+    }
+    if (message.authorization !== undefined) {
+      AuthorizationRules.encode(message.authorization, writer.uint32(34).fork()).join();
+    }
+    if (message.tenantField !== "") {
+      writer.uint32(42).string(message.tenantField);
+    }
+    if (message.description !== "") {
+      writer.uint32(50).string(message.description);
     }
     return writer;
   },
@@ -785,6 +1197,30 @@ export const TypeDescriptor: MessageFns<TypeDescriptor> = {
           message.relations.push(RelationDescriptor.decode(reader, reader.uint32()));
           continue;
         }
+        case 4: {
+          if (tag !== 34) {
+            break;
+          }
+
+          message.authorization = AuthorizationRules.decode(reader, reader.uint32());
+          continue;
+        }
+        case 5: {
+          if (tag !== 42) {
+            break;
+          }
+
+          message.tenantField = reader.string();
+          continue;
+        }
+        case 6: {
+          if (tag !== 50) {
+            break;
+          }
+
+          message.description = reader.string();
+          continue;
+        }
       }
       if ((tag & 7) === 4 || tag === 0) {
         break;
@@ -807,6 +1243,13 @@ export const TypeDescriptor: MessageFns<TypeDescriptor> = {
       relations: globalThis.Array.isArray(object?.relations)
         ? object.relations.map((e: any) => RelationDescriptor.fromJSON(e))
         : [],
+      authorization: isSet(object.authorization) ? AuthorizationRules.fromJSON(object.authorization) : undefined,
+      tenantField: isSet(object.tenantField)
+        ? globalThis.String(object.tenantField)
+        : isSet(object.tenant_field)
+        ? globalThis.String(object.tenant_field)
+        : "",
+      description: isSet(object.description) ? globalThis.String(object.description) : "",
     };
   },
 
@@ -821,6 +1264,15 @@ export const TypeDescriptor: MessageFns<TypeDescriptor> = {
     if (message.relations?.length) {
       obj.relations = message.relations.map((e) => RelationDescriptor.toJSON(e));
     }
+    if (message.authorization !== undefined) {
+      obj.authorization = AuthorizationRules.toJSON(message.authorization);
+    }
+    if (message.tenantField !== "") {
+      obj.tenantField = message.tenantField;
+    }
+    if (message.description !== "") {
+      obj.description = message.description;
+    }
     return obj;
   },
 
@@ -832,6 +1284,11 @@ export const TypeDescriptor: MessageFns<TypeDescriptor> = {
     message.typeName = object.typeName ?? "";
     message.properties = object.properties?.map((e) => PropertyDescriptor.fromPartial(e)) || [];
     message.relations = object.relations?.map((e) => RelationDescriptor.fromPartial(e)) || [];
+    message.authorization = (object.authorization !== undefined && object.authorization !== null)
+      ? AuthorizationRules.fromPartial(object.authorization)
+      : undefined;
+    message.tenantField = object.tenantField ?? "";
+    message.description = object.description ?? "";
     return message;
   },
 };

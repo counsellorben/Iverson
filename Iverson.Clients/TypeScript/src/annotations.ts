@@ -28,6 +28,9 @@ const IVERSON_LARGE_FIELDS = Symbol('iverson:large_fields');
 const IVERSON_EMBEDDING_FIELDS = Symbol('iverson:embedding_fields');
 const IVERSON_CHUNK_FIELDS     = Symbol('iverson:chunk_fields');
 const IVERSON_RELATIONS    = Symbol('iverson:relations');
+const IVERSON_METADATA_FIELDS  = Symbol('iverson:metadata_fields');
+const IVERSON_PROPERTY_DESCRIPTIONS = Symbol('iverson:property_descriptions');
+const IVERSON_TYPE_DESCRIPTION      = Symbol('iverson:type_description');
 
 // ── Public relation kind constants ─────────────────────────────────────────────
 
@@ -133,6 +136,52 @@ export function IversonChunk(maxTokens: number = 512, overlap: number = 64): Pro
 
 export function getChunkFields(target: Function): ChunkMeta[] {
     return Reflect.getMetadata(IVERSON_CHUNK_FIELDS, target) ?? [];
+}
+
+// ── @IversonMetadata() ───────────────────────────────────────────────────────
+
+/** Marks a scalar property as chunk metadata — denormalized onto chunk points. */
+export function IversonMetadata(): PropertyDecorator {
+    return (target, propertyKey) => {
+        const existing: string[] =
+            Reflect.getMetadata(IVERSON_METADATA_FIELDS, target.constructor) ?? [];
+        existing.push(String(propertyKey));
+        Reflect.defineMetadata(IVERSON_METADATA_FIELDS, existing, target.constructor);
+    };
+}
+
+export function getMetadataFields(target: Function): string[] {
+    return Reflect.getMetadata(IVERSON_METADATA_FIELDS, target) ?? [];
+}
+
+// ── @IversonDescription(text) ────────────────────────────────────────────────
+
+/**
+ * Attaches free-form descriptive text. Usable on an entity class (populates
+ * TypeDescriptor.description) or on any property (populates
+ * PropertyDescriptor.description), including the key property.
+ */
+export function IversonDescription(text: string): ClassDecorator & PropertyDecorator {
+    return ((target: any, propertyKey?: string | symbol) => {
+        if (propertyKey === undefined) {
+            // Class decorator: target is the constructor.
+            Reflect.defineMetadata(IVERSON_TYPE_DESCRIPTION, text, target);
+            return;
+        }
+        const ctor = target.constructor;
+        const existing: Record<string, string> =
+            Reflect.getMetadata(IVERSON_PROPERTY_DESCRIPTIONS, ctor) ?? {};
+        existing[String(propertyKey)] = text;
+        Reflect.defineMetadata(IVERSON_PROPERTY_DESCRIPTIONS, existing, ctor);
+    }) as ClassDecorator & PropertyDecorator;
+}
+
+export function getTypeDescription(target: Function): string {
+    return Reflect.getMetadata(IVERSON_TYPE_DESCRIPTION, target) ?? '';
+}
+
+export function getPropertyDescriptions(target: Function): Record<string, string> {
+    return Reflect.getMetadata(IVERSON_PROPERTY_DESCRIPTIONS, target) ?? {};
 }
 
 // ── Relation decorators ────────────────────────────────────────────────────────

@@ -8,6 +8,8 @@ export {
     IversonLargeField,
     IversonEmbedding,
     IversonChunk,
+    IversonMetadata,
+    IversonDescription,
     ManyToOne,
     ManyToMany,
     OneToMany,
@@ -17,6 +19,9 @@ export {
     getLargeFields,
     getEmbeddingFields,
     getChunkFields,
+    getMetadataFields,
+    getTypeDescription,
+    getPropertyDescriptions,
     getRelations,
     isIversonEntity,
 } from './annotations.js';
