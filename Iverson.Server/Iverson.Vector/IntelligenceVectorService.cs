@@ -137,7 +137,9 @@ public class IntelligenceVectorService(QdrantClient client) : IVectorQueryServic
 
     // ── Private helpers ────────────────────────────────────────────────────────
 
-    private static string ToCanonicalString(Value v) => v.KindCase switch
+    // InternalsVisibleTo access — lets the payload-kind classification be tested directly
+    // without a live Qdrant connection.
+    internal static string ToCanonicalString(Value v) => v.KindCase switch
     {
         Value.KindOneofCase.StringValue  => v.StringValue,
         Value.KindOneofCase.IntegerValue => v.IntegerValue.ToString(CultureInfo.InvariantCulture),

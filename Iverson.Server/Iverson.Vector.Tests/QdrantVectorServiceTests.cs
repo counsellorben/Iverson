@@ -1,4 +1,3 @@
-using System.Reflection;
 using FluentAssertions;
 using NSubstitute;
 using Qdrant.Client.Grpc;
@@ -177,8 +176,9 @@ public sealed class QdrantVectorServiceTests
     public void ToCanonicalString_MapsNonStringPayloadKindsToCanonicalText(string kind)
     {
         // The Qdrant client is a concrete, non-virtual type, so the search-result mapping
-        // cannot be driven through a mocked client here; the mapping helper is exercised
-        // directly instead. Integration coverage lives in QdrantIntegrationTests.
+        // cannot be driven through a mocked client here; via InternalsVisibleTo the mapping
+        // helper is exercised directly instead. Integration coverage lives in
+        // QdrantIntegrationTests.
         var (value, expected) = kind switch
         {
             "string"  => (new Value { StringValue  = "Allen Iverson" }, "Allen Iverson"),
@@ -187,13 +187,7 @@ public sealed class QdrantVectorServiceTests
             _         => (new Value { BoolValue    = true },            "true")
         };
 
-        var helper = typeof(IntelligenceVectorService).GetMethod(
-            "ToCanonicalString",
-            BindingFlags.NonPublic | BindingFlags.Static)!;
-
-        var actual = (string)helper.Invoke(null, [value])!;
-
-        actual.Should().Be(expected);
+        IntelligenceVectorService.ToCanonicalString(value).Should().Be(expected);
     }
 
     [Fact]
