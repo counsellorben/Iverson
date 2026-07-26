@@ -1,0 +1,377 @@
+package iverson
+
+// This is a white-box (package iverson) test file, unlike every other Go client test file
+// (all of which live in the separate iverson_test/ directory as black-box tests using only
+// exported API). It needs direct access to the unexported coordinatorDeps/
+// newEntityCoordinatorWithDeps mock-injection scaffolding to test the 6 new search-family
+// EntityCoordinator[T] methods against a mock SearchClient — Go's package visibility is
+// scoped per import path (directory), so an external test package genuinely cannot reach
+// unexported symbols regardless of naming convention, and _test.go files are only compiled
+// into their own package's test binary, not into packages that merely import it. Exporting
+// a test-only constructor just to keep this test in the external directory would widen the
+// public API for no real benefit, so this test lives here instead.
+
+import (
+	"context"
+	"errors"
+	"io"
+	"testing"
+
+	pb "github.com/iverson/clients/go/generated"
+	"google.golang.org/protobuf/types/known/structpb"
+)
+
+// ── Test entity type ─────────────────────────────────────────────────────────
+
+type coordinatorArticle struct {
+	Id       string `iverson:"key"`
+	Category string
+}
+
+// ── Mock SearchClient ────────────────────────────────────────────────────────
+
+type mockSearchStream struct {
+	responses []*pb.SearchResponse
+	idx       int
+	streamErr error
+}
+
+func (m *mockSearchStream) Recv() (*pb.SearchResponse, error) {
+	if m.idx < len(m.responses) {
+		r := m.responses[m.idx]
+		m.idx++
+		return r, nil
+	}
+	if m.streamErr != nil {
+		return nil, m.streamErr
+	}
+	return nil, io.EOF
+}
+
+type mockChunkSearchStream struct {
+	responses []*pb.ChunkSearchResponse
+	idx       int
+	streamErr error
+}
+
+func (m *mockChunkSearchStream) Recv() (*pb.ChunkSearchResponse, error) {
+	if m.idx < len(m.responses) {
+		r := m.responses[m.idx]
+		m.idx++
+		return r, nil
+	}
+	if m.streamErr != nil {
+		return nil, m.streamErr
+	}
+	return nil, io.EOF
+}
+
+type mockSearchClient struct {
+	searchStream   *mockSearchStream
+	searchErr      error
+	similarStream  *mockSearchStream
+	similarErr     error
+	chunksStream   *mockChunkSearchStream
+	chunksErr      error
+	groupByStream  *mockSearchStream
+	groupByErr     error
+	pipelineStream *mockSearchStream
+	pipelineErr    error
+	aggregateResp  *pb.AggregateResponse
+	aggregateErr   error
+
+	capturedSearch        *pb.SearchRequest
+	capturedSearchSimilar *pb.SearchSimilarRequest
+	capturedSearchChunks  *pb.SearchChunksRequest
+	capturedGroupBy       *pb.GroupByRequest
+	capturedPipeline      *pb.PipelineRequest
+	capturedAggregate     *pb.AggregateRequest
+}
+
+func (m *mockSearchClient) Search(_ context.Context, req *pb.SearchRequest) (SearchStream, error) {
+	m.capturedSearch = req
+	if m.searchErr != nil {
+		return nil, m.searchErr
+	}
+	return m.searchStream, nil
+}
+
+func (m *mockSearchClient) SearchSimilar(_ context.Context, req *pb.SearchSimilarRequest) (SearchStream, error) {
+	m.capturedSearchSimilar = req
+	if m.similarErr != nil {
+		return nil, m.similarErr
+	}
+	return m.similarStream, nil
+}
+
+func (m *mockSearchClient) SearchChunks(_ context.Context, req *pb.SearchChunksRequest) (ChunkSearchStream, error) {
+	m.capturedSearchChunks = req
+	if m.chunksErr != nil {
+		return nil, m.chunksErr
+	}
+	return m.chunksStream, nil
+}
+
+func (m *mockSearchClient) Aggregate(_ context.Context, req *pb.AggregateRequest) (*pb.AggregateResponse, error) {
+	m.capturedAggregate = req
+	if m.aggregateErr != nil {
+		return nil, m.aggregateErr
+	}
+	return m.aggregateResp, nil
+}
+
+func (m *mockSearchClient) GroupBy(_ context.Context, req *pb.GroupByRequest) (SearchStream, error) {
+	m.capturedGroupBy = req
+	if m.groupByErr != nil {
+		return nil, m.groupByErr
+	}
+	return m.groupByStream, nil
+}
+
+func (m *mockSearchClient) Pipeline(_ context.Context, req *pb.PipelineRequest) (SearchStream, error) {
+	m.capturedPipeline = req
+	if m.pipelineErr != nil {
+		return nil, m.pipelineErr
+	}
+	return m.pipelineStream, nil
+}
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+func mustStruct(t *testing.T, fields map[string]interface{}) *structpb.Struct {
+	t.Helper()
+	s, err := structpb.NewStruct(fields)
+	if err != nil {
+		t.Fatalf("structpb.NewStruct: %v", err)
+	}
+	return s
+}
+
+func newTestCoordinator(t *testing.T, search *mockSearchClient) *EntityCoordinator[coordinatorArticle] {
+	t.Helper()
+	c, err := newEntityCoordinatorWithDeps(coordinatorDeps{search: search}, coordinatorArticle{})
+	if err != nil {
+		t.Fatalf("newEntityCoordinatorWithDeps: %v", err)
+	}
+	return c
+}
+
+// ── Search ────────────────────────────────────────────────────────────────────
+
+func TestCoordinatorSearch_ReturnsEntitiesWithScores(t *testing.T) {
+	search := &mockSearchClient{
+		searchStream: &mockSearchStream{responses: []*pb.SearchResponse{
+			{Data: mustStruct(t, map[string]interface{}{"Id": "1", "Category": "tech"}), Score: 0.9},
+			{Data: mustStruct(t, map[string]interface{}{"Id": "2", "Category": "news"}), Score: 0.5},
+		}},
+	}
+	c := newTestCoordinator(t, search)
+
+	results, err := c.Search(context.Background(), &pb.SearchRequest{TypeName: "coordinatorArticle"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(results) != 2 {
+		t.Fatalf("expected 2 results, got %d", len(results))
+	}
+	if results[0].Entity.Id != "1" || results[0].Entity.Category != "tech" || results[0].Score != 0.9 {
+		t.Errorf("unexpected result 0: %+v", results[0])
+	}
+	if results[1].Entity.Id != "2" || results[1].Score != 0.5 {
+		t.Errorf("unexpected result 1: %+v", results[1])
+	}
+	if search.capturedSearch == nil || search.capturedSearch.TypeName != "coordinatorArticle" {
+		t.Errorf("request not passed through: %+v", search.capturedSearch)
+	}
+}
+
+func TestCoordinatorSearch_PropagatesInitialError(t *testing.T) {
+	search := &mockSearchClient{searchErr: errors.New("boom")}
+	c := newTestCoordinator(t, search)
+
+	_, err := c.Search(context.Background(), &pb.SearchRequest{})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+}
+
+func TestCoordinatorSearch_PropagatesStreamError(t *testing.T) {
+	search := &mockSearchClient{
+		searchStream: &mockSearchStream{streamErr: errors.New("stream boom")},
+	}
+	c := newTestCoordinator(t, search)
+
+	_, err := c.Search(context.Background(), &pb.SearchRequest{})
+	if err == nil {
+		t.Fatal("expected stream error")
+	}
+}
+
+func TestCoordinatorSearch_EmptyStream_ReturnsNoResults(t *testing.T) {
+	search := &mockSearchClient{searchStream: &mockSearchStream{}}
+	c := newTestCoordinator(t, search)
+
+	results, err := c.Search(context.Background(), &pb.SearchRequest{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(results) != 0 {
+		t.Errorf("expected 0 results, got %d", len(results))
+	}
+}
+
+// ── SearchSimilar ─────────────────────────────────────────────────────────────
+
+func TestCoordinatorSearchSimilar_ReturnsEntitiesWithScores(t *testing.T) {
+	search := &mockSearchClient{
+		similarStream: &mockSearchStream{responses: []*pb.SearchResponse{
+			{Data: mustStruct(t, map[string]interface{}{"Id": "1", "Category": "tech"}), Score: 0.87},
+		}},
+	}
+	c := newTestCoordinator(t, search)
+
+	results, err := c.SearchSimilar(context.Background(), &pb.SearchSimilarRequest{TypeName: "coordinatorArticle"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(results) != 1 || results[0].Entity.Id != "1" || results[0].Score != 0.87 {
+		t.Errorf("unexpected results: %+v", results)
+	}
+	if search.capturedSearchSimilar == nil {
+		t.Error("request not passed through")
+	}
+}
+
+func TestCoordinatorSearchSimilar_PropagatesInitialError(t *testing.T) {
+	search := &mockSearchClient{similarErr: errors.New("boom")}
+	c := newTestCoordinator(t, search)
+
+	_, err := c.SearchSimilar(context.Background(), &pb.SearchSimilarRequest{})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+}
+
+// ── SearchChunks ──────────────────────────────────────────────────────────────
+
+func TestCoordinatorSearchChunks_ReturnsRawResponses(t *testing.T) {
+	search := &mockSearchClient{
+		chunksStream: &mockChunkSearchStream{responses: []*pb.ChunkSearchResponse{
+			{ParentKey: "1", ChunkText: "hello", Score: 0.6},
+			{ParentKey: "1", ChunkText: "world", Score: 0.4},
+		}},
+	}
+	c := newTestCoordinator(t, search)
+
+	results, err := c.SearchChunks(context.Background(), &pb.SearchChunksRequest{TypeName: "coordinatorArticle"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(results) != 2 {
+		t.Fatalf("expected 2 results, got %d", len(results))
+	}
+	if results[0].ChunkText != "hello" || results[1].ChunkText != "world" {
+		t.Errorf("unexpected results: %+v", results)
+	}
+}
+
+func TestCoordinatorSearchChunks_PropagatesInitialError(t *testing.T) {
+	search := &mockSearchClient{chunksErr: errors.New("boom")}
+	c := newTestCoordinator(t, search)
+
+	_, err := c.SearchChunks(context.Background(), &pb.SearchChunksRequest{})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+}
+
+// ── GroupBy ───────────────────────────────────────────────────────────────────
+
+func TestCoordinatorGroupBy_ReturnsMaps(t *testing.T) {
+	search := &mockSearchClient{
+		groupByStream: &mockSearchStream{responses: []*pb.SearchResponse{
+			{Data: mustStruct(t, map[string]interface{}{"Category": "tech", "n": 3.0})},
+		}},
+	}
+	c := newTestCoordinator(t, search)
+
+	rows, err := c.GroupBy(context.Background(), &pb.GroupByRequest{TypeName: "coordinatorArticle"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("expected 1 row, got %d", len(rows))
+	}
+	if rows[0]["Category"] != "tech" || rows[0]["n"] != 3.0 {
+		t.Errorf("unexpected row: %+v", rows[0])
+	}
+}
+
+func TestCoordinatorGroupBy_PropagatesInitialError(t *testing.T) {
+	search := &mockSearchClient{groupByErr: errors.New("boom")}
+	c := newTestCoordinator(t, search)
+
+	_, err := c.GroupBy(context.Background(), &pb.GroupByRequest{})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+}
+
+// ── Pipeline ──────────────────────────────────────────────────────────────────
+
+func TestCoordinatorPipeline_ReturnsMaps(t *testing.T) {
+	search := &mockSearchClient{
+		pipelineStream: &mockSearchStream{responses: []*pb.SearchResponse{
+			{Data: mustStruct(t, map[string]interface{}{"rank": 1.0})},
+		}},
+	}
+	c := newTestCoordinator(t, search)
+
+	rows, err := c.Pipeline(context.Background(), &pb.PipelineRequest{TypeName: "coordinatorArticle"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(rows) != 1 || rows[0]["rank"] != 1.0 {
+		t.Errorf("unexpected rows: %+v", rows)
+	}
+}
+
+func TestCoordinatorPipeline_PropagatesInitialError(t *testing.T) {
+	search := &mockSearchClient{pipelineErr: errors.New("boom")}
+	c := newTestCoordinator(t, search)
+
+	_, err := c.Pipeline(context.Background(), &pb.PipelineRequest{})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+}
+
+// ── Aggregate ─────────────────────────────────────────────────────────────────
+
+func TestCoordinatorAggregate_ReturnsResponse(t *testing.T) {
+	search := &mockSearchClient{
+		aggregateResp: &pb.AggregateResponse{Total: 42},
+	}
+	c := newTestCoordinator(t, search)
+
+	resp, err := c.Aggregate(context.Background(), &pb.AggregateRequest{TypeName: "coordinatorArticle"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp.Total != 42 {
+		t.Errorf("total = %d, want 42", resp.Total)
+	}
+	if search.capturedAggregate == nil {
+		t.Error("request not passed through")
+	}
+}
+
+func TestCoordinatorAggregate_PropagatesError(t *testing.T) {
+	search := &mockSearchClient{aggregateErr: errors.New("boom")}
+	c := newTestCoordinator(t, search)
+
+	_, err := c.Aggregate(context.Background(), &pb.AggregateRequest{})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+}

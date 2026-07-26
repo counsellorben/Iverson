@@ -276,6 +276,45 @@ public sealed class EntityCoordinator<T>(
         }
     }
 
+    /// <summary>
+    /// Executes a GROUP BY aggregation and streams untyped rows (one row per output group).
+    /// Column set depends on the query's keys/metrics, so rows come back as string-keyed
+    /// dictionaries, same as <see cref="PipelineAsync(PipelineBuilder,CancellationToken)"/>.
+    /// </summary>
+    public async IAsyncEnumerable<IReadOnlyDictionary<string, object?>> GroupByAsync(
+        GroupByBuilder query,
+        Metadata? headers = null,
+        [EnumeratorCancellation] CancellationToken ct = default)
+    {
+        var request     = query.Build();
+        request.TraceId = CurrentTraceId();
+
+        logger.LogDebug("ObjectSearch.GroupBy {Entity} ({Keys} keys)",
+            _descriptor.EntityName, request.Keys.Count);
+
+        var stream = search.GroupBy(request, headers, cancellationToken: ct);
+        await foreach (var response in stream.ResponseStream.ReadAllAsync(ct))
+            yield return StructConverter.ToDictionary(response.Data);
+    }
+
+    /// <summary>
+    /// Executes an aggregation request and returns the full <see cref="AggregateResponse"/>
+    /// (one <see cref="AggregationResult"/> per requested <see cref="AggregationSpec"/>).
+    /// </summary>
+    public async Task<AggregateResponse> AggregateAsync(
+        AggregateBuilder query,
+        Metadata? headers = null,
+        CancellationToken ct = default)
+    {
+        var request     = query.Build();
+        request.TraceId = CurrentTraceId();
+
+        logger.LogDebug("ObjectSearch.Aggregate {Entity} ({Aggregations} aggregations)",
+            _descriptor.EntityName, request.Aggregations.Count);
+
+        return await search.AggregateAsync(request, headers, cancellationToken: ct);
+    }
+
     private static string CurrentTraceId() =>
         Activity.Current?.TraceId.ToString() ?? string.Empty;
 

@@ -1,5 +1,6 @@
 """Iverson Python gRPC client."""
 
+from iverson_client.aggregate import AggregateBuilder, aggregate
 from iverson_client.annotations import (
     iverson_entity,
     iverson_key,
@@ -12,7 +13,7 @@ from iverson_client.annotations import (
     FieldMeta,
 )
 from iverson_client.auth import IversonClientCredentials
-from iverson_client.core import IversonClient, EntityCoordinator, SchemaRegistrar
+from iverson_client.core import IversonClient, EntityCoordinator, SchemaRegistrar, SearchResult
 from iverson_client.group_by import GroupByBuilder
 from iverson_client.pipeline import PipelineBuilder, PipelineStepBuilder, pipeline
 from iverson_client.search import QueryBuilder
@@ -33,6 +34,7 @@ __all__ = [
     "IversonClientCredentials",
     "EntityCoordinator",
     "SchemaRegistrar",
+    "SearchResult",
     "QueryBuilder",
     "GroupByBuilder",
     "group_by",
@@ -43,4 +45,6 @@ __all__ = [
     "ChunksBuilder",
     "similar",
     "chunks",
+    "AggregateBuilder",
+    "aggregate",
 ]

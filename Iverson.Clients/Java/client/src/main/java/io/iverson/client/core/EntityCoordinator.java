@@ -3,16 +3,23 @@ package io.iverson.client.core;
 import io.grpc.StatusRuntimeException;
 import io.iverson.client.annotations.IversonEntity;
 import io.iverson.client.annotations.IversonKey;
+import io.iverson.client.search.AggregateBuilder;
+import io.iverson.client.search.ChunksBuilder;
+import io.iverson.client.search.GroupByBuilder;
+import io.iverson.client.search.PipelineBuilder;
 import io.iverson.client.search.QueryBuilder;
+import io.iverson.client.search.SimilarBuilder;
 import iverson.ObjectMapping;
 import iverson.ObjectPersistence;
 import iverson.ObjectRetrieval;
 import iverson.ObjectSearch;
+import iverson.ObjectSearchServiceGrpc;
 
 import java.lang.reflect.Field;
 import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.List;
+import java.util.Map;
 
 /**
  * Per-entity surface for all CRUD and search operations.
@@ -28,6 +35,7 @@ public final class EntityCoordinator<T> {
     private final IversonClient client;
     private final Class<T> entityType;
     private final String typeName;
+    private final ObjectSearchServiceGrpc.ObjectSearchServiceBlockingStub searchStub;
 
     public EntityCoordinator(IversonClient client, Class<T> entityType) {
         if (entityType.getAnnotation(IversonEntity.class) == null) {
@@ -37,6 +45,21 @@ public final class EntityCoordinator<T> {
         this.client     = client;
         this.entityType = entityType;
         this.typeName   = entityType.getSimpleName();
+        this.searchStub = client.searchStub;
+        // Validate that a key field exists
+        findKeyField(entityType);
+    }
+
+    /** Package-private constructor for testing with a mock search stub. */
+    EntityCoordinator(ObjectSearchServiceGrpc.ObjectSearchServiceBlockingStub searchStub, Class<T> entityType) {
+        if (entityType.getAnnotation(IversonEntity.class) == null) {
+            throw new IllegalArgumentException(
+                entityType.getSimpleName() + " is not annotated with @IversonEntity");
+        }
+        this.client     = null;
+        this.entityType = entityType;
+        this.typeName   = entityType.getSimpleName();
+        this.searchStub = searchStub;
         // Validate that a key field exists
         findKeyField(entityType);
     }
@@ -132,7 +155,7 @@ public final class EntityCoordinator<T> {
      */
     public List<SearchResult<T>> search(QueryBuilder<T> queryBuilder) throws StatusRuntimeException {
         ObjectSearch.SearchRequest request = queryBuilder.build();
-        Iterator<ObjectSearch.SearchResponse> stream = client.searchStub.search(request);
+        Iterator<ObjectSearch.SearchResponse> stream = searchStub.search(request);
         List<SearchResult<T>> results = new ArrayList<>();
         while (stream.hasNext()) {
             ObjectSearch.SearchResponse response = stream.next();
@@ -140,6 +163,113 @@ public final class EntityCoordinator<T> {
             if (entity != null) results.add(new SearchResult<>(entity, response.getScore()));
         }
         return results;
+    }
+
+    /**
+     * Executes a compound GROUP BY aggregation and returns one row per output group. Column
+     * set depends on the query's keys/metrics, so rows come back as string-keyed maps rather
+     * than typed entities.
+     */
+    public List<Map<String, Object>> groupBy(GroupByBuilder builder) throws StatusRuntimeException {
+        return groupBy(builder, null);
+    }
+
+    /** Same as {@link #groupBy(GroupByBuilder)}, propagating an acting-user token if given. */
+    public List<Map<String, Object>> groupBy(GroupByBuilder builder, String actingUserToken)
+            throws StatusRuntimeException {
+        ObjectSearch.GroupByRequest request = builder.build();
+        Iterator<ObjectSearch.SearchResponse> stream = stubFor(actingUserToken).groupBy(request);
+        List<Map<String, Object>> results = new ArrayList<>();
+        while (stream.hasNext()) {
+            results.add(StructConverter.fromStructAsMap(stream.next().getData()));
+        }
+        return results;
+    }
+
+    /**
+     * Executes an aggregation request and returns the full {@link ObjectSearch.AggregateResponse}
+     * (one {@code AggregationResult} per requested {@code AggregationSpec}).
+     */
+    public ObjectSearch.AggregateResponse aggregate(AggregateBuilder builder) throws StatusRuntimeException {
+        return aggregate(builder, null);
+    }
+
+    /** Same as {@link #aggregate(AggregateBuilder)}, propagating an acting-user token if given. */
+    public ObjectSearch.AggregateResponse aggregate(AggregateBuilder builder, String actingUserToken)
+            throws StatusRuntimeException {
+        ObjectSearch.AggregateRequest request = builder.build();
+        return stubFor(actingUserToken).aggregate(request);
+    }
+
+    /**
+     * Executes a pipeline (CTE chain) and returns one row per output row. Column set depends
+     * on the pipeline's final step, so rows come back as string-keyed maps, same as
+     * {@link #groupBy(GroupByBuilder)}.
+     */
+    public List<Map<String, Object>> pipeline(PipelineBuilder builder) throws StatusRuntimeException {
+        return pipeline(builder, null);
+    }
+
+    /** Same as {@link #pipeline(PipelineBuilder)}, propagating an acting-user token if given. */
+    public List<Map<String, Object>> pipeline(PipelineBuilder builder, String actingUserToken)
+            throws StatusRuntimeException {
+        ObjectSearch.PipelineRequest request = builder.build();
+        Iterator<ObjectSearch.SearchResponse> stream = stubFor(actingUserToken).pipeline(request);
+        List<Map<String, Object>> results = new ArrayList<>();
+        while (stream.hasNext()) {
+            results.add(StructConverter.fromStructAsMap(stream.next().getData()));
+        }
+        return results;
+    }
+
+    /** Executes a Qdrant vector similarity search and returns matching entities with scores. */
+    public List<SearchResult<T>> searchSimilar(SimilarBuilder builder) throws StatusRuntimeException {
+        return searchSimilar(builder, null);
+    }
+
+    /** Same as {@link #searchSimilar(SimilarBuilder)}, propagating an acting-user token if given. */
+    public List<SearchResult<T>> searchSimilar(SimilarBuilder builder, String actingUserToken)
+            throws StatusRuntimeException {
+        ObjectSearch.SearchSimilarRequest request = builder.build();
+        Iterator<ObjectSearch.SearchResponse> stream = stubFor(actingUserToken).searchSimilar(request);
+        List<SearchResult<T>> results = new ArrayList<>();
+        while (stream.hasNext()) {
+            ObjectSearch.SearchResponse response = stream.next();
+            T entity = StructConverter.fromStruct(response.getData(), entityType);
+            if (entity != null) results.add(new SearchResult<>(entity, response.getScore()));
+        }
+        return results;
+    }
+
+    /**
+     * Executes a Qdrant chunk/RAG search and returns matching passage chunks with their
+     * parent entity key and relevance score.
+     */
+    public List<ChunkSearchResult> searchChunks(ChunksBuilder builder) throws StatusRuntimeException {
+        return searchChunks(builder, null);
+    }
+
+    /** Same as {@link #searchChunks(ChunksBuilder)}, propagating an acting-user token if given. */
+    public List<ChunkSearchResult> searchChunks(ChunksBuilder builder, String actingUserToken)
+            throws StatusRuntimeException {
+        ObjectSearch.SearchChunksRequest request = builder.build();
+        Iterator<ObjectSearch.ChunkSearchResponse> stream = stubFor(actingUserToken).searchChunks(request);
+        List<ChunkSearchResult> results = new ArrayList<>();
+        while (stream.hasNext()) {
+            ObjectSearch.ChunkSearchResponse response = stream.next();
+            results.add(new ChunkSearchResult(response.getParentKey(), response.getChunkText(), response.getScore()));
+        }
+        return results;
+    }
+
+    /**
+     * Returns the search stub to invoke, attaching the acting-user token as a call option
+     * (consumed by {@link OAuth2ClientCredentials}) when one is given.
+     */
+    private ObjectSearchServiceGrpc.ObjectSearchServiceBlockingStub stubFor(String actingUserToken) {
+        return actingUserToken != null
+            ? searchStub.withOption(OAuth2ClientCredentials.ACTING_USER_TOKEN, actingUserToken)
+            : searchStub;
     }
 
     // ── Helpers ────────────────────────────────────────────────────────────────
@@ -168,4 +298,7 @@ public final class EntityCoordinator<T> {
 
     /** Wraps a search result entity with its relevance score. */
     public record SearchResult<T>(T entity, float score) {}
+
+    /** Wraps a chunk/RAG search hit with its parent entity key, passage text, and relevance score. */
+    public record ChunkSearchResult(String parentKey, String chunkText, float score) {}
 }

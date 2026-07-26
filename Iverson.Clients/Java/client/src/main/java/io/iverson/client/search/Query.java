@@ -41,6 +41,15 @@ public final class Query {
     }
 
     /**
+     * Creates an {@link AggregateBuilder} scoped to the given type name string.
+     * Use for one-spec-per-query aggregations (TERMS, DATE_HISTOGRAM, RANGE bucketing, and
+     * scalar metrics) via {@link AggregateBuilder#build()}.
+     */
+    public static AggregateBuilder aggregate(String typeName) {
+        return new AggregateBuilder(typeName);
+    }
+
+    /**
      * Creates a {@link PipelineBuilder} scoped to the given type name. Pipelines compile
      * fluent step chains into one server-side CTE-chain query.
      */

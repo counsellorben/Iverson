@@ -25,10 +25,16 @@ export type { RelationMeta, SearchKeyMeta, RelationKindString, ChunkMeta } from 
 
 export { IversonClient, EntityCoordinator, SchemaRegistrar } from './core.js';
 
+export type { SearchResult } from './core.js';
+
 export { QueryBuilder, FieldCondition, SearchOperator, SearchLogic, SearchClauseType, JoinKind } from './search.js';
 
 export { GroupByBuilder, groupBy } from './group-by.js';
 
+export { AggregateBuilder, aggregate } from './aggregate.js';
+
 export { PipelineBuilder, PipelineStepBuilder, SelectSpecBuilder, pipeline } from './pipeline.js';
 
 export { SimilarBuilder, ChunksBuilder, similar, chunks } from './vector-search.js';
+
+export { createOAuth2ClientCredentials, createActingUserMetadata } from './auth.js';

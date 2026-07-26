@@ -79,6 +79,21 @@ class _BearerTokenAuthPlugin(grpc.AuthMetadataPlugin):
 ACTING_USER_METADATA_KEY = "x-acting-user-authorization"
 
 
+class _ActingUserAuthPlugin(grpc.AuthMetadataPlugin):
+    """Attaches a pre-minted acting-user token to every call. Unlike
+    ``_BearerTokenAuthPlugin``, wraps a static token string directly — no
+    refresh logic needed."""
+
+    def __init__(self, token: str) -> None:
+        self._token = token
+
+    def __call__(self, context, callback) -> None:
+        try:
+            callback(((ACTING_USER_METADATA_KEY, f"Bearer {self._token}"),), None)
+        except Exception as e:
+            callback(None, e)
+
+
 def acting_user_metadata(token: str) -> tuple[tuple[str, str], ...]:
     """Per-call metadata tuple carrying the acting-user's own Authentik-issued
     token. Pass via a stub call's `metadata=` kwarg alongside the service
