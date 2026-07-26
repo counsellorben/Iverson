@@ -171,9 +171,9 @@ describe('EntityCoordinator — acting-user token threading', () => {
 // ── IversonClient — search-family execution methods ─────────────────────────
 
 describe('IversonClient — search-family execution methods', () => {
-    it('search() converts each row into a T instance via the shared Struct-conversion path', async () => {
+    it('search() converts each row into a T instance via the shared Struct-conversion path and preserves score', async () => {
         const rows: SearchResponse[] = [
-            { data: { Id: '1', Title: 'A', WordCount: 10 }, score: 0, traceId: '' },
+            { data: { Id: '1', Title: 'A', WordCount: 10 }, score: 0.75, traceId: '' },
             { data: { Id: '2', Title: 'B', WordCount: 20 }, score: 0, traceId: '' },
         ];
         const { fn, calls } = makeStreamStub<SearchRequest, SearchResponse>(rows);
@@ -187,15 +187,17 @@ describe('IversonClient — search-family execution methods', () => {
         const results = await client.search(req, SearchArticle);
 
         expect(results).toHaveLength(2);
-        expect(results[0]).toBeInstanceOf(SearchArticle);
-        expect(results[0]).toMatchObject({ id: '1', title: 'A', wordCount: 10 });
-        expect(results[1]).toMatchObject({ id: '2', title: 'B', wordCount: 20 });
+        expect(results[0].entity).toBeInstanceOf(SearchArticle);
+        expect(results[0].entity).toMatchObject({ id: '1', title: 'A', wordCount: 10 });
+        expect(results[0].score).toBe(0.75);
+        expect(results[1].entity).toMatchObject({ id: '2', title: 'B', wordCount: 20 });
+        expect(results[1].score).toBe(0);
         expect(calls[0].metadata.get(ACTING_USER_METADATA_KEY)).toEqual(['Bearer tok']);
 
         client.close();
     });
 
-    it('searchSimilar() converts each row into a T instance via the shared Struct-conversion path', async () => {
+    it('searchSimilar() converts each row into a T instance via the shared Struct-conversion path and preserves score', async () => {
         const rows: SearchResponse[] = [{ data: { Id: '9', Title: 'Vec', WordCount: 5 }, score: 0.9, traceId: '' }];
         const { fn } = makeStreamStub<SearchSimilarRequest, SearchResponse>(rows);
         const client = new IversonClient('localhost', 0);
@@ -208,8 +210,9 @@ describe('IversonClient — search-family execution methods', () => {
         const results = await client.searchSimilar(req, SearchArticle);
 
         expect(results).toHaveLength(1);
-        expect(results[0]).toBeInstanceOf(SearchArticle);
-        expect(results[0]).toMatchObject({ id: '9', title: 'Vec', wordCount: 5 });
+        expect(results[0].entity).toBeInstanceOf(SearchArticle);
+        expect(results[0].entity).toMatchObject({ id: '9', title: 'Vec', wordCount: 5 });
+        expect(results[0].score).toBe(0.9);
 
         client.close();
     });

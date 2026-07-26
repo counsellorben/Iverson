@@ -102,6 +102,14 @@ const RELATION_KIND_MAP: Record<RelationKindString, RelationKind> = {
 /** A pre-minted acting-user token, or a function that resolves one (e.g. from a token cache). */
 export type ActingUserToken = string | (() => Promise<string>);
 
+// ── Search results ─────────────────────────────────────────────────────────────
+
+/** A single search-family result row: the converted entity plus its relevance score. */
+export interface SearchResult<T> {
+    entity: T;
+    score: number;
+}
+
 /** Resolve an optional acting-user token (awaiting it if it's a function) into call metadata. */
 async function resolveActingUserMetadata(actingUserToken?: ActingUserToken): Promise<grpc.Metadata> {
     if (actingUserToken === undefined) return new grpc.Metadata();
@@ -496,21 +504,23 @@ export class IversonClient {
 
     // ── Search-family execution ──────────────────────────────────────────────
 
-    /** Execute a Search request. Rows are genuinely `T`-shaped, so each is converted via payloadToEntity. */
-    async search<T extends object>(request: SearchRequest, cls: new () => T): Promise<T[]> {
+    /** Execute a Search request. Rows are genuinely `T`-shaped, so each is converted via payloadToEntity;
+     * each result also carries the row's relevance score. */
+    async search<T extends object>(request: SearchRequest, cls: new () => T): Promise<SearchResult<T>[]> {
         return this._collectSearchStream(
             (req, metadata, options) => this._searchClient.search(req, metadata, options),
             request,
-            cls,
+            (row) => ({ entity: payloadToEntity(cls, (row.data ?? {}) as Record<string, unknown>), score: row.score }),
         );
     }
 
-    /** Execute a SearchSimilar (vector) request. Rows are genuinely `T`-shaped, so each is converted via payloadToEntity. */
-    async searchSimilar<T extends object>(request: SearchSimilarRequest, cls: new () => T): Promise<T[]> {
+    /** Execute a SearchSimilar (vector) request. Rows are genuinely `T`-shaped, so each is converted via
+     * payloadToEntity; each result also carries the row's relevance score. */
+    async searchSimilar<T extends object>(request: SearchSimilarRequest, cls: new () => T): Promise<SearchResult<T>[]> {
         return this._collectSearchStream(
             (req, metadata, options) => this._searchClient.searchSimilar(req, metadata, options),
             request,
-            cls,
+            (row) => ({ entity: payloadToEntity(cls, (row.data ?? {}) as Record<string, unknown>), score: row.score }),
         );
     }
 
@@ -531,7 +541,7 @@ export class IversonClient {
         return this._collectSearchStream<GroupByRequest, Record<string, unknown>>(
             (req, metadata, options) => this._searchClient.groupBy(req, metadata, options),
             request,
-            undefined,
+            (row) => (row.data ?? {}) as Record<string, unknown>,
         );
     }
 
@@ -551,29 +561,28 @@ export class IversonClient {
         return this._collectSearchStream<PipelineRequest, Record<string, unknown>>(
             (req, metadata, options) => this._searchClient.pipeline(req, metadata, options),
             request,
-            undefined,
+            (row) => (row.data ?? {}) as Record<string, unknown>,
         );
     }
 
     /**
-     * Shared Struct-conversion path for the streaming search-family RPCs (Search/SearchSimilar/
-     * GroupBy/Pipeline, all of which respond with SearchResponse): opens the stream with the
-     * acting-user token resolved into metadata, then converts each response's `data` map into a
-     * `T` instance via payloadToEntity when `cls` is given, or leaves it as a plain record when not.
+     * Shared streaming path for the search-family RPCs (Search/SearchSimilar/GroupBy/Pipeline, all
+     * of which respond with SearchResponse): opens the stream with the acting-user token resolved
+     * into metadata, then applies the caller-supplied `map` to each response row. Search/SearchSimilar
+     * map to a `SearchResult<T>` (entity converted via payloadToEntity, plus the row's score); GroupBy/
+     * Pipeline map to a plain record, since aggregated/derived columns don't correspond to any entity's
+     * own fields or carry a meaningful per-row score.
      */
-    private async _collectSearchStream<Req, T extends object>(
+    private async _collectSearchStream<Req, T>(
         method: (
             req: Req,
             metadata: grpc.Metadata,
             options: Partial<grpc.CallOptions>,
         ) => grpc.ClientReadableStream<SearchResponse>,
         request: Req,
-        cls: (new () => T) | undefined,
+        map: (row: SearchResponse) => T,
     ): Promise<T[]> {
         const stream = await openStream(method, request, this._callCredentials, this._actingUserToken);
-        return collectStream(stream, (row: SearchResponse) => {
-            const data = (row.data ?? {}) as Record<string, unknown>;
-            return (cls ? payloadToEntity(cls, data) : data) as T;
-        });
+        return collectStream(stream, map);
     }
 }
