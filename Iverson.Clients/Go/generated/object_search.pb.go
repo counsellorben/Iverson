@@ -1083,7 +1083,9 @@ type SearchChunksRequest struct {
 	Query    string                 `protobuf:"bytes,3,opt,name=query,proto3" json:"query,omitempty"`                       // text to embed and compare
 	TopK     uint32                 `protobuf:"varint,4,opt,name=top_k,json=topK,proto3" json:"top_k,omitempty"`
 	TraceId  string                 `protobuf:"bytes,5,opt,name=trace_id,json=traceId,proto3" json:"trace_id,omitempty"`
-	// At most one EQUALS clause on the type's primary-key property; see ObjectSearchGrpcService.SearchChunks.
+	// EQUALS clauses (ANDed) on the type's primary-key property and/or its metadata columns
+	// (properties annotated [IversonMetadata]). Other operators, other properties, and MUST_NOT
+	// clauses are rejected. See ObjectSearchGrpcService.SearchChunks.
 	Filter        []*SearchClause `protobuf:"bytes,6,rep,name=filter,proto3" json:"filter,omitempty"`
 	FilterLogic   SearchLogic     `protobuf:"varint,7,opt,name=filter_logic,json=filterLogic,proto3,enum=iverson.SearchLogic" json:"filter_logic,omitempty"`
 	unknownFields protoimpl.UnknownFields

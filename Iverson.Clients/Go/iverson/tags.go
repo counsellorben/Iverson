@@ -6,10 +6,20 @@
 //	`iverson:"key"`                 — primary key field
 //	`iverson:"search_key:N"`        — sort key at position N (0-based)
 //	`iverson:"large_field"`         — excluded from StarRocks materialized view
+//	`iverson:"metadata"`            — denormalized onto chunk points for chunk-search filtering
 //	`iverson:"many_to_one:TypeName"` — FK to TypeName (this entity holds the FK)
 //	`iverson:"many_to_many:TypeName"` — join-table FK
 //	`iverson:"one_to_many:TypeName"` — inverse of many_to_one
 //	`iverson:"one_to_one:TypeName"` — 1:1 FK
+//
+// A field may also carry an independent description tag, valid alongside any
+// `iverson` kind (including `key`) and on untagged fields:
+//
+//	`iverson_desc:"Human-readable description"`
+//
+// A type-level description is supplied by implementing the optional interface:
+//
+//	interface{ IversonDescription() string }
 package iverson
 
 import (
@@ -22,11 +32,16 @@ import (
 // Tag key for struct tag parsing.
 const TagKey = "iverson"
 
+// DescriptionTagKey is the struct tag key for field descriptions. It is
+// independent of TagKey and may appear on a field of any kind.
+const DescriptionTagKey = "iverson_desc"
+
 // Kind constants for tag values.
 const (
 	KindKey        = "key"
 	KindSearchKey  = "search_key"
 	KindLargeField = "large_field"
+	KindMetadata   = "metadata"
 	KindEmbedding  = "embedding"
 	KindChunk      = "chunk"
 	KindManyToOne  = "many_to_one"
@@ -49,6 +64,9 @@ type FieldMeta struct {
 	ChunkOverlap int
 	// RelatedType is the target type name for relation kinds.
 	RelatedType string
+	// Description is the field description from the `iverson_desc` struct tag,
+	// or "" when absent. Independent of Kind.
+	Description string
 }
 
 // ParseTag parses an `iverson:"..."` tag value for one field.
@@ -79,6 +97,9 @@ func ParseTag(fieldName, tagValue string) (FieldMeta, error) {
 
 	case KindLargeField:
 		meta.Kind = KindLargeField
+
+	case KindMetadata:
+		meta.Kind = KindMetadata
 
 	case KindEmbedding:
 		meta.Kind = KindEmbedding
@@ -148,6 +169,7 @@ func InspectType(v interface{}) (EntityMeta, error) {
 		if err != nil {
 			return EntityMeta{}, err
 		}
+		fm.Description = sf.Tag.Get(DescriptionTagKey)
 
 		switch fm.Kind {
 		case KindManyToOne, KindManyToMany, KindOneToMany, KindOneToOne:

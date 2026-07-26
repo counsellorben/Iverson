@@ -276,3 +276,97 @@ func (c *countingMappingClient) RegisterSchema(ctx context.Context, req *pb.Sche
 	*c.count++
 	return c.inner.RegisterSchema(ctx, req)
 }
+
+// ── metadata / description registrar tests ─────────────────────────────────────
+
+type describedArticle struct {
+	Id     string `iverson:"key" iverson_desc:"Primary identifier"`
+	Status string `iverson:"metadata" iverson_desc:"Publication status"`
+	Title  string `iverson_desc:"Headline"`
+	Body   string
+}
+
+func (describedArticle) IversonDescription() string { return "An article with metadata" }
+
+type undescribedArticle struct {
+	Id string `iverson:"key"`
+}
+
+func propByName(t *testing.T, req *pb.SchemaRequest, name string) *pb.PropertyDescriptor {
+	t.Helper()
+	for _, p := range req.RootType.Properties {
+		if p.Name == name {
+			return p
+		}
+	}
+	t.Fatalf("property %q not found", name)
+	return nil
+}
+
+func TestSchemaRegistrar_MetadataAndDescriptions(t *testing.T) {
+	mock := &mockMappingClient{response: &pb.SchemaResponse{Success: true}}
+	registrar := iverson.NewSchemaRegistrar(mock, describedArticle{})
+	if err := registrar.RegisterAll(context.Background(), ""); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	req := mock.capturedReq
+
+	if req.RootType.Description != "An article with metadata" {
+		t.Errorf("type description: got %q", req.RootType.Description)
+	}
+
+	// Description declared on the KEY field must be carried.
+	id := propByName(t, req, "Id")
+	if !id.IsKey {
+		t.Error("expected Id to be the key")
+	}
+	if id.Description != "Primary identifier" {
+		t.Errorf("key description: got %q", id.Description)
+	}
+	if id.IsMetadata {
+		t.Error("key field must not be marked metadata")
+	}
+
+	status := propByName(t, req, "Status")
+	if !status.IsMetadata {
+		t.Error("expected Status IsMetadata=true")
+	}
+	if status.Description != "Publication status" {
+		t.Errorf("metadata description: got %q", status.Description)
+	}
+
+	title := propByName(t, req, "Title")
+	if title.IsMetadata {
+		t.Error("expected Title IsMetadata=false")
+	}
+	if title.Description != "Headline" {
+		t.Errorf("plain-field description: got %q", title.Description)
+	}
+
+	body := propByName(t, req, "Body")
+	if body.Description != "" {
+		t.Errorf("expected empty description, got %q", body.Description)
+	}
+}
+
+func TestSchemaRegistrar_NoTypeDescriptionWhenInterfaceAbsent(t *testing.T) {
+	mock := &mockMappingClient{response: &pb.SchemaResponse{Success: true}}
+	registrar := iverson.NewSchemaRegistrar(mock, undescribedArticle{})
+	if err := registrar.RegisterAll(context.Background(), ""); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := mock.capturedReq.RootType.Description; got != "" {
+		t.Errorf("expected empty type description, got %q", got)
+	}
+}
+
+func TestSchemaRegistrar_TypeDescriptionFromPointerEntity(t *testing.T) {
+	mock := &mockMappingClient{response: &pb.SchemaResponse{Success: true}}
+	registrar := iverson.NewSchemaRegistrar(mock, &describedArticle{})
+	if err := registrar.RegisterAll(context.Background(), ""); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := mock.capturedReq.RootType.Description; got != "An article with metadata" {
+		t.Errorf("type description via pointer: got %q", got)
+	}
+}

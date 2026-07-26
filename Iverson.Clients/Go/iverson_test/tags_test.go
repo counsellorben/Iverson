@@ -294,3 +294,56 @@ func TestInspectType_NonStruct(t *testing.T) {
 		t.Error("expected error for non-struct type")
 	}
 }
+
+// ── metadata / description tag tests ───────────────────────────────────────────
+
+func TestParseTag_Metadata(t *testing.T) {
+	fm, err := iverson.ParseTag("Status", "metadata")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if fm.Kind != iverson.KindMetadata {
+		t.Errorf("expected kind=%q, got %q", iverson.KindMetadata, fm.Kind)
+	}
+}
+
+type descFixture struct {
+	Id       string `iverson:"key" iverson_desc:"The unique identifier"`
+	Status   string `iverson:"metadata" iverson_desc:"Publication status"`
+	Plain    string `iverson_desc:"A plain field"`
+	Untagged string
+}
+
+func TestInspectType_DescriptionsAndMetadata(t *testing.T) {
+	meta, err := iverson.InspectType(descFixture{})
+	if err != nil {
+		t.Fatalf("InspectType: %v", err)
+	}
+	byName := map[string]iverson.FieldMeta{}
+	for _, fm := range meta.Fields {
+		byName[fm.Name] = fm
+	}
+
+	// Description on the KEY field must be carried.
+	if got := byName["Id"].Description; got != "The unique identifier" {
+		t.Errorf("key field description: got %q", got)
+	}
+	if byName["Id"].Kind != iverson.KindKey {
+		t.Errorf("key field kind changed: %q", byName["Id"].Kind)
+	}
+	if byName["Status"].Kind != iverson.KindMetadata {
+		t.Errorf("expected metadata kind, got %q", byName["Status"].Kind)
+	}
+	if got := byName["Status"].Description; got != "Publication status" {
+		t.Errorf("metadata field description: got %q", got)
+	}
+	if got := byName["Plain"].Description; got != "A plain field" {
+		t.Errorf("plain field description: got %q", got)
+	}
+	if byName["Plain"].Kind != "" {
+		t.Errorf("expected empty kind for desc-only field, got %q", byName["Plain"].Kind)
+	}
+	if got := byName["Untagged"].Description; got != "" {
+		t.Errorf("expected empty description, got %q", got)
+	}
+}

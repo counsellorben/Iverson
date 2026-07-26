@@ -91,6 +91,8 @@ func (r *SchemaRegistrar) buildRequest(e interface{}, traceID string) (*pb.Schem
 			IsChunk:        fm.Kind == KindChunk,
 			ChunkMaxTokens: chunkMaxTokens,
 			ChunkOverlap:   chunkOverlap,
+			IsMetadata:     fm.Kind == KindMetadata,
+			Description:    fm.Description,
 		}
 		properties = append(properties, prop)
 	}
@@ -110,14 +112,39 @@ func (r *SchemaRegistrar) buildRequest(e interface{}, traceID string) (*pb.Schem
 	}
 
 	typeDesc := &pb.TypeDescriptor{
-		TypeName:   meta.TypeName,
-		Properties: properties,
-		Relations:  relations,
+		TypeName:    meta.TypeName,
+		Properties:  properties,
+		Relations:   relations,
+		Description: typeDescription(e),
 	}
 	return &pb.SchemaRequest{
 		RootType: typeDesc,
 		TraceId:  traceID,
 	}, nil
+}
+
+// DescribedEntity is the optional interface an entity struct may implement to
+// supply a type-level description.
+type DescribedEntity interface {
+	IversonDescription() string
+}
+
+// typeDescription returns the entity's type-level description, or "" when the
+// entity does not implement DescribedEntity. A struct value is also checked
+// through a pointer, so pointer-receiver implementations are honoured.
+func typeDescription(e interface{}) string {
+	if d, ok := e.(DescribedEntity); ok {
+		return d.IversonDescription()
+	}
+	v := reflect.ValueOf(e)
+	if v.Kind() == reflect.Struct {
+		p := reflect.New(v.Type())
+		p.Elem().Set(v)
+		if d, ok := p.Interface().(DescribedEntity); ok {
+			return d.IversonDescription()
+		}
+	}
+	return ""
 }
 
 // int32FromInt narrows a platform int to int32, rejecting values that would
