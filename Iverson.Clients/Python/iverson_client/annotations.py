@@ -25,47 +25,83 @@ class FieldMeta:
     ``FieldMeta`` default with ``None`` so the attribute behaves normally
     at runtime while preserving the metadata on ``cls._iverson_meta``.
     """
-    kind: str                     # 'key' | 'search_key' | 'large_field' | 'embedding' | 'chunk' | relation kinds
+    kind: str                     # 'key' | 'search_key' | 'metadata' | 'large_field' | 'embedding' | 'chunk' | relation kinds
     order: int = 0                # for search_key
     related_type: str | None = None  # for relation kinds
     max_tokens: int = 512         # for chunk
     overlap: int = 64             # for chunk
+    metadata: bool = False        # metadata signal marker
+    description: str = ""         # human-readable field description
 
 
 # ── Public factory helpers ─────────────────────────────────────────────────────
 
-def iverson_key() -> FieldMeta:
-    """Mark the primary key field of an entity."""
-    return FieldMeta(kind="key")
+def iverson_key(description: str = "") -> FieldMeta:
+    """Mark the primary key field of an entity.
+
+    Args:
+        description: human-readable description of the field.
+    """
+    return FieldMeta(kind="key", description=description)
 
 
-def iverson_search_key(order: int = 0) -> FieldMeta:
+def iverson_search_key(order: int = 0, metadata: bool = False, description: str = "") -> FieldMeta:
     """Mark a field used as a search/sort key in StarRocks MV.
 
     Args:
         order: position in the composite search key (0-based).
+        metadata: also mark the field as a metadata signal.
+        description: human-readable description of the field.
     """
-    return FieldMeta(kind="search_key", order=order)
+    return FieldMeta(kind="search_key", order=order, metadata=metadata, description=description)
 
 
-def iverson_large_field() -> FieldMeta:
-    """Mark a field as large (excluded from materialized views)."""
-    return FieldMeta(kind="large_field")
+def iverson_metadata(description: str = "") -> FieldMeta:
+    """Mark a field as a metadata signal — a property that describes or
+    qualifies the entity rather than carrying its primary content.
+
+    Args:
+        description: human-readable description of the field.
+    """
+    return FieldMeta(kind="metadata", metadata=True, description=description)
 
 
-def iverson_embedding() -> FieldMeta:
-    """Mark a string field as a source for a whole-field vector embedding."""
-    return FieldMeta(kind="embedding")
+def iverson_description(description: str) -> FieldMeta:
+    """Supply a human-readable description for an otherwise plain field.
+
+    Args:
+        description: the description text.
+    """
+    return FieldMeta(kind="plain", description=description)
 
 
-def iverson_chunk(max_tokens: int = 512, overlap: int = 64) -> FieldMeta:
+def iverson_large_field(description: str = "") -> FieldMeta:
+    """Mark a field as large (excluded from materialized views).
+
+    Args:
+        description: human-readable description of the field.
+    """
+    return FieldMeta(kind="large_field", description=description)
+
+
+def iverson_embedding(description: str = "") -> FieldMeta:
+    """Mark a string field as a source for a whole-field vector embedding.
+
+    Args:
+        description: human-readable description of the field.
+    """
+    return FieldMeta(kind="embedding", description=description)
+
+
+def iverson_chunk(max_tokens: int = 512, overlap: int = 64, description: str = "") -> FieldMeta:
     """Mark a string field as a source for chunk-level vector embeddings.
 
     Args:
         max_tokens: approximate window size in tokens (1 token ~ 4 chars).
         overlap: tokens shared between adjacent windows.
+        description: human-readable description of the field.
     """
-    return FieldMeta(kind="chunk", max_tokens=max_tokens, overlap=overlap)
+    return FieldMeta(kind="chunk", max_tokens=max_tokens, overlap=overlap, description=description)
 
 
 def many_to_one(type_name: str) -> FieldMeta:
@@ -93,8 +129,11 @@ def one_to_one(type_name: str) -> FieldMeta:
 _RELATION_KINDS = {"many_to_one", "many_to_many", "one_to_many", "one_to_one"}
 
 
-def iverson_entity(cls: type) -> type:
+def iverson_entity(cls: type | None = None, *, description: str = ""):
     """Class decorator that collects ``FieldMeta`` annotations into metadata.
+
+    Usable bare (``@iverson_entity``) or called
+    (``@iverson_entity(description="...")`` to describe the type itself).
 
     After decoration:
     - ``cls._iverson_meta`` is a dict with keys:
@@ -104,9 +143,17 @@ def iverson_entity(cls: type) -> type:
         - ``large_fields`` (list[str]): field names marked iverson_large_field
         - ``relations`` (list[dict]): each dict has 'field', 'kind', 'related_type'
         - ``fields`` (list[str]): all annotated field names (key + plain + large)
+        - ``metadata_fields`` (list[str]): field names marked as metadata signals
+        - ``descriptions`` (dict[str, str]): field name → description text
+        - ``description`` (str): description of the type itself
     - Every ``FieldMeta`` class attribute is replaced with ``None`` so instances
       can set it normally.
     """
+    if cls is None:
+        def _decorate(inner_cls: type) -> type:
+            return iverson_entity(inner_cls, description=description)
+        return _decorate
+
     annotations: dict[str, Any] = {}
     # Walk MRO to gather inherited annotations (excluding object)
     for base in reversed(cls.__mro__):
@@ -121,6 +168,8 @@ def iverson_entity(cls: type) -> type:
     chunk_fields: list[tuple[str, int, int]] = []
     relations: list[dict] = []
     plain_fields: list[str] = []
+    metadata_fields: list[str] = []
+    descriptions: dict[str, str] = {}
 
     for field_name, _type_hint in annotations.items():
         default = getattr(cls, field_name, None)
@@ -128,6 +177,12 @@ def iverson_entity(cls: type) -> type:
             meta: FieldMeta = default
             # Replace the FieldMeta sentinel with None so the attribute is usable
             setattr(cls, field_name, None)
+
+            if meta.kind not in _RELATION_KINDS:
+                if meta.metadata:
+                    metadata_fields.append(field_name)
+                if meta.description:
+                    descriptions[field_name] = meta.description
 
             if meta.kind == "key":
                 key_field = field_name
@@ -166,6 +221,9 @@ def iverson_entity(cls: type) -> type:
         "chunk_fields": chunk_fields,
         "relations": relations,
         "fields": plain_fields,
+        "metadata_fields": metadata_fields,
+        "descriptions": descriptions,
+        "description": description,
     }
 
     return cls

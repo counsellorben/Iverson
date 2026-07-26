@@ -13,6 +13,8 @@ from iverson_client.annotations import (
     iverson_large_field,
     iverson_embedding,
     iverson_chunk,
+    iverson_metadata,
+    iverson_description,
     many_to_one,
     one_to_many,
 )
@@ -35,6 +37,16 @@ class RegArticle:
     published_at: datetime = iverson_search_key(order=1)
     author_id: str = many_to_one("RegAuthor")
     summary: str = iverson_chunk(max_tokens=256, overlap=32)
+
+
+@iverson_entity(description="An article with metadata signals.")
+class RegDescribedArticle:
+    id: str = iverson_key(description="Stable article identifier.")
+    source: str = iverson_metadata(description="Originating feed.")
+    language: str = iverson_metadata()
+    region: str = iverson_search_key(order=0, metadata=True, description="Publication region.")
+    title: str = iverson_description("Headline text.")
+    word_count: int = None
 
 
 @iverson_entity
@@ -191,3 +203,46 @@ class TestSchemaRegistrar:
 
         request: mapping_pb.SchemaRequest = stub.RegisterSchema.call_args[0][0]
         assert request.trace_id == "test-trace-123"
+
+
+class TestMetadataAndDescription:
+    def _request(self, cls) -> mapping_pb.SchemaRequest:
+        stub = make_stub()
+        stub.RegisterSchema.return_value = mapping_pb.SchemaResponse(success=True)
+        SchemaRegistrar(stub, cls).register_all()
+        return stub.RegisterSchema.call_args[0][0]
+
+    def test_type_description_populated(self):
+        request = self._request(RegDescribedArticle)
+        assert request.root_type.description == "An article with metadata signals."
+
+    def test_type_description_defaults_empty(self):
+        request = self._request(RegArticle)
+        assert request.root_type.description == ""
+
+    def test_metadata_fields_flagged(self):
+        props = {p.name: p for p in self._request(RegDescribedArticle).root_type.properties}
+        assert props["Source"].is_metadata is True
+        assert props["Language"].is_metadata is True
+
+    def test_metadata_composes_with_search_key(self):
+        props = {p.name: p for p in self._request(RegDescribedArticle).root_type.properties}
+        assert props["Region"].is_metadata is True
+        assert props["Region"].is_search_key is True
+        assert props["Region"].search_key_order == 0
+        assert props["Region"].description == "Publication region."
+
+    def test_key_field_description_carried(self):
+        props = {p.name: p for p in self._request(RegDescribedArticle).root_type.properties}
+        assert props["Id"].is_key is True
+        assert props["Id"].description == "Stable article identifier."
+
+    def test_plain_field_description_carried(self):
+        props = {p.name: p for p in self._request(RegDescribedArticle).root_type.properties}
+        assert props["Title"].description == "Headline text."
+
+    def test_undeclared_fields_default_to_false_and_empty(self):
+        props = {p.name: p for p in self._request(RegDescribedArticle).root_type.properties}
+        assert props["WordCount"].is_metadata is False
+        assert props["WordCount"].description == ""
+        assert props["Language"].description == ""
