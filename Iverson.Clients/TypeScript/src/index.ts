@@ -29,6 +29,10 @@ export { QueryBuilder, FieldCondition, SearchOperator, SearchLogic, SearchClause
 
 export { GroupByBuilder, groupBy } from './group-by.js';
 
+export { AggregateBuilder, aggregate } from './aggregate.js';
+
 export { PipelineBuilder, PipelineStepBuilder, SelectSpecBuilder, pipeline } from './pipeline.js';
 
 export { SimilarBuilder, ChunksBuilder, similar, chunks } from './vector-search.js';
+
+export { createOAuth2ClientCredentials, createActingUserMetadata } from './auth.js';
