@@ -253,7 +253,7 @@ public sealed class ObjectSearchGrpcService(
             throw new RpcException(new Status(StatusCode.InvalidArgument,
                 $"Property '{request.Property}' on '{request.TypeName}' is not authorized for this caller."));
 
-        var filter = BuildChunksFilter(schema, request);
+        var filter = BuildChunksFilter(schema, request, decision.AllowedFields);
         filter = IntelligenceFilterBuilder.ApplyOwnership(
             filter,
             decision.OwnershipRequired,
@@ -573,7 +573,8 @@ public sealed class ObjectSearchGrpcService(
                 $"{rpcName}: filter property '{property}' is not a scalar or foreign-key column on '{schema.TypeName}'."));
     }
 
-    private static Filter? BuildChunksFilter(SchemaDescriptor schema, SearchChunksRequest request)
+    private static Filter? BuildChunksFilter(
+        SchemaDescriptor schema, SearchChunksRequest request, IReadOnlySet<string>? allowedFields)
     {
         if (request.Filter.Count == 0) return null;
 
@@ -591,7 +592,17 @@ public sealed class ObjectSearchGrpcService(
             if (string.Equals(clause.Property, schema.KeyColumn.Name, StringComparison.OrdinalIgnoreCase))
                 filter.Must.AddRange(IntelligenceFilterBuilder.MatchParentId(clause.Value.StringVal).Must);
             else if (schema.MetadataColumns.Contains(clause.Property))
+            {
+                // The key clause is exempt from field masking (see exemptField: "Key" on the
+                // SearchSimilar path, and parent_key is returned unconditionally here), but a
+                // metadata column can be field-restricted — filtering on one the caller cannot
+                // read would be a value oracle.
+                if (allowedFields is not null && !allowedFields.Contains(clause.Property))
+                    throw new RpcException(new Status(StatusCode.InvalidArgument,
+                        $"SearchChunks: filter property '{clause.Property}' is not authorized for this caller."));
+
                 filter.Must.Add(IntelligenceFilterBuilder.MatchEquality(clause.Property.ToCamelCase(), clause.Value));
+            }
             else
                 throw new RpcException(
                     new Status(
