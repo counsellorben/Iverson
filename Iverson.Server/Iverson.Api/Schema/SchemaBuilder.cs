@@ -29,6 +29,9 @@ internal static class SchemaBuilder
         var chunks           = new List<ChunkDescriptor>();
         var searchKeysSorted = new List<(string Name, int Order)>();
         var largeFields      = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var metadataColumns  = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var fieldDescriptions = new Dictionary<string, string>();
+        var badMetadata      = new List<string>();
 
         foreach (var prop in typeDesc.Properties.Where(p => !p.IsKey))
         {
@@ -58,6 +61,16 @@ internal static class SchemaBuilder
             if (prop.IsLargeField)
                 largeFields.Add(prop.Name);
 
+            if (prop.IsMetadata)
+            {
+                metadataColumns.Add(prop.Name);
+                if (prop.IsEmbedding || prop.IsChunk || prop.IsArray || prop.IsLargeField)
+                    badMetadata.Add(prop.Name);
+            }
+
+            if (!string.IsNullOrEmpty(prop.Description))
+                fieldDescriptions[prop.Name] = prop.Description;
+
             if (prop.IsSearchKey)
                 searchKeysSorted.Add((prop.Name, prop.SearchKeyOrder));
 
@@ -77,6 +90,11 @@ internal static class SchemaBuilder
             throw new InvalidOperationException(conflicts.Count == 1
                 ? $"Property '{conflicts[0]}' cannot have both [IversonSearchKey] and a large-field annotation."
                 : $"Properties {string.Join(", ", conflicts.Select(n => $"'{n}'"))} cannot have both [IversonSearchKey] and a large-field annotation.");
+
+        if (badMetadata.Count > 0)
+            throw new InvalidOperationException(badMetadata.Count == 1
+                ? $"Property '{badMetadata[0]}' cannot have both [IversonMetadata] and an embedding, chunk, array, or large-field annotation."
+                : $"Properties {string.Join(", ", badMetadata.Select(n => $"'{n}'"))} cannot have both [IversonMetadata] and an embedding, chunk, array, or large-field annotation.");
 
         var relations = typeDesc.Relations.Select(r => new RelationDescriptor(
             r.PropertyName,
@@ -117,7 +135,10 @@ internal static class SchemaBuilder
             SearchKeyColumns  = searchKeysSorted.ConvertAll(sk => sk.Name),
             LargeFieldColumns = largeFields,
             Authorization     = authorization,
-            TenantColumn      = string.IsNullOrEmpty(typeDesc.TenantField) ? null : typeDesc.TenantField
+            TenantColumn      = string.IsNullOrEmpty(typeDesc.TenantField) ? null : typeDesc.TenantField,
+            MetadataColumns   = metadataColumns,
+            Description       = string.IsNullOrEmpty(typeDesc.Description) ? null : typeDesc.Description,
+            FieldDescriptions = fieldDescriptions
         };
     }
 

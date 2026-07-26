@@ -57,6 +57,8 @@ message PropertyDescriptor {
     bool   is_search_key    = 14;  // [IversonSearchKey] present
     int32  search_key_order = 15;  // sort position when is_search_key = true
     bool   is_large_field   = 16;  // [IversonLargeField] present — excluded from fast-path indices
+    bool   is_metadata      = 17;  // [IversonMetadata] present — denormalized onto chunk points
+    string description      = 18;  // [IversonDescription] text; empty = none
 }
 
 message RelationDescriptor {
@@ -91,6 +93,7 @@ message TypeDescriptor {
     repeated RelationDescriptor relations  = 3;
     AuthorizationRules         authorization = 4;
     string                     tenant_field = 5;  // REQUIRED; names a declared scalar property holding the row's tenant id
+    string                     description  = 6;  // type-level [IversonDescription] text; empty = none
 }
 
 message SchemaRequest {

@@ -23,6 +23,12 @@ public sealed record SchemaDescriptor
     // A null TenantColumn means a legacy (pre-cutover) schema — the evaluator denies all access
     // to it until it is re-registered with a tenant_field.
     public string? TenantColumn { get; init; }
+
+    // Defaulted, not required — same rationale as TenantColumn above: legacy _iverson_schema
+    // JSON rows predate the metadata layer and carry none of these keys.
+    public HashSet<string>            MetadataColumns   { get; init; } = [];
+    public string?                    Description       { get; init; }
+    public Dictionary<string, string> FieldDescriptions { get; init; } = [];
 }
 
 public sealed record ColumnDescriptor(string Name, string SqlType, bool IsNullable);

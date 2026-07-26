@@ -129,6 +129,82 @@ public class SchemaBuilderTests
     }
 
     [Fact]
+    public void BuildDescriptor_PopulatesMetadataColumnsAndDescriptions()
+    {
+        var embedding = Substitute.For<IEmbeddingService>();
+        embedding.Dimension.Returns(768);
+        embedding.ModelId.Returns("nomic-embed-text");
+
+        var typeDesc = new TypeDescriptor { TypeName = "Article", Description = "An article." };
+        typeDesc.Properties.Add(
+            new PropertyDescriptor { Name = "Id",       ClrType = ClrType.ClrGuid,   IsKey = true });
+        typeDesc.Properties.Add(
+            new PropertyDescriptor { Name = "Category", ClrType = ClrType.ClrString, IsMetadata = true, Description = "The category." });
+        typeDesc.Properties.Add(
+            new PropertyDescriptor { Name = "Normal",   ClrType = ClrType.ClrString });
+
+        var descriptor = SchemaBuilder.BuildDescriptor(typeDesc, embedding);
+
+        descriptor.MetadataColumns.Should().BeEquivalentTo(new[] { "Category" });
+        descriptor.MetadataColumns.Should().NotContain("Normal");
+        descriptor.FieldDescriptions.Should().ContainKey("Category").WhoseValue.Should().Be("The category.");
+        descriptor.FieldDescriptions.Should().NotContainKey("Normal");
+        descriptor.Description.Should().Be("An article.");
+    }
+
+    [Fact]
+    public void BuildDescriptor_LeavesDescriptionNull_WhenTypeDescriptionIsEmpty()
+    {
+        var embedding = Substitute.For<IEmbeddingService>();
+        embedding.Dimension.Returns(768);
+        embedding.ModelId.Returns("nomic-embed-text");
+
+        var typeDesc = new TypeDescriptor { TypeName = "Article" };
+        typeDesc.Properties.Add(
+            new PropertyDescriptor { Name = "Id", ClrType = ClrType.ClrGuid, IsKey = true });
+
+        var descriptor = SchemaBuilder.BuildDescriptor(typeDesc, embedding);
+
+        descriptor.Description.Should().BeNull();
+        descriptor.MetadataColumns.Should().BeEmpty();
+        descriptor.FieldDescriptions.Should().BeEmpty();
+    }
+
+    [Theory]
+    [InlineData("embedding")]
+    [InlineData("chunk")]
+    [InlineData("array")]
+    [InlineData("large")]
+    public void BuildDescriptor_Throws_WhenMetadataPropertyIsNotAPlainScalar(string kind)
+    {
+        var embedding = Substitute.For<IEmbeddingService>();
+        embedding.Dimension.Returns(768);
+        embedding.ModelId.Returns("nomic-embed-text");
+
+        var bad = new PropertyDescriptor { Name = "Bad", ClrType = ClrType.ClrString, IsMetadata = true };
+        switch (kind)
+        {
+            case "embedding": bad.IsEmbedding = true; break;
+            case "chunk":
+                bad.IsChunk         = true;
+                bad.ChunkMaxTokens  = 512;
+                bad.ChunkOverlap    = 64;
+                break;
+            case "array":     bad.IsArray = true; break;
+            case "large":     bad.IsLargeField = true; break;
+        }
+
+        var typeDesc = new TypeDescriptor { TypeName = "Bad" };
+        typeDesc.Properties.Add(new PropertyDescriptor { Name = "Id", ClrType = ClrType.ClrGuid, IsKey = true });
+        typeDesc.Properties.Add(bad);
+
+        var act = () => SchemaBuilder.BuildDescriptor(typeDesc, embedding);
+
+        act.Should().Throw<InvalidOperationException>()
+           .WithMessage("*Bad*");
+    }
+
+    [Fact]
     public void ToEngagementQuerySchema_MapsTypeNameTableNameKeyAndScalarColumns()
     {
         var schema = SchemaFixtures.ArticleSchema();
