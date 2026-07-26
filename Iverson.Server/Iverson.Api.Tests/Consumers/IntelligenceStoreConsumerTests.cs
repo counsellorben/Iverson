@@ -855,4 +855,174 @@ public class IntelligenceStoreConsumerTests
                 Arg.Any<IReadOnlyDictionary<string, float[]>>(),
                 Arg.Any<IReadOnlyDictionary<string, object>?>());
         }
+
+    // ── Metadata denormalization onto chunk points ────────────────────────────
+
+    private static SchemaDescriptor MetadataDocSchema(
+        IEnumerable<ColumnDescriptor> scalarColumns,
+        IEnumerable<string> metadataColumns,
+        string? ownerField = null) => new()
+    {
+        TypeName       = "Doc",
+        TableName      = "docs",
+        CollectionName = "docs",
+        KeyColumn      = new ColumnDescriptor("Id", "uuid", false),
+        ScalarColumns  = scalarColumns.ToList(),
+        FkColumns      = [],
+        VectorFields   = [new VectorDescriptor("Title", 768, "nomic-embed-text")],
+        ChunkFields    = [new ChunkDescriptor("Body", 512, 64, "nomic-embed-text", 768)],
+        Relations      = [],
+        TenantColumn   = "TenantId",
+        MetadataColumns = new HashSet<string>(metadataColumns),
+        Authorization  = new AuthorizationRules(
+            ownerField,
+            new List<RowPermission> { new("test-bypass", true, true, true) },
+            new List<FieldPermission>())
+    };
+
+    private static EntityEvent DocEvent(string payloadJson, string traceId) => new(
+        EventType:     EntityEventType.Created,
+        TypeName:      "Doc",
+        Key:           Guid.NewGuid().ToString(),
+        PayloadJson:   payloadJson,
+        TraceId:       traceId,
+        SchemaVersion: "1",
+        OccurredAt:    DateTimeOffset.UtcNow,
+        TargetStores:  StoreTarget.Intelligence);
+
+    [Fact]
+    public async Task HandleCreated_WithMetadataColumns_WritesTypedValuesOntoChunkPayload()
+    {
+        var schema = MetadataDocSchema(
+            [
+                new ColumnDescriptor("Title", "text", false),
+                new ColumnDescriptor("Body", "text", false),
+                new ColumnDescriptor("Category", "text", false),
+                new ColumnDescriptor("Rank", "INTEGER", true)
+            ],
+            ["Category", "Rank"]);
+        await _registry.RegisterAsync(schema);
+
+        var longBody = new string('x', 3000);
+        var payload  = $$$"""{"Title":"T","Body":"{{{longBody}}}","Category":"news","Rank":7,"TenantId":"test-tenant"}""";
+
+        IReadOnlyDictionary<string, object>? capturedPayload = null;
+        _vectorWrite
+            .UpsertNamedAsync(
+                "docs_chunks_test-tenant",
+                Arg.Any<ulong>(),
+                Arg.Any<IReadOnlyDictionary<string, float[]>>(),
+                Arg.Do<IReadOnlyDictionary<string, object>?>(p => capturedPayload = p))
+            .Returns(Task.CompletedTask);
+
+        var ev = DocEvent(payload, "trace-metadata-chunk");
+        await BuildSut().HandleAsync(ev.Key, Serialize(ev), CancellationToken.None);
+
+        capturedPayload.Should().NotBeNull();
+        capturedPayload!["category"].Should().Be("news");
+        capturedPayload["rank"].Should().Be(7L);
+    }
+
+    [Fact]
+    public async Task HandleCreated_WithMetadataColumns_LeavesObjectPointPayloadUnchanged()
+    {
+        var schema = MetadataDocSchema(
+            [
+                new ColumnDescriptor("Title", "text", false),
+                new ColumnDescriptor("Body", "text", false),
+                new ColumnDescriptor("Category", "text", false)
+            ],
+            ["Category"]);
+        await _registry.RegisterAsync(schema);
+
+        var longBody = new string('x', 3000);
+        var payload  = $$$"""{"Title":"T","Body":"{{{longBody}}}","Category":"news","TenantId":"test-tenant"}""";
+
+        IReadOnlyDictionary<string, object>? pointPayload = null;
+        _vectorWrite
+            .UpsertNamedAsync(
+                "docs_test-tenant",
+                Arg.Any<ulong>(),
+                Arg.Any<IReadOnlyDictionary<string, float[]>>(),
+                Arg.Do<IReadOnlyDictionary<string, object>?>(p => pointPayload = p))
+            .Returns(Task.CompletedTask);
+
+        var ev = DocEvent(payload, "trace-metadata-point");
+        await BuildSut().HandleAsync(ev.Key, Serialize(ev), CancellationToken.None);
+
+        pointPayload.Should().NotBeNull();
+        // The object-level point already mirrors every scalar; the metadata flag must add nothing.
+        pointPayload!.Keys.Should().BeEquivalentTo(["key", "title", "body", "category"]);
+    }
+
+    [Fact]
+    public async Task HandleCreated_WithMetadataFlaggedOwnerField_ChunkPayloadKeepsAuthoritativeOwnerValue()
+    {
+        const string forgedOwner = "forged-owner";
+        const string realOwner   = "real-owner";
+
+        var schema = MetadataDocSchema(
+            [
+                new ColumnDescriptor("Title", "text", false),
+                new ColumnDescriptor("Body", "text", false),
+                new ColumnDescriptor("OwnerId", "text", false)
+            ],
+            ["OwnerId"],
+            ownerField: "OwnerId");
+        await _registry.RegisterAsync(schema);
+
+        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>())
+                 .Returns($$"""{"OwnerId":"{{realOwner}}","TenantId":"test-tenant"}""");
+
+        var longBody = new string('x', 3000);
+        var payload  = $$$"""{"Title":"T","Body":"{{{longBody}}}","OwnerId":"{{{forgedOwner}}}","TenantId":"test-tenant"}""";
+
+        IReadOnlyDictionary<string, object>? capturedPayload = null;
+        _vectorWrite
+            .UpsertNamedAsync(
+                "docs_chunks_test-tenant",
+                Arg.Any<ulong>(),
+                Arg.Any<IReadOnlyDictionary<string, float[]>>(),
+                Arg.Do<IReadOnlyDictionary<string, object>?>(p => capturedPayload = p))
+            .Returns(Task.CompletedTask);
+
+        var ev = DocEvent(payload, "trace-metadata-owner");
+        await BuildSut().HandleAsync(ev.Key, Serialize(ev), CancellationToken.None);
+
+        capturedPayload.Should().NotBeNull();
+        capturedPayload!["ownerId"].Should().Be(realOwner);
+        capturedPayload["ownerId"].Should().NotBe(forgedOwner);
+    }
+
+    [Fact]
+    public async Task HandleCreated_WithMetadataColumnNamedText_DoesNotClobberChunkPassageText()
+    {
+        var schema = MetadataDocSchema(
+            [
+                new ColumnDescriptor("Title", "text", false),
+                new ColumnDescriptor("Body", "text", false),
+                new ColumnDescriptor("Text", "text", false)
+            ],
+            ["Text"]);
+        await _registry.RegisterAsync(schema);
+
+        var longBody = new string('x', 3000);
+        var payload  = $$$"""{"Title":"T","Body":"{{{longBody}}}","Text":"clobbered","TenantId":"test-tenant"}""";
+
+        IReadOnlyDictionary<string, object>? capturedPayload = null;
+        _vectorWrite
+            .UpsertNamedAsync(
+                "docs_chunks_test-tenant",
+                Arg.Any<ulong>(),
+                Arg.Any<IReadOnlyDictionary<string, float[]>>(),
+                Arg.Do<IReadOnlyDictionary<string, object>?>(p => capturedPayload = p))
+            .Returns(Task.CompletedTask);
+
+        var ev = DocEvent(payload, "trace-metadata-text");
+        await BuildSut().HandleAsync(ev.Key, Serialize(ev), CancellationToken.None);
+
+        capturedPayload.Should().NotBeNull();
+        capturedPayload!["text"].Should().NotBe("clobbered");
+        ((string)capturedPayload["text"]).Should().StartWith("x");
+    }
 }

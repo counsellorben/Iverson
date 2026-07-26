@@ -200,6 +200,19 @@ public sealed class IntelligenceStoreConsumer(
                         if (authoritativeOwnerValue is not null)
                             chunkPayload[schema.Authorization!.OwnerField!.ToCamelCase()] = authoritativeOwnerValue;
 
+                        foreach (var name in schema.MetadataColumns)
+                        {
+                            if (ownerField is not null && string.Equals(name, ownerField, StringComparison.OrdinalIgnoreCase))
+                                continue; // authoritative owner write above covers this key (CSR #7)
+                            var camelKey = name.ToCamelCase();
+                            if (camelKey is "text" or "parent_id" or "field" or "chunk_index")
+                                continue; // reserved chunk payload keys must not be clobbered by metadata
+                            var sqlType = schema.ScalarColumns.FirstOrDefault(c =>
+                                string.Equals(c.Name, name, StringComparison.OrdinalIgnoreCase))?.SqlType ?? "TEXT";
+                            var val = ExtractTypedValue(payload, name, sqlType);
+                            if (val is not null) chunkPayload[name.ToCamelCase()] = val;
+                        }
+
                         await vectorWrite.UpsertNamedAsync(
                             chunksCollectionName,
                             chunkId,
