@@ -26,7 +26,18 @@ public sealed record SchemaDescriptor
 
     // Defaulted, not required — same rationale as TenantColumn above: legacy _iverson_schema
     // JSON rows predate the metadata layer and carry none of these keys.
-    public HashSet<string>            MetadataColumns   { get; init; } = [];
+    // The comparer is re-applied in the init accessor rather than only at construction:
+    // SchemaRegistry.LoadAsync deserializes this record with System.Text.Json, which builds a
+    // plain HashSet<string> with the default case-SENSITIVE comparer. Without this, a
+    // Contains("category") lookup would succeed in the process that registered the schema and
+    // fail in every process that loaded it from Postgres.
+    private readonly HashSet<string> _metadataColumns = [];
+    public HashSet<string> MetadataColumns
+    {
+        get => _metadataColumns;
+        init => _metadataColumns = new HashSet<string>(value ?? [], StringComparer.OrdinalIgnoreCase);
+    }
+
     public string?                    Description       { get; init; }
     public Dictionary<string, string> FieldDescriptions { get; init; } = [];
 }

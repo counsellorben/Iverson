@@ -91,6 +91,32 @@ public class SchemaRegistryTests
     }
 
     [Fact]
+    public async Task LoadAsync_MetadataColumns_StayCaseInsensitive_AfterRoundTrip()
+    {
+        // System.Text.Json rebuilds HashSet<string> with the default case-SENSITIVE comparer,
+        // so SchemaDescriptor re-applies OrdinalIgnoreCase in its init accessor. Without that,
+        // a Contains("category") lookup would succeed only in the registering process.
+        var schema = SchemaFixtures.AuthorSchema() with { MetadataColumns = ["Category"] };
+        schema.MetadataColumns.Contains("category").Should().BeTrue();
+
+        _repository.LoadAllAsync()
+            .Returns(new List<(string TypeName, string SchemaJson)>
+            {
+                ("Author", System.Text.Json.JsonSerializer.Serialize(
+                    schema,
+                    new System.Text.Json.JsonSerializerOptions
+                        { PropertyNamingPolicy = System.Text.Json.JsonNamingPolicy.CamelCase }))
+            });
+
+        await _sut.LoadAsync();
+
+        var loaded = _sut.Get("Author");
+        loaded.Should().NotBeNull();
+        loaded!.MetadataColumns.Contains("category").Should().BeTrue();
+        loaded.MetadataColumns.Contains("Category").Should().BeTrue();
+    }
+
+    [Fact]
     public async Task LoadAsync_LegacyJsonWithoutMetadataMembers_DeserializesToDefaults()
     {
         // Rows written before the metadata layer existed have no metadataColumns/
