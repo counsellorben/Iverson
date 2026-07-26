@@ -10,7 +10,12 @@ from typing import Generic, List, Optional, TypeVar
 import grpc
 from google.protobuf import struct_pb2
 
-from iverson_client.auth import IversonClientCredentials, _CachedTokenProvider, _BearerTokenAuthPlugin
+from iverson_client.auth import (
+    IversonClientCredentials,
+    _CachedTokenProvider,
+    _BearerTokenAuthPlugin,
+    _ActingUserAuthPlugin,
+)
 from iverson_client.generated import (
     object_mapping_pb2 as mapping_pb,
     object_mapping_pb2_grpc as mapping_grpc,
@@ -243,6 +248,7 @@ class EntityCoordinator(Generic[T]):
         self._mapping = mapping_grpc.ObjectMappingServiceStub(channel)
         self._persistence = persist_grpc.ObjectPersistenceServiceStub(channel)
         self._retrieval = retrieval_grpc.ObjectRetrievalServiceStub(channel)
+        self._search = search_grpc.ObjectSearchServiceStub(channel)
 
     def _get_key(self, entity: T) -> str:
         if self._key_field is None:
@@ -318,6 +324,39 @@ class EntityCoordinator(Generic[T]):
                 results.append(self._from_struct(response.data))
         return results
 
+    # ── Search-family execution ────────────────────────────────────────────────
+
+    def search(self, request: search_pb.SearchRequest) -> List[T]:
+        """Execute a Search request. Rows are genuinely ``T``-shaped, so each is
+        converted via ``_from_struct``."""
+        return [self._from_struct(row.data) for row in self._search.Search(request)]
+
+    def search_similar(self, request: search_pb.SearchSimilarRequest) -> List[T]:
+        """Execute a SearchSimilar (vector) request. Rows are genuinely ``T``-shaped,
+        so each is converted via ``_from_struct``."""
+        return [self._from_struct(row.data) for row in self._search.SearchSimilar(request)]
+
+    def search_chunks(self, request: search_pb.SearchChunksRequest) -> List[search_pb.ChunkSearchResponse]:
+        """Execute a SearchChunks request. Returns the flat chunk messages as-is."""
+        return list(self._search.SearchChunks(request))
+
+    def group_by(self, request: search_pb.GroupByRequest) -> List[dict]:
+        """Execute a GroupBy request. Columns are aggregated/aliased and don't match
+        ``T``'s own fields, so each row is converted via ``_struct_to_dict`` instead
+        of ``_from_struct``."""
+        return [_struct_to_dict(row.data) for row in self._search.GroupBy(request)]
+
+    def aggregate(self, request: search_pb.AggregateRequest) -> search_pb.AggregateResponse:
+        """Execute an Aggregate request. Single call; returns the ``AggregateResponse``
+        as-is."""
+        return self._search.Aggregate(request)
+
+    def pipeline(self, request: search_pb.PipelineRequest) -> List[dict]:
+        """Execute a Pipeline request. Columns are aggregated/aliased and don't match
+        ``T``'s own fields, so each row is converted via ``_struct_to_dict`` instead
+        of ``_from_struct``."""
+        return [_struct_to_dict(row.data) for row in self._search.Pipeline(request)]
+
     def _from_struct(self, s: struct_pb2.Struct) -> T:
         """Construct an entity instance from a Struct proto."""
         obj = object.__new__(self._cls)
@@ -355,6 +394,8 @@ class IversonClient:
         port: gRPC server port (default: ``5000``).
         use_tls: whether to use TLS (default: ``False`` for h2c).
         credentials: optional OAuth2 client-credentials for authenticated calls.
+        acting_user_token: optional pre-minted acting-user token, propagated on
+            every call as ``x-acting-user-authorization`` metadata.
     """
 
     def __init__(
@@ -364,19 +405,28 @@ class IversonClient:
         use_tls: bool = False,
         *,
         credentials: IversonClientCredentials | None = None,
+        acting_user_token: str | None = None,
     ) -> None:
         address = f"{host}:{port}"
 
-        if credentials is not None:
-            provider = _CachedTokenProvider(credentials)
-            call_creds = grpc.metadata_call_credentials(_BearerTokenAuthPlugin(provider))
+        if credentials is not None or acting_user_token is not None:
+            call_creds_list = []
+            if credentials is not None:
+                provider = _CachedTokenProvider(credentials)
+                call_creds_list.append(
+                    grpc.metadata_call_credentials(_BearerTokenAuthPlugin(provider))
+                )
+            if acting_user_token is not None:
+                call_creds_list.append(
+                    grpc.metadata_call_credentials(_ActingUserAuthPlugin(acting_user_token))
+                )
             # grpcio rejects CallCredentials on a bare insecure_channel with
             # "UNAUTHENTICATED: Established channel does not have a sufficient security
             # level to transfer call credential" — confirmed live. local_channel_credentials()
             # is a lightweight "trusted network" designation (not real TLS) that satisfies
             # the check without requiring actual certificates.
             channel_creds = grpc.composite_channel_credentials(
-                grpc.local_channel_credentials(), call_creds
+                grpc.local_channel_credentials(), *call_creds_list
             )
             self._channel = grpc.secure_channel(address, channel_creds)
         elif use_tls:

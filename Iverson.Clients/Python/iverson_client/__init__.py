@@ -1,5 +1,6 @@
 """Iverson Python gRPC client."""
 
+from iverson_client.aggregate import AggregateBuilder, aggregate
 from iverson_client.annotations import (
     iverson_entity,
     iverson_key,
@@ -43,4 +44,6 @@ __all__ = [
     "ChunksBuilder",
     "similar",
     "chunks",
+    "AggregateBuilder",
+    "aggregate",
 ]
