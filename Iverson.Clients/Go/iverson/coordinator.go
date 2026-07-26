@@ -36,6 +36,27 @@ type RetrievalStream interface {
 	Recv() (*pb.RetrievalResponse, error)
 }
 
+// SearchClient is the interface for ObjectSearchService stub.
+type SearchClient interface {
+	Search(ctx context.Context, req *pb.SearchRequest) (SearchStream, error)
+	SearchSimilar(ctx context.Context, req *pb.SearchSimilarRequest) (SearchStream, error)
+	SearchChunks(ctx context.Context, req *pb.SearchChunksRequest) (ChunkSearchStream, error)
+	Aggregate(ctx context.Context, req *pb.AggregateRequest) (*pb.AggregateResponse, error)
+	GroupBy(ctx context.Context, req *pb.GroupByRequest) (SearchStream, error)
+	Pipeline(ctx context.Context, req *pb.PipelineRequest) (SearchStream, error)
+}
+
+// SearchStream is the interface for the streaming Search/SearchSimilar/GroupBy/Pipeline
+// response, all of which stream *pb.SearchResponse.
+type SearchStream interface {
+	Recv() (*pb.SearchResponse, error)
+}
+
+// ChunkSearchStream is the interface for the streaming SearchChunks response.
+type ChunkSearchStream interface {
+	Recv() (*pb.ChunkSearchResponse, error)
+}
+
 // IversonClient holds gRPC connections to the Iverson server services.
 type IversonClient struct {
 	mappingConn     *grpc.ClientConn
@@ -81,6 +102,7 @@ type coordinatorDeps struct {
 	persistence PersistenceClient
 	retrieval   RetrievalClient
 	mapping     MappingDeleteClient
+	search      SearchClient
 }
 
 // EntityCoordinator[T] is a high-level coordinator for a single entity type T.
@@ -111,6 +133,7 @@ func NewEntityCoordinator[T any](client *IversonClient, entity T) (*EntityCoordi
 			persistence: &persistenceAdapter{client.PersistenceStub},
 			retrieval:   &retrievalAdapter{client.RetrievalStub},
 			mapping:     &mappingDeleteAdapter{client.MappingStub},
+			search:      &searchAdapter{client.SearchStub},
 		},
 		typeName: meta.TypeName,
 		keyField: keyField,
@@ -238,6 +261,146 @@ func (c *EntityCoordinator[T]) GetMany(ctx context.Context, ids []string) ([]T, 
 		}
 	}
 	return results, nil
+}
+
+// ── Object Search ──────────────────────────────────────────────────────────
+// DSL-driven; returns streamed results with relevance scores.
+
+// SearchResult pairs an entity with its relevance score, as returned by Search and
+// SearchSimilar.
+type SearchResult[T any] struct {
+	Entity T
+	Score  float32
+}
+
+// Search executes a DSL-driven search request and returns matching entities with
+// relevance scores.
+func (c *EntityCoordinator[T]) Search(ctx context.Context, req *pb.SearchRequest) ([]SearchResult[T], error) {
+	stream, err := c.deps.search.Search(ctx, req)
+	if err != nil {
+		return nil, fmt.Errorf("Search: %w", err)
+	}
+
+	var results []SearchResult[T]
+	for {
+		resp, err := stream.Recv()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return nil, fmt.Errorf("Search stream: %w", err)
+		}
+		entity, err := structToEntity[T](resp.Data)
+		if err != nil {
+			return nil, err
+		}
+		results = append(results, SearchResult[T]{Entity: entity, Score: resp.Score})
+	}
+	return results, nil
+}
+
+// SearchSimilar executes a semantic (vector embedding) similarity search and returns
+// matching entities with relevance scores.
+func (c *EntityCoordinator[T]) SearchSimilar(ctx context.Context, req *pb.SearchSimilarRequest) ([]SearchResult[T], error) {
+	stream, err := c.deps.search.SearchSimilar(ctx, req)
+	if err != nil {
+		return nil, fmt.Errorf("SearchSimilar: %w", err)
+	}
+
+	var results []SearchResult[T]
+	for {
+		resp, err := stream.Recv()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return nil, fmt.Errorf("SearchSimilar stream: %w", err)
+		}
+		entity, err := structToEntity[T](resp.Data)
+		if err != nil {
+			return nil, err
+		}
+		results = append(results, SearchResult[T]{Entity: entity, Score: resp.Score})
+	}
+	return results, nil
+}
+
+// SearchChunks executes a chunk/RAG search and returns matching passage chunks,
+// unconverted (the response is already a flat, typed message).
+func (c *EntityCoordinator[T]) SearchChunks(ctx context.Context, req *pb.SearchChunksRequest) ([]*pb.ChunkSearchResponse, error) {
+	stream, err := c.deps.search.SearchChunks(ctx, req)
+	if err != nil {
+		return nil, fmt.Errorf("SearchChunks: %w", err)
+	}
+
+	var results []*pb.ChunkSearchResponse
+	for {
+		resp, err := stream.Recv()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return nil, fmt.Errorf("SearchChunks stream: %w", err)
+		}
+		results = append(results, resp)
+	}
+	return results, nil
+}
+
+// GroupBy executes a compound GROUP BY aggregation and returns one untyped row per output
+// group. Columns are aggregated/aliased and don't match T's own fields, so results come
+// back as maps rather than typed entities.
+func (c *EntityCoordinator[T]) GroupBy(ctx context.Context, req *pb.GroupByRequest) ([]map[string]any, error) {
+	stream, err := c.deps.search.GroupBy(ctx, req)
+	if err != nil {
+		return nil, fmt.Errorf("GroupBy: %w", err)
+	}
+
+	var results []map[string]any
+	for {
+		resp, err := stream.Recv()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return nil, fmt.Errorf("GroupBy stream: %w", err)
+		}
+		results = append(results, structToMap(resp.Data))
+	}
+	return results, nil
+}
+
+// Pipeline executes a CTE-chain pipeline and returns one untyped row per output row.
+// Columns depend on the pipeline's final step, so results come back as maps rather than
+// typed entities, same as GroupBy.
+func (c *EntityCoordinator[T]) Pipeline(ctx context.Context, req *pb.PipelineRequest) ([]map[string]any, error) {
+	stream, err := c.deps.search.Pipeline(ctx, req)
+	if err != nil {
+		return nil, fmt.Errorf("Pipeline: %w", err)
+	}
+
+	var results []map[string]any
+	for {
+		resp, err := stream.Recv()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return nil, fmt.Errorf("Pipeline stream: %w", err)
+		}
+		results = append(results, structToMap(resp.Data))
+	}
+	return results, nil
+}
+
+// Aggregate executes an aggregation request and returns the full AggregateResponse (one
+// AggregationResult per requested AggregationSpec), unconverted.
+func (c *EntityCoordinator[T]) Aggregate(ctx context.Context, req *pb.AggregateRequest) (*pb.AggregateResponse, error) {
+	resp, err := c.deps.search.Aggregate(ctx, req)
+	if err != nil {
+		return nil, fmt.Errorf("Aggregate: %w", err)
+	}
+	return resp, nil
 }
 
 // ── Struct <-> entity conversion ──────────────────────────────────────────────
@@ -376,6 +539,29 @@ func protoValueToGoValue(pbVal *structpb.Value, target reflect.Value, targetType
 	return nil
 }
 
+// structToMap converts a google.protobuf.Struct to an untyped map, for results whose
+// columns are aggregated/aliased and don't correspond to any single entity's fields
+// (GroupBy, Pipeline) — unlike structToEntity[T], it isn't driven by a target reflect.Type.
+func structToMap(s *structpb.Struct) map[string]any {
+	if s == nil {
+		return nil
+	}
+	m := make(map[string]any, len(s.Fields))
+	for name, pbVal := range s.Fields {
+		switch v := pbVal.Kind.(type) {
+		case *structpb.Value_StringValue:
+			m[name] = v.StringValue
+		case *structpb.Value_NumberValue:
+			m[name] = v.NumberValue
+		case *structpb.Value_BoolValue:
+			m[name] = v.BoolValue
+		default:
+			m[name] = nil
+		}
+	}
+	return m
+}
+
 // ── Adapters wrapping generated stubs to satisfy interfaces ───────────────────
 
 type persistenceAdapter struct {
@@ -408,4 +594,32 @@ type mappingDeleteAdapter struct {
 
 func (a *mappingDeleteAdapter) Delete(ctx context.Context, req *pb.MappingDeleteRequest) (*pb.MappingDeleteResponse, error) {
 	return a.stub.Delete(ctx, req)
+}
+
+type searchAdapter struct {
+	stub pb.ObjectSearchServiceClient
+}
+
+func (a *searchAdapter) Search(ctx context.Context, req *pb.SearchRequest) (SearchStream, error) {
+	return a.stub.Search(ctx, req)
+}
+
+func (a *searchAdapter) SearchSimilar(ctx context.Context, req *pb.SearchSimilarRequest) (SearchStream, error) {
+	return a.stub.SearchSimilar(ctx, req)
+}
+
+func (a *searchAdapter) SearchChunks(ctx context.Context, req *pb.SearchChunksRequest) (ChunkSearchStream, error) {
+	return a.stub.SearchChunks(ctx, req)
+}
+
+func (a *searchAdapter) Aggregate(ctx context.Context, req *pb.AggregateRequest) (*pb.AggregateResponse, error) {
+	return a.stub.Aggregate(ctx, req)
+}
+
+func (a *searchAdapter) GroupBy(ctx context.Context, req *pb.GroupByRequest) (SearchStream, error) {
+	return a.stub.GroupBy(ctx, req)
+}
+
+func (a *searchAdapter) Pipeline(ctx context.Context, req *pb.PipelineRequest) (SearchStream, error) {
+	return a.stub.Pipeline(ctx, req)
 }
