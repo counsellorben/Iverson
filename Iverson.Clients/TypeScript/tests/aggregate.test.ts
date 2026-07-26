@@ -114,16 +114,16 @@ describe('AggregateBuilder — WHERE / HAVING / JOIN', () => {
         expect(req.query!.logic).toBe(SearchLogic.OR);
     });
 
-    it('having() adds a FILTER clause referencing an aggregation alias', () => {
-        const req = aggregate('Article').countAll('n').having('n', SearchOperator.GREATER_THAN, 5).build();
-        expect(req.having!.clauses[0].property).toBe('n');
+    it('having() adds a FILTER clause referencing the server\'s fixed output alias', () => {
+        const req = aggregate('Article').countAll('n').having('metric_val', SearchOperator.GREATER_THAN, 5).build();
+        expect(req.having!.clauses[0].property).toBe('metric_val');
         expect(req.having!.clauses[0].clauseType).toBe(SearchClauseType.FILTER);
     });
 
     it('withHavingLogic(OR) is carried onto the HAVING query', () => {
         const req = aggregate('Article').countAll('n')
-            .having('n', SearchOperator.GREATER_THAN, 5)
-            .having('m', SearchOperator.LESS_THAN, 1)
+            .having('metric_val', SearchOperator.GREATER_THAN, 5)
+            .having('metric_val', SearchOperator.LESS_THAN, 1)
             .withHavingLogic(SearchLogic.OR)
             .build();
         expect(req.having!.logic).toBe(SearchLogic.OR);

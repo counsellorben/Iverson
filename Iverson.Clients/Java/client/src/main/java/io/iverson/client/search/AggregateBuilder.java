@@ -77,9 +77,15 @@ public final class AggregateBuilder {
         return this;
     }
 
-    // ── HAVING (references output alias names) ──────────────────────────────────
+    // ── HAVING (references the server's fixed output alias, not the metric's name) ──
 
-    /** Adds a HAVING clause. {@code alias} must match an aggregation's output name. */
+    /**
+     * Adds a HAVING clause. {@code alias} must be one of the server's fixed output
+     * column aliases — {@code metric_val} for Avg/Sum/Min/Max/Count, or
+     * {@code doc_count}/{@code bucket_key} for Terms/DateHistogram/Range — never the
+     * name passed to a metric/bucket builder method. HAVING applies to every
+     * aggregation in the request, not just this one.
+     */
     public AggregateBuilder having(String alias, SearchOperator op, Object value) {
         having.add(SearchClause.newBuilder()
             .setProperty(alias)

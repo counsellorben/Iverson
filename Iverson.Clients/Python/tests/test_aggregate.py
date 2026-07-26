@@ -106,14 +106,14 @@ def test_with_logic_or_is_carried():
 
 
 def test_having_adds_clause():
-    req = aggregate("Article").count_all("n").having("n", pb.GREATER_THAN, 5).build()
-    assert req.having.clauses[0].property == "n"
+    req = aggregate("Article").count_all("n").having("metric_val", pb.GREATER_THAN, 5).build()
+    assert req.having.clauses[0].property == "metric_val"
     assert req.having.clauses[0].clause_type == pb.FILTER
 
 
 def test_with_having_logic_or_is_carried():
     req = (aggregate("Article").count_all("n")
-           .having("n", pb.GREATER_THAN, 5).having("m", pb.LESS_THAN, 1)
+           .having("metric_val", pb.GREATER_THAN, 5).having("metric_val", pb.LESS_THAN, 1)
            .with_having_logic(pb.OR).build())
     assert req.having.logic == pb.OR
 

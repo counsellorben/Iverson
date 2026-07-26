@@ -72,10 +72,14 @@ class AggregateBuilder:
         self._where_logic = logic
         return self
 
-    # ── HAVING (references output alias names) ──────────────────────────────────
+    # ── HAVING (references the server's fixed output alias, not the metric's name) ──
 
     def having(self, alias: str, op: int, value: object) -> "AggregateBuilder":
-        """Add a HAVING clause. ``alias`` must match an aggregation's output name."""
+        """Add a HAVING clause. ``alias`` must be one of the server's fixed output
+        column aliases (``metric_val``, or ``doc_count``/``bucket_key`` for bucket
+        aggregations) — not the ``name`` passed to a metric/bucket builder method.
+        HAVING applies to every aggregation in the request, not just this one.
+        """
         self._having.append(_pb.SearchClause(
             property=alias,
             operator=op,

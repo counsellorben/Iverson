@@ -50,7 +50,7 @@ func TestAggregateWithLogicOr(t *testing.T) {
 func TestAggregateWithHavingLogicOr(t *testing.T) {
 	req, err := iverson.NewAggregate("Article").
 		CountAll("n").
-		Having("n", pb.SearchOperator_GREATER_THAN, numberVal(5)).
+		Having("metric_val", pb.SearchOperator_GREATER_THAN, numberVal(5)).
 		WithHavingLogic(pb.SearchLogic_OR).
 		Build()
 	if err != nil {

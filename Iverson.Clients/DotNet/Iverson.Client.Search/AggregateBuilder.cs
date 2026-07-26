@@ -37,8 +37,15 @@ public sealed class AggregateBuilder
         return this;
     }
 
-    // ── HAVING (references output alias names) ────────────────────────────────────
+    // ── HAVING (references the server's fixed output alias, not the metric's name) ─
 
+    /// <summary>
+    /// Adds a HAVING clause. <paramref name="alias"/> must be one of the server's fixed
+    /// output column aliases — <c>metric_val</c> for Avg/Sum/Min/Max/Count, or
+    /// <c>doc_count</c>/<c>bucket_key</c> for Terms/DateHistogram/Range — never the
+    /// <c>name</c> passed to a metric/bucket builder method. HAVING applies to every
+    /// aggregation in the request, not just this one.
+    /// </summary>
     public AggregateBuilder Having(string alias, SearchOperator op, object value)
         => AddHaving(alias, op, value);
 

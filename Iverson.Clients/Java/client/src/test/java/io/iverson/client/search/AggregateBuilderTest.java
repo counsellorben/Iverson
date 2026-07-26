@@ -218,11 +218,11 @@ class AggregateBuilderTest {
     void having_addsHavingClause() {
         AggregateRequest req = Query.aggregate("Article")
             .sum("wordCount", "total")
-            .having("total", SearchOperator.GREATER_THAN, 1000)
+            .having("metric_val", SearchOperator.GREATER_THAN, 1000)
             .build();
 
         SearchClause clause = req.getHaving().getClauses(0);
-        assertEquals("total", clause.getProperty());
+        assertEquals("metric_val", clause.getProperty());
         assertEquals(SearchOperator.GREATER_THAN, clause.getOperator());
         assertEquals(1000.0, clause.getValue().getNumberVal(), 0.001);
     }
@@ -231,8 +231,8 @@ class AggregateBuilderTest {
     void withHavingLogic_or_isCarried() {
         AggregateRequest req = Query.aggregate("Article")
             .countAll("n")
-            .having("n", SearchOperator.GREATER_THAN, 5)
-            .having("n", SearchOperator.LESS_THAN, 2)
+            .having("metric_val", SearchOperator.GREATER_THAN, 5)
+            .having("metric_val", SearchOperator.LESS_THAN, 2)
             .withHavingLogic(SearchLogic.OR)
             .build();
 

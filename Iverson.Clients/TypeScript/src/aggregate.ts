@@ -86,7 +86,13 @@ export class AggregateBuilder {
         return this;
     }
 
-    /** Add a HAVING clause (applied after aggregating); `alias` references an aggregation's output name. */
+    /**
+     * Add a HAVING clause (applied after aggregating). `alias` must be one of the
+     * server's fixed output column aliases — `metric_val` for Avg/Sum/Min/Max/Count,
+     * or `doc_count`/`bucket_key` for Terms/DateHistogram/Range — never the `name`
+     * passed to a metric/bucket builder method. HAVING applies to every aggregation
+     * in the request, not just this one.
+     */
     having(alias: string, op: SearchOperator, value: unknown): this {
         this._having.push({
             property: alias,

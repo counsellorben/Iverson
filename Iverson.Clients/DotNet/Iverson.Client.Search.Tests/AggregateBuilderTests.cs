@@ -224,11 +224,11 @@ public sealed class AggregateBuilderTests
     {
         var req = new AggregateBuilder("Article")
             .Sum("WordCount", "total")
-            .Having("total", SearchOperator.GreaterThan, 1000)
+            .Having("metric_val", SearchOperator.GreaterThan, 1000)
             .Build();
 
         var clause = req.Having.Clauses.Should().ContainSingle().Subject;
-        clause.Property.Should().Be("total");
+        clause.Property.Should().Be("metric_val");
         clause.Operator.Should().Be(SearchOperator.GreaterThan);
         clause.Value.NumberVal.Should().Be(1000);
     }
@@ -238,8 +238,8 @@ public sealed class AggregateBuilderTests
     {
         var req = new AggregateBuilder("Article")
             .CountAll("n")
-            .Having("n", SearchOperator.GreaterThan, 5)
-            .Having("n", SearchOperator.LessThan, 2)
+            .Having("metric_val", SearchOperator.GreaterThan, 5)
+            .Having("metric_val", SearchOperator.LessThan, 2)
             .WithHavingLogic(SearchLogic.Or)
             .Build();
 

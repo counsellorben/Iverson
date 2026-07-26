@@ -79,9 +79,12 @@ func (a *AggregateBuilder) WithLogic(logic pb.SearchLogic) *AggregateBuilder {
 	return a
 }
 
-// ── HAVING (applied after aggregating; references output alias names) ──────
+// ── HAVING (applied after aggregating; references the server's fixed output alias) ──
 
-// Having adds a HAVING clause. alias must match an aggregation's output name.
+// Having adds a HAVING clause. alias must be one of the server's fixed output
+// column aliases (metric_val, or doc_count/bucket_key for bucket aggregations) —
+// not the name passed to a metric/bucket builder method. HAVING applies to every
+// aggregation in the request, not just this one.
 func (a *AggregateBuilder) Having(alias string, op pb.SearchOperator, val *pb.SearchValue) *AggregateBuilder {
 	if val == nil {
 		a.err = fmt.Errorf("having %q: nil search value for operator %v", alias, op)
