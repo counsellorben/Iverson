@@ -70,6 +70,19 @@ public final class StructConverter {
         }
     }
 
+    /**
+     * Converts a {@link Struct} to a plain {@code Map<String, Object>}, one entry per field,
+     * keyed by the struct's raw (PascalCase) field names. Used for untyped result rows — e.g.
+     * GroupBy/Pipeline output — where no target class is known ahead of time.
+     */
+    public static Map<String, Object> fromStructAsMap(Struct struct) {
+        Map<String, Object> result = new HashMap<>();
+        for (Map.Entry<String, Value> entry : struct.getFieldsMap().entrySet()) {
+            result.put(entry.getKey(), fromValue(entry.getValue()));
+        }
+        return result;
+    }
+
     // ── Helpers ────────────────────────────────────────────────────────────────
 
     static String toPascalCase(String camelCase) {
@@ -87,6 +100,16 @@ public final class StructConverter {
             return Value.newBuilder().setStringValue(dt.format(DateTimeFormatter.ISO_OFFSET_DATE_TIME)).build();
         // Fallback: toString
         return Value.newBuilder().setStringValue(val.toString()).build();
+    }
+
+    /** Untyped per-kind unwrapping, used by {@link #fromStructAsMap(Struct)}. */
+    private static Object fromValue(Value value) {
+        return switch (value.getKindCase()) {
+            case STRING_VALUE -> value.getStringValue();
+            case NUMBER_VALUE -> value.getNumberValue();
+            case BOOL_VALUE   -> value.getBoolValue();
+            default           -> null;
+        };
     }
 
     private static Object fromValue(Value value, Class<?> targetType) {
