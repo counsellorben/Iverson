@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Globalization;
 using Qdrant.Client;
 using Qdrant.Client.Grpc;
 
@@ -77,7 +78,7 @@ public class IntelligenceVectorService(QdrantClient client) : IVectorQueryServic
         return results.Select(r => new VectorSearchResult(
             r.Id.Num,
             r.Score,
-            r.Payload.ToDictionary(kvp => kvp.Key, kvp => kvp.Value.StringValue)
+            r.Payload.ToDictionary(kvp => kvp.Key, kvp => ToCanonicalString(kvp.Value))
         )).ToList();
     }
 
@@ -109,7 +110,7 @@ public class IntelligenceVectorService(QdrantClient client) : IVectorQueryServic
         return results.Select(r => new VectorSearchResult(
             r.Id.Num,
             r.Score,
-            r.Payload.ToDictionary(kvp => kvp.Key, kvp => kvp.Value.StringValue)
+            r.Payload.ToDictionary(kvp => kvp.Key, kvp => ToCanonicalString(kvp.Value))
         )).ToList();
     }
 
@@ -135,6 +136,15 @@ public class IntelligenceVectorService(QdrantClient client) : IVectorQueryServic
     }
 
     // ── Private helpers ────────────────────────────────────────────────────────
+
+    private static string ToCanonicalString(Value v) => v.KindCase switch
+    {
+        Value.KindOneofCase.StringValue  => v.StringValue,
+        Value.KindOneofCase.IntegerValue => v.IntegerValue.ToString(CultureInfo.InvariantCulture),
+        Value.KindOneofCase.DoubleValue  => v.DoubleValue.ToString(CultureInfo.InvariantCulture),
+        Value.KindOneofCase.BoolValue    => v.BoolValue ? "true" : "false",
+        _                                => v.ToString()
+    };
 
     private static Value ToQdrantValue(object value) => value switch
     {

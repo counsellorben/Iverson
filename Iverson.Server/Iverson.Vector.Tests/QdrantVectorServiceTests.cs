@@ -1,3 +1,4 @@
+using System.Reflection;
 using FluentAssertions;
 using NSubstitute;
 using Qdrant.Client.Grpc;
@@ -166,6 +167,33 @@ public sealed class QdrantVectorServiceTests
             Arg.Is<IReadOnlyDictionary<string, object>>(p =>
                 p["title"].Equals("typed") && p["wordCount"].Equals(42L) &&
                 p["rating"].Equals(4.5) && p["published"].Equals(true)));
+    }
+
+    [Theory]
+    [InlineData("string")]
+    [InlineData("integer")]
+    [InlineData("double")]
+    [InlineData("bool")]
+    public void ToCanonicalString_MapsNonStringPayloadKindsToCanonicalText(string kind)
+    {
+        // The Qdrant client is a concrete, non-virtual type, so the search-result mapping
+        // cannot be driven through a mocked client here; the mapping helper is exercised
+        // directly instead. Integration coverage lives in QdrantIntegrationTests.
+        var (value, expected) = kind switch
+        {
+            "string"  => (new Value { StringValue  = "Allen Iverson" }, "Allen Iverson"),
+            "integer" => (new Value { IntegerValue = 42L },             "42"),
+            "double"  => (new Value { DoubleValue  = 3.5 },             "3.5"),
+            _         => (new Value { BoolValue    = true },            "true")
+        };
+
+        var helper = typeof(IntelligenceVectorService).GetMethod(
+            "ToCanonicalString",
+            BindingFlags.NonPublic | BindingFlags.Static)!;
+
+        var actual = (string)helper.Invoke(null, [value])!;
+
+        actual.Should().Be(expected);
     }
 
     [Fact]
