@@ -1,6 +1,8 @@
 # Metadata Foundation Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+>
+> **Model selection:** Dispatch every task subagent on Opus 5 at low reasoning effort (`model: opus`). Drop to a lower tier only when certain it suffices for that specific task; when in doubt, stay on Opus 5.
 
 **Source spec:** `docs/specs/2026-07-26-metadata-foundation-design.md` (commit SHA: `96f616e`)
 
