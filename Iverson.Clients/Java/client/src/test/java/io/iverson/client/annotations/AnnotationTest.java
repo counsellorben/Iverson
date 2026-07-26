@@ -17,9 +17,17 @@ class AnnotationTest {
     // ── Fixture entity ────────────────────────────────────────────────────────
 
     @IversonEntity
+    @IversonDescription("A blog post")
     static class SamplePost {
         @IversonKey
+        @IversonDescription("Primary identifier")
         private UUID id;
+
+        @IversonMetadata
+        private String source;
+
+        @IversonDescription("Author display name")
+        private String authorName;
 
         @IversonSearchKey(order = 0)
         private String category;
@@ -91,6 +99,40 @@ class AnnotationTest {
         Field body = SamplePost.class.getDeclaredField("body");
         assertNotNull(body.getAnnotation(IversonLargeField.class),
             "@IversonLargeField must be retained at runtime");
+    }
+
+    // ── @IversonMetadata ──────────────────────────────────────────────────────
+
+    @Test
+    void iversonMetadata_isPresentAtRuntime() throws NoSuchFieldException {
+        Field source = SamplePost.class.getDeclaredField("source");
+        assertNotNull(source.getAnnotation(IversonMetadata.class),
+            "@IversonMetadata must be retained at runtime");
+    }
+
+    // ── @IversonDescription ───────────────────────────────────────────────────
+
+    @Test
+    void iversonDescription_isPresentAtRuntime_onType() {
+        IversonDescription d = SamplePost.class.getAnnotation(IversonDescription.class);
+        assertNotNull(d, "@IversonDescription must be retained at runtime on a type");
+        assertEquals("A blog post", d.value());
+    }
+
+    @Test
+    void iversonDescription_isPresentAtRuntime_onField() throws NoSuchFieldException {
+        Field authorName = SamplePost.class.getDeclaredField("authorName");
+        IversonDescription d = authorName.getAnnotation(IversonDescription.class);
+        assertNotNull(d, "@IversonDescription must be retained at runtime on a field");
+        assertEquals("Author display name", d.value());
+    }
+
+    @Test
+    void iversonDescription_isPresentAtRuntime_onKeyField() throws NoSuchFieldException {
+        Field id = SamplePost.class.getDeclaredField("id");
+        IversonDescription d = id.getAnnotation(IversonDescription.class);
+        assertNotNull(d, "@IversonDescription must be readable on the key field");
+        assertEquals("Primary identifier", d.value());
     }
 
     // ── Relation annotations ──────────────────────────────────────────────────
