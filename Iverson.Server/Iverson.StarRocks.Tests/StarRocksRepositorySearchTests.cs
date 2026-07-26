@@ -4,22 +4,22 @@ using Xunit;
 
 namespace Iverson.StarRocks.Tests;
 
-public class StarRocksRepositorySearchTests
+public class EngagementRepositorySearchTests
 {
     [Fact]
-    public async Task AggregateAsync_MultiKeyGroupByFields_ThrowsStarRocksQueryTranslationException()
+    public async Task AggregateAsync_MultiKeyGroupByFields_ThrowsEngagementQueryTranslationException()
     {
-        var repo = new StarRocksRepository(
+        var repo = new EngagementRepository(
             "Server=localhost;Port=1;Database=x;Uid=x;Pwd=x;",
-            NullLogger<StarRocksRepository>.Instance);
+            NullLogger<EngagementRepository>.Instance);
 
-        var schema = new StarRocksQuerySchema("Article", "articles", "Id", ["Title"]);
+        var schema = new EngagementQuerySchema("Article", "articles", "Id", ["Title"]);
         var spec = new AggregationDescriptor("by_title", AggregationKind.Terms, "Title",
             GroupByFields: ["Title", "Category"]);
 
         var act = async () => await repo.AggregateAsync(schema, null, spec);
 
-        await act.Should().ThrowAsync<StarRocksQueryTranslationException>()
+        await act.Should().ThrowAsync<EngagementQueryTranslationException>()
             .WithMessage("*Multi-key GROUP BY*");
     }
 }

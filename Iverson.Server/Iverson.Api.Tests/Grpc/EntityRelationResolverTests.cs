@@ -39,8 +39,12 @@ public class EntityRelationResolverTests
         await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
         await _registry.RegisterAsync(SchemaFixtures.ArticleSchema());
 
-        _entities.FetchByKeyAsync(
-                Arg.Is<TableSchema>(s => s.TableName == "authors"), Arg.Any<string>(), Arg.Any<bool>(), Arg.Any<string?>())
+        _entities
+            .FetchByKeyAsync(
+                Arg.Is<TableSchema>(s => s.TableName == "authors"),
+                Arg.Any<string>(),
+                Arg.Any<bool>(),
+                Arg.Any<string?>())
             .Returns(AuthorJson);
 
         var entityStruct = JsonParser.Default.Parse<Struct>(ArticleJson);
@@ -79,7 +83,12 @@ public class EntityRelationResolverTests
 
         var tag1Json = $$"""{"Id":"{{tagId1}}","Label":"dotnet","TenantId":"test-tenant"}""";
         var tag2Json = $$"""{"Id":"{{tagId2}}","Label":"csharp","TenantId":"test-tenant"}""";
-        _entities.FetchManyByKeysAsync(Arg.Any<TableSchema>(), Arg.Any<IReadOnlyList<string>>(), Arg.Any<bool>(), Arg.Any<string?>())
+        _entities
+            .FetchManyByKeysAsync(
+                Arg.Any<TableSchema>(),
+                Arg.Any<IReadOnlyList<string>>(),
+                Arg.Any<bool>(),
+                Arg.Any<string?>())
             .Returns(new[] { new KeyedRow(tagId1, tag1Json), new KeyedRow(tagId2, tag2Json) });
 
         var entityStruct = JsonParser.Default.Parse<Struct>(postJson);
@@ -87,9 +96,12 @@ public class EntityRelationResolverTests
 
         await _sut.ResolveRelationsAsync(entityStruct, schema, depth: 1, ActingUser, CancellationToken.None);
 
-        await _entities.Received(1).FetchManyByKeysAsync(
-            Arg.Any<TableSchema>(),
-            Arg.Is<IReadOnlyList<string>>(keys => keys.Count == 2), Arg.Any<bool>(), Arg.Any<string?>());
+        await _entities.Received(1)
+            .FetchManyByKeysAsync(
+                Arg.Any<TableSchema>(),
+                Arg.Is<IReadOnlyList<string>>(keys => keys.Count == 2),
+                Arg.Any<bool>(),
+                Arg.Any<string?>());
 
         entityStruct.Fields["Tags"].ListValue.Values.Should().HaveCount(2);
     }

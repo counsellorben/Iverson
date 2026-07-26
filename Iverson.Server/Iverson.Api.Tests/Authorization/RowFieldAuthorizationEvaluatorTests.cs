@@ -15,7 +15,10 @@ public class RowFieldAuthorizationEvaluatorTests
         return ActingUserWithTenant(sub, "test-tenant", groups);  // Default tenant_id
     }
 
-    private static ClaimsPrincipal ActingUserWithTenant(string sub, string? tenantId, params string[] groups)
+    private static ClaimsPrincipal ActingUserWithTenant(
+        string sub,
+        string? tenantId,
+        params string[] groups)
     {
         var claims = new List<Claim> { new("sub", sub) };
         if (tenantId is not null)
@@ -24,7 +27,9 @@ public class RowFieldAuthorizationEvaluatorTests
         return new ClaimsPrincipal(new ClaimsIdentity(claims, "test"));
     }
 
-    private static SchemaDescriptor SchemaWithAuthorization(AuthorizationRules? authorization = null, string? tenantColumn = "tenant_id")  // Default tenantColumn
+    private static SchemaDescriptor SchemaWithAuthorization(
+        AuthorizationRules? authorization = null,
+        string? tenantColumn = "tenant_id")  // Default tenantColumn
     {
         return new SchemaDescriptor
         {

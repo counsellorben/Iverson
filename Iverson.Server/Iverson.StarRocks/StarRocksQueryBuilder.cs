@@ -11,22 +11,22 @@ namespace Iverson.StarRocks;
 /// A single table participating in a joined query: its physical table name,
 /// schema descriptor, and the alias used to qualify columns in generated SQL.
 /// </summary>
-internal sealed record JoinContext(string TableName, StarRocksQuerySchema Schema, string Alias);
+internal sealed record JoinContext(string TableName, EngagementQuerySchema Schema, string Alias);
 
 internal static class StarRocksQueryBuilder
 {
     private static readonly ConditionalWeakTable<
-        StarRocksQuerySchema,
+        EngagementQuerySchema,
         Dictionary<string, string>> _columnCache = new();
     internal static (string Sql, DynamicParameters Param) BuildSearch(
         string tableName,
-        StarRocksQuerySchema schema,
+        EngagementQuerySchema schema,
         SearchQuery? query,
         int page,
         int pageSize,
         IReadOnlyList<string>? fields = null,
         IReadOnlyList<JoinSpec>? joins = null,
-        Func<string, StarRocksQuerySchema?>? registry = null,
+        Func<string, EngagementQuerySchema?>? registry = null,
         IReadOnlyDictionary<string, AuthorizationConstraint>? authz = null,
         string? tenantDatabase = null)
     {
@@ -110,7 +110,7 @@ internal static class StarRocksQueryBuilder
         return (sb.ToString(), param);
     }
 
-    private static string BuildSelectColumns(StarRocksQuerySchema schema, IReadOnlyList<string>? fields, string? primaryAlias = null)
+    private static string BuildSelectColumns(EngagementQuerySchema schema, IReadOnlyList<string>? fields, string? primaryAlias = null)
     {
         string Quote(string name) => primaryAlias is null ? $"`{name}`" : $"`{primaryAlias}`.`{name}`";
 
@@ -134,12 +134,12 @@ internal static class StarRocksQueryBuilder
 
     internal static (string Sql, DynamicParameters Param) BuildAggregate(
         string tableName,
-        StarRocksQuerySchema schema,
+        EngagementQuerySchema schema,
         SearchQuery? query,
         AggregationDescriptor spec,
         SearchQuery? having = null,
         IReadOnlyList<JoinSpec>? joins = null,
-        Func<string, StarRocksQuerySchema?>? registry = null,
+        Func<string, EngagementQuerySchema?>? registry = null,
         IReadOnlyDictionary<string, AuthorizationConstraint>? authz = null,
         string? tenantDatabase = null)
     {
@@ -192,9 +192,9 @@ internal static class StarRocksQueryBuilder
         void CheckFieldAllowed(string field)
         {
             var resolved = ResolveStrict(field)
-                ?? throw new StarRocksQueryTranslationException($"Unknown aggregation field '{field}'.");
+                ?? throw new EngagementQueryTranslationException($"Unknown aggregation field '{field}'.");
             if (!IsFieldAllowed(resolved, schema, tableMap, authz, out var typeName))
-                throw new StarRocksQueryTranslationException(
+                throw new EngagementQueryTranslationException(
                     $"Aggregation field '{field}' on '{typeName}' is not authorized for this caller.");
         }
 
@@ -304,9 +304,9 @@ internal static class StarRocksQueryBuilder
     /// </summary>
     internal static (string Sql, DynamicParameters Param) BuildGroupBy(
         string primaryTable,
-        StarRocksQuerySchema schema,
+        EngagementQuerySchema schema,
         GroupByRequest request,
-        Func<string, StarRocksQuerySchema?> registry,
+        Func<string, EngagementQuerySchema?> registry,
         IReadOnlyDictionary<string, AuthorizationConstraint>? authz = null,
         string? tenantDatabase = null)
     {
@@ -347,10 +347,10 @@ internal static class StarRocksQueryBuilder
             .Select(k =>
             {
                 var resolved = ResolveColumn(tableMap, k)
-                    ?? throw new StarRocksQueryTranslationException(
+                    ?? throw new EngagementQueryTranslationException(
                         $"Unknown or ambiguous GROUP BY key '{k}'.");
                 if (!IsFieldAllowed(resolved, schema, tableMap, authz, out var typeName))
-                    throw new StarRocksQueryTranslationException(
+                    throw new EngagementQueryTranslationException(
                         $"GROUP BY key '{k}' on '{typeName}' is not authorized for this caller.");
                 return resolved;
             })
@@ -372,10 +372,10 @@ internal static class StarRocksQueryBuilder
             .Select(s =>
             {
                 var resolved = ResolveColumn(tableMap, s.Property)
-                    ?? throw new StarRocksQueryTranslationException(
+                    ?? throw new EngagementQueryTranslationException(
                         $"Unknown or ambiguous ORDER BY property '{s.Property}'.");
                 if (!IsFieldAllowed(resolved, schema, tableMap, authz, out var typeName))
-                    throw new StarRocksQueryTranslationException(
+                    throw new EngagementQueryTranslationException(
                         $"ORDER BY property '{s.Property}' on '{typeName}' is not authorized for this caller.");
                 return (col: resolved, s.Descending);
             })
@@ -401,7 +401,7 @@ internal static class StarRocksQueryBuilder
     // this field is trusted or server-only.
     private static string BuildMetricExpr(
         MetricSpec metric,
-        StarRocksQuerySchema schema,
+        EngagementQuerySchema schema,
         IReadOnlyDictionary<string, JoinContext> tableMap,
         IReadOnlyDictionary<string, AuthorizationConstraint>? authz)
     {
@@ -421,7 +421,7 @@ internal static class StarRocksQueryBuilder
             AggregationType.Min   => "MIN",
             AggregationType.Max   => "MAX",
             AggregationType.Count => "COUNT",
-            _ => throw new StarRocksQueryTranslationException(
+            _ => throw new EngagementQueryTranslationException(
                 $"Metric '{metric.Name}' has unsupported type '{metric.Type}'; GroupBy metrics must be AVG, SUM, MIN, MAX, or COUNT.")
         };
 
@@ -439,10 +439,10 @@ internal static class StarRocksQueryBuilder
         if (!string.IsNullOrEmpty(metric.Field))
         {
             resolvedField = ResolveColumn(tableMap, metric.Field)
-                ?? throw new StarRocksQueryTranslationException(
+                ?? throw new EngagementQueryTranslationException(
                     $"Unknown or ambiguous field '{metric.Field}' referenced by metric '{metric.Name}'.");
             if (!IsFieldAllowed(resolvedField, schema, tableMap, authz, out var typeName))
-                throw new StarRocksQueryTranslationException(
+                throw new EngagementQueryTranslationException(
                     $"Field '{metric.Field}' on '{typeName}' referenced by metric '{metric.Name}' is not authorized for this caller.");
         }
 
@@ -453,10 +453,10 @@ internal static class StarRocksQueryBuilder
             {
                 if (StarRocksPipelineBuilder.DeriveWhitelist.Contains(m.Value)) continue;
                 var resolvedToken = ResolveColumn(tableMap, m.Value)
-                    ?? throw new StarRocksQueryTranslationException(
+                    ?? throw new EngagementQueryTranslationException(
                         $"Metric '{metric.Name}' expression references unknown field '{m.Value}'.");
                 if (!IsFieldAllowed(resolvedToken, schema, tableMap, authz, out var typeName))
-                    throw new StarRocksQueryTranslationException(
+                    throw new EngagementQueryTranslationException(
                         $"Field '{m.Value}' on '{typeName}' referenced by metric '{metric.Name}' expression is not authorized for this caller.");
             }
         }
@@ -471,12 +471,12 @@ internal static class StarRocksQueryBuilder
         // this (handled above via isCountAll); every other metric kind requires a column
         // argument, so emitting the naive fallback here would produce invalid SQL like
         // "SUM(``)" — fail loudly instead.
-        throw new StarRocksQueryTranslationException(
+        throw new EngagementQueryTranslationException(
             $"metric '{metric.Name}' requires a field or expression");
     }
 
     internal static string BuildWhere(
-        StarRocksQuerySchema schema,
+        EngagementQuerySchema schema,
         IEnumerable<SearchClause>? clauses,
         SearchLogic logic,
         DynamicParameters param,
@@ -494,14 +494,14 @@ internal static class StarRocksQueryBuilder
             {
                 if (ResolveColumn(tableMap, p) is not { } qc) return null;
                 if (!IsFieldAllowed(qc, schema, tableMap, authz, out var typeName))
-                    throw new StarRocksQueryTranslationException($"Filter property '{p}' on '{typeName}' is not authorized for this caller.");
+                    throw new EngagementQueryTranslationException($"Filter property '{p}' on '{typeName}' is not authorized for this caller.");
                 return QuoteQualified(qc);
             }
             : p =>
             {
                 if (ResolveColumn(schema, p) is not { } c) return null;
                 if (!IsFieldAllowed(c, schema, null, authz, out var typeName))
-                    throw new StarRocksQueryTranslationException($"Filter property '{p}' on '{typeName}' is not authorized for this caller.");
+                    throw new EngagementQueryTranslationException($"Filter property '{p}' on '{typeName}' is not authorized for this caller.");
                 return $"`{c}`";
             };
         return BuildWhere(resolve, clauses, logic, param, "p", out nextIdx);
@@ -509,14 +509,14 @@ internal static class StarRocksQueryBuilder
 
     /// <summary>
     /// Resolves a column's owning type and checks it against that type's <see cref="AuthorizationConstraint.AllowedFields"/>
-    /// in one call. Shared by the <see cref="BuildWhere(StarRocksQuerySchema, IEnumerable{SearchClause}?, SearchLogic, DynamicParameters, out int, IReadOnlyDictionary{string, JoinContext}?, IReadOnlyDictionary{string, AuthorizationConstraint}?)"/>
+    /// in one call. Shared by the <see cref="BuildWhere(EngagementQuerySchema, IEnumerable{SearchClause}?, SearchLogic, DynamicParameters, out int, IReadOnlyDictionary{string, JoinContext}?, IReadOnlyDictionary{string, AuthorizationConstraint}?)"/>
     /// overload's own filter-clause check above, and directly by other call sites that need the
     /// same alias-to-type-name resolution (e.g. SELECT-column and JOIN-condition authorization
     /// checks) rather than reimplementing it.
     /// </summary>
     internal static bool IsFieldAllowed(
         string resolvedColumnOrAliasDotColumn,
-        StarRocksQuerySchema schema,
+        EngagementQuerySchema schema,
         IReadOnlyDictionary<string, JoinContext>? tableMap,
         IReadOnlyDictionary<string, AuthorizationConstraint>? authz,
         out string typeName)
@@ -552,7 +552,7 @@ internal static class StarRocksQueryBuilder
         foreach (var clause in clauses)
         {
             if (clause.Operator == SearchOperator.VectorSimilar)
-                throw new StarRocksQueryTranslationException(
+                throw new EngagementQueryTranslationException(
                     "VECTOR_SIMILAR clauses are not supported by the SQL search path; " +
                     "use the SearchSimilar or SearchChunks RPCs for vector search.");
 
@@ -578,8 +578,8 @@ internal static class StarRocksQueryBuilder
     }
 
     /// <summary>
-    /// Builds a HAVING clause from the same clause-matching logic as <see cref="BuildWhere(StarRocksQuerySchema, IEnumerable{SearchClause}?, SearchLogic, DynamicParameters, out int, IReadOnlyDictionary{string, JoinContext}?)"/>,
-    /// but without the schema-backed <see cref="ResolveColumn(StarRocksQuerySchema, string)"/> guard —
+    /// Builds a HAVING clause from the same clause-matching logic as <see cref="BuildWhere(EngagementQuerySchema, IEnumerable{SearchClause}?, SearchLogic, DynamicParameters, out int, IReadOnlyDictionary{string, JoinContext}?)"/>,
+    /// but without the schema-backed <see cref="ResolveColumn(EngagementQuerySchema, string)"/> guard —
     /// HAVING clauses reference SQL output aliases (e.g. "doc_count", "metric_val") which are not
     /// schema columns, so the clause's Property is used verbatim as the column name. Uses an
     /// "h{n}" parameter prefix by default (vs. "p{n}" for WHERE) so both can share one
@@ -600,7 +600,7 @@ internal static class StarRocksQueryBuilder
         foreach (var clause in clauses)
         {
             if (clause.Operator == SearchOperator.VectorSimilar)
-                throw new StarRocksQueryTranslationException(
+                throw new EngagementQueryTranslationException(
                     "VECTOR_SIMILAR clauses are not supported by the SQL search path; " +
                     "use the SearchSimilar or SearchChunks RPCs for vector search.");
 
@@ -626,7 +626,7 @@ internal static class StarRocksQueryBuilder
         return string.Join(sep, parts);
     }
 
-    internal static string? ResolveColumn(StarRocksQuerySchema schema, string property)
+    internal static string? ResolveColumn(EngagementQuerySchema schema, string property)
     {
         var index = _columnCache.GetValue(schema, static s =>
             s.ColumnNames
@@ -706,9 +706,9 @@ internal static class StarRocksQueryBuilder
     /// surfacing with NULLs on the joined side).
     /// </remarks>
     internal static string BuildFromWithJoins(
-        StarRocksQuerySchema primarySchema,
+        EngagementQuerySchema primarySchema,
         IReadOnlyList<JoinSpec> joins,
-        Func<string, StarRocksQuerySchema?> registry,
+        Func<string, EngagementQuerySchema?> registry,
         DynamicParameters param,
         out IReadOnlyDictionary<string, JoinContext> tableMap,
         IReadOnlyDictionary<string, AuthorizationConstraint>? authz = null,
@@ -732,22 +732,22 @@ internal static class StarRocksQueryBuilder
             if (!map.TryGetValue(join.LeftType, out var leftCtx))
             {
                 var leftSchema = registry(join.LeftType)
-                    ?? throw new StarRocksQueryTranslationException(
+                    ?? throw new EngagementQueryTranslationException(
                         $"Unknown type '{join.LeftType}' referenced in join.");
                 leftCtx = new JoinContext(leftSchema.TableName, leftSchema, leftSchema.TableName);
                 map[join.LeftType] = leftCtx;
             }
 
             var rightSchema = registry(join.RightType)
-                ?? throw new StarRocksQueryTranslationException(
+                ?? throw new EngagementQueryTranslationException(
                     $"Unknown type '{join.RightType}' referenced in join.");
             var rightCtx = new JoinContext(rightSchema.TableName, rightSchema, rightSchema.TableName);
 
             var leftCol = ResolveColumn(leftCtx.Schema, join.LeftField)
-                ?? throw new StarRocksQueryTranslationException(
+                ?? throw new EngagementQueryTranslationException(
                     $"Unknown field '{join.LeftField}' on type '{join.LeftType}' referenced in join.");
             var rightCol = ResolveColumn(rightCtx.Schema, join.RightField)
-                ?? throw new StarRocksQueryTranslationException(
+                ?? throw new EngagementQueryTranslationException(
                     $"Unknown field '{join.RightField}' on type '{join.RightType}' referenced in join.");
 
             var kind = join.Kind switch
@@ -794,11 +794,11 @@ internal static class StarRocksQueryBuilder
     /// properties are silently skipped (matching the pre-existing behavior), but a
     /// resolved-but-disallowed field throws — an unrestricted sort would otherwise let a caller
     /// infer a restricted field's relative ordering across rows, a side channel that WHERE-clause
-    /// field gating (<see cref="BuildWhere(StarRocksQuerySchema, IEnumerable{SearchClause}?, SearchLogic, DynamicParameters, out int, IReadOnlyDictionary{string, JoinContext}?, IReadOnlyDictionary{string, AuthorizationConstraint}?)"/>)
+    /// field gating (<see cref="BuildWhere(EngagementQuerySchema, IEnumerable{SearchClause}?, SearchLogic, DynamicParameters, out int, IReadOnlyDictionary{string, JoinContext}?, IReadOnlyDictionary{string, AuthorizationConstraint}?)"/>)
     /// alone does not close.
     /// </summary>
     private static string BuildOrder(
-        StarRocksQuerySchema schema,
+        EngagementQuerySchema schema,
         IEnumerable<SearchSort>? sorts,
         IReadOnlyDictionary<string, JoinContext>? tableMap,
         IReadOnlyDictionary<string, AuthorizationConstraint>? authz)
@@ -812,7 +812,7 @@ internal static class StarRocksQueryBuilder
             if (resolved is null) continue;
 
             if (!IsFieldAllowed(resolved, schema, tableMap, authz, out var typeName))
-                throw new StarRocksQueryTranslationException(
+                throw new EngagementQueryTranslationException(
                     $"Sort property '{s.Property}' on '{typeName}' is not authorized for this caller.");
 
             var quoted = tableMap is not null ? QuoteQualified(resolved) : $"`{resolved}`";

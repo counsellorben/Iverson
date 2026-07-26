@@ -3,8 +3,8 @@ using Iverson.Embeddings;
 using Iverson.Sql;
 using Iverson.StarRocks;
 using Iverson.Vector;
-using ContractsRelationKind = Iverson.Client.Contracts.RelationKind;
-using SchemaRelationKind    = Iverson.Api.Schema.RelationKind;
+using ContractsRelationKind       = Iverson.Client.Contracts.RelationKind;
+using SchemaRelationKind          = Iverson.Api.Schema.RelationKind;
 using ContractsAuthorizationRules = Iverson.Client.Contracts.AuthorizationRules;
 using SchemaAuthorizationRules    = Iverson.Api.Schema.AuthorizationRules;
 using ContractsRowPermission      = Iverson.Client.Contracts.RowPermission;
@@ -23,27 +23,35 @@ internal static class SchemaBuilder
         var keyProp = typeDesc.Properties.FirstOrDefault(p => p.IsKey)
             ?? throw new InvalidOperationException($"No key property on '{typeDesc.TypeName}'.");
 
-        var scalars     = new List<ColumnDescriptor>();
-        var fks         = new List<ForeignKeyDescriptor>();
-        var vectors     = new List<VectorDescriptor>();
-        var chunks      = new List<ChunkDescriptor>();
+        var scalars          = new List<ColumnDescriptor>();
+        var fks              = new List<ForeignKeyDescriptor>();
+        var vectors          = new List<VectorDescriptor>();
+        var chunks           = new List<ChunkDescriptor>();
         var searchKeysSorted = new List<(string Name, int Order)>();
         var largeFields      = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
         foreach (var prop in typeDesc.Properties.Where(p => !p.IsKey))
         {
             var sqlType = ClrTypeToSql(prop.ClrType, prop.IsArray);
-            scalars.Add(new ColumnDescriptor(prop.Name, sqlType, prop.IsNullable));
+            scalars.Add(
+                new ColumnDescriptor(prop.Name, sqlType, prop.IsNullable));
 
             if (prop.IsEmbedding)
             {
-                vectors.Add(new VectorDescriptor(prop.Name, embedding.Dimension, embedding.ModelId));
+                vectors.Add(
+                    new VectorDescriptor(prop.Name, embedding.Dimension, embedding.ModelId));
                 largeFields.Add(prop.Name);
             }
 
             if (prop.IsChunk)
             {
-                chunks.Add(new ChunkDescriptor(prop.Name, prop.ChunkMaxTokens, prop.ChunkOverlap, embedding.ModelId, embedding.Dimension));
+                chunks.Add(
+                    new ChunkDescriptor(
+                        prop.Name,
+                        prop.ChunkMaxTokens,
+                        prop.ChunkOverlap,
+                        embedding.ModelId,
+                        embedding.Dimension));
                 largeFields.Add(prop.Name);
             }
 
@@ -122,17 +130,17 @@ internal static class SchemaBuilder
     internal static ColumnSchema ToColumnSchema(ColumnDescriptor c) =>
         new(c.Name, c.SqlType, c.IsNullable);
 
-    internal static StarRocksTableSchema ToStarRocksTableSchema(SchemaDescriptor d) => new(
+    internal static EngagementTableSchema ToEngagementTableSchema(SchemaDescriptor d) => new(
         d.TableName,
-        new StarRocksColumnSchema(d.KeyColumn.Name, ClrTypeToStarRocksType(d.KeyColumn.SqlType), false),
+        new EngagementColumnSchema(d.KeyColumn.Name, ClrTypeToEngagementType(d.KeyColumn.SqlType), false),
         d.ScalarColumns
-            .Select(c => new StarRocksColumnSchema(c.Name, ClrTypeToStarRocksType(c.SqlType), c.IsNullable))
+            .Select(c => new EngagementColumnSchema(c.Name, ClrTypeToEngagementType(c.SqlType), c.IsNullable))
             .ToList())
     {
         SortKey = d.SearchKeyColumns
     };
 
-    internal static StarRocksQuerySchema ToStarRocksQuerySchema(SchemaDescriptor d) => new(
+    internal static EngagementQuerySchema ToEngagementQuerySchema(SchemaDescriptor d) => new(
         d.TypeName,
         d.TableName,
         d.KeyColumn.Name,
@@ -209,7 +217,7 @@ internal static class SchemaBuilder
                 $"Unhandled {nameof(ClrType)} value — add an entry to {nameof(SchemaBuilder)}.{nameof(ScalarTypeMap)}.");
     }
 
-    internal static string ClrTypeToStarRocksType(string sqlType) =>
+    internal static string ClrTypeToEngagementType(string sqlType) =>
         SqlTypeMap.TryGetValue(sqlType, out var mapping) ? mapping.StarRocksType : "STRING";
 
     internal static PayloadIndexKind SqlTypeToPayloadKind(string sqlType) =>

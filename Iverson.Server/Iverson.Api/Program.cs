@@ -165,10 +165,10 @@ builder.Services.AddPostgres(cfg.GetConnectionString("Postgres")
 builder.Services.AddStarRocks(
     cfg.GetConnectionString("StarRocks")
     ?? "Server=localhost;Port=9030;Database=iverson;User Id=root;Password=;AllowPublicKeyRetrieval=true;",
-    new StarRocksResilienceOptions
+    new EngagementResilienceOptions
     {
         BackendReadyTimeout = TimeSpan.FromSeconds(cfg.GetValue("StarRocks:BackendReadyTimeoutSeconds", 120)),
-        CircuitBreaker = new StarRocksCircuitBreakerOptions
+        CircuitBreaker = new EngagementCircuitBreakerOptions
         {
             FailureRatio      = cfg.GetValue("StarRocks:CircuitBreaker:FailureRatio", 0.5),
             MinimumThroughput = cfg.GetValue("StarRocks:CircuitBreaker:MinimumThroughput", 4),
@@ -210,7 +210,7 @@ builder.Services.AddMemoryCache();
 builder.Services.AddSingleton<Iverson.Api.Tenancy.ITenantStatusCache, Iverson.Api.Tenancy.TenantStatusCache>();
 builder.Services.AddSingleton<Iverson.Api.Reconciliation.ReconciliationService>();
 
-builder.Services.AddHttpClient(Iverson.Api.Tenancy.AuthentikAdminClient.HttpClientName, client =>
+builder.Services.AddHttpClient(Iverson.Api.Tenancy.IdpAdminClient.HttpClientName, client =>
 {
     client.BaseAddress = new Uri(cfg["Authentik:BaseUrl"] ?? "http://authentik-server:9000");
     var adminToken = cfg["Authentik:AdminToken"];
@@ -218,7 +218,7 @@ builder.Services.AddHttpClient(Iverson.Api.Tenancy.AuthentikAdminClient.HttpClie
         client.DefaultRequestHeaders.Authorization =
             new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", adminToken);
 });
-builder.Services.AddSingleton<Iverson.Api.Tenancy.IAuthentikAdminClient, Iverson.Api.Tenancy.AuthentikAdminClient>();
+builder.Services.AddSingleton<Iverson.Api.Tenancy.IIdpAdminClient, Iverson.Api.Tenancy.IdpAdminClient>();
 
 builder.Services.AddHttpClient("JaegerOtlpHttp", client =>
 {
@@ -295,7 +295,7 @@ app.MapGet("/health", async (
     var checks = new
     {
         postgres  = pgTask.Result,
-        starrocks = srStatus == StarRocksHealthStatus.Healthy,
+        starrocks = srStatus == EngagementHealthStatus.Healthy,
         qdrant    = vectorTask.Result,
         kafka     = kafkaTask.Result
     };

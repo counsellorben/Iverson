@@ -40,23 +40,23 @@ public class ObjectSearchGrpcServiceTests
         _embedding = Substitute.For<IEmbeddingService>();
 
         _search.SearchAsync(
-                Arg.Any<StarRocksQuerySchema>(), Arg.Any<SearchQuery?>(), Arg.Any<int>(), Arg.Any<int>(),
+                Arg.Any<EngagementQuerySchema>(), Arg.Any<SearchQuery?>(), Arg.Any<int>(), Arg.Any<int>(),
                 Arg.Any<IReadOnlyList<string>?>(), Arg.Any<IReadOnlyList<JoinSpec>?>(),
-                Arg.Any<Func<string, StarRocksQuerySchema?>?>(),
+                Arg.Any<Func<string, EngagementQuerySchema?>?>(),
                 Arg.Any<IReadOnlyDictionary<string, AuthorizationConstraint>?>())
             .Returns(Enumerable.Empty<dynamic>());
         _search.AggregateAsync(
-                Arg.Any<StarRocksQuerySchema>(), Arg.Any<SearchQuery?>(), Arg.Any<AggregationDescriptor>(),
+                Arg.Any<EngagementQuerySchema>(), Arg.Any<SearchQuery?>(), Arg.Any<AggregationDescriptor>(),
                 Arg.Any<SearchQuery?>(), Arg.Any<IReadOnlyList<JoinSpec>?>(),
-                Arg.Any<Func<string, StarRocksQuerySchema?>?>(),
+                Arg.Any<Func<string, EngagementQuerySchema?>?>(),
                 Arg.Any<IReadOnlyDictionary<string, AuthorizationConstraint>?>())
             .Returns((SrAggResult?)null);
         _search.GroupByAsync(
-                Arg.Any<StarRocksQuerySchema>(), Arg.Any<GroupByRequest>(), Arg.Any<Func<string, StarRocksQuerySchema?>>(),
+                Arg.Any<EngagementQuerySchema>(), Arg.Any<GroupByRequest>(), Arg.Any<Func<string, EngagementQuerySchema?>>(),
                 Arg.Any<IReadOnlyDictionary<string, AuthorizationConstraint>?>())
             .Returns(Enumerable.Empty<dynamic>());
         _search.PipelineAsync(
-                Arg.Any<StarRocksQuerySchema>(), Arg.Any<PipelineRequest>(), Arg.Any<Func<string, StarRocksQuerySchema?>>(),
+                Arg.Any<EngagementQuerySchema>(), Arg.Any<PipelineRequest>(), Arg.Any<Func<string, EngagementQuerySchema?>>(),
                 Arg.Any<IReadOnlyDictionary<string, AuthorizationConstraint>?>())
             .Returns(Enumerable.Empty<dynamic>());
 
@@ -65,7 +65,7 @@ public class ObjectSearchGrpcServiceTests
         _sut = new ObjectSearchGrpcService(
             _registry, _search, _vector, _embedding,
             NullLogger<ObjectSearchGrpcService>.Instance,
-            _actingUserAccessor, _authEvaluator, new QdrantTenantScope("test-signing-key-0123456789abcdef"));
+            _actingUserAccessor, _authEvaluator, new IntelligenceTenantScope("test-signing-key-0123456789abcdef"));
     }
 
     private static (IServerStreamWriter<T> writer, List<T> written) MakeStream<T>()
@@ -97,9 +97,9 @@ public class ObjectSearchGrpcServiceTests
 
         var fakeRow = new Dictionary<string, object> { ["Name"] = "Alice" };
         _search.SearchAsync(
-                Arg.Any<StarRocksQuerySchema>(), Arg.Any<SearchQuery?>(), Arg.Any<int>(), Arg.Any<int>(),
+                Arg.Any<EngagementQuerySchema>(), Arg.Any<SearchQuery?>(), Arg.Any<int>(), Arg.Any<int>(),
                 Arg.Any<IReadOnlyList<string>?>(), Arg.Any<IReadOnlyList<JoinSpec>?>(),
-                Arg.Any<Func<string, StarRocksQuerySchema?>?>(),
+                Arg.Any<Func<string, EngagementQuerySchema?>?>(),
                 Arg.Any<IReadOnlyDictionary<string, AuthorizationConstraint>?>())
             .Returns(new[] { (dynamic)fakeRow }.AsEnumerable());
 
@@ -108,9 +108,9 @@ public class ObjectSearchGrpcServiceTests
 
         written.Should().HaveCount(1);
         await _search.Received(1).SearchAsync(
-            Arg.Any<StarRocksQuerySchema>(), Arg.Any<SearchQuery?>(), Arg.Any<int>(), Arg.Any<int>(),
+            Arg.Any<EngagementQuerySchema>(), Arg.Any<SearchQuery?>(), Arg.Any<int>(), Arg.Any<int>(),
             Arg.Any<IReadOnlyList<string>?>(), Arg.Any<IReadOnlyList<JoinSpec>?>(),
-            Arg.Any<Func<string, StarRocksQuerySchema?>?>(),
+            Arg.Any<Func<string, EngagementQuerySchema?>?>(),
             Arg.Any<IReadOnlyDictionary<string, AuthorizationConstraint>?>());
     }
 
@@ -120,14 +120,14 @@ public class ObjectSearchGrpcServiceTests
         // SQL generation itself is now StarRocksQueryBuilder's concern (covered by
         // StarRocksQueryBuilderTests in Iverson.StarRocks.Tests). This test verifies
         // ObjectSearchGrpcService converts the registered SchemaDescriptor to a
-        // StarRocksQuerySchema targeting the right table before delegating.
+        // EngagementQuerySchema targeting the right table before delegating.
         await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
 
-        StarRocksQuerySchema? capturedSchema = null;
+        EngagementQuerySchema? capturedSchema = null;
         _search.SearchAsync(
-                Arg.Do<StarRocksQuerySchema>(s => capturedSchema = s), Arg.Any<SearchQuery?>(), Arg.Any<int>(),
+                Arg.Do<EngagementQuerySchema>(s => capturedSchema = s), Arg.Any<SearchQuery?>(), Arg.Any<int>(),
                 Arg.Any<int>(), Arg.Any<IReadOnlyList<string>?>(), Arg.Any<IReadOnlyList<JoinSpec>?>(),
-                Arg.Any<Func<string, StarRocksQuerySchema?>?>(),
+                Arg.Any<Func<string, EngagementQuerySchema?>?>(),
                 Arg.Any<IReadOnlyDictionary<string, AuthorizationConstraint>?>())
             .Returns(Enumerable.Empty<dynamic>());
 
@@ -148,9 +148,9 @@ public class ObjectSearchGrpcServiceTests
 
         SearchQuery? capturedQuery = null;
         _search.SearchAsync(
-                Arg.Any<StarRocksQuerySchema>(), Arg.Do<SearchQuery?>(q => capturedQuery = q), Arg.Any<int>(),
+                Arg.Any<EngagementQuerySchema>(), Arg.Do<SearchQuery?>(q => capturedQuery = q), Arg.Any<int>(),
                 Arg.Any<int>(), Arg.Any<IReadOnlyList<string>?>(), Arg.Any<IReadOnlyList<JoinSpec>?>(),
-                Arg.Any<Func<string, StarRocksQuerySchema?>?>(),
+                Arg.Any<Func<string, EngagementQuerySchema?>?>(),
                 Arg.Any<IReadOnlyDictionary<string, AuthorizationConstraint>?>())
             .Returns(Enumerable.Empty<dynamic>());
 
@@ -249,9 +249,9 @@ public class ObjectSearchGrpcServiceTests
 
         IReadOnlyDictionary<string, AuthorizationConstraint>? captured = null;
         _search.SearchAsync(
-                Arg.Any<StarRocksQuerySchema>(), Arg.Any<SearchQuery?>(), Arg.Any<int>(), Arg.Any<int>(),
+                Arg.Any<EngagementQuerySchema>(), Arg.Any<SearchQuery?>(), Arg.Any<int>(), Arg.Any<int>(),
                 Arg.Any<IReadOnlyList<string>?>(), Arg.Any<IReadOnlyList<JoinSpec>?>(),
-                Arg.Any<Func<string, StarRocksQuerySchema?>?>(),
+                Arg.Any<Func<string, EngagementQuerySchema?>?>(),
                 Arg.Do<IReadOnlyDictionary<string, AuthorizationConstraint>?>(a => captured = a))
             .Returns(Enumerable.Empty<dynamic>());
 
@@ -274,9 +274,9 @@ public class ObjectSearchGrpcServiceTests
 
         IReadOnlyDictionary<string, AuthorizationConstraint>? captured = null;
         _search.SearchAsync(
-                Arg.Any<StarRocksQuerySchema>(), Arg.Any<SearchQuery?>(), Arg.Any<int>(), Arg.Any<int>(),
+                Arg.Any<EngagementQuerySchema>(), Arg.Any<SearchQuery?>(), Arg.Any<int>(), Arg.Any<int>(),
                 Arg.Any<IReadOnlyList<string>?>(), Arg.Any<IReadOnlyList<JoinSpec>?>(),
-                Arg.Any<Func<string, StarRocksQuerySchema?>?>(),
+                Arg.Any<Func<string, EngagementQuerySchema?>?>(),
                 Arg.Do<IReadOnlyDictionary<string, AuthorizationConstraint>?>(a => captured = a))
             .Returns(Enumerable.Empty<dynamic>());
 
@@ -305,9 +305,9 @@ public class ObjectSearchGrpcServiceTests
 
         var rowOwnedByTenantA = new Dictionary<string, object> { ["Id"] = "1", ["Name"] = "Alice" };
         _search.SearchAsync(
-                Arg.Any<StarRocksQuerySchema>(), Arg.Any<SearchQuery?>(), Arg.Any<int>(), Arg.Any<int>(),
+                Arg.Any<EngagementQuerySchema>(), Arg.Any<SearchQuery?>(), Arg.Any<int>(), Arg.Any<int>(),
                 Arg.Any<IReadOnlyList<string>?>(), Arg.Any<IReadOnlyList<JoinSpec>?>(),
-                Arg.Any<Func<string, StarRocksQuerySchema?>?>(),
+                Arg.Any<Func<string, EngagementQuerySchema?>?>(),
                 Arg.Any<IReadOnlyDictionary<string, AuthorizationConstraint>?>())
             .Returns(callInfo =>
             {
@@ -335,9 +335,9 @@ public class ObjectSearchGrpcServiceTests
 
         IReadOnlyDictionary<string, AuthorizationConstraint>? captured = null;
         _search.SearchAsync(
-                Arg.Any<StarRocksQuerySchema>(), Arg.Any<SearchQuery?>(), Arg.Any<int>(), Arg.Any<int>(),
+                Arg.Any<EngagementQuerySchema>(), Arg.Any<SearchQuery?>(), Arg.Any<int>(), Arg.Any<int>(),
                 Arg.Any<IReadOnlyList<string>?>(), Arg.Any<IReadOnlyList<JoinSpec>?>(),
-                Arg.Any<Func<string, StarRocksQuerySchema?>?>(),
+                Arg.Any<Func<string, EngagementQuerySchema?>?>(),
                 Arg.Do<IReadOnlyDictionary<string, AuthorizationConstraint>?>(a => captured = a))
             .Returns(Enumerable.Empty<dynamic>());
 
@@ -358,9 +358,9 @@ public class ObjectSearchGrpcServiceTests
 
         var fakeRow = new Dictionary<string, object> { ["Id"] = "1", ["Name"] = "visible", ["Secret"] = "hidden" };
         _search.SearchAsync(
-                Arg.Any<StarRocksQuerySchema>(), Arg.Any<SearchQuery?>(), Arg.Any<int>(), Arg.Any<int>(),
+                Arg.Any<EngagementQuerySchema>(), Arg.Any<SearchQuery?>(), Arg.Any<int>(), Arg.Any<int>(),
                 Arg.Any<IReadOnlyList<string>?>(), Arg.Any<IReadOnlyList<JoinSpec>?>(),
-                Arg.Any<Func<string, StarRocksQuerySchema?>?>(),
+                Arg.Any<Func<string, EngagementQuerySchema?>?>(),
                 Arg.Any<IReadOnlyDictionary<string, AuthorizationConstraint>?>())
             .Returns(new[] { (dynamic)fakeRow }.AsEnumerable());
 
@@ -404,9 +404,9 @@ public class ObjectSearchGrpcServiceTests
 
         IReadOnlyDictionary<string, AuthorizationConstraint>? captured = null;
         _search.SearchAsync(
-                Arg.Any<StarRocksQuerySchema>(), Arg.Any<SearchQuery?>(), Arg.Any<int>(), Arg.Any<int>(),
+                Arg.Any<EngagementQuerySchema>(), Arg.Any<SearchQuery?>(), Arg.Any<int>(), Arg.Any<int>(),
                 Arg.Any<IReadOnlyList<string>?>(), Arg.Any<IReadOnlyList<JoinSpec>?>(),
-                Arg.Any<Func<string, StarRocksQuerySchema?>?>(),
+                Arg.Any<Func<string, EngagementQuerySchema?>?>(),
                 Arg.Do<IReadOnlyDictionary<string, AuthorizationConstraint>?>(a => captured = a))
             .Returns(Enumerable.Empty<dynamic>());
 
@@ -436,9 +436,9 @@ public class ObjectSearchGrpcServiceTests
 
         IReadOnlyDictionary<string, AuthorizationConstraint>? captured = null;
         _search.SearchAsync(
-                Arg.Any<StarRocksQuerySchema>(), Arg.Any<SearchQuery?>(), Arg.Any<int>(), Arg.Any<int>(),
+                Arg.Any<EngagementQuerySchema>(), Arg.Any<SearchQuery?>(), Arg.Any<int>(), Arg.Any<int>(),
                 Arg.Any<IReadOnlyList<string>?>(), Arg.Any<IReadOnlyList<JoinSpec>?>(),
-                Arg.Any<Func<string, StarRocksQuerySchema?>?>(),
+                Arg.Any<Func<string, EngagementQuerySchema?>?>(),
                 Arg.Do<IReadOnlyDictionary<string, AuthorizationConstraint>?>(a => captured = a))
             .Returns(Enumerable.Empty<dynamic>());
 
@@ -476,9 +476,9 @@ public class ObjectSearchGrpcServiceTests
 
         IReadOnlyDictionary<string, AuthorizationConstraint>? captured = null;
         _search.SearchAsync(
-                Arg.Any<StarRocksQuerySchema>(), Arg.Any<SearchQuery?>(), Arg.Any<int>(), Arg.Any<int>(),
+                Arg.Any<EngagementQuerySchema>(), Arg.Any<SearchQuery?>(), Arg.Any<int>(), Arg.Any<int>(),
                 Arg.Any<IReadOnlyList<string>?>(), Arg.Any<IReadOnlyList<JoinSpec>?>(),
-                Arg.Any<Func<string, StarRocksQuerySchema?>?>(),
+                Arg.Any<Func<string, EngagementQuerySchema?>?>(),
                 Arg.Do<IReadOnlyDictionary<string, AuthorizationConstraint>?>(a => captured = a))
             .Returns(Enumerable.Empty<dynamic>());
 
@@ -501,7 +501,7 @@ public class ObjectSearchGrpcServiceTests
     [Fact]
     public async Task Search_RestrictedSortFieldRejectedByBuilder_TranslatesToInvalidArgument()
     {
-        // Simulates what BuildOrder (StarRocksQueryTranslationException on a disallowed
+        // Simulates what BuildOrder (EngagementQueryTranslationException on a disallowed
         // query.Sort entry — see StarRocksQueryBuilderTests) causes the real search service to
         // throw; proves ObjectSearchGrpcService.Search still surfaces it as InvalidArgument.
         // Closes a whole-branch-review gap: sort was previously ungated even though Search's
@@ -509,11 +509,11 @@ public class ObjectSearchGrpcServiceTests
         await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
 
         _search.SearchAsync(
-                Arg.Any<StarRocksQuerySchema>(), Arg.Any<SearchQuery?>(), Arg.Any<int>(), Arg.Any<int>(),
+                Arg.Any<EngagementQuerySchema>(), Arg.Any<SearchQuery?>(), Arg.Any<int>(), Arg.Any<int>(),
                 Arg.Any<IReadOnlyList<string>?>(), Arg.Any<IReadOnlyList<JoinSpec>?>(),
-                Arg.Any<Func<string, StarRocksQuerySchema?>?>(),
+                Arg.Any<Func<string, EngagementQuerySchema?>?>(),
                 Arg.Any<IReadOnlyDictionary<string, AuthorizationConstraint>?>())
-            .Returns<Task<IEnumerable<dynamic>>>(_ => throw new StarRocksQueryTranslationException(
+            .Returns<Task<IEnumerable<dynamic>>>(_ => throw new EngagementQueryTranslationException(
                 "Sort property 'Bio' on 'Author' is not authorized for this caller."));
 
         var request = new SearchRequest { TypeName = "Author", Query = new SearchQuery() };
@@ -544,9 +544,9 @@ public class ObjectSearchGrpcServiceTests
         var ownerMatchRow    = new Dictionary<string, object?> { ["Id"] = "1", ["Name"] = "Alice", ["Title"] = "Owned Article" };
         var nonMatchRow      = new Dictionary<string, object?> { ["Id"] = "2", ["Name"] = "Bob", ["Title"] = null };
         _search.SearchAsync(
-                Arg.Any<StarRocksQuerySchema>(), Arg.Any<SearchQuery?>(), Arg.Any<int>(), Arg.Any<int>(),
+                Arg.Any<EngagementQuerySchema>(), Arg.Any<SearchQuery?>(), Arg.Any<int>(), Arg.Any<int>(),
                 Arg.Any<IReadOnlyList<string>?>(), Arg.Any<IReadOnlyList<JoinSpec>?>(),
-                Arg.Any<Func<string, StarRocksQuerySchema?>?>(),
+                Arg.Any<Func<string, EngagementQuerySchema?>?>(),
                 Arg.Any<IReadOnlyDictionary<string, AuthorizationConstraint>?>())
             .Returns(new[] { (dynamic)ownerMatchRow, (dynamic)nonMatchRow }.AsEnumerable());
 
@@ -594,21 +594,21 @@ public class ObjectSearchGrpcServiceTests
     }
 
     [Fact]
-    public async Task Aggregate_TranslatesStarRocksQueryTranslationException_ToInvalidArgument()
+    public async Task Aggregate_TranslatesEngagementQueryTranslationException_ToInvalidArgument()
     {
-        // The multi-key-GROUP-BY guard now lives in StarRocksRepository.AggregateAsync
-        // (covered by StarRocksRepositorySearchTests). This test verifies
+        // The multi-key-GROUP-BY guard now lives in EngagementRepository.AggregateAsync
+        // (covered by EngagementRepositorySearchTests). This test verifies
         // ObjectSearchGrpcService still correctly translates a
-        // StarRocksQueryTranslationException raised by the search service into an
+        // EngagementQueryTranslationException raised by the search service into an
         // InvalidArgument RpcException.
         await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
 
         _search.AggregateAsync(
-                Arg.Any<StarRocksQuerySchema>(), Arg.Any<SearchQuery?>(), Arg.Any<AggregationDescriptor>(),
+                Arg.Any<EngagementQuerySchema>(), Arg.Any<SearchQuery?>(), Arg.Any<AggregationDescriptor>(),
                 Arg.Any<SearchQuery?>(), Arg.Any<IReadOnlyList<JoinSpec>?>(),
-                Arg.Any<Func<string, StarRocksQuerySchema?>?>(),
+                Arg.Any<Func<string, EngagementQuerySchema?>?>(),
                 Arg.Any<IReadOnlyDictionary<string, AuthorizationConstraint>?>())
-            .Returns<Task<SrAggResult?>>(_ => throw new StarRocksQueryTranslationException(
+            .Returns<Task<SrAggResult?>>(_ => throw new EngagementQueryTranslationException(
                 "Multi-key GROUP BY (group_by_fields with more than one entry) is not yet supported"));
 
         var request = new AggregateRequest { TypeName = "Author" };
@@ -628,15 +628,15 @@ public class ObjectSearchGrpcServiceTests
     public async Task Aggregate_Terms_ReturnsBuckets()
     {
         // Row-shape-to-AggregationResult decoding now happens inside
-        // StarRocksRepository.AggregateAsync (covered by StarRocksRepositorySearchTests
+        // EngagementRepository.AggregateAsync (covered by EngagementRepositorySearchTests
         // and Task 5's integration tests). This test mocks the search service to
         // return the already-decoded AggregationResult directly.
         await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
 
         _search.AggregateAsync(
-                Arg.Any<StarRocksQuerySchema>(), Arg.Any<SearchQuery?>(), Arg.Any<AggregationDescriptor>(),
+                Arg.Any<EngagementQuerySchema>(), Arg.Any<SearchQuery?>(), Arg.Any<AggregationDescriptor>(),
                 Arg.Any<SearchQuery?>(), Arg.Any<IReadOnlyList<JoinSpec>?>(),
-                Arg.Any<Func<string, StarRocksQuerySchema?>?>(),
+                Arg.Any<Func<string, EngagementQuerySchema?>?>(),
                 Arg.Any<IReadOnlyDictionary<string, AuthorizationConstraint>?>())
             .Returns(new SrAggResult("name_terms", AggregationKind.Terms,
                 Buckets: [new SrAggBucket("Alice", 10), new SrAggBucket("Bob", 5)]));
@@ -662,9 +662,9 @@ public class ObjectSearchGrpcServiceTests
         await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
 
         _search.AggregateAsync(
-                Arg.Any<StarRocksQuerySchema>(), Arg.Any<SearchQuery?>(), Arg.Any<AggregationDescriptor>(),
+                Arg.Any<EngagementQuerySchema>(), Arg.Any<SearchQuery?>(), Arg.Any<AggregationDescriptor>(),
                 Arg.Any<SearchQuery?>(), Arg.Any<IReadOnlyList<JoinSpec>?>(),
-                Arg.Any<Func<string, StarRocksQuerySchema?>?>(),
+                Arg.Any<Func<string, EngagementQuerySchema?>?>(),
                 Arg.Any<IReadOnlyDictionary<string, AuthorizationConstraint>?>())
             .Returns(new SrAggResult("bio_avg", AggregationKind.Avg, MetricValue: 42.5));
 
@@ -686,9 +686,9 @@ public class ObjectSearchGrpcServiceTests
         await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
 
         _search.AggregateAsync(
-                Arg.Any<StarRocksQuerySchema>(), Arg.Any<SearchQuery?>(), Arg.Any<AggregationDescriptor>(),
+                Arg.Any<EngagementQuerySchema>(), Arg.Any<SearchQuery?>(), Arg.Any<AggregationDescriptor>(),
                 Arg.Any<SearchQuery?>(), Arg.Any<IReadOnlyList<JoinSpec>?>(),
-                Arg.Any<Func<string, StarRocksQuerySchema?>?>(),
+                Arg.Any<Func<string, EngagementQuerySchema?>?>(),
                 Arg.Any<IReadOnlyDictionary<string, AuthorizationConstraint>?>())
             .Returns(new SrAggResult("name_terms", AggregationKind.Terms,
                 Buckets: [new SrAggBucket("Alice", 3)]));
@@ -715,9 +715,9 @@ public class ObjectSearchGrpcServiceTests
 
         SearchQuery? capturedQuery = null;
         _search.AggregateAsync(
-                Arg.Any<StarRocksQuerySchema>(), Arg.Do<SearchQuery?>(q => capturedQuery = q),
+                Arg.Any<EngagementQuerySchema>(), Arg.Do<SearchQuery?>(q => capturedQuery = q),
                 Arg.Any<AggregationDescriptor>(), Arg.Any<SearchQuery?>(), Arg.Any<IReadOnlyList<JoinSpec>?>(),
-                Arg.Any<Func<string, StarRocksQuerySchema?>?>(),
+                Arg.Any<Func<string, EngagementQuerySchema?>?>(),
                 Arg.Any<IReadOnlyDictionary<string, AuthorizationConstraint>?>())
             .Returns((SrAggResult?)null);
 
@@ -751,9 +751,9 @@ public class ObjectSearchGrpcServiceTests
         var callCount = 0;
 
         _search.AggregateAsync(
-                Arg.Any<StarRocksQuerySchema>(), Arg.Any<SearchQuery?>(), Arg.Any<AggregationDescriptor>(),
+                Arg.Any<EngagementQuerySchema>(), Arg.Any<SearchQuery?>(), Arg.Any<AggregationDescriptor>(),
                 Arg.Any<SearchQuery?>(), Arg.Any<IReadOnlyList<JoinSpec>?>(),
-                Arg.Any<Func<string, StarRocksQuerySchema?>?>(),
+                Arg.Any<Func<string, EngagementQuerySchema?>?>(),
                 Arg.Any<IReadOnlyDictionary<string, AuthorizationConstraint>?>())
             .Returns(_ =>
             {
@@ -846,9 +846,9 @@ public class ObjectSearchGrpcServiceTests
 
         IReadOnlyDictionary<string, AuthorizationConstraint>? captured = null;
         _search.AggregateAsync(
-                Arg.Any<StarRocksQuerySchema>(), Arg.Any<SearchQuery?>(), Arg.Any<AggregationDescriptor>(),
+                Arg.Any<EngagementQuerySchema>(), Arg.Any<SearchQuery?>(), Arg.Any<AggregationDescriptor>(),
                 Arg.Any<SearchQuery?>(), Arg.Any<IReadOnlyList<JoinSpec>?>(),
-                Arg.Any<Func<string, StarRocksQuerySchema?>?>(),
+                Arg.Any<Func<string, EngagementQuerySchema?>?>(),
                 Arg.Do<IReadOnlyDictionary<string, AuthorizationConstraint>?>(a => captured = a))
             .Returns((SrAggResult?)null);
 
@@ -873,9 +873,9 @@ public class ObjectSearchGrpcServiceTests
 
         IReadOnlyDictionary<string, AuthorizationConstraint>? captured = null;
         _search.AggregateAsync(
-                Arg.Any<StarRocksQuerySchema>(), Arg.Any<SearchQuery?>(), Arg.Any<AggregationDescriptor>(),
+                Arg.Any<EngagementQuerySchema>(), Arg.Any<SearchQuery?>(), Arg.Any<AggregationDescriptor>(),
                 Arg.Any<SearchQuery?>(), Arg.Any<IReadOnlyList<JoinSpec>?>(),
-                Arg.Any<Func<string, StarRocksQuerySchema?>?>(),
+                Arg.Any<Func<string, EngagementQuerySchema?>?>(),
                 Arg.Do<IReadOnlyDictionary<string, AuthorizationConstraint>?>(a => captured = a))
             .Returns((SrAggResult?)null);
 
@@ -897,9 +897,9 @@ public class ObjectSearchGrpcServiceTests
 
         IReadOnlyDictionary<string, AuthorizationConstraint>? captured = null;
         _search.AggregateAsync(
-                Arg.Any<StarRocksQuerySchema>(), Arg.Any<SearchQuery?>(), Arg.Any<AggregationDescriptor>(),
+                Arg.Any<EngagementQuerySchema>(), Arg.Any<SearchQuery?>(), Arg.Any<AggregationDescriptor>(),
                 Arg.Any<SearchQuery?>(), Arg.Any<IReadOnlyList<JoinSpec>?>(),
-                Arg.Any<Func<string, StarRocksQuerySchema?>?>(),
+                Arg.Any<Func<string, EngagementQuerySchema?>?>(),
                 Arg.Do<IReadOnlyDictionary<string, AuthorizationConstraint>?>(a => captured = a))
             .Returns((SrAggResult?)null);
 
@@ -920,18 +920,18 @@ public class ObjectSearchGrpcServiceTests
     [Fact]
     public async Task Aggregate_RestrictedFieldRejectedByBuilder_TranslatesToInvalidArgument()
     {
-        // Simulates what BuildAggregate (StarRocksQueryTranslationException on a disallowed
+        // Simulates what BuildAggregate (EngagementQueryTranslationException on a disallowed
         // spec.Field — see StarRocksQueryBuilderTests) causes the real search service to throw;
         // proves ObjectSearchGrpcService.Aggregate still surfaces it as InvalidArgument even
         // though authorization is now evaluated before dispatch.
         await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
 
         _search.AggregateAsync(
-                Arg.Any<StarRocksQuerySchema>(), Arg.Any<SearchQuery?>(), Arg.Any<AggregationDescriptor>(),
+                Arg.Any<EngagementQuerySchema>(), Arg.Any<SearchQuery?>(), Arg.Any<AggregationDescriptor>(),
                 Arg.Any<SearchQuery?>(), Arg.Any<IReadOnlyList<JoinSpec>?>(),
-                Arg.Any<Func<string, StarRocksQuerySchema?>?>(),
+                Arg.Any<Func<string, EngagementQuerySchema?>?>(),
                 Arg.Any<IReadOnlyDictionary<string, AuthorizationConstraint>?>())
-            .Returns<Task<SrAggResult?>>(_ => throw new StarRocksQueryTranslationException(
+            .Returns<Task<SrAggResult?>>(_ => throw new EngagementQueryTranslationException(
                 "Aggregation field 'Bio' on 'Author' is not authorized for this caller."));
 
         var request = new AggregateRequest { TypeName = "Author" };
@@ -952,11 +952,11 @@ public class ObjectSearchGrpcServiceTests
         await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
 
         _search.AggregateAsync(
-                Arg.Any<StarRocksQuerySchema>(), Arg.Any<SearchQuery?>(), Arg.Any<AggregationDescriptor>(),
+                Arg.Any<EngagementQuerySchema>(), Arg.Any<SearchQuery?>(), Arg.Any<AggregationDescriptor>(),
                 Arg.Any<SearchQuery?>(), Arg.Any<IReadOnlyList<JoinSpec>?>(),
-                Arg.Any<Func<string, StarRocksQuerySchema?>?>(),
+                Arg.Any<Func<string, EngagementQuerySchema?>?>(),
                 Arg.Any<IReadOnlyDictionary<string, AuthorizationConstraint>?>())
-            .Returns<Task<SrAggResult?>>(_ => throw new StarRocksQueryTranslationException(
+            .Returns<Task<SrAggResult?>>(_ => throw new EngagementQueryTranslationException(
                 "Aggregation expression references field 'Bio' on 'Author', which is not authorized for this caller."));
 
         var request = new AggregateRequest { TypeName = "Author" };
@@ -981,9 +981,9 @@ public class ObjectSearchGrpcServiceTests
 
         IReadOnlyList<string>? capturedFields = null;
         _search.SearchAsync(
-                Arg.Any<StarRocksQuerySchema>(), Arg.Any<SearchQuery?>(), Arg.Any<int>(), Arg.Any<int>(),
+                Arg.Any<EngagementQuerySchema>(), Arg.Any<SearchQuery?>(), Arg.Any<int>(), Arg.Any<int>(),
                 Arg.Do<IReadOnlyList<string>?>(f => capturedFields = f), Arg.Any<IReadOnlyList<JoinSpec>?>(),
-                Arg.Any<Func<string, StarRocksQuerySchema?>?>(),
+                Arg.Any<Func<string, EngagementQuerySchema?>?>(),
                 Arg.Any<IReadOnlyDictionary<string, AuthorizationConstraint>?>())
             .Returns(Enumerable.Empty<dynamic>());
 
@@ -1675,7 +1675,7 @@ public class ObjectSearchGrpcServiceTests
 
         IReadOnlyDictionary<string, AuthorizationConstraint>? captured = null;
         _search.GroupByAsync(
-                Arg.Any<StarRocksQuerySchema>(), Arg.Any<GroupByRequest>(), Arg.Any<Func<string, StarRocksQuerySchema?>>(),
+                Arg.Any<EngagementQuerySchema>(), Arg.Any<GroupByRequest>(), Arg.Any<Func<string, EngagementQuerySchema?>>(),
                 Arg.Do<IReadOnlyDictionary<string, AuthorizationConstraint>?>(a => captured = a))
             .Returns(Enumerable.Empty<dynamic>());
 
@@ -1701,7 +1701,7 @@ public class ObjectSearchGrpcServiceTests
 
         IReadOnlyDictionary<string, AuthorizationConstraint>? captured = null;
         _search.GroupByAsync(
-                Arg.Any<StarRocksQuerySchema>(), Arg.Any<GroupByRequest>(), Arg.Any<Func<string, StarRocksQuerySchema?>>(),
+                Arg.Any<EngagementQuerySchema>(), Arg.Any<GroupByRequest>(), Arg.Any<Func<string, EngagementQuerySchema?>>(),
                 Arg.Do<IReadOnlyDictionary<string, AuthorizationConstraint>?>(a => captured = a))
             .Returns(Enumerable.Empty<dynamic>());
 
@@ -1724,7 +1724,7 @@ public class ObjectSearchGrpcServiceTests
 
         IReadOnlyDictionary<string, AuthorizationConstraint>? captured = null;
         _search.GroupByAsync(
-                Arg.Any<StarRocksQuerySchema>(), Arg.Any<GroupByRequest>(), Arg.Any<Func<string, StarRocksQuerySchema?>>(),
+                Arg.Any<EngagementQuerySchema>(), Arg.Any<GroupByRequest>(), Arg.Any<Func<string, EngagementQuerySchema?>>(),
                 Arg.Do<IReadOnlyDictionary<string, AuthorizationConstraint>?>(a => captured = a))
             .Returns(Enumerable.Empty<dynamic>());
 
@@ -1746,16 +1746,16 @@ public class ObjectSearchGrpcServiceTests
     [Fact]
     public async Task GroupBy_RestrictedKeyRejectedByBuilder_TranslatesToInvalidArgument()
     {
-        // Simulates what BuildGroupBy (StarRocksQueryTranslationException on a disallowed
+        // Simulates what BuildGroupBy (EngagementQueryTranslationException on a disallowed
         // request.Keys entry — see StarRocksQueryBuilderTests) causes the real search service
         // to throw; proves ObjectSearchGrpcService.GroupBy still surfaces it as InvalidArgument
         // even though authorization is now evaluated before dispatch.
         await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
 
         _search.GroupByAsync(
-                Arg.Any<StarRocksQuerySchema>(), Arg.Any<GroupByRequest>(), Arg.Any<Func<string, StarRocksQuerySchema?>>(),
+                Arg.Any<EngagementQuerySchema>(), Arg.Any<GroupByRequest>(), Arg.Any<Func<string, EngagementQuerySchema?>>(),
                 Arg.Any<IReadOnlyDictionary<string, AuthorizationConstraint>?>())
-            .Returns<Task<IEnumerable<dynamic>>>(_ => throw new StarRocksQueryTranslationException(
+            .Returns<Task<IEnumerable<dynamic>>>(_ => throw new EngagementQueryTranslationException(
                 "GROUP BY key 'Bio' on 'Author' is not authorized for this caller."));
 
         var request = new GroupByRequest { TypeName = "Author", Keys = { "Bio" } };
@@ -1774,9 +1774,9 @@ public class ObjectSearchGrpcServiceTests
         await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
 
         _search.GroupByAsync(
-                Arg.Any<StarRocksQuerySchema>(), Arg.Any<GroupByRequest>(), Arg.Any<Func<string, StarRocksQuerySchema?>>(),
+                Arg.Any<EngagementQuerySchema>(), Arg.Any<GroupByRequest>(), Arg.Any<Func<string, EngagementQuerySchema?>>(),
                 Arg.Any<IReadOnlyDictionary<string, AuthorizationConstraint>?>())
-            .Returns<Task<IEnumerable<dynamic>>>(_ => throw new StarRocksQueryTranslationException(
+            .Returns<Task<IEnumerable<dynamic>>>(_ => throw new EngagementQueryTranslationException(
                 "Field 'Bio' on 'Author' referenced by metric 'by_bio' is not authorized for this caller."));
 
         var request = new GroupByRequest { TypeName = "Author", Keys = { "Name" } };
@@ -1798,9 +1798,9 @@ public class ObjectSearchGrpcServiceTests
         await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
 
         _search.GroupByAsync(
-                Arg.Any<StarRocksQuerySchema>(), Arg.Any<GroupByRequest>(), Arg.Any<Func<string, StarRocksQuerySchema?>>(),
+                Arg.Any<EngagementQuerySchema>(), Arg.Any<GroupByRequest>(), Arg.Any<Func<string, EngagementQuerySchema?>>(),
                 Arg.Any<IReadOnlyDictionary<string, AuthorizationConstraint>?>())
-            .Returns<Task<IEnumerable<dynamic>>>(_ => throw new StarRocksQueryTranslationException(
+            .Returns<Task<IEnumerable<dynamic>>>(_ => throw new EngagementQueryTranslationException(
                 "Field 'Bio' on 'Author' referenced by metric 'revenue' expression is not authorized for this caller."));
 
         var request = new GroupByRequest { TypeName = "Author", Keys = { "Name" } };
@@ -1816,7 +1816,7 @@ public class ObjectSearchGrpcServiceTests
     [Fact]
     public async Task GroupBy_RestrictedOrderByFieldRejectedByBuilder_TranslatesToInvalidArgument()
     {
-        // Simulates what BuildGroupBy's orderSql gate (StarRocksQueryTranslationException on a
+        // Simulates what BuildGroupBy's orderSql gate (EngagementQueryTranslationException on a
         // disallowed request.OrderBy entry — see StarRocksQueryBuilderTests) causes the real
         // search service to throw; proves ObjectSearchGrpcService.GroupBy still surfaces it as
         // InvalidArgument. Closes a whole-branch-review gap: OrderBy was previously ungated even
@@ -1824,9 +1824,9 @@ public class ObjectSearchGrpcServiceTests
         await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
 
         _search.GroupByAsync(
-                Arg.Any<StarRocksQuerySchema>(), Arg.Any<GroupByRequest>(), Arg.Any<Func<string, StarRocksQuerySchema?>>(),
+                Arg.Any<EngagementQuerySchema>(), Arg.Any<GroupByRequest>(), Arg.Any<Func<string, EngagementQuerySchema?>>(),
                 Arg.Any<IReadOnlyDictionary<string, AuthorizationConstraint>?>())
-            .Returns<Task<IEnumerable<dynamic>>>(_ => throw new StarRocksQueryTranslationException(
+            .Returns<Task<IEnumerable<dynamic>>>(_ => throw new EngagementQueryTranslationException(
                 "ORDER BY property 'Bio' on 'Author' is not authorized for this caller."));
 
         var request = new GroupByRequest { TypeName = "Author", Keys = { "Name" } };
@@ -1864,8 +1864,8 @@ public class ObjectSearchGrpcServiceTests
         PipelineRequest? capturedRequest = null;
         var fakeRow = new Dictionary<string, object> { ["Name"] = "Alice", ["n"] = 3L };
         _search.PipelineAsync(
-                Arg.Any<StarRocksQuerySchema>(), Arg.Do<PipelineRequest>(r => capturedRequest = r),
-                Arg.Any<Func<string, StarRocksQuerySchema?>>(),
+                Arg.Any<EngagementQuerySchema>(), Arg.Do<PipelineRequest>(r => capturedRequest = r),
+                Arg.Any<Func<string, EngagementQuerySchema?>>(),
                 Arg.Any<IReadOnlyDictionary<string, AuthorizationConstraint>?>())
             .Returns(new[] { (dynamic)fakeRow }.AsEnumerable());
 
@@ -1885,14 +1885,14 @@ public class ObjectSearchGrpcServiceTests
     }
 
     [Fact]
-    public async Task Pipeline_TranslatesStarRocksQueryTranslationException_ToInvalidArgument()
+    public async Task Pipeline_TranslatesEngagementQueryTranslationException_ToInvalidArgument()
     {
         await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
 
         _search.PipelineAsync(
-                Arg.Any<StarRocksQuerySchema>(), Arg.Any<PipelineRequest>(), Arg.Any<Func<string, StarRocksQuerySchema?>>(),
+                Arg.Any<EngagementQuerySchema>(), Arg.Any<PipelineRequest>(), Arg.Any<Func<string, EngagementQuerySchema?>>(),
                 Arg.Any<IReadOnlyDictionary<string, AuthorizationConstraint>?>())
-            .Returns<Task<IEnumerable<dynamic>>>(_ => throw new StarRocksQueryTranslationException(
+            .Returns<Task<IEnumerable<dynamic>>>(_ => throw new EngagementQueryTranslationException(
                 "step 's' reads from unknown step 'nonexistent'"));
 
         var step = new PipelineStep { Name = "s", Reads = "nonexistent" };
@@ -1911,9 +1911,9 @@ public class ObjectSearchGrpcServiceTests
     {
         await _registry.RegisterAsync(SchemaFixtures.ArticleWithProjectionSchema());
         _search.PipelineAsync(
-                Arg.Any<StarRocksQuerySchema>(), Arg.Any<PipelineRequest>(), Arg.Any<Func<string, StarRocksQuerySchema?>>(),
+                Arg.Any<EngagementQuerySchema>(), Arg.Any<PipelineRequest>(), Arg.Any<Func<string, EngagementQuerySchema?>>(),
                 Arg.Any<IReadOnlyDictionary<string, AuthorizationConstraint>?>())
-            .Returns<Task<IEnumerable<dynamic>>>(_ => throw new StarRocksNotReadyException("warming up"));
+            .Returns<Task<IEnumerable<dynamic>>>(_ => throw new EngagementNotReadyException("warming up"));
 
         var request = new PipelineRequest { TypeName = "Article" };
         var (writer, _) = MakeStream<SearchResponse>();
@@ -1929,7 +1929,7 @@ public class ObjectSearchGrpcServiceTests
     {
         await _registry.RegisterAsync(SchemaFixtures.ArticleWithProjectionSchema());
         _search.PipelineAsync(
-                Arg.Any<StarRocksQuerySchema>(), Arg.Any<PipelineRequest>(), Arg.Any<Func<string, StarRocksQuerySchema?>>(),
+                Arg.Any<EngagementQuerySchema>(), Arg.Any<PipelineRequest>(), Arg.Any<Func<string, EngagementQuerySchema?>>(),
                 Arg.Any<IReadOnlyDictionary<string, AuthorizationConstraint>?>())
             .Returns(new List<dynamic> { new Dictionary<string, object?> { ["Title"] = "T" } });
 
@@ -1945,7 +1945,7 @@ public class ObjectSearchGrpcServiceTests
     //
     // Column-introduction filtering / "all: true" scoping / MetricSpec.Expression reject-on-
     // reference / ownership wrap-and-AND (baseWhere + per-join ON) / Layer 2 masking are all
-    // StarRocksPipelineBuilder's (and StarRocksRepository's) concern — covered end-to-end, with
+    // StarRocksPipelineBuilder's (and EngagementRepository's) concern — covered end-to-end, with
     // real thrown exceptions and real generated SQL, by StarRocksPipelineBuilderTests. Since
     // `_search` is a mock here, these RPC-level tests instead cover what actually lives in
     // ObjectSearchGrpcService.Pipeline: denied-caller short-circuiting, InvalidArgument
@@ -2047,7 +2047,7 @@ public class ObjectSearchGrpcServiceTests
 
         IReadOnlyDictionary<string, AuthorizationConstraint>? captured = null;
         _search.PipelineAsync(
-                Arg.Any<StarRocksQuerySchema>(), Arg.Any<PipelineRequest>(), Arg.Any<Func<string, StarRocksQuerySchema?>>(),
+                Arg.Any<EngagementQuerySchema>(), Arg.Any<PipelineRequest>(), Arg.Any<Func<string, EngagementQuerySchema?>>(),
                 Arg.Do<IReadOnlyDictionary<string, AuthorizationConstraint>?>(a => captured = a))
             .Returns(Enumerable.Empty<dynamic>());
 
@@ -2067,7 +2067,7 @@ public class ObjectSearchGrpcServiceTests
 
         IReadOnlyDictionary<string, AuthorizationConstraint>? captured = null;
         _search.PipelineAsync(
-                Arg.Any<StarRocksQuerySchema>(), Arg.Any<PipelineRequest>(), Arg.Any<Func<string, StarRocksQuerySchema?>>(),
+                Arg.Any<EngagementQuerySchema>(), Arg.Any<PipelineRequest>(), Arg.Any<Func<string, EngagementQuerySchema?>>(),
                 Arg.Do<IReadOnlyDictionary<string, AuthorizationConstraint>?>(a => captured = a))
             .Returns(Enumerable.Empty<dynamic>());
 
@@ -2088,7 +2088,7 @@ public class ObjectSearchGrpcServiceTests
 
         IReadOnlyDictionary<string, AuthorizationConstraint>? captured = null;
         _search.PipelineAsync(
-                Arg.Any<StarRocksQuerySchema>(), Arg.Any<PipelineRequest>(), Arg.Any<Func<string, StarRocksQuerySchema?>>(),
+                Arg.Any<EngagementQuerySchema>(), Arg.Any<PipelineRequest>(), Arg.Any<Func<string, EngagementQuerySchema?>>(),
                 Arg.Do<IReadOnlyDictionary<string, AuthorizationConstraint>?>(a => captured = a))
             .Returns(Enumerable.Empty<dynamic>());
 

@@ -11,7 +11,7 @@ namespace Iverson.Api.Tests.StarRocks;
 // Deliberately does NOT reuse StarRocksContainerFixture from StarRocksIntegrationTests.cs —
 // that fixture's own WaitUntilQueryReadyAsync already waits for the backend before handing
 // out a Repository, which would defeat the point of this test: proving the *production*
-// StarRocksReadinessGate (inside StarRocksRepository itself) absorbs the FE-ready-but-
+// StarRocksReadinessGate (inside EngagementRepository itself) absorbs the FE-ready-but-
 // BE-not-ready race with no external help.
 public sealed class StarRocksReadinessIntegrationTests : IAsyncLifetime
 {
@@ -52,16 +52,16 @@ public sealed class StarRocksReadinessIntegrationTests : IAsyncLifetime
         //
         // Connect with no default database selected (mirrors the pre-Task-5
         // StarRocksSchemaManager.EnsureDatabaseAsync, which used the same trick) so the very
-        // first statement executed through StarRocksRepository's readiness-gated RunAsync can
+        // first statement executed through EngagementRepository's readiness-gated RunAsync can
         // itself be a CREATE DATABASE — proving the gate absorbs the FE-ready-but-BE-not-ready
         // race for a real, data-touching operation without requiring the target database to
         // already exist. (EnsureTenantProvisionedAsync is not used here: its GRANT statements
         // require a pre-existing `iverson_app` user that this bare test container never creates.)
         var adminConnectionString = new MySqlConnectionStringBuilder(_connectionString) { Database = "" }.ToString();
-        var repo = new StarRocksRepository(
+        var repo = new EngagementRepository(
             adminConnectionString,
-            NullLogger<StarRocksRepository>.Instance,
-            new StarRocksResilienceOptions { BackendReadyTimeout = TimeSpan.FromMinutes(3) });
+            NullLogger<EngagementRepository>.Instance,
+            new EngagementResilienceOptions { BackendReadyTimeout = TimeSpan.FromMinutes(3) });
 
         var qualifiedTable = "`iverson_readiness_test`.`readiness_probe`";
         var createTableDdl = $"""
@@ -83,7 +83,7 @@ public sealed class StarRocksReadinessIntegrationTests : IAsyncLifetime
         await act.Should().NotThrowAsync(
             "the repository's own readiness gate should absorb the FE/BE startup race internally");
 
-        var healthChecker = new StarRocksHealthChecker(_connectionString);
+        var healthChecker = new EngagementHealthChecker(_connectionString);
         var healthy = await healthChecker.IsHealthyAsync();
 
         healthy.Should().BeTrue(
@@ -109,10 +109,10 @@ public sealed class StarRocksReadinessIntegrationTests : IAsyncLifetime
             AllowPublicKeyRetrieval = true,
         }.ToString();
 
-        var healthChecker = new StarRocksHealthChecker(badConnectionString);
+        var healthChecker = new EngagementHealthChecker(badConnectionString);
 
         var status = await healthChecker.CheckHealthAsync();
 
-        status.Should().Be(StarRocksHealthStatus.AuthPending);
+        status.Should().Be(EngagementHealthStatus.AuthPending);
     }
 }

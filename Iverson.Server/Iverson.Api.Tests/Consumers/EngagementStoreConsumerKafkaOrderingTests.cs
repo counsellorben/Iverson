@@ -82,9 +82,9 @@ public sealed class EngagementStoreConsumerKafkaOrderingTests(KafkaOrderingConta
         await producer.ProduceAsync(EntityTopics.Events, key, deletedEvent);
 
         var sr = Substitute.For<IEngagementStoreEntityStore>();
-        sr.UpsertAsync(Arg.Any<StarRocksTableSchema>(), Arg.Any<string>(), Arg.Any<string>()).Returns(Task.CompletedTask);
+        sr.UpsertAsync(Arg.Any<EngagementTableSchema>(), Arg.Any<string>(), Arg.Any<string>()).Returns(Task.CompletedTask);
         sr.DeleteAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<string>(), Arg.Any<string>()).Returns(Task.CompletedTask);
-        sr.EnsureTenantProvisionedAsync(Arg.Any<string>(), Arg.Any<StarRocksTableSchema>()).Returns(Task.CompletedTask);
+        sr.EnsureTenantProvisionedAsync(Arg.Any<string>(), Arg.Any<EngagementTableSchema>()).Returns(Task.CompletedTask);
 
         var sql = Substitute.For<IRecordStoreQueryExecutor>();
         sql.ExecuteAsync(Arg.Any<string>(), Arg.Any<object?>()).Returns(0);
@@ -125,7 +125,7 @@ public sealed class EngagementStoreConsumerKafkaOrderingTests(KafkaOrderingConta
 
         Received.InOrder(() =>
         {
-            sr.UpsertAsync(Arg.Any<StarRocksTableSchema>(), Arg.Any<string>(), Arg.Any<string>());
+            sr.UpsertAsync(Arg.Any<EngagementTableSchema>(), Arg.Any<string>(), Arg.Any<string>());
             sr.DeleteAsync(Arg.Any<string>(), Arg.Any<string>(), key, Arg.Any<string>());
         });
     }

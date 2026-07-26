@@ -81,7 +81,8 @@ public class RegisterSchemaAuthorizationPipelineTests : IClassFixture<AuthTestWe
         // its own — see SchemaAdminAuthorizationPolicy's design note — so an admin-scoped-but-
         // not-schema_admin-scoped automation caller is still rejected here.
         var token = TestJwtFactory.CreateToken(
-            "test-service-audience", "ak-admin-scoped-service",
+            "test-service-audience",
+            "ak-admin-scoped-service",
             extraClaims: [new Claim("scope", "openid admin profile")]);
 
         var ex = await TryRegisterEmptySchemaAsync(Headers(token));
@@ -109,7 +110,8 @@ public class RegisterSchemaAuthorizationPipelineTests : IClassFixture<AuthTestWe
     public async Task RegisterSchema_AuthenticatedWithSchemaAdminScope_PassesAuthorizationGate()
     {
         var token = TestJwtFactory.CreateToken(
-            "test-service-audience", "ak-iverson-loadtest",
+            "test-service-audience",
+            "ak-iverson-loadtest",
             extraClaims: [new Claim("scope", "openid schema_admin profile")]);
 
         var ex = await TryRegisterEmptySchemaAsync(Headers(token));

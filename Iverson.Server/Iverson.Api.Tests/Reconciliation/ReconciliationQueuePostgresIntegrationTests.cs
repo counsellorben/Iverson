@@ -70,14 +70,20 @@ public sealed class ReconciliationQueuePostgresIntegrationTests(ReconciliationQu
             new { Id = authorId, Name = "Alice" });
 
         var schema = SchemaFixtures.AuthorSchema() with { TableName = authorsTable };
-        var registry = new SchemaRegistry(new SchemaRegistryRepository(_repo), NullLogger<SchemaRegistry>.Instance);
+        var registry = new SchemaRegistry(
+            new SchemaRegistryRepository(_repo),
+            NullLogger<SchemaRegistry>.Instance);
         await registry.RegisterAsync(schema);
 
         var events = Substitute.For<IEventProducer>();
         var entities = new EntityRepository(_repo);
         var queue = new ReconciliationQueueRepository(ReconciliationSchema.TableName, _repo);
         var service = new ReconciliationService(
-            registry, entities, queue, events, NullLogger<ReconciliationService>.Instance);
+            registry,
+            entities,
+            queue,
+            events,
+            NullLogger<ReconciliationService>.Instance);
 
         // 1+2: enqueue an upsert-style outbox row for this author directly — exercises the
         // uuid-typed INSERT the same way the (now-inlined) upsert-and-enqueue write path does.

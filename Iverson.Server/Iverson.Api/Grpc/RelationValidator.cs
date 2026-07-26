@@ -32,18 +32,25 @@ public sealed class RelationValidator(SchemaRegistry registry) : IRelationValida
                     break; // FK lives on the related entity
 
                 default:
-                    throw new ArgumentOutOfRangeException(nameof(relation.Kind), relation.Kind,
+                    throw new ArgumentOutOfRangeException(
+                        nameof(relation.Kind),
+                        relation.Kind,
                         $"Unhandled {nameof(RelationKind)} value in relation validation — add a case above.");
             }
         }
 
         if (errors.Count > 0)
-            throw new RpcException(new Status(StatusCode.InvalidArgument,
-                string.Join(" | ", errors)));
+            throw new RpcException(
+                new Status(
+                    StatusCode.InvalidArgument,
+                    string.Join(" | ", errors)));
     }
 
     private void ValidateSingleRelation(
-        Struct payload, RelationDescriptor relation, SchemaDescriptor schema, List<string> errors)
+        Struct payload,
+        RelationDescriptor relation,
+        SchemaDescriptor schema,
+        List<string> errors)
     {
         var fkValue = StructFieldAccess.GetFieldValue(payload, relation.ForeignKey);
         if (fkValue is not null)

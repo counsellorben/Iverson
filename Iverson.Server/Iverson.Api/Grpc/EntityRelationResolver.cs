@@ -11,7 +11,12 @@ namespace Iverson.Api.Grpc;
 
 public interface IEntityRelationResolver
 {
-    Task ResolveRelationsAsync(Struct entityStruct, SchemaDescriptor schema, int depth, ClaimsPrincipal? actingUser, CancellationToken ct);
+    Task ResolveRelationsAsync(
+        Struct entityStruct,
+        SchemaDescriptor schema,
+        int depth,
+        ClaimsPrincipal? actingUser,
+        CancellationToken ct);
 }
 
 public sealed class EntityRelationResolver(
@@ -20,7 +25,12 @@ public sealed class EntityRelationResolver(
     IRowFieldAuthorizationEvaluator authEvaluator)
     : IEntityRelationResolver
 {
-    public async Task ResolveRelationsAsync(Struct entityStruct, SchemaDescriptor schema, int depth, ClaimsPrincipal? actingUser, CancellationToken ct)
+    public async Task ResolveRelationsAsync(
+        Struct entityStruct,
+        SchemaDescriptor schema,
+        int depth,
+        ClaimsPrincipal? actingUser,
+        CancellationToken ct)
     {
         foreach (var relation in schema.Relations)
         {
@@ -56,7 +66,11 @@ public sealed class EntityRelationResolver(
     }
 
     private async Task ResolveSingleRelationAsync(
-        Struct entityStruct, SchemaRelationDescriptor relation, int depth, ClaimsPrincipal? actingUser, CancellationToken ct)
+        Struct entityStruct,
+        SchemaRelationDescriptor relation,
+        int depth,
+        ClaimsPrincipal? actingUser,
+        CancellationToken ct)
     {
         var fkValue = StructFieldAccess.GetFieldString(entityStruct, relation.ForeignKey);
         if (string.IsNullOrWhiteSpace(fkValue)) return;
@@ -65,7 +79,8 @@ public sealed class EntityRelationResolver(
         if (relatedSchema is null) return;
 
         var rowJson = await entities.FetchByKeyAsync(
-            SchemaBuilder.ToTableSchema(relatedSchema), fkValue,
+            SchemaBuilder.ToTableSchema(relatedSchema),
+            fkValue,
             tenantScoped: relatedSchema.TenantColumn is not null,
             tenantId: actingUser?.FindFirst("tenant_id")?.Value);
         if (rowJson is null) return;
@@ -82,7 +97,11 @@ public sealed class EntityRelationResolver(
     }
 
     private async Task ResolveManyToManyAsync(
-        Struct entityStruct, SchemaRelationDescriptor relation, int depth, ClaimsPrincipal? actingUser, CancellationToken ct)
+        Struct entityStruct,
+        SchemaRelationDescriptor relation,
+        int depth,
+        ClaimsPrincipal? actingUser,
+        CancellationToken ct)
     {
         var ids = StructFieldAccess.GetFieldStringList(entityStruct, relation.ForeignKey)
             .Distinct(StringComparer.OrdinalIgnoreCase)
@@ -93,7 +112,8 @@ public sealed class EntityRelationResolver(
         if (relatedSchema is null) return;
 
         var rows = await entities.FetchManyByKeysAsync(
-            SchemaBuilder.ToTableSchema(relatedSchema), ids,
+            SchemaBuilder.ToTableSchema(relatedSchema),
+            ids,
             tenantScoped: relatedSchema.TenantColumn is not null,
             tenantId: actingUser?.FindFirst("tenant_id")?.Value);
         var rowsByKey = rows.ToDictionary(r => r.Key, StringComparer.OrdinalIgnoreCase);
@@ -118,7 +138,12 @@ public sealed class EntityRelationResolver(
     }
 
     private async Task ResolveOneToManyAsync(
-        Struct entityStruct, SchemaDescriptor schema, SchemaRelationDescriptor relation, int depth, ClaimsPrincipal? actingUser, CancellationToken ct)
+        Struct entityStruct,
+        SchemaDescriptor schema,
+        SchemaRelationDescriptor relation,
+        int depth,
+        ClaimsPrincipal? actingUser,
+        CancellationToken ct)
     {
         var keyValue = StructFieldAccess.GetFieldString(entityStruct, schema.KeyColumn.Name);
         if (string.IsNullOrWhiteSpace(keyValue)) return;
@@ -127,7 +152,9 @@ public sealed class EntityRelationResolver(
         if (relatedSchema is null) return;
 
         var rows = await entities.FetchByColumnAsync(
-            SchemaBuilder.ToTableSchema(relatedSchema), relation.ForeignKey, keyValue,
+            SchemaBuilder.ToTableSchema(relatedSchema),
+            relation.ForeignKey,
+            keyValue,
             tenantScoped: relatedSchema.TenantColumn is not null,
             tenantId: actingUser?.FindFirst("tenant_id")?.Value);
 

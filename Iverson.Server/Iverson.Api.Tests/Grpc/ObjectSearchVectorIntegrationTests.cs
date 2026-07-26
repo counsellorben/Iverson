@@ -28,15 +28,18 @@ public sealed class QdrantGrpcContainerFixture : IAsyncLifetime
             .WithWaitStrategy(Wait.ForUnixContainer().UntilPortIsAvailable(GrpcPort))
             .Build();
 
-    public QdrantVectorService Service { get; private set; } = null!;
-    public QdrantCollectionManager CollectionManager { get; private set; } = null!;
+    public IntelligenceVectorService Service { get; private set; } = null!;
+    public IntelligenceCollectionManager CollectionManager { get; private set; } = null!;
 
     public async Task InitializeAsync()
     {
         await _container.StartAsync();
         var client = new QdrantClient(_container.Hostname, _container.GetMappedPublicPort(GrpcPort), https: false);
-        Service           = new QdrantVectorService(client);
-        CollectionManager = new QdrantCollectionManager(client, "test-api-key", NullLogger<QdrantCollectionManager>.Instance);
+        Service           = new IntelligenceVectorService(client);
+        CollectionManager = new IntelligenceCollectionManager(
+            client,
+            "test-api-key",
+            NullLogger<IntelligenceCollectionManager>.Instance);
     }
 
     public async Task DisposeAsync() => await _container.DisposeAsync();
@@ -45,11 +48,11 @@ public sealed class QdrantGrpcContainerFixture : IAsyncLifetime
 [Trait("Category", "Integration")]
 public sealed class ObjectSearchVectorIntegrationTests : IClassFixture<QdrantGrpcContainerFixture>
 {
-    private readonly QdrantVectorService _vector;
-    private readonly QdrantCollectionManager _mgr;
+    private readonly IntelligenceVectorService _vector;
+    private readonly IntelligenceCollectionManager _mgr;
     private readonly IEmbeddingService _embedding = Substitute.For<IEmbeddingService>();
     private readonly SchemaRegistry _registry;
-    private readonly QdrantTenantScope _tenantScope = new("test-integration-signing-key-0123456789abcdef");
+    private readonly IntelligenceTenantScope _tenantScope = new("test-integration-signing-key-0123456789abcdef");
 
     // Matches ActingUserFixtures.Principal's default tenant_id claim — every tenant-qualified
     // collection name in this test file is resolved through _tenantScope with this value so
@@ -69,10 +72,15 @@ public sealed class ObjectSearchVectorIntegrationTests : IClassFixture<QdrantGrp
     private static string UniqueName() => "art_" + Guid.NewGuid().ToString("N")[..8];
 
     private ObjectSearchGrpcService BuildSut() =>
-        new(_registry, Substitute.For<IEngagementStoreSearchService>(), _vector, _embedding,
+        new(
+            _registry,
+            Substitute.For<IEngagementStoreSearchService>(),
+            _vector,
+            _embedding,
             NullLogger<ObjectSearchGrpcService>.Instance,
             new ActingUserAccessor { ActingUser = ActingUserFixtures.Principal("test-user", "test-bypass") },
-            new RowFieldAuthorizationEvaluator(), _tenantScope);
+            new RowFieldAuthorizationEvaluator(),
+            _tenantScope);
 
     private static (IServerStreamWriter<T> writer, List<T> written) MakeStream<T>()
     {
@@ -130,13 +138,23 @@ public sealed class ObjectSearchVectorIntegrationTests : IClassFixture<QdrantGrp
         var schema = SchemaFixtures.ArticleSchema() with { CollectionName = collection };
         await _registry.RegisterAsync(schema);
 
-        var chunksCollection = _tenantScope.ResolveCollectionName(collection, TestTenant, isChunks: true);
-        await _mgr.ApplyCollectionAsync(new CollectionSchema(
-            chunksCollection, [new NamedVector("body_vector", 4)],
-            [new PayloadIndex("parent_id", PayloadIndexKind.Keyword)]));
+        var chunksCollection = _tenantScope
+            .ResolveCollectionName(
+                collection,
+                TestTenant,
+                isChunks: true);
+        await _mgr.ApplyCollectionAsync(
+            new CollectionSchema(
+                chunksCollection,
+                [new NamedVector("body_vector", 4)],
+                [new PayloadIndex("parent_id", PayloadIndexKind.Keyword)]));
 
         var vec = new float[] { 0.1f, 0.2f, 0.3f, 0.4f };
-        _embedding.EmbedAsync(Arg.Any<string>(), Arg.Any<CancellationToken>()).Returns(vec);
+        _embedding
+            .EmbedAsync(
+                Arg.Any<string>(),
+                Arg.Any<CancellationToken>())
+            .Returns(vec);
 
         await _vector.UpsertNamedAsync(chunksCollection, 1,
             new Dictionary<string, float[]> { ["body_vector"] = vec },

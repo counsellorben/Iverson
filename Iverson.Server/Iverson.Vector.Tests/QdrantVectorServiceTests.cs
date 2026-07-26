@@ -171,8 +171,8 @@ public sealed class QdrantVectorServiceTests
     [Fact]
     public void QdrantVectorService_ImplementsQueryAndWriteRoleInterfaces()
     {
-        typeof(QdrantVectorService).Should().Implement<IVectorQueryService>();
-        typeof(QdrantVectorService).Should().Implement<IVectorWriteService>();
+        typeof(IntelligenceVectorService).Should().Implement<IVectorQueryService>();
+        typeof(IntelligenceVectorService).Should().Implement<IVectorWriteService>();
     }
 
 }

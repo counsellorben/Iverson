@@ -34,11 +34,11 @@ public class EngagementStoreConsumerTests
         _entities = Substitute.For<IEntityRepository>();
 
         _sql.ExecuteAsync(Arg.Any<string>(), Arg.Any<object?>()).Returns(0);
-        _sr.UpsertAsync(Arg.Any<StarRocksTableSchema>(), Arg.Any<string>(), Arg.Any<string>())
+        _sr.UpsertAsync(Arg.Any<EngagementTableSchema>(), Arg.Any<string>(), Arg.Any<string>())
            .Returns(Task.CompletedTask);
         _sr.DeleteAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<string>(), Arg.Any<string>())
            .Returns(Task.CompletedTask);
-        _sr.EnsureTenantProvisionedAsync(Arg.Any<string>(), Arg.Any<StarRocksTableSchema>())
+        _sr.EnsureTenantProvisionedAsync(Arg.Any<string>(), Arg.Any<EngagementTableSchema>())
            .Returns(Task.CompletedTask);
         // Default: authoritative row agrees with the event payload's owner value used across
         // the pre-existing (non-adversarial) tests in this file, and carries the tenant value
@@ -48,7 +48,9 @@ public class EngagementStoreConsumerTests
         _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>())
                  .Returns("""{"Name":"Alice","TenantId":"tenant-a"}""");
 
-        _registry = new Api.Schema.SchemaRegistry(new SchemaRegistryRepository(_sql), NullLogger<Api.Schema.SchemaRegistry>.Instance);
+        _registry = new SchemaRegistry(
+            new SchemaRegistryRepository(_sql),
+            NullLogger<SchemaRegistry>.Instance);
     }
 
     private string Serialize(EntityEvent ev) => JsonSerializer.Serialize(ev, JsonOptions);
@@ -74,7 +76,7 @@ public class EngagementStoreConsumerTests
         await BuildSut().HandleUpsertAsync(ev.Key, Serialize(ev), CancellationToken.None);
 
         await _sr.Received(1).UpsertAsync(
-            Arg.Is<StarRocksTableSchema>(s => s.TableName == "authors"),
+            Arg.Is<EngagementTableSchema>(s => s.TableName == "authors"),
             Arg.Any<string>(),
             "tenant-a");
     }
@@ -117,7 +119,10 @@ public class EngagementStoreConsumerTests
 
         await BuildSut().HandleUpsertAsync(ev.Key, Serialize(ev), CancellationToken.None);
 
-        await _sr.DidNotReceive().UpsertAsync(Arg.Any<StarRocksTableSchema>(), Arg.Any<string>(), Arg.Any<string>());
+        await _sr.DidNotReceive().UpsertAsync(
+            Arg.Any<EngagementTableSchema>(),
+            Arg.Any<string>(),
+            Arg.Any<string>());
     }
 
     [Fact]
@@ -146,7 +151,10 @@ public class EngagementStoreConsumerTests
 
         await BuildSut().HandleUpsertAsync(ev.Key, Serialize(ev), CancellationToken.None);
 
-        await _sr.DidNotReceive().UpsertAsync(Arg.Any<StarRocksTableSchema>(), Arg.Any<string>(), Arg.Any<string>());
+        await _sr.DidNotReceive().UpsertAsync(
+            Arg.Any<EngagementTableSchema>(),
+            Arg.Any<string>(),
+            Arg.Any<string>());
     }
 
     [Fact]
@@ -166,8 +174,15 @@ public class EngagementStoreConsumerTests
 
         await BuildSut().DispatchAsync(ev.Key, Serialize(ev), CancellationToken.None);
 
-        await _sr.Received(1).UpsertAsync(Arg.Any<StarRocksTableSchema>(), Arg.Any<string>(), Arg.Any<string>());
-        await _sr.DidNotReceive().DeleteAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<string>(), Arg.Any<string>());
+        await _sr.Received(1).UpsertAsync(
+            Arg.Any<EngagementTableSchema>(),
+            Arg.Any<string>(),
+            Arg.Any<string>());
+        await _sr.DidNotReceive().DeleteAsync(
+            Arg.Any<string>(),
+            Arg.Any<string>(),
+            Arg.Any<string>(),
+            Arg.Any<string>());
     }
 
     [Fact]
@@ -187,7 +202,10 @@ public class EngagementStoreConsumerTests
 
         await BuildSut().DispatchAsync(ev.Key, Serialize(ev), CancellationToken.None);
 
-        await _sr.Received(1).UpsertAsync(Arg.Any<StarRocksTableSchema>(), Arg.Any<string>(), Arg.Any<string>());
+        await _sr.Received(1).UpsertAsync(
+            Arg.Any<EngagementTableSchema>(),
+            Arg.Any<string>(),
+            Arg.Any<string>());
     }
 
     [Fact]
@@ -209,7 +227,10 @@ public class EngagementStoreConsumerTests
         await BuildSut().DispatchAsync(ev.Key, Serialize(ev), CancellationToken.None);
 
         await _sr.Received(1).DeleteAsync("authors", "Id", key, "tenant-a");
-        await _sr.DidNotReceive().UpsertAsync(Arg.Any<StarRocksTableSchema>(), Arg.Any<string>(), Arg.Any<string>());
+        await _sr.DidNotReceive().UpsertAsync(
+            Arg.Any<EngagementTableSchema>(),
+            Arg.Any<string>(),
+            Arg.Any<string>());
     }
 
     [Fact]
@@ -244,7 +265,7 @@ public class EngagementStoreConsumerTests
             TargetStores:  StoreTarget.Engagement);
 
         string? capturedJson = null;
-        _sr.UpsertAsync(Arg.Any<StarRocksTableSchema>(), Arg.Do<string>(j => capturedJson = j), Arg.Any<string>())
+        _sr.UpsertAsync(Arg.Any<EngagementTableSchema>(), Arg.Do<string>(j => capturedJson = j), Arg.Any<string>())
            .Returns(Task.CompletedTask);
 
         await BuildSut().HandleUpsertAsync(ev.Key, Serialize(ev), CancellationToken.None);
@@ -286,7 +307,7 @@ public class EngagementStoreConsumerTests
             TargetStores:  StoreTarget.Engagement);
 
         string? capturedJson = null;
-        _sr.UpsertAsync(Arg.Any<StarRocksTableSchema>(), Arg.Do<string>(j => capturedJson = j), Arg.Any<string>())
+        _sr.UpsertAsync(Arg.Any<EngagementTableSchema>(), Arg.Do<string>(j => capturedJson = j), Arg.Any<string>())
            .Returns(Task.CompletedTask);
 
         await BuildSut().HandleUpsertAsync(ev.Key, Serialize(ev), CancellationToken.None);
@@ -316,7 +337,7 @@ public class EngagementStoreConsumerTests
             TargetStores:  StoreTarget.Engagement);
 
         string? capturedJson = null;
-        _sr.UpsertAsync(Arg.Any<StarRocksTableSchema>(), Arg.Do<string>(j => capturedJson = j), Arg.Any<string>())
+        _sr.UpsertAsync(Arg.Any<EngagementTableSchema>(), Arg.Do<string>(j => capturedJson = j), Arg.Any<string>())
            .Returns(Task.CompletedTask);
 
         await BuildSut().HandleUpsertAsync(ev.Key, Serialize(ev), CancellationToken.None);
@@ -348,8 +369,11 @@ public class EngagementStoreConsumerTests
 
         await BuildSut().HandleUpsertAsync(ev.Key, Serialize(ev), CancellationToken.None);
 
-        await _sr.DidNotReceive().EnsureTenantProvisionedAsync(Arg.Any<string>(), Arg.Any<StarRocksTableSchema>());
-        await _sr.DidNotReceive().UpsertAsync(Arg.Any<StarRocksTableSchema>(), Arg.Any<string>(), Arg.Any<string>());
+        await _sr.DidNotReceive().EnsureTenantProvisionedAsync(Arg.Any<string>(), Arg.Any<EngagementTableSchema>());
+        await _sr.DidNotReceive().UpsertAsync(
+            Arg.Any<EngagementTableSchema>(),
+            Arg.Any<string>(),
+            Arg.Any<string>());
     }
 
     [Fact]
@@ -384,7 +408,10 @@ public class EngagementStoreConsumerTests
         await sut.HandleUpsertAsync(ev1.Key, Serialize(ev1), CancellationToken.None);
         await sut.HandleUpsertAsync(ev2.Key, Serialize(ev2), CancellationToken.None);
 
-        await _sr.Received(1).EnsureTenantProvisionedAsync(Arg.Any<string>(), Arg.Any<StarRocksTableSchema>());
-        await _sr.Received(2).UpsertAsync(Arg.Any<StarRocksTableSchema>(), Arg.Any<string>(), Arg.Any<string>());
+        await _sr.Received(1).EnsureTenantProvisionedAsync(Arg.Any<string>(), Arg.Any<EngagementTableSchema>());
+        await _sr.Received(2).UpsertAsync(
+            Arg.Any<EngagementTableSchema>(),
+            Arg.Any<string>(),
+            Arg.Any<string>());
     }
 }

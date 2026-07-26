@@ -8,7 +8,7 @@ namespace Iverson.StarRocks;
 
 internal static class StarRocksResiliencePipelineFactory
 {
-    public static ResiliencePipeline Build(StarRocksCircuitBreakerOptions options, ILogger logger) =>
+    public static ResiliencePipeline Build(EngagementCircuitBreakerOptions options, ILogger logger) =>
         new ResiliencePipelineBuilder()
             .AddCircuitBreaker(new CircuitBreakerStrategyOptions
             {

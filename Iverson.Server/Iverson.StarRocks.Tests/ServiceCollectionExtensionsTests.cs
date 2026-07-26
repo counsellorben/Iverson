@@ -15,7 +15,7 @@ public class ServiceCollectionExtensionsTests
     public void AddStarRocks_RegistersResolvableRepository()
     {
         var services = new ServiceCollection();
-        services.AddSingleton<ILogger<StarRocksRepository>>(NullLogger<StarRocksRepository>.Instance);
+        services.AddSingleton<ILogger<EngagementRepository>>(NullLogger<EngagementRepository>.Instance);
         services.AddStarRocks(ConnString);
 
         using var provider = services.BuildServiceProvider();
@@ -23,27 +23,27 @@ public class ServiceCollectionExtensionsTests
         var healthCheck = provider.GetRequiredService<IEngagementStoreHealthCheck>();
         var entityStore = provider.GetRequiredService<IEngagementStoreEntityStore>();
 
-        queryExecutor.Should().BeOfType<StarRocksRepository>();
-        healthCheck.Should().BeOfType<StarRocksHealthChecker>();
-        entityStore.Should().BeOfType<StarRocksRepository>();
+        queryExecutor.Should().BeOfType<EngagementRepository>();
+        healthCheck.Should().BeOfType<EngagementHealthChecker>();
+        entityStore.Should().BeOfType<EngagementRepository>();
     }
 
     [Fact]
     public void AddStarRocks_WithCustomResilienceOptions_RegistersResolvableRepository()
     {
         var services = new ServiceCollection();
-        services.AddSingleton<ILogger<StarRocksRepository>>(NullLogger<StarRocksRepository>.Instance);
+        services.AddSingleton<ILogger<EngagementRepository>>(NullLogger<EngagementRepository>.Instance);
         services.AddStarRocks(
             ConnString,
-            new StarRocksResilienceOptions { BackendReadyTimeout = TimeSpan.FromSeconds(5) });
+            new EngagementResilienceOptions { BackendReadyTimeout = TimeSpan.FromSeconds(5) });
 
         using var provider = services.BuildServiceProvider();
         var queryExecutor = provider.GetRequiredService<IEngagementStoreQueryExecutor>();
         var healthCheck = provider.GetRequiredService<IEngagementStoreHealthCheck>();
         var entityStore = provider.GetRequiredService<IEngagementStoreEntityStore>();
 
-        queryExecutor.Should().BeOfType<StarRocksRepository>();
-        healthCheck.Should().BeOfType<StarRocksHealthChecker>();
-        entityStore.Should().BeOfType<StarRocksRepository>();
+        queryExecutor.Should().BeOfType<EngagementRepository>();
+        healthCheck.Should().BeOfType<EngagementHealthChecker>();
+        entityStore.Should().BeOfType<EngagementRepository>();
     }
 }

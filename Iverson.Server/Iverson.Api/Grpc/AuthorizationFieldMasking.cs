@@ -105,7 +105,10 @@ internal static class AuthorizationFieldMasking
         RejectDisallowedFields(payload, decision.AllowedFields, exemptField: decision.OwnerFieldName);
     }
 
-    public static void MaskDisallowedFields(Struct payload, IReadOnlySet<string>? allowedFields, string? exemptField = null)
+    public static void MaskDisallowedFields(
+        Struct payload,
+        IReadOnlySet<string>? allowedFields,
+        string? exemptField = null)
     {
         if (allowedFields is null) return;
 
@@ -117,7 +120,9 @@ internal static class AuthorizationFieldMasking
     }
 
     public static void RejectDisallowedFields(
-        Struct payload, IReadOnlySet<string>? allowedFields, string? exemptField = null)
+        Struct payload,
+        IReadOnlySet<string>? allowedFields,
+        string? exemptField = null)
     {
         if (allowedFields is null) return;
 

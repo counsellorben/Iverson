@@ -1,8 +1,8 @@
 namespace Iverson.StarRocks.Tests;
 
 /// <summary>
-/// Shared Testcontainers-integration-test helper: builds a Func&lt;string, StarRocksQuerySchema?&gt;
-/// registry lookup from a flat set of StarRocksQuerySchema fixtures. This mirrors the
+/// Shared Testcontainers-integration-test helper: builds a Func&lt;string, EngagementQuerySchema?&gt;
+/// registry lookup from a flat set of EngagementQuerySchema fixtures. This mirrors the
 /// per-file BuildRegistry helper pattern established independently in
 /// StarRocksQueryBuilderTests.cs and StarRocksPipelineBuilderTests.cs (Tasks 2-3), but is
 /// extracted to a shared class here because both StarRocksIntegrationTests.cs and
@@ -11,7 +11,7 @@ namespace Iverson.StarRocks.Tests;
 /// </summary>
 internal static class TestSchemaRegistry
 {
-    public static Func<string, StarRocksQuerySchema?> BuildRegistry(params StarRocksQuerySchema[] schemas)
+    public static Func<string, EngagementQuerySchema?> BuildRegistry(params EngagementQuerySchema[] schemas)
     {
         var map = schemas.ToDictionary(s => s.TypeName, StringComparer.OrdinalIgnoreCase);
         return typeName => map.GetValueOrDefault(typeName);

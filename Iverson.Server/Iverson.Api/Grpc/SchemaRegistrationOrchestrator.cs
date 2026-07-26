@@ -64,12 +64,17 @@ public sealed class SchemaRegistrationOrchestrator(
     // Shared by owner_field (optional) and tenant_field (mandatory) — both name a scalar
     // property that must resolve to a real column, be string-valued (Qdrant filtering requires
     // it), and not collide with a reserved chunk-payload key.
-    private static void ValidateFieldReference(SchemaDescriptor descriptor, string fieldName, string fieldLabel)
+    private static void ValidateFieldReference(
+        SchemaDescriptor descriptor,
+        string fieldName,
+        string fieldLabel)
     {
         if (!descriptor.ScalarColumns.Any(c => string.Equals(c.Name, fieldName, StringComparison.OrdinalIgnoreCase)))
         {
-            throw new RpcException(new Status(StatusCode.InvalidArgument,
-                $"{fieldLabel} '{fieldName}' on '{descriptor.TypeName}' does not match any declared scalar property."));
+            throw new RpcException(
+                new Status(
+                    StatusCode.InvalidArgument,
+                    $"{fieldLabel} '{fieldName}' on '{descriptor.TypeName}' does not match any declared scalar property."));
         }
 
         var column = descriptor.ScalarColumns.First(c =>

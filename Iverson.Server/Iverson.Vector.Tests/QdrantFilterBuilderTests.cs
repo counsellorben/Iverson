@@ -26,7 +26,7 @@ public class QdrantFilterBuilderTests
     [Fact]
     public void Build_EqualsString_ProducesMatchKeyword()
     {
-        var filter = QdrantFilterBuilder.Build(
+        var filter = IntelligenceFilterBuilder.Build(
             [Clause("category", SearchOperator.Equals, Str("Tech"))], SearchLogic.And, "SearchSimilar");
 
         filter.Must.Should().ContainSingle();
@@ -37,7 +37,7 @@ public class QdrantFilterBuilderTests
     [Fact]
     public void Build_EqualsBool_ProducesMatch()
     {
-        var filter = QdrantFilterBuilder.Build(
+        var filter = IntelligenceFilterBuilder.Build(
             [Clause("featured", SearchOperator.Equals, Bool(true))], SearchLogic.And, "SearchSimilar");
 
         filter.Must.Should().ContainSingle();
@@ -46,7 +46,7 @@ public class QdrantFilterBuilderTests
     [Fact]
     public void Build_EqualsNumber_ProducesMatch()
     {
-        var filter = QdrantFilterBuilder.Build(
+        var filter = IntelligenceFilterBuilder.Build(
             [Clause("wordCount", SearchOperator.Equals, Num(500))], SearchLogic.And, "SearchSimilar");
 
         filter.Must.Should().ContainSingle();
@@ -55,7 +55,7 @@ public class QdrantFilterBuilderTests
     [Fact]
     public void Build_NotEquals_RoutesToMustNot()
     {
-        var filter = QdrantFilterBuilder.Build(
+        var filter = IntelligenceFilterBuilder.Build(
             [Clause("category", SearchOperator.NotEquals, Str("Tech"))], SearchLogic.And, "SearchSimilar");
 
         filter.MustNot.Should().ContainSingle();
@@ -65,7 +65,7 @@ public class QdrantFilterBuilderTests
     [Fact]
     public void Build_MustNotClauseType_RoutesToMustNot()
     {
-        var filter = QdrantFilterBuilder.Build(
+        var filter = IntelligenceFilterBuilder.Build(
             [Clause("category", SearchOperator.Equals, Str("Tech"), SearchClauseType.MustNot)],
             SearchLogic.And, "SearchSimilar");
 
@@ -75,7 +75,7 @@ public class QdrantFilterBuilderTests
     [Fact]
     public void Build_NotEqualsAndMustNotClauseType_DoubleNegative_RoutesToMust()
     {
-        var filter = QdrantFilterBuilder.Build(
+        var filter = IntelligenceFilterBuilder.Build(
             [Clause("category", SearchOperator.NotEquals, Str("Tech"), SearchClauseType.MustNot)],
             SearchLogic.And, "SearchSimilar");
 
@@ -86,7 +86,7 @@ public class QdrantFilterBuilderTests
     [Fact]
     public void Build_GreaterThan_ProducesRangeCondition()
     {
-        var filter = QdrantFilterBuilder.Build(
+        var filter = IntelligenceFilterBuilder.Build(
             [Clause("wordCount", SearchOperator.GreaterThan, Num(100))], SearchLogic.And, "SearchSimilar");
 
         filter.Must.Should().ContainSingle();
@@ -99,14 +99,14 @@ public class QdrantFilterBuilderTests
     [InlineData(SearchOperator.LessThanOrEquals)]
     public void Build_RangeOperators_DoNotThrow(SearchOperator op)
     {
-        var act = () => QdrantFilterBuilder.Build([Clause("wordCount", op, Num(100))], SearchLogic.And, "SearchSimilar");
+        var act = () => IntelligenceFilterBuilder.Build([Clause("wordCount", op, Num(100))], SearchLogic.And, "SearchSimilar");
         act.Should().NotThrow();
     }
 
     [Fact]
     public void Build_In_ProducesMatchAnyCondition()
     {
-        var filter = QdrantFilterBuilder.Build(
+        var filter = IntelligenceFilterBuilder.Build(
             [Clause("category", SearchOperator.In, List("Tech", "Science"))], SearchLogic.And, "SearchSimilar");
 
         filter.Must.Should().ContainSingle();
@@ -115,7 +115,7 @@ public class QdrantFilterBuilderTests
     [Fact]
     public void Build_OrLogic_RoutesPositiveClausesToShould()
     {
-        var filter = QdrantFilterBuilder.Build(
+        var filter = IntelligenceFilterBuilder.Build(
             [Clause("category", SearchOperator.Equals, Str("Tech")),
              Clause("category", SearchOperator.Equals, Str("Science"))],
             SearchLogic.Or, "SearchSimilar");
@@ -130,7 +130,7 @@ public class QdrantFilterBuilderTests
         // Regression test: under OR logic, a NotEquals clause must be nested (negated) inside
         // the top-level Should group — not routed to top-level MustNot, which Qdrant ANDs
         // against everything else and would silently turn "A OR NOT B" into "A AND NOT B".
-        var filter = QdrantFilterBuilder.Build(
+        var filter = IntelligenceFilterBuilder.Build(
             [Clause("category", SearchOperator.Equals, Str("Tech")),
              Clause("category", SearchOperator.NotEquals, Str("Science"))],
             SearchLogic.Or, "SearchSimilar");
@@ -158,7 +158,7 @@ public class QdrantFilterBuilderTests
             ? new SearchValue { FloatList = new RepeatedFloat { Values = { 0.1f } } }
             : Str("x");
 
-        var act = () => QdrantFilterBuilder.Build([Clause("title", op, value)], SearchLogic.And, "SearchSimilar");
+        var act = () => IntelligenceFilterBuilder.Build([Clause("title", op, value)], SearchLogic.And, "SearchSimilar");
 
         act.Should().Throw<FilterTranslationException>()
             .Where(e => e.Message.Contains(op.ToString()) && e.Message.Contains("SearchSimilar"));
@@ -170,7 +170,7 @@ public class QdrantFilterBuilderTests
         // A caller could send an IN clause whose Value isn't actually a StringList (proto3
         // message field defaults to null when unset). Accessing .StringList.Values on that
         // would NullReferenceException — must be a clean exception instead.
-        var act = () => QdrantFilterBuilder.Build(
+        var act = () => IntelligenceFilterBuilder.Build(
             [Clause("category", SearchOperator.In, Str("Tech"))], SearchLogic.And, "SearchSimilar");
 
         act.Should().Throw<FilterTranslationException>()
@@ -187,7 +187,7 @@ public class QdrantFilterBuilderTests
         // A caller could send a Range clause whose Value isn't actually a NumberVal (proto3
         // scalar field silently defaults to 0 when a different oneof member is set) — must be
         // a clean exception rather than silently filtering on 0.
-        var act = () => QdrantFilterBuilder.Build(
+        var act = () => IntelligenceFilterBuilder.Build(
             [Clause("wordCount", op, Str("not-a-number"))], SearchLogic.And, "SearchSimilar");
 
         act.Should().Throw<FilterTranslationException>()
@@ -197,7 +197,7 @@ public class QdrantFilterBuilderTests
     [Fact]
     public void MatchParentId_ProducesSingleMustMatchKeywordOnParentId()
     {
-        var filter = QdrantFilterBuilder.MatchParentId("parent-123");
+        var filter = IntelligenceFilterBuilder.MatchParentId("parent-123");
 
         filter.Must.Should().ContainSingle();
         filter.Must[0].Field.Key.Should().Be("parent_id");
@@ -209,7 +209,7 @@ public class QdrantFilterBuilderTests
     [Fact]
     public void ApplyOwnership_NotRequired_NullFilter_ReturnsNull()
     {
-        var result = QdrantFilterBuilder.ApplyOwnership(null, ownershipRequired: false, "ownerId", "owner-1");
+        var result = IntelligenceFilterBuilder.ApplyOwnership(null, ownershipRequired: false, "ownerId", "owner-1");
 
         result.Should().BeNull();
     }
@@ -220,7 +220,7 @@ public class QdrantFilterBuilderTests
         var original = new Filter();
         original.Must.Add(Conditions.MatchKeyword("category", "Tech"));
 
-        var result = QdrantFilterBuilder.ApplyOwnership(original, ownershipRequired: false, "ownerId", "owner-1");
+        var result = IntelligenceFilterBuilder.ApplyOwnership(original, ownershipRequired: false, "ownerId", "owner-1");
 
         result.Should().BeSameAs(original);
         result!.Must.Should().ContainSingle();
@@ -229,7 +229,7 @@ public class QdrantFilterBuilderTests
     [Fact]
     public void ApplyOwnership_Required_NullFilter_CreatesFilterWithMatchKeywordCondition()
     {
-        var result = QdrantFilterBuilder.ApplyOwnership(null, ownershipRequired: true, "ownerId", "owner-1");
+        var result = IntelligenceFilterBuilder.ApplyOwnership(null, ownershipRequired: true, "ownerId", "owner-1");
 
         result.Should().NotBeNull();
         result!.Must.Should().ContainSingle();
@@ -243,7 +243,7 @@ public class QdrantFilterBuilderTests
         var original = new Filter();
         original.Must.Add(Conditions.MatchKeyword("category", "Tech"));
 
-        var result = QdrantFilterBuilder.ApplyOwnership(original, ownershipRequired: true, "ownerId", "owner-1");
+        var result = IntelligenceFilterBuilder.ApplyOwnership(original, ownershipRequired: true, "ownerId", "owner-1");
 
         result.Should().BeSameAs(original);
         result!.Must.Should().HaveCount(2);

@@ -39,10 +39,14 @@ public class SchemaBuilderTests
         embedding.ModelId.Returns("nomic-embed-text");
 
         var typeDesc = new TypeDescriptor { TypeName = "Article" };
-        typeDesc.Properties.Add(new PropertyDescriptor { Name = "Id",          ClrType = ClrType.ClrGuid,     IsKey = true });
-        typeDesc.Properties.Add(new PropertyDescriptor { Name = "Category",    ClrType = ClrType.ClrString,   IsSearchKey = true,  SearchKeyOrder = 0 });
-        typeDesc.Properties.Add(new PropertyDescriptor { Name = "PublishedAt", ClrType = ClrType.ClrDatetime, IsSearchKey = true,  SearchKeyOrder = 1 });
-        typeDesc.Properties.Add(new PropertyDescriptor { Name = "Body",        ClrType = ClrType.ClrString,   IsLargeField = true });
+        typeDesc.Properties.Add(
+            new PropertyDescriptor { Name = "Id",          ClrType = ClrType.ClrGuid,     IsKey = true });
+        typeDesc.Properties.Add(
+            new PropertyDescriptor { Name = "Category",    ClrType = ClrType.ClrString,   IsSearchKey = true,  SearchKeyOrder = 0 });
+        typeDesc.Properties.Add(
+            new PropertyDescriptor { Name = "PublishedAt", ClrType = ClrType.ClrDatetime, IsSearchKey = true,  SearchKeyOrder = 1 });
+        typeDesc.Properties.Add(
+            new PropertyDescriptor { Name = "Body",        ClrType = ClrType.ClrString,   IsLargeField = true });
 
         var descriptor = SchemaBuilder.BuildDescriptor(typeDesc, embedding);
 
@@ -57,11 +61,16 @@ public class SchemaBuilderTests
         embedding.ModelId.Returns("nomic-embed-text");
 
         var typeDesc = new TypeDescriptor { TypeName = "Article" };
-        typeDesc.Properties.Add(new PropertyDescriptor { Name = "Id",          ClrType = ClrType.ClrGuid,   IsKey = true });
-        typeDesc.Properties.Add(new PropertyDescriptor { Name = "Body",        ClrType = ClrType.ClrString, IsLargeField = true });
-        typeDesc.Properties.Add(new PropertyDescriptor { Name = "EmbedField",  ClrType = ClrType.ClrString, IsEmbedding  = true });
-        typeDesc.Properties.Add(new PropertyDescriptor { Name = "ChunkField",  ClrType = ClrType.ClrString, IsChunk      = true, ChunkMaxTokens = 512, ChunkOverlap = 64 });
-        typeDesc.Properties.Add(new PropertyDescriptor { Name = "Normal",      ClrType = ClrType.ClrString });
+        typeDesc.Properties.Add(
+            new PropertyDescriptor { Name = "Id",          ClrType = ClrType.ClrGuid,   IsKey = true });
+        typeDesc.Properties.Add(
+            new PropertyDescriptor { Name = "Body",        ClrType = ClrType.ClrString, IsLargeField = true });
+        typeDesc.Properties.Add(
+            new PropertyDescriptor { Name = "EmbedField",  ClrType = ClrType.ClrString, IsEmbedding  = true });
+        typeDesc.Properties.Add(
+            new PropertyDescriptor { Name = "ChunkField",  ClrType = ClrType.ClrString, IsChunk      = true, ChunkMaxTokens = 512, ChunkOverlap = 64 });
+        typeDesc.Properties.Add(
+            new PropertyDescriptor { Name = "Normal",      ClrType = ClrType.ClrString });
 
         var descriptor = SchemaBuilder.BuildDescriptor(typeDesc, embedding);
 
@@ -72,28 +81,28 @@ public class SchemaBuilderTests
     }
 
     [Fact]
-    public void ToStarRocksTableSchema_PopulatesSortKey_AndIncludesAllScalarColumns()
+    public void ToEngagementTableSchema_PopulatesSortKey_AndIncludesAllScalarColumns()
     {
         var descriptor = new SchemaDescriptor
         {
-            TypeName       = "Article",
-            TableName      = "articles",
-            CollectionName = null,
-            KeyColumn      = new ColumnDescriptor("Id",          "UUID",  false),
-            ScalarColumns  = [
+            TypeName          = "Article",
+            TableName         = "articles",
+            CollectionName    = null,
+            KeyColumn         = new ColumnDescriptor("Id",          "UUID",  false),
+            ScalarColumns     = [
                 new ColumnDescriptor("Category",    "TEXT",        false),
                 new ColumnDescriptor("PublishedAt", "TIMESTAMPTZ", false),
                 new ColumnDescriptor("Body",        "TEXT",        false),
             ],
-            FkColumns    = [],
-            VectorFields = [],
-            ChunkFields  = [],
-            Relations    = [],
+            FkColumns         = [],
+            VectorFields      = [],
+            ChunkFields       = [],
+            Relations         = [],
             SearchKeyColumns  = ["Category", "PublishedAt"],
             LargeFieldColumns = ["Body"]
         };
 
-        var schema = SchemaBuilder.ToStarRocksTableSchema(descriptor);
+        var schema = SchemaBuilder.ToEngagementTableSchema(descriptor);
 
         schema.SortKey.Should().Equal("Category", "PublishedAt");
         schema.Columns.Select(c => c.Name).Should().Contain("Body");
@@ -108,8 +117,10 @@ public class SchemaBuilderTests
         embedding.ModelId.Returns("nomic-embed-text");
 
         var typeDesc = new TypeDescriptor { TypeName = "Bad" };
-        typeDesc.Properties.Add(new PropertyDescriptor { Name = "Id",       ClrType = ClrType.ClrGuid,   IsKey = true });
-        typeDesc.Properties.Add(new PropertyDescriptor { Name = "Category", ClrType = ClrType.ClrString, IsSearchKey = true, SearchKeyOrder = 0, IsLargeField = true });
+        typeDesc.Properties.Add(
+            new PropertyDescriptor { Name = "Id",       ClrType = ClrType.ClrGuid,   IsKey = true });
+        typeDesc.Properties.Add(
+            new PropertyDescriptor { Name = "Category", ClrType = ClrType.ClrString, IsSearchKey = true, SearchKeyOrder = 0, IsLargeField = true });
 
         var act = () => SchemaBuilder.BuildDescriptor(typeDesc, embedding);
 
@@ -118,11 +129,11 @@ public class SchemaBuilderTests
     }
 
     [Fact]
-    public void ToStarRocksQuerySchema_MapsTypeNameTableNameKeyAndScalarColumns()
+    public void ToEngagementQuerySchema_MapsTypeNameTableNameKeyAndScalarColumns()
     {
         var schema = SchemaFixtures.ArticleSchema();
 
-        var result = SchemaBuilder.ToStarRocksQuerySchema(schema);
+        var result = SchemaBuilder.ToEngagementQuerySchema(schema);
 
         result.TypeName.Should().Be("Article");
         result.TableName.Should().Be("articles");
@@ -206,14 +217,14 @@ public class SchemaBuilderTests
         var sql = SchemaBuilder.ClrTypeToSql(clrType, isArray);
 
         sql.Should().Be(expectedSql);
-        SchemaBuilder.ClrTypeToStarRocksType(sql).Should().Be(expectedStarRocksType);
+        SchemaBuilder.ClrTypeToEngagementType(sql).Should().Be(expectedStarRocksType);
         SchemaBuilder.SqlTypeToPayloadKind(sql).Should().Be(expectedPayloadKind);
     }
 
     [Fact]
     public void ClrTypeToStarRocksType_UnknownSqlType_FallsBackToString()
     {
-        SchemaBuilder.ClrTypeToStarRocksType("NOT_A_REAL_TYPE").Should().Be("STRING");
+        SchemaBuilder.ClrTypeToEngagementType("NOT_A_REAL_TYPE").Should().Be("STRING");
     }
 
     [Fact]

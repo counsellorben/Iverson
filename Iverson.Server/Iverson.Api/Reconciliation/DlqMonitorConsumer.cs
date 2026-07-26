@@ -29,23 +29,26 @@ internal sealed class DlqMonitorConsumer(
         var attemptsRaw = Header("dlq.attempts");
         var failedAtRaw = Header("dlq.failed_at");
 
-        await dlq.InsertAsync(new DlqMessage(
-            SourceTopic: Header("dlq.source_topic") ?? "",
-            ConsumerGroup: Header("dlq.consumer_group") ?? "",
-            MessageKey: key,
-            MessageValue: value,
-            ExceptionType: Header("dlq.exception_type"),
-            ExceptionMessage: Header("dlq.exception_message"),
-            Attempts: int.TryParse(attemptsRaw, out var a) ? a : 0,
-            FailedAt: DateTime.TryParse(
-                failedAtRaw,
-                CultureInfo.InvariantCulture,
-                DateTimeStyles.AdjustToUniversal | DateTimeStyles.AssumeUniversal,
-                out var f)
-                ? f
-                : DateTime.UtcNow));
+        await dlq.InsertAsync(
+            new DlqMessage(
+                SourceTopic: Header("dlq.source_topic") ?? "",
+                ConsumerGroup: Header("dlq.consumer_group") ?? "",
+                MessageKey: key,
+                MessageValue: value,
+                ExceptionType: Header("dlq.exception_type"),
+                ExceptionMessage: Header("dlq.exception_message"),
+                Attempts: int.TryParse(attemptsRaw, out var a) ? a : 0,
+                FailedAt: DateTime.TryParse(
+                    failedAtRaw,
+                    CultureInfo.InvariantCulture,
+                    DateTimeStyles.AdjustToUniversal | DateTimeStyles.AssumeUniversal,
+                    out var f)
+                        ? f
+                        : DateTime.UtcNow));
 
-        logger.LogInformation("[DlqMonitor] Recorded DLQ message key={Key} sourceTopic={SourceTopic}",
-            key, Header("dlq.source_topic"));
+        logger.LogInformation(
+            "[DlqMonitor] Recorded DLQ message key={Key} sourceTopic={SourceTopic}",
+            key,
+            Header("dlq.source_topic"));
     }
 }

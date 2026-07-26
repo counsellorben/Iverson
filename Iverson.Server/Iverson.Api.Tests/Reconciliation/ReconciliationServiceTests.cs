@@ -26,9 +26,14 @@ public class ReconciliationServiceTests
         _entities = Substitute.For<IEntityRepository>();
         _queue = Substitute.For<IReconciliationQueueRepository>();
         _events = Substitute.For<IEventProducer>();
-        _registry = new SchemaRegistry(new SchemaRegistryRepository(_sql), NullLogger<SchemaRegistry>.Instance);
+        _registry = new SchemaRegistry(
+            new SchemaRegistryRepository(_sql), NullLogger<SchemaRegistry>.Instance);
         _sut = new ReconciliationService(
-            _registry, _entities, _queue, _events, NullLogger<ReconciliationService>.Instance);
+            _registry,
+            _entities,
+            _queue,
+            _events,
+            NullLogger<ReconciliationService>.Instance);
     }
 
     [Fact]
@@ -66,8 +71,10 @@ public class ReconciliationServiceTests
         var queueId = Guid.NewGuid();
         _queue.PollQueuedFailuresAsync(Arg.Any<int>(), Arg.Any<int>())
             .Returns(new[] { new ReconciliationQueueRow(queueId, "Author", "author-1", 0) });
-        _entities.FetchByKeyAsync(
-                Arg.Is<TableSchema>(s => s.TableName == "authors"), Arg.Any<string>())
+        _entities
+            .FetchByKeyAsync(
+                Arg.Is<TableSchema>(s => s.TableName == "authors"),
+                Arg.Any<string>())
             .Returns("""{"Id":"author-1","Name":"Alice"}""");
 
         await _sut.ProcessQueuedFailuresAsync(CancellationToken.None);
@@ -101,12 +108,15 @@ public class ReconciliationServiceTests
     {
         await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
         var queueId = Guid.NewGuid();
-        _queue.PollQueuedFailuresAsync(Arg.Any<int>(), Arg.Any<int>())
+        _queue
+            .PollQueuedFailuresAsync(Arg.Any<int>(), Arg.Any<int>())
             .Returns(new[] { new ReconciliationQueueRow(queueId, "Author", "author-1", 3) });
-        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>())
+        _entities
+            .FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>())
             .Returns("""{"Id":"author-1","Name":"Alice"}""");
-        _events.ProduceAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<EntityEvent>())
-               .Returns<Task>(_ => throw new InvalidOperationException("kafka still down"));
+        _events
+            .ProduceAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<EntityEvent>())
+            .Returns<Task>(_ => throw new InvalidOperationException("kafka still down"));
 
         await _sut.ProcessQueuedFailuresAsync(CancellationToken.None);
 
@@ -122,7 +132,8 @@ public class ReconciliationServiceTests
         await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
         var queueId = Guid.NewGuid();
         const string payload = """{"Id":"author-1","Name":"Alice"}""";
-        _queue.PollQueuedFailuresAsync(Arg.Any<int>(), Arg.Any<int>())
+        _queue
+            .PollQueuedFailuresAsync(Arg.Any<int>(), Arg.Any<int>())
             .Returns(new[] { new ReconciliationQueueRow(queueId, "Author", "author-1", 0, "Deleted", payload) });
 
         await _sut.ProcessQueuedFailuresAsync(CancellationToken.None);
@@ -146,7 +157,8 @@ public class ReconciliationServiceTests
         // preserve current behavior (target every store) rather than throw or narrow scope.
         var queueId = Guid.NewGuid();
         const string payload = """{"Id":"ghost-1","Name":"Ghost"}""";
-        _queue.PollQueuedFailuresAsync(Arg.Any<int>(), Arg.Any<int>())
+        _queue
+            .PollQueuedFailuresAsync(Arg.Any<int>(), Arg.Any<int>())
             .Returns(new[] { new ReconciliationQueueRow(queueId, "NoSuchType", "ghost-1", 0, "Deleted", payload) });
 
         await _sut.ProcessQueuedFailuresAsync(CancellationToken.None);
@@ -162,10 +174,12 @@ public class ReconciliationServiceTests
     {
         var queueId = Guid.NewGuid();
         const string payload = """{"Id":"author-1","Name":"Alice"}""";
-        _queue.PollQueuedFailuresAsync(Arg.Any<int>(), Arg.Any<int>())
+        _queue
+            .PollQueuedFailuresAsync(Arg.Any<int>(), Arg.Any<int>())
             .Returns(new[] { new ReconciliationQueueRow(queueId, "Author", "author-1", 3, "Deleted", payload) });
-        _events.ProduceAsync(EntityTopics.Events, Arg.Any<string>(), Arg.Any<EntityEvent>())
-               .Returns<Task>(_ => throw new InvalidOperationException("kafka still down"));
+        _events
+            .ProduceAsync(EntityTopics.Events, Arg.Any<string>(), Arg.Any<EntityEvent>())
+            .Returns<Task>(_ => throw new InvalidOperationException("kafka still down"));
 
         await _sut.ProcessQueuedFailuresAsync(CancellationToken.None);
 
@@ -180,7 +194,8 @@ public class ReconciliationServiceTests
         // asserting the exhausted-count query actually executes with the expected params,
         // rather than intercepting the logger.
         await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
-        _queue.PollQueuedFailuresAsync(Arg.Any<int>(), Arg.Any<int>())
+        _queue
+            .PollQueuedFailuresAsync(Arg.Any<int>(), Arg.Any<int>())
             .Returns(Array.Empty<ReconciliationQueueRow>());
         _queue.CountExhaustedAsync(Arg.Any<int>()).Returns(3);
 
@@ -198,5 +213,4 @@ public class ReconciliationServiceTests
 
         count.Should().Be(5);
     }
-
 }

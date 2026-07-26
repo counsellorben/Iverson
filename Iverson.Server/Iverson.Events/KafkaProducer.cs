@@ -28,8 +28,10 @@ public class KafkaProducer(
         var headers = new Headers();
         if (Activity.Current is { } current)
         {
-            headers.Add("traceparent", System.Text.Encoding.UTF8.GetBytes(
-                $"00-{current.TraceId}-{current.SpanId}-{(current.ActivityTraceFlags.HasFlag(ActivityTraceFlags.Recorded) ? "01" : "00")}"));
+            headers.Add(
+                "traceparent",
+                System.Text.Encoding.UTF8.GetBytes(
+                    $"00-{current.TraceId}-{current.SpanId}-{(current.ActivityTraceFlags.HasFlag(ActivityTraceFlags.Recorded) ? "01" : "00")}"));
         }
 
         try

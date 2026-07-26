@@ -55,7 +55,7 @@ public sealed class AllStoresContainerFixture : IAsyncLifetime
     public string ConnectionString { get; private set; } = null!;
     public PostgresRepository PostgresRepository { get; private set; } = null!;
     public PostgresSchemaManager PostgresSchemaManager { get; private set; } = null!;
-    public QdrantCollectionManager QdrantCollectionManager { get; private set; } = null!;
+    public IntelligenceCollectionManager QdrantCollectionManager { get; private set; } = null!;
 
     public async Task InitializeAsync()
     {
@@ -66,9 +66,11 @@ public sealed class AllStoresContainerFixture : IAsyncLifetime
 
         ConnectionString = _postgres.GetConnectionString();
         PostgresRepository = new PostgresRepository(
-            ConnectionString, NullLogger<PostgresRepository>.Instance);
+            ConnectionString,
+            NullLogger<PostgresRepository>.Instance);
         PostgresSchemaManager = new PostgresSchemaManager(
-            ConnectionString, NullLogger<PostgresSchemaManager>.Instance);
+            ConnectionString,
+            NullLogger<PostgresSchemaManager>.Instance);
 
         // Mirrors Program.cs startup ordering: the iverson_runtime role must exist before any
         // ApplySchemaAsync call that GRANTs to it for a tenant-scoped table (this fixture's tests
@@ -76,9 +78,13 @@ public sealed class AllStoresContainerFixture : IAsyncLifetime
         await PostgresSchemaManager.EnsureRuntimeRoleAsync();
 
         var qdrantClient = new QdrantClient(
-            _qdrant.Hostname, _qdrant.GetMappedPublicPort(QdrantGrpcPort), https: false);
-        QdrantCollectionManager = new QdrantCollectionManager(
-            qdrantClient, "test-api-key", NullLogger<QdrantCollectionManager>.Instance);
+            _qdrant.Hostname,
+            _qdrant.GetMappedPublicPort(QdrantGrpcPort),
+            https: false);
+        QdrantCollectionManager = new IntelligenceCollectionManager(
+            qdrantClient,
+            "test-api-key",
+            NullLogger<IntelligenceCollectionManager>.Instance);
 
         var starRocksConnectionString = new MySqlConnectionStringBuilder
         {
@@ -181,7 +187,7 @@ public sealed class AllStoresContainerFixture : IAsyncLifetime
 /// metadata (added in Task 1, not yet wired into any live RPC) does not break the existing
 /// schema-provisioning pipeline that <see cref="ObjectMappingGrpcService.RegisterSchema"/> drives against real
 /// Postgres, and that the metadata survives a real Postgres-backed JSON round trip. (StarRocks table
-/// provisioning is now lazy/per-tenant on first write — see StarRocksRepository.EnsureTenantProvisionedAsync —
+/// provisioning is now lazy/per-tenant on first write — see EngagementRepository.EnsureTenantProvisionedAsync —
 /// so RegisterSchema itself no longer eagerly provisions StarRocks or Qdrant.)
 /// </summary>
 [Trait("Category", "Integration")]

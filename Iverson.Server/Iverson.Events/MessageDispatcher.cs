@@ -53,7 +53,8 @@ public sealed class MessageDispatcher(
                 logger.LogCritical(
                     ex,
                     "[Dispatch] Poison message topic={Topic} key={Key} — routing to DLQ",
-                    ctx.SourceTopic, ctx.Key);
+                    ctx.SourceTopic,
+                    ctx.Key);
                 await DeadLetterAsync(ctx, ex, attempt + 1, ct);
                 return;
             }
@@ -69,7 +70,9 @@ public sealed class MessageDispatcher(
                     logger.LogCritical(
                         ex,
                         "[Dispatch] Exhausted {Max} attempts topic={Topic} key={Key} — routing to DLQ",
-                        _options.MaxAttempts, ctx.SourceTopic, ctx.Key);
+                        _options.MaxAttempts,
+                        ctx.SourceTopic,
+                        ctx.Key);
                     await DeadLetterAsync(ctx, ex, attempt, ct);
                     return;
                 }
@@ -79,7 +82,10 @@ public sealed class MessageDispatcher(
                 logger.LogWarning(
                     ex,
                     "[Dispatch] Transient failure attempt {Attempt}/{Max} topic={Topic} key={Key}",
-                    attempt, _options.MaxAttempts, ctx.SourceTopic, ctx.Key);
+                    attempt,
+                    _options.MaxAttempts,
+                    ctx.SourceTopic,
+                    ctx.Key);
                 await Task.Delay(_options.Backoff(attempt), ct);
             }
         }
@@ -113,7 +119,8 @@ public sealed class MessageDispatcher(
             logger.LogCritical(
                 produceEx,
                 "[Dispatch] FAILED to write to DLQ topic={Topic} key={Key} — offset will NOT be committed",
-                ctx.SourceTopic, ctx.Key);
+                ctx.SourceTopic,
+                ctx.Key);
             throw;
         }
 

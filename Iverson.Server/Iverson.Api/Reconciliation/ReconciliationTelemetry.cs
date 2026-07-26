@@ -22,12 +22,14 @@ internal static class ReconciliationTelemetry
     {
         Meter.CreateObservableGauge(
             "reconciliation.queue_depth",
-            () => ReconciliationQueueDepth,
-            description: "Pending rows in the reconciliation outbox queue");
+            () =>
+                ReconciliationQueueDepth,
+                description: "Pending rows in the reconciliation outbox queue");
 
         Meter.CreateObservableGauge(
             "dlq.unreplayed_count",
-            () => DlqUnreplayedCount,
-            description: "Unreplayed rows in the dead-letter queue table");
+            () =>
+                DlqUnreplayedCount,
+                description: "Unreplayed rows in the dead-letter queue table");
     }
 }

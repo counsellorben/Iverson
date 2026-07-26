@@ -15,13 +15,15 @@ public static class KafkaClientConfigFactory
         if (!string.IsNullOrWhiteSpace(options.SecurityProtocol))
         {
             config.SecurityProtocol = ParseEnum<SecurityProtocol>(
-                options.SecurityProtocol, nameof(KafkaOptions.SecurityProtocol));
+                options.SecurityProtocol,
+                nameof(KafkaOptions.SecurityProtocol));
         }
 
         if (!string.IsNullOrWhiteSpace(options.SaslMechanism))
         {
             config.SaslMechanism = ParseEnum<SaslMechanism>(
-                options.SaslMechanism, nameof(KafkaOptions.SaslMechanism));
+                options.SaslMechanism,
+                nameof(KafkaOptions.SaslMechanism));
         }
 
         if (!string.IsNullOrWhiteSpace(options.SaslUsername))

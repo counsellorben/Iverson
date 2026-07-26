@@ -25,28 +25,52 @@ public sealed class OutboxPublisher(
     private const string SchemaVersion = "1";
 
     public async Task PublishAsync(
-        EntityEventType eventType, string typeName, string key, string payloadJson,
-        string? requestTraceId, StoreTarget targetStores,
-        Guid outboxRowId, string opLabel, CancellationToken ct = default)
+        EntityEventType eventType,
+        string typeName,
+        string key,
+        string payloadJson,
+        string? requestTraceId,
+        StoreTarget targetStores,
+        Guid outboxRowId,
+        string opLabel,
+        CancellationToken ct = default)
     {
         var traceId = requestTraceId.NullIfEmpty() ?? Activity.Current?.TraceId.ToString() ?? string.Empty;
         var published = false;
         try
         {
-            await events.ProduceAsync(EntityTopics.Events, key,
-                new EntityEvent(eventType, typeName, key, payloadJson, traceId, SchemaVersion, DateTimeOffset.UtcNow, targetStores));
+            await events.ProduceAsync(
+                EntityTopics.Events,
+                key,
+                new EntityEvent(
+                    eventType,
+                    typeName,
+                    key,
+                    payloadJson,
+                    traceId,
+                    SchemaVersion,
+                    DateTimeOffset.UtcNow,
+                    targetStores));
             published = true;
             await outboxWriter.DeleteOutboxRowIfPresentAsync(outboxRowId);
         }
         catch (Exception ex) when (!published)
         {
-            logger.LogWarning(ex, "[{Op}] Opportunistic publish failed for type={Type} key={Key} — ReconciliationQueueWorker will retry from the durable outbox row",
-                opLabel, typeName.SanitizeForLog(), key);
+            logger.LogWarning(
+                ex,
+                "[{Op}] Opportunistic publish failed for type={Type} key={Key} — ReconciliationQueueWorker will retry from the durable outbox row",
+                opLabel,
+                typeName.SanitizeForLog(),
+                key);
         }
         catch (Exception ex)
         {
-            logger.LogWarning(ex, "[{Op}] Publish succeeded but outbox cleanup failed for type={Type} key={Key} — ReconciliationQueueWorker will harmlessly re-publish from the durable outbox row",
-                opLabel, typeName.SanitizeForLog(), key);
+            logger.LogWarning(
+                ex,
+                "[{Op}] Publish succeeded but outbox cleanup failed for type={Type} key={Key} — ReconciliationQueueWorker will harmlessly re-publish from the durable outbox row",
+                opLabel,
+                typeName.SanitizeForLog(),
+                key);
         }
     }
 }

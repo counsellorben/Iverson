@@ -9,21 +9,27 @@ namespace Iverson.Api.Grpc;
 
 public sealed class TenantLifecycleGrpcService(
     ITenantRepository tenantRepository,
-    IAuthentikAdminClient authentikAdminClient,
+    IIdpAdminClient authentikAdminClient,
     AuditLog auditLog) : Iverson.Client.Contracts.TenantLifecycleGrpcService.TenantLifecycleGrpcServiceBase
 {
     public override async Task<Tenant> CreateTenant(CreateTenantRequest request, ServerCallContext context)
     {
         if (!TenantIdentifier.IsValid(request.TenantId))
-            throw new RpcException(new Status(StatusCode.InvalidArgument, $"'{request.TenantId}' is not a valid tenant id."));
+            throw new RpcException(
+                new Status(
+                    StatusCode.InvalidArgument,
+                    $"'{request.TenantId}' is not a valid tenant id."));
 
         await tenantRepository.InsertAsync(request.TenantId, request.DisplayName, "active");
 
         try
         {
             await authentikAdminClient.CreateUserAsync(
-                request.AdminUsername, request.AdminEmail, request.AdminInitialPassword,
-                request.TenantId, ["tenant-admins"]);
+                request.AdminUsername,
+                request.AdminEmail,
+                request.AdminInitialPassword,
+                request.TenantId,
+                ["tenant-admins"]);
         }
         catch
         {
@@ -32,7 +38,12 @@ public sealed class TenantLifecycleGrpcService(
         }
 
         auditLog.AdminOperation(context.GetHttpContext().User, "CreateTenant", request.TenantId);
-        return new Tenant { TenantId = request.TenantId, DisplayName = request.DisplayName, Status = "active" };
+        return new Tenant
+        {
+            TenantId = request.TenantId,
+            DisplayName = request.DisplayName,
+            Status = "active"
+        };
     }
 
     public override async Task<ListTenantsResponse> ListTenants(ListTenantsRequest request, ServerCallContext context)
@@ -52,7 +63,10 @@ public sealed class TenantLifecycleGrpcService(
     public override async Task<Empty> DeleteTenant(DeleteTenantRequest request, ServerCallContext context)
     {
         var tenant = await tenantRepository.GetAsync(request.TenantId)
-            ?? throw new RpcException(new Status(StatusCode.NotFound, $"Tenant '{request.TenantId}' not found."));
+            ?? throw new RpcException(
+                new Status(
+                    StatusCode.NotFound,
+                    $"Tenant '{request.TenantId}' not found."));
         await tenantRepository.UpdateStatusAsync(request.TenantId, "deleted");
         await authentikAdminClient.DeactivateAllUsersInTenantAsync(request.TenantId);
         auditLog.AdminOperation(context.GetHttpContext().User, "DeleteTenant", request.TenantId);

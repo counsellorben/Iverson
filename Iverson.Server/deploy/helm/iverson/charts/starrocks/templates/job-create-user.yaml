@@ -80,12 +80,12 @@ spec:
               # "CREATE TABLE" — a bare "CREATE" in the combined list used to fail with "No
               # viable statement", confirmed empirically against a live FE (4.1.1).
               # OPERATE ON SYSTEM is needed for `SHOW BACKENDS`, which
-              # StarRocksRepository.IsHealthyAsync() runs as this user to back /health —
+              # EngagementRepository.IsHealthyAsync() runs as this user to back /health —
               # without it every readiness probe fails with "Access denied; you need (at
               # least one of) the OPERATE OR NODE privilege(s) on SYSTEM", confirmed
               # empirically against a live FE (4.1.1).
               # CREATE DATABASE ON CATALOG default_catalog is needed because
-              # StarRocksRepository.EnsureDatabaseAsync() runs `CREATE DATABASE IF NOT
+              # EngagementRepository.EnsureDatabaseAsync() runs `CREATE DATABASE IF NOT
               # EXISTS iverson` as iverson_app on every RegisterSchema call — StarRocks
               # checks the privilege before checking whether the database already exists,
               # so this failed on literally every schema registration even though the

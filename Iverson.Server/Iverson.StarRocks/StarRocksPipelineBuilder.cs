@@ -14,7 +14,7 @@ internal sealed record StepColumns(string Name, Dictionary<string, string> Colum
 /// <summary>
 /// Compiles a <see cref="PipelineRequest"/> into a single StarRocks CTE-chain query.
 /// Pass 1 (<see cref="TrackAndValidate"/>) computes every step's output column set and
-/// rejects invalid references via <see cref="StarRocksQueryTranslationException"/> before any SQL is built.
+/// rejects invalid references via <see cref="EngagementQueryTranslationException"/> before any SQL is built.
 /// </summary>
 internal static class StarRocksPipelineBuilder
 {
@@ -37,7 +37,7 @@ internal static class StarRocksPipelineBuilder
     // is never excluded, per IRowFieldAuthorizationEvaluator's existing contract (a caller always
     // sees the primary key even under field restriction).
     private static Dictionary<string, string> ColumnsFor(
-        StarRocksQuerySchema schema, AuthorizationConstraint? constraint = null)
+        EngagementQuerySchema schema, AuthorizationConstraint? constraint = null)
     {
         var cols = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
         {
@@ -52,9 +52,9 @@ internal static class StarRocksPipelineBuilder
     }
 
     internal static IReadOnlyList<StepColumns> TrackAndValidate(
-        StarRocksQuerySchema schema,
+        EngagementQuerySchema schema,
         PipelineRequest request,
-        Func<string, StarRocksQuerySchema?> registry,
+        Func<string, EngagementQuerySchema?> registry,
         IReadOnlyDictionary<string, AuthorizationConstraint>? authz = null)
     {
         var steps = new List<StepColumns>();
@@ -83,7 +83,7 @@ internal static class StarRocksPipelineBuilder
     }
 
     private static void ValidateStepName(
-        PipelineStep step, List<StepColumns> earlier, Func<string, StarRocksQuerySchema?> registry)
+        PipelineStep step, List<StepColumns> earlier, Func<string, EngagementQuerySchema?> registry)
     {
         if (string.IsNullOrEmpty(step.Name) || !IdentifierRx.IsMatch(step.Name))
             throw Invalid($"Step name '{step.Name}' is not a valid identifier.");
@@ -111,7 +111,7 @@ internal static class StarRocksPipelineBuilder
         PipelineStep step,
         StepColumns input,
         List<StepColumns> earlier,
-        Func<string, StarRocksQuerySchema?> registry,
+        Func<string, EngagementQuerySchema?> registry,
         IReadOnlyDictionary<string, AuthorizationConstraint>? authz = null)
     {
         var isAggregate = step.GroupBy.Count > 0 || step.Metrics.Count > 0 || step.Having.Count > 0;
@@ -262,7 +262,7 @@ internal static class StarRocksPipelineBuilder
     }
 
     private static Dictionary<string, StepColumns> ResolveJoinSources(
-        PipelineStep step, List<StepColumns> earlier, Func<string, StarRocksQuerySchema?> registry,
+        PipelineStep step, List<StepColumns> earlier, Func<string, EngagementQuerySchema?> registry,
         IReadOnlyDictionary<string, AuthorizationConstraint>? authz = null)
     {
         var sources = new Dictionary<string, StepColumns>(StringComparer.OrdinalIgnoreCase);
@@ -361,22 +361,22 @@ internal static class StarRocksPipelineBuilder
             throw Invalid($"Step '{stepName}': unknown column or alias '{property}'.");
     }
 
-    private static StarRocksQueryTranslationException Invalid(string message) =>
+    private static EngagementQueryTranslationException Invalid(string message) =>
         new(message);
 
     /// <summary>
     /// Compiles the request into one SQL statement. <c>LastCols</c> is the final step's tracked
     /// (already field-restriction-filtered, per Step 1) output-column dictionary — the caller
-    /// (<see cref="StarRocksRepository.PipelineAsync"/>) uses it as a Layer 2 (post-fetch) mask:
+    /// (<see cref="EngagementRepository.PipelineAsync"/>) uses it as a Layer 2 (post-fetch) mask:
     /// every intermediate/final CTE's actual physical columns can be broader than this tracked
     /// set (the base CTE and any unqualified "select *" passthrough both select every raw table
     /// column, restricted or not), so the final result row must still be stripped down to exactly
     /// this set before it leaves <c>Iverson.StarRocks</c>.
     /// </summary>
     internal static (string Sql, DynamicParameters Param, Dictionary<string, string> LastCols) Build(
-        StarRocksQuerySchema schema,
+        EngagementQuerySchema schema,
         PipelineRequest request,
-        Func<string, StarRocksQuerySchema?> registry,
+        Func<string, EngagementQuerySchema?> registry,
         IReadOnlyDictionary<string, AuthorizationConstraint>? authz = null,
         string? tenantDatabase = null)
     {
@@ -448,7 +448,7 @@ internal static class StarRocksPipelineBuilder
         PipelineStep step,
         StepColumns input,
         List<StepColumns> emitted,
-        Func<string, StarRocksQuerySchema?> registry,
+        Func<string, EngagementQuerySchema?> registry,
         DynamicParameters param,
         int stepIdx,
         IReadOnlyDictionary<string, AuthorizationConstraint>? authz = null,
@@ -585,7 +585,7 @@ internal static class StarRocksPipelineBuilder
             AggregationType.Min   => "MIN",
             AggregationType.Max   => "MAX",
             AggregationType.Count => "COUNT",
-            _ => throw new StarRocksQueryTranslationException(
+            _ => throw new EngagementQueryTranslationException(
                 $"Metric '{m.Name}' has unsupported type '{m.Type}'.")
         };
         // m.Expression is a client-settable field on the public PipelineStep.metrics proto
@@ -617,7 +617,7 @@ internal static class StarRocksPipelineBuilder
             WindowFunctionKind.RunningAvg => $"AVG(`{input[w.Field]}`)",
             WindowFunctionKind.Lag        => $"LAG(`{input[w.Field]}`, {offset})",
             WindowFunctionKind.Lead       => $"LEAD(`{input[w.Field]}`, {offset})",
-            _ => throw new StarRocksQueryTranslationException(
+            _ => throw new EngagementQueryTranslationException(
                 $"Window '{w.Alias}' has unsupported kind '{w.Kind}'.")
         };
         return $"{call} {over} AS `{w.Alias}`";

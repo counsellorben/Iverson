@@ -17,14 +17,19 @@ namespace Iverson.Api.Grpc;
 // header being present — which, per the above, this service's caller never sends, so the
 // interceptor's check would never fire here. This inline duplication is intentional.
 public sealed class TenantAdminGrpcService(
-    IAuthentikAdminClient authentikAdminClient,
+    IIdpAdminClient authentikAdminClient,
     ITenantStatusCache tenantStatusCache,
     AuditLog auditLog) : Iverson.Client.Contracts.TenantAdminGrpcService.TenantAdminGrpcServiceBase
 {
     public override async Task<TenantUser> InviteUser(InviteUserRequest request, ServerCallContext context)
     {
         var tenantId = await RequireActiveTenantAsync(context);
-        var userId = await authentikAdminClient.CreateUserAsync(request.Username, request.Email, request.InitialPassword, tenantId, []);
+        var userId = await authentikAdminClient.CreateUserAsync(
+            request.Username,
+            request.Email,
+            request.InitialPassword,
+            tenantId,
+            []);
         auditLog.AdminOperation(context.GetHttpContext().User, "InviteUser", request.Username);
         return new TenantUser { UserId = userId, Username = request.Username, Email = request.Email };
     }
@@ -34,7 +39,8 @@ public sealed class TenantAdminGrpcService(
         var tenantId = await RequireActiveTenantAsync(context);
         var users = await authentikAdminClient.ListUsersByTenantAsync(tenantId);
         var response = new ListUsersResponse();
-        response.Users.AddRange(users.Select(u => new TenantUser { UserId = u.Id, Username = u.Username, Email = u.Email }));
+        response.Users.AddRange(users.Select(u => 
+            new TenantUser { UserId = u.Id, Username = u.Username, Email = u.Email }));
         return response;
     }
 
@@ -73,10 +79,13 @@ public sealed class TenantAdminGrpcService(
     // without this check a tenant-admin of Tenant A could deactivate or promote/demote a user
     // in Tenant B by supplying that user's id. Looking the target up via the caller's OWN
     // tenant's user list — rather than trusting the request's tenant scoping — closes that gap.
-    private async Task<AuthentikUser> RequireUserInTenantAsync(string userId, string tenantId)
+    private async Task<IdpUser> RequireUserInTenantAsync(string userId, string tenantId)
     {
         var users = await authentikAdminClient.ListUsersByTenantAsync(tenantId);
         return users.FirstOrDefault(u => u.Id == userId)
-            ?? throw new RpcException(new Status(StatusCode.PermissionDenied, "User does not belong to your tenant."));
+            ?? throw new RpcException(
+                new Status(
+                    StatusCode.PermissionDenied,
+                    "User does not belong to your tenant."));
     }
 }

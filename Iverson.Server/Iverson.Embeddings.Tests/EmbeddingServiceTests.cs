@@ -31,8 +31,9 @@ public sealed class EmbeddingServiceTests
     private EmbeddingService CreateService(FakeHttpMessageHandler handler, string modelId = "nomic-embed-text")
     {
         var factory = Substitute.For<IHttpClientFactory>();
-        factory.CreateClient(Arg.Any<string>())
-               .Returns(new HttpClient(handler) { BaseAddress = new Uri("http://localhost:11434") });
+        factory
+            .CreateClient(Arg.Any<string>())
+            .Returns(new HttpClient(handler) { BaseAddress = new Uri("http://localhost:11434") });
         return new EmbeddingService(
             factory,
             Options.Create(new EmbeddingServiceOptions { ModelId = modelId }),
@@ -117,8 +118,9 @@ public sealed class EmbeddingServiceTests
         };
         var svc = CreateService(new FakeHttpMessageHandler(malformed));
 
-        await svc.Invoking(s => s.EmbedAsync("hello"))
-                 .Should().ThrowAsync<Exception>();
+        await svc
+            .Invoking(s => s.EmbedAsync("hello"))
+            .Should().ThrowAsync<Exception>();
     }
 
     [Fact]

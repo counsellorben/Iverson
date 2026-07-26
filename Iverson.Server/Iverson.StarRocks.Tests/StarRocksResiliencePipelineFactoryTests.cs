@@ -10,7 +10,7 @@ namespace Iverson.StarRocks.Tests;
 
 public class StarRocksResiliencePipelineFactoryTests
 {
-    private static StarRocksCircuitBreakerOptions FastTestOptions() => new()
+    private static EngagementCircuitBreakerOptions FastTestOptions() => new()
     {
         FailureRatio      = 1.0,
         MinimumThroughput = 2,

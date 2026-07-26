@@ -48,7 +48,7 @@ internal sealed class StarRocksReadinessGate(
                 await Task.Delay(_pollInterval, ct).ConfigureAwait(false);
             }
 
-            throw new StarRocksNotReadyException(
+            throw new EngagementNotReadyException(
                 $"StarRocks backend was not reported alive within {timeout}.", lastError);
         }
         finally

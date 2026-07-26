@@ -16,26 +16,44 @@ public sealed class MessageDispatcherTests
 
     public MessageDispatcherTests()
     {
-        _producer.ProduceAsync(Arg.Any<string>(), Arg.Any<Message<string, string>>(), Arg.Any<CancellationToken>())
-                 .Returns(Task.FromResult(new DeliveryResult<string, string>()));
+        _producer
+            .ProduceAsync(
+                Arg.Any<string>(),
+                Arg.Any<Message<string, string>>(),
+                Arg.Any<CancellationToken>())
+            .Returns(Task.FromResult(new DeliveryResult<string, string>()));
     }
 
     private MessageDispatcher BuildSut(int maxAttempts = 3) =>
-        new(_producer, NullLogger<MessageDispatcher>.Instance,
+        new(
+            _producer,
+            NullLogger<MessageDispatcher>.Instance,
             new MessageDispatcherOptions { MaxAttempts = maxAttempts, Backoff = _ => TimeSpan.Zero });
 
     private static DispatchContext Ctx(string value = """{"ok":true}""") =>
-        new("iverson.entity.created", "iverson.consumer.test", "key-1", value, new Headers());
+        new(
+            "iverson.entity.created",
+            "iverson.consumer.test",
+            "key-1",
+            value,
+            new Headers());
 
     [Fact]
     public async Task Success_InvokesHandlerOnce_NoDlq()
     {
         var calls = 0;
-        await BuildSut().DispatchAsync(Ctx(), (_, _, _) => { calls++; return Task.CompletedTask; }, CancellationToken.None);
+        await BuildSut()
+            .DispatchAsync(
+                Ctx(),
+                (_, _, _) => { calls++; return Task.CompletedTask; },
+                CancellationToken.None);
 
         calls.Should().Be(1);
-        await _producer.DidNotReceive().ProduceAsync(
-            Arg.Any<string>(), Arg.Any<Message<string, string>>(), Arg.Any<CancellationToken>());
+        await _producer.DidNotReceive()
+            .ProduceAsync(
+                Arg.Any<string>(),
+                Arg.Any<Message<string, string>>(),
+                Arg.Any<CancellationToken>());
     }
 
     [Fact]
@@ -49,11 +67,18 @@ public sealed class MessageDispatcherTests
             return Task.CompletedTask;
         }
 
-        await BuildSut().DispatchAsync(Ctx(), Handler, CancellationToken.None);
+        await BuildSut()
+            .DispatchAsync(
+                Ctx(),
+                Handler,
+                CancellationToken.None);
 
         calls.Should().Be(2);
-        await _producer.DidNotReceive().ProduceAsync(
-            Arg.Any<string>(), Arg.Any<Message<string, string>>(), Arg.Any<CancellationToken>());
+        await _producer.DidNotReceive()
+            .ProduceAsync(
+                Arg.Any<string>(),
+                Arg.Any<Message<string, string>>(),
+                Arg.Any<CancellationToken>());
     }
 
     [Fact]
@@ -65,30 +90,46 @@ public sealed class MessageDispatcherTests
         await BuildSut(maxAttempts: 3).DispatchAsync(Ctx(), Handler, CancellationToken.None);
 
         calls.Should().Be(3);
-        await _producer.Received(1).ProduceAsync(
-            EntityTopics.Dlq,
-            Arg.Is<Message<string, string>>(m => m.Key == "key-1"),
-            Arg.Any<CancellationToken>());
+        await _producer.Received(1)
+            .ProduceAsync(
+                EntityTopics.Dlq,
+                Arg.Is<Message<string, string>>(m => m.Key == "key-1"),
+                Arg.Any<CancellationToken>());
     }
 
     [Fact]
     public async Task PoisonMessage_RoutesToDlqImmediately_NoRetry()
     {
         var calls = 0;
-        Task Handler(string k, string v, CancellationToken c) { calls++; throw new PoisonMessageException("bad json"); }
+        Task Handler(string k, string v, CancellationToken c)
+        {
+            calls++;
+            throw new PoisonMessageException("bad json");
+        }
 
-        await BuildSut().DispatchAsync(Ctx(), Handler, CancellationToken.None);
+        await BuildSut()
+            .DispatchAsync(
+                Ctx(),
+                Handler,
+                CancellationToken.None);
 
         calls.Should().Be(1);
-        await _producer.Received(1).ProduceAsync(
-            EntityTopics.Dlq, Arg.Any<Message<string, string>>(), Arg.Any<CancellationToken>());
+        await _producer.Received(1)
+            .ProduceAsync(
+                EntityTopics.Dlq,
+                Arg.Any<Message<string, string>>(),
+                Arg.Any<CancellationToken>());
     }
 
     [Fact]
     public async Task DlqProduceFailure_Throws_DoesNotSwallow()
     {
-        _producer.ProduceAsync(EntityTopics.Dlq, Arg.Any<Message<string, string>>(), Arg.Any<CancellationToken>())
-                 .ThrowsAsync(new Exception("kafka down"));
+        _producer
+            .ProduceAsync(
+                EntityTopics.Dlq,
+                Arg.Any<Message<string, string>>(),
+                Arg.Any<CancellationToken>())
+            .ThrowsAsync(new Exception("kafka down"));
 
         Task Handler(string k, string v, CancellationToken c) => throw new PoisonMessageException("bad");
 
@@ -101,8 +142,12 @@ public sealed class MessageDispatcherTests
     public async Task DlqMessage_CarriesMetadataHeadersAndVerbatimValue()
     {
         Message<string, string>? captured = null;
-        _producer.ProduceAsync(EntityTopics.Dlq, Arg.Do<Message<string, string>>(m => captured = m), Arg.Any<CancellationToken>())
-                 .Returns(Task.FromResult(new DeliveryResult<string, string>()));
+        _producer
+            .ProduceAsync(
+                EntityTopics.Dlq,
+                Arg.Do<Message<string, string>>(m => captured = m),
+                Arg.Any<CancellationToken>())
+            .Returns(Task.FromResult(new DeliveryResult<string, string>()));
 
         Task Handler(string k, string v, CancellationToken c) => throw new PoisonMessageException("bad json");
 
@@ -133,7 +178,11 @@ public sealed class MessageDispatcherTests
         listener.Start();
 
         Task Handler(string k, string v, CancellationToken c) => throw new Exception("always");
-        await BuildSut(maxAttempts: 3).DispatchAsync(Ctx(), Handler, CancellationToken.None);
+        await BuildSut(maxAttempts: 3)
+            .DispatchAsync(
+                Ctx(),
+                Handler,
+                CancellationToken.None);
 
         listener.Dispose();
         measurements.GetValueOrDefault("consumer.retries").Should().Be(2);

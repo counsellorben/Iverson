@@ -8,7 +8,7 @@ using Xunit;
 namespace Iverson.StarRocks.Tests;
 
 // Proves the actual privilege boundary Tasks 1-6 built: per-tenant StarRocks databases + roles,
-// exercised through a second StarRocksRepository that authenticates as the real application user
+// exercised through a second EngagementRepository that authenticates as the real application user
 // (`iverson_app`) rather than `root` (StarRocksContainerFixture.Repository). Application-level
 // WHERE-clause tenant filtering is Part A's job and is deliberately NOT exercised here (every
 // AuthorizationConstraint below leaves TenantColumn null) — these tests must fail if the
@@ -16,8 +16,8 @@ namespace Iverson.StarRocks.Tests;
 [Trait("Category", "Integration")]
 public sealed class TenantIsolationIntegrationTests : IClassFixture<StarRocksContainerFixture>
 {
-    private readonly StarRocksRepository _appRepo;
-    private readonly StarRocksRepository _rootRepo;
+    private readonly EngagementRepository _appRepo;
+    private readonly EngagementRepository _rootRepo;
 
     public TenantIsolationIntegrationTests(StarRocksContainerFixture fx)
     {
@@ -29,8 +29,8 @@ public sealed class TenantIsolationIntegrationTests : IClassFixture<StarRocksCon
         //
         // OPERATE ON SYSTEM is granted directly to the user, not via a role: StarRocks does not
         // auto-activate granted roles on a fresh connection (a new session's active role is NONE
-        // until an explicit SET ROLE), but StarRocksRepository's cold-start readiness gate calls
-        // SHOW BACKENDS on every new StarRocksRepository instance before any role has been
+        // until an explicit SET ROLE), but EngagementRepository's cold-start readiness gate calls
+        // SHOW BACKENDS on every new EngagementRepository instance before any role has been
         // activated — exactly the gap job-create-user.yaml's direct (non-role) grant closes in
         // production. Discovered empirically: the brief's illustrative user_admin-only grant left
         // every _appRepo operation failing readiness with "Access denied ... OPERATE OR NODE
@@ -67,10 +67,10 @@ public sealed class TenantIsolationIntegrationTests : IClassFixture<StarRocksCon
             Database = ""
         }.ToString();
 
-        _appRepo = new StarRocksRepository(appConnectionString, NullLogger<StarRocksRepository>.Instance);
+        _appRepo = new EngagementRepository(appConnectionString, NullLogger<EngagementRepository>.Instance);
     }
 
-    private static StarRocksTableSchema ProbeSchema(string tableName) =>
+    private static EngagementTableSchema ProbeSchema(string tableName) =>
         new(tableName, new StarRocksColumnSchema("Id", "VARCHAR(36)", false),
             [new StarRocksColumnSchema("Name", "STRING", true)]);
 
@@ -98,7 +98,7 @@ public sealed class TenantIsolationIntegrationTests : IClassFixture<StarRocksCon
         await _appRepo.EnsureTenantProvisionedAsync(tenantId, schema);
         await _appRepo.UpsertAsync(schema, ProbePayload("11111111-1111-1111-1111-111111111111", "Alice"), tenantId);
 
-        var querySchema = new StarRocksQuerySchema("Probe", table, "Id", ["Name"]);
+        var querySchema = new EngagementQuerySchema("Probe", table, "Id", ["Name"]);
         var rows = (await _appRepo.SearchAsync(querySchema, null, 0, 50, authz: AuthzFor("Probe", tenantId))).ToList();
 
         rows.Should().ContainSingle();
@@ -116,7 +116,7 @@ public sealed class TenantIsolationIntegrationTests : IClassFixture<StarRocksCon
         await _appRepo.EnsureTenantProvisionedAsync(tenantA, schema);
         await _appRepo.UpsertAsync(schema, ProbePayload("22222222-2222-2222-2222-222222222222", "Bob"), tenantA);
 
-        var querySchema = new StarRocksQuerySchema("Probe", table, "Id", ["Name"]);
+        var querySchema = new EngagementQuerySchema("Probe", table, "Id", ["Name"]);
 
         var rows = (await _appRepo.SearchAsync(querySchema, null, 0, 50, authz: AuthzFor("Probe", tenantB))).ToList();
 
@@ -124,7 +124,7 @@ public sealed class TenantIsolationIntegrationTests : IClassFixture<StarRocksCon
     }
 
     // AggregateAsync/GroupByAsync/PipelineAsync got the identical unprovisioned-tenant fail-closed
-    // fix as SearchAsync (see StarRocksRepository.IsUnprovisionedTenantRoleError and its call
+    // fix as SearchAsync (see EngagementRepository.IsUnprovisionedTenantRoleError and its call
     // sites), but only SearchAsync's fix was exercised against a live container before this test
     // was added — these three lock in the same guarantee for the other three read methods.
     [Fact]
@@ -132,7 +132,7 @@ public sealed class TenantIsolationIntegrationTests : IClassFixture<StarRocksCon
     {
         var tenantB = UniqueTenantId(); // never provisioned
         var table = UniqueTable();
-        var querySchema = new StarRocksQuerySchema("Probe", table, "Id", ["Name"]);
+        var querySchema = new EngagementQuerySchema("Probe", table, "Id", ["Name"]);
         var spec = new AggregationDescriptor("cnt", AggregationKind.Count, "Name");
 
         var result = await _appRepo.AggregateAsync(querySchema, null, spec, authz: AuthzFor("Probe", tenantB));
@@ -148,7 +148,7 @@ public sealed class TenantIsolationIntegrationTests : IClassFixture<StarRocksCon
     {
         var tenantB = UniqueTenantId(); // never provisioned
         var table = UniqueTable();
-        var querySchema = new StarRocksQuerySchema("Probe", table, "Id", ["Name"]);
+        var querySchema = new EngagementQuerySchema("Probe", table, "Id", ["Name"]);
 
         var request = new GroupByRequest { TypeName = "Probe", Keys = { "Name" } };
         request.Metrics.Add(new MetricSpec { Name = "cnt", Type = AggregationType.Count });
@@ -165,7 +165,7 @@ public sealed class TenantIsolationIntegrationTests : IClassFixture<StarRocksCon
     {
         var tenantB = UniqueTenantId(); // never provisioned
         var table = UniqueTable();
-        var querySchema = new StarRocksQuerySchema("Probe", table, "Id", ["Name"]);
+        var querySchema = new EngagementQuerySchema("Probe", table, "Id", ["Name"]);
 
         var request = new PipelineRequest { TypeName = "Probe" };
         var registry = TestSchemaRegistry.BuildRegistry(querySchema);
@@ -196,7 +196,7 @@ public sealed class TenantIsolationIntegrationTests : IClassFixture<StarRocksCon
         await _appRepo.UpsertAsync(schema, ProbePayload("88888888-8888-8888-8888-888888888888", "TenantAOwner"), tenantA);
         await _appRepo.UpsertAsync(schema, ProbePayload("99999999-9999-9999-9999-999999999999", "TenantCOwner"), tenantC);
 
-        var querySchema = new StarRocksQuerySchema("Probe", table, "Id", ["Name"]);
+        var querySchema = new EngagementQuerySchema("Probe", table, "Id", ["Name"]);
 
         var rowsForA = (await _appRepo.SearchAsync(querySchema, null, 0, 50, authz: AuthzFor("Probe", tenantA))).ToList();
         var rowsForC = (await _appRepo.SearchAsync(querySchema, null, 0, 50, authz: AuthzFor("Probe", tenantC))).ToList();
@@ -211,7 +211,7 @@ public sealed class TenantIsolationIntegrationTests : IClassFixture<StarRocksCon
     // The adjacent "no data yet" case to SearchAsync_ForOtherTenant_ReturnsNoRows: here the tenant
     // IS provisioned (its role/database are real and granted) but has only ever written type A —
     // EnsureTenantProvisionedAsync creates one table per call, not every table a tenant will ever
-    // use, so type B's table genuinely doesn't exist yet. Locks in StarRocksRepository's
+    // use, so type B's table genuinely doesn't exist yet. Locks in EngagementRepository's
     // IsExpectedMissingResourceError "Unknown table" branch: this must return empty, not throw.
     [Fact]
     public async Task SearchAsync_ForNeverWrittenType_ReturnsNoRows()
@@ -224,7 +224,7 @@ public sealed class TenantIsolationIntegrationTests : IClassFixture<StarRocksCon
         await _appRepo.EnsureTenantProvisionedAsync(tenantId, schemaA);
         await _appRepo.UpsertAsync(schemaA, ProbePayload("11111111-2222-3333-4444-555555555555", "OnlyTypeAWritten"), tenantId);
 
-        var querySchemaB = new StarRocksQuerySchema("ProbeB", tableB, "Id", ["Name"]);
+        var querySchemaB = new EngagementQuerySchema("ProbeB", tableB, "Id", ["Name"]);
         var rows = (await _appRepo.SearchAsync(querySchemaB, null, 0, 50, authz: AuthzFor("ProbeB", tenantId))).ToList();
 
         rows.Should().BeEmpty();
@@ -248,7 +248,7 @@ public sealed class TenantIsolationIntegrationTests : IClassFixture<StarRocksCon
         // And the tenant must still be fully usable afterward — idempotency that left the
         // database/role/table in a broken half-state would defeat the point of this test.
         await _appRepo.UpsertAsync(schema, ProbePayload("33333333-3333-3333-3333-333333333333", "Carol"), tenantId);
-        var querySchema = new StarRocksQuerySchema("Probe", table, "Id", ["Name"]);
+        var querySchema = new EngagementQuerySchema("Probe", table, "Id", ["Name"]);
         var rows = (await _appRepo.SearchAsync(querySchema, null, 0, 50, authz: AuthzFor("Probe", tenantId))).ToList();
         rows.Should().ContainSingle();
     }
@@ -272,8 +272,8 @@ public sealed class TenantIsolationIntegrationTests : IClassFixture<StarRocksCon
         await _appRepo.UpsertAsync(schema1, ProbePayload("44444444-4444-4444-4444-444444444444", "One"), tenantId);
         await _appRepo.UpsertAsync(schema2, ProbePayload("55555555-5555-5555-5555-555555555555", "Two"), tenantId);
 
-        var query1 = new StarRocksQuerySchema("Probe1", table1, "Id", ["Name"]);
-        var query2 = new StarRocksQuerySchema("Probe2", table2, "Id", ["Name"]);
+        var query1 = new EngagementQuerySchema("Probe1", table1, "Id", ["Name"]);
+        var query2 = new EngagementQuerySchema("Probe2", table2, "Id", ["Name"]);
 
         var rows1 = (await _appRepo.SearchAsync(query1, null, 0, 50, authz: AuthzFor("Probe1", tenantId))).ToList();
         var rows2 = (await _appRepo.SearchAsync(query2, null, 0, 50, authz: AuthzFor("Probe2", tenantId))).ToList();
@@ -304,7 +304,7 @@ public sealed class TenantIsolationIntegrationTests : IClassFixture<StarRocksCon
         // Prove no row actually landed anywhere reachable: the legitimately provisioned tenant's
         // table (the only real table named `table` that a valid write could plausibly have hit)
         // must still be empty.
-        var querySchema = new StarRocksQuerySchema("Probe", table, "Id", ["Name"]);
+        var querySchema = new EngagementQuerySchema("Probe", table, "Id", ["Name"]);
         var rows = (await _appRepo.SearchAsync(querySchema, null, 0, 50, authz: AuthzFor("Probe", tenantId))).ToList();
         rows.Should().BeEmpty();
     }
@@ -322,7 +322,7 @@ public sealed class TenantIsolationIntegrationTests : IClassFixture<StarRocksCon
         // Uses _rootRepo, not _appRepo: _appRepo's connection string deliberately has no default
         // database (see constructor remarks), so it cannot run the unqualified DDL/DML this
         // scenario needs. _rootRepo (root, default database = iverson_test, set up by
-        // StarRocksContainerFixture) exercises the exact same StarRocksRepository.SearchAsync
+        // StarRocksContainerFixture) exercises the exact same EngagementRepository.SearchAsync
         // code path and authz-null branch — that shared code path, not the calling user's
         // identity, is what this test is proving.
         var table = UniqueTable();
@@ -334,7 +334,7 @@ public sealed class TenantIsolationIntegrationTests : IClassFixture<StarRocksCon
         await _rootRepo.ExecuteAsync(StarRocksSchemaManager.BuildCreateTableDdl(schema, $"`{table}`"));
         await _rootRepo.ExecuteAsync($"INSERT INTO `{table}` VALUES ('77777777-7777-7777-7777-777777777777', 'Unscoped')");
 
-        var querySchema = new StarRocksQuerySchema("Probe", table, "Id", ["Name"]);
+        var querySchema = new EngagementQuerySchema("Probe", table, "Id", ["Name"]);
         var rows = (await _rootRepo.SearchAsync(querySchema, null, 0, 50, authz: null)).ToList();
 
         rows.Should().ContainSingle();

@@ -8,19 +8,19 @@ public static class ServiceCollectionExtensions
     public static IServiceCollection AddStarRocks(
         this IServiceCollection services,
         string connectionString,
-        StarRocksResilienceOptions? resilienceOptions = null)
+        EngagementResilienceOptions? resilienceOptions = null)
     {
         services.AddSingleton(sp =>
         {
-            var logger = sp.GetRequiredService<ILogger<StarRocksRepository>>();
-            return new StarRocksRepository(connectionString, logger, resilienceOptions);
+            var logger = sp.GetRequiredService<ILogger<EngagementRepository>>();
+            return new EngagementRepository(connectionString, logger, resilienceOptions);
         });
-        services.AddSingleton<IEngagementStoreQueryExecutor>(sp => sp.GetRequiredService<StarRocksRepository>());
-        services.AddSingleton<IEngagementStoreEntityStore>(sp => sp.GetRequiredService<StarRocksRepository>());
-        services.AddSingleton<IEngagementStoreSearchService>(sp => sp.GetRequiredService<StarRocksRepository>());
+        services.AddSingleton<IEngagementStoreQueryExecutor>(sp => sp.GetRequiredService<EngagementRepository>());
+        services.AddSingleton<IEngagementStoreEntityStore>(sp => sp.GetRequiredService<EngagementRepository>());
+        services.AddSingleton<IEngagementStoreSearchService>(sp => sp.GetRequiredService<EngagementRepository>());
 
-        services.AddSingleton(new StarRocksHealthChecker(connectionString));
-        services.AddSingleton<IEngagementStoreHealthCheck>(sp => sp.GetRequiredService<StarRocksHealthChecker>());
+        services.AddSingleton(new EngagementHealthChecker(connectionString));
+        services.AddSingleton<IEngagementStoreHealthCheck>(sp => sp.GetRequiredService<EngagementHealthChecker>());
 
         return services;
     }

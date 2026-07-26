@@ -12,7 +12,7 @@ public sealed class QdrantTenantScopeTests
     // HS256 requires a key of at least 256 bits (32 bytes); pad well past that minimum.
     private const string ApiKey = "test-signing-key-at-least-32-bytes-long";
 
-    private static QdrantTenantScope CreateScope() => new(ApiKey);
+    private static IntelligenceTenantScope CreateScope() => new(ApiKey);
 
     // ── ResolveCollectionName ────────────────────────────────────────────────
 

@@ -11,10 +11,10 @@ public sealed class PipelineIntegrationTests : IClassFixture<StarRocksContainerF
 
     public PipelineIntegrationTests(StarRocksContainerFixture fx) => _fx = fx;
 
-    private static StarRocksQuerySchema ArticleSchema() =>
+    private static EngagementQuerySchema ArticleSchema() =>
         new("PipeArticle", "pipe_articles", "Id", ["AuthorId", "WordCount", "PublishedAt"]);
 
-    private static Func<string, StarRocksQuerySchema?> EmptyRegistry() => TestSchemaRegistry.BuildRegistry();
+    private static Func<string, EngagementQuerySchema?> EmptyRegistry() => TestSchemaRegistry.BuildRegistry();
 
     private async Task SeedAsync()
     {
@@ -22,7 +22,7 @@ public sealed class PipelineIntegrationTests : IClassFixture<StarRocksContainerF
         // author B has 2 (WordCount 500/600, Jan/Feb 2026). Fixed single-character ids keep
         // assertions deterministic. Idempotent: DROP TABLE IF EXISTS first. StarRocks
         // PRIMARY KEY columns must be NOT NULL and listed first. ENGINE/PROPERTIES mirror
-        // StarRocksRepository.BuildCreateTableDdl's convention (replication_num=1 is required
+        // EngagementRepository.BuildCreateTableDdl's convention (replication_num=1 is required
         // on this single-BE allin1 test container; the default cluster replication factor
         // would otherwise exceed the number of available BEs and the CREATE TABLE would fail).
         await _fx.Repository.ExecuteAsync("DROP TABLE IF EXISTS pipe_articles");

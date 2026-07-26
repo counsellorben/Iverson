@@ -23,7 +23,8 @@ public class TenantStatusCacheTests
     [Fact]
     public async Task GetStatusAsync_CacheMiss_ActiveTenant_ReturnsStatusAndQueriesRepository()
     {
-        _repository.GetAsync("tenant-a")
+        _repository
+            .GetAsync("tenant-a")
             .Returns(new TenantRow("tenant-a", "Tenant A", "active", DateTimeOffset.UtcNow));
 
         var status = await _sut.GetStatusAsync("tenant-a");
@@ -35,7 +36,8 @@ public class TenantStatusCacheTests
     [Fact]
     public async Task GetStatusAsync_CacheMiss_SuspendedTenant_ReturnsSuspended()
     {
-        _repository.GetAsync("tenant-b")
+        _repository
+            .GetAsync("tenant-b")
             .Returns(new TenantRow("tenant-b", "Tenant B", "suspended", DateTimeOffset.UtcNow));
 
         var status = await _sut.GetStatusAsync("tenant-b");
@@ -56,7 +58,8 @@ public class TenantStatusCacheTests
     [Fact]
     public async Task GetStatusAsync_CacheHit_DoesNotQueryRepositoryAgain()
     {
-        _repository.GetAsync("tenant-c")
+        _repository
+            .GetAsync("tenant-c")
             .Returns(new TenantRow("tenant-c", "Tenant C", "active", DateTimeOffset.UtcNow));
 
         var first = await _sut.GetStatusAsync("tenant-c");
@@ -70,7 +73,9 @@ public class TenantStatusCacheTests
     [Fact]
     public async Task GetStatusAsync_CacheHit_NullStatusIsAlsoCached()
     {
-        _repository.GetAsync("tenant-missing").Returns((TenantRow?)null);
+        _repository
+            .GetAsync("tenant-missing")
+            .Returns((TenantRow?)null);
 
         var first = await _sut.GetStatusAsync("tenant-missing");
         var second = await _sut.GetStatusAsync("tenant-missing");

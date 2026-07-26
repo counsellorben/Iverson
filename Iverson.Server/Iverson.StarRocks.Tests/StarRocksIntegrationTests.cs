@@ -19,7 +19,7 @@ public sealed class StarRocksContainerFixture : IAsyncLifetime
         .Build();
 
     public string ConnectionString { get; private set; } = null!;
-    public StarRocksRepository Repository { get; private set; } = null!;
+    public EngagementRepository Repository { get; private set; } = null!;
 
     public async Task InitializeAsync()
     {
@@ -40,7 +40,7 @@ public sealed class StarRocksContainerFixture : IAsyncLifetime
         // wait strategy is not sufficient. Retry a real query until it succeeds or we give up.
         await WaitUntilQueryReadyAsync(TimeSpan.FromMinutes(3));
 
-        Repository = new StarRocksRepository(ConnectionString, NullLogger<StarRocksRepository>.Instance);
+        Repository = new EngagementRepository(ConnectionString, NullLogger<EngagementRepository>.Instance);
     }
 
     private async Task WaitUntilQueryReadyAsync(TimeSpan timeout)
@@ -118,7 +118,7 @@ public sealed class StarRocksContainerFixture : IAsyncLifetime
 public sealed class StarRocksIntegrationTests(StarRocksContainerFixture fixture)
     : IClassFixture<StarRocksContainerFixture>
 {
-    private readonly StarRocksRepository _repo = fixture.Repository;
+    private readonly EngagementRepository _repo = fixture.Repository;
 
     // Use unique table names per test to avoid state leakage — the container and its
     // schema persist for the whole test class (IClassFixture), and StarRocks has no
@@ -126,13 +126,13 @@ public sealed class StarRocksIntegrationTests(StarRocksContainerFixture fixture)
     private static string UniqueTable() =>
         "tbl_" + Guid.NewGuid().ToString("N")[..8];
 
-    private static StarRocksQuerySchema AuthorSchema(string tableName) =>
+    private static EngagementQuerySchema AuthorSchema(string tableName) =>
         new("Author", tableName, "Id", ["Name", "Bio", "Rating", "PublishedAt"]);
 
     private async Task CreateAndSeedAuthorsAsync(
-        StarRocksRepository repo, string tableName, params (string Id, string Name, string? Bio, int? Rating, string? PublishedAt)[] rows)
+        EngagementRepository repo, string tableName, params (string Id, string Name, string? Bio, int? Rating, string? PublishedAt)[] rows)
     {
-        var schema = new StarRocksTableSchema(
+        var schema = new EngagementTableSchema(
             tableName,
             new StarRocksColumnSchema("Id", "VARCHAR(36)", false),
             [
@@ -268,7 +268,7 @@ public sealed class StarRocksIntegrationTests(StarRocksContainerFixture fixture)
             ("11111111-1111-1111-1111-111111111111", "Alice", null, null, null),
             ("22222222-2222-2222-2222-222222222222", "Bob",   null, null, null));
 
-        var articleSchema = new StarRocksTableSchema(
+        var articleSchema = new EngagementTableSchema(
             articlesTable,
             new StarRocksColumnSchema("Id", "VARCHAR(36)", false),
             [
@@ -282,7 +282,7 @@ public sealed class StarRocksIntegrationTests(StarRocksContainerFixture fixture)
         // Bob has no articles — an INNER JOIN must exclude him.
 
         var authorQuerySchema  = AuthorSchema(authorsTable);
-        var articleQuerySchema = new StarRocksQuerySchema("Article", articlesTable, "Id", ["Title", "AuthorId"]);
+        var articleQuerySchema = new EngagementQuerySchema("Article", articlesTable, "Id", ["Title", "AuthorId"]);
         var registry = TestSchemaRegistry.BuildRegistry(authorQuerySchema, articleQuerySchema);
 
         var joins = new List<JoinSpec>
@@ -305,7 +305,7 @@ public sealed class StarRocksIntegrationTests(StarRocksContainerFixture fixture)
             ("11111111-1111-1111-1111-111111111111", "Alice", null, null, null),
             ("22222222-2222-2222-2222-222222222222", "Bob",   null, null, null));
 
-        var articleSchema = new StarRocksTableSchema(
+        var articleSchema = new EngagementTableSchema(
             articlesTable,
             new StarRocksColumnSchema("Id", "VARCHAR(36)", false),
             [
@@ -319,7 +319,7 @@ public sealed class StarRocksIntegrationTests(StarRocksContainerFixture fixture)
         // Bob has no articles — a LEFT JOIN must still include him, unlike the INNER JOIN test above.
 
         var authorQuerySchema  = AuthorSchema(authorsTable);
-        var articleQuerySchema = new StarRocksQuerySchema("Article", articlesTable, "Id", ["Title", "AuthorId"]);
+        var articleQuerySchema = new EngagementQuerySchema("Article", articlesTable, "Id", ["Title", "AuthorId"]);
         var registry = TestSchemaRegistry.BuildRegistry(authorQuerySchema, articleQuerySchema);
 
         var joins = new List<JoinSpec>
@@ -347,7 +347,7 @@ public sealed class StarRocksIntegrationTests(StarRocksContainerFixture fixture)
         var spec = new AggregationDescriptor("by_name", AggregationKind.Terms, "Name", Size: 10);
         var result = await _repo.AggregateAsync(AuthorSchema(table), null, spec);
 
-        // Exercises StarRocksRepository.AggregateAsync's bucketed-decode path end to end:
+        // Exercises EngagementRepository.AggregateAsync's bucketed-decode path end to end:
         // multiple raw {bucket_key, doc_count} rows must turn into multiple AggregationBucket
         // entries with the correct key and count each — not just "didn't throw".
         result.Should().NotBeNull();
@@ -518,7 +518,7 @@ public sealed class StarRocksIntegrationTests(StarRocksContainerFixture fixture)
             ("11111111-1111-1111-1111-111111111111", "Alice", null, 3, null),
             ("22222222-2222-2222-2222-222222222222", "Bob",   null, 5, null));
 
-        var articleSchema = new StarRocksTableSchema(
+        var articleSchema = new EngagementTableSchema(
             articlesTable,
             new StarRocksColumnSchema("Id", "VARCHAR(36)", false),
             [
@@ -532,7 +532,7 @@ public sealed class StarRocksIntegrationTests(StarRocksContainerFixture fixture)
             $"('bbbbbbbb-2222-2222-2222-222222222222', '22222222-2222-2222-2222-222222222222', 'Other Title')");
 
         var authorQuerySchema  = AuthorSchema(authorsTable);
-        var articleQuerySchema = new StarRocksQuerySchema("Article", articlesTable, "Id", ["Title", "AuthorId"]);
+        var articleQuerySchema = new EngagementQuerySchema("Article", articlesTable, "Id", ["Title", "AuthorId"]);
         var registry = TestSchemaRegistry.BuildRegistry(authorQuerySchema, articleQuerySchema);
 
         var request = new GroupByRequest

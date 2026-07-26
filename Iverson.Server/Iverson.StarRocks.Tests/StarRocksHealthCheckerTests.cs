@@ -3,7 +3,7 @@ using Xunit;
 
 namespace Iverson.StarRocks.Tests;
 
-public class StarRocksHealthCheckerTests
+public class EngagementHealthCheckerTests
 {
     // MySqlException's constructors are internal to MySqlConnector with no InternalsVisibleTo
     // grant to this assembly, so an instance must be built via reflection against the exact
@@ -18,27 +18,27 @@ public class StarRocksHealthCheckerTests
             .Invoke([errorCode, null, message, null]);
 
     [Theory]
-    [InlineData(MySqlConnector.MySqlErrorCode.AccessDenied, StarRocksHealthStatus.AuthPending)]
-    [InlineData(MySqlConnector.MySqlErrorCode.UnableToConnectToHost, StarRocksHealthStatus.Unhealthy)]
-    [InlineData(MySqlConnector.MySqlErrorCode.ParseError, StarRocksHealthStatus.Unhealthy)]
+    [InlineData(MySqlConnector.MySqlErrorCode.AccessDenied, EngagementHealthStatus.AuthPending)]
+    [InlineData(MySqlConnector.MySqlErrorCode.UnableToConnectToHost, EngagementHealthStatus.Unhealthy)]
+    [InlineData(MySqlConnector.MySqlErrorCode.ParseError, EngagementHealthStatus.Unhealthy)]
     public void ClassifyConnectionException_MapsErrorCodeToStatus(
-        MySqlConnector.MySqlErrorCode code, StarRocksHealthStatus expected)
+        MySqlConnector.MySqlErrorCode code, EngagementHealthStatus expected)
     {
         var ex = CreateMySqlException(code);
 
-        StarRocksHealthChecker.ClassifyConnectionException(ex).Should().Be(expected);
+        EngagementHealthChecker.ClassifyConnectionException(ex).Should().Be(expected);
     }
 
     [Fact]
     public void ClassifyConnectionException_NonMySqlException_ReturnsUnhealthy()
     {
-        StarRocksHealthChecker.ClassifyConnectionException(new InvalidOperationException("boom"))
-            .Should().Be(StarRocksHealthStatus.Unhealthy);
+        EngagementHealthChecker.ClassifyConnectionException(new InvalidOperationException("boom"))
+            .Should().Be(EngagementHealthStatus.Unhealthy);
     }
 
     [Fact]
-    public void StarRocksHealthChecker_ImplementsIStarRocksHealthCheck()
+    public void EngagementHealthChecker_ImplementsIStarRocksHealthCheck()
     {
-        typeof(StarRocksHealthChecker).Should().Implement<IEngagementStoreHealthCheck>();
+        typeof(EngagementHealthChecker).Should().Implement<IEngagementStoreHealthCheck>();
     }
 }

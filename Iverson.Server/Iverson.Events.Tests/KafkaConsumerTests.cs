@@ -39,7 +39,11 @@ public sealed class KafkaConsumerTests
     {
         var (consumer, fakeConsumer, _) = CreateConsumer();
 
-        await consumer.ConsumeAsync("topic", "group", (_, _, _) => Task.CompletedTask, CancellationToken.None);
+        await consumer.ConsumeAsync(
+            "topic",
+            "group",
+            (_, _, _) => Task.CompletedTask,
+            CancellationToken.None);
 
         fakeConsumer.Received(1).Subscribe("topic");
         fakeConsumer.Received(1).Close();
@@ -50,7 +54,11 @@ public sealed class KafkaConsumerTests
     {
         var (consumer, _, fakeAdmin) = CreateConsumer();
 
-        await consumer.ConsumeAsync("topic", "group", (_, _, _) => Task.CompletedTask, CancellationToken.None);
+        await consumer.ConsumeAsync(
+            "topic",
+            "group",
+            (_, _, _) => Task.CompletedTask,
+            CancellationToken.None);
 
         await fakeAdmin.Received(1).CreateTopicsAsync(Arg.Any<IEnumerable<TopicSpecification>>());
     }
@@ -60,7 +68,11 @@ public sealed class KafkaConsumerTests
     {
         var (consumer, fakeConsumer, _) = CreateConsumer();
 
-        await consumer.ConsumeRawAsync("topic", "group", (_, _, _, _) => Task.CompletedTask, CancellationToken.None);
+        await consumer.ConsumeRawAsync(
+            "topic",
+            "group",
+            (_, _, _, _) => Task.CompletedTask,
+            CancellationToken.None);
 
         fakeConsumer.Received(1).Subscribe("topic");
     }

@@ -8,16 +8,14 @@ using Iverson.StarRocks;
 using Iverson.Vector;
 using Qdrant.Client;
 
-using Filter      = Qdrant.Client.Grpc.Filter;
-using Conditions  = Qdrant.Client.Grpc.Conditions;
-using SrAggKind   = Iverson.StarRocks.AggregationKind;
-using SrAggSpec   = Iverson.StarRocks.AggregationDescriptor;
-using SrAggResult = Iverson.StarRocks.AggregationResult;
-using SrAggBucket = Iverson.StarRocks.AggregationBucket;
-using SrRangeSpec = Iverson.StarRocks.RangeBucketDescriptor;
+using Filter = Qdrant.Client.Grpc.Filter;
+using SrAggKind = Iverson.StarRocks.AggregationKind;
+using EngagementAggSpec = Iverson.StarRocks.AggregationDescriptor;
+using EngagementAggResult = Iverson.StarRocks.AggregationResult;
+using EngagementRangeSpec = Iverson.StarRocks.RangeBucketDescriptor;
 using ProtoAggBucket = Iverson.Client.Contracts.AggregationBucket;
 using ProtoAggResult = Iverson.Client.Contracts.AggregationResult;
-using ProtoAggSpec   = Iverson.Client.Contracts.AggregationSpec;
+using ProtoAggSpec = Iverson.Client.Contracts.AggregationSpec;
 
 namespace Iverson.Api.Grpc;
 
@@ -35,7 +33,7 @@ public sealed class ObjectSearchGrpcService(
     ILogger<ObjectSearchGrpcService> logger,
     IActingUserAccessor actingUserAccessor,
     IRowFieldAuthorizationEvaluator authEvaluator,
-    QdrantTenantScope tenantScope)
+    IntelligenceTenantScope tenantScope)
     : ObjectSearchService.ObjectSearchServiceBase
 {
     // ── SQL Search ─────────────────────────────────────────────────────────────
@@ -55,24 +53,33 @@ public sealed class ObjectSearchGrpcService(
             throw new RpcException(new Status(StatusCode.InvalidArgument, $"Not authorized to join '{auth.DeniedJoinedType}'."));
 
         if (logger.IsEnabled(LogLevel.Information))
-            logger.LogInformation("[Search] type={Type} clauses={Clauses} page={Page}/{Size}",
-                request.TypeName.SanitizeForLog(), request.Query?.Clauses.Count ?? 0, request.Page, request.PageSize);
+            logger.LogInformation(
+                "[Search] type={Type} clauses={Clauses} page={Page}/{Size}",
+                request.TypeName.SanitizeForLog(),
+                request.Query?.Clauses.Count ?? 0,
+                request.Page,
+                request.PageSize);
 
         IEnumerable<dynamic> rows;
         try
         {
             rows = await search.SearchAsync(
-                SchemaBuilder.ToStarRocksQuerySchema(schema), request.Query, request.Page, request.PageSize,
+                SchemaBuilder.ToEngagementQuerySchema(schema),
+                request.Query,
+                request.Page,
+                request.PageSize,
                 fields: request.Fields.Count > 0 ? request.Fields : null,
                 joins: request.Joins,
-                registry: t => registry.Get(t) is { } d ? SchemaBuilder.ToStarRocksQuerySchema(d) : null,
+                registry: t => registry.Get(t) is { } d
+                    ? SchemaBuilder.ToEngagementQuerySchema(d)
+                    : null,
                 authz: auth.Constraints);
         }
-        catch (StarRocksQueryTranslationException ex)
+        catch (EngagementQueryTranslationException ex)
         {
             throw new RpcException(new Status(StatusCode.InvalidArgument, ex.Message));
         }
-        catch (StarRocksNotReadyException ex)
+        catch (EngagementNotReadyException ex)
         {
             throw new RpcException(new Status(StatusCode.Unavailable, $"StarRocks is not ready: {ex.Message}"));
         }
@@ -114,8 +121,10 @@ public sealed class ObjectSearchGrpcService(
 
         var vectorDesc = schema.VectorFields.FirstOrDefault(v =>
             string.Equals(v.PropertyName, request.Property, StringComparison.OrdinalIgnoreCase))
-            ?? throw new RpcException(new Status(StatusCode.InvalidArgument,
-                $"Property '{request.Property}' on '{request.TypeName}' has no [IversonEmbedding] annotation."));
+            ?? throw new RpcException(
+                new Status(
+                    StatusCode.InvalidArgument,
+                    $"Property '{request.Property}' on '{request.TypeName}' has no [IversonEmbedding] annotation."));
 
         if (schema.CollectionName is null)
             throw new RpcException(new Status(StatusCode.FailedPrecondition,
@@ -145,7 +154,7 @@ public sealed class ObjectSearchGrpcService(
 
             try
             {
-                filter = QdrantFilterBuilder.Build(camelCased, request.FilterLogic, "SearchSimilar");
+                filter = IntelligenceFilterBuilder.Build(camelCased, request.FilterLogic, "SearchSimilar");
             }
             catch (FilterTranslationException ex)
             {
@@ -153,10 +162,18 @@ public sealed class ObjectSearchGrpcService(
             }
         }
 
-        filter = QdrantFilterBuilder.ApplyOwnership(filter, decision.OwnershipRequired, schema.Authorization?.OwnerField?.ToCamelCase(), decision.OwnerValue);
+        filter = IntelligenceFilterBuilder.ApplyOwnership(
+            filter,
+            decision.OwnershipRequired,
+            schema.Authorization?.OwnerField?.ToCamelCase(),
+            decision.OwnerValue);
 
-        logger.LogInformation("[SearchSimilar] type={Type} property={Prop} topK={K} filtered={Filtered}",
-            request.TypeName.SanitizeForLog(), request.Property.SanitizeForLog(), request.TopK, filter is not null);
+        logger.LogInformation(
+            "[SearchSimilar] type={Type} property={Prop} topK={K} filtered={Filtered}",
+            request.TypeName.SanitizeForLog(),
+            request.Property.SanitizeForLog(),
+            request.TopK,
+            filter is not null);
 
         float[] queryVector;
         try
@@ -223,8 +240,10 @@ public sealed class ObjectSearchGrpcService(
 
         var chunkDesc = schema.ChunkFields.FirstOrDefault(c =>
             string.Equals(c.PropertyName, request.Property, StringComparison.OrdinalIgnoreCase))
-            ?? throw new RpcException(new Status(StatusCode.InvalidArgument,
-                $"Property '{request.Property}' on '{request.TypeName}' has no [IversonChunk] annotation."));
+            ?? throw new RpcException(
+                new Status(
+                    StatusCode.InvalidArgument,
+                        $"Property '{request.Property}' on '{request.TypeName}' has no [IversonChunk] annotation."));
 
         if (schema.CollectionName is null)
             throw new RpcException(new Status(StatusCode.FailedPrecondition,
@@ -235,10 +254,18 @@ public sealed class ObjectSearchGrpcService(
                 $"Property '{request.Property}' on '{request.TypeName}' is not authorized for this caller."));
 
         var filter = BuildChunksFilter(schema, request);
-        filter = QdrantFilterBuilder.ApplyOwnership(filter, decision.OwnershipRequired, schema.Authorization?.OwnerField?.ToCamelCase(), decision.OwnerValue);
+        filter = IntelligenceFilterBuilder.ApplyOwnership(
+            filter,
+            decision.OwnershipRequired,
+            schema.Authorization?.OwnerField?.ToCamelCase(),
+            decision.OwnerValue);
 
-        logger.LogInformation("[SearchChunks] type={Type} property={Prop} topK={K} filtered={Filtered}",
-            request.TypeName.SanitizeForLog(), request.Property.SanitizeForLog(), request.TopK, filter is not null);
+        logger.LogInformation(
+            "[SearchChunks] type={Type} property={Prop} topK={K} filtered={Filtered}",
+            request.TypeName.SanitizeForLog(),
+            request.Property.SanitizeForLog(),
+            request.TopK,
+            filter is not null);
 
         float[] queryVector;
         try
@@ -297,8 +324,10 @@ public sealed class ObjectSearchGrpcService(
         var schema = RequireSchema(request.TypeName);
 
         if (request.Aggregations.Count == 0)
-            throw new RpcException(new Status(StatusCode.InvalidArgument,
-                "At least one aggregation spec is required."));
+            throw new RpcException(
+                new Status(
+                    StatusCode.InvalidArgument,
+                    "At least one aggregation spec is required."));
 
         // AggregationSpec entries don't carry their own join info — only the request-level
         // Joins does — so authorization is evaluated once for the whole request, same as Search.
@@ -307,17 +336,29 @@ public sealed class ObjectSearchGrpcService(
         if (auth.PrimaryDenied)
             return new AggregateResponse { TraceId = request.TraceId }; // empty Results — StarRocks never queried
         if (auth.DeniedJoinedType is not null)
-            throw new RpcException(new Status(StatusCode.InvalidArgument, $"Not authorized to join '{auth.DeniedJoinedType}'."));
+            throw new RpcException(
+                new Status(
+                    StatusCode.InvalidArgument,
+                    $"Not authorized to join '{auth.DeniedJoinedType}'."));
 
         if (logger.IsEnabled(LogLevel.Information))
-            logger.LogInformation("[Aggregate] type={Type} aggs={Count}", request.TypeName.SanitizeForLog(), request.Aggregations.Count);
+            logger.LogInformation(
+                "[Aggregate] type={Type} aggs={Count}",
+                request.TypeName.SanitizeForLog(),
+                request.Aggregations.Count);
 
         var response = new AggregateResponse { TraceId = request.TraceId };
 
         var having = request.Having;
 
         var aggTasks = request.Aggregations
-            .Select(spec => RunAggregationAsync(schema, request.Query, ProtoToSrSpec(spec), having, request.Joins, auth.Constraints))
+            .Select(spec => RunAggregationAsync(
+                schema,
+                request.Query,
+                ProtoToEngagementSpec(spec),
+                having,
+                request.Joins,
+                auth.Constraints))
             .ToList();
 
         var aggResults = await Task.WhenAll(aggTasks);
@@ -328,23 +369,30 @@ public sealed class ObjectSearchGrpcService(
         return response;
     }
 
-    private async Task<SrAggResult?> RunAggregationAsync(
-        SchemaDescriptor schema, SearchQuery? query, SrAggSpec spec, SearchQuery? having = null,
+    private async Task<EngagementAggResult?> RunAggregationAsync(
+        SchemaDescriptor schema,
+        SearchQuery? query,
+        EngagementAggSpec spec,
+        SearchQuery? having = null,
         IReadOnlyList<JoinSpec>? joins = null,
         IReadOnlyDictionary<string, AuthorizationConstraint>? authz = null)
     {
         try
         {
             return await search.AggregateAsync(
-                SchemaBuilder.ToStarRocksQuerySchema(schema), query, spec, having, joins,
-                t => registry.Get(t) is { } d ? SchemaBuilder.ToStarRocksQuerySchema(d) : null,
+                SchemaBuilder.ToEngagementQuerySchema(schema),
+                query,
+                spec,
+                having,
+                joins,
+                t => registry.Get(t) is { } d ? SchemaBuilder.ToEngagementQuerySchema(d) : null,
                 authz);
         }
-        catch (StarRocksQueryTranslationException ex)
+        catch (EngagementQueryTranslationException ex)
         {
             throw new RpcException(new Status(StatusCode.InvalidArgument, ex.Message));
         }
-        catch (StarRocksNotReadyException ex)
+        catch (EngagementNotReadyException ex)
         {
             throw new RpcException(new Status(StatusCode.Unavailable, $"StarRocks is not ready: {ex.Message}"));
         }
@@ -364,7 +412,10 @@ public sealed class ObjectSearchGrpcService(
         if (auth.PrimaryDenied)
             return; // empty stream — StarRocks never queried
         if (auth.DeniedJoinedType is not null)
-            throw new RpcException(new Status(StatusCode.InvalidArgument, $"Not authorized to join '{auth.DeniedJoinedType}'."));
+            throw new RpcException(
+                new Status(
+                    StatusCode.InvalidArgument,
+                    $"Not authorized to join '{auth.DeniedJoinedType}'."));
 
         if (logger.IsEnabled(LogLevel.Information))
             logger.LogInformation("[GroupBy] type={Type} keys={Keys} metrics={Metrics}",
@@ -374,15 +425,18 @@ public sealed class ObjectSearchGrpcService(
         try
         {
             rows = await search.GroupByAsync(
-                SchemaBuilder.ToStarRocksQuerySchema(schema), request,
-                t => registry.Get(t) is { } d ? SchemaBuilder.ToStarRocksQuerySchema(d) : null,
+                SchemaBuilder.ToEngagementQuerySchema(schema),
+                request,
+                t => registry.Get(t) is { } d
+                    ? SchemaBuilder.ToEngagementQuerySchema(d)
+                    : null,
                 authz: auth.Constraints);
         }
-        catch (StarRocksQueryTranslationException ex)
+        catch (EngagementQueryTranslationException ex)
         {
             throw new RpcException(new Status(StatusCode.InvalidArgument, ex.Message));
         }
-        catch (StarRocksNotReadyException ex)
+        catch (EngagementNotReadyException ex)
         {
             throw new RpcException(new Status(StatusCode.Unavailable, $"StarRocks is not ready: {ex.Message}"));
         }
@@ -423,25 +477,33 @@ public sealed class ObjectSearchGrpcService(
         if (auth.PrimaryDenied)
             return; // empty stream — StarRocks never queried
         if (auth.DeniedJoinedType is not null)
-            throw new RpcException(new Status(StatusCode.InvalidArgument, $"Not authorized to join '{auth.DeniedJoinedType}'."));
+            throw new RpcException(
+                new Status(
+                    StatusCode.InvalidArgument,
+                    $"Not authorized to join '{auth.DeniedJoinedType}'."));
 
         if (logger.IsEnabled(LogLevel.Information))
-            logger.LogInformation("[Pipeline] type={Type} steps={Steps}",
-                request.TypeName.SanitizeForLog(), request.Steps.Count);
+            logger.LogInformation(
+                "[Pipeline] type={Type} steps={Steps}",
+                request.TypeName.SanitizeForLog(),
+                request.Steps.Count);
 
         IEnumerable<dynamic> rows;
         try
         {
             rows = await search.PipelineAsync(
-                SchemaBuilder.ToStarRocksQuerySchema(schema), request,
-                t => registry.Get(t) is { } d ? SchemaBuilder.ToStarRocksQuerySchema(d) : null,
+                SchemaBuilder.ToEngagementQuerySchema(schema),
+                request,
+                t => registry.Get(t) is { } d
+                    ? SchemaBuilder.ToEngagementQuerySchema(d)
+                    : null,
                 authz: auth.Constraints);
         }
-        catch (StarRocksQueryTranslationException ex)
+        catch (EngagementQueryTranslationException ex)
         {
             throw new RpcException(new Status(StatusCode.InvalidArgument, ex.Message));
         }
-        catch (StarRocksNotReadyException ex)
+        catch (EngagementNotReadyException ex)
         {
             throw new RpcException(new Status(StatusCode.Unavailable, $"StarRocks is not ready: {ex.Message}"));
         }
@@ -463,8 +525,10 @@ public sealed class ObjectSearchGrpcService(
     // ── Helpers ────────────────────────────────────────────────────────────────
 
     private SchemaDescriptor RequireSchema(string typeName) =>
-        registry.Get(typeName) ?? throw new RpcException(new Status(StatusCode.FailedPrecondition,
-            $"No schema registered for '{typeName}'. Call RegisterSchema first."));
+        registry.Get(typeName) ?? throw new RpcException(
+            new Status(
+                StatusCode.FailedPrecondition,
+                $"No schema registered for '{typeName}'. Call RegisterSchema first."));
 
     private sealed record AuthzResult(
         bool PrimaryDenied,
@@ -485,7 +549,10 @@ public sealed class ObjectSearchGrpcService(
         foreach (var typeName in joinedTypeNames.Distinct().Where(t => !string.Equals(t, primary.TypeName, StringComparison.OrdinalIgnoreCase)))
         {
             var joinedSchema = registry.Get(typeName)
-                ?? throw new RpcException(new Status(StatusCode.FailedPrecondition, $"No schema registered for '{typeName}'."));
+                ?? throw new RpcException(
+                    new Status(
+                        StatusCode.FailedPrecondition,
+                        $"No schema registered for '{typeName}'."));
             var decision = authEvaluator.Evaluate(joinedSchema, actingUserAccessor.ActingUser, AuthorizationAction.Read);
             if (decision.Denied)
                 return new AuthzResult(false, typeName, constraints);
@@ -511,25 +578,31 @@ public sealed class ObjectSearchGrpcService(
         if (request.Filter.Count == 0) return null;
 
         if (request.Filter.Count > 1)
-            throw new RpcException(new Status(StatusCode.InvalidArgument,
-                "SearchChunks supports at most one filter clause: an EQUALS match on the type's " +
-                $"primary-key property ('{schema.KeyColumn.Name}')."));
+            throw new RpcException(
+                new Status(
+                    StatusCode.InvalidArgument,
+                    "SearchChunks supports at most one filter clause: an EQUALS match on the type's " +
+                    $"primary-key property ('{schema.KeyColumn.Name}')."));
 
         var clause = request.Filter[0];
         if (clause.Operator != SearchOperator.Equals || clause.ClauseType != SearchClauseType.Filter)
-            throw new RpcException(new Status(StatusCode.InvalidArgument,
-                "SearchChunks only supports a single EQUALS filter clause; other operators and " +
-                "MUST_NOT clauses are rejected."));
+            throw new RpcException(
+                new Status(
+                    StatusCode.InvalidArgument,
+                    "SearchChunks only supports a single EQUALS filter clause; other operators and " +
+                    "MUST_NOT clauses are rejected."));
 
         if (!string.Equals(clause.Property, schema.KeyColumn.Name, StringComparison.OrdinalIgnoreCase))
-            throw new RpcException(new Status(StatusCode.InvalidArgument,
-                $"SearchChunks filter must target the primary-key property '{schema.KeyColumn.Name}', " +
-                $"got '{clause.Property}'."));
+            throw new RpcException(
+                new Status(
+                    StatusCode.InvalidArgument,
+                    $"SearchChunks filter must target the primary-key property '{schema.KeyColumn.Name}', " +
+                    $"got '{clause.Property}'."));
 
-        return QdrantFilterBuilder.MatchParentId(clause.Value.StringVal);
+        return IntelligenceFilterBuilder.MatchParentId(clause.Value.StringVal);
     }
 
-    private static SrAggSpec ProtoToSrSpec(ProtoAggSpec proto) =>
+    private static EngagementAggSpec ProtoToEngagementSpec(ProtoAggSpec proto) =>
         new(
             Name:             proto.Name,
             Kind:             ProtoKindToSr(proto.Type),
@@ -538,7 +611,7 @@ public sealed class ObjectSearchGrpcService(
             CalendarInterval: string.IsNullOrEmpty(proto.CalendarInterval) ? null : proto.CalendarInterval,
             TimeZone:         string.IsNullOrEmpty(proto.TimeZone)         ? null : proto.TimeZone,
             RangeBuckets:     proto.RangeBuckets.Count > 0
-                ? proto.RangeBuckets.Select(b => new SrRangeSpec(b.Key, b.From, b.To)).ToList()
+                ? proto.RangeBuckets.Select(b => new EngagementRangeSpec(b.Key, b.From, b.To)).ToList()
                 : null,
             GroupByFields:    proto.GroupByFields.Count > 0 ? proto.GroupByFields.ToList() : null,
             Expression:       string.IsNullOrEmpty(proto.Expression) ? null : proto.Expression);
@@ -556,7 +629,7 @@ public sealed class ObjectSearchGrpcService(
         _                             => throw new ArgumentOutOfRangeException(nameof(type), type, null)
     };
 
-    private static ProtoAggResult SrResultToProto(SrAggResult result)
+    private static ProtoAggResult SrResultToProto(EngagementAggResult result)
     {
         var proto = new ProtoAggResult
         {

@@ -17,10 +17,11 @@ internal sealed class DlqBacklogGaugeWorker(
 
     protected override Task ExecuteAsync(CancellationToken ct) =>
         ConsumerResilience.RunWithRestartAsync(
-            () => PollLoopAsync(ct),
-            logger,
-            "DlqBacklogGauge",
-            ct);
+            () =>
+                PollLoopAsync(ct),
+                logger,
+                "DlqBacklogGauge",
+                ct);
 
     private async Task PollLoopAsync(CancellationToken ct)
     {

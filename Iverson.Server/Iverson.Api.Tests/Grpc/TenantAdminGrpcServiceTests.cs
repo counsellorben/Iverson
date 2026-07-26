@@ -20,19 +20,22 @@ namespace Iverson.Api.Tests.Grpc;
 // acting-user header this service's caller never sends).
 public class TenantAdminGrpcServiceTests
 {
-    private readonly IAuthentikAdminClient _authentikAdminClient = Substitute.For<IAuthentikAdminClient>();
+    private readonly IIdpAdminClient _authentikAdminClient = Substitute.For<IIdpAdminClient>();
     private readonly ITenantStatusCache _tenantStatusCache = Substitute.For<ITenantStatusCache>();
     private readonly ILogger<AuditLog> _auditLogger = Substitute.For<ILogger<AuditLog>>();
     private readonly AuditLog _auditLog;
     private readonly Iverson.Api.Grpc.TenantAdminGrpcService _sut;
 
-    private static readonly AuthentikUser CallerTenantUser = new("user-1", "alice", "alice@acme.example");
-    private static readonly AuthentikUser OtherTenantUser = new("user-99", "mallory", "mallory@globex.example");
+    private static readonly IdpUser CallerTenantUser = new("user-1", "alice", "alice@acme.example");
+    private static readonly IdpUser OtherTenantUser = new("user-99", "mallory", "mallory@globex.example");
 
     public TenantAdminGrpcServiceTests()
     {
         _auditLog = new AuditLog(_auditLogger);
-        _sut = new Iverson.Api.Grpc.TenantAdminGrpcService(_authentikAdminClient, _tenantStatusCache, _auditLog);
+        _sut = new Iverson.Api.Grpc.TenantAdminGrpcService(
+            _authentikAdminClient,
+            _tenantStatusCache,
+            _auditLog);
         _tenantStatusCache.GetStatusAsync("acme").Returns(Task.FromResult<string?>("active"));
     }
 
@@ -53,18 +56,27 @@ public class TenantAdminGrpcServiceTests
             Email = "bob@acme.example",
             InitialPassword = "correct-horse-battery-staple"
         };
-        _authentikAdminClient.CreateUserAsync(
-            "bob", "bob@acme.example", "correct-horse-battery-staple", "acme",
-            Arg.Is<IReadOnlyList<string>>(g => g.Count == 0)).Returns(Task.FromResult("user-1"));
+        _authentikAdminClient
+            .CreateUserAsync(
+                "bob",
+                "bob@acme.example",
+                "correct-horse-battery-staple",
+                "acme",
+                Arg.Is<IReadOnlyList<string>>(g => g.Count == 0))
+            .Returns(Task.FromResult("user-1"));
 
         var response = await _sut.InviteUser(request, ContextForCallerTenant());
 
         response.UserId.Should().Be("user-1");
         response.Username.Should().Be("bob");
         response.Email.Should().Be("bob@acme.example");
-        await _authentikAdminClient.Received(1).CreateUserAsync(
-            "bob", "bob@acme.example", "correct-horse-battery-staple", "acme",
-            Arg.Is<IReadOnlyList<string>>(g => g.Count == 0));
+        await _authentikAdminClient.Received(1)
+            .CreateUserAsync(
+                "bob",
+                "bob@acme.example",
+                "correct-horse-battery-staple",
+                "acme",
+                Arg.Is<IReadOnlyList<string>>(g => g.Count == 0));
     }
 
     [Fact]
@@ -77,8 +89,13 @@ public class TenantAdminGrpcServiceTests
 
         var ex = await act.Should().ThrowAsync<RpcException>();
         ex.Which.StatusCode.Should().Be(StatusCode.PermissionDenied);
-        await _authentikAdminClient.DidNotReceive().CreateUserAsync(
-            Arg.Any<string>(), Arg.Any<string>(), Arg.Any<string>(), Arg.Any<string>(), Arg.Any<IReadOnlyList<string>>());
+        await _authentikAdminClient.DidNotReceive()
+            .CreateUserAsync(
+                Arg.Any<string>(),
+                Arg.Any<string>(),
+                Arg.Any<string>(),
+                Arg.Any<string>(),
+                Arg.Any<IReadOnlyList<string>>());
     }
 
     [Fact]
@@ -91,8 +108,13 @@ public class TenantAdminGrpcServiceTests
 
         var ex = await act.Should().ThrowAsync<RpcException>();
         ex.Which.StatusCode.Should().Be(StatusCode.PermissionDenied);
-        await _authentikAdminClient.DidNotReceive().CreateUserAsync(
-            Arg.Any<string>(), Arg.Any<string>(), Arg.Any<string>(), Arg.Any<string>(), Arg.Any<IReadOnlyList<string>>());
+        await _authentikAdminClient.DidNotReceive()
+            .CreateUserAsync(
+                Arg.Any<string>(),
+                Arg.Any<string>(),
+                Arg.Any<string>(),
+                Arg.Any<string>(),
+                Arg.Any<IReadOnlyList<string>>());
     }
 
     // ── ListUsers ────────────────────────────────────────────────────────────
@@ -101,7 +123,7 @@ public class TenantAdminGrpcServiceTests
     public async Task ListUsers_ActiveTenant_ReturnsUsersFromCallerTenantOnly()
     {
         _authentikAdminClient.ListUsersByTenantAsync("acme")
-            .Returns(Task.FromResult<IEnumerable<AuthentikUser>>([CallerTenantUser]));
+            .Returns(Task.FromResult<IEnumerable<IdpUser>>([CallerTenantUser]));
 
         var response = await _sut.ListUsers(new ListUsersRequest(), ContextForCallerTenant());
 
@@ -129,7 +151,7 @@ public class TenantAdminGrpcServiceTests
     public async Task RemoveUser_UserBelongsToCallerTenant_Deactivates()
     {
         _authentikAdminClient.ListUsersByTenantAsync("acme")
-            .Returns(Task.FromResult<IEnumerable<AuthentikUser>>([CallerTenantUser]));
+            .Returns(Task.FromResult<IEnumerable<IdpUser>>([CallerTenantUser]));
 
         await _sut.RemoveUser(new RemoveUserRequest { UserId = "user-1" }, ContextForCallerTenant());
 
@@ -146,7 +168,7 @@ public class TenantAdminGrpcServiceTests
     public async Task RemoveUser_UserBelongsToDifferentTenant_ThrowsPermissionDeniedAndDoesNotDeactivate()
     {
         _authentikAdminClient.ListUsersByTenantAsync("acme")
-            .Returns(Task.FromResult<IEnumerable<AuthentikUser>>([CallerTenantUser]));
+            .Returns(Task.FromResult<IEnumerable<IdpUser>>([CallerTenantUser]));
 
         var act = () => _sut.RemoveUser(new RemoveUserRequest { UserId = OtherTenantUser.Id }, ContextForCallerTenant());
 
@@ -174,7 +196,7 @@ public class TenantAdminGrpcServiceTests
     public async Task SetTenantAdmin_GrantForUserInCallerTenant_AddsGroupAndReturnsUser()
     {
         _authentikAdminClient.ListUsersByTenantAsync("acme")
-            .Returns(Task.FromResult<IEnumerable<AuthentikUser>>([CallerTenantUser]));
+            .Returns(Task.FromResult<IEnumerable<IdpUser>>([CallerTenantUser]));
 
         var response = await _sut.SetTenantAdmin(
             new SetTenantAdminRequest { UserId = "user-1", Grant = true }, ContextForCallerTenant());
@@ -188,7 +210,7 @@ public class TenantAdminGrpcServiceTests
     public async Task SetTenantAdmin_RevokeForUserInCallerTenant_RemovesGroup()
     {
         _authentikAdminClient.ListUsersByTenantAsync("acme")
-            .Returns(Task.FromResult<IEnumerable<AuthentikUser>>([CallerTenantUser]));
+            .Returns(Task.FromResult<IEnumerable<IdpUser>>([CallerTenantUser]));
 
         await _sut.SetTenantAdmin(new SetTenantAdminRequest { UserId = "user-1", Grant = false }, ContextForCallerTenant());
 
@@ -203,7 +225,7 @@ public class TenantAdminGrpcServiceTests
     public async Task SetTenantAdmin_UserBelongsToDifferentTenant_ThrowsPermissionDeniedAndDoesNotChangeGroups()
     {
         _authentikAdminClient.ListUsersByTenantAsync("acme")
-            .Returns(Task.FromResult<IEnumerable<AuthentikUser>>([CallerTenantUser]));
+            .Returns(Task.FromResult<IEnumerable<IdpUser>>([CallerTenantUser]));
 
         var act = () => _sut.SetTenantAdmin(
             new SetTenantAdminRequest { UserId = OtherTenantUser.Id, Grant = true }, ContextForCallerTenant());

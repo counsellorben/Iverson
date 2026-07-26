@@ -9,7 +9,7 @@ public sealed class QdrantCollectionManagerTests
     [Fact]
     public void QdrantCollectionManager_ImplementsIVectorSchemaManager()
     {
-        typeof(QdrantCollectionManager).Should().Implement<IVectorSchemaManager>();
+        typeof(IntelligenceCollectionManager).Should().Implement<IVectorSchemaManager>();
     }
 
     [Fact]

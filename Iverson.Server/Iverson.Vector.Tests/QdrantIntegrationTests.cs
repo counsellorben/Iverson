@@ -21,8 +21,8 @@ public sealed class QdrantContainerFixture : IAsyncLifetime
             .WithWaitStrategy(Wait.ForUnixContainer().UntilPortIsAvailable(GrpcPort))
             .Build();
 
-    public QdrantVectorService Service { get; private set; } = null!;
-    public QdrantCollectionManager CollectionManager { get; private set; } = null!;
+    public IntelligenceVectorService Service { get; private set; } = null!;
+    public IntelligenceCollectionManager CollectionManager { get; private set; } = null!;
 
     public async Task InitializeAsync()
     {
@@ -32,8 +32,8 @@ public sealed class QdrantContainerFixture : IAsyncLifetime
         var mappedPort = _container.GetMappedPublicPort(GrpcPort);
 
         var qdrantClient  = new QdrantClient(host, mappedPort, https: false);
-        Service           = new QdrantVectorService(qdrantClient);
-        CollectionManager = new QdrantCollectionManager(qdrantClient, "test-api-key", NullLogger<QdrantCollectionManager>.Instance);
+        Service           = new IntelligenceVectorService(qdrantClient);
+        CollectionManager = new IntelligenceCollectionManager(qdrantClient, "test-api-key", NullLogger<IntelligenceCollectionManager>.Instance);
     }
 
     public async Task DisposeAsync() => await _container.DisposeAsync();
@@ -42,8 +42,8 @@ public sealed class QdrantContainerFixture : IAsyncLifetime
 public sealed class QdrantIntegrationTests(QdrantContainerFixture fixture)
     : IClassFixture<QdrantContainerFixture>
 {
-    private readonly QdrantVectorService _svc = fixture.Service;
-    private readonly QdrantCollectionManager _mgr = fixture.CollectionManager;
+    private readonly IntelligenceVectorService _svc = fixture.Service;
+    private readonly IntelligenceCollectionManager _mgr = fixture.CollectionManager;
 
     // Each test gets its own collection name to avoid state leakage
     private static string UniqueName() =>

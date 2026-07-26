@@ -38,13 +38,14 @@ public sealed class AuthentikAdminClientTests
         }
     }
 
-    private static AuthentikAdminClient CreateClient(FakeHttpMessageHandler handler, out FakeHttpMessageHandler exposedHandler)
+    private static IdpAdminClient CreateClient(FakeHttpMessageHandler handler, out FakeHttpMessageHandler exposedHandler)
     {
         exposedHandler = handler;
         var factory = Substitute.For<IHttpClientFactory>();
-        factory.CreateClient(AuthentikAdminClient.HttpClientName)
-               .Returns(_ => new HttpClient(handler) { BaseAddress = new Uri("http://authentik.local") });
-        return new AuthentikAdminClient(factory);
+        factory
+            .CreateClient(IdpAdminClient.HttpClientName)
+            .Returns(_ => new HttpClient(handler) { BaseAddress = new Uri("http://authentik.local") });
+        return new IdpAdminClient(factory);
     }
 
     private static HttpResponseMessage JsonResponse(HttpStatusCode status, string json) =>
@@ -62,7 +63,11 @@ public sealed class AuthentikAdminClientTests
         var sut = CreateClient(new FakeHttpMessageHandler(groupLookup, createUser, setPassword), out var handler);
 
         var userId = await sut.CreateUserAsync(
-            "new-user", "new-user@example.invalid", "s3cret!", "tenant-a", ["tenant-admins"]);
+            "new-user",
+            "new-user@example.invalid",
+            "s3cret!",
+            "tenant-a",
+            ["tenant-admins"]);
 
         userId.Should().Be("42");
 
@@ -124,7 +129,7 @@ public sealed class AuthentikAdminClientTests
         var users = (await sut.ListUsersByTenantAsync("tenant-a")).ToList();
 
         users.Should().ContainSingle();
-        users[0].Should().BeEquivalentTo(new AuthentikUser("1", "alice", "alice@example.invalid"));
+        users[0].Should().BeEquivalentTo(new IdpUser("1", "alice", "alice@example.invalid"));
         handler.Requests.Should().ContainSingle();
         handler.Requests[0].RequestUri!.AbsolutePath.Should().Be("/api/v3/core/users/");
     }

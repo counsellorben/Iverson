@@ -74,7 +74,8 @@ public class TenantLifecycleGrpcServiceAuthorizationPipelineTests : IClassFixtur
     public async Task ListTenants_AuthenticatedWithOperatorsGroup_PassesAuthorizationGateAndReturnsResponse()
     {
         var token = TestJwtFactory.CreateToken(
-            "test-service-audience", "human-operator",
+            "test-service-audience",
+            "human-operator",
             extraClaims: [new Claim("groups", "operators")]);
 
         var ex = await TryListTenantsAsync(Headers(token));
@@ -88,7 +89,8 @@ public class TenantLifecycleGrpcServiceAuthorizationPipelineTests : IClassFixtur
     public async Task ListTenants_AuthenticatedWithAdminScope_PassesAuthorizationGateAndReturnsResponse()
     {
         var token = TestJwtFactory.CreateToken(
-            "test-service-audience", "ak-iverson-automation",
+            "test-service-audience",
+            "ak-iverson-automation",
             extraClaims: [new Claim("scope", "openid admin profile")]);
 
         var ex = await TryListTenantsAsync(Headers(token));

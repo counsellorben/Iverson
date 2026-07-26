@@ -14,7 +14,7 @@ namespace Iverson.Api.Tests.Grpc;
 public class TenantLifecycleGrpcServiceTests
 {
     private readonly ITenantRepository _tenantRepository = Substitute.For<ITenantRepository>();
-    private readonly IAuthentikAdminClient _authentikAdminClient = Substitute.For<IAuthentikAdminClient>();
+    private readonly IIdpAdminClient _authentikAdminClient = Substitute.For<IIdpAdminClient>();
     private readonly ILogger<AuditLog> _auditLogger = Substitute.For<ILogger<AuditLog>>();
     private readonly AuditLog _auditLog;
     private readonly Iverson.Api.Grpc.TenantLifecycleGrpcService _sut;
@@ -53,7 +53,10 @@ public class TenantLifecycleGrpcServiceTests
 
         await _tenantRepository.Received(1).InsertAsync("acme", "Acme Corp", "active");
         await _authentikAdminClient.Received(1).CreateUserAsync(
-            "acme-admin", "admin@acme.example", "correct-horse-battery-staple", "acme",
+            "acme-admin",
+            "admin@acme.example",
+            "correct-horse-battery-staple",
+            "acme",
             Arg.Is<IReadOnlyList<string>>(g => g.Contains("tenant-admins")));
         await _tenantRepository.DidNotReceive().DeleteAsync(Arg.Any<string>());
     }
@@ -75,9 +78,18 @@ public class TenantLifecycleGrpcServiceTests
         var ex = await act.Should().ThrowAsync<RpcException>();
         ex.Which.StatusCode.Should().Be(StatusCode.InvalidArgument);
 
-        await _tenantRepository.DidNotReceive().InsertAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<string>());
-        await _authentikAdminClient.DidNotReceive().CreateUserAsync(
-            Arg.Any<string>(), Arg.Any<string>(), Arg.Any<string>(), Arg.Any<string>(), Arg.Any<IReadOnlyList<string>>());
+        await _tenantRepository.DidNotReceive()
+            .InsertAsync(
+                Arg.Any<string>(),
+                Arg.Any<string>(),
+                Arg.Any<string>());
+        await _authentikAdminClient.DidNotReceive()
+            .CreateUserAsync(
+                Arg.Any<string>(),
+                Arg.Any<string>(),
+                Arg.Any<string>(),
+                Arg.Any<string>(),
+                Arg.Any<IReadOnlyList<string>>());
     }
 
     [Fact]
@@ -93,7 +105,12 @@ public class TenantLifecycleGrpcServiceTests
         };
         var authentikFailure = new InvalidOperationException("Authentik is unreachable");
         _authentikAdminClient
-            .CreateUserAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<string>(), Arg.Any<string>(), Arg.Any<IReadOnlyList<string>>())
+            .CreateUserAsync(
+                Arg.Any<string>(),
+                Arg.Any<string>(),
+                Arg.Any<string>(),
+                Arg.Any<string>(),
+                Arg.Any<IReadOnlyList<string>>())
             .Returns<Task<string>>(_ => throw authentikFailure);
 
         var act = () => _sut.CreateTenant(request, ContextWithUser());
@@ -150,11 +167,13 @@ public class TenantLifecycleGrpcServiceTests
     {
         _tenantRepository.GetAsync("ghost").Returns(Task.FromResult<TenantRow?>(null));
 
-        var act = () => _sut.SuspendTenant(new SuspendTenantRequest { TenantId = "ghost" }, TestServerCallContext.Create());
+        var act = () => _sut.SuspendTenant(
+            new SuspendTenantRequest { TenantId = "ghost" }, TestServerCallContext.Create());
 
         var ex = await act.Should().ThrowAsync<RpcException>();
         ex.Which.StatusCode.Should().Be(StatusCode.NotFound);
-        await _tenantRepository.DidNotReceive().UpdateStatusAsync(Arg.Any<string>(), Arg.Any<string>());
+        await _tenantRepository.DidNotReceive()
+            .UpdateStatusAsync(Arg.Any<string>(), Arg.Any<string>());
     }
 
     // ── ReactivateTenant ─────────────────────────────────────────────────────
@@ -165,7 +184,8 @@ public class TenantLifecycleGrpcServiceTests
         var suspended = ExistingTenant with { Status = "suspended" };
         _tenantRepository.GetAsync("acme").Returns(Task.FromResult<TenantRow?>(suspended));
 
-        var response = await _sut.ReactivateTenant(new ReactivateTenantRequest { TenantId = "acme" }, ContextWithUser());
+        var response = await _sut.ReactivateTenant(
+            new ReactivateTenantRequest { TenantId = "acme" }, ContextWithUser());
 
         response.TenantId.Should().Be("acme");
         response.Status.Should().Be("active");
@@ -177,7 +197,8 @@ public class TenantLifecycleGrpcServiceTests
     {
         _tenantRepository.GetAsync("ghost").Returns(Task.FromResult<TenantRow?>(null));
 
-        var act = () => _sut.ReactivateTenant(new ReactivateTenantRequest { TenantId = "ghost" }, TestServerCallContext.Create());
+        var act = () => _sut.ReactivateTenant(
+            new ReactivateTenantRequest { TenantId = "ghost" }, TestServerCallContext.Create());
 
         var ex = await act.Should().ThrowAsync<RpcException>();
         ex.Which.StatusCode.Should().Be(StatusCode.NotFound);

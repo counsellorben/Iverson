@@ -29,7 +29,7 @@ public sealed class IntelligenceStoreConsumer(
     IEmbeddingService embedding,
     SchemaRegistry registry,
     IEntityRepository entities,
-    QdrantTenantScope tenantScope,
+    IntelligenceTenantScope tenantScope,
     ILogger<IntelligenceStoreConsumer> logger) : BackgroundService
 {
     private const string GroupId = "iverson.consumer.intelligence";
@@ -259,7 +259,7 @@ public sealed class IntelligenceStoreConsumer(
         if (schema.ChunkFields.Count > 0)
         {
             var chunksCollectionName = tenantScope.ResolveCollectionName(schema.CollectionName, tenantValue, isChunks: true);
-            var chunkFilter = QdrantFilterBuilder.MatchParentId(ev.Key);
+            var chunkFilter = IntelligenceFilterBuilder.MatchParentId(ev.Key);
             using (RequestHeaders.Use("api-key", tenantScope.MintScopedApiKey(chunksCollectionName, readOnly: false)))
             {
                 await vectorWrite.DeleteByFilterAsync(chunksCollectionName, chunkFilter);

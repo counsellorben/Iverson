@@ -15,7 +15,9 @@ public sealed class KafkaProducerTests
     {
         var kafkaProducer = Substitute.For<IProducer<string, string>>();
         kafkaProducer
-            .ProduceAsync(Arg.Any<string>(), Arg.Any<Message<string, string>>())
+            .ProduceAsync(
+                Arg.Any<string>(),
+                Arg.Any<Message<string, string>>())
             .Returns(new DeliveryResult<string, string>());
 
         var producer = new KafkaProducer(kafkaProducer, NullLogger<KafkaProducer>.Instance);
@@ -69,13 +71,14 @@ public sealed class KafkaProducerTests
         var kafkaProducer = Substitute.For<IProducer<string, string>>();
         kafkaProducer
             .ProduceAsync(Arg.Any<string>(), Arg.Any<Message<string, string>>())
-            .Throws(new ProduceException<string, string>(
-                new Error(ErrorCode.BrokerNotAvailable),
-                new DeliveryResult<string, string>()));
+            .Throws(
+                new ProduceException<string, string>(
+                    new Error(ErrorCode.BrokerNotAvailable),
+                    new DeliveryResult<string, string>()));
 
         var producer = new KafkaProducer(kafkaProducer, NullLogger<KafkaProducer>.Instance);
 
         await producer.Invoking(p => p.ProduceAsync("topic", "key", "value"))
-                      .Should().ThrowAsync<ProduceException<string, string>>();
+            .Should().ThrowAsync<ProduceException<string, string>>();
     }
 }

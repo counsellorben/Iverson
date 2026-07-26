@@ -37,15 +37,15 @@ public static class ServiceCollectionExtensions
             }
             return new QdrantClient(host, port, https: false, apiKey: null);
         });
-        services.AddSingleton<QdrantVectorService>();
-        services.AddSingleton<IVectorQueryService>(sp => sp.GetRequiredService<QdrantVectorService>());
-        services.AddSingleton<IVectorWriteService>(sp => sp.GetRequiredService<QdrantVectorService>());
+        services.AddSingleton<IntelligenceVectorService>();
+        services.AddSingleton<IVectorQueryService>(sp => sp.GetRequiredService<IntelligenceVectorService>());
+        services.AddSingleton<IVectorWriteService>(sp => sp.GetRequiredService<IntelligenceVectorService>());
 
-        services.AddSingleton(sp => new QdrantCollectionManager(
-            sp.GetRequiredService<QdrantClient>(), apiKey, sp.GetRequiredService<ILogger<QdrantCollectionManager>>()));
-        services.AddSingleton<IVectorSchemaManager>(sp => sp.GetRequiredService<QdrantCollectionManager>());
+        services.AddSingleton(sp => new IntelligenceCollectionManager(
+            sp.GetRequiredService<QdrantClient>(), apiKey, sp.GetRequiredService<ILogger<IntelligenceCollectionManager>>()));
+        services.AddSingleton<IVectorSchemaManager>(sp => sp.GetRequiredService<IntelligenceCollectionManager>());
 
-        services.AddSingleton(new QdrantTenantScope(apiKey));
+        services.AddSingleton(new IntelligenceTenantScope(apiKey));
 
         return services;
     }

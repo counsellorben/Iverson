@@ -10,7 +10,7 @@ namespace Iverson.Api.Schema;
 /// ManyToMany whose FK lives on this row. A OneToMany disqualifies the entity because
 /// it logically owns a collection with no representation in a single flat row. Note
 /// that large-field columns (Body, embeddings) are excluded from the StarRocks schema
-/// separately in ToStarRocksTableSchema — that is an orthogonal concern.
+/// separately in ToEngagementTableSchema — that is an orthogonal concern.
 ///
 /// Intelligence (Qdrant): eligible when the schema declares vector or chunk fields.
 /// </summary>

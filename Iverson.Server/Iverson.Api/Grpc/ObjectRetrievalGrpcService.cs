@@ -22,7 +22,8 @@ public sealed class ObjectRetrievalGrpcService(
     : ObjectRetrievalService.ObjectRetrievalServiceBase
 {
     public override async Task<RetrievalResponse> Get(
-        RetrievalRequest request, ServerCallContext context)
+        RetrievalRequest request,
+        ServerCallContext context)
     {
         logger.LogInformation("[Retrieval.Get] type={Type} key={Key}", request.TypeName.SanitizeForLog(), request.Key);
 
@@ -31,7 +32,8 @@ public sealed class ObjectRetrievalGrpcService(
             return new RetrievalResponse { Found = false, TraceId = request.TraceId };
 
         var rowJson = await _entities.FetchByKeyAsync(
-            SchemaBuilder.ToTableSchema(schema), request.Key,
+            SchemaBuilder.ToTableSchema(schema),
+            request.Key,
             tenantScoped: schema.TenantColumn is not null,
             tenantId: actingUserAccessor.ActingUser?.FindFirst("tenant_id")?.Value);
 
@@ -47,8 +49,16 @@ public sealed class ObjectRetrievalGrpcService(
             StructFieldAccess.GetFieldString(data, decision.TenantColumn) != decision.TenantValue;
         if (decision.Denied || ownerMismatch || tenantMismatch)
         {
-            auditLog.Denied(actingUserAccessor.ActingUser, "Read", request.TypeName, request.Key,
-                decision.Denied ? "AccessDenied" : ownerMismatch ? "OwnerMismatch" : "TenantMismatch");
+            auditLog.Denied(
+                actingUserAccessor.ActingUser,
+                "Read",
+                request.TypeName,
+                request.Key,
+                decision.Denied
+                    ? "AccessDenied"
+                    : ownerMismatch
+                        ? "OwnerMismatch"
+                        : "TenantMismatch");
             return new RetrievalResponse { Found = false, TraceId = request.TraceId };
         }
 
@@ -92,7 +102,8 @@ public sealed class ObjectRetrievalGrpcService(
         }
 
         var rows = await _entities.FetchManyByKeysAsync(
-            SchemaBuilder.ToTableSchema(schema), keys,
+            SchemaBuilder.ToTableSchema(schema),
+            keys,
             tenantScoped: decision.TenantColumn is not null,
             tenantId: decision.TenantValue);
         var rowsByKey = rows.ToDictionary(r => r.Key, StringComparer.OrdinalIgnoreCase);
@@ -112,8 +123,14 @@ public sealed class ObjectRetrievalGrpcService(
                 StructFieldAccess.GetFieldString(data, decision.TenantColumn) != decision.TenantValue;
             if (ownerMismatch || tenantMismatch)
             {
-                auditLog.Denied(actingUserAccessor.ActingUser, "Read", request.TypeName, key,
-                    ownerMismatch ? "OwnerMismatch" : "TenantMismatch");
+                auditLog.Denied(
+                    actingUserAccessor.ActingUser,
+                    "Read",
+                    request.TypeName,
+                    key,
+                    ownerMismatch
+                        ? "OwnerMismatch"
+                        : "TenantMismatch");
                 await responseStream.WriteAsync(new RetrievalResponse { Found = false, TraceId = request.TraceId });
                 continue;
             }

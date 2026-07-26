@@ -1,7 +1,5 @@
-using Google.Protobuf.WellKnownTypes;
 using Grpc.Core;
 using Iverson.Api.Authorization;
-using Iverson.Api.Reconciliation;
 using Iverson.Api.Schema;
 using Iverson.Client.Contracts;
 using Iverson.Events;
@@ -33,8 +31,14 @@ public sealed class ObjectPersistenceGrpcService(
         var schema = RequireSchema(request.TypeName);
 
         AuthorizationFieldMasking.EnforceWriteAuthorization(
-            authEvaluator, actingUserAccessor.ActingUser, schema, request.Payload,
-            AuthorizationAction.Write, "Not authorized to create this entity.", existingRowJson: null, auditLog);
+            authEvaluator,
+            actingUserAccessor.ActingUser,
+            schema,
+            request.Payload,
+            AuthorizationAction.Write,
+            "Not authorized to create this entity.",
+            existingRowJson: null,
+            auditLog);
 
         relationValidator.ValidateRelations(request.Payload, schema);
 
@@ -50,9 +54,15 @@ public sealed class ObjectPersistenceGrpcService(
             logger.LogInformation("[Persistence.Post] type={Type} key={Key} stores={Stores}",
                 request.TypeName.SanitizeForLog(), key, targetStores);
 
-        var decision = authEvaluator.Evaluate(schema, actingUserAccessor.ActingUser, AuthorizationAction.Write);
+        var decision = authEvaluator.Evaluate(
+            schema,
+            actingUserAccessor.ActingUser,
+            AuthorizationAction.Write);
         var outboxRowId = await outboxWriter.UpsertAndEnqueueOutboxAsync(
-            SchemaBuilder.ToTableSchema(schema), request.TypeName, key, payloadJson,
+            SchemaBuilder.ToTableSchema(schema),
+            request.TypeName,
+            key,
+            payloadJson,
             tenantId: decision.TenantValue);
 
         // Opportunistic fast-path publish: the durability guarantee already exists (the
@@ -61,8 +71,15 @@ public sealed class ObjectPersistenceGrpcService(
         // polls unconditionally-inserted outbox rows, not just failure-recorded ones — see
         // Task 5's updated ReconciliationSchema doc comment) will pick this row up on its
         // next poll. This just keeps the common case's projection latency low.
-        await outboxPublisher.PublishAsync(EntityEventType.Created, request.TypeName, key, payloadJson,
-            request.TraceId, targetStores, outboxRowId, "Persistence.Post");
+        await outboxPublisher.PublishAsync(
+            EntityEventType.Created,
+            request.TypeName,
+            key,
+            payloadJson,
+            request.TraceId,
+            targetStores,
+            outboxRowId,
+            "Persistence.Post");
 
         return new PersistResponse
         {
@@ -73,7 +90,8 @@ public sealed class ObjectPersistenceGrpcService(
     }
 
     public override async Task<PersistResponse> Update(
-        PersistRequest request, ServerCallContext context)
+        PersistRequest request,
+        ServerCallContext context)
     {
         var schema = RequireSchema(request.TypeName);
 
@@ -84,8 +102,14 @@ public sealed class ObjectPersistenceGrpcService(
 
         var existingRowJson = await entities.FetchByKeyAsync(SchemaBuilder.ToTableSchema(schema), key);
         AuthorizationFieldMasking.EnforceWriteAuthorization(
-            authEvaluator, actingUserAccessor.ActingUser, schema, request.Payload,
-            AuthorizationAction.Write, "Not authorized to update this entity.", existingRowJson, auditLog);
+            authEvaluator,
+            actingUserAccessor.ActingUser,
+            schema,
+            request.Payload,
+            AuthorizationAction.Write,
+            "Not authorized to update this entity.",
+            existingRowJson,
+            auditLog);
 
         relationValidator.ValidateRelations(request.Payload, schema);
 
@@ -99,7 +123,10 @@ public sealed class ObjectPersistenceGrpcService(
 
         var decision = authEvaluator.Evaluate(schema, actingUserAccessor.ActingUser, AuthorizationAction.Write);
         var outboxRowId = await outboxWriter.UpsertAndEnqueueOutboxAsync(
-            SchemaBuilder.ToTableSchema(schema), request.TypeName, key, payloadJson,
+            SchemaBuilder.ToTableSchema(schema),
+            request.TypeName,
+            key,
+            payloadJson,
             tenantId: decision.TenantValue);
 
         // Opportunistic fast-path publish: the durability guarantee already exists (the
@@ -108,8 +135,15 @@ public sealed class ObjectPersistenceGrpcService(
         // polls unconditionally-inserted outbox rows, not just failure-recorded ones — see
         // Task 5's updated ReconciliationSchema doc comment) will pick this row up on its
         // next poll. This just keeps the common case's projection latency low.
-        await outboxPublisher.PublishAsync(EntityEventType.Updated, request.TypeName, key, payloadJson,
-            request.TraceId, targetStores, outboxRowId, "Persistence.Update");
+        await outboxPublisher.PublishAsync(
+            EntityEventType.Updated,
+            request.TypeName,
+            key,
+            payloadJson,
+            request.TraceId,
+            targetStores,
+            outboxRowId,
+            "Persistence.Update");
 
         return new PersistResponse
         {
@@ -120,6 +154,7 @@ public sealed class ObjectPersistenceGrpcService(
     }
 
     private SchemaDescriptor RequireSchema(string typeName) =>
-        registry.Get(typeName) ?? throw new RpcException(new Status(StatusCode.FailedPrecondition,
+        registry.Get(typeName) ?? throw new RpcException(
+            new Status(StatusCode.FailedPrecondition,
             $"No schema registered for '{typeName}'. Call RegisterSchema first."));
 }

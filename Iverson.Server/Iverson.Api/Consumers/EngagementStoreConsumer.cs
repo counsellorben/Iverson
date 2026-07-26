@@ -66,7 +66,7 @@ public sealed class EngagementStoreConsumer(
             return;
         }
 
-        var srSchema = SchemaBuilder.ToStarRocksTableSchema(schema);
+        var srSchema = SchemaBuilder.ToEngagementTableSchema(schema);
 
         if (!_provisioned.Contains((authoritativeTenantValue, srSchema.TableName)))
         {

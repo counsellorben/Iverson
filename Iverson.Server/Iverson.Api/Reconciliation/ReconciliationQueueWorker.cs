@@ -10,10 +10,11 @@ internal sealed class ReconciliationQueueWorker(
 
     protected override Task ExecuteAsync(CancellationToken ct) =>
         ConsumerResilience.RunWithRestartAsync(
-            () => PollLoopAsync(ct),
-            logger,
-            "ReconciliationQueue",
-            ct);
+            () =>
+                PollLoopAsync(ct),
+                logger,
+                "ReconciliationQueue",
+                ct);
 
     private async Task PollLoopAsync(CancellationToken ct)
     {

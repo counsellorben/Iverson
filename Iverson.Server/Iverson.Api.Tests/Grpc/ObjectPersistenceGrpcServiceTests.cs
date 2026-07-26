@@ -47,7 +47,9 @@ public class ObjectPersistenceGrpcServiceTests
             .Returns((string?)null);
 
         _txRunner = Substitute.For<IRecordStoreTransactionRunner>();
-        _txRunner.ExecuteInTransactionAsync(Arg.Any<Func<IDbTransactionContext, Task>>())
+        _txRunner
+            .ExecuteInTransactionAsync(
+                Arg.Any<Func<IDbTransactionContext, Task>>())
             .Returns(ci => ci.Arg<Func<IDbTransactionContext, Task>>()(Substitute.For<IDbTransactionContext>()));
 
         _registry = new SchemaRegistry(new SchemaRegistryRepository(_sql), NullLogger<SchemaRegistry>.Instance);
@@ -56,11 +58,16 @@ public class ObjectPersistenceGrpcServiceTests
         _outboxPublisher = new OutboxPublisher(_events, new OutboxWriter(ReconciliationSchema.TableName, _sql, _txRunner), NullLogger<OutboxPublisher>.Instance);
         _auditLog = new AuditLog(_auditLogger);
         _sut = new ObjectPersistenceGrpcService(
-            _outboxPublisher, _registry,
-            new RelationValidator(_registry), new EntityKeyAccessor(),
+            _outboxPublisher,
+            _registry,
+            new RelationValidator(_registry),
+            new EntityKeyAccessor(),
             new OutboxWriter(ReconciliationSchema.TableName, _sql, _txRunner),
             NullLogger<ObjectPersistenceGrpcService>.Instance,
-            _entities, _actingUserAccessor, _authEvaluator, _auditLog);
+            _entities,
+            _actingUserAccessor,
+            _authEvaluator,
+            _auditLog);
     }
 
     private static Struct MakePayload(Dictionary<string, Value> fields)
@@ -116,7 +123,8 @@ public class ObjectPersistenceGrpcServiceTests
         var fakeTx = Substitute.For<IDbTransactionContext>();
         fakeTx.ExecuteAsync(Arg.Do<string>(sql => executedSql.Add(sql)), Arg.Any<object?>()).Returns(0);
 
-        _txRunner.ExecuteInTransactionAsync(Arg.Any<Func<IDbTransactionContext, Task>>())
+        _txRunner
+            .ExecuteInTransactionAsync(Arg.Any<Func<IDbTransactionContext, Task>>())
             .Returns(call => call.Arg<Func<IDbTransactionContext, Task>>()(fakeTx));
 
         return executedSql;
@@ -171,7 +179,8 @@ public class ObjectPersistenceGrpcServiceTests
         await _registry.RegisterAsync(SchemaFixtures.ArticleSchema());
 
         var capturedWork = default(Func<IDbTransactionContext, Task>);
-        _txRunner.ExecuteInTransactionAsync(Arg.Do<Func<IDbTransactionContext, Task>>(w => capturedWork = w))
+        _txRunner
+            .ExecuteInTransactionAsync(Arg.Do<Func<IDbTransactionContext, Task>>(w => capturedWork = w))
             .Returns(Task.CompletedTask);
 
         var request = new PersistRequest { TypeName = "Article", Payload = new Struct() };
@@ -202,8 +211,9 @@ public class ObjectPersistenceGrpcServiceTests
         await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
 
         EntityEvent? captured = null;
-        _events.When(e => e.ProduceAsync(EntityTopics.Events, Arg.Any<string>(), Arg.Any<EntityEvent>()))
-               .Do(call => captured = call.ArgAt<EntityEvent>(2));
+        _events
+            .When(e => e.ProduceAsync(EntityTopics.Events, Arg.Any<string>(), Arg.Any<EntityEvent>()))
+            .Do(call => captured = call.ArgAt<EntityEvent>(2));
 
         var payload = MakePayload(new() { ["Name"] = Value.ForString("Alice") });
         await _sut.Post(new PersistRequest { TypeName = "Author", Payload = payload }, TestServerCallContext.Create());
@@ -218,8 +228,9 @@ public class ObjectPersistenceGrpcServiceTests
         await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
 
         EntityEvent? captured = null;
-        _events.When(e => e.ProduceAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<EntityEvent>()))
-               .Do(call => captured = call.ArgAt<EntityEvent>(2));
+        _events
+            .When(e => e.ProduceAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<EntityEvent>()))
+            .Do(call => captured = call.ArgAt<EntityEvent>(2));
 
         var payload = MakePayload(new() { ["Name"] = Value.ForString("Alice") });
         await _sut.Post(new PersistRequest { TypeName = "Author", Payload = payload }, TestServerCallContext.Create());
@@ -233,8 +244,9 @@ public class ObjectPersistenceGrpcServiceTests
         await _registry.RegisterAsync(SchemaFixtures.ArticleWithOneToManySchema());
 
         EntityEvent? captured = null;
-        _events.When(e => e.ProduceAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<EntityEvent>()))
-               .Do(call => captured = call.ArgAt<EntityEvent>(2));
+        _events
+            .When(e => e.ProduceAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<EntityEvent>()))
+            .Do(call => captured = call.ArgAt<EntityEvent>(2));
 
         var payload = MakePayload(new()
         {
@@ -540,7 +552,12 @@ public class ObjectPersistenceGrpcServiceTests
         await _registry.RegisterAsync(OwnedAuthorSchema());
         var authorId = Guid.NewGuid().ToString();
         var ownedJson = $$"""{"Id":"{{authorId}}","Name":"Alice","OwnerId":"test-user","TenantId":"test-tenant"}""";
-        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>(), Arg.Any<bool>(), Arg.Any<string?>())
+        _entities
+            .FetchByKeyAsync(
+                Arg.Any<TableSchema>(),
+                Arg.Any<string>(),
+                Arg.Any<bool>(),
+                Arg.Any<string?>())
             .Returns(ownedJson);
 
         var payload = MakePayload(new()
@@ -562,7 +579,12 @@ public class ObjectPersistenceGrpcServiceTests
         await _registry.RegisterAsync(OwnedAuthorSchema(withBypassRole: true));
         var authorId = Guid.NewGuid().ToString();
         var ownedJson = $$"""{"Id":"{{authorId}}","Name":"Alice","OwnerId":"someone-else","TenantId":"test-tenant"}""";
-        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>(), Arg.Any<bool>(), Arg.Any<string?>())
+        _entities
+            .FetchByKeyAsync(
+                Arg.Any<TableSchema>(),
+                Arg.Any<string>(),
+                Arg.Any<bool>(),
+                Arg.Any<string?>())
             .Returns(ownedJson);
 
         var payload = MakePayload(new()
@@ -584,7 +606,12 @@ public class ObjectPersistenceGrpcServiceTests
         await _registry.RegisterAsync(OwnedAuthorSchema());
         var authorId = Guid.NewGuid().ToString();
         var ownedJson = $$"""{"Id":"{{authorId}}","Name":"Alice","OwnerId":"someone-else","TenantId":"test-tenant"}""";
-        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>(), Arg.Any<bool>(), Arg.Any<string?>())
+        _entities
+            .FetchByKeyAsync(
+                Arg.Any<TableSchema>(),
+                Arg.Any<string>(),
+                Arg.Any<bool>(),
+                Arg.Any<string?>())
             .Returns(ownedJson);
 
         var payload = MakePayload(new()
@@ -616,7 +643,12 @@ public class ObjectPersistenceGrpcServiceTests
         };
         await _registry.RegisterAsync(schema);
         var authorId = Guid.NewGuid().ToString();
-        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>(), Arg.Any<bool>(), Arg.Any<string?>())
+        _entities
+            .FetchByKeyAsync(
+                Arg.Any<TableSchema>(),
+                Arg.Any<string>(),
+                Arg.Any<bool>(),
+                Arg.Any<string?>())
             .Returns($$"""{"Id":"{{authorId}}","Name":"Alice","Bio":"Writer","TenantId":"test-tenant"}""");
 
         var payload = MakePayload(new()
@@ -639,7 +671,12 @@ public class ObjectPersistenceGrpcServiceTests
     public async Task Update_ForOrdinaryCaller_WhenRowDoesNotExistYet_ForceSetsOwnerFieldToActingUserSub(string? clientSuppliedOwnerId)
     {
         await _registry.RegisterAsync(OwnedAuthorSchema(withBypassRole: false));
-        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>(), Arg.Any<bool>(), Arg.Any<string?>())
+        _entities
+            .FetchByKeyAsync(
+                Arg.Any<TableSchema>(),
+                Arg.Any<string>(),
+                Arg.Any<bool>(),
+                Arg.Any<string?>())
             .Returns((string?)null);
 
         var fields = new Dictionary<string, Value>
@@ -664,7 +701,12 @@ public class ObjectPersistenceGrpcServiceTests
     public async Task Update_WithBypassRole_WhenRowDoesNotExistYet_LeavesOwnerFieldUntouched(string? clientSuppliedOwnerId)
     {
         await _registry.RegisterAsync(OwnedAuthorSchema(withBypassRole: true));
-        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>(), Arg.Any<bool>(), Arg.Any<string?>())
+        _entities
+            .FetchByKeyAsync(
+                Arg.Any<TableSchema>(),
+                Arg.Any<string>(),
+                Arg.Any<bool>(),
+                Arg.Any<string?>())
             .Returns((string?)null);
 
         var fields = new Dictionary<string, Value>
@@ -692,7 +734,12 @@ public class ObjectPersistenceGrpcServiceTests
         await _registry.RegisterAsync(OwnedAuthorSchema(withBypassRole: false));
         var authorId = Guid.NewGuid().ToString();
         var ownedJson = $$"""{"Id":"{{authorId}}","Name":"Alice","OwnerId":"test-user","TenantId":"test-tenant"}""";
-        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>(), Arg.Any<bool>(), Arg.Any<string?>())
+        _entities
+            .FetchByKeyAsync(
+                Arg.Any<TableSchema>(),
+                Arg.Any<string>(),
+                Arg.Any<bool>(),
+                Arg.Any<string?>())
             .Returns(ownedJson);
 
         var payload = MakePayload(new()
@@ -719,7 +766,12 @@ public class ObjectPersistenceGrpcServiceTests
         await _registry.RegisterAsync(OwnedAuthorSchema(withBypassRole: true));
         var authorId = Guid.NewGuid().ToString();
         var ownedJson = $$"""{"Id":"{{authorId}}","Name":"Alice","OwnerId":"someone-else","TenantId":"test-tenant"}""";
-        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>(), Arg.Any<bool>(), Arg.Any<string?>())
+        _entities
+            .FetchByKeyAsync(
+                Arg.Any<TableSchema>(),
+                Arg.Any<string>(),
+                Arg.Any<bool>(),
+                Arg.Any<string?>())
             .Returns(ownedJson);
 
         var payload = MakePayload(new()
@@ -743,8 +795,9 @@ public class ObjectPersistenceGrpcServiceTests
         await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
 
         EntityEvent? captured = null;
-        _events.When(e => e.ProduceAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<EntityEvent>()))
-               .Do(call => captured = call.ArgAt<EntityEvent>(2));
+        _events
+            .When(e => e.ProduceAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<EntityEvent>()))
+            .Do(call => captured = call.ArgAt<EntityEvent>(2));
 
         var payload = MakePayload(new()
         {
@@ -790,7 +843,12 @@ public class ObjectPersistenceGrpcServiceTests
         await _registry.RegisterAsync(OwnedAuthorSchema());
         var authorId = Guid.NewGuid().ToString();
         var crossTenantJson = $$"""{"Id":"{{authorId}}","Name":"Alice","OwnerId":"test-user","TenantId":"other-tenant"}""";
-        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>(), Arg.Any<bool>(), Arg.Any<string?>())
+        _entities
+            .FetchByKeyAsync(
+                Arg.Any<TableSchema>(),
+                Arg.Any<string>(),
+                Arg.Any<bool>(),
+                Arg.Any<string?>())
             .Returns(crossTenantJson);
 
         var payload = MakePayload(new()
@@ -813,7 +871,12 @@ public class ObjectPersistenceGrpcServiceTests
         await _registry.RegisterAsync(OwnedAuthorSchema());
         var authorId = Guid.NewGuid().ToString();
         var ownedJson = $$"""{"Id":"{{authorId}}","Name":"Alice","OwnerId":"test-user","TenantId":"test-tenant"}""";
-        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>(), Arg.Any<bool>(), Arg.Any<string?>())
+        _entities
+            .FetchByKeyAsync(
+                Arg.Any<TableSchema>(),
+                Arg.Any<string>(),
+                Arg.Any<bool>(),
+                Arg.Any<string?>())
             .Returns(ownedJson);
 
         var payload = MakePayload(new()
@@ -837,7 +900,12 @@ public class ObjectPersistenceGrpcServiceTests
         await _registry.RegisterAsync(OwnedAuthorSchema());
         var authorId = Guid.NewGuid().ToString();
         var ownedJson = $$"""{"Id":"{{authorId}}","Name":"Alice","OwnerId":"someone-else","TenantId":"test-tenant"}""";
-        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>(), Arg.Any<bool>(), Arg.Any<string?>())
+        _entities
+            .FetchByKeyAsync(
+                Arg.Any<TableSchema>(),
+                Arg.Any<string>(),
+                Arg.Any<bool>(),
+                Arg.Any<string?>())
             .Returns(ownedJson);
 
         var payload = MakePayload(new()
@@ -860,7 +928,12 @@ public class ObjectPersistenceGrpcServiceTests
         await _registry.RegisterAsync(OwnedAuthorSchema(withBypassRole: false));
         var authorId = Guid.NewGuid().ToString();
         var ownedJson = $$"""{"Id":"{{authorId}}","Name":"Alice","OwnerId":"test-user","TenantId":"test-tenant"}""";
-        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>(), Arg.Any<bool>(), Arg.Any<string?>())
+        _entities
+            .FetchByKeyAsync(
+                Arg.Any<TableSchema>(),
+                Arg.Any<string>(),
+                Arg.Any<bool>(),
+                Arg.Any<string?>())
             .Returns(ownedJson);
 
         var payload = MakePayload(new()

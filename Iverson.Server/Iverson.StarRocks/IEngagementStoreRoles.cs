@@ -10,47 +10,47 @@ public interface IEngagementStoreQueryExecutor
 
 public interface IEngagementStoreHealthCheck
 {
-    Task<StarRocksHealthStatus> CheckHealthAsync();
+    Task<EngagementHealthStatus> CheckHealthAsync();
     Task<bool> IsHealthyAsync();
 }
 
 public interface IEngagementStoreEntityStore
 {
-    Task UpsertAsync(StarRocksTableSchema schema, string payloadJson, string tenantId);
+    Task UpsertAsync(EngagementTableSchema schema, string payloadJson, string tenantId);
     Task DeleteAsync(string tableName, string keyColumn, string keyValue, string tenantId);
-    Task EnsureTenantProvisionedAsync(string tenantId, StarRocksTableSchema schema);
+    Task EnsureTenantProvisionedAsync(string tenantId, EngagementTableSchema schema);
 }
 
 public interface IEngagementStoreSearchService
 {
     Task<IEnumerable<dynamic>> SearchAsync(
-        StarRocksQuerySchema schema,
+        EngagementQuerySchema schema,
         SearchQuery? query,
         int page,
         int pageSize,
         IReadOnlyList<string>? fields = null,
         IReadOnlyList<JoinSpec>? joins = null,
-        Func<string, StarRocksQuerySchema?>? registry = null,
+        Func<string, EngagementQuerySchema?>? registry = null,
         IReadOnlyDictionary<string, AuthorizationConstraint>? authz = null);
 
     Task<AggregationResult?> AggregateAsync(
-        StarRocksQuerySchema schema,
+        EngagementQuerySchema schema,
         SearchQuery? query,
         AggregationDescriptor spec,
         SearchQuery? having = null,
         IReadOnlyList<JoinSpec>? joins = null,
-        Func<string, StarRocksQuerySchema?>? registry = null,
+        Func<string, EngagementQuerySchema?>? registry = null,
         IReadOnlyDictionary<string, AuthorizationConstraint>? authz = null);
 
     Task<IEnumerable<dynamic>> GroupByAsync(
-        StarRocksQuerySchema schema,
+        EngagementQuerySchema schema,
         GroupByRequest request,
-        Func<string, StarRocksQuerySchema?> registry,
+        Func<string, EngagementQuerySchema?> registry,
         IReadOnlyDictionary<string, AuthorizationConstraint>? authz = null);
 
     Task<IEnumerable<dynamic>> PipelineAsync(
-        StarRocksQuerySchema schema,
+        EngagementQuerySchema schema,
         PipelineRequest request,
-        Func<string, StarRocksQuerySchema?> registry,
+        Func<string, EngagementQuerySchema?> registry,
         IReadOnlyDictionary<string, AuthorizationConstraint>? authz = null);
 }

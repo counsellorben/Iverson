@@ -38,9 +38,10 @@ public class TenantAdminGrpcServiceAuthorizationPipelineTests : IClassFixture<Au
         var loggerSpy = Substitute.For<ILogger<Iverson.Api.Grpc.AuditLog>>();
         var fakeTenantStatusCache = Substitute.For<ITenantStatusCache>();
         fakeTenantStatusCache.GetStatusAsync(Arg.Any<string>()).Returns("active");
-        var fakeAuthentikAdminClient = Substitute.For<IAuthentikAdminClient>();
-        fakeAuthentikAdminClient.ListUsersByTenantAsync(Arg.Any<string>())
-            .Returns(Task.FromResult<IEnumerable<AuthentikUser>>([]));
+        var fakeAuthentikAdminClient = Substitute.For<IIdpAdminClient>();
+        fakeAuthentikAdminClient
+            .ListUsersByTenantAsync(Arg.Any<string>())
+            .Returns(Task.FromResult<IEnumerable<IdpUser>>([]));
 
         var factory = _baseFactory.WithWebHostBuilder(builder =>
             builder.ConfigureServices(services =>
@@ -49,7 +50,7 @@ public class TenantAdminGrpcServiceAuthorizationPipelineTests : IClassFixture<Au
                 services.AddSingleton(loggerSpy);
                 services.RemoveAll<ITenantStatusCache>();
                 services.AddSingleton(fakeTenantStatusCache);
-                services.RemoveAll<IAuthentikAdminClient>();
+                services.RemoveAll<IIdpAdminClient>();
                 services.AddSingleton(fakeAuthentikAdminClient);
             }));
         var channel = GrpcChannel.ForAddress(factory.Server.BaseAddress, new GrpcChannelOptions
@@ -93,7 +94,8 @@ public class TenantAdminGrpcServiceAuthorizationPipelineTests : IClassFixture<Au
     {
         var (client, loggerSpy) = CreateClient();
         var token = TestJwtFactory.CreateToken(
-            "test-service-audience", "not-a-tenant-admin",
+            "test-service-audience",
+            "not-a-tenant-admin",
             extraClaims: [new Claim("tenant_id", "acme"), new Claim("groups", "some-other-group")]);
 
         var ex = await TryListUsersAsync(client, Headers(token));
@@ -116,7 +118,8 @@ public class TenantAdminGrpcServiceAuthorizationPipelineTests : IClassFixture<Au
     {
         var (client, loggerSpy) = CreateClient();
         var token = TestJwtFactory.CreateToken(
-            "test-service-audience", "human-tenant-admin",
+            "test-service-audience",
+            "human-tenant-admin",
             extraClaims: [new Claim("tenant_id", "acme"), new Claim("groups", "tenant-admins")]);
 
         var ex = await TryListUsersAsync(client, Headers(token));

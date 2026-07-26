@@ -7,28 +7,28 @@ namespace Iverson.StarRocks.Tests;
 
 public class StarRocksPipelineBuilderTests
 {
-    private static StarRocksQuerySchema ArticleSchema() => new(
+    private static EngagementQuerySchema ArticleSchema() => new(
         "Article", "articles", "Id",
         ["Title", "Category", "WordCount", "IsPublished", "PublishedAt", "AuthorId"]);
 
-    private static Func<string, StarRocksQuerySchema?> BuildRegistry(params StarRocksQuerySchema[] schemas)
+    private static Func<string, EngagementQuerySchema?> BuildRegistry(params EngagementQuerySchema[] schemas)
     {
         var map = schemas.ToDictionary(s => s.TypeName, StringComparer.OrdinalIgnoreCase);
         return typeName => map.GetValueOrDefault(typeName);
     }
 
-    private static Func<string, StarRocksQuerySchema?> EmptyRegistry() => BuildRegistry();
+    private static Func<string, EngagementQuerySchema?> EmptyRegistry() => BuildRegistry();
 
-    private static StarRocksQuerySchema AuthorSchemaLocal() => new(
+    private static EngagementQuerySchema AuthorSchemaLocal() => new(
         "Author", "authors", "Id", ["Name"]);
 
-    private static Func<string, StarRocksQuerySchema?> RegistryWithAuthor() =>
+    private static Func<string, EngagementQuerySchema?> RegistryWithAuthor() =>
         BuildRegistry(AuthorSchemaLocal());
 
-    private static StarRocksQuerySchema TagSchemaLocal() => new(
+    private static EngagementQuerySchema TagSchemaLocal() => new(
         "Tag", "tags", "Id", ["Label"]);
 
-    private static Func<string, StarRocksQuerySchema?> RegistryWithAuthorAndTag() =>
+    private static Func<string, EngagementQuerySchema?> RegistryWithAuthorAndTag() =>
         BuildRegistry(AuthorSchemaLocal(), TagSchemaLocal());
 
     private static PipelineRequest Request(params PipelineStep[] steps)
@@ -40,7 +40,7 @@ public class StarRocksPipelineBuilderTests
 
     private static void AssertInvalid(Action act, string messagePart)
     {
-        var ex = Assert.Throws<StarRocksQueryTranslationException>(act);
+        var ex = Assert.Throws<EngagementQueryTranslationException>(act);
         ex.Message.Should().Contain(messagePart);
     }
 
@@ -661,7 +661,7 @@ public class StarRocksPipelineBuilderTests
 
         var act = () => StarRocksPipelineBuilder.Build(ArticleSchema(), request, EmptyRegistry());
 
-        act.Should().Throw<StarRocksQueryTranslationException>()
+        act.Should().Throw<EngagementQueryTranslationException>()
             .Where(e => e.Message == "Step 's1': select alias 'bad alias' is not a valid identifier.");
     }
 
@@ -676,7 +676,7 @@ public class StarRocksPipelineBuilderTests
 
         var act = () => StarRocksPipelineBuilder.Build(ArticleSchema(), request, EmptyRegistry());
 
-        act.Should().Throw<StarRocksQueryTranslationException>()
+        act.Should().Throw<EngagementQueryTranslationException>()
             .Where(e => e.Message == "Step 's1': window alias 'bad alias' is not a valid identifier.");
     }
 
@@ -692,7 +692,7 @@ public class StarRocksPipelineBuilderTests
 
         var act = () => StarRocksPipelineBuilder.Build(ArticleSchema(), request, EmptyRegistry());
 
-        act.Should().Throw<StarRocksQueryTranslationException>()
+        act.Should().Throw<EngagementQueryTranslationException>()
             .Where(e => e.Message == "Step 's1': metric alias 'bad alias' is not a valid identifier.");
     }
 
@@ -709,7 +709,7 @@ public class StarRocksPipelineBuilderTests
 
         var act = () => StarRocksPipelineBuilder.Build(ArticleSchema(), request, EmptyRegistry());
 
-        act.Should().Throw<StarRocksQueryTranslationException>()
+        act.Should().Throw<EngagementQueryTranslationException>()
             .Where(e => e.Message.Contains("forbidden character")
                      && e.Message.Contains("SQL comment sequences"));
     }
@@ -753,7 +753,7 @@ public class StarRocksPipelineBuilderTests
 
         var act = () => StarRocksPipelineBuilder.Build(ArticleSchema(), Request(step), EmptyRegistry());
 
-        act.Should().Throw<StarRocksQueryTranslationException>()
+        act.Should().Throw<EngagementQueryTranslationException>()
             .Where(e => e.Message.Contains("forbidden character"));
     }
 

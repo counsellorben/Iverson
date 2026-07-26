@@ -23,9 +23,13 @@ public class SchemaRegistrationOrchestratorTests
     {
         _embedding.Dimension.Returns(768);
         _embedding.ModelId.Returns("nomic-embed-text");
-        _registry = new SchemaRegistry(new SchemaRegistryRepository(_sql), NullLogger<SchemaRegistry>.Instance);
+        _registry = new SchemaRegistry(
+            new SchemaRegistryRepository(_sql),
+            NullLogger<SchemaRegistry>.Instance);
         _sut = new SchemaRegistrationOrchestrator(
-            _schemaManager, _embedding, _registry);
+            _schemaManager,
+            _embedding,
+            _registry);
     }
 
     private static TypeDescriptor SimpleType(string name, params string[] extraScalars)

@@ -5,7 +5,7 @@ using Xunit;
 
 namespace Iverson.StarRocks.Tests;
 
-public class StarRocksRepositoryTests
+public class EngagementRepositoryTests
 {
     [Fact]
     public void IStarRocksQueryExecutor_ExistsAsInterface()
@@ -22,14 +22,14 @@ public class StarRocksRepositoryTests
     }
 
     [Fact]
-    public void StarRocksRepository_ImplementsQueryAndEntityStoreRoles()
+    public void EngagementRepository_ImplementsQueryAndEntityStoreRoles()
     {
-        typeof(StarRocksRepository).Should().Implement<IEngagementStoreQueryExecutor>();
-        typeof(StarRocksRepository).Should().Implement<IEngagementStoreEntityStore>();
+        typeof(EngagementRepository).Should().Implement<IEngagementStoreQueryExecutor>();
+        typeof(EngagementRepository).Should().Implement<IEngagementStoreEntityStore>();
     }
 
     [Fact]
-    public void StarRocksTableSchema_StoresColumns()
+    public void EngagementTableSchema_StoresColumns()
     {
         var key  = new StarRocksColumnSchema("Id", "VARCHAR(36)", false);
         var cols = new List<StarRocksColumnSchema>
@@ -37,7 +37,7 @@ public class StarRocksRepositoryTests
             new("Name", "STRING", false),
             new("Bio",  "STRING", true)
         };
-        var schema = new StarRocksTableSchema("authors", key, cols);
+        var schema = new EngagementTableSchema("authors", key, cols);
 
         schema.TableName.Should().Be("authors");
         schema.KeyColumn.Name.Should().Be("Id");
@@ -53,7 +53,7 @@ public class StarRocksRepositoryTests
 
     // ── PipelineAsync — Layer 2 (post-fetch) masking ────────────────────────────
     //
-    // StarRocksRepository is sealed and QueryAsync<T> hits a real MySqlConnection (not virtual,
+    // EngagementRepository is sealed and QueryAsync<T> hits a real MySqlConnection (not virtual,
     // no injectable seam), so PipelineAsync itself can't be exercised without a live StarRocks
     // backend. MaskPipelineRows is extracted specifically so this row-stripping transformation —
     // the Step 5 "Layer 2 masking" safety net for implicit-passthrough/"select *" columns that
@@ -68,7 +68,7 @@ public class StarRocksRepositoryTests
         };
         var row = new Dictionary<string, object> { ["Id"] = "1", ["Title"] = "T", ["Secret"] = "hidden" };
 
-        var result = StarRocksRepository.MaskPipelineRows(new[] { (dynamic)row }, lastCols).ToList();
+        var result = EngagementRepository.MaskPipelineRows(new[] { (dynamic)row }, lastCols).ToList();
 
         result.Should().HaveCount(1);
         var dict = (IDictionary<string, object>)result[0];
@@ -88,7 +88,7 @@ public class StarRocksRepositoryTests
         };
         var row = new Dictionary<string, object> { ["Id"] = "1", ["Title"] = "T", ["Body"] = "B" };
 
-        var result = StarRocksRepository.MaskPipelineRows(new[] { (dynamic)row }, lastCols).ToList();
+        var result = EngagementRepository.MaskPipelineRows(new[] { (dynamic)row }, lastCols).ToList();
 
         var dict = (IDictionary<string, object>)result[0];
         dict.Keys.Should().BeEquivalentTo(["Id", "Title", "Body"]);
@@ -104,7 +104,7 @@ public class StarRocksRepositoryTests
             (dynamic)new Dictionary<string, object> { ["Id"] = "2", ["Secret"] = "b" }
         };
 
-        var result = StarRocksRepository.MaskPipelineRows(rows, lastCols).ToList();
+        var result = EngagementRepository.MaskPipelineRows(rows, lastCols).ToList();
 
         result.Should().HaveCount(2);
         foreach (var r in result)

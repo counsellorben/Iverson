@@ -42,7 +42,15 @@ internal sealed class ReconciliationService(
             await events.ProduceAsync(
                 EntityTopics.Events,
                 key,
-                new EntityEvent(EntityEventType.Updated, typeName, key, rowJson, traceId, "1", DateTimeOffset.UtcNow, targetStores));
+                new EntityEvent(
+                    EntityEventType.Updated,
+                    typeName,
+                    key,
+                    rowJson,
+                    traceId,
+                    "1",
+                    DateTimeOffset.UtcNow,
+                    targetStores));
             count++;
         }
 
@@ -105,12 +113,22 @@ internal sealed class ReconciliationService(
             await events.ProduceAsync(
                 EntityTopics.Events,
                 row.EntityKey,
-                new EntityEvent(EntityEventType.Updated, row.TypeName, row.EntityKey, rowJson, string.Empty, "1", DateTimeOffset.UtcNow, targetStores));
+                new EntityEvent(
+                    EntityEventType.Updated,
+                    row.TypeName,
+                    row.EntityKey,
+                    rowJson,
+                    string.Empty,
+                    "1",
+                    DateTimeOffset.UtcNow,
+                    targetStores));
 
             await DeleteQueueRowAsync(row.Id);
             logger.LogInformation(
                 "[Reconciliation] Re-published queued entity type={Type} key={Key} after {Attempts} prior failed attempt(s)",
-                row.TypeName, row.EntityKey, row.Attempts);
+                row.TypeName,
+                row.EntityKey,
+                row.Attempts);
         }
         catch (Exception ex)
         {
@@ -137,12 +155,22 @@ internal sealed class ReconciliationService(
             await events.ProduceAsync(
                 EntityTopics.Events,
                 row.EntityKey,
-                new EntityEvent(EntityEventType.Deleted, row.TypeName, row.EntityKey, row.Payload!, string.Empty, "1", DateTimeOffset.UtcNow, targetStores));
+                new EntityEvent(
+                    EntityEventType.Deleted,
+                    row.TypeName,
+                    row.EntityKey,
+                    row.Payload!,
+                    string.Empty,
+                    "1",
+                    DateTimeOffset.UtcNow,
+                    targetStores));
 
             await DeleteQueueRowAsync(row.Id);
             logger.LogInformation(
                 "[Reconciliation] Re-published queued delete type={Type} key={Key} after {Attempts} prior failed attempt(s)",
-                row.TypeName, row.EntityKey, row.Attempts);
+                row.TypeName,
+                row.EntityKey,
+                row.Attempts);
         }
         catch (Exception ex)
         {
@@ -159,7 +187,11 @@ internal sealed class ReconciliationService(
             logger.LogCritical(
                 "[Reconciliation] Giving up on type={Type} key={Key} after {Attempts} attempts — " +
                 "requires manual POST /admin/reconcile/{Type}. Last error: {Error}",
-                row.TypeName, row.EntityKey, attempts, row.TypeName, ex.Message);
+                row.TypeName,
+                row.EntityKey,
+                attempts,
+                row.TypeName,
+                ex.Message);
     }
 
     private Task DeleteQueueRowAsync(Guid id) => queue.DeleteRowAsync(id);
@@ -171,6 +203,10 @@ internal sealed class ReconciliationService(
             return keyEl.GetString();
 
         var camel = char.ToLowerInvariant(keyColumn[0]) + keyColumn[1..];
-        return doc.RootElement.TryGetProperty(camel, out var camelEl) ? camelEl.GetString() : null;
+        return doc.RootElement.TryGetProperty(
+            camel,
+            out var camelEl)
+                ? camelEl.GetString()
+                : null;
     }
 }

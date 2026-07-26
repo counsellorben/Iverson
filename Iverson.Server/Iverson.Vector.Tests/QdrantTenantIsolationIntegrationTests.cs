@@ -9,7 +9,7 @@ using Xunit;
 namespace Iverson.Vector.Tests;
 
 /// <summary>
-/// Real-Qdrant-container proof that the tenant-scoped JWT mechanism (<see cref="QdrantTenantScope"/>)
+/// Real-Qdrant-container proof that the tenant-scoped JWT mechanism (<see cref="IntelligenceTenantScope"/>)
 /// actually enforces the isolation Tasks 1-3 wire into every call site: a JWT minted for exactly one
 /// physical collection cannot read or write any other collection, a read-only JWT cannot write, and
 /// the shared <see cref="QdrantClient"/> (constructed with no static credential, per Task 2) only
@@ -43,9 +43,9 @@ public sealed class QdrantJwtRbacContainerFixture : IAsyncLifetime
     // `new QdrantClient(host, port, https: false, apiKey: null)` (Task 2). Every call in these
     // tests must supply its own credential via RequestHeaders.Use, exactly like production.
     public QdrantClient Client { get; private set; } = null!;
-    public QdrantCollectionManager AdminCollectionManager { get; private set; } = null!;
-    public QdrantVectorService Vector { get; private set; } = null!;
-    public QdrantTenantScope TenantScope { get; } = new(ApiKey);
+    public IntelligenceCollectionManager AdminCollectionManager { get; private set; } = null!;
+    public IntelligenceVectorService Vector { get; private set; } = null!;
+    public IntelligenceTenantScope TenantScope { get; } = new(ApiKey);
 
     public async Task InitializeAsync()
     {
@@ -55,8 +55,8 @@ public sealed class QdrantJwtRbacContainerFixture : IAsyncLifetime
         var mappedPort = _container.GetMappedPublicPort(GrpcPort);
 
         Client                 = new QdrantClient(host, mappedPort, https: false, apiKey: null);
-        AdminCollectionManager = new QdrantCollectionManager(Client, ApiKey, NullLogger<QdrantCollectionManager>.Instance);
-        Vector                 = new QdrantVectorService(Client);
+        AdminCollectionManager = new IntelligenceCollectionManager(Client, ApiKey, NullLogger<IntelligenceCollectionManager>.Instance);
+        Vector                 = new IntelligenceVectorService(Client);
     }
 
     public async Task DisposeAsync() => await _container.DisposeAsync();
@@ -66,9 +66,9 @@ public sealed class QdrantTenantIsolationIntegrationTests(QdrantJwtRbacContainer
     : IClassFixture<QdrantJwtRbacContainerFixture>
 {
     private readonly QdrantClient _client = fixture.Client;
-    private readonly QdrantCollectionManager _admin = fixture.AdminCollectionManager;
-    private readonly QdrantVectorService _vector = fixture.Vector;
-    private readonly QdrantTenantScope _tenantScope = fixture.TenantScope;
+    private readonly IntelligenceCollectionManager _admin = fixture.AdminCollectionManager;
+    private readonly IntelligenceVectorService _vector = fixture.Vector;
+    private readonly IntelligenceTenantScope _tenantScope = fixture.TenantScope;
 
     private static string UniqueBase() => "tn_" + Guid.NewGuid().ToString("N")[..8];
 
@@ -256,7 +256,7 @@ public sealed class QdrantTenantIsolationIntegrationTests(QdrantJwtRbacContainer
                 new Dictionary<string, object> { ["ownerId"] = "bob" });
         }
 
-        var filter = QdrantFilterBuilder.ApplyOwnership(null, ownershipRequired: true, "ownerId", "alice");
+        var filter = IntelligenceFilterBuilder.ApplyOwnership(null, ownershipRequired: true, "ownerId", "alice");
 
         IReadOnlyList<VectorSearchResult> results;
         using (RequestHeaders.Use("api-key", _tenantScope.MintScopedApiKey(collection, readOnly: true)))

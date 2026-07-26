@@ -9,16 +9,16 @@ public class StarRocksQueryBuilderTests
 {
     // ── Fixtures ───────────────────────────────────────────────────────────────
 
-    private static StarRocksQuerySchema AuthorSchema() => new(
+    private static EngagementQuerySchema AuthorSchema() => new(
         "Author", "authors", "Id", ["Name", "Bio", "Rating", "PublishedAt"]);
 
-    private static StarRocksQuerySchema ArticleSchema() => new(
+    private static EngagementQuerySchema ArticleSchema() => new(
         "Article", "articles", "Id", ["Title", "Body"]);
 
-    private static StarRocksQuerySchema ArticleWithProjectionSchema() => new(
+    private static EngagementQuerySchema ArticleWithProjectionSchema() => new(
         "Article", "articles", "Id", ["Title", "Category", "WordCount", "PublishedAt", "Body"]);
 
-    private static StarRocksQuerySchema TagSchema() => new(
+    private static EngagementQuerySchema TagSchema() => new(
         "Tag", "tags", "Id", ["Label"]);
 
     // ── BuildAggregate — Terms ─────────────────────────────────────────────────
@@ -553,7 +553,7 @@ public class StarRocksQueryBuilderTests
 
         var act = () => StarRocksQueryBuilder.BuildAggregate("authors", AuthorSchema(), null, spec, authz: authz);
 
-        act.Should().Throw<StarRocksQueryTranslationException>().WithMessage("*Bio*");
+        act.Should().Throw<EngagementQueryTranslationException>().WithMessage("*Bio*");
     }
 
     [Fact]
@@ -582,7 +582,7 @@ public class StarRocksQueryBuilderTests
 
         var act = () => StarRocksQueryBuilder.BuildAggregate("authors", AuthorSchema(), null, spec, authz: authz);
 
-        act.Should().Throw<StarRocksQueryTranslationException>().WithMessage("*Bio*");
+        act.Should().Throw<EngagementQueryTranslationException>().WithMessage("*Bio*");
     }
 
     [Fact]
@@ -602,7 +602,7 @@ public class StarRocksQueryBuilderTests
         var act = () => StarRocksQueryBuilder.BuildAggregate(
             "authors", AuthorSchema(), null, spec, joins: joins, registry: registry, authz: authz);
 
-        var thrown = act.Should().Throw<StarRocksQueryTranslationException>().Which;
+        var thrown = act.Should().Throw<EngagementQueryTranslationException>().Which;
         thrown.Message.Should().Contain("Body");
         thrown.Message.Should().Contain("Article");
     }
@@ -623,7 +623,7 @@ public class StarRocksQueryBuilderTests
 
         var act = () => StarRocksQueryBuilder.BuildAggregate("authors", AuthorSchema(), null, spec, authz: authz);
 
-        act.Should().Throw<StarRocksQueryTranslationException>().WithMessage("*Bio*");
+        act.Should().Throw<EngagementQueryTranslationException>().WithMessage("*Bio*");
     }
 
     [Fact]
@@ -646,7 +646,7 @@ public class StarRocksQueryBuilderTests
 
         var act = () => StarRocksQueryBuilder.BuildAggregate("authors", AuthorSchema(), null, spec, authz: authz);
 
-        act.Should().Throw<StarRocksQueryTranslationException>().WithMessage("*Bio*");
+        act.Should().Throw<EngagementQueryTranslationException>().WithMessage("*Bio*");
     }
 
     [Fact]
@@ -674,7 +674,7 @@ public class StarRocksQueryBuilderTests
 
         var act = () => StarRocksQueryBuilder.BuildAggregate("authors", AuthorSchema(), null, spec);
 
-        act.Should().Throw<StarRocksQueryTranslationException>().WithMessage("*NoSuchColumn*");
+        act.Should().Throw<EngagementQueryTranslationException>().WithMessage("*NoSuchColumn*");
     }
 
     [Fact]
@@ -711,7 +711,7 @@ public class StarRocksQueryBuilderTests
 
         var act = () => StarRocksQueryBuilder.BuildAggregate("authors", AuthorSchema(), null, spec);
 
-        act.Should().Throw<StarRocksQueryTranslationException>()
+        act.Should().Throw<EngagementQueryTranslationException>()
             .Where(e => e.Message.Contains("forbidden character"));
     }
 
@@ -733,7 +733,7 @@ public class StarRocksQueryBuilderTests
 
         var act = () => StarRocksQueryBuilder.BuildAggregate("authors", AuthorSchema(), null, spec, authz: authz);
 
-        act.Should().Throw<StarRocksQueryTranslationException>()
+        act.Should().Throw<EngagementQueryTranslationException>()
             .Where(e => e.Message.Contains("forbidden character"));
     }
 
@@ -994,7 +994,7 @@ public class StarRocksQueryBuilderTests
 
         // VECTOR_SIMILAR is Qdrant's job, not StarRocks's — BuildSearch (via BuildWhere)
         // must reject it loudly with InvalidArgument, not silently drop it.
-        act.Should().Throw<StarRocksQueryTranslationException>()
+        act.Should().Throw<EngagementQueryTranslationException>()
             .Where(e => e.Message.Contains("VECTOR_SIMILAR"));
     }
 
@@ -1394,7 +1394,7 @@ public class StarRocksQueryBuilderTests
 
         var act = () => StarRocksQueryBuilder.BuildSearch("authors", AuthorSchema(), query, 0, 10, authz: authz);
 
-        act.Should().Throw<StarRocksQueryTranslationException>().WithMessage("*Bio*");
+        act.Should().Throw<EngagementQueryTranslationException>().WithMessage("*Bio*");
     }
 
     [Fact]
@@ -1415,7 +1415,7 @@ public class StarRocksQueryBuilderTests
         var act = () => StarRocksQueryBuilder.BuildSearch(
             "authors", AuthorSchema(), query, 0, 10, joins: joins, registry: registry, authz: authz);
 
-        var thrown = act.Should().Throw<StarRocksQueryTranslationException>().Which;
+        var thrown = act.Should().Throw<EngagementQueryTranslationException>().Which;
         thrown.Message.Should().Contain("Body");
         thrown.Message.Should().Contain("Article");
     }
@@ -1461,7 +1461,7 @@ public class StarRocksQueryBuilderTests
         // nonexistent type) never reaches IsFieldAllowed's tableMap!.Values.First(...) lookup and
         // never risks an uncaught InvalidOperationException. This is the correct pattern;
         // BuildGroupBy's orderSql construction did NOT follow it until the fix, and is now
-        // aligned via a resolve-or-throw StarRocksQueryTranslationException instead (see
+        // aligned via a resolve-or-throw EngagementQueryTranslationException instead (see
         // BuildGroupBy_OrderBy_UnresolvableProperty_ThrowsTranslationException_NotInvalidOperationException).
         var query = new SearchQuery();
         query.Sort.Add(new SearchSort { Property = "NoSuchType.Field" });
@@ -1473,7 +1473,7 @@ public class StarRocksQueryBuilderTests
 
     // ── BuildFromWithJoins ─────────────────────────────────────────────────────
 
-    private static Func<string, StarRocksQuerySchema?> BuildRegistry(params StarRocksQuerySchema[] schemas)
+    private static Func<string, EngagementQuerySchema?> BuildRegistry(params EngagementQuerySchema[] schemas)
     {
         var map = schemas.ToDictionary(s => s.TypeName, StringComparer.OrdinalIgnoreCase);
         return typeName => map.GetValueOrDefault(typeName);
@@ -1594,7 +1594,7 @@ public class StarRocksQueryBuilderTests
 
         var act = () => StarRocksQueryBuilder.BuildFromWithJoins(AuthorSchema(), joins, registry, new DynamicParameters(), out _);
 
-        act.Should().Throw<StarRocksQueryTranslationException>()
+        act.Should().Throw<EngagementQueryTranslationException>()
             .WithMessage("*NoSuchType*");
     }
 
@@ -1948,7 +1948,7 @@ public class StarRocksQueryBuilderTests
 
         var act = () => StarRocksQueryBuilder.BuildGroupBy("authors", AuthorSchema(), request, registry);
 
-        act.Should().Throw<StarRocksQueryTranslationException>()
+        act.Should().Throw<EngagementQueryTranslationException>()
             .Where(e => e.Message.Contains("forbidden character"));
     }
 
@@ -1975,7 +1975,7 @@ public class StarRocksQueryBuilderTests
 
         var act = () => StarRocksQueryBuilder.BuildGroupBy("authors", AuthorSchema(), request, registry, authz: authz);
 
-        act.Should().Throw<StarRocksQueryTranslationException>()
+        act.Should().Throw<EngagementQueryTranslationException>()
             .Where(e => e.Message.Contains("forbidden character"));
     }
 
@@ -2084,7 +2084,7 @@ public class StarRocksQueryBuilderTests
 
         var act = () => StarRocksQueryBuilder.BuildGroupBy("authors", AuthorSchema(), request, registry);
 
-        act.Should().Throw<StarRocksQueryTranslationException>()
+        act.Should().Throw<EngagementQueryTranslationException>()
             .WithMessage("*bad_sum*");
     }
 
@@ -2267,7 +2267,7 @@ public class StarRocksQueryBuilderTests
 
         var act = () => StarRocksQueryBuilder.BuildGroupBy("authors", AuthorSchema(), request, registry, authz: authz);
 
-        act.Should().Throw<StarRocksQueryTranslationException>().WithMessage("*Bio*");
+        act.Should().Throw<EngagementQueryTranslationException>().WithMessage("*Bio*");
     }
 
     [Fact]
@@ -2307,7 +2307,7 @@ public class StarRocksQueryBuilderTests
 
         var act = () => StarRocksQueryBuilder.BuildGroupBy("authors", AuthorSchema(), request, registry, authz: authz);
 
-        var thrown = act.Should().Throw<StarRocksQueryTranslationException>().Which;
+        var thrown = act.Should().Throw<EngagementQueryTranslationException>().Which;
         thrown.Message.Should().Contain("Body");
         thrown.Message.Should().Contain("Article");
     }
@@ -2325,7 +2325,7 @@ public class StarRocksQueryBuilderTests
 
         var act = () => StarRocksQueryBuilder.BuildGroupBy("authors", AuthorSchema(), request, registry, authz: authz);
 
-        act.Should().Throw<StarRocksQueryTranslationException>().WithMessage("*Bio*");
+        act.Should().Throw<EngagementQueryTranslationException>().WithMessage("*Bio*");
     }
 
     [Fact]
@@ -2349,7 +2349,7 @@ public class StarRocksQueryBuilderTests
 
         var act = () => StarRocksQueryBuilder.BuildGroupBy("authors", AuthorSchema(), request, registry, authz: authz);
 
-        var thrown = act.Should().Throw<StarRocksQueryTranslationException>().Which;
+        var thrown = act.Should().Throw<EngagementQueryTranslationException>().Which;
         thrown.Message.Should().Contain("Body");
         thrown.Message.Should().Contain("Article");
     }
@@ -2370,7 +2370,7 @@ public class StarRocksQueryBuilderTests
 
         var act = () => StarRocksQueryBuilder.BuildGroupBy("authors", AuthorSchema(), request, registry, authz: authz);
 
-        act.Should().Throw<StarRocksQueryTranslationException>().WithMessage("*Bio*");
+        act.Should().Throw<EngagementQueryTranslationException>().WithMessage("*Bio*");
     }
 
     [Fact]
@@ -2395,7 +2395,7 @@ public class StarRocksQueryBuilderTests
 
         var act = () => StarRocksQueryBuilder.BuildGroupBy("authors", AuthorSchema(), request, registry, authz: authz);
 
-        act.Should().Throw<StarRocksQueryTranslationException>().WithMessage("*Bio*");
+        act.Should().Throw<EngagementQueryTranslationException>().WithMessage("*Bio*");
     }
 
     [Fact]
@@ -2425,7 +2425,7 @@ public class StarRocksQueryBuilderTests
 
         var act = () => StarRocksQueryBuilder.BuildGroupBy("authors", AuthorSchema(), request, registry);
 
-        act.Should().Throw<StarRocksQueryTranslationException>().WithMessage("*NoSuchColumn*");
+        act.Should().Throw<EngagementQueryTranslationException>().WithMessage("*NoSuchColumn*");
     }
 
     [Fact]
@@ -2491,7 +2491,7 @@ public class StarRocksQueryBuilderTests
 
         var act = () => StarRocksQueryBuilder.BuildGroupBy("authors", AuthorSchema(), request, registry, authz: authz);
 
-        act.Should().Throw<StarRocksQueryTranslationException>().WithMessage("*Bio*");
+        act.Should().Throw<EngagementQueryTranslationException>().WithMessage("*Bio*");
     }
 
     [Fact]
@@ -2516,7 +2516,7 @@ public class StarRocksQueryBuilderTests
 
         var act = () => StarRocksQueryBuilder.BuildGroupBy("authors", AuthorSchema(), request, registry, authz: authz);
 
-        var thrown = act.Should().Throw<StarRocksQueryTranslationException>().Which;
+        var thrown = act.Should().Throw<EngagementQueryTranslationException>().Which;
         thrown.Message.Should().Contain("Body");
         thrown.Message.Should().Contain("Article");
     }
@@ -2545,7 +2545,7 @@ public class StarRocksQueryBuilderTests
         // unhandled/Internal gRPC error) because JoinContext.Alias is the physical table name
         // (e.g. "authors"), never the TypeName ("Author"). Mirrors keyCols' "resolve-or-throw"
         // pattern just above in this method: an unresolvable property must throw
-        // StarRocksQueryTranslationException, the one mandated exception type, same as every
+        // EngagementQueryTranslationException, the one mandated exception type, same as every
         // other reject-on-reference check in this file.
         var registry = BuildRegistry(AuthorSchema());
         var request = new GroupByRequest { TypeName = "Author", Keys = { "Name" } };
@@ -2554,7 +2554,7 @@ public class StarRocksQueryBuilderTests
 
         var act = () => StarRocksQueryBuilder.BuildGroupBy("authors", AuthorSchema(), request, registry);
 
-        act.Should().Throw<StarRocksQueryTranslationException>().WithMessage("*NoSuchType.Field*");
+        act.Should().Throw<EngagementQueryTranslationException>().WithMessage("*NoSuchType.Field*");
     }
 
     // ── BuildWhere/BuildHaving — resolver + prefix overloads ──────────────────
@@ -2636,7 +2636,7 @@ public class StarRocksQueryBuilderTests
         var act = () => StarRocksQueryBuilder.BuildWhere(
             AuthorSchema(), [VectorClause()], SearchLogic.And, param, out _);
 
-        act.Should().Throw<StarRocksQueryTranslationException>()
+        act.Should().Throw<EngagementQueryTranslationException>()
             .Where(e => e.Message.Contains("VECTOR_SIMILAR")
                      && e.Message.Contains("SearchSimilar"));
     }
@@ -2648,7 +2648,7 @@ public class StarRocksQueryBuilderTests
         var act = () => StarRocksQueryBuilder.BuildHaving(
             [VectorClause()], SearchLogic.And, param);
 
-        act.Should().Throw<StarRocksQueryTranslationException>()
+        act.Should().Throw<EngagementQueryTranslationException>()
             .Where(e => e.Message.Contains("VECTOR_SIMILAR")
                      && e.Message.Contains("SearchSimilar"));
     }

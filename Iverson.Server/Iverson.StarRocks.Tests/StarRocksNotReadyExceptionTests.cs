@@ -4,14 +4,14 @@ using Xunit;
 
 namespace Iverson.StarRocks.Tests;
 
-public class StarRocksNotReadyExceptionTests
+public class EngagementNotReadyExceptionTests
 {
     [Fact]
     public void Constructor_SetsMessageAndInnerException()
     {
         var inner = new InvalidOperationException("boom");
 
-        var ex = new StarRocksNotReadyException("not ready", inner);
+        var ex = new EngagementNotReadyException("not ready", inner);
 
         ex.Message.Should().Be("not ready");
         ex.InnerException.Should().BeSameAs(inner);
@@ -20,7 +20,7 @@ public class StarRocksNotReadyExceptionTests
     [Fact]
     public void Constructor_InnerExceptionIsOptional()
     {
-        var ex = new StarRocksNotReadyException("not ready");
+        var ex = new EngagementNotReadyException("not ready");
 
         ex.Message.Should().Be("not ready");
         ex.InnerException.Should().BeNull();

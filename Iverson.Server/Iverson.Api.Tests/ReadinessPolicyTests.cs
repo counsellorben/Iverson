@@ -10,7 +10,7 @@ public class ReadinessPolicyTests
     [Fact]
     public void Evaluate_AllHealthyIncludingStarRocks_IsReadyAndFullyHealthy()
     {
-        var result = ReadinessPolicy.Evaluate(true, StarRocksHealthStatus.Healthy, true, true);
+        var result = ReadinessPolicy.Evaluate(true, EngagementHealthStatus.Healthy, true, true);
 
         result.Ready.Should().BeTrue();
         result.FullyHealthy.Should().BeTrue();
@@ -19,7 +19,7 @@ public class ReadinessPolicyTests
     [Fact]
     public void Evaluate_StarRocksAuthPending_IsReadyButNotFullyHealthy()
     {
-        var result = ReadinessPolicy.Evaluate(true, StarRocksHealthStatus.AuthPending, true, true);
+        var result = ReadinessPolicy.Evaluate(true, EngagementHealthStatus.AuthPending, true, true);
 
         result.Ready.Should().BeTrue();
         result.FullyHealthy.Should().BeFalse();
@@ -28,7 +28,7 @@ public class ReadinessPolicyTests
     [Fact]
     public void Evaluate_StarRocksUnhealthy_IsNotReady()
     {
-        var result = ReadinessPolicy.Evaluate(true, StarRocksHealthStatus.Unhealthy, true, true);
+        var result = ReadinessPolicy.Evaluate(true, EngagementHealthStatus.Unhealthy, true, true);
 
         result.Ready.Should().BeFalse();
         result.FullyHealthy.Should().BeFalse();
@@ -40,7 +40,7 @@ public class ReadinessPolicyTests
     [InlineData(true, true, false)]
     public void Evaluate_AnyOtherDependencyUnhealthy_IsNotReady(bool postgres, bool qdrant, bool kafka)
     {
-        var result = ReadinessPolicy.Evaluate(postgres, StarRocksHealthStatus.Healthy, qdrant, kafka);
+        var result = ReadinessPolicy.Evaluate(postgres, EngagementHealthStatus.Healthy, qdrant, kafka);
 
         result.Ready.Should().BeFalse();
     }

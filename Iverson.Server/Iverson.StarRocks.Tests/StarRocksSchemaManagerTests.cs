@@ -8,7 +8,7 @@ public class StarRocksSchemaManagerTests
     [Fact]
     public void BuildCreateTableDdl_EmitsPrimaryKey()
     {
-        var schema = new StarRocksTableSchema(
+        var schema = new EngagementTableSchema(
             "articles",
             new StarRocksColumnSchema("Id", "VARCHAR(36)", false),
             [new StarRocksColumnSchema("Title", "STRING", false)]);
@@ -25,7 +25,7 @@ public class StarRocksSchemaManagerTests
     [Fact]
     public void BuildCreateTableDdl_NullableColumn_OmitsNotNull()
     {
-        var schema = new StarRocksTableSchema(
+        var schema = new EngagementTableSchema(
             "authors",
             new StarRocksColumnSchema("Id",  "VARCHAR(36)", false),
             [new StarRocksColumnSchema("Bio", "STRING",     true)]);
@@ -39,7 +39,7 @@ public class StarRocksSchemaManagerTests
     [Fact]
     public void BuildCreateTableDdl_EmitsOrderBy_WhenSortKeyIsPopulated()
     {
-        var schema = new StarRocksTableSchema(
+        var schema = new EngagementTableSchema(
             "articles",
             new StarRocksColumnSchema("Id", "VARCHAR(36)", false),
             [
@@ -59,7 +59,7 @@ public class StarRocksSchemaManagerTests
     [Fact]
     public void BuildCreateTableDdl_OmitsOrderBy_WhenNoSortKey()
     {
-        var schema = new StarRocksTableSchema(
+        var schema = new EngagementTableSchema(
             "authors",
             new StarRocksColumnSchema("Id", "VARCHAR(36)", false),
             [new StarRocksColumnSchema("Name", "STRING", false)]);

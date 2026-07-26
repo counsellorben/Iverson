@@ -52,7 +52,7 @@ public class StarRocksReadinessGateTests
             pollInterval: TimeSpan.FromMilliseconds(10));
 
         var act = async () => await gate.EnsureReadyAsync();
-        await act.Should().ThrowAsync<StarRocksNotReadyException>();
+        await act.Should().ThrowAsync<EngagementNotReadyException>();
 
         alwaysReady = true;
         await gate.EnsureReadyAsync(); // should not throw — the gate must retry fresh, not stay wedged

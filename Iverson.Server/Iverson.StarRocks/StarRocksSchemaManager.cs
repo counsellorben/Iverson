@@ -2,7 +2,7 @@ namespace Iverson.StarRocks;
 
 internal static class StarRocksSchemaManager
 {
-    internal static string BuildCreateTableDdl(StarRocksTableSchema schema, string qualifiedTableName)
+    internal static string BuildCreateTableDdl(EngagementTableSchema schema, string qualifiedTableName)
     {
         var keySql  = $"`{schema.KeyColumn.Name}` {schema.KeyColumn.SrType} NOT NULL";
         var colsSql = schema.Columns.Select(c =>

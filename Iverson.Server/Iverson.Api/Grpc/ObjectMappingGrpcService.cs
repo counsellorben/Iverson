@@ -2,7 +2,6 @@ using Google.Protobuf;
 using Google.Protobuf.WellKnownTypes;
 using Grpc.Core;
 using Iverson.Api.Authorization;
-using Iverson.Api.Reconciliation;
 using Iverson.Api.Schema;
 using Iverson.Client.Contracts;
 using Iverson.Events;
@@ -101,7 +100,12 @@ public sealed class ObjectMappingGrpcService(
         AuthorizationFieldMasking.MaskDisallowedFields(entityStruct, decision.AllowedFields);
 
         if (request.Depth > 0)
-            await _relationResolver.ResolveRelationsAsync(entityStruct, schema, request.Depth, _actingUserAccessor.ActingUser, context.CancellationToken);
+            await _relationResolver.ResolveRelationsAsync(
+                entityStruct,
+                schema,
+                request.Depth,
+                _actingUserAccessor.ActingUser,
+                context.CancellationToken);
 
         return new MappingResponse { Success = true, Data = entityStruct, TraceId = request.TraceId };
     }
@@ -162,8 +166,14 @@ public sealed class ObjectMappingGrpcService(
 
         var existingRowJson = await FetchByKeyAsync(schema, key);
         AuthorizationFieldMasking.EnforceWriteAuthorization(
-            _authEvaluator, _actingUserAccessor.ActingUser, schema, request.Payload,
-            AuthorizationAction.Write, "Not authorized to update this entity.", existingRowJson, _auditLog);
+            _authEvaluator,
+            _actingUserAccessor.ActingUser,
+            schema,
+            request.Payload,
+            AuthorizationAction.Write,
+            "Not authorized to update this entity.",
+            existingRowJson,
+            _auditLog);
 
         _relationValidator.ValidateRelations(request.Payload, schema);
 
@@ -181,8 +191,15 @@ public sealed class ObjectMappingGrpcService(
         // polls unconditionally-inserted outbox rows, not just failure-recorded ones — see
         // Task 5's updated ReconciliationSchema doc comment) will pick this row up on its
         // next poll. This just keeps the common case's projection latency low.
-        await _outboxPublisher.PublishAsync(EntityEventType.Updated, request.TypeName, key, payloadJson,
-            request.TraceId, targetStores, outboxRowId, "Mapping.Update");
+        await _outboxPublisher.PublishAsync(
+            EntityEventType.Updated,
+            request.TypeName,
+            key,
+            payloadJson,
+            request.TraceId,
+            targetStores,
+            outboxRowId,
+            "Mapping.Update");
 
         return new MappingResponse { Success = true, Data = request.Payload, TraceId = request.TraceId };
     }
@@ -213,8 +230,16 @@ public sealed class ObjectMappingGrpcService(
             StructFieldAccess.GetFieldString(rowStruct, decision.TenantColumn) != decision.TenantValue;
         if (decision.Denied || ownerMismatch || tenantMismatch)
         {
-            _auditLog.Denied(_actingUserAccessor.ActingUser, "Delete", request.TypeName, request.Key,
-                decision.Denied ? "AccessDenied" : ownerMismatch ? "OwnerMismatch" : "TenantMismatch");
+            _auditLog.Denied(
+                _actingUserAccessor.ActingUser,
+                "Delete",
+                request.TypeName,
+                request.Key,
+                decision.Denied
+                    ? "AccessDenied"
+                    : ownerMismatch
+                        ? "OwnerMismatch"
+                        : "TenantMismatch");
             return new MappingDeleteResponse
             {
                 Success = false,
@@ -229,12 +254,18 @@ public sealed class ObjectMappingGrpcService(
         await _txRunner.ExecuteInTransactionAsync(async tx =>
         {
             await _entities.DeleteAsync(
-                tx, SchemaBuilder.ToTableSchema(schema), request.Key,
+                tx,
+                SchemaBuilder.ToTableSchema(schema),
+                request.Key,
                 tenantScoped: decision.TenantColumn is not null,
                 tenantId: decision.TenantValue);
 
             await _outboxWriter.EnqueueDeleteOutboxRowAsync(
-                tx, outboxRowId, request.TypeName, request.Key, rowJson);
+                tx,
+                outboxRowId,
+                request.TypeName,
+                request.Key,
+                rowJson);
         });
 
         // Opportunistic fast-path publish: the durability guarantee already exists (the
@@ -244,8 +275,15 @@ public sealed class ObjectMappingGrpcService(
         // see Task 5's updated ReconciliationSchema doc comment) will pick this row up on its
         // next poll and replay it from the stored pre-delete snapshot. This just keeps the
         // common case's projection latency low.
-        await _outboxPublisher.PublishAsync(EntityEventType.Deleted, request.TypeName, request.Key, rowJson,
-            request.TraceId, targetStores, outboxRowId, "Mapping.Delete");
+        await _outboxPublisher.PublishAsync(
+            EntityEventType.Deleted,
+            request.TypeName,
+            request.Key,
+            rowJson,
+            request.TraceId,
+            targetStores,
+            outboxRowId,
+            "Mapping.Delete");
 
         return new MappingDeleteResponse { Success = true, TraceId = request.TraceId };
     }
@@ -258,5 +296,9 @@ public sealed class ObjectMappingGrpcService(
 
     private Task<string?> FetchByKeyAsync(
         SchemaDescriptor schema, string key, bool tenantScoped = false, string? tenantId = null) =>
-        _entities.FetchByKeyAsync(SchemaBuilder.ToTableSchema(schema), key, tenantScoped, tenantId);
+        _entities.FetchByKeyAsync(
+            SchemaBuilder.ToTableSchema(schema),
+            key,
+            tenantScoped,
+            tenantId);
 }

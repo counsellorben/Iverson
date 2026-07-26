@@ -12,11 +12,11 @@ public static class ReadinessPolicy
     // in the response body (the caller's "starrocks" check stays false) for real observability —
     // only the k8s-facing readiness verdict (Ready, which drives the HTTP status code) tolerates it.
     public static ReadinessResult Evaluate(
-        bool postgresHealthy, StarRocksHealthStatus starRocksStatus, bool qdrantHealthy, bool kafkaHealthy)
+        bool postgresHealthy, EngagementHealthStatus starRocksStatus, bool qdrantHealthy, bool kafkaHealthy)
     {
         var ready = postgresHealthy && qdrantHealthy && kafkaHealthy
-            && starRocksStatus != StarRocksHealthStatus.Unhealthy;
-        var fullyHealthy = ready && starRocksStatus == StarRocksHealthStatus.Healthy;
+            && starRocksStatus != EngagementHealthStatus.Unhealthy;
+        var fullyHealthy = ready && starRocksStatus == EngagementHealthStatus.Healthy;
 
         return new ReadinessResult(ready, fullyHealthy);
     }
