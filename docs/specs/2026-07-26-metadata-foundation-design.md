@@ -105,9 +105,15 @@ CSR #7), and sourcing it from the unsigned event payload would corrupt chunk-sea
 row authorization. Metadata payload refreshes whenever the object is re-written,
 matching existing payload behavior.
 
-No filter-DSL change: `IntelligenceFilterBuilder` already filters arbitrary payload
-keys with string/bool/number equality, so metadata on chunk points becomes filterable
-in `SearchChunks` for free.
+The filter DSL itself needs no change: `IntelligenceFilterBuilder` already filters
+arbitrary payload keys with string/bool/number equality. However, the gRPC layer in
+front of it, `BuildChunksFilter` (ObjectSearchGrpcService.cs:576–585), currently
+rejects any `SearchChunks` filter that is not exactly one EQUALS clause on the
+primary-key property. Change: extend `BuildChunksFilter` to also accept EQUALS
+clauses whose property is in `schema.MetadataColumns` (camelCase payload key, the
+existing `BuildEqualityCondition` value kinds), keeping the primary-key special case;
+clauses on any other property are still rejected. This makes chunk metadata
+filterable by clients through `SearchChunks`.
 
 ### 5. Search-result payload fix (latent bug, folded in)
 
@@ -134,7 +140,9 @@ server-side consumers (the future enrichment/fusion stages). A client-facing
   test: legacy JSON without the new members loads with empty defaults. Consumer tests:
   chunk points carry parent metadata values; object points unchanged; a schema whose
   owner field is metadata-flagged yields chunk points carrying the authoritative
-  owner value (not the event-payload value). Vector service
+  owner value (not the event-payload value). Search service tests: `SearchChunks`
+  accepts an EQUALS clause on a metadata column, still accepts the primary-key
+  clause, and still rejects clauses on non-metadata, non-key properties. Vector service
   test: non-string payload values round-trip as canonical strings.
 - **Clients** — per-language registrar/annotation tests asserting the new
   declarations produce `is_metadata`/`description` on the wire, mirroring each
@@ -164,6 +172,10 @@ All verified empirically 2026-07-26:
 11. All 16 `SchemaDescriptor` consumers read only existing members; additive members
     leave SQL/StarRocks DDL, authorization, and the refresh worker unaffected. Bonus
     finding: object points already mirror all scalars (narrowed §4's scope).
+12. (Added by round-2 CDR) `BuildChunksFilter` restricts client `SearchChunks`
+    filters to a single primary-key EQUALS clause (ObjectSearchGrpcService.cs:576–585)
+    — client-facing metadata filterability therefore requires the `BuildChunksFilter`
+    extension specified in §4.
 
 ## Out of scope
 
