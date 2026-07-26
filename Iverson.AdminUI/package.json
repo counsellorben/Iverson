@@ -11,7 +11,7 @@
   "dependencies": {
     "react": "^18.3.0",
     "react-dom": "^18.3.0",
-    "react-router-dom": "^7.0.0",
+    "react-router-dom": "^7.18.1",
     "@improbable-eng/grpc-web": "^0.15.0",
     "google-protobuf": "^3.21.0",
     "long": "^5.2.3",
