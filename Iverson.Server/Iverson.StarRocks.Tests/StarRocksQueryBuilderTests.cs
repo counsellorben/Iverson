@@ -324,6 +324,21 @@ public class StarRocksQueryBuilderTests
         sql.Should().Contain("COUNT(DISTINCT `Rating`)");
     }
 
+    [Fact]
+    public void BuildAggregate_CountAll_EmitsCountStar()
+    {
+        var spec = new AggregationDescriptor("row_count", AggregationKind.Count, "");
+
+        var (sql, _) = StarRocksQueryBuilder.BuildAggregate("authors", AuthorSchema(), null, spec);
+
+        // CountAll (empty Field, empty Expression) must emit COUNT(*), not COUNT(DISTINCT ``) —
+        // the latter is invalid SQL (StarRocksQueryBuilder.cs:290 previously resolved an empty
+        // Field into an empty-backtick-quoted identifier).
+        sql.Should().Contain("COUNT(*)");
+        sql.Should().NotContain("COUNT(DISTINCT");
+        sql.Should().NotContain("``");
+    }
+
     // ── BuildAggregate — authorization (row ownership) ─────────────────────────
 
     [Fact]

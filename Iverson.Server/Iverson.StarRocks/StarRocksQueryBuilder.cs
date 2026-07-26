@@ -246,6 +246,14 @@ internal static class StarRocksQueryBuilder
         var col = Resolve(spec.Field);
         var wc    = where.Length > 0 ? $" WHERE {where}" : "";
 
+        // CountAll: mirrors BuildMetricExpr's isCountAll handling (below, near line 408) — when
+        // neither Field nor Expression is set, col resolves to "" and Quote(col) would otherwise
+        // splice an empty backtick-quoted identifier (``) into COUNT(DISTINCT ``), which is
+        // invalid SQL. Emit COUNT(*) instead.
+        var isCountAll = spec.Kind == AggregationKind.Count
+            && string.IsNullOrEmpty(spec.Field)
+            && string.IsNullOrEmpty(spec.Expression);
+
         var havingSql = BuildHaving(having?.Clauses, having?.Logic ?? SearchLogic.And, param);
         var hc = havingSql.Length > 0 ? $" HAVING {havingSql}" : "";
 
@@ -287,7 +295,9 @@ internal static class StarRocksQueryBuilder
             AggregationKind.Sum   => $"SELECT SUM({spec.Expression ?? Quote(col)}) AS metric_val {from}{wc}{hc}",
             AggregationKind.Min   => $"SELECT MIN({spec.Expression ?? Quote(col)}) AS metric_val {from}{wc}{hc}",
             AggregationKind.Max   => $"SELECT MAX({spec.Expression ?? Quote(col)}) AS metric_val {from}{wc}{hc}",
-            AggregationKind.Count => $"SELECT COUNT(DISTINCT {spec.Expression ?? Quote(col)}) AS metric_val {from}{wc}{hc}",
+            AggregationKind.Count => isCountAll
+                ? $"SELECT COUNT(*) AS metric_val {from}{wc}{hc}"
+                : $"SELECT COUNT(DISTINCT {spec.Expression ?? Quote(col)}) AS metric_val {from}{wc}{hc}",
 
             _ => throw new ArgumentOutOfRangeException(nameof(spec.Kind))
         };
