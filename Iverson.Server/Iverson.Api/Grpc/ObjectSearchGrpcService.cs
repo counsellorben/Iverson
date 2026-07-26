@@ -577,29 +577,31 @@ public sealed class ObjectSearchGrpcService(
     {
         if (request.Filter.Count == 0) return null;
 
-        if (request.Filter.Count > 1)
-            throw new RpcException(
-                new Status(
-                    StatusCode.InvalidArgument,
-                    "SearchChunks supports at most one filter clause: an EQUALS match on the type's " +
-                    $"primary-key property ('{schema.KeyColumn.Name}')."));
+        var filter = new Filter();
 
-        var clause = request.Filter[0];
-        if (clause.Operator != SearchOperator.Equals || clause.ClauseType != SearchClauseType.Filter)
-            throw new RpcException(
-                new Status(
-                    StatusCode.InvalidArgument,
-                    "SearchChunks only supports a single EQUALS filter clause; other operators and " +
-                    "MUST_NOT clauses are rejected."));
+        foreach (var clause in request.Filter)
+        {
+            if (clause.Operator != SearchOperator.Equals || clause.ClauseType != SearchClauseType.Filter)
+                throw new RpcException(
+                    new Status(
+                        StatusCode.InvalidArgument,
+                        "SearchChunks only supports EQUALS filter clauses; other operators and " +
+                        "MUST_NOT clauses are rejected."));
 
-        if (!string.Equals(clause.Property, schema.KeyColumn.Name, StringComparison.OrdinalIgnoreCase))
-            throw new RpcException(
-                new Status(
-                    StatusCode.InvalidArgument,
-                    $"SearchChunks filter must target the primary-key property '{schema.KeyColumn.Name}', " +
-                    $"got '{clause.Property}'."));
+            if (string.Equals(clause.Property, schema.KeyColumn.Name, StringComparison.OrdinalIgnoreCase))
+                filter.Must.AddRange(IntelligenceFilterBuilder.MatchParentId(clause.Value.StringVal).Must);
+            else if (schema.MetadataColumns.Contains(clause.Property))
+                filter.Must.Add(IntelligenceFilterBuilder.MatchEquality(clause.Property.ToCamelCase(), clause.Value));
+            else
+                throw new RpcException(
+                    new Status(
+                        StatusCode.InvalidArgument,
+                        $"SearchChunks filter clauses must target the primary-key property " +
+                        $"'{schema.KeyColumn.Name}' or a metadata column on '{schema.TypeName}', " +
+                        $"got '{clause.Property}'."));
+        }
 
-        return IntelligenceFilterBuilder.MatchParentId(clause.Value.StringVal);
+        return filter;
     }
 
     private static EngagementAggSpec ProtoToEngagementSpec(ProtoAggSpec proto) =>

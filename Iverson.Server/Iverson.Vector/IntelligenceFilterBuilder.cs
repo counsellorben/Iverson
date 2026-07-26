@@ -51,6 +51,14 @@ public static class IntelligenceFilterBuilder
         return filter;
     }
 
+    /// <summary>
+    /// Builds an EQUALS payload condition for a single property/value pair. Exposed for callers
+    /// outside this assembly (SearchChunks metadata filtering) that translate individual clauses
+    /// themselves rather than going through <see cref="Build"/>.
+    /// </summary>
+    public static Condition MatchEquality(string property, SearchValue value) =>
+        BuildEqualityCondition(property, value);
+
     public static Filter? ApplyOwnership(Filter? filter, bool ownershipRequired, string? ownerFieldCamelCase, string? ownerValue)
     {
         if (!ownershipRequired) return filter;

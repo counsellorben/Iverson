@@ -109,7 +109,9 @@ message SearchChunksRequest {
     string query     = 3;  // text to embed and compare
     uint32 top_k     = 4;
     string trace_id  = 5;
-    // At most one EQUALS clause on the type's primary-key property; see ObjectSearchGrpcService.SearchChunks.
+    // EQUALS clauses (ANDed) on the type's primary-key property and/or its metadata columns
+    // (properties annotated [IversonMetadata]). Other operators, other properties, and MUST_NOT
+    // clauses are rejected. See ObjectSearchGrpcService.SearchChunks.
     repeated SearchClause filter        = 6;
     SearchLogic           filter_logic = 7;
 }
