@@ -153,6 +153,25 @@ public class SchemaBuilderTests
     }
 
     [Fact]
+    public void BuildDescriptor_CapturesDescription_DeclaredOnTheKeyProperty()
+    {
+        var embedding = Substitute.For<IEmbeddingService>();
+        embedding.Dimension.Returns(768);
+        embedding.ModelId.Returns("nomic-embed-text");
+
+        var typeDesc = new TypeDescriptor { TypeName = "Article" };
+        typeDesc.Properties.Add(
+            new PropertyDescriptor { Name = "Id",    ClrType = ClrType.ClrGuid,   IsKey = true, Description = "The article id." });
+        typeDesc.Properties.Add(
+            new PropertyDescriptor { Name = "Title", ClrType = ClrType.ClrString, Description = "The title." });
+
+        var descriptor = SchemaBuilder.BuildDescriptor(typeDesc, embedding);
+
+        descriptor.FieldDescriptions.Should().ContainKey("Id").WhoseValue.Should().Be("The article id.");
+        descriptor.FieldDescriptions.Should().ContainKey("Title").WhoseValue.Should().Be("The title.");
+    }
+
+    [Fact]
     public void BuildDescriptor_LeavesDescriptionNull_WhenTypeDescriptionIsEmpty()
     {
         var embedding = Substitute.For<IEmbeddingService>();

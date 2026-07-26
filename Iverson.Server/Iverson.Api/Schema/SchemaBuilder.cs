@@ -33,6 +33,12 @@ internal static class SchemaBuilder
         var fieldDescriptions = new Dictionary<string, string>();
         var badMetadata      = new List<string>();
 
+        // [IversonDescription] is valid on any property including the key, so descriptions are
+        // collected across all properties — unlike every other collection below, which is
+        // built from non-key properties only.
+        if (!string.IsNullOrEmpty(keyProp.Description))
+            fieldDescriptions[keyProp.Name] = keyProp.Description;
+
         foreach (var prop in typeDesc.Properties.Where(p => !p.IsKey))
         {
             var sqlType = ClrTypeToSql(prop.ClrType, prop.IsArray);
