@@ -1,5 +1,5 @@
 import { useAuth } from "react-oidc-context";
-import { Link } from "react-router-dom";
+import { Link } from "react-router";
 import { Drawer, List, ListItemButton, ListItemText } from "@mui/material";
 
 export function Sidebar() {

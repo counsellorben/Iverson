@@ -1,5 +1,5 @@
 import { useAuth } from "react-oidc-context";
-import { Outlet } from "react-router-dom";
+import { Outlet } from "react-router";
 import { AppBar, Toolbar, Typography, Button, Box } from "@mui/material";
 import { Sidebar } from "./Sidebar";
 import { tokens } from "../theme/tokens";

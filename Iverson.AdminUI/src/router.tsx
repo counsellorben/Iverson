@@ -1,4 +1,4 @@
-import { createBrowserRouter, Navigate } from "react-router-dom";
+import { createBrowserRouter, Navigate } from "react-router";
 import { AuthGate } from "./auth/AuthProvider";
 import { CallbackPage } from "./auth/CallbackPage";
 import { AppLayout } from "./layout/AppLayout";
