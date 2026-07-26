@@ -51,6 +51,7 @@ The spec's 12 verified assumptions are trusted as ground truth (see its "Verifie
 | 10 | Convention | Commit messages use `type(scope): summary` | git log (`fix(ts-client): …`, `docs(specs): …`) |
 | 11 | Path | Per-language declaration sites and search-key precedents | DotNet `IversonSearchKeyAttribute.cs`; Java `annotations/IversonSearchKey.java`; Python core.py:134-155 (`meta["search_keys"]` → `is_search_key` on wire); Go tags.go:6-12 tag grammar + ParseTag:54; TS src/annotations.ts |
 | 12 | Code validity | Go `FieldMeta.Kind` is single-valued ("one of the Kind* constants", tags.go:42-43) and entities reach the registrar as bare struct values (registrar.go:28) — so Task 8 models metadata as a new mutually-exclusive Kind, field descriptions as a separate `iverson_desc` tag, and the type-level description as an optional `IversonDescription() string` interface | reads cited |
+| 13 | Code validity | `IntelligenceFilterBuilder.BuildEqualityCondition` is `private static` in the Iverson.Vector assembly (IntelligenceFilterBuilder.cs:95) — Task 4 therefore adds the public `MatchEquality` wrapper rather than calling it directly | read cited |
 
 ## Tasks
 
@@ -100,7 +101,7 @@ git commit -m "feat(schema): metadata flags and descriptions in proto, SchemaDes
 **Interfaces:**
 - Consumes: `SchemaDescriptor.MetadataColumns` (Task 1).
 
-- [ ] **Step 1: Write failing tests**: (a) schema with a metadata-flagged scalar → chunk points' payload contains `fieldName.ToCamelCase()` with the typed value; (b) object-level point payload is unchanged by the flag; (c) schema whose owner field is metadata-flagged → chunk payload owner key holds the authoritative (Postgres-derived) value, not the event-payload value.
+- [ ] **Step 1: Write failing tests**: (a) schema with a metadata-flagged scalar → chunk points' payload contains `fieldName.ToCamelCase()` with the typed value; (b) object-level point payload is unchanged by the flag; (c) schema whose owner field is metadata-flagged → chunk payload owner key holds the authoritative (Postgres-derived) value, not the event-payload value; (d) a metadata property named `Text` leaves the chunk's reserved `text` payload entry (the passage text) intact.
 
 - [ ] **Step 2: Implement** — after the existing `chunkPayload` construction, per metadata column:
 ```csharp
@@ -108,6 +109,9 @@ foreach (var name in schema.MetadataColumns)
 {
     if (ownerField is not null && string.Equals(name, ownerField, StringComparison.OrdinalIgnoreCase))
         continue; // authoritative owner write above covers this key (CSR #7)
+    var camelKey = name.ToCamelCase();
+    if (camelKey is "text" or "parent_id" or "field" or "chunk_index")
+        continue; // reserved chunk payload keys must not be clobbered by metadata
     var sqlType = schema.ScalarColumns.FirstOrDefault(c =>
         string.Equals(c.Name, name, StringComparison.OrdinalIgnoreCase))?.SqlType ?? "TEXT";
     var val = ExtractTypedValue(payload, name, sqlType);
@@ -146,7 +150,7 @@ private static string ToCanonicalString(Value v) => v.KindCase switch
 ### Task 4: BuildChunksFilter metadata clauses
 
 **Files:**
-- Modify: `Iverson.Server/Iverson.Api/Grpc/ObjectSearchGrpcService.cs` (`BuildChunksFilter`, :576-585) and the stale restriction comment at `Iverson.Clients/Common/Proto/object_search.proto:112`
+- Modify: `Iverson.Server/Iverson.Api/Grpc/ObjectSearchGrpcService.cs` (`BuildChunksFilter`, :576-585), `Iverson.Server/Iverson.Vector/IntelligenceFilterBuilder.cs` (new public wrapper), and the stale restriction comment at `Iverson.Clients/Common/Proto/object_search.proto:112`
 - Test: `Iverson.Server/Iverson.Api.Tests/Grpc/ObjectSearchGrpcServiceTests.cs`
 
 **Interfaces:**
@@ -154,7 +158,12 @@ private static string ToCanonicalString(Value v) => v.KindCase switch
 
 - [ ] **Step 1: Write failing tests**: EQUALS clause on a metadata column is accepted (translated to a payload condition on the camelCase key); PK EQUALS clause still accepted; clause on a non-metadata, non-key property still throws `InvalidArgument`; multiple clauses mixing PK + metadata accepted.
 
-- [ ] **Step 2: Implement** — rework `BuildChunksFilter`: for each clause, PK property keeps its existing translation; a property in `schema.MetadataColumns` (OrdinalIgnoreCase) becomes an EQUALS condition on `property.ToCamelCase()` via the existing `BuildEqualityCondition` value kinds; anything else throws the (updated) `InvalidArgument` message. Drop the count>1 rejection. Update the proto comment to describe the new contract.
+- [ ] **Step 2: Implement** — first add a public wrapper to `IntelligenceFilterBuilder` (its `BuildEqualityCondition` is `private static` in the Iverson.Vector assembly and unreachable from Iverson.Api):
+```csharp
+public static Condition MatchEquality(string property, SearchValue value) =>
+    BuildEqualityCondition(property, value);
+```
+Then rework `BuildChunksFilter`: for each clause, PK property keeps its existing translation; a property in `schema.MetadataColumns` (OrdinalIgnoreCase) becomes `IntelligenceFilterBuilder.MatchEquality(property.ToCamelCase(), clause.Value)`; anything else throws the (updated) `InvalidArgument` message. Drop the count>1 rejection. Update the proto comment to describe the new contract. (`MatchEquality`'s `FilterTranslationException` on unsupported value kinds surfaces through the existing SearchChunks error handling.)
 
 - [ ] **Step 3: Run** `dotnet test Iverson.Server/Iverson.Api.Tests/Iverson.Api.Tests.csproj --filter "FullyQualifiedName~ObjectSearchGrpcService"` — green.
 
