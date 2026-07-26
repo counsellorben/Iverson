@@ -48,8 +48,11 @@ Semantics:
 - Each `SchemaRegistrar` maps the declarations onto the new proto fields (§2).
 
 Validation (server-side at registration; clients may pre-validate where cheap):
-`is_metadata` is **rejected** on embedding, chunk, relation, and large-field
-properties (denormalizing up-to-64KB values onto every chunk point is harmful) and is
+`is_metadata` is **rejected** on embedding, chunk, relation, array (`is_array`),
+and large-field properties (large fields: denormalizing up-to-64KB values onto every
+chunk point is harmful; arrays: they would land as a single JSON-text blob that
+keyword filters cannot match elements of, silently breaking the §4 filterability
+guarantee) and is
 meaningless on the key/tenant fields (already present in payload / collection routing).
 
 ### 2. Proto change — `Iverson.Clients/Common/Proto/object_mapping.proto`
@@ -95,8 +98,12 @@ only `text`, `parent_id`, `field`, `chunk_index`, and owner.
 Change: in the chunk-upsert block (IntelligenceStoreConsumer.cs:191–208), each chunk
 payload additionally gets one entry per `MetadataColumns` member — camelCase key,
 value via the existing `ExtractTypedValue` against the parent object's event payload
-(already in scope), nulls omitted. Metadata payload refreshes whenever the object is
-re-written, matching existing payload behavior.
+(already in scope), nulls omitted. The loop **skips** any `MetadataColumns` member
+equal to `schema.Authorization?.OwnerField` (OrdinalIgnoreCase): the consumer already
+writes that key from the authoritative Postgres row (IntelligenceStoreConsumer.cs:200–201,
+CSR #7), and sourcing it from the unsigned event payload would corrupt chunk-search
+row authorization. Metadata payload refreshes whenever the object is re-written,
+matching existing payload behavior.
 
 No filter-DSL change: `IntelligenceFilterBuilder` already filters arbitrary payload
 keys with string/bool/number equality, so metadata on chunk points becomes filterable
@@ -123,9 +130,11 @@ server-side consumers (the future enrichment/fusion stages). A client-facing
 ### 7. Testing
 
 - **Server** — `SchemaBuilder` tests: proto → descriptor mapping of the new members;
-  validation rejections (metadata on embedding/chunk/large/relation). Registry test:
-  legacy JSON without the new members loads with empty defaults. Consumer test:
-  chunk points carry parent metadata values; object points unchanged. Vector service
+  validation rejections (metadata on embedding/chunk/large/relation/array). Registry
+  test: legacy JSON without the new members loads with empty defaults. Consumer tests:
+  chunk points carry parent metadata values; object points unchanged; a schema whose
+  owner field is metadata-flagged yields chunk points carrying the authoritative
+  owner value (not the event-payload value). Vector service
   test: non-string payload values round-trip as canonical strings.
 - **Clients** — per-language registrar/annotation tests asserting the new
   declarations produce `is_metadata`/`description` on the wire, mirroring each
