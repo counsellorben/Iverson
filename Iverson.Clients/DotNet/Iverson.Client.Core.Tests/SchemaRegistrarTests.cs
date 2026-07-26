@@ -23,6 +23,24 @@ internal sealed class SearchAnnotationTestEntity
 }
 
 [IversonEntity]
+[IversonDescription("Documents authored by a user.")]
+internal sealed class MetadataAnnotationTestEntity
+{
+    [IversonKey]
+    [IversonDescription("Primary identifier.")]
+    public Guid Id { get; set; }
+
+    [IversonMetadata]
+    [IversonDescription("Source system name.")]
+    public string Source { get; set; } = "";
+
+    [IversonMetadata]
+    public string Region { get; set; } = "";
+
+    public string Plain { get; set; } = "";
+}
+
+[IversonEntity]
 internal sealed class SchemaTestAuthor
 {
     [IversonKey]
@@ -321,6 +339,49 @@ public class SchemaRegistrarTests
         category.SearchKeyOrder.Should().Be(0);
         publishedAt.IsSearchKey.Should().BeTrue();
         publishedAt.SearchKeyOrder.Should().Be(1);
+    }
+
+    [Fact]
+    public async Task RegisterAllAsync_SetsIsMetadata_AndDescriptions_OnAnnotatedMembers()
+    {
+        SchemaRequest? req = null;
+        _mappingClient
+            .RegisterSchemaAsync(
+                Arg.Do<SchemaRequest>(r =>
+                {
+                    if (r.RootType?.TypeName == "MetadataAnnotationTestEntity") req = r;
+                }),
+                Arg.Any<Metadata>(),
+                Arg.Any<DateTime?>(),
+                Arg.Any<CancellationToken>())
+            .Returns(new AsyncUnaryCall<SchemaResponse>(
+                Task.FromResult(new SchemaResponse { Success = true }),
+                Task.FromResult(new Metadata()),
+                () => Status.DefaultSuccess,
+                () => new Metadata(),
+                () => { }));
+
+        await _sut.RegisterAllAsync();
+
+        req.Should().NotBeNull();
+        req!.RootType!.Description.Should().Be("Documents authored by a user.");
+
+        var id     = req.RootType.Properties.Single(p => p.Name == "Id");
+        var source = req.RootType.Properties.Single(p => p.Name == "Source");
+        var region = req.RootType.Properties.Single(p => p.Name == "Region");
+        var plain  = req.RootType.Properties.Single(p => p.Name == "Plain");
+
+        id.Description.Should().Be("Primary identifier.");
+        id.IsMetadata.Should().BeFalse();
+
+        source.IsMetadata.Should().BeTrue();
+        source.Description.Should().Be("Source system name.");
+
+        region.IsMetadata.Should().BeTrue();
+        region.Description.Should().BeEmpty();
+
+        plain.IsMetadata.Should().BeFalse();
+        plain.Description.Should().BeEmpty();
     }
 
     [Fact]

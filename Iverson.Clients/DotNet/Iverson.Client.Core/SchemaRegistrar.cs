@@ -61,6 +61,10 @@ public sealed class SchemaRegistrar(
     private static TypeDescriptor BuildTypeDescriptor(EntityDescriptor descriptor)
     {
         var typeDesc = new TypeDescriptor { TypeName = descriptor.EntityName };
+
+        if (descriptor.EntityType.GetCustomAttribute<IversonDescriptionAttribute>() is { } typeDescription)
+            typeDesc.Description = typeDescription.Description;
+
         var navProps = descriptor.Relations
             .Select(r => r.Property.Name)
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
@@ -148,6 +152,12 @@ public sealed class SchemaRegistrar(
             descriptor.IsSearchKey    = true;
             descriptor.SearchKeyOrder = sk.Order;
         }
+
+        if (prop.GetCustomAttribute<IversonMetadataAttribute>() is not null)
+            descriptor.IsMetadata = true;
+
+        if (prop.GetCustomAttribute<IversonDescriptionAttribute>() is { } propDescription)
+            descriptor.Description = propDescription.Description;
 
         if (prop.GetCustomAttribute<IversonLargeFieldAttribute>() is not null)
             descriptor.IsLargeField = true;
