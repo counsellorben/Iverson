@@ -31,6 +31,9 @@ mkdir -p "$GO_DIR/generated"
   "--go-grpc_opt=Mobject_retrieval.proto=${GO_PKG}" \
   "--go-grpc_opt=Mobject_search.proto=${GO_PKG}" \
   -I "$PROTO_DIR" \
-  "$PROTO_DIR"/*.proto
+  "$PROTO_DIR/object_mapping.proto" \
+  "$PROTO_DIR/object_persistence.proto" \
+  "$PROTO_DIR/object_retrieval.proto" \
+  "$PROTO_DIR/object_search.proto"
 
 echo "Proto stubs generated in $GO_DIR/generated/"

@@ -57,6 +57,26 @@ class SchemaRegistrarTest {
     }
 
     @IversonEntity
+    @IversonDescription("An entity exercising metadata annotations")
+    static class MetadataAnnotationTestEntity {
+        @IversonKey
+        @IversonDescription("The primary key")
+        private UUID id;
+
+        @IversonMetadata
+        private String source;
+
+        @IversonDescription("Where the article was published")
+        private String outlet;
+
+        @IversonMetadata
+        @IversonDescription("Language code")
+        private String language;
+
+        private String plain;
+    }
+
+    @IversonEntity
     static class SchemaTestAuthor {
         @IversonKey
         private UUID id;
@@ -260,6 +280,56 @@ class SchemaRegistrarTest {
         assertTrue(summary.getIsChunk());
         assertEquals(256, summary.getChunkMaxTokens());
         assertEquals(32, summary.getChunkOverlap());
+    }
+
+    // ── registerAll: @IversonMetadata / @IversonDescription ───────────────────
+
+    private static PropertyDescriptor prop(TypeDescriptor td, String name) {
+        return td.getPropertiesList().stream()
+            .filter(p -> p.getName().equals(name))
+            .findFirst().orElseThrow(() -> new AssertionError(name + " property not found"));
+    }
+
+    private TypeDescriptor captureMetadataEntity() {
+        ArgumentCaptor<SchemaRequest> captor = ArgumentCaptor.forClass(SchemaRequest.class);
+        sut.registerAll(MetadataAnnotationTestEntity.class);
+        verify(mockStub).registerSchema(captor.capture());
+        return captor.getValue().getRootType();
+    }
+
+    @Test
+    void registerAll_setsIsMetadata_onAnnotatedProperties() {
+        TypeDescriptor td = captureMetadataEntity();
+
+        assertTrue(prop(td, "Source").getIsMetadata());
+        assertTrue(prop(td, "Language").getIsMetadata());
+        assertFalse(prop(td, "Outlet").getIsMetadata());
+        assertFalse(prop(td, "Plain").getIsMetadata());
+        assertFalse(prop(td, "Id").getIsMetadata());
+    }
+
+    @Test
+    void registerAll_setsTypeDescription_fromClassLevelAnnotation() {
+        TypeDescriptor td = captureMetadataEntity();
+        assertEquals("An entity exercising metadata annotations", td.getDescription());
+    }
+
+    @Test
+    void registerAll_setsPropertyDescription_onAnnotatedProperties() {
+        TypeDescriptor td = captureMetadataEntity();
+
+        assertEquals("Where the article was published", prop(td, "Outlet").getDescription());
+        assertEquals("Language code", prop(td, "Language").getDescription());
+        assertEquals("", prop(td, "Plain").getDescription());
+    }
+
+    @Test
+    void registerAll_setsPropertyDescription_onKeyProperty() {
+        TypeDescriptor td = captureMetadataEntity();
+
+        PropertyDescriptor key = prop(td, "Id");
+        assertTrue(key.getIsKey());
+        assertEquals("The primary key", key.getDescription());
     }
 
     // ── registerAll: relations ─────────────────────────────────────────────────

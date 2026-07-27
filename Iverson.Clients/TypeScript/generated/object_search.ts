@@ -514,7 +514,11 @@ export interface SearchChunksRequest {
   query: string;
   topK: number;
   traceId: string;
-  /** At most one EQUALS clause on the type's primary-key property; see ObjectSearchGrpcService.SearchChunks. */
+  /**
+   * EQUALS clauses (ANDed) on the type's primary-key property and/or its metadata columns
+   * (properties annotated [IversonMetadata]). Other operators, other properties, and MUST_NOT
+   * clauses are rejected. See ObjectSearchGrpcService.SearchChunks.
+   */
   filter: SearchClause[];
   filterLogic: SearchLogic;
 }

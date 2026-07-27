@@ -1450,20 +1450,165 @@ public class ObjectSearchGrpcServiceTests
     }
 
     [Fact]
-    public async Task SearchChunks_MoreThanOneFilterClause_ThrowsInvalidArgument()
+    public async Task SearchChunks_WithMetadataColumnEqualsFilter_PassesCamelCasePayloadMatch()
     {
-        await _registry.RegisterAsync(SchemaFixtures.ArticleSchema());
+        await _registry.RegisterAsync(SchemaFixtures.ArticleSchema() with { MetadataColumns = ["Title"] });
+        _embedding.EmbedAsync("q", Arg.Any<CancellationToken>()).Returns(new float[768]);
+        _vector.SearchNamedAsync("articles_chunks_test-tenant", "body_vector", Arg.Any<float[]>(), Arg.Any<ulong>(), Arg.Any<Filter>())
+               .Returns(new List<VectorSearchResult>().AsReadOnly());
+
+        var request = new SearchChunksRequest { TypeName = "Article", Property = "Body", Query = "q", TopK = 5 };
+        request.Filter.Add(new SearchClause
+        {
+            Property = "Title", Operator = SearchOperator.Equals,
+            Value = new SearchValue { StringVal = "news" }, ClauseType = SearchClauseType.Filter
+        });
+
+        var (writer, _) = MakeStream<ChunkSearchResponse>();
+        await _sut.SearchChunks(request, writer, TestServerCallContext.Create());
+
+        var call = _vector.ReceivedCalls()
+            .Should().ContainSingle(c => c.GetMethodInfo().Name == nameof(IVectorQueryService.SearchNamedAsync))
+            .Subject;
+        var captured = (Filter?)call.GetArguments()[4];
+        captured.Should().NotBeNull();
+        captured!.Must.Should().ContainSingle(c =>
+            c.Field.Key == "title" && c.Field.Match.Keyword == "news");
+    }
+
+    [Fact]
+    public async Task SearchChunks_MultipleClausesMixingPkAndMetadata_AreAllTranslated()
+    {
+        await _registry.RegisterAsync(SchemaFixtures.ArticleSchema() with { MetadataColumns = ["Title"] });
+        _embedding.EmbedAsync("q", Arg.Any<CancellationToken>()).Returns(new float[768]);
+        _vector.SearchNamedAsync("articles_chunks_test-tenant", "body_vector", Arg.Any<float[]>(), Arg.Any<ulong>(), Arg.Any<Filter>())
+               .Returns(new List<VectorSearchResult>().AsReadOnly());
+
+        var request = new SearchChunksRequest { TypeName = "Article", Property = "Body", Query = "q", TopK = 5 };
+        request.Filter.Add(new SearchClause
+        {
+            Property = "Id", Operator = SearchOperator.Equals,
+            Value = new SearchValue { StringVal = "parent-123" }, ClauseType = SearchClauseType.Filter
+        });
+        request.Filter.Add(new SearchClause
+        {
+            Property = "Title", Operator = SearchOperator.Equals,
+            Value = new SearchValue { StringVal = "news" }, ClauseType = SearchClauseType.Filter
+        });
+
+        var (writer, _) = MakeStream<ChunkSearchResponse>();
+        await _sut.SearchChunks(request, writer, TestServerCallContext.Create());
+
+        var call = _vector.ReceivedCalls()
+            .Should().ContainSingle(c => c.GetMethodInfo().Name == nameof(IVectorQueryService.SearchNamedAsync))
+            .Subject;
+        var captured = (Filter?)call.GetArguments()[4];
+        captured.Should().NotBeNull();
+        captured!.Must.Should().Contain(c => c.Field.Key == "parent_id" && c.Field.Match.Keyword == "parent-123");
+        captured.Must.Should().Contain(c => c.Field.Key == "title" && c.Field.Match.Keyword == "news");
+    }
+
+    [Fact]
+    public async Task SearchChunks_MetadataFilterWithDifferentCasing_UsesSchemaCanonicalPayloadKey()
+    {
+        // Schema declares "Title"; caller filters as "TITLE". The payload key must still be
+        // "title" (what IntelligenceStoreConsumer wrote), not "tITLE".
+        await _registry.RegisterAsync(SchemaFixtures.ArticleSchema() with { MetadataColumns = ["Title"] });
+        _embedding.EmbedAsync("q", Arg.Any<CancellationToken>()).Returns(new float[768]);
+        _vector.SearchNamedAsync("articles_chunks_test-tenant", "body_vector", Arg.Any<float[]>(), Arg.Any<ulong>(), Arg.Any<Filter>())
+               .Returns(new List<VectorSearchResult>().AsReadOnly());
+
+        var request = new SearchChunksRequest { TypeName = "Article", Property = "Body", Query = "q", TopK = 5 };
+        request.Filter.Add(new SearchClause
+        {
+            Property = "TITLE", Operator = SearchOperator.Equals,
+            Value = new SearchValue { StringVal = "news" }, ClauseType = SearchClauseType.Filter
+        });
+
+        var (writer, _) = MakeStream<ChunkSearchResponse>();
+        await _sut.SearchChunks(request, writer, TestServerCallContext.Create());
+
+        var call = _vector.ReceivedCalls()
+            .Should().ContainSingle(c => c.GetMethodInfo().Name == nameof(IVectorQueryService.SearchNamedAsync))
+            .Subject;
+        var captured = (Filter?)call.GetArguments()[4];
+        captured.Should().NotBeNull();
+        captured!.Must.Should().ContainSingle(c =>
+            c.Field.Key == "title" && c.Field.Match.Keyword == "news");
+    }
+
+    [Fact]
+    public async Task SearchChunks_MetadataFilterWithUnsupportedValueKind_ThrowsInvalidArgument()
+    {
+        await _registry.RegisterAsync(SchemaFixtures.ArticleSchema() with { MetadataColumns = ["Title"] });
         _embedding.EmbedAsync("q", Arg.Any<CancellationToken>()).Returns(new float[768]);
 
         var request = new SearchChunksRequest { TypeName = "Article", Property = "Body", Query = "q", TopK = 5 };
-        request.Filter.Add(new SearchClause { Property = "Id", Operator = SearchOperator.Equals, Value = new SearchValue { StringVal = "a" } });
-        request.Filter.Add(new SearchClause { Property = "Id", Operator = SearchOperator.Equals, Value = new SearchValue { StringVal = "b" } });
+        request.Filter.Add(new SearchClause
+        {
+            Property = "Title", Operator = SearchOperator.Equals,
+            Value = new SearchValue { StringList = new RepeatedString { Values = { "a", "b" } } },
+            ClauseType = SearchClauseType.Filter
+        });
 
         var (writer, _) = MakeStream<ChunkSearchResponse>();
         var act = async () => await _sut.SearchChunks(request, writer, TestServerCallContext.Create());
 
         (await act.Should().ThrowAsync<RpcException>())
             .Where(e => e.Status.StatusCode == StatusCode.InvalidArgument);
+    }
+
+    [Fact]
+    public async Task SearchChunks_MetadataFilterOnUnauthorizedField_ThrowsInvalidArgument()
+    {
+        // "Name" is a metadata column but restricted to "admin"; the acting user has only
+        // "test-bypass", so filtering on it would be a value oracle for a field it cannot read.
+        var fieldPermissions = new List<Iverson.Api.Schema.FieldPermission> { new("Name", ["admin"], []) };
+        var schema = OwnedQdrantSchema("Owned", null, fieldPermissions) with { MetadataColumns = ["Name"] };
+        await _registry.RegisterAsync(schema);
+        _embedding.EmbedAsync("q", Arg.Any<CancellationToken>()).Returns(new float[768]);
+
+        var request = new SearchChunksRequest { TypeName = "Owned", Property = "Secret", Query = "q" };
+        request.Filter.Add(new SearchClause
+        {
+            Property = "Name", Operator = SearchOperator.Equals,
+            Value = new SearchValue { StringVal = "x" }, ClauseType = SearchClauseType.Filter
+        });
+
+        var (writer, _) = MakeStream<ChunkSearchResponse>();
+        var act = async () => await _sut.SearchChunks(request, writer, TestServerCallContext.Create());
+
+        (await act.Should().ThrowAsync<RpcException>())
+            .Where(e => e.Status.StatusCode == StatusCode.InvalidArgument
+                     && e.Status.Detail.Contains("not authorized for this caller"));
+    }
+
+    [Fact]
+    public async Task SearchChunks_MetadataFilterOnAuthorizedField_IsAccepted()
+    {
+        var fieldPermissions = new List<Iverson.Api.Schema.FieldPermission> { new("Name", ["test-bypass"], []) };
+        var schema = OwnedQdrantSchema("Owned", null, fieldPermissions) with { MetadataColumns = ["Name"] };
+        await _registry.RegisterAsync(schema);
+        _embedding.EmbedAsync("q", Arg.Any<CancellationToken>()).Returns(new float[768]);
+        _vector.SearchNamedAsync("owneds_chunks_test-tenant", "secret_vector", Arg.Any<float[]>(), Arg.Any<ulong>(), Arg.Any<Filter>())
+               .Returns(new List<VectorSearchResult>().AsReadOnly());
+
+        var request = new SearchChunksRequest { TypeName = "Owned", Property = "Secret", Query = "q" };
+        request.Filter.Add(new SearchClause
+        {
+            Property = "Name", Operator = SearchOperator.Equals,
+            Value = new SearchValue { StringVal = "x" }, ClauseType = SearchClauseType.Filter
+        });
+
+        var (writer, _) = MakeStream<ChunkSearchResponse>();
+        await _sut.SearchChunks(request, writer, TestServerCallContext.Create());
+
+        var call = _vector.ReceivedCalls()
+            .Should().ContainSingle(c => c.GetMethodInfo().Name == nameof(IVectorQueryService.SearchNamedAsync))
+            .Subject;
+        var captured = (Filter?)call.GetArguments()[4];
+        captured.Should().NotBeNull();
+        captured!.Must.Should().ContainSingle(c => c.Field.Key == "name" && c.Field.Match.Keyword == "x");
     }
 
     [Fact]

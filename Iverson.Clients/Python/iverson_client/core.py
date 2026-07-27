@@ -136,6 +136,8 @@ class SchemaRegistrar:
         embedding_fields_set = set(meta["embedding_fields"])
         chunk_fields_by_name = {f: (mt, ov) for f, mt, ov in meta["chunk_fields"]}
         relation_fields = {r["field"] for r in meta["relations"]}
+        metadata_fields_set = set(meta.get("metadata_fields", []))
+        descriptions_by_field = meta.get("descriptions", {})
 
         properties: list[mapping_pb.PropertyDescriptor] = []
         for field_name in meta["fields"]:
@@ -153,6 +155,8 @@ class SchemaRegistrar:
                 is_array=False,
                 is_search_key=(field_name in search_keys_by_field),
                 search_key_order=search_keys_by_field.get(field_name, 0),
+                is_metadata=(field_name in metadata_fields_set),
+                description=descriptions_by_field.get(field_name, ""),
                 is_large_field=(field_name in large_fields_set),
                 is_embedding=(field_name in embedding_fields_set),
                 vector_dim=0,
@@ -181,6 +185,7 @@ class SchemaRegistrar:
             type_name=type_name,
             properties=properties,
             relations=relations,
+            description=meta.get("description", ""),
         )
         return mapping_pb.SchemaRequest(root_type=type_descriptor, trace_id=trace_id)
 

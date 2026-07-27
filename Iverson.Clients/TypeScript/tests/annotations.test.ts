@@ -9,6 +9,8 @@ import {
     IversonKey,
     IversonSearchKey,
     IversonLargeField,
+    IversonMetadata,
+    IversonDescription,
     ManyToOne,
     ManyToMany,
     OneToMany,
@@ -16,6 +18,9 @@ import {
     getKeyField,
     getSearchKeys,
     getLargeFields,
+    getMetadataFields,
+    getTypeDescription,
+    getPropertyDescriptions,
     getRelations,
 } from '../src/annotations.js';
 
@@ -158,5 +163,61 @@ describe('Relation decorators', () => {
 
     it('returns empty array when no relations', () => {
         expect(getRelations(TestAuthor)).toHaveLength(0);
+    });
+});
+
+// ── Metadata / description decorators ─────────────────────────────────────────
+
+@IversonEntity()
+@IversonDescription('A product catalog entry.')
+class DescribedProduct {
+    @IversonKey()
+    @IversonDescription('Stable product identifier.')
+    id: string = '';
+
+    @IversonMetadata()
+    @IversonDescription('Merchandising category.')
+    category: string = '';
+
+    @IversonMetadata()
+    region: string = '';
+
+    plain: string = '';
+}
+
+@IversonEntity()
+class UndescribedProduct {
+    @IversonKey()
+    id: string = '';
+}
+
+describe('@IversonMetadata', () => {
+    it('collects every marked field', () => {
+        expect(getMetadataFields(DescribedProduct).sort()).toEqual(['category', 'region']);
+    });
+
+    it('returns empty array when none are marked', () => {
+        expect(getMetadataFields(UndescribedProduct)).toHaveLength(0);
+    });
+});
+
+describe('@IversonDescription', () => {
+    it('stores the class-level description', () => {
+        expect(getTypeDescription(DescribedProduct)).toBe('A product catalog entry.');
+    });
+
+    it('stores property descriptions, including on the key property', () => {
+        const descriptions = getPropertyDescriptions(DescribedProduct);
+        expect(descriptions['id']).toBe('Stable product identifier.');
+        expect(descriptions['category']).toBe('Merchandising category.');
+    });
+
+    it('omits undecorated properties', () => {
+        expect(getPropertyDescriptions(DescribedProduct)['plain']).toBeUndefined();
+    });
+
+    it('returns empty defaults when absent', () => {
+        expect(getTypeDescription(UndescribedProduct)).toBe('');
+        expect(getPropertyDescriptions(UndescribedProduct)).toEqual({});
     });
 });

@@ -253,7 +253,16 @@ public sealed class ObjectSearchGrpcService(
             throw new RpcException(new Status(StatusCode.InvalidArgument,
                 $"Property '{request.Property}' on '{request.TypeName}' is not authorized for this caller."));
 
-        var filter = BuildChunksFilter(schema, request);
+        Filter? filter;
+        try
+        {
+            filter = BuildChunksFilter(schema, request, decision.AllowedFields);
+        }
+        catch (FilterTranslationException ex)
+        {
+            throw new RpcException(new Status(StatusCode.InvalidArgument, ex.Message));
+        }
+
         filter = IntelligenceFilterBuilder.ApplyOwnership(
             filter,
             decision.OwnershipRequired,
@@ -573,33 +582,49 @@ public sealed class ObjectSearchGrpcService(
                 $"{rpcName}: filter property '{property}' is not a scalar or foreign-key column on '{schema.TypeName}'."));
     }
 
-    private static Filter? BuildChunksFilter(SchemaDescriptor schema, SearchChunksRequest request)
+    private static Filter? BuildChunksFilter(
+        SchemaDescriptor schema, SearchChunksRequest request, IReadOnlySet<string>? allowedFields)
     {
         if (request.Filter.Count == 0) return null;
 
-        if (request.Filter.Count > 1)
-            throw new RpcException(
-                new Status(
-                    StatusCode.InvalidArgument,
-                    "SearchChunks supports at most one filter clause: an EQUALS match on the type's " +
-                    $"primary-key property ('{schema.KeyColumn.Name}')."));
+        var filter = new Filter();
 
-        var clause = request.Filter[0];
-        if (clause.Operator != SearchOperator.Equals || clause.ClauseType != SearchClauseType.Filter)
-            throw new RpcException(
-                new Status(
-                    StatusCode.InvalidArgument,
-                    "SearchChunks only supports a single EQUALS filter clause; other operators and " +
-                    "MUST_NOT clauses are rejected."));
+        foreach (var clause in request.Filter)
+        {
+            if (clause.Operator != SearchOperator.Equals || clause.ClauseType != SearchClauseType.Filter)
+                throw new RpcException(
+                    new Status(
+                        StatusCode.InvalidArgument,
+                        "SearchChunks only supports EQUALS filter clauses; other operators and " +
+                        "MUST_NOT clauses are rejected."));
 
-        if (!string.Equals(clause.Property, schema.KeyColumn.Name, StringComparison.OrdinalIgnoreCase))
-            throw new RpcException(
-                new Status(
-                    StatusCode.InvalidArgument,
-                    $"SearchChunks filter must target the primary-key property '{schema.KeyColumn.Name}', " +
-                    $"got '{clause.Property}'."));
+            if (string.Equals(clause.Property, schema.KeyColumn.Name, StringComparison.OrdinalIgnoreCase))
+                filter.Must.AddRange(IntelligenceFilterBuilder.MatchParentId(clause.Value.StringVal).Must);
+            else if (schema.MetadataColumns.TryGetValue(clause.Property, out var canonicalName))
+            {
+                // The key clause is exempt from field masking (see exemptField: "Key" on the
+                // SearchSimilar path, and parent_key is returned unconditionally here), but a
+                // metadata column can be field-restricted — filtering on one the caller cannot
+                // read would be a value oracle.
+                // canonicalName is the schema's stored spelling; the caller's casing may differ
+                // (MetadataColumns is OrdinalIgnoreCase) and both the payload key written by
+                // IntelligenceStoreConsumer and AllowedFields use the schema's spelling.
+                if (allowedFields is not null && !allowedFields.Contains(canonicalName))
+                    throw new RpcException(new Status(StatusCode.InvalidArgument,
+                        $"SearchChunks: filter property '{clause.Property}' is not authorized for this caller."));
 
-        return IntelligenceFilterBuilder.MatchParentId(clause.Value.StringVal);
+                filter.Must.Add(IntelligenceFilterBuilder.MatchEquality(canonicalName.ToCamelCase(), clause.Value));
+            }
+            else
+                throw new RpcException(
+                    new Status(
+                        StatusCode.InvalidArgument,
+                        $"SearchChunks filter clauses must target the primary-key property " +
+                        $"'{schema.KeyColumn.Name}' or a metadata column on '{schema.TypeName}', " +
+                        $"got '{clause.Property}'."));
+        }
+
+        return filter;
     }
 
     private static EngagementAggSpec ProtoToEngagementSpec(ProtoAggSpec proto) =>

@@ -48,8 +48,11 @@ import {
     getEmbeddingFields,
     getKeyField,
     getLargeFields,
+    getMetadataFields,
+    getPropertyDescriptions,
     getRelations,
     getSearchKeys,
+    getTypeDescription,
     isIversonEntity,
     RelationKindString,
 } from './annotations.js';
@@ -182,6 +185,8 @@ export function describeEntity(cls: Function): TypeDescriptor {
     const largeFields = new Set(getLargeFields(cls));
     const embeddingFields = new Set(getEmbeddingFields(cls));
     const chunkFieldsByName = new Map(getChunkFields(cls).map(c => [c.field, c]));
+    const metadataFields = new Set(getMetadataFields(cls));
+    const propertyDescriptions = getPropertyDescriptions(cls);
     const relations = getRelations(cls);
     const relationFields = new Set(relations.map(r => r.field));
 
@@ -223,6 +228,8 @@ export function describeEntity(cls: Function): TypeDescriptor {
             isSearchKey,
             searchKeyOrder: searchKeysByField.get(fieldName) ?? 0,
             isLargeField,
+            isMetadata: metadataFields.has(fieldName),
+            description: propertyDescriptions[fieldName] ?? '',
         });
     }
 
@@ -237,6 +244,9 @@ export function describeEntity(cls: Function): TypeDescriptor {
         typeName,
         properties,
         relations: relationDescriptors,
+        authorization: undefined,
+        tenantField: '',
+        description: getTypeDescription(cls),
     };
 }
 

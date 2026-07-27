@@ -72,6 +72,11 @@ public final class SchemaRegistrar {
         TypeDescriptor.Builder builder = TypeDescriptor.newBuilder()
             .setTypeName(cls.getSimpleName());
 
+        IversonDescription typeDescription = cls.getAnnotation(IversonDescription.class);
+        if (typeDescription != null) {
+            builder.setDescription(typeDescription.value());
+        }
+
         // Collect nav property field names (annotated with any relation annotation)
         Set<String> navFieldNames = new HashSet<>();
         Field keyField = null;
@@ -142,6 +147,15 @@ public final class SchemaRegistrar {
         if (sk != null) {
             b.setIsSearchKey(true);
             b.setSearchKeyOrder(sk.order());
+        }
+
+        if (field.getAnnotation(IversonMetadata.class) != null) {
+            b.setIsMetadata(true);
+        }
+
+        IversonDescription desc = field.getAnnotation(IversonDescription.class);
+        if (desc != null) {
+            b.setDescription(desc.value());
         }
 
         IversonLargeField lf = field.getAnnotation(IversonLargeField.class);

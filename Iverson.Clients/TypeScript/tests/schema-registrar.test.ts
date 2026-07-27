@@ -11,6 +11,8 @@ import {
     IversonLargeField,
     IversonEmbedding,
     IversonChunk,
+    IversonMetadata,
+    IversonDescription,
     ManyToOne,
     OneToMany,
 } from '../src/annotations.js';
@@ -266,5 +268,76 @@ describe('SchemaRegistrar', () => {
             expect(rel.foreignKey).toBe('PostId');
             expect(rel.kind).toBe(RelationKind.ONE_TO_MANY);
         });
+    });
+});
+
+// ── Metadata / description entity ─────────────────────────────────────────────
+
+@IversonEntity()
+@IversonDescription('Documents ingested for retrieval.')
+class RegDoc {
+    @IversonKey()
+    @IversonDescription('Stable document identifier.')
+    id: string = '';
+
+    @IversonMetadata()
+    @IversonDescription('Publishing source.')
+    source: string = '';
+
+    @IversonMetadata()
+    region: string = '';
+
+    title: string = '';
+}
+
+describe('_buildRequest — metadata and descriptions', () => {
+    function propsOf(cls: Function) {
+        const registrar = new SchemaRegistrar(makeStub(), [cls]);
+        const req = registrar._buildRequest(cls);
+        return {
+            req,
+            props: Object.fromEntries(req.rootType!.properties.map(p => [p.name, p])),
+        };
+    }
+
+    it('sets isMetadata only on marked properties', () => {
+        const { props } = propsOf(RegDoc);
+        expect(props['Source'].isMetadata).toBe(true);
+        expect(props['Region'].isMetadata).toBe(true);
+        expect(props['Title'].isMetadata).toBe(false);
+        expect(props['Id'].isMetadata).toBe(false);
+    });
+
+    it('sets property descriptions, including on the key property', () => {
+        const { props } = propsOf(RegDoc);
+        expect(props['Id'].description).toBe('Stable document identifier.');
+        expect(props['Source'].description).toBe('Publishing source.');
+        expect(props['Title'].description).toBe('');
+    });
+
+    it('sets the type-level description', () => {
+        const { req } = propsOf(RegDoc);
+        expect(req.rootType!.description).toBe('Documents ingested for retrieval.');
+    });
+
+    it('carries metadata and descriptions across the wire encoding', () => {
+        const { req } = propsOf(RegDoc);
+        const decoded = SchemaRequest.decode(SchemaRequest.encode(req).finish());
+        const props = Object.fromEntries(decoded.rootType!.properties.map(p => [p.name, p]));
+
+        expect(decoded.rootType!.description).toBe('Documents ingested for retrieval.');
+        // Regression guard: a description on the KEY property must not be dropped.
+        expect(props['Id'].description).toBe('Stable document identifier.');
+        expect(props['Source'].description).toBe('Publishing source.');
+        expect(props['Source'].isMetadata).toBe(true);
+        expect(props['Region'].isMetadata).toBe(true);
+        expect(props['Title'].isMetadata).toBe(false);
+    });
+
+    it('leaves descriptions and isMetadata empty for entities without them', () => {
+        const { req, props } = propsOf(RegArticle);
+        expect(req.rootType!.description).toBe('');
+        expect(props['Category'].isMetadata).toBe(false);
+        expect(props['Category'].description).toBe('');
     });
 });

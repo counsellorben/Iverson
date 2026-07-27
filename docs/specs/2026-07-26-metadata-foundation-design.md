@@ -55,6 +55,13 @@ keyword filters cannot match elements of, silently breaking the §4 filterabilit
 guarantee) and is
 meaningless on the key/tenant fields (already present in payload / collection routing).
 
+`is_metadata` is also **rejected** when the property's camelCase name collides with a
+reserved chunk payload key (`text`, `parent_id`, `field`, `chunk_index`). The alternative —
+skipping such a column at ingest — leaves it silently un-denormalized while the §4 filter
+path still accepts filters on it, so the filter matches the reserved key's value (e.g. the
+chunk passage text) instead. Rejecting at registration keeps the ingest and filter paths in
+agreement by construction. Added during the final whole-branch review.
+
 ### 2. Proto change — `Iverson.Clients/Common/Proto/object_mapping.proto`
 
 ```proto

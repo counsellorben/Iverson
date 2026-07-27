@@ -168,6 +168,28 @@ public sealed class QdrantVectorServiceTests
                 p["rating"].Equals(4.5) && p["published"].Equals(true)));
     }
 
+    [Theory]
+    [InlineData("string")]
+    [InlineData("integer")]
+    [InlineData("double")]
+    [InlineData("bool")]
+    public void ToCanonicalString_MapsNonStringPayloadKindsToCanonicalText(string kind)
+    {
+        // The Qdrant client is a concrete, non-virtual type, so the search-result mapping
+        // cannot be driven through a mocked client here; via InternalsVisibleTo the mapping
+        // helper is exercised directly instead. Integration coverage lives in
+        // QdrantIntegrationTests.
+        var (value, expected) = kind switch
+        {
+            "string"  => (new Value { StringValue  = "Allen Iverson" }, "Allen Iverson"),
+            "integer" => (new Value { IntegerValue = 42L },             "42"),
+            "double"  => (new Value { DoubleValue  = 3.5 },             "3.5"),
+            _         => (new Value { BoolValue    = true },            "true")
+        };
+
+        IntelligenceVectorService.ToCanonicalString(value).Should().Be(expected);
+    }
+
     [Fact]
     public void QdrantVectorService_ImplementsQueryAndWriteRoleInterfaces()
     {

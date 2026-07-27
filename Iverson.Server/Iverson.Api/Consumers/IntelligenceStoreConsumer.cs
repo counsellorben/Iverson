@@ -200,6 +200,20 @@ public sealed class IntelligenceStoreConsumer(
                         if (authoritativeOwnerValue is not null)
                             chunkPayload[schema.Authorization!.OwnerField!.ToCamelCase()] = authoritativeOwnerValue;
 
+                        foreach (var name in schema.MetadataColumns)
+                        {
+                            if (ownerField is not null && string.Equals(name, ownerField, StringComparison.OrdinalIgnoreCase))
+                                continue; // authoritative owner write above covers this key (CSR #7)
+                            // No reserved-key guard needed here: SchemaBuilder rejects a metadata
+                            // column whose camelCase name collides with a reserved chunk payload key
+                            // at registration, so one cannot reach this loop.
+                            var camelKey = name.ToCamelCase();
+                            var sqlType = schema.ScalarColumns.FirstOrDefault(c =>
+                                string.Equals(c.Name, name, StringComparison.OrdinalIgnoreCase))?.SqlType ?? "TEXT";
+                            var val = ExtractTypedValue(payload, name, sqlType);
+                            if (val is not null) chunkPayload[camelKey] = val;
+                        }
+
                         await vectorWrite.UpsertNamedAsync(
                             chunksCollectionName,
                             chunkId,
