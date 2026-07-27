@@ -195,6 +195,8 @@ builder.Services.AddSingleton<IOutboxWriter>(sp => new OutboxWriter(
     sp.GetRequiredService<IRecordStoreQueryExecutor>(),
     sp.GetRequiredService<IRecordStoreTransactionRunner>()));
 builder.Services.AddSingleton<IOutboxPublisher, OutboxPublisher>();
+builder.Services.AddSingleton<IEnrichmentStateRepository>(sp =>
+    new EnrichmentStateRepository(sp.GetRequiredService<IRecordStoreQueryExecutor>()));
 builder.Services.AddSingleton<IEntityRelationResolver, EntityRelationResolver>();
 builder.Services.AddSingleton<ISchemaRegistrationOrchestrator, SchemaRegistrationOrchestrator>();
 builder.Services.AddSingleton<IReconciliationQueueRepository>(sp => new ReconciliationQueueRepository(
@@ -226,6 +228,11 @@ builder.Services.AddHttpClient("JaegerOtlpHttp", client =>
 });
 
 builder.Services.AddEmbeddings(cfg);
+
+// AddEnrichment is unconditional (IEnrichmentService / IOptions<EnrichmentServiceOptions> are
+// resolved outside the enrichment consumer too); only the hosted EnrichmentConsumer is gated on
+// Enrichment__Enabled — see EnrichmentRegistration.
+builder.Services.AddEnrichmentPipeline(cfg, workloadRole == "worker");
 
 // Defense-in-depth: ConsumerResilience.RunWithRestartAsync already catches and retries
 // every exception these hosted services can throw, but if something ever escapes that
@@ -371,6 +378,10 @@ app.MapPost("/admin/dlq/{id}/replay", async (Guid id, IDlqRepository dlq, IEvent
 await app.Services.GetRequiredService<IEmbeddingService>().InitializeAsync();
 var schemaRegistry = app.Services.GetRequiredService<SchemaRegistry>();
 await schemaRegistry.LoadAsync();
+
+// Plumbing table for the enrichment loop breaker — created the same way SchemaRegistry creates
+// its own backing table (SchemaRegistry.LoadAsync → repository.EnsureTableAsync).
+await app.Services.GetRequiredService<IEnrichmentStateRepository>().EnsureTableAsync();
 
 // EnsureRuntimeRoleAsync must run before any ApplySchemaAsync call for a tenant-scoped table,
 // since that DDL GRANTs to iverson_runtime — the role has to exist first.

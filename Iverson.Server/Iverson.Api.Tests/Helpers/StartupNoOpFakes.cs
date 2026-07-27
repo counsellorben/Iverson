@@ -33,6 +33,15 @@ internal sealed class NoOpSchemaRegistryRepository : ISchemaRegistryRepository
     public Task DeleteAsync(string typeName) => Task.CompletedTask;
 }
 
+// Program.cs also calls IEnrichmentStateRepository.EnsureTableAsync() during hydration.
+internal sealed class NoOpEnrichmentStateRepository : IEnrichmentStateRepository
+{
+    public Task EnsureTableAsync() => Task.CompletedTask;
+    public Task<string?> GetHashAsync(string tenantId, string typeName, string entityKey) => Task.FromResult<string?>(null);
+    public Task UpsertAsync(IDbTransactionContext tx, string tenantId, string typeName, string entityKey, string sourceHash, DateTimeOffset enrichedAt) => Task.CompletedTask;
+    public Task DeleteAsync(string tenantId, string typeName, string entityKey) => Task.CompletedTask;
+}
+
 internal sealed class NoOpRecordStoreSchemaManager : IRecordStoreSchemaManager
 {
     public Task ApplySchemaAsync(TableSchema schema) => Task.CompletedTask;

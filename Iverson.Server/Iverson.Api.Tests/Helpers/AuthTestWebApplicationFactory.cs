@@ -51,6 +51,9 @@ public sealed class AuthTestWebApplicationFactory : WebApplicationFactory<Progra
             services.RemoveAll<ISchemaRegistryRepository>();
             services.AddSingleton<ISchemaRegistryRepository, NoOpSchemaRegistryRepository>();
 
+            services.RemoveAll<IEnrichmentStateRepository>();
+            services.AddSingleton<IEnrichmentStateRepository, NoOpEnrichmentStateRepository>();
+
             services.RemoveAll<IRecordStoreSchemaManager>();
             services.AddSingleton<IRecordStoreSchemaManager, NoOpRecordStoreSchemaManager>();
 
