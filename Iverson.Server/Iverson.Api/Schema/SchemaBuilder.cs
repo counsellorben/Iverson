@@ -42,6 +42,7 @@ internal static class SchemaBuilder
         var fieldDescriptions = new Dictionary<string, string>();
         var badMetadata      = new List<string>();
         var reservedMetadata = new List<string>();
+        var enrichmentTargets = new List<EnrichmentTarget>();
 
         // [IversonDescription] is valid on any property including the key, so descriptions are
         // collected across all properties — unlike every other collection below, which is
@@ -70,9 +71,19 @@ internal static class SchemaBuilder
                         prop.ChunkMaxTokens,
                         prop.ChunkOverlap,
                         embedding.ModelId,
-                        embedding.Dimension));
+                        embedding.Dimension,
+                        prop.ChunkContextual));
                 largeFields.Add(prop.Name);
             }
+
+            if (prop.IsSummaryTarget)
+                enrichmentTargets.Add(new EnrichmentTarget(prop.Name, EnrichmentKind.Summary, null));
+
+            if (prop.IsKeywordsTarget)
+                enrichmentTargets.Add(new EnrichmentTarget(prop.Name, EnrichmentKind.Keywords, null));
+
+            if (!string.IsNullOrEmpty(prop.ExtractHint))
+                enrichmentTargets.Add(new EnrichmentTarget(prop.Name, EnrichmentKind.Extracted, prop.ExtractHint));
 
             if (prop.IsLargeField)
                 largeFields.Add(prop.Name);
@@ -161,7 +172,8 @@ internal static class SchemaBuilder
             TenantColumn      = string.IsNullOrEmpty(typeDesc.TenantField) ? null : typeDesc.TenantField,
             MetadataColumns   = metadataColumns,
             Description       = string.IsNullOrEmpty(typeDesc.Description) ? null : typeDesc.Description,
-            FieldDescriptions = fieldDescriptions
+            FieldDescriptions = fieldDescriptions,
+            EnrichmentTargets = enrichmentTargets
         };
     }
 

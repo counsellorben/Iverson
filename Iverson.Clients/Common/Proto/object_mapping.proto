@@ -59,6 +59,10 @@ message PropertyDescriptor {
     bool   is_large_field   = 16;  // [IversonLargeField] present — excluded from fast-path indices
     bool   is_metadata      = 17;  // [IversonMetadata] present — denormalized onto chunk points
     string description      = 18;  // [IversonDescription] text; empty = none
+    bool   is_summary_target  = 19;  // [IversonSummary]
+    bool   is_keywords_target = 20;  // [IversonKeywords]
+    string extract_hint       = 21;  // [IversonExtracted]; empty = absent
+    bool   chunk_contextual   = 22;  // [IversonChunk(Contextual = true)]
 }
 
 message RelationDescriptor {

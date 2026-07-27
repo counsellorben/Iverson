@@ -38,6 +38,8 @@ public sealed class SchemaRegistrationOrchestrator(
 
             var descriptor = SchemaBuilder.BuildDescriptor(typeDesc, embedding);
 
+            ValidateEnrichmentTargets(typeDesc, descriptor);
+
             var ownerField = descriptor.Authorization?.OwnerField;
             if (!string.IsNullOrEmpty(ownerField))
                 ValidateFieldReference(descriptor, ownerField, "owner_field");
@@ -103,6 +105,72 @@ public sealed class SchemaRegistrationOrchestrator(
                 throw new RpcException(new Status(StatusCode.InvalidArgument,
                     $"{fieldLabel} '{fieldName}' on '{descriptor.TypeName}' camelCases to '{camelField}', " +
                     $"which collides with a reserved chunk-payload key ({string.Join(", ", reservedChunkKeys)})."));
+            }
+        }
+    }
+
+    // Enrichment targets (properties tagged [IversonSummary]/[IversonKeywords]/[IversonExtracted])
+    // are columns the enrichment pipeline writes to, not reads from. Five rules keep that
+    // invariant sound at registration time rather than failing obscurely at ingest.
+    private static void ValidateEnrichmentTargets(TypeDescriptor typeDesc, SchemaDescriptor descriptor)
+    {
+        var ownerField = descriptor.Authorization?.OwnerField;
+
+        foreach (var target in descriptor.EnrichmentTargets)
+        {
+            var property = typeDesc.Properties.First(p =>
+                string.Equals(p.Name, target.ColumnName, StringComparison.OrdinalIgnoreCase));
+
+            if (property.ClrType != ClrType.ClrString)
+            {
+                throw new RpcException(new Status(StatusCode.InvalidArgument,
+                    $"Enrichment target '{target.ColumnName}' on '{descriptor.TypeName}' must be a string " +
+                    $"property; it is '{property.ClrType}'."));
+            }
+
+            if (property.IsKey ||
+                string.Equals(target.ColumnName, descriptor.TenantColumn, StringComparison.OrdinalIgnoreCase) ||
+                (!string.IsNullOrEmpty(ownerField) &&
+                 string.Equals(target.ColumnName, ownerField, StringComparison.OrdinalIgnoreCase)))
+            {
+                throw new RpcException(new Status(StatusCode.InvalidArgument,
+                    $"Enrichment target '{target.ColumnName}' on '{descriptor.TypeName}' cannot be the key, " +
+                    "tenant_field, or owner_field."));
+            }
+
+            if (property.IsEmbedding || property.IsChunk)
+            {
+                throw new RpcException(new Status(StatusCode.InvalidArgument,
+                    $"Enrichment target '{target.ColumnName}' on '{descriptor.TypeName}' cannot also carry " +
+                    "[IversonEmbedding]/[IversonChunk]: if this property were also a source property, the " +
+                    "enrichment writeback would mutate the hashed text, causing the enricher to re-enrich its " +
+                    "own republished event without bound."));
+            }
+
+            if (target.Kind == EnrichmentKind.Extracted && string.IsNullOrWhiteSpace(target.Hint))
+            {
+                throw new RpcException(new Status(StatusCode.InvalidArgument,
+                    $"Enrichment target '{target.ColumnName}' on '{descriptor.TypeName}' has [IversonExtracted] " +
+                    "with an empty hint."));
+            }
+        }
+
+        if (descriptor.EnrichmentTargets.Count > 0)
+        {
+            var targetNames = descriptor.EnrichmentTargets
+                .Select(t => t.ColumnName)
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+            var hasSourceProperty = typeDesc.Properties.Any(p =>
+                p.ClrType == ClrType.ClrString && !p.IsKey && !targetNames.Contains(p.Name) &&
+                !string.Equals(p.Name, descriptor.TenantColumn, StringComparison.OrdinalIgnoreCase) &&
+                !string.Equals(p.Name, ownerField, StringComparison.OrdinalIgnoreCase));
+
+            if (!hasSourceProperty)
+            {
+                throw new RpcException(new Status(StatusCode.InvalidArgument,
+                    $"'{descriptor.TypeName}' declares enrichment targets but has no source text property " +
+                    "for the enrichment pipeline to read from."));
             }
         }
     }

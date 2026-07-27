@@ -40,7 +40,13 @@ public sealed record SchemaDescriptor
 
     public string?                    Description       { get; init; }
     public Dictionary<string, string> FieldDescriptions { get; init; } = [];
+
+    public IReadOnlyList<EnrichmentTarget> EnrichmentTargets { get; init; } = [];
 }
+
+public enum EnrichmentKind { Summary, Keywords, Extracted }
+
+public sealed record EnrichmentTarget(string ColumnName, EnrichmentKind Kind, string? Hint);
 
 public sealed record ColumnDescriptor(string Name, string SqlType, bool IsNullable);
 
@@ -48,7 +54,9 @@ public sealed record ForeignKeyDescriptor(string ColumnName, string ReferencedTy
 
 public sealed record VectorDescriptor(string PropertyName, int Dimension, string ModelId);
 
-public sealed record ChunkDescriptor(string PropertyName, int MaxTokens, int Overlap, string ModelId, int Dimension);
+public sealed record ChunkDescriptor(
+    string PropertyName, int MaxTokens, int Overlap, string ModelId, int Dimension,
+    bool Contextual = false);
 
 public sealed record RelationDescriptor(
     string PropertyName,

@@ -281,4 +281,85 @@ public class SchemaRegistrationOrchestratorTests
         schema.VectorFields[0].Dimension.Should().Be(768);
         schema.VectorFields[0].ModelId.Should().Be("nomic-embed-text");
     }
+
+    [Fact]
+    public async Task RegisterAsync_WithNonStringEnrichmentTarget_ThrowsInvalidArgument()
+    {
+        var td = new TypeDescriptor { TypeName = "Widget", TenantField = "TenantId" };
+        td.Properties.Add(new PropertyDescriptor { Name = "Id", ClrType = ClrType.ClrGuid, IsKey = true });
+        td.Properties.Add(new PropertyDescriptor { Name = "TenantId", ClrType = ClrType.ClrString });
+        td.Properties.Add(new PropertyDescriptor { Name = "Body", ClrType = ClrType.ClrString });
+        td.Properties.Add(new PropertyDescriptor
+            { Name = "Count", ClrType = ClrType.ClrInt32, IsSummaryTarget = true });
+
+        var act = () => _sut.RegisterAsync(new SchemaRequest { RootType = td }, CancellationToken.None);
+
+        await act.Should().ThrowAsync<RpcException>()
+            .Where(e => e.StatusCode == StatusCode.InvalidArgument);
+    }
+
+    [Fact]
+    public async Task RegisterAsync_WithKeyTenantOrOwnerAsEnrichmentTarget_ThrowsInvalidArgument()
+    {
+        var td = new TypeDescriptor { TypeName = "Widget", TenantField = "TenantId" };
+        td.Properties.Add(new PropertyDescriptor { Name = "Id", ClrType = ClrType.ClrGuid, IsKey = true });
+        td.Properties.Add(new PropertyDescriptor
+            { Name = "TenantId", ClrType = ClrType.ClrString, IsSummaryTarget = true });
+        td.Properties.Add(new PropertyDescriptor { Name = "Body", ClrType = ClrType.ClrString });
+
+        var act = () => _sut.RegisterAsync(new SchemaRequest { RootType = td }, CancellationToken.None);
+
+        await act.Should().ThrowAsync<RpcException>()
+            .Where(e => e.StatusCode == StatusCode.InvalidArgument);
+    }
+
+    [Fact]
+    public async Task RegisterAsync_WithEnrichmentTargetThatIsAlsoEmbeddingOrChunk_ThrowsInvalidArgument()
+    {
+        var td = new TypeDescriptor { TypeName = "Widget", TenantField = "TenantId" };
+        td.Properties.Add(new PropertyDescriptor { Name = "Id", ClrType = ClrType.ClrGuid, IsKey = true });
+        td.Properties.Add(new PropertyDescriptor { Name = "TenantId", ClrType = ClrType.ClrString });
+        td.Properties.Add(new PropertyDescriptor { Name = "Body", ClrType = ClrType.ClrString });
+        td.Properties.Add(new PropertyDescriptor
+        {
+            Name = "Summary", ClrType = ClrType.ClrString, IsSummaryTarget = true,
+            IsChunk = true, ChunkMaxTokens = 512, ChunkOverlap = 64
+        });
+
+        var act = () => _sut.RegisterAsync(new SchemaRequest { RootType = td }, CancellationToken.None);
+
+        await act.Should().ThrowAsync<RpcException>()
+            .Where(e => e.StatusCode == StatusCode.InvalidArgument);
+    }
+
+    [Fact]
+    public async Task RegisterAsync_WithEnrichmentTargetsButNoSourceProperty_ThrowsInvalidArgument()
+    {
+        var td = new TypeDescriptor { TypeName = "Widget", TenantField = "TenantId" };
+        td.Properties.Add(new PropertyDescriptor { Name = "Id", ClrType = ClrType.ClrGuid, IsKey = true });
+        td.Properties.Add(new PropertyDescriptor { Name = "TenantId", ClrType = ClrType.ClrString });
+        td.Properties.Add(new PropertyDescriptor
+            { Name = "Summary", ClrType = ClrType.ClrString, IsSummaryTarget = true });
+
+        var act = () => _sut.RegisterAsync(new SchemaRequest { RootType = td }, CancellationToken.None);
+
+        await act.Should().ThrowAsync<RpcException>()
+            .Where(e => e.StatusCode == StatusCode.InvalidArgument);
+    }
+
+    [Fact]
+    public async Task RegisterAsync_WithEmptyExtractHint_ThrowsInvalidArgument()
+    {
+        var td = new TypeDescriptor { TypeName = "Widget", TenantField = "TenantId" };
+        td.Properties.Add(new PropertyDescriptor { Name = "Id", ClrType = ClrType.ClrGuid, IsKey = true });
+        td.Properties.Add(new PropertyDescriptor { Name = "TenantId", ClrType = ClrType.ClrString });
+        td.Properties.Add(new PropertyDescriptor { Name = "Body", ClrType = ClrType.ClrString });
+        td.Properties.Add(new PropertyDescriptor
+            { Name = "Extracted", ClrType = ClrType.ClrString, ExtractHint = "   " });
+
+        var act = () => _sut.RegisterAsync(new SchemaRequest { RootType = td }, CancellationToken.None);
+
+        await act.Should().ThrowAsync<RpcException>()
+            .Where(e => e.StatusCode == StatusCode.InvalidArgument);
+    }
 }
