@@ -16,8 +16,8 @@ agent must read.
 Parts 3 (tensor re-rank/fusion), 4 (derived vector signals), and 5 (agent-facing
 schema surface) remain out of scope.
 
-**Base branch:** this work builds on `metadata-foundation` (part 1), which is
-implemented but not yet merged to `main`.
+**Base branch:** `main`. Part 1 was merged at `35dfeeb`; the earlier instruction to
+branch from `metadata-foundation` is obsolete and that branch no longer exists.
 
 ## Goal
 
@@ -43,7 +43,7 @@ languages (.NET, Java, Python, Go, TypeScript):
 The client declares these properties and leaves them empty. Because they are ordinary
 declared columns they reach Postgres, StarRocks, and Qdrant through the existing
 projection with no new plumbing — `SchemaBuilder` places them in `ScalarColumns` like
-any other scalar (verified: `SchemaBuilder.cs:136`).
+any other scalar (verified: `SchemaBuilder.cs:153`).
 
 **Enrichment source text** is the concatenation of the type's existing
 `[IversonEmbedding]` and `[IversonChunk]` properties. There is deliberately no separate
@@ -328,13 +328,13 @@ before this spec was written.
 | A6 | Proto has room on a per-property descriptor | `object_mapping.proto` — chunk config at 9-13, part 1 at 17-18, 19-22 free |
 | A7 | All five clients have an attribute + registrar path | `IversonMetadata` present in .NET, Java, Python, Go, and TypeScript, each with registrar tests |
 | A8 | `SchemaDescriptor` is extensible | `SchemaDescriptor.cs:21-33`; **constraint found** — defaulted not `required`, comparer re-applied in `init` |
-| A9 | Enrichment columns project automatically | `SchemaBuilder.cs:136` — `ScalarColumns = scalars` |
+| A9 | Enrichment columns project automatically | `SchemaBuilder.cs:153` — `ScalarColumns = scalars` |
 | A10 | A `context` payload key collides with nothing | `ObjectSearchGrpcService.cs:312-313` reads only `text`/`parent_id`; **changed the design** — the key was dropped as write-only |
 | A11 | The extra republish breaks nothing | Engagement upsert and Intelligence deterministic `ComputeChunkPointId` are both idempotent; events keyed by entity key preserve per-key ordering |
 | A12 | Field authorization is unaffected | Enricher bypasses gRPC; client reads unchanged (`ObjectSearchGrpcService.cs:252`) |
 | A13 | The embedding service pattern is copyable | `EmbeddingServiceOptions`; `Program.cs:228`, `Program.cs:371` |
 | A14 | Ollama supports `format: "json"`; models are pullable | Official Ollama `api.md`; `statefulset.yaml:53-59`; **finding** — `docker-compose.yml:96-103` needs restructuring |
-| A15 | Part 1 is unmerged; base is `metadata-foundation` | `git worktree list` — `metadata-foundation` @ `eabef05`; `main` @ `30e9db2` has only docs |
+| A15 | ~~Part 1 is unmerged; base is `metadata-foundation`~~ **Superseded:** part 1 merged to `main` at `35dfeeb`; base is `main` | `git log` — merge commit `35dfeeb`; branch `metadata-foundation` deleted |
 | A16 | A tx-scoped outbox enqueue for non-delete events must be added — none exists | `OutboxWriter.cs:15` runs its own transaction and writes a full payload; `OutboxWriter.cs:69-77` takes an `IDbTransactionContext` but hardcodes `'Deleted'` |
 | A17 | An outbox row alone converges, as the durable fallback behind §3's opportunistic publish | `ReconciliationService.ProcessOneAsync:100-113` re-fetches from Postgres and republishes with recomputed `targetStores`; `ReconciliationQueueWorker.PollInterval` is 30s |
 | A18 | The enricher generates its own outbox row Guid and passes it to `PublishAsync` for cleanup, so the new tx-scoped enqueue must accept or return it | `OutboxPublisher.cs:8-18` requires `outboxRowId` and deletes that row on success; `OutboxWriter.cs:38` shows the writer generating the Guid itself |

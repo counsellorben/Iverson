@@ -10,7 +10,7 @@
 
 **Tech stack:** .NET (net10.0), Postgres via Dapper-style `IRecordStoreQueryExecutor`, Kafka, Qdrant, StarRocks, Ollama. Clients in .NET, Java, Python, Go, TypeScript.
 
-**Base branch:** `metadata-foundation` (part 1, implemented but not merged to `main`). Branch this work from there, not from `main`.
+**Base branch:** `main`. Part 1 was merged at `35dfeeb`; the earlier instruction to branch from `metadata-foundation` is obsolete and that branch no longer exists.
 
 ---
 
@@ -59,7 +59,7 @@ Verified by `thorough-brainstorming` at spec-write time; **not** re-verified her
 - A4-A6: a third consumer on the same topic is supported; server-owned tables have a creation mechanism; proto fields 19-22 are free.
 - A7-A9: all five clients have an attribute + registrar path; `SchemaDescriptor` is extensible; enrichment columns project automatically via `ScalarColumns`.
 - A10-A12: the chunk `context` key was dropped as write-only; the extra republish breaks nothing; field authorization is unaffected.
-- A13-A15: the embedding service pattern is copyable; Ollama supports `format:"json"` and `docker-compose.yml:96-103` needs restructuring; the base branch is `metadata-foundation`.
+- A13-A15: the embedding service pattern is copyable; Ollama supports `format:"json"` and `docker-compose.yml:96-103` needs restructuring; A15's base-branch claim is superseded — part 1 is merged and the base is `main`.
 - A16-A18: no tx-scoped non-delete outbox enqueue exists; an outbox row alone converges via reconciliation (30s poll); the enricher generates its own outbox row Guid.
 
 ## Verified plan-level assumptions
@@ -86,7 +86,7 @@ Newly introduced by this plan and verified at plan-write time against the `metad
 | P16 | Ordering | No task consumes a symbol a later task introduces | T4 consumes T1/T2/T3; T5 consumes T1/T2; T7-11 consume only T1's proto and nothing from one another; T6 is independent |
 | P17 | Code validity | `/api/generate` with `stream:false` returns the text in the `response` field | Official Ollama `api.md` non-streaming example |
 | P18 | Code validity | `SHA256.HashData` is available | net10.0 |
-| P19 | Consumer impact | **`ChunkDescriptor` is a positional record** — `Contextual` must be a trailing optional parameter | `SchemaDescriptor.cs:51` declares 5 positional params; 5 construction sites: `SchemaBuilder.cs:58`, `IntelligenceStoreConsumerTests.cs:598,873`, `ObjectSearchGrpcServiceTests.cs:207`, `SchemaFixtures.cs:39` |
+| P19 | Consumer impact | **`ChunkDescriptor` is a positional record** — `Contextual` must be a trailing optional parameter | `SchemaDescriptor.cs:51` declares 5 positional params; 5 construction sites: `SchemaBuilder.cs:68`, `IntelligenceStoreConsumerTests.cs:598,873`, `ObjectSearchGrpcServiceTests.cs:207`, `SchemaFixtures.cs:39` |
 | P20 | Consumer impact | Exactly one implementer each of `IEntityRepository` and `IOutboxWriter` | `EntityRepository.cs:3`; `OutboxWriter.cs:13`. No hand-written fakes — tests substitute the interfaces |
 | P21 | Consumer impact | One construction site for `IntelligenceStoreConsumer` | `IntelligenceStoreConsumerTests.BuildSut()` at `:72-81` (target-typed `new`); `Program.cs:240` resolves via DI |
 | P22 | Consumer impact | `SchemaDescriptor` additions are additive | uses `{ get; init; }` members, not positional params — unlike P19 |
@@ -145,7 +145,7 @@ In `SchemaRegistrationOrchestrator`, following the existing `ValidateFieldRefere
 
 - [ ] **Step 5: Map the proto fields in `SchemaBuilder`**
 
-Populate `EnrichmentTargets` from `is_summary_target` / `is_keywords_target` / `extract_hint`, and pass `chunk_contextual` into the `ChunkDescriptor` construction at `SchemaBuilder.cs:58`.
+Populate `EnrichmentTargets` from `is_summary_target` / `is_keywords_target` / `extract_hint`, and pass `chunk_contextual` into the `ChunkDescriptor` construction at `SchemaBuilder.cs:68`.
 
 - [ ] **Step 6: Run tests**
 ```bash
