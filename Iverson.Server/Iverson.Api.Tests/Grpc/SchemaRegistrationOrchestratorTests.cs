@@ -335,9 +335,12 @@ public class SchemaRegistrationOrchestratorTests
     [Fact]
     public async Task RegisterAsync_WithEnrichmentTargetsButNoSourceProperty_ThrowsInvalidArgument()
     {
+        // Source text is the concatenation of [IversonEmbedding]/[IversonChunk] properties only —
+        // an ordinary string property does NOT count as a source, even though it's plain text.
         var td = new TypeDescriptor { TypeName = "Widget", TenantField = "TenantId" };
         td.Properties.Add(new PropertyDescriptor { Name = "Id", ClrType = ClrType.ClrGuid, IsKey = true });
         td.Properties.Add(new PropertyDescriptor { Name = "TenantId", ClrType = ClrType.ClrString });
+        td.Properties.Add(new PropertyDescriptor { Name = "Body", ClrType = ClrType.ClrString });
         td.Properties.Add(new PropertyDescriptor
             { Name = "Summary", ClrType = ClrType.ClrString, IsSummaryTarget = true });
 
@@ -345,6 +348,22 @@ public class SchemaRegistrationOrchestratorTests
 
         await act.Should().ThrowAsync<RpcException>()
             .Where(e => e.StatusCode == StatusCode.InvalidArgument);
+    }
+
+    [Fact]
+    public async Task RegisterAsync_WithEnrichmentTargetAndChunkSourceProperty_DoesNotThrow()
+    {
+        var td = new TypeDescriptor { TypeName = "Widget", TenantField = "TenantId" };
+        td.Properties.Add(new PropertyDescriptor { Name = "Id", ClrType = ClrType.ClrGuid, IsKey = true });
+        td.Properties.Add(new PropertyDescriptor { Name = "TenantId", ClrType = ClrType.ClrString });
+        td.Properties.Add(new PropertyDescriptor
+            { Name = "Body", ClrType = ClrType.ClrString, IsChunk = true, ChunkMaxTokens = 512, ChunkOverlap = 64 });
+        td.Properties.Add(new PropertyDescriptor
+            { Name = "Summary", ClrType = ClrType.ClrString, IsSummaryTarget = true });
+
+        var act = () => _sut.RegisterAsync(new SchemaRequest { RootType = td }, CancellationToken.None);
+
+        await act.Should().NotThrowAsync();
     }
 
     [Fact]

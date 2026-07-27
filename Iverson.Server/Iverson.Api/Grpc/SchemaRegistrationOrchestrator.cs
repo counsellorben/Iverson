@@ -161,10 +161,11 @@ public sealed class SchemaRegistrationOrchestrator(
                 .Select(t => t.ColumnName)
                 .ToHashSet(StringComparer.OrdinalIgnoreCase);
 
-            var hasSourceProperty = typeDesc.Properties.Any(p =>
-                p.ClrType == ClrType.ClrString && !p.IsKey && !targetNames.Contains(p.Name) &&
-                !string.Equals(p.Name, descriptor.TenantColumn, StringComparison.OrdinalIgnoreCase) &&
-                !string.Equals(p.Name, ownerField, StringComparison.OrdinalIgnoreCase));
+            // Source text is defined as the concatenation of the type's [IversonEmbedding]/
+            // [IversonChunk] properties — nothing else counts. A type with an enrichment target
+            // but no embedding/chunk property would hash an empty source text and call the
+            // enrichment model with an empty prompt.
+            var hasSourceProperty = typeDesc.Properties.Any(p => p.IsEmbedding || p.IsChunk);
 
             if (!hasSourceProperty)
             {
