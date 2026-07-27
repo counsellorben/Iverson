@@ -20,6 +20,12 @@ networkPolicy:
 # in lockstep with api.ingress.host in every values-*.yaml file.
 global:
   ingressHost: "iverson.local"
+  # The generative model used for ingest enrichment. Lives under `global` (not under
+  # `ollama:`) because two subcharts must agree on it: the ollama subchart PULLS it, and
+  # the api/worker subcharts REQUEST it via Enrichment__ModelId. Scoping it to one subchart
+  # would let the pulled model and the requested model drift apart, which fails at runtime
+  # with a 404 from Ollama on every generative call.
+  generativeModel: "qwen2.5:3b"
 
 postgres:
   instances: 2
@@ -78,7 +84,6 @@ ollama:
   storageSize: 20Gi
   storageClassName: ""
   imageTag: "0.5.0"
-  generativeModel: "qwen2.5:3b"
   resources:
     requests: { cpu: "8", memory: "16Gi", ephemeral-storage: "2Gi" }
     limits: { cpu: "8", memory: "16Gi", ephemeral-storage: "4Gi" }

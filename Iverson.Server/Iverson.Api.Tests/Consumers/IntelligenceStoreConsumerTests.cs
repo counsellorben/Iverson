@@ -1190,6 +1190,92 @@ public class IntelligenceStoreConsumerTests
         payloads[0]!["text"].Should().Be(ContextualBody);
     }
 
+    // ── Contextual prefix fan-out: concurrency cap + per-chunk failure isolation ──
+
+    // maxTokens = 10 → 40-char window, overlap 0. MultiChunkBody below is 20 distinguishable
+    // 40-char blocks, so it splits into exactly 20 chunks and each chunk names itself ("C00".."C19").
+    private static SchemaDescriptor MultiChunkDocSchema() => new()
+    {
+        TypeName       = "Doc",
+        TableName      = "docs",
+        CollectionName = "docs",
+        KeyColumn      = new ColumnDescriptor("Id", "uuid", false),
+        ScalarColumns  = [new ColumnDescriptor("Body", "text", false),
+                          new ColumnDescriptor("Summary", "text", true)],
+        FkColumns      = [],
+        VectorFields   = [],
+        ChunkFields    = [new ChunkDescriptor("Body", 10, 0, "nomic-embed-text", 768, true)],
+        Relations      = [],
+        TenantColumn   = "TenantId",
+        EnrichmentTargets = [new EnrichmentTarget("Summary", EnrichmentKind.Summary, null)]
+    };
+
+    private const int MultiChunkCount = 20;
+
+    private static readonly string MultiChunkBody =
+        string.Concat(Enumerable.Range(0, MultiChunkCount).Select(i => $"C{i:00}" + new string('x', 37)));
+
+    [Fact]
+    public async Task HandleCreated_ContextualChunkFanOut_NeverExceedsConfiguredConcurrencyCap()
+    {
+        const int cap = 3;
+        _enrichmentOptions.MaxConcurrentChunkPrefixes = cap;
+        await _registry.RegisterAsync(MultiChunkDocSchema());
+        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>())
+                 .Returns("""{"Summary":"The doc is about widgets.","TenantId":"test-tenant"}""");
+
+        var inFlight    = 0;
+        var maxInFlight = 0;
+        var calls       = 0;
+        _enrichment.GenerateAsync(Arg.Any<string>(), Arg.Any<CancellationToken>())
+                   .Returns(async _ =>
+                   {
+                       var now = Interlocked.Increment(ref inFlight);
+                       Interlocked.Increment(ref calls);
+                       // Record the high-water mark without losing races.
+                       int observed;
+                       while (now > (observed = Volatile.Read(ref maxInFlight)))
+                           Interlocked.CompareExchange(ref maxInFlight, now, observed);
+
+                       await Task.Delay(15);
+                       Interlocked.Decrement(ref inFlight);
+                       return "Situating sentence.";
+                   });
+
+        CaptureChunkWrites();
+
+        var ev = DocEvent($$$"""{"Body":"{{{MultiChunkBody}}}","TenantId":"test-tenant"}""", "trace-fanout-cap");
+        await BuildSut().HandleAsync(ev.Key, Serialize(ev), CancellationToken.None);
+
+        calls.Should().Be(MultiChunkCount, "every chunk still gets a prefix attempt");
+        maxInFlight.Should().BeLessThanOrEqualTo(cap,
+            "the semaphore must cap generative fan-out on the projection critical path");
+    }
+
+    [Fact]
+    public async Task HandleCreated_ContextualChunkFanOut_OneChunkFailingDoesNotCostSiblingsTheirPrefixes()
+    {
+        await _registry.RegisterAsync(MultiChunkDocSchema());
+        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>())
+                 .Returns("""{"Summary":"The doc is about widgets.","TenantId":"test-tenant"}""");
+
+        // Only the chunk that names itself "C07" fails generation.
+        _enrichment.GenerateAsync(Arg.Any<string>(), Arg.Any<CancellationToken>())
+                   .Returns(ci => ((string)ci[0]).Contains("C07")
+                       ? throw new Exception("Ollama down")
+                       : Task.FromResult("Situating sentence."));
+
+        var (embedded, _) = CaptureChunkWrites();
+
+        var ev = DocEvent($$$"""{"Body":"{{{MultiChunkBody}}}","TenantId":"test-tenant"}""", "trace-fanout-isolation");
+        var act = async () => await BuildSut().HandleAsync(ev.Key, Serialize(ev), CancellationToken.None);
+
+        await act.Should().NotThrowAsync();
+        embedded.Should().HaveCount(MultiChunkCount);
+        embedded.Count(t => t.StartsWith("Situating sentence.\n\n")).Should().Be(MultiChunkCount - 1);
+        embedded.Should().ContainSingle(t => !t.StartsWith("Situating sentence.") && t.StartsWith("C07"));
+    }
+
     // A metadata column whose camelCase name collides with a reserved chunk payload key is now
     // rejected by SchemaBuilder at registration, so it cannot reach this consumer. Coverage moved
     // to SchemaBuilderTests.BuildDescriptor_Throws_WhenMetadataPropertyCollidesWithReservedChunkPayloadKey.

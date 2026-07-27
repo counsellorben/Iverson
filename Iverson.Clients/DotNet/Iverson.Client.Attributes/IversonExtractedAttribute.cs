@@ -7,7 +7,19 @@ namespace Iverson.Client.Attributes;
 /// attribute cannot be applied without one.
 /// </summary>
 [AttributeUsage(AttributeTargets.Property, Inherited = false)]
-public sealed class IversonExtractedAttribute(string hint) : Attribute
+public sealed class IversonExtractedAttribute : Attribute
 {
-    public string Hint { get; } = hint;
+    public IversonExtractedAttribute(string hint)
+    {
+        if (string.IsNullOrWhiteSpace(hint))
+            throw new ArgumentException(
+                "[IversonExtracted] requires a non-blank extraction hint; the server treats an " +
+                "empty hint as \"not an extraction target\" and silently drops the property, so it " +
+                "would never be populated.",
+                nameof(hint));
+
+        Hint = hint;
+    }
+
+    public string Hint { get; }
 }

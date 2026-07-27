@@ -501,6 +501,27 @@ public class SchemaRegistrarTests
         plain.ChunkContextual.Should().BeFalse();
     }
 
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("   ")]
+    [InlineData("\t\n")]
+    public void IversonExtractedAttribute_Throws_WhenHintIsBlank(string? hint)
+    {
+        var act = () => new IversonExtractedAttribute(hint!);
+
+        act.Should().Throw<ArgumentException>()
+           .WithMessage("*non-blank extraction hint*")
+           .And.ParamName.Should().Be("hint");
+    }
+
+    [Fact]
+    public void IversonExtractedAttribute_KeepsHint_WhenNonBlank()
+    {
+        new IversonExtractedAttribute("Extract the invoice total.")
+            .Hint.Should().Be("Extract the invoice total.");
+    }
+
     [Fact]
     public async Task RegisterAllAsync_SetsAuthorization_WhenSupplementProvidesEntry()
     {

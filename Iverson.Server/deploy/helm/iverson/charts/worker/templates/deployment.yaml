@@ -114,6 +114,10 @@ spec:
               value: "/etc/kafka-ca/ca.crt"
             - name: Embeddings__BaseUrl
               value: "http://{{ .Release.Name }}-ollama:11434"
+            - name: Enrichment__BaseUrl
+              value: "http://{{ .Release.Name }}-ollama:11434"
+            - name: Enrichment__ModelId
+              value: {{ .Values.global.generativeModel | quote }}
             - name: Otel__Endpoint
               value: "http://{{ .Release.Name }}-jaeger:4317"
           resources:

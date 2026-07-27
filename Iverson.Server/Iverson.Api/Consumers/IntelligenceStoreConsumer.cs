@@ -185,6 +185,12 @@ public sealed class IntelligenceStoreConsumer(
                 ? await FetchSummaryAsync(schema, ev.Key, ct)
                 : null;
 
+            // Caps generative fan-out for contextual prefixes. Embedding calls stay unthrottled —
+            // only the (far more expensive) generative calls are gated. See
+            // EnrichmentServiceOptions.MaxConcurrentChunkPrefixes.
+            using var prefixGate = new SemaphoreSlim(
+                Math.Max(1, enrichmentOptions.Value.MaxConcurrentChunkPrefixes));
+
             using (RequestHeaders.Use("api-key", tenantScope.MintScopedApiKey(chunksCollectionName, readOnly: false)))
             {
                 foreach (var cf in schema.ChunkFields)
@@ -205,7 +211,8 @@ public sealed class IntelligenceStoreConsumer(
                     {
                         var (chunkText, chunkIndex) = chunk;
                         var textToEmbed = documentContext is not null
-                            ? await PrefixWithContextAsync(documentContext, chunkText, schema.TypeName, ev.Key, ct)
+                            ? await PrefixWithContextAsync(
+                                  prefixGate, documentContext, chunkText, schema.TypeName, ev.Key, ct)
                             : chunkText;
                         var chunkVector = await embedding.EmbedAsync(textToEmbed, ct);
                         var chunkId     = ComputeChunkPointId(pointId, cf.PropertyName, chunkIndex);
@@ -366,12 +373,22 @@ public sealed class IntelligenceStoreConsumer(
     // Caught per chunk (spec §6): a generation failure must leave the object's projection intact,
     // and must not cost the *other* chunks of the same field their prefixes.
     private async Task<string> PrefixWithContextAsync(
-        string documentContext, string chunkText, string typeName, string key, CancellationToken ct)
+        SemaphoreSlim gate, string documentContext, string chunkText, string typeName, string key,
+        CancellationToken ct)
     {
         try
         {
-            var prefix = await enrichment.GenerateAsync(
-                string.Format(EnrichmentPrompts.ChunkContext, documentContext, chunkText), ct);
+            await gate.WaitAsync(ct);
+            string? prefix;
+            try
+            {
+                prefix = await enrichment.GenerateAsync(
+                    string.Format(EnrichmentPrompts.ChunkContext, documentContext, chunkText), ct);
+            }
+            finally
+            {
+                gate.Release();
+            }
 
             return string.IsNullOrWhiteSpace(prefix) ? chunkText : $"{prefix.Trim()}\n\n{chunkText}";
         }
