@@ -174,6 +174,14 @@ export interface PropertyDescriptor {
   isMetadata: boolean;
   /** [IversonDescription] text; empty = none */
   description: string;
+  /** [IversonSummary] */
+  isSummaryTarget: boolean;
+  /** [IversonKeywords] */
+  isKeywordsTarget: boolean;
+  /** [IversonExtracted]; empty = absent */
+  extractHint: string;
+  /** [IversonChunk(Contextual = true)] */
+  chunkContextual: boolean;
 }
 
 export interface RelationDescriptor {
@@ -296,6 +304,10 @@ function createBasePropertyDescriptor(): PropertyDescriptor {
     isLargeField: false,
     isMetadata: false,
     description: "",
+    isSummaryTarget: false,
+    isKeywordsTarget: false,
+    extractHint: "",
+    chunkContextual: false,
   };
 }
 
@@ -354,6 +366,18 @@ export const PropertyDescriptor: MessageFns<PropertyDescriptor> = {
     }
     if (message.description !== "") {
       writer.uint32(146).string(message.description);
+    }
+    if (message.isSummaryTarget !== false) {
+      writer.uint32(152).bool(message.isSummaryTarget);
+    }
+    if (message.isKeywordsTarget !== false) {
+      writer.uint32(160).bool(message.isKeywordsTarget);
+    }
+    if (message.extractHint !== "") {
+      writer.uint32(170).string(message.extractHint);
+    }
+    if (message.chunkContextual !== false) {
+      writer.uint32(176).bool(message.chunkContextual);
     }
     return writer;
   },
@@ -509,6 +533,38 @@ export const PropertyDescriptor: MessageFns<PropertyDescriptor> = {
           message.description = reader.string();
           continue;
         }
+        case 19: {
+          if (tag !== 152) {
+            break;
+          }
+
+          message.isSummaryTarget = reader.bool();
+          continue;
+        }
+        case 20: {
+          if (tag !== 160) {
+            break;
+          }
+
+          message.isKeywordsTarget = reader.bool();
+          continue;
+        }
+        case 21: {
+          if (tag !== 170) {
+            break;
+          }
+
+          message.extractHint = reader.string();
+          continue;
+        }
+        case 22: {
+          if (tag !== 176) {
+            break;
+          }
+
+          message.chunkContextual = reader.bool();
+          continue;
+        }
       }
       if ((tag & 7) === 4 || tag === 0) {
         break;
@@ -602,6 +658,26 @@ export const PropertyDescriptor: MessageFns<PropertyDescriptor> = {
         ? globalThis.Boolean(object.is_metadata)
         : false,
       description: isSet(object.description) ? globalThis.String(object.description) : "",
+      isSummaryTarget: isSet(object.isSummaryTarget)
+        ? globalThis.Boolean(object.isSummaryTarget)
+        : isSet(object.is_summary_target)
+        ? globalThis.Boolean(object.is_summary_target)
+        : false,
+      isKeywordsTarget: isSet(object.isKeywordsTarget)
+        ? globalThis.Boolean(object.isKeywordsTarget)
+        : isSet(object.is_keywords_target)
+        ? globalThis.Boolean(object.is_keywords_target)
+        : false,
+      extractHint: isSet(object.extractHint)
+        ? globalThis.String(object.extractHint)
+        : isSet(object.extract_hint)
+        ? globalThis.String(object.extract_hint)
+        : "",
+      chunkContextual: isSet(object.chunkContextual)
+        ? globalThis.Boolean(object.chunkContextual)
+        : isSet(object.chunk_contextual)
+        ? globalThis.Boolean(object.chunk_contextual)
+        : false,
     };
   },
 
@@ -661,6 +737,18 @@ export const PropertyDescriptor: MessageFns<PropertyDescriptor> = {
     if (message.description !== "") {
       obj.description = message.description;
     }
+    if (message.isSummaryTarget !== false) {
+      obj.isSummaryTarget = message.isSummaryTarget;
+    }
+    if (message.isKeywordsTarget !== false) {
+      obj.isKeywordsTarget = message.isKeywordsTarget;
+    }
+    if (message.extractHint !== "") {
+      obj.extractHint = message.extractHint;
+    }
+    if (message.chunkContextual !== false) {
+      obj.chunkContextual = message.chunkContextual;
+    }
     return obj;
   },
 
@@ -687,6 +775,10 @@ export const PropertyDescriptor: MessageFns<PropertyDescriptor> = {
     message.isLargeField = object.isLargeField ?? false;
     message.isMetadata = object.isMetadata ?? false;
     message.description = object.description ?? "";
+    message.isSummaryTarget = object.isSummaryTarget ?? false;
+    message.isKeywordsTarget = object.isKeywordsTarget ?? false;
+    message.extractHint = object.extractHint ?? "";
+    message.chunkContextual = object.chunkContextual ?? false;
     return message;
   },
 };

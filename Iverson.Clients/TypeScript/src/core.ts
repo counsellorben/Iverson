@@ -46,12 +46,15 @@ import {
 import {
     getChunkFields,
     getEmbeddingFields,
+    getExtractedFields,
     getKeyField,
+    getKeywordsFields,
     getLargeFields,
     getMetadataFields,
     getPropertyDescriptions,
     getRelations,
     getSearchKeys,
+    getSummaryFields,
     getTypeDescription,
     isIversonEntity,
     RelationKindString,
@@ -186,6 +189,9 @@ export function describeEntity(cls: Function): TypeDescriptor {
     const embeddingFields = new Set(getEmbeddingFields(cls));
     const chunkFieldsByName = new Map(getChunkFields(cls).map(c => [c.field, c]));
     const metadataFields = new Set(getMetadataFields(cls));
+    const summaryFields = new Set(getSummaryFields(cls));
+    const keywordsFields = new Set(getKeywordsFields(cls));
+    const extractedByField = new Map(getExtractedFields(cls).map(e => [e.field, e]));
     const propertyDescriptions = getPropertyDescriptions(cls);
     const relations = getRelations(cls);
     const relationFields = new Set(relations.map(r => r.field));
@@ -230,6 +236,10 @@ export function describeEntity(cls: Function): TypeDescriptor {
             isLargeField,
             isMetadata: metadataFields.has(fieldName),
             description: propertyDescriptions[fieldName] ?? '',
+            isSummaryTarget: summaryFields.has(fieldName),
+            isKeywordsTarget: keywordsFields.has(fieldName),
+            extractHint: extractedByField.get(fieldName)?.hint ?? '',
+            chunkContextual: chunkMeta?.contextual ?? false,
         });
     }
 

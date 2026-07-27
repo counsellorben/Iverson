@@ -13,6 +13,9 @@ import {
     IversonChunk,
     IversonMetadata,
     IversonDescription,
+    IversonSummary,
+    IversonKeywords,
+    IversonExtracted,
     ManyToOne,
     OneToMany,
 } from '../src/annotations.js';
@@ -339,5 +342,112 @@ describe('_buildRequest — metadata and descriptions', () => {
         expect(req.rootType!.description).toBe('');
         expect(props['Category'].isMetadata).toBe(false);
         expect(props['Category'].description).toBe('');
+    });
+});
+
+// ── Ingest enrichment targets ──────────────────────────────────────────────────
+
+@IversonEntity()
+class RegEnriched {
+    @IversonKey()
+    id: string = '';
+
+    @IversonSummary()
+    summary: string = '';
+
+    @IversonKeywords()
+    keywords: string = '';
+
+    @IversonExtracted('the invoice total amount')
+    total: string = '';
+
+    @IversonChunk(256, 32, { contextual: true })
+    body: string = '';
+
+    plainField: string = '';
+}
+
+describe('_buildRequest — ingest enrichment targets', () => {
+    function propsOf(cls: Function) {
+        const registrar = new SchemaRegistrar(makeStub(), [cls]);
+        const req = registrar._buildRequest(cls);
+        return Object.fromEntries(req.rootType!.properties.map(p => [p.name, p]));
+    }
+
+    it('sets isSummaryTarget only on the @IversonSummary() property', () => {
+        const props = propsOf(RegEnriched);
+        expect(props['Summary'].isSummaryTarget).toBe(true);
+        expect(props['Keywords'].isSummaryTarget).toBe(false);
+        expect(props['PlainField'].isSummaryTarget).toBe(false);
+    });
+
+    it('sets isKeywordsTarget only on the @IversonKeywords() property', () => {
+        const props = propsOf(RegEnriched);
+        expect(props['Keywords'].isKeywordsTarget).toBe(true);
+        expect(props['Summary'].isKeywordsTarget).toBe(false);
+        expect(props['PlainField'].isKeywordsTarget).toBe(false);
+    });
+
+    it('sets extractHint only on the @IversonExtracted() property', () => {
+        const props = propsOf(RegEnriched);
+        expect(props['Total'].extractHint).toBe('the invoice total amount');
+        expect(props['Summary'].extractHint).toBe('');
+        expect(props['PlainField'].extractHint).toBe('');
+    });
+
+    it('sets chunkContextual from the IversonChunk contextual option', () => {
+        const props = propsOf(RegEnriched);
+        expect(props['Body'].chunkContextual).toBe(true);
+        expect(props['Body'].isChunk).toBe(true);
+    });
+
+    it('defaults chunkContextual to false when not specified', () => {
+        const props = propsOf(RegArticle);
+        expect(props['Summary'].isChunk).toBe(true);
+        expect(props['Summary'].chunkContextual).toBe(false);
+    });
+
+    it('leaves an undeclared property with none of the four enrichment targets', () => {
+        const props = propsOf(RegEnriched);
+        expect(props['PlainField'].isSummaryTarget).toBe(false);
+        expect(props['PlainField'].isKeywordsTarget).toBe(false);
+        expect(props['PlainField'].extractHint).toBe('');
+        expect(props['PlainField'].chunkContextual).toBe(false);
+    });
+
+    it('carries the enrichment targets across the wire encoding', () => {
+        const req = new SchemaRegistrar(makeStub(), [RegEnriched])._buildRequest(RegEnriched);
+        const decoded = SchemaRequest.decode(SchemaRequest.encode(req).finish());
+        const props = Object.fromEntries(decoded.rootType!.properties.map(p => [p.name, p]));
+        expect(props['Summary'].isSummaryTarget).toBe(true);
+        expect(props['Keywords'].isKeywordsTarget).toBe(true);
+        expect(props['Total'].extractHint).toBe('the invoice total amount');
+        expect(props['Body'].chunkContextual).toBe(true);
+    });
+
+    it('rejects a blank extraction hint at decoration time', () => {
+        expect(() => {
+            class BadEntity {
+                @IversonKey()
+                id: string = '';
+
+                @IversonExtracted('   ')
+                total: string = '';
+            }
+            void BadEntity;
+        }).toThrow(/non-blank extraction hint/);
+    });
+
+    it('rejects an empty-string extraction hint at decoration time', () => {
+        expect(() => {
+            class BadEntity2 {
+                @IversonKey()
+                id: string = '';
+
+                @IversonExtracted('')
+                total: string = '';
+            }
+            void BadEntity2;
+        }).toThrow(/non-blank extraction hint/);
     });
 });

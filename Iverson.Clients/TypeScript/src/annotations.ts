@@ -29,6 +29,9 @@ const IVERSON_EMBEDDING_FIELDS = Symbol('iverson:embedding_fields');
 const IVERSON_CHUNK_FIELDS     = Symbol('iverson:chunk_fields');
 const IVERSON_RELATIONS    = Symbol('iverson:relations');
 const IVERSON_METADATA_FIELDS  = Symbol('iverson:metadata_fields');
+const IVERSON_SUMMARY_FIELDS   = Symbol('iverson:summary_fields');
+const IVERSON_KEYWORDS_FIELDS  = Symbol('iverson:keywords_fields');
+const IVERSON_EXTRACTED_FIELDS = Symbol('iverson:extracted_fields');
 const IVERSON_PROPERTY_DESCRIPTIONS = Symbol('iverson:property_descriptions');
 const IVERSON_TYPE_DESCRIPTION      = Symbol('iverson:type_description');
 
@@ -123,19 +126,94 @@ export interface ChunkMeta {
     field: string;
     maxTokens: number;
     overlap: number;
+    contextual: boolean;
 }
 
-export function IversonChunk(maxTokens: number = 512, overlap: number = 64): PropertyDecorator {
+export interface ChunkOptions {
+    contextual?: boolean;
+}
+
+export function IversonChunk(maxTokens: number = 512, overlap: number = 64, options: ChunkOptions = {}): PropertyDecorator {
     return (target, propertyKey) => {
         const existing: ChunkMeta[] =
             Reflect.getMetadata(IVERSON_CHUNK_FIELDS, target.constructor) ?? [];
-        existing.push({ field: String(propertyKey), maxTokens, overlap });
+        existing.push({ field: String(propertyKey), maxTokens, overlap, contextual: options.contextual ?? false });
         Reflect.defineMetadata(IVERSON_CHUNK_FIELDS, existing, target.constructor);
     };
 }
 
 export function getChunkFields(target: Function): ChunkMeta[] {
     return Reflect.getMetadata(IVERSON_CHUNK_FIELDS, target) ?? [];
+}
+
+// ── @IversonSummary() ─────────────────────────────────────────────────────────
+
+/** Marks a property as the target for an Ollama-driven summary during ingest enrichment. */
+export function IversonSummary(): PropertyDecorator {
+    return (target, propertyKey) => {
+        const existing: string[] =
+            Reflect.getMetadata(IVERSON_SUMMARY_FIELDS, target.constructor) ?? [];
+        existing.push(String(propertyKey));
+        Reflect.defineMetadata(IVERSON_SUMMARY_FIELDS, existing, target.constructor);
+    };
+}
+
+export function getSummaryFields(target: Function): string[] {
+    return Reflect.getMetadata(IVERSON_SUMMARY_FIELDS, target) ?? [];
+}
+
+// ── @IversonKeywords() ────────────────────────────────────────────────────────
+
+/** Marks a property as the target for Ollama-driven keyword extraction during ingest enrichment. */
+export function IversonKeywords(): PropertyDecorator {
+    return (target, propertyKey) => {
+        const existing: string[] =
+            Reflect.getMetadata(IVERSON_KEYWORDS_FIELDS, target.constructor) ?? [];
+        existing.push(String(propertyKey));
+        Reflect.defineMetadata(IVERSON_KEYWORDS_FIELDS, existing, target.constructor);
+    };
+}
+
+export function getKeywordsFields(target: Function): string[] {
+    return Reflect.getMetadata(IVERSON_KEYWORDS_FIELDS, target) ?? [];
+}
+
+// ── @IversonExtracted(hint) ───────────────────────────────────────────────────
+
+export interface ExtractedMeta {
+    field: string;
+    hint: string;
+}
+
+/**
+ * Marks a property as the target for an Ollama-driven extraction during
+ * ingest enrichment, guided by `hint`.
+ *
+ * The hint is mandatory: the server only treats a property as an extraction
+ * target when a non-empty hint is present (`SchemaBuilder.cs` only creates
+ * the Extracted target when the hint is non-empty), so a blank hint would be
+ * silently dropped server-side. This decorator rejects that case up front —
+ * at decoration time, not just at the type level, since JS callers bypass
+ * TypeScript's compile-time checks entirely.
+ */
+export function IversonExtracted(hint: string): PropertyDecorator {
+    return (target, propertyKey) => {
+        if (hint === undefined || hint === null || hint.trim() === '') {
+            throw new Error(
+                `@IversonExtracted() on ${target.constructor.name}.${String(propertyKey)} requires a ` +
+                'non-blank extraction hint; the server treats an empty hint as "not an extraction ' +
+                'target" and would silently drop it.',
+            );
+        }
+        const existing: ExtractedMeta[] =
+            Reflect.getMetadata(IVERSON_EXTRACTED_FIELDS, target.constructor) ?? [];
+        existing.push({ field: String(propertyKey), hint });
+        Reflect.defineMetadata(IVERSON_EXTRACTED_FIELDS, existing, target.constructor);
+    };
+}
+
+export function getExtractedFields(target: Function): ExtractedMeta[] {
+    return Reflect.getMetadata(IVERSON_EXTRACTED_FIELDS, target) ?? [];
 }
 
 // ── @IversonMetadata() ───────────────────────────────────────────────────────
