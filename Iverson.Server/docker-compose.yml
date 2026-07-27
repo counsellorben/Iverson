@@ -99,7 +99,11 @@ services:
     depends_on:
       ollama:
         condition: service_healthy
-    command: ["-X", "POST", "http://ollama:11434/api/pull", "-d", "{\"name\":\"nomic-embed-text\"}"]
+    entrypoint: ["sh", "-c"]
+    command:
+      - |
+        curl -X POST http://ollama:11434/api/pull -d '{"name":"nomic-embed-text"}' &&
+        curl -X POST http://ollama:11434/api/pull -d '{"name":"qwen2.5:3b"}'
     restart: "no"
 
   zookeeper:
@@ -265,6 +269,8 @@ services:
       - Otel__Endpoint=http://jaeger:4317
       - Embeddings__BaseUrl=http://ollama:11434
       - Embeddings__ModelId=nomic-embed-text
+      - Enrichment__BaseUrl=http://ollama:11434
+      - Enrichment__ModelId=qwen2.5:3b
       - Kafka__BootstrapServers=kafka:29092
       - Qdrant__ApiKey=dev-only-not-for-production-qdrant-key-0123456789
       - Authentication__Authority=http://authentik-server:9000/application/o/iverson-api/
