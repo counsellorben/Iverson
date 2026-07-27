@@ -21,4 +21,22 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<IEmbeddingService, EmbeddingService>();
         return services;
     }
+
+    public static IServiceCollection AddEnrichment(this IServiceCollection services, IConfiguration config)
+    {
+        services.Configure<EnrichmentServiceOptions>(config.GetSection(EnrichmentServiceOptions.Section));
+
+        services.AddHttpClient(
+            Telemetry.EnrichmentHttpClientName,
+            (sp, client) =>
+            {
+                var opts = sp.GetRequiredService<
+                    Microsoft.Extensions.Options.IOptions<EnrichmentServiceOptions>>().Value;
+                client.BaseAddress = new Uri(opts.BaseUrl);
+                client.Timeout     = opts.Timeout;
+            });
+
+        services.AddSingleton<IEnrichmentService, EnrichmentService>();
+        return services;
+    }
 }
