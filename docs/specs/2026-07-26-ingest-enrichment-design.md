@@ -101,17 +101,25 @@ Per Created/Updated event:
 1. Fetch the authoritative row via `IEntityRepository.FetchByKeyAsync` — not the event
    payload, matching the re-derivation `IntelligenceStoreConsumer` already performs for
    owner and tenant values.
-2. Build the source text and hash it (SHA-256).
+2. Build the source text, concatenate it with the type's enrichment specification — the
+   ordered set of (target column, kind, hint) from `schema.EnrichmentTargets` — and hash the
+   result (SHA-256). Including the specification is what makes a newly declared target, a
+   removed one, or an edited `[IversonExtracted]` hint re-enrich existing objects; hashing
+   source text alone would leave them permanently unenriched.
 3. Compare against the stored hash. **Equal → stop.**
 4. Otherwise call Ollama per target, write back (§3), and store the new hash.
 
 ### Loop prevention
 
 Step 3 is the loop breaker. An enrichment writeback modifies only enrichment target
-columns, never source text, so the `entity.updated` it republishes hashes identically and
-is dropped on the second pass. No event marker has to be threaded through the outbox.
+columns — neither the source text nor the type's enrichment specification, which are the two
+things step 2 hashes — so the `entity.updated` it republishes hashes identically and is
+dropped on the second pass. No event marker has to be threaded through the outbox.
 
-The same check absorbs `ReconciliationService` republishes at no cost.
+The same check absorbs `ReconciliationService` republishes at no cost when nothing has
+changed. Because the hash covers the enrichment specification, `ReconcileTypeAsync` also
+serves as the operational trigger for re-enriching a type whose targets or hints were
+edited.
 
 ### Enrichment state table
 
@@ -176,9 +184,13 @@ fallback if the publish fails.
 
 Two of its parameters must be derived rather than passed through:
 
-- `payloadJson` must be the **merged post-enrichment** row. The row the enricher fetched
-  predates its own update, so publishing it unchanged would project stale values and would
-  deny §4's second Intelligence pass the summary it depends on.
+- `payloadJson` comes from a **re-fetch after the transaction commits** — call
+  `FetchByKeyAsync` again and publish that row. It must not be the step-1 snapshot with the
+  enriched columns merged in: that snapshot predates any client update that landed during the
+  LLM call, so publishing it would carry stale column values to StarRocks and Qdrant and win
+  over the client's own event, reintroducing on the publish path exactly the clobber this
+  section's targeted update removes from the write path. The re-fetch also matches what
+  `ReconciliationService.ProcessOneAsync:100` already does before republishing.
 - `targetStores` comes from `StoreTargeting.DetermineTargetStores(schema)`.
 
 The republished `entity.updated` then converges StarRocks and Qdrant through the two
@@ -325,3 +337,4 @@ before this spec was written.
 | A15 | Part 1 is unmerged; base is `metadata-foundation` | `git worktree list` — `metadata-foundation` @ `eabef05`; `main` @ `30e9db2` has only docs |
 | A16 | A tx-scoped outbox enqueue for non-delete events must be added — none exists | `OutboxWriter.cs:15` runs its own transaction and writes a full payload; `OutboxWriter.cs:69-77` takes an `IDbTransactionContext` but hardcodes `'Deleted'` |
 | A17 | An outbox row alone converges, as the durable fallback behind §3's opportunistic publish | `ReconciliationService.ProcessOneAsync:100-113` re-fetches from Postgres and republishes with recomputed `targetStores`; `ReconciliationQueueWorker.PollInterval` is 30s |
+| A18 | The enricher generates its own outbox row Guid and passes it to `PublishAsync` for cleanup, so the new tx-scoped enqueue must accept or return it | `OutboxPublisher.cs:8-18` requires `outboxRowId` and deletes that row on success; `OutboxWriter.cs:38` shows the writer generating the Guid itself |
