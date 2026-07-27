@@ -11,4 +11,10 @@ public sealed class IversonChunkAttribute(int maxTokens = 512, int overlap = 64)
 {
     public int MaxTokens { get; } = maxTokens;
     public int Overlap   { get; } = overlap;
+
+    /// <summary>
+    /// When true, each chunk is enriched with surrounding document context before
+    /// embedding, improving passage-level retrieval quality at additional ingest cost.
+    /// </summary>
+    public bool Contextual { get; set; }
 }

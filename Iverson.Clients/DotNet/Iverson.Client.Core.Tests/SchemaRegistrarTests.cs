@@ -41,6 +41,27 @@ internal sealed class MetadataAnnotationTestEntity
 }
 
 [IversonEntity]
+internal sealed class EnrichmentAnnotationTestEntity
+{
+    [IversonKey]
+    public Guid Id { get; set; }
+
+    [IversonSummary]
+    public string Summary { get; set; } = "";
+
+    [IversonKeywords]
+    public string Keywords { get; set; } = "";
+
+    [IversonExtracted("Extract the invoice total.")]
+    public string ExtractedField { get; set; } = "";
+
+    [IversonChunk(Contextual = true)]
+    public string ContextualChunk { get; set; } = "";
+
+    public string Plain { get; set; } = "";
+}
+
+[IversonEntity]
 internal sealed class SchemaTestAuthor
 {
     [IversonKey]
@@ -434,6 +455,50 @@ public class SchemaRegistrarTests
 
         await act.Should().ThrowAsync<RpcException>()
             .Where(ex => ex.StatusCode == StatusCode.Unavailable);
+    }
+
+    [Fact]
+    public async Task RegisterAllAsync_SetsEnrichmentAnnotations_OnAnnotatedMembers()
+    {
+        SchemaRequest? req = null;
+        _mappingClient
+            .RegisterSchemaAsync(
+                Arg.Do<SchemaRequest>(r =>
+                {
+                    if (r.RootType?.TypeName == "EnrichmentAnnotationTestEntity") req = r;
+                }),
+                Arg.Any<Metadata>(),
+                Arg.Any<DateTime?>(),
+                Arg.Any<CancellationToken>())
+            .Returns(new AsyncUnaryCall<SchemaResponse>(
+                Task.FromResult(new SchemaResponse { Success = true }),
+                Task.FromResult(new Metadata()),
+                () => Status.DefaultSuccess,
+                () => new Metadata(),
+                () => { }));
+
+        await _sut.RegisterAllAsync();
+
+        req.Should().NotBeNull();
+        var summary   = req!.RootType!.Properties.Single(p => p.Name == "Summary");
+        var keywords  = req.RootType.Properties.Single(p => p.Name == "Keywords");
+        var extracted = req.RootType.Properties.Single(p => p.Name == "ExtractedField");
+        var chunk     = req.RootType.Properties.Single(p => p.Name == "ContextualChunk");
+        var plain     = req.RootType.Properties.Single(p => p.Name == "Plain");
+
+        summary.IsSummaryTarget.Should().BeTrue();
+
+        keywords.IsKeywordsTarget.Should().BeTrue();
+
+        extracted.ExtractHint.Should().Be("Extract the invoice total.");
+
+        chunk.IsChunk.Should().BeTrue();
+        chunk.ChunkContextual.Should().BeTrue();
+
+        plain.IsSummaryTarget.Should().BeFalse();
+        plain.IsKeywordsTarget.Should().BeFalse();
+        plain.ExtractHint.Should().BeEmpty();
+        plain.ChunkContextual.Should().BeFalse();
     }
 
     [Fact]

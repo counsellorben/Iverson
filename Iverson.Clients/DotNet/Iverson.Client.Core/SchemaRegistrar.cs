@@ -145,6 +145,7 @@ public sealed class SchemaRegistrar(
             descriptor.ChunkOverlap   = chunk.Overlap;
             descriptor.ChunkModelId   = string.Empty;
             descriptor.ChunkVectorDim = 0;
+            descriptor.ChunkContextual = chunk.Contextual;
         }
 
         if (prop.GetCustomAttribute<IversonSearchKeyAttribute>() is { } sk)
@@ -155,6 +156,15 @@ public sealed class SchemaRegistrar(
 
         if (prop.GetCustomAttribute<IversonMetadataAttribute>() is not null)
             descriptor.IsMetadata = true;
+
+        if (prop.GetCustomAttribute<IversonSummaryAttribute>() is not null)
+            descriptor.IsSummaryTarget = true;
+
+        if (prop.GetCustomAttribute<IversonKeywordsAttribute>() is not null)
+            descriptor.IsKeywordsTarget = true;
+
+        if (prop.GetCustomAttribute<IversonExtractedAttribute>() is { } extracted)
+            descriptor.ExtractHint = extracted.Hint;
 
         if (prop.GetCustomAttribute<IversonDescriptionAttribute>() is { } propDescription)
             descriptor.Description = propDescription.Description;
