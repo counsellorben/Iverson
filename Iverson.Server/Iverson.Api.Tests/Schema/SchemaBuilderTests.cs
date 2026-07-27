@@ -223,6 +223,45 @@ public class SchemaBuilderTests
            .WithMessage("*Bad*");
     }
 
+    [Theory]
+    [InlineData("Text")]
+    [InlineData("Field")]
+    public void BuildDescriptor_Throws_WhenMetadataPropertyCollidesWithReservedChunkPayloadKey(string name)
+    {
+        var embedding = Substitute.For<IEmbeddingService>();
+        embedding.Dimension.Returns(768);
+        embedding.ModelId.Returns("nomic-embed-text");
+
+        var typeDesc = new TypeDescriptor { TypeName = "Doc" };
+        typeDesc.Properties.Add(new PropertyDescriptor { Name = "Id", ClrType = ClrType.ClrGuid, IsKey = true });
+        typeDesc.Properties.Add(new PropertyDescriptor { Name = name, ClrType = ClrType.ClrString, IsMetadata = true });
+
+        var act = () => SchemaBuilder.BuildDescriptor(typeDesc, embedding);
+
+        // Rejected at registration rather than skipped at ingest: a skip would leave the column
+        // un-denormalized while BuildChunksFilter still accepted filters on it, so the filter
+        // would match the reserved key's value instead.
+        act.Should().Throw<InvalidOperationException>()
+           .WithMessage($"*{name}*reserved chunk payload key*");
+    }
+
+    [Fact]
+    public void BuildDescriptor_AllowsMetadataPropertyWhoseNameOnlyResemblesAReservedKey()
+    {
+        var embedding = Substitute.For<IEmbeddingService>();
+        embedding.Dimension.Returns(768);
+        embedding.ModelId.Returns("nomic-embed-text");
+
+        // ToCamelCase("ParentId") is "parentId", not the reserved "parent_id" — so this is legal.
+        var typeDesc = new TypeDescriptor { TypeName = "Doc" };
+        typeDesc.Properties.Add(new PropertyDescriptor { Name = "Id", ClrType = ClrType.ClrGuid, IsKey = true });
+        typeDesc.Properties.Add(new PropertyDescriptor { Name = "ParentId", ClrType = ClrType.ClrString, IsMetadata = true });
+
+        var descriptor = SchemaBuilder.BuildDescriptor(typeDesc, embedding);
+
+        descriptor.MetadataColumns.Should().Contain("ParentId");
+    }
+
     [Fact]
     public void ToEngagementQuerySchema_MapsTypeNameTableNameKeyAndScalarColumns()
     {

@@ -16,6 +16,15 @@ namespace Iverson.Api.Schema;
 
 internal static class SchemaBuilder
 {
+    // Payload keys IntelligenceStoreConsumer writes on every chunk point. A metadata column
+    // whose camelCase name lands on one of these is rejected at registration rather than
+    // skipped at ingest: a skip leaves the column silently un-denormalized while
+    // ObjectSearchGrpcService.BuildChunksFilter still accepts filters on it, so the filter
+    // would match against the reserved key's value (e.g. the chunk passage text) instead.
+    // Rejecting here keeps the ingest and search paths in agreement by construction.
+    private static readonly HashSet<string> s_reservedChunkPayloadKeys =
+        new(StringComparer.Ordinal) { "text", "parent_id", "field", "chunk_index" };
+
     internal static SchemaDescriptor BuildDescriptor(TypeDescriptor typeDesc, IEmbeddingService embedding)
     {
         var tableName = typeDesc.TypeName.ToSnakeCase() + "s";
@@ -32,6 +41,7 @@ internal static class SchemaBuilder
         var metadataColumns  = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var fieldDescriptions = new Dictionary<string, string>();
         var badMetadata      = new List<string>();
+        var reservedMetadata = new List<string>();
 
         // [IversonDescription] is valid on any property including the key, so descriptions are
         // collected across all properties — unlike every other collection below, which is
@@ -72,6 +82,8 @@ internal static class SchemaBuilder
                 metadataColumns.Add(prop.Name);
                 if (prop.IsEmbedding || prop.IsChunk || prop.IsArray || prop.IsLargeField)
                     badMetadata.Add(prop.Name);
+                if (s_reservedChunkPayloadKeys.Contains(prop.Name.ToCamelCase()))
+                    reservedMetadata.Add(prop.Name);
             }
 
             if (!string.IsNullOrEmpty(prop.Description))
@@ -101,6 +113,11 @@ internal static class SchemaBuilder
             throw new InvalidOperationException(badMetadata.Count == 1
                 ? $"Property '{badMetadata[0]}' cannot have both [IversonMetadata] and an embedding, chunk, array, or large-field annotation."
                 : $"Properties {string.Join(", ", badMetadata.Select(n => $"'{n}'"))} cannot have both [IversonMetadata] and an embedding, chunk, array, or large-field annotation.");
+
+        if (reservedMetadata.Count > 0)
+            throw new InvalidOperationException(reservedMetadata.Count == 1
+                ? $"Property '{reservedMetadata[0]}' cannot have [IversonMetadata]: its payload key collides with a reserved chunk payload key ({string.Join(", ", s_reservedChunkPayloadKeys)})."
+                : $"Properties {string.Join(", ", reservedMetadata.Select(n => $"'{n}'"))} cannot have [IversonMetadata]: their payload keys collide with reserved chunk payload keys ({string.Join(", ", s_reservedChunkPayloadKeys)}).");
 
         var relations = typeDesc.Relations.Select(r => new RelationDescriptor(
             r.PropertyName,

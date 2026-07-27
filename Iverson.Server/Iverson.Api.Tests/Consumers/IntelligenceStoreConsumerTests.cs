@@ -994,35 +994,7 @@ public class IntelligenceStoreConsumerTests
         capturedPayload["ownerId"].Should().NotBe(forgedOwner);
     }
 
-    [Fact]
-    public async Task HandleCreated_WithMetadataColumnNamedText_DoesNotClobberChunkPassageText()
-    {
-        var schema = MetadataDocSchema(
-            [
-                new ColumnDescriptor("Title", "text", false),
-                new ColumnDescriptor("Body", "text", false),
-                new ColumnDescriptor("Text", "text", false)
-            ],
-            ["Text"]);
-        await _registry.RegisterAsync(schema);
-
-        var longBody = new string('x', 3000);
-        var payload  = $$$"""{"Title":"T","Body":"{{{longBody}}}","Text":"clobbered","TenantId":"test-tenant"}""";
-
-        IReadOnlyDictionary<string, object>? capturedPayload = null;
-        _vectorWrite
-            .UpsertNamedAsync(
-                "docs_chunks_test-tenant",
-                Arg.Any<ulong>(),
-                Arg.Any<IReadOnlyDictionary<string, float[]>>(),
-                Arg.Do<IReadOnlyDictionary<string, object>?>(p => capturedPayload = p))
-            .Returns(Task.CompletedTask);
-
-        var ev = DocEvent(payload, "trace-metadata-text");
-        await BuildSut().HandleAsync(ev.Key, Serialize(ev), CancellationToken.None);
-
-        capturedPayload.Should().NotBeNull();
-        capturedPayload!["text"].Should().NotBe("clobbered");
-        ((string)capturedPayload["text"]).Should().StartWith("x");
-    }
+    // A metadata column whose camelCase name collides with a reserved chunk payload key is now
+    // rejected by SchemaBuilder at registration, so it cannot reach this consumer. Coverage moved
+    // to SchemaBuilderTests.BuildDescriptor_Throws_WhenMetadataPropertyCollidesWithReservedChunkPayloadKey.
 }
