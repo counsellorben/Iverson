@@ -79,6 +79,13 @@ to the case-sensitive default comparer. Both hazards are documented in place at
 
 - Enrichment targets must be text-typed columns.
 - They must not be the key, tenant, or owner column.
+- They must not be a property carrying `[IversonEmbedding]` or `[IversonChunk]`. This is
+  what enforces §2's loop-prevention invariant: a target that is also a source property
+  makes the writeback mutate the hashed text, so the enricher would re-enrich on its own
+  republished event without bound.
+- A type declaring any enrichment target must declare at least one `[IversonEmbedding]` or
+  `[IversonChunk]` property. Without a source, enrichment would call the model with an
+  empty prompt and write the result into the object as though it described it.
 - `[IversonExtracted]` requires a non-empty hint.
 
 ## 2. The enrichment pipeline
@@ -119,6 +126,19 @@ every enriched type.
 It is a **plumbing table**, like the outbox — outside RLS, holding `tenant_id` as ordinary
 data rather than as an RLS-enforced boundary. Deletes remove the state row.
 
+### Null tenant value
+
+`SchemaDescriptor.TenantColumn` is nullable by design (`SchemaDescriptor.cs:21-25`), and a
+legacy pre-cutover schema reaches consumers via `ReconciliationService.ReconcileTypeAsync`
+republishes. When `TenantColumn` is null, or the tenant value re-derived from the
+authoritative row is null, the enricher skips the object and writes **no** state row.
+
+This follows the fail-closed convention established at `EngagementStoreConsumer.cs:55-60`.
+Writing no state row is the load-bearing half: `EnterTenantScopeAsync(null)` sets
+`app.tenant_id` to NULL, so the RLS predicate fails closed and the targeted `UPDATE` matches
+zero rows (`PostgresRepository.cs:112-113`). Recording the new hash anyway would mark the
+object enriched forever while it carried none of the enriched values.
+
 ## 3. Writeback safety
 
 `IOutboxWriter.UpsertAndEnqueueOutboxAsync` writes an entire payload
@@ -145,6 +165,21 @@ transaction, and the outbox and state tables have no `iverson_runtime` grant, so
 plumbing-table statement issued while still in tenant scope fails. `OutboxWriter.cs:42-49`
 performs exactly this sequence, and `TenantScopeTransactionExtensions`
 (`IRecordStoreRoles.cs:28-47`) documents the hazard.
+
+### Publishing the writeback event
+
+After the transaction commits, the enricher makes an opportunistic
+`IOutboxPublisher.PublishAsync` call, matching the write path's established pattern
+(`ObjectMappingGrpcService.cs:137-149`). The outbox row is a durability record only; the
+Kafka publish is a separate call, and `ReconciliationQueueWorker` remains the durable
+fallback if the publish fails.
+
+Two of its parameters must be derived rather than passed through:
+
+- `payloadJson` must be the **merged post-enrichment** row. The row the enricher fetched
+  predates its own update, so publishing it unchanged would project stale values and would
+  deny §4's second Intelligence pass the summary it depends on.
+- `targetStores` comes from `StoreTargeting.DetermineTargetStores(schema)`.
 
 The republished `entity.updated` then converges StarRocks and Qdrant through the two
 existing consumers, both of which are idempotent.
@@ -244,8 +279,11 @@ Following `IntelligenceStoreConsumerTests`:
 - Targeted column update preserves a concurrent client edit to another column.
 - LLM failure leaves the object intact and unenriched, and does not poison the message.
 - Transaction exits tenant scope before touching the state and outbox tables.
-- Registration validation rejects non-text targets, key/tenant/owner targets, and an empty
-  `[IversonExtracted]` hint.
+- A null tenant value skips the object and writes no state row, leaving it eligible for
+  enrichment after re-registration.
+- Registration validation rejects non-text targets, key/tenant/owner targets, targets that
+  are also `[IversonEmbedding]`/`[IversonChunk]` source properties, a type with enrichment
+  targets but no source property, and an empty `[IversonExtracted]` hint.
 - Per-language registrar tests for the four new declarations, mirroring part 1's.
 
 ## Out of scope
@@ -285,3 +323,5 @@ before this spec was written.
 | A13 | The embedding service pattern is copyable | `EmbeddingServiceOptions`; `Program.cs:228`, `Program.cs:371` |
 | A14 | Ollama supports `format: "json"`; models are pullable | Official Ollama `api.md`; `statefulset.yaml:53-59`; **finding** — `docker-compose.yml:96-103` needs restructuring |
 | A15 | Part 1 is unmerged; base is `metadata-foundation` | `git worktree list` — `metadata-foundation` @ `eabef05`; `main` @ `30e9db2` has only docs |
+| A16 | A tx-scoped outbox enqueue for non-delete events must be added — none exists | `OutboxWriter.cs:15` runs its own transaction and writes a full payload; `OutboxWriter.cs:69-77` takes an `IDbTransactionContext` but hardcodes `'Deleted'` |
+| A17 | An outbox row alone converges, as the durable fallback behind §3's opportunistic publish | `ReconciliationService.ProcessOneAsync:100-113` re-fetches from Postgres and republishes with recomputed `targetStores`; `ReconciliationQueueWorker.PollInterval` is 30s |
