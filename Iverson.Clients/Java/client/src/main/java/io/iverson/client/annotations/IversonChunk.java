@@ -19,4 +19,10 @@ public @interface IversonChunk {
 
     /** Tokens shared between adjacent windows. Default 64. */
     int overlap() default 64;
+
+    /**
+     * When true, each chunk is enriched with surrounding document context
+     * before embedding. Default false.
+     */
+    boolean contextual() default false;
 }

@@ -177,6 +177,27 @@ public final class SchemaRegistrar {
             b.setChunkOverlap(chunk.overlap());
             b.setChunkModelId("");
             b.setChunkVectorDim(0);
+            b.setChunkContextual(chunk.contextual());
+        }
+
+        if (field.getAnnotation(IversonSummary.class) != null) {
+            b.setIsSummaryTarget(true);
+        }
+
+        if (field.getAnnotation(IversonKeywords.class) != null) {
+            b.setIsKeywordsTarget(true);
+        }
+
+        IversonExtracted extracted = field.getAnnotation(IversonExtracted.class);
+        if (extracted != null) {
+            String hint = extracted.value();
+            if (hint == null || hint.isBlank()) {
+                throw new IllegalArgumentException(
+                    "@IversonExtracted on field '" + field.getName() +
+                    "' requires a non-blank extraction hint; the server treats an empty hint " +
+                    "as \"not an extraction target\" and would silently drop it.");
+            }
+            b.setExtractHint(hint);
         }
     }
 

@@ -57,6 +57,26 @@ class SchemaRegistrarTest {
     }
 
     @IversonEntity
+    static class EnrichmentAnnotationTestEntity {
+        @IversonKey
+        private UUID id;
+
+        @IversonSummary
+        private String summaryField;
+
+        @IversonKeywords
+        private String keywordsField;
+
+        @IversonExtracted("Extract the publisher name")
+        private String extractedField;
+
+        @IversonChunk(contextual = true)
+        private String contextualChunkField;
+
+        private String plainField;
+    }
+
+    @IversonEntity
     @IversonDescription("An entity exercising metadata annotations")
     static class MetadataAnnotationTestEntity {
         @IversonKey
@@ -280,6 +300,116 @@ class SchemaRegistrarTest {
         assertTrue(summary.getIsChunk());
         assertEquals(256, summary.getChunkMaxTokens());
         assertEquals(32, summary.getChunkOverlap());
+    }
+
+    // ── registerAll: @IversonSummary / @IversonKeywords / @IversonExtracted / contextual chunk ──
+
+    @Test
+    void registerAll_setsIsSummaryTarget_onAnnotatedProperty() {
+        ArgumentCaptor<SchemaRequest> captor = ArgumentCaptor.forClass(SchemaRequest.class);
+
+        sut.registerAll(EnrichmentAnnotationTestEntity.class);
+
+        verify(mockStub).registerSchema(captor.capture());
+        TypeDescriptor typeDesc = captor.getValue().getRootType();
+
+        assertTrue(prop(typeDesc, "SummaryField").getIsSummaryTarget());
+    }
+
+    @Test
+    void registerAll_setsIsKeywordsTarget_onAnnotatedProperty() {
+        ArgumentCaptor<SchemaRequest> captor = ArgumentCaptor.forClass(SchemaRequest.class);
+
+        sut.registerAll(EnrichmentAnnotationTestEntity.class);
+
+        verify(mockStub).registerSchema(captor.capture());
+        TypeDescriptor typeDesc = captor.getValue().getRootType();
+
+        assertTrue(prop(typeDesc, "KeywordsField").getIsKeywordsTarget());
+    }
+
+    @Test
+    void registerAll_setsExtractHint_onAnnotatedProperty() {
+        ArgumentCaptor<SchemaRequest> captor = ArgumentCaptor.forClass(SchemaRequest.class);
+
+        sut.registerAll(EnrichmentAnnotationTestEntity.class);
+
+        verify(mockStub).registerSchema(captor.capture());
+        TypeDescriptor typeDesc = captor.getValue().getRootType();
+
+        assertEquals("Extract the publisher name", prop(typeDesc, "ExtractedField").getExtractHint());
+    }
+
+    @Test
+    void registerAll_setsChunkContextual_onAnnotatedProperty() {
+        ArgumentCaptor<SchemaRequest> captor = ArgumentCaptor.forClass(SchemaRequest.class);
+
+        sut.registerAll(EnrichmentAnnotationTestEntity.class);
+
+        verify(mockStub).registerSchema(captor.capture());
+        TypeDescriptor typeDesc = captor.getValue().getRootType();
+
+        PropertyDescriptor contextualChunk = prop(typeDesc, "ContextualChunkField");
+        assertTrue(contextualChunk.getIsChunk());
+        assertTrue(contextualChunk.getChunkContextual());
+    }
+
+    @Test
+    void registerAll_defaultsChunkContextual_toFalse_whenNotSpecified() {
+        ArgumentCaptor<SchemaRequest> captor = ArgumentCaptor.forClass(SchemaRequest.class);
+
+        sut.registerAll(SearchAnnotationTestEntity.class);
+
+        verify(mockStub).registerSchema(captor.capture());
+        TypeDescriptor typeDesc = captor.getValue().getRootType();
+
+        PropertyDescriptor summary = prop(typeDesc, "Summary");
+        assertTrue(summary.getIsChunk());
+        assertFalse(summary.getChunkContextual());
+    }
+
+    @Test
+    void registerAll_unannotatedProperty_hasNoEnrichmentTargets() {
+        ArgumentCaptor<SchemaRequest> captor = ArgumentCaptor.forClass(SchemaRequest.class);
+
+        sut.registerAll(EnrichmentAnnotationTestEntity.class);
+
+        verify(mockStub).registerSchema(captor.capture());
+        TypeDescriptor typeDesc = captor.getValue().getRootType();
+
+        PropertyDescriptor plain = prop(typeDesc, "PlainField");
+        assertFalse(plain.getIsSummaryTarget());
+        assertFalse(plain.getIsKeywordsTarget());
+        assertEquals("", plain.getExtractHint());
+        assertFalse(plain.getIsChunk());
+        assertFalse(plain.getChunkContextual());
+    }
+
+    @Test
+    void registerAll_throwsForBlankExtractHint() {
+        @IversonEntity
+        class BlankHintEntity {
+            @IversonKey private UUID id;
+            @IversonExtracted("   ")
+            private String extractedField;
+        }
+
+        IllegalArgumentException ex = assertThrows(IllegalArgumentException.class,
+            () -> sut.registerAll(BlankHintEntity.class));
+        assertTrue(ex.getMessage().contains("extractedField"));
+    }
+
+    @Test
+    void registerAll_throwsForEmptyExtractHint() {
+        @IversonEntity
+        class EmptyHintEntity {
+            @IversonKey private UUID id;
+            @IversonExtracted("")
+            private String extractedField;
+        }
+
+        assertThrows(IllegalArgumentException.class,
+            () -> sut.registerAll(EmptyHintEntity.class));
     }
 
     // ── registerAll: @IversonMetadata / @IversonDescription ───────────────────
