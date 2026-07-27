@@ -91,6 +91,7 @@ Newly introduced by this plan and verified at plan-write time against the `metad
 | P21 | Consumer impact | One construction site for `IntelligenceStoreConsumer` | `IntelligenceStoreConsumerTests.BuildSut()` at `:72-81` (target-typed `new`); `Program.cs:240` resolves via DI |
 | P22 | Consumer impact | `SchemaDescriptor` additions are additive | uses `{ get; init; }` members, not positional params — unlike P19 |
 | P23 | Signature | A mutating repository method joins a caller's transaction by taking `IDbTransactionContext` as its **first** parameter | `IRecordStoreRoles.cs:55` — `DeleteAsync(IDbTransactionContext tx, TableSchema schema, string key, bool tenantScoped = false, string? tenantId = null)`; the four `Fetch*` methods take no `tx` and run on their own connection via `IRecordStoreQueryExecutor` |
+| P24 | Signature | Consumer-level code reads an `Iverson.Embeddings` options value via `IOptions<T>` constructor injection, available to any consumer once `AddEnrichment` runs | `EmbeddingService.cs:9-12` takes `IOptions<EmbeddingServiceOptions>`; `ServiceCollectionExtensions.cs:10` registers it with `services.Configure<EmbeddingServiceOptions>(config.GetSection(...))` |
 
 ## Tasks
 
@@ -282,7 +283,7 @@ Following `IntelligenceStoreConsumerTests`' fixture style:
 - Delete removes the state row, sourcing tenant from the pre-delete payload snapshot; a delete-then-recreate with a client-supplied key enriches rather than inheriting the stale hash.
 - LLM failure → object intact and unenriched, no `PoisonMessageException`.
 - The transaction exits tenant scope before the state and outbox writes.
-- `Enrichment__Enabled=false` → consumer does nothing.
+- `Enrichment__Enabled=false` → `Program.cs` does not register the hosted service. Asserted at registration level, because the gate lives in `Program.cs` and the consumer itself carries no flag awareness.
 
 - [ ] **Step 2: Consumer skeleton**
 
@@ -290,13 +291,17 @@ Following `IntelligenceStoreConsumerTests`' fixture style:
 
 Handle `Deleted` by removing the state row. The state row's key includes `tenant_id`, and by delete-consumption time the Postgres row is gone — `IntelligenceStoreConsumer.cs:248-250` documents this ("there is no authoritative row left to re-fetch (unlike `HandleAsync`)"). So the tenant value must come from the pre-delete snapshot in `ev.PayloadJson`, the way `HandleDeleteAsync` sources it at `:262`; skip the state delete when the snapshot carries no tenant value. Leaving the row behind is not safe: `ObjectMappingGrpcService.cs:127-132` honours a client-supplied key, so a delete-then-recreate of the same key would hash equal against the orphan row and be skipped forever.
 
-- [ ] **Step 3: Fetch, hash, compare**
+- [ ] **Step 3: Fetch and derive tenant (null guard)**
 
-Fetch the authoritative row with `FetchByKeyAsync` (not the event payload). Build the source text from the type's `[IversonEmbedding]` and `[IversonChunk]` properties, then hash **source text + the ordered (column, kind, hint) set from `EnrichmentTargets`** with `SHA256.HashData`. Including the specification is what makes a newly declared target or an edited hint re-enrich existing objects. Compare against `GetHashAsync`; equal → return.
+Fetch the authoritative row with `FetchByKeyAsync` (not the event payload), then re-derive the tenant value from that row.
 
-- [ ] **Step 4: Null-tenant guard**
+If `schema.TenantColumn` is null, or the re-derived value is null, log and **return without writing a state row**. Fail-closed, matching `EngagementStoreConsumer.cs:55-60`. Writing a state row here would mark the object enriched forever while the RLS-blocked `UPDATE` silently matched zero rows.
 
-Before any write: if `schema.TenantColumn` is null, or the tenant value re-derived from the row is null, log and **return without writing a state row**. Fail-closed, matching `EngagementStoreConsumer.cs:55-60`. Writing a state row here would mark the object enriched forever while the RLS-blocked `UPDATE` silently matched zero rows.
+This must happen **before** Step 4, not after: `GetHashAsync` is keyed by `(tenant_id, type_name, entity_key)`, so the comparison cannot run without the tenant value. Looking up under a null or placeholder tenant would miss the row Step 5 later writes under the real one — every event would then re-enrich, and each writeback republishes `entity.updated`, turning the loop breaker into unbounded re-enrichment.
+
+- [ ] **Step 4: Hash and compare**
+
+Build the source text from the type's `[IversonEmbedding]` and `[IversonChunk]` properties, then hash **source text + the ordered (column, kind, hint) set from `EnrichmentTargets`** with `SHA256.HashData`. Including the specification is what makes a newly declared target or an edited hint re-enrich existing objects. Compare against `GetHashAsync`, using the tenant value from Step 3; equal → return.
 
 - [ ] **Step 5: Generate and write back**
 
@@ -306,7 +311,7 @@ Call `IEnrichmentService` per target. Then, in one transaction, in this exact or
 3. `ExitTenantScopeAsync()`
 4. state upsert + outbox enqueue (with a caller-generated `Guid`)
 
-Steps 3-4 are not optional (see Global Constraints).
+Sub-steps 3-4 of that transaction are not optional (see Global Constraints).
 
 - [ ] **Step 6: Publish**
 
@@ -348,7 +353,9 @@ Add to `IntelligenceStoreConsumerTests`: a `Contextual = true` chunk field embed
 
 - [ ] **Step 2: Inject `IEnrichmentService`**
 
-Add the constructor parameter. Exactly one construction site needs updating — `BuildSut()` at `IntelligenceStoreConsumerTests.cs:72-81` (P21); `Program.cs:240` resolves via DI.
+Add two constructor parameters: `IEnrichmentService` and `IOptions<EnrichmentServiceOptions>`. The options parameter is what lets Step 3 read `Enrichment__Enabled` — the service interface does not expose it, and the flag is otherwise readable only from `Program.cs`. This mirrors how `EmbeddingService` receives its own options (`EmbeddingService.cs:9-12`).
+
+Exactly one construction site needs updating — `BuildSut()` at `IntelligenceStoreConsumerTests.cs:72-81` (P21), which must now supply both; `Program.cs:240` resolves via DI.
 
 - [ ] **Step 3: Generate prefixes in the chunk loop**
 
