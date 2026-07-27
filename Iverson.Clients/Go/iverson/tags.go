@@ -16,11 +16,24 @@
 //
 //	`iverson_desc:"Human-readable description"`
 //	`iverson_meta:"true"`  — denormalized onto chunk points for chunk-search filtering
+//	`iverson_summary:"true"`     — marks the field as the ingest-time summary target
+//	`iverson_keywords:"true"`    — marks the field as the ingest-time keywords target
+//	`iverson_extract:"<hint>"`   — marks the field as an extraction target; the tag
+//	                               value is the extraction hint. A blank hint is
+//	                               rejected: the server treats an empty hint as
+//	                               "not an extraction target" and would silently
+//	                               drop the declaration.
+//	`iverson_contextual:"true"`  — the "contextual" option for a chunk field; valid
+//	                               only alongside `iverson:"chunk..."` on the same
+//	                               field.
 //
 // `iverson_meta` is a separate tag key rather than an `iverson` kind because it
 // composes with the kinds: a field can be both a search key and metadata, which
 // the server and the other four clients all allow. Note the server rejects it in
 // combination with embedding, chunk, array, or large-field annotations.
+// `iverson_summary`, `iverson_keywords`, `iverson_extract`, and `iverson_contextual`
+// follow the same pattern: independent tag keys so they compose freely with any
+// `iverson` kind, rather than being mutually-exclusive kinds of their own.
 //
 // A type-level description is supplied by implementing the optional interface:
 //
@@ -44,6 +57,23 @@ const DescriptionTagKey = "iverson_desc"
 // MetadataTagKey is the struct tag key marking a field as metadata. Like
 // DescriptionTagKey it is independent of TagKey, so it composes with any kind.
 const MetadataTagKey = "iverson_meta"
+
+// SummaryTagKey is the struct tag key marking a field as the summary
+// enrichment target. Independent of TagKey.
+const SummaryTagKey = "iverson_summary"
+
+// KeywordsTagKey is the struct tag key marking a field as the keywords
+// enrichment target. Independent of TagKey.
+const KeywordsTagKey = "iverson_keywords"
+
+// ExtractTagKey is the struct tag key marking a field as an extraction
+// target; the tag's value is the extraction hint. Independent of TagKey.
+const ExtractTagKey = "iverson_extract"
+
+// ContextualTagKey is the struct tag key enabling the "contextual" option on
+// a chunk field. Independent of TagKey, but only meaningful alongside
+// `iverson:"chunk..."` on the same field.
+const ContextualTagKey = "iverson_contextual"
 
 // Kind constants for tag values.
 const (
@@ -78,6 +108,15 @@ type FieldMeta struct {
 	// Metadata reports whether the field carries `iverson_meta:"true"`.
 	// Independent of Kind, so it composes with search_key, large_field, and the rest.
 	Metadata bool
+	// IsSummaryTarget reports whether the field carries `iverson_summary:"true"`.
+	IsSummaryTarget bool
+	// IsKeywordsTarget reports whether the field carries `iverson_keywords:"true"`.
+	IsKeywordsTarget bool
+	// ExtractHint is the value of `iverson_extract:"<hint>"`, or "" when absent.
+	ExtractHint string
+	// ChunkContextual reports whether the field carries `iverson_contextual:"true"`.
+	// Only valid when Kind == KindChunk.
+	ChunkContextual bool
 }
 
 // ParseTag parses an `iverson:"..."` tag value for one field.
@@ -179,6 +218,20 @@ func InspectType(v interface{}) (EntityMeta, error) {
 		}
 		fm.Description = sf.Tag.Get(DescriptionTagKey)
 		fm.Metadata = sf.Tag.Get(MetadataTagKey) == "true"
+		fm.IsSummaryTarget = sf.Tag.Get(SummaryTagKey) == "true"
+		fm.IsKeywordsTarget = sf.Tag.Get(KeywordsTagKey) == "true"
+
+		if hint, ok := sf.Tag.Lookup(ExtractTagKey); ok {
+			if strings.TrimSpace(hint) == "" {
+				return EntityMeta{}, fmt.Errorf("iverson tag %q: field %s has a blank extraction hint; the server treats an empty extract_hint as \"not an extraction target\" and would silently drop this declaration — provide a non-empty hint", ExtractTagKey, sf.Name)
+			}
+			fm.ExtractHint = hint
+		}
+
+		fm.ChunkContextual = sf.Tag.Get(ContextualTagKey) == "true"
+		if fm.ChunkContextual && fm.Kind != KindChunk {
+			return EntityMeta{}, fmt.Errorf("iverson tag %q: field %s carries iverson_contextual but is not a chunk field (iverson:\"chunk...\"); contextual is only meaningful on a chunk field", ContextualTagKey, sf.Name)
+		}
 
 		switch fm.Kind {
 		case KindManyToOne, KindManyToMany, KindOneToMany, KindOneToOne:

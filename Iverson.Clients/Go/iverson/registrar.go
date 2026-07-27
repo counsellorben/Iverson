@@ -80,19 +80,23 @@ func (r *SchemaRegistrar) buildRequest(e interface{}, traceID string) (*pb.Schem
 			return nil, fmt.Errorf("field %s: ChunkOverlap %w", fm.Name, err)
 		}
 		prop := &pb.PropertyDescriptor{
-			Name:           fm.Name,
-			ClrType:        clrType,
-			IsKey:          fm.Kind == KindKey,
-			IsNullable:     fm.Kind != KindKey,
-			IsSearchKey:    fm.Kind == KindSearchKey,
-			SearchKeyOrder: searchKeyOrder,
-			IsLargeField:   fm.Kind == KindLargeField,
-			IsEmbedding:    fm.Kind == KindEmbedding,
-			IsChunk:        fm.Kind == KindChunk,
-			ChunkMaxTokens: chunkMaxTokens,
-			ChunkOverlap:   chunkOverlap,
-			IsMetadata:     fm.Metadata,
-			Description:    fm.Description,
+			Name:             fm.Name,
+			ClrType:          clrType,
+			IsKey:            fm.Kind == KindKey,
+			IsNullable:       fm.Kind != KindKey,
+			IsSearchKey:      fm.Kind == KindSearchKey,
+			SearchKeyOrder:   searchKeyOrder,
+			IsLargeField:     fm.Kind == KindLargeField,
+			IsEmbedding:      fm.Kind == KindEmbedding,
+			IsChunk:          fm.Kind == KindChunk,
+			ChunkMaxTokens:   chunkMaxTokens,
+			ChunkOverlap:     chunkOverlap,
+			IsMetadata:       fm.Metadata,
+			Description:      fm.Description,
+			IsSummaryTarget:  fm.IsSummaryTarget,
+			IsKeywordsTarget: fm.IsKeywordsTarget,
+			ExtractHint:      fm.ExtractHint,
+			ChunkContextual:  fm.ChunkContextual,
 		}
 		properties = append(properties, prop)
 	}

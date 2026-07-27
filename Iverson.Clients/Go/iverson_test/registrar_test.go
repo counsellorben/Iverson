@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/iverson/clients/go/iverson"
 	pb "github.com/iverson/clients/go/generated"
+	"github.com/iverson/clients/go/iverson"
 )
 
 // ── Mock MappingClient ─────────────────────────────────────────────────────────
@@ -29,10 +29,10 @@ func (m *mockMappingClient) RegisterSchema(_ context.Context, req *pb.SchemaRequ
 // ── Test entity types ──────────────────────────────────────────────────────────
 
 type registrarArticle struct {
-	Id          string    `iverson:"key"`
-	Title       string    `iverson:"embedding"`
-	Body        string    `iverson:"large_field"`
-	Category    string    `iverson:"search_key:0"`
+	Id          string `iverson:"key"`
+	Title       string `iverson:"embedding"`
+	Body        string `iverson:"large_field"`
+	Category    string `iverson:"search_key:0"`
 	WordCount   int
 	PublishedAt time.Time `iverson:"search_key:1"`
 	AuthorId    string    `iverson:"many_to_one:Author"`
@@ -368,5 +368,82 @@ func TestSchemaRegistrar_TypeDescriptionFromPointerEntity(t *testing.T) {
 	}
 	if got := mock.capturedReq.RootType.Description; got != "An article with metadata" {
 		t.Errorf("type description via pointer: got %q", got)
+	}
+}
+
+// ── enrichment target registrar tests ───────────────────────────────────────────
+
+type enrichedArticle struct {
+	Id       string `iverson:"key"`
+	Summary  string `iverson_summary:"true"`
+	Keywords string `iverson_keywords:"true"`
+	Topic    string `iverson_extract:"the article's primary topic"`
+	Body     string `iverson:"chunk:256:32" iverson_contextual:"true"`
+	Title    string
+}
+
+func TestSchemaRegistrar_EnrichmentTargets(t *testing.T) {
+	mock := &mockMappingClient{response: &pb.SchemaResponse{Success: true}}
+	registrar := iverson.NewSchemaRegistrar(mock, enrichedArticle{})
+	if err := registrar.RegisterAll(context.Background(), ""); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	req := mock.capturedReq
+
+	summary := propByName(t, req, "Summary")
+	if !summary.IsSummaryTarget {
+		t.Error("expected Summary.IsSummaryTarget=true")
+	}
+
+	keywords := propByName(t, req, "Keywords")
+	if !keywords.IsKeywordsTarget {
+		t.Error("expected Keywords.IsKeywordsTarget=true")
+	}
+
+	topic := propByName(t, req, "Topic")
+	if topic.ExtractHint != "the article's primary topic" {
+		t.Errorf("expected ExtractHint set, got %q", topic.ExtractHint)
+	}
+
+	body := propByName(t, req, "Body")
+	if !body.ChunkContextual {
+		t.Error("expected Body.ChunkContextual=true")
+	}
+	if !body.IsChunk {
+		t.Error("expected Body.IsChunk=true")
+	}
+
+	// Negative control: an untagged field must carry none of the four.
+	title := propByName(t, req, "Title")
+	if title.IsSummaryTarget || title.IsKeywordsTarget || title.ExtractHint != "" || title.ChunkContextual {
+		t.Errorf("expected Title to carry no enrichment targets, got %+v", title)
+	}
+}
+
+type blankExtractHint struct {
+	Id    string `iverson:"key"`
+	Topic string `iverson_extract:"   "`
+}
+
+func TestSchemaRegistrar_BlankExtractHint_Rejected(t *testing.T) {
+	mock := &mockMappingClient{response: &pb.SchemaResponse{Success: true}}
+	registrar := iverson.NewSchemaRegistrar(mock, blankExtractHint{})
+	err := registrar.RegisterAll(context.Background(), "")
+	if err == nil {
+		t.Fatal("expected error for blank extract hint, got nil")
+	}
+}
+
+type contextualWithoutChunk struct {
+	Id    string `iverson:"key"`
+	Title string `iverson_contextual:"true"`
+}
+
+func TestSchemaRegistrar_ContextualWithoutChunk_Rejected(t *testing.T) {
+	mock := &mockMappingClient{response: &pb.SchemaResponse{Success: true}}
+	registrar := iverson.NewSchemaRegistrar(mock, contextualWithoutChunk{})
+	err := registrar.RegisterAll(context.Background(), "")
+	if err == nil {
+		t.Fatal("expected error for contextual on non-chunk field, got nil")
 	}
 }
