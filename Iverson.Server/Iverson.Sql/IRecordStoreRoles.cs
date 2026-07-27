@@ -53,6 +53,15 @@ public interface IEntityRepository
     Task<IEnumerable<string>> FetchByColumnAsync(TableSchema schema, string columnName, string value, bool tenantScoped = false, string? tenantId = null);
     Task<IEnumerable<string>> FetchAllAsync(TableSchema schema, bool tenantScoped = false, string? tenantId = null);
     Task DeleteAsync(IDbTransactionContext tx, TableSchema schema, string key, bool tenantScoped = false, string? tenantId = null);
+    Task UpdateColumnsAsync(IDbTransactionContext tx, TableSchema schema, string key, IReadOnlyDictionary<string, object?> columns);
+}
+
+public interface IEnrichmentStateRepository
+{
+    Task EnsureTableAsync();
+    Task<string?> GetHashAsync(string tenantId, string typeName, string entityKey);
+    Task UpsertAsync(IDbTransactionContext tx, string tenantId, string typeName, string entityKey, string sourceHash, DateTimeOffset enrichedAt);
+    Task DeleteAsync(string tenantId, string typeName, string entityKey);
 }
 
 public interface ISchemaRegistryRepository

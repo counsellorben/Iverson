@@ -1,3 +1,5 @@
+using Dapper;
+
 namespace Iverson.Sql;
 
 public sealed class EntityRepository(IRecordStoreQueryExecutor sql) : IEntityRepository
@@ -44,5 +46,22 @@ public sealed class EntityRepository(IRecordStoreQueryExecutor sql) : IEntityRep
             // no grant on those — reset back to the superuser role before returning.
             await tx.ExitTenantScopeAsync();
         }
+    }
+
+    public Task UpdateColumnsAsync(
+        IDbTransactionContext tx, TableSchema schema, string key,
+        IReadOnlyDictionary<string, object?> columns)
+    {
+        var setClause = string.Join(", ", columns.Keys.Select(c => $"\"{c}\" = @{c}"));
+        var parameters = new DynamicParameters();
+        foreach (var (column, value) in columns)
+        {
+            parameters.Add(column, value);
+        }
+        parameters.Add("Key", key);
+
+        return tx.ExecuteAsync(
+            $"UPDATE \"{schema.TableName}\" SET {setClause} WHERE \"{schema.KeyColumn.Name}\" = @Key::uuid",
+            parameters);
     }
 }

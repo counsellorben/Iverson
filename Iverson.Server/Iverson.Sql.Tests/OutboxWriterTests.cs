@@ -112,4 +112,33 @@ public class OutboxWriterTests
         paramType.GetProperty("EntityKey")!.GetValue(capturedParams).Should().Be("author-1");
         paramType.GetProperty("Payload")!.GetValue(capturedParams).Should().Be(payload);
     }
+
+    [Fact]
+    public async Task EnqueueUpdateOutboxRowAsync_InsertsRowWithEventTypeUpdated_AndStoredPayload_UsingCallerSuppliedId()
+    {
+        var tx = Substitute.For<IDbTransactionContext>();
+        var id = Guid.NewGuid();
+        const string payload = """{"Id":"author-1","Name":"Alice"}""";
+
+        string? capturedSql = null;
+        object? capturedParams = null;
+        tx.WhenForAnyArgs(t => t.ExecuteAsync(Arg.Any<string>(), Arg.Any<object?>()))
+          .Do(call =>
+          {
+              capturedSql = call.ArgAt<string>(0);
+              capturedParams = call.ArgAt<object?>(1);
+          });
+
+        await _sut.EnqueueUpdateOutboxRowAsync(tx, id, "Author", "author-1", payload);
+
+        capturedSql.Should().NotBeNull();
+        capturedSql!.Should().Contain("INSERT INTO").And.Contain(OutboxTableName).And.Contain("'Updated'");
+
+        capturedParams.Should().NotBeNull();
+        var paramType = capturedParams!.GetType();
+        paramType.GetProperty("Id")!.GetValue(capturedParams).Should().Be(id);
+        paramType.GetProperty("TypeName")!.GetValue(capturedParams).Should().Be("Author");
+        paramType.GetProperty("EntityKey")!.GetValue(capturedParams).Should().Be("author-1");
+        paramType.GetProperty("Payload")!.GetValue(capturedParams).Should().Be(payload);
+    }
 }

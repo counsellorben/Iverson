@@ -5,6 +5,7 @@ public interface IOutboxWriter
     Task<Guid> UpsertAndEnqueueOutboxAsync(TableSchema schema, string typeName, string key, string payloadJson, string? tenantId = null);
     Task DeleteOutboxRowIfPresentAsync(Guid outboxRowId);
     Task EnqueueDeleteOutboxRowAsync(IDbTransactionContext tx, Guid id, string typeName, string key, string payload);
+    Task EnqueueUpdateOutboxRowAsync(IDbTransactionContext tx, Guid id, string typeName, string key, string payload);
 }
 
 public sealed class OutboxWriter(
@@ -74,6 +75,24 @@ public sealed class OutboxWriter(
                 ("Id", "TypeName", "EntityKey", "EnqueuedAt", "Attempts", "LastError", "LastAttemptAt", "EventType", "Payload")
             VALUES
                 (@Id, @TypeName, @EntityKey, @EnqueuedAt, 0, null, null, 'Deleted', @Payload)
+            """,
+            new
+            {
+                Id = id,
+                TypeName = typeName,
+                EntityKey = key,
+                EnqueuedAt = DateTimeOffset.UtcNow,
+                Payload = payload
+            });
+
+    public Task EnqueueUpdateOutboxRowAsync(
+        IDbTransactionContext tx, Guid id, string typeName, string key, string payload) =>
+        tx.ExecuteAsync(
+            $"""
+            INSERT INTO "{outboxTableName}"
+                ("Id", "TypeName", "EntityKey", "EnqueuedAt", "Attempts", "LastError", "LastAttemptAt", "EventType", "Payload")
+            VALUES
+                (@Id, @TypeName, @EntityKey, @EnqueuedAt, 0, null, null, 'Updated', @Payload)
             """,
             new
             {

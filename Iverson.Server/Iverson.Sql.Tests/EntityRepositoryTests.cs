@@ -180,4 +180,36 @@ public class EntityRepositoryTests
 
         calls.Should().ContainSingle().Which.Should().Contain("DELETE FROM \"articles\"");
     }
+
+    [Fact]
+    public async Task UpdateColumnsAsync_ExecutesOnTheGivenTransactionContext_NotTheInjectedExecutor()
+    {
+        var sql = Substitute.For<IRecordStoreQueryExecutor>();
+        var tx = Substitute.For<IDbTransactionContext>();
+        var repo = new EntityRepository(sql);
+
+        await repo.UpdateColumnsAsync(tx, ArticleSchema, "k1", new Dictionary<string, object?> { ["Title"] = "New Title" });
+
+        await tx.Received(1).ExecuteAsync(Arg.Is<string>(s => s.Contains("UPDATE \"articles\"")), Arg.Any<object?>());
+        await sql.DidNotReceive().ExecuteAsync(Arg.Any<string>(), Arg.Any<object?>());
+    }
+
+    [Fact]
+    public async Task UpdateColumnsAsync_SetsOnlySuppliedColumns_AndFiltersByKeyColumn()
+    {
+        var sql = Substitute.For<IRecordStoreQueryExecutor>();
+        var tx = Substitute.For<IDbTransactionContext>();
+        var repo = new EntityRepository(sql);
+
+        await repo.UpdateColumnsAsync(
+            tx, ArticleSchema, "k1",
+            new Dictionary<string, object?> { ["Title"] = "New Title", ["Body"] = "New Body" });
+
+        await tx.Received(1).ExecuteAsync(
+            Arg.Is<string>(s =>
+                s.Contains("SET \"Title\" = @Title") &&
+                s.Contains("\"Body\" = @Body") &&
+                s.Contains("WHERE \"Id\" = @Key::uuid")),
+            Arg.Any<object?>());
+    }
 }
