@@ -281,7 +281,7 @@ func (c *countingMappingClient) RegisterSchema(ctx context.Context, req *pb.Sche
 
 type describedArticle struct {
 	Id     string `iverson:"key" iverson_desc:"Primary identifier"`
-	Status string `iverson:"metadata" iverson_desc:"Publication status"`
+	Status string `iverson_meta:"true" iverson_desc:"Publication status"`
 	Title  string `iverson_desc:"Headline"`
 	Body   string
 }

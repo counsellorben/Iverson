@@ -297,21 +297,40 @@ func TestInspectType_NonStruct(t *testing.T) {
 
 // ── metadata / description tag tests ───────────────────────────────────────────
 
-func TestParseTag_Metadata(t *testing.T) {
-	fm, err := iverson.ParseTag("Status", "metadata")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if fm.Kind != iverson.KindMetadata {
-		t.Errorf("expected kind=%q, got %q", iverson.KindMetadata, fm.Kind)
-	}
-}
-
 type descFixture struct {
 	Id       string `iverson:"key" iverson_desc:"The unique identifier"`
-	Status   string `iverson:"metadata" iverson_desc:"Publication status"`
+	Status   string `iverson_meta:"true" iverson_desc:"Publication status"`
+	Region   string `iverson:"search_key:0" iverson_meta:"true" iverson_desc:"Publication region."`
 	Plain    string `iverson_desc:"A plain field"`
 	Untagged string
+}
+
+// Metadata is an independent tag key, so it composes with an `iverson` kind —
+// matching the server and the other four clients (cf. Python's
+// test_metadata_composes_with_search_key).
+func TestInspectType_MetadataComposesWithSearchKey(t *testing.T) {
+	meta, err := iverson.InspectType(descFixture{})
+	if err != nil {
+		t.Fatalf("InspectType: %v", err)
+	}
+	var region iverson.FieldMeta
+	for _, fm := range meta.Fields {
+		if fm.Name == "Region" {
+			region = fm
+		}
+	}
+	if !region.Metadata {
+		t.Error("expected Region Metadata=true")
+	}
+	if region.Kind != iverson.KindSearchKey {
+		t.Errorf("expected Region kind=%q, got %q", iverson.KindSearchKey, region.Kind)
+	}
+	if region.SearchKeyOrder != 0 {
+		t.Errorf("expected Region search key order 0, got %d", region.SearchKeyOrder)
+	}
+	if got := region.Description; got != "Publication region." {
+		t.Errorf("Region description: got %q", got)
+	}
 }
 
 func TestInspectType_DescriptionsAndMetadata(t *testing.T) {
@@ -331,8 +350,11 @@ func TestInspectType_DescriptionsAndMetadata(t *testing.T) {
 	if byName["Id"].Kind != iverson.KindKey {
 		t.Errorf("key field kind changed: %q", byName["Id"].Kind)
 	}
-	if byName["Status"].Kind != iverson.KindMetadata {
-		t.Errorf("expected metadata kind, got %q", byName["Status"].Kind)
+	if !byName["Status"].Metadata {
+		t.Error("expected Status Metadata=true")
+	}
+	if byName["Status"].Kind != "" {
+		t.Errorf("metadata tag must not set a kind, got %q", byName["Status"].Kind)
 	}
 	if got := byName["Status"].Description; got != "Publication status" {
 		t.Errorf("metadata field description: got %q", got)

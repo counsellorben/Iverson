@@ -91,7 +91,7 @@ func (r *SchemaRegistrar) buildRequest(e interface{}, traceID string) (*pb.Schem
 			IsChunk:        fm.Kind == KindChunk,
 			ChunkMaxTokens: chunkMaxTokens,
 			ChunkOverlap:   chunkOverlap,
-			IsMetadata:     fm.Kind == KindMetadata,
+			IsMetadata:     fm.Metadata,
 			Description:    fm.Description,
 		}
 		properties = append(properties, prop)

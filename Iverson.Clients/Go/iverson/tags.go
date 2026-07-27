@@ -6,16 +6,21 @@
 //	`iverson:"key"`                 — primary key field
 //	`iverson:"search_key:N"`        — sort key at position N (0-based)
 //	`iverson:"large_field"`         — excluded from StarRocks materialized view
-//	`iverson:"metadata"`            — denormalized onto chunk points for chunk-search filtering
 //	`iverson:"many_to_one:TypeName"` — FK to TypeName (this entity holds the FK)
 //	`iverson:"many_to_many:TypeName"` — join-table FK
 //	`iverson:"one_to_many:TypeName"` — inverse of many_to_one
 //	`iverson:"one_to_one:TypeName"` — 1:1 FK
 //
-// A field may also carry an independent description tag, valid alongside any
+// A field may also carry these independent tags, each valid alongside any
 // `iverson` kind (including `key`) and on untagged fields:
 //
 //	`iverson_desc:"Human-readable description"`
+//	`iverson_meta:"true"`  — denormalized onto chunk points for chunk-search filtering
+//
+// `iverson_meta` is a separate tag key rather than an `iverson` kind because it
+// composes with the kinds: a field can be both a search key and metadata, which
+// the server and the other four clients all allow. Note the server rejects it in
+// combination with embedding, chunk, array, or large-field annotations.
 //
 // A type-level description is supplied by implementing the optional interface:
 //
@@ -36,12 +41,15 @@ const TagKey = "iverson"
 // independent of TagKey and may appear on a field of any kind.
 const DescriptionTagKey = "iverson_desc"
 
+// MetadataTagKey is the struct tag key marking a field as metadata. Like
+// DescriptionTagKey it is independent of TagKey, so it composes with any kind.
+const MetadataTagKey = "iverson_meta"
+
 // Kind constants for tag values.
 const (
 	KindKey        = "key"
 	KindSearchKey  = "search_key"
 	KindLargeField = "large_field"
-	KindMetadata   = "metadata"
 	KindEmbedding  = "embedding"
 	KindChunk      = "chunk"
 	KindManyToOne  = "many_to_one"
@@ -67,6 +75,9 @@ type FieldMeta struct {
 	// Description is the field description from the `iverson_desc` struct tag,
 	// or "" when absent. Independent of Kind.
 	Description string
+	// Metadata reports whether the field carries `iverson_meta:"true"`.
+	// Independent of Kind, so it composes with search_key, large_field, and the rest.
+	Metadata bool
 }
 
 // ParseTag parses an `iverson:"..."` tag value for one field.
@@ -97,9 +108,6 @@ func ParseTag(fieldName, tagValue string) (FieldMeta, error) {
 
 	case KindLargeField:
 		meta.Kind = KindLargeField
-
-	case KindMetadata:
-		meta.Kind = KindMetadata
 
 	case KindEmbedding:
 		meta.Kind = KindEmbedding
@@ -170,6 +178,7 @@ func InspectType(v interface{}) (EntityMeta, error) {
 			return EntityMeta{}, err
 		}
 		fm.Description = sf.Tag.Get(DescriptionTagKey)
+		fm.Metadata = sf.Tag.Get(MetadataTagKey) == "true"
 
 		switch fm.Kind {
 		case KindManyToOne, KindManyToMany, KindOneToMany, KindOneToOne:
