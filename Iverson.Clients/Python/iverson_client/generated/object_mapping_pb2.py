@@ -25,7 +25,7 @@ _sym_db = _symbol_database.Default()
 from google.protobuf import struct_pb2 as google_dot_protobuf_dot_struct__pb2
 
 
-DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x14object_mapping.proto\x12\x07iverson\x1a\x1cgoogle/protobuf/struct.proto\"\xa1\x03\n\x12PropertyDescriptor\x12\x0c\n\x04name\x18\x01 \x01(\t\x12\"\n\x08\x63lr_type\x18\x02 \x01(\x0e\x32\x10.iverson.ClrType\x12\x0e\n\x06is_key\x18\x03 \x01(\x08\x12\x13\n\x0bis_nullable\x18\x04 \x01(\x08\x12\x10\n\x08is_array\x18\x05 \x01(\x08\x12\x14\n\x0cis_embedding\x18\x06 \x01(\x08\x12\x12\n\nvector_dim\x18\x07 \x01(\x05\x12\x10\n\x08model_id\x18\x08 \x01(\t\x12\x10\n\x08is_chunk\x18\t \x01(\x08\x12\x18\n\x10\x63hunk_max_tokens\x18\n \x01(\x05\x12\x15\n\rchunk_overlap\x18\x0b \x01(\x05\x12\x16\n\x0e\x63hunk_model_id\x18\x0c \x01(\t\x12\x18\n\x10\x63hunk_vector_dim\x18\r \x01(\x05\x12\x15\n\ris_search_key\x18\x0e \x01(\x08\x12\x18\n\x10search_key_order\x18\x0f \x01(\x05\x12\x16\n\x0eis_large_field\x18\x10 \x01(\x08\x12\x13\n\x0bis_metadata\x18\x11 \x01(\x08\x12\x13\n\x0b\x64\x65scription\x18\x12 \x01(\t\"{\n\x12RelationDescriptor\x12\x15\n\rproperty_name\x18\x01 \x01(\t\x12#\n\x04kind\x18\x02 \x01(\x0e\x32\x15.iverson.RelationKind\x12\x14\n\x0crelated_type\x18\x03 \x01(\t\x12\x13\n\x0b\x66oreign_key\x18\x04 \x01(\t\"b\n\rRowPermission\x12\x0c\n\x04role\x18\x01 \x01(\t\x12\x14\n\x0c\x63\x61n_read_all\x18\x02 \x01(\x08\x12\x15\n\rcan_write_all\x18\x03 \x01(\x08\x12\x16\n\x0e\x63\x61n_delete_all\x18\x04 \x01(\x08\"U\n\x0f\x46ieldPermission\x12\x12\n\nfield_name\x18\x01 \x01(\t\x12\x16\n\x0ereadable_roles\x18\x02 \x03(\t\x12\x16\n\x0ewritable_roles\x18\x03 \x03(\t\"\x8f\x01\n\x12\x41uthorizationRules\x12\x13\n\x0bowner_field\x18\x01 \x01(\t\x12/\n\x0frow_permissions\x18\x02 \x03(\x0b\x32\x16.iverson.RowPermission\x12\x33\n\x11\x66ield_permissions\x18\x03 \x03(\x0b\x32\x18.iverson.FieldPermission\"\xe3\x01\n\x0eTypeDescriptor\x12\x11\n\ttype_name\x18\x01 \x01(\t\x12/\n\nproperties\x18\x02 \x03(\x0b\x32\x1b.iverson.PropertyDescriptor\x12.\n\trelations\x18\x03 \x03(\x0b\x32\x1b.iverson.RelationDescriptor\x12\x32\n\rauthorization\x18\x04 \x01(\x0b\x32\x1b.iverson.AuthorizationRules\x12\x14\n\x0ctenant_field\x18\x05 \x01(\t\x12\x13\n\x0b\x64\x65scription\x18\x06 \x01(\t\"z\n\rSchemaRequest\x12*\n\troot_type\x18\x01 \x01(\x0b\x32\x17.iverson.TypeDescriptor\x12+\n\ndependents\x18\x02 \x03(\x0b\x32\x17.iverson.TypeDescriptor\x12\x10\n\x08trace_id\x18\x03 \x01(\t\"V\n\x0eSchemaResponse\x12\x0f\n\x07success\x18\x01 \x01(\x08\x12\x10\n\x08trace_id\x18\x02 \x01(\t\x12\r\n\x05\x65rror\x18\x03 \x01(\t\x12\x12\n\nregistered\x18\x04 \x03(\t\"T\n\x11MappingGetRequest\x12\x11\n\ttype_name\x18\x01 \x01(\t\x12\x0b\n\x03key\x18\x02 \x01(\t\x12\r\n\x05\x64\x65pth\x18\x03 \x01(\x05\x12\x10\n\x08trace_id\x18\x04 \x01(\t\"d\n\x13MappingWriteRequest\x12\x11\n\ttype_name\x18\x01 \x01(\t\x12(\n\x07payload\x18\x02 \x01(\x0b\x32\x17.google.protobuf.Struct\x12\x10\n\x08trace_id\x18\x03 \x01(\t\"H\n\x14MappingDeleteRequest\x12\x11\n\ttype_name\x18\x01 \x01(\t\x12\x0b\n\x03key\x18\x02 \x01(\t\x12\x10\n\x08trace_id\x18\x03 \x01(\t\"j\n\x0fMappingResponse\x12\x0f\n\x07success\x18\x01 \x01(\x08\x12%\n\x04\x64\x61ta\x18\x02 \x01(\x0b\x32\x17.google.protobuf.Struct\x12\x10\n\x08trace_id\x18\x03 \x01(\t\x12\r\n\x05\x65rror\x18\x04 \x01(\t\"I\n\x15MappingDeleteResponse\x12\x0f\n\x07success\x18\x01 \x01(\x08\x12\x10\n\x08trace_id\x18\x02 \x01(\t\x12\r\n\x05\x65rror\x18\x03 \x01(\t*R\n\x0cRelationKind\x12\x0e\n\nONE_TO_ONE\x10\x00\x12\x0f\n\x0bONE_TO_MANY\x10\x01\x12\x0f\n\x0bMANY_TO_ONE\x10\x02\x12\x10\n\x0cMANY_TO_MANY\x10\x03*\x93\x01\n\x07\x43lrType\x12\x0e\n\nCLR_STRING\x10\x00\x12\x0c\n\x08\x43LR_GUID\x10\x01\x12\r\n\tCLR_INT32\x10\x02\x12\r\n\tCLR_INT64\x10\x03\x12\x0e\n\nCLR_DOUBLE\x10\x04\x12\r\n\tCLR_FLOAT\x10\x05\x12\x0c\n\x08\x43LR_BOOL\x10\x06\x12\x10\n\x0c\x43LR_DATETIME\x10\x07\x12\r\n\tCLR_BYTES\x10\x08\x32\xe1\x02\n\x14ObjectMappingService\x12;\n\x03Get\x12\x1a.iverson.MappingGetRequest\x1a\x18.iverson.MappingResponse\x12>\n\x04Post\x12\x1c.iverson.MappingWriteRequest\x1a\x18.iverson.MappingResponse\x12@\n\x06Update\x12\x1c.iverson.MappingWriteRequest\x1a\x18.iverson.MappingResponse\x12G\n\x06\x44\x65lete\x12\x1d.iverson.MappingDeleteRequest\x1a\x1e.iverson.MappingDeleteResponse\x12\x41\n\x0eRegisterSchema\x12\x16.iverson.SchemaRequest\x1a\x17.iverson.SchemaResponseB\x1b\xaa\x02\x18Iverson.Client.Contractsb\x06proto3')
+DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x14object_mapping.proto\x12\x07iverson\x1a\x1cgoogle/protobuf/struct.proto\"\x88\x04\n\x12PropertyDescriptor\x12\x0c\n\x04name\x18\x01 \x01(\t\x12\"\n\x08\x63lr_type\x18\x02 \x01(\x0e\x32\x10.iverson.ClrType\x12\x0e\n\x06is_key\x18\x03 \x01(\x08\x12\x13\n\x0bis_nullable\x18\x04 \x01(\x08\x12\x10\n\x08is_array\x18\x05 \x01(\x08\x12\x14\n\x0cis_embedding\x18\x06 \x01(\x08\x12\x12\n\nvector_dim\x18\x07 \x01(\x05\x12\x10\n\x08model_id\x18\x08 \x01(\t\x12\x10\n\x08is_chunk\x18\t \x01(\x08\x12\x18\n\x10\x63hunk_max_tokens\x18\n \x01(\x05\x12\x15\n\rchunk_overlap\x18\x0b \x01(\x05\x12\x16\n\x0e\x63hunk_model_id\x18\x0c \x01(\t\x12\x18\n\x10\x63hunk_vector_dim\x18\r \x01(\x05\x12\x15\n\ris_search_key\x18\x0e \x01(\x08\x12\x18\n\x10search_key_order\x18\x0f \x01(\x05\x12\x16\n\x0eis_large_field\x18\x10 \x01(\x08\x12\x13\n\x0bis_metadata\x18\x11 \x01(\x08\x12\x13\n\x0b\x64\x65scription\x18\x12 \x01(\t\x12\x19\n\x11is_summary_target\x18\x13 \x01(\x08\x12\x1a\n\x12is_keywords_target\x18\x14 \x01(\x08\x12\x14\n\x0c\x65xtract_hint\x18\x15 \x01(\t\x12\x18\n\x10\x63hunk_contextual\x18\x16 \x01(\x08\"{\n\x12RelationDescriptor\x12\x15\n\rproperty_name\x18\x01 \x01(\t\x12#\n\x04kind\x18\x02 \x01(\x0e\x32\x15.iverson.RelationKind\x12\x14\n\x0crelated_type\x18\x03 \x01(\t\x12\x13\n\x0b\x66oreign_key\x18\x04 \x01(\t\"b\n\rRowPermission\x12\x0c\n\x04role\x18\x01 \x01(\t\x12\x14\n\x0c\x63\x61n_read_all\x18\x02 \x01(\x08\x12\x15\n\rcan_write_all\x18\x03 \x01(\x08\x12\x16\n\x0e\x63\x61n_delete_all\x18\x04 \x01(\x08\"U\n\x0f\x46ieldPermission\x12\x12\n\nfield_name\x18\x01 \x01(\t\x12\x16\n\x0ereadable_roles\x18\x02 \x03(\t\x12\x16\n\x0ewritable_roles\x18\x03 \x03(\t\"\x8f\x01\n\x12\x41uthorizationRules\x12\x13\n\x0bowner_field\x18\x01 \x01(\t\x12/\n\x0frow_permissions\x18\x02 \x03(\x0b\x32\x16.iverson.RowPermission\x12\x33\n\x11\x66ield_permissions\x18\x03 \x03(\x0b\x32\x18.iverson.FieldPermission\"\xe3\x01\n\x0eTypeDescriptor\x12\x11\n\ttype_name\x18\x01 \x01(\t\x12/\n\nproperties\x18\x02 \x03(\x0b\x32\x1b.iverson.PropertyDescriptor\x12.\n\trelations\x18\x03 \x03(\x0b\x32\x1b.iverson.RelationDescriptor\x12\x32\n\rauthorization\x18\x04 \x01(\x0b\x32\x1b.iverson.AuthorizationRules\x12\x14\n\x0ctenant_field\x18\x05 \x01(\t\x12\x13\n\x0b\x64\x65scription\x18\x06 \x01(\t\"z\n\rSchemaRequest\x12*\n\troot_type\x18\x01 \x01(\x0b\x32\x17.iverson.TypeDescriptor\x12+\n\ndependents\x18\x02 \x03(\x0b\x32\x17.iverson.TypeDescriptor\x12\x10\n\x08trace_id\x18\x03 \x01(\t\"V\n\x0eSchemaResponse\x12\x0f\n\x07success\x18\x01 \x01(\x08\x12\x10\n\x08trace_id\x18\x02 \x01(\t\x12\r\n\x05\x65rror\x18\x03 \x01(\t\x12\x12\n\nregistered\x18\x04 \x03(\t\"T\n\x11MappingGetRequest\x12\x11\n\ttype_name\x18\x01 \x01(\t\x12\x0b\n\x03key\x18\x02 \x01(\t\x12\r\n\x05\x64\x65pth\x18\x03 \x01(\x05\x12\x10\n\x08trace_id\x18\x04 \x01(\t\"d\n\x13MappingWriteRequest\x12\x11\n\ttype_name\x18\x01 \x01(\t\x12(\n\x07payload\x18\x02 \x01(\x0b\x32\x17.google.protobuf.Struct\x12\x10\n\x08trace_id\x18\x03 \x01(\t\"H\n\x14MappingDeleteRequest\x12\x11\n\ttype_name\x18\x01 \x01(\t\x12\x0b\n\x03key\x18\x02 \x01(\t\x12\x10\n\x08trace_id\x18\x03 \x01(\t\"j\n\x0fMappingResponse\x12\x0f\n\x07success\x18\x01 \x01(\x08\x12%\n\x04\x64\x61ta\x18\x02 \x01(\x0b\x32\x17.google.protobuf.Struct\x12\x10\n\x08trace_id\x18\x03 \x01(\t\x12\r\n\x05\x65rror\x18\x04 \x01(\t\"I\n\x15MappingDeleteResponse\x12\x0f\n\x07success\x18\x01 \x01(\x08\x12\x10\n\x08trace_id\x18\x02 \x01(\t\x12\r\n\x05\x65rror\x18\x03 \x01(\t*R\n\x0cRelationKind\x12\x0e\n\nONE_TO_ONE\x10\x00\x12\x0f\n\x0bONE_TO_MANY\x10\x01\x12\x0f\n\x0bMANY_TO_ONE\x10\x02\x12\x10\n\x0cMANY_TO_MANY\x10\x03*\x93\x01\n\x07\x43lrType\x12\x0e\n\nCLR_STRING\x10\x00\x12\x0c\n\x08\x43LR_GUID\x10\x01\x12\r\n\tCLR_INT32\x10\x02\x12\r\n\tCLR_INT64\x10\x03\x12\x0e\n\nCLR_DOUBLE\x10\x04\x12\r\n\tCLR_FLOAT\x10\x05\x12\x0c\n\x08\x43LR_BOOL\x10\x06\x12\x10\n\x0c\x43LR_DATETIME\x10\x07\x12\r\n\tCLR_BYTES\x10\x08\x32\xe1\x02\n\x14ObjectMappingService\x12;\n\x03Get\x12\x1a.iverson.MappingGetRequest\x1a\x18.iverson.MappingResponse\x12>\n\x04Post\x12\x1c.iverson.MappingWriteRequest\x1a\x18.iverson.MappingResponse\x12@\n\x06Update\x12\x1c.iverson.MappingWriteRequest\x1a\x18.iverson.MappingResponse\x12G\n\x06\x44\x65lete\x12\x1d.iverson.MappingDeleteRequest\x1a\x1e.iverson.MappingDeleteResponse\x12\x41\n\x0eRegisterSchema\x12\x16.iverson.SchemaRequest\x1a\x17.iverson.SchemaResponseB\x1b\xaa\x02\x18Iverson.Client.Contractsb\x06proto3')
 
 _globals = globals()
 _builder.BuildMessageAndEnumDescriptors(DESCRIPTOR, _globals)
@@ -33,36 +33,36 @@ _builder.BuildTopDescriptorsAndMessages(DESCRIPTOR, 'object_mapping_pb2', _globa
 if not _descriptor._USE_C_DESCRIPTORS:
   _globals['DESCRIPTOR']._loaded_options = None
   _globals['DESCRIPTOR']._serialized_options = b'\252\002\030Iverson.Client.Contracts'
-  _globals['_RELATIONKIND']._serialized_start=1828
-  _globals['_RELATIONKIND']._serialized_end=1910
-  _globals['_CLRTYPE']._serialized_start=1913
-  _globals['_CLRTYPE']._serialized_end=2060
+  _globals['_RELATIONKIND']._serialized_start=1931
+  _globals['_RELATIONKIND']._serialized_end=2013
+  _globals['_CLRTYPE']._serialized_start=2016
+  _globals['_CLRTYPE']._serialized_end=2163
   _globals['_PROPERTYDESCRIPTOR']._serialized_start=64
-  _globals['_PROPERTYDESCRIPTOR']._serialized_end=481
-  _globals['_RELATIONDESCRIPTOR']._serialized_start=483
-  _globals['_RELATIONDESCRIPTOR']._serialized_end=606
-  _globals['_ROWPERMISSION']._serialized_start=608
-  _globals['_ROWPERMISSION']._serialized_end=706
-  _globals['_FIELDPERMISSION']._serialized_start=708
-  _globals['_FIELDPERMISSION']._serialized_end=793
-  _globals['_AUTHORIZATIONRULES']._serialized_start=796
-  _globals['_AUTHORIZATIONRULES']._serialized_end=939
-  _globals['_TYPEDESCRIPTOR']._serialized_start=942
-  _globals['_TYPEDESCRIPTOR']._serialized_end=1169
-  _globals['_SCHEMAREQUEST']._serialized_start=1171
-  _globals['_SCHEMAREQUEST']._serialized_end=1293
-  _globals['_SCHEMARESPONSE']._serialized_start=1295
-  _globals['_SCHEMARESPONSE']._serialized_end=1381
-  _globals['_MAPPINGGETREQUEST']._serialized_start=1383
-  _globals['_MAPPINGGETREQUEST']._serialized_end=1467
-  _globals['_MAPPINGWRITEREQUEST']._serialized_start=1469
-  _globals['_MAPPINGWRITEREQUEST']._serialized_end=1569
-  _globals['_MAPPINGDELETEREQUEST']._serialized_start=1571
-  _globals['_MAPPINGDELETEREQUEST']._serialized_end=1643
-  _globals['_MAPPINGRESPONSE']._serialized_start=1645
-  _globals['_MAPPINGRESPONSE']._serialized_end=1751
-  _globals['_MAPPINGDELETERESPONSE']._serialized_start=1753
-  _globals['_MAPPINGDELETERESPONSE']._serialized_end=1826
-  _globals['_OBJECTMAPPINGSERVICE']._serialized_start=2063
-  _globals['_OBJECTMAPPINGSERVICE']._serialized_end=2416
+  _globals['_PROPERTYDESCRIPTOR']._serialized_end=584
+  _globals['_RELATIONDESCRIPTOR']._serialized_start=586
+  _globals['_RELATIONDESCRIPTOR']._serialized_end=709
+  _globals['_ROWPERMISSION']._serialized_start=711
+  _globals['_ROWPERMISSION']._serialized_end=809
+  _globals['_FIELDPERMISSION']._serialized_start=811
+  _globals['_FIELDPERMISSION']._serialized_end=896
+  _globals['_AUTHORIZATIONRULES']._serialized_start=899
+  _globals['_AUTHORIZATIONRULES']._serialized_end=1042
+  _globals['_TYPEDESCRIPTOR']._serialized_start=1045
+  _globals['_TYPEDESCRIPTOR']._serialized_end=1272
+  _globals['_SCHEMAREQUEST']._serialized_start=1274
+  _globals['_SCHEMAREQUEST']._serialized_end=1396
+  _globals['_SCHEMARESPONSE']._serialized_start=1398
+  _globals['_SCHEMARESPONSE']._serialized_end=1484
+  _globals['_MAPPINGGETREQUEST']._serialized_start=1486
+  _globals['_MAPPINGGETREQUEST']._serialized_end=1570
+  _globals['_MAPPINGWRITEREQUEST']._serialized_start=1572
+  _globals['_MAPPINGWRITEREQUEST']._serialized_end=1672
+  _globals['_MAPPINGDELETEREQUEST']._serialized_start=1674
+  _globals['_MAPPINGDELETEREQUEST']._serialized_end=1746
+  _globals['_MAPPINGRESPONSE']._serialized_start=1748
+  _globals['_MAPPINGRESPONSE']._serialized_end=1854
+  _globals['_MAPPINGDELETERESPONSE']._serialized_start=1856
+  _globals['_MAPPINGDELETERESPONSE']._serialized_end=1929
+  _globals['_OBJECTMAPPINGSERVICE']._serialized_start=2166
+  _globals['_OBJECTMAPPINGSERVICE']._serialized_end=2519
 # @@protoc_insertion_point(module_scope)

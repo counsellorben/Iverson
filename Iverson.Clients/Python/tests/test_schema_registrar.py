@@ -15,6 +15,9 @@ from iverson_client.annotations import (
     iverson_chunk,
     iverson_metadata,
     iverson_description,
+    iverson_summary,
+    iverson_keywords,
+    iverson_extracted,
     many_to_one,
     one_to_many,
 )
@@ -53,6 +56,16 @@ class RegDescribedArticle:
 class RegAuthor:
     id: str = iverson_key()
     name: str = None
+
+
+@iverson_entity
+class RegEnrichedArticle:
+    id: str = iverson_key()
+    title: str = None
+    abstract: str = iverson_summary()
+    tags: str = iverson_keywords()
+    entities: str = iverson_extracted("Extract named entities as a JSON array.")
+    body: str = iverson_chunk(max_tokens=256, overlap=32, contextual=True)
 
 
 # ── Fixtures ───────────────────────────────────────────────────────────────────
@@ -246,3 +259,47 @@ class TestMetadataAndDescription:
         assert props["WordCount"].is_metadata is False
         assert props["WordCount"].description == ""
         assert props["Language"].description == ""
+
+
+class TestEnrichmentTargets:
+    def _request(self, cls) -> mapping_pb.SchemaRequest:
+        stub = make_stub()
+        stub.RegisterSchema.return_value = mapping_pb.SchemaResponse(success=True)
+        SchemaRegistrar(stub, cls).register_all()
+        return stub.RegisterSchema.call_args[0][0]
+
+    def test_summary_target_flagged(self):
+        props = {p.name: p for p in self._request(RegEnrichedArticle).root_type.properties}
+        assert props["Abstract"].is_summary_target is True
+
+    def test_keywords_target_flagged(self):
+        props = {p.name: p for p in self._request(RegEnrichedArticle).root_type.properties}
+        assert props["Tags"].is_keywords_target is True
+
+    def test_extracted_hint_carried(self):
+        props = {p.name: p for p in self._request(RegEnrichedArticle).root_type.properties}
+        assert props["Entities"].extract_hint == "Extract named entities as a JSON array."
+
+    def test_chunk_contextual_flagged(self):
+        props = {p.name: p for p in self._request(RegEnrichedArticle).root_type.properties}
+        assert props["Body"].is_chunk is True
+        assert props["Body"].chunk_contextual is True
+
+    def test_chunk_contextual_defaults_false(self):
+        props = {p.name: p for p in self._request(RegArticle).root_type.properties}
+        assert props["Summary"].chunk_contextual is False
+
+    def test_undeclared_property_has_no_enrichment_targets(self):
+        props = {p.name: p for p in self._request(RegEnrichedArticle).root_type.properties}
+        assert props["Title"].is_summary_target is False
+        assert props["Title"].is_keywords_target is False
+        assert props["Title"].extract_hint == ""
+        assert props["Title"].chunk_contextual is False
+
+    def test_blank_extraction_hint_rejected(self):
+        with pytest.raises(ValueError, match="extract"):
+            iverson_extracted("")
+
+    def test_whitespace_extraction_hint_rejected(self):
+        with pytest.raises(ValueError, match="extract"):
+            iverson_extracted("   ")

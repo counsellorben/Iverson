@@ -32,6 +32,10 @@ class FieldMeta:
     overlap: int = 64             # for chunk
     metadata: bool = False        # metadata signal marker
     description: str = ""         # human-readable field description
+    contextual: bool = False      # for chunk: include surrounding context
+    is_summary_target: bool = False    # marker for summary enrichment
+    is_keywords_target: bool = False   # marker for keywords enrichment
+    extract_hint: str = ""        # for extraction enrichment; mandatory when kind == 'extracted'
 
 
 # ── Public factory helpers ─────────────────────────────────────────────────────
@@ -93,15 +97,71 @@ def iverson_embedding(description: str = "") -> FieldMeta:
     return FieldMeta(kind="embedding", description=description)
 
 
-def iverson_chunk(max_tokens: int = 512, overlap: int = 64, description: str = "") -> FieldMeta:
+def iverson_chunk(
+    max_tokens: int = 512,
+    overlap: int = 64,
+    description: str = "",
+    contextual: bool = False,
+) -> FieldMeta:
     """Mark a string field as a source for chunk-level vector embeddings.
 
     Args:
         max_tokens: approximate window size in tokens (1 token ~ 4 chars).
         overlap: tokens shared between adjacent windows.
         description: human-readable description of the field.
+        contextual: whether chunk embeddings should include surrounding context.
     """
-    return FieldMeta(kind="chunk", max_tokens=max_tokens, overlap=overlap, description=description)
+    return FieldMeta(
+        kind="chunk",
+        max_tokens=max_tokens,
+        overlap=overlap,
+        description=description,
+        contextual=contextual,
+    )
+
+
+def iverson_summary(description: str = "") -> FieldMeta:
+    """Mark a field as the target for an Ollama-driven summary during ingest
+    enrichment.
+
+    Args:
+        description: human-readable description of the field.
+    """
+    return FieldMeta(kind="summary", is_summary_target=True, description=description)
+
+
+def iverson_keywords(description: str = "") -> FieldMeta:
+    """Mark a field as the target for Ollama-driven keyword extraction during
+    ingest enrichment.
+
+    Args:
+        description: human-readable description of the field.
+    """
+    return FieldMeta(kind="keywords", is_keywords_target=True, description=description)
+
+
+def iverson_extracted(hint: str, description: str = "") -> FieldMeta:
+    """Mark a field as the target for an Ollama-driven extraction during
+    ingest enrichment, guided by ``hint``.
+
+    The hint is mandatory: the server only treats a property as an
+    extraction target when a non-empty hint is present (``SchemaBuilder.cs``
+    only creates the Extracted target when the hint is non-empty), so an
+    empty or blank hint would be silently dropped server-side. This factory
+    rejects that case up front.
+
+    Args:
+        hint: the extraction hint guiding the Ollama prompt. Required;
+            must not be blank.
+        description: human-readable description of the field.
+    """
+    if hint is None or not hint.strip():
+        raise ValueError(
+            "iverson_extracted() requires a non-blank extraction hint; the "
+            "server treats an empty hint as \"not an extraction target\" and "
+            "would silently drop it."
+        )
+    return FieldMeta(kind="extracted", extract_hint=hint, description=description)
 
 
 def many_to_one(type_name: str) -> FieldMeta:
@@ -165,11 +225,14 @@ def iverson_entity(cls: type | None = None, *, description: str = ""):
     search_keys: list[tuple[str, int]] = []
     large_fields: list[str] = []
     embedding_fields: list[str] = []
-    chunk_fields: list[tuple[str, int, int]] = []
+    chunk_fields: list[tuple[str, int, int, bool]] = []
     relations: list[dict] = []
     plain_fields: list[str] = []
     metadata_fields: list[str] = []
     descriptions: dict[str, str] = {}
+    summary_fields: list[str] = []
+    keywords_fields: list[str] = []
+    extracted_fields: dict[str, str] = {}
 
     for field_name, _type_hint in annotations.items():
         default = getattr(cls, field_name, None)
@@ -197,7 +260,16 @@ def iverson_entity(cls: type | None = None, *, description: str = ""):
                 embedding_fields.append(field_name)
                 plain_fields.append(field_name)
             elif meta.kind == "chunk":
-                chunk_fields.append((field_name, meta.max_tokens, meta.overlap))
+                chunk_fields.append((field_name, meta.max_tokens, meta.overlap, meta.contextual))
+                plain_fields.append(field_name)
+            elif meta.kind == "summary":
+                summary_fields.append(field_name)
+                plain_fields.append(field_name)
+            elif meta.kind == "keywords":
+                keywords_fields.append(field_name)
+                plain_fields.append(field_name)
+            elif meta.kind == "extracted":
+                extracted_fields[field_name] = meta.extract_hint
                 plain_fields.append(field_name)
             elif meta.kind in _RELATION_KINDS:
                 relations.append({
@@ -224,6 +296,9 @@ def iverson_entity(cls: type | None = None, *, description: str = ""):
         "metadata_fields": metadata_fields,
         "descriptions": descriptions,
         "description": description,
+        "summary_fields": summary_fields,
+        "keywords_fields": keywords_fields,
+        "extracted_fields": extracted_fields,
     }
 
     return cls

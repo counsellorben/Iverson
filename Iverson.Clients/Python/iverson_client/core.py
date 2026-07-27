@@ -134,10 +134,13 @@ class SchemaRegistrar:
         search_keys_by_field = {f: o for f, o in meta["search_keys"]}
         large_fields_set = set(meta["large_fields"])
         embedding_fields_set = set(meta["embedding_fields"])
-        chunk_fields_by_name = {f: (mt, ov) for f, mt, ov in meta["chunk_fields"]}
+        chunk_fields_by_name = {f: (mt, ov, ctx) for f, mt, ov, ctx in meta["chunk_fields"]}
         relation_fields = {r["field"] for r in meta["relations"]}
         metadata_fields_set = set(meta.get("metadata_fields", []))
         descriptions_by_field = meta.get("descriptions", {})
+        summary_fields_set = set(meta.get("summary_fields", []))
+        keywords_fields_set = set(meta.get("keywords_fields", []))
+        extracted_fields_by_name = meta.get("extracted_fields", {})
 
         properties: list[mapping_pb.PropertyDescriptor] = []
         for field_name in meta["fields"]:
@@ -146,7 +149,9 @@ class SchemaRegistrar:
             type_hint = annotations.get(field_name)
             clr_type = _python_type_to_clr(type_hint)
             is_chunk = field_name in chunk_fields_by_name
-            chunk_max_tokens, chunk_overlap = chunk_fields_by_name.get(field_name, (0, 0))
+            chunk_max_tokens, chunk_overlap, chunk_contextual = chunk_fields_by_name.get(
+                field_name, (0, 0, False)
+            )
             prop = mapping_pb.PropertyDescriptor(
                 name=_to_pascal_case(field_name),
                 clr_type=clr_type,
@@ -166,6 +171,10 @@ class SchemaRegistrar:
                 chunk_overlap=chunk_overlap,
                 chunk_model_id="",
                 chunk_vector_dim=0,
+                chunk_contextual=chunk_contextual,
+                is_summary_target=(field_name in summary_fields_set),
+                is_keywords_target=(field_name in keywords_fields_set),
+                extract_hint=extracted_fields_by_name.get(field_name, ""),
             )
             properties.append(prop)
 
