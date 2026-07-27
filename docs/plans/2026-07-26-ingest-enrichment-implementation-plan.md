@@ -90,6 +90,7 @@ Newly introduced by this plan and verified at plan-write time against the `metad
 | P20 | Consumer impact | Exactly one implementer each of `IEntityRepository` and `IOutboxWriter` | `EntityRepository.cs:3`; `OutboxWriter.cs:13`. No hand-written fakes — tests substitute the interfaces |
 | P21 | Consumer impact | One construction site for `IntelligenceStoreConsumer` | `IntelligenceStoreConsumerTests.BuildSut()` at `:72-81` (target-typed `new`); `Program.cs:240` resolves via DI |
 | P22 | Consumer impact | `SchemaDescriptor` additions are additive | uses `{ get; init; }` members, not positional params — unlike P19 |
+| P23 | Signature | A mutating repository method joins a caller's transaction by taking `IDbTransactionContext` as its **first** parameter | `IRecordStoreRoles.cs:55` — `DeleteAsync(IDbTransactionContext tx, TableSchema schema, string key, bool tenantScoped = false, string? tenantId = null)`; the four `Fetch*` methods take no `tx` and run on their own connection via `IRecordStoreQueryExecutor` |
 
 ## Tasks
 
@@ -219,7 +220,15 @@ git commit -m "feat(enrichment): add Ollama generative service with its own name
 
 - [ ] **Step 1: `UpdateColumnsAsync` on `IEntityRepository`**
 
-Add to the interface (`IRecordStoreRoles.cs:49-56`) and implement in `EntityRepository`. Issues `UPDATE "<table>" SET "col" = @p... WHERE "<key>" = @Key` over only the supplied columns. Column names come from the registry, never from client input — interpolate them the way the existing repository code does, and parameterize the values. Exactly one implementer exists (P20), so no fakes need updating.
+Add to the interface (`IRecordStoreRoles.cs:49-56`) and implement in `EntityRepository`:
+```csharp
+Task UpdateColumnsAsync(
+    IDbTransactionContext tx, TableSchema schema, string key,
+    IReadOnlyDictionary<string, object?> columns);
+```
+The `IDbTransactionContext` first parameter is **mandatory** and matches `DeleteAsync`'s shape at `IRecordStoreRoles.cs:55` — it is what lets the update join the transaction Task 4 Step 5 opens. Without it the statement runs on its own connection, outside both the tenant scope and the atomic commit. Tenant scoping comes from the enclosing `EnterTenantScopeAsync`, so no `tenantScoped`/`tenantId` parameters are needed here.
+
+Issues `UPDATE "<table>" SET "col" = @p... WHERE "<key>" = @Key` over only the supplied columns. Column names come from the registry, never from client input — interpolate them the way the existing repository code does, and parameterize the values. Exactly one implementer exists (P20), so no fakes need updating.
 
 - [ ] **Step 2: Tx-scoped, non-delete outbox enqueue**
 
@@ -270,13 +279,16 @@ Following `IntelligenceStoreConsumerTests`' fixture style:
 - Changing an `[IversonExtracted]` hint (with source text untouched) → does re-enrich.
 - Targeted update preserves a concurrent client edit to a non-enrichment column.
 - Null tenant → object skipped, **no state row written**.
+- Delete removes the state row, sourcing tenant from the pre-delete payload snapshot; a delete-then-recreate with a client-supplied key enriches rather than inheriting the stale hash.
 - LLM failure → object intact and unenriched, no `PoisonMessageException`.
 - The transaction exits tenant scope before the state and outbox writes.
 - `Enrichment__Enabled=false` → consumer does nothing.
 
 - [ ] **Step 2: Consumer skeleton**
 
-`BackgroundService`, group id `iverson.consumer.enrichment`, subscribing to `EntityTopics.Events` via `ConsumerResilience.RunWithRestartAsync` (P8) — same shape as the two existing consumers. Gate on `schema.EnrichmentTargets.Count > 0`. Handle `Deleted` by removing the state row.
+`BackgroundService`, group id `iverson.consumer.enrichment`, subscribing to `EntityTopics.Events` via `ConsumerResilience.RunWithRestartAsync` (P8) — same shape as the two existing consumers. Gate on `schema.EnrichmentTargets.Count > 0`.
+
+Handle `Deleted` by removing the state row. The state row's key includes `tenant_id`, and by delete-consumption time the Postgres row is gone — `IntelligenceStoreConsumer.cs:248-250` documents this ("there is no authoritative row left to re-fetch (unlike `HandleAsync`)"). So the tenant value must come from the pre-delete snapshot in `ev.PayloadJson`, the way `HandleDeleteAsync` sources it at `:262`; skip the state delete when the snapshot carries no tenant value. Leaving the row behind is not safe: `ObjectMappingGrpcService.cs:127-132` honours a client-supplied key, so a delete-then-recreate of the same key would hash equal against the orphan row and be skipped forever.
 
 - [ ] **Step 3: Fetch, hash, compare**
 
@@ -332,7 +344,7 @@ git commit -m "feat(enrichment): add EnrichmentConsumer with specification-inclu
 
 - [ ] **Step 1: Tests**
 
-Add to `IntelligenceStoreConsumerTests`: a `Contextual = true` chunk field embeds prefixed text while the payload's `text` key stays the raw chunk; a `Contextual = false` field is unchanged; with no summary present, the prefix falls back to truncated parent text.
+Add to `IntelligenceStoreConsumerTests`: a `Contextual = true` chunk field embeds prefixed text while the payload's `text` key stays the raw chunk; a `Contextual = false` field is unchanged; with no summary present, the prefix falls back to truncated parent text; with the enrichment service throwing, chunks still land in Qdrant with unprefixed text; with `Enrichment__Enabled=false`, no generative call is made at all.
 
 - [ ] **Step 2: Inject `IEnrichmentService`**
 
@@ -341,6 +353,10 @@ Add the constructor parameter. Exactly one construction site needs updating — 
 - [ ] **Step 3: Generate prefixes in the chunk loop**
 
 In the chunk block (`IntelligenceStoreConsumer.cs:173-225`), when `cf.Contextual`, generate a short situating sentence per chunk and prepend it **to the text passed to `EmbedAsync` only**. The chunk payload is unchanged — `text` stays the raw chunk, and the prefix is **not** stored under any key, since `SearchChunks` reads only `text` and `parent_id`.
+
+Skip prefix generation entirely when `Enrichment__Enabled` is false, embedding the raw chunk text. The flag is a global kill-switch: no generative call is made from anywhere when it is off. A `Contextual = true` type then gets non-contextual embeddings, and because `ComputeChunkPointId` is deterministic those persist until something re-triggers ingestion for the object.
+
+When enabled, a failed generation must be caught **per chunk**, logged, and fall back to embedding the unprefixed text. Spec §6 requires that enrichment never block or fail an object's projection, and this call sits inside `HandleAsync`'s awaited chunk block (`IntelligenceStoreConsumer.cs:173-225`) — an uncaught exception here would stop the object reaching Qdrant at all, not merely leave it unenriched.
 
 Condition the prompt on the object's summary, located via the type's `EnrichmentTargets`. When absent — which is always true on first ingest — fall back to a truncated slice of the parent text. The enricher's republish then drives a second pass that regenerates prefixes summary-conditioned; `ComputeChunkPointId` is deterministic, so it overwrites rather than duplicating.
 
