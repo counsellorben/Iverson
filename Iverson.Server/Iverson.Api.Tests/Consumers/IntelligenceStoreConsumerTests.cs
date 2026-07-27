@@ -9,6 +9,7 @@ using Iverson.Events;
 using Iverson.Sql;
 using Iverson.Vector;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
 using NSubstitute;
 using Qdrant.Client.Grpc;
 using Xunit;
@@ -24,6 +25,8 @@ public class IntelligenceStoreConsumerTests
     private readonly IRecordStoreQueryExecutor _sql;
     private readonly IEntityRepository _entities;
     private readonly SchemaRegistry _registry;
+    private readonly IEnrichmentService _enrichment;
+    private readonly EnrichmentServiceOptions _enrichmentOptions = new();
 
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
@@ -54,6 +57,10 @@ public class IntelligenceStoreConsumerTests
         _embedding.EmbedAsync(Arg.Any<string>(), Arg.Any<CancellationToken>())
                   .Returns(new float[768]);
 
+        _enrichment = Substitute.For<IEnrichmentService>();
+        _enrichment.GenerateAsync(Arg.Any<string>(), Arg.Any<CancellationToken>())
+                   .Returns("Situating sentence.");
+
         _entities = Substitute.For<IEntityRepository>();
         // Default: authoritative row agrees with the event payload's owner value used across
         // the pre-existing (non-adversarial) tests in this file. TenantId is included because
@@ -78,6 +85,8 @@ public class IntelligenceStoreConsumerTests
             _registry,
             _entities,
             new IntelligenceTenantScope("test-signing-key-0123456789abcdef"),
+            _enrichment,
+            Options.Create(_enrichmentOptions),
             NullLogger<IntelligenceStoreConsumer>.Instance);
 
     [Fact]
@@ -992,6 +1001,193 @@ public class IntelligenceStoreConsumerTests
         capturedPayload.Should().NotBeNull();
         capturedPayload!["ownerId"].Should().Be(realOwner);
         capturedPayload["ownerId"].Should().NotBe(forgedOwner);
+    }
+
+    // ── Contextual chunk prefixes ─────────────────────────────────────────────
+
+    // maxTokens = 1000 → 4000-char window, so ContextualBody below is a single chunk and every
+    // assertion about "the prompt" / "the embedded text" is deterministic.
+    private static SchemaDescriptor ContextualDocSchema(
+        bool contextual,
+        bool withSummaryTarget) => new()
+    {
+        TypeName       = "Doc",
+        TableName      = "docs",
+        CollectionName = "docs",
+        KeyColumn      = new ColumnDescriptor("Id", "uuid", false),
+        ScalarColumns  = [new ColumnDescriptor("Body", "text", false),
+                          new ColumnDescriptor("Summary", "text", true)],
+        FkColumns      = [],
+        VectorFields   = [],
+        ChunkFields    = [new ChunkDescriptor("Body", 1000, 0, "nomic-embed-text", 768, contextual)],
+        Relations      = [],
+        TenantColumn   = "TenantId",
+        EnrichmentTargets = withSummaryTarget
+            ? [new EnrichmentTarget("Summary", EnrichmentKind.Summary, null)]
+            : []
+    };
+
+    // 2500 chars — longer than the 2000-char parent-text fallback slice, shorter than one chunk.
+    private static readonly string ContextualBody = "B" + new string('a', 2498) + "Z";
+
+    private List<string> CaptureEnrichmentPrompts(string generated = "Situating sentence.")
+    {
+        var prompts = new List<string>();
+        _enrichment.GenerateAsync(Arg.Any<string>(), Arg.Any<CancellationToken>())
+                   .Returns(ci =>
+                   {
+                       lock (prompts) prompts.Add((string)ci[0]);
+                       return Task.FromResult(generated);
+                   });
+        return prompts;
+    }
+
+    private (List<string> EmbeddedTexts, List<IReadOnlyDictionary<string, object>?> Payloads) CaptureChunkWrites()
+    {
+        var embedded = new List<string>();
+        _embedding.EmbedAsync(Arg.Any<string>(), Arg.Any<CancellationToken>())
+                  .Returns(ci =>
+                  {
+                      lock (embedded) embedded.Add((string)ci[0]);
+                      return Task.FromResult(new float[768]);
+                  });
+
+        var payloads = new List<IReadOnlyDictionary<string, object>?>();
+        _vectorWrite
+            .UpsertNamedAsync(
+                "docs_chunks_test-tenant",
+                Arg.Any<ulong>(),
+                Arg.Any<IReadOnlyDictionary<string, float[]>>(),
+                Arg.Any<IReadOnlyDictionary<string, object>?>())
+            .Returns(ci =>
+            {
+                lock (payloads) payloads.Add((IReadOnlyDictionary<string, object>?)ci[3]);
+                return Task.CompletedTask;
+            });
+
+        return (embedded, payloads);
+    }
+
+    [Fact]
+    public async Task HandleCreated_ContextualChunkField_EmbedsPrefixedTextButStoresRawChunkText()
+    {
+        await _registry.RegisterAsync(ContextualDocSchema(contextual: true, withSummaryTarget: true));
+        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>())
+                 .Returns("""{"Summary":"The doc is about widgets.","TenantId":"test-tenant"}""");
+
+        var prompts = CaptureEnrichmentPrompts();
+        var (embedded, payloads) = CaptureChunkWrites();
+
+        var ev = DocEvent($$$"""{"Body":"{{{ContextualBody}}}","TenantId":"test-tenant"}""", "trace-contextual");
+        await BuildSut().HandleAsync(ev.Key, Serialize(ev), CancellationToken.None);
+
+        // The prompt is conditioned on the object's summary, located via EnrichmentTargets.
+        prompts.Should().ContainSingle();
+        prompts[0].Should().Be(string.Format(
+            EnrichmentPrompts.ChunkContext, "The doc is about widgets.", ContextualBody));
+
+        // The embedded text carries the generated prefix …
+        embedded.Should().ContainSingle();
+        embedded[0].Should().Be("Situating sentence.\n\n" + ContextualBody);
+
+        // … but the stored payload's "text" key stays the raw, unprefixed chunk, and the
+        // prefix is not persisted under any other key.
+        payloads.Should().ContainSingle();
+        payloads[0]!["text"].Should().Be(ContextualBody);
+        payloads[0]!.Values.Any(v => v is string s && s.Contains("Situating sentence."))
+                    .Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task HandleCreated_NonContextualChunkField_EmbedsRawTextAndMakesNoGenerativeCall()
+    {
+        await _registry.RegisterAsync(ContextualDocSchema(contextual: false, withSummaryTarget: true));
+        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>())
+                 .Returns("""{"Summary":"The doc is about widgets.","TenantId":"test-tenant"}""");
+
+        var (embedded, payloads) = CaptureChunkWrites();
+
+        var ev = DocEvent($$$"""{"Body":"{{{ContextualBody}}}","TenantId":"test-tenant"}""", "trace-non-contextual");
+        await BuildSut().HandleAsync(ev.Key, Serialize(ev), CancellationToken.None);
+
+        await _enrichment.DidNotReceive().GenerateAsync(Arg.Any<string>(), Arg.Any<CancellationToken>());
+        embedded.Should().ContainSingle().Which.Should().Be(ContextualBody);
+        payloads.Should().ContainSingle();
+        payloads[0]!["text"].Should().Be(ContextualBody);
+    }
+
+    [Fact]
+    public async Task HandleCreated_ContextualChunkFieldWithNoSummary_FallsBackToTruncatedParentText()
+    {
+        // No Summary enrichment target at all — the first-ingest case, before the enricher's
+        // republish drives a second, summary-conditioned pass.
+        await _registry.RegisterAsync(ContextualDocSchema(contextual: true, withSummaryTarget: false));
+
+        var prompts = CaptureEnrichmentPrompts();
+        CaptureChunkWrites();
+
+        var ev = DocEvent($$$"""{"Body":"{{{ContextualBody}}}","TenantId":"test-tenant"}""", "trace-no-summary");
+        await BuildSut().HandleAsync(ev.Key, Serialize(ev), CancellationToken.None);
+
+        prompts.Should().ContainSingle();
+        prompts[0].Should().Be(string.Format(
+            EnrichmentPrompts.ChunkContext, ContextualBody[..2000], ContextualBody));
+    }
+
+    [Fact]
+    public async Task HandleCreated_ContextualChunkFieldWithSummaryColumnNull_FallsBackToTruncatedParentText()
+    {
+        // A Summary target is declared but the column is still null (also first ingest).
+        await _registry.RegisterAsync(ContextualDocSchema(contextual: true, withSummaryTarget: true));
+        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>())
+                 .Returns("""{"Summary":null,"TenantId":"test-tenant"}""");
+
+        var prompts = CaptureEnrichmentPrompts();
+        CaptureChunkWrites();
+
+        var ev = DocEvent($$$"""{"Body":"{{{ContextualBody}}}","TenantId":"test-tenant"}""", "trace-null-summary");
+        await BuildSut().HandleAsync(ev.Key, Serialize(ev), CancellationToken.None);
+
+        prompts.Should().ContainSingle();
+        prompts[0].Should().Be(string.Format(
+            EnrichmentPrompts.ChunkContext, ContextualBody[..2000], ContextualBody));
+    }
+
+    [Fact]
+    public async Task HandleCreated_ContextualChunkFieldAndGenerationThrows_StillUpsertsChunkWithUnprefixedText()
+    {
+        // Spec §6: enrichment must never block or fail an object's projection.
+        await _registry.RegisterAsync(ContextualDocSchema(contextual: true, withSummaryTarget: true));
+
+        _enrichment.GenerateAsync(Arg.Any<string>(), Arg.Any<CancellationToken>())
+                   .Returns<string>(_ => throw new Exception("Ollama down"));
+
+        var (embedded, payloads) = CaptureChunkWrites();
+
+        var ev = DocEvent($$$"""{"Body":"{{{ContextualBody}}}","TenantId":"test-tenant"}""", "trace-gen-throws");
+        var act = async () => await BuildSut().HandleAsync(ev.Key, Serialize(ev), CancellationToken.None);
+
+        await act.Should().NotThrowAsync();
+        embedded.Should().ContainSingle().Which.Should().Be(ContextualBody);
+        payloads.Should().ContainSingle();
+        payloads[0]!["text"].Should().Be(ContextualBody);
+    }
+
+    [Fact]
+    public async Task HandleCreated_ContextualChunkFieldWithEnrichmentDisabled_MakesNoGenerativeCall()
+    {
+        _enrichmentOptions.Enabled = false; // Enrichment__Enabled global kill-switch
+        await _registry.RegisterAsync(ContextualDocSchema(contextual: true, withSummaryTarget: true));
+
+        var (embedded, payloads) = CaptureChunkWrites();
+
+        var ev = DocEvent($$$"""{"Body":"{{{ContextualBody}}}","TenantId":"test-tenant"}""", "trace-disabled");
+        await BuildSut().HandleAsync(ev.Key, Serialize(ev), CancellationToken.None);
+
+        await _enrichment.DidNotReceive().GenerateAsync(Arg.Any<string>(), Arg.Any<CancellationToken>());
+        embedded.Should().ContainSingle().Which.Should().Be(ContextualBody);
+        payloads.Should().ContainSingle();
+        payloads[0]!["text"].Should().Be(ContextualBody);
     }
 
     // A metadata column whose camelCase name collides with a reserved chunk payload key is now

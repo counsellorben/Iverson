@@ -5,6 +5,7 @@ using Iverson.Embeddings;
 using Iverson.Events;
 using Iverson.Sql;
 using Iverson.Vector;
+using Microsoft.Extensions.Options;
 using Qdrant.Client;
 
 namespace Iverson.Api.Consumers;
@@ -30,9 +31,16 @@ public sealed class IntelligenceStoreConsumer(
     SchemaRegistry registry,
     IEntityRepository entities,
     IntelligenceTenantScope tenantScope,
+    IEnrichmentService enrichment,
+    IOptions<EnrichmentServiceOptions> enrichmentOptions,
     ILogger<IntelligenceStoreConsumer> logger) : BackgroundService
 {
     private const string GroupId = "iverson.consumer.intelligence";
+
+    // How much of the parent text stands in for the object's summary when no summary exists
+    // yet — which is always the case on first ingest, before the enricher's republish drives a
+    // second, summary-conditioned pass.
+    private const int ParentTextContextChars = 2000;
 
     // Tracks which collections have been ensured this session
     private readonly HashSet<string> _ensuredCollections = [];
@@ -168,6 +176,15 @@ public sealed class IntelligenceStoreConsumer(
             if (authoritativeTenantValue is not null)
                 await EnsureCollectionAsync(SchemaBuilder.ToChunkCollectionSchema(schema) with { CollectionName = chunksCollectionName });
 
+            // Contextual prefixes are conditioned on the object's generated summary. It lives on
+            // the authoritative row, so it is fetched at most once per event and only when some
+            // chunk field actually asks for it and the global kill-switch is on.
+            var contextualEnabled = enrichmentOptions.Value.Enabled
+                                 && schema.ChunkFields.Any(cf => cf.Contextual);
+            var summary = contextualEnabled
+                ? await FetchSummaryAsync(schema, ev.Key, ct)
+                : null;
+
             using (RequestHeaders.Use("api-key", tenantScope.MintScopedApiKey(chunksCollectionName, readOnly: false)))
             {
                 foreach (var cf in schema.ChunkFields)
@@ -178,10 +195,19 @@ public sealed class IntelligenceStoreConsumer(
                     var vectorName = $"{cf.PropertyName.ToSnakeCase()}_vector";
                     var chunks     = SplitIntoChunks(text, cf.MaxTokens, cf.Overlap).ToList();
 
+                    // No summary yet (always so on first ingest) — stand in a truncated slice of
+                    // the parent text so the excerpt is still situated in *something*.
+                    var documentContext = contextualEnabled && cf.Contextual
+                        ? summary ?? text[..Math.Min(text.Length, ParentTextContextChars)]
+                        : null;
+
                     var chunkTasks = chunks.Select(async chunk =>
                     {
                         var (chunkText, chunkIndex) = chunk;
-                        var chunkVector = await embedding.EmbedAsync(chunkText, ct);
+                        var textToEmbed = documentContext is not null
+                            ? await PrefixWithContextAsync(documentContext, chunkText, schema.TypeName, ev.Key, ct)
+                            : chunkText;
+                        var chunkVector = await embedding.EmbedAsync(textToEmbed, ct);
                         var chunkId     = ComputeChunkPointId(pointId, cf.PropertyName, chunkIndex);
                         return (chunkVector, chunkId, chunkText, chunkIndex);
                     }).ToList();
@@ -304,6 +330,58 @@ public sealed class IntelligenceStoreConsumer(
 
         using var doc = JsonDocument.Parse(rowJson);
         return ExtractString(doc.RootElement, ownerField);
+    }
+
+    // Locates the object's summary via the type's EnrichmentTargets and reads it out of the
+    // authoritative row. Returns null when the type declares no summary target, when the row is
+    // gone, or when the column has not been filled in yet — every one of which simply means the
+    // caller falls back to the parent-text context.
+    private async Task<string?> FetchSummaryAsync(SchemaDescriptor schema, string key, CancellationToken ct)
+    {
+        var summaryTarget = schema.EnrichmentTargets
+            .FirstOrDefault(t => t.Kind == EnrichmentKind.Summary);
+        if (summaryTarget is null) return null;
+
+        try
+        {
+            var rowJson = await entities.FetchByKeyAsync(SchemaBuilder.ToTableSchema(schema), key);
+            if (rowJson is null) return null;
+
+            using var doc = JsonDocument.Parse(rowJson);
+            var summary = ExtractString(doc.RootElement, summaryTarget.ColumnName);
+            return string.IsNullOrWhiteSpace(summary) ? null : summary;
+        }
+        catch (Exception ex)
+        {
+            // Same best-effort contract as the generation call itself: an unavailable summary
+            // must never cost the object its chunks.
+            logger.LogWarning(ex,
+                "[Intelligence] Could not read summary for {Type}:{Key} — using parent-text context.",
+                schema.TypeName.SanitizeForLog(), key);
+            return null;
+        }
+    }
+
+    // Generates the situating sentence and prepends it to the chunk text that gets embedded.
+    // Caught per chunk (spec §6): a generation failure must leave the object's projection intact,
+    // and must not cost the *other* chunks of the same field their prefixes.
+    private async Task<string> PrefixWithContextAsync(
+        string documentContext, string chunkText, string typeName, string key, CancellationToken ct)
+    {
+        try
+        {
+            var prefix = await enrichment.GenerateAsync(
+                string.Format(EnrichmentPrompts.ChunkContext, documentContext, chunkText), ct);
+
+            return string.IsNullOrWhiteSpace(prefix) ? chunkText : $"{prefix.Trim()}\n\n{chunkText}";
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex,
+                "[Intelligence] Contextual prefix generation failed for {Type}:{Key} — embedding the chunk unprefixed.",
+                typeName.SanitizeForLog(), key);
+            return chunkText;
+        }
     }
 
     private async Task EnsureCollectionAsync(CollectionSchema collectionSchema)
