@@ -55,11 +55,13 @@ def _enrichment_kwargs(
 ) -> dict:
     """Validate and package the shared enrichment kwargs.
 
-    Reuses the blank-hint guard from ``iverson_extracted``: the server treats
-    an empty hint as "not an extraction target" and would silently drop it,
-    so a blank hint supplied via a kwarg must be rejected the same way.
+    This is the single home for the blank-hint guard: the server treats an
+    empty hint as "not an extraction target" and would silently drop it, so
+    a ``None`` or blank-but-non-empty hint must be rejected the same way no
+    matter which factory it arrives through. An empty string (``""``) is the
+    "not declared" default and must NOT raise.
     """
-    if extract_hint and not extract_hint.strip():
+    if extract_hint is None or (extract_hint != "" and not extract_hint.strip()):
         raise ValueError(
             f"{caller}() requires a non-blank extraction hint; the "
             "server treats an empty hint as \"not an extraction target\" and "
@@ -238,13 +240,12 @@ def iverson_extracted(hint: str, description: str = "") -> FieldMeta:
             must not be blank.
         description: human-readable description of the field.
     """
-    if hint is None or not hint.strip():
-        raise ValueError(
-            "iverson_extracted() requires a non-blank extraction hint; the "
-            "server treats an empty hint as \"not an extraction target\" and "
-            "would silently drop it."
-        )
-    return FieldMeta(kind="", extract_hint=hint, description=description)
+    # Unlike the optional `extract_hint` kwarg on other factories (where ""
+    # means "not declared"), `hint` here is mandatory — an empty string is a
+    # blank declaration, not an opt-out — so normalize it to None and let the
+    # shared helper's None-or-blank guard reject it via the one shared message.
+    kwargs = _enrichment_kwargs(False, False, hint or None, "iverson_extracted")
+    return FieldMeta(kind="", description=description, **kwargs)
 
 
 def iverson_tenant(description: str = "") -> FieldMeta:

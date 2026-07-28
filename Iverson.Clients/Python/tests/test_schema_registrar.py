@@ -390,6 +390,10 @@ class TestEnrichmentTargets:
         with pytest.raises(ValueError, match="extract"):
             iverson_description("desc", extract_hint="   ")
 
+    def test_none_extract_hint_kwarg_rejected(self):
+        with pytest.raises(ValueError, match="extract"):
+            iverson_metadata(extract_hint=None)
+
 
 class TestTenantField:
     def test_tenant_field_name_on_descriptor(self):
