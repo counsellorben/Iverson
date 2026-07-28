@@ -102,18 +102,39 @@ the existing method's shape — same `Telemetry.Source.StartActivity` pattern, s
 `NamedVectors` construction. Qdrant's documented semantics are that unspecified vectors are
 kept unchanged, so the object's own embeddings and payload survive the update.
 
-After the chunk loop, if any centroids were computed:
+After the chunk loop, if any centroids were computed, the write branches on whether an
+object point was **actually written for this event** — not on schema shape. The object
+block sets a local flag once its upsert succeeds:
 
-- **the object block ran** (`VectorFields.Count > 0`) → `UpdateNamedVectorsAsync`;
-- **it did not** (a chunks-only entity) → ensure the object collection and
-  `UpsertNamedAsync` a new point carrying the centroids plus the object payload.
+- **the object point was written** → `UpdateNamedVectorsAsync`;
+- **it was not** → `UpsertNamedAsync` a new point carrying the centroids plus the object
+  payload.
 
-The second branch is mandatory, not a nicety. Qdrant's update requires that all given
-points exist, so an update against a chunks-only entity would error outright. Such entities
-are reachable: `StoreTargeting.cs:42-43` routes to the Intelligence store when there are
-vector fields **or** chunk fields, but the object-point write is gated on
-`VectorFields.Count > 0` (`:119`), so an entity with a chunked `Body` and no
-`[IversonEmbedding]` field has no object point today.
+Branching on `VectorFields.Count > 0` would be wrong. That opens the outer block (`:119`),
+but the point write, the payload construction and the object collection's
+`EnsureCollectionAsync` all sit inside a second, nested guard, `if (namedVectors.Count > 0)`
+(`:138`), and `namedVectors` is fed only by vector fields whose text is non-blank (`:126`).
+An entity declaring `[IversonEmbedding] Title` and `[IversonChunk] Body`, ingesting an event
+where `Title` is empty, therefore writes no object point despite declaring a vector field.
+
+Two distinct cases reach the second branch, and both take it: a chunks-only entity, which
+has no object point by construction, and an entity whose declared vector fields are all
+blank on this event. Both produce an object point carrying centroids and payload but no
+`_vector` entries; a later event with non-blank text adds those. A named-vector search on
+`title_vector` does not match such a point, which is the correct outcome. This creates
+object points for events that produce none today — accepted deliberately, so that a
+centroid is always produced whenever chunks exist rather than being silently conditional on
+an unrelated field's emptiness.
+
+The second branch is mandatory, not a nicety: Qdrant's update requires that all given points
+exist, so an update against either case would error outright. Chunks-only entities are
+reachable — `StoreTargeting.cs:42-43` routes to the Intelligence store when there are vector
+fields **or** chunk fields.
+
+Because `EnsureCollectionAsync` for the object collection also sits inside the `:138` guard,
+the centroid path must ensure the object collection itself before writing, on both branches,
+rather than relying on the object block having done it. Otherwise the update could target a
+collection that was never migrated to carry the `_centroid` vectors.
 
 To serve both branches, the object payload construction at `:139-158` moves into a private
 helper. Both paths sit under the existing `authoritativeTenantValue is not null` condition
@@ -199,6 +220,12 @@ Checked against the codebase at `main@24a7fef` before this spec was written.
     affect.
 15. `StoreTargeting.cs:42-43` routes to the Intelligence store on vector **or** chunk
     fields, so chunks-only entities reach the consumer.
+16. The object point write, its payload construction, and the object collection's
+    `EnsureCollectionAsync` all sit inside `if (namedVectors.Count > 0)`
+    (`IntelligenceStoreConsumer.cs:138`), nested within
+    `if (schema.VectorFields.Count > 0)` (`:119`). `namedVectors` is populated only from
+    vector fields with non-blank text (`:126`), so declared vector fields do **not**
+    guarantee an object point for a given event.
 
 ## Out of scope
 
