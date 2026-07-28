@@ -1,6 +1,7 @@
 package iverson_test
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -369,5 +370,23 @@ func TestInspectType_DescriptionsAndMetadata(t *testing.T) {
 	}
 	if got := byName["Untagged"].Description; got != "" {
 		t.Errorf("expected empty description, got %q", got)
+	}
+}
+
+// A tenant marker on a relation field is not a tenant declaration: relations
+// never reach meta.Fields, which is where the registrar looks the tenant field
+// up, so accepting it would put an empty TenantField on the wire.
+type relationTenantFixture struct {
+	Id       string `iverson:"key"`
+	AuthorId string `iverson:"many_to_one:Author" iverson_tenant:"true"`
+}
+
+func TestInspectType_TenantOnRelationRejected(t *testing.T) {
+	_, err := iverson.InspectType(relationTenantFixture{})
+	if err == nil {
+		t.Fatal("expected the zero-marker error for a tenant tag on a relation field")
+	}
+	if !strings.Contains(err.Error(), "relationTenantFixture") {
+		t.Errorf("expected error to name the type, got %q", err.Error())
 	}
 }

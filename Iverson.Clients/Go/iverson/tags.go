@@ -232,9 +232,6 @@ func InspectType(v interface{}) (EntityMeta, error) {
 		fm.Description = sf.Tag.Get(DescriptionTagKey)
 		fm.Metadata = sf.Tag.Get(MetadataTagKey) == "true"
 		fm.Tenant = sf.Tag.Get(TenantTagKey) == "true"
-		if fm.Tenant {
-			tenantFields = append(tenantFields, sf.Name)
-		}
 		fm.IsSummaryTarget = sf.Tag.Get(SummaryTagKey) == "true"
 		fm.IsKeywordsTarget = sf.Tag.Get(KeywordsTagKey) == "true"
 
@@ -252,8 +249,14 @@ func InspectType(v interface{}) (EntityMeta, error) {
 
 		switch fm.Kind {
 		case KindManyToOne, KindManyToMany, KindOneToMany, KindOneToOne:
+			// Relations never reach meta.Fields, which is where the tenant field
+			// is looked up on registration — so a tenant marker on a relation is
+			// not a tenant declaration at all and must not satisfy the check.
 			meta.Relations = append(meta.Relations, fm)
 		default:
+			if fm.Tenant {
+				tenantFields = append(tenantFields, sf.Name)
+			}
 			meta.Fields = append(meta.Fields, fm)
 		}
 	}
