@@ -6,6 +6,9 @@ using Iverson.Api.Tests.Helpers;
 using Iverson.Events;
 using Iverson.Sql;
 using Iverson.StarRocks;
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging.Abstractions;
 using NSubstitute;
 using Xunit;
@@ -413,5 +416,37 @@ public class EngagementStoreConsumerTests
             Arg.Any<EngagementTableSchema>(),
             Arg.Any<string>(),
             Arg.Any<string>());
+    }
+
+    // ── Registration gate ─────────────────────────────────────────────────────
+
+    [Theory]
+    [InlineData("false", false)]
+    [InlineData("true", true)]
+    public void AddEngagementStoreConsumer_GatesTheHostedServiceOnEnabledFlag(string flag, bool expectHostedService)
+    {
+        var services = new ServiceCollection();
+        var config = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?> { ["Engagement:Enabled"] = flag })
+            .Build();
+
+        services.AddEngagementStoreConsumer(config, isWorker: true);
+
+        var hasConsumer = services.Any(d =>
+            d.ServiceType == typeof(IHostedService) && d.ImplementationType == typeof(EngagementStoreConsumer));
+        hasConsumer.Should().Be(expectHostedService);
+    }
+
+    [Fact]
+    public void AddEngagementStoreConsumer_InApiRole_DoesNotRegisterTheHostedService()
+    {
+        var services = new ServiceCollection();
+        var config = new ConfigurationBuilder().Build();
+
+        services.AddEngagementStoreConsumer(config, isWorker: false);
+
+        services.Any(d =>
+            d.ServiceType == typeof(IHostedService) &&
+            d.ImplementationType == typeof(EngagementStoreConsumer)).Should().BeFalse();
     }
 }

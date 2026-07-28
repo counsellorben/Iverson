@@ -18,6 +18,7 @@ using OpenTelemetry.Resources;
 using OpenTelemetry.Trace;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Authorization;
+using Microsoft.Extensions.Options;
 
 var builder = WebApplication.CreateBuilder(args);
 var cfg = builder.Configuration;
@@ -227,6 +228,8 @@ builder.Services.AddHttpClient("JaegerOtlpHttp", client =>
     client.BaseAddress = new Uri(cfg["Jaeger:OtlpHttpUrl"] ?? "http://iverson-jaeger:4318");
 });
 
+builder.Services.Configure<EngagementStoreOptions>(cfg.GetSection(EngagementStoreOptions.Section));
+
 builder.Services.AddEmbeddings(cfg);
 
 // AddEnrichment is unconditional (IEnrichmentService / IOptions<EnrichmentServiceOptions> are
@@ -241,9 +244,10 @@ builder.Services.AddEnrichmentPipeline(cfg, workloadRole == "worker");
 builder.Services.Configure<Microsoft.Extensions.Hosting.HostOptions>(o =>
     o.BackgroundServiceExceptionBehavior = Microsoft.Extensions.Hosting.BackgroundServiceExceptionBehavior.Ignore);
 
+builder.Services.AddEngagementStoreConsumer(cfg, workloadRole == "worker");
+
 if (workloadRole == "worker")
 {
-    builder.Services.AddHostedService<EngagementStoreConsumer>();
     builder.Services.AddHostedService<IntelligenceStoreConsumer>();
     builder.Services.AddHostedService<Iverson.Api.Reconciliation.DlqMonitorConsumer>();
     builder.Services.AddHostedService<Iverson.Api.Reconciliation.ReconciliationQueueWorker>();
@@ -288,7 +292,8 @@ app.MapGet("/health", async (
     IRecordStoreQueryExecutor db,
     IEngagementStoreHealthCheck sr,
     IVectorSchemaManager vector,
-    IEventProducer kafka) =>
+    IEventProducer kafka,
+    IOptions<EngagementStoreOptions> engagementOptions) =>
 {
     var pgTask     = db.QuerySingleOrDefaultAsync<int>("SELECT 1").ContinueWith(t => t.IsCompletedSuccessfully && t.Result == 1);
     var srTask     = sr.CheckHealthAsync();
@@ -299,15 +304,17 @@ app.MapGet("/health", async (
     await Task.WhenAll(pgTask, srTask, vectorTask, kafkaTask);
 
     var srStatus = await srTask;
+    var engagementEnabled = engagementOptions.Value.Enabled;
     var checks = new
     {
         postgres  = pgTask.Result,
-        starrocks = srStatus == EngagementHealthStatus.Healthy,
+        starrocks = engagementEnabled ? (object)(srStatus == EngagementHealthStatus.Healthy) : "disabled",
         qdrant    = vectorTask.Result,
         kafka     = kafkaTask.Result
     };
 
-    var readiness = ReadinessPolicy.Evaluate(checks.postgres, srStatus, checks.qdrant, checks.kafka);
+    var readiness = ReadinessPolicy.Evaluate(
+        pgTask.Result, srStatus, vectorTask.Result, kafkaTask.Result, engagementEnabled);
 
     return readiness.Ready
         ? Results.Ok(new { status = readiness.FullyHealthy ? "healthy" : "degraded", checks })

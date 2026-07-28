@@ -196,3 +196,20 @@ public sealed class EngagementStoreConsumer(
         PropertyNameCaseInsensitive = true
     };
 }
+
+/// <summary>
+/// The one place the Engagement__Enabled gate is expressed. This single gate covers engagement
+/// writes and StarRocks DDL, because <c>EnsureTenantProvisionedAsync</c> — the only place
+/// StarRocks tables are created — is called solely from this consumer.
+/// </summary>
+internal static class EngagementStoreRegistration
+{
+    internal static IServiceCollection AddEngagementStoreConsumer(
+        this IServiceCollection services, IConfiguration config, bool isWorker)
+    {
+        if (isWorker && config.GetValue($"{EngagementStoreOptions.Section}:Enabled", true))
+            services.AddHostedService<EngagementStoreConsumer>();
+
+        return services;
+    }
+}

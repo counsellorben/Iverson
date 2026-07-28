@@ -44,4 +44,24 @@ public class ReadinessPolicyTests
 
         result.Ready.Should().BeFalse();
     }
+
+    [Fact]
+    public void Evaluate_EngagementDisabled_UnhealthyStarRocksDoesNotBlockReadiness()
+    {
+        var result = ReadinessPolicy.Evaluate(
+            true, EngagementHealthStatus.Unhealthy, true, true, engagementEnabled: false);
+
+        result.Ready.Should().BeTrue();
+        result.FullyHealthy.Should().BeTrue();
+    }
+
+    [Fact]
+    public void Evaluate_EngagementDisabled_OtherDependenciesStillGateReadiness()
+    {
+        var result = ReadinessPolicy.Evaluate(
+            false, EngagementHealthStatus.Unhealthy, true, true, engagementEnabled: false);
+
+        result.Ready.Should().BeFalse();
+        result.FullyHealthy.Should().BeFalse();
+    }
 }
