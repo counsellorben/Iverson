@@ -80,10 +80,14 @@ public final class SchemaRegistrar {
         // Collect nav property field names (annotated with any relation annotation)
         Set<String> navFieldNames = new HashSet<>();
         Field keyField = null;
+        List<Field> tenantFields = new ArrayList<>();
 
         for (Field field : getAllFields(cls)) {
             if (field.getAnnotation(IversonKey.class) != null) {
                 keyField = field;
+            }
+            if (field.getAnnotation(IversonTenant.class) != null) {
+                tenantFields.add(field);
             }
             if (isRelationField(field)) {
                 navFieldNames.add(field.getName());
@@ -106,6 +110,8 @@ public final class SchemaRegistrar {
             if (pd != null) builder.addProperties(pd);
         }
 
+        builder.setTenantField(resolveTenantField(cls, tenantFields));
+
         // Relation descriptors
         for (Field field : getAllFields(cls)) {
             if (!isRelationField(field)) continue;
@@ -114,6 +120,28 @@ public final class SchemaRegistrar {
         }
 
         return builder.build();
+    }
+
+    private static String resolveTenantField(Class<?> cls, List<Field> tenantFields) {
+        if (tenantFields.isEmpty()) {
+            throw new IllegalArgumentException(
+                cls.getSimpleName() + " has no field annotated with @IversonTenant; the server " +
+                "requires every schema to declare a tenant boundary and will reject registration " +
+                "without one.");
+        }
+
+        if (tenantFields.size() > 1) {
+            StringBuilder names = new StringBuilder();
+            for (Field field : tenantFields) {
+                if (names.length() > 0) names.append(", ");
+                names.append(field.getName());
+            }
+            throw new IllegalArgumentException(
+                cls.getSimpleName() + " has multiple fields annotated with @IversonTenant (" +
+                names + "); exactly one field must carry the tenant marker.");
+        }
+
+        return StructConverter.toPascalCase(tenantFields.get(0).getName());
     }
 
     private PropertyDescriptor buildKeyDescriptor(Field field) {

@@ -40,6 +40,9 @@ class SchemaRegistrarTest {
         @IversonKey
         private UUID id;
 
+        @IversonTenant
+        private String tenantId;
+
         @IversonSearchKey(order = 0)
         private String category;
 
@@ -60,6 +63,9 @@ class SchemaRegistrarTest {
     static class EnrichmentAnnotationTestEntity {
         @IversonKey
         private UUID id;
+
+        @IversonTenant
+        private String tenantId;
 
         @IversonSummary
         private String summaryField;
@@ -83,6 +89,9 @@ class SchemaRegistrarTest {
         @IversonDescription("The primary key")
         private UUID id;
 
+        @IversonTenant
+        private String tenantId;
+
         @IversonMetadata
         private String source;
 
@@ -100,6 +109,8 @@ class SchemaRegistrarTest {
     static class SchemaTestAuthor {
         @IversonKey
         private UUID id;
+        @IversonTenant
+        private String tenantId;
         private String name;
         private String bio;   // nullable (String is a reference type)
     }
@@ -108,6 +119,8 @@ class SchemaRegistrarTest {
     static class SchemaTestArticle {
         @IversonKey
         private UUID id;
+        @IversonTenant
+        private String tenantId;
         private String title;
         private UUID authorId;
 
@@ -122,6 +135,8 @@ class SchemaRegistrarTest {
     static class SchemaTestTag {
         @IversonKey
         private UUID id;
+        @IversonTenant
+        private String tenantId;
         private String label;
         private UUID articleId;
     }
@@ -462,6 +477,47 @@ class SchemaRegistrarTest {
         assertEquals("The primary key", key.getDescription());
     }
 
+    // ── registerAll: @IversonTenant ────────────────────────────────────────────
+
+    @Test
+    void registerAll_setsTenantField_toMarkedFieldName() {
+        ArgumentCaptor<SchemaRequest> captor = ArgumentCaptor.forClass(SchemaRequest.class);
+
+        sut.registerAll(SchemaTestAuthor.class);
+
+        verify(mockStub).registerSchema(captor.capture());
+        TypeDescriptor typeDesc = captor.getValue().getRootType();
+        assertEquals("TenantId", typeDesc.getTenantField());
+    }
+
+    @Test
+    void registerAll_throwsForZeroTenantMarkers() {
+        @IversonEntity
+        class NoTenantEntity {
+            @IversonKey private UUID id;
+            private String name;
+        }
+
+        IllegalArgumentException ex = assertThrows(IllegalArgumentException.class,
+            () -> sut.registerAll(NoTenantEntity.class));
+        assertTrue(ex.getMessage().contains("NoTenantEntity"));
+    }
+
+    @Test
+    void registerAll_throwsForMultipleTenantMarkers() {
+        @IversonEntity
+        class MultiTenantEntity {
+            @IversonKey private UUID id;
+            @IversonTenant private String tenantA;
+            @IversonTenant private String tenantB;
+        }
+
+        IllegalArgumentException ex = assertThrows(IllegalArgumentException.class,
+            () -> sut.registerAll(MultiTenantEntity.class));
+        assertTrue(ex.getMessage().contains("tenantA"));
+        assertTrue(ex.getMessage().contains("tenantB"));
+    }
+
     // ── registerAll: relations ─────────────────────────────────────────────────
 
     @Test
@@ -512,6 +568,7 @@ class SchemaRegistrarTest {
         @IversonEntity
         class Widget {
             @IversonKey     private String widgetId;
+            @IversonTenant  private String tenantId;
             private String  widgetName;
         }
 
