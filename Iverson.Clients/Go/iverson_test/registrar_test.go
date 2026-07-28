@@ -31,7 +31,7 @@ func (m *mockMappingClient) RegisterSchema(_ context.Context, req *pb.SchemaRequ
 
 type registrarArticle struct {
 	Id          string `iverson:"key"`
-	TenantId    string `iverson_tenant:"true"`
+	TenantId    string `iverson:"search_key:2" iverson_tenant:"true"`
 	Title       string `iverson:"embedding"`
 	Body        string `iverson:"large_field"`
 	Category    string `iverson:"search_key:0"`
@@ -120,14 +120,17 @@ func TestSchemaRegistrar_RegisterAll_SearchKey(t *testing.T) {
 			searchKeys[p.Name] = p.SearchKeyOrder
 		}
 	}
-	if len(searchKeys) != 2 {
-		t.Fatalf("expected 2 search keys, got %d", len(searchKeys))
+	if len(searchKeys) != 3 {
+		t.Fatalf("expected 3 search keys, got %d", len(searchKeys))
 	}
 	if searchKeys["Category"] != 0 {
 		t.Errorf("Category order should be 0, got %d", searchKeys["Category"])
 	}
 	if searchKeys["PublishedAt"] != 1 {
 		t.Errorf("PublishedAt order should be 1, got %d", searchKeys["PublishedAt"])
+	}
+	if searchKeys["TenantId"] != 2 {
+		t.Errorf("TenantId order should be 2, got %d", searchKeys["TenantId"])
 	}
 }
 
@@ -464,6 +467,35 @@ func TestSchemaRegistrar_TenantField_Set(t *testing.T) {
 	}
 	if got := mock.capturedReq.RootType.TenantField; got != "TenantId" {
 		t.Errorf("expected TenantField=TenantId, got %q", got)
+	}
+}
+
+// TestSchemaRegistrar_TenantField_ComposesWithSearchKey guards against the
+// e4a77ff regression class: iverson_tenant is an independent tag key, not a
+// mutually-exclusive kind, so a field must be able to carry both
+// iverson_tenant:"true" and iverson:"search_key:N" at once. registrarArticle's
+// TenantId field carries `iverson:"search_key:2" iverson_tenant:"true"`; this
+// test asserts BOTH halves survive together — that TenantField is set to the
+// field, AND that its search-key metadata (IsSearchKey/SearchKeyOrder) is not
+// dropped by the tenant tag.
+func TestSchemaRegistrar_TenantField_ComposesWithSearchKey(t *testing.T) {
+	mock := &mockMappingClient{response: &pb.SchemaResponse{Success: true}}
+	registrar := iverson.NewSchemaRegistrar(mock, registrarArticle{})
+	if err := registrar.RegisterAll(context.Background(), ""); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	req := mock.capturedReq
+
+	if got := req.RootType.TenantField; got != "TenantId" {
+		t.Errorf("expected TenantField=TenantId, got %q", got)
+	}
+
+	tenantProp := propByName(t, req, "TenantId")
+	if !tenantProp.IsSearchKey {
+		t.Error("expected TenantId.IsSearchKey=true; iverson_tenant must not suppress the search_key kind")
+	}
+	if tenantProp.SearchKeyOrder != 2 {
+		t.Errorf("expected TenantId.SearchKeyOrder=2, got %d", tenantProp.SearchKeyOrder)
 	}
 }
 
