@@ -3,8 +3,8 @@ package iverson_test
 import (
 	"testing"
 
-	"github.com/iverson/clients/go/iverson"
 	pb "github.com/iverson/clients/go/generated"
+	"github.com/iverson/clients/go/iverson"
 )
 
 // ── QueryBuilder tests ─────────────────────────────────────────────────────────
