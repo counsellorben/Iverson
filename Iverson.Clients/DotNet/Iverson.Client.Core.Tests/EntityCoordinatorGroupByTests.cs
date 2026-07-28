@@ -17,6 +17,8 @@ public class EntityCoordinatorGroupByTests
     {
         [IversonKey]
         public string Id { get; set; } = "";
+        [IversonTenant]
+        public string TenantId { get; set; } = "";
         public string Category { get; set; } = "";
     }
 

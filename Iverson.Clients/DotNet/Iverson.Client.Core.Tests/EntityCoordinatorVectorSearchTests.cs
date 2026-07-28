@@ -16,6 +16,8 @@ public class EntityCoordinatorVectorSearchTests
     {
         [IversonKey]
         public string Id { get; set; } = "";
+        [IversonTenant]
+        public string TenantId { get; set; } = "";
         public string Title { get; set; } = "";
     }
 

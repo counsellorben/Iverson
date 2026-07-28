@@ -1,3 +1,4 @@
+using System.Reflection;
 using FluentAssertions;
 using Grpc.Core;
 using Iverson.Client.Attributes;
@@ -17,6 +18,7 @@ namespace Iverson.Client.Core.Tests;
 internal sealed class SearchAnnotationTestEntity
 {
     [IversonKey]          public Guid            Id          { get; set; }
+    [IversonTenant]        public string          TenantId    { get; set; } = string.Empty;
     [IversonSearchKey(0)] public string          Category    { get; set; } = "";
     [IversonSearchKey(1)] public DateTimeOffset  PublishedAt { get; set; }
     [IversonLargeField]   public string          Body        { get; set; } = "";
@@ -29,6 +31,9 @@ internal sealed class MetadataAnnotationTestEntity
     [IversonKey]
     [IversonDescription("Primary identifier.")]
     public Guid Id { get; set; }
+
+    [IversonTenant]
+    public string TenantId { get; set; } = string.Empty;
 
     [IversonMetadata]
     [IversonDescription("Source system name.")]
@@ -45,6 +50,9 @@ internal sealed class EnrichmentAnnotationTestEntity
 {
     [IversonKey]
     public Guid Id { get; set; }
+
+    [IversonTenant]
+    public string TenantId { get; set; } = string.Empty;
 
     [IversonSummary]
     public string Summary { get; set; } = "";
@@ -66,6 +74,8 @@ internal sealed class SchemaTestAuthor
 {
     [IversonKey]
     public Guid Id { get; set; }
+    [IversonTenant]
+    public string TenantId { get; set; } = string.Empty;
     public string Name { get; set; } = string.Empty;
     public string? Bio { get; set; }
 }
@@ -75,6 +85,8 @@ internal sealed class SchemaTestArticle
 {
     [IversonKey]
     public Guid Id { get; set; }
+    [IversonTenant]
+    public string TenantId { get; set; } = string.Empty;
     public string Title { get; set; } = string.Empty;
     public Guid AuthorId { get; set; }
 
@@ -93,6 +105,8 @@ internal sealed class SchemaTestTag
 {
     [IversonKey]
     public Guid Id { get; set; }
+    [IversonTenant]
+    public string TenantId { get; set; } = string.Empty;
     public string Label { get; set; } = string.Empty;
     public Guid ArticleId { get; set; }
 }
@@ -585,7 +599,7 @@ public class SchemaRegistrarTests
     }
 
     [Fact]
-    public async Task RegisterAllAsync_SetsTenantField_WhenSupplementProvidesEntry()
+    public async Task RegisterAllAsync_SetsTenantField_FromMarkedProperty()
     {
         SchemaRequest? authorRequest = null;
         _mappingClient
@@ -604,37 +618,65 @@ public class SchemaRegistrarTests
                 () => new Metadata(),
                 () => { }));
 
-        await _sut.RegisterAllAsync(
-            tenantFieldByTypeName: new Dictionary<string, string> { ["SchemaTestAuthor"] = "TenantId" });
+        await _sut.RegisterAllAsync();
 
         authorRequest.Should().NotBeNull();
         authorRequest!.RootType!.TenantField.Should().Be("TenantId");
     }
 
-    [Fact]
-    public async Task RegisterAllAsync_LeavesTenantFieldEmpty_WhenSupplementHasNoEntryForType()
+    private sealed class NoTenantMarkerEntity
     {
-        SchemaRequest? tagRequest = null;
-        _mappingClient
-            .RegisterSchemaAsync(
-                Arg.Do<SchemaRequest>(r =>
-                {
-                    if (r.RootType?.TypeName == "SchemaTestTag") tagRequest = r;
-                }),
-                Arg.Any<Metadata>(),
-                Arg.Any<DateTime?>(),
-                Arg.Any<CancellationToken>())
-            .Returns(new AsyncUnaryCall<SchemaResponse>(
-                Task.FromResult(new SchemaResponse { Success = true }),
-                Task.FromResult(new Metadata()),
-                () => Status.DefaultSuccess,
-                () => new Metadata(),
-                () => { }));
+        public Guid Id { get; set; }
+        public string Name { get; set; } = "";
+    }
 
-        await _sut.RegisterAllAsync(
-            tenantFieldByTypeName: new Dictionary<string, string> { ["SchemaTestAuthor"] = "TenantId" });
+    private sealed class DualTenantMarkerEntity
+    {
+        public Guid Id { get; set; }
+        [IversonTenant] public string TenantA { get; set; } = "";
+        [IversonTenant] public string TenantB { get; set; } = "";
+    }
 
-        tagRequest.Should().NotBeNull();
-        tagRequest!.RootType!.TenantField.Should().BeEmpty();
+    private static EntityDescriptor BuildDescriptor<T>() where T : class =>
+        new()
+        {
+            EntityType  = typeof(T),
+            EntityName  = typeof(T).Name,
+            KeyProperty = typeof(T).GetProperty(nameof(NoTenantMarkerEntity.Id))!,
+            Relations   = []
+        };
+
+    private static Exception? InvokeBuildTypeDescriptor(EntityDescriptor descriptor)
+    {
+        var method = typeof(SchemaRegistrar).GetMethod(
+            "BuildTypeDescriptor", BindingFlags.NonPublic | BindingFlags.Static)!;
+        try
+        {
+            method.Invoke(null, [descriptor]);
+            return null;
+        }
+        catch (TargetInvocationException tie)
+        {
+            return tie.InnerException;
+        }
+    }
+
+    [Fact]
+    public void BuildTypeDescriptor_Throws_WhenNoPropertyIsMarkedTenant()
+    {
+        var ex = InvokeBuildTypeDescriptor(BuildDescriptor<NoTenantMarkerEntity>());
+
+        ex.Should().BeOfType<ArgumentException>();
+        ex!.Message.Should().Contain(nameof(NoTenantMarkerEntity));
+    }
+
+    [Fact]
+    public void BuildTypeDescriptor_Throws_WhenMultiplePropertiesAreMarkedTenant()
+    {
+        var ex = InvokeBuildTypeDescriptor(BuildDescriptor<DualTenantMarkerEntity>());
+
+        ex.Should().BeOfType<ArgumentException>();
+        ex!.Message.Should().Contain("TenantA");
+        ex.Message.Should().Contain("TenantB");
     }
 }

@@ -17,6 +17,8 @@ internal sealed class TestTag
 {
     [IversonKey]
     public string Id { get; set; } = string.Empty;
+    [IversonTenant]
+    public string TenantId { get; set; } = string.Empty;
     public string Label { get; set; } = string.Empty;
 }
 
@@ -25,6 +27,8 @@ internal sealed class TestArticle
 {
     [IversonKey]
     public string Id { get; set; } = string.Empty;
+    [IversonTenant]
+    public string TenantId { get; set; } = string.Empty;
     public string TagId { get; set; } = string.Empty;
 
     [ManyToOne(typeof(TestTag), foreignKey: "TagId")]

@@ -150,13 +150,7 @@ if (needsTenantAndSchema)
             ["BenchmarkAuthor"]  = BuildAuthorizationRules("Email"),
             ["BenchmarkTag"]     = BuildAuthorizationRules("Category"),
         };
-        var tenantFieldByTypeName = new Dictionary<string, string>
-        {
-            ["BenchmarkArticle"] = "TenantId",
-            ["BenchmarkAuthor"]  = "TenantId",
-            ["BenchmarkTag"]     = "TenantId",
-        };
-        await services.GetRequiredService<SchemaRegistrar>().RegisterAllAsync(authorizationByTypeName, tenantFieldByTypeName);
+        await services.GetRequiredService<SchemaRegistrar>().RegisterAllAsync(authorizationByTypeName);
         Console.WriteLine("Schemas registered.\n");
     }
     catch (Exception ex)

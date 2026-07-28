@@ -18,7 +18,6 @@ public sealed class SchemaRegistrar(
 {
     public async Task RegisterAllAsync(
         IReadOnlyDictionary<string, AuthorizationRules>? authorizationByTypeName = null,
-        IReadOnlyDictionary<string, string>? tenantFieldByTypeName = null,
         CancellationToken ct = default)
     {
         foreach (var descriptor in registry.All)
@@ -28,14 +27,6 @@ public sealed class SchemaRegistrar(
                 authorizationByTypeName.TryGetValue(descriptor.EntityName, out var authorization))
             {
                 typeDesc.Authorization = authorization;
-            }
-            // tenant_field is REQUIRED by the server (RegisterSchema rejects a schema without
-            // one) — mirrors authorizationByTypeName's out-of-band, per-type-name mechanism
-            // since tenant_field, like owner_field, isn't attribute-derived.
-            if (tenantFieldByTypeName is not null &&
-                tenantFieldByTypeName.TryGetValue(descriptor.EntityName, out var tenantField))
-            {
-                typeDesc.TenantField = tenantField;
             }
             try
             {
@@ -81,6 +72,8 @@ public sealed class SchemaRegistrar(
             if (propDescriptor is not null) typeDesc.Properties.Add(propDescriptor);
         }
 
+        typeDesc.TenantField = ResolveTenantField(descriptor);
+
         foreach (var relation in descriptor.Relations)
         {
             var fk = relation.ForeignKey ?? InferForeignKey(relation, descriptor.EntityName);
@@ -95,6 +88,28 @@ public sealed class SchemaRegistrar(
         }
 
         return typeDesc;
+    }
+
+    private static string ResolveTenantField(EntityDescriptor descriptor)
+    {
+        var tenantProps = descriptor.EntityType
+            .GetProperties(BindingFlags.Public | BindingFlags.Instance)
+            .Where(p => p.GetCustomAttribute<IversonTenantAttribute>() is not null)
+            .ToList();
+
+        if (tenantProps.Count == 0)
+            throw new ArgumentException(
+                $"'{descriptor.EntityName}' has no property marked [IversonTenant]; the server " +
+                "requires every schema to declare a tenant boundary and will reject registration " +
+                "without one.");
+
+        if (tenantProps.Count > 1)
+            throw new ArgumentException(
+                $"'{descriptor.EntityName}' has multiple properties marked [IversonTenant] " +
+                $"({string.Join(", ", tenantProps.Select(p => p.Name))}); exactly one property " +
+                "must carry the tenant marker.");
+
+        return tenantProps[0].Name;
     }
 
     private static PropertyDescriptor BuildKeyDescriptor(PropertyInfo prop)
