@@ -18,6 +18,7 @@ from iverson_client.annotations import (
     iverson_summary,
     iverson_keywords,
     iverson_extracted,
+    iverson_tenant,
     many_to_one,
     one_to_many,
 )
@@ -40,6 +41,7 @@ class RegArticle:
     published_at: datetime = iverson_search_key(order=1)
     author_id: str = many_to_one("RegAuthor")
     summary: str = iverson_chunk(max_tokens=256, overlap=32)
+    tenant_id: str = iverson_tenant()
 
 
 @iverson_entity(description="An article with metadata signals.")
@@ -50,12 +52,14 @@ class RegDescribedArticle:
     region: str = iverson_search_key(order=0, metadata=True, description="Publication region.")
     title: str = iverson_description("Headline text.")
     word_count: int = None
+    tenant_id: str = iverson_tenant()
 
 
 @iverson_entity
 class RegAuthor:
     id: str = iverson_key()
     name: str = None
+    tenant_id: str = iverson_tenant()
 
 
 @iverson_entity
@@ -66,6 +70,20 @@ class RegEnrichedArticle:
     tags: str = iverson_keywords()
     entities: str = iverson_extracted("Extract named entities as a JSON array.")
     body: str = iverson_chunk(max_tokens=256, overlap=32, contextual=True)
+    tenant_id: str = iverson_tenant()
+
+
+@iverson_entity
+class RegNoTenantArticle:
+    id: str = iverson_key()
+    title: str = None
+
+
+@iverson_entity
+class RegMultiTenantArticle:
+    id: str = iverson_key()
+    tenant_id: str = iverson_tenant()
+    org_id: str = iverson_tenant()
 
 
 # ── Fixtures ───────────────────────────────────────────────────────────────────
@@ -303,3 +321,26 @@ class TestEnrichmentTargets:
     def test_whitespace_extraction_hint_rejected(self):
         with pytest.raises(ValueError, match="extract"):
             iverson_extracted("   ")
+
+
+class TestTenantField:
+    def test_tenant_field_name_on_descriptor(self):
+        stub = make_stub()
+        stub.RegisterSchema.return_value = mapping_pb.SchemaResponse(success=True)
+        registrar = SchemaRegistrar(stub, RegArticle)
+        registrar.register_all()
+
+        request: mapping_pb.SchemaRequest = stub.RegisterSchema.call_args[0][0]
+        assert request.root_type.tenant_field == "TenantId"
+
+    def test_zero_tenant_markers_raises(self):
+        stub = make_stub()
+        registrar = SchemaRegistrar(stub, RegNoTenantArticle)
+        with pytest.raises(ValueError, match="RegNoTenantArticle"):
+            registrar.register_all()
+
+    def test_multiple_tenant_markers_raises(self):
+        stub = make_stub()
+        registrar = SchemaRegistrar(stub, RegMultiTenantArticle)
+        with pytest.raises(ValueError, match="tenant_id.*org_id|org_id.*tenant_id"):
+            registrar.register_all()

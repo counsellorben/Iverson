@@ -36,6 +36,7 @@ class FieldMeta:
     is_summary_target: bool = False    # marker for summary enrichment
     is_keywords_target: bool = False   # marker for keywords enrichment
     extract_hint: str = ""        # for extraction enrichment; mandatory when kind == 'extracted'
+    tenant: bool = False          # marks the field holding the row's tenant id
 
 
 # ── Public factory helpers ─────────────────────────────────────────────────────
@@ -164,6 +165,15 @@ def iverson_extracted(hint: str, description: str = "") -> FieldMeta:
     return FieldMeta(kind="extracted", extract_hint=hint, description=description)
 
 
+def iverson_tenant(description: str = "") -> FieldMeta:
+    """Mark the field holding the row's tenant id.
+
+    The server requires every schema to declare a tenant boundary and rejects
+    registration without one, so exactly one field per entity must carry this.
+    """
+    return FieldMeta(kind="", tenant=True, description=description)
+
+
 def many_to_one(type_name: str) -> FieldMeta:
     """Declare a many-to-one relation field (FK on this entity)."""
     return FieldMeta(kind="many_to_one", related_type=type_name)
@@ -233,6 +243,7 @@ def iverson_entity(cls: type | None = None, *, description: str = ""):
     summary_fields: list[str] = []
     keywords_fields: list[str] = []
     extracted_fields: dict[str, str] = {}
+    tenant_fields: list[str] = []
 
     for field_name, _type_hint in annotations.items():
         default = getattr(cls, field_name, None)
@@ -246,6 +257,8 @@ def iverson_entity(cls: type | None = None, *, description: str = ""):
                     metadata_fields.append(field_name)
                 if meta.description:
                     descriptions[field_name] = meta.description
+                if meta.tenant:
+                    tenant_fields.append(field_name)
 
             if meta.kind == "key":
                 key_field = field_name
@@ -299,6 +312,7 @@ def iverson_entity(cls: type | None = None, *, description: str = ""):
         "summary_fields": summary_fields,
         "keywords_fields": keywords_fields,
         "extracted_fields": extracted_fields,
+        "tenant_fields": tenant_fields,
     }
 
     return cls

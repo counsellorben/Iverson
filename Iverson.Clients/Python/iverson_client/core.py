@@ -141,6 +141,7 @@ class SchemaRegistrar:
         summary_fields_set = set(meta.get("summary_fields", []))
         keywords_fields_set = set(meta.get("keywords_fields", []))
         extracted_fields_by_name = meta.get("extracted_fields", {})
+        tenant_field = self._resolve_tenant_field(type_name, meta.get("tenant_fields", []))
 
         properties: list[mapping_pb.PropertyDescriptor] = []
         for field_name in meta["fields"]:
@@ -195,8 +196,25 @@ class SchemaRegistrar:
             properties=properties,
             relations=relations,
             description=meta.get("description", ""),
+            tenant_field=_to_pascal_case(tenant_field),
         )
         return mapping_pb.SchemaRequest(root_type=type_descriptor, trace_id=trace_id)
+
+    @staticmethod
+    def _resolve_tenant_field(type_name: str, tenant_fields: list[str]) -> str:
+        if len(tenant_fields) == 0:
+            raise ValueError(
+                f"{type_name} has no field marked with iverson_tenant(); the server "
+                "requires every schema to declare a tenant boundary and will reject "
+                "registration without one."
+            )
+        if len(tenant_fields) > 1:
+            raise ValueError(
+                f"{type_name} has multiple fields marked with iverson_tenant() "
+                f"({', '.join(tenant_fields)}); exactly one field must carry the "
+                "tenant marker."
+            )
+        return tenant_fields[0]
 
 
 # ── StructConverter ────────────────────────────────────────────────────────────
