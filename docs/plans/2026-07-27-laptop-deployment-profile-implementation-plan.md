@@ -91,6 +91,7 @@ Newly introduced by this plan and verified at plan-write time.
 | P19 | Consumer impact | Only `EngagementRepository` implements `IEngagementStoreSearchService`; tests substitute the interface | `EngagementRepository.cs:16`; `ObjectSearchGrpcServiceTests.cs:38`, `ObjectSearchVectorIntegrationTests.cs:77` use `Substitute.For` |
 | P20 | Consumer impact | Nothing reads the `/health` body's `starrocks` field | `grep "checks.starrocks"` — only comments in `EngagementHealthChecker.cs:39` and `ReadinessPolicy.cs:12` |
 | P21 | Code validity | **The OTLP env vars are `Otel__Endpoint` and `Jaeger__OtlpHttpUrl`, not `OTEL_EXPORTER_OTLP_ENDPOINT`** — the spec's testing bullet names an env var that does not exist in this chart | `charts/api/.../deployment.yaml:126,154`; `charts/worker/.../deployment.yaml:121`. The worker has one OTLP entry; the api has two |
+| P22 | Consumer impact | With the store disabled the StarRocks health check still runs on every probe, and stays fast enough for the 1s readiness timeout | `EngagementHealthChecker.cs:11-13` — deliberately bypasses the readiness gate and circuit breaker so it returns quickly; with `ConnectionStrings__StarRocks` stripped by Task 1 it dials the `localhost:9030` fallback, which refuses immediately rather than hanging. Only the *verdict* excludes it (Task 4 Step 3), not the call |
 
 ## Tasks
 
@@ -211,16 +212,20 @@ git commit -m "feat(helm): make all 12 subcharts conditional and guard cross-sub
 
 - [ ] **Step 1: Create `values-laptop.yaml`**
 
-Each disabled component must use the key that actually drives it — `jaeger` and `starrocks` are global-conditioned, the rest are not:
+Each disabled component must use the key that actually drives it — `jaeger` and `starrocks` are global-conditioned, the rest are not. The file is **self-contained**, like every other overlay in this directory:
 
 ```yaml
 # Laptop profile — fits a 4-CPU / 9GB host by omitting what a developer least needs.
 # values-local.yaml remains the full-fidelity profile for a >=16GB machine.
 #
-# Capacity: app side ~1.45 CPU of requests; system + operators measured ~2.0 CPU;
-# metrics-server ~0.1. Total ~3.55 of 4.0 (~89%). The margin is thin — roughly 450m.
-# It works because requests are reservations: ollama's 3-CPU limit still bursts into
-# unreserved capacity during inference. Re-measure with `kubectl top` after deploying.
+# SELF-CONTAINED, like every other overlay in this directory. Helm layers only the
+# files passed on the command line, so `-f values-laptop.yaml` inherits values.yaml's
+# PRODUCTION defaults (postgres 8 CPU x2, qdrant 8, ollama 8) unless the laptop sizing
+# is restated here. The CI harness passes exactly one -f per overlay.
+#
+# Capacity: 250+250+250+250+100+100+50+200 = 1.45 CPU of requests; system + operators
+# measured ~2.0; metrics-server ~0.1. Total ~3.55 of 4.0 (~89%). Margin is thin —
+# roughly 450m. Re-measure with `kubectl top` after deploying.
 global:
   engagementEnabled: false   # no StarRocks: vendor sizes FE at 8 CPU/16GB
   tracingEnabled: false      # no jaeger
@@ -229,9 +234,72 @@ prometheus:
   enabled: false
 adminUi:
   enabled: false
-```
 
-Everything else inherits `values.yaml`. Do **not** restate resource blocks that `values-local.yaml` already sets — this preset is layered, not a fork.
+postgres:
+  instances: 1
+  storageSize: 2Gi
+  storageClassName: "standard"
+  resources:
+    requests: { cpu: "250m", memory: "512Mi" }
+    limits: { cpu: "500m", memory: "1Gi" }
+
+kafka:
+  replicas: 1
+  storageSize: 1Gi
+  storageClassName: "standard"
+  resources:
+    requests: { cpu: "250m", memory: "512Mi" }
+    limits: { cpu: "500m", memory: "1Gi" }
+
+qdrant:
+  replicas: 1
+  storageSize: 1Gi
+  storageClassName: "standard"
+  resources:
+    requests: { cpu: "250m", memory: "512Mi" }
+    limits: { cpu: "500m", memory: "1Gi" }
+
+ollama:
+  replicas: 1
+  storageSize: 8Gi
+  storageClassName: "standard"
+  resources:
+    requests: { cpu: "250m", memory: "1Gi" }
+    limits: { cpu: "500m", memory: "2Gi" }
+
+api:
+  replicas: 1
+  resources:
+    requests: { cpu: "100m", memory: "256Mi" }
+    limits: { cpu: "500m", memory: "512Mi" }
+  hpa: { minReplicas: 1, maxReplicas: 2, targetCPUUtilization: 70 }
+  ingress:
+    className: "nginx"
+    annotations: {}
+    host: "iverson.local"
+    tlsSecretName: ""
+
+worker:
+  replicas: 1
+  resources:
+    requests: { cpu: "100m", memory: "256Mi" }
+    limits: { cpu: "500m", memory: "512Mi" }
+  hpa: { minReplicas: 1, maxReplicas: 2, targetCPUUtilization: 70 }
+
+redis:
+  resources:
+    requests: { cpu: "50m", memory: "64Mi" }
+    limits: { cpu: "100m", memory: "128Mi" }
+
+authentik:
+  resources:
+    server:
+      requests: { cpu: "100m", memory: "256Mi" }
+      limits: { cpu: "500m", memory: "512Mi" }
+    worker:
+      requests: { cpu: "100m", memory: "256Mi" }
+      limits: { cpu: "500m", memory: "512Mi" }
+```
 
 - [ ] **Step 2: Update `values-local.yaml` StarRocks sizing and ollama storage**
 
@@ -279,6 +347,28 @@ helm template t . -f values-laptop.yaml | grep -c "kind: StarRocksCluster"   # e
 helm template t . -f values-laptop.yaml | grep -c "starrocks-app"            # expect 0
 helm template t . -f values-laptop.yaml | grep -c "Otel__Endpoint"           # expect 0
 helm template t . -f values-laptop.yaml | grep -c "name: t-prometheus"       # expect 0
+
+# Total CPU requests must fit the node's ~2.2 free CPU (4.0 less ~1.8 system overhead).
+# Without this, a render inheriting values.yaml's production defaults (~55 CPU) passes
+# every grep above and every CI lint, and only fails at schedule time.
+helm template t . -f values-laptop.yaml | python3 -c "
+import sys,yaml
+def cpu(v):
+    v=str(v); return float(v[:-1])/1000 if v.endswith('m') else float(v)
+tot=0
+for d in yaml.safe_load_all(sys.stdin):
+    if not d: continue
+    if d.get('kind') in ('Deployment','StatefulSet'):
+        n=d['spec'].get('replicas',1) or 1
+        for c in d['spec']['template']['spec'].get('containers',[]):
+            r=(c.get('resources') or {}).get('requests') or {}
+            if 'cpu' in r: tot+=cpu(r['cpu'])*n
+    elif d.get('kind')=='Cluster':
+        n=d['spec'].get('instances',1); r=(d['spec'].get('resources') or {}).get('requests') or {}
+        if 'cpu' in r: tot+=cpu(r['cpu'])*n
+print(f'total CPU requests: {tot:.2f}')
+assert tot < 2.2, f'laptop preset requests {tot:.2f} CPU — will not schedule'
+"
 ```
 
 - [ ] **Step 5: Commit**
@@ -451,6 +541,7 @@ git commit -m "feat(engagement): make the engagement store optional at startup a
 - Create: `Iverson.Server/Iverson.StarRocks/EngagementStoreDisabledException.cs`
 - Create: `Iverson.Server/Iverson.StarRocks/DisabledEngagementStoreSearchService.cs`
 - Modify: `Iverson.Server/Iverson.StarRocks/ServiceCollectionExtensions.cs`
+- Modify: `Iverson.Server/Iverson.Api/Program.cs`
 - Modify: `Iverson.Server/Iverson.Api/Grpc/ObjectSearchGrpcService.cs`
 - Test: `Iverson.Server/Iverson.Api.Tests/Grpc/ObjectSearchGrpcServiceTests.cs`
 
@@ -531,7 +622,19 @@ and at the `IEngagementStoreSearchService` registration:
             services.AddSingleton<IEngagementStoreSearchService>(new DisabledEngagementStoreSearchService());
 ```
 
-Leave the other registrations alone: `IEngagementStoreHealthCheck` must stay resolvable because `/health` still injects it, and the entity/query executors stay for the same reason nothing else loses a dependency. Pass the flag from `Program.cs:165`'s call.
+Leave the other registrations alone: `IEngagementStoreHealthCheck` must stay resolvable because `/health` still injects it, and the entity/query executors stay for the same reason nothing else loses a dependency.
+
+Then update the sole production caller at `Program.cs:165` to pass it — the parameter is optional, so omitting this leaves `engagementEnabled` at `true` and the null object is never registered:
+
+```csharp
+builder.Services.AddStarRocks(
+    cfg.GetConnectionString("StarRocks")
+    ?? "Server=localhost;Port=9030;Database=iverson;User Id=root;Password=;AllowPublicKeyRetrieval=true;",
+    new EngagementResilienceOptions { /* unchanged */ },
+    cfg.GetValue($"{EngagementStoreOptions.Section}:Enabled", true));
+```
+
+This is the second reader of `Engagement:Enabled` — Task 4 Step 5's consumer gate is the first. Both must use the same key and the same `true` default, or the consumer and the search service can disagree about whether the store exists.
 
 - [ ] **Step 4: Map the exception in the gRPC service**
 
@@ -556,7 +659,7 @@ dotnet test Iverson.Server/Iverson.Server.slnx
 
 - [ ] **Step 6: Commit**
 ```bash
-git add Iverson.Server/Iverson.StarRocks/EngagementStoreDisabledException.cs Iverson.Server/Iverson.StarRocks/DisabledEngagementStoreSearchService.cs Iverson.Server/Iverson.StarRocks/ServiceCollectionExtensions.cs Iverson.Server/Iverson.Api/Grpc/ObjectSearchGrpcService.cs Iverson.Server/Iverson.Api.Tests/Grpc/ObjectSearchGrpcServiceTests.cs
+git add Iverson.Server/Iverson.StarRocks/EngagementStoreDisabledException.cs Iverson.Server/Iverson.StarRocks/DisabledEngagementStoreSearchService.cs Iverson.Server/Iverson.StarRocks/ServiceCollectionExtensions.cs Iverson.Server/Iverson.Api/Program.cs Iverson.Server/Iverson.Api/Grpc/ObjectSearchGrpcService.cs Iverson.Server/Iverson.Api.Tests/Grpc/ObjectSearchGrpcServiceTests.cs
 git commit -m "feat(engagement): fail search and aggregate with FailedPrecondition when the store is absent"
 ```
 
