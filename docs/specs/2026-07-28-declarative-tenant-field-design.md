@@ -63,7 +63,7 @@ registrar finds the marked property and sets `TypeDescriptor.tenant_field` to it
 |---|---|---|
 | .NET | `[IversonTenant]` | `[IversonKey]`, `[IversonMetadata]` |
 | Java | `@IversonTenant` | `@IversonKey`, `@IversonMetadata` |
-| Python | `iverson_tenant()` field spec | `iverson_key()`, `iverson_metadata()` |
+| Python | `iverson_tenant()` field spec setting an independent `tenant: bool` | `iverson_metadata()`'s `metadata: bool` flag |
 | Go | `iverson_tenant:"true"` struct tag | `iverson_meta:"true"` |
 | TypeScript | `@IversonTenant()` decorator | `@IversonKey()`, `@IversonMetadata()` |
 
@@ -73,6 +73,19 @@ recorded in part 1's `e4a77ff`, where `metadata` had to be moved from a kind to 
 independent key for exactly this reason. `tags.go` already carries six independent keys
 (`iverson_desc`, `_meta`, `_summary`, `_keywords`, `_extract`, `_contextual`); this is the
 seventh and composes the same way.
+
+**Python uses an independent `tenant: bool` flag on `FieldMeta`, not a `kind`.** Python is
+the one client where declarations cannot stack: a `FieldMeta` *is* the attribute's default
+value (`annotations.py:21-27`), so a field carries exactly one — unlike two C# attributes or
+two TypeScript decorators on the same member. Modelling tenancy as `kind="tenant"` would
+therefore make a Python tenant property unable to carry any other declaration, contradicting
+the same composability rationale that drives the Go choice above.
+
+The flag sits beside the existing `metadata: bool` (`annotations.py:33`), which is already
+independent of `kind` and is already read for every non-relation kind (`:244-248`). A bare
+`iverson_tenant()` emits `kind=""`; the dispatch's final `else` branch (`:279-281`) treats an
+unrecognised kind as a plain field, which is exactly the right outcome for a property whose
+only role is carrying the tenant id.
 
 This replaces TypeScript's hardcoded `''` and fills the field Java, Python and Go never set.
 
@@ -161,7 +174,8 @@ marker is the only path.
 ## Verified assumptions
 
 Thirteen assumptions were enumerated against the design and checked against the codebase
-before this spec was written. Twelve held; one failed and changed the design.
+before this spec was written. Twelve held; one failed and changed the design. A14 was added
+afterwards, when critical-design-review round 1 forced the Python mechanism decision.
 
 | # | Assumption | Result |
 |---|---|---|
@@ -178,6 +192,7 @@ before this spec was written. Twelve held; one failed and changed the design.
 | A11 | The properties to be marked satisfy the server's scalar + four-type allow-list | PASS — all are `string` |
 | A12 | Nothing else reads a client-built `tenant_field` in a way removing the map breaks | PASS — the only other `TenantField` readers are server-side orchestrator tests that construct descriptors directly |
 | A13 | Every client has a registrar test file to extend | PASS — all five present |
+| A14 | Python's `FieldMeta` supports an independent flag beside `kind`, and an empty `kind` degrades to a plain field | PASS — `metadata: bool` already sits beside `kind` (`annotations.py:33`) and is read for every non-relation kind (`:244-248`); the kind dispatch's final `else` appends to `plain_fields` (`:279-281`), so `kind=""` needs no new constant. Added after critical-design-review round 1 |
 
 ## Known issues / accepted
 
