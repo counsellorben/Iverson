@@ -16,6 +16,7 @@ import {
     IversonSummary,
     IversonKeywords,
     IversonExtracted,
+    IversonTenant,
     ManyToOne,
     OneToMany,
 } from '../src/annotations.js';
@@ -37,6 +38,7 @@ class RegAuthor {
 // Apply decorators manually (so the class definition above has the real properties)
 IversonEntity()(RegAuthor);
 IversonKey()(RegAuthor.prototype, 'id');
+IversonTenant()(RegAuthor.prototype, 'name');
 
 @IversonEntity()
 class RegArticle {
@@ -53,6 +55,7 @@ class RegArticle {
     body: string = '';
 
     @IversonSearchKey(0)
+    @IversonTenant()
     category: string = '';
 
     wordCount: number = 0;
@@ -258,6 +261,7 @@ describe('SchemaRegistrar', () => {
             @IversonEntity()
             class Post {
                 @IversonKey()
+                @IversonTenant()
                 id: string = '';
 
                 @OneToMany(() => RegAuthor)
@@ -290,6 +294,7 @@ class RegDoc {
     @IversonMetadata()
     region: string = '';
 
+    @IversonTenant()
     title: string = '';
 }
 
@@ -364,6 +369,7 @@ class RegEnriched {
     @IversonChunk(256, 32, { contextual: true })
     body: string = '';
 
+    @IversonTenant()
     plainField: string = '';
 }
 
@@ -449,5 +455,59 @@ describe('_buildRequest — ingest enrichment targets', () => {
             }
             void BadEntity2;
         }).toThrow(/non-blank extraction hint/);
+    });
+});
+
+// ── Tenant field ────────────────────────────────────────────────────────────
+
+describe('_buildRequest — tenant field', () => {
+    it('sets tenantField to the PascalCased decorated property name', () => {
+        const stub = makeStub();
+        const registrar = new SchemaRegistrar(stub, [RegArticle]);
+        const req = registrar._buildRequest(RegArticle);
+        expect(req.rootType!.tenantField).toBe('Category');
+    });
+
+    it('composes the tenant marker with other declarations on the same property (search key)', () => {
+        const stub = makeStub();
+        const registrar = new SchemaRegistrar(stub, [RegArticle]);
+        const req = registrar._buildRequest(RegArticle);
+        const props = Object.fromEntries(req.rootType!.properties.map(p => [p.name, p]));
+
+        expect(req.rootType!.tenantField).toBe('Category');
+        expect(props['Category'].isSearchKey).toBe(true);
+        expect(props['Category'].searchKeyOrder).toBe(0);
+    });
+
+    it('throws naming the type when no property is decorated with @IversonTenant()', () => {
+        @IversonEntity()
+        class NoTenant {
+            @IversonKey()
+            id: string = '';
+        }
+
+        const stub = makeStub();
+        const registrar = new SchemaRegistrar(stub, [NoTenant]);
+        expect(() => registrar._buildRequest(NoTenant)).toThrow(/NoTenant/);
+        expect(() => registrar._buildRequest(NoTenant)).toThrow(/@IversonTenant/);
+    });
+
+    it('throws naming both properties when two are decorated with @IversonTenant()', () => {
+        @IversonEntity()
+        class TwoTenants {
+            @IversonKey()
+            id: string = '';
+
+            @IversonTenant()
+            orgId: string = '';
+
+            @IversonTenant()
+            accountId: string = '';
+        }
+
+        const stub = makeStub();
+        const registrar = new SchemaRegistrar(stub, [TwoTenants]);
+        expect(() => registrar._buildRequest(TwoTenants)).toThrow(/orgId/);
+        expect(() => registrar._buildRequest(TwoTenants)).toThrow(/accountId/);
     });
 });

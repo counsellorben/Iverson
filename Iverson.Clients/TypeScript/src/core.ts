@@ -55,6 +55,7 @@ import {
     getRelations,
     getSearchKeys,
     getSummaryFields,
+    getTenantFields,
     getTypeDescription,
     isIversonEntity,
     RelationKindString,
@@ -250,12 +251,26 @@ export function describeEntity(cls: Function): TypeDescriptor {
         foreignKey: inferFk(rel.kind, rel.relatedType, typeName),
     }));
 
+    const tenantFields = getTenantFields(cls);
+    if (tenantFields.length === 0) {
+        throw new Error(
+            `${typeName} has no property decorated with @IversonTenant(); schema registration ` +
+            'requires exactly one tenant field and the server rejects a request missing it.',
+        );
+    }
+    if (tenantFields.length > 1) {
+        throw new Error(
+            `${typeName} has multiple properties decorated with @IversonTenant() ` +
+            `(${tenantFields.join(', ')}); schema registration requires exactly one tenant field.`,
+        );
+    }
+
     return {
         typeName,
         properties,
         relations: relationDescriptors,
         authorization: undefined,
-        tenantField: '',
+        tenantField: toPascalCase(tenantFields[0]),
         description: getTypeDescription(cls),
     };
 }
