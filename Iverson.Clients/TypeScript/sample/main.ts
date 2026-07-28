@@ -30,6 +30,7 @@ async function main() {
 
     const article = new Article();
     article.id = crypto.randomUUID();
+    article.tenantId = 'sample-tenant';
     article.title = 'Hello Iverson';
     article.category = 'tech';
     article.wordCount = 500;
