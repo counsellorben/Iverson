@@ -80,6 +80,13 @@ class RegNoTenantArticle:
 
 
 @iverson_entity
+class RegComposedTenantArticle:
+    id: str = iverson_key()
+    title: str = None
+    tenant_id: str = iverson_search_key(order=0, tenant=True)
+
+
+@iverson_entity
 class RegMultiTenantArticle:
     id: str = iverson_key()
     tenant_id: str = iverson_tenant()
@@ -338,6 +345,17 @@ class TestTenantField:
         registrar = SchemaRegistrar(stub, RegNoTenantArticle)
         with pytest.raises(ValueError, match="RegNoTenantArticle"):
             registrar.register_all()
+
+    def test_tenant_composes_with_search_key(self):
+        stub = make_stub()
+        stub.RegisterSchema.return_value = mapping_pb.SchemaResponse(success=True)
+        SchemaRegistrar(stub, RegComposedTenantArticle).register_all()
+
+        request: mapping_pb.SchemaRequest = stub.RegisterSchema.call_args[0][0]
+        assert request.root_type.tenant_field == "TenantId"
+        props = {p.name: p for p in request.root_type.properties}
+        assert props["TenantId"].is_search_key is True
+        assert props["TenantId"].search_key_order == 0
 
     def test_multiple_tenant_markers_raises(self):
         stub = make_stub()

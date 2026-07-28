@@ -50,15 +50,27 @@ def iverson_key(description: str = "") -> FieldMeta:
     return FieldMeta(kind="key", description=description)
 
 
-def iverson_search_key(order: int = 0, metadata: bool = False, description: str = "") -> FieldMeta:
+def iverson_search_key(
+    order: int = 0,
+    metadata: bool = False,
+    tenant: bool = False,
+    description: str = "",
+) -> FieldMeta:
     """Mark a field used as a search/sort key in StarRocks MV.
 
     Args:
         order: position in the composite search key (0-based).
         metadata: also mark the field as a metadata signal.
+        tenant: also mark the field as the row's tenant id field.
         description: human-readable description of the field.
     """
-    return FieldMeta(kind="search_key", order=order, metadata=metadata, description=description)
+    return FieldMeta(
+        kind="search_key",
+        order=order,
+        metadata=metadata,
+        tenant=tenant,
+        description=description,
+    )
 
 
 def iverson_metadata(description: str = "") -> FieldMeta:
