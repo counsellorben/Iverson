@@ -151,8 +151,15 @@ block closes at `:261`.
 - **Single chunk** — the centroid equals that chunk normalized. Correct; no special case.
 - **Empty chunk set** — cannot arise. `SplitIntoChunks` loops `while (start < text.Length)`
   (`:421`), so non-blank text always yields at least one chunk.
-- **Re-ingest** — recomputes from the full field text, so the centroid always reflects the
-  current document rather than accumulating.
+- **Re-ingest** — when a chunk field has text, the centroid is recomputed from the full field
+  text rather than accumulating, so it tracks the current document. When the field is blank,
+  no centroid is computed and none is written: on the paths that rewrite the object point the
+  previous centroid is dropped, because Qdrant's upsert nulls unspecified vectors; on the
+  paths that do not — a chunks-only entity, or one whose declared vector fields are all blank
+  — the previous centroid persists until an event repopulates the field. A centroid can
+  therefore outlive the text it summarizes on those paths. Accepted deliberately: the same is
+  already true of the chunk points themselves, which `:199` leaves in place when a field is
+  cleared, so centroids are no staler than the passages they summarize.
 - **Crash between the two writes** — the object point exists without its centroids until
   the next republish. Accepted: it matches behaviour part 2 already has, where chunk
   prefixes are regenerated non-deterministically on every republish.
@@ -226,6 +233,10 @@ Checked against the codebase at `main@24a7fef` before this spec was written.
     `if (schema.VectorFields.Count > 0)` (`:119`). `namedVectors` is populated only from
     vector fields with non-blank text (`:126`), so declared vector fields do **not**
     guarantee an object point for a given event.
+17. Qdrant's upsert replaces a point wholesale — the existing point is deleted and reinserted
+    with only the supplied vectors, so unspecified vectors are set to null. The object upsert
+    at `IntelligenceStoreConsumer.cs:163` therefore clears any `_centroid` vectors, which the
+    centroid write restores within the same event.
 
 ## Out of scope
 
