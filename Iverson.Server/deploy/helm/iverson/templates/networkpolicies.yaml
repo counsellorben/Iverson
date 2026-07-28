@@ -443,6 +443,7 @@ spec:
                # Same port as the ingress rule above since admin-ui has no dedicated health port.
       ports:
         - { protocol: TCP, port: 8080 }
+{{- if .Values.global.tracingEnabled }}
 ---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
@@ -469,6 +470,8 @@ spec:
   egress:
     - to: []   # DNS
       ports: [{ protocol: UDP, port: 53 }, { protocol: TCP, port: 53 }]
+{{- end }}
+{{- if .Values.prometheus.enabled }}
 ---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
@@ -485,6 +488,7 @@ spec:
         - podSelector: { matchLabels: { app: {{ .Release.Name }}-api } }
         - podSelector: { matchLabels: { app: {{ .Release.Name }}-worker } }
       ports: [{ protocol: TCP, port: 8081 }]
+{{- end }}
 ---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
