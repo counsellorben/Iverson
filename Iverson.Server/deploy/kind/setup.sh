@@ -80,5 +80,18 @@ helm upgrade --install starrocks-operator operator \
   --namespace starrocks --create-namespace \
   --wait
 
+echo "Installing metrics-server..."
+# Without it both HPAs report cpu: <unknown> and never restore a Deployment that was
+# manually scaled to 0 — which is how the worker (and with it EnrichmentConsumer) sat
+# at 0 replicas during the 2026-07-27 smoke test with no error anywhere. Also makes
+# `kubectl top` work, which the laptop profile's capacity numbers depend on.
+# --kubelet-insecure-tls is required on kind: kubelet serves a self-signed cert that
+# metrics-server will otherwise reject.
+helm upgrade --install metrics-server metrics-server \
+  --repo https://kubernetes-sigs.github.io/metrics-server/ \
+  --namespace kube-system \
+  --set 'args={--kubelet-insecure-tls}' \
+  --wait
+
 echo "All operators installed."
 echo "Next: deploy/kind/build-and-load-image.sh to build+load the app image, then helm upgrade --install iverson . -f values-local.yaml -n iverson"
