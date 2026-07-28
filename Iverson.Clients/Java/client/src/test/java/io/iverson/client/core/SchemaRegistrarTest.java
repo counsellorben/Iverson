@@ -491,6 +491,27 @@ class SchemaRegistrarTest {
     }
 
     @Test
+    void registerAll_tenantMarkerComposesWithSearchKey() {
+        @IversonEntity
+        class ComposedTenantEntity {
+            @IversonKey private UUID id;
+            @IversonTenant @IversonSearchKey(order = 0) private String tenantId;
+        }
+
+        ArgumentCaptor<SchemaRequest> captor = ArgumentCaptor.forClass(SchemaRequest.class);
+
+        sut.registerAll(ComposedTenantEntity.class);
+
+        verify(mockStub).registerSchema(captor.capture());
+        TypeDescriptor typeDesc = captor.getValue().getRootType();
+        assertEquals("TenantId", typeDesc.getTenantField());
+        PropertyDescriptor tenant = prop(typeDesc, "TenantId");
+        assertTrue(tenant.getIsSearchKey(),
+            "@IversonTenant must not suppress @IversonSearchKey");
+        assertEquals(0, tenant.getSearchKeyOrder());
+    }
+
+    @Test
     void registerAll_throwsForZeroTenantMarkers() {
         @IversonEntity
         class NoTenantEntity {

@@ -2,6 +2,7 @@ package io.iverson.sample.models;
 
 import io.iverson.client.annotations.IversonEntity;
 import io.iverson.client.annotations.IversonKey;
+import io.iverson.client.annotations.IversonTenant;
 
 import java.util.UUID;
 
@@ -13,6 +14,9 @@ public class Author {
 
     @IversonKey
     private UUID id;
+
+    @IversonTenant
+    private String tenantId;
 
     private String name;
     private String email;
@@ -27,6 +31,9 @@ public class Author {
 
     public UUID getId()          { return id; }
     public void setId(UUID id)   { this.id = id; }
+
+    public String getTenantId()                 { return tenantId; }
+    public void   setTenantId(String tenantId)  { this.tenantId = tenantId; }
 
     public String getName()             { return name; }
     public void   setName(String name)  { this.name = name; }

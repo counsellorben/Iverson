@@ -25,6 +25,9 @@ import java.util.UUID;
  */
 public class Main {
 
+    /** Every row must carry the tenant it belongs to. */
+    private static final String TENANT_ID = "sample-tenant";
+
     public static void main(String[] args) throws Exception {
         // ── Connect ────────────────────────────────────────────────────────────
         try (IversonClient client = new IversonClient("localhost", 5000)) {
@@ -39,6 +42,7 @@ public class Main {
 
             UUID authorId = UUID.randomUUID();
             Author author = new Author(authorId, "Jane Smith", "jane@example.com");
+            author.setTenantId(TENANT_ID);
             String persistedAuthorId = authorCoordinator.persist(author);
             System.out.println("Persisted author: " + persistedAuthorId);
 
@@ -55,6 +59,8 @@ public class Main {
                 OffsetDateTime.now(),
                 authorId
             );
+
+            article.setTenantId(TENANT_ID);
 
             String articleId = articleCoordinator.persist(article);
             System.out.println("Persisted article: " + articleId);
