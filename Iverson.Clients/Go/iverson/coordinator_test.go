@@ -25,6 +25,7 @@ import (
 
 type coordinatorArticle struct {
 	Id       string `iverson:"key"`
+	TenantId string `iverson_tenant:"true"`
 	Category string
 }
 

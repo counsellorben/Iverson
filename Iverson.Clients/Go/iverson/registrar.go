@@ -115,11 +115,20 @@ func (r *SchemaRegistrar) buildRequest(e interface{}, traceID string) (*pb.Schem
 		relations = append(relations, rel)
 	}
 
+	var tenantField string
+	for _, fm := range meta.Fields {
+		if fm.Tenant {
+			tenantField = fm.Name
+			break
+		}
+	}
+
 	typeDesc := &pb.TypeDescriptor{
 		TypeName:    meta.TypeName,
 		Properties:  properties,
 		Relations:   relations,
 		Description: typeDescription(e),
+		TenantField: tenantField,
 	}
 	return &pb.SchemaRequest{
 		RootType: typeDesc,

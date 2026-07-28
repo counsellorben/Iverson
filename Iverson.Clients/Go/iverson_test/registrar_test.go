@@ -3,6 +3,7 @@ package iverson_test
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -30,6 +31,7 @@ func (m *mockMappingClient) RegisterSchema(_ context.Context, req *pb.SchemaRequ
 
 type registrarArticle struct {
 	Id          string `iverson:"key"`
+	TenantId    string `iverson_tenant:"true"`
 	Title       string `iverson:"embedding"`
 	Body        string `iverson:"large_field"`
 	Category    string `iverson:"search_key:0"`
@@ -81,9 +83,9 @@ func TestSchemaRegistrar_RegisterAll_Properties(t *testing.T) {
 	_ = registrar.RegisterAll(context.Background(), "")
 
 	props := mock.capturedReq.RootType.Properties
-	// Should have 7 properties (Id, Title, Body, Category, WordCount, PublishedAt, Summary)
-	if len(props) != 7 {
-		t.Errorf("expected 7 properties, got %d", len(props))
+	// Should have 8 properties (Id, TenantId, Title, Body, Category, WordCount, PublishedAt, Summary)
+	if len(props) != 8 {
+		t.Errorf("expected 8 properties, got %d", len(props))
 	}
 }
 
@@ -238,8 +240,9 @@ func TestSchemaRegistrar_RegisterAll_ServerError(t *testing.T) {
 
 func TestSchemaRegistrar_RegisterAll_MultipleEntities(t *testing.T) {
 	type secondEntity struct {
-		Id   string `iverson:"key"`
-		Name string
+		Id       string `iverson:"key"`
+		TenantId string `iverson_tenant:"true"`
+		Name     string
 	}
 
 	callCount := 0
@@ -280,16 +283,18 @@ func (c *countingMappingClient) RegisterSchema(ctx context.Context, req *pb.Sche
 // ── metadata / description registrar tests ─────────────────────────────────────
 
 type describedArticle struct {
-	Id     string `iverson:"key" iverson_desc:"Primary identifier"`
-	Status string `iverson_meta:"true" iverson_desc:"Publication status"`
-	Title  string `iverson_desc:"Headline"`
-	Body   string
+	Id       string `iverson:"key" iverson_desc:"Primary identifier"`
+	TenantId string `iverson_tenant:"true"`
+	Status   string `iverson_meta:"true" iverson_desc:"Publication status"`
+	Title    string `iverson_desc:"Headline"`
+	Body     string
 }
 
 func (describedArticle) IversonDescription() string { return "An article with metadata" }
 
 type undescribedArticle struct {
-	Id string `iverson:"key"`
+	Id       string `iverson:"key"`
+	TenantId string `iverson_tenant:"true"`
 }
 
 func propByName(t *testing.T, req *pb.SchemaRequest, name string) *pb.PropertyDescriptor {
@@ -375,6 +380,7 @@ func TestSchemaRegistrar_TypeDescriptionFromPointerEntity(t *testing.T) {
 
 type enrichedArticle struct {
 	Id       string `iverson:"key"`
+	TenantId string `iverson_tenant:"true"`
 	Summary  string `iverson_summary:"true"`
 	Keywords string `iverson_keywords:"true"`
 	Topic    string `iverson_extract:"the article's primary topic"`
@@ -445,5 +451,53 @@ func TestSchemaRegistrar_ContextualWithoutChunk_Rejected(t *testing.T) {
 	err := registrar.RegisterAll(context.Background(), "")
 	if err == nil {
 		t.Fatal("expected error for contextual on non-chunk field, got nil")
+	}
+}
+
+// ── tenant field registrar tests ────────────────────────────────────────────────
+
+func TestSchemaRegistrar_TenantField_Set(t *testing.T) {
+	mock := &mockMappingClient{response: &pb.SchemaResponse{Success: true}}
+	registrar := iverson.NewSchemaRegistrar(mock, registrarArticle{})
+	if err := registrar.RegisterAll(context.Background(), ""); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := mock.capturedReq.RootType.TenantField; got != "TenantId" {
+		t.Errorf("expected TenantField=TenantId, got %q", got)
+	}
+}
+
+type noTenantArticle struct {
+	Id    string `iverson:"key"`
+	Title string
+}
+
+func TestSchemaRegistrar_NoTenantField_Rejected(t *testing.T) {
+	mock := &mockMappingClient{response: &pb.SchemaResponse{Success: true}}
+	registrar := iverson.NewSchemaRegistrar(mock, noTenantArticle{})
+	err := registrar.RegisterAll(context.Background(), "")
+	if err == nil {
+		t.Fatal("expected error for missing tenant field, got nil")
+	}
+	if !strings.Contains(err.Error(), "noTenantArticle") {
+		t.Errorf("expected error to name the type noTenantArticle, got %q", err.Error())
+	}
+}
+
+type doubleTenantArticle struct {
+	Id       string `iverson:"key"`
+	TenantId string `iverson_tenant:"true"`
+	OrgId    string `iverson_tenant:"true"`
+}
+
+func TestSchemaRegistrar_MultipleTenantFields_Rejected(t *testing.T) {
+	mock := &mockMappingClient{response: &pb.SchemaResponse{Success: true}}
+	registrar := iverson.NewSchemaRegistrar(mock, doubleTenantArticle{})
+	err := registrar.RegisterAll(context.Background(), "")
+	if err == nil {
+		t.Fatal("expected error for multiple tenant fields, got nil")
+	}
+	if !strings.Contains(err.Error(), "TenantId") || !strings.Contains(err.Error(), "OrgId") {
+		t.Errorf("expected error to name both fields TenantId and OrgId, got %q", err.Error())
 	}
 }

@@ -161,10 +161,11 @@ func TestParseTag_RelationMissingType(t *testing.T) {
 // ── InspectType tests ─────────────────────────────────────────────────────────
 
 type articleFixture struct {
-	Id          string    `iverson:"key"`
+	Id          string `iverson:"key"`
+	TenantId    string `iverson_tenant:"true"`
 	Title       string
-	Body        string    `iverson:"large_field"`
-	Category    string    `iverson:"search_key:0"`
+	Body        string `iverson:"large_field"`
+	Category    string `iverson:"search_key:0"`
 	WordCount   int
 	PublishedAt time.Time `iverson:"search_key:1"`
 	AuthorId    string    `iverson:"many_to_one:Author"`
@@ -180,9 +181,9 @@ func TestInspectType_Fields(t *testing.T) {
 		t.Errorf("expected TypeName=articleFixture, got %q", meta.TypeName)
 	}
 
-	// Expect 6 non-relation fields: Id, Title, Body, Category, WordCount, PublishedAt
-	if len(meta.Fields) != 6 {
-		t.Errorf("expected 6 fields, got %d: %+v", len(meta.Fields), meta.Fields)
+	// Expect 7 non-relation fields: Id, TenantId, Title, Body, Category, WordCount, PublishedAt
+	if len(meta.Fields) != 7 {
+		t.Errorf("expected 7 fields, got %d: %+v", len(meta.Fields), meta.Fields)
 	}
 
 	// Expect 1 relation
@@ -299,6 +300,7 @@ func TestInspectType_NonStruct(t *testing.T) {
 
 type descFixture struct {
 	Id       string `iverson:"key" iverson_desc:"The unique identifier"`
+	TenantId string `iverson_tenant:"true"`
 	Status   string `iverson_meta:"true" iverson_desc:"Publication status"`
 	Region   string `iverson:"search_key:0" iverson_meta:"true" iverson_desc:"Publication region."`
 	Plain    string `iverson_desc:"A plain field"`

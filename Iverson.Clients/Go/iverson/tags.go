@@ -16,6 +16,9 @@
 //
 //	`iverson_desc:"Human-readable description"`
 //	`iverson_meta:"true"`  — denormalized onto chunk points for chunk-search filtering
+//	`iverson_tenant:"true"` — marks the field as the tenant boundary. Exactly one
+//	                          field on a type must carry it; the server requires
+//	                          every schema to declare a tenant boundary.
 //	`iverson_summary:"true"`     — marks the field as the ingest-time summary target
 //	`iverson_keywords:"true"`    — marks the field as the ingest-time keywords target
 //	`iverson_extract:"<hint>"`   — marks the field as an extraction target; the tag
@@ -57,6 +60,12 @@ const DescriptionTagKey = "iverson_desc"
 // MetadataTagKey is the struct tag key marking a field as metadata. Like
 // DescriptionTagKey it is independent of TagKey, so it composes with any kind.
 const MetadataTagKey = "iverson_meta"
+
+// TenantTagKey is the struct tag key marking a field as the tenant boundary.
+// Independent of TagKey (not a kind) because the tenant field may legitimately
+// also be a search key or another kind; kinds are mutually exclusive but this
+// tag must compose with them.
+const TenantTagKey = "iverson_tenant"
 
 // SummaryTagKey is the struct tag key marking a field as the summary
 // enrichment target. Independent of TagKey.
@@ -108,6 +117,9 @@ type FieldMeta struct {
 	// Metadata reports whether the field carries `iverson_meta:"true"`.
 	// Independent of Kind, so it composes with search_key, large_field, and the rest.
 	Metadata bool
+	// Tenant reports whether the field carries `iverson_tenant:"true"`.
+	// Independent of Kind, so it composes with search_key and the rest.
+	Tenant bool
 	// IsSummaryTarget reports whether the field carries `iverson_summary:"true"`.
 	IsSummaryTarget bool
 	// IsKeywordsTarget reports whether the field carries `iverson_keywords:"true"`.
@@ -208,6 +220,7 @@ func InspectType(v interface{}) (EntityMeta, error) {
 	}
 
 	meta := EntityMeta{TypeName: t.Name()}
+	var tenantFields []string
 
 	for i := 0; i < t.NumField(); i++ {
 		sf := t.Field(i)
@@ -218,6 +231,10 @@ func InspectType(v interface{}) (EntityMeta, error) {
 		}
 		fm.Description = sf.Tag.Get(DescriptionTagKey)
 		fm.Metadata = sf.Tag.Get(MetadataTagKey) == "true"
+		fm.Tenant = sf.Tag.Get(TenantTagKey) == "true"
+		if fm.Tenant {
+			tenantFields = append(tenantFields, sf.Name)
+		}
 		fm.IsSummaryTarget = sf.Tag.Get(SummaryTagKey) == "true"
 		fm.IsKeywordsTarget = sf.Tag.Get(KeywordsTagKey) == "true"
 
@@ -239,6 +256,13 @@ func InspectType(v interface{}) (EntityMeta, error) {
 		default:
 			meta.Fields = append(meta.Fields, fm)
 		}
+	}
+
+	if len(tenantFields) == 0 {
+		return EntityMeta{}, fmt.Errorf("iverson tag %q: type %s has no field marked iverson_tenant:\"true\"; the server requires every schema to declare a tenant boundary and will reject registration without one", TenantTagKey, meta.TypeName)
+	}
+	if len(tenantFields) > 1 {
+		return EntityMeta{}, fmt.Errorf("iverson tag %q: type %s has multiple fields marked iverson_tenant:\"true\" (%s); exactly one field must carry the tenant marker", TenantTagKey, meta.TypeName, strings.Join(tenantFields, ", "))
 	}
 
 	return meta, nil
