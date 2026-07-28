@@ -15,6 +15,7 @@ public sealed class EmbeddingService(
         new() { PropertyNamingPolicy = JsonNamingPolicy.CamelCase };
 
     private int _dimension;
+    private readonly SemaphoreSlim _initLock = new(1, 1);
 
     public int Dimension => _dimension > 0
         ? _dimension
@@ -23,13 +24,25 @@ public sealed class EmbeddingService(
 
     public string ModelId => options.Value.ModelId;
 
-    public async Task InitializeAsync(CancellationToken ct = default)
+    public Task InitializeAsync(CancellationToken ct = default) => EnsureInitializedAsync(ct);
+
+    public async Task EnsureInitializedAsync(CancellationToken ct = default)
     {
-        var probe = await EmbedAsync("probe", ct);
-        _dimension = probe.Length;
-        logger.LogInformation(
-            "EmbeddingService initialized: model={Model} dimension={Dimension}",
-            ModelId, _dimension);
+        if (_dimension > 0) return;
+
+        await _initLock.WaitAsync(ct);
+        try
+        {
+            if (_dimension > 0) return;
+            var probe = await EmbedAsync("probe", ct);
+            _dimension = probe.Length;
+            logger.LogInformation(
+                "EmbeddingService initialized: model={Model} dimension={Dimension}", ModelId, _dimension);
+        }
+        finally
+        {
+            _initLock.Release();
+        }
     }
 
     public async Task<float[]> EmbedAsync(string text, CancellationToken ct = default)

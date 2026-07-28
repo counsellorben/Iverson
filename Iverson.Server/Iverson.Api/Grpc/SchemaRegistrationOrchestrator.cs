@@ -36,6 +36,17 @@ public sealed class SchemaRegistrationOrchestrator(
             foreach (var property in typeDesc.Properties)
                 ValidateIdentifier(property.Name, $"property name on type '{typeDesc.TypeName}'");
 
+            try
+            {
+                await embedding.EnsureInitializedAsync(ct);
+            }
+            catch (Exception ex)
+            {
+                throw new RpcException(new Status(StatusCode.Unavailable,
+                    $"Embedding service is unavailable, so schema registration cannot determine the vector "
+                    + $"dimension. Check that Ollama is reachable and retry. ({ex.Message})"));
+            }
+
             var descriptor = SchemaBuilder.BuildDescriptor(typeDesc, embedding);
 
             ValidateEnrichmentTargets(typeDesc, descriptor);

@@ -19,6 +19,7 @@ internal sealed class NoOpEmbeddingService : IEmbeddingService
     public int Dimension => 4;
     public string ModelId => "test-noop";
     public Task InitializeAsync(CancellationToken ct = default) => Task.CompletedTask;
+    public Task EnsureInitializedAsync(CancellationToken ct = default) => Task.CompletedTask;
     public Task<float[]> EmbedAsync(string text, CancellationToken ct = default) => Task.FromResult(new float[4]);
 }
 

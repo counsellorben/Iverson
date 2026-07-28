@@ -383,7 +383,19 @@ app.MapPost("/admin/dlq/{id}/replay", async (Guid id, IDlqRepository dlq, IEvent
 }).WithName("ReplayDlq").RequireAuthorization("Operator");
 
 // ── Schema hydration ───────────────────────────────────────────────────────────
-await app.Services.GetRequiredService<IEmbeddingService>().InitializeAsync();
+try
+{
+    await app.Services.GetRequiredService<IEmbeddingService>().EnsureInitializedAsync();
+}
+catch (Exception ex)
+{
+    // Ollama is commonly still pulling ~2.2GB of models on a first install. Dying here
+    // crash-loops both roles and CrashLoopBackOff then delays recovery by up to five
+    // minutes AFTER Ollama is healthy. Initialization retries lazily at the one place
+    // that needs the dimension (schema registration), so continue.
+    app.Logger.LogWarning(ex,
+        "Embedding service not initialized at startup; will initialize on first schema registration.");
+}
 var schemaRegistry = app.Services.GetRequiredService<SchemaRegistry>();
 await schemaRegistry.LoadAsync();
 

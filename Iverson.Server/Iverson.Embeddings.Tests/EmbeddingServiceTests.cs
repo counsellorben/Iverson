@@ -28,12 +28,19 @@ public sealed class EmbeddingServiceTests
         }
     }
 
-    private EmbeddingService CreateService(FakeHttpMessageHandler handler, string modelId = "nomic-embed-text")
+    private EmbeddingService CreateService(HttpMessageHandler handler, string modelId = "nomic-embed-text")
     {
+        // EmbedAsync disposes the HttpClient it gets from the factory on every call
+        // (`using var client = httpClientFactory.CreateClient(...)`), matching real
+        // IHttpClientFactory usage where each CreateClient() call returns a fresh client
+        // over a shared, undisposed handler. Return a new client per call here too, so
+        // tests that call EnsureInitializedAsync/EmbedAsync more than once on the same
+        // service instance don't hit a spurious ObjectDisposedException from client reuse.
         var factory = Substitute.For<IHttpClientFactory>();
         factory
             .CreateClient(Arg.Any<string>())
-            .Returns(new HttpClient(handler) { BaseAddress = new Uri("http://localhost:11434") });
+            .Returns(_ => new HttpClient(handler, disposeHandler: false)
+                { BaseAddress = new Uri("http://localhost:11434") });
         return new EmbeddingService(
             factory,
             Options.Create(new EmbeddingServiceOptions { ModelId = modelId }),
@@ -145,5 +152,81 @@ public sealed class EmbeddingServiceTests
 
         act.Should().Throw<InvalidOperationException>()
            .WithMessage("*not initialized*");
+    }
+
+    private sealed class CountingHttpMessageHandler(HttpResponseMessage response) : HttpMessageHandler
+    {
+        public int CallCount;
+
+        protected override async Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken ct)
+        {
+            Interlocked.Increment(ref CallCount);
+            await Task.Delay(20, ct); // widen the race window for concurrency test
+            return new HttpResponseMessage(response.StatusCode)
+            {
+                Content = new StringContent(
+                    await response.Content!.ReadAsStringAsync(ct), Encoding.UTF8, "application/json")
+            };
+        }
+    }
+
+    [Fact]
+    public async Task EnsureInitializedAsync_CalledTwice_ProbesOnlyOnce()
+    {
+        var handler = new CountingHttpMessageHandler(SuccessResponse([0.1f, 0.2f]));
+        var svc = CreateService(handler);
+
+        await svc.EnsureInitializedAsync();
+        await svc.EnsureInitializedAsync();
+
+        handler.CallCount.Should().Be(1);
+        svc.Dimension.Should().Be(2);
+    }
+
+    [Fact]
+    public async Task EnsureInitializedAsync_ConcurrentCallers_ProbeOnlyOnce()
+    {
+        var handler = new CountingHttpMessageHandler(SuccessResponse([0.1f, 0.2f, 0.3f]));
+        var svc = CreateService(handler);
+
+        await Task.WhenAll(Enumerable.Range(0, 10).Select(_ => svc.EnsureInitializedAsync()));
+
+        handler.CallCount.Should().Be(1);
+        svc.Dimension.Should().Be(3);
+    }
+
+    private sealed class FlakyThenSuccessHandler(HttpResponseMessage success) : HttpMessageHandler
+    {
+        public int CallCount;
+
+        protected override Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken ct)
+        {
+            Interlocked.Increment(ref CallCount);
+            if (CallCount == 1)
+                return Task.FromResult(new HttpResponseMessage(HttpStatusCode.InternalServerError));
+            return Task.FromResult(success);
+        }
+    }
+
+    [Fact]
+    public async Task EnsureInitializedAsync_FailingProbe_ThrowsButLeavesServiceUsableForLaterSuccess()
+    {
+        var handler = new FlakyThenSuccessHandler(SuccessResponse([0.1f, 0.2f]));
+        var svc = CreateService(handler);
+
+        await svc.Invoking(s => s.EnsureInitializedAsync())
+                 .Should().ThrowAsync<HttpRequestException>();
+
+        var act = () => svc.Dimension;
+        act.Should().Throw<InvalidOperationException>();
+
+        await svc.EnsureInitializedAsync();
+
+        svc.Dimension.Should().Be(2);
+        handler.CallCount.Should().Be(2);
     }
 }
