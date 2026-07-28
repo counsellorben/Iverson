@@ -71,13 +71,20 @@ application, not just the store. Specifically:
 The jaeger references are non-fatal (a dangling endpoint only produces export errors), but
 guarding them avoids a permanent error-log stream in a profile where jaeger is off.
 
-`global.tracingEnabled` must be **defined**, not merely referenced: add
-`global.tracingEnabled: true` to `values.yaml` and set `condition: global.tracingEnabled`
-on the `jaeger` dependency, so one value drives both the subchart and the env guard. Helm
-resolves `global.*` paths in `condition:` (its own documented example is
-`condition: subchart1.enabled,global.subchart1.enabled`). Without the definition the value
-renders falsey and the OTLP endpoints disappear from every profile, including the cloud
-overlays — the opposite of the "purely additive" guarantee above.
+**Both global flags must be defined**, not merely referenced: add
+`global.engagementEnabled: true` and `global.tracingEnabled: true` to `values.yaml`, and
+set the `starrocks` and `jaeger` dependency conditions to them respectively, so one value
+drives each subchart *and* its env guard. Helm resolves `global.*` paths in `condition:`
+(its own documented example is `condition: subchart1.enabled,global.subchart1.enabled`).
+
+Defining them is not optional, because Helm treats the two consumers asymmetrically. An
+undefined `condition:` path "has no effect", so the subchart still renders; an undefined
+template-guard value is falsey, so the guarded env block is omitted. Leaving either flag
+undefined therefore *deploys* the component while *stripping* the api and worker env that
+talks to it — StarRocks running with no connection string and an empty
+`Engagement__Enabled`, or jaeger running with no OTLP endpoint — in every profile including
+the cloud overlays, and with no failed pod to signal it. That is the opposite of the
+"purely additive" guarantee above.
 
 **Values scoping.** A Helm subchart cannot read a sibling top-level value, so the api and
 worker charts cannot see `starrocks.enabled`. The chart already solves this class of
@@ -103,7 +110,8 @@ remains the full-fidelity profile.
 | postgres, kafka, qdrant, ollama | on |
 | api, worker, redis, authentik | on |
 | starrocks | **off** (`global.engagementEnabled: false`) |
-| jaeger, prometheus, adminUi | **off** |
+| jaeger | **off** (`global.tracingEnabled: false`) |
+| prometheus, adminUi | **off** (`prometheus.enabled: false`, `adminUi.enabled: false`) |
 
 **Capacity.** The app side is ~1.45 CPU of requests, verified by rendering the chart.
 System and operator overhead measured ~2.0 CPU during the smoke test, and metrics-server
@@ -232,6 +240,10 @@ Unit-level, matching existing patterns:
 - A positive default-render assertion: `helm template` with stock `values.yaml` still emits
   `OTEL_EXPORTER_OTLP_ENDPOINT` on both api and worker. The other render assertions cover
   the disabled cases; this one guards the "defaults unchanged" invariant.
+- A positive default-render assertion for the engagement flag: `helm template` with stock
+  `values.yaml` emits `ConnectionStrings__StarRocks` and `Engagement__Enabled=true` on both
+  api and worker. The existing assertion only proves the `global.engagementEnabled=false`
+  direction.
 
 ## Verified assumptions
 
