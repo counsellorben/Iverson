@@ -93,6 +93,17 @@ class RegMultiTenantArticle:
     org_id: str = iverson_tenant()
 
 
+@iverson_entity
+class RegComposedEnrichmentArticle:
+    id: str = iverson_key()
+    title: str = None
+    summary_key: str = iverson_search_key(order=0, summary=True)
+    keywords_meta: str = iverson_metadata(keywords=True)
+    hint_field: str = iverson_large_field(extract_hint="Extract the price.")
+    described_summary: str = iverson_description("A summary field.", summary=True)
+    tenant_id: str = iverson_tenant()
+
+
 # ── Fixtures ───────────────────────────────────────────────────────────────────
 
 def make_stub() -> MagicMock:
@@ -328,6 +339,56 @@ class TestEnrichmentTargets:
     def test_whitespace_extraction_hint_rejected(self):
         with pytest.raises(ValueError, match="extract"):
             iverson_extracted("   ")
+
+    def test_standalone_summary_still_works(self):
+        props = {p.name: p for p in self._request(RegEnrichedArticle).root_type.properties}
+        assert props["Abstract"].is_summary_target is True
+        assert props["Abstract"].is_search_key is False
+
+    def test_standalone_keywords_still_works(self):
+        props = {p.name: p for p in self._request(RegEnrichedArticle).root_type.properties}
+        assert props["Tags"].is_keywords_target is True
+
+    def test_standalone_extracted_still_works(self):
+        props = {p.name: p for p in self._request(RegEnrichedArticle).root_type.properties}
+        assert props["Entities"].extract_hint == "Extract named entities as a JSON array."
+
+    def test_summary_composes_with_search_key(self):
+        props = {p.name: p for p in self._request(RegComposedEnrichmentArticle).root_type.properties}
+        assert props["SummaryKey"].is_summary_target is True
+        assert props["SummaryKey"].is_search_key is True
+        assert props["SummaryKey"].search_key_order == 0
+
+    def test_keywords_composes_with_metadata(self):
+        props = {p.name: p for p in self._request(RegComposedEnrichmentArticle).root_type.properties}
+        assert props["KeywordsMeta"].is_keywords_target is True
+        assert props["KeywordsMeta"].is_metadata is True
+
+    def test_extract_hint_composes_with_large_field(self):
+        props = {p.name: p for p in self._request(RegComposedEnrichmentArticle).root_type.properties}
+        assert props["HintField"].extract_hint == "Extract the price."
+        assert props["HintField"].is_large_field is True
+
+    def test_summary_composes_with_description(self):
+        props = {p.name: p for p in self._request(RegComposedEnrichmentArticle).root_type.properties}
+        assert props["DescribedSummary"].is_summary_target is True
+        assert props["DescribedSummary"].description == "A summary field."
+
+    def test_blank_extract_hint_kwarg_rejected_on_search_key(self):
+        with pytest.raises(ValueError, match="extract"):
+            iverson_search_key(extract_hint="   ")
+
+    def test_blank_extract_hint_kwarg_rejected_on_metadata(self):
+        with pytest.raises(ValueError, match="extract"):
+            iverson_metadata(extract_hint="   ")
+
+    def test_blank_extract_hint_kwarg_rejected_on_large_field(self):
+        with pytest.raises(ValueError, match="extract"):
+            iverson_large_field(extract_hint="   ")
+
+    def test_blank_extract_hint_kwarg_rejected_on_description(self):
+        with pytest.raises(ValueError, match="extract"):
+            iverson_description("desc", extract_hint="   ")
 
 
 class TestTenantField:

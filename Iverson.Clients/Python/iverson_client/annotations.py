@@ -50,11 +50,36 @@ def iverson_key(description: str = "") -> FieldMeta:
     return FieldMeta(kind="key", description=description)
 
 
+def _enrichment_kwargs(
+    summary: bool, keywords: bool, extract_hint: str, caller: str
+) -> dict:
+    """Validate and package the shared enrichment kwargs.
+
+    Reuses the blank-hint guard from ``iverson_extracted``: the server treats
+    an empty hint as "not an extraction target" and would silently drop it,
+    so a blank hint supplied via a kwarg must be rejected the same way.
+    """
+    if extract_hint and not extract_hint.strip():
+        raise ValueError(
+            f"{caller}() requires a non-blank extraction hint; the "
+            "server treats an empty hint as \"not an extraction target\" and "
+            "would silently drop it."
+        )
+    return dict(
+        is_summary_target=summary,
+        is_keywords_target=keywords,
+        extract_hint=extract_hint,
+    )
+
+
 def iverson_search_key(
     order: int = 0,
     metadata: bool = False,
     tenant: bool = False,
     description: str = "",
+    summary: bool = False,
+    keywords: bool = False,
+    extract_hint: str = "",
 ) -> FieldMeta:
     """Mark a field used as a search/sort key in StarRocks MV.
 
@@ -63,6 +88,10 @@ def iverson_search_key(
         metadata: also mark the field as a metadata signal.
         tenant: also mark the field as the row's tenant id field.
         description: human-readable description of the field.
+        summary: also mark the field as a summary enrichment target.
+        keywords: also mark the field as a keywords enrichment target.
+        extract_hint: also mark the field as an extraction enrichment target,
+            guided by this hint. Must not be blank when provided.
     """
     return FieldMeta(
         kind="search_key",
@@ -70,35 +99,76 @@ def iverson_search_key(
         metadata=metadata,
         tenant=tenant,
         description=description,
+        **_enrichment_kwargs(summary, keywords, extract_hint, "iverson_search_key"),
     )
 
 
-def iverson_metadata(description: str = "") -> FieldMeta:
+def iverson_metadata(
+    description: str = "",
+    summary: bool = False,
+    keywords: bool = False,
+    extract_hint: str = "",
+) -> FieldMeta:
     """Mark a field as a metadata signal — a property that describes or
     qualifies the entity rather than carrying its primary content.
 
     Args:
         description: human-readable description of the field.
+        summary: also mark the field as a summary enrichment target.
+        keywords: also mark the field as a keywords enrichment target.
+        extract_hint: also mark the field as an extraction enrichment target,
+            guided by this hint. Must not be blank when provided.
     """
-    return FieldMeta(kind="metadata", metadata=True, description=description)
+    return FieldMeta(
+        kind="metadata",
+        metadata=True,
+        description=description,
+        **_enrichment_kwargs(summary, keywords, extract_hint, "iverson_metadata"),
+    )
 
 
-def iverson_description(description: str) -> FieldMeta:
+def iverson_description(
+    description: str,
+    summary: bool = False,
+    keywords: bool = False,
+    extract_hint: str = "",
+) -> FieldMeta:
     """Supply a human-readable description for an otherwise plain field.
 
     Args:
         description: the description text.
+        summary: also mark the field as a summary enrichment target.
+        keywords: also mark the field as a keywords enrichment target.
+        extract_hint: also mark the field as an extraction enrichment target,
+            guided by this hint. Must not be blank when provided.
     """
-    return FieldMeta(kind="plain", description=description)
+    return FieldMeta(
+        kind="plain",
+        description=description,
+        **_enrichment_kwargs(summary, keywords, extract_hint, "iverson_description"),
+    )
 
 
-def iverson_large_field(description: str = "") -> FieldMeta:
+def iverson_large_field(
+    description: str = "",
+    summary: bool = False,
+    keywords: bool = False,
+    extract_hint: str = "",
+) -> FieldMeta:
     """Mark a field as large (excluded from materialized views).
 
     Args:
         description: human-readable description of the field.
+        summary: also mark the field as a summary enrichment target.
+        keywords: also mark the field as a keywords enrichment target.
+        extract_hint: also mark the field as an extraction enrichment target,
+            guided by this hint. Must not be blank when provided.
     """
-    return FieldMeta(kind="large_field", description=description)
+    return FieldMeta(
+        kind="large_field",
+        description=description,
+        **_enrichment_kwargs(summary, keywords, extract_hint, "iverson_large_field"),
+    )
 
 
 def iverson_embedding(description: str = "") -> FieldMeta:
@@ -140,7 +210,7 @@ def iverson_summary(description: str = "") -> FieldMeta:
     Args:
         description: human-readable description of the field.
     """
-    return FieldMeta(kind="summary", is_summary_target=True, description=description)
+    return FieldMeta(kind="", is_summary_target=True, description=description)
 
 
 def iverson_keywords(description: str = "") -> FieldMeta:
@@ -150,7 +220,7 @@ def iverson_keywords(description: str = "") -> FieldMeta:
     Args:
         description: human-readable description of the field.
     """
-    return FieldMeta(kind="keywords", is_keywords_target=True, description=description)
+    return FieldMeta(kind="", is_keywords_target=True, description=description)
 
 
 def iverson_extracted(hint: str, description: str = "") -> FieldMeta:
@@ -174,7 +244,7 @@ def iverson_extracted(hint: str, description: str = "") -> FieldMeta:
             "server treats an empty hint as \"not an extraction target\" and "
             "would silently drop it."
         )
-    return FieldMeta(kind="extracted", extract_hint=hint, description=description)
+    return FieldMeta(kind="", extract_hint=hint, description=description)
 
 
 def iverson_tenant(description: str = "") -> FieldMeta:
@@ -271,6 +341,12 @@ def iverson_entity(cls: type | None = None, *, description: str = ""):
                     descriptions[field_name] = meta.description
                 if meta.tenant:
                     tenant_fields.append(field_name)
+                if meta.is_summary_target:
+                    summary_fields.append(field_name)
+                if meta.is_keywords_target:
+                    keywords_fields.append(field_name)
+                if meta.extract_hint:
+                    extracted_fields[field_name] = meta.extract_hint
 
             if meta.kind == "key":
                 key_field = field_name
@@ -286,15 +362,6 @@ def iverson_entity(cls: type | None = None, *, description: str = ""):
                 plain_fields.append(field_name)
             elif meta.kind == "chunk":
                 chunk_fields.append((field_name, meta.max_tokens, meta.overlap, meta.contextual))
-                plain_fields.append(field_name)
-            elif meta.kind == "summary":
-                summary_fields.append(field_name)
-                plain_fields.append(field_name)
-            elif meta.kind == "keywords":
-                keywords_fields.append(field_name)
-                plain_fields.append(field_name)
-            elif meta.kind == "extracted":
-                extracted_fields[field_name] = meta.extract_hint
                 plain_fields.append(field_name)
             elif meta.kind in _RELATION_KINDS:
                 relations.append({
