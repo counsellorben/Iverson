@@ -52,6 +52,10 @@ qdrant:
 
 ollama:
   replicas: 1
+  # ollama renders as a StatefulSet, so this feeds volumeClaimTemplates. Raising it on an
+  # existing install will make `helm upgrade` fail (those fields are immutable) — first run
+  # `kubectl delete sts iverson-ollama --cascade=orphan` (keeps the pod/PVC), or also delete
+  # the PVC for a clean re-pull.
   storageSize: 8Gi
   storageClassName: "standard"
   resources:

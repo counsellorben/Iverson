@@ -95,3 +95,4 @@ helm upgrade --install metrics-server metrics-server \
 
 echo "All operators installed."
 echo "Next: deploy/kind/build-and-load-image.sh to build+load the app image, then helm upgrade --install iverson . -f values-local.yaml -n iverson"
+echo "Note: if you later raise ollama.storageSize on an existing cluster, 'helm upgrade' will fail (StatefulSet volumeClaimTemplates are immutable) - see the comment next to storageSize in values-local.yaml."
