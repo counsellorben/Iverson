@@ -88,6 +88,7 @@ Newly introduced by this plan and verified at plan-write time.
 | P15 | Consumer impact | Removing `tenantFieldByTypeName` touches no caller beyond the spec's enumerated set | `grep` returns 7 hits, matching A8 exactly |
 | P16 | Consumer impact | Appending a field to Go's or Python's `FieldMeta` breaks no construction site | Go uses a keyed literal `FieldMeta{Name: fieldName}` (`tags.go:125`); Python's `FieldMeta(` calls are keyword-based |
 | P17 | Consumer impact | Adding `TenantId` to the Sample models breaks no assertion | The Sample is referenced only by the two `.slnx` files and its own sources; no test asserts its property set |
+| P18 | Consumer impact | The new zero-marker validation invalidates every client's pre-existing registrar-test fixtures, none of which carries a tenant property | `grep -ci tenant` → 0 in the Java, Python, Go and TypeScript registrar test files; .NET's 3 hits are dictionary values at `SchemaRegistrarTests.cs:608,611,635`, not fixture properties. Registering call sites: .NET 16, Java 56, Python 15, TS 20, Go every `NewSchemaRegistrar(mock, registrarArticle{})`. Added after critical-implementation-review round 1 |
 
 ## Tasks
 
@@ -128,6 +129,8 @@ In `SchemaRegistrarTests.cs`, the two existing map tests (`RegisterAllAsync_Sets
 - an entity with two marked properties throws `ArgumentException`, message naming both properties
 
 The two authorization tests at `:526` and `:561` are unaffected — do not touch them.
+
+Before running the suite, every entity fixture in this file that a test registers must carry the marker, or the new zero-marker check throws on all 16 existing `RegisterAllAsync` call sites. `SchemaTestAuthor` (`:65`), `SchemaTestArticle` (`:74`) and `SchemaTestTag` (`:92`) have no tenant property at all — the `"TenantId"` string at `:608`/`:611`/`:635` is a dictionary *value* in the map tests, not a property — so each fixture needs a `public string TenantId { get; set; } = string.Empty;` carrying `[IversonTenant]`. The two replaced map tests must then assert against that real property rather than the fabricated name the unvalidated map accepted.
 
 - [ ] **Step 3: Scan and validate in the registrar**
 
@@ -211,6 +214,8 @@ Mirror `IversonMetadata.java`, which carries `@Target(ElementType.FIELD)` and `@
 
 Three cases in `SchemaRegistrarTest.java`: the marked field's name reaches `tenant_field`; zero markers throws `IllegalArgumentException` naming the type; two markers throws naming both fields.
 
+Before running the suite, every entity fixture in this file that a test registers must carry the marker, or the new zero-marker check throws on every existing registering test. Enumerate the fixtures in this file rather than assuming a count — it defines several (`SchemaTestAuthor`, `SchemaTestArticle`, `SearchAnnotationTestEntity`, `MetadataAnnotationTestEntity`, `EnrichmentAnnotationTestEntity`, …). Each needs a string tenant field carrying the marker. Fixtures that are *deliberately* invalid — ones whose test asserts a registration error — must be left alone, since they never reach the descriptor build.
+
 - [ ] **Step 3: Scan, validate, set**
 
 In the field loop that already populates the builder (`SchemaRegistrar.java:72` `newBuilder` through `:116` `build()`), collect fields carrying `IversonTenant`. Zero or more-than-one throws `IllegalArgumentException`; exactly one calls `builder.setTenantField(name)`.
@@ -238,6 +243,8 @@ git commit -m "feat(java-client): declare the tenant field with @IversonTenant"
 - [ ] **Step 1: Write the tests first**
 
 Three cases in `test_schema_registrar.py`: the marked field's name reaches `tenant_field` on the built descriptor; zero markers raises `ValueError` naming the type; two markers raises `ValueError` naming both fields.
+
+Before running the suite, every entity fixture in this file that a test registers must carry the marker, or the new zero-marker check raises on every existing registering test. Enumerate the fixtures in this file rather than assuming a count — it defines several (`RegArticle`, `RegAuthor`, `RegDescribedArticle`, `RegEnrichedArticle`, …). Each needs a string tenant field carrying the marker. Fixtures that are *deliberately* invalid — ones whose test asserts a registration error — must be left alone, since they never reach the descriptor build.
 
 - [ ] **Step 2: Add the flag and the factory**
 
@@ -295,6 +302,8 @@ git commit -m "feat(python-client): declare the tenant field with iverson_tenant
 
 Three cases in `registrar_test.go`: the tagged field's name reaches `TenantField`; zero tags returns an error naming the type; two tags returns an error naming both fields.
 
+Before running the suite, every entity fixture in this file that a test registers must carry the tag, or the new zero-tag check errors on every existing registering test — each `NewSchemaRegistrar(mock, registrarArticle{})` call site included. Enumerate the fixtures in this file rather than assuming a count (`registrarArticle`, …). Each needs a string tenant field carrying the tag. Fixtures that are *deliberately* invalid — ones whose test asserts a registration error — must be left alone, since they never reach the descriptor build.
+
 - [ ] **Step 2: Add the tag key and the field**
 
 Add `TenantTagKey = "iverson_tenant"` beside the other independent key constants, and a `Tenant bool` member to `FieldMeta` beside `Metadata`. Parse it the way `iverson_meta` is parsed — the same `== "true"` rule, not a new truthiness convention.
@@ -333,6 +342,8 @@ git commit -m "feat(go-client): declare the tenant field with an iverson_tenant 
 - [ ] **Step 1: Write the tests first**
 
 Three cases in `schema-registrar.test.ts`: the decorated property's name reaches `tenantField`; zero decorators throws `Error` naming the type; two throws naming both properties.
+
+Before running the suite, every entity fixture in this file that a test registers must carry the decorator, or the new zero-decorator check throws on every existing registering test. Enumerate the fixtures in this file rather than assuming a count — it defines several at module scope (`RegArticle`, `RegDoc`, …) plus classes declared inline inside individual tests. Each needs a string tenant property carrying the decorator. Fixtures that are *deliberately* invalid — such as the undecorated class whose test asserts the `@IversonEntity()` error at `:126-130` — must be left alone, since they never reach the descriptor build.
 
 - [ ] **Step 2: Add the decorator**
 
