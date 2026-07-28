@@ -46,9 +46,11 @@ assumes every store is deployed.
 ### 1. Chart composability
 
 Add `condition: <key>.enabled` to all 12 dependencies in `Chart.yaml`, with
-`enabled: true` defaulted in each subchart's values block. Defaults preserve today's
-behaviour exactly, so `values.yaml` and the three cloud overlays are unaffected. This is
-purely additive.
+`enabled: true` defaulted in each subchart's values block — except `starrocks` and
+`jaeger`, whose conditions are `global.engagementEnabled` and `global.tracingEnabled`
+respectively, because those two also gate env vars in the api and worker charts and must
+not be settable twice. Defaults preserve today's behaviour exactly, so `values.yaml` and
+the three cloud overlays are unaffected. This is purely additive.
 
 `admin-ui` is declared with `alias: adminUi`, so its condition key is `adminUi.enabled`.
 
@@ -69,12 +71,27 @@ application, not just the store. Specifically:
 The jaeger references are non-fatal (a dangling endpoint only produces export errors), but
 guarding them avoids a permanent error-log stream in a profile where jaeger is off.
 
+`global.tracingEnabled` must be **defined**, not merely referenced: add
+`global.tracingEnabled: true` to `values.yaml` and set `condition: global.tracingEnabled`
+on the `jaeger` dependency, so one value drives both the subchart and the env guard. Helm
+resolves `global.*` paths in `condition:` (its own documented example is
+`condition: subchart1.enabled,global.subchart1.enabled`). Without the definition the value
+renders falsey and the OTLP endpoints disappear from every profile, including the cloud
+overlays — the opposite of the "purely additive" guarantee above.
+
 **Values scoping.** A Helm subchart cannot read a sibling top-level value, so the api and
 worker charts cannot see `starrocks.enabled`. The chart already solves this class of
 problem with `global.*` (`global.ingressHost`, `global.generativeModel`), so the flag is
-`global.engagementEnabled`, following that precedent. `values.yaml` sets
-`starrocks.enabled` and `global.engagementEnabled` together, and the spec's tests assert
-they agree.
+`global.engagementEnabled`, following that precedent.
+
+There is exactly **one** flag: `global.engagementEnabled`. It drives the starrocks
+dependency's `condition:` *and* the env guards *and* `Engagement__Enabled`. There is
+deliberately no separate `starrocks.enabled` — two flags that must "agree" can disagree,
+and the disagreeing state (`starrocks.enabled=false` with `global.engagementEnabled=true`)
+renders the `secretKeyRef` against a Secret that no longer exists, reproducing the exact
+`CreateContainerConfigError` this guard was added to prevent. A test over the repo's own
+values files cannot constrain a user's `--set`. This mirrors the reasoning already recorded
+for `global.generativeModel`.
 
 ### 2. New `values-laptop.yaml`
 
@@ -85,7 +102,7 @@ remains the full-fidelity profile.
 |---|---|
 | postgres, kafka, qdrant, ollama | on |
 | api, worker, redis, authentik | on |
-| starrocks | **off** |
+| starrocks | **off** (`global.engagementEnabled: false`) |
 | jaeger, prometheus, adminUi | **off** |
 
 **Capacity.** The app side is ~1.45 CPU of requests, verified by rendering the chart.
@@ -149,7 +166,7 @@ sole call site is `SchemaRegistrationOrchestrator.cs:39` — an async method on 
 role's registration path. `EmbedAsync` does not reference `_dimension` at all. The worker
 therefore probes at startup, crash-loops on it, and never uses the result.
 
-Four changes:
+Three changes:
 
 1. `IEmbeddingService.EnsureInitializedAsync()` — idempotent, `SemaphoreSlim`-guarded so
    concurrent callers probe once. The `Dimension` property keeps throwing
@@ -161,14 +178,21 @@ Four changes:
    registering a schema with embedding or chunk fields while Ollama is down yields a clear
    `Unavailable` gRPC error naming Ollama, instead of a confusing `InvalidOperationException`.
    Recoverable: retry the registration once Ollama is up.
-4. Readiness gains an `embeddings` check, so k8s holds traffic rather than admitting a
-   server that would fail every registration.
 
 This matches the "degrade and report, don't die" shape the StarRocks path already uses,
 rather than introducing a second competing pattern.
 
 Deliberately **not** doing: a configurable `Embeddings__Dimension`. That reintroduces the
 pulled-vs-requested drift class that the `global.generativeModel` fix just eliminated.
+
+Also deliberately **not** doing: adding an `embeddings` check to readiness. The api and
+worker share one `/health` endpoint (A27), and the worker never initializes the embedding
+service — `Dimension` is consumed only on the api's registration path. An
+"initialization succeeded" check would therefore leave the worker permanently not-Ready,
+trading the crash-loop for a silent outage and disabling `EnrichmentConsumer` the same
+invisible way the missing metrics-server did. Changes 1-3 remove the crash-loop on their
+own, and change 3 surfaces a registration attempted against a down Ollama as an explicit
+`Unavailable` error rather than by withholding traffic.
 
 ### 5. Supporting fixes
 
@@ -203,13 +227,17 @@ Unit-level, matching existing patterns:
   registered when true.
 - `helm template` assertions: each `condition:` removes its subchart; `Engagement__Enabled`
   tracks `global.engagementEnabled` on both api and worker; and — the regression this
-  design exists to prevent — **rendering with `starrocks.enabled=false` produces api and
-  worker Deployments with no reference to the `-starrocks-app` Secret.**
+  design exists to prevent — **rendering with `global.engagementEnabled=false` produces api
+  and worker Deployments with no reference to the `-starrocks-app` Secret.**
+- A positive default-render assertion: `helm template` with stock `values.yaml` still emits
+  `OTEL_EXPORTER_OTLP_ENDPOINT` on both api and worker. The other render assertions cover
+  the disabled cases; this one guards the "defaults unchanged" invariant.
 
 ## Verified assumptions
 
 Nineteen assumptions were enumerated against the design and checked against the codebase
-before this spec was written. Fifteen held; four changed the design.
+before this spec was written. Fifteen held; four changed the design. A27 and A28 were added
+afterwards, from the span check in critical-design-review round 1.
 
 | # | Assumption | Result |
 |---|---|---|
@@ -232,6 +260,8 @@ before this spec was written. Fifteen held; four changed the design.
 | A21 | 2Gi ollama storage is a real regression | **DISPROVED** — local-path-provisioner ignores capacity limits |
 | A22 | StarRocks can be right-sized for a laptop | **DISPROVED** — vendor sizes FE at 8 CPU/16GB, BE at 16 CPU/64GB |
 | A23/A24 | metrics-server absent; `setup.sh` is the right place | PASS — 0 occurrences in `setup.sh` |
+| A27 | api and worker share the `/health` endpoint and both gate readiness on it | PASS — `charts/api/.../deployment.yaml:165-167`, `charts/worker/.../deployment.yaml:132-135`; any readiness change affects both roles |
+| A28 | Removing `ConnectionStrings__StarRocks` from the env is non-crashing | PASS — `Program.cs:165-167` falls back to `localhost:9030`. Nothing dials it when disabled: consumer unregistered (3a), search swapped (3b), health result excluded from the verdict (3c) |
 
 ## Known issues / accepted
 
