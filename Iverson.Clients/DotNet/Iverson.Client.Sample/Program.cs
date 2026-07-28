@@ -27,6 +27,9 @@ var userArticles = services.GetRequiredService<EntityCoordinator<UserArticle>>()
 // separate RPCs not yet surfaced on EntityCoordinator).
 var searchClient = services.GetRequiredService<ObjectSearchService.ObjectSearchServiceClient>();
 
+// Every row must declare the tenant it belongs to; reads are filtered by it.
+const string sampleTenant = "sample-tenant";
+
 // ── Seed Data ─────────────────────────────────────────────────────────────────
 
 Console.WriteLine("\n=== Seed Data ===");
@@ -38,6 +41,7 @@ var authorKobeId = Guid.NewGuid();
 await authors.PersistAsync(new Author
 {
     Id    = authorAiId,
+    TenantId = sampleTenant,
     Name  = "Allen Iverson",
     Email = "ai@iverson.dev",
     Bio   = "The original AI. Point guard. Hall of Famer."
@@ -45,6 +49,7 @@ await authors.PersistAsync(new Author
 await authors.PersistAsync(new Author
 {
     Id    = authorKobeId,
+    TenantId = sampleTenant,
     Name  = "Kobe Bryant",
     Email = "kb@iverson.dev",
     Bio   = "The Black Mamba. Five-time NBA champion."
@@ -56,9 +61,9 @@ var tagBballId  = Guid.NewGuid();
 var tagCultureId = Guid.NewGuid();
 var tagLegacyId  = Guid.NewGuid();
 
-await tags.PersistAsync(new Tag { Id = tagBballId,   Label = "Basketball",   Slug = "basketball"   });
-await tags.PersistAsync(new Tag { Id = tagCultureId, Label = "Culture",      Slug = "culture"      });
-await tags.PersistAsync(new Tag { Id = tagLegacyId,  Label = "Legacy",       Slug = "legacy"       });
+await tags.PersistAsync(new Tag { Id = tagBballId,   Label = "Basketball",   Slug = "basketball", TenantId = sampleTenant });
+await tags.PersistAsync(new Tag { Id = tagCultureId, Label = "Culture",      Slug = "culture", TenantId = sampleTenant });
+await tags.PersistAsync(new Tag { Id = tagLegacyId,  Label = "Legacy",       Slug = "legacy", TenantId = sampleTenant });
 Console.WriteLine($"Created tags: basketball, culture, legacy");
 
 // Articles (PostMappedAsync so the server resolves Author and Tags and the full
@@ -69,6 +74,7 @@ var article2Id = Guid.NewGuid();
 var article1 = await articles.PostMappedAsync(new Article
 {
     Id          = article1Id,
+    TenantId    = sampleTenant,
     AuthorId    = authorAiId,
     TagIds      = [tagBballId, tagCultureId],
     Title       = "The Original AI: Allen Iverson's Legacy",
@@ -79,6 +85,7 @@ var article1 = await articles.PostMappedAsync(new Article
 var article2 = await articles.PostMappedAsync(new Article
 {
     Id          = article2Id,
+    TenantId    = sampleTenant,
     AuthorId    = authorKobeId,
     TagIds      = [tagBballId, tagLegacyId],
     Title       = "The Black Mamba Mentality",
@@ -93,6 +100,7 @@ var userId = Guid.NewGuid();
 await users.PersistAsync(new User
 {
     Id        = userId,
+    TenantId  = sampleTenant,
     Name      = "Test User",
     Email     = "test@example.com",
     Username  = "testuser",
@@ -109,6 +117,7 @@ var ua2Id = Guid.NewGuid();
 await userArticles.PostMappedAsync(new UserArticle
 {
     Id        = ua1Id,
+    TenantId  = sampleTenant,
     UserId    = userId,
     ArticleId = article1Id,
     CreatedAt = DateTime.UtcNow
@@ -116,6 +125,7 @@ await userArticles.PostMappedAsync(new UserArticle
 await userArticles.PostMappedAsync(new UserArticle
 {
     Id        = ua2Id,
+    TenantId  = sampleTenant,
     UserId    = userId,
     ArticleId = article2Id,
     CreatedAt = DateTime.UtcNow

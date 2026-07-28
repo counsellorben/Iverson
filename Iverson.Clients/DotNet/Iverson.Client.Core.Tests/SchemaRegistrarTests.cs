@@ -624,6 +624,28 @@ public class SchemaRegistrarTests
         authorRequest!.RootType!.TenantField.Should().Be("TenantId");
     }
 
+    private sealed class ComposedTenantMarkerEntity
+    {
+        public Guid Id { get; set; }
+        [IversonTenant, IversonSearchKey(0)] public string TenantId { get; set; } = "";
+    }
+
+    [Fact]
+    public void BuildTypeDescriptor_TenantMarker_ComposesWithSearchKey()
+    {
+        var method = typeof(SchemaRegistrar).GetMethod(
+            "BuildTypeDescriptor", BindingFlags.NonPublic | BindingFlags.Static)!;
+
+        var typeDescriptor = (TypeDescriptor)method.Invoke(
+            null, [BuildDescriptor<ComposedTenantMarkerEntity>()])!;
+
+        typeDescriptor.TenantField.Should().Be("TenantId");
+        var tenant = typeDescriptor.Properties.Single(p => p.Name == "TenantId");
+        tenant.IsSearchKey.Should().BeTrue(
+            "[IversonTenant] must not suppress [IversonSearchKey]");
+        tenant.SearchKeyOrder.Should().Be(0);
+    }
+
     private sealed class NoTenantMarkerEntity
     {
         public Guid Id { get; set; }
