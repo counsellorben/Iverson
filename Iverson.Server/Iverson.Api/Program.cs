@@ -176,7 +176,8 @@ builder.Services.AddStarRocks(
             SamplingDuration  = TimeSpan.FromSeconds(cfg.GetValue("StarRocks:CircuitBreaker:SamplingDurationSeconds", 30)),
             BreakDuration     = TimeSpan.FromSeconds(cfg.GetValue("StarRocks:CircuitBreaker:BreakDurationSeconds", 15))
         }
-    });
+    },
+    cfg.GetValue($"{EngagementStoreOptions.Section}:Enabled", true));
 
 builder.Services.AddQdrant(
     cfg["Qdrant:Host"] ?? "localhost",

@@ -83,6 +83,10 @@ public sealed class ObjectSearchGrpcService(
         {
             throw new RpcException(new Status(StatusCode.Unavailable, $"StarRocks is not ready: {ex.Message}"));
         }
+        catch (EngagementStoreDisabledException ex)
+        {
+            throw new RpcException(new Status(StatusCode.FailedPrecondition, ex.Message));
+        }
 
         var primaryConstraint = auth.Constraints.TryGetValue(schema.TypeName, out var pc) ? pc : null;
 
@@ -405,6 +409,10 @@ public sealed class ObjectSearchGrpcService(
         {
             throw new RpcException(new Status(StatusCode.Unavailable, $"StarRocks is not ready: {ex.Message}"));
         }
+        catch (EngagementStoreDisabledException ex)
+        {
+            throw new RpcException(new Status(StatusCode.FailedPrecondition, ex.Message));
+        }
     }
 
     // ── Compound GROUP BY ──────────────────────────────────────────────────────
@@ -448,6 +456,10 @@ public sealed class ObjectSearchGrpcService(
         catch (EngagementNotReadyException ex)
         {
             throw new RpcException(new Status(StatusCode.Unavailable, $"StarRocks is not ready: {ex.Message}"));
+        }
+        catch (EngagementStoreDisabledException ex)
+        {
+            throw new RpcException(new Status(StatusCode.FailedPrecondition, ex.Message));
         }
 
         foreach (var row in rows)
@@ -515,6 +527,10 @@ public sealed class ObjectSearchGrpcService(
         catch (EngagementNotReadyException ex)
         {
             throw new RpcException(new Status(StatusCode.Unavailable, $"StarRocks is not ready: {ex.Message}"));
+        }
+        catch (EngagementStoreDisabledException ex)
+        {
+            throw new RpcException(new Status(StatusCode.FailedPrecondition, ex.Message));
         }
 
         foreach (var row in rows)

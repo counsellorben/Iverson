@@ -2070,6 +2070,24 @@ public class ObjectSearchGrpcServiceTests
     }
 
     [Fact]
+    public async Task Pipeline_EngagementStoreDisabled_ThrowsFailedPrecondition()
+    {
+        await _registry.RegisterAsync(SchemaFixtures.ArticleWithProjectionSchema());
+        _search.PipelineAsync(
+                Arg.Any<EngagementQuerySchema>(), Arg.Any<PipelineRequest>(), Arg.Any<Func<string, EngagementQuerySchema?>>(),
+                Arg.Any<IReadOnlyDictionary<string, AuthorizationConstraint>?>())
+            .Returns<Task<IEnumerable<dynamic>>>(_ => throw new EngagementStoreDisabledException("engagement store disabled"));
+
+        var request = new PipelineRequest { TypeName = "Article" };
+        var (writer, _) = MakeStream<SearchResponse>();
+
+        var act = async () => await _sut.Pipeline(request, writer, TestServerCallContext.Create());
+
+        (await act.Should().ThrowAsync<RpcException>())
+            .Where(e => e.Status.StatusCode == StatusCode.FailedPrecondition);
+    }
+
+    [Fact]
     public async Task Pipeline_StreamsResults_PropagatesTraceId()
     {
         await _registry.RegisterAsync(SchemaFixtures.ArticleWithProjectionSchema());
