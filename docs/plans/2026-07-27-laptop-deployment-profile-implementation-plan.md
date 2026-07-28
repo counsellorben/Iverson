@@ -264,8 +264,13 @@ ollama:
   storageSize: 8Gi
   storageClassName: "standard"
   resources:
-    requests: { cpu: "250m", memory: "1Gi" }
-    limits: { cpu: "500m", memory: "2Gi" }
+    # Burst headroom, deliberately above values-local's 500m/2Gi. CPU-only generative
+    # inference is slow here — the smoke test measured a two-token reply at 73s wall
+    # clock, 55s of it model load. Requests are what the scheduler reserves, so raising
+    # the LIMIT costs nothing against the 1.45 CPU budget; it just lets ollama use idle
+    # capacity mid-generation instead of being throttled to half a core.
+    requests: { cpu: "250m", memory: "2Gi" }
+    limits: { cpu: "3", memory: "4Gi" }
 
 api:
   replicas: 1

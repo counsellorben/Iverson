@@ -113,14 +113,31 @@ remains the full-fidelity profile.
 | jaeger | **off** (`global.tracingEnabled: false`) |
 | prometheus, adminUi | **off** (`prometheus.enabled: false`, `adminUi.enabled: false`) |
 
+**Ollama is given burst headroom.** `values-local.yaml` limits ollama to 500m CPU / 2Gi,
+which is fine for embedding calls but not for generative inference: the smoke test measured
+a *two-token* reply at 73s wall clock (55s of it model load) on this hardware. The laptop
+profile therefore overrides ollama's limits to `cpu: "3"`, `memory: 4Gi` while leaving its
+requests at `cpu: 250m`, `memory: 2Gi` — the values the 2026-07-27 smoke test actually ran
+with when both models pulled and `/api/generate` returned successfully.
+
+Requests are what the scheduler reserves; limits only cap what a container may consume. So
+raising the limit costs nothing at schedule time and does not change the arithmetic below —
+it is what lets ollama use idle capacity during a generation instead of being throttled to
+half a core.
+
 **Capacity.** The app side is ~1.45 CPU of requests, verified by rendering the chart.
 System and operator overhead measured ~2.0 CPU during the smoke test, and metrics-server
 adds ~0.1. Total ≈ **3.55 of 4.0 CPU (≈89%)**.
 
 This fits, but the margin is thin — roughly 450m. It works because requests are
-reservations, not usage: Ollama's 3-CPU *limit* can still burst into unreserved capacity
-during inference. Do not read 89% as comfortable, and re-measure with `kubectl top` after
-implementation.
+reservations, not usage: ollama's 3-CPU *limit* can still burst into that unreserved
+capacity during inference. Do not read 89% as comfortable, and re-measure with `kubectl top`
+after implementation.
+
+The memory limit carries the real risk on a 9GB host: 4Gi is a cap, not a reservation, and
+if ollama actually reaches it alongside everything else the node can hit memory pressure and
+evict. 4Gi is what was observed working; treat it as the empirical starting point the rest
+of this profile's numbers already are.
 
 ### 3. Optional engagement store (server side)
 
