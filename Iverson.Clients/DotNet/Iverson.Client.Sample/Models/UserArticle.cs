@@ -12,6 +12,8 @@ public class UserArticle
     public Guid     ArticleId { get; set; }  // convention: ManyToOne(Article) → "ArticleId"
     public DateTime CreatedAt { get; set; }
 
+    [IversonTenant] public string TenantId { get; set; } = string.Empty;
+
     [ManyToOne(typeof(User))]
     public User? User { get; set; }
 

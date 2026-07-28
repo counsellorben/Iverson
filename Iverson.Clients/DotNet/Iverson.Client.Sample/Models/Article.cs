@@ -17,6 +17,8 @@ public class Article
     public DateTime PublishedAt { get; set; }
     public bool IsPublished { get; set; }
 
+    [IversonTenant] public string TenantId { get; set; } = string.Empty;
+
     public Guid AuthorId { get; set; }  // convention: {RelatedTypeName}Id  → "AuthorId"
     public Guid[] TagIds { get; set; } = [];  // convention: {RelatedTypeName}Ids → "TagIds"
 
