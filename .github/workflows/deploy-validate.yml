@@ -25,10 +25,10 @@ jobs:
       - name: helm dependency build
         run: helm dependency build Iverson.Server/deploy/helm/iverson
 
-      - name: helm lint against all 4 values overlays
+      - name: helm lint against all 5 values overlays
         run: |
           set -e
-          for values in values-local values-aws values-azure values-gcp; do
+          for values in values-local values-laptop values-aws values-azure values-gcp; do
             echo "::group::helm lint ($values.yaml)"
             helm lint Iverson.Server/deploy/helm/iverson -f "Iverson.Server/deploy/helm/iverson/$values.yaml"
             echo "::endgroup::"
@@ -52,10 +52,10 @@ jobs:
       - name: helm dependency build
         run: helm dependency build Iverson.Server/deploy/helm/iverson
 
-      - name: helm template | kubeconform against all 4 values overlays
+      - name: helm template | kubeconform against all 5 values overlays
         run: |
           set -e
-          for values in values-local values-aws values-azure values-gcp; do
+          for values in values-local values-laptop values-aws values-azure values-gcp; do
             echo "::group::kubeconform ($values.yaml)"
             helm template iverson Iverson.Server/deploy/helm/iverson -f "Iverson.Server/deploy/helm/iverson/$values.yaml" \
               | kubeconform -kubernetes-version 1.30.0 -summary -ignore-missing-schemas
@@ -80,10 +80,10 @@ jobs:
       - name: helm dependency build
         run: helm dependency build Iverson.Server/deploy/helm/iverson
 
-      - name: kube-score against all 4 values overlays
+      - name: kube-score against all 5 values overlays
         run: |
           set -e
-          for values in values-local values-aws values-azure values-gcp; do
+          for values in values-local values-laptop values-aws values-azure values-gcp; do
             echo "::group::kube-score ($values.yaml)"
             helm template iverson Iverson.Server/deploy/helm/iverson -f "Iverson.Server/deploy/helm/iverson/$values.yaml" \
               | kube-score score \

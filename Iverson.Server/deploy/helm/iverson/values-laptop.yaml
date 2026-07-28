@@ -1,0 +1,89 @@
+# Laptop profile — fits a 4-CPU / 9GB host by omitting what a developer least needs.
+# values-local.yaml remains the full-fidelity profile for a >=16GB machine.
+#
+# SELF-CONTAINED, like every other overlay in this directory. Helm layers only the
+# files passed on the command line, so `-f values-laptop.yaml` inherits values.yaml's
+# PRODUCTION defaults (postgres 8 CPU x2, qdrant 8, ollama 8) unless the laptop sizing
+# is restated here. The CI harness passes exactly one -f per overlay.
+#
+# Capacity: 250+250+250+250+100+100+50+200 = 1.45 CPU of requests; system + operators
+# measured ~2.0; metrics-server ~0.1. Total ~3.55 of 4.0 (~89%). Margin is thin —
+# roughly 450m. Re-measure with `kubectl top` after deploying.
+global:
+  engagementEnabled: false   # no StarRocks: vendor sizes FE at 8 CPU/16GB
+  tracingEnabled: false      # no jaeger
+
+prometheus:
+  enabled: false
+adminUi:
+  enabled: false
+
+postgres:
+  instances: 1
+  storageSize: 2Gi
+  storageClassName: "standard"
+  resources:
+    requests: { cpu: "250m", memory: "512Mi" }
+    limits: { cpu: "500m", memory: "1Gi" }
+
+kafka:
+  replicas: 1
+  storageSize: 1Gi
+  storageClassName: "standard"
+  resources:
+    requests: { cpu: "250m", memory: "512Mi" }
+    limits: { cpu: "500m", memory: "1Gi" }
+
+qdrant:
+  replicas: 1
+  storageSize: 1Gi
+  storageClassName: "standard"
+  resources:
+    requests: { cpu: "250m", memory: "512Mi" }
+    limits: { cpu: "500m", memory: "1Gi" }
+
+ollama:
+  replicas: 1
+  storageSize: 8Gi
+  storageClassName: "standard"
+  resources:
+    # Burst headroom, deliberately above values-local's 500m/2Gi. CPU-only generative
+    # inference is slow here — the smoke test measured a two-token reply at 73s wall
+    # clock, 55s of it model load. Requests are what the scheduler reserves, so raising
+    # the LIMIT costs nothing against the 1.45 CPU budget; it just lets ollama use idle
+    # capacity mid-generation instead of being throttled to half a core.
+    requests: { cpu: "250m", memory: "2Gi" }
+    limits: { cpu: "3", memory: "4Gi" }
+
+api:
+  replicas: 1
+  resources:
+    requests: { cpu: "100m", memory: "256Mi" }
+    limits: { cpu: "500m", memory: "512Mi" }
+  hpa: { minReplicas: 1, maxReplicas: 2, targetCPUUtilization: 70 }
+  ingress:
+    className: "nginx"
+    annotations: {}
+    host: "iverson.local"
+    tlsSecretName: ""
+
+worker:
+  replicas: 1
+  resources:
+    requests: { cpu: "100m", memory: "256Mi" }
+    limits: { cpu: "500m", memory: "512Mi" }
+  hpa: { minReplicas: 1, maxReplicas: 2, targetCPUUtilization: 70 }
+
+redis:
+  resources:
+    requests: { cpu: "50m", memory: "64Mi" }
+    limits: { cpu: "100m", memory: "128Mi" }
+
+authentik:
+  resources:
+    server:
+      requests: { cpu: "100m", memory: "256Mi" }
+      limits: { cpu: "500m", memory: "512Mi" }
+    worker:
+      requests: { cpu: "100m", memory: "256Mi" }
+      limits: { cpu: "500m", memory: "512Mi" }

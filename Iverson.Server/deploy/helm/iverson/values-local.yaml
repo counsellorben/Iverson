@@ -23,20 +23,24 @@ kafka:
     requests: { cpu: "250m", memory: "512Mi" }
     limits: { cpu: "500m", memory: "1Gi" }
 
+# StarRocks dev floor. The vendor sizes FE at 8 CPU / 16GB and BE at 16 CPU / 64GB;
+# there is no laptop-viable sizing, so this profile assumes a machine with >=16GB.
+# These values are a starting point to confirm empirically, not vendor minimums.
+# For a laptop, use values-laptop.yaml, which omits StarRocks entirely.
 starrocks:
   storageClassName: "standard"
   fe:
     replicas: 1
     storageSize: 1Gi
     resources:
-      requests: { cpu: "250m", memory: "512Mi" }
-      limits: { cpu: "500m", memory: "1Gi" }
+      requests: { cpu: "1", memory: "4Gi" }
+      limits:   { cpu: "2", memory: "6Gi" }
   be:
     replicas: 1
     storageSize: 2Gi
     resources:
-      requests: { cpu: "250m", memory: "512Mi" }
-      limits: { cpu: "500m", memory: "1Gi" }
+      requests: { cpu: "1", memory: "4Gi" }
+      limits:   { cpu: "2", memory: "6Gi" }
 
 qdrant:
   replicas: 1
@@ -48,7 +52,7 @@ qdrant:
 
 ollama:
   replicas: 1
-  storageSize: 2Gi
+  storageSize: 8Gi
   storageClassName: "standard"
   resources:
     requests: { cpu: "250m", memory: "1Gi" }
