@@ -82,6 +82,7 @@ spec:
               # key=value syntax, not libpq-style URIs) — composing it here mirrors the
               # ConnectionStrings__StarRocks pattern below.
               value: "Host={{ .Release.Name }}-postgres-rw;Port=5432;Database=iverson;Username=iverson;Password=$(POSTGRES_APP_PASSWORD)"
+            {{- if .Values.global.engagementEnabled }}
             - name: STARROCKS_APP_PASSWORD
               valueFrom:
                 secretKeyRef:
@@ -89,6 +90,9 @@ spec:
                   key: app-password
             - name: ConnectionStrings__StarRocks
               value: "Server={{ .Release.Name }}-starrocks-fe-service;Port=9030;Database=iverson;User Id=iverson_app;Password=$(STARROCKS_APP_PASSWORD);AllowPublicKeyRetrieval=true;"
+            {{- end }}
+            - name: Engagement__Enabled
+              value: {{ .Values.global.engagementEnabled | quote }}
             - name: QDRANT_API_KEY
               valueFrom:
                 secretKeyRef:
@@ -123,8 +127,10 @@ spec:
               value: "http://{{ .Release.Name }}-ollama:11434"
             - name: Enrichment__ModelId
               value: {{ .Values.global.generativeModel | quote }}
+            {{- if .Values.global.tracingEnabled }}
             - name: Otel__Endpoint
               value: "http://{{ .Release.Name }}-jaeger:4317"
+            {{- end }}
             - name: Authentication__Authority
               value: "http://{{ .Release.Name }}-authentik:9000/application/o/iverson-api/"
             - name: Authentication__ExternalIssuer
@@ -151,8 +157,10 @@ spec:
             - name: Authentik__AdminToken
               valueFrom:
                 secretKeyRef: { name: {{ .Release.Name }}-authentik-admin-orchestrator-token, key: token-key }
+            {{- if .Values.global.tracingEnabled }}
             - name: Jaeger__OtlpHttpUrl
               value: "http://{{ .Release.Name }}-jaeger:4318"
+            {{- end }}
           resources:
             requests:
               cpu: {{ .Values.resources.requests.cpu | quote }}

@@ -35,5 +35,5 @@ dependencies:
 - name: authentik
   repository: file://charts/authentik
   version: 0.1.0
-digest: sha256:82f200128b6adf3f9d3a45055414dee336212c52f94ff2b0dd86723842906701
-generated: "2026-07-21T11:29:57.012760485-04:00"
+digest: sha256:d0178ab838466204ce9bf2141333db10be47f0ab88ae64d1df733cb848e57a08
+generated: "2026-07-27T22:05:11.14883941-04:00"
