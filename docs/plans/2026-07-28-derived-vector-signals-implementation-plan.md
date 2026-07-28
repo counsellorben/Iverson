@@ -69,6 +69,7 @@ Newly introduced by this plan and verified at plan-write time.
 | P15 | Consumer impact | `ToCollectionSchema` has exactly two callers, and widening its vector list breaks neither | `IntelligenceStoreConsumer.cs:161` (passes it straight to `EnsureCollectionAsync`) and `SchemaBuilderTests.cs:283` (asserts payload index names only) |
 | P16 | Consumer impact | The object payload block is `:138-158` — the dictionary initialisation through the FK loop, stopping **before** `ResolveCollectionName` at `:159`. The spec cites `:139-158`, which omits the initialisation line; this plan uses the precise range. It captures only `ev.Key`, `schema`, `payload`, `ownerField` and `authoritativeOwnerValue`, and calls only pre-existing helpers (`ExtractString`, `ExtractTypedValue`, `ToCamelCase`) | Read of `IntelligenceStoreConsumer.cs:138-159` |
 | P17 | Consumer impact | The payload helper degrades correctly on both new branches: its first loop iterates `schema.VectorFields` copying non-blank field text, which no-ops for a chunks-only entity (empty collection) and for the all-blank case (every text fails the `IsNullOrWhiteSpace` guard) | `IntelligenceStoreConsumer.cs:139-144` |
+| P18 | Signature | `ev` (`:72`) and `payload` (`:88`) are declared directly in `HandleAsync`'s body, so both are live at Step 5's payload-helper call site after the chunk block closes at `:261` | Read of `IntelligenceStoreConsumer.cs:72`, `:88` |
 
 ## Tasks
 
@@ -222,7 +223,7 @@ Four cases in `IntelligenceStoreConsumerTests`:
 - an entity with both an embedding field and a chunk field: `UpdateNamedVectorsAsync` received for the object collection with the expected `_centroid` key;
 - a chunks-only entity: `UpsertNamedAsync` received for the object collection carrying the centroid and the payload;
 - a blank chunk field: no centroid key written;
-- the update path does not clobber: `UpdateNamedVectorsAsync` received **and** `UpsertNamedAsync` not received for the object collection after the object block's own call — the assertion that catches a regression to a clobbering upsert.
+- the update path does not clobber: for the both-fields case, `Received(1)` on `UpsertNamedAsync` for the object collection — the object block's own call at `:163`, unchanged — together with `Received(1)` on `UpdateNamedVectorsAsync(objectCollection, pointId, …)`. That pair is what proves the centroid write added an update rather than a second, clobbering upsert. Do **not** assert `DidNotReceive()` on `UpsertNamedAsync` here: the object block calls it on this path, so the assertion would fail. For the chunks-only case the mirror applies — `Received(1)` on `UpsertNamedAsync` for the object collection and `DidNotReceive()` on `UpdateNamedVectorsAsync` — proving branch selection in the other direction.
 
 - [ ] **Step 7: Build and test**
 ```bash
