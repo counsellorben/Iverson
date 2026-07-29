@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Text.Json;
+using Grpc.Core;
 using Iverson.Api.Schema;
 using Iverson.Embeddings;
 using Iverson.Events;
@@ -247,22 +248,59 @@ public sealed class IntelligenceStoreConsumer(
         }
 
         // ── Centroid write (document-level signal derived from this event's chunks) ───────
+        //
+        // Never branches on VectorFields.Count — an entity can declare vector fields whose text
+        // is blank on this event, in which case the object block above never runs even though
+        // the object point already exists from a prior event. objectPointWritten is only a fast
+        // path (skip the doomed update attempt right after we just upserted the point ourselves);
+        // it is not sufficient on its own to pick the write mode, because "the object block
+        // didn't run this event" does not imply "the point doesn't exist." Qdrant's upsert nulls
+        // every unspecified named vector, so upserting straight past an existing point here would
+        // silently destroy its *_vector values. UpdateNamedVectorsAsync is therefore always tried
+        // first when we didn't just write the point ourselves; only a genuine "point not found"
+        // (surfaced by Qdrant as gRPC NotFound) falls back to upsert.
         if (centroids.Count > 0 && authoritativeTenantValue is not null)
         {
             var collectionName = tenantScope.ResolveCollectionName(schema.CollectionName, authoritativeTenantValue, isChunks: false);
-            await EnsureCollectionAsync(SchemaBuilder.ToCollectionSchema(schema) with { CollectionName = collectionName });
+            if (!objectPointWritten)
+                await EnsureCollectionAsync(SchemaBuilder.ToCollectionSchema(schema) with { CollectionName = collectionName });
 
             using (RequestHeaders.Use("api-key", tenantScope.MintScopedApiKey(collectionName, readOnly: false)))
             {
+                // objectPointWritten is a fast path only: when we just wrote the object point
+                // ourselves this event, the update is certain to succeed, so there's no need to
+                // wrap it in the try/catch. Otherwise the point's existence is genuinely unknown
+                // (it may survive from a prior event, or may never have been written), so the
+                // update is attempted and only a real NotFound falls back to upsert.
                 if (objectPointWritten)
+                {
                     await vectorWrite.UpdateNamedVectorsAsync(collectionName, pointId, centroids);
-                else
+                }
+                else if (!await TryUpdateNamedVectorsAsync(collectionName, pointId, centroids))
                     await vectorWrite.UpsertNamedAsync(
                         collectionName,
                         pointId,
                         centroids,
                         BuildObjectPointPayload(ev.Key, schema, payload, ownerField, authoritativeOwnerValue));
             }
+        }
+    }
+
+    // Attempts the partial-update path for the centroid write. Returns true on success. Returns
+    // false only when Qdrant reports the point does not exist yet (gRPC NotFound) — the signal
+    // the caller uses to fall back to an upsert. Any other RPC failure propagates: this must not
+    // swallow errors unrelated to point existence.
+    private async Task<bool> TryUpdateNamedVectorsAsync(
+        string collectionName, ulong pointId, IReadOnlyDictionary<string, float[]> centroids)
+    {
+        try
+        {
+            await vectorWrite.UpdateNamedVectorsAsync(collectionName, pointId, centroids);
+            return true;
+        }
+        catch (RpcException ex) when (ex.StatusCode == StatusCode.NotFound)
+        {
+            return false;
         }
     }
 
