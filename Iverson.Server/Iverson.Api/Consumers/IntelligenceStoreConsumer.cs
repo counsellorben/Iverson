@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Text.Json;
+using Grpc.Core;
 using Iverson.Api.Schema;
 using Iverson.Embeddings;
 using Iverson.Events;
@@ -116,6 +117,7 @@ public sealed class IntelligenceStoreConsumer(
             : null;
 
         // ── Named vector upsert (entity-level embeddings) ──────────────────────
+        var objectPointWritten = false;
         if (schema.VectorFields.Count > 0)
         {
             var namedVectors = new Dictionary<string, float[]>(schema.VectorFields.Count);
@@ -135,27 +137,7 @@ public sealed class IntelligenceStoreConsumer(
 
             if (namedVectors.Count > 0)
             {
-                var pointPayload = new Dictionary<string, object> { ["key"] = ev.Key };
-                foreach (var vf in schema.VectorFields)
-                {
-                    var fieldText = ExtractString(payload, vf.PropertyName);
-                    if (!string.IsNullOrWhiteSpace(fieldText))
-                        pointPayload[vf.PropertyName.ToCamelCase()] = fieldText;
-                }
-                foreach (var col in schema.ScalarColumns)
-                {
-                    var isOwnerColumn = ownerField is not null &&
-                        string.Equals(col.Name, ownerField, StringComparison.OrdinalIgnoreCase);
-                    var val = isOwnerColumn
-                        ? authoritativeOwnerValue
-                        : ExtractTypedValue(payload, col.Name, col.SqlType);
-                    if (val is not null) pointPayload[col.Name.ToCamelCase()] = val;
-                }
-                foreach (var fk in schema.FkColumns)
-                {
-                    var val = ExtractTypedValue(payload, fk.ColumnName, "TEXT");
-                    if (val is not null) pointPayload[fk.ColumnName.ToCamelCase()] = val;
-                }
+                var pointPayload = BuildObjectPointPayload(ev.Key, schema, payload, ownerField, authoritativeOwnerValue);
                 var collectionName = tenantScope.ResolveCollectionName(schema.CollectionName, authoritativeTenantValue, isChunks: false);
                 if (authoritativeTenantValue is not null)
                     await EnsureCollectionAsync(SchemaBuilder.ToCollectionSchema(schema) with { CollectionName = collectionName });
@@ -164,12 +146,14 @@ public sealed class IntelligenceStoreConsumer(
                 {
                     await vectorWrite.UpsertNamedAsync(collectionName, pointId, namedVectors, pointPayload);
                 }
+                objectPointWritten = true;
                 logger.LogInformation("[Intelligence] Upserted {Count} vector(s) for {Type}:{Key}",
                     namedVectors.Count, ev.TypeName, ev.Key);
             }
         }
 
         // ── Chunk upsert (passage-level RAG embeddings) ────────────────────────
+        var centroids = new Dictionary<string, float[]>();
         if (schema.ChunkFields.Count > 0)
         {
             var chunksCollectionName = tenantScope.ResolveCollectionName(schema.CollectionName, authoritativeTenantValue, isChunks: true);
@@ -221,6 +205,9 @@ public sealed class IntelligenceStoreConsumer(
 
                     var chunkResults = await Task.WhenAll(chunkTasks);
 
+                    var fieldCentroid = ComputeCentroid(chunkResults.Select(r => r.chunkVector).ToList());
+                    centroids[$"{cf.PropertyName.ToSnakeCase()}_centroid"] = fieldCentroid;
+
                     foreach (var (chunkVector, chunkId, chunkText, chunkIndex) in chunkResults)
                     {
                         var chunkPayload = new Dictionary<string, object>
@@ -259,6 +246,145 @@ public sealed class IntelligenceStoreConsumer(
                 }
             }
         }
+
+        // ── Centroid write (document-level signal derived from this event's chunks) ───────
+        //
+        // Never branches on VectorFields.Count — an entity can declare vector fields whose text
+        // is blank on this event, in which case the object block above never runs even though
+        // the object point already exists from a prior event. objectPointWritten is only a fast
+        // path (skip the doomed update attempt right after we just upserted the point ourselves);
+        // it is not sufficient on its own to pick the write mode, because "the object block
+        // didn't run this event" does not imply "the point doesn't exist." Qdrant's upsert nulls
+        // every unspecified named vector, so upserting straight past an existing point here would
+        // silently destroy its *_vector values. UpdateNamedVectorsAsync is therefore always tried
+        // first when we didn't just write the point ourselves; only a genuine "point not found"
+        // (surfaced by Qdrant as gRPC NotFound) falls back to upsert.
+        // Gated on authoritativeTenantValue is not null, unlike the chunk upserts above (:239,
+        // ungated) — inherited asymmetry, not accidental: on the documented delete-then-recreate
+        // race (authoritative row missing), chunks are still written but the centroid is silently
+        // dropped. Plan-conformant; not changed here.
+        if (centroids.Count > 0 && authoritativeTenantValue is not null)
+        {
+            var collectionName = tenantScope.ResolveCollectionName(schema.CollectionName, authoritativeTenantValue, isChunks: false);
+            if (!objectPointWritten)
+                await EnsureCollectionAsync(SchemaBuilder.ToCollectionSchema(schema) with { CollectionName = collectionName });
+
+            using (RequestHeaders.Use("api-key", tenantScope.MintScopedApiKey(collectionName, readOnly: false)))
+            {
+                // objectPointWritten is a fast path only: when we just wrote the object point
+                // ourselves this event, the update is certain to succeed, so there's no need to
+                // wrap it in the try/catch. Otherwise the point's existence is genuinely unknown
+                // (it may survive from a prior event, or may never have been written), so the
+                // update is attempted and only a real NotFound falls back to upsert.
+                if (objectPointWritten)
+                {
+                    await vectorWrite.UpdateNamedVectorsAsync(collectionName, pointId, centroids);
+                    logger.LogInformation("[Intelligence] Updated {Count} centroid(s) for {Type}:{Key} (object point written this event)",
+                        centroids.Count, ev.TypeName, ev.Key);
+                }
+                else if (!await TryUpdateNamedVectorsAsync(collectionName, pointId, centroids))
+                {
+                    await vectorWrite.UpsertNamedAsync(
+                        collectionName,
+                        pointId,
+                        centroids,
+                        BuildObjectPointPayload(ev.Key, schema, payload, ownerField, authoritativeOwnerValue));
+                    logger.LogInformation("[Intelligence] Upserted {Count} centroid(s) for {Type}:{Key} (object point did not exist)",
+                        centroids.Count, ev.TypeName, ev.Key);
+                }
+                else
+                {
+                    logger.LogInformation("[Intelligence] Updated {Count} centroid(s) for {Type}:{Key} (object point already existed)",
+                        centroids.Count, ev.TypeName, ev.Key);
+                }
+            }
+        }
+    }
+
+    // Attempts the partial-update path for the centroid write. Returns true on success. Returns
+    // false only when Qdrant reports the point does not exist yet (gRPC NotFound) — the signal
+    // the caller uses to fall back to an upsert. Any other RPC failure propagates: this must not
+    // swallow errors unrelated to point existence.
+    private async Task<bool> TryUpdateNamedVectorsAsync(
+        string collectionName, ulong pointId, IReadOnlyDictionary<string, float[]> centroids)
+    {
+        try
+        {
+            await vectorWrite.UpdateNamedVectorsAsync(collectionName, pointId, centroids);
+            return true;
+        }
+        catch (RpcException ex) when (ex.StatusCode == StatusCode.NotFound)
+        {
+            return false;
+        }
+    }
+
+    // Builds the object-level point payload — key, vector-field text, scalar columns (owner
+    // column re-derived from the authoritative row per CSR #7), and FK columns. Shared by the
+    // named-vector upsert and the centroid write, which independently need the same payload
+    // when the object block did not already write the point this event.
+    private static Dictionary<string, object> BuildObjectPointPayload(
+        string key,
+        SchemaDescriptor schema,
+        JsonElement payload,
+        string? ownerField,
+        string? authoritativeOwnerValue)
+    {
+        var pointPayload = new Dictionary<string, object> { ["key"] = key };
+        foreach (var vf in schema.VectorFields)
+        {
+            var fieldText = ExtractString(payload, vf.PropertyName);
+            if (!string.IsNullOrWhiteSpace(fieldText))
+                pointPayload[vf.PropertyName.ToCamelCase()] = fieldText;
+        }
+        foreach (var col in schema.ScalarColumns)
+        {
+            var isOwnerColumn = ownerField is not null &&
+                string.Equals(col.Name, ownerField, StringComparison.OrdinalIgnoreCase);
+            var val = isOwnerColumn
+                ? authoritativeOwnerValue
+                : ExtractTypedValue(payload, col.Name, col.SqlType);
+            if (val is not null) pointPayload[col.Name.ToCamelCase()] = val;
+        }
+        foreach (var fk in schema.FkColumns)
+        {
+            var val = ExtractTypedValue(payload, fk.ColumnName, "TEXT");
+            if (val is not null) pointPayload[fk.ColumnName.ToCamelCase()] = val;
+        }
+        return pointPayload;
+    }
+
+    // L2-normalizes each input vector and returns their componentwise mean, without
+    // re-normalizing the result: Qdrant normalizes on store under Distance.Cosine, and cosine
+    // similarity is scale-invariant, so a second normalization here would buy nothing.
+    // No zero-magnitude guard: no caller passes a zero vector (blank text is skipped upstream,
+    // and SplitIntoChunks always yields at least one chunk from non-blank text).
+    // Assumes every input vector shares vectors[0].Length (one embedding model per chunk field,
+    // so all chunks for a given field are the same dimensionality today). A shorter input would
+    // throw; a longer one would be silently truncated in the sum while still contributing its
+    // full magnitude to the normalization — unreachable under the current one-model-per-field
+    // invariant, so no runtime guard is added.
+    internal static float[] ComputeCentroid(IReadOnlyList<float[]> vectors)
+    {
+        var dims = vectors[0].Length;
+        var sum = new float[dims];
+
+        foreach (var vector in vectors)
+        {
+            float magnitude = 0;
+            foreach (var component in vector)
+                magnitude += component * component;
+            magnitude = MathF.Sqrt(magnitude);
+
+            for (var i = 0; i < dims; i++)
+                sum[i] += vector[i] / magnitude;
+        }
+
+        var mean = new float[dims];
+        for (var i = 0; i < dims; i++)
+            mean[i] = sum[i] / vectors.Count;
+
+        return mean;
     }
 
     internal async Task HandleDeleteAsync(string key, string value, CancellationToken ct)

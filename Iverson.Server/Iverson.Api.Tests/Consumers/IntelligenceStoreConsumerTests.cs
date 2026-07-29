@@ -1,6 +1,7 @@
 using System.Reflection;
 using System.Text.Json;
 using FluentAssertions;
+using Grpc.Core;
 using Iverson.Api.Consumers;
 using Iverson.Api.Schema;
 using Iverson.Api.Tests.Helpers;
@@ -54,6 +55,11 @@ public class IntelligenceStoreConsumerTests
             .Returns(Task.CompletedTask);
         _vectorWrite.DeleteAsync(Arg.Any<string>(), Arg.Any<ulong>()).Returns(Task.CompletedTask);
         _vectorWrite.DeleteByFilterAsync(Arg.Any<string>(), Arg.Any<Filter>()).Returns(Task.CompletedTask);
+        _vectorWrite.UpdateNamedVectorsAsync(
+            Arg.Any<string>(),
+            Arg.Any<ulong>(),
+            Arg.Any<IReadOnlyDictionary<string, float[]>>())
+            .Returns(Task.CompletedTask);
         _embedding.EmbedAsync(Arg.Any<string>(), Arg.Any<CancellationToken>())
                   .Returns(new float[768]);
 
@@ -1279,4 +1285,291 @@ public class IntelligenceStoreConsumerTests
     // A metadata column whose camelCase name collides with a reserved chunk payload key is now
     // rejected by SchemaBuilder at registration, so it cannot reach this consumer. Coverage moved
     // to SchemaBuilderTests.BuildDescriptor_Throws_WhenMetadataPropertyCollidesWithReservedChunkPayloadKey.
+
+    // ── ComputeCentroid ─────────────────────────────────────────────────────
+
+    [Fact]
+    public void ComputeCentroid_KnownVectors_ReturnsMeanOfL2NormalizedInputs()
+    {
+        // [3,4] normalizes to [0.6,0.8]; [1,0] is already unit. Mean is [0.8,0.4].
+        List<float[]> vectors = [[3f, 4f], [1f, 0f]];
+
+        var result = IntelligenceStoreConsumer.ComputeCentroid(vectors);
+
+        result[0].Should().BeApproximately(0.8f, 1e-6f);
+        result[1].Should().BeApproximately(0.4f, 1e-6f);
+    }
+
+    [Fact]
+    public void ComputeCentroid_SingleChunk_ReturnsThatChunkNormalized()
+    {
+        List<float[]> vectors = [[3f, 4f]];
+
+        var result = IntelligenceStoreConsumer.ComputeCentroid(vectors);
+
+        result[0].Should().BeApproximately(0.6f, 1e-6f);
+        result[1].Should().BeApproximately(0.8f, 1e-6f);
+    }
+
+    // ── Centroid write ──────────────────────────────────────────────────────
+
+    [Fact]
+    public async Task HandleCreated_WithVectorFieldAndChunkField_UpdatesNamedVectorsWithCentroidOnObjectCollection()
+    {
+        // ArticleSchema has both a vector field (Title) and a chunk field (Body) — the object
+        // point is written by the vector-field block, so the centroid write must go through
+        // UpdateNamedVectorsAsync (partial update), not a second, clobbering upsert.
+        await _registry.RegisterAsync(SchemaFixtures.ArticleSchema());
+
+        var longBody = new string('x', 3000);
+        var payload  = $$$"""{"Title":"Great Title","Body":"{{{longBody}}}","AuthorId":"00000000-0000-0000-0000-000000000001"}""";
+        var ev = new EntityEvent(
+            EventType:     EntityEventType.Created,
+            TypeName:      "Article",
+            Key:           Guid.NewGuid().ToString(),
+            PayloadJson:   payload,
+            TraceId:       "trace-centroid-update",
+            SchemaVersion: "1",
+            OccurredAt:    DateTimeOffset.UtcNow,
+            TargetStores:  StoreTarget.Intelligence);
+
+        await BuildSut().HandleAsync(ev.Key, Serialize(ev), CancellationToken.None);
+
+        await _vectorWrite.Received(1).UpdateNamedVectorsAsync(
+            "articles_test-tenant",
+            Arg.Any<ulong>(),
+            Arg.Is<IReadOnlyDictionary<string, float[]>>(v => v.ContainsKey("body_centroid")));
+
+        // The object block's own upsert still fires exactly once — proving the centroid write
+        // added an *update*, not a second upsert that would clobber the object point's vectors.
+        await _vectorWrite.Received(1).UpsertNamedAsync(
+            "articles_test-tenant",
+            Arg.Any<ulong>(),
+            Arg.Any<IReadOnlyDictionary<string, float[]>>(),
+            Arg.Any<IReadOnlyDictionary<string, object>?>());
+    }
+
+    [Fact]
+    public async Task HandleCreated_VectorFieldBlankButChunkFieldPopulated_PreservesExistingVectorsViaUpdateNotUpsert()
+    {
+        // Regression for the data-loss finding: ArticleSchema declares a vector field (Title)
+        // AND a chunk field (Body). Title is blank on this event, so the object block's
+        // namedVectors.Count stays 0 and it never runs — objectPointWritten stays false even
+        // though the object point may already carry a "title_vector" from a prior event.
+        // The centroid write must NOT take the naive upsert branch here (Qdrant's upsert nulls
+        // every unspecified named vector, which would destroy title_vector) — it must attempt
+        // UpdateNamedVectorsAsync first.
+        await _registry.RegisterAsync(SchemaFixtures.ArticleSchema());
+
+        var longBody = new string('x', 3000);
+        var payload  = $$$"""{"Title":"","Body":"{{{longBody}}}","AuthorId":"00000000-0000-0000-0000-000000000001"}""";
+        var ev = new EntityEvent(
+            EventType:     EntityEventType.Created,
+            TypeName:      "Article",
+            Key:           Guid.NewGuid().ToString(),
+            PayloadJson:   payload,
+            TraceId:       "trace-blank-vector-preserve",
+            SchemaVersion: "1",
+            OccurredAt:    DateTimeOffset.UtcNow,
+            TargetStores:  StoreTarget.Intelligence);
+
+        await BuildSut().HandleAsync(ev.Key, Serialize(ev), CancellationToken.None);
+
+        // Update succeeds (the default stub returns Task.CompletedTask) — proving the fix takes
+        // the non-destructive update path rather than immediately upserting past the point.
+        await _vectorWrite.Received(1).UpdateNamedVectorsAsync(
+            "articles_test-tenant",
+            Arg.Any<ulong>(),
+            Arg.Is<IReadOnlyDictionary<string, float[]>>(v => v.ContainsKey("body_centroid")));
+
+        // No upsert reaches the object collection at all: Title was blank so the object block
+        // never upserts, and the centroid write's update succeeded so it never falls back either.
+        // A pre-fix implementation would have called UpsertNamedAsync here and clobbered any
+        // pre-existing title_vector.
+        await _vectorWrite.DidNotReceive().UpsertNamedAsync(
+            "articles_test-tenant",
+            Arg.Any<ulong>(),
+            Arg.Any<IReadOnlyDictionary<string, float[]>>(),
+            Arg.Any<IReadOnlyDictionary<string, object>?>());
+    }
+
+    [Fact]
+    public async Task HandleCreated_VectorFieldBlankAndObjectPointGenuinelyAbsent_FallsBackToUpsertOnNotFound()
+    {
+        // Same setup as above, but this time the object point genuinely does not exist yet
+        // (e.g. first-ever event for this key) — Qdrant reports NotFound for the update attempt,
+        // and only then must the centroid write fall back to an upsert.
+        await _registry.RegisterAsync(SchemaFixtures.ArticleSchema());
+
+        _vectorWrite
+            .UpdateNamedVectorsAsync(
+                "articles_test-tenant",
+                Arg.Any<ulong>(),
+                Arg.Any<IReadOnlyDictionary<string, float[]>>())
+            .Returns<Task>(_ => throw new RpcException(new Status(StatusCode.NotFound, "no point")));
+
+        var longBody = new string('x', 3000);
+        var payload  = $$$"""{"Title":"","Body":"{{{longBody}}}","AuthorId":"00000000-0000-0000-0000-000000000001"}""";
+        var ev = new EntityEvent(
+            EventType:     EntityEventType.Created,
+            TypeName:      "Article",
+            Key:           Guid.NewGuid().ToString(),
+            PayloadJson:   payload,
+            TraceId:       "trace-blank-vector-fallback",
+            SchemaVersion: "1",
+            OccurredAt:    DateTimeOffset.UtcNow,
+            TargetStores:  StoreTarget.Intelligence);
+
+        IReadOnlyDictionary<string, float[]>? capturedVectors = null;
+        _vectorWrite
+            .UpsertNamedAsync(
+                "articles_test-tenant",
+                Arg.Any<ulong>(),
+                Arg.Do<IReadOnlyDictionary<string, float[]>>(v => capturedVectors = v),
+                Arg.Any<IReadOnlyDictionary<string, object>?>())
+            .Returns(Task.CompletedTask);
+
+        await BuildSut().HandleAsync(ev.Key, Serialize(ev), CancellationToken.None);
+
+        await _vectorWrite.Received(1).UpdateNamedVectorsAsync(
+            "articles_test-tenant", Arg.Any<ulong>(), Arg.Any<IReadOnlyDictionary<string, float[]>>());
+        await _vectorWrite.Received(1).UpsertNamedAsync(
+            "articles_test-tenant",
+            Arg.Any<ulong>(),
+            Arg.Any<IReadOnlyDictionary<string, float[]>>(),
+            Arg.Any<IReadOnlyDictionary<string, object>?>());
+
+        capturedVectors.Should().NotBeNull();
+        capturedVectors!.Should().ContainKey("body_centroid");
+    }
+
+    [Fact]
+    public async Task HandleCreated_ChunksOnlyEntity_UpsertsCentroidAndPayloadOnObjectCollection()
+    {
+        // Chunks-only schema — no vector fields, so the object block never runs and the
+        // object point does not yet exist. The update-first fix means UpdateNamedVectorsAsync
+        // is attempted regardless (never branching on VectorFields.Count) — here it's configured
+        // to report NotFound, as real Qdrant would for a point that has never been written, so
+        // the centroid write falls back to the upsert branch.
+        var schema = new SchemaDescriptor
+        {
+            TypeName       = "Doc",
+            TableName      = "docs",
+            CollectionName = "docs",
+            KeyColumn      = new ColumnDescriptor("Id", "uuid", false),
+            ScalarColumns  = [new ColumnDescriptor("Body", "text", false)],
+            FkColumns      = [],
+            VectorFields   = [],
+            ChunkFields    = [new ChunkDescriptor("Body", 512, 64, "nomic-embed-text", 768)],
+            Relations      = [],
+            TenantColumn   = "TenantId"
+        };
+        await _registry.RegisterAsync(schema);
+
+        _vectorWrite
+            .UpdateNamedVectorsAsync(
+                "docs_test-tenant",
+                Arg.Any<ulong>(),
+                Arg.Any<IReadOnlyDictionary<string, float[]>>())
+            .Returns<Task>(_ => throw new RpcException(new Status(StatusCode.NotFound, "no point")));
+
+        var longBody = new string('x', 3000);
+        var payload  = $$$"""{"Body":"{{{longBody}}}"}""";
+        var ev = new EntityEvent(
+            EventType:     EntityEventType.Created,
+            TypeName:      "Doc",
+            Key:           Guid.NewGuid().ToString(),
+            PayloadJson:   payload,
+            TraceId:       "trace-centroid-upsert",
+            SchemaVersion: "1",
+            OccurredAt:    DateTimeOffset.UtcNow,
+            TargetStores:  StoreTarget.Intelligence);
+
+        IReadOnlyDictionary<string, float[]>? capturedVectors = null;
+        IReadOnlyDictionary<string, object>?  capturedPayload = null;
+        _vectorWrite
+            .UpsertNamedAsync(
+                "docs_test-tenant",
+                Arg.Any<ulong>(),
+                Arg.Do<IReadOnlyDictionary<string, float[]>>(v => capturedVectors = v),
+                Arg.Do<IReadOnlyDictionary<string, object>?>(p => capturedPayload = p))
+            .Returns(Task.CompletedTask);
+
+        await BuildSut().HandleAsync(ev.Key, Serialize(ev), CancellationToken.None);
+
+        await _vectorWrite.Received(1).UpdateNamedVectorsAsync(
+            "docs_test-tenant", Arg.Any<ulong>(), Arg.Any<IReadOnlyDictionary<string, float[]>>());
+        await _vectorWrite.Received(1).UpsertNamedAsync(
+            "docs_test-tenant",
+            Arg.Any<ulong>(),
+            Arg.Any<IReadOnlyDictionary<string, float[]>>(),
+            Arg.Any<IReadOnlyDictionary<string, object>?>());
+
+        capturedVectors.Should().NotBeNull();
+        capturedVectors!.Should().ContainKey("body_centroid");
+        capturedPayload.Should().NotBeNull();
+        capturedPayload!["key"].Should().Be(ev.Key);
+    }
+
+    [Fact]
+    public async Task HandleCreated_BlankChunkField_WritesNoCentroidKeyForBlankFieldButDoesForPopulatedField()
+    {
+        // Discriminating version of the blank-chunk-field test: pairs a blank chunk field with a
+        // populated one in the same event so the assertion can't pass merely because the centroid
+        // feature was deleted outright (a DidNotReceive()-only assertion passes identically in
+        // that case). Here the populated field (Body) must still get a centroid write, while the
+        // blank field (Summary) must not appear in that write's vector dictionary.
+        var schema = new SchemaDescriptor
+        {
+            TypeName       = "Doc",
+            TableName      = "docs",
+            CollectionName = "docs",
+            KeyColumn      = new ColumnDescriptor("Id", "uuid", false),
+            ScalarColumns  = [new ColumnDescriptor("Body", "text", false), new ColumnDescriptor("Summary", "text", false)],
+            FkColumns      = [],
+            VectorFields   = [],
+            ChunkFields    =
+            [
+                new ChunkDescriptor("Body", 512, 64, "nomic-embed-text", 768),
+                new ChunkDescriptor("Summary", 512, 64, "nomic-embed-text", 768)
+            ],
+            Relations      = [],
+            TenantColumn   = "TenantId"
+        };
+        await _registry.RegisterAsync(schema);
+
+        _vectorWrite
+            .UpdateNamedVectorsAsync(
+                "docs_test-tenant",
+                Arg.Any<ulong>(),
+                Arg.Any<IReadOnlyDictionary<string, float[]>>())
+            .Returns<Task>(_ => throw new RpcException(new Status(StatusCode.NotFound, "no point")));
+
+        var longBody = new string('x', 3000);
+        var payload  = $$$"""{"Body":"{{{longBody}}}","Summary":""}""";
+        var ev = new EntityEvent(
+            EventType:     EntityEventType.Created,
+            TypeName:      "Doc",
+            Key:           Guid.NewGuid().ToString(),
+            PayloadJson:   payload,
+            TraceId:       "trace-centroid-blank",
+            SchemaVersion: "1",
+            OccurredAt:    DateTimeOffset.UtcNow,
+            TargetStores:  StoreTarget.Intelligence);
+
+        IReadOnlyDictionary<string, float[]>? capturedVectors = null;
+        _vectorWrite
+            .UpsertNamedAsync(
+                "docs_test-tenant",
+                Arg.Any<ulong>(),
+                Arg.Do<IReadOnlyDictionary<string, float[]>>(v => capturedVectors = v),
+                Arg.Any<IReadOnlyDictionary<string, object>?>())
+            .Returns(Task.CompletedTask);
+
+        await BuildSut().HandleAsync(ev.Key, Serialize(ev), CancellationToken.None);
+
+        capturedVectors.Should().NotBeNull();
+        capturedVectors!.Should().ContainKey("body_centroid");
+        capturedVectors.Should().NotContainKey("summary_centroid");
+    }
 }

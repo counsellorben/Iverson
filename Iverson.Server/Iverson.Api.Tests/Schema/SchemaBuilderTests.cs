@@ -287,6 +287,19 @@ public class SchemaBuilderTests
     }
 
     [Fact]
+    public void ToCollectionSchema_IncludesVectorAndCentroidNamedVectors()
+    {
+        var descriptor = SchemaFixtures.ArticleSchema();
+
+        var schema = SchemaBuilder.ToCollectionSchema(descriptor);
+
+        // ArticleSchema has Title (vector field) and Body (chunk field)
+        schema.Vectors.Should().HaveCount(2);
+        schema.Vectors.Should().ContainSingle(v => v.Name == "title_vector" && v.Dimension == 768);
+        schema.Vectors.Should().ContainSingle(v => v.Name == "body_centroid" && v.Dimension == 768);
+    }
+
+    [Fact]
     public void ToChunkCollectionSchema_IncludesPayloadIndex_ForOwnerField_WhenConfigured()
     {
         var descriptor = SchemaFixtures.ArticleSchema() with

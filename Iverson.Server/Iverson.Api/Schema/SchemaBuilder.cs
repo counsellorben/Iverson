@@ -216,7 +216,9 @@ internal static class SchemaBuilder
 
     internal static CollectionSchema ToCollectionSchema(SchemaDescriptor d) => new(
         d.CollectionName!,
-        d.VectorFields.Select(v => new NamedVector($"{v.PropertyName.ToSnakeCase()}_vector", v.Dimension)).ToList(),
+        d.VectorFields.Select(v => new NamedVector($"{v.PropertyName.ToSnakeCase()}_vector", v.Dimension))
+            .Concat(d.ChunkFields.Select(c => new NamedVector($"{c.PropertyName.ToSnakeCase()}_centroid", c.Dimension)))
+            .ToList(),
         d.ScalarColumns
             .Select(c => new PayloadIndex(c.Name.ToCamelCase(), SqlTypeToPayloadKind(c.SqlType)))
             .Concat(d.FkColumns.Select(fk => new PayloadIndex(fk.ColumnName.ToCamelCase(), PayloadIndexKind.Keyword)))

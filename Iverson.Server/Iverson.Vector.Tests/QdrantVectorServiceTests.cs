@@ -71,6 +71,25 @@ public sealed class QdrantVectorServiceTests
     }
 
     [Fact]
+    public async Task UpdateNamedVectorsAsync_IsCalledWithNamedVectors()
+    {
+        var svc = Substitute.For<IVectorWriteService>();
+        var namedVectors = new Dictionary<string, float[]>
+        {
+            ["bio_embedding"] = new float[] { 0.1f, 0.2f },
+            ["stats_embedding"] = new float[] { 0.3f, 0.4f }
+        };
+
+        await svc.UpdateNamedVectorsAsync("players", 7UL, namedVectors);
+
+        await svc.Received(1).UpdateNamedVectorsAsync(
+            "players",
+            7UL,
+            Arg.Is<IReadOnlyDictionary<string, float[]>>(d =>
+                d.ContainsKey("bio_embedding") && d.ContainsKey("stats_embedding")));
+    }
+
+    [Fact]
     public async Task DeleteAsync_IsCalledWithCorrectId()
     {
         var svc = Substitute.For<IVectorWriteService>();

@@ -59,6 +59,31 @@ public class IntelligenceVectorService(QdrantClient client) : IVectorQueryServic
         activity?.SetStatus(ActivityStatusCode.Ok);
     }
 
+    public async Task UpdateNamedVectorsAsync(
+        string collectionName,
+        ulong id,
+        IReadOnlyDictionary<string, float[]> namedVectors)
+    {
+        using var activity = Telemetry.Source.StartActivity("qdrant.update_named_vectors", ActivityKind.Client);
+        activity?.SetTag("db.system", "qdrant");
+        activity?.SetTag("qdrant.collection", collectionName);
+        activity?.SetTag("qdrant.point_id", id);
+        activity?.SetTag("qdrant.vector_count", namedVectors.Count);
+
+        var named = new NamedVectors();
+        foreach (var (name, data) in namedVectors)
+            named.Vectors[name] = data;
+
+        var point = new PointVectors
+        {
+            Id      = id,
+            Vectors = new Vectors { Vectors_ = named }
+        };
+
+        await client.UpdateVectorsAsync(collectionName, [point]);
+        activity?.SetStatus(ActivityStatusCode.Ok);
+    }
+
     public async Task<IReadOnlyList<VectorSearchResult>> SearchAsync(
         string collectionName,
         float[] queryVector,
