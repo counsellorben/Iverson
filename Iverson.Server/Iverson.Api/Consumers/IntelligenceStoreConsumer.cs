@@ -116,6 +116,7 @@ public sealed class IntelligenceStoreConsumer(
             : null;
 
         // ── Named vector upsert (entity-level embeddings) ──────────────────────
+        var objectPointWritten = false;
         if (schema.VectorFields.Count > 0)
         {
             var namedVectors = new Dictionary<string, float[]>(schema.VectorFields.Count);
@@ -135,27 +136,7 @@ public sealed class IntelligenceStoreConsumer(
 
             if (namedVectors.Count > 0)
             {
-                var pointPayload = new Dictionary<string, object> { ["key"] = ev.Key };
-                foreach (var vf in schema.VectorFields)
-                {
-                    var fieldText = ExtractString(payload, vf.PropertyName);
-                    if (!string.IsNullOrWhiteSpace(fieldText))
-                        pointPayload[vf.PropertyName.ToCamelCase()] = fieldText;
-                }
-                foreach (var col in schema.ScalarColumns)
-                {
-                    var isOwnerColumn = ownerField is not null &&
-                        string.Equals(col.Name, ownerField, StringComparison.OrdinalIgnoreCase);
-                    var val = isOwnerColumn
-                        ? authoritativeOwnerValue
-                        : ExtractTypedValue(payload, col.Name, col.SqlType);
-                    if (val is not null) pointPayload[col.Name.ToCamelCase()] = val;
-                }
-                foreach (var fk in schema.FkColumns)
-                {
-                    var val = ExtractTypedValue(payload, fk.ColumnName, "TEXT");
-                    if (val is not null) pointPayload[fk.ColumnName.ToCamelCase()] = val;
-                }
+                var pointPayload = BuildObjectPointPayload(ev.Key, schema, payload, ownerField, authoritativeOwnerValue);
                 var collectionName = tenantScope.ResolveCollectionName(schema.CollectionName, authoritativeTenantValue, isChunks: false);
                 if (authoritativeTenantValue is not null)
                     await EnsureCollectionAsync(SchemaBuilder.ToCollectionSchema(schema) with { CollectionName = collectionName });
@@ -164,12 +145,14 @@ public sealed class IntelligenceStoreConsumer(
                 {
                     await vectorWrite.UpsertNamedAsync(collectionName, pointId, namedVectors, pointPayload);
                 }
+                objectPointWritten = true;
                 logger.LogInformation("[Intelligence] Upserted {Count} vector(s) for {Type}:{Key}",
                     namedVectors.Count, ev.TypeName, ev.Key);
             }
         }
 
         // ── Chunk upsert (passage-level RAG embeddings) ────────────────────────
+        var centroids = new Dictionary<string, float[]>();
         if (schema.ChunkFields.Count > 0)
         {
             var chunksCollectionName = tenantScope.ResolveCollectionName(schema.CollectionName, authoritativeTenantValue, isChunks: true);
@@ -221,6 +204,9 @@ public sealed class IntelligenceStoreConsumer(
 
                     var chunkResults = await Task.WhenAll(chunkTasks);
 
+                    var fieldCentroid = ComputeCentroid(chunkResults.Select(r => r.chunkVector).ToList());
+                    centroids[$"{cf.PropertyName.ToSnakeCase()}_centroid"] = fieldCentroid;
+
                     foreach (var (chunkVector, chunkId, chunkText, chunkIndex) in chunkResults)
                     {
                         var chunkPayload = new Dictionary<string, object>
@@ -259,6 +245,88 @@ public sealed class IntelligenceStoreConsumer(
                 }
             }
         }
+
+        // ── Centroid write (document-level signal derived from this event's chunks) ───────
+        if (centroids.Count > 0 && authoritativeTenantValue is not null)
+        {
+            var collectionName = tenantScope.ResolveCollectionName(schema.CollectionName, authoritativeTenantValue, isChunks: false);
+            await EnsureCollectionAsync(SchemaBuilder.ToCollectionSchema(schema) with { CollectionName = collectionName });
+
+            using (RequestHeaders.Use("api-key", tenantScope.MintScopedApiKey(collectionName, readOnly: false)))
+            {
+                if (objectPointWritten)
+                    await vectorWrite.UpdateNamedVectorsAsync(collectionName, pointId, centroids);
+                else
+                    await vectorWrite.UpsertNamedAsync(
+                        collectionName,
+                        pointId,
+                        centroids,
+                        BuildObjectPointPayload(ev.Key, schema, payload, ownerField, authoritativeOwnerValue));
+            }
+        }
+    }
+
+    // Builds the object-level point payload — key, vector-field text, scalar columns (owner
+    // column re-derived from the authoritative row per CSR #7), and FK columns. Shared by the
+    // named-vector upsert and the centroid write, which independently need the same payload
+    // when the object block did not already write the point this event.
+    private static Dictionary<string, object> BuildObjectPointPayload(
+        string key,
+        SchemaDescriptor schema,
+        JsonElement payload,
+        string? ownerField,
+        string? authoritativeOwnerValue)
+    {
+        var pointPayload = new Dictionary<string, object> { ["key"] = key };
+        foreach (var vf in schema.VectorFields)
+        {
+            var fieldText = ExtractString(payload, vf.PropertyName);
+            if (!string.IsNullOrWhiteSpace(fieldText))
+                pointPayload[vf.PropertyName.ToCamelCase()] = fieldText;
+        }
+        foreach (var col in schema.ScalarColumns)
+        {
+            var isOwnerColumn = ownerField is not null &&
+                string.Equals(col.Name, ownerField, StringComparison.OrdinalIgnoreCase);
+            var val = isOwnerColumn
+                ? authoritativeOwnerValue
+                : ExtractTypedValue(payload, col.Name, col.SqlType);
+            if (val is not null) pointPayload[col.Name.ToCamelCase()] = val;
+        }
+        foreach (var fk in schema.FkColumns)
+        {
+            var val = ExtractTypedValue(payload, fk.ColumnName, "TEXT");
+            if (val is not null) pointPayload[fk.ColumnName.ToCamelCase()] = val;
+        }
+        return pointPayload;
+    }
+
+    // L2-normalizes each input vector and returns their componentwise mean, without
+    // re-normalizing the result: Qdrant normalizes on store under Distance.Cosine, and cosine
+    // similarity is scale-invariant, so a second normalization here would buy nothing.
+    // No zero-magnitude guard: no caller passes a zero vector (blank text is skipped upstream,
+    // and SplitIntoChunks always yields at least one chunk from non-blank text).
+    internal static float[] ComputeCentroid(IReadOnlyList<float[]> vectors)
+    {
+        var dims = vectors[0].Length;
+        var sum = new float[dims];
+
+        foreach (var vector in vectors)
+        {
+            float magnitude = 0;
+            foreach (var component in vector)
+                magnitude += component * component;
+            magnitude = MathF.Sqrt(magnitude);
+
+            for (var i = 0; i < dims; i++)
+                sum[i] += vector[i] / magnitude;
+        }
+
+        var mean = new float[dims];
+        for (var i = 0; i < dims; i++)
+            mean[i] = sum[i] / vectors.Count;
+
+        return mean;
     }
 
     internal async Task HandleDeleteAsync(string key, string value, CancellationToken ct)
