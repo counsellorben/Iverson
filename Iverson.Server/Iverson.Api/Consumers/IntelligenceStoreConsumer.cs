@@ -259,6 +259,10 @@ public sealed class IntelligenceStoreConsumer(
         // silently destroy its *_vector values. UpdateNamedVectorsAsync is therefore always tried
         // first when we didn't just write the point ourselves; only a genuine "point not found"
         // (surfaced by Qdrant as gRPC NotFound) falls back to upsert.
+        // Gated on authoritativeTenantValue is not null, unlike the chunk upserts above (:239,
+        // ungated) — inherited asymmetry, not accidental: on the documented delete-then-recreate
+        // race (authoritative row missing), chunks are still written but the centroid is silently
+        // dropped. Plan-conformant; not changed here.
         if (centroids.Count > 0 && authoritativeTenantValue is not null)
         {
             var collectionName = tenantScope.ResolveCollectionName(schema.CollectionName, authoritativeTenantValue, isChunks: false);
@@ -275,13 +279,24 @@ public sealed class IntelligenceStoreConsumer(
                 if (objectPointWritten)
                 {
                     await vectorWrite.UpdateNamedVectorsAsync(collectionName, pointId, centroids);
+                    logger.LogInformation("[Intelligence] Updated {Count} centroid(s) for {Type}:{Key} (object point written this event)",
+                        centroids.Count, ev.TypeName, ev.Key);
                 }
                 else if (!await TryUpdateNamedVectorsAsync(collectionName, pointId, centroids))
+                {
                     await vectorWrite.UpsertNamedAsync(
                         collectionName,
                         pointId,
                         centroids,
                         BuildObjectPointPayload(ev.Key, schema, payload, ownerField, authoritativeOwnerValue));
+                    logger.LogInformation("[Intelligence] Upserted {Count} centroid(s) for {Type}:{Key} (object point did not exist)",
+                        centroids.Count, ev.TypeName, ev.Key);
+                }
+                else
+                {
+                    logger.LogInformation("[Intelligence] Updated {Count} centroid(s) for {Type}:{Key} (object point already existed)",
+                        centroids.Count, ev.TypeName, ev.Key);
+                }
             }
         }
     }
@@ -344,6 +359,11 @@ public sealed class IntelligenceStoreConsumer(
     // similarity is scale-invariant, so a second normalization here would buy nothing.
     // No zero-magnitude guard: no caller passes a zero vector (blank text is skipped upstream,
     // and SplitIntoChunks always yields at least one chunk from non-blank text).
+    // Assumes every input vector shares vectors[0].Length (one embedding model per chunk field,
+    // so all chunks for a given field are the same dimensionality today). A shorter input would
+    // throw; a longer one would be silently truncated in the sum while still contributing its
+    // full magnitude to the normalization — unreachable under the current one-model-per-field
+    // invariant, so no runtime guard is added.
     internal static float[] ComputeCentroid(IReadOnlyList<float[]> vectors)
     {
         var dims = vectors[0].Length;

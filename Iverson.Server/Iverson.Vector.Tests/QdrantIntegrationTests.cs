@@ -1,5 +1,6 @@
 using DotNet.Testcontainers.Builders;
 using FluentAssertions;
+using Grpc.Core;
 using Iverson.Vector;
 using Microsoft.Extensions.Logging.Abstractions;
 using Qdrant.Client;
@@ -290,5 +291,58 @@ public sealed class QdrantIntegrationTests(QdrantContainerFixture fixture)
 
         results.Should().ContainSingle();
         results[0].Id.Should().Be(2);
+    }
+
+    // ── UpdateNamedVectorsAsync (partial named-vector update) ─────────────────
+    //
+    // These tests verify, against a real Qdrant, the two facts the IntelligenceStoreConsumer's
+    // update-then-fallback design depends on but that were previously only assumed in mocked
+    // tests: (1) update_vectors against a point that was never written surfaces as gRPC NotFound,
+    // and (2) a partial named-vector update leaves untouched named vectors on the same point
+    // unchanged (i.e. it truly is a partial update, not a full-vector replace).
+
+    [Fact]
+    public async Task UpdateNamedVectorsAsync_PointNeverWritten_ThrowsNotFound()
+    {
+        var name = UniqueName();
+        var schema = new CollectionSchema(name, [new NamedVector("title_centroid", 4)], []);
+        await _mgr.ApplyCollectionAsync(schema);
+
+        var act = async () => await _svc.UpdateNamedVectorsAsync(
+            name, 123UL,
+            new Dictionary<string, float[]> { ["title_centroid"] = [0.1f, 0.2f, 0.3f, 0.4f] });
+
+        var thrown = await act.Should().ThrowAsync<RpcException>();
+        thrown.Which.StatusCode.Should().Be(StatusCode.NotFound);
+    }
+
+    [Fact]
+    public async Task UpdateNamedVectorsAsync_UpdatesOnlyTargetedVector_LeavesOtherVectorUnchanged()
+    {
+        var name = UniqueName();
+        var schema = new CollectionSchema(
+            name,
+            [new NamedVector("title_vector", 4), new NamedVector("title_centroid", 4)],
+            []);
+        await _mgr.ApplyCollectionAsync(schema);
+
+        var originalTitleVector = new float[] { 1f, 0f, 0f, 0f };
+        await _svc.UpsertNamedAsync(name, 5UL, new Dictionary<string, float[]>
+        {
+            ["title_vector"]   = originalTitleVector,
+            ["title_centroid"] = [0f, 1f, 0f, 0f],
+        });
+
+        var updatedCentroid = new float[] { 0f, 0f, 1f, 0f };
+        await _svc.UpdateNamedVectorsAsync(name, 5UL,
+            new Dictionary<string, float[]> { ["title_centroid"] = updatedCentroid });
+
+        // The updated vector reflects the new value.
+        var centroidResults = await _svc.SearchNamedAsync(name, "title_centroid", updatedCentroid, limit: 1);
+        centroidResults.Should().ContainSingle().Which.Id.Should().Be(5UL);
+
+        // The untouched named vector on the same point survived unchanged.
+        var titleResults = await _svc.SearchNamedAsync(name, "title_vector", originalTitleVector, limit: 1);
+        titleResults.Should().ContainSingle().Which.Id.Should().Be(5UL);
     }
 }

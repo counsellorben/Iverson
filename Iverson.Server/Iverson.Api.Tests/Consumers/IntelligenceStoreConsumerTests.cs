@@ -1512,24 +1512,41 @@ public class IntelligenceStoreConsumerTests
     }
 
     [Fact]
-    public async Task HandleCreated_BlankChunkField_WritesNoCentroidKey()
+    public async Task HandleCreated_BlankChunkField_WritesNoCentroidKeyForBlankFieldButDoesForPopulatedField()
     {
+        // Discriminating version of the blank-chunk-field test: pairs a blank chunk field with a
+        // populated one in the same event so the assertion can't pass merely because the centroid
+        // feature was deleted outright (a DidNotReceive()-only assertion passes identically in
+        // that case). Here the populated field (Body) must still get a centroid write, while the
+        // blank field (Summary) must not appear in that write's vector dictionary.
         var schema = new SchemaDescriptor
         {
             TypeName       = "Doc",
             TableName      = "docs",
             CollectionName = "docs",
             KeyColumn      = new ColumnDescriptor("Id", "uuid", false),
-            ScalarColumns  = [new ColumnDescriptor("Body", "text", false)],
+            ScalarColumns  = [new ColumnDescriptor("Body", "text", false), new ColumnDescriptor("Summary", "text", false)],
             FkColumns      = [],
             VectorFields   = [],
-            ChunkFields    = [new ChunkDescriptor("Body", 512, 64, "nomic-embed-text", 768)],
+            ChunkFields    =
+            [
+                new ChunkDescriptor("Body", 512, 64, "nomic-embed-text", 768),
+                new ChunkDescriptor("Summary", 512, 64, "nomic-embed-text", 768)
+            ],
             Relations      = [],
             TenantColumn   = "TenantId"
         };
         await _registry.RegisterAsync(schema);
 
-        var payload = """{"Body":""}""";
+        _vectorWrite
+            .UpdateNamedVectorsAsync(
+                "docs_test-tenant",
+                Arg.Any<ulong>(),
+                Arg.Any<IReadOnlyDictionary<string, float[]>>())
+            .Returns<Task>(_ => throw new RpcException(new Status(StatusCode.NotFound, "no point")));
+
+        var longBody = new string('x', 3000);
+        var payload  = $$$"""{"Body":"{{{longBody}}}","Summary":""}""";
         var ev = new EntityEvent(
             EventType:     EntityEventType.Created,
             TypeName:      "Doc",
@@ -1540,14 +1557,19 @@ public class IntelligenceStoreConsumerTests
             OccurredAt:    DateTimeOffset.UtcNow,
             TargetStores:  StoreTarget.Intelligence);
 
+        IReadOnlyDictionary<string, float[]>? capturedVectors = null;
+        _vectorWrite
+            .UpsertNamedAsync(
+                "docs_test-tenant",
+                Arg.Any<ulong>(),
+                Arg.Do<IReadOnlyDictionary<string, float[]>>(v => capturedVectors = v),
+                Arg.Any<IReadOnlyDictionary<string, object>?>())
+            .Returns(Task.CompletedTask);
+
         await BuildSut().HandleAsync(ev.Key, Serialize(ev), CancellationToken.None);
 
-        await _vectorWrite.DidNotReceive().UpsertNamedAsync(
-            "docs_test-tenant",
-            Arg.Any<ulong>(),
-            Arg.Any<IReadOnlyDictionary<string, float[]>>(),
-            Arg.Any<IReadOnlyDictionary<string, object>?>());
-        await _vectorWrite.DidNotReceive().UpdateNamedVectorsAsync(
-            "docs_test-tenant", Arg.Any<ulong>(), Arg.Any<IReadOnlyDictionary<string, float[]>>());
+        capturedVectors.Should().NotBeNull();
+        capturedVectors!.Should().ContainKey("body_centroid");
+        capturedVectors.Should().NotContainKey("summary_centroid");
     }
 }
