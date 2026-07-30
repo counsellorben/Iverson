@@ -72,7 +72,7 @@ Newly introduced by this plan and verified at plan-write time.
 | P1 | File path | `Iverson.Vector/` is flat and holds no `IResultReranker.cs`/`ResultReranker.cs` | `ls Iverson.Vector/` — 9 `.cs` files, no subdirectories |
 | P2 | File path | **Corrected from draft.** There is no `Search/` folder in `Iverson.Api`; `Grpc/` already holds non-service helpers, so `DecayFieldResolver` belongs there | `ls -d Iverson.Api/*/` → Authorization, Consumers, Grpc, Properties, Reconciliation, Schema, Tenancy. `Grpc/` contains `EntityKeyAccessor.cs`, `ProtoPayloadHelper.cs`, `StructFieldAccess.cs`, `RelationValidator.cs` |
 | P3 | Signature | `TensorPrimitives.CosineSimilarity(ReadOnlySpan<float>, ReadOnlySpan<float>)` exists | `System.Numerics.Tensors.xml` (10.0.10) |
-| P4 | Signature | Retrieve accessor chain: `RetrievedPoint.Id.Num` (`ulong`), `.Vectors` → `VectorsOutput.Vectors` → `NamedVectorsOutput.Vectors` (`MapField<string, VectorOutput>`) → `VectorOutput.Dense` (`DenseVector`) | Reflection dump over `Qdrant.Client` 1.18.1, including `DenseVector.Data : RepeatedField<float>`. `VectorOutput` exposes both `.Data` and `.Dense`; this plan uses `.Dense`, matching the write side's `Vector.Dense` convention |
+| P4 | Signature | Retrieve accessor chain: `RetrievedPoint.Id.Num` (`ulong`), `.Vectors` → `VectorsOutput.Vectors` → `NamedVectorsOutput.Vectors` (`MapField<string, VectorOutput>`) → `VectorOutput.Dense` (`DenseVector`) | Reflection dump over `Qdrant.Client` 1.18.1, including `DenseVector.Data : RepeatedField<float>`. `VectorOutput` exposes both `.Data` and `.Dense`. Which one a 1.18 server populates is **not** established by this evidence, so Task 1 reads both and its integration test pins the answer |
 | P5 | Signature | `PointId` converts implicitly from `ulong` | Reflection: `PointId.op_Implicit(UInt64)` |
 | P6 | Signature | `Build(IReadOnlyList<SearchClause> clauses, SearchLogic logic, string rpcName)` returns `Filter` (not `Filter?`) | `IntelligenceFilterBuilder.cs:16` |
 | P7 | Signature | `ColumnDescriptor(string Name, string SqlType, bool IsNullable)`; `SchemaDescriptor` exposes `KeyColumn` and `ScalarColumns` | `SchemaDescriptor.cs:51`, `:9-10` |
@@ -89,6 +89,8 @@ Newly introduced by this plan and verified at plan-write time.
 | P18 | Consumer impact | **Corrected from spec §8.** Two tests bind `KeyToUlong` by reflection on `typeof(IntelligenceStoreConsumer)` with `BindingFlags.NonPublic`. Widening `private` → `internal` **in place** satisfies the search service's need and keeps both tests passing; *moving* the method to another type would break them | `IntelligenceStoreConsumerTests.cs:746`, `:764`; `internal` remains `NonPublic` to reflection |
 | P19 | Consumer impact | The vector roles are registered in `Iverson.Vector/ServiceCollectionExtensions.cs`; the re-ranker registration belongs beside them | `:40-46` — `AddSingleton<IntelligenceVectorService>()` then role-forwarding singletons |
 | P20 | Sibling sweep | **Corrected from spec §8.** The two RPCs reach the filter builder through *different* public entry points: `SearchSimilar` → `Build` (`:161`), `SearchChunks` → `MatchEquality` (`:632`). Both funnel to the private `BuildEqualityCondition`, so canonicalization must live there and **both** entry points must thread the timestamp columns. Property names arrive camelCased at both (`:152`, `:632` `canonicalName.ToCamelCase()`) | `IntelligenceFilterBuilder.cs:16`, `:59`, `:73-74`, `:105`; `ObjectSearchGrpcService.cs:152`, `:161`, `:632` |
+| P21 | Consumer impact | `Iverson.Vector`'s `InternalsVisibleTo` names only `Iverson.Vector.Tests`, so any type `Iverson.Api` consumes must be `public` | `Iverson.Vector.csproj:11` — single `<_Parameter1>Iverson.Vector.Tests</_Parameter1>`; existing cross-assembly roles (`IVectorQueryService`, `VectorSearchResult`) are all `public` in `IVectorRoles.cs` |
+| P22 | Consumer impact | `ObjectSearchGrpcService` serves concurrent gRPC calls, so any static cache Task 4 introduces is written from multiple threads | Registered as a gRPC service endpoint; Task 5 Step 5 resolves the decay field once per request, on the request thread |
 
 ## Tasks
 
@@ -123,14 +125,15 @@ On `IntelligenceVectorService`, mirroring `SearchNamedAsync`'s telemetry shape (
 var points = await client.RetrieveAsync(
     collectionName,
     ids.Select(id => (PointId)id).ToList(),
-    withPayload: false,
-    withVectors: new[] { vectorName });
+    payloadSelector: false,
+    vectorSelector:  new[] { vectorName });
 
 var result = new Dictionary<ulong, float[]>();
 foreach (var p in points)
 {
-    if (p.Vectors?.Vectors?.Vectors.TryGetValue(vectorName, out var v) == true && v.Dense is not null)
-        result[p.Id.Num] = v.Dense.Data.ToArray();
+    if (p.Vectors?.Vectors?.Vectors.TryGetValue(vectorName, out var v) != true) continue;
+    var data = v.Dense?.Data ?? v.Data;          // 1.18 exposes both; read whichever is set
+    if (data is { Count: > 0 }) result[p.Id.Num] = data.ToArray();
 }
 return result;
 ```
@@ -141,7 +144,7 @@ Points lacking the named vector are simply absent from the map — Task 5 treats
 
 In `QdrantIntegrationTests`, following the file's existing `QdrantContainerFixture` convention: upsert a point carrying two named vectors, retrieve only one of them by id, and assert the returned map contains that point's id with the expected values and that the other vector is not returned. Add a second case asserting that ids with no such point are absent from the map rather than throwing.
 
-A mock cannot confirm the named-vector shape Qdrant actually returns — this is the class of gap part 4a's final review caught.
+A mock cannot confirm the named-vector shape Qdrant actually returns — this is the class of gap part 4a's final review caught. This test also pins which representation the server returns — `VectorOutput` carries both a legacy flat `Data` and a `Dense` message, and the read above deliberately accepts either.
 
 - [ ] **Step 4: Build and test**
 ```bash
@@ -231,7 +234,7 @@ In `ResultRerankerTests`, with known vectors so every expected value is computed
 - both absent → fused equals `BaseScore` exactly, and the returned order matches the input order for already-descending input (the "today's behavior preserved" case);
 - centroid present but of the wrong length → treated as absent, not as zero.
 
-The types are `internal`-visible to this test project already (P13), so no reflection is needed.
+The types are `public` like the other vector roles (P21), so the tests reference them directly with no reflection.
 
 - [ ] **Step 6: Build and test**
 ```bash
@@ -290,7 +293,7 @@ public static Condition MatchEquality(
     IReadOnlySet<string>? timestampColumns = null)
 ```
 
-`BuildEqualityCondition` canonicalizes a `StringVal` operand — parse with `DateTimeOffset.TryParse` and re-emit `"o"` — when `timestampColumns` contains the property, leaving it untouched otherwise. Apply it for `EQUALS`, `NOT_EQUALS` and `IN`; those are the only three operators that reach a payload string comparison (spec A21), and `IN` canonicalizes each element of its list. An operand that will not parse passes through unchanged rather than throwing — the caller sent a value that was never going to match.
+`BuildEqualityCondition` (`:105`) and the `IN` arm of `BuildCondition` (`:79`) are the **two** string-comparison emission points, so the canonicalization goes in a single private helper — `Canonicalize(string property, string value, IReadOnlySet<string>? timestampColumns)` — that both call: `BuildEqualityCondition` on its `StringVal` operand, and the `IN` arm on each element of its list. Placing it in the equality helper alone would leave `IN` untouched, since `IN` does not route through it. The helper parses with `DateTimeOffset.TryParse` and re-emits `"o"` when `timestampColumns` contains the property, leaving the value untouched otherwise. Those three operators are the only ones that reach a payload string comparison (spec A21). An operand that will not parse passes through unchanged rather than throwing — the caller sent a value that was never going to match.
 
 **Casing contract:** property names arrive camelCased at both entry points (`ObjectSearchGrpcService.cs:152` and `:632`'s `canonicalName.ToCamelCase()`), so the set must hold camelCase names, or the comparison must be `OrdinalIgnoreCase`. A mismatch here silently disables the canonicalization and reinstates the bug — assert it in the tests.
 
@@ -337,7 +340,7 @@ An `internal static` resolver that takes a `SchemaDescriptor` and returns the ca
 - none → `null`;
 - two or more → `null`, and log once per type.
 
-The two-or-more case refuses to guess deliberately (spec §6). "Once per type" means the resolver caches its per-type answer; the cache is also what keeps the join off the hot path.
+The two-or-more case refuses to guess deliberately (spec §6). "Once per type" is implemented with a `static readonly ConcurrentDictionary<string, string?>` keyed by type name, populated via `GetOrAdd`; the cache is also what keeps the join off the hot path. `ObjectSearchGrpcService` serves concurrent requests (P22), so a plain `Dictionary` is not an option. `GetOrAdd`'s value factory may run more than once under a racing first call for the same type, so the ambiguous-type log line is at-least-once, not exactly-once — acceptable, since it is a registration-time diagnostic rather than a counter.
 
 - [ ] **Step 2: Compute the decay value**
 
