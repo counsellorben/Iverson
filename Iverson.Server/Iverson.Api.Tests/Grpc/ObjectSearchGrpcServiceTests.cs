@@ -2293,6 +2293,28 @@ public class ObjectSearchGrpcServiceTests
         TenantColumn   = "TenantId"
     };
 
+    // Embedding-only searched property (no centroid possible) but a TIMESTAMPTZ metadata column,
+    // so DecayFieldResolver DOES resolve a decay field — only one of the two signals is absent.
+    private static SchemaDescriptor EmbeddingOnlyWithDecaySchema() => new()
+    {
+        TypeName        = "Dated",
+        TableName       = "dated",
+        CollectionName  = "dated",
+        KeyColumn       = new ColumnDescriptor("Id", "uuid", false),
+        ScalarColumns   = [
+            new ColumnDescriptor("Title",       "text",        false),
+            new ColumnDescriptor("PublishedAt", "TIMESTAMPTZ", true)
+        ],
+        MetadataColumns = ["PublishedAt"],
+        FkColumns       = [],
+        VectorFields    = [new VectorDescriptor("Title", 768, "nomic-embed-text")],
+        ChunkFields     = [],
+        Relations       = [],
+        Authorization   = new Iverson.Api.Schema.AuthorizationRules(
+            null, new List<Iverson.Api.Schema.RowPermission> { new("test-bypass", true, true, true) }, []),
+        TenantColumn    = "TenantId"
+    };
+
     private static float[] UnitVector()
     {
         var v = new float[768];
@@ -2305,15 +2327,46 @@ public class ObjectSearchGrpcServiceTests
             .Single(c => c.GetMethodInfo().Name == nameof(IVectorQueryService.SearchNamedAsync))
             .GetArguments()[3]!;
 
+    // Doc.Body is dual-annotated, so a centroid CAN be present — the identity gate must not fire
+    // and the over-fetch stays exactly 4 × top_k with no ceiling.
     [Fact]
     public async Task SearchSimilar_OverFetchesFourTimesTopK_AndTrimsToTopK()
+    {
+        await _registry.RegisterAsync(DualAnnotatedSchema());
+
+        var fakeVector = UnitVector();
+        _embedding.EmbedAsync("q", Arg.Any<CancellationToken>()).Returns(fakeVector);
+
+        var results = Enumerable.Range(1, 20)
+            .Select(i => new VectorSearchResult((ulong)i, 1.0 - i * 0.01,
+                new Dictionary<string, string> { ["body"] = $"a{i}" }))
+            .ToList();
+        _vector.SearchNamedAsync("docs_test-tenant", "body_vector", fakeVector, Arg.Any<ulong>(), Arg.Any<Filter>())
+               .Returns(results.AsReadOnly());
+        _vector.RetrieveNamedVectorAsync(Arg.Any<string>(), Arg.Any<IReadOnlyList<ulong>>(), Arg.Any<string>())
+               .Returns((IReadOnlyDictionary<ulong, float[]>)new Dictionary<ulong, float[]>());
+
+        var (writer, written) = MakeStream<SearchResponse>();
+        await _sut.SearchSimilar(
+            new SearchSimilarRequest { TypeName = "Doc", Property = "Body", Query = "q", TopK = 5 },
+            writer, TestServerCallContext.Create());
+
+        CapturedLimit(_vector).Should().Be(20);   // 4 × top_k, uncapped
+        written.Should().HaveCount(5);            // trimmed back to top_k
+    }
+
+    // Article.Title is embedding-only (no centroid possible) AND ArticleSchema has no timestamp
+    // metadata column (no decay field) — the fused score provably equals the base score for every
+    // candidate, so the over-fetch and the centroid round trip are both pure waste.
+    [Fact]
+    public async Task SearchSimilar_NoCentroidAndNoDecayField_RequestsExactlyTopK_AndSkipsRetrieve()
     {
         await _registry.RegisterAsync(SchemaFixtures.ArticleSchema());
 
         var fakeVector = UnitVector();
         _embedding.EmbedAsync("q", Arg.Any<CancellationToken>()).Returns(fakeVector);
 
-        var results = Enumerable.Range(1, 20)
+        var results = Enumerable.Range(1, 5)
             .Select(i => new VectorSearchResult((ulong)i, 1.0 - i * 0.01,
                 new Dictionary<string, string> { ["title"] = $"a{i}" }))
             .ToList();
@@ -2325,10 +2378,45 @@ public class ObjectSearchGrpcServiceTests
             new SearchSimilarRequest { TypeName = "Article", Property = "Title", Query = "q", TopK = 5 },
             writer, TestServerCallContext.Create());
 
-        CapturedLimit(_vector).Should().Be(20);   // 4 × top_k, uncapped
-        written.Should().HaveCount(5);            // trimmed back to top_k
+        CapturedLimit(_vector).Should().Be(5);    // exactly top_k — no over-fetch
+        await _vector.DidNotReceive().RetrieveNamedVectorAsync(
+            Arg.Any<string>(), Arg.Any<IReadOnlyList<ulong>>(), Arg.Any<string>());
+
+        // Still re-ranked, and bit-for-bit what the ungated code returned: base cosines, in order.
+        written.Should().HaveCount(5);
+        written.Select(w => w.Score).Should()
+               .Equal(0.99f, 0.98f, 0.97f, 0.96f, 0.95f);
     }
 
+    // Only ONE signal absent is not enough: an embedding-only property on a schema that DOES
+    // carry a decay field still re-ranks non-trivially, so the 4x over-fetch stays.
+    [Fact]
+    public async Task SearchSimilar_NoCentroidButDecayFieldPresent_StillOverFetchesFourTimesTopK()
+    {
+        await _registry.RegisterAsync(EmbeddingOnlyWithDecaySchema());
+
+        var fakeVector = UnitVector();
+        _embedding.EmbedAsync("q", Arg.Any<CancellationToken>()).Returns(fakeVector);
+
+        var results = Enumerable.Range(1, 8)
+            .Select(i => new VectorSearchResult((ulong)i, 1.0 - i * 0.01,
+                new Dictionary<string, string> { ["title"] = $"a{i}" }))
+            .ToList();
+        _vector.SearchNamedAsync("dated_test-tenant", "title_vector", fakeVector, Arg.Any<ulong>(), Arg.Any<Filter>())
+               .Returns(results.AsReadOnly());
+
+        var (writer, written) = MakeStream<SearchResponse>();
+        await _sut.SearchSimilar(
+            new SearchSimilarRequest { TypeName = "Dated", Property = "Title", Query = "q", TopK = 5 },
+            writer, TestServerCallContext.Create());
+
+        CapturedLimit(_vector).Should().Be(20);   // 4 × top_k
+        written.Should().HaveCount(5);
+    }
+
+    // SearchChunks only accepts an [IversonChunk] property, and every chunk field gets a
+    // "<property>_centroid" on the object collection — the centroid signal is ALWAYS possible
+    // here, so the identity gate can never fire and the 4x over-fetch always stands.
     [Fact]
     public async Task SearchChunks_OverFetchesFourTimesTopK_AndTrimsToTopK()
     {

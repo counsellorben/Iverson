@@ -130,16 +130,21 @@ public static class IntelligenceFilterBuilder
     };
 
     /// <summary>
-    /// Re-emits a filter operand on a timestamp property in the canonical round-trip ("o") form
-    /// that IntelligenceStoreConsumer writes into the payload, so string comparison matches
-    /// whatever format the caller sent. Non-timestamp properties, and operands that will not
-    /// parse, pass through unchanged — a value that cannot be a timestamp was never going to
-    /// match, and throwing here would turn a no-hit query into an error.
+    /// Re-emits a filter operand on a timestamp property in the canonical UTC round-trip ("o")
+    /// form that IntelligenceStoreConsumer writes into the payload, so string comparison matches
+    /// any operand naming the same INSTANT, whatever offset the caller expressed it in.
+    /// AdjustToUniversal normalizes the offset; AssumeUniversal makes an offset-LESS operand mean
+    /// UTC rather than the pod's local timezone, so the API pod and the ingest pod canonicalize
+    /// identically under different TZ settings. This is the SAME rule the write side applies.
+    /// Non-timestamp properties, and operands that will not parse, pass through unchanged — a
+    /// value that cannot be a timestamp was never going to match, and throwing here would turn a
+    /// no-hit query into an error.
     /// </summary>
     private static string Canonicalize(string property, string value, IReadOnlySet<string>? timestampColumns) =>
         timestampColumns is not null
         && timestampColumns.Contains(property)
-        && DateTimeOffset.TryParse(value, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out var dto)
+        && DateTimeOffset.TryParse(value, CultureInfo.InvariantCulture,
+               DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal, out var dto)
             ? dto.ToString("o", CultureInfo.InvariantCulture)
             : value;
 }

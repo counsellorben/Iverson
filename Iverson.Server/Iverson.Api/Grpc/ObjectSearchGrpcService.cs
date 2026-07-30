@@ -197,12 +197,28 @@ public sealed class ObjectSearchGrpcService(
         var topK           = (ulong)Math.Max(1, (int)request.TopK);
         var collectionName = tenantScope.ResolveCollectionName(schema.CollectionName, decision.TenantValue, isChunks: false);
 
+        // The centroid signal only exists for a property that is BOTH embedded and chunked —
+        // "<property>_centroid" is written on the object collection only for chunk fields. For an
+        // embedding-only property there is no such named vector.
+        var centroidPossible = schema.ChunkFields.Any(c =>
+            string.Equals(c.PropertyName, vectorDesc.PropertyName, StringComparison.OrdinalIgnoreCase));
+
+        var decayField = DecayFieldResolver.ResolveDecayField(schema, logger);
+
+        // When NEITHER signal can be present, the fused score provably equals the base score for
+        // every candidate and the re-rank is a mathematical identity — Qdrant's own ordering is
+        // already final. Over-fetching 4x then discarding 3/4 of the payloads (which carry the
+        // full source text of every vector field) buys nothing, so fetch exactly topK. Whenever
+        // either signal CAN be present the over-fetch stays exactly 4x with no ceiling.
+        var rerankIsIdentity = !centroidPossible && decayField is null;
+        var fetchLimit       = rerankIsIdentity ? topK : topK * OverFetchFactor;
+
         IReadOnlyList<VectorSearchResult> results;
         using (RequestHeaders.Use("api-key", tenantScope.MintScopedApiKey(collectionName, readOnly: true)))
         {
             try
             {
-                results = await vector.SearchNamedAsync(collectionName, vectorName, queryVector, topK * OverFetchFactor, filter);
+                results = await vector.SearchNamedAsync(collectionName, vectorName, queryVector, fetchLimit, filter);
             }
             catch (RpcException ex) when (ex.StatusCode == StatusCode.NotFound)
             {
@@ -213,13 +229,10 @@ public sealed class ObjectSearchGrpcService(
             }
         }
 
-        // The centroid signal only exists for a property that is BOTH embedded and chunked —
-        // "<property>_centroid" is written on the object collection only for chunk fields. For an
-        // embedding-only property there is no such named vector, so skip the fetch entirely and
-        // let every candidate's centroid be absent.
+        // No centroid vector to fetch when the property is not chunked — skip the round trip
+        // entirely and let every candidate's centroid be absent.
         var centroids = EmptyCentroids;
-        if (results.Count > 0 &&
-            schema.ChunkFields.Any(c => string.Equals(c.PropertyName, vectorDesc.PropertyName, StringComparison.OrdinalIgnoreCase)))
+        if (results.Count > 0 && centroidPossible)
         {
             centroids = await FetchCentroidsAsync(
                 collectionName,
@@ -228,8 +241,7 @@ public sealed class ObjectSearchGrpcService(
                 "SearchSimilar");
         }
 
-        var decayField = DecayFieldResolver.ResolveDecayField(schema, logger);
-        var now        = DateTimeOffset.UtcNow;
+        var now = DateTimeOffset.UtcNow;
 
         var candidates = results.Select(r => new RerankCandidate(
             Id:        r.Id,
@@ -326,12 +338,18 @@ public sealed class ObjectSearchGrpcService(
         var chunksCollection = tenantScope.ResolveCollectionName(schema.CollectionName, decision.TenantValue, isChunks: true);
         var topK             = (ulong)Math.Max(1, (int)request.TopK);
 
+        // Unlike SearchSimilar, the identity gate can never fire here: SearchChunks only accepts a
+        // property carrying [IversonChunk], and SchemaBuilder writes a "<property>_centroid" named
+        // vector on the object collection for every chunk field. The centroid signal is therefore
+        // always possible, so the over-fetch stays exactly 4x with no ceiling.
+        var fetchLimit = topK * OverFetchFactor;
+
         IReadOnlyList<VectorSearchResult> results;
         using (RequestHeaders.Use("api-key", tenantScope.MintScopedApiKey(chunksCollection, readOnly: true)))
         {
             try
             {
-                results = await vector.SearchNamedAsync(chunksCollection, vectorName, queryVector, topK * OverFetchFactor, filter);
+                results = await vector.SearchNamedAsync(chunksCollection, vectorName, queryVector, fetchLimit, filter);
             }
             catch (RpcException ex) when (ex.StatusCode == StatusCode.NotFound)
             {

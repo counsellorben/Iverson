@@ -240,7 +240,35 @@ public class QdrantFilterBuilderTests
 
         filter.Must.Should().ContainSingle();
         filter.Must[0].Field.Match.Keywords.Strings.Should().Equal(
-            CanonicalTimestamp, "2026-07-30T12:30:00.0000000+02:00");
+            CanonicalTimestamp, "2026-07-30T10:30:00.0000000+00:00");   // +02:00 normalized to UTC
+    }
+
+    [Fact]
+    public void Build_SameInstantWithDifferentOffsets_CanonicalizesIdentically()
+    {
+        // The whole point of canonicalization: an operand naming the same INSTANT must produce the
+        // same string whatever offset the caller expressed it in, or equality silently no-hits.
+        static string Canonical(string operand) =>
+            IntelligenceFilterBuilder.Build(
+                [Clause("publishedAt", SearchOperator.Equals, Str(operand))],
+                SearchLogic.And, "SearchSimilar", TimestampColumns)
+                .Must[0].Field.Match.Keyword;
+
+        Canonical("2026-07-30T12:30:00+02:00").Should().Be("2026-07-30T10:30:00.0000000+00:00");
+        Canonical("2026-07-30T10:30:00Z").Should().Be("2026-07-30T10:30:00.0000000+00:00");
+        Canonical("2026-07-30T05:30:00-05:00").Should().Be("2026-07-30T10:30:00.0000000+00:00");
+    }
+
+    [Fact]
+    public void Build_OffsetLessTimestampOperand_IsReadAsUtc_NotMachineLocalTime()
+    {
+        // AssumeUniversal: without it the value would be resolved against the pod's local
+        // timezone, so the API pod and the ingest pod would disagree under different TZ settings.
+        var filter = IntelligenceFilterBuilder.Build(
+            [Clause("publishedAt", SearchOperator.Equals, Str("2026-07-30T10:30:00"))],
+            SearchLogic.And, "SearchSimilar", TimestampColumns);
+
+        filter.Must[0].Field.Match.Keyword.Should().Be("2026-07-30T10:30:00.0000000+00:00");
     }
 
     [Fact]

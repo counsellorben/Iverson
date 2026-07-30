@@ -628,14 +628,19 @@ public sealed class IntelligenceStoreConsumer(
             "INTEGER" or "BIGINT"         => v.TryGetInt64(out var l) ? l : null,
             "REAL" or "DOUBLE PRECISION"  => v.TryGetDouble(out var d) ? d : null,
             "BOOLEAN"                     => v.ValueKind is JsonValueKind.True or JsonValueKind.False ? v.GetBoolean() : null,
-            // Canonicalize timestamps to round-trip ("o") form so equality filters — which compare
-            // payload strings verbatim — match regardless of the format the client sent.
+            // Canonicalize timestamps to UTC round-trip ("o") form so equality filters — which
+            // compare payload strings verbatim — match any input naming the same INSTANT, whatever
+            // offset the client expressed it in. AdjustToUniversal normalizes the offset;
+            // AssumeUniversal makes an offset-LESS value mean UTC rather than the pod's local
+            // timezone, so two pods with different TZ settings canonicalize identically.
+            // IntelligenceFilterBuilder.Canonicalize applies the SAME rule on the read side.
             // ToQdrantValue writes the DateTimeOffset out in "o" form. A value that will not parse
             // yields null, so the column is simply absent from the payload rather than stored in a
             // format nothing can match.
             "TIMESTAMPTZ" or "DATETIME"   =>
                 v.ValueKind == JsonValueKind.String && DateTimeOffset.TryParse(
-                    v.GetString(), CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out var dto)
+                    v.GetString(), CultureInfo.InvariantCulture,
+                    DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal, out var dto)
                     ? dto
                     : null,
             _                             => v.ValueKind == JsonValueKind.String ? v.GetString() : v.ToString()

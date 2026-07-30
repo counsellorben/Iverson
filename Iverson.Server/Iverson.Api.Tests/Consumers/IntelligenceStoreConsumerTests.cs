@@ -974,6 +974,46 @@ public class IntelligenceStoreConsumerTests
             .Should().Be("2026-07-29T00:00:00.0000000+00:00");
     }
 
+    [Theory]
+    // Same INSTANT, three spellings — all must canonicalize to the same UTC string, or an equality
+    // filter written in one spelling silently no-hits a document stored in another.
+    [InlineData("2026-07-30T12:30:00+02:00")]
+    [InlineData("2026-07-30T10:30:00Z")]
+    [InlineData("2026-07-30T05:30:00-05:00")]
+    // Offset-LESS: AssumeUniversal means UTC, not the pod's local timezone, so the ingest pod and
+    // the API pod canonicalize identically under different TZ settings.
+    [InlineData("2026-07-30T10:30:00")]
+    public async Task HandleCreated_TimestampMetadataColumn_NormalizesToUtc_RegardlessOfOffset(string sent)
+    {
+        var schema = MetadataDocSchema(
+            [
+                new ColumnDescriptor("Title", "text", false),
+                new ColumnDescriptor("Body", "text", false),
+                new ColumnDescriptor("PublishedAt", "TIMESTAMPTZ", true)
+            ],
+            ["PublishedAt"]);
+        await _registry.RegisterAsync(schema);
+
+        var longBody = new string('x', 3000);
+        var payload  = $$$"""{"Title":"T","Body":"{{{longBody}}}","PublishedAt":"{{{sent}}}","TenantId":"test-tenant"}""";
+
+        IReadOnlyDictionary<string, object>? capturedPayload = null;
+        _vectorWrite
+            .UpsertNamedAsync(
+                "docs_chunks_test-tenant",
+                Arg.Any<ulong>(),
+                Arg.Any<IReadOnlyDictionary<string, float[]>>(),
+                Arg.Do<IReadOnlyDictionary<string, object>?>(p => capturedPayload = p))
+            .Returns(Task.CompletedTask);
+
+        var ev = DocEvent(payload, "trace-metadata-timestamp-utc");
+        await BuildSut().HandleAsync(ev.Key, Serialize(ev), CancellationToken.None);
+
+        capturedPayload.Should().NotBeNull();
+        ((DateTimeOffset)capturedPayload!["publishedAt"]).ToString("o")
+            .Should().Be("2026-07-30T10:30:00.0000000+00:00");
+    }
+
     [Fact]
     public async Task HandleCreated_UnparseableTimestampMetadataColumn_IsAbsentFromPayload()
     {
