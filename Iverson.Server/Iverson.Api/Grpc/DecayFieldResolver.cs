@@ -1,5 +1,5 @@
-using System.Collections.Concurrent;
 using System.Globalization;
+using System.Runtime.CompilerServices;
 using Iverson.Api.Schema;
 
 namespace Iverson.Api.Grpc;
@@ -13,18 +13,25 @@ internal static class DecayFieldResolver
 {
     private const double HalfLifeDays = 180.0;
 
-    // Registration-time diagnostic, not a per-request counter: GetOrAdd's value factory may
-    // run more than once under a racing first call for the same cache key, so the
-    // ambiguous-type log line below is at-least-once, not exactly-once. Also keeps the
-    // metadata/column join off the hot path — ObjectSearchGrpcService serves concurrent
-    // gRPC requests, so this must be a thread-safe collection rather than a plain Dictionary.
+    // Keyed on schema IDENTITY via reference equality, not on derived content: SchemaRegistry
+    // (Iverson.Api/Schema/SchemaRegistry.cs) stores one SchemaDescriptor instance per type in
+    // its own ConcurrentDictionary and replaces the instance wholesale on RegisterAsync
+    // (`_schemas[descriptor.TypeName] = descriptor`) — it is never rebuilt per request. So the
+    // SchemaDescriptor handed to ResolveDecayField is stable across repeated calls for an
+    // unchanged registration and becomes a brand-new object the moment RegisterSchema
+    // re-registers the type, including when only a column's SqlType changes and the column
+    // NAME set stays identical (a case a name-derived key could not distinguish). Reference
+    // identity costs nothing to compute, so the metadata/column join only runs on a genuine
+    // cache miss (a never-seen-before descriptor) — ObjectSearchGrpcService calls this once
+    // per search request and must not pay for the join on every hit.
     //
-    // Keyed on schema IDENTITY, not just TypeName: SchemaDescriptor has no version/etag field,
-    // and RegisterSchema is a live RPC that can re-register an existing type with a different
-    // set of timestamp metadata columns. The key folds in the resolved candidate column names
-    // (see BuildCacheKey) so a re-registration that changes the candidate set naturally misses
-    // the old cache entry instead of serving a stale field forever.
-    private static readonly ConcurrentDictionary<string, string?> Cache = new();
+    // ConditionalWeakTable.GetValue's createValueCallback can run more than once under a race
+    // for the same key (only one result is kept), so the once-per-type ambiguity log below is
+    // at-least-once, not exactly-once — same guarantee as a ConcurrentDictionary.GetOrAdd would
+    // give, and acceptable for a registration-time diagnostic. Values are boxed in StrongBox
+    // because ConditionalWeakTable cannot store a bare null, and null ("no decay field" /
+    // "ambiguous") is a legitimate, cacheable answer.
+    private static readonly ConditionalWeakTable<SchemaDescriptor, StrongBox<string?>> Cache = new();
 
     /// <summary>
     /// Resolves the camelCase payload key of the decay column for <paramref name="schema"/>,
@@ -32,24 +39,7 @@ internal static class DecayFieldResolver
     /// (two or more candidates — this refuses to guess, and logs once per type).
     /// </summary>
     internal static string? ResolveDecayField(SchemaDescriptor schema, ILogger logger) =>
-        Cache.GetOrAdd(BuildCacheKey(schema), _ => Resolve(schema, logger));
-
-    // Schema identity = type name + the sorted set of candidate timestamp-metadata column
-    // names. Any change to which columns are timestamp-typed AND declared metadata (add,
-    // remove, rename, or retype) changes this key, so ResolveDecayField naturally re-resolves
-    // instead of reading a stale cache entry. Column names, not SqlType, are enough here: a
-    // retype into/out of TIMESTAMPTZ/DATETIME changes set membership just the same as a rename.
-    private static string BuildCacheKey(SchemaDescriptor schema)
-    {
-        var candidateNames = schema.ScalarColumns
-            .Where(c => schema.MetadataColumns.Contains(c.Name))
-            .Where(c => c.SqlType.Equals("TIMESTAMPTZ", StringComparison.OrdinalIgnoreCase) ||
-                        c.SqlType.Equals("DATETIME", StringComparison.OrdinalIgnoreCase))
-            .Select(c => c.Name)
-            .OrderBy(n => n, StringComparer.OrdinalIgnoreCase);
-
-        return $"{schema.TypeName}|{string.Join(',', candidateNames)}";
-    }
+        Cache.GetValue(schema, s => new StrongBox<string?>(Resolve(s, logger))).Value;
 
     private static string? Resolve(SchemaDescriptor schema, ILogger logger)
     {
