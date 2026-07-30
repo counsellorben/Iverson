@@ -47,6 +47,8 @@ public static class ServiceCollectionExtensions
 
         services.AddSingleton(new IntelligenceTenantScope(apiKey));
 
+        services.AddSingleton<IResultReranker, ResultReranker>();
+
         return services;
     }
 }
