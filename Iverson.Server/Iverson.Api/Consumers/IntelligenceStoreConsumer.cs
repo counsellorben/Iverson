@@ -561,8 +561,12 @@ public sealed class IntelligenceStoreConsumer(
         }
     }
 
-    // Deterministic ulong from a string key (UUID → lower 8 bytes of Guid bytes)
-    private static ulong KeyToUlong(string key)
+    // Deterministic ulong from a string key (UUID → lower 8 bytes of Guid bytes).
+    // internal (not private) because ObjectSearchGrpcService must derive the SAME point id
+    // from a chunk's parent_id payload value when it fetches parent centroids for re-ranking;
+    // both sides have to agree on this function. Still NonPublic, so the reflection-based
+    // tests binding it on typeof(IntelligenceStoreConsumer) keep working.
+    internal static ulong KeyToUlong(string key)
     {
         if (Guid.TryParse(key, out var g))
         {

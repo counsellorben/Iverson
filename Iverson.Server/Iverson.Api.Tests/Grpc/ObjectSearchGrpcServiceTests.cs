@@ -65,7 +65,8 @@ public class ObjectSearchGrpcServiceTests
         _sut = new ObjectSearchGrpcService(
             _registry, _search, _vector, _embedding,
             NullLogger<ObjectSearchGrpcService>.Instance,
-            _actingUserAccessor, _authEvaluator, new IntelligenceTenantScope("test-signing-key-0123456789abcdef"));
+            _actingUserAccessor, _authEvaluator, new IntelligenceTenantScope("test-signing-key-0123456789abcdef"),
+            new ResultReranker());
     }
 
     private static (IServerStreamWriter<T> writer, List<T> written) MakeStream<T>()
@@ -2270,5 +2271,215 @@ public class ObjectSearchGrpcServiceTests
         captured.Should().NotBeNull();
         captured!["Article"].OwnerColumn.Should().Be("OwnerId");
         captured["Article"].OwnerValue.Should().Be("test-user"); // default fixture's sub claim
+    }
+
+    // ── Tensor re-ranking ──────────────────────────────────────────────────────
+
+    // A property carrying BOTH [IversonEmbedding] and [IversonChunk] — the only shape for which
+    // SearchSimilar has a "<property>_centroid" named vector to fetch on the object collection.
+    private static SchemaDescriptor DualAnnotatedSchema() => new()
+    {
+        TypeName       = "Doc",
+        TableName      = "docs",
+        CollectionName = "docs",
+        KeyColumn      = new ColumnDescriptor("Id", "uuid", false),
+        ScalarColumns  = [new ColumnDescriptor("Body", "text", false)],
+        FkColumns      = [],
+        VectorFields   = [new VectorDescriptor("Body", 768, "nomic-embed-text")],
+        ChunkFields    = [new ChunkDescriptor("Body", 512, 64, "nomic-embed-text", 768)],
+        Relations      = [],
+        Authorization  = new Iverson.Api.Schema.AuthorizationRules(
+            null, new List<Iverson.Api.Schema.RowPermission> { new("test-bypass", true, true, true) }, []),
+        TenantColumn   = "TenantId"
+    };
+
+    private static float[] UnitVector()
+    {
+        var v = new float[768];
+        v[0] = 1f;
+        return v;
+    }
+
+    private static ulong CapturedLimit(IVectorQueryService vector) =>
+        (ulong)vector.ReceivedCalls()
+            .Single(c => c.GetMethodInfo().Name == nameof(IVectorQueryService.SearchNamedAsync))
+            .GetArguments()[3]!;
+
+    [Fact]
+    public async Task SearchSimilar_OverFetchesFourTimesTopK_AndTrimsToTopK()
+    {
+        await _registry.RegisterAsync(SchemaFixtures.ArticleSchema());
+
+        var fakeVector = UnitVector();
+        _embedding.EmbedAsync("q", Arg.Any<CancellationToken>()).Returns(fakeVector);
+
+        var results = Enumerable.Range(1, 20)
+            .Select(i => new VectorSearchResult((ulong)i, 1.0 - i * 0.01,
+                new Dictionary<string, string> { ["title"] = $"a{i}" }))
+            .ToList();
+        _vector.SearchNamedAsync("articles_test-tenant", "title_vector", fakeVector, Arg.Any<ulong>(), Arg.Any<Filter>())
+               .Returns(results.AsReadOnly());
+
+        var (writer, written) = MakeStream<SearchResponse>();
+        await _sut.SearchSimilar(
+            new SearchSimilarRequest { TypeName = "Article", Property = "Title", Query = "q", TopK = 5 },
+            writer, TestServerCallContext.Create());
+
+        CapturedLimit(_vector).Should().Be(20);   // 4 × top_k, uncapped
+        written.Should().HaveCount(5);            // trimmed back to top_k
+    }
+
+    [Fact]
+    public async Task SearchChunks_OverFetchesFourTimesTopK_AndTrimsToTopK()
+    {
+        await _registry.RegisterAsync(SchemaFixtures.ArticleSchema());
+
+        var fakeVector = UnitVector();
+        _embedding.EmbedAsync("q", Arg.Any<CancellationToken>()).Returns(fakeVector);
+
+        var results = Enumerable.Range(1, 12)
+            .Select(i => new VectorSearchResult((ulong)i, 1.0 - i * 0.01,
+                new Dictionary<string, string> { ["text"] = $"c{i}", ["parent_id"] = Guid.NewGuid().ToString() }))
+            .ToList();
+        _vector.SearchNamedAsync("articles_chunks_test-tenant", "body_vector", fakeVector, Arg.Any<ulong>(), Arg.Any<Filter>())
+               .Returns(results.AsReadOnly());
+
+        var (writer, written) = MakeStream<ChunkSearchResponse>();
+        await _sut.SearchChunks(
+            new SearchChunksRequest { TypeName = "Article", Property = "Body", Query = "q", TopK = 3 },
+            writer, TestServerCallContext.Create());
+
+        CapturedLimit(_vector).Should().Be(12);
+        written.Should().HaveCount(3);
+    }
+
+    [Fact]
+    public async Task SearchChunks_BatchesCentroidRetrieve_ToDistinctParentIds()
+    {
+        await _registry.RegisterAsync(SchemaFixtures.ArticleSchema());
+
+        var fakeVector = UnitVector();
+        _embedding.EmbedAsync("q", Arg.Any<CancellationToken>()).Returns(fakeVector);
+
+        var sharedParent = Guid.NewGuid().ToString();
+        var results = Enumerable.Range(1, 3)
+            .Select(i => new VectorSearchResult((ulong)i, 0.9 - i * 0.01,
+                new Dictionary<string, string> { ["text"] = $"c{i}", ["parent_id"] = sharedParent }))
+            .ToList();
+        _vector.SearchNamedAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<float[]>(), Arg.Any<ulong>(), Arg.Any<Filter>())
+               .Returns(results.AsReadOnly());
+
+        string? capturedCollection = null, capturedVectorName = null;
+        List<ulong>? capturedIds = null;
+        _vector.RetrieveNamedVectorAsync(Arg.Any<string>(), Arg.Any<IReadOnlyList<ulong>>(), Arg.Any<string>())
+               .Returns(ci =>
+               {
+                   capturedCollection = (string)ci[0]!;
+                   capturedIds        = ((IReadOnlyList<ulong>)ci[1]!).ToList();
+                   capturedVectorName = (string)ci[2]!;
+                   return (IReadOnlyDictionary<ulong, float[]>)new Dictionary<ulong, float[]>();
+               });
+
+        var (writer, written) = MakeStream<ChunkSearchResponse>();
+        await _sut.SearchChunks(
+            new SearchChunksRequest { TypeName = "Article", Property = "Body", Query = "q", TopK = 5 },
+            writer, TestServerCallContext.Create());
+
+        await _vector.Received(1).RetrieveNamedVectorAsync(
+            Arg.Any<string>(), Arg.Any<IReadOnlyList<ulong>>(), Arg.Any<string>());
+        capturedIds.Should().ContainSingle();                       // three chunks, one parent
+        capturedCollection.Should().Be("articles_test-tenant");     // the OBJECT collection
+        capturedVectorName.Should().Be("body_centroid");
+        written.Should().HaveCount(3);
+    }
+
+    [Fact]
+    public async Task SearchChunks_CentroidRetrieveThrows_KeepsRawCosineOrder()
+    {
+        await _registry.RegisterAsync(SchemaFixtures.ArticleSchema());
+
+        var fakeVector = UnitVector();
+        _embedding.EmbedAsync("q", Arg.Any<CancellationToken>()).Returns(fakeVector);
+
+        var results = new List<VectorSearchResult>
+        {
+            new(1, 0.90, new Dictionary<string, string> { ["text"] = "hi", ["parent_id"] = Guid.NewGuid().ToString() }),
+            new(2, 0.50, new Dictionary<string, string> { ["text"] = "lo", ["parent_id"] = Guid.NewGuid().ToString() })
+        };
+        _vector.SearchNamedAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<float[]>(), Arg.Any<ulong>(), Arg.Any<Filter>())
+               .Returns(results.AsReadOnly());
+        _vector.RetrieveNamedVectorAsync(Arg.Any<string>(), Arg.Any<IReadOnlyList<ulong>>(), Arg.Any<string>())
+               .Returns<Task<IReadOnlyDictionary<ulong, float[]>>>(_ => throw new InvalidOperationException("qdrant down"));
+
+        var (writer, written) = MakeStream<ChunkSearchResponse>();
+        await _sut.SearchChunks(
+            new SearchChunksRequest { TypeName = "Article", Property = "Body", Query = "q", TopK = 5 },
+            writer, TestServerCallContext.Create());
+
+        // Degraded, not failed: every centroid absent, so the fused score is the raw cosine.
+        written.Should().HaveCount(2);
+        written[0].ChunkText.Should().Be("hi");
+        written[0].Score.Should().BeApproximately(0.90f, 0.0001f);
+        written[1].Score.Should().BeApproximately(0.50f, 0.0001f);
+    }
+
+    [Fact]
+    public async Task SearchSimilar_EmbeddingOnlyProperty_DoesNotFetchCentroids()
+    {
+        // Article.Title carries [IversonEmbedding] but not [IversonChunk] — no title_centroid exists.
+        await _registry.RegisterAsync(SchemaFixtures.ArticleSchema());
+
+        var fakeVector = UnitVector();
+        _embedding.EmbedAsync("q", Arg.Any<CancellationToken>()).Returns(fakeVector);
+        _vector.SearchNamedAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<float[]>(), Arg.Any<ulong>(), Arg.Any<Filter>())
+               .Returns(new List<VectorSearchResult>
+               {
+                   new(7, 0.42, new Dictionary<string, string> { ["title"] = "t" })
+               }.AsReadOnly());
+
+        var (writer, written) = MakeStream<SearchResponse>();
+        await _sut.SearchSimilar(
+            new SearchSimilarRequest { TypeName = "Article", Property = "Title", Query = "q", TopK = 5 },
+            writer, TestServerCallContext.Create());
+
+        await _vector.DidNotReceive().RetrieveNamedVectorAsync(
+            Arg.Any<string>(), Arg.Any<IReadOnlyList<ulong>>(), Arg.Any<string>());
+        written.Should().ContainSingle();
+        written[0].Score.Should().BeApproximately(0.42f, 0.0001f);   // untouched base cosine
+    }
+
+    [Fact]
+    public async Task SearchSimilar_DualAnnotatedProperty_FetchesCentroids_AndFusedScoreReachesResponse()
+    {
+        await _registry.RegisterAsync(DualAnnotatedSchema());
+
+        var fakeVector = UnitVector();
+        _embedding.EmbedAsync("q", Arg.Any<CancellationToken>()).Returns(fakeVector);
+        _vector.SearchNamedAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<float[]>(), Arg.Any<ulong>(), Arg.Any<Filter>())
+               .Returns(new List<VectorSearchResult>
+               {
+                   new(11, 0.50, new Dictionary<string, string> { ["body"] = "b" })
+               }.AsReadOnly());
+
+        string? capturedVectorName = null;
+        _vector.RetrieveNamedVectorAsync(Arg.Any<string>(), Arg.Any<IReadOnlyList<ulong>>(), Arg.Any<string>())
+               .Returns(ci =>
+               {
+                   capturedVectorName = (string)ci[2]!;
+                   return (IReadOnlyDictionary<ulong, float[]>)new Dictionary<ulong, float[]>
+                   {
+                       [11] = UnitVector()   // identical to the query vector → cosine 1.0
+                   };
+               });
+
+        var (writer, written) = MakeStream<SearchResponse>();
+        await _sut.SearchSimilar(
+            new SearchSimilarRequest { TypeName = "Doc", Property = "Body", Query = "q", TopK = 5 },
+            writer, TestServerCallContext.Create());
+
+        capturedVectorName.Should().Be("body_centroid");
+        written.Should().ContainSingle();
+        // (0.60 × 0.50 + 0.30 × 1.00) / 0.90 — no decay column on this schema.
+        written[0].Score.Should().BeApproximately(0.6667f, 0.0005f);
     }
 }

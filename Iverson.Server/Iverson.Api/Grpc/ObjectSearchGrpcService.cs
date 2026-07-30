@@ -1,6 +1,7 @@
 using Google.Protobuf.WellKnownTypes;
 using Grpc.Core;
 using Iverson.Api.Authorization;
+using Iverson.Api.Consumers;
 using Iverson.Api.Schema;
 using Iverson.Client.Contracts;
 using Iverson.Embeddings;
@@ -33,7 +34,8 @@ public sealed class ObjectSearchGrpcService(
     ILogger<ObjectSearchGrpcService> logger,
     IActingUserAccessor actingUserAccessor,
     IRowFieldAuthorizationEvaluator authEvaluator,
-    IntelligenceTenantScope tenantScope)
+    IntelligenceTenantScope tenantScope,
+    IResultReranker reranker)
     : ObjectSearchService.ObjectSearchServiceBase
 {
     // ── SQL Search ─────────────────────────────────────────────────────────────
@@ -200,7 +202,7 @@ public sealed class ObjectSearchGrpcService(
         {
             try
             {
-                results = await vector.SearchNamedAsync(collectionName, vectorName, queryVector, topK, filter);
+                results = await vector.SearchNamedAsync(collectionName, vectorName, queryVector, topK * OverFetchFactor, filter);
             }
             catch (RpcException ex) when (ex.StatusCode == StatusCode.NotFound)
             {
@@ -211,8 +213,36 @@ public sealed class ObjectSearchGrpcService(
             }
         }
 
-        foreach (var r in results)
+        // The centroid signal only exists for a property that is BOTH embedded and chunked —
+        // "<property>_centroid" is written on the object collection only for chunk fields. For an
+        // embedding-only property there is no such named vector, so skip the fetch entirely and
+        // let every candidate's centroid be absent.
+        var centroids = EmptyCentroids;
+        if (results.Count > 0 &&
+            schema.ChunkFields.Any(c => string.Equals(c.PropertyName, vectorDesc.PropertyName, StringComparison.OrdinalIgnoreCase)))
         {
+            centroids = await FetchCentroidsAsync(
+                collectionName,
+                results.Select(r => r.Id).Distinct().ToList(),
+                vectorDesc.PropertyName.ToSnakeCase() + "_centroid",
+                "SearchSimilar");
+        }
+
+        var decayField = DecayFieldResolver.ResolveDecayField(schema, logger);
+        var now        = DateTimeOffset.UtcNow;
+
+        var candidates = results.Select(r => new RerankCandidate(
+            Id:        r.Id,
+            BaseScore: r.Score,
+            Centroid:  centroids.TryGetValue(r.Id, out var centroid) ? centroid : null,
+            Decay:     DecayFor(r, decayField, now))).ToList();
+
+        var byId = ResultsById(results);
+
+        foreach (var ranked in reranker.Rerank(queryVector, candidates).Take((int)topK))
+        {
+            if (!byId.TryGetValue(ranked.Id, out var r)) continue;
+
             var protoStruct = new Struct();
             foreach (var kvp in r.Payload)
                 protoStruct.Fields[kvp.Key] = Value.ForString(kvp.Value);
@@ -223,7 +253,7 @@ public sealed class ObjectSearchGrpcService(
                 new SearchResponse
                 {
                     Data    = protoStruct,
-                    Score   = (float)r.Score,
+                    Score   = (float)ranked.FusedScore,
                     TraceId = request.TraceId
                 },
                 context.CancellationToken);
@@ -301,7 +331,7 @@ public sealed class ObjectSearchGrpcService(
         {
             try
             {
-                results = await vector.SearchNamedAsync(chunksCollection, vectorName, queryVector, topK, filter);
+                results = await vector.SearchNamedAsync(chunksCollection, vectorName, queryVector, topK * OverFetchFactor, filter);
             }
             catch (RpcException ex) when (ex.StatusCode == StatusCode.NotFound)
             {
@@ -312,8 +342,42 @@ public sealed class ObjectSearchGrpcService(
             }
         }
 
-        foreach (var r in results)
+        // A chunk's centroid signal is its PARENT object's centroid, which lives on the object
+        // collection (not the chunks collection) under "<property>_centroid". Several chunks
+        // routinely share one parent, so the retrieve is batched over the DISTINCT parent ids.
+        var parentIds = results
+            .Select(r => r.Payload.TryGetValue("parent_id", out var p) ? p : null)
+            .Where(p => !string.IsNullOrEmpty(p))
+            .Select(p => IntelligenceStoreConsumer.KeyToUlong(p!))
+            .Distinct()
+            .ToList();
+
+        var centroids = parentIds.Count > 0
+            ? await FetchCentroidsAsync(
+                tenantScope.ResolveCollectionName(schema.CollectionName, decision.TenantValue, isChunks: false),
+                parentIds,
+                chunkDesc.PropertyName.ToSnakeCase() + "_centroid",
+                "SearchChunks")
+            : EmptyCentroids;
+
+        var decayField = DecayFieldResolver.ResolveDecayField(schema, logger);
+        var now        = DateTimeOffset.UtcNow;
+
+        var candidates = results.Select(r =>
         {
+            float[]? centroid = null;
+            if (r.Payload.TryGetValue("parent_id", out var parent) && !string.IsNullOrEmpty(parent))
+                centroids.TryGetValue(IntelligenceStoreConsumer.KeyToUlong(parent), out centroid);
+
+            return new RerankCandidate(r.Id, r.Score, centroid, DecayFor(r, decayField, now));
+        }).ToList();
+
+        var byId = ResultsById(results);
+
+        foreach (var ranked in reranker.Rerank(queryVector, candidates).Take((int)topK))
+        {
+            if (!byId.TryGetValue(ranked.Id, out var r)) continue;
+
             r.Payload.TryGetValue("text",      out var chunkText);
             r.Payload.TryGetValue("parent_id", out var parentId);
 
@@ -322,7 +386,7 @@ public sealed class ObjectSearchGrpcService(
                 {
                     ParentKey = parentId  ?? string.Empty,
                     ChunkText = chunkText ?? string.Empty,
-                    Score     = (float)r.Score,
+                    Score     = (float)ranked.FusedScore,
                     TraceId   = request.TraceId
                 },
                 context.CancellationToken);
@@ -547,6 +611,62 @@ public sealed class ObjectSearchGrpcService(
                 context.CancellationToken);
         }
     }
+
+    // ── Re-ranking helpers ─────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Vector search over-fetch multiplier. Re-ranking can only reorder what the ANN search
+    /// returned, so both vector RPCs ask Qdrant for 4 × top_k candidates and trim back to
+    /// top_k after fusing. Deliberately uncapped: top_k = 1000 fetches 4000.
+    /// </summary>
+    private const ulong OverFetchFactor = 4;
+
+    private static readonly IReadOnlyDictionary<ulong, float[]> EmptyCentroids =
+        new Dictionary<ulong, float[]>();
+
+    /// <summary>
+    /// Fetches parent/object centroids under their own scoped api-key. A failure here degrades
+    /// the ranking rather than failing the search: every centroid becomes ABSENT (never a
+    /// substituted neutral value), leaving raw-cosine ordering.
+    /// </summary>
+    private async Task<IReadOnlyDictionary<ulong, float[]>> FetchCentroidsAsync(
+        string objectCollection, IReadOnlyList<ulong> ids, string centroidVectorName, string rpcName)
+    {
+        if (ids.Count == 0) return EmptyCentroids;
+
+        try
+        {
+            using (RequestHeaders.Use("api-key", tenantScope.MintScopedApiKey(objectCollection, readOnly: true)))
+                return await vector.RetrieveNamedVectorAsync(objectCollection, ids, centroidVectorName)
+                       ?? EmptyCentroids;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            logger.LogWarning(
+                ex,
+                "[{Rpc}] centroid retrieve failed (collection={Collection} vector={Vector} ids={Count}); " +
+                "re-ranking without the centroid signal.",
+                rpcName, objectCollection.SanitizeForLog(), centroidVectorName.SanitizeForLog(), ids.Count);
+            return EmptyCentroids;
+        }
+    }
+
+    /// <summary>
+    /// The re-ranker returns ids and fused scores only, so the original search results are
+    /// indexed by id to rebuild each response. Qdrant point ids are unique within a search
+    /// result set; TryAdd keeps the first if that ever fails to hold.
+    /// </summary>
+    private static Dictionary<ulong, VectorSearchResult> ResultsById(IReadOnlyList<VectorSearchResult> results)
+    {
+        var byId = new Dictionary<ulong, VectorSearchResult>(results.Count);
+        foreach (var r in results) byId.TryAdd(r.Id, r);
+        return byId;
+    }
+
+    private static double? DecayFor(VectorSearchResult result, string? decayField, DateTimeOffset now) =>
+        decayField is not null && result.Payload.TryGetValue(decayField, out var stored)
+            ? DecayFieldResolver.ComputeDecay(stored, now)
+            : null;
 
     // ── Helpers ────────────────────────────────────────────────────────────────
 

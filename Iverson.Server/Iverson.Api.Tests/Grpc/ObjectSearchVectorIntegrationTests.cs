@@ -80,7 +80,8 @@ public sealed class ObjectSearchVectorIntegrationTests : IClassFixture<QdrantGrp
             NullLogger<ObjectSearchGrpcService>.Instance,
             new ActingUserAccessor { ActingUser = ActingUserFixtures.Principal("test-user", "test-bypass") },
             new RowFieldAuthorizationEvaluator(),
-            _tenantScope);
+            _tenantScope,
+            new ResultReranker());
 
     private static (IServerStreamWriter<T> writer, List<T> written) MakeStream<T>()
     {
