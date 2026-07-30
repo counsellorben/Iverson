@@ -85,6 +85,37 @@ public class DecayFieldResolverTests
     }
 
     [Fact]
+    public void ResolveDecayField_ReRegisteredWithChangedTimestampColumns_ReturnsNewFieldNotCached()
+    {
+        var typeName = $"Reregistered_{Guid.NewGuid():N}";
+
+        var originalSchema = MakeSchema(
+            typeName,
+            [
+                new ColumnDescriptor("Title", "text", false),
+                new ColumnDescriptor("PublishedAt", "TIMESTAMPTZ", false),
+            ],
+            metadataColumns: ["Title", "PublishedAt"]);
+
+        var originalResult = DecayFieldResolver.ResolveDecayField(originalSchema, NullLogger.Instance);
+        Assert.Equal("publishedAt", originalResult);
+
+        // Re-register the same type with a different timestamp metadata column — simulates a
+        // live RegisterSchema RPC changing the schema's shape without a process restart.
+        var updatedSchema = MakeSchema(
+            typeName,
+            [
+                new ColumnDescriptor("Title", "text", false),
+                new ColumnDescriptor("UpdatedAt", "DATETIME", false),
+            ],
+            metadataColumns: ["Title", "UpdatedAt"]);
+
+        var updatedResult = DecayFieldResolver.ResolveDecayField(updatedSchema, NullLogger.Instance);
+
+        Assert.Equal("updatedAt", updatedResult);
+    }
+
+    [Fact]
     public void ComputeDecay_AgeZero_ReturnsOne()
     {
         var now = new DateTimeOffset(2026, 7, 30, 0, 0, 0, TimeSpan.Zero);
@@ -118,6 +149,18 @@ public class DecayFieldResolverTests
 
         Assert.NotNull(result);
         Assert.Equal(0.25, result!.Value, precision: 9);
+    }
+
+    [Fact]
+    public void ComputeDecay_FutureTimestamp_ClampsToOne()
+    {
+        var now = new DateTimeOffset(2026, 7, 30, 0, 0, 0, TimeSpan.Zero);
+        var stored = now.AddDays(180).ToString("o"); // 180 days in the future
+
+        var result = DecayFieldResolver.ComputeDecay(stored, now);
+
+        Assert.NotNull(result);
+        Assert.Equal(1.0, result!.Value, precision: 9);
     }
 
     [Fact]
