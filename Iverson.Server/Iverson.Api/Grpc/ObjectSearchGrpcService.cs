@@ -223,7 +223,7 @@ public sealed class ObjectSearchGrpcService(
         {
             centroids = await FetchCentroidsAsync(
                 collectionName,
-                results.Select(r => r.Id).Distinct().ToList(),
+                results.Select(r => r.Id).ToList(),
                 vectorDesc.PropertyName.ToSnakeCase() + "_centroid",
                 "SearchSimilar");
         }
@@ -637,8 +637,7 @@ public sealed class ObjectSearchGrpcService(
         try
         {
             using (RequestHeaders.Use("api-key", tenantScope.MintScopedApiKey(objectCollection, readOnly: true)))
-                return await vector.RetrieveNamedVectorAsync(objectCollection, ids, centroidVectorName)
-                       ?? EmptyCentroids;
+                return await vector.RetrieveNamedVectorAsync(objectCollection, ids, centroidVectorName);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {

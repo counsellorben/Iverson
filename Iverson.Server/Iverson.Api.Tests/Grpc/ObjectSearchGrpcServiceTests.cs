@@ -2482,4 +2482,63 @@ public class ObjectSearchGrpcServiceTests
         // (0.60 × 0.50 + 0.30 × 1.00) / 0.90 — no decay column on this schema.
         written[0].Score.Should().BeApproximately(0.6667f, 0.0005f);
     }
+
+    [Fact]
+    public async Task SearchChunks_WhenRerankPermutesOrder_EachResponseKeepsItsOwnTextParentAndScore()
+    {
+        // Guards the re-join: the fused ranking here is a genuine PERMUTATION of the order Qdrant
+        // returned, so a positional re-join (ranked[i] paired with results[i]) would emit chunk A's
+        // text and parent alongside chunk B's score. Ranking arithmetic (no decay column on Article):
+        //   A: base 0.90, parent centroid orthogonal to the query → cos 0.0 → (0.6×0.90 + 0.3×0.0)/0.9 = 0.6000
+        //   B: base 0.50, parent centroid identical to the query  → cos 1.0 → (0.6×0.50 + 0.3×1.0)/0.9 = 0.6667
+        // so B outranks A despite the lower base cosine, reversing the search order.
+        await _registry.RegisterAsync(SchemaFixtures.ArticleSchema());
+
+        var query = UnitVector();                     // e0
+        _embedding.EmbedAsync("q", Arg.Any<CancellationToken>()).Returns(query);
+
+        var parentA = Guid.NewGuid().ToString();
+        var parentB = Guid.NewGuid().ToString();
+
+        var results = new List<VectorSearchResult>
+        {
+            new(1, 0.90, new Dictionary<string, string> { ["text"] = "text-A", ["parent_id"] = parentA }),
+            new(2, 0.50, new Dictionary<string, string> { ["text"] = "text-B", ["parent_id"] = parentB })
+        };
+        _vector.SearchNamedAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<float[]>(), Arg.Any<ulong>(), Arg.Any<Filter>())
+               .Returns(results.AsReadOnly());
+
+        var orthogonal = new float[768];
+        orthogonal[1] = 1f;                           // e1 → cosine 0 against e0
+
+        var idA = InvokeKeyToUlong(parentA);
+        var idB = InvokeKeyToUlong(parentB);
+        _vector.RetrieveNamedVectorAsync(Arg.Any<string>(), Arg.Any<IReadOnlyList<ulong>>(), Arg.Any<string>())
+               .Returns((IReadOnlyDictionary<ulong, float[]>)new Dictionary<ulong, float[]>
+               {
+                   [idA] = orthogonal,
+                   [idB] = UnitVector()
+               });
+
+        var (writer, written) = MakeStream<ChunkSearchResponse>();
+        await _sut.SearchChunks(
+            new SearchChunksRequest { TypeName = "Article", Property = "Body", Query = "q", TopK = 5 },
+            writer, TestServerCallContext.Create());
+
+        written.Should().HaveCount(2);
+
+        // B first, carrying ITS OWN text/parent — a positional join would put "text-A"/parentA here.
+        written[0].ChunkText.Should().Be("text-B");
+        written[0].ParentKey.Should().Be(parentB);
+        written[0].Score.Should().BeApproximately(0.6667f, 0.0005f);
+
+        written[1].ChunkText.Should().Be("text-A");
+        written[1].ParentKey.Should().Be(parentA);
+        written[1].Score.Should().BeApproximately(0.6000f, 0.0005f);
+    }
+
+    // The point-id function is internal to IntelligenceStoreConsumer; the test needs the same
+    // parent_id → ulong mapping the service applies so it can key the centroid map.
+    private static ulong InvokeKeyToUlong(string key) =>
+        Iverson.Api.Consumers.IntelligenceStoreConsumer.KeyToUlong(key);
 }
