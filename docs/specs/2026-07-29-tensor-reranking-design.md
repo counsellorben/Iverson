@@ -196,12 +196,17 @@ fallback.
   signal's input format is client-determined and recency silently never applies for clients
   that don't emit ISO-8601. The helper is shared with the object-point payload, so this changes
   the stored format for every declared timestamp column, not only the decay field. **The read
-  side must apply the same rule:** `SearchChunks`' `EQUALS` clauses are compiled to exact
-  keyword matches (`IntelligenceFilterBuilder.cs:103-105`), so when a clause targets a
-  `TIMESTAMPTZ`/`DATETIME` column its value is parsed and re-emitted in canonical `"o"` form
-  before the condition is built. One canonicalization rule, applied on both sides; without it,
-  filtering on a timestamp metadata column silently matches nothing and the re-ranker receives
-  an empty candidate set.
+  side must apply the same rule, in the shared translator rather than per RPC:**
+  `IntelligenceFilterBuilder` canonicalizes the operand for `EQUALS`, `NOT_EQUALS` and `IN` —
+  the three operators that reach a payload string comparison (`IntelligenceFilterBuilder.cs:73-79`,
+  `:105`) — whenever the target column's `SqlType` is `TIMESTAMPTZ`/`DATETIME`. Placing it there
+  covers both `SearchChunks` and `SearchSimilar` by construction; `SearchSimilar` admits any
+  scalar column as a filter target (`ObjectSearchGrpcService.cs:594-595`) and passes the clause
+  value through untouched (`:152`), so a per-call-site fix would leave it broken. The builder
+  does not receive column types today; both call sites already hold `schema`, so passing the
+  timestamp columns' names is the mechanical part. Without this, a timestamp filter silently
+  matches nothing — or, under `NOT_EQUALS`, returns everything the caller asked to exclude —
+  and the re-ranker scores the wrong candidate set.
 
 ### 9. Testing
 
@@ -243,6 +248,7 @@ Checked against the codebase at `f989dc9` before this spec was written.
 | A18 | `System.Numerics.Tensors` exposes the operation the design needs (A9 verified only that the package restores) | ✅ `TensorPrimitives.CosineSimilarity` present — `System.Numerics.Tensors.xml` (10.0.10) |
 | A19 | The response contract can carry the fused score | ✅ `float score` on both `SearchResponse` (`object_search.proto:84`) and `ChunkSearchResponse` (`:121`) |
 | A20 | `ExtractTypedValue` feeds only Qdrant payload construction, so §8's normalization cannot alter Postgres or StarRocks writes | ✅ three call sites, all in `IntelligenceStoreConsumer` — chunk metadata loop (`:233`), `BuildObjectPointPayload` scalar loop (`:346`), FK loop (`:351`, hard-coded `"TEXT"`) |
+| A21 | Exactly three filter operators can carry a timestamp operand into a payload string comparison, bounding §8's read-side rule | ✅ `EQUALS`/`NOT_EQUALS` → `BuildEqualityCondition` → `MatchKeyword`, `IN` → `Conditions.Match(list)` (`IntelligenceFilterBuilder.cs:73-79`, `:105`); the four range operators call `RequireNumber` (`:75-78`) and reject a non-`NumberVal` value |
 
 A16 and the absent-signal penalty it exposed were re-approved by Ben before this spec was
 written; §2 and §5 record the outcomes.
