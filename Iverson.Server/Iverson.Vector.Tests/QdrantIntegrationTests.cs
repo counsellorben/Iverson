@@ -345,4 +345,70 @@ public sealed class QdrantIntegrationTests(QdrantContainerFixture fixture)
         var titleResults = await _svc.SearchNamedAsync(name, "title_vector", originalTitleVector, limit: 1);
         titleResults.Should().ContainSingle().Which.Id.Should().Be(5UL);
     }
+
+    // ── RetrieveNamedVectorAsync ────────────────────────────────────────────
+
+    [Fact]
+    public async Task RetrieveNamedVectorAsync_ReturnsOnlyRequestedVector_ForMatchingId()
+    {
+        var name   = UniqueName();
+        var schema = new CollectionSchema(
+            name,
+            [new NamedVector("title_vector", 4), new NamedVector("body_vector", 4)],
+            []);
+        await _mgr.ApplyCollectionAsync(schema);
+
+        var titleVector = new float[] { 1f, 0f, 0f, 0f };
+        var bodyVector  = new float[] { 0f, 1f, 0f, 0f };
+        await _svc.UpsertNamedAsync(name, 1UL, new Dictionary<string, float[]>
+        {
+            ["title_vector"] = titleVector,
+            ["body_vector"]  = bodyVector,
+        });
+
+        var result = await _svc.RetrieveNamedVectorAsync(name, [1UL], "title_vector");
+
+        result.Should().ContainKey(1UL).WhoseValue.Should().BeEquivalentTo(titleVector);
+    }
+
+    [Fact]
+    public async Task RetrieveNamedVectorAsync_OmitsIds_WithNoSuchPoint()
+    {
+        var name   = UniqueName();
+        var schema = new CollectionSchema(name, [new NamedVector("title_vector", 4)], []);
+        await _mgr.ApplyCollectionAsync(schema);
+
+        await _svc.UpsertNamedAsync(name, 1UL,
+            new Dictionary<string, float[]> { ["title_vector"] = [1f, 0f, 0f, 0f] });
+
+        var result = await _svc.RetrieveNamedVectorAsync(name, [1UL, 999UL], "title_vector");
+
+        result.Should().ContainKey(1UL);
+        result.Should().NotContainKey(999UL);
+    }
+
+    [Fact]
+    public async Task RetrieveNamedVectorAsync_MergesAcrossBatches_WhenMoreThan512Ids()
+    {
+        var name   = UniqueName();
+        var schema = new CollectionSchema(name, [new NamedVector("title_vector", 4)], []);
+        await _mgr.ApplyCollectionAsync(schema);
+
+        // Collection uses Cosine distance, which normalizes stored vectors — vary
+        // direction (not magnitude) per id so identity is verifiable after storage.
+        const int count = 600;
+        for (ulong i = 1; i <= count; i++)
+        {
+            var vector = i % 2 == 0 ? new float[] { 1f, 0f, 0f, 0f } : new float[] { 0f, 1f, 0f, 0f };
+            await _svc.UpsertNamedAsync(name, i,
+                new Dictionary<string, float[]> { ["title_vector"] = vector });
+        }
+
+        var ids = Enumerable.Range(1, count).Select(i => (ulong)i).ToList();
+        var result = await _svc.RetrieveNamedVectorAsync(name, ids, "title_vector");
+
+        result.Should().HaveCount(count);
+        result[1UL].Should().BeEquivalentTo(new float[] { 0f, 1f, 0f, 0f });
+        result[600UL].Should().BeEquivalentTo(new float[] { 1f, 0f, 0f, 0f });
+    }
 }

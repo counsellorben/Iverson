@@ -139,6 +139,40 @@ public class IntelligenceVectorService(QdrantClient client) : IVectorQueryServic
         )).ToList();
     }
 
+    public async Task<IReadOnlyDictionary<ulong, float[]>> RetrieveNamedVectorAsync(
+        string collectionName,
+        IReadOnlyList<ulong> ids,
+        string vectorName)
+    {
+        using var activity = Telemetry.Source.StartActivity("qdrant.retrieve_named_vector", ActivityKind.Client);
+        activity?.SetTag("db.system", "qdrant");
+        activity?.SetTag("qdrant.collection", collectionName);
+        activity?.SetTag("qdrant.vector_name", vectorName);
+        activity?.SetTag("qdrant.id_count", ids.Count);
+
+        const int BatchSize = 512;   // 512 × 768 floats ≈ 1.6 MB, well under Grpc.Net.Client's 4 MB default
+
+        var result = new Dictionary<ulong, float[]>();
+        foreach (var batch in ids.Chunk(BatchSize))
+        {
+            var points = await client.RetrieveAsync(
+                collectionName,
+                batch.Select(id => (PointId)id).ToList(),
+                payloadSelector: false,
+                vectorSelector:  new[] { vectorName });
+
+            foreach (var p in points)
+            {
+                if (p.Vectors?.Vectors?.Vectors.TryGetValue(vectorName, out var v) != true) continue;
+                var data = v.Dense?.Data ?? v.Data;      // 1.18 exposes both; read whichever is set
+                if (data is { Count: > 0 }) result[p.Id.Num] = data.ToArray();
+            }
+        }
+
+        activity?.SetStatus(ActivityStatusCode.Ok);
+        return result;
+    }
+
     public async Task DeleteAsync(string collectionName, ulong id)
     {
         using var activity = Telemetry.Source.StartActivity("qdrant.delete", ActivityKind.Client);

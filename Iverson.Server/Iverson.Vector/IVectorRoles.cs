@@ -14,6 +14,10 @@ public interface IVectorQueryService
         float[] queryVector,
         ulong limit = 10,
         Filter? filter = null);
+    Task<IReadOnlyDictionary<ulong, float[]>> RetrieveNamedVectorAsync(
+        string collectionName,
+        IReadOnlyList<ulong> ids,
+        string vectorName);
 }
 
 public interface IVectorSchemaManager
