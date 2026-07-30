@@ -160,7 +160,11 @@ failure would be silent. Absent-and-logged is diagnosable.
 The decay **value** needs no extra fetch. Part 1 denormalizes declared metadata onto chunk
 points (`IntelligenceStoreConsumer.cs:223-235`) and object points carry all their scalar
 columns (`BuildObjectPointPayload`, `:340-348`), so the timestamp arrives in the payload the
-search already returns, as an ISO-8601 round-trip string.
+search already returns. Today that value is **whatever the client's JSON serializer emitted**:
+`ExtractTypedValue` (`:612-628`) has no timestamp case, so a `TIMESTAMPTZ` column falls through
+to `v.GetString()` and is stored verbatim. §8 adds that case so the value is canonicalized on
+write. Points written before that change keep the client's original format until republished;
+§7's unparseable-value rule covers them.
 
 ### 7. Degradation
 
@@ -185,6 +189,13 @@ fallback.
   The search service needs the same key→point-id function; it moves to a shared `internal`
   helper in the same assembly. The function itself does not change — both sides must derive
   identical ids.
+- **Timestamp normalization on write.** `ExtractTypedValue`
+  (`IntelligenceStoreConsumer.cs:612-628`) gains a `TIMESTAMPTZ`/`DATETIME` case that parses to
+  `DateTimeOffset`, so `ToQdrantValue`'s existing `"o"` branch
+  (`IntelligenceVectorService.cs:184-185`) produces round-trip strings. Without it the decay
+  signal's input format is client-determined and recency silently never applies for clients
+  that don't emit ISO-8601. The helper is shared with the object-point payload, so this changes
+  the stored format for every declared timestamp column, not only the decay field.
 
 ### 9. Testing
 
@@ -213,7 +224,7 @@ Checked against the codebase at `f989dc9` before this spec was written.
 | A5 | Metadata is denormalized onto chunk points | ✅ `IntelligenceStoreConsumer.cs:223-235`, typed via `ExtractTypedValue` with the column's `SqlType`, camelCase keys |
 | A6 | Object points carry declared timestamp metadata | ✅ `BuildObjectPointPayload:340-348` writes all `ScalarColumns` (a superset of `MetadataColumns`) |
 | A7 | Metadata fields are typed at search time | ✅ `MetadataColumns` (names) joined to `ScalarColumns[].SqlType`; `ClrDatetime → TIMESTAMPTZ/DATETIME` — `SchemaBuilder.cs:243` |
-| A8 | Timestamps are parseable in the payload | ✅ written as ISO-8601 round-trip `"o"` (`IntelligenceVectorService.cs:184-185`), read back as `StringValue` (`:169`) |
+| A8 | Timestamps are parseable in the payload | ❌ **Not as designed.** `ExtractTypedValue` has no timestamp case; `TIMESTAMPTZ` falls to the default at `IntelligenceStoreConsumer.cs:626` returning `v.GetString()`, so `ToQdrantValue`'s `"o"` branch (`IntelligenceVectorService.cs:184-185`) is unreachable from ingest and the stored format is client-determined. Addressed in §8. |
 | A9 | `System.Numerics.Tensors` is usable | ✅ not referenced today; `10.0.10` restores cleanly for `net10.0` in a scratch project. No central package management in this repo. |
 | A10 | `top_k` is not clamped, so 4× over-fetch survives | ✅ only `Math.Max(1, …)` — `ObjectSearchGrpcService.cs:194`, `:296` |
 | A11 | Both RPCs can resolve the object collection | ✅ `ResolveCollectionName(schema.CollectionName, decision.TenantValue, isChunks: false)`; both have `schema` and `decision.TenantValue` (`:195`, `:294`) |
@@ -222,6 +233,9 @@ Checked against the codebase at `f989dc9` before this spec was written.
 | A14 | The `_centroid` name is derivable from the request property | ✅ `ToSnakeCase() + "_centroid"` matches `SchemaBuilder.cs:219`; the service already builds `_vector` names the same way (`:193`, `:293`) |
 | A15 | Nothing depends on current score semantics or ordering | ✅ exactly one score assertion exists (`ObjectSearchGrpcServiceTests.cs:1086`, `BeApproximately(0.95f)`); no ordering assertions; all five client SDKs pass `score` through untouched; no MCP consumer |
 | A16 | The design holds for **both** RPC paths individually | ❌ **Broke the design.** Centroids are named after chunk fields (`SchemaBuilder.cs:219`) but `SearchSimilar`'s property is an `[IversonEmbedding]` field, and `IsEmbedding`/`IsChunk` are independent (`SchemaBuilder.cs:59`, `:66`), so `<embeddingField>_centroid` usually does not exist. Resolved in §5. |
+| A17 | The Qdrant client can retrieve points by id with named vectors (§4 depends on it; A3 covers only our own interface's lack of a method) | ✅ batched `RetrieveAsync(string, IReadOnlyList<PointId>, WithPayloadSelector, WithVectorsSelector, …)` exists, and `WithVectorsSelector.op_Implicit(String[])` permits selecting `["<field>_centroid"]` specifically — `Qdrant.Client.xml` (1.18.1) |
+| A18 | `System.Numerics.Tensors` exposes the operation the design needs (A9 verified only that the package restores) | ✅ `TensorPrimitives.CosineSimilarity` present — `System.Numerics.Tensors.xml` (10.0.10) |
+| A19 | The response contract can carry the fused score | ✅ `float score` on both `SearchResponse` (`object_search.proto:84`) and `ChunkSearchResponse` (`:121`) |
 
 A16 and the absent-signal penalty it exposed were re-approved by Ben before this spec was
 written; §2 and §5 record the outcomes.
