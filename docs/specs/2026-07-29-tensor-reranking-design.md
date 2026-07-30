@@ -72,9 +72,9 @@ fused = Σ(wᵢ · sᵢ) / Σ(wᵢ)      for each present signal i
 
 Renormalization rather than a zero (or a neutral `1.0`) for absent signals is deliberate. A
 document with no centroid scored `centroid = 0` would lose 30% of its score and rank below
-essentially every document that has one, regardless of relevance — and every document
-ingested before part 4a is in exactly that state until republished. A mixed corpus would rank
-all legacy documents beneath all re-ingested ones. Renormalizing makes an absent signal
+essentially every document that has one, regardless of relevance — and a document is in that
+state for ordinary reasons: its chunk field was blank on the event that wrote it, or §7's
+dimension check rejected the stored centroid. Renormalizing makes an absent signal
 neither help nor hurt, and it gives the feature the property of being inert for types that
 have nothing to say: a type with no chunk fields and no timestamp metadata scores exactly as
 it does today.
@@ -163,8 +163,8 @@ columns (`BuildObjectPointPayload`, `:340-348`), so the timestamp arrives in the
 search already returns. Today that value is **whatever the client's JSON serializer emitted**:
 `ExtractTypedValue` (`:612-628`) has no timestamp case, so a `TIMESTAMPTZ` column falls through
 to `v.GetString()` and is stored verbatim. §8 adds that case so the value is canonicalized on
-write. Points written before that change keep the client's original format until republished;
-§7's unparseable-value rule covers them.
+write. Existing data is wiped before part 3 ships, so every point carries the canonical form —
+there is no mixed-format corpus to read across.
 
 ### 7. Degradation
 
@@ -195,7 +195,13 @@ fallback.
   (`IntelligenceVectorService.cs:184-185`) produces round-trip strings. Without it the decay
   signal's input format is client-determined and recency silently never applies for clients
   that don't emit ISO-8601. The helper is shared with the object-point payload, so this changes
-  the stored format for every declared timestamp column, not only the decay field.
+  the stored format for every declared timestamp column, not only the decay field. **The read
+  side must apply the same rule:** `SearchChunks`' `EQUALS` clauses are compiled to exact
+  keyword matches (`IntelligenceFilterBuilder.cs:103-105`), so when a clause targets a
+  `TIMESTAMPTZ`/`DATETIME` column its value is parsed and re-emitted in canonical `"o"` form
+  before the condition is built. One canonicalization rule, applied on both sides; without it,
+  filtering on a timestamp metadata column silently matches nothing and the re-ranker receives
+  an empty candidate set.
 
 ### 9. Testing
 
@@ -236,6 +242,7 @@ Checked against the codebase at `f989dc9` before this spec was written.
 | A17 | The Qdrant client can retrieve points by id with named vectors (§4 depends on it; A3 covers only our own interface's lack of a method) | ✅ batched `RetrieveAsync(string, IReadOnlyList<PointId>, WithPayloadSelector, WithVectorsSelector, …)` exists, and `WithVectorsSelector.op_Implicit(String[])` permits selecting `["<field>_centroid"]` specifically — `Qdrant.Client.xml` (1.18.1) |
 | A18 | `System.Numerics.Tensors` exposes the operation the design needs (A9 verified only that the package restores) | ✅ `TensorPrimitives.CosineSimilarity` present — `System.Numerics.Tensors.xml` (10.0.10) |
 | A19 | The response contract can carry the fused score | ✅ `float score` on both `SearchResponse` (`object_search.proto:84`) and `ChunkSearchResponse` (`:121`) |
+| A20 | `ExtractTypedValue` feeds only Qdrant payload construction, so §8's normalization cannot alter Postgres or StarRocks writes | ✅ three call sites, all in `IntelligenceStoreConsumer` — chunk metadata loop (`:233`), `BuildObjectPointPayload` scalar loop (`:346`), FK loop (`:351`, hard-coded `"TEXT"`) |
 
 A16 and the absent-signal penalty it exposed were re-approved by Ben before this spec was
 written; §2 and §5 record the outcomes.
