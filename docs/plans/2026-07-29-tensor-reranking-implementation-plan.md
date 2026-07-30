@@ -91,6 +91,8 @@ Newly introduced by this plan and verified at plan-write time.
 | P20 | Sibling sweep | **Corrected from spec §8.** The two RPCs reach the filter builder through *different* public entry points: `SearchSimilar` → `Build` (`:161`), `SearchChunks` → `MatchEquality` (`:632`). Both funnel to the private `BuildEqualityCondition`, so canonicalization must live there and **both** entry points must thread the timestamp columns. Property names arrive camelCased at both (`:152`, `:632` `canonicalName.ToCamelCase()`) | `IntelligenceFilterBuilder.cs:16`, `:59`, `:73-74`, `:105`; `ObjectSearchGrpcService.cs:152`, `:161`, `:632` |
 | P21 | Consumer impact | `Iverson.Vector`'s `InternalsVisibleTo` names only `Iverson.Vector.Tests`, so any type `Iverson.Api` consumes must be `public` | `Iverson.Vector.csproj:11` — single `<_Parameter1>Iverson.Vector.Tests</_Parameter1>`; existing cross-assembly roles (`IVectorQueryService`, `VectorSearchResult`) are all `public` in `IVectorRoles.cs` |
 | P22 | Consumer impact | `ObjectSearchGrpcService` serves concurrent gRPC calls, so any static cache Task 4 introduces is written from multiple threads | Registered as a gRPC service endpoint; Task 5 Step 5 resolves the decay field once per request, on the request thread |
+| P23 | Consumer impact | `Iverson.Api`'s `InternalsVisibleTo` covers `Iverson.Api.Tests`, so Task 4's `internal static` resolver is directly testable | ✅ `Iverson.Api.csproj:11` — `<_Parameter1>Iverson.Api.Tests</_Parameter1>`; `Grpc/` already hosts `internal static` helpers (`AuthorizationFieldMasking.cs:10`, `ProtoPayloadHelper.cs:6`) |
+| P24 | Code validity | The Qdrant client is constructed with no channel options, so `Grpc.Net.Client`'s 4 MB default receive limit applies | ✅ `ServiceCollectionExtensions.cs:38` — `new QdrantClient(host, port, https: false, apiKey: null)`; the TLS branch (`:31-36`) sets only `CertificateThumbprint`. At 768 dims (`SchemaRegistrationOrchestratorTests.cs:24`) a point is ≈3.1 KB, so the limit is ~1,300 points |
 
 ## Tasks
 
@@ -122,27 +124,34 @@ One named vector is all any caller needs; returning a map keyed by point id is w
 On `IntelligenceVectorService`, mirroring `SearchNamedAsync`'s telemetry shape (`:117-122`): open `Telemetry.Source.StartActivity("qdrant.retrieve_named_vector", ActivityKind.Client)` and set `db.system`, `qdrant.collection`, `qdrant.vector_name`, plus the id count. Then:
 
 ```csharp
-var points = await client.RetrieveAsync(
-    collectionName,
-    ids.Select(id => (PointId)id).ToList(),
-    payloadSelector: false,
-    vectorSelector:  new[] { vectorName });
+const int BatchSize = 512;   // 512 × 768 floats ≈ 1.6 MB, well under Grpc.Net.Client's 4 MB default
 
 var result = new Dictionary<ulong, float[]>();
-foreach (var p in points)
+foreach (var batch in ids.Chunk(BatchSize))
 {
-    if (p.Vectors?.Vectors?.Vectors.TryGetValue(vectorName, out var v) != true) continue;
-    var data = v.Dense?.Data ?? v.Data;          // 1.18 exposes both; read whichever is set
-    if (data is { Count: > 0 }) result[p.Id.Num] = data.ToArray();
+    var points = await client.RetrieveAsync(
+        collectionName,
+        batch.Select(id => (PointId)id).ToList(),
+        payloadSelector: false,
+        vectorSelector:  new[] { vectorName });
+
+    foreach (var p in points)
+    {
+        if (p.Vectors?.Vectors?.Vectors.TryGetValue(vectorName, out var v) != true) continue;
+        var data = v.Dense?.Data ?? v.Data;      // 1.18 exposes both; read whichever is set
+        if (data is { Count: > 0 }) result[p.Id.Num] = data.ToArray();
+    }
 }
 return result;
 ```
+
+Paging is not optional: the client is constructed with no channel options, so `Grpc.Net.Client`'s 4 MB default receive limit applies (~1,300 points at 768 dimensions), and `top_k = 1000` legitimately asks for up to 4,000 centroids (P24). An unpaged call would throw `ResourceExhausted`, which Task 5's degrade path would absorb — leaving the centroid signal silently inert exactly at large result sets.
 
 Points lacking the named vector are simply absent from the map — Task 5 treats absence as "no centroid signal" (Global Constraints). `PointId` converts implicitly from `ulong` (P5); `withVectors` takes a `string[]` (P14); the accessor chain is P4.
 
 - [ ] **Step 3: Integration test against real Qdrant**
 
-In `QdrantIntegrationTests`, following the file's existing `QdrantContainerFixture` convention: upsert a point carrying two named vectors, retrieve only one of them by id, and assert the returned map contains that point's id with the expected values and that the other vector is not returned. Add a second case asserting that ids with no such point are absent from the map rather than throwing.
+In `QdrantIntegrationTests`, following the file's existing `QdrantContainerFixture` convention: upsert a point carrying two named vectors, retrieve only one of them by id, and assert the returned map contains that point's id with the expected values and that the other vector is not returned. Add a second case asserting that ids with no such point are absent from the map rather than throwing, and a third retrieving more ids than one batch (>512) to prove the paging merges correctly.
 
 A mock cannot confirm the named-vector shape Qdrant actually returns — this is the class of gap part 4a's final review caught. This test also pins which representation the server returns — `VectorOutput` carries both a legacy flat `Data` and a `Dense` message, and the read above deliberately accepts either.
 
@@ -305,7 +314,7 @@ In `ObjectSearchGrpcService`, derive the type's timestamp columns once per reque
 
 In `IntelligenceStoreConsumerTests`: an entity with a declared timestamp metadata column whose client-sent value is a non-canonical but parseable string (e.g. `2026-07-29T00:00:00Z`) is stored in `"o"` form; an unparseable value results in the column being absent from the payload.
 
-In `QdrantFilterBuilderTests`, following the file's existing convention: `EQUALS` on a timestamp column canonicalizes the operand; `NOT_EQUALS` and `IN` do the same; a non-timestamp column's operand is untouched; a caller value that will not parse passes through unchanged; and a call with the default (omitted) `timestampColumns` behaves exactly as today.
+In `QdrantFilterBuilderTests`, following the file's existing convention: `EQUALS` on a timestamp column canonicalizes the operand; `NOT_EQUALS` and `IN` do the same; a non-timestamp column's operand is untouched; a caller value that will not parse passes through unchanged; and a call with the default (omitted) `timestampColumns` behaves exactly as today. Add one more — the `SearchChunks` entry point's own regression guard — a direct call to `IntelligenceFilterBuilder.MatchEquality` with a timestamp column in the set, asserting the emitted condition carries the canonical `"o"` operand. Every other case in this list reaches the builder through `Build`; this is the only one that fails if the second entry point is left unthreaded.
 
 - [ ] **Step 5: Build and test**
 ```bash
