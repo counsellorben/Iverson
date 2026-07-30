@@ -194,6 +194,119 @@ public class QdrantFilterBuilderTests
             .Where(e => e.Message.Contains(op.ToString()) && e.Message.Contains("wordCount"));
     }
 
+    // ---- Timestamp canonicalization -------------------------------------------------------
+    // IntelligenceStoreConsumer stores timestamp payload values in round-trip ("o") form, so the
+    // filter operand must be re-emitted the same way or string equality never matches.
+
+    private const string NonCanonicalTimestamp = "2026-07-29T00:00:00Z";
+    private const string CanonicalTimestamp    = "2026-07-29T00:00:00.0000000+00:00";
+
+    // camelCase: property names reach the builder already camelCased from ObjectSearchGrpcService,
+    // and the set is built from camelCased column names. A casing mismatch here would silently
+    // disable canonicalization altogether.
+    private static readonly IReadOnlySet<string> TimestampColumns =
+        new HashSet<string>(StringComparer.Ordinal) { "publishedAt" };
+
+    [Fact]
+    public void Build_EqualsOnTimestampColumn_CanonicalizesOperand()
+    {
+        var filter = IntelligenceFilterBuilder.Build(
+            [Clause("publishedAt", SearchOperator.Equals, Str(NonCanonicalTimestamp))],
+            SearchLogic.And, "SearchSimilar", TimestampColumns);
+
+        filter.Must.Should().ContainSingle();
+        filter.Must[0].Field.Match.Keyword.Should().Be(CanonicalTimestamp);
+    }
+
+    [Fact]
+    public void Build_NotEqualsOnTimestampColumn_CanonicalizesOperand()
+    {
+        var filter = IntelligenceFilterBuilder.Build(
+            [Clause("publishedAt", SearchOperator.NotEquals, Str(NonCanonicalTimestamp))],
+            SearchLogic.And, "SearchSimilar", TimestampColumns);
+
+        filter.MustNot.Should().ContainSingle();
+        filter.MustNot[0].Field.Match.Keyword.Should().Be(CanonicalTimestamp);
+    }
+
+    [Fact]
+    public void Build_InOnTimestampColumn_CanonicalizesEveryElement()
+    {
+        // The IN arm does not route through the equality helper — it is a second, independent
+        // string-comparison emission point.
+        var filter = IntelligenceFilterBuilder.Build(
+            [Clause("publishedAt", SearchOperator.In, List(NonCanonicalTimestamp, "2026-07-30T12:30:00+02:00"))],
+            SearchLogic.And, "SearchSimilar", TimestampColumns);
+
+        filter.Must.Should().ContainSingle();
+        filter.Must[0].Field.Match.Keywords.Strings.Should().Equal(
+            CanonicalTimestamp, "2026-07-30T12:30:00.0000000+02:00");
+    }
+
+    [Fact]
+    public void Build_TimestampColumnNameCasingMismatch_LeavesOperandUntouched()
+    {
+        // Guards the casing contract: property names arrive camelCased, so a PascalCase set entry
+        // matches nothing and the bug silently returns.
+        var pascalCased = new HashSet<string>(StringComparer.Ordinal) { "PublishedAt" };
+
+        var filter = IntelligenceFilterBuilder.Build(
+            [Clause("publishedAt", SearchOperator.Equals, Str(NonCanonicalTimestamp))],
+            SearchLogic.And, "SearchSimilar", pascalCased);
+
+        filter.Must[0].Field.Match.Keyword.Should().Be(NonCanonicalTimestamp);
+    }
+
+    [Fact]
+    public void Build_EqualsOnNonTimestampColumn_LeavesOperandUntouched()
+    {
+        var filter = IntelligenceFilterBuilder.Build(
+            [Clause("category", SearchOperator.Equals, Str(NonCanonicalTimestamp))],
+            SearchLogic.And, "SearchSimilar", TimestampColumns);
+
+        filter.Must[0].Field.Match.Keyword.Should().Be(NonCanonicalTimestamp);
+    }
+
+    [Fact]
+    public void Build_UnparseableTimestampOperand_PassesThroughUnchanged()
+    {
+        var filter = IntelligenceFilterBuilder.Build(
+            [Clause("publishedAt", SearchOperator.Equals, Str("not-a-timestamp"))],
+            SearchLogic.And, "SearchSimilar", TimestampColumns);
+
+        filter.Must[0].Field.Match.Keyword.Should().Be("not-a-timestamp");
+    }
+
+    [Fact]
+    public void Build_TimestampColumnsOmitted_BehavesAsBefore()
+    {
+        var filter = IntelligenceFilterBuilder.Build(
+            [Clause("publishedAt", SearchOperator.Equals, Str(NonCanonicalTimestamp))],
+            SearchLogic.And, "SearchSimilar");
+
+        filter.Must[0].Field.Match.Keyword.Should().Be(NonCanonicalTimestamp);
+    }
+
+    [Fact]
+    public void MatchEquality_TimestampColumn_CanonicalizesOperand()
+    {
+        // SearchChunks enters the builder here, not through Build — the only case that fails if
+        // this second entry point is left unthreaded.
+        var condition = IntelligenceFilterBuilder.MatchEquality(
+            "publishedAt", Str(NonCanonicalTimestamp), TimestampColumns);
+
+        condition.Field.Key.Should().Be("publishedAt");
+        condition.Field.Match.Keyword.Should().Be(CanonicalTimestamp);
+    }
+
+    [Fact]
+    public void MatchEquality_TimestampColumnsOmitted_BehavesAsBefore()
+    {
+        var condition = IntelligenceFilterBuilder.MatchEquality("publishedAt", Str(NonCanonicalTimestamp));
+
+        condition.Field.Match.Keyword.Should().Be(NonCanonicalTimestamp);
+    }
+
     [Fact]
     public void MatchParentId_ProducesSingleMustMatchKeywordOnParentId()
     {

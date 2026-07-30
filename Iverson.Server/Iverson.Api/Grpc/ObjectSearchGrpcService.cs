@@ -158,7 +158,8 @@ public sealed class ObjectSearchGrpcService(
 
             try
             {
-                filter = IntelligenceFilterBuilder.Build(camelCased, request.FilterLogic, "SearchSimilar");
+                filter = IntelligenceFilterBuilder.Build(
+                    camelCased, request.FilterLogic, "SearchSimilar", TimestampColumns(schema));
             }
             catch (FilterTranslationException ex)
             {
@@ -598,12 +599,25 @@ public sealed class ObjectSearchGrpcService(
                 $"{rpcName}: filter property '{property}' is not a scalar or foreign-key column on '{schema.TypeName}'."));
     }
 
+    /// <summary>
+    /// The type's timestamp-typed scalar columns, camelCased to match both the payload keys
+    /// IntelligenceStoreConsumer writes and the property spelling the filter builder sees.
+    /// IntelligenceStoreConsumer stores these values in canonical round-trip ("o") form, so the
+    /// filter builder must re-emit operands on them the same way or equality never matches.
+    /// </summary>
+    private static IReadOnlySet<string> TimestampColumns(SchemaDescriptor schema) =>
+        schema.ScalarColumns
+            .Where(c => c.SqlType.ToUpperInvariant() is "TIMESTAMPTZ" or "DATETIME")
+            .Select(c => c.Name.ToCamelCase())
+            .ToHashSet(StringComparer.Ordinal);
+
     private static Filter? BuildChunksFilter(
         SchemaDescriptor schema, SearchChunksRequest request, IReadOnlySet<string>? allowedFields)
     {
         if (request.Filter.Count == 0) return null;
 
         var filter = new Filter();
+        var timestampColumns = TimestampColumns(schema);
 
         foreach (var clause in request.Filter)
         {
@@ -629,7 +643,8 @@ public sealed class ObjectSearchGrpcService(
                     throw new RpcException(new Status(StatusCode.InvalidArgument,
                         $"SearchChunks: filter property '{clause.Property}' is not authorized for this caller."));
 
-                filter.Must.Add(IntelligenceFilterBuilder.MatchEquality(canonicalName.ToCamelCase(), clause.Value));
+                filter.Must.Add(IntelligenceFilterBuilder.MatchEquality(
+                    canonicalName.ToCamelCase(), clause.Value, timestampColumns));
             }
             else
                 throw new RpcException(

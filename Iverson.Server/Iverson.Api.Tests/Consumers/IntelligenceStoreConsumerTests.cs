@@ -939,6 +939,74 @@ public class IntelligenceStoreConsumerTests
     }
 
     [Fact]
+    public async Task HandleCreated_TimestampMetadataColumn_IsStoredInCanonicalRoundTripForm()
+    {
+        // The client sent a parseable but non-canonical spelling; it must land as a
+        // DateTimeOffset, which IntelligenceVectorService.ToQdrantValue writes out in "o" form.
+        // Equality filters compare payload strings verbatim, so any other form never matches.
+        var schema = MetadataDocSchema(
+            [
+                new ColumnDescriptor("Title", "text", false),
+                new ColumnDescriptor("Body", "text", false),
+                new ColumnDescriptor("PublishedAt", "TIMESTAMPTZ", true)
+            ],
+            ["PublishedAt"]);
+        await _registry.RegisterAsync(schema);
+
+        var longBody = new string('x', 3000);
+        var payload  = $$$"""{"Title":"T","Body":"{{{longBody}}}","PublishedAt":"2026-07-29T00:00:00Z","TenantId":"test-tenant"}""";
+
+        IReadOnlyDictionary<string, object>? capturedPayload = null;
+        _vectorWrite
+            .UpsertNamedAsync(
+                "docs_chunks_test-tenant",
+                Arg.Any<ulong>(),
+                Arg.Any<IReadOnlyDictionary<string, float[]>>(),
+                Arg.Do<IReadOnlyDictionary<string, object>?>(p => capturedPayload = p))
+            .Returns(Task.CompletedTask);
+
+        var ev = DocEvent(payload, "trace-metadata-timestamp");
+        await BuildSut().HandleAsync(ev.Key, Serialize(ev), CancellationToken.None);
+
+        capturedPayload.Should().NotBeNull();
+        capturedPayload!["publishedAt"].Should().BeOfType<DateTimeOffset>();
+        ((DateTimeOffset)capturedPayload["publishedAt"]).ToString("o")
+            .Should().Be("2026-07-29T00:00:00.0000000+00:00");
+    }
+
+    [Fact]
+    public async Task HandleCreated_UnparseableTimestampMetadataColumn_IsAbsentFromPayload()
+    {
+        var schema = MetadataDocSchema(
+            [
+                new ColumnDescriptor("Title", "text", false),
+                new ColumnDescriptor("Body", "text", false),
+                new ColumnDescriptor("PublishedAt", "TIMESTAMPTZ", true)
+            ],
+            ["PublishedAt"]);
+        await _registry.RegisterAsync(schema);
+
+        var longBody = new string('x', 3000);
+        var payload  = $$$"""{"Title":"T","Body":"{{{longBody}}}","PublishedAt":"not-a-timestamp","TenantId":"test-tenant"}""";
+
+        IReadOnlyDictionary<string, object>? capturedPayload = null;
+        _vectorWrite
+            .UpsertNamedAsync(
+                "docs_chunks_test-tenant",
+                Arg.Any<ulong>(),
+                Arg.Any<IReadOnlyDictionary<string, float[]>>(),
+                Arg.Do<IReadOnlyDictionary<string, object>?>(p => capturedPayload = p))
+            .Returns(Task.CompletedTask);
+
+        var ev = DocEvent(payload, "trace-metadata-timestamp-bad");
+        await BuildSut().HandleAsync(ev.Key, Serialize(ev), CancellationToken.None);
+
+        capturedPayload.Should().NotBeNull();
+        // Degrade, never throw: the column is simply absent rather than stored unmatchably.
+        capturedPayload!.Should().NotContainKey("publishedAt");
+    }
+
+    [Fact]
     public async Task HandleCreated_WithMetadataColumns_LeavesObjectPointPayloadUnchanged()
     {
         var schema = MetadataDocSchema(
