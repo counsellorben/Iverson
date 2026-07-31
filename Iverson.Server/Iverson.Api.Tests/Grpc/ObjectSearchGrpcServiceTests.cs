@@ -2573,7 +2573,8 @@ public class ObjectSearchGrpcServiceTests
 
         string? capturedCollection = null, capturedVectorName = null;
         List<ulong>? capturedIds = null;
-        _vector.RetrieveNamedVectorAsync(Arg.Any<string>(), Arg.Any<IReadOnlyList<ulong>>(), Arg.Any<string>())
+        _vector.RetrieveNamedVectorAsync(
+                   Arg.Is<string>(c => c == "articles_test-tenant"), Arg.Any<IReadOnlyList<ulong>>(), Arg.Any<string>())
                .Returns(ci =>
                {
                    capturedCollection = (string)ci[0]!;
@@ -2581,6 +2582,9 @@ public class ObjectSearchGrpcServiceTests
                    capturedVectorName = (string)ci[2]!;
                    return (IReadOnlyDictionary<ulong, float[]>)new Dictionary<ulong, float[]>();
                });
+        _vector.RetrieveNamedVectorAsync(
+                   Arg.Is<string>(c => c == "articles_chunks_test-tenant"), Arg.Any<IReadOnlyList<ulong>>(), Arg.Any<string>())
+               .Returns((IReadOnlyDictionary<ulong, float[]>)new Dictionary<ulong, float[]>());
 
         var (writer, written) = MakeStream<ChunkSearchResponse>();
         await _sut.SearchChunks(
@@ -2588,7 +2592,7 @@ public class ObjectSearchGrpcServiceTests
             writer, TestServerCallContext.Create());
 
         await _vector.Received(1).RetrieveNamedVectorAsync(
-            Arg.Any<string>(), Arg.Any<IReadOnlyList<ulong>>(), Arg.Any<string>());
+            Arg.Is<string>(c => c == "articles_test-tenant"), Arg.Any<IReadOnlyList<ulong>>(), Arg.Any<string>());
         capturedIds.Should().ContainSingle();                       // three chunks, one parent
         capturedCollection.Should().Be("articles_test-tenant");     // the OBJECT collection
         capturedVectorName.Should().Be("body_centroid");
@@ -2737,6 +2741,148 @@ public class ObjectSearchGrpcServiceTests
         written[1].ChunkText.Should().Be("text-A");
         written[1].ParentKey.Should().Be(parentA);
         written[1].Score.Should().BeApproximately(0.6000f, 0.0005f);
+    }
+
+    // ── SearchChunks diversification (chunk-level, not parent-level) ───────────
+
+    // The chunk-vector retrieve is a SECOND round trip, distinct from part 3's parent-centroid
+    // retrieve: different collection ("chunks" vs the object collection), different vector name
+    // (the plain "<property>_vector" vs "<property>_centroid").
+    [Fact]
+    public async Task SearchChunks_Diversification_FetchesBothParentCentroidsAndChunkVectors()
+    {
+        await _registry.RegisterAsync(SchemaFixtures.ArticleSchema());
+
+        var fakeVector = UnitVector();
+        _embedding.EmbedAsync("q", Arg.Any<CancellationToken>()).Returns(fakeVector);
+
+        var parent = Guid.NewGuid().ToString();
+        var results = new List<VectorSearchResult>
+        {
+            new(1, 0.90, new Dictionary<string, string> { ["text"] = "c1", ["parent_id"] = parent }),
+            new(2, 0.80, new Dictionary<string, string> { ["text"] = "c2", ["parent_id"] = parent }),
+        };
+        _vector.SearchNamedAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<float[]>(), Arg.Any<ulong>(), Arg.Any<Filter>())
+               .Returns(results.AsReadOnly());
+        _vector.RetrieveNamedVectorAsync(Arg.Any<string>(), Arg.Any<IReadOnlyList<ulong>>(), Arg.Any<string>())
+               .Returns((IReadOnlyDictionary<ulong, float[]>)new Dictionary<ulong, float[]>());
+
+        var (writer, written) = MakeStream<ChunkSearchResponse>();
+        await _sut.SearchChunks(
+            new SearchChunksRequest { TypeName = "Article", Property = "Body", Query = "q", TopK = 2 },
+            writer, TestServerCallContext.Create());
+
+        await _vector.Received(1).RetrieveNamedVectorAsync(
+            "articles_test-tenant", Arg.Any<IReadOnlyList<ulong>>(), "body_centroid");
+        await _vector.Received(1).RetrieveNamedVectorAsync(
+            "articles_chunks_test-tenant", Arg.Any<IReadOnlyList<ulong>>(), "body_vector");
+        written.Should().HaveCount(2);
+    }
+
+    // Three chunks share ONE parent, so a parent-level diversity signal (identical centroid for
+    // all three) cannot distinguish them at all — whichever ranks second by fused score would be
+    // picked mechanically, with no actual diversity effect. Chunk-level vectors tell a different
+    // story: A and B are near-identical passages (same chunk vector) while C is dissimilar from
+    // both (orthogonal chunk vector), even though all three came from the same document.
+    //
+    // Query = e0. Parent centroid = e0 for all three (cos to query = 1.0) — identical, so it
+    // contributes the same +0.3 term to every fused score and never changes relative order.
+    //   A: base=0.95 → fused = (0.6*0.95 + 0.3*1.0)/0.9 = 0.9667
+    //   B: base=0.90 → fused = (0.6*0.90 + 0.3*1.0)/0.9 = 0.9333
+    //   C: base=0.85 → fused = (0.6*0.85 + 0.3*1.0)/0.9 = 0.9000
+    // Fused-descending order fed to the diversifier: [A, B, C].
+    // Step 1 selects A unconditionally (highest fused).
+    // A's CHUNK vector is e0 — identical to B's chunk vector (cos(B,A) = 1.0) and orthogonal to
+    // C's chunk vector (cos(C,A) = 0.0).
+    //   Mmr(B) = 0.7*0.9333 - 0.3*1.0 = 0.3533
+    //   Mmr(C) = 0.7*0.9000 - 0.3*0.0 = 0.6300
+    // C's MMR score beats B's, so with top_k=2 the selection is [A, C]: the near-duplicate B
+    // (same parent AND a near-identical passage) is suppressed, while C (same parent but a
+    // dissimilar passage) is NOT suppressed — proving the diversity signal operates at chunk
+    // granularity, not parent granularity.
+    [Fact]
+    public async Task SearchChunks_SuppressesNearDuplicatePassage_ButNotDissimilarPassage_EvenSharingOneParent()
+    {
+        await _registry.RegisterAsync(SchemaFixtures.ArticleSchema());
+
+        var queryVector = UnitVector(); // e0
+        _embedding.EmbedAsync("q", Arg.Any<CancellationToken>()).Returns(queryVector);
+
+        var sharedParent = Guid.NewGuid().ToString();
+        var results = new List<VectorSearchResult>
+        {
+            new(1, 0.95, new Dictionary<string, string> { ["text"] = "A",              ["parent_id"] = sharedParent }),
+            new(2, 0.90, new Dictionary<string, string> { ["text"] = "B-near-duplicate", ["parent_id"] = sharedParent }),
+            new(3, 0.85, new Dictionary<string, string> { ["text"] = "C-dissimilar",     ["parent_id"] = sharedParent }),
+        };
+        _vector.SearchNamedAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<float[]>(), Arg.Any<ulong>(), Arg.Any<Filter>())
+               .Returns(results.AsReadOnly());
+
+        var parentUlong = InvokeKeyToUlong(sharedParent);
+        _vector.RetrieveNamedVectorAsync(
+                   Arg.Is<string>(c => c == "articles_test-tenant"), Arg.Any<IReadOnlyList<ulong>>(), Arg.Any<string>())
+               .Returns((IReadOnlyDictionary<ulong, float[]>)new Dictionary<ulong, float[]>
+               {
+                   [parentUlong] = UnitVector(), // same parent centroid (e0) for all three chunks
+               });
+        _vector.RetrieveNamedVectorAsync(
+                   Arg.Is<string>(c => c == "articles_chunks_test-tenant"), Arg.Any<IReadOnlyList<ulong>>(), Arg.Any<string>())
+               .Returns((IReadOnlyDictionary<ulong, float[]>)new Dictionary<ulong, float[]>
+               {
+                   [1] = UnitVector(),           // A: e0
+                   [2] = UnitVector(),           // B: e0 — near-duplicate of A (cosine ≈ 1.0)
+                   [3] = OrthogonalUnitVector(), // C: e1 — dissimilar from A (cosine ≈ 0.0)
+               });
+
+        var (writer, written) = MakeStream<ChunkSearchResponse>();
+        await _sut.SearchChunks(
+            new SearchChunksRequest { TypeName = "Article", Property = "Body", Query = "q", TopK = 2 },
+            writer, TestServerCallContext.Create());
+
+        written.Should().HaveCount(2);
+        written[0].ChunkText.Should().Be("A");
+        written[0].Score.Should().BeApproximately(0.9667f, 0.001f);
+        written[1].ChunkText.Should().Be("C-dissimilar");
+        written[1].Score.Should().BeApproximately(0.9000f, 0.001f);
+    }
+
+    // A failed chunk-vector retrieve must degrade selection, never fail the search: every
+    // diversity vector becomes absent, and the diversifier falls back to the fused-descending
+    // order — bit-for-bit what the plain Take(topK) it replaced would have returned. The
+    // parent-centroid retrieve is stubbed to SUCCEED here so the test isolates the chunk-vector
+    // failure path specifically, rather than duplicating the "both retrieves throw" coverage
+    // already provided by SearchChunks_CentroidRetrieveThrows_KeepsRawCosineOrder.
+    [Fact]
+    public async Task SearchChunks_ChunkVectorRetrieveThrows_KeepsFusedOrder_AndStreamsExactlyTopK()
+    {
+        await _registry.RegisterAsync(SchemaFixtures.ArticleSchema());
+
+        var fakeVector = UnitVector();
+        _embedding.EmbedAsync("q", Arg.Any<CancellationToken>()).Returns(fakeVector);
+
+        var results = Enumerable.Range(1, 5)
+            .Select(i => new VectorSearchResult((ulong)i, 1.0 - i * 0.1,
+                new Dictionary<string, string> { ["text"] = $"c{i}" }))
+            .ToList();
+        _vector.SearchNamedAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<float[]>(), Arg.Any<ulong>(), Arg.Any<Filter>())
+               .Returns(results.AsReadOnly());
+
+        _vector.RetrieveNamedVectorAsync(
+                   Arg.Is<string>(c => c == "articles_test-tenant"), Arg.Any<IReadOnlyList<ulong>>(), Arg.Any<string>())
+               .Returns((IReadOnlyDictionary<ulong, float[]>)new Dictionary<ulong, float[]>());
+        _vector.RetrieveNamedVectorAsync(
+                   Arg.Is<string>(c => c == "articles_chunks_test-tenant"), Arg.Any<IReadOnlyList<ulong>>(), Arg.Any<string>())
+               .Returns<Task<IReadOnlyDictionary<ulong, float[]>>>(_ => throw new InvalidOperationException("qdrant down"));
+
+        var (writer, written) = MakeStream<ChunkSearchResponse>();
+        await _sut.SearchChunks(
+            new SearchChunksRequest { TypeName = "Article", Property = "Body", Query = "q", TopK = 3 },
+            writer, TestServerCallContext.Create());
+
+        written.Should().HaveCount(3);
+        written.Select(w => w.ChunkText).Should().Equal("c1", "c2", "c3");
+        written.Select(w => w.Score).Should()
+               .Equal(0.9f, 0.8f, 0.7f); // no centroid on these payloads either — raw cosine
     }
 
     // The point-id function is internal to IntelligenceStoreConsumer; the test needs the same

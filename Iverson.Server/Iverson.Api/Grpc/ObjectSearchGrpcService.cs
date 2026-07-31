@@ -386,6 +386,31 @@ public sealed class ObjectSearchGrpcService(
                 "SearchChunks")
             : EmptyCentroids;
 
+        // The DIVERSITY vector for a chunk is the chunk's OWN vector — the same representation
+        // Qdrant matched the query against — not its parent centroid, which is the re-rank
+        // signal above and lives at document granularity. Distinct collections, distinct
+        // signals; neither substitutes for the other. A failure here degrades selection to
+        // the fused order rather than failing the search.
+        var chunkVectors = EmptyCentroids;
+        if (results.Count > 0)
+        {
+            try
+            {
+                using (RequestHeaders.Use("api-key", tenantScope.MintScopedApiKey(chunksCollection, readOnly: true)))
+                    chunkVectors = await vector.RetrieveNamedVectorAsync(
+                        chunksCollection, results.Select(r => r.Id).ToList(), vectorName);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                logger.LogWarning(
+                    ex,
+                    "[SearchChunks] chunk-vector retrieve failed (collection={Collection} vector={Vector} ids={Count}); " +
+                    "selecting without the diversity signal.",
+                    chunksCollection.SanitizeForLog(), vectorName.SanitizeForLog(), results.Count);
+                chunkVectors = EmptyCentroids;
+            }
+        }
+
         var decayField = DecayFieldResolver.ResolveDecayField(schema, logger);
         var now        = DateTimeOffset.UtcNow;
 
@@ -400,7 +425,14 @@ public sealed class ObjectSearchGrpcService(
 
         var byId = ResultsById(results);
 
-        foreach (var ranked in reranker.Rerank(queryVector, candidates).Take((int)topK))
+        var diversityCandidates = reranker.Rerank(queryVector, candidates)
+            .Select(r => new DiversifyCandidate(
+                r.Id,
+                r.FusedScore,
+                chunkVectors.TryGetValue(r.Id, out var v) ? v : null))
+            .ToList();
+
+        foreach (var ranked in diversifier.Diversify(diversityCandidates, (int)topK))
         {
             if (!byId.TryGetValue(ranked.Id, out var r)) continue;
 
