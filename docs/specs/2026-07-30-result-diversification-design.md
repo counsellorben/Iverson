@@ -109,16 +109,21 @@ two paths genuinely diverge, and the divergence is load-bearing rather than inci
   The chunk's own vector is the quantity the Goal names.
 
   The chunk vector is exactly what Qdrant matched the query against, so a cosine between two of
-  them is true passage-level similarity. The named vector exists and carries this name:
+  them measures similarity in the same representation retrieval used. For a non-contextual chunk
+  field that representation *is* the passage; for a contextual one it is the passage plus a
+  document-context prefix shared by all of that document's chunks (A12). The named vector exists
+  and carries this name:
   `SchemaBuilder.ToChunkCollectionSchema` declares `<property>_vector` per chunk field
   (`SchemaBuilder.cs:213`) and the consumer writes the chunk under that name
   (`IntelligenceStoreConsumer.cs:238-242`) — the same name `SearchChunks` already passes to
   `SearchNamedAsync`.
 
-  Consequence to be explicit about: chunks sharing a parent are no longer suppressed
-  automatically. They are suppressed exactly to the extent their passages are actually similar,
-  which is the intended behavior — a long document's three distinct sections can all surface when
-  all three answer the question.
+  Consequence to be explicit about: chunks sharing a parent are no longer suppressed merely for
+  sharing one. For a non-contextual field they are suppressed exactly to the extent their passages
+  resemble each other, so a long document's three distinct sections can all surface when all three
+  answer the question. For a contextual field the shared prefix gives same-parent chunks a
+  similarity floor, so some parent-level suppression remains — weaker than the parent centroid's
+  exact `cos = 1.0`, and still responsive to passage content.
 
 ### 3. The contract
 
@@ -255,7 +260,11 @@ Service level, in `Iverson.Api.Tests`:
   than failing the call, and exactly `topK` results are streamed;
 - `SearchSimilar` — diversification applies on a dual-annotated property, on an embedding-only
   property the results are unchanged from the fused order, and **no** additional retrieve is
-  issued beyond part 3's existing centroid fetch.
+  issued beyond part 3's existing centroid fetch;
+- `SearchChunks` — **existing test update:** `SearchChunks_BatchesCentroidRetrieve_ToDistinctParentIds`
+  must discriminate the two retrieves by collection rather than matching `Arg.Any<string>()`, so it
+  continues to assert the parent-centroid retrieve's batching without being overwritten by the
+  chunk-vector retrieve.
 
 ## Verified assumptions
 
@@ -272,9 +281,10 @@ Verified against the codebase at `main@5834131` before this spec was written.
 | A6 | A stored centroid can in principle be degenerate: `ComputeCentroid` divides by each chunk vector's magnitude with no zero guard | `IntelligenceStoreConsumer.cs:375-381`. See "Out of scope, but known" — not fixed here |
 | A7 | Part 3's over-fetch gate remains correct with MMR added: MMR needs `centroidPossible`, which already forces the `4 ×` branch | `ObjectSearchGrpcService.cs:213`; `SearchChunks` never gates, `:341-345` |
 | A8 | The re-ranker's DI registration site takes a sibling singleton, and cross-assembly types must be `public` | `ServiceCollectionExtensions.cs:50`; `Iverson.Vector.csproj:10-12` names only `Iverson.Vector.Tests` |
-| A9 | No existing test depends on trim or ordering behaviour in a way MMR breaks | Every test reaching the selection step was checked, not a sample: `ObjectSearchGrpcServiceTests.cs:2333` and `:2445` supply empty centroid maps, so MMR no-ops; `:2485` throws; `:2362`, `:2394` and `:2515` fetch no centroids at all; `:2421` leaves the retrieve unstubbed; `:2540` has a non-empty map but a **single** result, making selection trivial; `:2575`'s two centroids are mutually orthogonal, giving a zero penalty either way. All still pass |
+| A9 | No existing test depends on trim or ordering behaviour in a way MMR breaks | Every test reaching the selection step was checked, not a sample: `ObjectSearchGrpcServiceTests.cs:2333` and `:2445` supply empty centroid maps, so MMR no-ops; `:2485` throws; `:2362`, `:2394` and `:2515` fetch no centroids at all; `:2421` leaves the retrieve unstubbed; `:2540` has a non-empty map but a **single** result, making selection trivial; `:2575`'s two centroids are mutually orthogonal, giving a zero penalty either way. Eight of the nine still pass unchanged. **`:2445` (`SearchChunks_BatchesCentroidRetrieve_ToDistinctParentIds`) does not**: its stub matches `Arg.Any<string>()` for the collection, so it intercepts both of `SearchChunks`' retrieves and its captured locals are overwritten by the second — `Received(1)`, `capturedIds.ContainSingle()`, `capturedCollection` and `capturedVectorName` all fail. §7 requires it to be updated |
 | A10 | *(Recurrence)* Every requirement above holds for **both** RPCs — diversity-vector source, degradation path, and an exactly-`topK` streaming test | A5 and A11 for the vector source; A7 for the pool; `ObjectSearchGrpcServiceTests.cs:2333` and `:2421` for the streaming tests |
 | A11 | Chunk points carry a named vector `<property>_vector` in the chunks collection, retrievable by point id — the vector `SearchChunks`' diversity signal requires | `SchemaBuilder.cs:213` declares one `NamedVector($"{c.PropertyName.ToSnakeCase()}_vector", c.Dimension)` per chunk field on the `_chunks` collection; `IntelligenceStoreConsumer.cs:238-242` upserts each chunk under exactly that name. It is the same name `SearchChunks` already passes to `SearchNamedAsync` (`ObjectSearchGrpcService.cs:352`), and `RetrieveNamedVectorAsync` (A1's sibling, part 3 Task 1) is collection-agnostic |
+| A12 | What a chunk vector encodes depends on the contextual-prefix feature: the consumer embeds `PrefixWithContextAsync(documentContext, chunkText)` when `contextualEnabled && cf.Contextual`, and the bare `chunkText` otherwise. `documentContext` — the object summary, or the parent text's first `ParentTextContextChars` — is identical for every chunk of that field in that document | `IntelligenceStoreConsumer.cs:191-202`, embed call at `:202`. No un-prefixed chunk vector is stored, so this is the only chunk representation available |
 
 ## Out of scope, but known
 
