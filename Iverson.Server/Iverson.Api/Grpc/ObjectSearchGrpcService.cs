@@ -35,7 +35,8 @@ public sealed class ObjectSearchGrpcService(
     IActingUserAccessor actingUserAccessor,
     IRowFieldAuthorizationEvaluator authEvaluator,
     IntelligenceTenantScope tenantScope,
-    IResultReranker reranker)
+    IResultReranker reranker,
+    IResultDiversifier diversifier)
     : ObjectSearchService.ObjectSearchServiceBase
 {
     // ── SQL Search ─────────────────────────────────────────────────────────────
@@ -251,7 +252,14 @@ public sealed class ObjectSearchGrpcService(
 
         var byId = ResultsById(results);
 
-        foreach (var ranked in reranker.Rerank(queryVector, candidates).Take((int)topK))
+        var diversityCandidates = reranker.Rerank(queryVector, candidates)
+            .Select(r => new DiversifyCandidate(
+                r.Id,
+                r.FusedScore,
+                centroids.TryGetValue(r.Id, out var v) ? v : null))
+            .ToList();
+
+        foreach (var ranked in diversifier.Diversify(diversityCandidates, (int)topK))
         {
             if (!byId.TryGetValue(ranked.Id, out var r)) continue;
 

@@ -66,7 +66,7 @@ public class ObjectSearchGrpcServiceTests
             _registry, _search, _vector, _embedding,
             NullLogger<ObjectSearchGrpcService>.Instance,
             _actingUserAccessor, _authEvaluator, new IntelligenceTenantScope("test-signing-key-0123456789abcdef"),
-            new ResultReranker());
+            new ResultReranker(), new ResultDiversifier());
     }
 
     private static (IServerStreamWriter<T> writer, List<T> written) MakeStream<T>()
@@ -2412,6 +2412,120 @@ public class ObjectSearchGrpcServiceTests
 
         CapturedLimit(_vector).Should().Be(20);   // 4 × top_k
         written.Should().HaveCount(5);
+    }
+
+    // ── Result diversification (MMR) ────────────────────────────────────────────
+
+    private static float[] OrthogonalUnitVector()
+    {
+        var v = new float[768];
+        v[1] = 1f;
+        return v;
+    }
+
+    // Hand-computed MMR (lambda = 0.70) over 3 dual-annotated candidates, query = e0:
+    //   A: BaseScore=1.00, centroid=e0 (sim to query=1.0)  → fused = (0.6*1.00 + 0.3*1.0)/0.9 = 1.0000
+    //   B: BaseScore=0.85, centroid=e0 (sim to query=1.0)  → fused = (0.6*0.85 + 0.3*1.0)/0.9 = 0.9000
+    //   C: BaseScore=1.00, centroid=e1 (sim to query=0.0)  → fused = (0.6*1.00 + 0.3*0.0)/0.9 = 0.6667
+    // Fused-descending order fed to the diversifier: [A, B, C].
+    // Step 1 selects A unconditionally (highest fused).
+    // A's centroid is e0, same as B's (cosine(B,A) = 1.0) and orthogonal to C's (cosine(C,A) = 0.0).
+    //   Mmr(B) = 0.7*0.9000 - 0.3*1.0 = 0.33
+    //   Mmr(C) = 0.7*0.6667 - 0.3*0.0 = 0.4667
+    // C's MMR score beats B's, so C is selected second despite its materially lower fused score —
+    // B (the near-duplicate of the already-selected A) is passed over.
+    [Fact]
+    public async Task SearchSimilar_PromotesDissimilarCandidate_OverNearDuplicate_DespiteLowerFusedScore()
+    {
+        await _registry.RegisterAsync(DualAnnotatedSchema());
+
+        var queryVector = UnitVector(); // e0
+        _embedding.EmbedAsync("q", Arg.Any<CancellationToken>()).Returns(queryVector);
+
+        var results = new List<VectorSearchResult>
+        {
+            new(1, 1.00, new Dictionary<string, string> { ["body"] = "A" }),
+            new(2, 0.85, new Dictionary<string, string> { ["body"] = "B-near-duplicate" }),
+            new(3, 1.00, new Dictionary<string, string> { ["body"] = "C-dissimilar" }),
+        };
+        _vector.SearchNamedAsync("docs_test-tenant", "body_vector", queryVector, Arg.Any<ulong>(), Arg.Any<Filter>())
+               .Returns(results.AsReadOnly());
+
+        var centroids = new Dictionary<ulong, float[]>
+        {
+            [1] = UnitVector(),           // A: e0
+            [2] = UnitVector(),           // B: e0 — near-duplicate of A (cosine ≈ 1.0)
+            [3] = OrthogonalUnitVector(), // C: e1 — dissimilar from A (cosine ≈ 0.0)
+        };
+        _vector.RetrieveNamedVectorAsync(Arg.Any<string>(), Arg.Any<IReadOnlyList<ulong>>(), Arg.Any<string>())
+               .Returns((IReadOnlyDictionary<ulong, float[]>)centroids);
+
+        var (writer, written) = MakeStream<SearchResponse>();
+        await _sut.SearchSimilar(
+            new SearchSimilarRequest { TypeName = "Doc", Property = "Body", Query = "q", TopK = 2 },
+            writer, TestServerCallContext.Create());
+
+        written.Should().HaveCount(2);
+        written[0].Data.Fields["body"].StringValue.Should().Be("A");
+        written[0].Score.Should().BeApproximately(1.0f, 0.001f);
+        written[1].Data.Fields["body"].StringValue.Should().Be("C-dissimilar");
+        written[1].Score.Should().BeApproximately(0.6667f, 0.001f);
+    }
+
+    // Embedding-only property: no centroid signal exists at all, so every candidate's
+    // DiversityVector is null and the diversifier degrades to the fused-descending order —
+    // i.e. behaves identically to the plain Take(topK) it replaced.
+    [Fact]
+    public async Task SearchSimilar_EmbeddingOnlyProperty_ResultsUnchangedFromFusedOrder()
+    {
+        await _registry.RegisterAsync(SchemaFixtures.ArticleSchema());
+
+        var fakeVector = UnitVector();
+        _embedding.EmbedAsync("q", Arg.Any<CancellationToken>()).Returns(fakeVector);
+
+        var results = Enumerable.Range(1, 5)
+            .Select(i => new VectorSearchResult((ulong)i, 1.0 - i * 0.01,
+                new Dictionary<string, string> { ["title"] = $"a{i}" }))
+            .ToList();
+        _vector.SearchNamedAsync("articles_test-tenant", "title_vector", fakeVector, Arg.Any<ulong>(), Arg.Any<Filter>())
+               .Returns(results.AsReadOnly());
+
+        var (writer, written) = MakeStream<SearchResponse>();
+        await _sut.SearchSimilar(
+            new SearchSimilarRequest { TypeName = "Article", Property = "Title", Query = "q", TopK = 5 },
+            writer, TestServerCallContext.Create());
+
+        written.Should().HaveCount(5);
+        written.Select(w => w.Score).Should()
+               .Equal(0.99f, 0.98f, 0.97f, 0.96f, 0.95f);
+    }
+
+    // Part 3 already fetches the object's own centroid once via RetrieveNamedVectorAsync;
+    // diversification must consume that same fetch and issue no additional Qdrant retrieve.
+    [Fact]
+    public async Task SearchSimilar_Diversification_IssuesNoAdditionalRetrieve()
+    {
+        await _registry.RegisterAsync(DualAnnotatedSchema());
+
+        var fakeVector = UnitVector();
+        _embedding.EmbedAsync("q", Arg.Any<CancellationToken>()).Returns(fakeVector);
+
+        var results = Enumerable.Range(1, 8)
+            .Select(i => new VectorSearchResult((ulong)i, 1.0 - i * 0.01,
+                new Dictionary<string, string> { ["body"] = $"a{i}" }))
+            .ToList();
+        _vector.SearchNamedAsync("docs_test-tenant", "body_vector", fakeVector, Arg.Any<ulong>(), Arg.Any<Filter>())
+               .Returns(results.AsReadOnly());
+        _vector.RetrieveNamedVectorAsync(Arg.Any<string>(), Arg.Any<IReadOnlyList<ulong>>(), Arg.Any<string>())
+               .Returns((IReadOnlyDictionary<ulong, float[]>)new Dictionary<ulong, float[]>());
+
+        var (writer, _) = MakeStream<SearchResponse>();
+        await _sut.SearchSimilar(
+            new SearchSimilarRequest { TypeName = "Doc", Property = "Body", Query = "q", TopK = 5 },
+            writer, TestServerCallContext.Create());
+
+        await _vector.Received(1).RetrieveNamedVectorAsync(
+            Arg.Any<string>(), Arg.Any<IReadOnlyList<ulong>>(), Arg.Any<string>());
     }
 
     // SearchChunks only accepts an [IversonChunk] property, and every chunk field gets a
