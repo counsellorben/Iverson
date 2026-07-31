@@ -131,8 +131,7 @@ public sealed class ResultDiversifierTests
 
         var results = _diversifier.Diversify(candidates, topK: 3);
 
-        results.Should().HaveCount(Math.Min(3, candidates.Length));
-        results.Should().HaveCount(candidates.Take(3).Count());
+        results.Select(r => r.Id).Should().Equal(1UL, 2UL, 3UL);
     }
 
     [Fact]
@@ -149,10 +148,9 @@ public sealed class ResultDiversifierTests
             new DiversifyCandidate(3, Score: 0.5, DiversityVector: null)
         };
 
-        Action act = () => _diversifier.Diversify(candidates, topK: 2);
+        Func<IReadOnlyList<RerankedResult>> act = () => _diversifier.Diversify(candidates, topK: 2);
 
-        act.Should().NotThrow();
-        var results = _diversifier.Diversify(candidates, topK: 2);
+        var results = act.Should().NotThrow().Subject;
         results.Select(r => r.Id).Should().ContainInOrder(1UL, 2UL);
     }
 
