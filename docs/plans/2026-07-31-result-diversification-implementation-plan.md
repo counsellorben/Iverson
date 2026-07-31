@@ -78,6 +78,7 @@ Newly introduced by this plan and verified at plan-write time against `main@68c4
 | P13 | Consumer impact *(sibling sweep — all 8 `RetrieveNamedVectorAsync` sites in the Api test file)* | Both `DidNotReceive()` assertions (`:2382`, `:2533`) belong to **`SearchSimilar`** tests, which gain no retrieve, so they are unaffected. Of the four `Arg.Any<string>()`-collection stubs, `:2346` and `:2553` are `SearchSimilar`; `:2499` throws for every retrieve (both of `SearchChunks`' retrieves throw → fused order, still passes); `:2462` is the one the spec mandates updating. `:2604` (`SearchChunks_WhenRerankPermutesOrder_...`) is a fifth case the spec's A9 assessed only for ranking: its stub will also serve the chunk-vector retrieve, but its map is keyed by `KeyToUlong(parentGuid)` while the chunk ids are `1` and `2`, so every chunk lookup misses, diversity vectors are absent, MMR degrades to fused order and its assertions still hold | `grep -n "RetrieveNamedVectorAsync"` over `ObjectSearchGrpcServiceTests.cs` (8 hits: `:2346`, `:2382`, `:2462`, `:2476`, `:2499`, `:2533`, `:2553`, `:2604`), each read against its enclosing `[Fact]` at `:2333`, `:2362`, `:2445`, `:2485`, `:2515`, `:2540`, `:2575` |
 | P14 | Consumer impact | `ServiceCollectionExtensionsTests` asserts only that specific services resolve; it makes no registration-count or exhaustive-set assertion, so a new `AddSingleton` breaks nothing | `Iverson.Vector.Tests/ServiceCollectionExtensionsTests.cs` — three facts, each resolving `QdrantClient` and asserting `NotBeNull`/`BeOfType` |
 | P15 | Consumer impact | `.Rerank(...).Take(...)` appears at exactly two call sites, both in scope; no other consumer of `IResultReranker` exists in production code | `grep -rn "IResultReranker\|\.Rerank("` over non-test, non-`obj` sources: `ObjectSearchGrpcService.cs:38,:254,:395`, plus the type's own declaration and DI registration |
+| P16 | Code validity | `TensorPrimitives.CosineSimilarity` returns a value in `[-1, 1]` — negative similarities are reachable, so "absent" cannot be encoded as the value `0.0` in the running maximum | `System.Numerics.Tensors.xml:146` documents cosine similarity over single-precision tensors; nothing constrains stored centroids or chunk vectors to a non-negative orthant, and `ObjectSearchGrpcServiceTests.cs:2599-2600` constructs an orthogonal vector specifically to obtain `cos 0.0` |
 
 ## Tasks
 
@@ -122,6 +123,8 @@ public interface IResultDiversifier
 - the highest-fused candidate is always selected first, including when it is the most redundant;
 - **every diversity vector absent → the selected set AND its order are identical to `ranked.Take(topK)`, asserted exactly** (compare the full `RerankedResult` sequence, not just ids);
 - one vector absent → that pair contributes no penalty;
+- a candidate whose diversity vector is **anti-similar** to the selected set outranks one whose maximum similarity is zero at equal fused score — the assertion that distinguishes a clamped running maximum from a correct one;
+- a `NaN` fused score in the pool → exactly `Math.Min(topK, pool)` results are returned, matching `Take(topK)`'s count;
 - differing lengths → treated as absent and, specifically, **does not throw**;
 - a zero-magnitude vector → `NaN` treated as absent, and a `NaN`-first candidate is not selected ahead of a strictly better one;
 - pool smaller than `topK` → every candidate returned, MMR determines their order;
@@ -159,7 +162,12 @@ public sealed class ResultDiversifier : IResultDiversifier
         // Running maximum similarity of each remaining candidate against the SELECTED set,
         // updated against only the newly-selected candidate each round. NaN is never stored:
         // an unusable similarity is an ABSENT one, leaving the running maximum untouched.
+        // Presence is tracked SEPARATELY from magnitude: cosine similarity ranges over
+        // [-1, 1], so the value 0.0 cannot stand in for "no similarity term" — a candidate
+        // anti-similar to everything selected is the MOST diverse one there is, and must not
+        // score as though its vector were absent.
         var maxSim = new double[ranked.Count];
+        var hasSim = new bool[ranked.Count];
 
         // Step 1 of the mechanism: the highest-fused candidate is selected unconditionally.
         // `ranked` is fused-descending, so that is index 0.
@@ -174,7 +182,18 @@ public sealed class ResultDiversifier : IResultDiversifier
             {
                 if (taken[i]) continue;
 
-                var mmr = Lambda * ranked[i].Score - (1 - Lambda) * maxSim[i];
+                // Seed on the first untaken candidate so the scan is TOTAL. A NaN fused score
+                // is reachable (a NaN centroid — see Known issues — fuses to NaN) and loses
+                // every `>` comparison; without the seed, a tail of them would leave bestIndex
+                // at -1 and return FEWER results than Take(topK) does.
+                if (bestIndex < 0)
+                {
+                    bestIndex = i;
+                    bestScore = Mmr(i);
+                    continue;
+                }
+
+                var mmr = Mmr(i);
 
                 // Strict `>` keeps the EARLIER candidate on a tie, and `ranked` is
                 // fused-descending — the exactness of the all-absent guarantee rests on this.
@@ -185,11 +204,17 @@ public sealed class ResultDiversifier : IResultDiversifier
                 }
             }
 
-            if (bestIndex < 0) break;
+            if (bestIndex < 0) break;   // nothing untaken remains
             Select(bestIndex);
         }
 
         return selected;
+
+        // An absent similarity term contributes NO penalty — never a substituted 0.0.
+        double Mmr(int i) =>
+            hasSim[i]
+                ? Lambda * ranked[i].Score - (1 - Lambda) * maxSim[i]
+                : Lambda * ranked[i].Score;
 
         void Select(int index)
         {
@@ -216,7 +241,11 @@ public sealed class ResultDiversifier : IResultDiversifier
                 // reach the argmax, where every `>` comparison against it is false.
                 if (double.IsNaN(similarity)) continue;
 
-                if (similarity > maxSim[i]) maxSim[i] = similarity;
+                if (!hasSim[i] || similarity > maxSim[i])
+                {
+                    maxSim[i] = similarity;
+                    hasSim[i] = true;
+                }
             }
         }
     }
@@ -367,7 +396,7 @@ The loop body, the `byId` re-join and the fused `Score` are unchanged. Do **not*
 
 - [ ] **Step 3: Update the existing batching test.**
 
-`SearchChunks_BatchesCentroidRetrieve_ToDistinctParentIds` (`:2445`) stubs `RetrieveNamedVectorAsync` with `Arg.Any<string>()` for the collection, so it now intercepts **both** retrieves and its captured locals are overwritten by the second — `Received(1)`, `capturedIds.ContainSingle()`, `capturedCollection` and `capturedVectorName` all fail. Discriminate the two stubs by collection (`Arg.Is<string>(c => c == "articles_test-tenant")` for the parent-centroid retrieve, and a separate stub for the chunks collection), so the test continues to assert the parent-centroid retrieve's batching to distinct parent ids.
+`SearchChunks_BatchesCentroidRetrieve_ToDistinctParentIds` (`:2445`) stubs `RetrieveNamedVectorAsync` with `Arg.Any<string>()` for the collection, so it now intercepts **both** retrieves and its captured locals are overwritten by the second — `Received(1)`, `capturedIds.ContainSingle()`, `capturedCollection` and `capturedVectorName` all fail. Discriminate the two stubs by collection (`Arg.Is<string>(c => c == "articles_test-tenant")` for the parent-centroid retrieve, and a separate stub for the chunks collection), so the test continues to assert the parent-centroid retrieve's batching to distinct parent ids. Narrow the `Received(1)` assertion at `:2476-2477` the same way — it is written with `Arg.Any<string>()` for the collection and would otherwise count both retrieves and fail against 2 actual calls.
 
 Two neighbouring tests need **no** change and must not be "fixed": `SearchChunks_CentroidRetrieveThrows_KeepsRawCosineOrder` (`:2485`) throws for every retrieve, so both degrade and the fused order stands; `SearchChunks_WhenRerankPermutesOrder_...` (`:2575`) returns a map keyed by `KeyToUlong(parentGuid)` while the chunk ids are `1` and `2`, so every chunk-vector lookup misses, the diversity vectors are absent, and its assertions hold unchanged.
 
