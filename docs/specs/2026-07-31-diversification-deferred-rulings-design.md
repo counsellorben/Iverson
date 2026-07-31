@@ -90,11 +90,15 @@ verification rather than assumed: `ComputeCentroid` is `static` while `logger` i
 (`:38`), and the context the warning must name — `ev.TypeName`, `ev.Key`, the field — exists only at
 the call site (A16). A guard inside the function could not produce a useful log line.
 
-So the caller partitions the freshly embedded chunk vectors:
+So the caller partitions the freshly embedded chunk vectors **for the centroid computation only**:
 
 - Vectors with zero magnitude are excluded and logged once per event as a warning naming type, key,
   field, and how many were dropped.
 - `ComputeCentroid` is called with the survivors, and its result stored as today.
+- The chunk-point write loop (`:212-243`) is unchanged: every chunk is still upserted with its own
+  `<property>_vector`, degenerate ones included. Part 4b already handles a degenerate chunk vector on
+  the read side — `CosineSimilarity` returns `NaN` and the diversifier treats it as absent — so
+  dropping the chunk point would remove a retrievable passage for no gain.
 - If **no** vector survives, no `<field>_centroid` entry is added to the `centroids` dictionary at
   all. An absent centroid is a state part 3 already handles — `RetrieveNamedVectorAsync` omits points
   lacking the named vector, and `ResultReranker` treats a null centroid as an absent signal
@@ -138,7 +142,7 @@ why a missing vector is a free pass, plus the Known-issues entry below.
   still is. No existing test uses `TopK = 1` (A9), so this is new coverage rather than a change to
   an existing assertion.
 - **§3** — the caller drops a zero-magnitude vector and still stores a centroid from the survivors;
-  an all-degenerate field stores no centroid entry at all; and the two existing `ComputeCentroid`
+  an all-degenerate field stores no centroid entry at all (while still writing its chunk points); and the two existing `ComputeCentroid`
   tests continue to pass unchanged, since neither supplies a degenerate vector (A14).
 
 ## Verified assumptions
@@ -168,6 +172,8 @@ design, then checked — the enumeration is what surfaced A16, which changed §3
 | A18 | Both suites pass on `main@d6f4ff2` as a baseline | Run directly on the merged tree: `Iverson.Vector.Tests` 120/120, `Iverson.Api.Tests` 574/574, build 0 errors |
 | A19 | No warnings-as-errors setting would turn a nullable warning into a build break | Neither `Iverson.Api.csproj` nor `Iverson.Api.Tests.csproj` sets `TreatWarningsAsErrors` or `WarningsAsErrors`; no `Directory.Build.props` exists. Recorded because it bounds A15's consequence to warnings rather than failures |
 | A20 | *(Recurrence)* Every symbol this design renames or changes has had its consumers swept: `FetchCentroidsAsync` (A1), `EmptyCentroids` (A2), `ComputeCentroid` (A10) | Each swept by name across all `.cs` outside `obj/`. Method and field references are reliably found by name grep — unlike the constructor case that bit part 4b, where target-typed `new(` hid a call site from a `new TypeName(` pattern. No symbol here is a constructor |
+| A21 | `ComputeCentroid` throws on an empty input list, so the caller must check before calling rather than call-then-check | `IntelligenceStoreConsumer.cs:370` opens with `var dims = vectors[0].Length;`, which raises `IndexOutOfRangeException` on an empty list |
+| A22 | The pool `Diversify` sees has the same count as `results`, so §2's gate tests the right quantity | `ObjectSearchGrpcService.cs:417-425` builds `candidates` one-to-one from `results`; `Rerank` returns one `RerankedResult` per candidate; `.Select(...).ToList()` at `:428-433` preserves the count |
 
 ## Known issues
 
