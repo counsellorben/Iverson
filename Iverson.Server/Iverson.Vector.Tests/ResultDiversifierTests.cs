@@ -122,16 +122,20 @@ public sealed class ResultDiversifierTests
     [Fact]
     public void Diversify_NaNFusedScoreInPool_ReturnsExactlyMinTopKAndPoolCount()
     {
+        // NaN placed LAST: Diversify's precondition is a fused-descending pool, and Rerank's
+        // OrderByDescending(r => r.FusedScore) uses Comparer<double>.Default, which sorts NaN
+        // as smaller than every real value -- so a NaN candidate is always at the tail of any
+        // pool production actually hands to Diversify.
         var candidates = new[]
         {
             new DiversifyCandidate(1, Score: 1.0, DiversityVector: null),
-            new DiversifyCandidate(2, Score: double.NaN, DiversityVector: null),
-            new DiversifyCandidate(3, Score: 0.5, DiversityVector: null)
+            new DiversifyCandidate(3, Score: 0.5, DiversityVector: null),
+            new DiversifyCandidate(2, Score: double.NaN, DiversityVector: null)
         };
 
         var results = _diversifier.Diversify(candidates, topK: 3);
 
-        results.Select(r => r.Id).Should().Equal(1UL, 2UL, 3UL);
+        results.Select(r => r.Id).Should().Equal(1UL, 3UL, 2UL);
     }
 
     [Fact]
