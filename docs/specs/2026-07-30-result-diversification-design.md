@@ -33,9 +33,12 @@ Cross-corpus k-means is the most expensive item remaining on the initiative, and
 its required decisions (k, recomputation trigger, staleness tolerance) is a tuning choice with
 no obvious right answer and no way to calibrate against a problem that has not been measured.
 Diversification does not require it. Greedy maximal marginal relevance over the candidate pool
-part 3 *already over-fetches*, scored against the centroids part 3 *already retrieves*,
-delivers cross-document topical diversity with no new I/O, no batch job, no k, and nothing
-that can go stale.
+part 3 *already over-fetches* delivers topical diversity with no batch job, no k, and nothing
+that can go stale — the properties that make cluster centroids expensive.
+
+For `SearchSimilar` it also needs no new I/O at all, scoring against the object centroids part 3
+already retrieves. For `SearchChunks` it needs one additional retrieve; §2 explains why the
+free vector is the wrong one there.
 
 Cluster centroids remain available as a later spec if diversification proves valuable and
 corpus structure is wanted for its own sake. Nothing here forecloses them.
@@ -85,16 +88,37 @@ against the whole selected set. This is the standard efficient form of greedy MM
 
 ### 2. The diversity vector
 
-No new I/O. Both RPCs already resolve exactly the vector this needs, for part 3's centroid
-signal, and it is reused unchanged:
+**The diversity vector must live at the same granularity as the thing being returned.** The two
+RPCs return different kinds of entry, so they resolve it differently — this is the one place the
+two paths genuinely diverge, and the divergence is load-bearing rather than incidental.
 
-- **`SearchChunks`** — the candidate's **parent** centroid, already resolved per candidate at
-  `ObjectSearchGrpcService.cs:386-388` from a map batched over distinct parent ids. Chunks
-  sharing a parent share a centroid, so their mutual cosine is 1.0 and they suppress one
-  another strongly. Same-document crowding is therefore reduced as a side effect, which is why
-  no separate per-parent cap is specified.
-- **`SearchSimilar`** — the candidate object's own `<property>_centroid`, already resolved at
-  `:246-250`, fetched only when the searched property is both embedded and chunked.
+- **`SearchSimilar`** — the candidate object's own `<property>_centroid`, already resolved for
+  part 3's centroid signal at `ObjectSearchGrpcService.cs:246-250` and reused unchanged. The
+  entries are objects and the centroid summarizes an object, so the granularity already matches
+  and no new I/O is required.
+
+- **`SearchChunks`** — the candidate chunk's **own vector**, fetched by a second retrieve
+  against the **chunks** collection under `<property>_vector` for the over-fetched candidate ids.
+
+  The parent centroid part 3 already has in hand is *not* usable here. Its granularity is the
+  document, but the entries are passages, and the mismatch fails in both directions: two
+  genuinely distinct passages from one document share a parent centroid exactly, drawing the
+  maximum `cos = 1.0` penalty and letting the single most relevant document contribute only one
+  passage; while two near-duplicate passages sitting in topically different documents draw a low
+  penalty and are not suppressed at all — which is precisely the redundancy a RAG consumer reads.
+  The chunk's own vector is the quantity the Goal names.
+
+  The chunk vector is exactly what Qdrant matched the query against, so a cosine between two of
+  them is true passage-level similarity. The named vector exists and carries this name:
+  `SchemaBuilder.ToChunkCollectionSchema` declares `<property>_vector` per chunk field
+  (`SchemaBuilder.cs:213`) and the consumer writes the chunk under that name
+  (`IntelligenceStoreConsumer.cs:238-242`) — the same name `SearchChunks` already passes to
+  `SearchNamedAsync`.
+
+  Consequence to be explicit about: chunks sharing a parent are no longer suppressed
+  automatically. They are suppressed exactly to the extent their passages are actually similar,
+  which is the intended behavior — a long document's three distinct sections can all surface when
+  all three answer the question.
 
 ### 3. The contract
 
@@ -127,10 +151,35 @@ Two deliberate choices:
 
 ### 4. Composition with part 3
 
-The diversifier runs immediately after `Rerank`, consuming its output and replacing
-`.Take((int)topK)` at `ObjectSearchGrpcService.cs:254` and `:395`. Re-ranking itself is
-untouched: the score returned to the client remains the fused score, and the re-join from
-selected id back to the originating search result is unchanged.
+The diversifier runs immediately after `Rerank`, replacing `.Take((int)topK)` at
+`ObjectSearchGrpcService.cs:254` and `:395`. Re-ranking itself is untouched: the score returned
+to the client remains the fused score, and the re-join from selected id back to the originating
+search result is unchanged.
+
+`Rerank` returns `RerankedResult(Id, FusedScore)`, which does not carry a vector, so each call
+site pairs the ranked ids with their diversity vectors by id before calling `Diversify`. For
+`SearchSimilar` that vector is the one already held in `RerankCandidate.Centroid`; for
+`SearchChunks` it comes from the chunk-vector map described below, **not** from
+`RerankCandidate.Centroid`, which remains the parent centroid and continues to serve part 3's
+re-rank signal unchanged.
+
+**`SearchChunks` acquires its diversity vectors with a second retrieve**, after the search and
+alongside part 3's existing parent-centroid retrieve:
+
+```
+RetrieveNamedVectorAsync(chunksCollection, candidateIds, "<property>_vector")
+```
+
+inside its own `RequestHeaders.Use("api-key", tenantScope.MintScopedApiKey(chunksCollection, readOnly: true))`
+scope, matching the sequential-scope pattern the file already uses. The collection and vector
+name are the ones the search itself just used; the ids are the candidates' own. The two
+retrieves address different collections and serve different signals, and neither is a
+substitute for the other.
+
+**If the chunk-vector retrieve throws, log and continue with every diversity vector absent** —
+selection degrades to the fused order, exactly as §5 specifies for absent vectors. A failed
+diversification must never fail a search, matching part 3's treatment of a failed centroid
+retrieve.
 
 **Part 3's over-fetch gate stays correct as written.** It fetches `1 × topK` only when
 `!centroidPossible && decayField is null` (`:213`). MMR can only ever act when a diversity
@@ -155,9 +204,11 @@ established empirically rather than from documentation — see the verified-assu
 - **Differing vector lengths throw `ArgumentException`.** Length equality must therefore be
   checked *before* calling `TensorPrimitives.CosineSimilarity`, as part 3 does at
   `ResultReranker.cs:20`. A mismatched pair is treated as having no similarity term. In practice
-  two centroids from the same collection under the same vector name cannot differ in length,
-  so this guard is defensive rather than load-bearing — but the failure mode it prevents is a
-  500 on a search request, not a mis-ordering.
+  both compared vectors come from one collection under one vector name — object centroids for
+  `SearchSimilar`, chunk vectors for `SearchChunks` — and Qdrant fixes a named vector's dimension
+  at the collection level, so they cannot differ in length. The guard is therefore defensive
+  rather than load-bearing — but the failure mode it prevents is a 500 on a search request,
+  not a mis-ordering.
 - **A zero-magnitude vector returns `NaN`.** A `NaN` similarity is treated as absent. Left
   unguarded, a `NaN` reaching a hand-rolled forward argmax is selected when it appears first in
   iteration order, because every `>` comparison against it is false.
@@ -194,11 +245,17 @@ Formula and selection, in `Iverson.Vector.Tests`:
 
 Service level, in `Iverson.Api.Tests`:
 
-- `SearchChunks` — several chunks sharing one parent are suppressed relative to a chunk with a
-  distinct parent, and exactly `topK` results are streamed;
-- `SearchSimilar` — diversification applies on a dual-annotated property, and on an
-  embedding-only property the results are unchanged from the fused order;
-- neither RPC issues any additional retrieve call as a result of diversification.
+- `SearchChunks` — the diversity vectors come from a retrieve against the **chunks** collection
+  under `<property>_vector`, distinct from part 3's parent-centroid retrieve against the object
+  collection; both retrieves occur, addressing different collections;
+- `SearchChunks` — two near-identical chunks are suppressed relative to a dissimilar one **even
+  when all three share a parent**, and two dissimilar chunks sharing a parent are *not*
+  suppressed — the pair of cases that distinguishes chunk-level from parent-level diversity;
+- `SearchChunks` — the chunk-vector retrieve throwing leaves the results in fused order rather
+  than failing the call, and exactly `topK` results are streamed;
+- `SearchSimilar` — diversification applies on a dual-annotated property, on an embedding-only
+  property the results are unchanged from the fused order, and **no** additional retrieve is
+  issued beyond part 3's existing centroid fetch.
 
 ## Verified assumptions
 
@@ -210,13 +267,14 @@ Verified against the codebase at `main@5834131` before this spec was written.
 | A2 | The fused score shares a numeric scale with cosine similarity, so one λ blend is meaningful | `ResultReranker.cs:35-51` — weighted mean of a Qdrant cosine, a centroid cosine and a decay in `[0,1]` |
 | A3 | **Corrected during verification.** `TensorPrimitives.CosineSimilarity` returns `NaN` for a zero-magnitude vector but **throws `ArgumentException`** for differing lengths and for two empty spans | Executed directly against `System.Numerics.Tensors` 10.0.10 in a scratch xUnit probe. The design originally assumed both cases yielded `NaN`; they do not, and they need different handling |
 | A3b | A `NaN` reaching a naive forward argmax is selected when it appears first; LINQ `MaxBy` and `OrderByDescending` treat `NaN` as smallest | Same probe: `NaN`-first forward scan returned the `NaN` index; `MaxBy` returned the true maximum |
-| A4 | `SearchChunks` already resolves each candidate's parent centroid at the point selection happens | `ObjectSearchGrpcService.cs:386-388`, from the distinct-parent-id map built at `:366-379` |
+| A4 | `SearchChunks` already resolves each candidate's parent centroid at the point selection happens. **Scope note:** this covers part 3's re-rank signal only — §2 establishes that the parent centroid is the wrong granularity to use as `SearchChunks`' diversity vector, which A11 covers instead | `ObjectSearchGrpcService.cs:386-388`, from the distinct-parent-id map built at `:366-379` |
 | A5 | `SearchSimilar` already resolves each candidate's own centroid, keyed by candidate id | `ObjectSearchGrpcService.cs:246-250` |
 | A6 | A stored centroid can in principle be degenerate: `ComputeCentroid` divides by each chunk vector's magnitude with no zero guard | `IntelligenceStoreConsumer.cs:375-381`. See "Out of scope, but known" — not fixed here |
 | A7 | Part 3's over-fetch gate remains correct with MMR added: MMR needs `centroidPossible`, which already forces the `4 ×` branch | `ObjectSearchGrpcService.cs:213`; `SearchChunks` never gates, `:341-345` |
 | A8 | The re-ranker's DI registration site takes a sibling singleton, and cross-assembly types must be `public` | `ServiceCollectionExtensions.cs:50`; `Iverson.Vector.csproj:10-12` names only `Iverson.Vector.Tests` |
-| A9 | No existing test depends on trim or ordering behaviour in a way MMR breaks | `ObjectSearchGrpcServiceTests.cs:2333` supplies an empty centroid map, so MMR no-ops; `:2575`'s two centroids are orthogonal, giving a zero penalty either way. Both still pass |
-| A10 | *(Recurrence)* Every requirement above holds for **both** RPCs — diversity-vector source, degradation path, and an exactly-`topK` streaming test | A4 and A5 for the vector source; A7 for the pool; `ObjectSearchGrpcServiceTests.cs:2333` and `:2421` for the streaming tests |
+| A9 | No existing test depends on trim or ordering behaviour in a way MMR breaks | Every test reaching the selection step was checked, not a sample: `ObjectSearchGrpcServiceTests.cs:2333` and `:2445` supply empty centroid maps, so MMR no-ops; `:2485` throws; `:2362`, `:2394` and `:2515` fetch no centroids at all; `:2421` leaves the retrieve unstubbed; `:2540` has a non-empty map but a **single** result, making selection trivial; `:2575`'s two centroids are mutually orthogonal, giving a zero penalty either way. All still pass |
+| A10 | *(Recurrence)* Every requirement above holds for **both** RPCs — diversity-vector source, degradation path, and an exactly-`topK` streaming test | A5 and A11 for the vector source; A7 for the pool; `ObjectSearchGrpcServiceTests.cs:2333` and `:2421` for the streaming tests |
+| A11 | Chunk points carry a named vector `<property>_vector` in the chunks collection, retrievable by point id — the vector `SearchChunks`' diversity signal requires | `SchemaBuilder.cs:213` declares one `NamedVector($"{c.PropertyName.ToSnakeCase()}_vector", c.Dimension)` per chunk field on the `_chunks` collection; `IntelligenceStoreConsumer.cs:238-242` upserts each chunk under exactly that name. It is the same name `SearchChunks` already passes to `SearchNamedAsync` (`ObjectSearchGrpcService.cs:352`), and `RetrieveNamedVectorAsync` (A1's sibling, part 3 Task 1) is collection-agnostic |
 
 ## Out of scope, but known
 
@@ -246,6 +304,12 @@ accepted its uncapped `4N` fetch: the cost is proportional to what the caller ex
 for, and clamping it would be a silent behaviour change. If it ever bites, the fix is a
 threshold above which diversification is skipped — not a cap on `top_k`.
 
+**`SearchChunks` gains a second Qdrant round trip per search.** The chunk-vector retrieve (§4)
+is an additional call over `4 × top_k` ids, on top of part 3's parent-centroid retrieve. It is
+what buys passage-level diversity rather than document-level, and it is paged by the same
+batching `RetrieveNamedVectorAsync` already applies. `SearchSimilar` is unaffected and still
+issues no retrieve beyond part 3's.
+
 **λ is uncalibrated.** 0.70 is a reasonable default from the MMR literature, not a value tuned
 against this corpus, and the motivating problem has not been measured. λ is a compile-time
 constant precisely so it can be revised centrally once there is evidence to revise it against.
@@ -254,8 +318,10 @@ constant precisely so it can be revised centrally once there is evidence to revi
 
 - **Cross-corpus cluster centroids.** Deferred by 4a and still deferred; see Context above.
 - **Topic discovery / corpus browsing.** Would need the cluster artifact this spec does not build.
-- **A per-parent hard cap.** Subsumed: same-parent chunks share a centroid and suppress one
-  another through the ordinary similarity term.
+- **A per-parent hard cap.** Not included. With chunk-level diversity vectors (§2), same-parent
+  chunks are no longer suppressed merely for sharing a parent — only for actually resembling one
+  another, which is the intended behavior. If same-document crowding turns out to need a hard
+  limit independent of passage similarity, that is a separate decision on measured evidence.
 - **Caller-supplied λ or a per-request opt-out.** Fixed server-side constants, per part 3.
 - **The DSL `Search` path and `VECTOR_SIMILAR` clauses.** Scope is `SearchChunks` and
   `SearchSimilar`, matching part 3.
