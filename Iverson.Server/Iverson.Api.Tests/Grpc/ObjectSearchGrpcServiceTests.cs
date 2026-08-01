@@ -2779,6 +2779,40 @@ public class ObjectSearchGrpcServiceTests
         written.Should().HaveCount(2);
     }
 
+    // With topK = 1, MMR's selection loop never runs, so the chunk-vector retrieve provably cannot
+    // change the returned set or its order — it is skipped. The parent-centroid retrieve still
+    // fires, because it feeds the fused score that decides WHICH single chunk wins.
+    [Fact]
+    public async Task SearchChunks_TopKOne_SkipsChunkVectorRetrieveButStillFetchesParentCentroids()
+    {
+        await _registry.RegisterAsync(SchemaFixtures.ArticleSchema());
+
+        var fakeVector = UnitVector();
+        _embedding.EmbedAsync("q", Arg.Any<CancellationToken>()).Returns(fakeVector);
+
+        var parent = Guid.NewGuid().ToString();
+        var results = new List<VectorSearchResult>
+        {
+            new(1, 0.90, new Dictionary<string, string> { ["text"] = "c1", ["parent_id"] = parent }),
+            new(2, 0.80, new Dictionary<string, string> { ["text"] = "c2", ["parent_id"] = parent }),
+        };
+        _vector.SearchNamedAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<float[]>(), Arg.Any<ulong>(), Arg.Any<Filter>())
+               .Returns(results.AsReadOnly());
+        _vector.RetrieveNamedVectorAsync(Arg.Any<string>(), Arg.Any<IReadOnlyList<ulong>>(), Arg.Any<string>())
+               .Returns((IReadOnlyDictionary<ulong, float[]>)new Dictionary<ulong, float[]>());
+
+        var (writer, written) = MakeStream<ChunkSearchResponse>();
+        await _sut.SearchChunks(
+            new SearchChunksRequest { TypeName = "Article", Property = "Body", Query = "q", TopK = 1 },
+            writer, TestServerCallContext.Create());
+
+        await _vector.Received(1).RetrieveNamedVectorAsync(
+            "articles_test-tenant", Arg.Any<IReadOnlyList<ulong>>(), "body_centroid");
+        await _vector.DidNotReceive().RetrieveNamedVectorAsync(
+            "articles_chunks_test-tenant", Arg.Any<IReadOnlyList<ulong>>(), Arg.Any<string>());
+        written.Should().HaveCount(1);
+    }
+
     // Three chunks share ONE parent, so a parent-level diversity signal (identical centroid for
     // all three) cannot distinguish them at all — whichever ranks second by fused score would be
     // picked mechanically, with no actual diversity effect. Chunk-level vectors tell a different

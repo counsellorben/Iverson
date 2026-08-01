@@ -232,14 +232,15 @@ public sealed class ObjectSearchGrpcService(
 
         // No centroid vector to fetch when the property is not chunked — skip the round trip
         // entirely and let every candidate's centroid be absent.
-        var centroids = EmptyCentroids;
+        var centroids = EmptyVectors;
         if (results.Count > 0 && centroidPossible)
         {
-            centroids = await FetchCentroidsAsync(
+            centroids = await RetrieveVectorsOrDegradeAsync(
                 collectionName,
                 results.Select(r => r.Id).ToList(),
                 vectorDesc.PropertyName.ToSnakeCase() + "_centroid",
-                "SearchSimilar");
+                "SearchSimilar",
+                "re-ranking without the centroid signal");
         }
 
         var now = DateTimeOffset.UtcNow;
@@ -252,6 +253,10 @@ public sealed class ObjectSearchGrpcService(
 
         var byId = ResultsById(results);
 
+        // A candidate whose diversity vector is ABSENT contributes no similarity term and so takes
+        // no penalty, which means it outranks an otherwise-equal candidate that has a vector and
+        // any positive similarity. Accepted by design: substituting a value would break the
+        // bit-exact Take(topK) degradation guarantee. See the design spec's Known issues.
         var diversityCandidates = reranker.Rerank(queryVector, candidates)
             .Select(r => new DiversifyCandidate(
                 r.Id,
@@ -378,37 +383,30 @@ public sealed class ObjectSearchGrpcService(
             .Distinct()
             .ToList();
 
-        var centroids = parentIds.Count > 0
-            ? await FetchCentroidsAsync(
-                tenantScope.ResolveCollectionName(schema.CollectionName, decision.TenantValue, isChunks: false),
-                parentIds,
-                chunkDesc.PropertyName.ToSnakeCase() + "_centroid",
-                "SearchChunks")
-            : EmptyCentroids;
+        var centroids = await RetrieveVectorsOrDegradeAsync(
+            tenantScope.ResolveCollectionName(schema.CollectionName, decision.TenantValue, isChunks: false),
+            parentIds,
+            chunkDesc.PropertyName.ToSnakeCase() + "_centroid",
+            "SearchChunks",
+            "re-ranking without the centroid signal");
 
         // The DIVERSITY vector for a chunk is the chunk's OWN vector — the same representation
-        // Qdrant matched the query against — not its parent centroid, which is the re-rank
-        // signal above and lives at document granularity. Distinct collections, distinct
-        // signals; neither substitutes for the other. A failure here degrades selection to
-        // the fused order rather than failing the search.
-        var chunkVectors = EmptyCentroids;
-        if (results.Count > 0)
+        // Qdrant matched the query against — not its parent centroid, which is the re-rank signal
+        // above and lives at document granularity. Distinct collections, distinct signals.
+        //
+        // Skipped when diversification provably cannot act: MMR reads a diversity vector only
+        // inside the selection loop, which runs only when Math.Min(topK, pool) >= 2. Below that the
+        // retrieve cannot change the returned set OR its order. Deliberately NOT gated on
+        // pool > topK — MMR reorders even when the pool is exactly topK.
+        var chunkVectors = EmptyVectors;
+        if (results.Count > 1 && topK > 1)
         {
-            try
-            {
-                using (RequestHeaders.Use("api-key", tenantScope.MintScopedApiKey(chunksCollection, readOnly: true)))
-                    chunkVectors = await vector.RetrieveNamedVectorAsync(
-                        chunksCollection, results.Select(r => r.Id).ToList(), vectorName);
-            }
-            catch (Exception ex) when (ex is not OperationCanceledException)
-            {
-                logger.LogWarning(
-                    ex,
-                    "[SearchChunks] chunk-vector retrieve failed (collection={Collection} vector={Vector} ids={Count}); " +
-                    "selecting without the diversity signal.",
-                    chunksCollection.SanitizeForLog(), vectorName.SanitizeForLog(), results.Count);
-                chunkVectors = EmptyCentroids;
-            }
+            chunkVectors = await RetrieveVectorsOrDegradeAsync(
+                chunksCollection,
+                results.Select(r => r.Id).ToList(),
+                vectorName,
+                "SearchChunks",
+                "selecting without the diversity signal");
         }
 
         var decayField = DecayFieldResolver.ResolveDecayField(schema, logger);
@@ -425,6 +423,10 @@ public sealed class ObjectSearchGrpcService(
 
         var byId = ResultsById(results);
 
+        // A candidate whose diversity vector is ABSENT contributes no similarity term and so takes
+        // no penalty, which means it outranks an otherwise-equal candidate that has a vector and
+        // any positive similarity. Accepted by design: substituting a value would break the
+        // bit-exact Take(topK) degradation guarantee. See the design spec's Known issues.
         var diversityCandidates = reranker.Rerank(queryVector, candidates)
             .Select(r => new DiversifyCandidate(
                 r.Id,
@@ -679,32 +681,31 @@ public sealed class ObjectSearchGrpcService(
     /// </summary>
     private const ulong OverFetchFactor = 4;
 
-    private static readonly IReadOnlyDictionary<ulong, float[]> EmptyCentroids =
+    private static readonly IReadOnlyDictionary<ulong, float[]> EmptyVectors =
         new Dictionary<ulong, float[]>();
 
     /// <summary>
-    /// Fetches parent/object centroids under their own scoped api-key. A failure here degrades
-    /// the ranking rather than failing the search: every centroid becomes ABSENT (never a
-    /// substituted neutral value), leaving raw-cosine ordering.
+    /// Retrieves a named vector for a set of point ids under its own scoped api-key. A failure here
+    /// degrades the ranking rather than failing the search: every vector becomes ABSENT (never a
+    /// substituted neutral value). The caller names the consequence so the log stays specific.
     /// </summary>
-    private async Task<IReadOnlyDictionary<ulong, float[]>> FetchCentroidsAsync(
-        string objectCollection, IReadOnlyList<ulong> ids, string centroidVectorName, string rpcName)
+    private async Task<IReadOnlyDictionary<ulong, float[]>> RetrieveVectorsOrDegradeAsync(
+        string collection, IReadOnlyList<ulong> ids, string vectorName, string rpcName, string consequence)
     {
-        if (ids.Count == 0) return EmptyCentroids;
+        if (ids.Count == 0) return EmptyVectors;
 
         try
         {
-            using (RequestHeaders.Use("api-key", tenantScope.MintScopedApiKey(objectCollection, readOnly: true)))
-                return await vector.RetrieveNamedVectorAsync(objectCollection, ids, centroidVectorName);
+            using (RequestHeaders.Use("api-key", tenantScope.MintScopedApiKey(collection, readOnly: true)))
+                return await vector.RetrieveNamedVectorAsync(collection, ids, vectorName);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             logger.LogWarning(
                 ex,
-                "[{Rpc}] centroid retrieve failed (collection={Collection} vector={Vector} ids={Count}); " +
-                "re-ranking without the centroid signal.",
-                rpcName, objectCollection.SanitizeForLog(), centroidVectorName.SanitizeForLog(), ids.Count);
-            return EmptyCentroids;
+                "[{Rpc}] retrieve failed (collection={Collection} vector={Vector} ids={Count}); {Consequence}.",
+                rpcName, collection.SanitizeForLog(), vectorName.SanitizeForLog(), ids.Count, consequence);
+            return EmptyVectors;
         }
     }
 
