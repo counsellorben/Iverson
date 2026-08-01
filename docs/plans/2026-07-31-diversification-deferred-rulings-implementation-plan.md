@@ -67,6 +67,7 @@ Newly introduced by this plan and verified at plan-write time against `main@91d5
 | P13 | Consumer impact **(shape-changing — see Task 2 Step 1)** | The consumer tests' embedding stub returns a **zero vector**, so Task 2's filter would drop every chunk vector and write no centroid, failing five existing assertions | `IntelligenceStoreConsumerTests.cs:64` — `.Returns(new float[768])`; further zero-vector fixtures at `:103`, `:578`, `:1166`. Five tests assert `body_centroid` presence: `:1449`, `:1491`, `:1551`, `:1617`, `:1680`. **Consequence worth recording:** today those tests store an all-`NaN` centroid (`0/0` per component) and pass anyway, because they assert only key presence and never the values — the suite has been exercising the exact failure §3 exists to prevent |
 | P14 | Consumer impact | Repairing those fixtures is safe — no test asserts vector contents | All four `new float[768]` occurrences are stub return values (`:64`, `:103`, `:578`, `:1166`); none is compared component-wise anywhere in the file |
 | P15 | Consumer impact *(sibling sweep — every existing test that depends on the chunk-vector retrieve firing)* | All satisfy the new gate `results.Count > 1 && topK > 1`, so §2 breaks none of them | `SearchChunks_BatchesCentroidRetrieve_ToDistinctParentIds` (`:2559`): 3 results, `TopK = 5`. `SearchChunks_SuppressesNearDuplicatePassage_…` (`:2804`): 3 results, `TopK = 2`. `SearchChunks_ChunkVectorRetrieveThrows_…` (`:2856`): 5 results, `TopK = 3` |
+| P16 | Consumer impact | The block gated on `centroids.Count > 0` also **creates the object point** for chunk-only types, so making the centroid write conditional has a second effect beyond omitting a vector | `IntelligenceStoreConsumer.cs:267` gates the block; `:286-293` is the `UpsertNamedAsync` fallback carrying `BuildObjectPointPayload(...)`; `objectPointWritten` is set only at `:150`, inside the plain-`[IversonEmbedding]` path, so it is `false` for a chunk-only type |
 
 ## Tasks
 
@@ -220,6 +221,13 @@ Run the suite before moving on and confirm it is green — this establishes that
 
                     // No centroid at all when nothing survives — an ABSENT centroid is a state part 3
                     // handles; a NaN one is not. ComputeCentroid would also throw on an empty list.
+                    //
+                    // Consequence, accepted deliberately: the centroid-write block below is gated on
+                    // `centroids.Count > 0`, and for a chunk-only type that block is ALSO what creates
+                    // the object point and its payload (:286-293; objectPointWritten is set only in the
+                    // plain-[IversonEmbedding] path at :150). So an entity whose every chunk vector is
+                    // degenerate now gets no object point at all, where before it got one carrying a
+                    // NaN centroid. Such an entity has no usable vector content either way.
                     if (centroidInput.Count > 0)
                         centroids[$"{cf.PropertyName.ToSnakeCase()}_centroid"] = ComputeCentroid(centroidInput);
 ```
@@ -249,7 +257,7 @@ That reasoning is about the input **text**; the failure mode is the embedding **
 - [ ] **Step 5: Add the degenerate-vector tests** to `IntelligenceStoreConsumerTests.cs`:
 
 - one degenerate chunk vector among several is dropped from the centroid, and a centroid is still written from the survivors;
-- when **every** chunk vector is degenerate, no `<field>_centroid` entry is written — **and the chunk points are still upserted**, one per chunk;
+- when **every** chunk vector is degenerate, no `<field>_centroid` entry is written — **and the chunk points are still upserted**, one per chunk. For a chunk-only type this also means **no object point is written** (P16); assert that explicitly rather than leaving it implied, since it is the behaviour change this task accepts;
 - the two existing `ComputeCentroid` tests (`:1400`, `:1412`) continue to pass unchanged.
 
 - [ ] **Step 6: Build and test.**
@@ -278,5 +286,7 @@ Inherited from the spec's "Not in this spec". A new spec → new plan cycle is r
 ## Known issues inherited from spec
 
 **The absent-vector bias is accepted by construction.** As §4 sets out, a candidate whose diversity vector is missing takes no penalty and therefore outranks an otherwise-equal candidate that has a vector and any positive similarity. In a partially-populated chunks collection this quietly favours the un-vectorised points. Both available cures are worse: substituting a value contradicts part 4b's "an absent signal is never replaced" rule and breaks its bit-for-bit `Take(topK)` guarantee, and discarding all diversity whenever any vector is missing throws away a good signal over one bad point. Ben was shown the three options and chose to document rather than code. Worth revisiting only if partial chunk-vector maps are ever observed in production.
+
+**A chunk-only entity with an entirely degenerate embedding now produces no object point.** Introduced by this plan, not inherited from the spec, and accepted knowingly. The centroid-write block is gated on `centroids.Count > 0` and, for a type whose only vector content is chunk fields, that same block is what creates the object point and its payload (`IntelligenceStoreConsumer.cs:286-293`; `objectPointWritten` is set only in the plain-`[IversonEmbedding]` path at `:150`). With every chunk vector degenerate the dictionary is empty, so the block does not run and no object point is written — where previously one was written carrying a `NaN` centroid. Such an entity has no usable vector content under either behaviour, so the practical loss is the object point's metadata payload. Preserving the point would mean decoupling its creation from centroid presence, which is a larger restructure of code this plan does not otherwise touch and which rests on whether `UpsertNamedAsync` accepts an empty named-vector map — unverified. Ben was shown both shapes and chose to document.
 
 **No backfill for already-stored `NaN` centroids.** §3 stops new degenerate centroids from being written but does nothing about any already in Qdrant. For one to exist, the embedding model must have returned an exact zero vector for non-blank text, so there is most likely nothing to backfill — but this could not be verified without querying a live Qdrant instance, so it is stated as a limit rather than claimed as clean. If a document is ever found sitting at the bottom of every result set for no apparent reason, this is the first thing to check.
