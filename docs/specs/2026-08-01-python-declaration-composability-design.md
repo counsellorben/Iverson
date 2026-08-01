@@ -26,8 +26,11 @@ one combination, treating the instance rather than the axis:
 3. Python's three enrichment declarations as kinds — fixed 2026-07-28 (`6c3a1d9`) by adding
    `summary`/`keywords`/`extract_hint` kwargs to four factories.
 4. **Open, and the subject of this spec:** `kind` is still the composition axis, so
-   `large_field`+`chunk`, `large_field`+`metadata`, `chunk`/`embedding`+`metadata`, and
-   `metadata`+`tenant` remain inexpressible in Python while the proto and .NET allow them.
+   `large_field`+`chunk` and `metadata`+`tenant` remain inexpressible in Python while the
+   proto, .NET, and the server all permit them. Two further combinations —
+   `large_field`+`metadata` and `chunk`/`embedding`+`metadata` — are equally inexpressible,
+   but the server rejects them (`SchemaBuilder.cs:94`, `:123-126`), so `kind` has been
+   enforcing a real server rule by accident. See Known issues.
 
 The pattern is structural, not incidental: a Python `FieldMeta` *is* the attribute's default value,
 so a field carries exactly one, and composability exists only where a flag is *also* exposed as a
@@ -164,8 +167,10 @@ neither needs an edit. This also makes the change directly assertable against `_
 Every composition test asserts **both** halves. A one-sided test lets the other declaration be
 silently dropped, which is how instance 3 survived its own test suite.
 
-- The four previously-inexpressible combinations: `large_field`+`chunk`, `large_field`+`metadata`,
-  `chunk`/`embedding`+`metadata`, `metadata`+`tenant`.
+- The two previously-inexpressible legal combinations: `large_field`+`chunk` and
+  `metadata`+`tenant`. No composition test is written for `large_field`+`metadata` or
+  `chunk`/`embedding`+`metadata` — the server rejects both, so a client-side test asserting
+  on `_iverson_meta` would pass while encoding a capability that can never register.
 - `plain_fields` contains each field exactly once under a multi-flag declaration (guards §5's
   known hazard).
 - The blank-hint guard still rejects `None` and blank-but-non-empty hints, and still accepts `""`.
@@ -205,15 +210,23 @@ Verified against `main@4522745`. Baseline: `python3 -m pytest tests/ -q` → **1
 | A15 | `_resolve_tenant_field` is unaffected | `core.py:204` takes `list[str]`; unchanged |
 | A16 | *(dependents)* Nothing assumes exactly-one-set membership | `core.py:156-179` tests each set independently |
 | A17 | A description-only field still reaches `plain_fields` | Today via `kind="plain"` → terminal `else`; under the new model via the unconditional append |
+| A18 | *(span-check gap, added round 1)* The target combinations' legality at the server | `SchemaBuilder.cs:94`, `:123-126` reject `metadata` + embedding/chunk/array/large_field, so `large_field`+`metadata` and `chunk`/`embedding`+`metadata` are illegal. `large_field`+`chunk` is legal (`:40` — `largeFields` is a `HashSet`; no rule pairs them); `metadata`+`tenant` is legal (`tenant` maps to `TypeDescriptor.TenantField`, not a property bool) |
 
 ## Known issues / accepted as out of scope
 
-**Combinations the server rejects become expressible.** `kind` was accidentally blocking some of
-them — e.g. an enrichment target that is also a chunk or embedding. The server rejects these with a
-clear `InvalidArgument` (`SchemaRegistrationOrchestratorTests.cs:316`, and key/tenant-as-enrichment-target
-at `:301`), so the failure stays loud and immediate. Client-side validation is deliberately **not**
-added: it would duplicate the server's rules in a fifth place, and nothing is literally wrong
-without it. Ben accepted this.
+**Removing `kind` gives up an accidental enforcement, and that regression is accepted.** Because
+`metadata` is currently a `kind`, Python cannot express `metadata` together with
+`embedding`/`chunk`/`large_field` — which is exactly what the server rejects at
+`SchemaBuilder.cs:94`, `:123-126`. Python has therefore been satisfying that rule by construction,
+for free, and will stop once `kind` is gone. The same applies to combinations the server rejects
+elsewhere, e.g. an enrichment target that is also a chunk or embedding
+(`SchemaRegistrationOrchestratorTests.cs:316`, and key/tenant-as-enrichment-target at `:301`).
+
+Client-side validation is deliberately **not** added to replace it. A Python user writing
+`iverson_field(metadata=True, large_field=True)` will learn at registration time via a clear
+`InvalidArgument`, so the failure stays loud and immediate. This keeps the server's rules out of a
+fifth place and matches the other four clients, none of which validate this either. Ben was shown
+the alternative — a single guard inside `iverson_field` — and chose to accept the regression.
 
 **This fixes Python only.** The other four clients already compose correctly; Go was fixed at
 `e4a77ff` and .NET has always used independent attributes.
