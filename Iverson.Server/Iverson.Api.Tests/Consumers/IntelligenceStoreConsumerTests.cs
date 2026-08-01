@@ -33,10 +33,10 @@ public class IntelligenceStoreConsumerTests
     // that is a zero-magnitude (degenerate) vector, which the consumer now filters out of the
     // centroid input entirely — so a stub returning one would silently exercise the
     // "no centroid at all" path instead of the normal one.
-    private static float[] UnitVector(int component = 0)
+    private static float[] UnitVector()
     {
         var v = new float[768];
-        v[component] = 1f;
+        v[0] = 1f;
         return v;
     }
 
@@ -1740,7 +1740,7 @@ public class IntelligenceStoreConsumerTests
         capturedCentroids.Should().NotBeNull();
         capturedCentroids!.Should().ContainKey("body_centroid");
 
-        var centroid = capturedCentroids["body_centroid"];
+        var centroid = capturedCentroids!["body_centroid"];
         centroid.Should().NotContain(c => float.IsNaN(c), "a degenerate vector must never reach ComputeCentroid");
         // Mean of the MultiChunkCount - 1 surviving unit vectors, all on component 0.
         centroid[0].Should().BeApproximately(1f, 1e-6f);

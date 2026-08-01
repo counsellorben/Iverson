@@ -235,6 +235,13 @@ public sealed class IntelligenceStoreConsumer(
                     // plain-[IversonEmbedding] path at :150). So an entity whose every chunk vector is
                     // degenerate now gets no object point at all, where before it got one carrying a
                     // NaN centroid. Such an entity has no usable vector content either way.
+                    //
+                    // On an UPDATE, this same guard means: if the entity already has a stored centroid
+                    // and a later Updated event's chunks all embed to zero, the write is skipped and
+                    // Qdrant retains the previous, now-superseded centroid. Accepted deliberately — a
+                    // stale finite centroid is strictly better than the NaN one the old code would have
+                    // written, and it matches the pre-existing blank-text path (:184), which already
+                    // leaves a stale centroid in place.
                     if (centroidInput.Count > 0)
                         centroids[$"{cf.PropertyName.ToSnakeCase()}_centroid"] = ComputeCentroid(centroidInput);
 
