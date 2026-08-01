@@ -1,0 +1,198 @@
+# Retrieval-Quality Benchmark — Public-Corpus Ablation Harness
+
+Date: 2026-07-31
+Status: Approved design, not yet planned or implemented
+
+## Context
+
+Parts 3 and 4b of the metadata / tensor-search initiative added two scoring mechanisms whose values
+were never calibrated against evidence:
+
+- **Fusion (part 3):** the returned score is a weighted mean of a Qdrant cosine (0.60), a document
+  centroid cosine (0.30) and a recency decay (0.10). The weights were chosen, not measured.
+- **Diversification (part 4b):** greedy MMR at λ = 0.70. Its own spec says plainly that topical
+  collapse "has not been observed in a real corpus, and this is anticipation rather than a measured
+  failure", and that λ "is a compile-time constant precisely so it can be revised centrally once
+  there is evidence to revise it against."
+
+There is no such evidence today, and there cannot be from Iverson's own corpora: measuring retrieval
+quality needs relevance judgments, which a private corpus does not have. Public IR benchmarks do have
+them. This spec builds the harness that runs Iverson against those benchmarks so the two open
+questions become measurable.
+
+**Base branch:** `main`, at `d3c8b3c`.
+
+## Goal
+
+Produce TREC-format run files from Iverson's two vector RPCs against public benchmark corpora, across
+a sweep of fusion-weight and λ configurations, so that standard IR tooling can answer two questions:
+does the centroid signal improve retrieval, and does MMR diversification help.
+
+## Design
+
+### 1. The two ablations, and why each is a single-constant edit
+
+Both axes have exact "off" settings reachable by editing one compile-time constant. This is not an
+approximation in either case.
+
+- **Centroid off — `WCentroid = 0.00`.** `ResultReranker` accumulates `weightTotal += WCentroid`
+  only inside `if (hasCentroid)`, so a zero weight adds nothing to either the numerator or the
+  denominator and `fused` becomes exactly `base` (A14).
+- **MMR off — `Lambda = 1.00`.** Then `mmr(c) = 1·fused − 0·maxSim = fused`, and with ties breaking
+  toward the earlier candidate the selected set is bit-for-bit `Take(topK)` — the same degradation
+  guarantee part 4b already proves and tests (A15).
+
+The sweep is `WCentroid ∈ {0.30, 0.00}` × `Lambda ∈ {1.00, 0.70, 0.50, 0.30}`.
+
+**No configuration seam is added.** Parts 3 and 4b both state "no caller-supplied weights, no
+per-request opt-out, no kill switch, no configuration knob", and that rule stands. Each configuration
+is a source edit plus a server rebuild. The alternative — widening the constants to `internal` for a
+test-only seam — was considered and rejected: it puts a mutable knob into the exact components the
+specs said must not have one, in a production assembly, for measurement, and seams outlive
+experiments.
+
+**One ingest serves the entire sweep.** The constants appear only in `ResultReranker` and
+`ResultDiversifier`, both query-time components; nothing on the ingest path references them (A16).
+Chunking, embedding and centroid computation therefore happen once, and each configuration is a
+rebuild plus a re-query. This is what makes an eight-configuration sweep affordable at all.
+
+### 2. Corpora
+
+Two corpora, because the two questions need different judgment structures — and this is the single
+most important constraint in the design:
+
+- **Fusion → BEIR (SciFact + NFCorpus).** BEIR supplies `(query, document, relevance)` judgments,
+  which is exactly what nDCG@10 and Recall@k need. ~9K documents and ~620 test queries combined,
+  the small end of BEIR.
+- **Diversification → FreshStack (two topics).** α-nDCG scores a result set by how much of a query's
+  *facets* it covers, so it needs subtopic- or nugget-level judgments. **BEIR does not have these**,
+  and no amount of nDCG on BEIR will answer the λ question. FreshStack ships 3–4 GPT-4o-generated
+  nuggets per question and reports α-nDCG@10, Coverage@20 and Recall@50 — the exact metric family
+  MMR exists to move. Two topics give ~50K documents and ~100 queries (A1).
+
+### 3. Corpus → Iverson mapping
+
+A new `BenchmarkDocument` entity in `Iverson.LoadTest`:
+
+- `[IversonKey] Guid Id` — **server-assigned**, not the corpus id. Iverson generates a UUIDv7 when
+  the supplied key is empty, and non-GUID keys are documented as unreachable (A5).
+- `DocId` (string) — the corpus document id, carried as an ordinary property.
+- `Title` (string) — the corpus title.
+- `Body` — annotated **both** `[IversonEmbedding]` and `[IversonChunk]`. The dual annotation is what
+  makes `centroidPossible` true and the centroid signal live; an embedding-only property would make
+  the fusion a mathematical identity and the ablation meaningless (A4).
+- `[IversonTenant]` on a tenant property, per the declarative marker (A7).
+
+Ingestion goes through `EntityCoordinator`, **not** `DirectSeeder`. `DirectSeeder` writes straight to
+Postgres/StarRocks/Kafka for bulk speed and would bypass the chunk/embed/centroid pipeline the
+benchmark exists to measure.
+
+### 4. Query execution and run files
+
+Both RPCs are exercised per query. They are cheap once ingestion is done, and they resolve document
+identity differently:
+
+- **`SearchSimilar`** returns the deserialized entity, so `DocId` comes back directly — no mapping.
+- **`SearchChunks`** returns only `ParentKey` and `Score`, so the harness keeps an ingest-time
+  `ParentKey → DocId` map and translates on the way out. Passages are aggregated to documents by
+  **max chunk score per parent** (standard max-passage), which is also the RAG-realistic path.
+
+Output is standard TREC run format — `qid Q0 docid rank score runtag` — with the run tag encoding the
+configuration. `topK` is set to at least 50 to serve Recall@50; there is no upper clamp on `top_k`
+(A13), and the 4× over-fetch is bounded accordingly.
+
+### 5. Scoring is external
+
+The harness computes no metrics. It writes run files; scoring happens with the reference
+implementations the benchmarks themselves use — `ir_measures` supports `alpha_nDCG`, reading subtopic
+ids from the qrels iteration field per TREC convention (A3), and FreshStack ships its own evaluation
+package. Hand-rolling α-nDCG was rejected: the α redundancy discount and the ideal-ranking
+denominator are easy to get subtly wrong, and a wrong metric invalidates every conclusion silently.
+
+### 6. Harness location
+
+`Iverson.LoadTest` gains the entity, a scenario, and a `Program.cs` command. It already has the client
+wiring, Authentik acting-user auth, tenant and schema setup, and a reporting shape; entity
+registration is by assembly scan, so a new type in the same assembly is picked up with no server
+change (A17, A18). A separate project would duplicate all of that for one scenario.
+
+### 7. Running the sweep
+
+Because the tests hand-compute expected values at the current constants, **every ablation build has a
+failing test suite by construction** (A19). The sweep therefore runs on a scratch branch: edit the
+constant, build, deploy, run the harness, keep the run file, move to the next configuration, and
+discard the branch at the end. Do not run the suite against an ablation build expecting green, and do
+not commit an edited constant to `main`.
+
+## Testing
+
+Two parts of the harness can be silently wrong in ways that would invalidate every result, and they
+get unit tests:
+
+- the corpus parsers (BEIR `corpus.jsonl` / `queries.jsonl` / `qrels` TSV, and FreshStack's format);
+- the max-passage aggregation — that several chunks of one parent collapse to a single document entry
+  carrying the maximum chunk score, and that ordering follows the aggregated score.
+
+The rest of the harness is I/O against a live stack and is not usefully unit-testable.
+
+## Verified assumptions
+
+Verified against the codebase at `main@d3c8b3c` before this spec was written.
+
+| # | Assumption | Evidence |
+|---|---|---|
+| A1 | FreshStack is publicly available with nugget-level judgments, but its smallest unit is ~25K documents and ~50 questions per topic | Published dataset: five topics (langchain, yolo, laravel, angular, godot) on HuggingFace, each ≥25K documents from 4–10 GitHub repos, ≥50 questions, 3–4 nuggets per question; reports α@10, C@20, R@50 |
+| A2 | BEIR SciFact and NFCorpus are small enough for the fusion half | ~5.2K and ~3.6K documents, ~300 and ~323 test queries — the small end of BEIR's 18 datasets, which are now a subset of MTEB. **Stated from published dataset documentation, not fetched and counted in this session**; confirm the exact figures when downloading, since the scale decision rests on them |
+| A3 | `ir_measures` computes α-nDCG from TREC-format inputs | `ir_measures` supports `alpha_nDCG`, taking subtopic ids from the qrels *iteration* field per TREC convention; `trec_eval`/`ndeval` are the underlying references |
+| A4 | Dual `[IversonEmbedding]` + `[IversonChunk]` annotation is what makes the centroid signal live | `ObjectSearchGrpcService.cs:204` — `centroidPossible = schema.ChunkFields.Any(c => …PropertyName == vectorDesc.PropertyName)` |
+| A5 | **Shape-changing.** The corpus id cannot be the entity key | `ObjectMappingGrpcService.cs:127-132` assigns `Guid.CreateVersion7()` when the supplied key is empty; `IntelligenceStoreConsumer.cs:576` states "Non-GUID keys are unreachable today (keys are server-generated UUIDv7)". The sample entity uses `[IversonKey] Guid Id`. A string key *might* work — `SchemaRegistrar.BuildKeyDescriptor` goes through `DetectType` rather than hardcoding Guid — but the design does not depend on it |
+| A6 | Registering a new entity type needs no server-side code change | Registration is client-driven by assembly scan (A17's evidence); authorization rules are a client-side per-type dictionary |
+| A7 | The entity can declare its tenant field declaratively | `Iverson.Client.Attributes/IversonTenantAttribute.cs:9` |
+| A8 | Ingestion must use the client write path, not `DirectSeeder` | `Seeding/DirectSeeder.cs` opens Npgsql, MySqlConnector and a Kafka producer directly and targets 400K articles — a bulk path that bypasses the API |
+| A9 | `Iverson.LoadTest` can register a schema and write as an authorized acting user | `Program.cs:118-126` wires `AddIversonClient` with a tenant-admin token provider; `Auth/ActingUserTokenProvider.cs` and `Auth/AuthentikFlowExecutorClient.cs` exist |
+| A10 | **NOT VERIFIED — deliberately.** Whether ~59K documents can be ingested on the laptop deployment in tolerable time | Cannot be established by reading code; it depends on CPU Ollama embedding throughput under real chunking. Listed here rather than silently omitted, and carried as the first entry under "Known issues" |
+| A11 | `SearchSimilarAsync` returns the deserialized entity plus score | `EntityCoordinator.cs:204-220` — yields `new SearchResult<T>(entity, response.Score)` |
+| A12 | `SearchChunksAsync` returns `ParentKey` and `Score` | `EntityCoordinator.cs:222-234` yields the raw `ChunkSearchResponse`, whose fields are `parent_key`, `chunk_text`, `score`, `trace_id` |
+| A13 | `top_k` has no upper clamp | `ObjectSearchGrpcService.cs:198` and `:347` — `(ulong)Math.Max(1, (int)request.TopK)`, lower bound only |
+| A14 | `WCentroid = 0.00` makes `fused` exactly `base` | `ResultReranker.cs:35-42` — `weightedSum += WCentroid * sim` and `weightTotal += WCentroid` both inside `if (hasCentroid)`, so a zero weight contributes to neither |
+| A15 | `Lambda = 1.00` makes selection identical to `Take(topK)` | `ResultDiversifier.cs:76-77` — `Lambda * Score - (1 - Lambda) * maxSim` collapses to `Score`; part 4b's `Diversify_AllVectorsAbsent_…` test already asserts the fused-order equivalence this reduces to |
+| A16 | The constants are query-time only, so one ingest serves the whole sweep | `grep` for `WBase\|WCentroid\|WDecay\|Lambda` across non-test server sources returns hits only in `ResultReranker.cs` and `ResultDiversifier.cs`; nothing in `IntelligenceStoreConsumer` references them |
+| A17 | `Iverson.LoadTest` can host the entity, scenario and command | `Program.cs:122` registers entities via `entityAssemblies: [typeof(BenchmarkArticle).Assembly]`; `Program.cs:168-190` is a `switch` over commands; `Scenarios/`, `Reporting/` and `Auth/` already exist |
+| A18 | Adding an entity type breaks no existing scenario | Entity discovery is assembly-scan; authorization is a per-type dictionary keyed by name (`Program.cs:147-151`), so a new entry is additive |
+| A19 | **Operational.** Every ablation build has a failing test suite | `ResultRerankerTests.cs:28-29` asserts `(0.6*0.9 + 0.3*0.5 + 0.1*0.8)/1.0 = 0.77`, with more at `:44-46` and `:62`; `ResultDiversifierTests.cs` hand-computes at λ = 0.70. Editing a constant falsifies them by construction |
+| A20 | *(Recurrence)* Every configuration in the sweep is a pure constant edit — no member of the matrix needs a code-shape change | Members enumerated: `WCentroid ∈ {0.30, 0.00}` and `Lambda ∈ {1.00, 0.70, 0.50, 0.30}`. Both symbols are `private const double` (`ResultReranker.cs:12`, `ResultDiversifier.cs:12`) read at a single expression site each, and A16's sweep confirms no other code path branches on their values |
+
+## Known issues / accepted as out of scope
+
+**Laptop ingest feasibility is unverified.** The combined corpora are ~59K documents, which chunk into
+substantially more embedding calls, all through CPU Ollama. Whether this completes in a tolerable time
+on the laptop deployment cannot be established without running it — and a previous kind run on this
+machine hit a local `pids.max=307` ceiling. This is the largest open risk in the design. If ingestion
+proves intractable, the fallback is BEIR alone, which is ~9K documents and answers the fusion question
+without the diversity half.
+
+**~100 queries is modest statistical power.** Two FreshStack topics give roughly 100 questions. That is
+enough to detect a large diversification effect and not enough to resolve a subtle one, so a null
+result on the λ sweep should be read as "no large effect detected", never as "λ = 0.70 is optimal".
+Ben chose two topics over one for exactly this reason; more topics would cost proportionally more
+ingest.
+
+**α-nDCG depends on expressing FreshStack's nuggets in the scoring tool's expected shape.** `ir_measures`
+reads subtopic ids from the qrels iteration field; FreshStack's own evaluation package is the lower-risk
+route and should be preferred if its input format accepts a standard run file. This was not verified
+end-to-end.
+
+**Ablation builds are knowingly red.** See A19 and §7. Accepted as the cost of not adding a
+configuration seam.
+
+## Not in this spec
+
+- **Automating the sweep.** A shell loop over configurations that edits, builds, deploys and runs is
+  fine; building a sweep runner is not part of this.
+- **CI integration.** This is a calibration exercise, not a regression gate. If a run file ever becomes
+  a baseline worth defending, that is a separate decision.
+- **Latency measurement.** `Iverson.LoadTest`'s existing scenarios already own that, with HdrHistogram.
+- **Acting on the results.** Changing `WCentroid` or λ on the strength of what this measures is a
+  separate spec, and should be — the numbers come first.
+- **Any change to the scoring components themselves.** `ResultReranker` and `ResultDiversifier` are
+  read-only here apart from the throwaway constant edits on a scratch branch.
