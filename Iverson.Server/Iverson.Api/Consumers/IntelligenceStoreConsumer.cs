@@ -206,8 +206,37 @@ public sealed class IntelligenceStoreConsumer(
 
                     var chunkResults = await Task.WhenAll(chunkTasks);
 
-                    var fieldCentroid = ComputeCentroid(chunkResults.Select(r => r.chunkVector).ToList());
-                    centroids[$"{cf.PropertyName.ToSnakeCase()}_centroid"] = fieldCentroid;
+                    // Filter degenerate vectors from the CENTROID INPUT ONLY. A zero-magnitude
+                    // vector makes ComputeCentroid divide by zero and store a NaN centroid, which
+                    // part 3 fuses into a NaN score that sinks the document to the bottom of every
+                    // result set — silently. The chunk-point write loop below is UNCHANGED: every
+                    // chunk keeps its own vector, degenerate ones included, because part 4b's
+                    // diversifier already treats a NaN cosine as an absent signal.
+                    var centroidInput = chunkResults
+                        .Select(r => r.chunkVector)
+                        .Where(v => !IsZeroMagnitude(v))
+                        .ToList();
+
+                    var degenerate = chunkResults.Length - centroidInput.Count;
+                    if (degenerate > 0)
+                        logger.LogWarning(
+                            "[Intelligence] Dropped {Count} zero-magnitude chunk vector(s) from the centroid for {Type}:{Key} field={Field}",
+                            degenerate,
+                            ev.TypeName.SanitizeForLog(),
+                            ev.Key.SanitizeForLog(),
+                            cf.PropertyName.SanitizeForLog());
+
+                    // No centroid at all when nothing survives — an ABSENT centroid is a state part 3
+                    // handles; a NaN one is not. ComputeCentroid would also throw on an empty list.
+                    //
+                    // Consequence, accepted deliberately: the centroid-write block below is gated on
+                    // `centroids.Count > 0`, and for a chunk-only type that block is ALSO what creates
+                    // the object point and its payload (:286-293; objectPointWritten is set only in the
+                    // plain-[IversonEmbedding] path at :150). So an entity whose every chunk vector is
+                    // degenerate now gets no object point at all, where before it got one carrying a
+                    // NaN centroid. Such an entity has no usable vector content either way.
+                    if (centroidInput.Count > 0)
+                        centroids[$"{cf.PropertyName.ToSnakeCase()}_centroid"] = ComputeCentroid(centroidInput);
 
                     foreach (var (chunkVector, chunkId, chunkText, chunkIndex) in chunkResults)
                     {
@@ -355,11 +384,26 @@ public sealed class IntelligenceStoreConsumer(
         return pointPayload;
     }
 
+    // Mirrors ComputeCentroid's own magnitude computation. A vector whose components are small
+    // enough to underflow when squared also lands here, since the accumulated magnitude is then
+    // exactly zero — which is the case that would divide to Infinity rather than NaN.
+    private static bool IsZeroMagnitude(float[] vector)
+    {
+        float magnitude = 0;
+        foreach (var component in vector)
+            magnitude += component * component;
+        return magnitude == 0;
+    }
+
     // L2-normalizes each input vector and returns their componentwise mean, without
     // re-normalizing the result: Qdrant normalizes on store under Distance.Cosine, and cosine
     // similarity is scale-invariant, so a second normalization here would buy nothing.
-    // No zero-magnitude guard: no caller passes a zero vector (blank text is skipped upstream,
-    // and SplitIntoChunks always yields at least one chunk from non-blank text).
+    // No zero-magnitude guard: the caller filters zero-magnitude vectors out of the input before
+    // calling (see IsZeroMagnitude at the chunk-embedding site), so the invariant is enforced at
+    // the boundary rather than assumed here. The earlier reasoning — that blank text is skipped
+    // upstream and SplitIntoChunks always yields a chunk — was about the input *text*, and never
+    // covered the actual failure mode: the embedding model returning a zero vector for non-blank
+    // text, which would divide by zero and produce a NaN centroid.
     // Assumes every input vector shares vectors[0].Length (one embedding model per chunk field,
     // so all chunks for a given field are the same dimensionality today). A shorter input would
     // throw; a longer one would be silently truncated in the sum while still contributing its

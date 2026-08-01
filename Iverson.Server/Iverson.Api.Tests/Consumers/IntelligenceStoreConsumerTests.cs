@@ -29,6 +29,17 @@ public class IntelligenceStoreConsumerTests
     private readonly IEnrichmentService _enrichment;
     private readonly EnrichmentServiceOptions _enrichmentOptions = new();
 
+    // A non-degenerate 768-dim vector. Embedding stubs must not return an all-zero vector:
+    // that is a zero-magnitude (degenerate) vector, which the consumer now filters out of the
+    // centroid input entirely — so a stub returning one would silently exercise the
+    // "no centroid at all" path instead of the normal one.
+    private static float[] UnitVector(int component = 0)
+    {
+        var v = new float[768];
+        v[component] = 1f;
+        return v;
+    }
+
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
         PropertyNamingPolicy        = JsonNamingPolicy.CamelCase,
@@ -61,7 +72,7 @@ public class IntelligenceStoreConsumerTests
             Arg.Any<IReadOnlyDictionary<string, float[]>>())
             .Returns(Task.CompletedTask);
         _embedding.EmbedAsync(Arg.Any<string>(), Arg.Any<CancellationToken>())
-                  .Returns(new float[768]);
+                  .Returns(UnitVector());
 
         _enrichment = Substitute.For<IEnrichmentService>();
         _enrichment.GenerateAsync(Arg.Any<string>(), Arg.Any<CancellationToken>())
@@ -100,7 +111,7 @@ public class IntelligenceStoreConsumerTests
     {
         await _registry.RegisterAsync(SchemaFixtures.ArticleSchema());
 
-        var fakeVector = new float[768];
+        var fakeVector = UnitVector();
         _embedding.EmbedAsync("Great Title", Arg.Any<CancellationToken>())
                   .Returns(fakeVector);
 
@@ -575,7 +586,7 @@ public class IntelligenceStoreConsumerTests
 
         _embedding
             .EmbedAsync(Arg.Any<string>(), Arg.Any<CancellationToken>())
-            .Returns(new float[768]);
+            .Returns(UnitVector());
 
         var payload = """{"Title":"Hello","Summary":"World","Id":"00000000-0000-0000-0000-000000000001"}""";
         var ev = new EntityEvent(
@@ -1163,7 +1174,7 @@ public class IntelligenceStoreConsumerTests
                   .Returns(ci =>
                   {
                       lock (embedded) embedded.Add((string)ci[0]);
-                      return Task.FromResult(new float[768]);
+                      return Task.FromResult(UnitVector());
                   });
 
         var payloads = new List<IReadOnlyDictionary<string, object>?>();
@@ -1679,5 +1690,103 @@ public class IntelligenceStoreConsumerTests
         capturedVectors.Should().NotBeNull();
         capturedVectors!.Should().ContainKey("body_centroid");
         capturedVectors.Should().NotContainKey("summary_centroid");
+    }
+
+    // ── Degenerate (zero-magnitude) chunk vectors ───────────────────────────
+
+    // Chunk-only Doc (no VectorFields), maxTokens = 10 → 40-char window, overlap 0, so
+    // MultiChunkBody splits into exactly MultiChunkCount self-naming chunks. Non-contextual,
+    // so no generative call is involved and the embedded text is the raw chunk.
+    private static SchemaDescriptor DegenerateDocSchema() => new()
+    {
+        TypeName       = "Doc",
+        TableName      = "docs",
+        CollectionName = "docs",
+        KeyColumn      = new ColumnDescriptor("Id", "uuid", false),
+        ScalarColumns  = [new ColumnDescriptor("Body", "text", false)],
+        FkColumns      = [],
+        VectorFields   = [],
+        ChunkFields    = [new ChunkDescriptor("Body", 10, 0, "nomic-embed-text", 768)],
+        Relations      = [],
+        TenantColumn   = "TenantId"
+    };
+
+    [Fact]
+    public async Task HandleCreated_OneDegenerateChunkVector_ExcludesItFromCentroidButStillWritesOne()
+    {
+        await _registry.RegisterAsync(DegenerateDocSchema());
+
+        // Exactly one chunk ("C07") embeds to a zero-magnitude vector; the rest are unit vectors
+        // on component 0. Unfiltered, that single zero divides to NaN and poisons every component
+        // of the centroid — so asserting the value, not just the key, is the point of this test.
+        _embedding.EmbedAsync(Arg.Any<string>(), Arg.Any<CancellationToken>())
+                  .Returns(ci => Task.FromResult(
+                      ((string)ci[0]).Contains("C07") ? new float[768] : UnitVector()));
+
+        IReadOnlyDictionary<string, float[]>? capturedCentroids = null;
+        _vectorWrite.UpdateNamedVectorsAsync(
+            "docs_test-tenant",
+            Arg.Any<ulong>(),
+            Arg.Any<IReadOnlyDictionary<string, float[]>>())
+            .Returns(ci =>
+            {
+                capturedCentroids = (IReadOnlyDictionary<string, float[]>)ci[2];
+                return Task.CompletedTask;
+            });
+
+        var ev = DocEvent($$$"""{"Body":"{{{MultiChunkBody}}}","TenantId":"test-tenant"}""", "trace-one-degenerate");
+        await BuildSut().HandleAsync(ev.Key, Serialize(ev), CancellationToken.None);
+
+        capturedCentroids.Should().NotBeNull();
+        capturedCentroids!.Should().ContainKey("body_centroid");
+
+        var centroid = capturedCentroids["body_centroid"];
+        centroid.Should().NotContain(c => float.IsNaN(c), "a degenerate vector must never reach ComputeCentroid");
+        // Mean of the MultiChunkCount - 1 surviving unit vectors, all on component 0.
+        centroid[0].Should().BeApproximately(1f, 1e-6f);
+        centroid[1].Should().BeApproximately(0f, 1e-6f);
+
+        // The chunk-point write loop is untouched: the degenerate chunk keeps its own vector.
+        await _vectorWrite.Received(MultiChunkCount).UpsertNamedAsync(
+            "docs_chunks_test-tenant",
+            Arg.Any<ulong>(),
+            Arg.Any<IReadOnlyDictionary<string, float[]>>(),
+            Arg.Any<IReadOnlyDictionary<string, object>?>());
+    }
+
+    [Fact]
+    public async Task HandleCreated_AllChunkVectorsDegenerate_WritesNoCentroidAndNoObjectPoint()
+    {
+        await _registry.RegisterAsync(DegenerateDocSchema());
+
+        _embedding.EmbedAsync(Arg.Any<string>(), Arg.Any<CancellationToken>())
+                  .Returns(_ => Task.FromResult(new float[768]));
+
+        var ev = DocEvent($$$"""{"Body":"{{{MultiChunkBody}}}","TenantId":"test-tenant"}""", "trace-all-degenerate");
+        await BuildSut().HandleAsync(ev.Key, Serialize(ev), CancellationToken.None);
+
+        // No centroid is written at all — an absent centroid is a state part 3 handles; a NaN one
+        // is not.
+        await _vectorWrite.DidNotReceive().UpdateNamedVectorsAsync(
+            "docs_test-tenant",
+            Arg.Any<ulong>(),
+            Arg.Any<IReadOnlyDictionary<string, float[]>>());
+
+        // Accepted, deliberate consequence (P16): for a chunk-only type the centroid-write block
+        // is also what creates the object point, so with no centroid there is no object point
+        // either — where previously one was written carrying a NaN centroid. Asserted rather than
+        // implied, because it is the behaviour change this task knowingly accepts.
+        await _vectorWrite.DidNotReceive().UpsertNamedAsync(
+            "docs_test-tenant",
+            Arg.Any<ulong>(),
+            Arg.Any<IReadOnlyDictionary<string, float[]>>(),
+            Arg.Any<IReadOnlyDictionary<string, object>?>());
+
+        // The chunk points are still upserted, one per chunk, degenerate vectors included.
+        await _vectorWrite.Received(MultiChunkCount).UpsertNamedAsync(
+            "docs_chunks_test-tenant",
+            Arg.Any<ulong>(),
+            Arg.Any<IReadOnlyDictionary<string, float[]>>(),
+            Arg.Any<IReadOnlyDictionary<string, object>?>());
     }
 }
