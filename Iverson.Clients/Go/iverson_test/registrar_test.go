@@ -516,6 +516,43 @@ func TestSchemaRegistrar_NoTenantField_Rejected(t *testing.T) {
 	}
 }
 
+// ── declaration composability registrar tests ───────────────────────────────────
+
+type ComposedDeclArticle struct {
+	Id       string `iverson_key:"true"`
+	TenantId string `iverson_tenant:"true"`
+	Body     string `iverson_large_field:"true" iverson_chunk:"256:32"`
+}
+
+// TestSchemaRegistrar_ComposedDeclarations_LargeFieldAndChunk asserts that
+// iverson_large_field and iverson_chunk, both present on the same field, survive
+// together through to the built PropertyDescriptor. Both flag assertions are the
+// point — a test asserting only IsChunk would pass while large_field was silently
+// dropped. The windowing values are non-default so they cannot pass vacuously
+// against the 512/64 defaults.
+func TestSchemaRegistrar_ComposedDeclarations_LargeFieldAndChunk(t *testing.T) {
+	mock := &mockMappingClient{response: &pb.SchemaResponse{Success: true}}
+	registrar := iverson.NewSchemaRegistrar(mock, ComposedDeclArticle{})
+	if err := registrar.RegisterAll(context.Background(), ""); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	req := mock.capturedReq
+
+	body := propByName(t, req, "Body")
+	if !body.IsLargeField {
+		t.Error("expected Body.IsLargeField=true")
+	}
+	if !body.IsChunk {
+		t.Error("expected Body.IsChunk=true")
+	}
+	if body.ChunkMaxTokens != 256 {
+		t.Errorf("expected ChunkMaxTokens=256, got %d", body.ChunkMaxTokens)
+	}
+	if body.ChunkOverlap != 32 {
+		t.Errorf("expected ChunkOverlap=32, got %d", body.ChunkOverlap)
+	}
+}
+
 type doubleTenantArticle struct {
 	Id       string `iverson_key:"true"`
 	TenantId string `iverson_tenant:"true"`
