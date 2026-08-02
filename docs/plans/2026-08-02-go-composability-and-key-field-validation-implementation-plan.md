@@ -261,10 +261,18 @@ Two packages, both must migrate:
   - `registrar_test.go` — 8 struct tags, including `:289` `iverson:"key" iverson_desc:"Primary
     identifier"` (the key+description combination that must keep working) and key tags at `:33`,
     `:246`, `:299`, `:385`, `:433`, `:447`, `:503`, `:520`.
-  - `tags_test.go` — the largest surface. Roughly a dozen direct `ParseTag` calls passing scalar
-    kind strings, plus assertions on `fm.Kind` at `:18`, `:31`, `:41`, `:62`, `:72`, `:82`, `:111`,
-    `:135`, `:203`, `:223`, `:251`, `:274`, `:328`, `:353`, `:359`, `:368`, and struct tags at
-    `:165`, `:303`, `:380`.
+  - `tags_test.go` — the largest surface. **Enumerate by `ParseTag` call site, not by `.Kind`
+    assertion**: Step 4 breaks every call that passes a scalar kind string, including tests that
+    never mention `.Kind`. The 13 call sites are `:14` (empty tag — still valid), `:27` `"key"`,
+    `:37` `"search_key:0"`, `:48` `"search_key:1"`, `:58` `"large_field"`, `:68` `"embedding"`,
+    `:78` `"chunk"`, `:94` `"chunk:256:32"` — **these seven scalar calls all become `InspectType`
+    tests** — plus `:107` and `:130` (relations — stay as `ParseTag`), `:142` `"unknown_kind"`
+    (still valid, `default:` preserved), `:156` `"many_to_one"` (still valid), and `:149`
+    `"search_key:abc"` (see below). Note `:94` (`TestParseTag_Chunk_CustomParams`) asserts only on
+    `ChunkMaxTokens`/`ChunkOverlap` and would be missed by any `.Kind`-based sweep. Separately,
+    assertions on `fm.Kind` appear at `:18`, `:31`, `:41`, `:62`, `:72`, `:82`, `:111`, `:135`,
+    `:203`, `:223`, `:251`, `:274`, `:328`, `:353`, `:359`, `:368`, and struct tags at `:165`,
+    `:303`, `:380`.
 
 Migration rules for `tags_test.go`:
 
@@ -283,6 +291,12 @@ Migration rules for `tags_test.go`:
   zero-valued struct that Step 5 never populated.
 - `:359-360` asserts "metadata tag must not set a kind". Convert to asserting `iverson_meta` sets
   `fm.Metadata` and leaves all five scalar booleans and `RelationKind` unset.
+- `:149` `TestParseTag_SearchKeyBadOrder` still compiles and still passes after the change — but for
+  the wrong reason: `"search_key:abc"` now falls to the `default:` branch and errors as an unknown
+  kind, duplicating `TestParseTag_UnknownKind` while its name claims order validation. Re-point it
+  at Step 5's new validation: an `InspectType` test over a struct with `iverson_search_key:"abc"`,
+  asserting the returned error names the field. Otherwise the order-parsing Step 5 introduces has no
+  test and this one silently attests to something it no longer checks.
 
 Every converted assertion must name the specific flag it checks. An assertion rewritten as
 "something is set" is weaker than what it replaced.
@@ -602,3 +616,4 @@ Verified against `main@59f4e12`.
 | P21 | The Python spec's parity claim is where Task 4 says | `docs/specs/2026-08-01-python-declaration-composability-design.md:231-232` — "The other four clients already compose correctly; Go was fixed at `e4a77ff`…" |
 | P22 | `docs/` is gitignored, so Task 4's commit needs `-f` | Established repo-wide; every prior spec and plan in this project was committed with `git add -f` |
 | P23 | **The `FieldMeta.Kind` referent set is complete** — not merely accurate per listed site | `grep -n '\.Kind\b'` across `Iverson.Clients/Go` excluding `generated/`: production referents are `registrar.go:85,86,87,89,90,91,106,227,244`, `coordinator.go:125,151,428`, `tags.go:246,250`, `sample/main.go:24,27,32`. Steps 6-8 cover all of them. Step 2 deletes the field, so any unconverted reader is a compile error — completeness, not per-site accuracy, is what this task rests on |
+| P24 | **The `ParseTag` call-site set in `iverson_test/tags_test.go` is complete, and is the enumeration key Step 10 depends on** — not the `.Kind` assertion set | `grep -n 'ParseTag(' Iverson.Clients/Go/iverson_test/tags_test.go` → 13 sites. Scalar-kind calls that Step 4 breaks: `:27` `"key"`, `:37` `"search_key:0"`, `:48` `"search_key:1"`, `:58` `"large_field"`, `:68` `"embedding"`, `:78` `"chunk"`, `:94` `"chunk:256:32"`. Degrades silently: `:149` `"search_key:abc"`. Still valid: `:14` (empty), `:107`/`:130` (relations), `:142` (unknown kind), `:156` (relation without type). `:94` carries no `.Kind` reference and is invisible to any `.Kind`-anchored sweep |
