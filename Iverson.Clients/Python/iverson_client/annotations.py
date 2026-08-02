@@ -10,6 +10,7 @@ Usage:
         category: str = iverson_search_key(order=0)
         published_at: datetime = iverson_search_key(order=1)
         author_id: str = many_to_one('Author')
+        transcript: str = iverson_field(large_field=True, chunk=True)
 """
 from __future__ import annotations
 
@@ -17,7 +18,7 @@ from dataclasses import dataclass
 from typing import Any
 
 
-@dataclass
+@dataclass(kw_only=True)
 class FieldMeta:
     """Descriptor object attached as a class attribute default.
 
@@ -45,7 +46,7 @@ class FieldMeta:
     tenant: bool = False
     summary: bool = False
     keywords: bool = False
-    extract_hint: str = ""
+    extract_hint: str | None = ""
     description: str = ""
     relation_kind: str | None = None
     related_type: str | None = None
@@ -68,7 +69,7 @@ def iverson_field(
     tenant: bool = False,
     summary: bool = False,
     keywords: bool = False,
-    extract_hint: str = "",
+    extract_hint: str | None = "",
     description: str = "",
 ) -> FieldMeta:
     """Declare a field with any combination of scalar declarations.

@@ -131,7 +131,6 @@ def make_stub() -> MagicMock:
 def register_request(cls) -> mapping_pb.SchemaRequest:
     """Register `cls` against a stub and return the SchemaRequest that was sent."""
     stub = make_stub()
-    stub.RegisterSchema.return_value = mapping_pb.SchemaResponse(success=True)
     SchemaRegistrar(stub, cls).register_all()
     return stub.RegisterSchema.call_args[0][0]
 
