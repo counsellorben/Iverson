@@ -234,4 +234,4 @@ TypeScript already compose correctly with independent attributes.
 
 **`search_key` combinations are rejected server-side.** Combinations of `search_key` with `large_field`, `chunk`, or `embedding` are rejected at the server (`SchemaBuilder.cs:117-121`). Note that `IsEmbedding` and `IsChunk` implicitly add the column to `largeFields` (`:63` and `:76`), so `search_key`+`chunk` trips the same rule without an explicit `large_field`.
 
-**Key fields with incompatible flags are now rejected client-side.** Key field combinations (key + tenant, key + metadata, key + search_key, etc.) are no longer accepted-and-silently-discarded. All five clients now include a validation check that rejects these combinations before schema registration.
+**Key fields with incompatible flags are now rejected client-side.** All five clients now validate that key fields do not carry `search_key`, `large_field`, `embedding`, `chunk`, or `metadata` — the exact set of flags that compose illegally with a key. (Key fields can still carry `description` alone.) Previously, such combinations were accepted but silently discarded during schema inspection.
