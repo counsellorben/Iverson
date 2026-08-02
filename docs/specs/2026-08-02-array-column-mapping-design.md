@@ -67,6 +67,17 @@ under the same kind as its elements, so an `Integer` index over an integer list 
 range-filterable. This leaves the two existing entries' `Keyword` for `float[]` looking anomalous;
 it is preserved rather than corrected, because changing it would retype a live Qdrant index.
 
+**`ADD COLUMN` needs an array default.** `PostgresSchemaManager.cs:53-56` appends
+`NOT NULL DEFAULT ('{GetDefaultForType(SqlType)}')` for every non-nullable added column, and
+`GetDefaultForType` (`:146-157`) matches scalar type-name prefixes only — `INTEGER[]` matches
+`StartsWith("INT")` and gets `'0'`, `TEXT[]` falls through to `''`. Every array type then produces
+`ERROR: malformed array literal`. `GetDefaultForType` gains an array case returning `'{}'`, valid
+for every Postgres array type, tested **before** the scalar prefix branches which would otherwise
+capture it. This is the common path, not an edge case: `CREATE TABLE` emits no default and
+succeeds, so a fresh type works while adding an array property to an existing type fails.
+Non-nullable is the default branch — `SchemaRegistrar.cs:243-264` sets `isNullable` only from a
+`Nullable<T>` unwrap, so a plain `string[] Tags` is `NOT NULL`.
+
 **`ClrBytes → BYTEA[]` is reachable only via `byte[][]`.** `byte[]` is carved out as a scalar
 before the array unwrap (`SchemaRegistrar.cs:241`). The entry exists so the table is total over the
 enum rather than leaving one value falling through to the scalar map.
@@ -78,7 +89,13 @@ enum rather than leaving one value falling through to the scalar map.
 (`:67-72`). It never compares types, so a column whose type no longer matches the registry is
 invisible.
 
-The query is extended to return `(name, format_type(atttypid, atttypmod))` from `pg_attribute`.
+The query is extended to return `(name, format_type(atttypid, atttypmod))` from `pg_attribute`,
+filtered `AND a.attnum > 0 AND NOT a.attisdropped`. That filter is not optional: unlike
+`information_schema.columns`, `pg_attribute` also returns the six system columns (`ctid`, `xmin`, …)
+and dropped-column tombstones, and the same `existingColumns` result feeds the pre-existing
+orphan-`DROP` loop (`:67`) — which would then attempt `DROP COLUMN "ctid"` on every existing table.
+`IF EXISTS` does not suppress it: `ERROR: cannot drop system column "ctid"`.
+
 For every schema column whose name already exists, the actual type is compared to the expected
 `ColumnDescriptor.SqlType`. New columns still `ADD`; orphans still `DROP`; only the intersection is
 checked. The key column is checked too — on an existing table it was created with the table and
@@ -166,7 +183,10 @@ tags: string[] = [];
 ```
 
 `@IversonArray` is a `PropertyDecorator`, matching the eight that already exist
-(`annotations.ts:56-169`). The registrar reads it for both `isArray` and `clrType`. A property whose
+(`annotations.ts:56-169`). Both `@IversonArray` and `ClrType` are added to `src/index.ts`'s
+exports. `ClrType` is a generated proto enum and is not exported today — `index.ts` exposes the
+twelve decorators, nine accessors, the builders and the three client classes, and no generated
+type — so without it a consumer cannot name the decorator's argument. The registrar reads it for both `isArray` and `clrType`. A property whose
 `design:type` is `Array` **without** the decorator is a registration error, not a silent
 `CLR_STRING` — leaving it to the existing fallback would reproduce the silent-wrong-declaration
 class this work exists to remove. Decision made by Ben 2026-08-02.
@@ -185,6 +205,13 @@ registration and logs at startup, with the message naming table, column, actual 
 `TIMESTAMPTZ` **and `TIMESTAMPTZ[]`** cases are both asserted specifically, since they are the two
 where `format_type`'s spelling differs and a naive comparison yields a false positive on a
 *correct* column — and the scalar case passing is exactly what would mask the array case.
+
+**Orphan-drop survives the query change** — a table that has had a column dropped still applies
+cleanly, since the tombstone row is the case a hand-written filter is most likely to miss.
+
+**Both DDL paths** — an array property on a newly registered type (`CREATE TABLE`) and an array
+property added to an already-registered type (`ALTER TABLE ADD COLUMN`). Only the second exercises
+`GetDefaultForType`, and a test against a fresh database takes only the first.
 
 **Round-trip** — the test that would have caught this originally: an entity with a `string[]`
 property persisted and read back with its elements intact, plus one numeric array. This is also
@@ -234,3 +261,5 @@ instance during critical design review; B7 failed and is corrected below.
 | B20 | TypeScript cannot infer the element type | `core.ts:235` reads `design:type`, which `emitDecoratorMetadata` erases to `Array`; `core.ts:228` instantiates the class but an initialized `[]` carries no element type |
 | B21 | StarRocks accepts `STRING` for array columns | `SchemaBuilder.cs:191-193` builds `EngagementColumnSchema` from `ClrTypeToEngagementType(SqlType)`, already `STRING` for both existing arrays |
 | B22 | StarRocks has no `ALTER` path | `StarRocksSchemaManager.cs:16` is `CREATE TABLE IF NOT EXISTS`; no `ALTER TABLE` anywhere in `Iverson.StarRocks` |
+| B23 | The existing-columns query has **two** consumers, and changing its source affects both | `PostgresSchemaManager.cs:51` (ADD) and `:67` (orphan DROP) both read `existingColumns`. Executed against Postgres 16: an unfiltered `pg_attribute` query returns 6 system columns plus dropped tombstones, and `DROP COLUMN IF EXISTS "ctid"` errors |
+| B24 | Adding a non-nullable column to an existing table depends on `GetDefaultForType` | `PostgresSchemaManager.cs:55` invokes it for every non-nullable added column; `:146-157` has no array case. Executed: `ADD COLUMN "tags" TEXT[] NOT NULL DEFAULT ('')` → `ERROR: malformed array literal: ""` |
