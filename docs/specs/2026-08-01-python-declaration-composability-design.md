@@ -228,5 +228,10 @@ Client-side validation is deliberately **not** added to replace it. A Python use
 fifth place and matches the other four clients, none of which validate this either. Ben was shown
 the alternative — a single guard inside `iverson_field` — and chose to accept the regression.
 
-**This fixes Python only.** The other four clients already compose correctly; Go was fixed at
-`e4a77ff` and .NET has always used independent attributes.
+**This fixes Python only.** Go carried the same mutually-exclusive axis and is fixed by
+`docs/specs/2026-08-02-go-composability-and-key-field-validation-design.md`; .NET, Java, and
+TypeScript already compose correctly with independent attributes.
+
+**`search_key` combinations are rejected server-side.** Combinations of `search_key` with `large_field`, `chunk`, or `embedding` are rejected at the server (`SchemaBuilder.cs:117-121`). Note that `IsEmbedding` and `IsChunk` implicitly add the column to `largeFields` (`:63` and `:76`), so `search_key`+`chunk` trips the same rule without an explicit `large_field`.
+
+**Key fields with incompatible flags are now rejected client-side.** Key field combinations (key + tenant, key + metadata, key + search_key, etc.) are no longer accepted-and-silently-discarded. All five clients now include a validation check that rejects these combinations before schema registration.
