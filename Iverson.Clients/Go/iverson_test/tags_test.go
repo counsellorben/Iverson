@@ -489,8 +489,13 @@ type metadataOnKeyFixture struct {
 	TenantId string `iverson_tenant:"true"`
 }
 
+type summaryOnKeyFixture struct {
+	Id       string `iverson_key:"true" iverson_summary:"true"`
+	TenantId string `iverson_tenant:"true"`
+}
+
 type multiDeclarationKeyFixture struct {
-	Id       string `iverson_key:"true" iverson_search_key:"0" iverson_large_field:"true" iverson_meta:"true"`
+	Id       string `iverson_key:"true" iverson_search_key:"0" iverson_large_field:"true" iverson_embedding:"true" iverson_chunk:"true" iverson_meta:"true" iverson_summary:"true" iverson_keywords:"true" iverson_extract:"hint"`
 	TenantId string `iverson_tenant:"true"`
 }
 
@@ -515,12 +520,31 @@ func TestInspectType_MetadataOnKeyRejected(t *testing.T) {
 	}
 }
 
+func TestInspectType_SummaryOnKeyRejected(t *testing.T) {
+	_, err := iverson.InspectType(summaryOnKeyFixture{})
+	if err == nil {
+		t.Fatal("expected an error for iverson_summary on the key field")
+	}
+	if !strings.Contains(err.Error(), "summaryOnKeyFixture.Id is the primary key and also declares") {
+		t.Errorf("error must name the type and field: %q", err.Error())
+	}
+	if !strings.Contains(err.Error(), "iverson_summary") {
+		t.Errorf("error must name the offending declaration: %q", err.Error())
+	}
+	if !strings.Contains(err.Error(), "silently discarded") {
+		t.Errorf("error must explain why it is dropped: %q", err.Error())
+	}
+}
+
 func TestInspectType_KeyErrorNamesEveryRejectedDeclaration(t *testing.T) {
 	_, err := iverson.InspectType(multiDeclarationKeyFixture{})
 	if err == nil {
 		t.Fatal("expected an error for multiple declarations on the key field")
 	}
-	for _, want := range []string{"iverson_search_key", "iverson_large_field", "iverson_meta"} {
+	for _, want := range []string{
+		"iverson_search_key", "iverson_large_field", "iverson_embedding", "iverson_chunk",
+		"iverson_meta", "iverson_summary", "iverson_keywords", "iverson_extract",
+	} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("error must name %s in one message, got %q", want, err.Error())
 		}

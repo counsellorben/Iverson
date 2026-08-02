@@ -111,6 +111,12 @@ public sealed class SchemaRegistrar(
             rejected.Add("[IversonChunk]");
         if (keyProp.GetCustomAttribute<IversonMetadataAttribute>() is not null)
             rejected.Add("[IversonMetadata]");
+        if (keyProp.GetCustomAttribute<IversonSummaryAttribute>() is not null)
+            rejected.Add("[IversonSummary]");
+        if (keyProp.GetCustomAttribute<IversonKeywordsAttribute>() is not null)
+            rejected.Add("[IversonKeywords]");
+        if (keyProp.GetCustomAttribute<IversonExtractedAttribute>() is not null)
+            rejected.Add("[IversonExtracted]");
 
         if (rejected.Count == 0) return;
 

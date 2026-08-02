@@ -716,9 +716,17 @@ public class SchemaRegistrarTests
         [IversonTenant] public string TenantId { get; set; } = "";
     }
 
+    private sealed class SummaryOnKeyEntity
+    {
+        [IversonSummary] public Guid Id { get; set; }
+        [IversonTenant] public string TenantId { get; set; } = "";
+    }
+
     private sealed class MultiDeclarationKeyEntity
     {
-        [IversonMetadata, IversonLargeField, IversonSearchKey(0)] public Guid Id { get; set; }
+        [IversonSearchKey(0), IversonLargeField, IversonEmbedding, IversonChunk,
+         IversonMetadata, IversonSummary, IversonKeywords, IversonExtracted("hint")]
+        public Guid Id { get; set; }
         [IversonTenant] public string TenantId { get; set; } = "";
     }
 
@@ -734,6 +742,17 @@ public class SchemaRegistrarTests
     }
 
     [Fact]
+    public void BuildTypeDescriptor_Throws_WhenKeyDeclaresSummary()
+    {
+        var ex = InvokeBuildTypeDescriptor(BuildDescriptor<SummaryOnKeyEntity>());
+
+        ex.Should().BeOfType<ArgumentException>();
+        ex!.Message.Should().Contain("SummaryOnKeyEntity.Id is the primary key and also declares");
+        ex.Message.Should().Contain("[IversonSummary]");
+        ex.Message.Should().Contain("silently discarded");
+    }
+
+    [Fact]
     public void BuildTypeDescriptor_NamesEveryRejectedDeclaration_InOneError()
     {
         var ex = InvokeBuildTypeDescriptor(BuildDescriptor<MultiDeclarationKeyEntity>());
@@ -741,7 +760,12 @@ public class SchemaRegistrarTests
         ex.Should().BeOfType<ArgumentException>();
         ex!.Message.Should().Contain("[IversonSearchKey]");
         ex.Message.Should().Contain("[IversonLargeField]");
+        ex.Message.Should().Contain("[IversonEmbedding]");
+        ex.Message.Should().Contain("[IversonChunk]");
         ex.Message.Should().Contain("[IversonMetadata]");
+        ex.Message.Should().Contain("[IversonSummary]");
+        ex.Message.Should().Contain("[IversonKeywords]");
+        ex.Message.Should().Contain("[IversonExtracted]");
     }
 
     [Fact]

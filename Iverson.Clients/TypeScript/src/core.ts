@@ -202,6 +202,9 @@ export function describeEntity(cls: Function): TypeDescriptor {
         if (embeddingFields.has(keyField)) rejected.push('@IversonEmbedding()');
         if (chunkFieldsByName.has(keyField)) rejected.push('@IversonChunk()');
         if (metadataFields.has(keyField)) rejected.push('@IversonMetadata()');
+        if (summaryFields.has(keyField)) rejected.push('@IversonSummary()');
+        if (keywordsFields.has(keyField)) rejected.push('@IversonKeywords()');
+        if (extractedByField.has(keyField)) rejected.push('@IversonExtracted()');
 
         if (rejected.length > 0) {
             throw new Error(

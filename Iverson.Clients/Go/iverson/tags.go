@@ -19,6 +19,11 @@
 //	`iverson_embedding:"true"`      — embedding source field
 //	`iverson_chunk:"..."`           — chunk field; "true", "256", or "256:32"
 //
+// One exception: `iverson_key` composes only with `iverson_desc`. Any other
+// declaration on the key field is rejected, because the server builds every
+// per-property declaration from non-key properties only and would accept and
+// silently discard it.
+//
 // A field may also carry these independent tags, each valid on any field:
 //
 //	`iverson_desc:"Human-readable description"`
@@ -292,6 +297,15 @@ func InspectType(v interface{}) (EntityMeta, error) {
 			}
 			if fm.Metadata {
 				rejected = append(rejected, MetadataTagKey)
+			}
+			if fm.IsSummaryTarget {
+				rejected = append(rejected, SummaryTagKey)
+			}
+			if fm.IsKeywordsTarget {
+				rejected = append(rejected, KeywordsTagKey)
+			}
+			if fm.ExtractHint != "" {
+				rejected = append(rejected, ExtractTagKey)
 			}
 			if len(rejected) > 0 {
 				return EntityMeta{}, fmt.Errorf("%s.%s is the primary key and also declares %s; the server builds every per-property declaration from non-key properties only, so this would be accepted and silently discarded. Remove it from the key field. (Only a description is valid on a key.)", meta.TypeName, sf.Name, strings.Join(rejected, ", "))

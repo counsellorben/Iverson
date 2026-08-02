@@ -558,10 +558,28 @@ class SchemaRegistrarTest {
     }
 
     @Test
+    void registerAll_throwsWhenKeyDeclaresSummary() {
+        @IversonEntity
+        class SummaryOnKeyEntity {
+            @IversonKey @IversonSummary private UUID id;
+            @IversonTenant private String tenantId;
+        }
+
+        IllegalArgumentException ex = assertThrows(IllegalArgumentException.class,
+            () -> sut.registerAll(SummaryOnKeyEntity.class));
+        assertTrue(ex.getMessage().contains(
+            "SummaryOnKeyEntity.id is the primary key and also declares"), ex.getMessage());
+        assertTrue(ex.getMessage().contains("@IversonSummary"), ex.getMessage());
+        assertTrue(ex.getMessage().contains("silently discarded"), ex.getMessage());
+    }
+
+    @Test
     void registerAll_namesEveryRejectedKeyDeclarationInOneError() {
         @IversonEntity
         class MultiDeclarationKeyEntity {
-            @IversonKey @IversonSearchKey(order = 0) @IversonLargeField @IversonMetadata
+            @IversonKey @IversonSearchKey(order = 0) @IversonLargeField @IversonEmbedding
+            @IversonChunk @IversonMetadata @IversonSummary @IversonKeywords
+            @IversonExtracted("hint")
             private UUID id;
             @IversonTenant private String tenantId;
         }
@@ -570,7 +588,12 @@ class SchemaRegistrarTest {
             () -> sut.registerAll(MultiDeclarationKeyEntity.class));
         assertTrue(ex.getMessage().contains("@IversonSearchKey"), ex.getMessage());
         assertTrue(ex.getMessage().contains("@IversonLargeField"), ex.getMessage());
+        assertTrue(ex.getMessage().contains("@IversonEmbedding"), ex.getMessage());
+        assertTrue(ex.getMessage().contains("@IversonChunk"), ex.getMessage());
         assertTrue(ex.getMessage().contains("@IversonMetadata"), ex.getMessage());
+        assertTrue(ex.getMessage().contains("@IversonSummary"), ex.getMessage());
+        assertTrue(ex.getMessage().contains("@IversonKeywords"), ex.getMessage());
+        assertTrue(ex.getMessage().contains("@IversonExtracted"), ex.getMessage());
     }
 
     @Test

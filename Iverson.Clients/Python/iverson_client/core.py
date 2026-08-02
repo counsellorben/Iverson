@@ -149,6 +149,9 @@ class SchemaRegistrar:
             embedding_fields_set,
             chunk_fields_by_name,
             metadata_fields_set,
+            summary_fields_set,
+            keywords_fields_set,
+            extracted_fields_by_name,
         )
         tenant_field = self._resolve_tenant_field(type_name, meta.get("tenant_fields", []))
 
@@ -218,6 +221,9 @@ class SchemaRegistrar:
         embedding_fields_set: set,
         chunk_fields_by_name: dict,
         metadata_fields_set: set,
+        summary_fields_set: set,
+        keywords_fields_set: set,
+        extracted_fields_by_name: dict,
     ) -> None:
         """Reject declarations the server silently discards on a key field.
 
@@ -238,6 +244,12 @@ class SchemaRegistrar:
             rejected.append("iverson_chunk()")
         if key_field in metadata_fields_set:
             rejected.append("iverson_metadata()")
+        if key_field in summary_fields_set:
+            rejected.append("iverson_summary()")
+        if key_field in keywords_fields_set:
+            rejected.append("iverson_keywords()")
+        if key_field in extracted_fields_by_name:
+            rejected.append("iverson_extracted()")
 
         if not rejected:
             return

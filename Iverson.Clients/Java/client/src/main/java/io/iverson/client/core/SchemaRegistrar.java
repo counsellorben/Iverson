@@ -137,6 +137,9 @@ public final class SchemaRegistrar {
         if (keyField.getAnnotation(IversonEmbedding.class) != null)  rejected.add("@IversonEmbedding");
         if (keyField.getAnnotation(IversonChunk.class) != null)      rejected.add("@IversonChunk");
         if (keyField.getAnnotation(IversonMetadata.class) != null)   rejected.add("@IversonMetadata");
+        if (keyField.getAnnotation(IversonSummary.class) != null)    rejected.add("@IversonSummary");
+        if (keyField.getAnnotation(IversonKeywords.class) != null)   rejected.add("@IversonKeywords");
+        if (keyField.getAnnotation(IversonExtracted.class) != null)  rejected.add("@IversonExtracted");
 
         if (rejected.isEmpty()) return;
 

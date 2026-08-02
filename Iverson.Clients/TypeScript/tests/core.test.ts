@@ -10,12 +10,17 @@ import * as grpc from '@grpc/grpc-js';
 import { describe, expect, it, vi } from 'vitest';
 
 import {
+    IversonChunk,
     IversonDescription,
+    IversonEmbedding,
     IversonEntity,
+    IversonExtracted,
     IversonKey,
+    IversonKeywords,
     IversonLargeField,
     IversonMetadata,
     IversonSearchKey,
+    IversonSummary,
     IversonTenant,
 } from '../src/annotations.js';
 import { ACTING_USER_METADATA_KEY } from '../src/auth.js';
@@ -315,10 +320,28 @@ describe('describeEntity key-field validation', () => {
         expect(() => describeEntity(MetadataOnKeyEntity)).toThrow(/silently discarded/);
     });
 
+    it('rejects a key field that also declares summary', () => {
+        @IversonEntity()
+        class SummaryOnKeyEntity {
+            @IversonKey() @IversonSummary()
+            id: string = '';
+            @IversonTenant()
+            tenantId: string = '';
+        }
+
+        expect(() => describeEntity(SummaryOnKeyEntity)).toThrow(
+            /SummaryOnKeyEntity\.id is the primary key and also declares/,
+        );
+        expect(() => describeEntity(SummaryOnKeyEntity)).toThrow(/@IversonSummary\(\)/);
+        expect(() => describeEntity(SummaryOnKeyEntity)).toThrow(/silently discarded/);
+    });
+
     it('names every rejected declaration in one error', () => {
         @IversonEntity()
         class MultiDeclarationKeyEntity {
-            @IversonKey() @IversonSearchKey(0) @IversonLargeField() @IversonMetadata()
+            @IversonKey() @IversonSearchKey(0) @IversonLargeField() @IversonEmbedding()
+            @IversonChunk() @IversonMetadata() @IversonSummary() @IversonKeywords()
+            @IversonExtracted('hint')
             id: string = '';
             @IversonTenant()
             tenantId: string = '';
@@ -332,7 +355,12 @@ describe('describeEntity key-field validation', () => {
         }
         expect(message).toContain('@IversonSearchKey()');
         expect(message).toContain('@IversonLargeField()');
+        expect(message).toContain('@IversonEmbedding()');
+        expect(message).toContain('@IversonChunk()');
         expect(message).toContain('@IversonMetadata()');
+        expect(message).toContain('@IversonSummary()');
+        expect(message).toContain('@IversonKeywords()');
+        expect(message).toContain('@IversonExtracted()');
     });
 
     it('still accepts a key field carrying only a description', () => {

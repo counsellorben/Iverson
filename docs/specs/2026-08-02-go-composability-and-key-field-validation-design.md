@@ -83,9 +83,9 @@ The five scalar `Kind*` constants are deleted. The four relation constants stay.
 
 At registration time, before the request is sent, each client rejects an entity whose key field carries a scalar declaration other than `description`.
 
-**In scope — the silently-discarded set:** `search_key`, `large_field`, `embedding`, `chunk`, `metadata` on the key field. Each is collected only inside `SchemaBuilder.cs`'s non-key loop, so each is accepted and dropped.
+**In scope — the silently-discarded set:** `search_key`, `large_field`, `embedding`, `chunk`, `metadata`, `summary`, `keywords`, `extract_hint` on the key field. Each is collected only inside `SchemaBuilder.cs`'s non-key loop, so each is accepted and dropped.
 
-**Out of scope — already loud:** `summary`, `keywords` and `extract_hint` on the key field. `SchemaRegistrationOrchestrator.cs:142-150` throws `InvalidArgument` for an enrichment target that is the key, tenant or owner field. Duplicating that client-side would place a server rule in a fifth location for no benefit.
+**Correction — the enrichment three are NOT already loud.** An earlier revision of this spec put `summary`, `keywords` and `extract_hint` out of scope on the belief that `SchemaRegistrationOrchestrator.cs:142-150` throws `InvalidArgument` for an enrichment target that is the key. That guard is *unreachable* for the key field. `ValidateEnrichmentTargets` iterates `descriptor.EnrichmentTargets` (`SchemaRegistrationOrchestrator.cs:130`), and that list is populated only inside `SchemaBuilder.cs`'s non-key loop (`:79`, `:82`, `:85-86`; sole assignment at `:176`). An enrichment declaration on the key therefore never enters the list, the `property.IsKey` test at `:142` never sees it, and nothing errors — the declaration is silently discarded exactly like the other five. All three are consequently in scope and are now rejected client-side in all five clients. The rejected set is eight declarations, in this order: `search_key`, `large_field`, `embedding`, `chunk`, `metadata`, `summary`, `keywords`, `extract_hint`.
 
 **Out of scope — not discarded:** `tenant` on the key field. Tenant maps to `TypeDescriptor.TenantField` at type level and reaches `SchemaDescriptor.TenantColumn` via `SchemaBuilder.cs:172`, never through the per-property loop. Whether a primary key doubling as the tenant column is *sensible* is a separate question from whether it is silently discarded; it is not, so it stays out.
 
@@ -97,7 +97,7 @@ Each client already performs exactly this shape of registration-time validation 
 
 | Client | Precedent | Error type |
 |---|---|---|
-| .NET | `SchemaRegistrar.cs:93` `ResolveTenantField` | `InvalidOperationException` |
+| .NET | `SchemaRegistrar.cs:93` `ResolveTenantField` | `ArgumentException` |
 | Java | `SchemaRegistrar.java:125` `resolveTenantField` | `IllegalArgumentException` |
 | TypeScript | `core.ts:254-266` tenant-field resolution | `Error` |
 | Python | `core.py:204` `_resolve_tenant_field` | `ValueError` |
@@ -150,7 +150,7 @@ Verified against `main@645f160`.
 | V1–V3 | All five clients have a registrar-step validation precedent *(recurrence — every client)* | .NET `SchemaRegistrar.cs:75,93`; Java `SchemaRegistrar.java:113,125-127`; TypeScript `core.ts:254-273`; Python `core.py:204`; Go `tags.go:265-268` |
 | V4 | Each client's test runner is identifiable | Go `go.mod`; TypeScript `package.json:15` → `vitest run`; Java `pom.xml`; Python `pyproject.toml` `testpaths`; .NET `dotnet test` |
 | V5 | Non-key-only collection, with the key's description exempt | `SchemaBuilder.cs:53` `Where(p => !p.IsKey)`; `:50-51` collects `keyProp.Description`; the comment at `:47-49` states the rule |
-| V6 | Enrichment targets on the key are rejected loudly | `SchemaRegistrationOrchestrator.cs:142-150` — `if (property.IsKey \|\| …)` throws `InvalidArgument` |
+| V6 | ~~Enrichment targets on the key are rejected loudly~~ **FALSE — corrected.** Enrichment targets on the key are silently discarded, like the other five | `ValidateEnrichmentTargets` iterates `descriptor.EnrichmentTargets` (`SchemaRegistrationOrchestrator.cs:130`), which is populated only inside `SchemaBuilder.cs`'s non-key loop (`:79`, `:82`, `:85-86`; sole assignment `:176`). A key-field enrichment declaration never enters the list, so the guard at `:142-150` never runs for it. Its `property.IsKey` disjunct is dead code for its own named case — only the tenant-field and owner-field disjuncts can ever fire |
 | V7 | `tenant` on the key is not discarded | `SchemaBuilder.cs:172` — `TenantColumn` comes from `typeDesc.TenantField`, never the per-property loop |
 | V8 | `metadata` on the key is discarded | `metadataColumns` is populated only inside the `!p.IsKey` loop (`SchemaBuilder.cs:91-98`) |
 | V9 | *(dependents)* No existing declaration breaks under §2's check | Python `sample/models.py:19,26,35` and tests use `iverson_key()` alone; .NET samples carry `[IversonKey]` alone; TypeScript samples `@IversonKey()` alone; Go `iverson:"key"` alone. Java `AnnotationTest.java:22-24` pairs `@IversonKey` with `@IversonDescription` — legal under the rule and confirms the carve-out is load-bearing |

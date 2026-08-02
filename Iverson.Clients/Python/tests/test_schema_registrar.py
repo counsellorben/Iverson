@@ -122,9 +122,17 @@ class RegMetadataOnKeyArticle:
 
 
 @iverson_entity
+class RegSummaryOnKeyArticle:
+    id: str = iverson_field(key=True, summary=True)
+    tenant_id: str = iverson_tenant()
+
+
+@iverson_entity
 class RegMultiDeclarationKeyArticle:
-    id: str = iverson_field(key=True, metadata=True, large_field=True,
-                            search_key=True, search_key_order=0)
+    id: str = iverson_field(key=True, search_key=True, search_key_order=0,
+                            large_field=True, embedding=True, chunk=True,
+                            metadata=True, summary=True, keywords=True,
+                            extract_hint="hint")
     tenant_id: str = iverson_tenant()
 
 
@@ -474,6 +482,15 @@ class TestKeyFieldDeclarations:
         assert "iverson_metadata()" in str(ex.value)
         assert "silently discarded" in str(ex.value)
 
+    def test_summary_on_key_raises(self):
+        stub = make_stub()
+        registrar = SchemaRegistrar(stub, RegSummaryOnKeyArticle)
+        with pytest.raises(ValueError) as ex:
+            registrar.register_all()
+        assert "RegSummaryOnKeyArticle.id is the primary key and also declares" in str(ex.value)
+        assert "iverson_summary()" in str(ex.value)
+        assert "silently discarded" in str(ex.value)
+
     def test_every_rejected_declaration_named_in_one_error(self):
         stub = make_stub()
         registrar = SchemaRegistrar(stub, RegMultiDeclarationKeyArticle)
@@ -482,7 +499,12 @@ class TestKeyFieldDeclarations:
         message = str(ex.value)
         assert "iverson_search_key()" in message
         assert "iverson_large_field()" in message
+        assert "iverson_embedding()" in message
+        assert "iverson_chunk()" in message
         assert "iverson_metadata()" in message
+        assert "iverson_summary()" in message
+        assert "iverson_keywords()" in message
+        assert "iverson_extracted()" in message
 
     def test_description_on_key_still_registers(self):
         request = register_request(RegDescribedKeyArticle)
