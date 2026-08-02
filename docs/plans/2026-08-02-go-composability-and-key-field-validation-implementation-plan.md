@@ -201,14 +201,19 @@ table below has nine rows across those five sites.
 currently sits at `:245-248`, after the `ExtractTagKey` block; Step 5 inserts before that block, so
 the ordering is already correct — verify it rather than assuming.
 
-### Step 7 — Convert the four `RelationKind` rename sites
+### Step 7 — Convert the five `RelationKind` rename sites
 
 | Site | Current | Becomes |
 |---|---|---|
 | `registrar.go:106` | `relationKindToProto(fm.Kind)` | `relationKindToProto(fm.RelationKind)` |
 | `registrar.go:227` | `switch fm.Kind` | `switch fm.RelationKind` |
 | `registrar.go:244` | `fm.Kind == KindManyToOne \|\| fm.Kind == KindOneToOne` | `fm.RelationKind == ...` |
+| `coordinator.go:428` | `switch fm.Kind` over the four relation kinds, inside the relation-skip block | `switch fm.RelationKind` |
 | `tags.go:250` | `switch fm.Kind { case KindManyToOne, ...: ... default: ... }` | `if fm.RelationKind != "" { meta.Relations = append(...) } else { <default branch verbatim> }` |
+
+`coordinator.go:428` sits three lines below the `ParseTag` call at `:427` and is the only relation
+switch in a file whose other two `Kind` reads (`:125`, `:151`) are in Step 6's boolean table — check
+it explicitly rather than assuming `coordinator.go` is already covered.
 
 **`tags.go:250` is relation-vs-scalar routing plus tenant collection, not validation.** Its
 `default:` branch — the `fm.Tenant` collection and the `meta.Fields` append at `:256-261` — moves
@@ -224,7 +229,7 @@ scalar flag and no relation kind:
 
 ```go
 		if !f.IsKey && !f.IsSearchKey && !f.IsLargeField && !f.IsEmbedding && !f.IsChunk &&
-			!f.Metadata && f.RelationKind == "" {
+			f.RelationKind == "" {
 ```
 
 `sample/main.go:27` prints `f.Kind` and `:32` prints `r.Kind`. `:32` iterates relations, so it
@@ -263,6 +268,10 @@ Two packages, both must migrate:
 
 Migration rules for `tags_test.go`:
 
+- **Every struct introduced for a converted test must carry a tenant field**
+  (`iverson_tenant:"true"`). `InspectType` returns an error for a type with none
+  (`tags.go:264-267`), so a struct carrying only the flag under test fails on the tenant rule before
+  reaching any assertion. `articleFixture` at `tags_test.go:163-173` is the existing shape to follow.
 - A test that called `ParseTag(name, "key")` and asserted `fm.Kind == iverson.KindKey` no longer has
   a `ParseTag` path — the scalar keys are read at the assembly point, not by `ParseTag`. Convert
   those to `InspectType` tests over a struct carrying `iverson_key:"true"`, asserting `fm.IsKey`.
@@ -478,10 +487,13 @@ The second is not optional. Without it, a client that rejected every key declara
 `description` would pass the suite while breaking a documented, currently-working case
 (`registrar_test.go:289` in Go and `AnnotationTest.java:22-24` in Java both rely on key+description).
 
-**Every fixture must carry a tenant field.** All five clients raise on a missing tenant marker, and
-in Python that check runs at `core.py:144` — *before* where Step 5 sites the key check. A fixture
-without a tenant field would raise the tenant error, and a bare "raises" assertion would pass
-vacuously. Assert on the key-field message specifically, not merely that an exception was raised.
+**Every fixture must carry a tenant field.** All five clients raise on a missing tenant marker. This
+is load-bearing for the *acceptance* test in particular — "key carries only `description` and still
+registers" cannot pass without one, since registration fails on the tenant rule first. Under the
+placements above the key check precedes the tenant check in all five clients, so a rejection fixture
+would raise the key error even without a tenant field; include one anyway, so both fixtures in each
+client have the same shape. Assert on the key-field message specifically, not merely that an
+exception was raised.
 
 Confirmed as a non-issue: no existing fixture in any of the five clients declares a rejected flag on
 its key field — every key fixture carries at most `description`. The new check turns no green test
@@ -575,7 +587,7 @@ Verified against `main@59f4e12`.
 | P6 | `strconv`, `strings` and `fmt` are already imported in `tags.go` | import block at `tags.go:1-6` — `fmt`, `reflect`, `strconv`, `strings` |
 | P7 | The eight existing `*TagKey` constants establish the naming convention | `tags.go:54,58,62,68,72,76,80,85` — one const per statement, each with a doc comment |
 | P8 | The five boolean-read sites are exactly as tabulated | `registrar.go:85,86,87,89,90,91`; `coordinator.go:125,151`; `tags.go:246`. `registrar.go:88` reads `fm.Metadata` and is unaffected |
-| P9 | The four rename sites are exactly as tabulated | `registrar.go:106,227,244`; `tags.go:250`. `tags.go:250-262`'s `default:` branch carries the tenant collection and `meta.Fields` append |
+| P9 | The **five** rename sites are exactly as tabulated | `registrar.go:106,227,244`; `tags.go:250`; **`coordinator.go:428`** — a relation-only `switch fm.Kind` inside the relation-skip block, omitted from the spec's `G5`/`G6`/`G7` and from this plan's first draft. `tags.go:250-262`'s `default:` branch carries the tenant collection and `meta.Fields` append |
 | P10 | The nine `Kind*` constants have no referents outside the Go client | Repo-wide grep for `Kind[A-Z]` in `*.go`: hits are confined to `Iverson.Clients/Go/iverson/`, `sample/main.go` and `iverson_test/`. `generated/*.pb.go` hits are proto oneof `.Kind` fields, unrelated |
 | P11 | Client registrar and test files are at the cited paths | `DotNet/Iverson.Client.Core/SchemaRegistrar.cs` + `Iverson.Client.Core.Tests/SchemaRegistrarTests.cs`; `Java/client/src/{main,test}/java/io/iverson/client/core/SchemaRegistrar{,Test}.java`; `TypeScript/src/core.ts` + `tests/core.test.ts`; `Python/iverson_client/core.py` + `tests/test_schema_registrar.py` |
 | P12 | **TypeScript's accessors are in `annotations.ts`, not `core.ts`** | `getKeyField` etc. declared at `annotations.ts:74-255`, imported at `core.ts:50`, used at `core.ts:186`. The spec's CDR round 2 said "core.ts exposes" — it consumes them |
@@ -589,3 +601,4 @@ Verified against `main@59f4e12`.
 | P20 | Task ordering | Task 2 uses `iverson_large_field`/`iverson_chunk`, introduced by Task 1. Task 3's Go half reads `fm.IsKey`, introduced by Task 1. Task 4 touches only a markdown file no other task reads. So: T1 → {T2, T3}, T4 anytime |
 | P21 | The Python spec's parity claim is where Task 4 says | `docs/specs/2026-08-01-python-declaration-composability-design.md:231-232` — "The other four clients already compose correctly; Go was fixed at `e4a77ff`…" |
 | P22 | `docs/` is gitignored, so Task 4's commit needs `-f` | Established repo-wide; every prior spec and plan in this project was committed with `git add -f` |
+| P23 | **The `FieldMeta.Kind` referent set is complete** — not merely accurate per listed site | `grep -n '\.Kind\b'` across `Iverson.Clients/Go` excluding `generated/`: production referents are `registrar.go:85,86,87,89,90,91,106,227,244`, `coordinator.go:125,151,428`, `tags.go:246,250`, `sample/main.go:24,27,32`. Steps 6-8 cover all of them. Step 2 deletes the field, so any unconverted reader is a compile error — completeness, not per-site accuracy, is what this task rests on |
