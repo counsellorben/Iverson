@@ -106,6 +106,15 @@ class RegComposedEnrichmentArticle:
     tenant_id: str = iverson_tenant()
 
 
+@iverson_entity
+class RegComposedDeclarationArticle:
+    id: str = iverson_key()
+    title: str = None
+    body: str = iverson_field(large_field=True, chunk=True,
+                              chunk_max_tokens=256, chunk_overlap=32)
+    tenant_id: str = iverson_field(metadata=True, tenant=True)
+
+
 # ── Fixtures ───────────────────────────────────────────────────────────────────
 
 def make_stub() -> MagicMock:
@@ -117,6 +126,14 @@ def make_stub() -> MagicMock:
         registered=["RegArticle"],
     )
     return stub
+
+
+def register_request(cls) -> mapping_pb.SchemaRequest:
+    """Register `cls` against a stub and return the SchemaRequest that was sent."""
+    stub = make_stub()
+    stub.RegisterSchema.return_value = mapping_pb.SchemaResponse(success=True)
+    SchemaRegistrar(stub, cls).register_all()
+    return stub.RegisterSchema.call_args[0][0]
 
 
 # ── Tests ──────────────────────────────────────────────────────────────────────
@@ -257,78 +274,66 @@ class TestSchemaRegistrar:
 
 
 class TestMetadataAndDescription:
-    def _request(self, cls) -> mapping_pb.SchemaRequest:
-        stub = make_stub()
-        stub.RegisterSchema.return_value = mapping_pb.SchemaResponse(success=True)
-        SchemaRegistrar(stub, cls).register_all()
-        return stub.RegisterSchema.call_args[0][0]
-
     def test_type_description_populated(self):
-        request = self._request(RegDescribedArticle)
+        request = register_request(RegDescribedArticle)
         assert request.root_type.description == "An article with metadata signals."
 
     def test_type_description_defaults_empty(self):
-        request = self._request(RegArticle)
+        request = register_request(RegArticle)
         assert request.root_type.description == ""
 
     def test_metadata_fields_flagged(self):
-        props = {p.name: p for p in self._request(RegDescribedArticle).root_type.properties}
+        props = {p.name: p for p in register_request(RegDescribedArticle).root_type.properties}
         assert props["Source"].is_metadata is True
         assert props["Language"].is_metadata is True
 
     def test_metadata_composes_with_search_key(self):
-        props = {p.name: p for p in self._request(RegDescribedArticle).root_type.properties}
+        props = {p.name: p for p in register_request(RegDescribedArticle).root_type.properties}
         assert props["Region"].is_metadata is True
         assert props["Region"].is_search_key is True
         assert props["Region"].search_key_order == 0
         assert props["Region"].description == "Publication region."
 
     def test_key_field_description_carried(self):
-        props = {p.name: p for p in self._request(RegDescribedArticle).root_type.properties}
+        props = {p.name: p for p in register_request(RegDescribedArticle).root_type.properties}
         assert props["Id"].is_key is True
         assert props["Id"].description == "Stable article identifier."
 
     def test_plain_field_description_carried(self):
-        props = {p.name: p for p in self._request(RegDescribedArticle).root_type.properties}
+        props = {p.name: p for p in register_request(RegDescribedArticle).root_type.properties}
         assert props["Title"].description == "Headline text."
 
     def test_undeclared_fields_default_to_false_and_empty(self):
-        props = {p.name: p for p in self._request(RegDescribedArticle).root_type.properties}
+        props = {p.name: p for p in register_request(RegDescribedArticle).root_type.properties}
         assert props["WordCount"].is_metadata is False
         assert props["WordCount"].description == ""
         assert props["Language"].description == ""
 
 
 class TestEnrichmentTargets:
-    def _request(self, cls) -> mapping_pb.SchemaRequest:
-        stub = make_stub()
-        stub.RegisterSchema.return_value = mapping_pb.SchemaResponse(success=True)
-        SchemaRegistrar(stub, cls).register_all()
-        return stub.RegisterSchema.call_args[0][0]
-
     def test_summary_target_flagged(self):
-        props = {p.name: p for p in self._request(RegEnrichedArticle).root_type.properties}
+        props = {p.name: p for p in register_request(RegEnrichedArticle).root_type.properties}
         assert props["Abstract"].is_summary_target is True
 
     def test_keywords_target_flagged(self):
-        props = {p.name: p for p in self._request(RegEnrichedArticle).root_type.properties}
+        props = {p.name: p for p in register_request(RegEnrichedArticle).root_type.properties}
         assert props["Tags"].is_keywords_target is True
 
     def test_extracted_hint_carried(self):
-        props = {p.name: p for p in self._request(RegEnrichedArticle).root_type.properties}
+        props = {p.name: p for p in register_request(RegEnrichedArticle).root_type.properties}
         assert props["Entities"].extract_hint == "Extract named entities as a JSON array."
 
     def test_chunk_contextual_flagged(self):
-        props = {p.name: p for p in self._request(RegEnrichedArticle).root_type.properties}
+        props = {p.name: p for p in register_request(RegEnrichedArticle).root_type.properties}
         assert props["Body"].is_chunk is True
         assert props["Body"].chunk_contextual is True
 
     def test_chunk_contextual_defaults_false(self):
-        props = {p.name: p for p in self._request(RegArticle).root_type.properties}
+        props = {p.name: p for p in register_request(RegArticle).root_type.properties}
         assert props["Summary"].chunk_contextual is False
 
     def test_undeclared_property_has_no_enrichment_targets(self):
-        props = {p.name: p for p in self._request(RegEnrichedArticle).root_type.properties}
+        props = {p.name: p for p in register_request(RegEnrichedArticle).root_type.properties}
         assert props["Title"].is_summary_target is False
         assert props["Title"].is_keywords_target is False
         assert props["Title"].extract_hint == ""
@@ -343,36 +348,36 @@ class TestEnrichmentTargets:
             iverson_extracted("   ")
 
     def test_standalone_summary_still_works(self):
-        props = {p.name: p for p in self._request(RegEnrichedArticle).root_type.properties}
+        props = {p.name: p for p in register_request(RegEnrichedArticle).root_type.properties}
         assert props["Abstract"].is_summary_target is True
         assert props["Abstract"].is_search_key is False
 
     def test_standalone_keywords_still_works(self):
-        props = {p.name: p for p in self._request(RegEnrichedArticle).root_type.properties}
+        props = {p.name: p for p in register_request(RegEnrichedArticle).root_type.properties}
         assert props["Tags"].is_keywords_target is True
 
     def test_standalone_extracted_still_works(self):
-        props = {p.name: p for p in self._request(RegEnrichedArticle).root_type.properties}
+        props = {p.name: p for p in register_request(RegEnrichedArticle).root_type.properties}
         assert props["Entities"].extract_hint == "Extract named entities as a JSON array."
 
     def test_summary_composes_with_search_key(self):
-        props = {p.name: p for p in self._request(RegComposedEnrichmentArticle).root_type.properties}
+        props = {p.name: p for p in register_request(RegComposedEnrichmentArticle).root_type.properties}
         assert props["SummaryKey"].is_summary_target is True
         assert props["SummaryKey"].is_search_key is True
         assert props["SummaryKey"].search_key_order == 0
 
     def test_keywords_composes_with_metadata(self):
-        props = {p.name: p for p in self._request(RegComposedEnrichmentArticle).root_type.properties}
+        props = {p.name: p for p in register_request(RegComposedEnrichmentArticle).root_type.properties}
         assert props["KeywordsMeta"].is_keywords_target is True
         assert props["KeywordsMeta"].is_metadata is True
 
     def test_extract_hint_composes_with_large_field(self):
-        props = {p.name: p for p in self._request(RegComposedEnrichmentArticle).root_type.properties}
+        props = {p.name: p for p in register_request(RegComposedEnrichmentArticle).root_type.properties}
         assert props["HintField"].extract_hint == "Extract the price."
         assert props["HintField"].is_large_field is True
 
     def test_summary_composes_with_description(self):
-        props = {p.name: p for p in self._request(RegComposedEnrichmentArticle).root_type.properties}
+        props = {p.name: p for p in register_request(RegComposedEnrichmentArticle).root_type.properties}
         assert props["DescribedSummary"].is_summary_target is True
         assert props["DescribedSummary"].description == "A summary field."
 
@@ -417,3 +422,25 @@ class TestTenantField:
         registrar = SchemaRegistrar(stub, RegMultiTenantArticle)
         with pytest.raises(ValueError, match="tenant_id.*org_id|org_id.*tenant_id"):
             registrar.register_all()
+
+
+class TestDeclarationComposition:
+    def test_large_field_composes_with_chunk(self):
+        props = {p.name: p for p in
+                 register_request(RegComposedDeclarationArticle).root_type.properties}
+        assert props["Body"].is_large_field is True
+        assert props["Body"].is_chunk is True
+        assert props["Body"].chunk_max_tokens == 256
+        assert props["Body"].chunk_overlap == 32
+
+    def test_metadata_composes_with_tenant(self):
+        request = register_request(RegComposedDeclarationArticle)
+        props = {p.name: p for p in request.root_type.properties}
+        assert props["TenantId"].is_metadata is True
+        assert request.root_type.tenant_field == "TenantId"
+
+    def test_multi_flag_field_emits_exactly_one_property(self):
+        request = register_request(RegComposedDeclarationArticle)
+        names = [p.name for p in request.root_type.properties]
+        assert names.count("Body") == 1
+        assert names.count("TenantId") == 1
