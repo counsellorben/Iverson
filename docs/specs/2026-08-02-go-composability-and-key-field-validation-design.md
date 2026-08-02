@@ -63,7 +63,7 @@ type Article struct {
 
 **`ParseTag` keeps its exported signature** — `ParseTag(fieldName, tagValue string) (FieldMeta, error)` — and narrows to parsing relation kinds from `iverson:`. The five new keys are read at the existing assembly point (`tags.go:228-235`), beside the seven independent keys already read there via `sf.Tag.Get(...)`. Changing `ParseTag` to accept a `reflect.StructTag` would break an exported API and force rewrites at `coordinator.go:427` and every test call site, for no gain.
 
-**Six call sites read the scalar `Kind` today and must change.** The design's first draft named only the first of these; all six are in scope:
+**Five call sites read the scalar `Kind` today and must change.** The design's first draft named only the first of these; all five are in scope:
 
 | Site | Current | Becomes |
 |---|---|---|
@@ -71,12 +71,11 @@ type Article struct {
 | `coordinator.go:125` | `if f.Kind == KindKey` | `if f.IsKey` |
 | `coordinator.go:151` | `if f.Kind == KindKey` | `if f.IsKey` |
 | `tags.go:246` | `if fm.ChunkContextual && fm.Kind != KindChunk` | `&& !fm.IsChunk` |
-| `tags.go:250` | `switch fm.Kind` (validation) | rewritten against the booleans |
 | `sample/main.go:24` | `if f.Kind == ""` — plain-field detection | see below |
 
 `sample/main.go:24` needs a definition, not a mechanical rename. Under the axis, "plain field" was `Kind == ""`. Under independent flags it becomes "no scalar flag set and no relation kind" — the sample must test that explicitly rather than compare one field to `""`.
 
-`registrar.go:106`, `:227` and `:244` also switch on `Kind`, but only over relation kinds; they follow the `RelationKind` rename mechanically.
+`registrar.go:106`, `:227`, `:244` and `tags.go:250` also switch on `Kind`, but over relation kinds only; they follow the `RelationKind` rename mechanically. `tags.go:250` is relation-vs-scalar routing plus tenant collection, not validation: its `switch fm.Kind` becomes a `fm.RelationKind != ""` test with the `default:` branch unchanged. Rewriting it against the scalar booleans would send every plain, untagged field into `meta.Relations`.
 
 The five scalar `Kind*` constants are deleted. The four relation constants stay.
 
@@ -112,7 +111,7 @@ The message names the type, the key field, and the offending declaration.
 
 **That spec's Known issues understates the surface.** It names only `metadata` + embedding/chunk/array/large_field as newly expressible and server-rejected. Two classes are added: `search_key` + `large_field`/`chunk`/`embedding` (`SchemaBuilder.cs:117-121`; note `IsEmbedding` and `IsChunk` implicitly add the column to `largeFields` at `:63` and `:76`, so `search_key`+`chunk` trips the same rule), and the key-field class — recorded as no longer accepted-and-discarded, because §2 adds the client check.
 
-**Go's package doc is rewritten.** `tags.go:1-43` documents the tag format and asserts "kinds are mutually exclusive"; `tags.go:68-69` repeats it, and `tags.go:29-30` and `:83-84` describe `iverson_contextual` as valid "only alongside `iverson:\"chunk...\"`". All four are false once §1 lands.
+**Go's package doc is rewritten.** `tags.go:1-43` documents the tag format and asserts "kinds are mutually exclusive"; `tags.go:68-69` repeats it, and `tags.go:29-30` and `:83-84` describe `iverson_contextual` as valid "only alongside `iverson:\"chunk...\"`". All four are false once §1 lands. `tags.go:247` also carries the old form inside a runtime error message ("…is not a chunk field (iverson:\"chunk...\")…"), which would tell users to fix their tag with a syntax that no longer exists; it is rewritten with the other five.
 
 ## Testing
 
@@ -123,6 +122,8 @@ The message names the type, the key field, and the offending declaration.
 ## Migration
 
 Every existing Go struct tag for a scalar field changes. A compatibility shim accepting the old forms is deliberately not offered — it would leave the mutually-exclusive path alive, which is the thing being removed.
+
+Un-migrated tags fail loudly: `ParseTag` rejects an unknown kind (`tags.go:194-195`) and `InspectType` propagates the error, so an old `iverson:"key"` is a registration-time failure rather than a silently-dropped declaration. That matters here — a silent degradation would reproduce the exact failure class §2 exists to eliminate.
 
 Known migration surface: `sample/models/article.go`, `sample/models/author.go`, `sample/models/tag.go`, `iverson/coordinator_test.go:27`, `iverson_test/registrar_test.go` (8 tags), and `iverson_test/tags_test.go` (which calls `ParseTag` directly with scalar-kind strings at roughly a dozen sites, and asserts on `fm.Kind`).
 
@@ -138,12 +139,14 @@ Verified against `main@645f160`.
 | G2 | `ParseTag`'s caller set is bounded | `coordinator.go:427`, `tags.go:228`, and ~12 direct calls in `iverson_test/tags_test.go` |
 | G3 | Narrowing `ParseTag` to relations is safe at `coordinator.go:427` | `:425-432` — it parses, then `switch fm.Kind` over the four relation kinds only, to skip relation fields |
 | G4 | `tags.go:228-235` is the assembly point to extend | `ParseTag(...)` followed by `fm.Description = sf.Tag.Get(DescriptionTagKey)`, `fm.Metadata = … == "true"`, `fm.Tenant`, `fm.IsSummaryTarget` — the same pattern the five new keys join |
-| G5 | **Six** sites read the scalar `Kind`, not one | `registrar.go:85-91`; `coordinator.go:125`, `:151`; `tags.go:246`, `:250`; `sample/main.go:24`. `registrar.go:106`, `:227`, `:244` switch on relation kinds only |
+| G5 | **Five** sites read the scalar `Kind`, not one | `registrar.go:85-91`; `coordinator.go:125`, `:151`; `tags.go:246`; `sample/main.go:24`. Four further sites — `registrar.go:106`, `:227`, `:244`, `tags.go:250` — switch over relation kinds only and follow the `RelationKind` rename |
 | G6 | The five scalar `Kind*` constants are deletable | Referenced only in `ParseTag` (`tags.go:147-167`), the six sites above, and the test suite |
 | G7 | Relation `Kind*` constants survive the rename | Used at `registrar.go:106`, `:227`, `:244` and `coordinator.go:428` — all relation-only |
 | G8 | Full Go migration surface *(recurrence — every old-form tag)* | 3 sample model files, `coordinator_test.go:27`, 8 tags in `registrar_test.go`, and `tags_test.go`'s direct `ParseTag` calls |
 | G9 | Go module exists for build/test | `Iverson.Clients/Go/go.mod` |
-| G10 | Every doc reference to the old forms *(recurrence)* | `tags.go:6-12` (format block), `:29-30` and `:83-84` (`iverson_contextual` "alongside `iverson:\"chunk...\"`"), `:32-39` (composability rationale), `:68-69` ("kinds are mutually exclusive"), `:134` (`ParseTag` doc) |
+| G10 | Every doc reference to the old forms *(recurrence)* | `tags.go:6-12` (format block), `:29-30` and `:83-84` (`iverson_contextual` "alongside `iverson:\"chunk...\"`"), `:32-39` (composability rationale), `:68-69` ("kinds are mutually exclusive"), `:134` (`ParseTag` doc), and `:247` — a runtime `fmt.Errorf` string carrying the same `iverson:\"chunk...\"` text. Note `:247` is invisible to a `grep 'iverson:"'` because the source escapes the quote; `grep 'iverson:\\"'` returns it and nothing else |
+| G11 | *(span-check gap, added round 1)* Un-migrated tags fail loudly, not silently | `tags.go:194-195` — `ParseTag`'s `default:` case returns `fmt.Errorf("iverson tag %q: unknown kind %q", …)`, and `InspectType` propagates it (`:228`). An old `iverson:"key"` tag is a registration-time error, not a silently-dropped declaration |
+| G12 | *(span-check gap, added round 1)* The Go assembly point can fail | `InspectType` is declared `(EntityMeta, error)` (`tags.go:249`) and already returns errors for a blank extract hint (`:242`) and the tenant-count rules (`:265-268`), so both the new tag parsing and §2's key-field check have an established path to raise |
 | V1–V3 | All five clients have a registrar-step validation precedent *(recurrence — every client)* | .NET `SchemaRegistrar.cs:75,93`; Java `SchemaRegistrar.java:113,125-127`; TypeScript `core.ts:254-273`; Python `core.py:204`; Go `tags.go:265-268` |
 | V4 | Each client's test runner is identifiable | Go `go.mod`; TypeScript `package.json:15` → `vitest run`; Java `pom.xml`; Python `pyproject.toml` `testpaths`; .NET `dotnet test` |
 | V5 | Non-key-only collection, with the key's description exempt | `SchemaBuilder.cs:53` `Where(p => !p.IsKey)`; `:50-51` collects `keyProp.Description`; the comment at `:47-49` states the rule |
