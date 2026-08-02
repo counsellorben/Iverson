@@ -24,162 +24,133 @@ class FieldMeta:
     ``@iverson_entity`` inspects ``__annotations__`` and replaces every
     ``FieldMeta`` default with ``None`` so the attribute behaves normally
     at runtime while preserving the metadata on ``cls._iverson_meta``.
+
+    Every scalar declaration is an INDEPENDENT flag, mirroring the proto's
+    ``PropertyDescriptor``. There is deliberately no ``kind`` discriminator:
+    a single mutually-exclusive axis is what made declarations non-composable
+    and produced the same bug four times. ``relation_kind`` is the one
+    exception — relations serialize to ``RelationDescriptor``, a different
+    message, so a field is either a scalar property or a relation.
     """
-    kind: str                     # 'key' | 'search_key' | 'metadata' | 'large_field' | 'embedding' | 'chunk' | relation kinds
-    order: int = 0                # for search_key
-    related_type: str | None = None  # for relation kinds
-    max_tokens: int = 512         # for chunk
-    overlap: int = 64             # for chunk
-    metadata: bool = False        # metadata signal marker
-    description: str = ""         # human-readable field description
-    contextual: bool = False      # for chunk: include surrounding context
-    is_summary_target: bool = False    # marker for summary enrichment
-    is_keywords_target: bool = False   # marker for keywords enrichment
-    extract_hint: str = ""        # for extraction enrichment; mandatory when kind == 'extracted'
-    tenant: bool = False          # marks the field holding the row's tenant id
+    key: bool = False
+    search_key: bool = False
+    search_key_order: int = 0
+    large_field: bool = False
+    embedding: bool = False
+    chunk: bool = False
+    chunk_max_tokens: int = 512
+    chunk_overlap: int = 64
+    chunk_contextual: bool = False
+    metadata: bool = False
+    tenant: bool = False
+    summary: bool = False
+    keywords: bool = False
+    extract_hint: str = ""
+    description: str = ""
+    relation_kind: str | None = None
+    related_type: str | None = None
 
 
 # ── Public factory helpers ─────────────────────────────────────────────────────
 
-def iverson_key(description: str = "") -> FieldMeta:
-    """Mark the primary key field of an entity.
-
-    Args:
-        description: human-readable description of the field.
-    """
-    return FieldMeta(kind="key", description=description)
-
-
-def _enrichment_kwargs(
-    summary: bool, keywords: bool, extract_hint: str, caller: str
-) -> dict:
-    """Validate and package the shared enrichment kwargs.
-
-    This is the single home for the blank-hint guard: the server treats an
-    empty hint as "not an extraction target" and would silently drop it, so
-    a ``None`` or blank-but-non-empty hint must be rejected the same way no
-    matter which factory it arrives through. An empty string (``""``) is the
-    "not declared" default and must NOT raise.
-    """
-    if extract_hint is None or (extract_hint != "" and not extract_hint.strip()):
-        raise ValueError(
-            f"{caller}() requires a non-blank extraction hint; the "
-            "server treats an empty hint as \"not an extraction target\" and "
-            "would silently drop it."
-        )
-    return dict(
-        is_summary_target=summary,
-        is_keywords_target=keywords,
-        extract_hint=extract_hint,
-    )
-
-
-def iverson_search_key(
-    order: int = 0,
+def iverson_field(
+    *,
+    key: bool = False,
+    search_key: bool = False,
+    search_key_order: int = 0,
+    large_field: bool = False,
+    embedding: bool = False,
+    chunk: bool = False,
+    chunk_max_tokens: int = 512,
+    chunk_overlap: int = 64,
+    chunk_contextual: bool = False,
     metadata: bool = False,
     tenant: bool = False,
-    description: str = "",
     summary: bool = False,
     keywords: bool = False,
     extract_hint: str = "",
+    description: str = "",
 ) -> FieldMeta:
-    """Mark a field used as a search/sort key in StarRocks MV.
+    """Declare a field with any combination of scalar declarations.
+
+    This is the single constructor for scalar declarations; the named
+    factories below are one-line presets over it. Use this directly whenever
+    a field carries MORE THAN ONE declaration.
 
     Args:
-        order: position in the composite search key (0-based).
-        metadata: also mark the field as a metadata signal.
-        tenant: also mark the field as the row's tenant id field.
-        description: human-readable description of the field.
-        summary: also mark the field as a summary enrichment target.
-        keywords: also mark the field as a keywords enrichment target.
-        extract_hint: also mark the field as an extraction enrichment target,
-            guided by this hint. Must not be blank when provided.
+        key: primary key field.
+        search_key / search_key_order: StarRocks MV search/sort key and its
+            0-based position in the composite key.
+        large_field: excluded from materialized views.
+        embedding: source for a whole-field vector embedding.
+        chunk / chunk_max_tokens / chunk_overlap / chunk_contextual: source
+            for chunk-level vector embeddings and its windowing.
+        metadata: a property that describes or qualifies the entity rather
+            than carrying its primary content.
+        tenant: the field holding the row's tenant id. Exactly one per entity.
+        summary / keywords: Ollama enrichment targets.
+        extract_hint: Ollama extraction target, guided by this hint. ``""``
+            means "not an extraction target"; a blank-but-non-empty hint is
+            rejected.
+        description: human-readable field description.
     """
+    # The server treats an empty hint as "not an extraction target" and would
+    # silently drop it, so a None or blank-but-non-empty hint is rejected here.
+    # An empty string is the "not declared" default and must NOT raise.
+    if extract_hint is None or (extract_hint != "" and not extract_hint.strip()):
+        raise ValueError(
+            "extract_hint must be non-blank when provided; the server treats "
+            "an empty hint as \"not an extraction target\" and would silently "
+            "drop it."
+        )
+
     return FieldMeta(
-        kind="search_key",
-        order=order,
+        key=key,
+        search_key=search_key,
+        search_key_order=search_key_order,
+        large_field=large_field,
+        embedding=embedding,
+        chunk=chunk,
+        chunk_max_tokens=chunk_max_tokens,
+        chunk_overlap=chunk_overlap,
+        chunk_contextual=chunk_contextual,
         metadata=metadata,
         tenant=tenant,
+        summary=summary,
+        keywords=keywords,
+        extract_hint=extract_hint,
         description=description,
-        **_enrichment_kwargs(summary, keywords, extract_hint, "iverson_search_key"),
     )
 
 
-def iverson_metadata(
-    description: str = "",
-    summary: bool = False,
-    keywords: bool = False,
-    extract_hint: str = "",
-) -> FieldMeta:
-    """Mark a field as a metadata signal — a property that describes or
-    qualifies the entity rather than carrying its primary content.
-
-    Args:
-        description: human-readable description of the field.
-        summary: also mark the field as a summary enrichment target.
-        keywords: also mark the field as a keywords enrichment target.
-        extract_hint: also mark the field as an extraction enrichment target,
-            guided by this hint. Must not be blank when provided.
-    """
-    return FieldMeta(
-        kind="metadata",
-        metadata=True,
-        description=description,
-        **_enrichment_kwargs(summary, keywords, extract_hint, "iverson_metadata"),
-    )
+def iverson_key(description: str = "") -> FieldMeta:
+    """Mark the primary key field of an entity."""
+    return iverson_field(key=True, description=description)
 
 
-def iverson_description(
-    description: str,
-    summary: bool = False,
-    keywords: bool = False,
-    extract_hint: str = "",
-) -> FieldMeta:
-    """Supply a human-readable description for an otherwise plain field.
-
-    Args:
-        description: the description text.
-        summary: also mark the field as a summary enrichment target.
-        keywords: also mark the field as a keywords enrichment target.
-        extract_hint: also mark the field as an extraction enrichment target,
-            guided by this hint. Must not be blank when provided.
-    """
-    return FieldMeta(
-        kind="plain",
-        description=description,
-        **_enrichment_kwargs(summary, keywords, extract_hint, "iverson_description"),
-    )
+def iverson_search_key(order: int = 0, description: str = "") -> FieldMeta:
+    """Mark a field used as a search/sort key in the StarRocks MV."""
+    return iverson_field(search_key=True, search_key_order=order, description=description)
 
 
-def iverson_large_field(
-    description: str = "",
-    summary: bool = False,
-    keywords: bool = False,
-    extract_hint: str = "",
-) -> FieldMeta:
-    """Mark a field as large (excluded from materialized views).
+def iverson_metadata(description: str = "") -> FieldMeta:
+    """Mark a field as a metadata signal."""
+    return iverson_field(metadata=True, description=description)
 
-    Args:
-        description: human-readable description of the field.
-        summary: also mark the field as a summary enrichment target.
-        keywords: also mark the field as a keywords enrichment target.
-        extract_hint: also mark the field as an extraction enrichment target,
-            guided by this hint. Must not be blank when provided.
-    """
-    return FieldMeta(
-        kind="large_field",
-        description=description,
-        **_enrichment_kwargs(summary, keywords, extract_hint, "iverson_large_field"),
-    )
+
+def iverson_description(description: str) -> FieldMeta:
+    """Supply a human-readable description for an otherwise plain field."""
+    return iverson_field(description=description)
+
+
+def iverson_large_field(description: str = "") -> FieldMeta:
+    """Mark a field as large (excluded from materialized views)."""
+    return iverson_field(large_field=True, description=description)
 
 
 def iverson_embedding(description: str = "") -> FieldMeta:
-    """Mark a string field as a source for a whole-field vector embedding.
-
-    Args:
-        description: human-readable description of the field.
-    """
-    return FieldMeta(kind="embedding", description=description)
+    """Mark a string field as a source for a whole-field vector embedding."""
+    return iverson_field(embedding=True, description=description)
 
 
 def iverson_chunk(
@@ -188,98 +159,62 @@ def iverson_chunk(
     description: str = "",
     contextual: bool = False,
 ) -> FieldMeta:
-    """Mark a string field as a source for chunk-level vector embeddings.
-
-    Args:
-        max_tokens: approximate window size in tokens (1 token ~ 4 chars).
-        overlap: tokens shared between adjacent windows.
-        description: human-readable description of the field.
-        contextual: whether chunk embeddings should include surrounding context.
-    """
-    return FieldMeta(
-        kind="chunk",
-        max_tokens=max_tokens,
-        overlap=overlap,
+    """Mark a string field as a source for chunk-level vector embeddings."""
+    return iverson_field(
+        chunk=True,
+        chunk_max_tokens=max_tokens,
+        chunk_overlap=overlap,
+        chunk_contextual=contextual,
         description=description,
-        contextual=contextual,
     )
 
 
 def iverson_summary(description: str = "") -> FieldMeta:
-    """Mark a field as the target for an Ollama-driven summary during ingest
-    enrichment.
-
-    Args:
-        description: human-readable description of the field.
-    """
-    return FieldMeta(kind="", is_summary_target=True, description=description)
+    """Mark a field as the target for an Ollama-driven summary."""
+    return iverson_field(summary=True, description=description)
 
 
 def iverson_keywords(description: str = "") -> FieldMeta:
-    """Mark a field as the target for Ollama-driven keyword extraction during
-    ingest enrichment.
-
-    Args:
-        description: human-readable description of the field.
-    """
-    return FieldMeta(kind="", is_keywords_target=True, description=description)
+    """Mark a field as the target for Ollama-driven keyword extraction."""
+    return iverson_field(keywords=True, description=description)
 
 
 def iverson_extracted(hint: str, description: str = "") -> FieldMeta:
-    """Mark a field as the target for an Ollama-driven extraction during
-    ingest enrichment, guided by ``hint``.
+    """Mark a field as an Ollama extraction target, guided by ``hint``.
 
-    The hint is mandatory: the server only treats a property as an
-    extraction target when a non-empty hint is present (``SchemaBuilder.cs``
-    only creates the Extracted target when the hint is non-empty), so an
-    empty or blank hint would be silently dropped server-side. This factory
-    rejects that case up front.
-
-    Args:
-        hint: the extraction hint guiding the Ollama prompt. Required;
-            must not be blank.
-        description: human-readable description of the field.
+    The hint is mandatory here, unlike the optional ``extract_hint`` kwarg on
+    ``iverson_field`` where ``""`` means "not declared". Normalizing ``""`` to
+    ``None`` routes an empty hint into the shared guard's rejection path.
     """
-    # Unlike the optional `extract_hint` kwarg on other factories (where ""
-    # means "not declared"), `hint` here is mandatory — an empty string is a
-    # blank declaration, not an opt-out — so normalize it to None and let the
-    # shared helper's None-or-blank guard reject it via the one shared message.
-    kwargs = _enrichment_kwargs(False, False, hint or None, "iverson_extracted")
-    return FieldMeta(kind="", description=description, **kwargs)
+    return iverson_field(extract_hint=hint or None, description=description)
 
 
 def iverson_tenant(description: str = "") -> FieldMeta:
-    """Mark the field holding the row's tenant id.
-
-    The server requires every schema to declare a tenant boundary and rejects
-    registration without one, so exactly one field per entity must carry this.
-    """
-    return FieldMeta(kind="", tenant=True, description=description)
+    """Mark the field holding the row's tenant id. Exactly one per entity."""
+    return iverson_field(tenant=True, description=description)
 
 
 def many_to_one(type_name: str) -> FieldMeta:
     """Declare a many-to-one relation field (FK on this entity)."""
-    return FieldMeta(kind="many_to_one", related_type=type_name)
+    return FieldMeta(relation_kind="many_to_one", related_type=type_name)
 
 
 def many_to_many(type_name: str) -> FieldMeta:
     """Declare a many-to-many relation field."""
-    return FieldMeta(kind="many_to_many", related_type=type_name)
+    return FieldMeta(relation_kind="many_to_many", related_type=type_name)
 
 
 def one_to_many(type_name: str) -> FieldMeta:
     """Declare a one-to-many relation field (FK on the related entity)."""
-    return FieldMeta(kind="one_to_many", related_type=type_name)
+    return FieldMeta(relation_kind="one_to_many", related_type=type_name)
 
 
 def one_to_one(type_name: str) -> FieldMeta:
     """Declare a one-to-one relation field."""
-    return FieldMeta(kind="one_to_one", related_type=type_name)
+    return FieldMeta(relation_kind="one_to_one", related_type=type_name)
 
 
 # ── @iverson_entity decorator ──────────────────────────────────────────────────
-
-_RELATION_KINDS = {"many_to_one", "many_to_many", "one_to_many", "one_to_one"}
 
 
 def iverson_entity(cls: type | None = None, *, description: str = ""):
@@ -335,43 +270,47 @@ def iverson_entity(cls: type | None = None, *, description: str = ""):
             # Replace the FieldMeta sentinel with None so the attribute is usable
             setattr(cls, field_name, None)
 
-            if meta.kind not in _RELATION_KINDS:
-                if meta.metadata:
-                    metadata_fields.append(field_name)
-                if meta.description:
-                    descriptions[field_name] = meta.description
-                if meta.tenant:
-                    tenant_fields.append(field_name)
-                if meta.is_summary_target:
-                    summary_fields.append(field_name)
-                if meta.is_keywords_target:
-                    keywords_fields.append(field_name)
-                if meta.extract_hint:
-                    extracted_fields[field_name] = meta.extract_hint
-
-            if meta.kind == "key":
-                key_field = field_name
-                plain_fields.append(field_name)
-            elif meta.kind == "search_key":
-                search_keys.append((field_name, meta.order))
-                plain_fields.append(field_name)
-            elif meta.kind == "large_field":
-                large_fields.append(field_name)
-                plain_fields.append(field_name)
-            elif meta.kind == "embedding":
-                embedding_fields.append(field_name)
-                plain_fields.append(field_name)
-            elif meta.kind == "chunk":
-                chunk_fields.append((field_name, meta.max_tokens, meta.overlap, meta.contextual))
-                plain_fields.append(field_name)
-            elif meta.kind in _RELATION_KINDS:
+            if meta.relation_kind:
+                # Relations are the one exclusive axis: they serialize to
+                # RelationDescriptor, not PropertyDescriptor. The dict keeps its
+                # "kind" key because core.py:69 and core.py:188 read rel["kind"].
                 relations.append({
                     "field": field_name,
-                    "kind": meta.kind,
+                    "kind": meta.relation_kind,
                     "related_type": meta.related_type,
                 })
-            else:
-                plain_fields.append(field_name)
+                continue
+
+            if meta.key:
+                key_field = field_name
+            if meta.search_key:
+                search_keys.append((field_name, meta.search_key_order))
+            if meta.large_field:
+                large_fields.append(field_name)
+            if meta.embedding:
+                embedding_fields.append(field_name)
+            if meta.chunk:
+                chunk_fields.append(
+                    (field_name, meta.chunk_max_tokens, meta.chunk_overlap, meta.chunk_contextual))
+            if meta.metadata:
+                metadata_fields.append(field_name)
+            if meta.tenant:
+                tenant_fields.append(field_name)
+            if meta.summary:
+                summary_fields.append(field_name)
+            if meta.keywords:
+                keywords_fields.append(field_name)
+            if meta.extract_hint:
+                extracted_fields[field_name] = meta.extract_hint
+            if meta.description:
+                descriptions[field_name] = meta.description
+
+            # Exactly one append per scalar field. Previously this happened inside
+            # each elif branch AND in the terminal else; under independent ifs that
+            # would double-append any field carrying two flags, and core.py:147
+            # iterates this list directly — a duplicate emits a duplicate
+            # PropertyDescriptor on the wire.
+            plain_fields.append(field_name)
         else:
             plain_fields.append(field_name)
 

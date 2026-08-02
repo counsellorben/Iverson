@@ -8,6 +8,7 @@ import pytest
 
 from iverson_client.annotations import (
     iverson_entity,
+    iverson_field,
     iverson_key,
     iverson_search_key,
     iverson_large_field,
@@ -49,7 +50,8 @@ class RegDescribedArticle:
     id: str = iverson_key(description="Stable article identifier.")
     source: str = iverson_metadata(description="Originating feed.")
     language: str = iverson_metadata()
-    region: str = iverson_search_key(order=0, metadata=True, description="Publication region.")
+    region: str = iverson_field(search_key=True, search_key_order=0, metadata=True,
+                                description="Publication region.")
     title: str = iverson_description("Headline text.")
     word_count: int = None
     tenant_id: str = iverson_tenant()
@@ -83,7 +85,7 @@ class RegNoTenantArticle:
 class RegComposedTenantArticle:
     id: str = iverson_key()
     title: str = None
-    tenant_id: str = iverson_search_key(order=0, tenant=True)
+    tenant_id: str = iverson_field(search_key=True, search_key_order=0, tenant=True)
 
 
 @iverson_entity
@@ -97,10 +99,10 @@ class RegMultiTenantArticle:
 class RegComposedEnrichmentArticle:
     id: str = iverson_key()
     title: str = None
-    summary_key: str = iverson_search_key(order=0, summary=True)
-    keywords_meta: str = iverson_metadata(keywords=True)
-    hint_field: str = iverson_large_field(extract_hint="Extract the price.")
-    described_summary: str = iverson_description("A summary field.", summary=True)
+    summary_key: str = iverson_field(search_key=True, search_key_order=0, summary=True)
+    keywords_meta: str = iverson_field(metadata=True, keywords=True)
+    hint_field: str = iverson_field(large_field=True, extract_hint="Extract the price.")
+    described_summary: str = iverson_field(description="A summary field.", summary=True)
     tenant_id: str = iverson_tenant()
 
 
@@ -374,25 +376,13 @@ class TestEnrichmentTargets:
         assert props["DescribedSummary"].is_summary_target is True
         assert props["DescribedSummary"].description == "A summary field."
 
-    def test_blank_extract_hint_kwarg_rejected_on_search_key(self):
+    def test_blank_extract_hint_rejected(self):
         with pytest.raises(ValueError, match="extract"):
-            iverson_search_key(extract_hint="   ")
+            iverson_field(extract_hint="   ")
 
-    def test_blank_extract_hint_kwarg_rejected_on_metadata(self):
+    def test_none_extract_hint_rejected(self):
         with pytest.raises(ValueError, match="extract"):
-            iverson_metadata(extract_hint="   ")
-
-    def test_blank_extract_hint_kwarg_rejected_on_large_field(self):
-        with pytest.raises(ValueError, match="extract"):
-            iverson_large_field(extract_hint="   ")
-
-    def test_blank_extract_hint_kwarg_rejected_on_description(self):
-        with pytest.raises(ValueError, match="extract"):
-            iverson_description("desc", extract_hint="   ")
-
-    def test_none_extract_hint_kwarg_rejected(self):
-        with pytest.raises(ValueError, match="extract"):
-            iverson_metadata(extract_hint=None)
+            iverson_field(extract_hint=None)
 
 
 class TestTenantField:
