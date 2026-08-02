@@ -30,15 +30,15 @@ func (m *mockMappingClient) RegisterSchema(_ context.Context, req *pb.SchemaRequ
 // ── Test entity types ──────────────────────────────────────────────────────────
 
 type registrarArticle struct {
-	Id          string `iverson:"key"`
-	TenantId    string `iverson:"search_key:2" iverson_tenant:"true"`
-	Title       string `iverson:"embedding"`
-	Body        string `iverson:"large_field"`
-	Category    string `iverson:"search_key:0"`
+	Id          string `iverson_key:"true"`
+	TenantId    string `iverson_search_key:"2" iverson_tenant:"true"`
+	Title       string `iverson_embedding:"true"`
+	Body        string `iverson_large_field:"true"`
+	Category    string `iverson_search_key:"0"`
 	WordCount   int
-	PublishedAt time.Time `iverson:"search_key:1"`
+	PublishedAt time.Time `iverson_search_key:"1"`
 	AuthorId    string    `iverson:"many_to_one:Author"`
-	Summary     string    `iverson:"chunk:256:32"`
+	Summary     string    `iverson_chunk:"256:32"`
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -243,7 +243,7 @@ func TestSchemaRegistrar_RegisterAll_ServerError(t *testing.T) {
 
 func TestSchemaRegistrar_RegisterAll_MultipleEntities(t *testing.T) {
 	type secondEntity struct {
-		Id       string `iverson:"key"`
+		Id       string `iverson_key:"true"`
 		TenantId string `iverson_tenant:"true"`
 		Name     string
 	}
@@ -286,7 +286,7 @@ func (c *countingMappingClient) RegisterSchema(ctx context.Context, req *pb.Sche
 // ── metadata / description registrar tests ─────────────────────────────────────
 
 type describedArticle struct {
-	Id       string `iverson:"key" iverson_desc:"Primary identifier"`
+	Id       string `iverson_key:"true" iverson_desc:"Primary identifier"`
 	TenantId string `iverson_tenant:"true"`
 	Status   string `iverson_meta:"true" iverson_desc:"Publication status"`
 	Title    string `iverson_desc:"Headline"`
@@ -296,7 +296,7 @@ type describedArticle struct {
 func (describedArticle) IversonDescription() string { return "An article with metadata" }
 
 type undescribedArticle struct {
-	Id       string `iverson:"key"`
+	Id       string `iverson_key:"true"`
 	TenantId string `iverson_tenant:"true"`
 }
 
@@ -382,12 +382,12 @@ func TestSchemaRegistrar_TypeDescriptionFromPointerEntity(t *testing.T) {
 // ── enrichment target registrar tests ───────────────────────────────────────────
 
 type enrichedArticle struct {
-	Id       string `iverson:"key"`
+	Id       string `iverson_key:"true"`
 	TenantId string `iverson_tenant:"true"`
 	Summary  string `iverson_summary:"true"`
 	Keywords string `iverson_keywords:"true"`
 	Topic    string `iverson_extract:"the article's primary topic"`
-	Body     string `iverson:"chunk:256:32" iverson_contextual:"true"`
+	Body     string `iverson_chunk:"256:32" iverson_contextual:"true"`
 	Title    string
 }
 
@@ -430,7 +430,7 @@ func TestSchemaRegistrar_EnrichmentTargets(t *testing.T) {
 }
 
 type blankExtractHint struct {
-	Id    string `iverson:"key"`
+	Id    string `iverson_key:"true"`
 	Topic string `iverson_extract:"   "`
 }
 
@@ -444,7 +444,7 @@ func TestSchemaRegistrar_BlankExtractHint_Rejected(t *testing.T) {
 }
 
 type contextualWithoutChunk struct {
-	Id    string `iverson:"key"`
+	Id    string `iverson_key:"true"`
 	Title string `iverson_contextual:"true"`
 }
 
@@ -473,8 +473,8 @@ func TestSchemaRegistrar_TenantField_Set(t *testing.T) {
 // TestSchemaRegistrar_TenantField_ComposesWithSearchKey guards against the
 // e4a77ff regression class: iverson_tenant is an independent tag key, not a
 // mutually-exclusive kind, so a field must be able to carry both
-// iverson_tenant:"true" and iverson:"search_key:N" at once. registrarArticle's
-// TenantId field carries `iverson:"search_key:2" iverson_tenant:"true"`; this
+// iverson_tenant:"true" and iverson_search_key:"N" at once. registrarArticle's
+// TenantId field carries `iverson_search_key:"2" iverson_tenant:"true"`; this
 // test asserts BOTH halves survive together — that TenantField is set to the
 // field, AND that its search-key metadata (IsSearchKey/SearchKeyOrder) is not
 // dropped by the tenant tag.
@@ -500,7 +500,7 @@ func TestSchemaRegistrar_TenantField_ComposesWithSearchKey(t *testing.T) {
 }
 
 type noTenantArticle struct {
-	Id    string `iverson:"key"`
+	Id    string `iverson_key:"true"`
 	Title string
 }
 
@@ -517,7 +517,7 @@ func TestSchemaRegistrar_NoTenantField_Rejected(t *testing.T) {
 }
 
 type doubleTenantArticle struct {
-	Id       string `iverson:"key"`
+	Id       string `iverson_key:"true"`
 	TenantId string `iverson_tenant:"true"`
 	OrgId    string `iverson_tenant:"true"`
 }

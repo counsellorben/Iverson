@@ -122,7 +122,7 @@ func NewEntityCoordinator[T any](client *IversonClient, entity T) (*EntityCoordi
 	}
 	keyField := ""
 	for _, f := range meta.Fields {
-		if f.Kind == KindKey {
+		if f.IsKey {
 			keyField = f.Name
 			break
 		}
@@ -148,7 +148,7 @@ func newEntityCoordinatorWithDeps[T any](deps coordinatorDeps, entity T) (*Entit
 	}
 	keyField := ""
 	for _, f := range meta.Fields {
-		if f.Kind == KindKey {
+		if f.IsKey {
 			keyField = f.Name
 			break
 		}
@@ -425,7 +425,7 @@ func entityToStruct(entity interface{}) (*structpb.Struct, error) {
 		tag := sf.Tag.Get(TagKey)
 		if tag != "" {
 			fm, _ := ParseTag(sf.Name, tag)
-			switch fm.Kind {
+			switch fm.RelationKind {
 			case KindManyToOne, KindManyToMany, KindOneToMany, KindOneToOne:
 				continue
 			}

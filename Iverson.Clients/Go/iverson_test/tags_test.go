@@ -8,98 +8,21 @@ import (
 	"github.com/iverson/clients/go/iverson"
 )
 
-// ── ParseTag tests ─────────────────────────────────────────────────────────────
+// ── ParseTag tests (relation kinds + untagged) ──────────────────────────────────
 
 func TestParseTag_Empty(t *testing.T) {
 	fm, err := iverson.ParseTag("Title", "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if fm.Kind != "" {
-		t.Errorf("expected empty kind, got %q", fm.Kind)
+	if fm.RelationKind != "" {
+		t.Errorf("expected empty relation kind, got %q", fm.RelationKind)
+	}
+	if fm.IsKey || fm.IsSearchKey || fm.IsLargeField || fm.IsEmbedding || fm.IsChunk {
+		t.Errorf("expected no scalar flags set for an untagged field, got %+v", fm)
 	}
 	if fm.Name != "Title" {
 		t.Errorf("expected Name=Title, got %q", fm.Name)
-	}
-}
-
-func TestParseTag_Key(t *testing.T) {
-	fm, err := iverson.ParseTag("Id", "key")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if fm.Kind != iverson.KindKey {
-		t.Errorf("expected kind=%q, got %q", iverson.KindKey, fm.Kind)
-	}
-}
-
-func TestParseTag_SearchKey(t *testing.T) {
-	fm, err := iverson.ParseTag("Category", "search_key:0")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if fm.Kind != iverson.KindSearchKey {
-		t.Errorf("expected kind=%q, got %q", iverson.KindSearchKey, fm.Kind)
-	}
-	if fm.SearchKeyOrder != 0 {
-		t.Errorf("expected order=0, got %d", fm.SearchKeyOrder)
-	}
-
-	fm2, err := iverson.ParseTag("PublishedAt", "search_key:1")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if fm2.SearchKeyOrder != 1 {
-		t.Errorf("expected order=1, got %d", fm2.SearchKeyOrder)
-	}
-}
-
-func TestParseTag_LargeField(t *testing.T) {
-	fm, err := iverson.ParseTag("Body", "large_field")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if fm.Kind != iverson.KindLargeField {
-		t.Errorf("expected kind=%q, got %q", iverson.KindLargeField, fm.Kind)
-	}
-}
-
-func TestParseTag_Embedding(t *testing.T) {
-	fm, err := iverson.ParseTag("Title", "embedding")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if fm.Kind != iverson.KindEmbedding {
-		t.Errorf("expected kind=%q, got %q", iverson.KindEmbedding, fm.Kind)
-	}
-}
-
-func TestParseTag_Chunk_Defaults(t *testing.T) {
-	fm, err := iverson.ParseTag("Summary", "chunk")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if fm.Kind != iverson.KindChunk {
-		t.Errorf("expected kind=%q, got %q", iverson.KindChunk, fm.Kind)
-	}
-	if fm.ChunkMaxTokens != 512 {
-		t.Errorf("expected default ChunkMaxTokens=512, got %d", fm.ChunkMaxTokens)
-	}
-	if fm.ChunkOverlap != 64 {
-		t.Errorf("expected default ChunkOverlap=64, got %d", fm.ChunkOverlap)
-	}
-}
-
-func TestParseTag_Chunk_CustomParams(t *testing.T) {
-	fm, err := iverson.ParseTag("Summary", "chunk:256:32")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if fm.ChunkMaxTokens != 256 {
-		t.Errorf("expected ChunkMaxTokens=256, got %d", fm.ChunkMaxTokens)
-	}
-	if fm.ChunkOverlap != 32 {
-		t.Errorf("expected ChunkOverlap=32, got %d", fm.ChunkOverlap)
 	}
 }
 
@@ -108,8 +31,8 @@ func TestParseTag_ManyToOne(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if fm.Kind != iverson.KindManyToOne {
-		t.Errorf("expected kind=%q, got %q", iverson.KindManyToOne, fm.Kind)
+	if fm.RelationKind != iverson.KindManyToOne {
+		t.Errorf("expected relation kind=%q, got %q", iverson.KindManyToOne, fm.RelationKind)
 	}
 	if fm.RelatedType != "Author" {
 		t.Errorf("expected RelatedType=Author, got %q", fm.RelatedType)
@@ -132,8 +55,8 @@ func TestParseTag_AllRelationKinds(t *testing.T) {
 			t.Errorf("tag=%q: unexpected error: %v", tc.tag, err)
 			continue
 		}
-		if fm.Kind != tc.kind {
-			t.Errorf("tag=%q: expected kind=%q, got %q", tc.tag, tc.kind, fm.Kind)
+		if fm.RelationKind != tc.kind {
+			t.Errorf("tag=%q: expected relation kind=%q, got %q", tc.tag, tc.kind, fm.RelationKind)
 		}
 	}
 }
@@ -145,13 +68,6 @@ func TestParseTag_UnknownKind(t *testing.T) {
 	}
 }
 
-func TestParseTag_SearchKeyBadOrder(t *testing.T) {
-	_, err := iverson.ParseTag("Field", "search_key:abc")
-	if err == nil {
-		t.Error("expected error for non-integer search_key order, got nil")
-	}
-}
-
 func TestParseTag_RelationMissingType(t *testing.T) {
 	_, err := iverson.ParseTag("Field", "many_to_one")
 	if err == nil {
@@ -159,16 +75,189 @@ func TestParseTag_RelationMissingType(t *testing.T) {
 	}
 }
 
-// ── InspectType tests ─────────────────────────────────────────────────────────
+// ── InspectType tests: scalar tag keys ──────────────────────────────────────────
+//
+// The five scalar declarations are read at the InspectType assembly point, not
+// via ParseTag, so their coverage lives here rather than in the ParseTag tests
+// above.
+
+type keyFixture struct {
+	Id       string `iverson_key:"true"`
+	TenantId string `iverson_tenant:"true"`
+}
+
+func TestInspectType_Key(t *testing.T) {
+	meta, err := iverson.InspectType(keyFixture{})
+	if err != nil {
+		t.Fatalf("InspectType: %v", err)
+	}
+	var fm iverson.FieldMeta
+	for _, f := range meta.Fields {
+		if f.Name == "Id" {
+			fm = f
+		}
+	}
+	if !fm.IsKey {
+		t.Error("expected IsKey=true")
+	}
+}
+
+type searchKeyFixture struct {
+	Id          string    `iverson_key:"true"`
+	TenantId    string    `iverson_tenant:"true"`
+	Category    string    `iverson_search_key:"0"`
+	PublishedAt time.Time `iverson_search_key:"1"`
+}
+
+func TestInspectType_SearchKey(t *testing.T) {
+	meta, err := iverson.InspectType(searchKeyFixture{})
+	if err != nil {
+		t.Fatalf("InspectType: %v", err)
+	}
+	byName := map[string]iverson.FieldMeta{}
+	for _, f := range meta.Fields {
+		byName[f.Name] = f
+	}
+	cat := byName["Category"]
+	if !cat.IsSearchKey {
+		t.Error("expected Category IsSearchKey=true")
+	}
+	if cat.SearchKeyOrder != 0 {
+		t.Errorf("expected order=0, got %d", cat.SearchKeyOrder)
+	}
+
+	pub := byName["PublishedAt"]
+	if !pub.IsSearchKey {
+		t.Error("expected PublishedAt IsSearchKey=true")
+	}
+	if pub.SearchKeyOrder != 1 {
+		t.Errorf("expected order=1, got %d", pub.SearchKeyOrder)
+	}
+}
+
+type largeFieldFixture struct {
+	Id       string `iverson_key:"true"`
+	TenantId string `iverson_tenant:"true"`
+	Body     string `iverson_large_field:"true"`
+}
+
+func TestInspectType_LargeFieldKey(t *testing.T) {
+	meta, err := iverson.InspectType(largeFieldFixture{})
+	if err != nil {
+		t.Fatalf("InspectType: %v", err)
+	}
+	var fm iverson.FieldMeta
+	for _, f := range meta.Fields {
+		if f.Name == "Body" {
+			fm = f
+		}
+	}
+	if !fm.IsLargeField {
+		t.Error("expected IsLargeField=true")
+	}
+}
+
+type embeddingFixture struct {
+	Id       string `iverson_key:"true"`
+	TenantId string `iverson_tenant:"true"`
+	Title    string `iverson_embedding:"true"`
+}
+
+func TestInspectType_Embedding(t *testing.T) {
+	meta, err := iverson.InspectType(embeddingFixture{})
+	if err != nil {
+		t.Fatalf("InspectType: %v", err)
+	}
+	var fm iverson.FieldMeta
+	for _, f := range meta.Fields {
+		if f.Name == "Title" {
+			fm = f
+		}
+	}
+	if !fm.IsEmbedding {
+		t.Error("expected IsEmbedding=true")
+	}
+}
+
+type chunkDefaultsFixture struct {
+	Id       string `iverson_key:"true"`
+	TenantId string `iverson_tenant:"true"`
+	Summary  string `iverson_chunk:"true"`
+}
+
+func TestInspectType_Chunk_Defaults(t *testing.T) {
+	meta, err := iverson.InspectType(chunkDefaultsFixture{})
+	if err != nil {
+		t.Fatalf("InspectType: %v", err)
+	}
+	var fm iverson.FieldMeta
+	for _, f := range meta.Fields {
+		if f.Name == "Summary" {
+			fm = f
+		}
+	}
+	if !fm.IsChunk {
+		t.Error("expected IsChunk=true")
+	}
+	if fm.ChunkMaxTokens != 512 {
+		t.Errorf("expected default ChunkMaxTokens=512, got %d", fm.ChunkMaxTokens)
+	}
+	if fm.ChunkOverlap != 64 {
+		t.Errorf("expected default ChunkOverlap=64, got %d", fm.ChunkOverlap)
+	}
+}
+
+type chunkCustomFixture struct {
+	Id       string `iverson_key:"true"`
+	TenantId string `iverson_tenant:"true"`
+	Summary  string `iverson_chunk:"256:32"`
+}
+
+func TestInspectType_Chunk_CustomParams(t *testing.T) {
+	meta, err := iverson.InspectType(chunkCustomFixture{})
+	if err != nil {
+		t.Fatalf("InspectType: %v", err)
+	}
+	var fm iverson.FieldMeta
+	for _, f := range meta.Fields {
+		if f.Name == "Summary" {
+			fm = f
+		}
+	}
+	if fm.ChunkMaxTokens != 256 {
+		t.Errorf("expected ChunkMaxTokens=256, got %d", fm.ChunkMaxTokens)
+	}
+	if fm.ChunkOverlap != 32 {
+		t.Errorf("expected ChunkOverlap=32, got %d", fm.ChunkOverlap)
+	}
+}
+
+type searchKeyBadOrderFixture struct {
+	Id       string `iverson_key:"true"`
+	TenantId string `iverson_tenant:"true"`
+	Field    string `iverson_search_key:"abc"`
+}
+
+func TestInspectType_SearchKeyBadOrder(t *testing.T) {
+	_, err := iverson.InspectType(searchKeyBadOrderFixture{})
+	if err == nil {
+		t.Fatal("expected error for non-integer search_key order, got nil")
+	}
+	if !strings.Contains(err.Error(), "Field") {
+		t.Errorf("expected error to name the field, got %q", err.Error())
+	}
+}
+
+// ── InspectType tests: general shape ────────────────────────────────────────────
 
 type articleFixture struct {
-	Id          string `iverson:"key"`
+	Id          string `iverson_key:"true"`
 	TenantId    string `iverson_tenant:"true"`
 	Title       string
-	Body        string `iverson:"large_field"`
-	Category    string `iverson:"search_key:0"`
+	Body        string `iverson_large_field:"true"`
+	Category    string `iverson_search_key:"0"`
 	WordCount   int
-	PublishedAt time.Time `iverson:"search_key:1"`
+	PublishedAt time.Time `iverson_search_key:"1"`
 	AuthorId    string    `iverson:"many_to_one:Author"`
 }
 
@@ -200,7 +289,7 @@ func TestInspectType_KeyField(t *testing.T) {
 	}
 	var keyField *iverson.FieldMeta
 	for i := range meta.Fields {
-		if meta.Fields[i].Kind == iverson.KindKey {
+		if meta.Fields[i].IsKey {
 			keyField = &meta.Fields[i]
 			break
 		}
@@ -220,7 +309,7 @@ func TestInspectType_SearchKeys(t *testing.T) {
 	}
 	var keys []iverson.FieldMeta
 	for _, f := range meta.Fields {
-		if f.Kind == iverson.KindSearchKey {
+		if f.IsSearchKey {
 			keys = append(keys, f)
 		}
 	}
@@ -248,8 +337,8 @@ func TestInspectType_LargeField(t *testing.T) {
 	found := false
 	for _, f := range meta.Fields {
 		if f.Name == "Body" {
-			if f.Kind != iverson.KindLargeField {
-				t.Errorf("Body should be large_field, got %q", f.Kind)
+			if !f.IsLargeField {
+				t.Errorf("Body should be IsLargeField=true, got %v", f.IsLargeField)
 			}
 			found = true
 		}
@@ -271,8 +360,8 @@ func TestInspectType_Relations(t *testing.T) {
 	if rel.Name != "AuthorId" {
 		t.Errorf("expected relation Name=AuthorId, got %q", rel.Name)
 	}
-	if rel.Kind != iverson.KindManyToOne {
-		t.Errorf("expected kind=many_to_one, got %q", rel.Kind)
+	if rel.RelationKind != iverson.KindManyToOne {
+		t.Errorf("expected relation kind=many_to_one, got %q", rel.RelationKind)
 	}
 	if rel.RelatedType != "Author" {
 		t.Errorf("expected RelatedType=Author, got %q", rel.RelatedType)
@@ -300,15 +389,15 @@ func TestInspectType_NonStruct(t *testing.T) {
 // ── metadata / description tag tests ───────────────────────────────────────────
 
 type descFixture struct {
-	Id       string `iverson:"key" iverson_desc:"The unique identifier"`
+	Id       string `iverson_key:"true" iverson_desc:"The unique identifier"`
 	TenantId string `iverson_tenant:"true"`
 	Status   string `iverson_meta:"true" iverson_desc:"Publication status"`
-	Region   string `iverson:"search_key:0" iverson_meta:"true" iverson_desc:"Publication region."`
+	Region   string `iverson_search_key:"0" iverson_meta:"true" iverson_desc:"Publication region."`
 	Plain    string `iverson_desc:"A plain field"`
 	Untagged string
 }
 
-// Metadata is an independent tag key, so it composes with an `iverson` kind —
+// Metadata is an independent tag key, so it composes with a scalar declaration —
 // matching the server and the other four clients (cf. Python's
 // test_metadata_composes_with_search_key).
 func TestInspectType_MetadataComposesWithSearchKey(t *testing.T) {
@@ -325,8 +414,8 @@ func TestInspectType_MetadataComposesWithSearchKey(t *testing.T) {
 	if !region.Metadata {
 		t.Error("expected Region Metadata=true")
 	}
-	if region.Kind != iverson.KindSearchKey {
-		t.Errorf("expected Region kind=%q, got %q", iverson.KindSearchKey, region.Kind)
+	if !region.IsSearchKey {
+		t.Errorf("expected Region IsSearchKey=true")
 	}
 	if region.SearchKeyOrder != 0 {
 		t.Errorf("expected Region search key order 0, got %d", region.SearchKeyOrder)
@@ -350,14 +439,15 @@ func TestInspectType_DescriptionsAndMetadata(t *testing.T) {
 	if got := byName["Id"].Description; got != "The unique identifier" {
 		t.Errorf("key field description: got %q", got)
 	}
-	if byName["Id"].Kind != iverson.KindKey {
-		t.Errorf("key field kind changed: %q", byName["Id"].Kind)
+	if !byName["Id"].IsKey {
+		t.Errorf("key field IsKey changed: %v", byName["Id"].IsKey)
 	}
 	if !byName["Status"].Metadata {
 		t.Error("expected Status Metadata=true")
 	}
-	if byName["Status"].Kind != "" {
-		t.Errorf("metadata tag must not set a kind, got %q", byName["Status"].Kind)
+	if byName["Status"].IsKey || byName["Status"].IsSearchKey || byName["Status"].IsLargeField ||
+		byName["Status"].IsEmbedding || byName["Status"].IsChunk || byName["Status"].RelationKind != "" {
+		t.Errorf("metadata tag must not set any scalar flag or relation kind: %+v", byName["Status"])
 	}
 	if got := byName["Status"].Description; got != "Publication status" {
 		t.Errorf("metadata field description: got %q", got)
@@ -365,8 +455,9 @@ func TestInspectType_DescriptionsAndMetadata(t *testing.T) {
 	if got := byName["Plain"].Description; got != "A plain field" {
 		t.Errorf("plain field description: got %q", got)
 	}
-	if byName["Plain"].Kind != "" {
-		t.Errorf("expected empty kind for desc-only field, got %q", byName["Plain"].Kind)
+	if byName["Plain"].IsKey || byName["Plain"].IsSearchKey || byName["Plain"].IsLargeField ||
+		byName["Plain"].IsEmbedding || byName["Plain"].IsChunk || byName["Plain"].RelationKind != "" {
+		t.Errorf("expected no scalar flags for desc-only field, got %+v", byName["Plain"])
 	}
 	if got := byName["Untagged"].Description; got != "" {
 		t.Errorf("expected empty description, got %q", got)
@@ -377,7 +468,7 @@ func TestInspectType_DescriptionsAndMetadata(t *testing.T) {
 // never reach meta.Fields, which is where the registrar looks the tenant field
 // up, so accepting it would put an empty TenantField on the wire.
 type relationTenantFixture struct {
-	Id       string `iverson:"key"`
+	Id       string `iverson_key:"true"`
 	AuthorId string `iverson:"many_to_one:Author" iverson_tenant:"true"`
 }
 

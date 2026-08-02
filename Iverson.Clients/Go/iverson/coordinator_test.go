@@ -24,7 +24,7 @@ import (
 // ── Test entity type ─────────────────────────────────────────────────────────
 
 type coordinatorArticle struct {
-	Id       string `iverson:"key"`
+	Id       string `iverson_key:"true"`
 	TenantId string `iverson_tenant:"true"`
 	Category string
 }

@@ -82,13 +82,13 @@ func (r *SchemaRegistrar) buildRequest(e interface{}, traceID string) (*pb.Schem
 		prop := &pb.PropertyDescriptor{
 			Name:             fm.Name,
 			ClrType:          clrType,
-			IsKey:            fm.Kind == KindKey,
-			IsNullable:       fm.Kind != KindKey,
-			IsSearchKey:      fm.Kind == KindSearchKey,
+			IsKey:            fm.IsKey,
+			IsNullable:       !fm.IsKey,
+			IsSearchKey:      fm.IsSearchKey,
 			SearchKeyOrder:   searchKeyOrder,
-			IsLargeField:     fm.Kind == KindLargeField,
-			IsEmbedding:      fm.Kind == KindEmbedding,
-			IsChunk:          fm.Kind == KindChunk,
+			IsLargeField:     fm.IsLargeField,
+			IsEmbedding:      fm.IsEmbedding,
+			IsChunk:          fm.IsChunk,
 			ChunkMaxTokens:   chunkMaxTokens,
 			ChunkOverlap:     chunkOverlap,
 			IsMetadata:       fm.Metadata,
@@ -103,7 +103,7 @@ func (r *SchemaRegistrar) buildRequest(e interface{}, traceID string) (*pb.Schem
 
 	relations := make([]*pb.RelationDescriptor, 0, len(meta.Relations))
 	for _, fm := range meta.Relations {
-		kind := relationKindToProto(fm.Kind)
+		kind := relationKindToProto(fm.RelationKind)
 		fk := inferFK(fm, meta.TypeName)
 		propName := relationPropertyName(fm)
 		rel := &pb.RelationDescriptor{
@@ -224,7 +224,7 @@ func relationKindToProto(kind string) pb.RelationKind {
 // Convention mirrors the C# server: {RelatedType}Id for many_to_one/one_to_one,
 // {RelatedType}Ids for many_to_many, {ThisType}Id for one_to_many.
 func inferFK(fm FieldMeta, thisTypeName string) string {
-	switch fm.Kind {
+	switch fm.RelationKind {
 	case KindManyToOne, KindOneToOne:
 		// The field itself is the FK (e.g. AuthorId field with many_to_one:Author tag).
 		// The field name IS the FK column.
@@ -241,7 +241,7 @@ func inferFK(fm FieldMeta, thisTypeName string) string {
 // For many_to_one: AuthorId → Author (strip trailing "Id").
 // For others: use the field name as-is.
 func relationPropertyName(fm FieldMeta) string {
-	if fm.Kind == KindManyToOne || fm.Kind == KindOneToOne {
+	if fm.RelationKind == KindManyToOne || fm.RelationKind == KindOneToOne {
 		name := fm.Name
 		if len(name) > 2 && name[len(name)-2:] == "Id" {
 			return name[:len(name)-2]

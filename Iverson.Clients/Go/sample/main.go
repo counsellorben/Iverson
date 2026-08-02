@@ -6,6 +6,7 @@ package main
 import (
 	"fmt"
 	"log"
+	"strings"
 	"time"
 
 	"github.com/iverson/clients/go/iverson"
@@ -21,15 +22,32 @@ func main() {
 	fmt.Printf("Entity: %s\n", meta.TypeName)
 	fmt.Printf("Fields (%d):\n", len(meta.Fields))
 	for _, f := range meta.Fields {
-		if f.Kind == "" {
+		if !f.IsKey && !f.IsSearchKey && !f.IsLargeField && !f.IsEmbedding && !f.IsChunk &&
+			f.RelationKind == "" {
 			fmt.Printf("  %s (plain)\n", f.Name)
 		} else {
-			fmt.Printf("  %s (%s)\n", f.Name, f.Kind)
+			var flags []string
+			if f.IsKey {
+				flags = append(flags, "key")
+			}
+			if f.IsSearchKey {
+				flags = append(flags, "search_key")
+			}
+			if f.IsLargeField {
+				flags = append(flags, "large_field")
+			}
+			if f.IsEmbedding {
+				flags = append(flags, "embedding")
+			}
+			if f.IsChunk {
+				flags = append(flags, "chunk")
+			}
+			fmt.Printf("  %s (%s)\n", f.Name, strings.Join(flags, ", "))
 		}
 	}
 	fmt.Printf("Relations (%d):\n", len(meta.Relations))
 	for _, r := range meta.Relations {
-		fmt.Printf("  %s → %s (%s)\n", r.Name, r.RelatedType, r.Kind)
+		fmt.Printf("  %s → %s (%s)\n", r.Name, r.RelatedType, r.RelationKind)
 	}
 
 	// ── QueryBuilder ───────────────────────────────────────────────────────────

@@ -3,16 +3,23 @@
 //
 // Tag format:
 //
-//	`iverson:"key"`                 — primary key field
-//	`iverson:"search_key:N"`        — sort key at position N (0-based)
-//	`iverson:"large_field"`         — excluded from StarRocks materialized view
+// The `iverson` tag carries relation kinds only:
+//
 //	`iverson:"many_to_one:TypeName"` — FK to TypeName (this entity holds the FK)
 //	`iverson:"many_to_many:TypeName"` — join-table FK
 //	`iverson:"one_to_many:TypeName"` — inverse of many_to_one
 //	`iverson:"one_to_one:TypeName"` — 1:1 FK
 //
-// A field may also carry these independent tags, each valid alongside any
-// `iverson` kind (including `key`) and on untagged fields:
+// Every scalar declaration is its own independent tag key, and all of them
+// compose:
+//
+//	`iverson_key:"true"`            — primary key field
+//	`iverson_search_key:"N"`        — sort key at position N (0-based)
+//	`iverson_large_field:"true"`    — excluded from StarRocks materialized view
+//	`iverson_embedding:"true"`      — embedding source field
+//	`iverson_chunk:"..."`           — chunk field; "true", "256", or "256:32"
+//
+// A field may also carry these independent tags, each valid on any field:
 //
 //	`iverson_desc:"Human-readable description"`
 //	`iverson_meta:"true"`  — denormalized onto chunk points for chunk-search filtering
@@ -27,16 +34,16 @@
 //	                               "not an extraction target" and would silently
 //	                               drop the declaration.
 //	`iverson_contextual:"true"`  — the "contextual" option for a chunk field; valid
-//	                               only alongside `iverson:"chunk..."` on the same
+//	                               only alongside `iverson_chunk:"..."` on the same
 //	                               field.
 //
 // `iverson_meta` is a separate tag key rather than an `iverson` kind because it
-// composes with the kinds: a field can be both a search key and metadata, which
-// the server and the other four clients all allow. Note the server rejects it in
-// combination with embedding, chunk, array, or large-field annotations.
+// composes: a field can be both a search key and metadata, which the server and
+// the other four clients all allow. Note the server rejects it in combination
+// with embedding, chunk, array, or large-field annotations.
 // `iverson_summary`, `iverson_keywords`, `iverson_extract`, and `iverson_contextual`
-// follow the same pattern: independent tag keys so they compose freely with any
-// `iverson` kind, rather than being mutually-exclusive kinds of their own.
+// follow the same pattern: independent tag keys so they compose freely, rather
+// than being mutually-exclusive kinds of their own.
 //
 // A type-level description is supplied by implementing the optional interface:
 //
@@ -81,16 +88,28 @@ const ExtractTagKey = "iverson_extract"
 
 // ContextualTagKey is the struct tag key enabling the "contextual" option on
 // a chunk field. Independent of TagKey, but only meaningful alongside
-// `iverson:"chunk..."` on the same field.
+// `iverson_chunk:"..."` on the same field.
 const ContextualTagKey = "iverson_contextual"
 
-// Kind constants for tag values.
+// KeyTagKey marks the primary key field: `iverson_key:"true"`.
+const KeyTagKey = "iverson_key"
+
+// SearchKeyTagKey declares a sort key at a 0-based position: `iverson_search_key:"0"`.
+const SearchKeyTagKey = "iverson_search_key"
+
+// LargeFieldTagKey excludes the column from the StarRocks materialized view:
+// `iverson_large_field:"true"`.
+const LargeFieldTagKey = "iverson_large_field"
+
+// EmbeddingTagKey marks the field as an embedding source: `iverson_embedding:"true"`.
+const EmbeddingTagKey = "iverson_embedding"
+
+// ChunkTagKey marks the field for chunking. Value is "true" for defaults, "256" for a
+// window size, or "256:32" for window size and overlap.
+const ChunkTagKey = "iverson_chunk"
+
+// Kind constants for relation tag values.
 const (
-	KindKey        = "key"
-	KindSearchKey  = "search_key"
-	KindLargeField = "large_field"
-	KindEmbedding  = "embedding"
-	KindChunk      = "chunk"
 	KindManyToOne  = "many_to_one"
 	KindManyToMany = "many_to_many"
 	KindOneToMany  = "one_to_many"
@@ -101,24 +120,36 @@ const (
 type FieldMeta struct {
 	// Name is the struct field name (PascalCase).
 	Name string
-	// Kind is one of the Kind* constants, or "" for plain fields.
-	Kind string
-	// SearchKeyOrder is the sort position when Kind == KindSearchKey.
+	// RelationKind is one of KindManyToOne, KindManyToMany, KindOneToMany or
+	// KindOneToOne, or "" for scalar fields. Relations are mutually exclusive by
+	// design: they serialize to RelationDescriptor, a different proto message.
+	RelationKind string
+	// IsKey reports whether the field carries `iverson_key:"true"`.
+	IsKey bool
+	// IsSearchKey reports whether the field carries `iverson_search_key:"N"`.
+	IsSearchKey bool
+	// IsLargeField reports whether the field carries `iverson_large_field:"true"`.
+	IsLargeField bool
+	// IsEmbedding reports whether the field carries `iverson_embedding:"true"`.
+	IsEmbedding bool
+	// IsChunk reports whether the field carries `iverson_chunk:"..."`.
+	IsChunk bool
+	// SearchKeyOrder is the sort position when IsSearchKey.
 	SearchKeyOrder int
-	// ChunkMaxTokens is the window size in tokens when Kind == KindChunk. Default 512.
+	// ChunkMaxTokens is the window size in tokens when IsChunk. Default 512.
 	ChunkMaxTokens int
-	// ChunkOverlap is the tokens shared between adjacent windows when Kind == KindChunk. Default 64.
+	// ChunkOverlap is the tokens shared between adjacent windows when IsChunk. Default 64.
 	ChunkOverlap int
 	// RelatedType is the target type name for relation kinds.
 	RelatedType string
 	// Description is the field description from the `iverson_desc` struct tag,
-	// or "" when absent. Independent of Kind.
+	// or "" when absent.
 	Description string
 	// Metadata reports whether the field carries `iverson_meta:"true"`.
-	// Independent of Kind, so it composes with search_key, large_field, and the rest.
+	// Independent, so it composes with search_key, large_field, and the rest.
 	Metadata bool
 	// Tenant reports whether the field carries `iverson_tenant:"true"`.
-	// Independent of Kind, so it composes with search_key and the rest.
+	// Independent, so it composes with search_key and the rest.
 	Tenant bool
 	// IsSummaryTarget reports whether the field carries `iverson_summary:"true"`.
 	IsSummaryTarget bool
@@ -127,12 +158,12 @@ type FieldMeta struct {
 	// ExtractHint is the value of `iverson_extract:"<hint>"`, or "" when absent.
 	ExtractHint string
 	// ChunkContextual reports whether the field carries `iverson_contextual:"true"`.
-	// Only valid when Kind == KindChunk.
+	// Only valid when IsChunk.
 	ChunkContextual bool
 }
 
-// ParseTag parses an `iverson:"..."` tag value for one field.
-// Returns a FieldMeta; Kind is "" for untagged fields.
+// ParseTag parses an `iverson:"..."` tag value for one field's relation kind.
+// Returns a FieldMeta; RelationKind is "" for untagged fields.
 func ParseTag(fieldName, tagValue string) (FieldMeta, error) {
 	meta := FieldMeta{Name: fieldName}
 	if tagValue == "" {
@@ -144,47 +175,8 @@ func ParseTag(fieldName, tagValue string) (FieldMeta, error) {
 	kind := parts[0]
 
 	switch kind {
-	case KindKey:
-		meta.Kind = KindKey
-
-	case KindSearchKey:
-		meta.Kind = KindSearchKey
-		if len(parts) == 2 {
-			order, err := strconv.Atoi(parts[1])
-			if err != nil {
-				return meta, fmt.Errorf("iverson tag %q: search_key order %q is not an integer", tagValue, parts[1])
-			}
-			meta.SearchKeyOrder = order
-		}
-
-	case KindLargeField:
-		meta.Kind = KindLargeField
-
-	case KindEmbedding:
-		meta.Kind = KindEmbedding
-
-	case KindChunk:
-		meta.Kind = KindChunk
-		meta.ChunkMaxTokens = 512
-		meta.ChunkOverlap = 64
-		if len(parts) == 2 {
-			chunkParts := strings.SplitN(parts[1], ":", 2)
-			maxTokens, err := strconv.Atoi(chunkParts[0])
-			if err != nil {
-				return meta, fmt.Errorf("iverson tag %q: chunk maxTokens %q is not an integer", tagValue, chunkParts[0])
-			}
-			meta.ChunkMaxTokens = maxTokens
-			if len(chunkParts) == 2 {
-				overlap, err := strconv.Atoi(chunkParts[1])
-				if err != nil {
-					return meta, fmt.Errorf("iverson tag %q: chunk overlap %q is not an integer", tagValue, chunkParts[1])
-				}
-				meta.ChunkOverlap = overlap
-			}
-		}
-
 	case KindManyToOne, KindManyToMany, KindOneToMany, KindOneToOne:
-		meta.Kind = kind
+		meta.RelationKind = kind
 		if len(parts) == 2 {
 			meta.RelatedType = parts[1]
 		} else {
@@ -235,6 +227,40 @@ func InspectType(v interface{}) (EntityMeta, error) {
 		fm.IsSummaryTarget = sf.Tag.Get(SummaryTagKey) == "true"
 		fm.IsKeywordsTarget = sf.Tag.Get(KeywordsTagKey) == "true"
 
+		fm.IsKey = sf.Tag.Get(KeyTagKey) == "true"
+		fm.IsLargeField = sf.Tag.Get(LargeFieldTagKey) == "true"
+		fm.IsEmbedding = sf.Tag.Get(EmbeddingTagKey) == "true"
+
+		if order, ok := sf.Tag.Lookup(SearchKeyTagKey); ok {
+			n, err := strconv.Atoi(strings.TrimSpace(order))
+			if err != nil {
+				return EntityMeta{}, fmt.Errorf("iverson tag %q: field %s has a non-integer search-key order %q; the value is the 0-based sort position", SearchKeyTagKey, sf.Name, order)
+			}
+			fm.IsSearchKey = true
+			fm.SearchKeyOrder = n
+		}
+
+		if chunk, ok := sf.Tag.Lookup(ChunkTagKey); ok {
+			fm.IsChunk = true
+			fm.ChunkMaxTokens = 512
+			fm.ChunkOverlap = 64
+			if chunk != "true" {
+				parts := strings.SplitN(chunk, ":", 2)
+				maxTokens, err := strconv.Atoi(strings.TrimSpace(parts[0]))
+				if err != nil {
+					return EntityMeta{}, fmt.Errorf("iverson tag %q: field %s has a non-integer chunk window size %q; use \"true\", \"256\" or \"256:32\"", ChunkTagKey, sf.Name, parts[0])
+				}
+				fm.ChunkMaxTokens = maxTokens
+				if len(parts) == 2 {
+					overlap, err := strconv.Atoi(strings.TrimSpace(parts[1]))
+					if err != nil {
+						return EntityMeta{}, fmt.Errorf("iverson tag %q: field %s has a non-integer chunk overlap %q; use \"true\", \"256\" or \"256:32\"", ChunkTagKey, sf.Name, parts[1])
+					}
+					fm.ChunkOverlap = overlap
+				}
+			}
+		}
+
 		if hint, ok := sf.Tag.Lookup(ExtractTagKey); ok {
 			if strings.TrimSpace(hint) == "" {
 				return EntityMeta{}, fmt.Errorf("iverson tag %q: field %s has a blank extraction hint; the server treats an empty extract_hint as \"not an extraction target\" and would silently drop this declaration — provide a non-empty hint", ExtractTagKey, sf.Name)
@@ -243,17 +269,16 @@ func InspectType(v interface{}) (EntityMeta, error) {
 		}
 
 		fm.ChunkContextual = sf.Tag.Get(ContextualTagKey) == "true"
-		if fm.ChunkContextual && fm.Kind != KindChunk {
-			return EntityMeta{}, fmt.Errorf("iverson tag %q: field %s carries iverson_contextual but is not a chunk field (iverson:\"chunk...\"); contextual is only meaningful on a chunk field", ContextualTagKey, sf.Name)
+		if fm.ChunkContextual && !fm.IsChunk {
+			return EntityMeta{}, fmt.Errorf("iverson tag %q: field %s carries iverson_contextual but is not a chunk field (iverson_chunk:\"...\"); contextual is only meaningful on a chunk field", ContextualTagKey, sf.Name)
 		}
 
-		switch fm.Kind {
-		case KindManyToOne, KindManyToMany, KindOneToMany, KindOneToOne:
+		if fm.RelationKind != "" {
 			// Relations never reach meta.Fields, which is where the tenant field
 			// is looked up on registration — so a tenant marker on a relation is
 			// not a tenant declaration at all and must not satisfy the check.
 			meta.Relations = append(meta.Relations, fm)
-		default:
+		} else {
 			if fm.Tenant {
 				tenantFields = append(tenantFields, sf.Name)
 			}
