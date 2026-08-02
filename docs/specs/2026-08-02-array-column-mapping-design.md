@@ -97,9 +97,10 @@ Throwing at startup would turn any historical drift — including drift unrelate
 boot failure. Decision made by Ben 2026-08-02.
 
 **Type-name canonicalization.** `format_type` returns Postgres's canonical spelling, which matches
-our `SqlType` strings case-insensitively for eight of nine; `TIMESTAMPTZ` comes back as
-`timestamp with time zone`. Comparison goes through a `NormalizePgType` helper, guarded by an
-enum-driven test (§4) so a newly added type cannot silently skip it.
+our `SqlType` strings case-insensitively for 16 of the 18 post-change strings; **both**
+`TIMESTAMPTZ` and `TIMESTAMPTZ[]` differ, coming back as `timestamp with time zone` and
+`timestamp with time zone[]`. Comparison goes through a `NormalizePgType` helper, guarded by an
+enum-driven test (§5) so a newly added type cannot silently skip it.
 
 **This is general, not array-specific.** A check that fired only for arrays would leave every other
 type-change class drifting silently. The cost is a real behaviour change: a deployment whose table
@@ -129,13 +130,26 @@ No serialization code changes anywhere. §4's round-trip test is what proves thi
 | Client | Mechanism |
 |---|---|
 | Java | `field.getGenericType()` — arrays via `getComponentType()`, `List<T>`/`Collection<T>` via the `ParameterizedType` argument |
-| Python | `typing.get_origin`/`get_args` over the existing `__annotations__` hint (`core.py:162`) |
+| Python | `typing.get_type_hints(cls)` to resolve string annotations, then `typing.get_origin`/`get_args` |
 | Go | `reflect.Slice` → `t.Elem()`, inside the existing `goTypeToClr` (`registrar.go:174`) |
 | TypeScript | New `@IversonArray(elementType)` decorator |
 
 **Each must carve out its bytes type before the array unwrap**, mirroring `SchemaRegistrar.cs:241`:
 Java `byte[]`, Python `bytes`, Go `[]byte`. Without it, a bytes field becomes an array of its
 element type instead of the `ClrBytes` scalar it is today — a silent regression on working code.
+
+**Python must resolve annotations before inspecting them.** `core.py:126-130` walks raw
+`__annotations__`, which holds **strings** under `from __future__ import annotations` — the style
+every existing Python entity uses (`sample/models.py:2`, `tests/test_schema_registrar.py:2`).
+`typing.get_origin('list[str]')` returns `None`, so detection runs over `typing.get_type_hints(cls)`
+instead. The existing scalar path survives raw strings only by accident: `_python_type_to_clr`
+accepts `str | type` (`:54`) and `_PY_TO_CLR` keys on bare names (`:35-44`), so `'str'` hits the
+`"str"` key while `'list[str]'` matches nothing.
+
+Accepted cost: `get_type_hints` evaluates annotations in the defining module's namespace, so a
+forward reference not importable at runtime — the `if TYPE_CHECKING:` relation-import pattern —
+raises `NameError` where the raw walk did not. No `TYPE_CHECKING` usage exists in the Python client
+today. Decision made by Ben 2026-08-02.
 
 **Java needs a signature change, not just a branch.** `detectClrType(field.getType())`
 (`SchemaRegistrar.java:176`, `:188`) receives a `Class<?>`, which erases generics — `List<String>`
@@ -168,8 +182,9 @@ every mapped SQL type, scalar and array.
 
 **Drift, both directions** — a matching column is accepted silently; a differing one throws at
 registration and logs at startup, with the message naming table, column, actual and expected. The
-`TIMESTAMPTZ` case is asserted specifically, since it is the one where `format_type`'s spelling
-differs and a naive comparison yields a false positive on a *correct* column.
+`TIMESTAMPTZ` **and `TIMESTAMPTZ[]`** cases are both asserted specifically, since they are the two
+where `format_type`'s spelling differs and a naive comparison yields a false positive on a
+*correct* column — and the scalar case passing is exactly what would mask the array case.
 
 **Round-trip** — the test that would have caught this originally: an entity with a `string[]`
 property persisted and read back with its elements intact, plus one numeric array. This is also
@@ -194,22 +209,22 @@ declared types, but it remains as a silent fallback rather than an error.
 
 ## Verified assumptions
 
-Verified against `main@5884b07`. Items marked **reasoned** could not be executed without a live
-Postgres; §5's round-trip and drift tests are the empirical check on each.
+Verified against `main@5884b07`. B2, B7 and B11-B13 were executed against a live Postgres 16
+instance during critical design review; B7 failed and is corrected below.
 
 | # | Assumption | Evidence |
 |---|---|---|
 | B1 | `ArrayTypeOverrides` is the sole decider of array SQL types | Consumed only at `SchemaBuilder.cs:269` (`ClrTypeToSql`) and `:264` (`SqlTypeMap` construction) |
-| B2 | Postgres has an array form of all nine scalar types | **Reasoned** from Postgres semantics — every base type has an array type. §5's round-trip test confirms |
+| B2 | **Executed.** Postgres has an array form of all nine scalar types | All 18 type strings resolve via `format_type(t::regtype, null)` against Postgres 16 |
 | B3 | `ClrTypeMapping` is `(SqlType, StarRocksType, PayloadKind)` | `SchemaBuilder.cs:227` |
 | B4 | Seven new array entries create no duplicate key in `SqlTypeMap` | `:262-265` — `ScalarTypeMap.Values.Concat(ArrayTypeOverrides.Values).ToDictionary(m => m.SqlType, …)`, which **throws on duplicates**. Post-change the 18 SQL-type strings are pairwise distinct (`TEXT` vs `TEXT[]`, etc.) |
 | B5 | `BYTEA[]` is reachable only via `byte[][]` | `SchemaRegistrar.cs:241` returns `(ClrBytes, isArray: false)` for `byte[]` before the array unwrap |
 | B6 | The existing-columns query can be extended to return types | `PostgresSchemaManager.cs:24-30` selects `column_name` from `information_schema.columns`; its result is used only as a local name `HashSet` |
-| B7 | `format_type` matches our spelling for eight of nine; `TIMESTAMPTZ` differs | **Reasoned** — canonical spellings are `uuid`, `text`, `integer`, `bigint`, `real`, `double precision`, `boolean`, `timestamp with time zone`, `bytea`. §5 asserts the `TIMESTAMPTZ` case specifically |
+| B7 | **Corrected and executed.** `format_type` matches 16 of the 18 post-change SQL type strings; **both** `TIMESTAMPTZ` and `TIMESTAMPTZ[]` differ | Run against Postgres 16: `SELECT t, format_type(t::regtype,null), lower(t) = format_type(t::regtype,null) FROM unnest(ARRAY[…]) t` → `TIMESTAMPTZ` → `timestamp with time zone` and `TIMESTAMPTZ[]` → `timestamp with time zone[]`, both `f`; the other 16 match |
 | B8 | `ApplySchemaAsync` has two callers | `SchemaRegistrationOrchestrator.cs:68` and `Program.cs:421` (`foreach (var descriptor in schemaRegistry.All.Values)`). This drove §2's split policy |
 | B9 | Nothing else consumes the existing-columns query shape | `PostgresSchemaManager.cs:25` — result is a local `HashSet<string>` used at `:51` and `:67` only |
 | B10 | Registration surfaces a throw from the schema manager | `SchemaRegistrationOrchestrator.cs:68` awaits it inside the registration path with no catch around it |
-| B11-B13 | The round-trip is array-correct at every layer | `OutboxWriter.cs:27` (`json_populate_record`), `EntityRepository.cs:9` (`row_to_json`), `ObjectMappingGrpcService.cs:81` (`JsonParser`), `StructConverter.cs:27-32` (`JsonSerializer.Deserialize<T>`). Postgres array semantics within these are **reasoned** |
+| B11-B13 | **Executed.** The round-trip is array-correct at every layer | `OutboxWriter.cs:27` (`json_populate_record`), `EntityRepository.cs:9` (`row_to_json`), `ObjectMappingGrpcService.cs:81` (`JsonParser`), `StructConverter.cs:27-32` (`JsonSerializer.Deserialize<T>`). Run against Postgres 16: JSON arrays populate `text[]`/`integer[]`/`timestamptz[]`, and `row_to_json` returns `{"tags":["a","b"],"nums":[1,2],…}`. Negative control on a scalar `TEXT` column returns `{"tags":"[\"a\",\"b\"]"}` — the reported bug, reproduced |
 | B14 | **Failed.** Four clients never emit `is_array` | Python `core.py:173` `is_array=False`; TypeScript `core.ts:249` `isArray: false`; Java `SchemaRegistrar.java` never sets it; Go `registrar.go` never sets it. Only .NET derives it. This drove §4 |
 | B15 | No existing schema, sample, test or fixture declares an array property | Repo-wide grep over samples and `Iverson.LoadTest` returns nothing; no array fixture in any client test suite |
 | B16 | Java can recover an element type | `detectClrType(field.getType())` at `:176`/`:188`/`:287` — `getType()` erases generics, so `getGenericType()` is required. Feasible, but a signature change |
