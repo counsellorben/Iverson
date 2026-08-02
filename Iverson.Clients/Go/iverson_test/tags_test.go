@@ -481,3 +481,64 @@ func TestInspectType_TenantOnRelationRejected(t *testing.T) {
 		t.Errorf("expected error to name the type, got %q", err.Error())
 	}
 }
+
+// ── Declarations the server silently discards on the key field ───────────────
+
+type metadataOnKeyFixture struct {
+	Id       string `iverson_key:"true" iverson_meta:"true"`
+	TenantId string `iverson_tenant:"true"`
+}
+
+type multiDeclarationKeyFixture struct {
+	Id       string `iverson_key:"true" iverson_search_key:"0" iverson_large_field:"true" iverson_meta:"true"`
+	TenantId string `iverson_tenant:"true"`
+}
+
+type describedKeyFixture struct {
+	Id       string `iverson_key:"true" iverson_desc:"Stable identifier."`
+	TenantId string `iverson_tenant:"true"`
+}
+
+func TestInspectType_MetadataOnKeyRejected(t *testing.T) {
+	_, err := iverson.InspectType(metadataOnKeyFixture{})
+	if err == nil {
+		t.Fatal("expected an error for iverson_meta on the key field")
+	}
+	if !strings.Contains(err.Error(), "metadataOnKeyFixture.Id is the primary key and also declares") {
+		t.Errorf("error must name the type and field: %q", err.Error())
+	}
+	if !strings.Contains(err.Error(), "iverson_meta") {
+		t.Errorf("error must name the offending declaration: %q", err.Error())
+	}
+	if !strings.Contains(err.Error(), "silently discarded") {
+		t.Errorf("error must explain why it is dropped: %q", err.Error())
+	}
+}
+
+func TestInspectType_KeyErrorNamesEveryRejectedDeclaration(t *testing.T) {
+	_, err := iverson.InspectType(multiDeclarationKeyFixture{})
+	if err == nil {
+		t.Fatal("expected an error for multiple declarations on the key field")
+	}
+	for _, want := range []string{"iverson_search_key", "iverson_large_field", "iverson_meta"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error must name %s in one message, got %q", want, err.Error())
+		}
+	}
+}
+
+func TestInspectType_DescriptionOnKeyAccepted(t *testing.T) {
+	meta, err := iverson.InspectType(describedKeyFixture{})
+	if err != nil {
+		t.Fatalf("a description on the key must stay legal: %v", err)
+	}
+	for _, fm := range meta.Fields {
+		if fm.Name == "Id" {
+			if !fm.IsKey || fm.Description != "Stable identifier." {
+				t.Errorf("key field lost its declarations: %+v", fm)
+			}
+			return
+		}
+	}
+	t.Fatal("key field missing from meta.Fields")
+}

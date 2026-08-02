@@ -9,9 +9,17 @@ import { EventEmitter } from 'node:events';
 import * as grpc from '@grpc/grpc-js';
 import { describe, expect, it, vi } from 'vitest';
 
-import { IversonEntity, IversonKey } from '../src/annotations.js';
+import {
+    IversonDescription,
+    IversonEntity,
+    IversonKey,
+    IversonLargeField,
+    IversonMetadata,
+    IversonSearchKey,
+    IversonTenant,
+} from '../src/annotations.js';
 import { ACTING_USER_METADATA_KEY } from '../src/auth.js';
-import { EntityCoordinator, IversonClient } from '../src/core.js';
+import { describeEntity, EntityCoordinator, IversonClient } from '../src/core.js';
 
 import {
     ObjectPersistenceServiceClient,
@@ -285,5 +293,60 @@ describe('IversonClient — search-family execution methods', () => {
         expect(calls[0].metadata.get(ACTING_USER_METADATA_KEY)).toEqual(['Bearer tok-agg']);
 
         client.close();
+    });
+});
+
+// ── Declarations the server silently discards on the key field ────────────────
+
+describe('describeEntity key-field validation', () => {
+    it('rejects a key field that also declares metadata', () => {
+        @IversonEntity()
+        class MetadataOnKeyEntity {
+            @IversonKey() @IversonMetadata()
+            id: string = '';
+            @IversonTenant()
+            tenantId: string = '';
+        }
+
+        expect(() => describeEntity(MetadataOnKeyEntity)).toThrow(
+            /MetadataOnKeyEntity\.id is the primary key and also declares/,
+        );
+        expect(() => describeEntity(MetadataOnKeyEntity)).toThrow(/@IversonMetadata\(\)/);
+        expect(() => describeEntity(MetadataOnKeyEntity)).toThrow(/silently discarded/);
+    });
+
+    it('names every rejected declaration in one error', () => {
+        @IversonEntity()
+        class MultiDeclarationKeyEntity {
+            @IversonKey() @IversonSearchKey(0) @IversonLargeField() @IversonMetadata()
+            id: string = '';
+            @IversonTenant()
+            tenantId: string = '';
+        }
+
+        let message = '';
+        try {
+            describeEntity(MultiDeclarationKeyEntity);
+        } catch (err) {
+            message = (err as Error).message;
+        }
+        expect(message).toContain('@IversonSearchKey()');
+        expect(message).toContain('@IversonLargeField()');
+        expect(message).toContain('@IversonMetadata()');
+    });
+
+    it('still accepts a key field carrying only a description', () => {
+        @IversonEntity()
+        class DescribedKeyEntity {
+            @IversonKey() @IversonDescription('Stable identifier.')
+            id: string = '';
+            @IversonTenant()
+            tenantId: string = '';
+        }
+
+        const descriptor = describeEntity(DescribedKeyEntity);
+        const key = descriptor.properties.find(p => p.name === 'Id');
+        expect(key?.isKey).toBe(true);
+        expect(key?.description).toBe('Stable identifier.');
     });
 });

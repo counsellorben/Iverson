@@ -539,6 +539,58 @@ class SchemaRegistrarTest {
         assertTrue(ex.getMessage().contains("tenantB"));
     }
 
+    // ── registerAll: declarations the server discards on the key field ────────
+
+    @Test
+    void registerAll_throwsWhenKeyDeclaresMetadata() {
+        @IversonEntity
+        class MetadataOnKeyEntity {
+            @IversonKey @IversonMetadata private UUID id;
+            @IversonTenant private String tenantId;
+        }
+
+        IllegalArgumentException ex = assertThrows(IllegalArgumentException.class,
+            () -> sut.registerAll(MetadataOnKeyEntity.class));
+        assertTrue(ex.getMessage().contains(
+            "MetadataOnKeyEntity.id is the primary key and also declares"), ex.getMessage());
+        assertTrue(ex.getMessage().contains("@IversonMetadata"), ex.getMessage());
+        assertTrue(ex.getMessage().contains("silently discarded"), ex.getMessage());
+    }
+
+    @Test
+    void registerAll_namesEveryRejectedKeyDeclarationInOneError() {
+        @IversonEntity
+        class MultiDeclarationKeyEntity {
+            @IversonKey @IversonSearchKey(order = 0) @IversonLargeField @IversonMetadata
+            private UUID id;
+            @IversonTenant private String tenantId;
+        }
+
+        IllegalArgumentException ex = assertThrows(IllegalArgumentException.class,
+            () -> sut.registerAll(MultiDeclarationKeyEntity.class));
+        assertTrue(ex.getMessage().contains("@IversonSearchKey"), ex.getMessage());
+        assertTrue(ex.getMessage().contains("@IversonLargeField"), ex.getMessage());
+        assertTrue(ex.getMessage().contains("@IversonMetadata"), ex.getMessage());
+    }
+
+    @Test
+    void registerAll_allowsDescriptionOnKeyField() {
+        @IversonEntity
+        class DescribedKeyEntity {
+            @IversonKey @IversonDescription("Stable identifier.") private UUID id;
+            @IversonTenant private String tenantId;
+        }
+
+        ArgumentCaptor<SchemaRequest> captor = ArgumentCaptor.forClass(SchemaRequest.class);
+
+        sut.registerAll(DescribedKeyEntity.class);
+
+        verify(mockStub).registerSchema(captor.capture());
+        PropertyDescriptor key = prop(captor.getValue().getRootType(), "Id");
+        assertTrue(key.getIsKey());
+        assertEquals("Stable identifier.", key.getDescription());
+    }
+
     // ── registerAll: relations ─────────────────────────────────────────────────
 
     @Test

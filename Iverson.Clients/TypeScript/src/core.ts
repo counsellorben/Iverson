@@ -193,6 +193,26 @@ export function describeEntity(cls: Function): TypeDescriptor {
     const summaryFields = new Set(getSummaryFields(cls));
     const keywordsFields = new Set(getKeywordsFields(cls));
     const extractedByField = new Map(getExtractedFields(cls).map(e => [e.field, e]));
+    if (keyField !== undefined) {
+        // The server builds every per-property declaration from non-key properties only, so
+        // anything but a description on the key is accepted and silently dropped.
+        const rejected: string[] = [];
+        if (searchKeysByField.has(keyField)) rejected.push('@IversonSearchKey()');
+        if (largeFields.has(keyField)) rejected.push('@IversonLargeField()');
+        if (embeddingFields.has(keyField)) rejected.push('@IversonEmbedding()');
+        if (chunkFieldsByName.has(keyField)) rejected.push('@IversonChunk()');
+        if (metadataFields.has(keyField)) rejected.push('@IversonMetadata()');
+
+        if (rejected.length > 0) {
+            throw new Error(
+                `${typeName}.${keyField} is the primary key and also declares ` +
+                `${rejected.join(', ')}; the server builds every per-property declaration ` +
+                'from non-key properties only, so this would be accepted and silently discarded. ' +
+                'Remove it from the key field. (Only a description is valid on a key.)',
+            );
+        }
+    }
+
     const propertyDescriptions = getPropertyDescriptions(cls);
     const relations = getRelations(cls);
     const relationFields = new Set(relations.map(r => r.field));

@@ -99,6 +99,8 @@ public final class SchemaRegistrar {
                 cls.getSimpleName() + " has no field annotated with @IversonKey");
         }
 
+        validateKeyDeclarations(cls, keyField);
+
         // Key property first
         builder.addProperties(buildKeyDescriptor(keyField));
 
@@ -120,6 +122,29 @@ public final class SchemaRegistrar {
         }
 
         return builder.build();
+    }
+
+    /**
+     * Rejects declarations the server silently discards on a key field. The server builds every
+     * per-property declaration from non-key properties only, so anything but a description on
+     * the key is accepted and dropped without error.
+     */
+    private static void validateKeyDeclarations(Class<?> cls, Field keyField) {
+        List<String> rejected = new ArrayList<>();
+
+        if (keyField.getAnnotation(IversonSearchKey.class) != null)  rejected.add("@IversonSearchKey");
+        if (keyField.getAnnotation(IversonLargeField.class) != null) rejected.add("@IversonLargeField");
+        if (keyField.getAnnotation(IversonEmbedding.class) != null)  rejected.add("@IversonEmbedding");
+        if (keyField.getAnnotation(IversonChunk.class) != null)      rejected.add("@IversonChunk");
+        if (keyField.getAnnotation(IversonMetadata.class) != null)   rejected.add("@IversonMetadata");
+
+        if (rejected.isEmpty()) return;
+
+        throw new IllegalArgumentException(
+            cls.getSimpleName() + "." + keyField.getName() + " is the primary key and also declares " +
+            String.join(", ", rejected) + "; the server builds every per-property declaration " +
+            "from non-key properties only, so this would be accepted and silently discarded. " +
+            "Remove it from the key field. (Only a description is valid on a key.)");
     }
 
     private static String resolveTenantField(Class<?> cls, List<Field> tenantFields) {

@@ -141,6 +141,15 @@ class SchemaRegistrar:
         summary_fields_set = set(meta.get("summary_fields", []))
         keywords_fields_set = set(meta.get("keywords_fields", []))
         extracted_fields_by_name = meta.get("extracted_fields", {})
+        self._validate_key_declarations(
+            type_name,
+            key_field,
+            search_keys_by_field,
+            large_fields_set,
+            embedding_fields_set,
+            chunk_fields_by_name,
+            metadata_fields_set,
+        )
         tenant_field = self._resolve_tenant_field(type_name, meta.get("tenant_fields", []))
 
         properties: list[mapping_pb.PropertyDescriptor] = []
@@ -199,6 +208,47 @@ class SchemaRegistrar:
             tenant_field=_to_pascal_case(tenant_field),
         )
         return mapping_pb.SchemaRequest(root_type=type_descriptor, trace_id=trace_id)
+
+    @staticmethod
+    def _validate_key_declarations(
+        type_name: str,
+        key_field: str | None,
+        search_keys_by_field: dict,
+        large_fields_set: set,
+        embedding_fields_set: set,
+        chunk_fields_by_name: dict,
+        metadata_fields_set: set,
+    ) -> None:
+        """Reject declarations the server silently discards on a key field.
+
+        The server builds every per-property declaration from non-key properties
+        only, so anything but a description on the key is accepted and dropped.
+        """
+        if key_field is None:
+            return
+
+        rejected: list[str] = []
+        if key_field in search_keys_by_field:
+            rejected.append("iverson_search_key()")
+        if key_field in large_fields_set:
+            rejected.append("iverson_large_field()")
+        if key_field in embedding_fields_set:
+            rejected.append("iverson_embedding()")
+        if key_field in chunk_fields_by_name:
+            rejected.append("iverson_chunk()")
+        if key_field in metadata_fields_set:
+            rejected.append("iverson_metadata()")
+
+        if not rejected:
+            return
+
+        raise ValueError(
+            f"{type_name}.{key_field} is the primary key and also declares "
+            f"{', '.join(rejected)}; the server builds every per-property declaration "
+            "from non-key properties only, so this would be accepted and silently "
+            "discarded. Remove it from the key field. (Only a description is valid "
+            "on a key.)"
+        )
 
     @staticmethod
     def _resolve_tenant_field(type_name: str, tenant_fields: list[str]) -> str:

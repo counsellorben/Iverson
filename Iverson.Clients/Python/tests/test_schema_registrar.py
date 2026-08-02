@@ -115,6 +115,25 @@ class RegComposedDeclarationArticle:
     tenant_id: str = iverson_field(metadata=True, tenant=True)
 
 
+@iverson_entity
+class RegMetadataOnKeyArticle:
+    id: str = iverson_field(key=True, metadata=True)
+    tenant_id: str = iverson_tenant()
+
+
+@iverson_entity
+class RegMultiDeclarationKeyArticle:
+    id: str = iverson_field(key=True, metadata=True, large_field=True,
+                            search_key=True, search_key_order=0)
+    tenant_id: str = iverson_tenant()
+
+
+@iverson_entity
+class RegDescribedKeyArticle:
+    id: str = iverson_key(description="Stable identifier.")
+    tenant_id: str = iverson_tenant()
+
+
 # ── Fixtures ───────────────────────────────────────────────────────────────────
 
 def make_stub() -> MagicMock:
@@ -443,3 +462,30 @@ class TestDeclarationComposition:
         names = [p.name for p in request.root_type.properties]
         assert names.count("Body") == 1
         assert names.count("TenantId") == 1
+
+
+class TestKeyFieldDeclarations:
+    def test_metadata_on_key_raises(self):
+        stub = make_stub()
+        registrar = SchemaRegistrar(stub, RegMetadataOnKeyArticle)
+        with pytest.raises(ValueError) as ex:
+            registrar.register_all()
+        assert "RegMetadataOnKeyArticle.id is the primary key and also declares" in str(ex.value)
+        assert "iverson_metadata()" in str(ex.value)
+        assert "silently discarded" in str(ex.value)
+
+    def test_every_rejected_declaration_named_in_one_error(self):
+        stub = make_stub()
+        registrar = SchemaRegistrar(stub, RegMultiDeclarationKeyArticle)
+        with pytest.raises(ValueError) as ex:
+            registrar.register_all()
+        message = str(ex.value)
+        assert "iverson_search_key()" in message
+        assert "iverson_large_field()" in message
+        assert "iverson_metadata()" in message
+
+    def test_description_on_key_still_registers(self):
+        request = register_request(RegDescribedKeyArticle)
+        props = {p.name: p for p in request.root_type.properties}
+        assert props["Id"].is_key is True
+        assert props["Id"].description == "Stable identifier."

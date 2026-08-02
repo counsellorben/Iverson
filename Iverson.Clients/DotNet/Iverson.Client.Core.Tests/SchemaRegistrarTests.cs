@@ -701,4 +701,54 @@ public class SchemaRegistrarTests
         ex!.Message.Should().Contain("TenantA");
         ex.Message.Should().Contain("TenantB");
     }
+
+    // ── Key-field declarations the server silently discards ───────────────────
+
+    private sealed class MetadataOnKeyEntity
+    {
+        [IversonMetadata] public Guid Id { get; set; }
+        [IversonTenant] public string TenantId { get; set; } = "";
+    }
+
+    private sealed class DescribedKeyEntity
+    {
+        [IversonDescription("Stable identifier.")] public Guid Id { get; set; }
+        [IversonTenant] public string TenantId { get; set; } = "";
+    }
+
+    private sealed class MultiDeclarationKeyEntity
+    {
+        [IversonMetadata, IversonLargeField, IversonSearchKey(0)] public Guid Id { get; set; }
+        [IversonTenant] public string TenantId { get; set; } = "";
+    }
+
+    [Fact]
+    public void BuildTypeDescriptor_Throws_WhenKeyDeclaresMetadata()
+    {
+        var ex = InvokeBuildTypeDescriptor(BuildDescriptor<MetadataOnKeyEntity>());
+
+        ex.Should().BeOfType<ArgumentException>();
+        ex!.Message.Should().Contain("MetadataOnKeyEntity.Id is the primary key and also declares");
+        ex.Message.Should().Contain("[IversonMetadata]");
+        ex.Message.Should().Contain("silently discarded");
+    }
+
+    [Fact]
+    public void BuildTypeDescriptor_NamesEveryRejectedDeclaration_InOneError()
+    {
+        var ex = InvokeBuildTypeDescriptor(BuildDescriptor<MultiDeclarationKeyEntity>());
+
+        ex.Should().BeOfType<ArgumentException>();
+        ex!.Message.Should().Contain("[IversonSearchKey]");
+        ex.Message.Should().Contain("[IversonLargeField]");
+        ex.Message.Should().Contain("[IversonMetadata]");
+    }
+
+    [Fact]
+    public void BuildTypeDescriptor_AllowsDescription_OnKeyProperty()
+    {
+        var ex = InvokeBuildTypeDescriptor(BuildDescriptor<DescribedKeyEntity>());
+
+        ex.Should().BeNull();
+    }
 }

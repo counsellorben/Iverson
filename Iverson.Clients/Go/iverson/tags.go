@@ -273,6 +273,31 @@ func InspectType(v interface{}) (EntityMeta, error) {
 			return EntityMeta{}, fmt.Errorf("iverson tag %q: field %s carries iverson_contextual but is not a chunk field (iverson_chunk:\"...\"); contextual is only meaningful on a chunk field", ContextualTagKey, sf.Name)
 		}
 
+		// The server builds every per-property declaration from non-key properties
+		// only, so anything but a description on the key is accepted and silently
+		// dropped.
+		if fm.IsKey {
+			var rejected []string
+			if fm.IsSearchKey {
+				rejected = append(rejected, SearchKeyTagKey)
+			}
+			if fm.IsLargeField {
+				rejected = append(rejected, LargeFieldTagKey)
+			}
+			if fm.IsEmbedding {
+				rejected = append(rejected, EmbeddingTagKey)
+			}
+			if fm.IsChunk {
+				rejected = append(rejected, ChunkTagKey)
+			}
+			if fm.Metadata {
+				rejected = append(rejected, MetadataTagKey)
+			}
+			if len(rejected) > 0 {
+				return EntityMeta{}, fmt.Errorf("%s.%s is the primary key and also declares %s; the server builds every per-property declaration from non-key properties only, so this would be accepted and silently discarded. Remove it from the key field. (Only a description is valid on a key.)", meta.TypeName, sf.Name, strings.Join(rejected, ", "))
+			}
+		}
+
 		if fm.RelationKind != "" {
 			// Relations never reach meta.Fields, which is where the tenant field
 			// is looked up on registration — so a tenant marker on a relation is

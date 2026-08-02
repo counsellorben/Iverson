@@ -60,6 +60,8 @@ public sealed class SchemaRegistrar(
             .Select(r => r.Property.Name)
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
 
+        ValidateKeyDeclarations(descriptor.EntityName, descriptor.KeyProperty);
+
         typeDesc.Properties.Add(BuildKeyDescriptor(descriptor.KeyProperty));
 
         foreach (var prop in descriptor.EntityType
@@ -88,6 +90,35 @@ public sealed class SchemaRegistrar(
         }
 
         return typeDesc;
+    }
+
+    /// <summary>
+    /// Rejects declarations the server silently discards on a key property. The server builds
+    /// every per-property declaration from non-key properties only, so anything but a
+    /// description on the key is accepted and dropped without error.
+    /// </summary>
+    private static void ValidateKeyDeclarations(string entityName, PropertyInfo keyProp)
+    {
+        var rejected = new List<string>();
+
+        if (keyProp.GetCustomAttribute<IversonSearchKeyAttribute>() is not null)
+            rejected.Add("[IversonSearchKey]");
+        if (keyProp.GetCustomAttribute<IversonLargeFieldAttribute>() is not null)
+            rejected.Add("[IversonLargeField]");
+        if (keyProp.GetCustomAttribute<IversonEmbeddingAttribute>() is not null)
+            rejected.Add("[IversonEmbedding]");
+        if (keyProp.GetCustomAttribute<IversonChunkAttribute>() is not null)
+            rejected.Add("[IversonChunk]");
+        if (keyProp.GetCustomAttribute<IversonMetadataAttribute>() is not null)
+            rejected.Add("[IversonMetadata]");
+
+        if (rejected.Count == 0) return;
+
+        throw new ArgumentException(
+            $"{entityName}.{keyProp.Name} is the primary key and also declares " +
+            $"{string.Join(", ", rejected)}; the server builds every per-property declaration " +
+            "from non-key properties only, so this would be accepted and silently discarded. " +
+            "Remove it from the key field. (Only a description is valid on a key.)");
     }
 
     private static string ResolveTenantField(EntityDescriptor descriptor)
