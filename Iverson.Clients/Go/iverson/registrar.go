@@ -66,7 +66,7 @@ func (r *SchemaRegistrar) buildRequest(e interface{}, traceID string) (*pb.Schem
 		if !ok {
 			continue
 		}
-		clrType := goTypeToClr(sf.Type)
+		clrType, isArray := goTypeToClr(sf.Type)
 		searchKeyOrder, err := int32FromInt(fm.SearchKeyOrder)
 		if err != nil {
 			return nil, fmt.Errorf("field %s: SearchKeyOrder %w", fm.Name, err)
@@ -82,6 +82,7 @@ func (r *SchemaRegistrar) buildRequest(e interface{}, traceID string) (*pb.Schem
 		prop := &pb.PropertyDescriptor{
 			Name:             fm.Name,
 			ClrType:          clrType,
+			IsArray:          isArray,
 			IsKey:            fm.IsKey,
 			IsNullable:       !fm.IsKey,
 			IsSearchKey:      fm.IsSearchKey,
@@ -170,37 +171,39 @@ func int32FromInt(v int) (int32, error) {
 	return int32(v), nil
 }
 
-// goTypeToClr maps a reflect.Type to a ClrType proto enum value.
-func goTypeToClr(t reflect.Type) pb.ClrType {
+// goTypeToClr maps a reflect.Type to a ClrType proto enum value and whether it is an array.
+func goTypeToClr(t reflect.Type) (pb.ClrType, bool) {
 	if t.Kind() == reflect.Ptr {
 		t = t.Elem()
 	}
 	switch t.Kind() {
 	case reflect.String:
-		return pb.ClrType_CLR_STRING
+		return pb.ClrType_CLR_STRING, false
 	case reflect.Int32:
-		return pb.ClrType_CLR_INT32
+		return pb.ClrType_CLR_INT32, false
 	case reflect.Int, reflect.Int64:
-		return pb.ClrType_CLR_INT64
+		return pb.ClrType_CLR_INT64, false
 	case reflect.Float32:
-		return pb.ClrType_CLR_FLOAT
+		return pb.ClrType_CLR_FLOAT, false
 	case reflect.Float64:
-		return pb.ClrType_CLR_DOUBLE
+		return pb.ClrType_CLR_DOUBLE, false
 	case reflect.Bool:
-		return pb.ClrType_CLR_BOOL
+		return pb.ClrType_CLR_BOOL, false
 	case reflect.Slice:
+		// []byte is a primitive scalar — check before the array unwrap.
 		if t.Elem().Kind() == reflect.Uint8 {
-			return pb.ClrType_CLR_BYTES
+			return pb.ClrType_CLR_BYTES, false
 		}
-		return pb.ClrType_CLR_STRING
+		element, _ := goTypeToClr(t.Elem())
+		return element, true
 	case reflect.Struct:
 		// time.Time maps to CLR_DATETIME
 		if t.PkgPath() == "time" && t.Name() == "Time" {
-			return pb.ClrType_CLR_DATETIME
+			return pb.ClrType_CLR_DATETIME, false
 		}
-		return pb.ClrType_CLR_STRING
+		return pb.ClrType_CLR_STRING, false
 	default:
-		return pb.ClrType_CLR_STRING
+		return pb.ClrType_CLR_STRING, false
 	}
 }
 

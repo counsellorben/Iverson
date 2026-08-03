@@ -570,3 +570,57 @@ func TestSchemaRegistrar_MultipleTenantFields_Rejected(t *testing.T) {
 		t.Errorf("expected error to name both fields TenantId and OrgId, got %q", err.Error())
 	}
 }
+
+type arrayFieldsArticle struct {
+	Id       string `iverson_key:"true"`
+	TenantId string `iverson_tenant:"true"`
+	Tags     []string
+	Counts   []int
+	Blob     []byte
+}
+
+func TestSchemaRegistrar_RegisterAll_ArrayFields(t *testing.T) {
+	mock := &mockMappingClient{response: &pb.SchemaResponse{Success: true}}
+	registrar := iverson.NewSchemaRegistrar(mock, arrayFieldsArticle{})
+	if err := registrar.RegisterAll(context.Background(), ""); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	props := make(map[string]*pb.PropertyDescriptor)
+	for _, p := range mock.capturedReq.RootType.Properties {
+		props[p.Name] = p
+	}
+
+	tags, ok := props["Tags"]
+	if !ok {
+		t.Fatal("no Tags property found")
+	}
+	if !tags.IsArray {
+		t.Error("expected Tags.IsArray=true")
+	}
+	if tags.ClrType != pb.ClrType_CLR_STRING {
+		t.Errorf("expected Tags.ClrType=CLR_STRING, got %v", tags.ClrType)
+	}
+
+	counts, ok := props["Counts"]
+	if !ok {
+		t.Fatal("no Counts property found")
+	}
+	if !counts.IsArray {
+		t.Error("expected Counts.IsArray=true")
+	}
+	if counts.ClrType != pb.ClrType_CLR_INT64 {
+		t.Errorf("expected Counts.ClrType=CLR_INT64, got %v", counts.ClrType)
+	}
+
+	blob, ok := props["Blob"]
+	if !ok {
+		t.Fatal("no Blob property found")
+	}
+	if blob.IsArray {
+		t.Error("expected Blob.IsArray=false")
+	}
+	if blob.ClrType != pb.ClrType_CLR_BYTES {
+		t.Errorf("expected Blob.ClrType=CLR_BYTES, got %v", blob.ClrType)
+	}
+}
