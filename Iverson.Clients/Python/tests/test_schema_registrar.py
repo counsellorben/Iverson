@@ -142,6 +142,15 @@ class RegDescribedKeyArticle:
     tenant_id: str = iverson_tenant()
 
 
+@iverson_entity
+class RegArrayArticle:
+    id: str = iverson_key()
+    tags: list[str] = None
+    counts: list[int] = None
+    blob: bytes = None
+    tenant_id: str = iverson_tenant()
+
+
 # ── Fixtures ───────────────────────────────────────────────────────────────────
 
 def make_stub() -> MagicMock:
@@ -511,3 +520,23 @@ class TestKeyFieldDeclarations:
         props = {p.name: p for p in request.root_type.properties}
         assert props["Id"].is_key is True
         assert props["Id"].description == "Stable identifier."
+
+
+class TestArrayProperties:
+    def test_list_str_flagged_as_array_of_string(self):
+        request = register_request(RegArrayArticle)
+        props = {p.name: p for p in request.root_type.properties}
+        assert props["Tags"].is_array is True
+        assert props["Tags"].clr_type == mapping_pb.CLR_STRING
+
+    def test_list_int_flagged_as_array_of_int32(self):
+        request = register_request(RegArrayArticle)
+        props = {p.name: p for p in request.root_type.properties}
+        assert props["Counts"].is_array is True
+        assert props["Counts"].clr_type == mapping_pb.CLR_INT32
+
+    def test_bytes_still_scalar_not_array(self):
+        request = register_request(RegArrayArticle)
+        props = {p.name: p for p in request.root_type.properties}
+        assert props["Blob"].is_array is False
+        assert props["Blob"].clr_type == mapping_pb.CLR_BYTES

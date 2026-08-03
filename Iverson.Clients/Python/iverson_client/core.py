@@ -6,7 +6,7 @@ from __future__ import annotations
 import re
 import uuid
 from dataclasses import dataclass
-from typing import Generic, List, Optional, TypeVar
+from typing import Generic, List, Optional, TypeVar, get_args, get_origin, get_type_hints
 
 import grpc
 from google.protobuf import struct_pb2
@@ -51,12 +51,22 @@ _RELATION_KIND_MAP: dict[str, int] = {
 }
 
 
-def _python_type_to_clr(type_hint: str | type | None) -> int:
-    """Map a Python type annotation to a ClrType enum value."""
+def _python_type_to_clr(type_hint: str | type | None) -> tuple[int, bool]:
+    """Map a Python type annotation to (ClrType enum value, is_array)."""
     if type_hint is None:
-        return mapping_pb.CLR_STRING
+        return mapping_pb.CLR_STRING, False
+    # bytes is a scalar — check before the array unwrap.
+    if type_hint is bytes:
+        return mapping_pb.CLR_BYTES, False
+    if get_origin(type_hint) in (list, set, tuple):
+        args = get_args(type_hint)
+        element = args[0] if args else None
+        if element is bytes:
+            return mapping_pb.CLR_BYTES, True
+        name = getattr(element, "__name__", str(element)) if element is not None else ""
+        return _PY_TO_CLR.get(name, mapping_pb.CLR_STRING), True
     name = type_hint if isinstance(type_hint, str) else getattr(type_hint, "__name__", str(type_hint))
-    return _PY_TO_CLR.get(name, mapping_pb.CLR_STRING)
+    return _PY_TO_CLR.get(name, mapping_pb.CLR_STRING), False
 
 
 def _to_pascal_case(snake: str) -> str:
@@ -123,11 +133,7 @@ class SchemaRegistrar:
                 f"{cls.__name__} is not decorated with @iverson_entity"
             )
 
-        annotations = {}
-        for base in reversed(cls.__mro__):
-            if base is object:
-                continue
-            annotations.update(getattr(base, "__annotations__", {}))
+        annotations = get_type_hints(cls)
 
         type_name = meta["type_name"]
         key_field = meta["key_field"]
@@ -160,7 +166,7 @@ class SchemaRegistrar:
             if field_name in relation_fields:
                 continue
             type_hint = annotations.get(field_name)
-            clr_type = _python_type_to_clr(type_hint)
+            clr_type, is_array = _python_type_to_clr(type_hint)
             is_chunk = field_name in chunk_fields_by_name
             chunk_max_tokens, chunk_overlap, chunk_contextual = chunk_fields_by_name.get(
                 field_name, (0, 0, False)
@@ -170,7 +176,7 @@ class SchemaRegistrar:
                 clr_type=clr_type,
                 is_key=(field_name == key_field),
                 is_nullable=(field_name != key_field),
-                is_array=False,
+                is_array=is_array,
                 is_search_key=(field_name in search_keys_by_field),
                 search_key_order=search_keys_by_field.get(field_name, 0),
                 is_metadata=(field_name in metadata_fields_set),
