@@ -561,6 +561,76 @@ public sealed class PostgresIntegrationTests(PostgresContainerFixture fixture)
         await act.Should().NotThrowAsync();
     }
 
+    // ── End-to-end array round-trip (Task 7 of array-column-mapping) ────────
+
+    [Fact]
+    public async Task ArrayProperties_RoundTripThroughJsonPopulateRecordAndRowToJson_AsJsonArrays()
+    {
+        var table = UniqueTable();
+        await _schemaManager.ApplySchemaAsync(new TableSchema(
+            table,
+            new ColumnSchema("id",     "uuid",       IsNullable: false),
+            [
+                new ColumnSchema("tags",   "TEXT[]",    IsNullable: true),
+                new ColumnSchema("scores", "INTEGER[]", IsNullable: true),
+            ]));
+
+        var id = Guid.NewGuid();
+        var json = $$$"""{"id":"{{{id}}}","tags":["a","b"],"scores":[1,2,3]}""";
+
+        var upsertSql = $"""
+            INSERT INTO "{table}"
+            SELECT * FROM json_populate_record(null::"{table}", @Json::json)
+            """;
+        await _repo.ExecuteAsync(upsertSql, new { Json = json });
+
+        var readBack = await _repo.QuerySingleOrDefaultAsync<string>(
+            $"""SELECT row_to_json(t)::text FROM "{table}" t WHERE id = @Id""",
+            new { Id = id });
+
+        readBack.Should().NotBeNull();
+
+        // Negative control: with a scalar TEXT column holding a JSON-encoded array, row_to_json
+        // would emit the stored text AS A JSON STRING — e.g. "tags":"[\"a\",\"b\"]" — because
+        // Postgres has no idea the text happens to look like JSON. With a real TEXT[]/INTEGER[]
+        // column it emits genuine JSON arrays: "tags":["a","b"]. Asserting the unescaped,
+        // unquoted array form is what distinguishes the two; a regression to TEXT would produce
+        // the escaped-string form and fail this assertion.
+        readBack.Should().Contain("\"tags\":[\"a\",\"b\"]");
+        readBack.Should().Contain("\"scores\":[1,2,3]");
+        readBack.Should().NotContain("\\\"a\\\"");
+    }
+
+    [Fact]
+    public async Task ApplySchemaAsync_AddsNonNullableArrayColumn_ToExistingTable()
+    {
+        var table = UniqueTable();
+        var v1 = new TableSchema(
+            table,
+            new ColumnSchema("id",   "uuid", IsNullable: false),
+            [new ColumnSchema("name", "text", IsNullable: false)]);
+        await _schemaManager.ApplySchemaAsync(v1);
+
+        // Adding a non-nullable array column to an already-existing table is the only DDL path
+        // that invokes GetDefaultForType — a fresh CREATE TABLE emits no default at all, so only
+        // this ALTER TABLE ADD COLUMN path would catch a malformed array default literal.
+        var v2 = new TableSchema(
+            table,
+            new ColumnSchema("id",     "uuid", IsNullable: false),
+            [
+                new ColumnSchema("name", "text",    IsNullable: false),
+                new ColumnSchema("tags",  "TEXT[]", IsNullable: false),
+            ]);
+
+        var act = async () => await _schemaManager.ApplySchemaAsync(v2);
+        await act.Should().NotThrowAsync();
+
+        var cols = (await _repo.QueryAsync<string>(
+            $"SELECT column_name FROM information_schema.columns WHERE table_name = '{table}'"))
+            .ToList();
+        cols.Should().Contain("tags");
+    }
+
     [Fact]
     public async Task ApplySchemaAsync_OrphanDrop_StillAppliesCleanly_AfterPriorColumnDrop()
     {
