@@ -71,7 +71,7 @@ message SchemaField {
     int32   search_key_order = 9;
     bool    is_embedding     = 10;
     bool    is_chunk         = 11;
-    SchemaEnrichmentKind enrichment = 12;
+    repeated SchemaEnrichmentKind enrichment = 12;
 }
 
 message SchemaRelation {
@@ -82,6 +82,7 @@ message SchemaRelation {
 }
 
 enum SchemaEnrichmentKind {
+    // Required zero value (proto3); never emitted — an empty `enrichment` list is "none".
     ENRICHMENT_NONE      = 0;
     ENRICHMENT_SUMMARY   = 1;
     ENRICHMENT_KEYWORDS  = 2;
@@ -94,11 +95,8 @@ cannot name a type it has not heard of. A single-type filter is deliberately not
 has asked for it, and it is additive later.
 
 **A purpose-built response, not the registration `TypeDescriptor`.** Round-tripping `TypeDescriptor`
-would be pleasingly symmetric but is **lossy**: `is_array` is never persisted (`SchemaBuilder.cs:55`
-consumes it to pick a SQL type and discards it), and only `Guid[]` and `float[]` receive a distinct
-SQL type. A declared `string[]` persists as `TEXT`, indistinguishable from `string`, so its
-`is_array` could not be reconstructed without adding stored state to serve a read path. Reusing
-`TypeDescriptor` would also hand agents registration-only concepts and expose `AuthorizationRules`.
+would be pleasingly symmetric, but it hands agents registration-only concepts and exposes
+`AuthorizationRules`.
 
 `ClrType` and `RelationKind` are reused rather than redefined — both already live in this proto
 (`:31` and `:24`).
@@ -127,8 +125,11 @@ discovery out of reach of the callers it exists to serve.
 
 1. `decision = _authEvaluator.Evaluate(schema, _actingUserAccessor.ActingUser, AuthorizationAction.Read)`
 2. `decision.Denied` → omit the type entirely.
-3. Candidate fields = `KeyColumn` + `ScalarColumns` + `FkColumns`. When `decision.AllowedFields`
-   is non-null, intersect with it.
+3. Candidate fields = `KeyColumn` + `ScalarColumns`. **`FkColumns` is deliberately not added:**
+   every FK property is already a scalar column, and only the `ColumnDescriptor` form carries the
+   `SqlType` and `IsNullable` the projection needs. Adding it would emit each foreign key twice,
+   the second time without a derivable `clr_type`, `is_array` or `is_nullable`. When
+   `decision.AllowedFields` is non-null, intersect with it.
 4. Empty field set → omit the type. A type with nothing readable is a dead end, and listing its
    name is itself a disclosure.
 5. Project the survivors.
@@ -144,9 +145,8 @@ omitted, so the catalog never invites a join to a type the caller cannot see.
 `description` from `FieldDescriptions`; `enrichment` from `EnrichmentTargets`; relations from
 `Relations` (`PropertyName`, `Kind`, `RelatedTypeName`, `ForeignKey`).
 
-`is_array` is derived as `sqlType.EndsWith("[]")`. This is complete for everything the storage
-layer treats as an array: `ArrayTypeOverrides` (`SchemaBuilder.cs:250-255`) contains exactly
-`ClrGuid → "UUID[]"` and `ClrFloat → "REAL[]"`, and no scalar SQL type ends in `[]`.
+`is_array` is derived as `sqlType.EndsWith("[]")`. `ArrayTypeOverrides` (`SchemaBuilder.cs:249-265`)
+is total over `ClrType`, every entry ends in `[]`, and no scalar SQL type does.
 
 **`search_key_order` is the rank, not the declared value.** `SchemaBuilder.cs:115` sorts by the
 declared `SearchKeyOrder` and `:169` flattens the result to names, so the declared number is never
@@ -158,8 +158,8 @@ round-trip fidelity and the field must not be read as such.
 (`SchemaBuilder.cs:262-265`) is keyed by SQL type but its values are `ClrTypeMapping`, which does
 not carry the `ClrType` key, so it cannot answer this. The new dictionary is built from the same
 `ScalarTypeMap` + `ArrayTypeOverrides` source at static-init time, so it cannot drift from
-`ClrTypeToSql`. The mapping is well-defined: all nine scalar SQL types are distinct, and both
-array overrides are distinct from every scalar.
+`ClrTypeToSql`. The mapping is well-defined: the nine scalar and nine array SQL types are
+pairwise distinct.
 
 **No audit logging.** `AuditLog` records data access; a schema-shape read is not that, and a
 per-type denial entry on every catalog call would be noise.
@@ -210,8 +210,8 @@ plumbing appears anywhere: TypeScript `callUnary`, Python channel call-credentia
 5. A relation whose `related_type` was omitted is dropped from the surviving type.
 
 **Type recovery** — table-driven over **`Enum.GetValues<ClrType>()`**, asserting that for every
-`ClrType`, `SqlTypeToClr(ClrTypeToSql(t, isArray: false))` returns `t`, plus the two array cases
-round-tripping to `(ClrGuid, is_array)` and `(ClrFloat, is_array)`.
+`ClrType`, `SqlTypeToClr(ClrTypeToSql(t, isArray: false))` returns `t`, and that
+`SqlTypeToClr(ClrTypeToSql(t, isArray: true))` returns `(t, is_array: true)`.
 
 Iterating the enum rather than the map is deliberate on two counts. `ScalarTypeMap` and
 `ArrayTypeOverrides` are `private static readonly` (`SchemaBuilder.cs:233`, `:250`), so tests
@@ -221,7 +221,8 @@ stronger check anyway: a newly added `ClrType` with no `ScalarTypeMap` entry fai
 `ClrTypeToSql`'s `ArgumentOutOfRangeException` at `:274-275`), whereas iterating the map would
 silently skip it.
 
-**Flag composition** — a field declared both `metadata` and `search_key` reports both. The proto's
+**Flag composition** — a field declared both `metadata` and `search_key` reports both, **and a field
+declared both `@IversonSummary` and `@IversonKeywords` reports both enrichment kinds.** The proto's
 booleans are independent and all five clients now enforce that they compose; the projection must
 not reintroduce exclusivity.
 
@@ -234,16 +235,6 @@ The MCP server (`docs/specs/2026-07-22-mcp-server-design.md`) — it is a separa
 consumer of this RPC and is not absorbed here. Any richer query surface beyond the six search RPCs
 that already exist. A single-type request filter. Persisting `is_array` or the declared
 `SearchKeyOrder` value to improve response fidelity.
-
-## Known issues — pre-existing, not addressed here
-
-A declared `string[]` (or any array other than `Guid[]`/`float[]`) maps to its scalar SQL type at
-registration — `ClrTypeToSql` (`SchemaBuilder.cs:267-276`) consults `ArrayTypeOverrides` first and
-falls through to `ScalarTypeMap` for every other type, so a `string[]` is persisted as `TEXT`. This
-design reports `is_array = false` for such a field, which is consistent with how the server stores
-and queries it, but it means the response reflects storage rather than the original declaration.
-Whether that mapping is itself correct is a pre-existing question about the write path and is not
-touched here.
 
 ## Verified assumptions
 
@@ -260,8 +251,9 @@ Verified against `main@5884b07`.
 | A7 | `AllowedFields` spans key + scalars + FKs + vector/chunk source names | `IRowFieldAuthorizationEvaluator.cs:21-25` doc comment, verbatim |
 | A8 | The service requires authentication ambiently | `Program.cs:143-145` `FallbackPolicy = RequireAuthenticatedUser()`; `Program.cs:426` maps the service with no `RequireAuthorization` override |
 | A9 | `SchemaDescriptor` carries every member the projection reads | `SchemaDescriptor.cs:3-45` — `KeyColumn`, `ScalarColumns`, `FkColumns`, `VectorFields`, `ChunkFields`, `Relations`, `SearchKeyColumns`, `MetadataColumns`, `Description`, `FieldDescriptions`, `EnrichmentTargets` all present |
+| A20 | **`ScalarColumns` and `FkColumns` overlap — every FK column is also a scalar column** | `SchemaBuilder.cs:56-57` adds every non-key property to `scalars` unconditionally; `:106-113` appends the same property to `fks` later in the *same* loop iteration with no `continue`. Corroborated by `ToTableSchema` (`:181-184`), which builds the physical table from `KeyColumn` + `ScalarColumns` only — FK columns are not separate columns because they are already scalars |
 | A10 | `ScalarTypeMap` is injective on SQL type | `SchemaBuilder.cs:233-245` — nine entries, SQL types `UUID`, `TEXT`, `INTEGER`, `BIGINT`, `REAL`, `DOUBLE PRECISION`, `BOOLEAN`, `TIMESTAMPTZ`, `BYTEA`, all distinct |
-| A11 | Only `UUID[]` and `REAL[]` end in `[]` | `SchemaBuilder.cs:250-255` — `ArrayTypeOverrides` has exactly those two; no scalar SQL type ends in `[]` |
+| A11 | **Corrected — was two array types, now nine.** Every array SQL type ends in `[]`; no scalar SQL type does | `SchemaBuilder.cs:249-265` — `ArrayTypeOverrides` is total over `ClrType`: `UUID[]`, `TEXT[]`, `INTEGER[]`, `BIGINT[]`, `REAL[]`, `DOUBLE PRECISION[]`, `BOOLEAN[]`, `TIMESTAMPTZ[]`, `BYTEA[]`. The 18 SQL strings are pairwise distinct, so the `SqlType → ClrType` inverse stays well-defined. Restated after the `array-column-mapping` branch merged |
 | A12 | **Corrected.** `SearchKeyColumns` is ordered, but by rank — the declared value is not persisted | `SchemaBuilder.cs:115` sorts by declared order; `:169` flattens to `ConvertAll(sk => sk.Name)`. `search_key_order` is therefore the rank |
 | A13 | `RelationDescriptor` and `EnrichmentKind` shapes | `SchemaDescriptor.cs:61-65` `(PropertyName, Kind, RelatedTypeName, ForeignKey)`; `:47` `enum EnrichmentKind { Summary, Keywords, Extracted }` |
 | A14 | **Failed for .NET.** Four clients have a non-generic data-plane client holding a mapping stub; .NET does not | TypeScript `core.ts:518-524` (`_mappingClient`, `_actingUserToken`); Java `IversonClient.java:31` (`mappingStub`); Python `core.py:506,53` (`IversonClient`, `self._mapping_stub`, `acting_user_token`); Go `coordinator.go:61-70` (`MappingStub`). `grep -rn 'class IversonClient' Iverson.Clients/DotNet/` returns nothing — hence `SchemaCatalogClient` |
