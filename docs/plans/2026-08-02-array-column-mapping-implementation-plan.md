@@ -85,9 +85,11 @@ Newly introduced by this plan and verified at plan-write time against `main@93b5
 | P10 | Signature | Go already carves out `[]byte` and returns `CLR_STRING` for every other slice | `registrar.go:186-189`. The carve-out is preserved, not added; the `CLR_STRING` fallthrough is what gets replaced |
 | P11 | Signature | Python `_python_type_to_clr(type_hint: str \| type \| None) -> int` has exactly **one** call site | Definition `core.py:54`, call `core.py:163` |
 | P12 | Consumer impact | The `get_type_hints` switch breaks no existing Python entity | No `TYPE_CHECKING` usage anywhere in the Python client; `sample/models.py` and all test entities use `from __future__ import annotations`, and every annotation resolves at call time (`Author.articles: list` is a bare builtin and is a relation field, skipped before the type path) |
+| P25 | Signature | **`core.py` binds only selected `typing` names, not the module** | `core.py:9` — `from typing import Generic, List, Optional, TypeVar`; no `import typing` anywhere in the file. Any `typing.<name>` reference is unbound until the import is extended |
 | P13 | Consumer impact | TypeScript's new "undecorated `Array` property throws" breaks no existing fixture | No decorated entity class in `tests/` or `sample/` declares an array-typed field; the `[]` hits in `core.test.ts` are local variables and response arrays, not entity properties |
 | P14 | Signature | TypeScript property decorators use `Reflect.defineMetadata(KEY, value, target.constructor)` and a paired getter | `annotations.ts:68-75` (`IversonKey`/`getKeyField`), the pattern `@IversonArray`/`getArrayFields` follows |
 | P15 | Consumer impact | `ClrType` is genuinely absent from TypeScript's public exports | `src/index.ts` exports 12 decorators, the accessors, builders and client classes, and no generated proto type |
+| P26 | Signature | **`annotations.ts` imports no generated proto type, and can safely gain one** | `annotations.ts:20` — sole import is `import 'reflect-metadata';`. `ClrType` originates at `../generated/object_mapping.js` (`core.ts:9,18`). No cycle: `annotations.ts` imports nothing from `core.ts` |
 | P16 | Signature | `PostgresContainerFixture` exposes `SchemaManager` and `ConnectionString` and is consumed via `IClassFixture` | `PostgresIntegrationTests.cs:9-38`; `postgres:16-alpine`, `UniqueTable()` helper at `:44-45` |
 | P17 | Command | `dotnet test <project-dir>` is the invocation — there is no solution file | No `.sln` at repo root or under `Iverson.Server/`; each test project has its own `.csproj` |
 | P18 | Command | `mvn -f Iverson.Clients/Java/pom.xml test` is valid | `pom.xml` declares modules `client` and `sample` |
@@ -308,7 +310,15 @@ Java currently **drops** array fields rather than mis-typing them: `detectClrTyp
 ```
 
 - [ ] **Step 2: Route both call sites through it.**
-`buildKeyDescriptor` (`:176`) and `tryBuildPropertyDescriptor` (`:188`) pass `field.getGenericType()` and call `.setIsArray(detected.isArray())` on the builder. `tryBuildPropertyDescriptor` still returns `null` when detection yields `null`, preserving the skip for genuine nav properties and custom types. A key field is never an array in practice; `buildKeyDescriptor` sets `isArray` from the detection result rather than special-casing.
+`buildKeyDescriptor` (`:176`) and `tryBuildPropertyDescriptor` (`:188`) pass `field.getGenericType()`. Detection returns `null` for unsupported types, so both sites must guard it — `buildKeyDescriptor` preserves today's `CLR_STRING` fallback rather than dereferencing:
+
+```java
+DetectedType detected = detectClrType(field.getGenericType());
+ClrType clrType = detected != null ? detected.clrType() : ClrType.CLR_STRING;
+boolean isArray = detected != null && detected.isArray();
+```
+
+`tryBuildPropertyDescriptor` still returns `null` when detection yields `null`, preserving the skip for genuine nav properties and custom types. A key field is never an array in practice; `buildKeyDescriptor` sets `isArray` from the detection result rather than special-casing.
 
 - [ ] **Step 3: Add tests.** An entity with a `List<String>` and a `String[]` registers with `is_array` set and element `clr_type` `CLR_STRING`; a `byte[]` field still registers as the `ClrBytes` scalar with `is_array` false.
 
@@ -332,7 +342,9 @@ git commit -m "detect array properties in the Java client"
 - Test: `Iverson.Clients/Python/tests/test_schema_registrar.py`
 
 - [ ] **Step 1: Resolve annotations before inspecting them.**
-`_build_request` walks raw `__annotations__` across the MRO, which holds **strings** under `from __future__ import annotations` — the style every existing Python entity uses. `typing.get_origin('list[str]')` returns `None`. Replace the MRO walk with `typing.get_type_hints(cls)`, which resolves the strings and merges the MRO itself.
+First extend the existing import: `from typing import Generic, List, Optional, TypeVar, get_args, get_origin, get_type_hints`. `core.py` binds only selected `typing` names today, so a bare `typing.get_type_hints` reference is unbound.
+
+`_build_request` walks raw `__annotations__` across the MRO, which holds **strings** under `from __future__ import annotations` — the style every existing Python entity uses. `get_origin('list[str]')` returns `None`. Replace the MRO walk with `get_type_hints(cls)`, which resolves the strings and merges the MRO itself.
 
 The existing scalar path survives raw strings only by accident: `_python_type_to_clr` accepts `str | type` and `_PY_TO_CLR` keys on bare names, so `'str'` hits the `"str"` key while `'list[str]'` matches nothing.
 
@@ -346,8 +358,8 @@ def _python_type_to_clr(type_hint: str | type | None) -> tuple[int, bool]:
     # bytes is a scalar — check before the array unwrap.
     if type_hint is bytes:
         return mapping_pb.CLR_BYTES, False
-    if typing.get_origin(type_hint) in (list, set, tuple):
-        args = typing.get_args(type_hint)
+    if get_origin(type_hint) in (list, set, tuple):
+        args = get_args(type_hint)
         element = args[0] if args else None
         if element is bytes:
             return mapping_pb.CLR_BYTES, True
@@ -449,6 +461,8 @@ git commit -m "detect array properties in the Go client"
 TypeScript cannot infer the element type: `Reflect.getMetadata('design:type', …)` returns the `Array` constructor, `emitDecoratorMetadata` erases the element, and an initialized `[]` carries no element either. So it is declared explicitly.
 
 - [ ] **Step 1: Add the decorator and its accessor.**
+`annotations.ts` first gains `import { ClrType } from '../generated/object_mapping.js';` alongside its `reflect-metadata` import — the same specifier `core.ts` uses. Without it the decorator's signature fails to compile with TS2304. No cycle results: `annotations.ts` imports nothing from `core.ts`.
+
 Same `Reflect.defineMetadata` shape as the eight existing property decorators.
 
 ```ts
