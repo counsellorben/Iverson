@@ -186,6 +186,24 @@ Putting an entity-independent catalog call on it would force callers to name an 
 ask what types exist. `SchemaCatalogClient` is a small non-generic type taking the mapping client,
 registered `AddSingleton` exactly as `SchemaRegistrar` is (`:76`). Decision made by Ben 2026-08-02.
 
+**.NET binds the acting user at construction.** The other four clients hold identity on the client
+instance or the call context, so a signature without an identity parameter still carries one; .NET
+holds it in neither place today — grepping the .NET client for `ActingUser` returns hits only inside
+`ActingUserMetadata.cs`, a per-call `Metadata` extension. `SchemaCatalogClient` therefore takes an
+acting-user token provider as a constructor dependency and applies `WithActingUser` itself on every
+call, so the signature stays entity- and identity-free. `AddIversonClient` gains a
+`Func<Task<string>>? actingUserTokenProvider = null` parameter alongside the existing
+`dataPlaneTokenProvider`, declared before the trailing `params Assembly[]`.
+
+**An absent acting user yields an empty catalog, not a full one:** `RowFieldAuthorizationEvaluator`
+returns `Denied` for a null acting user, so §2's step 2 omits every type. A caller that configures no
+provider gets an empty response, and needs to read that as an authorization outcome rather than an
+empty registry.
+
+Note also that `SchemaCatalogClient` and `SchemaRegistrar` share one DI-registered
+`ObjectMappingServiceClient`, credentialed with the client-credentials token — the registrar
+separation above is a type-level distinction, not a credential-level one.
+
 **Returns the generated proto type**, unwrapped to the `types` list. This matches the search family
 — TypeScript's `searchChunks()` returns `ChunkSearchResponse[]` and `aggregate()` returns
 `AggregateResponse`, both generated types. A hand-rolled idiomatic model in five languages would be
@@ -227,7 +245,9 @@ booleans are independent and all five clients now enforce that they compose; the
 not reintroduce exclusivity.
 
 **Clients** — one test per language: the method issues `GetSchema` against a mock stub and surfaces
-the returned types, following each suite's existing mock-stub pattern rather than a new harness.
+the returned types, following each suite's existing mock-stub pattern rather than a new harness. For
+.NET, additionally: a client constructed with an acting-user token provider reaches the stub
+carrying the `x-acting-user-authorization` metadata key.
 
 ## Out of scope
 
@@ -258,6 +278,7 @@ Verified against `main@5884b07`.
 | A13 | `RelationDescriptor` and `EnrichmentKind` shapes | `SchemaDescriptor.cs:61-65` `(PropertyName, Kind, RelatedTypeName, ForeignKey)`; `:47` `enum EnrichmentKind { Summary, Keywords, Extracted }` |
 | A14 | **Failed for .NET.** Four clients have a non-generic data-plane client holding a mapping stub; .NET does not | TypeScript `core.ts:518-524` (`_mappingClient`, `_actingUserToken`); Java `IversonClient.java:31` (`mappingStub`); Python `core.py:506,53` (`IversonClient`, `self._mapping_stub`, `acting_user_token`); Go `coordinator.go:61-70` (`MappingStub`). `grep -rn 'class IversonClient' Iverson.Clients/DotNet/` returns nothing — hence `SchemaCatalogClient` |
 | A15 | Each client has a reusable acting-user call path | TypeScript `callUnary` (`core.ts:139`); Python `_ActingUserAuthPlugin` + channel call-credentials (`core.py:529-538`); Go `WithActingUserToken` (`auth.go:23`); Java `CallOptions` (`OAuth2ClientCredentials.java:56-58`); .NET `ActingUserMetadata.WithActingUser` (`ActingUserMetadata.cs:9`) |
+| A21 | **Four clients bind the acting user to the client instance or call context; .NET binds it to neither** | TypeScript resolves an instance-level `actingUserToken` inside `callUnary` (`core.ts:122-139`); Python installs `acting_user_token` on the channel at construction (`core.py:553-564`); Java builds `mappingStub` with `.withCallCredentials(credentials)` (`IversonClient.java:71`); Go takes `ctx`, where `WithActingUserToken` puts it. For .NET, `grep -rn "ActingUser" Iverson.Clients/DotNet/Iverson.Client.Core/*.cs` returns hits only inside `ActingUserMetadata.cs` — the mechanism is a per-call `Metadata` extension, and `EntityCoordinator.PersistAsync` (`:98`) is the only method on the .NET data-plane surface that accepts one. A signature without an identity parameter therefore carries an identity in four clients and none in .NET |
 | A16 | Each suite has an ObjectMappingService mock-stub pattern | `SchemaRegistrarTests.cs`, `TestCoordinatorFactory.cs`, `SchemaRegistrarTest.java`, `schema-registrar.test.ts`, `test_auth.py`, `registrar_test.go` |
 | A17 | Generated proto types are already public/exported per client | Every client's `SchemaRegistrar` already builds and passes `SchemaRequest`/`TypeDescriptor` across its public API |
 | A18 | **Corrected.** Server tests reach the type mapping through methods, not the maps | `Iverson.Api.csproj:10-13` declares two `InternalsVisibleTo` attributes, but `ScalarTypeMap` (`SchemaBuilder.cs:233`) and `ArrayTypeOverrides` (`:250`) are `private static readonly` and therefore unreachable from tests. `ClrTypeToSql` (`:267`) is `internal static`, so the round-trip test drives the enum through the two methods instead — see §4 |
