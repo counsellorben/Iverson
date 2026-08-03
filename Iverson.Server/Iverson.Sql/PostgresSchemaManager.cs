@@ -145,6 +145,7 @@ public sealed class PostgresSchemaManager(
 
     private static string GetDefaultForType(string sqlType) => sqlType.ToUpperInvariant() switch
     {
+        var t when t.EndsWith("[]")          => "{}",
         var t when t.StartsWith("INT")       => "0",
         var t when t.StartsWith("FLOAT")     => "0",
         var t when t.StartsWith("REAL")      => "0",

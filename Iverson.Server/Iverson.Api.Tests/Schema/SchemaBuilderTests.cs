@@ -350,14 +350,21 @@ public class SchemaBuilderTests
     [InlineData(ClrType.ClrGuid,     false, "UUID",             "VARCHAR(36)", PayloadIndexKind.Keyword)]
     [InlineData(ClrType.ClrGuid,     true,  "UUID[]",           "STRING",      PayloadIndexKind.Keyword)]
     [InlineData(ClrType.ClrString,   false, "TEXT",             "STRING",      PayloadIndexKind.Keyword)]
+    [InlineData(ClrType.ClrString,   true,  "TEXT[]",           "STRING",      PayloadIndexKind.Keyword)]
     [InlineData(ClrType.ClrInt32,    false, "INTEGER",          "INT",         PayloadIndexKind.Integer)]
+    [InlineData(ClrType.ClrInt32,    true,  "INTEGER[]",        "STRING",      PayloadIndexKind.Integer)]
     [InlineData(ClrType.ClrInt64,    false, "BIGINT",           "BIGINT",      PayloadIndexKind.Integer)]
+    [InlineData(ClrType.ClrInt64,    true,  "BIGINT[]",         "STRING",      PayloadIndexKind.Integer)]
     [InlineData(ClrType.ClrFloat,    false, "REAL",             "FLOAT",       PayloadIndexKind.Float)]
     [InlineData(ClrType.ClrFloat,    true,  "REAL[]",           "STRING",      PayloadIndexKind.Keyword)]
     [InlineData(ClrType.ClrDouble,   false, "DOUBLE PRECISION", "DOUBLE",      PayloadIndexKind.Float)]
+    [InlineData(ClrType.ClrDouble,   true,  "DOUBLE PRECISION[]", "STRING",    PayloadIndexKind.Float)]
     [InlineData(ClrType.ClrBool,     false, "BOOLEAN",          "BOOLEAN",     PayloadIndexKind.Boolean)]
+    [InlineData(ClrType.ClrBool,     true,  "BOOLEAN[]",        "STRING",      PayloadIndexKind.Boolean)]
     [InlineData(ClrType.ClrDatetime, false, "TIMESTAMPTZ",      "DATETIME",    PayloadIndexKind.Datetime)]
+    [InlineData(ClrType.ClrDatetime, true,  "TIMESTAMPTZ[]",    "STRING",      PayloadIndexKind.Datetime)]
     [InlineData(ClrType.ClrBytes,    false, "BYTEA",            "VARBINARY",   PayloadIndexKind.Keyword)]
+    [InlineData(ClrType.ClrBytes,    true,  "BYTEA[]",          "STRING",      PayloadIndexKind.Keyword)]
     public void TypeMapping_IsConsistentAcrossAllThreeConversions(
         ClrType clrType, bool isArray, string expectedSql, string expectedStarRocksType, PayloadIndexKind expectedPayloadKind)
     {
@@ -378,5 +385,39 @@ public class SchemaBuilderTests
     public void SqlTypeToPayloadKind_UnknownSqlType_FallsBackToKeyword()
     {
         SchemaBuilder.SqlTypeToPayloadKind("NOT_A_REAL_TYPE").Should().Be(PayloadIndexKind.Keyword);
+    }
+
+    // ClrFloat is a deliberate, named exception: it keeps Keyword in the array table because
+    // changing it would retype a live Qdrant index. Every other ClrType is element-typed.
+    // This table is written out explicitly rather than derived from ScalarTypeMap so it does
+    // not silently agree with a future regression on that exact row.
+    private static readonly IReadOnlyDictionary<ClrType, PayloadIndexKind> ExpectedArrayPayloadKinds =
+        new Dictionary<ClrType, PayloadIndexKind>
+        {
+            [ClrType.ClrGuid]     = PayloadIndexKind.Keyword,
+            [ClrType.ClrString]   = PayloadIndexKind.Keyword,
+            [ClrType.ClrInt32]    = PayloadIndexKind.Integer,
+            [ClrType.ClrInt64]    = PayloadIndexKind.Integer,
+            [ClrType.ClrFloat]    = PayloadIndexKind.Keyword, // named exception — see comment above
+            [ClrType.ClrDouble]   = PayloadIndexKind.Float,
+            [ClrType.ClrBool]     = PayloadIndexKind.Boolean,
+            [ClrType.ClrDatetime] = PayloadIndexKind.Datetime,
+            [ClrType.ClrBytes]    = PayloadIndexKind.Keyword
+        };
+
+    [Fact]
+    public void ArrayTypeOverrides_IsTotalOverClrType()
+    {
+        foreach (var clrType in Enum.GetValues<ClrType>())
+        {
+            var scalarSql = SchemaBuilder.ClrTypeToSql(clrType, isArray: false);
+            var arraySql = SchemaBuilder.ClrTypeToSql(clrType, isArray: true);
+
+            arraySql.Should().Be(scalarSql + "[]", $"array SQL type for {clrType} should be its scalar type plus []");
+            SchemaBuilder.ClrTypeToEngagementType(arraySql).Should().Be("STRING", $"StarRocks type for array {clrType} should be STRING");
+            SchemaBuilder.SqlTypeToPayloadKind(arraySql).Should().Be(
+                ExpectedArrayPayloadKinds[clrType],
+                $"payload kind for array {clrType} should match the expected table");
+        }
     }
 }

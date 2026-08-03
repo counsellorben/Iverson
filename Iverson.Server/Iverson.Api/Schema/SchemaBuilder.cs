@@ -244,14 +244,24 @@ internal static class SchemaBuilder
             [ClrType.ClrBytes]    = new("BYTEA", "VARBINARY", PayloadIndexKind.Keyword)
         };
 
-    // Only ClrGuid and ClrFloat have array-specific SQL/StarRocks representations distinct
-    // from their scalar form (preserves the exact prior behavior of the three switches this
-    // table replaces — every other ClrType's array variant reused its scalar mapping).
+    // Total over ClrType. StarRocks is STRING for every array. Payload kinds are element-typed
+    // except ClrFloat, which keeps Keyword — see the comment on that row below.
     private static readonly IReadOnlyDictionary<ClrType, ClrTypeMapping> ArrayTypeOverrides =
         new Dictionary<ClrType, ClrTypeMapping>
         {
-            [ClrType.ClrGuid]  = new("UUID[]", "STRING", PayloadIndexKind.Keyword),
-            [ClrType.ClrFloat] = new("REAL[]", "STRING", PayloadIndexKind.Keyword)
+            [ClrType.ClrGuid]     = new("UUID[]", "STRING", PayloadIndexKind.Keyword),
+            [ClrType.ClrString]   = new("TEXT[]", "STRING", PayloadIndexKind.Keyword),
+            [ClrType.ClrInt32]    = new("INTEGER[]", "STRING", PayloadIndexKind.Integer),
+            [ClrType.ClrInt64]    = new("BIGINT[]", "STRING", PayloadIndexKind.Integer),
+            // Keyword, not Float: preserved from the pre-existing entry because changing it
+            // would retype a live Qdrant index. See the spec's §1 and "Out of scope".
+            [ClrType.ClrFloat]    = new("REAL[]", "STRING", PayloadIndexKind.Keyword),
+            [ClrType.ClrDouble]   = new("DOUBLE PRECISION[]", "STRING", PayloadIndexKind.Float),
+            [ClrType.ClrBool]     = new("BOOLEAN[]", "STRING", PayloadIndexKind.Boolean),
+            [ClrType.ClrDatetime] = new("TIMESTAMPTZ[]", "STRING", PayloadIndexKind.Datetime),
+            // Reachable only via byte[][] — byte[] is carved out as a scalar at
+            // SchemaRegistrar.cs:241. Present so the table is total over the enum.
+            [ClrType.ClrBytes]    = new("BYTEA[]", "STRING", PayloadIndexKind.Keyword)
         };
 
     // Derived from ScalarTypeMap + ArrayTypeOverrides at static-init time, keyed by the SQL
