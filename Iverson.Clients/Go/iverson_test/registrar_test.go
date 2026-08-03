@@ -655,6 +655,38 @@ func TestSchemaRegistrar_RegisterAll_NestedArrayRejected(t *testing.T) {
 	}
 }
 
+type byteArrayArticle struct {
+	Id       string `iverson_key:"true"`
+	TenantId string `iverson_tenant:"true"`
+	Blobs    [][]byte
+}
+
+// [][]byte is the one nested shape that is legitimate: its inner slice is the scalar
+// bytes type, not a nested array, so it must map to BYTEA[] rather than be rejected.
+func TestSchemaRegistrar_RegisterAll_NestedByteArrayAllowed(t *testing.T) {
+	mock := &mockMappingClient{response: &pb.SchemaResponse{Success: true}}
+	registrar := iverson.NewSchemaRegistrar(mock, byteArrayArticle{})
+	if err := registrar.RegisterAll(context.Background(), ""); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	props := make(map[string]*pb.PropertyDescriptor)
+	for _, p := range mock.capturedReq.RootType.Properties {
+		props[p.Name] = p
+	}
+
+	blobs, ok := props["Blobs"]
+	if !ok {
+		t.Fatal("no Blobs property found")
+	}
+	if !blobs.IsArray {
+		t.Error("expected Blobs.IsArray=true")
+	}
+	if blobs.ClrType != pb.ClrType_CLR_BYTES {
+		t.Errorf("expected Blobs.ClrType=CLR_BYTES, got %v", blobs.ClrType)
+	}
+}
+
 func TestSchemaRegistrar_RegisterAll_UnsupportedElementTypeRejected(t *testing.T) {
 	mock := &mockMappingClient{response: &pb.SchemaResponse{Success: true}}
 	registrar := iverson.NewSchemaRegistrar(mock, unsupportedElementArticle{})

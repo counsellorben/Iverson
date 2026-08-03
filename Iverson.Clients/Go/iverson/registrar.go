@@ -187,6 +187,11 @@ func goTypeToClr(t reflect.Type) (pb.ClrType, bool, error) {
 		if elem.Kind() == reflect.Ptr {
 			elem = elem.Elem()
 		}
+		// A [][]byte is the one nested shape that is legitimate: its inner slice is
+		// the scalar bytes type, not a nested array, so it maps to BYTEA[].
+		if elem.Kind() == reflect.Slice && elem.Elem().Kind() == reflect.Uint8 {
+			return pb.ClrType_CLR_BYTES, true, nil
+		}
 		if elem.Kind() == reflect.Slice || elem.Kind() == reflect.Array {
 			return 0, false, fmt.Errorf("nested array type %s is not supported", t)
 		}
