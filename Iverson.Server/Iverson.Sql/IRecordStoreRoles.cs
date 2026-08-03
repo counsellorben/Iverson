@@ -7,9 +7,20 @@ public interface IRecordStoreQueryExecutor
     Task<T?> QuerySingleOrDefaultAsync<T>(string sql, object? param = null, bool tenantScoped = false, string? tenantId = null);
 }
 
+public enum SchemaDriftPolicy
+{
+    /// Log a warning and continue — startup, where a boot failure on historical drift is worse.
+    Warn,
+    /// Throw — registration, where a RegisterSchema depending on a mis-typed column must fail.
+    Throw
+}
+
+public sealed class SchemaDriftException(string table, string column, string actual, string expected)
+    : Exception($"Column \"{column}\" on table \"{table}\" has type '{actual}' but the registered schema expects '{expected}'. Migrate the column by hand, then retry registration.");
+
 public interface IRecordStoreSchemaManager
 {
-    Task ApplySchemaAsync(TableSchema schema);
+    Task ApplySchemaAsync(TableSchema schema, SchemaDriftPolicy driftPolicy = SchemaDriftPolicy.Warn);
     Task EnsureRuntimeRoleAsync();
 }
 

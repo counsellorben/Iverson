@@ -45,7 +45,9 @@ internal sealed class NoOpEnrichmentStateRepository : IEnrichmentStateRepository
 
 internal sealed class NoOpRecordStoreSchemaManager : IRecordStoreSchemaManager
 {
-    public Task ApplySchemaAsync(TableSchema schema) => Task.CompletedTask;
+    public Task ApplySchemaAsync(
+        TableSchema schema,
+        SchemaDriftPolicy driftPolicy = SchemaDriftPolicy.Warn) => Task.CompletedTask;
     public Task EnsureRuntimeRoleAsync() => Task.CompletedTask;
 }
 

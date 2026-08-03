@@ -11,7 +11,7 @@ public sealed class PostgresSchemaManager(
 {
     private NpgsqlConnection CreateConnection() => new(connectionString);
 
-    public async Task ApplySchemaAsync(TableSchema schema)
+    public async Task ApplySchemaAsync(TableSchema schema, SchemaDriftPolicy driftPolicy = SchemaDriftPolicy.Warn)
     {
         using var activity = Telemetry.Source.StartActivity("db.apply_schema", ActivityKind.Client);
         activity?.SetTag("db.system", "postgresql");
@@ -22,13 +22,20 @@ public sealed class PostgresSchemaManager(
 
         try
         {
-            var existingColumns = (await conn.QueryAsync<string>(
+            var existingColumnRows = (await conn.QueryAsync<(string Name, string Type)>(
                 """
-                SELECT column_name
-                FROM information_schema.columns
-                WHERE table_schema = 'public' AND table_name = @TableName
+                SELECT a.attname AS name, format_type(a.atttypid, a.atttypmod) AS type
+                FROM pg_attribute a
+                JOIN pg_class c ON c.oid = a.attrelid
+                JOIN pg_namespace n ON n.oid = c.relnamespace
+                WHERE n.nspname = 'public' AND c.relname = @TableName
+                  AND a.attnum > 0 AND NOT a.attisdropped
                 """,
-                new { schema.TableName })).ToHashSet(StringComparer.OrdinalIgnoreCase);
+                new { schema.TableName })).ToList();
+
+            var existingColumns = existingColumnRows
+                .Select(c => c.Name)
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
 
             if (existingColumns.Count == 0)
             {
@@ -70,6 +77,31 @@ public sealed class PostgresSchemaManager(
                         logger.LogInformation("Dropping removed column {Column} from {Table}", orphan, schema.TableName);
                     await conn.ExecuteAsync(
                         $"ALTER TABLE \"{schema.TableName}\" DROP COLUMN IF EXISTS \"{orphan}\"");
+                }
+
+                var actualTypeByName = existingColumnRows.ToDictionary(
+                    c => c.Name, c => c.Type, StringComparer.OrdinalIgnoreCase);
+
+                var checkedColumns = schema.Columns
+                    .Append(schema.KeyColumn)
+                    .Where(c => existingColumns.Contains(c.Name));
+
+                foreach (var col in checkedColumns)
+                {
+                    var actual = actualTypeByName[col.Name];
+                    var expected = col.SqlType;
+
+                    if (!string.Equals(NormalizePgType(actual), NormalizePgType(expected), StringComparison.Ordinal))
+                    {
+                        if (driftPolicy == SchemaDriftPolicy.Throw)
+                        {
+                            throw new SchemaDriftException(schema.TableName, col.Name, actual, expected);
+                        }
+
+                        logger.LogWarning(
+                            "Column {Column} on table {Table} has type '{Actual}' but the registered schema expects '{Expected}'",
+                            col.Name, schema.TableName, actual, expected);
+                    }
                 }
             }
 
@@ -142,6 +174,13 @@ public sealed class PostgresSchemaManager(
             }
         }
     }
+
+    private static string NormalizePgType(string sqlType) => sqlType.Trim().ToLowerInvariant() switch
+    {
+        "timestamptz"   => "timestamp with time zone",
+        "timestamptz[]" => "timestamp with time zone[]",
+        var t           => t
+    };
 
     private static string GetDefaultForType(string sqlType) => sqlType.ToUpperInvariant() switch
     {

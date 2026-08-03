@@ -65,7 +65,14 @@ public sealed class SchemaRegistrationOrchestrator(
             }
             ValidateFieldReference(descriptor, descriptor.TenantColumn, "tenant_field");
 
-            await schemaManager.ApplySchemaAsync(SchemaBuilder.ToTableSchema(descriptor));
+            try
+            {
+                await schemaManager.ApplySchemaAsync(SchemaBuilder.ToTableSchema(descriptor), SchemaDriftPolicy.Throw);
+            }
+            catch (SchemaDriftException ex)
+            {
+                throw new RpcException(new Status(StatusCode.FailedPrecondition, ex.Message));
+            }
 
             await registry.RegisterAsync(descriptor);
             registered.Add(descriptor.TypeName);

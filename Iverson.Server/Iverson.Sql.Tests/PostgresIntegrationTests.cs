@@ -428,4 +428,195 @@ public sealed class PostgresIntegrationTests(PostgresContainerFixture fixture)
         (await RlsEnabledAsync(table)).Should().BeTrue();
         (await RuntimeGrantCountAsync(table)).Should().Be(4);
     }
+
+    // ── Schema-drift detection (Task 2 of array-column-mapping) ─────────────
+
+    // All 18 SQL types PostgresSchemaManager can be asked to apply — the 9 scalar entries in
+    // SchemaBuilder.ScalarTypeMap and the 9 array entries in ArrayTypeOverrides. Hardcoded here
+    // rather than reflected off ClrType because Iverson.Sql.Tests has no reference to Iverson.Api
+    // (where ClrType/SchemaBuilder live) and adding one purely for this list is out of scope.
+    private static readonly string[] AllMappedSqlTypes =
+    [
+        "TEXT", "INTEGER", "BIGINT", "REAL", "DOUBLE PRECISION", "BOOLEAN", "TIMESTAMPTZ", "UUID", "BYTEA",
+        "TEXT[]", "INTEGER[]", "BIGINT[]", "REAL[]", "DOUBLE PRECISION[]", "BOOLEAN[]", "TIMESTAMPTZ[]", "UUID[]", "BYTEA[]"
+    ];
+
+    private sealed class CapturingLogger<T> : Microsoft.Extensions.Logging.ILogger<T>
+    {
+        public List<string> Warnings { get; } = [];
+
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+        public bool IsEnabled(Microsoft.Extensions.Logging.LogLevel logLevel) => true;
+
+        public void Log<TState>(
+            Microsoft.Extensions.Logging.LogLevel logLevel,
+            Microsoft.Extensions.Logging.EventId eventId,
+            TState state,
+            Exception? exception,
+            Func<TState, Exception?, string> formatter)
+        {
+            if (logLevel == Microsoft.Extensions.Logging.LogLevel.Warning)
+                Warnings.Add(formatter(state, exception));
+        }
+    }
+
+    [Fact]
+    public async Task ApplySchemaAsync_MatchingColumnType_NoDrift()
+    {
+        var table = UniqueTable();
+        var schema = new TableSchema(
+            table,
+            new ColumnSchema("id",   "uuid", IsNullable: false),
+            [new ColumnSchema("tag", "TEXT", IsNullable: true)]);
+
+        await _schemaManager.ApplySchemaAsync(schema);
+
+        var act = async () => await _schemaManager.ApplySchemaAsync(schema, SchemaDriftPolicy.Throw);
+        await act.Should().NotThrowAsync();
+    }
+
+    [Fact]
+    public async Task ApplySchemaAsync_DifferingColumnType_ThrowsUnderThrowPolicy()
+    {
+        var table = UniqueTable();
+        var v1 = new TableSchema(
+            table,
+            new ColumnSchema("id",     "uuid", IsNullable: false),
+            [new ColumnSchema("count", "INTEGER", IsNullable: true)]);
+        await _schemaManager.ApplySchemaAsync(v1);
+
+        var v2 = new TableSchema(
+            table,
+            new ColumnSchema("id",     "uuid", IsNullable: false),
+            [new ColumnSchema("count", "BIGINT", IsNullable: true)]);
+
+        var act = async () => await _schemaManager.ApplySchemaAsync(v2, SchemaDriftPolicy.Throw);
+
+        var thrown = await act.Should().ThrowAsync<SchemaDriftException>();
+        thrown.Which.Message.Should().Contain(table);
+        thrown.Which.Message.Should().Contain("count");
+        thrown.Which.Message.Should().Contain("integer");
+        thrown.Which.Message.Should().Contain("BIGINT");
+    }
+
+    [Fact]
+    public async Task ApplySchemaAsync_DifferingColumnType_LogsUnderWarnPolicy()
+    {
+        var table = UniqueTable();
+        var v1 = new TableSchema(
+            table,
+            new ColumnSchema("id",     "uuid", IsNullable: false),
+            [new ColumnSchema("count", "INTEGER", IsNullable: true)]);
+        await _schemaManager.ApplySchemaAsync(v1);
+
+        var v2 = new TableSchema(
+            table,
+            new ColumnSchema("id",     "uuid", IsNullable: false),
+            [new ColumnSchema("count", "BIGINT", IsNullable: true)]);
+
+        var capturingLogger = new CapturingLogger<PostgresSchemaManager>();
+        var warnManager = new PostgresSchemaManager(fixture.ConnectionString, capturingLogger);
+
+        var act = async () => await warnManager.ApplySchemaAsync(v2, SchemaDriftPolicy.Warn);
+        await act.Should().NotThrowAsync();
+
+        capturingLogger.Warnings.Should().ContainSingle(w =>
+            w.Contains(table) && w.Contains("count") && w.Contains("integer") && w.Contains("BIGINT"));
+    }
+
+    [Fact]
+    public async Task ApplySchemaAsync_Timestamptz_ScalarAndArray_AreNotDrift()
+    {
+        var table = UniqueTable();
+        var schema = new TableSchema(
+            table,
+            new ColumnSchema("id",         "uuid", IsNullable: false),
+            [
+                new ColumnSchema("seen_at",  "TIMESTAMPTZ",   IsNullable: true),
+                new ColumnSchema("seen_ats", "TIMESTAMPTZ[]", IsNullable: true),
+            ]);
+
+        await _schemaManager.ApplySchemaAsync(schema);
+
+        var act = async () => await _schemaManager.ApplySchemaAsync(schema, SchemaDriftPolicy.Throw);
+        await act.Should().NotThrowAsync();
+    }
+
+    [Fact]
+    public async Task ApplySchemaAsync_AllMappedSqlTypes_RoundTripWithoutDrift()
+    {
+        var table = UniqueTable();
+        var columns = AllMappedSqlTypes
+            .Select((sqlType, i) => new ColumnSchema($"col_{i}", sqlType, IsNullable: true))
+            .ToList();
+
+        var schema = new TableSchema(
+            table,
+            new ColumnSchema("id", "uuid", IsNullable: false),
+            columns);
+
+        await _schemaManager.ApplySchemaAsync(schema);
+
+        var act = async () => await _schemaManager.ApplySchemaAsync(schema, SchemaDriftPolicy.Throw);
+        await act.Should().NotThrowAsync();
+    }
+
+    [Fact]
+    public async Task ApplySchemaAsync_OrphanDrop_StillAppliesCleanly_AfterPriorColumnDrop()
+    {
+        var table = UniqueTable();
+
+        var v1 = new TableSchema(
+            table,
+            new ColumnSchema("id",       "uuid", IsNullable: false),
+            [
+                new ColumnSchema("name", "text", IsNullable: false),
+                new ColumnSchema("bio",  "text", IsNullable: true),
+            ]);
+        await _schemaManager.ApplySchemaAsync(v1);
+
+        var v2 = new TableSchema(
+            table,
+            new ColumnSchema("id",    "uuid", IsNullable: false),
+            [new ColumnSchema("name", "text", IsNullable: false)]);
+        await _schemaManager.ApplySchemaAsync(v2);
+
+        // "bio" is now a tombstoned pg_attribute row (attisdropped = true). A second apply with
+        // the same v2 schema must not resurrect it as a phantom orphan-drop or false drift.
+        var act = async () => await _schemaManager.ApplySchemaAsync(v2, SchemaDriftPolicy.Throw);
+        await act.Should().NotThrowAsync();
+
+        var cols = (await _repo.QueryAsync<string>(
+            $"SELECT column_name FROM information_schema.columns WHERE table_name = '{table}'"))
+            .ToList();
+        cols.Should().NotContain("bio");
+    }
+
+    [Fact]
+    public async Task ApplySchemaAsync_AddsArrayColumn_ToExistingTable_UsesDefaultForType()
+    {
+        var table = UniqueTable();
+
+        var v1 = new TableSchema(
+            table,
+            new ColumnSchema("id",    "uuid", IsNullable: false),
+            [new ColumnSchema("name", "text", IsNullable: false)]);
+        await _schemaManager.ApplySchemaAsync(v1);
+
+        var v2 = new TableSchema(
+            table,
+            new ColumnSchema("id",     "uuid", IsNullable: false),
+            [
+                new ColumnSchema("name", "text",     IsNullable: false),
+                new ColumnSchema("tags", "TEXT[]",   IsNullable: false),
+            ]);
+
+        var act = async () => await _schemaManager.ApplySchemaAsync(v2);
+        await act.Should().NotThrowAsync();
+
+        var cols = (await _repo.QueryAsync<string>(
+            $"SELECT column_name FROM information_schema.columns WHERE table_name = '{table}'"))
+            .ToList();
+        cols.Should().Contain("tags");
+    }
 }
