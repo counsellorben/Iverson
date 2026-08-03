@@ -141,6 +141,17 @@ class SchemaRegistrarTest {
         private UUID articleId;
     }
 
+    @IversonEntity
+    static class ArrayTestEntity {
+        @IversonKey
+        private UUID id;
+        @IversonTenant
+        private String tenantId;
+        private List<String> tags;
+        private String[] labels;
+        private byte[] payload;
+    }
+
     // ── Test setup ─────────────────────────────────────────────────────────────
 
     @Mock
@@ -240,6 +251,62 @@ class SchemaRegistrarTest {
             .orElseThrow(() -> new AssertionError("Bio property not found"));
 
         assertTrue(bioProp.getIsNullable(), "String field should be marked nullable");
+    }
+
+    // ── registerAll: array detection ──────────────────────────────────────────
+
+    @Test
+    void registerAll_listField_registersAsArrayOfElementType() {
+        ArgumentCaptor<SchemaRequest> captor = ArgumentCaptor.forClass(SchemaRequest.class);
+
+        sut.registerAll(ArrayTestEntity.class);
+
+        verify(mockStub).registerSchema(captor.capture());
+        TypeDescriptor typeDesc = captor.getValue().getRootType();
+
+        PropertyDescriptor tagsProp = typeDesc.getPropertiesList().stream()
+            .filter(p -> p.getName().equals("Tags"))
+            .findFirst()
+            .orElseThrow(() -> new AssertionError("Tags property not found"));
+
+        assertTrue(tagsProp.getIsArray(), "List<String> field should be marked is_array");
+        assertEquals(ClrType.CLR_STRING, tagsProp.getClrType());
+    }
+
+    @Test
+    void registerAll_arrayField_registersAsArrayOfElementType() {
+        ArgumentCaptor<SchemaRequest> captor = ArgumentCaptor.forClass(SchemaRequest.class);
+
+        sut.registerAll(ArrayTestEntity.class);
+
+        verify(mockStub).registerSchema(captor.capture());
+        TypeDescriptor typeDesc = captor.getValue().getRootType();
+
+        PropertyDescriptor labelsProp = typeDesc.getPropertiesList().stream()
+            .filter(p -> p.getName().equals("Labels"))
+            .findFirst()
+            .orElseThrow(() -> new AssertionError("Labels property not found"));
+
+        assertTrue(labelsProp.getIsArray(), "String[] field should be marked is_array");
+        assertEquals(ClrType.CLR_STRING, labelsProp.getClrType());
+    }
+
+    @Test
+    void registerAll_byteArrayField_stillRegistersAsClrBytesScalar() {
+        ArgumentCaptor<SchemaRequest> captor = ArgumentCaptor.forClass(SchemaRequest.class);
+
+        sut.registerAll(ArrayTestEntity.class);
+
+        verify(mockStub).registerSchema(captor.capture());
+        TypeDescriptor typeDesc = captor.getValue().getRootType();
+
+        PropertyDescriptor payloadProp = typeDesc.getPropertiesList().stream()
+            .filter(p -> p.getName().equals("Payload"))
+            .findFirst()
+            .orElseThrow(() -> new AssertionError("Payload property not found"));
+
+        assertEquals(ClrType.CLR_BYTES, payloadProp.getClrType());
+        assertFalse(payloadProp.getIsArray(), "byte[] must remain the ClrBytes scalar, not an array");
     }
 
     // ── registerAll: @IversonSearchKey ────────────────────────────────────────

@@ -173,27 +173,30 @@ public final class SchemaRegistrar {
     }
 
     private PropertyDescriptor buildKeyDescriptor(Field field) {
-        ClrType clrType = detectClrType(field.getType());
-        if (clrType == null) clrType = ClrType.CLR_STRING; // fallback
+        DetectedType detected = detectClrType(field.getGenericType());
+        ClrType clrType = detected != null ? detected.clrType() : ClrType.CLR_STRING; // fallback
+        boolean isArray = detected != null && detected.isArray();
         PropertyDescriptor.Builder b = PropertyDescriptor.newBuilder()
             .setName(StructConverter.toPascalCase(field.getName()))
             .setClrType(clrType)
             .setIsKey(true)
-            .setIsNullable(false);
+            .setIsNullable(false)
+            .setIsArray(isArray);
         applyAnnotations(b, field);
         return b.build();
     }
 
     private PropertyDescriptor tryBuildPropertyDescriptor(Field field) {
-        ClrType clrType = detectClrType(field.getType());
-        if (clrType == null) return null;
+        DetectedType detected = detectClrType(field.getGenericType());
+        if (detected == null) return null;
 
         boolean isNullable = !field.getType().isPrimitive();
         PropertyDescriptor.Builder b = PropertyDescriptor.newBuilder()
             .setName(StructConverter.toPascalCase(field.getName()))
-            .setClrType(clrType)
+            .setClrType(detected.clrType())
             .setIsKey(false)
-            .setIsNullable(isNullable);
+            .setIsNullable(isNullable)
+            .setIsArray(detected.isArray());
         applyAnnotations(b, field);
         return b.build();
     }
@@ -283,6 +286,33 @@ public final class SchemaRegistrar {
     }
 
     // ── Type detection ─────────────────────────────────────────────────────────
+
+    private record DetectedType(ClrType clrType, boolean isArray) {}
+
+    private static DetectedType detectClrType(java.lang.reflect.Type type) {
+        // byte[] is a primitive scalar — check before the array unwrap.
+        if (type == byte[].class) return new DetectedType(ClrType.CLR_BYTES, false);
+
+        if (type instanceof Class<?> c && c.isArray()) {
+            ClrType element = detectClrType(c.getComponentType());
+            return element == null ? null : new DetectedType(element, true);
+        }
+        if (type instanceof java.lang.reflect.ParameterizedType p
+                && p.getRawType() instanceof Class<?> raw
+                && java.util.Collection.class.isAssignableFrom(raw)) {
+            java.lang.reflect.Type[] args = p.getActualTypeArguments();
+            if (args.length == 1 && args[0] instanceof Class<?> elementClass) {
+                ClrType element = detectClrType(elementClass);
+                return element == null ? null : new DetectedType(element, true);
+            }
+            return null;
+        }
+        if (type instanceof Class<?> c) {
+            ClrType scalar = detectClrType(c);
+            return scalar == null ? null : new DetectedType(scalar, false);
+        }
+        return null;
+    }
 
     private static ClrType detectClrType(Class<?> type) {
         if (type == String.class)              return ClrType.CLR_STRING;
