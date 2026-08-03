@@ -97,6 +97,7 @@ Newly introduced by this plan and verified at plan-write time against `main@93b5
 | P18 | Command | `mvn -f Iverson.Clients/Java/pom.xml test` is valid | `pom.xml` declares modules `client` and `sample` |
 | P19 | Command | `pytest` run from `Iverson.Clients/Python` is valid | `pyproject.toml` `[tool.pytest.ini_options] testpaths = ["tests"]` |
 | P20 | Command | `go test ./...` run from `Iverson.Clients/Go` is valid | `go.mod` module `github.com/iverson/clients/go`, go 1.25.0; packages `iverson`, `iverson_test` |
+| P29 | Signature | **`design:type` is emitted only for declarations carrying at least one decorator** | `emitDecoratorMetadata` attaches `design:type` per-declaration, not per-class. `core.ts:236` reads `designType ? jsTypeToClr(designType.name) : ClrType.CLR_STRING` — the `undefined` branch would be dead code if every property carried metadata. A fully undecorated property is therefore invisible to any `design:type`-based test |
 | P21 | Command | `npm test` in `Iverson.Clients/TypeScript` runs vitest | `package.json` `scripts.test` = `"vitest run"` |
 | P22 | Ordering | Task 2's drift check must not reject Task 1's new array types, so Task 1 lands first | Task 2's comparison reads `ColumnDescriptor.SqlType`, which Task 1 defines for arrays; a drift test written against `TEXT[]` fails if `ArrayTypeOverrides` still yields `TEXT` |
 | P23 | Ordering | Tasks 3-6 are mutually independent and independent of Tasks 1-2 | Each touches one client tree only; `is_array` is a pre-existing proto field, so no client depends on the server change to compile or test |
@@ -513,9 +514,13 @@ tags: string[] = [];
 In `core.ts`, add `getArrayFields` to the existing named-import block from `./annotations.js` (`:44-62`), then build `const arrayFields = getArrayFields(cls);` alongside the other accessor calls and replace the `clrType`/`isArray` derivation at `:235`/`:249`:
 
 ```ts
+const instance = new (cls as any)();
+const allFields = Object.getOwnPropertyNames(instance);
+…
 const designType = Reflect.getMetadata('design:type', proto, fieldName) as Function | undefined;
 const arrayElement = arrayFields.get(fieldName);
-if (designType === Array && arrayElement === undefined) {
+const looksArray = designType === Array || Array.isArray(instance[fieldName]);
+if (looksArray && arrayElement === undefined) {
     throw new Error(
         `${typeName}.${fieldName} is an array property but has no @IversonArray(elementType) ` +
         'decorator; TypeScript erases the element type, so it cannot be inferred. ' +
@@ -526,11 +531,13 @@ const isArray = arrayElement !== undefined;
 const clrType = arrayElement ?? (designType ? jsTypeToClr(designType.name) : ClrType.CLR_STRING);
 ```
 
-`isArray` then replaces the hardcoded `false` in the descriptor literal. A property whose `design:type` is `Array` **without** the decorator is a registration error, not a silent `CLR_STRING` — leaving it to the existing fallback would reproduce the silent-wrong-declaration class this work exists to remove.
+`isArray` then replaces the hardcoded `false` in the descriptor literal. An array property without the decorator is a registration error, not a silent `CLR_STRING` — leaving it to the existing fallback would reproduce the silent-wrong-declaration class this work exists to remove.
+
+`design:type` alone is insufficient to detect that: it is emitted only for decorated declarations, so a bare `tags: string[] = []` would skip the guard and register as a scalar `TEXT` column. `Array.isArray` on the initialized value catches that class — it reveals arrayness, not the element type, which is why the decorator is still required.
 
 - [ ] **Step 3: Export both symbols.** `index.ts` adds `IversonArray` and `getArrayFields` to the `annotations.js` export block, and a new `export { ClrType }` for the generated proto enum — without it a consumer cannot name the decorator's argument, since `index.ts` exposes no generated type today.
 
-- [ ] **Step 4: Add tests.** An entity with `@IversonArray(ClrType.CLR_STRING) tags: string[]` registers with `isArray` true and `clrType` `CLR_STRING`; an `Array`-typed property **without** the decorator fails registration; a non-array property is unaffected.
+- [ ] **Step 4: Add tests.** An entity with `@IversonArray(ClrType.CLR_STRING) tags: string[]` registers with `isArray` true and `clrType` `CLR_STRING`; a **decorated but not `@IversonArray`** array property (e.g. `@IversonMetadata() tags: string[]`) fails registration; a **fully undecorated** array property (`tags: string[] = []`) also fails registration — that is the case `design:type` cannot see; a non-array property is unaffected.
 
 - [ ] **Step 5: Run the tests.**
 ```bash
