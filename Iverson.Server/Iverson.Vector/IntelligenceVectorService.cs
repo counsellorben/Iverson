@@ -1,3 +1,4 @@
+using System.Collections;
 using System.Diagnostics;
 using System.Globalization;
 using Qdrant.Client;
@@ -207,7 +208,9 @@ public class IntelligenceVectorService(QdrantClient client) : IVectorQueryServic
         _                                => v.ToString()
     };
 
-    private static Value ToQdrantValue(object value) => value switch
+    // InternalsVisibleTo access — the Qdrant client is a concrete, non-virtual type, so the
+    // payload conversion is exercised directly rather than through a mocked client.
+    internal static Value ToQdrantValue(object value) => value switch
     {
         string s           => s,
         bool b             => b,
@@ -217,6 +220,21 @@ public class IntelligenceVectorService(QdrantClient client) : IVectorQueryServic
         double d           => d,
         DateTime dt        => dt.ToString("o"),
         DateTimeOffset dto => dto.ToString("o"),
+        // Array columns arrive as an IEnumerable of already-coerced element values. Qdrant indexes
+        // a list under the same kind as its elements, so the list has to be emitted as a real
+        // ListValue — flattening it to a string would leave it unmatched by its element-typed index.
+        // Ordered AFTER `string`, which is itself an IEnumerable<char>.
+        IEnumerable seq    => ToQdrantList(seq),
         _                  => value.ToString() ?? string.Empty
     };
+
+    private static Value ToQdrantList(IEnumerable seq)
+    {
+        var list = new ListValue();
+        foreach (var item in seq)
+            if (item is not null)
+                list.Values.Add(ToQdrantValue(item));
+
+        return new Value { ListValue = list };
+    }
 }

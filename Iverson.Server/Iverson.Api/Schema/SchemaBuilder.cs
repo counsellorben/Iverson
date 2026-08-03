@@ -260,7 +260,8 @@ internal static class SchemaBuilder
             [ClrType.ClrBool]     = new("BOOLEAN[]", "STRING", PayloadIndexKind.Boolean),
             [ClrType.ClrDatetime] = new("TIMESTAMPTZ[]", "STRING", PayloadIndexKind.Datetime),
             // Reachable only via byte[][] — byte[] is carved out as a scalar at
-            // SchemaRegistrar.cs:241. Present so the table is total over the enum.
+            // Iverson.Clients/DotNet/Iverson.Client.Core/SchemaRegistrar.cs:239. Present so the
+            // table is total over the enum.
             [ClrType.ClrBytes]    = new("BYTEA[]", "STRING", PayloadIndexKind.Keyword)
         };
 

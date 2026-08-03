@@ -435,6 +435,12 @@ public sealed class PostgresIntegrationTests(PostgresContainerFixture fixture)
     // SchemaBuilder.ScalarTypeMap and the 9 array entries in ArrayTypeOverrides. Hardcoded here
     // rather than reflected off ClrType because Iverson.Sql.Tests has no reference to Iverson.Api
     // (where ClrType/SchemaBuilder live) and adding one purely for this list is out of scope.
+    //
+    // TRIPWIRE: because the list is hand-maintained, it silently DRIFTS. Adding a new ClrType (or
+    // changing an existing type's SQL mapping) in SchemaBuilder without updating this list leaves
+    // that SQL type entirely unexercised by ApplySchemaAsync_AllMappedSqlTypes_RoundTripWithoutDrift
+    // — nothing fails, and a NormalizePgType gap that makes every registration of the new type
+    // report false drift ships undetected. Update this list in the same change.
     private static readonly string[] AllMappedSqlTypes =
     [
         "TEXT", "INTEGER", "BIGINT", "REAL", "DOUBLE PRECISION", "BOOLEAN", "TIMESTAMPTZ", "UUID", "BYTEA",
@@ -611,6 +617,10 @@ public sealed class PostgresIntegrationTests(PostgresContainerFixture fixture)
             [new ColumnSchema("name", "text", IsNullable: false)]);
         await _schemaManager.ApplySchemaAsync(v1);
 
+        var id = Guid.NewGuid();
+        await _repo.ExecuteAsync(
+            $"INSERT INTO \"{table}\" (id, name) VALUES (@Id, 'pre-existing')", new { Id = id });
+
         // Adding a non-nullable array column to an already-existing table is the only DDL path
         // that invokes GetDefaultForType — a fresh CREATE TABLE emits no default at all, so only
         // this ALTER TABLE ADD COLUMN path would catch a malformed array default literal.
@@ -629,6 +639,12 @@ public sealed class PostgresIntegrationTests(PostgresContainerFixture fixture)
             $"SELECT column_name FROM information_schema.columns WHERE table_name = '{table}'"))
             .ToList();
         cols.Should().Contain("tags");
+
+        // The pre-existing row must have picked up GetDefaultForType's "{}" — an EMPTY array, not
+        // a one-element array containing the literal text "{}" and not NULL.
+        var backfilled = await _repo.QuerySingleOrDefaultAsync<int>(
+            $"SELECT cardinality(tags) FROM \"{table}\" WHERE id = @Id", new { Id = id });
+        backfilled.Should().Be(0);
     }
 
     [Fact]
@@ -663,30 +679,40 @@ public sealed class PostgresIntegrationTests(PostgresContainerFixture fixture)
     }
 
     [Fact]
-    public async Task ApplySchemaAsync_AddsArrayColumn_ToExistingTable_UsesDefaultForType()
+    public async Task ApplySchemaAsync_DriftUnderThrowPolicy_AppliesNoDdlBeforeThrowing()
     {
+        // The ADD/DROP loops are NOT transactional, so the drift check has to run BEFORE them.
+        // If it ran after, a rejected registration would still have mutated the table — including
+        // DROPPING an orphan column, which is unrecoverable data loss.
         var table = UniqueTable();
 
         var v1 = new TableSchema(
             table,
-            new ColumnSchema("id",    "uuid", IsNullable: false),
-            [new ColumnSchema("name", "text", IsNullable: false)]);
+            new ColumnSchema("id",       "uuid", IsNullable: false),
+            [
+                new ColumnSchema("name",  "text",    IsNullable: false),
+                new ColumnSchema("rank",  "INTEGER", IsNullable: true),
+                new ColumnSchema("orphan", "text",   IsNullable: true),
+            ]);
         await _schemaManager.ApplySchemaAsync(v1);
 
+        // v2 drifts "rank" (INTEGER -> TEXT), drops "orphan", and adds "tags".
         var v2 = new TableSchema(
             table,
-            new ColumnSchema("id",     "uuid", IsNullable: false),
+            new ColumnSchema("id",      "uuid", IsNullable: false),
             [
-                new ColumnSchema("name", "text",     IsNullable: false),
-                new ColumnSchema("tags", "TEXT[]",   IsNullable: false),
+                new ColumnSchema("name", "text",   IsNullable: false),
+                new ColumnSchema("rank", "TEXT",   IsNullable: true),
+                new ColumnSchema("tags", "TEXT[]", IsNullable: true),
             ]);
 
-        var act = async () => await _schemaManager.ApplySchemaAsync(v2);
-        await act.Should().NotThrowAsync();
+        var act = async () => await _schemaManager.ApplySchemaAsync(v2, SchemaDriftPolicy.Throw);
+        await act.Should().ThrowAsync<SchemaDriftException>();
 
         var cols = (await _repo.QueryAsync<string>(
             $"SELECT column_name FROM information_schema.columns WHERE table_name = '{table}'"))
             .ToList();
-        cols.Should().Contain("tags");
+        cols.Should().Contain("orphan", "a rejected registration must not drop columns");
+        cols.Should().NotContain("tags", "a rejected registration must not add columns");
     }
 }

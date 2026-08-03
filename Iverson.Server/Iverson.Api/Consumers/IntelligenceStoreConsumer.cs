@@ -674,10 +674,43 @@ public sealed class IntelligenceStoreConsumer(
         }
         if (v.ValueKind == JsonValueKind.Null) return null;
 
-        return sqlType.ToUpperInvariant() switch
+        var normalized = sqlType.ToUpperInvariant();
+
+        // An array column's SqlType is the element type with a trailing "[]" ("INTEGER[]",
+        // "TIMESTAMPTZ[]", ...). Its payload index is built from the ELEMENT kind, so the value
+        // has to reach Qdrant as a real list of element-typed values — not the raw JSON text,
+        // which would silently be unfilterable under an integer/datetime index.
+        if (normalized.EndsWith("[]", StringComparison.Ordinal))
         {
-            "INTEGER" or "BIGINT"         => v.TryGetInt64(out var l) ? l : null,
-            "REAL" or "DOUBLE PRECISION"  => v.TryGetDouble(out var d) ? d : null,
+            if (v.ValueKind != JsonValueKind.Array) return null;
+
+            var elementType = normalized[..^2];
+            var items       = new List<object>();
+
+            // An element that will not coerce is skipped, exactly as a failing scalar yields null.
+            foreach (var element in v.EnumerateArray())
+            {
+                if (element.ValueKind == JsonValueKind.Null) continue;
+                var coerced = CoerceElement(element, elementType);
+                if (coerced is not null) items.Add(coerced);
+            }
+
+            return items;
+        }
+
+        return CoerceElement(v, normalized);
+    }
+
+    // Per-element coercion shared verbatim by the scalar and array paths — an array element must
+    // land in the SAME form its scalar counterpart would, or the read side stops matching it.
+    private static object? CoerceElement(JsonElement v, string normalizedSqlType) =>
+        normalizedSqlType switch
+        {
+            // The ValueKind guard is load-bearing: TryGetInt64/TryGetDouble THROW (they do not
+            // return false) when the element is not a JSON number, which would turn one badly
+            // typed field into a poisoned message for the whole event.
+            "INTEGER" or "BIGINT"         => v.ValueKind == JsonValueKind.Number && v.TryGetInt64(out var l) ? l : null,
+            "REAL" or "DOUBLE PRECISION"  => v.ValueKind == JsonValueKind.Number && v.TryGetDouble(out var d) ? d : null,
             "BOOLEAN"                     => v.ValueKind is JsonValueKind.True or JsonValueKind.False ? v.GetBoolean() : null,
             // Canonicalize timestamps to UTC round-trip ("o") form so equality filters — which
             // compare payload strings verbatim — match any input naming the same INSTANT, whatever
@@ -696,7 +729,6 @@ public sealed class IntelligenceStoreConsumer(
                     : null,
             _                             => v.ValueKind == JsonValueKind.String ? v.GetString() : v.ToString()
         };
-    }
 
     private static EntityEvent Deserialize(string key, string value)
     {

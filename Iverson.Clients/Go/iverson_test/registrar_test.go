@@ -624,3 +624,45 @@ func TestSchemaRegistrar_RegisterAll_ArrayFields(t *testing.T) {
 		t.Errorf("expected Blob.ClrType=CLR_BYTES, got %v", blob.ClrType)
 	}
 }
+
+type nestedArrayArticle struct {
+	Id       string `iverson_key:"true"`
+	TenantId string `iverson_tenant:"true"`
+	Matrix   [][]string
+}
+
+type customElement struct {
+	Name string
+}
+
+type unsupportedElementArticle struct {
+	Id       string `iverson_key:"true"`
+	TenantId string `iverson_tenant:"true"`
+	Widgets  []customElement
+}
+
+// Silently collapsing [][]string to a 1-D TEXT[] column would register a schema the server
+// accepts and json_populate_record then fails on at the first insert.
+func TestSchemaRegistrar_RegisterAll_NestedArrayRejected(t *testing.T) {
+	mock := &mockMappingClient{response: &pb.SchemaResponse{Success: true}}
+	registrar := iverson.NewSchemaRegistrar(mock, nestedArrayArticle{})
+	err := registrar.RegisterAll(context.Background(), "")
+	if err == nil {
+		t.Fatal("expected registration to fail for a nested array field")
+	}
+	if !strings.Contains(err.Error(), "Matrix") || !strings.Contains(err.Error(), "nested array") {
+		t.Errorf("expected error naming Matrix and nested array, got %q", err.Error())
+	}
+}
+
+func TestSchemaRegistrar_RegisterAll_UnsupportedElementTypeRejected(t *testing.T) {
+	mock := &mockMappingClient{response: &pb.SchemaResponse{Success: true}}
+	registrar := iverson.NewSchemaRegistrar(mock, unsupportedElementArticle{})
+	err := registrar.RegisterAll(context.Background(), "")
+	if err == nil {
+		t.Fatal("expected registration to fail for an unsupported array element type")
+	}
+	if !strings.Contains(err.Error(), "Widgets") || !strings.Contains(err.Error(), "customElement") {
+		t.Errorf("expected error naming Widgets and customElement, got %q", err.Error())
+	}
+}

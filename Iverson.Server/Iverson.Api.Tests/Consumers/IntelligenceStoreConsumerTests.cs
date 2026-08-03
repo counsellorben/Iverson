@@ -1789,4 +1789,141 @@ public class IntelligenceStoreConsumerTests
             Arg.Any<IReadOnlyDictionary<string, float[]>>(),
             Arg.Any<IReadOnlyDictionary<string, object>?>());
     }
+
+    [Fact]
+    public async Task HandleCreated_IntegerArrayMetadataColumn_IsStoredAsListOfIntegers()
+    {
+        // The payload index for an INTEGER[] column is built from the ELEMENT kind (Integer), so
+        // the value must reach Qdrant as a real list of integers. Storing the raw JSON text
+        // "[1,2,3]" as a string leaves the field silently unfilterable under that index.
+        var schema = MetadataDocSchema(
+            [
+                new ColumnDescriptor("Title", "text", false),
+                new ColumnDescriptor("Body", "text", false),
+                new ColumnDescriptor("Scores", "INTEGER[]", true)
+            ],
+            ["Scores"]);
+        await _registry.RegisterAsync(schema);
+
+        var longBody = new string('x', 3000);
+        var payload  = $$$"""{"Title":"T","Body":"{{{longBody}}}","Scores":[1,2,3],"TenantId":"test-tenant"}""";
+
+        IReadOnlyDictionary<string, object>? capturedPayload = null;
+        _vectorWrite
+            .UpsertNamedAsync(
+                "docs_chunks_test-tenant",
+                Arg.Any<ulong>(),
+                Arg.Any<IReadOnlyDictionary<string, float[]>>(),
+                Arg.Do<IReadOnlyDictionary<string, object>?>(p => capturedPayload = p))
+            .Returns(Task.CompletedTask);
+
+        var ev = DocEvent(payload, "trace-metadata-int-array");
+        await BuildSut().HandleAsync(ev.Key, Serialize(ev), CancellationToken.None);
+
+        capturedPayload.Should().NotBeNull();
+        capturedPayload!["scores"].Should().NotBeOfType<string>();
+        capturedPayload["scores"].Should().BeAssignableTo<IEnumerable<object>>();
+        ((IEnumerable<object>)capturedPayload["scores"]).Should().Equal(1L, 2L, 3L);
+    }
+
+    [Fact]
+    public async Task HandleCreated_StringArrayMetadataColumn_IsStoredAsListOfStrings()
+    {
+        var schema = MetadataDocSchema(
+            [
+                new ColumnDescriptor("Title", "text", false),
+                new ColumnDescriptor("Body", "text", false),
+                new ColumnDescriptor("Tags", "TEXT[]", true)
+            ],
+            ["Tags"]);
+        await _registry.RegisterAsync(schema);
+
+        var longBody = new string('x', 3000);
+        var payload  = $$$"""{"Title":"T","Body":"{{{longBody}}}","Tags":["a","b"],"TenantId":"test-tenant"}""";
+
+        IReadOnlyDictionary<string, object>? capturedPayload = null;
+        _vectorWrite
+            .UpsertNamedAsync(
+                "docs_chunks_test-tenant",
+                Arg.Any<ulong>(),
+                Arg.Any<IReadOnlyDictionary<string, float[]>>(),
+                Arg.Do<IReadOnlyDictionary<string, object>?>(p => capturedPayload = p))
+            .Returns(Task.CompletedTask);
+
+        var ev = DocEvent(payload, "trace-metadata-string-array");
+        await BuildSut().HandleAsync(ev.Key, Serialize(ev), CancellationToken.None);
+
+        capturedPayload.Should().NotBeNull();
+        capturedPayload!["tags"].Should().BeAssignableTo<IEnumerable<object>>();
+        ((IEnumerable<object>)capturedPayload["tags"]).Should().Equal("a", "b");
+    }
+
+    [Fact]
+    public async Task HandleCreated_TimestampArrayMetadataColumn_CanonicalizesEveryElementLikeTheScalarPath()
+    {
+        // Array ELEMENTS must go through the exact same UTC canonicalization as a scalar
+        // TIMESTAMPTZ, or an equality filter written in one spelling no-hits a stored element
+        // written in another. Three spellings of the same INSTANT plus one offset-less value.
+        var schema = MetadataDocSchema(
+            [
+                new ColumnDescriptor("Title", "text", false),
+                new ColumnDescriptor("Body", "text", false),
+                new ColumnDescriptor("Revisions", "TIMESTAMPTZ[]", true)
+            ],
+            ["Revisions"]);
+        await _registry.RegisterAsync(schema);
+
+        var longBody = new string('x', 3000);
+        var payload  = $$$"""{"Title":"T","Body":"{{{longBody}}}","Revisions":["2026-07-30T12:30:00+02:00","2026-07-30T10:30:00Z","2026-07-30T05:30:00-05:00","2026-07-30T10:30:00"],"TenantId":"test-tenant"}""";
+
+        IReadOnlyDictionary<string, object>? capturedPayload = null;
+        _vectorWrite
+            .UpsertNamedAsync(
+                "docs_chunks_test-tenant",
+                Arg.Any<ulong>(),
+                Arg.Any<IReadOnlyDictionary<string, float[]>>(),
+                Arg.Do<IReadOnlyDictionary<string, object>?>(p => capturedPayload = p))
+            .Returns(Task.CompletedTask);
+
+        var ev = DocEvent(payload, "trace-metadata-timestamp-array");
+        await BuildSut().HandleAsync(ev.Key, Serialize(ev), CancellationToken.None);
+
+        capturedPayload.Should().NotBeNull();
+        var elements = ((IEnumerable<object>)capturedPayload!["revisions"]).ToList();
+        elements.Should().AllBeOfType<DateTimeOffset>();
+        elements.Select(e => ((DateTimeOffset)e).ToString("o"))
+                .Should().AllBe("2026-07-30T10:30:00.0000000+00:00");
+    }
+
+    [Fact]
+    public async Task HandleCreated_IntegerArrayMetadataColumn_SkipsElementsThatCannotCoerce()
+    {
+        var schema = MetadataDocSchema(
+            [
+                new ColumnDescriptor("Title", "text", false),
+                new ColumnDescriptor("Body", "text", false),
+                new ColumnDescriptor("Scores", "INTEGER[]", true)
+            ],
+            ["Scores"]);
+        await _registry.RegisterAsync(schema);
+
+        var longBody = new string('x', 3000);
+        var payload  = $$$"""{"Title":"T","Body":"{{{longBody}}}","Scores":[1,"nope",3],"TenantId":"test-tenant"}""";
+
+        IReadOnlyDictionary<string, object>? capturedPayload = null;
+        _vectorWrite
+            .UpsertNamedAsync(
+                "docs_chunks_test-tenant",
+                Arg.Any<ulong>(),
+                Arg.Any<IReadOnlyDictionary<string, float[]>>(),
+                Arg.Do<IReadOnlyDictionary<string, object>?>(p => capturedPayload = p))
+            .Returns(Task.CompletedTask);
+
+        var ev = DocEvent(payload, "trace-metadata-int-array-bad-element");
+        await BuildSut().HandleAsync(ev.Key, Serialize(ev), CancellationToken.None);
+
+        capturedPayload.Should().NotBeNull();
+        // Degrade, never throw — the bad element is skipped exactly as a failing scalar yields null.
+        ((IEnumerable<object>)capturedPayload!["scores"]).Should().Equal(1L, 3L);
+    }
 }

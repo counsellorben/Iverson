@@ -55,6 +55,36 @@ public sealed class PostgresSchemaManager(
             }
             else
             {
+                // Drift detection runs BEFORE any DDL. Under SchemaDriftPolicy.Throw the whole
+                // registration is rejected, and these statements are NOT transactional — running
+                // the ADD/DROP loops first would leave a mutated table (including DROPPED columns,
+                // i.e. data loss) behind a registration that was never recorded.
+                var actualTypeByName = existingColumnRows.ToDictionary(
+                    c => c.Name, c => c.Type, StringComparer.OrdinalIgnoreCase);
+
+                var checkedColumns = schema.Columns
+                    .Append(schema.KeyColumn)
+                    .Where(c => existingColumns.Contains(c.Name));
+
+                foreach (var col in checkedColumns)
+                {
+                    var actual = actualTypeByName[col.Name];
+                    var expected = col.SqlType;
+
+                    if (!string.Equals(NormalizePgType(actual), NormalizePgType(expected), StringComparison.Ordinal))
+                    {
+                        if (driftPolicy == SchemaDriftPolicy.Throw)
+                        {
+                            throw new SchemaDriftException(schema.TableName, col.Name, actual, expected);
+                        }
+
+                        logger.LogWarning(
+                            "Column {Column} on table {Table} has type '{Actual}' but the registered schema expects '{Expected}'. "
+                            + "Migrate the column by hand, then retry registration.",
+                            col.Name, schema.TableName, actual, expected);
+                    }
+                }
+
                 foreach (var col in schema.Columns.Where(c => !existingColumns.Contains(c.Name)))
                 {
                     var alterSql = $"""
@@ -77,31 +107,6 @@ public sealed class PostgresSchemaManager(
                         logger.LogInformation("Dropping removed column {Column} from {Table}", orphan, schema.TableName);
                     await conn.ExecuteAsync(
                         $"ALTER TABLE \"{schema.TableName}\" DROP COLUMN IF EXISTS \"{orphan}\"");
-                }
-
-                var actualTypeByName = existingColumnRows.ToDictionary(
-                    c => c.Name, c => c.Type, StringComparer.OrdinalIgnoreCase);
-
-                var checkedColumns = schema.Columns
-                    .Append(schema.KeyColumn)
-                    .Where(c => existingColumns.Contains(c.Name));
-
-                foreach (var col in checkedColumns)
-                {
-                    var actual = actualTypeByName[col.Name];
-                    var expected = col.SqlType;
-
-                    if (!string.Equals(NormalizePgType(actual), NormalizePgType(expected), StringComparison.Ordinal))
-                    {
-                        if (driftPolicy == SchemaDriftPolicy.Throw)
-                        {
-                            throw new SchemaDriftException(schema.TableName, col.Name, actual, expected);
-                        }
-
-                        logger.LogWarning(
-                            "Column {Column} on table {Table} has type '{Actual}' but the registered schema expects '{Expected}'",
-                            col.Name, schema.TableName, actual, expected);
-                    }
                 }
             }
 

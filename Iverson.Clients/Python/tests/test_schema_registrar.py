@@ -151,6 +151,24 @@ class RegArrayArticle:
     tenant_id: str = iverson_tenant()
 
 
+class _CustomElement:
+    pass
+
+
+@iverson_entity
+class RegNestedArrayArticle:
+    id: str = iverson_key()
+    matrix: list[list[str]] = None
+    tenant_id: str = iverson_tenant()
+
+
+@iverson_entity
+class RegUnsupportedElementArticle:
+    id: str = iverson_key()
+    widgets: list[_CustomElement] = None
+    tenant_id: str = iverson_tenant()
+
+
 # ── Fixtures ───────────────────────────────────────────────────────────────────
 
 def make_stub() -> MagicMock:
@@ -540,3 +558,19 @@ class TestArrayProperties:
         props = {p.name: p for p in request.root_type.properties}
         assert props["Blob"].is_array is False
         assert props["Blob"].clr_type == mapping_pb.CLR_BYTES
+
+    def test_nested_array_rejected(self):
+        # Silently collapsing list[list[str]] to a TEXT[] column would register a schema the
+        # server accepts and json_populate_record then fails on at the first insert.
+        with pytest.raises(ValueError) as exc:
+            register_request(RegNestedArrayArticle)
+        message = str(exc.value)
+        assert "matrix" in message
+        assert "Nested array" in message
+
+    def test_unsupported_element_type_rejected(self):
+        with pytest.raises(ValueError) as exc:
+            register_request(RegUnsupportedElementArticle)
+        message = str(exc.value)
+        assert "widgets" in message
+        assert "_CustomElement" in message

@@ -1,3 +1,4 @@
+using System.Globalization;
 using FluentAssertions;
 using NSubstitute;
 using Qdrant.Client.Grpc;
@@ -207,6 +208,38 @@ public sealed class QdrantVectorServiceTests
         };
 
         IntelligenceVectorService.ToCanonicalString(value).Should().Be(expected);
+    }
+
+    [Fact]
+    public void ToQdrantValue_ArrayValue_BecomesAListOfElementTypedValues()
+    {
+        // An array column's payload index is built from the ELEMENT kind, so the value has to be
+        // emitted as a real Qdrant ListValue. Flattening it to a string would leave the field
+        // silently unfilterable under its own index.
+        var value = IntelligenceVectorService.ToQdrantValue(new List<object> { 1L, 2L, 3L });
+
+        value.KindCase.Should().Be(Value.KindOneofCase.ListValue);
+        value.ListValue.Values.Select(v => v.KindCase)
+             .Should().AllBeEquivalentTo(Value.KindOneofCase.IntegerValue);
+        value.ListValue.Values.Select(v => v.IntegerValue).Should().Equal(1L, 2L, 3L);
+    }
+
+    [Fact]
+    public void ToQdrantValue_StringValue_StaysAStringNotACharList()
+    {
+        // string is itself IEnumerable<char>; the string arm must win over the sequence arm.
+        IntelligenceVectorService.ToQdrantValue("Allen Iverson").KindCase
+            .Should().Be(Value.KindOneofCase.StringValue);
+    }
+
+    [Fact]
+    public void ToQdrantValue_TimestampArray_EmitsRoundTripFormattedStrings()
+    {
+        var when  = DateTimeOffset.Parse("2026-07-30T10:30:00Z", CultureInfo.InvariantCulture);
+        var value = IntelligenceVectorService.ToQdrantValue(new List<object> { when, when });
+
+        value.ListValue.Values.Select(v => v.StringValue)
+             .Should().AllBe(when.ToString("o"));
     }
 
     [Fact]

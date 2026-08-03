@@ -51,20 +51,42 @@ _RELATION_KIND_MAP: dict[str, int] = {
 }
 
 
-def _python_type_to_clr(type_hint: str | type | None) -> tuple[int, bool]:
-    """Map a Python type annotation to (ClrType enum value, is_array)."""
+def _python_type_to_clr(type_hint: str | type | None, prop_name: str = "") -> tuple[int, bool]:
+    """Map a Python type annotation to (ClrType enum value, is_array).
+
+    An array whose element is itself a generic (e.g. ``list[list[str]]``) or is not a supported
+    scalar is REJECTED rather than silently falling back to ``str``: the server would register a
+    1-D ``TEXT[]`` column against a payload that is a nested/complex JSON array, and
+    ``json_populate_record`` fails on the first insert.
+    """
     if type_hint is None:
         return mapping_pb.CLR_STRING, False
     # bytes is a scalar — check before the array unwrap.
     if type_hint is bytes:
         return mapping_pb.CLR_BYTES, False
-    if get_origin(type_hint) in (list, set, tuple):
+    if get_origin(type_hint) is list:
         args = get_args(type_hint)
         element = args[0] if args else None
         if element is bytes:
             return mapping_pb.CLR_BYTES, True
-        name = getattr(element, "__name__", str(element)) if element is not None else ""
-        return _PY_TO_CLR.get(name, mapping_pb.CLR_STRING), True
+        where = f" on property '{prop_name}'" if prop_name else ""
+        if element is None:
+            raise ValueError(
+                f"Array type {type_hint!r}{where} must declare an element type, "
+                "e.g. list[str]."
+            )
+        if get_origin(element) is not None:
+            raise ValueError(
+                f"Nested array element type {element!r}{where} is not supported; "
+                "declare a list of a supported scalar type."
+            )
+        name = getattr(element, "__name__", None)
+        if name is None or name not in _PY_TO_CLR:
+            raise ValueError(
+                f"Array element type {element!r}{where} is not a supported scalar; "
+                f"supported element types are: {', '.join(sorted(_PY_TO_CLR))}."
+            )
+        return _PY_TO_CLR[name], True
     name = type_hint if isinstance(type_hint, str) else getattr(type_hint, "__name__", str(type_hint))
     return _PY_TO_CLR.get(name, mapping_pb.CLR_STRING), False
 
@@ -166,7 +188,7 @@ class SchemaRegistrar:
             if field_name in relation_fields:
                 continue
             type_hint = annotations.get(field_name)
-            clr_type, is_array = _python_type_to_clr(type_hint)
+            clr_type, is_array = _python_type_to_clr(type_hint, field_name)
             is_chunk = field_name in chunk_fields_by_name
             chunk_max_tokens, chunk_overlap, chunk_contextual = chunk_fields_by_name.get(
                 field_name, (0, 0, False)
