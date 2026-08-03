@@ -17,11 +17,13 @@ import {
     IversonKeywords,
     IversonExtracted,
     IversonTenant,
+    IversonArray,
     ManyToOne,
     OneToMany,
 } from '../src/annotations.js';
 import { SchemaRegistrar } from '../src/core.js';
 import {
+    ClrType,
     ObjectMappingServiceClient,
     RelationKind,
     SchemaRequest,
@@ -509,5 +511,69 @@ describe('_buildRequest — tenant field', () => {
         const registrar = new SchemaRegistrar(stub, [TwoTenants]);
         expect(() => registrar._buildRequest(TwoTenants)).toThrow(/orgId/);
         expect(() => registrar._buildRequest(TwoTenants)).toThrow(/accountId/);
+    });
+});
+
+// ── Array fields ────────────────────────────────────────────────────────────
+
+describe('_buildRequest — array fields', () => {
+    it('registers a decorated array property with isArray=true and the declared clrType', () => {
+        @IversonEntity()
+        class WithArray {
+            @IversonKey()
+            id: string = '';
+
+            @IversonTenant()
+            orgId: string = '';
+
+            @IversonArray(ClrType.CLR_STRING)
+            tags: string[] = [];
+        }
+
+        const stub = makeStub();
+        const registrar = new SchemaRegistrar(stub, [WithArray]);
+        const req = registrar._buildRequest(WithArray);
+        const props = Object.fromEntries(req.rootType!.properties.map(p => [p.name, p]));
+
+        expect(props['Tags'].isArray).toBe(true);
+        expect(props['Tags'].clrType).toBe(ClrType.CLR_STRING);
+    });
+
+    it('throws when an array property is decorated but not with @IversonArray', () => {
+        @IversonEntity()
+        class DecoratedNotArray {
+            @IversonKey()
+            id: string = '';
+
+            @IversonMetadata()
+            tags: string[] = [];
+        }
+
+        const stub = makeStub();
+        const registrar = new SchemaRegistrar(stub, [DecoratedNotArray]);
+        expect(() => registrar._buildRequest(DecoratedNotArray)).toThrow(/@IversonArray/);
+    });
+
+    it('throws when an array property is fully undecorated', () => {
+        @IversonEntity()
+        class UndecoratedArray {
+            @IversonKey()
+            id: string = '';
+
+            tags: string[] = [];
+        }
+
+        const stub = makeStub();
+        const registrar = new SchemaRegistrar(stub, [UndecoratedArray]);
+        expect(() => registrar._buildRequest(UndecoratedArray)).toThrow(/@IversonArray/);
+    });
+
+    it('leaves a non-array property unaffected', () => {
+        const stub = makeStub();
+        const registrar = new SchemaRegistrar(stub, [RegArticle]);
+        const req = registrar._buildRequest(RegArticle);
+        const props = Object.fromEntries(req.rootType!.properties.map(p => [p.name, p]));
+
+        expect(props['Title'].isArray).toBe(false);
     });
 });

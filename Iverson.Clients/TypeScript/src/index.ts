@@ -10,6 +10,7 @@ export {
     IversonChunk,
     IversonMetadata,
     IversonDescription,
+    IversonArray,
     ManyToOne,
     ManyToMany,
     OneToMany,
@@ -23,8 +24,11 @@ export {
     getTypeDescription,
     getPropertyDescriptions,
     getRelations,
+    getArrayFields,
     isIversonEntity,
 } from './annotations.js';
+
+export { ClrType } from '../generated/object_mapping.js';
 
 export type { RelationMeta, SearchKeyMeta, RelationKindString, ChunkMeta } from './annotations.js';
 

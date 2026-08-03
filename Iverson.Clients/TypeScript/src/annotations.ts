@@ -19,6 +19,8 @@
  */
 import 'reflect-metadata';
 
+import { ClrType } from '../generated/object_mapping.js';
+
 // ── Metadata symbol keys ───────────────────────────────────────────────────────
 
 const IVERSON_ENTITY_KEY   = Symbol('iverson:entity');
@@ -231,6 +233,31 @@ export function IversonMetadata(): PropertyDecorator {
 
 export function getMetadataFields(target: Function): string[] {
     return Reflect.getMetadata(IVERSON_METADATA_FIELDS, target) ?? [];
+}
+
+// ── @IversonArray(elementType) ─────────────────────────────────────────────────
+
+const IVERSON_ARRAY_KEY = Symbol('iverson:array');
+
+/**
+ * Declares a property as an array column, naming its element type explicitly.
+ * TypeScript cannot infer the element type: `emitDecoratorMetadata` erases it
+ * (design:type reports only the `Array` constructor), and an initialized `[]`
+ * carries no element type either. Without this decorator, the registrar would
+ * either silently fall back to a scalar CLR_STRING column or, for undecorated
+ * declarations, skip detection entirely.
+ */
+export function IversonArray(elementType: ClrType): PropertyDecorator {
+    return (target, propertyKey) => {
+        const existing: Map<string, ClrType> =
+            Reflect.getMetadata(IVERSON_ARRAY_KEY, target.constructor) ?? new Map();
+        existing.set(String(propertyKey), elementType);
+        Reflect.defineMetadata(IVERSON_ARRAY_KEY, existing, target.constructor);
+    };
+}
+
+export function getArrayFields(target: Function): Map<string, ClrType> {
+    return Reflect.getMetadata(IVERSON_ARRAY_KEY, target) ?? new Map();
 }
 
 // ── @IversonTenant() ────────────────────────────────────────────────────────

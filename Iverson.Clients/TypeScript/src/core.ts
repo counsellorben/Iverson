@@ -44,6 +44,7 @@ import {
 } from '../generated/object_search.js';
 
 import {
+    getArrayFields,
     getChunkFields,
     getEmbeddingFields,
     getExtractedFields,
@@ -193,6 +194,7 @@ export function describeEntity(cls: Function): TypeDescriptor {
     const summaryFields = new Set(getSummaryFields(cls));
     const keywordsFields = new Set(getKeywordsFields(cls));
     const extractedByField = new Map(getExtractedFields(cls).map(e => [e.field, e]));
+    const arrayFields = getArrayFields(cls);
     if (keyField !== undefined) {
         // The server builds every per-property declaration from non-key properties only, so
         // anything but a description on the key is accepted and silently dropped.
@@ -225,7 +227,8 @@ export function describeEntity(cls: Function): TypeDescriptor {
     // then reflect on each property. design:type is set by TypeScript
     // when emitDecoratorMetadata=true.
     const proto = cls.prototype as Record<string, unknown>;
-    const allFields = Object.getOwnPropertyNames(new (cls as any)());
+    const instance = new (cls as any)();
+    const allFields = Object.getOwnPropertyNames(instance);
 
     const properties: PropertyDescriptor[] = [];
     for (const fieldName of allFields) {
@@ -233,7 +236,17 @@ export function describeEntity(cls: Function): TypeDescriptor {
 
         // Reflect design:type from emitDecoratorMetadata
         const designType = Reflect.getMetadata('design:type', proto, fieldName) as Function | undefined;
-        const clrType = designType ? jsTypeToClr(designType.name) : ClrType.CLR_STRING;
+        const arrayElement = arrayFields.get(fieldName);
+        const looksArray = designType === Array || Array.isArray(instance[fieldName]);
+        if (looksArray && arrayElement === undefined) {
+            throw new Error(
+                `${typeName}.${fieldName} is an array property but has no @IversonArray(elementType) ` +
+                'decorator; TypeScript erases the element type, so it cannot be inferred. ' +
+                'Add @IversonArray(ClrType.CLR_…) naming the element type.',
+            );
+        }
+        const isArray = arrayElement !== undefined;
+        const clrType = arrayElement ?? (designType ? jsTypeToClr(designType.name) : ClrType.CLR_STRING);
 
         const isKey = fieldName === keyField;
         const isSearchKey = searchKeysByField.has(fieldName);
@@ -246,7 +259,7 @@ export function describeEntity(cls: Function): TypeDescriptor {
             clrType,
             isKey,
             isNullable: !isKey,
-            isArray: false,
+            isArray,
             isEmbedding,
             vectorDim: 0,
             modelId: '',
