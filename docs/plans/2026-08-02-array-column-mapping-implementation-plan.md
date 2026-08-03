@@ -78,6 +78,7 @@ Newly introduced by this plan and verified at plan-write time against `main@93b5
 | P3 | Signature | `ApplySchemaAsync` is `Task ApplySchemaAsync(TableSchema schema)` on both interface and impl | `IRecordStoreRoles.cs:12`, `PostgresSchemaManager.cs:14` |
 | P4 | **Consumer impact** | **`NoOpRecordStoreSchemaManager` must be updated.** C# requires an implementer to restate a defaulted interface parameter; the fake will not satisfy the new signature otherwise | `StartupNoOpFakes.cs:46` (`internal sealed class NoOpRecordStoreSchemaManager : IRecordStoreSchemaManager`), `:48` (`public Task ApplySchemaAsync(TableSchema schema) => Task.CompletedTask;`). Registered at `AuthTestWebApplicationFactory.cs:58` |
 | P5 | **Consumer impact** | The optional-parameter approach leaves all other call sites compiling untouched | 5 production sites (`Program.cs:410,411,412,421`, `SchemaRegistrationOrchestrator.cs:68`) and ~25 test sites across 5 files; `PostgresSchemaManager` is the only concrete implementer (`ServiceCollectionExtensions.cs:23`). NSubstitute `Substitute.For<IRecordStoreSchemaManager>()` uses a dynamic proxy and needs no source change |
+| P27 | Consumer impact | **A non-`RpcException` thrown below the gRPC layer loses its message** | `ObjectMappingGrpcService.cs:37-57` — `RegisterSchema` has no try/catch around `:47`; `ActingUserInterceptor.cs` has no `catch`; `Program.cs:87` configures `AddGrpc` without `EnableDetailedErrors`. The client receives `StatusCode.Unknown` / `"Exception was thrown by handler."`. Every other registration failure throws `RpcException` explicitly (`SchemaRegistrationOrchestrator.cs:45-47,62-64,87-90`) |
 | P6 | Signature | `GetDefaultForType` is a switch expression over `sqlType.ToUpperInvariant()` with `var t when t.StartsWith(...)` arms, evaluated top-down | `PostgresSchemaManager.cs:146-156`. An `EndsWith("[]")` arm placed first therefore captures `INTEGER[]` before `StartsWith("INT")` |
 | P7 | Signature | Java `detectClrType(Class<?>)` is `private static`, returns `ClrType` or `null`, with exactly **two** call sites | `SchemaRegistrar.java:287` (definition), `:176` (`buildKeyDescriptor`), `:188` (`tryBuildPropertyDescriptor`) |
 | P8 | Consumer impact | Java currently **drops** array fields rather than mis-typing them | `detectClrType` returns `null` for `List`/`Collection` (`:287-299`, no matching branch); `tryBuildPropertyDescriptor` returns `null` on that and the field is skipped (`:188-189`). Task 3 turns a dropped field into a registered one |
@@ -90,6 +91,7 @@ Newly introduced by this plan and verified at plan-write time against `main@93b5
 | P14 | Signature | TypeScript property decorators use `Reflect.defineMetadata(KEY, value, target.constructor)` and a paired getter | `annotations.ts:68-75` (`IversonKey`/`getKeyField`), the pattern `@IversonArray`/`getArrayFields` follows |
 | P15 | Consumer impact | `ClrType` is genuinely absent from TypeScript's public exports | `src/index.ts` exports 12 decorators, the accessors, builders and client classes, and no generated proto type |
 | P26 | Signature | **`annotations.ts` imports no generated proto type, and can safely gain one** | `annotations.ts:20` — sole import is `import 'reflect-metadata';`. `ClrType` originates at `../generated/object_mapping.js` (`core.ts:9,18`). No cycle: `annotations.ts` imports nothing from `core.ts` |
+| P28 | Signature | **`core.ts` imports its annotation accessors by explicit name** | `core.ts:44-62` — a named-import block from `./annotations.js` listing `getChunkFields`, `getEmbeddingFields`, `getKeyField`, `getLargeFields`, `getMetadataFields`, `getRelations`, `getSearchKeys`, `getTenantFields` and the rest. A new accessor is unbound until added to that list |
 | P16 | Signature | `PostgresContainerFixture` exposes `SchemaManager` and `ConnectionString` and is consumed via `IClassFixture` | `PostgresIntegrationTests.cs:9-38`; `postgres:16-alpine`, `UniqueTable()` helper at `:44-45` |
 | P17 | Command | `dotnet test <project-dir>` is the invocation — there is no solution file | No `.sln` at repo root or under `Iverson.Server/`; each test project has its own `.csproj` |
 | P18 | Command | `mvn -f Iverson.Clients/Java/pom.xml test` is valid | `pom.xml` declares modules `client` and `sample` |
@@ -198,6 +200,13 @@ public interface IRecordStoreSchemaManager
 }
 ```
 
+Declare the drift exception alongside the enum, so the detail survives to the caller (see Step 5):
+
+```csharp
+public sealed class SchemaDriftException(string table, string column, string actual, string expected)
+    : Exception($"Column \"{column}\" on table \"{table}\" has type '{actual}' but the registered schema expects '{expected}'. Migrate the column by hand, then retry registration.");
+```
+
 The default keeps all five production and ~25 test call sites compiling unchanged. **`NoOpRecordStoreSchemaManager` must still be updated** — C# requires an implementer to restate the parameter:
 
 ```csharp
@@ -237,14 +246,23 @@ private static string NormalizePgType(string sqlType) => sqlType.Trim().ToLowerI
 ```
 
 - [ ] **Step 4: Compare types over the name intersection.**
-For every schema column whose name already exists, compare `NormalizePgType(expected.SqlType)` to `NormalizePgType(actual)`. New columns still ADD; orphans still DROP; only the intersection is checked. **Include the key column** — on an existing table it was created with the table and never revisited, so it must be appended to the checked set explicitly (`schema.Columns` excludes it; see `:57`). On mismatch, `Throw` raises naming table, column, actual and expected; `Warn` logs the same detail.
+For every schema column whose name already exists, compare `NormalizePgType(expected.SqlType)` to `NormalizePgType(actual)`. New columns still ADD; orphans still DROP; only the intersection is checked. **Include the key column** — on an existing table it was created with the table and never revisited, so it must be appended to the checked set explicitly (`schema.Columns` excludes it; see `:57`). On mismatch, `Throw` raises a `SchemaDriftException` carrying table, column, actual and expected; `Warn` logs the same detail.
 
 - [ ] **Step 5: Registration opts into throwing.**
 `SchemaRegistrationOrchestrator.cs:68` becomes:
+
 ```csharp
-await schemaManager.ApplySchemaAsync(SchemaBuilder.ToTableSchema(descriptor), SchemaDriftPolicy.Throw);
+try
+{
+    await schemaManager.ApplySchemaAsync(SchemaBuilder.ToTableSchema(descriptor), SchemaDriftPolicy.Throw);
+}
+catch (SchemaDriftException ex)
+{
+    throw new RpcException(new Status(StatusCode.FailedPrecondition, ex.Message));
+}
 ```
-The four `Program.cs` calls (`:410-412` bootstrap, `:421` registered descriptors) are all startup and keep the `Warn` default.
+
+The `try/catch` is not optional: `Iverson.Sql` has no gRPC dependency, so a bare `SchemaDriftException` reaches the client as `StatusCode.Unknown` / `"Exception was thrown by handler."` and the table, column, actual and expected detail is lost. This matches how every other failure in this file surfaces. The four `Program.cs` calls (`:410-412` bootstrap, `:421` registered descriptors) are all startup and keep the `Warn` default, which logs and never throws.
 
 - [ ] **Step 6: Add the tests to `PostgresIntegrationTests`.**
 Using the existing `PostgresContainerFixture` and `UniqueTable()`:
@@ -492,7 +510,7 @@ tags: string[] = [];
 ```
 
 - [ ] **Step 2: Read it in the registrar.**
-In `core.ts`, build `const arrayFields = getArrayFields(cls);` alongside the other accessor calls, then replace the `clrType`/`isArray` derivation at `:235`/`:249`:
+In `core.ts`, add `getArrayFields` to the existing named-import block from `./annotations.js` (`:44-62`), then build `const arrayFields = getArrayFields(cls);` alongside the other accessor calls and replace the `clrType`/`isArray` derivation at `:235`/`:249`:
 
 ```ts
 const designType = Reflect.getMetadata('design:type', proto, fieldName) as Function | undefined;
