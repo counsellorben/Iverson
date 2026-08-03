@@ -148,7 +148,7 @@ No serialization code changes anywhere. §4's round-trip test is what proves thi
 |---|---|
 | Java | `field.getGenericType()` — arrays via `getComponentType()`, `List<T>`/`Collection<T>` via the `ParameterizedType` argument |
 | Python | `typing.get_type_hints(cls)` to resolve string annotations, then `typing.get_origin`/`get_args` |
-| Go | `reflect.Slice` → `t.Elem()`, inside the existing `goTypeToClr` (`registrar.go:174`) |
+| Go | `reflect.Slice` → `t.Elem()`, inside `goTypeToClr` (`registrar.go:173`) — see below, a signature change |
 | TypeScript | New `@IversonArray(elementType)` decorator |
 
 **Each must carve out its bytes type before the array unwrap**, mirroring `SchemaRegistrar.cs:241`:
@@ -172,6 +172,15 @@ today. Decision made by Ben 2026-08-02.
 (`SchemaRegistrar.java:176`, `:188`) receives a `Class<?>`, which erases generics — `List<String>`
 arrives as `List`. Element-type recovery requires `getGenericType()`.
 
+**Go needs a signature change too, not just a branch.** `goTypeToClr` returns a single
+`pb.ClrType` (`registrar.go:173`) and its sole caller assigns that one value (`:69`); the
+`PropertyDescriptor` literal (`:82-95`) has no `IsArray` field at all. A branch alone is a no-op —
+the existing `reflect.Slice` arm already returns `CLR_STRING` for every non-`[]byte` slice
+(`:186-189`), so `[]string` would register exactly as it does today. `goTypeToClr` returns
+`(pb.ClrType, bool)`, the `reflect.Slice` arm recurses on `t.Elem()` with `isArray: true` after the
+`[]byte` carve-out, and `:69` destructures both into `ClrType` and a new `IsArray` field on the
+descriptor.
+
 **TypeScript cannot infer the element type.** `Reflect.getMetadata('design:type', …)`
 (`core.ts:235`) returns the `Array` constructor for `tags: string[]`; `emitDecoratorMetadata`
 erases the element type, and the class *is* instantiated (`core.ts:228`) but an initialized `[]`
@@ -194,8 +203,11 @@ class this work exists to remove. Decision made by Ben 2026-08-02.
 ### 5. Testing
 
 **Mapping completeness** — iterate `Enum.GetValues<ClrType>()`, asserting every value has an
-`ArrayTypeOverrides` entry whose Postgres type is its scalar type plus `[]` and whose payload kind
-matches the scalar's. Enum-driven so a newly added `ClrType` fails here rather than falling through.
+`ArrayTypeOverrides` entry whose Postgres type is its scalar type plus `[]` and whose StarRocks type
+is `STRING`. Payload kinds are asserted against an explicit expected table rather than derived from
+the scalar map, carrying `ClrFloat → Keyword` as a named exception — §1 preserves it because
+correcting it would retype a live Qdrant index. Enum-driven so a newly added `ClrType` fails here
+rather than falling through.
 
 **Normalization completeness** — iterate the same enum, asserting `NormalizePgType` answers for
 every mapped SQL type, scalar and array.
@@ -257,6 +269,7 @@ instance during critical design review; B7 failed and is corrected below.
 | B16 | Java can recover an element type | `detectClrType(field.getType())` at `:176`/`:188`/`:287` — `getType()` erases generics, so `getGenericType()` is required. Feasible, but a signature change |
 | B17 | Python can recover an element type | `core.py:162-163` reads `__annotations__` and passes the hint to `_python_type_to_clr`; hints preserve `list[str]` for `typing.get_origin`/`get_args` |
 | B18 | Go can recover an element type | `goTypeToClr(sf.Type)` (`registrar.go:69`, `:174`) already takes a `reflect.Type`; `reflect.Slice` → `Elem()` |
+| B25 | **Go cannot propagate `isArray` without a signature change** | `goTypeToClr` returns a single `pb.ClrType` (`registrar.go:173`); its sole caller assigns that one value (`:69`), and the `PropertyDescriptor` literal (`:82-95`) has no `IsArray` field. `grep -rn "IsArray" Iverson.Clients/Go/iverson/*.go` → no matches. Element recovery (B18) is necessary but not sufficient |
 | B19 | TypeScript supports a new per-property decorator | `annotations.ts:56-169` — eight existing `PropertyDecorator`s establish the pattern |
 | B20 | TypeScript cannot infer the element type | `core.ts:235` reads `design:type`, which `emitDecoratorMetadata` erases to `Array`; `core.ts:228` instantiates the class but an initialized `[]` carries no element type |
 | B21 | StarRocks accepts `STRING` for array columns | `SchemaBuilder.cs:191-193` builds `EngagementColumnSchema` from `ClrTypeToEngagementType(SqlType)`, already `STRING` for both existing arrays |
