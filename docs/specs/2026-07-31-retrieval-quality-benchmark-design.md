@@ -83,6 +83,15 @@ A new `BenchmarkDocument` entity in `Iverson.LoadTest`:
   the fusion a mathematical identity and the ablation meaningless (A4).
 - `[IversonTenant]` on a tenant property, per the declarative marker (A7).
 
+**Authorization must be declared, or every query returns nothing.** `SchemaRegistrar.RegisterAllAsync`
+attaches authorization only to types present in its dictionary, and a type registered without rules is
+denied on read — both vector RPCs return an empty stream rather than an error, so the failure looks
+like "retrieval found nothing" (A21). `BenchmarkDocument` therefore needs an entry in
+`authorizationByTypeName` granting `CanReadAll` to `iverson-loadtest-bypass`, and the scenario queries
+as the already-provisioned `iverson-loadtest-bypass-user`. That identity's bypass role sets
+`ownershipRequired` false, so no `OwnerId` property is needed. It must also carry a `tenant_id` claim,
+which the load test's existing tenant provisioning supplies.
+
 Ingestion goes through `EntityCoordinator`, **not** `DirectSeeder`. `DirectSeeder` writes straight to
 Postgres/StarRocks/Kafka for bulk speed and would bypass the chunk/embed/centroid pipeline the
 benchmark exists to measure.
@@ -121,7 +130,8 @@ change (A17, A18). A separate project would duplicate all of that for one scenar
 Because the tests hand-compute expected values at the current constants, **every ablation build has a
 failing test suite by construction** (A19). The sweep therefore runs on a scratch branch: edit the
 constant, build, deploy, run the harness, keep the run file, move to the next configuration, and
-discard the branch at the end. Do not run the suite against an ablation build expecting green, and do
+discard the branch at the end. Check the first configuration's run file is non-empty before spending
+the remaining seven cycles. Do not run the suite against an ablation build expecting green, and do
 not commit an edited constant to `main`.
 
 ## Testing
@@ -161,6 +171,7 @@ Verified against the codebase at `main@d3c8b3c` before this spec was written.
 | A18 | Adding an entity type breaks no existing scenario | Entity discovery is assembly-scan; authorization is a per-type dictionary keyed by name (`Program.cs:147-151`), so a new entry is additive |
 | A19 | **Operational.** Every ablation build has a failing test suite | `ResultRerankerTests.cs:28-29` asserts `(0.6*0.9 + 0.3*0.5 + 0.1*0.8)/1.0 = 0.77`, with more at `:44-46` and `:62`; `ResultDiversifierTests.cs` hand-computes at λ = 0.70. Editing a constant falsifies them by construction |
 | A20 | *(Recurrence)* Every configuration in the sweep is a pure constant edit — no member of the matrix needs a code-shape change | Members enumerated: `WCentroid ∈ {0.30, 0.00}` and `Lambda ∈ {1.00, 0.70, 0.50, 0.30}`. Both symbols are `private const double` (`ResultReranker.cs:12`, `ResultDiversifier.cs:12`) read at a single expression site each, and A16's sweep confirms no other code path branches on their values |
+| A21 | A type registered without authorization rules is denied on read, and both vector RPCs return an empty stream rather than an error | `SchemaRegistrar.cs:26-30` attaches `Authorization` only for dictionary-present types; `RowFieldAuthorizationEvaluator.cs:11-12` returns `Denied` when rules are null; `ObjectSearchGrpcService.cs:126-127` and `:298-299` — `if (decision.Denied) return;` |
 
 ## Known issues / accepted as out of scope
 
