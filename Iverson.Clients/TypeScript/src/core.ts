@@ -7,6 +7,8 @@ import * as grpc from '@grpc/grpc-js';
 
 import {
     ClrType,
+    GetSchemaRequest,
+    GetSchemaResponse,
     MappingDeleteRequest,
     ObjectMappingServiceClient,
     PropertyDescriptor,
@@ -14,6 +16,7 @@ import {
     RelationKind,
     SchemaRequest,
     SchemaResponse,
+    SchemaType,
     TypeDescriptor,
 } from '../generated/object_mapping.js';
 
@@ -571,6 +574,17 @@ export class IversonClient {
     /** Return a SchemaRegistrar for the given entity classes. */
     registrar(...entityClasses: Function[]): SchemaRegistrar {
         return new SchemaRegistrar(this._mappingClient, entityClasses, this._callCredentials);
+    }
+
+    /** Fetch the tenant's authorized schema catalog. */
+    async getSchema(traceId = ''): Promise<SchemaType[]> {
+        const response = await callUnary<GetSchemaRequest, GetSchemaResponse>(
+            (req, metadata, options, cb) => this._mappingClient.getSchema(req, metadata, options, cb),
+            { traceId },
+            this._callCredentials,
+            this._actingUserToken,
+        );
+        return response.types;
     }
 
     // ── Search-family execution ──────────────────────────────────────────────

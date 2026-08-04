@@ -30,6 +30,8 @@ export {
 
 export { ClrType } from '../generated/object_mapping.js';
 
+export type { SchemaType, SchemaField, SchemaRelation } from '../generated/object_mapping.js';
+
 export type { RelationMeta, SearchKeyMeta, RelationKindString, ChunkMeta } from './annotations.js';
 
 export { IversonClient, EntityCoordinator, SchemaRegistrar } from './core.js';

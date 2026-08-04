@@ -21,11 +21,13 @@ import {
     ManyToOne,
     OneToMany,
 } from '../src/annotations.js';
-import { SchemaRegistrar } from '../src/core.js';
+import { IversonClient, SchemaRegistrar } from '../src/core.js';
 import {
     ClrType,
+    GetSchemaResponse,
     ObjectMappingServiceClient,
     RelationKind,
+    SchemaEnrichmentKind,
     SchemaRequest,
     SchemaResponse,
 } from '../generated/object_mapping.js';
@@ -575,5 +577,52 @@ describe('_buildRequest — array fields', () => {
         const props = Object.fromEntries(req.rootType!.properties.map(p => [p.name, p]));
 
         expect(props['Title'].isArray).toBe(false);
+    });
+});
+
+// ── IversonClient.getSchema ────────────────────────────────────────────────
+
+describe('IversonClient.getSchema', () => {
+    it('returns response.types via the unary GetSchema call', async () => {
+        const response: GetSchemaResponse = {
+            types: [
+                {
+                    typeName: 'Article',
+                    description: '',
+                    fields: [
+                        {
+                            name: 'category',
+                            clrType: ClrType.CLR_STRING,
+                            isKey: false,
+                            isSearchKey: true,
+                            searchKeyOrder: 0,
+                            isMetadata: false,
+                            description: '',
+                            enrichment: [SchemaEnrichmentKind.ENRICHMENT_NONE],
+                        },
+                    ],
+                    relations: [],
+                },
+            ],
+        };
+        const getSchema = vi.fn(
+            (req: unknown, _metadata: unknown, _options: unknown, cb: (err: null, res: GetSchemaResponse) => void) => {
+                cb(null, response);
+                return {} as any;
+            },
+        );
+        const stub = { getSchema, close: vi.fn() } as unknown as ObjectMappingServiceClient;
+
+        const client = new IversonClient('localhost', 0);
+        (client as unknown as { _mappingClient: unknown })._mappingClient = stub;
+
+        const types = await client.getSchema('trace-1');
+
+        expect(types).toEqual(response.types);
+        expect(getSchema).toHaveBeenCalledTimes(1);
+        const capturedReq = getSchema.mock.calls[0][0];
+        expect(capturedReq).toEqual({ traceId: 'trace-1' });
+
+        client.close();
     });
 });
