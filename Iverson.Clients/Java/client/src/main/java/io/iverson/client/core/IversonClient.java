@@ -3,11 +3,15 @@ package io.iverson.client.core;
 import io.grpc.CallCredentials;
 import io.grpc.ManagedChannel;
 import io.grpc.ManagedChannelBuilder;
+import iverson.ObjectMapping.GetSchemaRequest;
+import iverson.ObjectMapping.GetSchemaResponse;
+import iverson.ObjectMapping.SchemaType;
 import iverson.ObjectMappingServiceGrpc;
 import iverson.ObjectPersistenceServiceGrpc;
 import iverson.ObjectRetrievalServiceGrpc;
 import iverson.ObjectSearchServiceGrpc;
 
+import java.util.List;
 import java.util.concurrent.TimeUnit;
 
 /**
@@ -72,6 +76,28 @@ public final class IversonClient implements AutoCloseable {
         this.persistenceStub = ObjectPersistenceServiceGrpc.newBlockingStub(channel).withCallCredentials(credentials);
         this.retrievalStub   = ObjectRetrievalServiceGrpc.newBlockingStub(channel).withCallCredentials(credentials);
         this.searchStub      = ObjectSearchServiceGrpc.newBlockingStub(channel).withCallCredentials(credentials);
+    }
+
+    /**
+     * Test seam: builds a client over a pre-made mapping stub, bypassing channel construction.
+     * The channel and the other three stubs are null, so a client built this way serves only
+     * mapping calls and must not be closed.
+     */
+    IversonClient(ObjectMappingServiceGrpc.ObjectMappingServiceBlockingStub mappingStub) {
+        this.channel         = null;
+        this.mappingStub     = mappingStub;
+        this.persistenceStub = null;
+        this.retrievalStub   = null;
+        this.searchStub      = null;
+    }
+
+    /**
+     * Retrieves the tenant's authorized schema catalog.
+     */
+    public List<SchemaType> getSchema(String traceId) {
+        GetSchemaResponse response = mappingStub.getSchema(
+            GetSchemaRequest.newBuilder().setTraceId(traceId).build());
+        return response.getTypesList();
     }
 
     @Override

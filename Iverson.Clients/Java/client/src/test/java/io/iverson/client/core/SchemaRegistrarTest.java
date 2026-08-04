@@ -6,8 +6,11 @@ import iverson.ObjectMapping.ClrType;
 import iverson.ObjectMapping.PropertyDescriptor;
 import iverson.ObjectMapping.RelationDescriptor;
 import iverson.ObjectMapping.RelationKind;
+import iverson.ObjectMapping.GetSchemaRequest;
+import iverson.ObjectMapping.GetSchemaResponse;
 import iverson.ObjectMapping.SchemaRequest;
 import iverson.ObjectMapping.SchemaResponse;
+import iverson.ObjectMapping.SchemaType;
 import iverson.ObjectMapping.TypeDescriptor;
 import iverson.ObjectMappingServiceGrpc;
 import org.junit.jupiter.api.BeforeEach;
@@ -725,6 +728,25 @@ class SchemaRegistrarTest {
     }
 
     // ── buildTypeDescriptor: PascalCase field names ────────────────────────────
+
+    // ── IversonClient.getSchema ────────────────────────────────────────────────
+
+    @Test
+    void getSchema_issuesGetSchemaCall_andSurfacesReturnedTypes() {
+        SchemaType type = SchemaType.newBuilder().setName("Article").build();
+        GetSchemaResponse response = GetSchemaResponse.newBuilder().addTypes(type).build();
+        when(mockStub.getSchema(any())).thenReturn(response);
+
+        IversonClient client = new IversonClient(mockStub);
+        List<SchemaType> types = client.getSchema("trace-123");
+
+        assertEquals(1, types.size());
+        assertEquals("Article", types.get(0).getName());
+
+        ArgumentCaptor<GetSchemaRequest> captor = ArgumentCaptor.forClass(GetSchemaRequest.class);
+        verify(mockStub).getSchema(captor.capture());
+        assertEquals("trace-123", captor.getValue().getTraceId());
+    }
 
     @Test
     void buildTypeDescriptor_convertsCamelCase_toPascalCase() {
