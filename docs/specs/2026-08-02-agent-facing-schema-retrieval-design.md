@@ -173,7 +173,7 @@ entire response depends on the acting user.
 | Client | Type | Signature |
 |---|---|---|
 | .NET | `SchemaCatalogClient` (new) | `Task<IReadOnlyList<SchemaType>> GetSchemaAsync(string traceId = "", CancellationToken ct = default)` |
-| Java | `IversonClient` | `List<SchemaType> getSchema(String traceId)` |
+| Java | `IversonClient` | `List<SchemaType> getSchema(String traceId, String actingUserToken)` (corrected 2026-08-03 — see A21) |
 | TypeScript | `IversonClient` | `async getSchema(traceId = ''): Promise<SchemaType[]>` |
 | Python | `IversonClient` | `def get_schema(self, trace_id: str = "") -> list[SchemaType]` |
 | Go | `IversonClient` | `func (c *IversonClient) GetSchema(ctx context.Context, traceID string) ([]*pb.SchemaType, error)` |
@@ -186,8 +186,12 @@ Putting an entity-independent catalog call on it would force callers to name an 
 ask what types exist. `SchemaCatalogClient` is a small non-generic type taking the mapping client,
 registered `AddSingleton` exactly as `SchemaRegistrar` is (`:76`). Decision made by Ben 2026-08-02.
 
-**.NET binds the acting user at construction.** The other four clients hold identity on the client
-instance or the call context, so a signature without an identity parameter still carries one; .NET
+**.NET and Java both require the acting user per call.** (Corrected 2026-08-03 — see A21. The
+original text said "the other four clients"; Java in fact holds only its *service* credential on the
+client instance, and its acting user travels on a per-call `CallOptions.Key`. Java's `getSchema`
+therefore takes a trailing `String actingUserToken`, exactly as every `EntityCoordinator` data-plane
+method does.) TypeScript, Python and Go hold identity on the client instance or the call context, so
+a signature without an identity parameter still carries one; .NET
 holds it in neither place today — grepping the .NET client for `ActingUser` returns hits only inside
 `ActingUserMetadata.cs`, a per-call `Metadata` extension. `SchemaCatalogClient` therefore takes an
 acting-user token provider as a constructor dependency and applies `WithActingUser` itself on every
@@ -195,10 +199,25 @@ call, so the signature stays entity- and identity-free. `AddIversonClient` gains
 `Func<Task<string>>? actingUserTokenProvider = null` parameter alongside the existing
 `dataPlaneTokenProvider`, declared before the trailing `params Assembly[]`.
 
-**An absent acting user yields an empty catalog, not a full one:** `RowFieldAuthorizationEvaluator`
-returns `Denied` for a null acting user, so §2's step 2 omits every type. A caller that configures no
-provider gets an empty response, and needs to read that as an authorization outcome rather than an
-empty registry.
+*Release note (added 2026-08-03, final whole-branch review, Minor 9):* inserting
+`actingUserTokenProvider` before the trailing `params Assembly[] entityAssemblies` is a
+**source-breaking** change for any external caller that passes assemblies positionally after three
+arguments. Both in-repo callers (`Iverson.Client.Sample/Program.cs`, `Iverson.LoadTest/Program.cs`)
+pass `entityAssemblies:` by name and are unaffected. Compile-time only — no runtime behaviour change.
+
+**An empty catalog is an authorization outcome, not an empty registry.** `RowFieldAuthorizationEvaluator`
+is fail-closed on every axis, and §2's step 2 omits every `Denied` type. An absent acting user is only
+one of the causes; the others produce exactly the same empty response:
+
+- no acting user on the call (`RowFieldAuthorizationEvaluator.cs:14-15`) — e.g. no token provider configured;
+- an acting user with no `tenant_id` claim (`:20-22`);
+- registered types that declare no `Authorization` rules at all (`:10-12`);
+- registered types that declare no tenant field, so `TenantColumn` is null/empty (`:18-19`).
+
+All four make a type unreadable through *every* RPC, not just `GetSchema` — the catalog lists
+precisely the types the caller can actually query, which is the intended property. Client
+documentation must name all four causes, not just the missing acting user, or an operator debugging
+an empty catalog hunts the wrong thing.
 
 Note also that `SchemaCatalogClient` and `SchemaRegistrar` share one DI-registered
 `ObjectMappingServiceClient`, credentialed with the client-credentials token — the registrar
@@ -224,8 +243,25 @@ plumbing appears anywhere: TypeScript `callUnary`, Python channel call-credentia
 3. A caller with a restricted `AllowedFields` sees only those fields, **and** the excluded field's
    `description` appears nowhere in the response. This is the specific leak §2 exists to prevent,
    so it is asserted separately rather than riding on the field-list check.
-4. A type where filtering leaves nothing readable is omitted.
+4. A type where filtering leaves nothing readable is omitted. Note (2026-08-03): the production
+   `RowFieldAuthorizationEvaluator` unconditionally re-admits the key column
+   (`RowFieldAuthorizationEvaluator.cs:65`), so it can never itself produce an empty `AllowedFields`.
+   The guard in `GetSchema` is therefore fail-closed defence-in-depth, and the test drives it with a
+   substituted `IRowFieldAuthorizationEvaluator` returning an empty `AllowedFields` rather than with
+   real authorization rules.
 5. A relation whose `related_type` was omitted is dropped from the surviving type.
+6. **Added 2026-08-03 (final whole-branch review, Important 2).** A relation whose `foreign_key`
+   column was removed by a `FieldPermission` is dropped too. Every FK property is also an ordinary
+   scalar column (`SchemaBuilder.cs:53-57` adds every non-key property to `scalars`; `:107-112`
+   *additionally* records FK-named ones in `fks`), so filtering relations only on the survival of
+   the related type would still disclose the excluded column's exact name as `relation.foreign_key`.
+   Relations are therefore filtered on **both** `survivingNames.Contains(RelatedTypeName)` and
+   `decision.AllowedFields is null || decision.AllowedFields.Contains(ForeignKey)`.
+7. **Added 2026-08-03 (final whole-branch review, Minor 7).** A column whose persisted SQL type is
+   not in this build's map is skipped and logged, not fatal. `SchemaRegistry.LoadAsync` rehydrates
+   descriptors written by older builds, so `GetSchema` uses the non-throwing `TrySqlTypeToClr`;
+   losing one legacy column must not take discovery down for every type. The write path
+   (`ClrTypeToSql`) still throws, where failing registration is correct.
 
 **Type recovery** — table-driven over **`Enum.GetValues<ClrType>()`**, asserting that for every
 `ClrType`, `SqlTypeToClr(ClrTypeToSql(t, isArray: false))` returns `t`, and that
@@ -278,7 +314,7 @@ Verified against `main@5884b07`.
 | A13 | `RelationDescriptor` and `EnrichmentKind` shapes | `SchemaDescriptor.cs:61-65` `(PropertyName, Kind, RelatedTypeName, ForeignKey)`; `:47` `enum EnrichmentKind { Summary, Keywords, Extracted }` |
 | A14 | **Failed for .NET.** Four clients have a non-generic data-plane client holding a mapping stub; .NET does not | TypeScript `core.ts:518-524` (`_mappingClient`, `_actingUserToken`); Java `IversonClient.java:31` (`mappingStub`); Python `core.py:506,53` (`IversonClient`, `self._mapping_stub`, `acting_user_token`); Go `coordinator.go:61-70` (`MappingStub`). `grep -rn 'class IversonClient' Iverson.Clients/DotNet/` returns nothing — hence `SchemaCatalogClient` |
 | A15 | Each client has a reusable acting-user call path | TypeScript `callUnary` (`core.ts:139`); Python `_ActingUserAuthPlugin` + channel call-credentials (`core.py:529-538`); Go `WithActingUserToken` (`auth.go:23`); Java `CallOptions` (`OAuth2ClientCredentials.java:56-58`); .NET `ActingUserMetadata.WithActingUser` (`ActingUserMetadata.cs:9`) |
-| A21 | **Four clients bind the acting user to the client instance or call context; .NET binds it to neither** | TypeScript resolves an instance-level `actingUserToken` inside `callUnary` (`core.ts:122-139`); Python installs `acting_user_token` on the channel at construction (`core.py:553-564`); Java builds `mappingStub` with `.withCallCredentials(credentials)` (`IversonClient.java:71`); Go takes `ctx`, where `WithActingUserToken` puts it. For .NET, `grep -rn "ActingUser" Iverson.Clients/DotNet/Iverson.Client.Core/*.cs` returns hits only inside `ActingUserMetadata.cs` — the mechanism is a per-call `Metadata` extension, and `EntityCoordinator.PersistAsync` (`:98`) is the only method on the .NET data-plane surface that accepts one. A signature without an identity parameter therefore carries an identity in four clients and none in .NET |
+| A21 | **CORRECTED 2026-08-03 (final whole-branch review, Critical 1). Only three clients bind the acting user ambiently; Java and .NET both require it per call.** Three clients bind the acting user to the client instance or call context: TypeScript resolves an instance-level `actingUserToken` inside `callUnary` (`core.ts:122-139`); Python installs `acting_user_token` on the channel at construction (`core.py:553-564`); Go takes `ctx`, where `WithActingUserToken` puts it. **Java does not.** The original claim — that Java builds `mappingStub` with `.withCallCredentials(credentials)` and therefore carries an identity — conflated two distinct credentials. Those `CallCredentials` are the service's own OAuth2 *client-credentials* token; the acting user travels separately, on a per-call `CallOptions.Key` (`OAuth2ClientCredentials.java:35-36` `ACTING_USER_TOKEN`; `:56-58` reads it off `requestInfo.getCallOptions()` and only then emits `x-acting-user-authorization`). Every Java data-plane method accordingly takes a trailing `String actingUserToken` and applies `stub.withOption(ACTING_USER_TOKEN, token)` (`EntityCoordinator.java:269-273`). For .NET, `grep -rn "ActingUser" Iverson.Clients/DotNet/Iverson.Client.Core/*.cs` returns hits only inside `ActingUserMetadata.cs` — a per-call `Metadata` extension. **Consequence:** a `getSchema(String traceId)` signature carries an identity in TypeScript, Python and Go, but in Java and .NET it carries none, and the server returns an empty catalog on every call. Java's `getSchema` therefore takes `(String traceId, String actingUserToken)`, matching `EntityCoordinator`; .NET's `SchemaCatalogClient` takes an acting-user token provider as a constructor dependency |
 | A16 | Each suite has an ObjectMappingService mock-stub pattern | `SchemaRegistrarTests.cs`, `TestCoordinatorFactory.cs`, `SchemaRegistrarTest.java`, `schema-registrar.test.ts`, `test_auth.py`, `registrar_test.go` |
 | A17 | Generated proto types are already public/exported per client | Every client's `SchemaRegistrar` already builds and passes `SchemaRequest`/`TypeDescriptor` across its public API |
 | A18 | **Corrected.** Server tests reach the type mapping through methods, not the maps | `Iverson.Api.csproj:10-13` declares two `InternalsVisibleTo` attributes, but `ScalarTypeMap` (`SchemaBuilder.cs:233`) and `ArrayTypeOverrides` (`:250`) are `private static readonly` and therefore unreachable from tests. `ClrTypeToSql` (`:267`) is `internal static`, so the round-trip test drives the enum through the two methods instead — see §4 |
