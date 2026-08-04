@@ -83,6 +83,7 @@ Newly introduced by this plan and verified at plan-write time against `main@9ab3
 | P9 | Signature | .NET `SchemaRegistrar` takes `ObjectMappingService.ObjectMappingServiceClient`, and `SchemaCatalogClient` mirrors it | `SchemaRegistrar.cs:14-17` |
 | P10 | Signature | Each client's mapping stub member name | Python `self._mapping_stub` (`core.py:586`); TypeScript `IversonClient._mappingClient` (`core.ts:531`, **not** `:322`, which is `SchemaRegistrar`'s own field); Java `mappingStub` (`IversonClient.java:31`); Go exported `MappingStub` (`coordinator.go:67`) |
 | P11 | File path | Each client's test file exists | `Iverson.Client.Core.Tests/`, `SchemaRegistrarTest.java`, `schema-registrar.test.ts`, `test_auth.py`, `registrar_test.go` |
+| P21 | **Consumer impact** | **The suites' mock-stub pattern injects a stub into the class under test — which works for four clients and not for Java's `IversonClient`** | `SchemaRegistrarTest.java:30-34` mocks the gRPC stub and passes it to `SchemaRegistrar`, which *takes* one. `IversonClient.mappingStub` is `final` package-private (`IversonClient.java:31`), assigned from a `ManagedChannel` in all four constructors (`:40`, `:47`, `:60`, `:70`); none accepts a stub, and `grep -rn "new IversonClient" …/src/test/` returns nothing. Python escapes this because `client._mapping_stub` is assignable on the instance; TypeScript, Go and .NET all receive or expose their stub. Task 4 therefore adds a package-private test constructor |
 | P12 | Command | The three generation scripts are runnable here | `protoc` at `~/sdk/protoc/bin/protoc` (present, executable); `protoc-gen-go` and `protoc-gen-go-grpc` on PATH; `python3 -c "import grpc_tools"` succeeds; `protoc-gen-ts_proto` in TypeScript's `node_modules/.bin` |
 | P13 | Command | Build/test commands are valid | `dotnet build Iverson.Clients/DotNet/Iverson.Client.Contracts` (has `<Protobuf Include="../../Common/Proto/*.proto" GrpcServices="Both" />` at `:17`); `mvn -f Iverson.Clients/Java/pom.xml`; `dotnet test` on the two named test projects; `pytest`; `go test -count=1 ./...`; `npm test` / `npm run build` |
 | P14 | **Consumer impact** | **Inserting `actingUserTokenProvider` before the trailing `params Assembly[]` breaks neither caller** | Two callers exist. `Iverson.Client.Sample/Program.cs:13-15` passes `grpcEndpoint:` and `entityAssemblies:` — both named. `Iverson.LoadTest/Program.cs:119-122` passes three positionally (`grpcUrl`, `clientCredentials`, a provider) then `entityAssemblies:` named. The new parameter sits after `dataPlaneTokenProvider`, so both continue to bind as before |
@@ -311,14 +312,34 @@ git commit -m "add SchemaCatalogClient to the dotnet client"
     }
 ```
 
-- [ ] **Step 2: Add a test** following the suite's existing mock-stub pattern: the method issues `GetSchema` and surfaces the returned types.
+- [ ] **Step 2: Add a package-private test seam.**
+The suite mocks the gRPC stub and hands it to the class under test, but `IversonClient` builds its own stubs from a `ManagedChannel` and `mappingStub` is `final`. Add a fifth constructor beside the four public ones — package-private, so only the same-package tests can reach it:
 
-- [ ] **Step 3: Run the tests**
+```java
+    /**
+     * Test seam: builds a client over a pre-made mapping stub, bypassing channel construction.
+     * The channel and the other three stubs are null, so a client built this way serves only
+     * mapping calls and must not be closed.
+     */
+    IversonClient(ObjectMappingServiceGrpc.ObjectMappingServiceBlockingStub mappingStub) {
+        this.channel         = null;
+        this.mappingStub     = mappingStub;
+        this.persistenceStub = null;
+        this.retrievalStub   = null;
+        this.searchStub      = null;
+    }
+```
+
+`close()` dereferences `channel`, so the test must not call it — hence the Javadoc note. All five fields are `final` and must be assigned in every constructor.
+
+- [ ] **Step 3: Add a test** using that constructor with a Mockito-mocked `ObjectMappingServiceBlockingStub`, matching `SchemaRegistrarTest`'s style: the method issues `GetSchema` and surfaces the returned types.
+
+- [ ] **Step 4: Run the tests**
 ```bash
 mvn -f Iverson.Clients/Java/pom.xml test
 ```
 
-- [ ] **Step 4: Commit**
+- [ ] **Step 5: Commit**
 ```bash
 git add Iverson.Clients/Java/client/src/main/java/io/iverson/client/core/IversonClient.java Iverson.Clients/Java/client/src/test/java/io/iverson/client/core/SchemaRegistrarTest.java
 git commit -m "add getSchema to the java client"
