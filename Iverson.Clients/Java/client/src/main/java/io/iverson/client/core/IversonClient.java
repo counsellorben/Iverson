@@ -81,7 +81,7 @@ public final class IversonClient implements AutoCloseable {
     /**
      * Test seam: builds a client over a pre-made mapping stub, bypassing channel construction.
      * The channel and the other three stubs are null, so a client built this way serves only
-     * mapping calls and must not be closed.
+     * mapping calls; {@link #close()} is a no-op for it.
      */
     IversonClient(ObjectMappingServiceGrpc.ObjectMappingServiceBlockingStub mappingStub) {
         this.channel         = null;
@@ -92,16 +92,44 @@ public final class IversonClient implements AutoCloseable {
     }
 
     /**
-     * Retrieves the tenant's authorized schema catalog.
+     * Retrieves the schema catalog of the types the acting user is authorized to read.
+     *
+     * <p>The acting-user token travels as a per-call option consumed by
+     * {@link OAuth2ClientCredentials} — the {@link CallCredentials} given to the constructor are
+     * the service's own client-credentials token and do <em>not</em> identify an acting user. This
+     * mirrors {@code EntityCoordinator}'s data-plane methods, which take the same trailing
+     * parameter.
+     *
+     * <p>The catalog lists precisely the types the caller can actually query, so an empty result is
+     * a normal authorization outcome, not an error. It means every registered type was denied for
+     * this caller. The usual causes are: a null {@code actingUserToken}; an acting user with no
+     * {@code tenant_id} claim; registered types that declare no authorization rules; or types that
+     * declare no tenant field. All four make a type unreadable through every RPC, not just this one.
+     *
+     * @param actingUserToken the end-user access token to act as; may be null, which yields an
+     *                        empty catalog.
      */
-    public List<SchemaType> getSchema(String traceId) {
-        GetSchemaResponse response = mappingStub.getSchema(
+    public List<SchemaType> getSchema(String traceId, String actingUserToken) {
+        GetSchemaResponse response = stubFor(actingUserToken).getSchema(
             GetSchemaRequest.newBuilder().setTraceId(traceId).build());
         return response.getTypesList();
     }
 
+    /**
+     * Returns the mapping stub to invoke, attaching the acting-user token as a call option
+     * (consumed by {@link OAuth2ClientCredentials}) when one is given.
+     */
+    private ObjectMappingServiceGrpc.ObjectMappingServiceBlockingStub stubFor(String actingUserToken) {
+        return actingUserToken != null
+            ? mappingStub.withOption(OAuth2ClientCredentials.ACTING_USER_TOKEN, actingUserToken)
+            : mappingStub;
+    }
+
     @Override
     public void close() throws InterruptedException {
-        channel.shutdown().awaitTermination(5, TimeUnit.SECONDS);
+        // Null under the package-private test-seam constructor, which builds no channel.
+        if (channel != null) {
+            channel.shutdown().awaitTermination(5, TimeUnit.SECONDS);
+        }
     }
 }

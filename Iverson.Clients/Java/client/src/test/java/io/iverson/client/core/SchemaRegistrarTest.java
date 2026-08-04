@@ -1,5 +1,11 @@
 package io.iverson.client.core;
 
+import io.grpc.CallOptions;
+import io.grpc.Channel;
+import io.grpc.ClientCall;
+import io.grpc.Metadata;
+import io.grpc.MethodDescriptor;
+import io.grpc.Status;
 import io.iverson.client.annotations.*;
 import iverson.ObjectMapping;
 import iverson.ObjectMapping.ClrType;
@@ -738,7 +744,7 @@ class SchemaRegistrarTest {
         when(mockStub.getSchema(any())).thenReturn(response);
 
         IversonClient client = new IversonClient(mockStub);
-        List<SchemaType> types = client.getSchema("trace-123");
+        List<SchemaType> types = client.getSchema("trace-123", null);
 
         assertEquals(1, types.size());
         assertEquals("Article", types.get(0).getName());
@@ -746,6 +752,79 @@ class SchemaRegistrarTest {
         ArgumentCaptor<GetSchemaRequest> captor = ArgumentCaptor.forClass(GetSchemaRequest.class);
         verify(mockStub).getSchema(captor.capture());
         assertEquals("trace-123", captor.getValue().getTraceId());
+    }
+
+    /**
+     * Channel that answers a canned GetSchemaResponse and records the {@link CallOptions} the
+     * stub actually invoked with. A Mockito stub cannot serve here: {@code withOption} is final on
+     * {@code AbstractStub} and a mock answers regardless of call options, so it would pass even
+     * when the acting-user option is never attached — which is exactly the defect being pinned.
+     */
+    private static final class CapturingChannel extends Channel {
+        CallOptions capturedOptions;
+        private final GetSchemaResponse response;
+
+        CapturingChannel(GetSchemaResponse response) { this.response = response; }
+
+        @Override
+        public String authority() { return "capturing-channel"; }
+
+        @Override
+        @SuppressWarnings("unchecked")
+        public <ReqT, RespT> ClientCall<ReqT, RespT> newCall(
+                MethodDescriptor<ReqT, RespT> method, CallOptions callOptions) {
+            capturedOptions = callOptions;
+            return new ClientCall<ReqT, RespT>() {
+                private Listener<RespT> listener;
+                @Override public void start(Listener<RespT> responseListener, Metadata headers) {
+                    this.listener = responseListener;
+                }
+                @Override public void request(int numMessages) { }
+                @Override public void cancel(String message, Throwable cause) { }
+                @Override public void sendMessage(ReqT message) { }
+                @Override public void halfClose() {
+                    listener.onMessage((RespT) response);
+                    listener.onClose(Status.OK, new Metadata());
+                }
+            };
+        }
+    }
+
+    @Test
+    void getSchema_withActingUserToken_attachesTheActingUserCallOption() {
+        CapturingChannel channel = new CapturingChannel(GetSchemaResponse.newBuilder()
+            .addTypes(SchemaType.newBuilder().setName("Article").build())
+            .build());
+        IversonClient client = new IversonClient(
+            ObjectMappingServiceGrpc.newBlockingStub(channel));
+
+        List<SchemaType> types = client.getSchema("trace-123", "acting-user-jwt");
+
+        assertEquals(1, types.size());
+        assertNotNull(channel.capturedOptions, "the stub never issued a call");
+        assertEquals(
+            "acting-user-jwt",
+            channel.capturedOptions.getOption(OAuth2ClientCredentials.ACTING_USER_TOKEN),
+            "getSchema must attach the acting-user token as a call option, or "
+                + "OAuth2ClientCredentials never emits the x-acting-user-authorization header");
+    }
+
+    @Test
+    void getSchema_withoutActingUserToken_leavesTheCallOptionUnset() {
+        CapturingChannel channel = new CapturingChannel(GetSchemaResponse.getDefaultInstance());
+        IversonClient client = new IversonClient(
+            ObjectMappingServiceGrpc.newBlockingStub(channel));
+
+        client.getSchema("trace-123", null);
+
+        assertNull(channel.capturedOptions.getOption(OAuth2ClientCredentials.ACTING_USER_TOKEN));
+    }
+
+    @Test
+    void close_onTestSeamClient_withNoChannel_doesNotThrow() {
+        // IversonClient is AutoCloseable and documented for try-with-resources, so the
+        // channel-less constructor must not NPE on close.
+        assertDoesNotThrow(() -> new IversonClient(mockStub).close());
     }
 
     @Test
