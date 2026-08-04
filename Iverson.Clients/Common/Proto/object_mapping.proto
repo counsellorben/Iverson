@@ -12,6 +12,7 @@ service ObjectMappingService {
     rpc Update         (MappingWriteRequest)  returns (MappingResponse);
     rpc Delete         (MappingDeleteRequest) returns (MappingDeleteResponse);
     rpc RegisterSchema (SchemaRequest)        returns (SchemaResponse);
+    rpc GetSchema      (GetSchemaRequest)     returns (GetSchemaResponse);
 }
 
 // ---------------------------------------------------------------------------
@@ -111,6 +112,50 @@ message SchemaResponse {
     string          trace_id    = 2;
     string          error       = 3;
     repeated string registered  = 4;  // type names that were created or updated
+}
+
+// ---------------------------------------------------------------------------
+// Schema retrieval — agent-facing discovery of queryable types and fields.
+// ---------------------------------------------------------------------------
+
+message GetSchemaRequest  { string trace_id = 1; }
+message GetSchemaResponse { repeated SchemaType types = 1; }
+
+message SchemaType {
+    string                  name        = 1;
+    string                  description = 2;
+    repeated SchemaField    fields      = 3;
+    repeated SchemaRelation relations   = 4;
+}
+
+message SchemaField {
+    string  name             = 1;
+    string  description      = 2;
+    ClrType clr_type         = 3;
+    bool    is_array         = 4;
+    bool    is_key           = 5;
+    bool    is_nullable      = 6;
+    bool    is_metadata      = 7;
+    bool    is_search_key    = 8;
+    int32   search_key_order = 9;
+    bool    is_embedding     = 10;
+    bool    is_chunk         = 11;
+    repeated SchemaEnrichmentKind enrichment = 12;
+}
+
+message SchemaRelation {
+    string       property_name = 1;
+    RelationKind kind          = 2;
+    string       related_type  = 3;
+    string       foreign_key   = 4;
+}
+
+enum SchemaEnrichmentKind {
+    // Required zero value (proto3); never emitted — an empty `enrichment` list is "none".
+    ENRICHMENT_NONE      = 0;
+    ENRICHMENT_SUMMARY   = 1;
+    ENRICHMENT_KEYWORDS  = 2;
+    ENRICHMENT_EXTRACTED = 3;
 }
 
 // ---------------------------------------------------------------------------

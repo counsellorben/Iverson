@@ -24,6 +24,7 @@ const (
 	ObjectMappingService_Update_FullMethodName         = "/iverson.ObjectMappingService/Update"
 	ObjectMappingService_Delete_FullMethodName         = "/iverson.ObjectMappingService/Delete"
 	ObjectMappingService_RegisterSchema_FullMethodName = "/iverson.ObjectMappingService/RegisterSchema"
+	ObjectMappingService_GetSchema_FullMethodName      = "/iverson.ObjectMappingService/GetSchema"
 )
 
 // ObjectMappingServiceClient is the client API for ObjectMappingService service.
@@ -38,6 +39,7 @@ type ObjectMappingServiceClient interface {
 	Update(ctx context.Context, in *MappingWriteRequest, opts ...grpc.CallOption) (*MappingResponse, error)
 	Delete(ctx context.Context, in *MappingDeleteRequest, opts ...grpc.CallOption) (*MappingDeleteResponse, error)
 	RegisterSchema(ctx context.Context, in *SchemaRequest, opts ...grpc.CallOption) (*SchemaResponse, error)
+	GetSchema(ctx context.Context, in *GetSchemaRequest, opts ...grpc.CallOption) (*GetSchemaResponse, error)
 }
 
 type objectMappingServiceClient struct {
@@ -98,6 +100,16 @@ func (c *objectMappingServiceClient) RegisterSchema(ctx context.Context, in *Sch
 	return out, nil
 }
 
+func (c *objectMappingServiceClient) GetSchema(ctx context.Context, in *GetSchemaRequest, opts ...grpc.CallOption) (*GetSchemaResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetSchemaResponse)
+	err := c.cc.Invoke(ctx, ObjectMappingService_GetSchema_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // ObjectMappingServiceServer is the server API for ObjectMappingService service.
 // All implementations must embed UnimplementedObjectMappingServiceServer
 // for forward compatibility.
@@ -110,6 +122,7 @@ type ObjectMappingServiceServer interface {
 	Update(context.Context, *MappingWriteRequest) (*MappingResponse, error)
 	Delete(context.Context, *MappingDeleteRequest) (*MappingDeleteResponse, error)
 	RegisterSchema(context.Context, *SchemaRequest) (*SchemaResponse, error)
+	GetSchema(context.Context, *GetSchemaRequest) (*GetSchemaResponse, error)
 	mustEmbedUnimplementedObjectMappingServiceServer()
 }
 
@@ -134,6 +147,9 @@ func (UnimplementedObjectMappingServiceServer) Delete(context.Context, *MappingD
 }
 func (UnimplementedObjectMappingServiceServer) RegisterSchema(context.Context, *SchemaRequest) (*SchemaResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method RegisterSchema not implemented")
+}
+func (UnimplementedObjectMappingServiceServer) GetSchema(context.Context, *GetSchemaRequest) (*GetSchemaResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method GetSchema not implemented")
 }
 func (UnimplementedObjectMappingServiceServer) mustEmbedUnimplementedObjectMappingServiceServer() {}
 func (UnimplementedObjectMappingServiceServer) testEmbeddedByValue()                              {}
@@ -246,6 +262,24 @@ func _ObjectMappingService_RegisterSchema_Handler(srv interface{}, ctx context.C
 	return interceptor(ctx, in, info, handler)
 }
 
+func _ObjectMappingService_GetSchema_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetSchemaRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ObjectMappingServiceServer).GetSchema(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ObjectMappingService_GetSchema_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ObjectMappingServiceServer).GetSchema(ctx, req.(*GetSchemaRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // ObjectMappingService_ServiceDesc is the grpc.ServiceDesc for ObjectMappingService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -272,6 +306,10 @@ var ObjectMappingService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "RegisterSchema",
 			Handler:    _ObjectMappingService_RegisterSchema_Handler,
+		},
+		{
+			MethodName: "GetSchema",
+			Handler:    _ObjectMappingService_GetSchema_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

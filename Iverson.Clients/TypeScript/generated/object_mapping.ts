@@ -142,6 +142,52 @@ export function clrTypeToJSON(object: ClrType): string {
   }
 }
 
+export enum SchemaEnrichmentKind {
+  /** ENRICHMENT_NONE - Required zero value (proto3); never emitted — an empty `enrichment` list is "none". */
+  ENRICHMENT_NONE = 0,
+  ENRICHMENT_SUMMARY = 1,
+  ENRICHMENT_KEYWORDS = 2,
+  ENRICHMENT_EXTRACTED = 3,
+  UNRECOGNIZED = -1,
+}
+
+export function schemaEnrichmentKindFromJSON(object: any): SchemaEnrichmentKind {
+  switch (object) {
+    case 0:
+    case "ENRICHMENT_NONE":
+      return SchemaEnrichmentKind.ENRICHMENT_NONE;
+    case 1:
+    case "ENRICHMENT_SUMMARY":
+      return SchemaEnrichmentKind.ENRICHMENT_SUMMARY;
+    case 2:
+    case "ENRICHMENT_KEYWORDS":
+      return SchemaEnrichmentKind.ENRICHMENT_KEYWORDS;
+    case 3:
+    case "ENRICHMENT_EXTRACTED":
+      return SchemaEnrichmentKind.ENRICHMENT_EXTRACTED;
+    case -1:
+    case "UNRECOGNIZED":
+    default:
+      return SchemaEnrichmentKind.UNRECOGNIZED;
+  }
+}
+
+export function schemaEnrichmentKindToJSON(object: SchemaEnrichmentKind): string {
+  switch (object) {
+    case SchemaEnrichmentKind.ENRICHMENT_NONE:
+      return "ENRICHMENT_NONE";
+    case SchemaEnrichmentKind.ENRICHMENT_SUMMARY:
+      return "ENRICHMENT_SUMMARY";
+    case SchemaEnrichmentKind.ENRICHMENT_KEYWORDS:
+      return "ENRICHMENT_KEYWORDS";
+    case SchemaEnrichmentKind.ENRICHMENT_EXTRACTED:
+      return "ENRICHMENT_EXTRACTED";
+    case SchemaEnrichmentKind.UNRECOGNIZED:
+    default:
+      return "UNRECOGNIZED";
+  }
+}
+
 export interface PropertyDescriptor {
   name: string;
   clrType: ClrType;
@@ -249,6 +295,43 @@ export interface SchemaResponse {
   error: string;
   /** type names that were created or updated */
   registered: string[];
+}
+
+export interface GetSchemaRequest {
+  traceId: string;
+}
+
+export interface GetSchemaResponse {
+  types: SchemaType[];
+}
+
+export interface SchemaType {
+  name: string;
+  description: string;
+  fields: SchemaField[];
+  relations: SchemaRelation[];
+}
+
+export interface SchemaField {
+  name: string;
+  description: string;
+  clrType: ClrType;
+  isArray: boolean;
+  isKey: boolean;
+  isNullable: boolean;
+  isMetadata: boolean;
+  isSearchKey: boolean;
+  searchKeyOrder: number;
+  isEmbedding: boolean;
+  isChunk: boolean;
+  enrichment: SchemaEnrichmentKind[];
+}
+
+export interface SchemaRelation {
+  propertyName: string;
+  kind: RelationKind;
+  relatedType: string;
+  foreignKey: string;
 }
 
 export interface MappingGetRequest {
@@ -1603,6 +1686,659 @@ export const SchemaResponse: MessageFns<SchemaResponse> = {
   },
 };
 
+function createBaseGetSchemaRequest(): GetSchemaRequest {
+  return { traceId: "" };
+}
+
+export const GetSchemaRequest: MessageFns<GetSchemaRequest> = {
+  encode(message: GetSchemaRequest, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.traceId !== "") {
+      writer.uint32(10).string(message.traceId);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): GetSchemaRequest {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseGetSchemaRequest();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.traceId = reader.string();
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): GetSchemaRequest {
+    return {
+      traceId: isSet(object.traceId)
+        ? globalThis.String(object.traceId)
+        : isSet(object.trace_id)
+        ? globalThis.String(object.trace_id)
+        : "",
+    };
+  },
+
+  toJSON(message: GetSchemaRequest): unknown {
+    const obj: any = {};
+    if (message.traceId !== "") {
+      obj.traceId = message.traceId;
+    }
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<GetSchemaRequest>, I>>(base?: I): GetSchemaRequest {
+    return GetSchemaRequest.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<GetSchemaRequest>, I>>(object: I): GetSchemaRequest {
+    const message = createBaseGetSchemaRequest();
+    message.traceId = object.traceId ?? "";
+    return message;
+  },
+};
+
+function createBaseGetSchemaResponse(): GetSchemaResponse {
+  return { types: [] };
+}
+
+export const GetSchemaResponse: MessageFns<GetSchemaResponse> = {
+  encode(message: GetSchemaResponse, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    for (const v of message.types) {
+      SchemaType.encode(v!, writer.uint32(10).fork()).join();
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): GetSchemaResponse {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseGetSchemaResponse();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.types.push(SchemaType.decode(reader, reader.uint32()));
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): GetSchemaResponse {
+    return {
+      types: globalThis.Array.isArray(object?.types) ? object.types.map((e: any) => SchemaType.fromJSON(e)) : [],
+    };
+  },
+
+  toJSON(message: GetSchemaResponse): unknown {
+    const obj: any = {};
+    if (message.types?.length) {
+      obj.types = message.types.map((e) => SchemaType.toJSON(e));
+    }
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<GetSchemaResponse>, I>>(base?: I): GetSchemaResponse {
+    return GetSchemaResponse.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<GetSchemaResponse>, I>>(object: I): GetSchemaResponse {
+    const message = createBaseGetSchemaResponse();
+    message.types = object.types?.map((e) => SchemaType.fromPartial(e)) || [];
+    return message;
+  },
+};
+
+function createBaseSchemaType(): SchemaType {
+  return { name: "", description: "", fields: [], relations: [] };
+}
+
+export const SchemaType: MessageFns<SchemaType> = {
+  encode(message: SchemaType, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.name !== "") {
+      writer.uint32(10).string(message.name);
+    }
+    if (message.description !== "") {
+      writer.uint32(18).string(message.description);
+    }
+    for (const v of message.fields) {
+      SchemaField.encode(v!, writer.uint32(26).fork()).join();
+    }
+    for (const v of message.relations) {
+      SchemaRelation.encode(v!, writer.uint32(34).fork()).join();
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): SchemaType {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseSchemaType();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.name = reader.string();
+          continue;
+        }
+        case 2: {
+          if (tag !== 18) {
+            break;
+          }
+
+          message.description = reader.string();
+          continue;
+        }
+        case 3: {
+          if (tag !== 26) {
+            break;
+          }
+
+          message.fields.push(SchemaField.decode(reader, reader.uint32()));
+          continue;
+        }
+        case 4: {
+          if (tag !== 34) {
+            break;
+          }
+
+          message.relations.push(SchemaRelation.decode(reader, reader.uint32()));
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): SchemaType {
+    return {
+      name: isSet(object.name) ? globalThis.String(object.name) : "",
+      description: isSet(object.description) ? globalThis.String(object.description) : "",
+      fields: globalThis.Array.isArray(object?.fields) ? object.fields.map((e: any) => SchemaField.fromJSON(e)) : [],
+      relations: globalThis.Array.isArray(object?.relations)
+        ? object.relations.map((e: any) => SchemaRelation.fromJSON(e))
+        : [],
+    };
+  },
+
+  toJSON(message: SchemaType): unknown {
+    const obj: any = {};
+    if (message.name !== "") {
+      obj.name = message.name;
+    }
+    if (message.description !== "") {
+      obj.description = message.description;
+    }
+    if (message.fields?.length) {
+      obj.fields = message.fields.map((e) => SchemaField.toJSON(e));
+    }
+    if (message.relations?.length) {
+      obj.relations = message.relations.map((e) => SchemaRelation.toJSON(e));
+    }
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<SchemaType>, I>>(base?: I): SchemaType {
+    return SchemaType.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<SchemaType>, I>>(object: I): SchemaType {
+    const message = createBaseSchemaType();
+    message.name = object.name ?? "";
+    message.description = object.description ?? "";
+    message.fields = object.fields?.map((e) => SchemaField.fromPartial(e)) || [];
+    message.relations = object.relations?.map((e) => SchemaRelation.fromPartial(e)) || [];
+    return message;
+  },
+};
+
+function createBaseSchemaField(): SchemaField {
+  return {
+    name: "",
+    description: "",
+    clrType: 0,
+    isArray: false,
+    isKey: false,
+    isNullable: false,
+    isMetadata: false,
+    isSearchKey: false,
+    searchKeyOrder: 0,
+    isEmbedding: false,
+    isChunk: false,
+    enrichment: [],
+  };
+}
+
+export const SchemaField: MessageFns<SchemaField> = {
+  encode(message: SchemaField, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.name !== "") {
+      writer.uint32(10).string(message.name);
+    }
+    if (message.description !== "") {
+      writer.uint32(18).string(message.description);
+    }
+    if (message.clrType !== 0) {
+      writer.uint32(24).int32(message.clrType);
+    }
+    if (message.isArray !== false) {
+      writer.uint32(32).bool(message.isArray);
+    }
+    if (message.isKey !== false) {
+      writer.uint32(40).bool(message.isKey);
+    }
+    if (message.isNullable !== false) {
+      writer.uint32(48).bool(message.isNullable);
+    }
+    if (message.isMetadata !== false) {
+      writer.uint32(56).bool(message.isMetadata);
+    }
+    if (message.isSearchKey !== false) {
+      writer.uint32(64).bool(message.isSearchKey);
+    }
+    if (message.searchKeyOrder !== 0) {
+      writer.uint32(72).int32(message.searchKeyOrder);
+    }
+    if (message.isEmbedding !== false) {
+      writer.uint32(80).bool(message.isEmbedding);
+    }
+    if (message.isChunk !== false) {
+      writer.uint32(88).bool(message.isChunk);
+    }
+    writer.uint32(98).fork();
+    for (const v of message.enrichment) {
+      writer.int32(v);
+    }
+    writer.join();
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): SchemaField {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseSchemaField();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.name = reader.string();
+          continue;
+        }
+        case 2: {
+          if (tag !== 18) {
+            break;
+          }
+
+          message.description = reader.string();
+          continue;
+        }
+        case 3: {
+          if (tag !== 24) {
+            break;
+          }
+
+          message.clrType = reader.int32() as any;
+          continue;
+        }
+        case 4: {
+          if (tag !== 32) {
+            break;
+          }
+
+          message.isArray = reader.bool();
+          continue;
+        }
+        case 5: {
+          if (tag !== 40) {
+            break;
+          }
+
+          message.isKey = reader.bool();
+          continue;
+        }
+        case 6: {
+          if (tag !== 48) {
+            break;
+          }
+
+          message.isNullable = reader.bool();
+          continue;
+        }
+        case 7: {
+          if (tag !== 56) {
+            break;
+          }
+
+          message.isMetadata = reader.bool();
+          continue;
+        }
+        case 8: {
+          if (tag !== 64) {
+            break;
+          }
+
+          message.isSearchKey = reader.bool();
+          continue;
+        }
+        case 9: {
+          if (tag !== 72) {
+            break;
+          }
+
+          message.searchKeyOrder = reader.int32();
+          continue;
+        }
+        case 10: {
+          if (tag !== 80) {
+            break;
+          }
+
+          message.isEmbedding = reader.bool();
+          continue;
+        }
+        case 11: {
+          if (tag !== 88) {
+            break;
+          }
+
+          message.isChunk = reader.bool();
+          continue;
+        }
+        case 12: {
+          if (tag === 96) {
+            message.enrichment.push(reader.int32() as any);
+
+            continue;
+          }
+
+          if (tag === 98) {
+            const end2 = reader.uint32() + reader.pos;
+            while (reader.pos < end2) {
+              message.enrichment.push(reader.int32() as any);
+            }
+
+            continue;
+          }
+
+          break;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): SchemaField {
+    return {
+      name: isSet(object.name) ? globalThis.String(object.name) : "",
+      description: isSet(object.description) ? globalThis.String(object.description) : "",
+      clrType: isSet(object.clrType)
+        ? clrTypeFromJSON(object.clrType)
+        : isSet(object.clr_type)
+        ? clrTypeFromJSON(object.clr_type)
+        : 0,
+      isArray: isSet(object.isArray)
+        ? globalThis.Boolean(object.isArray)
+        : isSet(object.is_array)
+        ? globalThis.Boolean(object.is_array)
+        : false,
+      isKey: isSet(object.isKey)
+        ? globalThis.Boolean(object.isKey)
+        : isSet(object.is_key)
+        ? globalThis.Boolean(object.is_key)
+        : false,
+      isNullable: isSet(object.isNullable)
+        ? globalThis.Boolean(object.isNullable)
+        : isSet(object.is_nullable)
+        ? globalThis.Boolean(object.is_nullable)
+        : false,
+      isMetadata: isSet(object.isMetadata)
+        ? globalThis.Boolean(object.isMetadata)
+        : isSet(object.is_metadata)
+        ? globalThis.Boolean(object.is_metadata)
+        : false,
+      isSearchKey: isSet(object.isSearchKey)
+        ? globalThis.Boolean(object.isSearchKey)
+        : isSet(object.is_search_key)
+        ? globalThis.Boolean(object.is_search_key)
+        : false,
+      searchKeyOrder: isSet(object.searchKeyOrder)
+        ? globalThis.Number(object.searchKeyOrder)
+        : isSet(object.search_key_order)
+        ? globalThis.Number(object.search_key_order)
+        : 0,
+      isEmbedding: isSet(object.isEmbedding)
+        ? globalThis.Boolean(object.isEmbedding)
+        : isSet(object.is_embedding)
+        ? globalThis.Boolean(object.is_embedding)
+        : false,
+      isChunk: isSet(object.isChunk)
+        ? globalThis.Boolean(object.isChunk)
+        : isSet(object.is_chunk)
+        ? globalThis.Boolean(object.is_chunk)
+        : false,
+      enrichment: globalThis.Array.isArray(object?.enrichment)
+        ? object.enrichment.map((e: any) => schemaEnrichmentKindFromJSON(e))
+        : [],
+    };
+  },
+
+  toJSON(message: SchemaField): unknown {
+    const obj: any = {};
+    if (message.name !== "") {
+      obj.name = message.name;
+    }
+    if (message.description !== "") {
+      obj.description = message.description;
+    }
+    if (message.clrType !== 0) {
+      obj.clrType = clrTypeToJSON(message.clrType);
+    }
+    if (message.isArray !== false) {
+      obj.isArray = message.isArray;
+    }
+    if (message.isKey !== false) {
+      obj.isKey = message.isKey;
+    }
+    if (message.isNullable !== false) {
+      obj.isNullable = message.isNullable;
+    }
+    if (message.isMetadata !== false) {
+      obj.isMetadata = message.isMetadata;
+    }
+    if (message.isSearchKey !== false) {
+      obj.isSearchKey = message.isSearchKey;
+    }
+    if (message.searchKeyOrder !== 0) {
+      obj.searchKeyOrder = Math.round(message.searchKeyOrder);
+    }
+    if (message.isEmbedding !== false) {
+      obj.isEmbedding = message.isEmbedding;
+    }
+    if (message.isChunk !== false) {
+      obj.isChunk = message.isChunk;
+    }
+    if (message.enrichment?.length) {
+      obj.enrichment = message.enrichment.map((e) => schemaEnrichmentKindToJSON(e));
+    }
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<SchemaField>, I>>(base?: I): SchemaField {
+    return SchemaField.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<SchemaField>, I>>(object: I): SchemaField {
+    const message = createBaseSchemaField();
+    message.name = object.name ?? "";
+    message.description = object.description ?? "";
+    message.clrType = object.clrType ?? 0;
+    message.isArray = object.isArray ?? false;
+    message.isKey = object.isKey ?? false;
+    message.isNullable = object.isNullable ?? false;
+    message.isMetadata = object.isMetadata ?? false;
+    message.isSearchKey = object.isSearchKey ?? false;
+    message.searchKeyOrder = object.searchKeyOrder ?? 0;
+    message.isEmbedding = object.isEmbedding ?? false;
+    message.isChunk = object.isChunk ?? false;
+    message.enrichment = object.enrichment?.map((e) => e) || [];
+    return message;
+  },
+};
+
+function createBaseSchemaRelation(): SchemaRelation {
+  return { propertyName: "", kind: 0, relatedType: "", foreignKey: "" };
+}
+
+export const SchemaRelation: MessageFns<SchemaRelation> = {
+  encode(message: SchemaRelation, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.propertyName !== "") {
+      writer.uint32(10).string(message.propertyName);
+    }
+    if (message.kind !== 0) {
+      writer.uint32(16).int32(message.kind);
+    }
+    if (message.relatedType !== "") {
+      writer.uint32(26).string(message.relatedType);
+    }
+    if (message.foreignKey !== "") {
+      writer.uint32(34).string(message.foreignKey);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): SchemaRelation {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseSchemaRelation();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.propertyName = reader.string();
+          continue;
+        }
+        case 2: {
+          if (tag !== 16) {
+            break;
+          }
+
+          message.kind = reader.int32() as any;
+          continue;
+        }
+        case 3: {
+          if (tag !== 26) {
+            break;
+          }
+
+          message.relatedType = reader.string();
+          continue;
+        }
+        case 4: {
+          if (tag !== 34) {
+            break;
+          }
+
+          message.foreignKey = reader.string();
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): SchemaRelation {
+    return {
+      propertyName: isSet(object.propertyName)
+        ? globalThis.String(object.propertyName)
+        : isSet(object.property_name)
+        ? globalThis.String(object.property_name)
+        : "",
+      kind: isSet(object.kind) ? relationKindFromJSON(object.kind) : 0,
+      relatedType: isSet(object.relatedType)
+        ? globalThis.String(object.relatedType)
+        : isSet(object.related_type)
+        ? globalThis.String(object.related_type)
+        : "",
+      foreignKey: isSet(object.foreignKey)
+        ? globalThis.String(object.foreignKey)
+        : isSet(object.foreign_key)
+        ? globalThis.String(object.foreign_key)
+        : "",
+    };
+  },
+
+  toJSON(message: SchemaRelation): unknown {
+    const obj: any = {};
+    if (message.propertyName !== "") {
+      obj.propertyName = message.propertyName;
+    }
+    if (message.kind !== 0) {
+      obj.kind = relationKindToJSON(message.kind);
+    }
+    if (message.relatedType !== "") {
+      obj.relatedType = message.relatedType;
+    }
+    if (message.foreignKey !== "") {
+      obj.foreignKey = message.foreignKey;
+    }
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<SchemaRelation>, I>>(base?: I): SchemaRelation {
+    return SchemaRelation.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<SchemaRelation>, I>>(object: I): SchemaRelation {
+    const message = createBaseSchemaRelation();
+    message.propertyName = object.propertyName ?? "";
+    message.kind = object.kind ?? 0;
+    message.relatedType = object.relatedType ?? "";
+    message.foreignKey = object.foreignKey ?? "";
+    return message;
+  },
+};
+
 function createBaseMappingGetRequest(): MappingGetRequest {
   return { typeName: "", key: "", depth: 0, traceId: "" };
 }
@@ -2179,6 +2915,15 @@ export const ObjectMappingServiceService = {
     responseSerialize: (value: SchemaResponse): Buffer => Buffer.from(SchemaResponse.encode(value).finish()),
     responseDeserialize: (value: Buffer): SchemaResponse => SchemaResponse.decode(value),
   },
+  getSchema: {
+    path: "/iverson.ObjectMappingService/GetSchema" as const,
+    requestStream: false as const,
+    responseStream: false as const,
+    requestSerialize: (value: GetSchemaRequest): Buffer => Buffer.from(GetSchemaRequest.encode(value).finish()),
+    requestDeserialize: (value: Buffer): GetSchemaRequest => GetSchemaRequest.decode(value),
+    responseSerialize: (value: GetSchemaResponse): Buffer => Buffer.from(GetSchemaResponse.encode(value).finish()),
+    responseDeserialize: (value: Buffer): GetSchemaResponse => GetSchemaResponse.decode(value),
+  },
 } as const;
 
 export interface ObjectMappingServiceServer extends UntypedServiceImplementation {
@@ -2187,6 +2932,7 @@ export interface ObjectMappingServiceServer extends UntypedServiceImplementation
   update: handleUnaryCall<MappingWriteRequest, MappingResponse>;
   delete: handleUnaryCall<MappingDeleteRequest, MappingDeleteResponse>;
   registerSchema: handleUnaryCall<SchemaRequest, SchemaResponse>;
+  getSchema: handleUnaryCall<GetSchemaRequest, GetSchemaResponse>;
 }
 
 export interface ObjectMappingServiceClient extends Client {
@@ -2264,6 +3010,21 @@ export interface ObjectMappingServiceClient extends Client {
     metadata: Metadata,
     options: Partial<CallOptions>,
     callback: (error: ServiceError | null, response: SchemaResponse) => void,
+  ): ClientUnaryCall;
+  getSchema(
+    request: GetSchemaRequest,
+    callback: (error: ServiceError | null, response: GetSchemaResponse) => void,
+  ): ClientUnaryCall;
+  getSchema(
+    request: GetSchemaRequest,
+    metadata: Metadata,
+    callback: (error: ServiceError | null, response: GetSchemaResponse) => void,
+  ): ClientUnaryCall;
+  getSchema(
+    request: GetSchemaRequest,
+    metadata: Metadata,
+    options: Partial<CallOptions>,
+    callback: (error: ServiceError | null, response: GetSchemaResponse) => void,
   ): ClientUnaryCall;
 }
 

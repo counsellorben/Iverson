@@ -61,6 +61,11 @@ class ObjectMappingServiceStub:
                 request_serializer=object__mapping__pb2.SchemaRequest.SerializeToString,
                 response_deserializer=object__mapping__pb2.SchemaResponse.FromString,
                 _registered_method=True)
+        self.GetSchema = channel.unary_unary(
+                '/iverson.ObjectMappingService/GetSchema',
+                request_serializer=object__mapping__pb2.GetSchemaRequest.SerializeToString,
+                response_deserializer=object__mapping__pb2.GetSchemaResponse.FromString,
+                _registered_method=True)
 
 
 class ObjectMappingServiceServicer:
@@ -98,6 +103,12 @@ class ObjectMappingServiceServicer:
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def GetSchema(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
 
 def add_ObjectMappingServiceServicer_to_server(servicer, server):
     rpc_method_handlers = {
@@ -125,6 +136,11 @@ def add_ObjectMappingServiceServicer_to_server(servicer, server):
                     servicer.RegisterSchema,
                     request_deserializer=object__mapping__pb2.SchemaRequest.FromString,
                     response_serializer=object__mapping__pb2.SchemaResponse.SerializeToString,
+            ),
+            'GetSchema': grpc.unary_unary_rpc_method_handler(
+                    servicer.GetSchema,
+                    request_deserializer=object__mapping__pb2.GetSchemaRequest.FromString,
+                    response_serializer=object__mapping__pb2.GetSchemaResponse.SerializeToString,
             ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
@@ -264,6 +280,33 @@ class ObjectMappingService:
             '/iverson.ObjectMappingService/RegisterSchema',
             object__mapping__pb2.SchemaRequest.SerializeToString,
             object__mapping__pb2.SchemaResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def GetSchema(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/iverson.ObjectMappingService/GetSchema',
+            object__mapping__pb2.GetSchemaRequest.SerializeToString,
+            object__mapping__pb2.GetSchemaResponse.FromString,
             options,
             channel_credentials,
             insecure,
