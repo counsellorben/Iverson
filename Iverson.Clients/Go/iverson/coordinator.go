@@ -98,8 +98,12 @@ func (c *IversonClient) Close() error {
 }
 
 // GetSchema returns the catalog of registered types the calling identity may read.
-// Attach an acting user with WithActingUserToken(ctx, token) — without one the
-// server returns an empty catalog.
+// The catalog lists precisely the types the caller can actually query, so an empty
+// result is a normal authorization outcome, not an error. It means every registered
+// type was denied for this caller. The usual causes are: no acting user attached
+// (use WithActingUserToken(ctx, token)); the acting user has no tenant_id claim;
+// the registered types declare no authorization rules; or they declare no tenant
+// field. All four make a type unreadable through every RPC, not just this one.
 func (c *IversonClient) GetSchema(ctx context.Context, traceID string) ([]*pb.SchemaType, error) {
 	resp, err := c.MappingStub.GetSchema(ctx, &pb.GetSchemaRequest{TraceId: traceID})
 	if err != nil {

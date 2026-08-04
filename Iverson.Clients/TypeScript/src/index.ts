@@ -28,7 +28,10 @@ export {
     isIversonEntity,
 } from './annotations.js';
 
-export { ClrType } from '../generated/object_mapping.js';
+// Exported as values, not types: a consumer reading a SchemaField/SchemaRelation must compare
+// field.clrType, field.enrichment[] and relation.kind against these enums rather than hard-coding
+// the proto's numeric values.
+export { ClrType, SchemaEnrichmentKind, RelationKind } from '../generated/object_mapping.js';
 
 export type { SchemaType, SchemaField, SchemaRelation } from '../generated/object_mapping.js';
 
