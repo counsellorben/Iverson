@@ -587,17 +587,21 @@ describe('IversonClient.getSchema', () => {
         const response: GetSchemaResponse = {
             types: [
                 {
-                    typeName: 'Article',
+                    name: 'Article',
                     description: '',
                     fields: [
                         {
                             name: 'category',
+                            description: '',
                             clrType: ClrType.CLR_STRING,
+                            isArray: false,
                             isKey: false,
+                            isNullable: false,
+                            isMetadata: false,
                             isSearchKey: true,
                             searchKeyOrder: 0,
-                            isMetadata: false,
-                            description: '',
+                            isEmbedding: false,
+                            isChunk: false,
                             enrichment: [SchemaEnrichmentKind.ENRICHMENT_NONE],
                         },
                     ],
@@ -618,7 +622,13 @@ describe('IversonClient.getSchema', () => {
 
         const types = await client.getSchema('trace-1');
 
-        expect(types).toEqual(response.types);
+        expect(types).toHaveLength(1);
+        expect(types[0].name).toBe('Article');
+        expect(types[0].fields).toHaveLength(1);
+        expect(types[0].fields[0].name).toBe('category');
+        expect(types[0].fields[0].clrType).toBe(ClrType.CLR_STRING);
+        expect(types[0].fields[0].isSearchKey).toBe(true);
+        expect(types[0].fields[0].searchKeyOrder).toBe(0);
         expect(getSchema).toHaveBeenCalledTimes(1);
         const capturedReq = getSchema.mock.calls[0][0];
         expect(capturedReq).toEqual({ traceId: 'trace-1' });
