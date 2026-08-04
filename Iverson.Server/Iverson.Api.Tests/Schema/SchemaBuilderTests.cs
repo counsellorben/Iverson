@@ -420,4 +420,19 @@ public class SchemaBuilderTests
                 $"payload kind for array {clrType} should match the expected table");
         }
     }
+
+    [Fact]
+    public void SqlTypeToClr_RecoversEveryClrType_ScalarAndArray()
+    {
+        foreach (var clrType in Enum.GetValues<ClrType>())
+        {
+            var scalarSql = SchemaBuilder.ClrTypeToSql(clrType, isArray: false);
+            SchemaBuilder.SqlTypeToClr(scalarSql).Should().Be((clrType, false),
+                $"scalar SQL type for {clrType} should map back to ({clrType}, false)");
+
+            var arraySql = SchemaBuilder.ClrTypeToSql(clrType, isArray: true);
+            SchemaBuilder.SqlTypeToClr(arraySql).Should().Be((clrType, true),
+                $"array SQL type for {clrType} should map back to ({clrType}, true)");
+        }
+    }
 }

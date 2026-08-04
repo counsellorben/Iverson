@@ -286,6 +286,20 @@ internal static class SchemaBuilder
                 $"Unhandled {nameof(ClrType)} value — add an entry to {nameof(SchemaBuilder)}.{nameof(ScalarTypeMap)}.");
     }
 
+    // Inverse of ClrTypeToSql, for the GetSchema read path: a persisted ColumnDescriptor carries
+    // only the SQL type string, but the catalog reports clr_type + is_array. Built from the same
+    // two maps ClrTypeToSql reads, so the two cannot disagree.
+    private static readonly IReadOnlyDictionary<string, (ClrType Type, bool IsArray)> SqlTypeToClrMap =
+        ScalarTypeMap.Select(kv => (Sql: kv.Value.SqlType, Clr: kv.Key, IsArray: false))
+            .Concat(ArrayTypeOverrides.Select(kv => (Sql: kv.Value.SqlType, Clr: kv.Key, IsArray: true)))
+            .ToDictionary(x => x.Sql, x => (x.Clr, x.IsArray), StringComparer.OrdinalIgnoreCase);
+
+    internal static (ClrType Type, bool IsArray) SqlTypeToClr(string sqlType) =>
+        SqlTypeToClrMap.TryGetValue(sqlType, out var mapping)
+            ? mapping
+            : throw new ArgumentOutOfRangeException(nameof(sqlType), sqlType,
+                $"Unhandled SQL type — add an entry to {nameof(SchemaBuilder)}.{nameof(ScalarTypeMap)}.");
+
     internal static string ClrTypeToEngagementType(string sqlType) =>
         SqlTypeMap.TryGetValue(sqlType, out var mapping) ? mapping.StarRocksType : "STRING";
 

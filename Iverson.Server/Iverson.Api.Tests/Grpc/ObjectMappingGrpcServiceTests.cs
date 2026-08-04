@@ -251,6 +251,107 @@ public class ObjectMappingGrpcServiceTests
             Arg.Any<Func<object, Exception?, string>>());
     }
 
+    // ── GetSchema ─────────────────────────────────────────────────────────────
+
+    [Fact]
+    public async Task GetSchema_ForUnrestrictedCaller_ReturnsAllTypesWithAllFields()
+    {
+        await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
+        await _registry.RegisterAsync(SchemaFixtures.ArticleSchema());
+
+        var response = await _sut.GetSchema(new GetSchemaRequest(), MakeContext());
+
+        response.Types_.Select(t => t.Name).Should().BeEquivalentTo(new[] { "Author", "Article" });
+        var author = response.Types_.Single(t => t.Name == "Author");
+        author.Fields.Select(f => f.Name).Should().BeEquivalentTo(new[] { "Id", "Name", "Bio" });
+        var article = response.Types_.Single(t => t.Name == "Article");
+        article.Fields.Select(f => f.Name).Should().BeEquivalentTo(new[] { "Id", "Title", "Body" });
+    }
+
+    [Fact]
+    public async Task GetSchema_WithDeniedType_OmitsItEntirely()
+    {
+        // No RowPermission matches "test-bypass" and there's no OwnerField — the evaluator
+        // denies this type outright, so its name must never appear in the response.
+        var denied = SchemaFixtures.AuthorSchema() with
+        {
+            Authorization = new Iverson.Api.Schema.AuthorizationRules(
+                null,
+                new List<Iverson.Api.Schema.RowPermission> { new("some-other-role", true, true, true) },
+                new List<Iverson.Api.Schema.FieldPermission>())
+        };
+        await _registry.RegisterAsync(denied);
+
+        var response = await _sut.GetSchema(new GetSchemaRequest(), MakeContext());
+
+        response.Types_.Select(t => t.Name).Should().NotContain("Author");
+    }
+
+    [Fact]
+    public async Task GetSchema_WithRestrictedFieldPermission_OmitsFieldAndItsDescription()
+    {
+        var schema = SchemaFixtures.AuthorSchema() with
+        {
+            FieldDescriptions = new Dictionary<string, string> { ["Bio"] = "A short biography." },
+            Authorization = new Iverson.Api.Schema.AuthorizationRules(
+                null,
+                new List<Iverson.Api.Schema.RowPermission> { new("test-bypass", true, true, true) },
+                new List<Iverson.Api.Schema.FieldPermission>
+                {
+                    new("Bio", new List<string> { "premium" }, new List<string>())
+                })
+        };
+        await _registry.RegisterAsync(schema);
+
+        var response = await _sut.GetSchema(new GetSchemaRequest(), MakeContext());
+
+        var author = response.Types_.Single(t => t.Name == "Author");
+        author.Fields.Select(f => f.Name).Should().NotContain("Bio");
+
+        // Asserted separately from the field-list check above: the excluded field's
+        // description leaking anywhere in the response would itself be a disclosure.
+        author.Fields.Select(f => f.Description).Should().NotContain("A short biography.");
+    }
+
+    [Fact]
+    public async Task GetSchema_WithRelationToOmittedType_DropsTheRelation()
+    {
+        // Article relates to Author; only Article is registered, so the evaluator never even
+        // considers Author — it simply doesn't survive pass one, and the relation pointing at
+        // it must be dropped in pass two.
+        await _registry.RegisterAsync(SchemaFixtures.ArticleSchema());
+
+        var response = await _sut.GetSchema(new GetSchemaRequest(), MakeContext());
+
+        var article = response.Types_.Single(t => t.Name == "Article");
+        article.Relations.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task GetSchema_ComposesMultipleFlagsAndEnrichmentKinds_OnASingleField()
+    {
+        var schema = SchemaFixtures.AuthorSchema() with
+        {
+            MetadataColumns  = ["Name"],
+            SearchKeyColumns = ["Name"],
+            EnrichmentTargets =
+            [
+                new EnrichmentTarget("Name", EnrichmentKind.Summary, null),
+                new EnrichmentTarget("Name", EnrichmentKind.Keywords, null)
+            ]
+        };
+        await _registry.RegisterAsync(schema);
+
+        var response = await _sut.GetSchema(new GetSchemaRequest(), MakeContext());
+
+        var nameField = response.Types_.Single(t => t.Name == "Author").Fields.Single(f => f.Name == "Name");
+        nameField.IsMetadata.Should().BeTrue();
+        nameField.IsSearchKey.Should().BeTrue();
+        nameField.SearchKeyOrder.Should().Be(0);
+        nameField.Enrichment.Should().BeEquivalentTo(
+            new[] { SchemaEnrichmentKind.EnrichmentSummary, SchemaEnrichmentKind.EnrichmentKeywords });
+    }
+
     // ── Post ──────────────────────────────────────────────────────────────────
 
     [Fact]

@@ -7,6 +7,8 @@ using Iverson.Client.Contracts;
 using Iverson.Events;
 using Iverson.Sql;
 using Microsoft.AspNetCore.Authorization;
+using ContractsRelationKind = Iverson.Client.Contracts.RelationKind;
+using SchemaRelationKind    = Iverson.Api.Schema.RelationKind;
 
 namespace Iverson.Api.Grpc;
 
@@ -54,6 +56,105 @@ public sealed class ObjectMappingGrpcService(
             TraceId    = request.TraceId,
             Registered = { registered }
         };
+    }
+
+    // No [Authorize] here — GetSchema is discovery, meant to be reachable by any authenticated
+    // caller. It inherits the ambient RequireAuthenticatedUser() fallback policy.
+    public override Task<GetSchemaResponse> GetSchema(
+        GetSchemaRequest request,
+        ServerCallContext context)
+    {
+        // Two-pass: pass one decides which types survive (row-level denial, then an empty
+        // authorized field set), pass two emits relations, dropping any whose related_type
+        // did not survive pass one — that cross-type check can't be made until every type has
+        // been evaluated.
+        var survivors = new List<(SchemaDescriptor Schema, List<SchemaField> Fields)>();
+        var survivingNames = new HashSet<string>(StringComparer.Ordinal);
+
+        foreach (var schema in _registry.All.Values)
+        {
+            var decision = _authEvaluator.Evaluate(schema, _actingUserAccessor.ActingUser, AuthorizationAction.Read);
+            if (decision.Denied)
+                continue;
+
+            IEnumerable<ColumnDescriptor> candidates = new[] { schema.KeyColumn }.Concat(schema.ScalarColumns);
+            if (decision.AllowedFields is not null)
+                candidates = candidates.Where(c => decision.AllowedFields.Contains(c.Name));
+
+            var fields = candidates.Select(c => ProjectField(c, schema)).ToList();
+            if (fields.Count == 0)
+                continue; // Fail-closed guard; the real evaluator always keeps the key column.
+
+            survivors.Add((schema, fields));
+            survivingNames.Add(schema.TypeName);
+        }
+
+        var response = new GetSchemaResponse();
+        foreach (var (schema, fields) in survivors)
+        {
+            var schemaType = new SchemaType
+            {
+                Name        = schema.TypeName,
+                Description = schema.Description ?? string.Empty
+            };
+            schemaType.Fields.AddRange(fields);
+            schemaType.Relations.AddRange(
+                schema.Relations
+                    .Where(r => survivingNames.Contains(r.RelatedTypeName))
+                    .Select(r => new SchemaRelation
+                    {
+                        PropertyName = r.PropertyName,
+                        Kind = r.Kind switch
+                        {
+                            SchemaRelationKind.OneToOne   => ContractsRelationKind.OneToOne,
+                            SchemaRelationKind.OneToMany  => ContractsRelationKind.OneToMany,
+                            SchemaRelationKind.ManyToOne  => ContractsRelationKind.ManyToOne,
+                            SchemaRelationKind.ManyToMany => ContractsRelationKind.ManyToMany,
+                            _ => throw new ArgumentOutOfRangeException(nameof(r.Kind), r.Kind,
+                                $"Unhandled {nameof(SchemaRelationKind)} value — add a case above.")
+                        },
+                        RelatedType = r.RelatedTypeName,
+                        ForeignKey  = r.ForeignKey
+                    }));
+            response.Types_.Add(schemaType);
+        }
+
+        return Task.FromResult(response);
+    }
+
+    private static SchemaField ProjectField(ColumnDescriptor col, SchemaDescriptor schema)
+    {
+        var (clrType, isArray) = SchemaBuilder.SqlTypeToClr(col.SqlType);
+        var searchKeyOrder = schema.SearchKeyColumns.IndexOf(col.Name);
+
+        var field = new SchemaField
+        {
+            Name           = col.Name,
+            Description    = schema.FieldDescriptions.TryGetValue(col.Name, out var desc) ? desc : string.Empty,
+            ClrType        = clrType,
+            IsArray        = isArray,
+            IsKey          = col.Name == schema.KeyColumn.Name,
+            IsNullable     = col.IsNullable,
+            IsMetadata     = schema.MetadataColumns.Contains(col.Name),
+            IsSearchKey    = searchKeyOrder >= 0,
+            SearchKeyOrder = searchKeyOrder >= 0 ? searchKeyOrder : 0,
+            IsEmbedding    = schema.VectorFields.Any(v => v.PropertyName == col.Name),
+            IsChunk        = schema.ChunkFields.Any(c => c.PropertyName == col.Name)
+        };
+
+        field.Enrichment.AddRange(
+            schema.EnrichmentTargets
+                .Where(t => t.ColumnName == col.Name)
+                .Select(t => t.Kind switch
+                {
+                    EnrichmentKind.Summary   => SchemaEnrichmentKind.EnrichmentSummary,
+                    EnrichmentKind.Keywords  => SchemaEnrichmentKind.EnrichmentKeywords,
+                    EnrichmentKind.Extracted => SchemaEnrichmentKind.EnrichmentExtracted,
+                    _ => throw new ArgumentOutOfRangeException(nameof(t.Kind), t.Kind,
+                        $"Unhandled {nameof(EnrichmentKind)} value — add a case above.")
+                }));
+
+        return field;
     }
 
     // ── CRUD ──────────────────────────────────────────────────────────────────
