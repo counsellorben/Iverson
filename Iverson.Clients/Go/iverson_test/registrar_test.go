@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"google.golang.org/grpc"
+
 	pb "github.com/iverson/clients/go/generated"
 	"github.com/iverson/clients/go/iverson"
 )
@@ -25,6 +27,45 @@ func (m *mockMappingClient) RegisterSchema(_ context.Context, req *pb.SchemaRequ
 		return nil, m.err
 	}
 	return m.response, nil
+}
+
+// mockObjectMappingServiceClient is a full pb.ObjectMappingServiceClient mock, needed
+// because IversonClient.GetSchema calls through the exported MappingStub field, whose
+// type is the full generated interface (not the narrower MappingClient interface above
+// used by SchemaRegistrar). Only GetSchema is exercised; the rest are unused by this
+// test and simply return zero values.
+type mockObjectMappingServiceClient struct {
+	capturedGetSchemaReq *pb.GetSchemaRequest
+	getSchemaResp        *pb.GetSchemaResponse
+	getSchemaErr         error
+}
+
+func (m *mockObjectMappingServiceClient) Get(context.Context, *pb.MappingGetRequest, ...grpc.CallOption) (*pb.MappingResponse, error) {
+	return nil, nil
+}
+
+func (m *mockObjectMappingServiceClient) Post(context.Context, *pb.MappingWriteRequest, ...grpc.CallOption) (*pb.MappingResponse, error) {
+	return nil, nil
+}
+
+func (m *mockObjectMappingServiceClient) Update(context.Context, *pb.MappingWriteRequest, ...grpc.CallOption) (*pb.MappingResponse, error) {
+	return nil, nil
+}
+
+func (m *mockObjectMappingServiceClient) Delete(context.Context, *pb.MappingDeleteRequest, ...grpc.CallOption) (*pb.MappingDeleteResponse, error) {
+	return nil, nil
+}
+
+func (m *mockObjectMappingServiceClient) RegisterSchema(context.Context, *pb.SchemaRequest, ...grpc.CallOption) (*pb.SchemaResponse, error) {
+	return nil, nil
+}
+
+func (m *mockObjectMappingServiceClient) GetSchema(_ context.Context, req *pb.GetSchemaRequest, _ ...grpc.CallOption) (*pb.GetSchemaResponse, error) {
+	m.capturedGetSchemaReq = req
+	if m.getSchemaErr != nil {
+		return nil, m.getSchemaErr
+	}
+	return m.getSchemaResp, nil
 }
 
 // ── Test entity types ──────────────────────────────────────────────────────────
@@ -696,5 +737,93 @@ func TestSchemaRegistrar_RegisterAll_UnsupportedElementTypeRejected(t *testing.T
 	}
 	if !strings.Contains(err.Error(), "Widgets") || !strings.Contains(err.Error(), "customElement") {
 		t.Errorf("expected error naming Widgets and customElement, got %q", err.Error())
+	}
+}
+
+// ── GetSchema ─────────────────────────────────────────────────────────────────
+
+func TestIversonClient_GetSchema_ReturnsTypes(t *testing.T) {
+	mock := &mockObjectMappingServiceClient{
+		getSchemaResp: &pb.GetSchemaResponse{
+			Types: []*pb.SchemaType{
+				{
+					Name: "Article",
+					Fields: []*pb.SchemaField{
+						{
+							Name:           "Category",
+							ClrType:        pb.ClrType_CLR_STRING,
+							IsSearchKey:    true,
+							SearchKeyOrder: 0,
+						},
+						{
+							Name:           "PublishedAt",
+							ClrType:        pb.ClrType_CLR_DATETIME,
+							IsSearchKey:    true,
+							SearchKeyOrder: 1,
+						},
+					},
+				},
+			},
+		},
+	}
+	client := &iverson.IversonClient{MappingStub: mock}
+
+	types, err := client.GetSchema(context.Background(), "trace-1")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(types) != 1 {
+		t.Fatalf("expected 1 type, got %d", len(types))
+	}
+	if types[0].Name != "Article" {
+		t.Errorf("expected type name Article, got %q", types[0].Name)
+	}
+	if len(types[0].Fields) != 2 {
+		t.Fatalf("expected 2 fields, got %d", len(types[0].Fields))
+	}
+
+	category := types[0].Fields[0]
+	if category.Name != "Category" {
+		t.Errorf("expected field name Category, got %q", category.Name)
+	}
+	if category.ClrType != pb.ClrType_CLR_STRING {
+		t.Errorf("expected ClrType CLR_STRING, got %v", category.ClrType)
+	}
+	if !category.IsSearchKey {
+		t.Error("expected Category.IsSearchKey=true")
+	}
+	if category.SearchKeyOrder != 0 {
+		t.Errorf("expected Category.SearchKeyOrder=0, got %d", category.SearchKeyOrder)
+	}
+
+	publishedAt := types[0].Fields[1]
+	if publishedAt.Name != "PublishedAt" {
+		t.Errorf("expected field name PublishedAt, got %q", publishedAt.Name)
+	}
+	if publishedAt.ClrType != pb.ClrType_CLR_DATETIME {
+		t.Errorf("expected ClrType CLR_DATETIME, got %v", publishedAt.ClrType)
+	}
+	if publishedAt.SearchKeyOrder != 1 {
+		t.Errorf("expected PublishedAt.SearchKeyOrder=1, got %d", publishedAt.SearchKeyOrder)
+	}
+
+	if mock.capturedGetSchemaReq == nil {
+		t.Fatal("no request captured")
+	}
+	if mock.capturedGetSchemaReq.TraceId != "trace-1" {
+		t.Errorf("expected TraceId=trace-1, got %q", mock.capturedGetSchemaReq.TraceId)
+	}
+}
+
+func TestIversonClient_GetSchema_PropagatesError(t *testing.T) {
+	mock := &mockObjectMappingServiceClient{getSchemaErr: errors.New("boom")}
+	client := &iverson.IversonClient{MappingStub: mock}
+
+	_, err := client.GetSchema(context.Background(), "")
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !strings.Contains(err.Error(), "boom") {
+		t.Errorf("expected error to wrap %q, got %q", "boom", err.Error())
 	}
 }

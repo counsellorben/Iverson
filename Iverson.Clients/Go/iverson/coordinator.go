@@ -97,6 +97,17 @@ func (c *IversonClient) Close() error {
 	return c.mappingConn.Close()
 }
 
+// GetSchema returns the catalog of registered types the calling identity may read.
+// Attach an acting user with WithActingUserToken(ctx, token) — without one the
+// server returns an empty catalog.
+func (c *IversonClient) GetSchema(ctx context.Context, traceID string) ([]*pb.SchemaType, error) {
+	resp, err := c.MappingStub.GetSchema(ctx, &pb.GetSchemaRequest{TraceId: traceID})
+	if err != nil {
+		return nil, fmt.Errorf("GetSchema: %w", err)
+	}
+	return resp.Types, nil
+}
+
 // coordinatorDeps holds injectable service clients (real or mock).
 type coordinatorDeps struct {
 	persistence PersistenceClient
