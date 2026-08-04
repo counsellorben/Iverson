@@ -1,0 +1,16 @@
+// Type-checks the code the build deliberately leaves out: tests, the sample, and the vitest
+// config. Those files were previously checked by nothing at all — tsconfig.json's `include` is
+// scoped to what ships, and vitest strips types without checking them. A test fixture could
+// therefore claim a generated protobuf type and not match it, which is exactly what happened:
+// a `GetSchemaResponse` fixture used `typeName` where the type declares `name` and omitted four
+// required members, and still passed.
+//
+// This must stay a separate config rather than a widened `include`, or the extra files land in
+// `dist` and change the published package layout.
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true
+  },
+  "include": ["src/**/*", "generated/**/*", "tests/**/*", "sample/**/*", "vitest.config.ts"]
+}
