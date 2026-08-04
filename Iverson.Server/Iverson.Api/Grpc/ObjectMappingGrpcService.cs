@@ -68,8 +68,11 @@ public sealed class ObjectMappingGrpcService(
         // authorized field set), pass two emits relations, dropping any whose related_type
         // did not survive pass one — that cross-type check can't be made until every type has
         // been evaluated.
-        var survivors = new List<(SchemaDescriptor Schema, List<SchemaField> Fields)>();
-        var survivingNames = new HashSet<string>(StringComparer.Ordinal);
+        var survivors = new List<(SchemaDescriptor Schema, List<SchemaField> Fields, AuthorizationDecision Decision)>();
+        // OrdinalIgnoreCase to match SchemaRegistry's own keying (SchemaRegistry.cs) and every
+        // other RelationDescriptor.RelatedTypeName lookup (EntityRelationResolver), so a relation
+        // declaring a differently-cased related type is not silently dropped from the catalog.
+        var survivingNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
         foreach (var schema in _registry.All.Values)
         {
@@ -81,16 +84,20 @@ public sealed class ObjectMappingGrpcService(
             if (decision.AllowedFields is not null)
                 candidates = candidates.Where(c => decision.AllowedFields.Contains(c.Name));
 
-            var fields = candidates.Select(c => ProjectField(c, schema)).ToList();
+            var fields = candidates
+                .Select(c => ProjectField(c, schema))
+                .Where(f => f is not null)
+                .Select(f => f!)
+                .ToList();
             if (fields.Count == 0)
                 continue; // Fail-closed guard; the real evaluator always keeps the key column.
 
-            survivors.Add((schema, fields));
+            survivors.Add((schema, fields, decision));
             survivingNames.Add(schema.TypeName);
         }
 
         var response = new GetSchemaResponse();
-        foreach (var (schema, fields) in survivors)
+        foreach (var (schema, fields, decision) in survivors)
         {
             var schemaType = new SchemaType
             {
@@ -100,7 +107,12 @@ public sealed class ObjectMappingGrpcService(
             schemaType.Fields.AddRange(fields);
             schemaType.Relations.AddRange(
                 schema.Relations
-                    .Where(r => survivingNames.Contains(r.RelatedTypeName))
+                    // Two conditions, both necessary. The related type must have survived pass
+                    // one, and the FK column must itself be readable: every FK property is also
+                    // an ordinary scalar column, so a FieldPermission that removed it from
+                    // `fields` would otherwise still disclose its exact name as `foreign_key`.
+                    .Where(r => survivingNames.Contains(r.RelatedTypeName)
+                             && (decision.AllowedFields is null || decision.AllowedFields.Contains(r.ForeignKey)))
                     .Select(r => new SchemaRelation
                     {
                         PropertyName = r.PropertyName,
@@ -122,9 +134,22 @@ public sealed class ObjectMappingGrpcService(
         return Task.FromResult(response);
     }
 
-    private static SchemaField ProjectField(ColumnDescriptor col, SchemaDescriptor schema)
+    /// <summary>
+    /// Projects one persisted column into its wire form, or <c>null</c> when the column's SQL type
+    /// is not known to this build (a descriptor persisted by an older build). Skipping the column
+    /// keeps the rest of the catalog available instead of failing the whole RPC.
+    /// </summary>
+    private SchemaField? ProjectField(ColumnDescriptor col, SchemaDescriptor schema)
     {
-        var (clrType, isArray) = SchemaBuilder.SqlTypeToClr(col.SqlType);
+        if (!SchemaBuilder.TrySqlTypeToClr(col.SqlType, out var mapping))
+        {
+            _logger.LogWarning(
+                "[GetSchema] Skipping column {Type}.{Column}: unmapped SQL type '{SqlType}'.",
+                schema.TypeName.SanitizeForLog(), col.Name.SanitizeForLog(), col.SqlType.SanitizeForLog());
+            return null;
+        }
+
+        var (clrType, isArray) = mapping;
         var searchKeyOrder = schema.SearchKeyColumns.IndexOf(col.Name);
 
         var field = new SchemaField

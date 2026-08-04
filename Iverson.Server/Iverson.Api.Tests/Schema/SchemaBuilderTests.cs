@@ -272,7 +272,9 @@ public class SchemaBuilderTests
         result.TypeName.Should().Be("Article");
         result.TableName.Should().Be("articles");
         result.KeyColumnName.Should().Be("Id");
-        result.ColumnNames.Should().BeEquivalentTo(["Title", "Body"]);
+        // AuthorId is both an FK and a scalar column (as SchemaBuilder really produces), so it
+        // appears here alongside the plain scalars.
+        result.ColumnNames.Should().BeEquivalentTo(["Title", "Body", "AuthorId"]);
     }
 
     [Fact]

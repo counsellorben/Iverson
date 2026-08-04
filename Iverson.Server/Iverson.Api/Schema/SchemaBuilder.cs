@@ -295,10 +295,21 @@ internal static class SchemaBuilder
             .ToDictionary(x => x.Sql, x => (x.Clr, x.IsArray), StringComparer.OrdinalIgnoreCase);
 
     internal static (ClrType Type, bool IsArray) SqlTypeToClr(string sqlType) =>
-        SqlTypeToClrMap.TryGetValue(sqlType, out var mapping)
+        TrySqlTypeToClr(sqlType, out var mapping)
             ? mapping
             : throw new ArgumentOutOfRangeException(nameof(sqlType), sqlType,
                 $"Unhandled SQL type — add an entry to {nameof(SchemaBuilder)}.{nameof(ScalarTypeMap)}.");
+
+    /// <summary>
+    /// Non-throwing form of <see cref="SqlTypeToClr"/>, for the GetSchema read path.
+    /// <see cref="SchemaRegistry"/> rehydrates persisted descriptors written by older builds, so a
+    /// column may carry a SQL type string this build no longer maps. Skipping that one column keeps
+    /// discovery available for every other type, rather than failing the whole RPC — matching how
+    /// <see cref="ClrTypeToEngagementType"/> and <see cref="SqlTypeToPayloadKind"/> degrade. The
+    /// write path (<see cref="ClrTypeToSql"/>) still throws, where failing registration is correct.
+    /// </summary>
+    internal static bool TrySqlTypeToClr(string sqlType, out (ClrType Type, bool IsArray) mapping) =>
+        SqlTypeToClrMap.TryGetValue(sqlType, out mapping);
 
     internal static string ClrTypeToEngagementType(string sqlType) =>
         SqlTypeMap.TryGetValue(sqlType, out var mapping) ? mapping.StarRocksType : "STRING";

@@ -33,7 +33,13 @@ public static class SchemaFixtures
         TableName      = "articles",
         CollectionName = "articles",
         KeyColumn      = new ColumnDescriptor("Id", "uuid", false),
-        ScalarColumns  = [new ColumnDescriptor("Title", "text", false), new ColumnDescriptor("Body", "text", false)],
+        // AuthorId appears in BOTH ScalarColumns and FkColumns, matching what SchemaBuilder
+        // really produces (every non-key property becomes a scalar; FK-named ones are
+        // *additionally* recorded as FKs).
+        ScalarColumns  = [
+            new ColumnDescriptor("Title", "text", false),
+            new ColumnDescriptor("Body", "text", false),
+            new ColumnDescriptor("AuthorId", "uuid", false)],
         FkColumns      = [new ForeignKeyDescriptor("AuthorId", "Author")],
         VectorFields   = [new VectorDescriptor("Title", 768, "nomic-embed-text")],
         ChunkFields    = [new ChunkDescriptor("Body", 512, 64, "nomic-embed-text", 768)],

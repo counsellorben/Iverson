@@ -265,7 +265,168 @@ public class ObjectMappingGrpcServiceTests
         var author = response.Types_.Single(t => t.Name == "Author");
         author.Fields.Select(f => f.Name).Should().BeEquivalentTo(new[] { "Id", "Name", "Bio" });
         var article = response.Types_.Single(t => t.Name == "Article");
-        article.Fields.Select(f => f.Name).Should().BeEquivalentTo(new[] { "Id", "Title", "Body" });
+        article.Fields.Select(f => f.Name).Should().BeEquivalentTo(new[] { "Id", "Title", "Body", "AuthorId" });
+    }
+
+    [Fact]
+    public async Task GetSchema_ProjectsEveryFieldLevelFlag_ThroughTheRpc()
+    {
+        // End-to-end cover for the members no other GetSchema test asserts: clr_type, is_array,
+        // is_key, is_nullable, is_embedding, is_chunk and SchemaType.description. The flag
+        // composition test alongside covers is_metadata / is_search_key / enrichment.
+        var schema = SchemaFixtures.ArticleSchema() with
+        {
+            Description = "A published article.",
+            ScalarColumns =
+            [
+                new ColumnDescriptor("Title", "text", false),
+                new ColumnDescriptor("Body", "text", false),
+                new ColumnDescriptor("AuthorId", "uuid", false),
+                new ColumnDescriptor("Tags", "text[]", true)
+            ],
+            FieldDescriptions = new Dictionary<string, string> { ["Title"] = "The headline." }
+        };
+        await _registry.RegisterAsync(schema);
+
+        var response = await _sut.GetSchema(new GetSchemaRequest(), MakeContext());
+
+        var article = response.Types_.Single(t => t.Name == "Article");
+        article.Description.Should().Be("A published article.");
+
+        var key = article.Fields.Single(f => f.Name == "Id");
+        key.ClrType.Should().Be(ClrType.ClrGuid);
+        key.IsKey.Should().BeTrue();
+        key.IsArray.Should().BeFalse();
+        key.IsNullable.Should().BeFalse();
+
+        // Scalar, non-key, carries a description, is the declared vector (embedding) field.
+        var title = article.Fields.Single(f => f.Name == "Title");
+        title.ClrType.Should().Be(ClrType.ClrString);
+        title.Description.Should().Be("The headline.");
+        title.IsKey.Should().BeFalse();
+        title.IsArray.Should().BeFalse();
+        title.IsEmbedding.Should().BeTrue();
+        title.IsChunk.Should().BeFalse();
+
+        // The declared chunk field.
+        var body = article.Fields.Single(f => f.Name == "Body");
+        body.IsChunk.Should().BeTrue();
+        body.IsEmbedding.Should().BeFalse();
+
+        // An array column: is_array is true and clr_type reports the *element* type.
+        var tags = article.Fields.Single(f => f.Name == "Tags");
+        tags.ClrType.Should().Be(ClrType.ClrString);
+        tags.IsArray.Should().BeTrue();
+        tags.IsNullable.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task GetSchema_WithRestrictedFkFieldPermission_DropsBothTheFieldAndTheRelation()
+    {
+        // Regression: relations were filtered only on whether the related type survived, so a
+        // FieldPermission excluding the FK column still disclosed its exact name as
+        // relation.foreign_key — the very name field-level authorization had just removed.
+        var article = SchemaFixtures.ArticleSchema() with
+        {
+            Authorization = new Iverson.Api.Schema.AuthorizationRules(
+                null,
+                new List<Iverson.Api.Schema.RowPermission> { new("test-bypass", true, true, true) },
+                new List<Iverson.Api.Schema.FieldPermission>
+                {
+                    new("AuthorId", new List<string> { "editor" }, new List<string>())
+                })
+        };
+        await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
+        await _registry.RegisterAsync(article);
+
+        var response = await _sut.GetSchema(new GetSchemaRequest(), MakeContext());
+
+        var projected = response.Types_.Single(t => t.Name == "Article");
+        projected.Fields.Select(f => f.Name).Should().NotContain("AuthorId");
+        projected.Relations.Select(r => r.ForeignKey).Should().NotContain("AuthorId");
+        projected.Relations.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task GetSchema_WithReadableFk_KeepsTheRelation()
+    {
+        // Companion to the test above: with no FieldPermission on the FK, both the surviving
+        // related type and the relation itself must still be reported.
+        await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
+        await _registry.RegisterAsync(SchemaFixtures.ArticleSchema());
+
+        var response = await _sut.GetSchema(new GetSchemaRequest(), MakeContext());
+
+        var article = response.Types_.Single(t => t.Name == "Article");
+        var relation = article.Relations.Should().ContainSingle().Subject;
+        relation.PropertyName.Should().Be("Author");
+        relation.RelatedType.Should().Be("Author");
+        relation.ForeignKey.Should().Be("AuthorId");
+        relation.Kind.Should().Be(Iverson.Client.Contracts.RelationKind.ManyToOne);
+    }
+
+    [Fact]
+    public async Task GetSchema_WithDifferentlyCasedRelatedTypeName_KeepsTheRelation()
+    {
+        // SchemaRegistry keys OrdinalIgnoreCase and EntityRelationResolver resolves through it,
+        // so a relation the query path would honour must not be dropped from the catalog.
+        var article = SchemaFixtures.ArticleSchema() with
+        {
+            Relations = [new Iverson.Api.Schema.RelationDescriptor(
+                "Author", Iverson.Api.Schema.RelationKind.ManyToOne, "author", "AuthorId")]
+        };
+        await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
+        await _registry.RegisterAsync(article);
+
+        var response = await _sut.GetSchema(new GetSchemaRequest(), MakeContext());
+
+        response.Types_.Single(t => t.Name == "Article").Relations.Should().ContainSingle();
+    }
+
+    [Fact]
+    public async Task GetSchema_WithUnmappedLegacySqlType_SkipsTheColumnAndKeepsTheCatalog()
+    {
+        // SchemaRegistry rehydrates descriptors persisted by older builds, so a column may carry
+        // a SQL type this build no longer maps. That must cost one column, not the whole RPC.
+        var schema = SchemaFixtures.AuthorSchema() with
+        {
+            ScalarColumns =
+            [
+                new ColumnDescriptor("Name", "text", false),
+                new ColumnDescriptor("Legacy", "money", true)
+            ]
+        };
+        await _registry.RegisterAsync(schema);
+
+        var response = await _sut.GetSchema(new GetSchemaRequest(), MakeContext());
+
+        var author = response.Types_.Single(t => t.Name == "Author");
+        author.Fields.Select(f => f.Name).Should().BeEquivalentTo(new[] { "Id", "Name" });
+    }
+
+    [Fact]
+    public async Task GetSchema_WhenEveryFieldIsFilteredOut_OmitsTheTypeEntirely()
+    {
+        // Spec §4 server test 4. The production RowFieldAuthorizationEvaluator unconditionally
+        // re-admits the key column so it can never produce an empty AllowedFields — this pins the
+        // fail-closed guard against a substituted evaluator that does.
+        await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
+
+        var evaluator = Substitute.For<IRowFieldAuthorizationEvaluator>();
+        evaluator.Evaluate(Arg.Any<SchemaDescriptor>(), Arg.Any<ClaimsPrincipal?>(), Arg.Any<AuthorizationAction>())
+            .Returns(new AuthorizationDecision(
+                false, false, null, null, new HashSet<string>(), "TenantId", "test-tenant"));
+
+        var sut = new ObjectMappingGrpcService(
+            _entities, _txRunner, _outboxPublisher, _registry,
+            new RelationValidator(_registry), new EntityKeyAccessor(),
+            new OutboxWriter(ReconciliationSchema.TableName, _sql, _txRunner),
+            NullLogger<ObjectMappingGrpcService>.Instance,
+            _actingUserAccessor, evaluator, _relationResolver, _schemaRegistration, _auditLog);
+
+        var response = await sut.GetSchema(new GetSchemaRequest(), MakeContext());
+
+        response.Types_.Should().BeEmpty();
     }
 
     [Fact]
