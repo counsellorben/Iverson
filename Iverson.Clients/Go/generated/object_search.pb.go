@@ -921,10 +921,17 @@ func (x *SearchSort) GetDescending() bool {
 }
 
 type SearchResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Data          *structpb.Struct       `protobuf:"bytes,1,opt,name=data,proto3" json:"data,omitempty"`
-	Score         float32                `protobuf:"fixed32,2,opt,name=score,proto3" json:"score,omitempty"`
-	TraceId       string                 `protobuf:"bytes,3,opt,name=trace_id,json=traceId,proto3" json:"trace_id,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	Data  *structpb.Struct       `protobuf:"bytes,1,opt,name=data,proto3" json:"data,omitempty"`
+	// For SearchSimilar this is the FUSED re-ranking score (raw cosine blended with a
+	// document-centroid similarity and a recency decay), not a raw cosine similarity.
+	// Its absolute magnitude is not comparable to a cosine — use it for ordering, and
+	// re-calibrate any client-side score threshold against it.
+	// Results are also diversified (maximal marginal relevance) before streaming, so their
+	// order is not simply fused-score-descending — the top entries are not necessarily the
+	// highest-fused candidates the search found.
+	Score         float32 `protobuf:"fixed32,2,opt,name=score,proto3" json:"score,omitempty"`
+	TraceId       string  `protobuf:"bytes,3,opt,name=trace_id,json=traceId,proto3" json:"trace_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1172,11 +1179,17 @@ func (x *SearchChunksRequest) GetFilterLogic() SearchLogic {
 }
 
 type ChunkSearchResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	ParentKey     string                 `protobuf:"bytes,1,opt,name=parent_key,json=parentKey,proto3" json:"parent_key,omitempty"` // key of the parent entity that owns this chunk
-	ChunkText     string                 `protobuf:"bytes,2,opt,name=chunk_text,json=chunkText,proto3" json:"chunk_text,omitempty"` // the matching passage text
-	Score         float32                `protobuf:"fixed32,3,opt,name=score,proto3" json:"score,omitempty"`
-	TraceId       string                 `protobuf:"bytes,4,opt,name=trace_id,json=traceId,proto3" json:"trace_id,omitempty"`
+	state     protoimpl.MessageState `protogen:"open.v1"`
+	ParentKey string                 `protobuf:"bytes,1,opt,name=parent_key,json=parentKey,proto3" json:"parent_key,omitempty"` // key of the parent entity that owns this chunk
+	ChunkText string                 `protobuf:"bytes,2,opt,name=chunk_text,json=chunkText,proto3" json:"chunk_text,omitempty"` // the matching passage text
+	// FUSED re-ranking score (raw cosine blended with a document-centroid similarity and a
+	// recency decay), not a raw cosine similarity. Its absolute magnitude is not comparable
+	// to a cosine — use it for ordering, and re-calibrate any client-side score threshold.
+	// Results are also diversified (maximal marginal relevance, on the chunk's own vector) before
+	// streaming, so their order is not simply fused-score-descending — the top entries are not
+	// necessarily the highest-fused candidates the search found.
+	Score         float32 `protobuf:"fixed32,3,opt,name=score,proto3" json:"score,omitempty"`
+	TraceId       string  `protobuf:"bytes,4,opt,name=trace_id,json=traceId,proto3" json:"trace_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }

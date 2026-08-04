@@ -477,7 +477,18 @@ export interface SearchSort {
 }
 
 export interface SearchResponse {
-  data: { [key: string]: any } | undefined;
+  data:
+    | { [key: string]: any }
+    | undefined;
+  /**
+   * For SearchSimilar this is the FUSED re-ranking score (raw cosine blended with a
+   * document-centroid similarity and a recency decay), not a raw cosine similarity.
+   * Its absolute magnitude is not comparable to a cosine — use it for ordering, and
+   * re-calibrate any client-side score threshold against it.
+   * Results are also diversified (maximal marginal relevance) before streaming, so their
+   * order is not simply fused-score-descending — the top entries are not necessarily the
+   * highest-fused candidates the search found.
+   */
   score: number;
   traceId: string;
 }
@@ -528,6 +539,14 @@ export interface ChunkSearchResponse {
   parentKey: string;
   /** the matching passage text */
   chunkText: string;
+  /**
+   * FUSED re-ranking score (raw cosine blended with a document-centroid similarity and a
+   * recency decay), not a raw cosine similarity. Its absolute magnitude is not comparable
+   * to a cosine — use it for ordering, and re-calibrate any client-side score threshold.
+   * Results are also diversified (maximal marginal relevance, on the chunk's own vector) before
+   * streaming, so their order is not simply fused-score-descending — the top entries are not
+   * necessarily the highest-fused candidates the search found.
+   */
   score: number;
   traceId: string;
 }
