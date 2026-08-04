@@ -348,6 +348,59 @@ public class ObjectMappingGrpcServiceTests
     }
 
     [Fact]
+    public async Task GetSchema_WithOneToManyRelation_UnderActiveFieldPermission_KeepsTheRelation()
+    {
+        // Regression (N1): a OneToMany's ForeignKey is a column on the RELATED type's table
+        // (EntityRelationResolver.ResolveOneToManyAsync passes it to FetchByColumnAsync against
+        // ToTableSchema(relatedSchema)), matched against this type's key. AllowedFields only ever
+        // holds the DECLARING schema's own members, so testing the FK against it can never succeed
+        // and would drop every OneToMany from the catalog whenever a FieldPermission is active.
+        var article = SchemaFixtures.ArticleWithOneToManySchema() with
+        {
+            Authorization = new Iverson.Api.Schema.AuthorizationRules(
+                null,
+                new List<Iverson.Api.Schema.RowPermission> { new("test-bypass", true, true, true) },
+                // Any active FieldPermission makes AllowedFields non-null — that is the trigger.
+                new List<Iverson.Api.Schema.FieldPermission>
+                {
+                    new("Title", new List<string> { "editor" }, new List<string>())
+                })
+        };
+        await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
+        await _registry.RegisterAsync(SchemaFixtures.UserArticleSchema());
+        await _registry.RegisterAsync(article);
+
+        var response = await _sut.GetSchema(new GetSchemaRequest(), MakeContext());
+
+        var projected = response.Types_.Single(t => t.Name == "Article");
+        // Sanity: AllowedFields really is active, i.e. this test is exercising the gated path.
+        projected.Fields.Select(f => f.Name).Should().NotContain("Title");
+
+        var oneToMany = projected.Relations
+            .Should().ContainSingle(r => r.Kind == Iverson.Client.Contracts.RelationKind.OneToMany).Subject;
+        oneToMany.PropertyName.Should().Be("UserArticles");
+        oneToMany.RelatedType.Should().Be("UserArticle");
+        oneToMany.ForeignKey.Should().Be("ArticleId");
+    }
+
+    [Fact]
+    public async Task GetSchema_WithUnmappedKeyColumnSqlType_FailsLoudly()
+    {
+        // N2: a non-key column with an unmapped legacy SQL type is skipped, but the key is not
+        // optional — a type with no is_key field is one the caller cannot issue a Get against,
+        // and pass one's empty-field guard assumes the key survives.
+        var schema = SchemaFixtures.AuthorSchema() with
+        {
+            KeyColumn = new ColumnDescriptor("Id", "money", false)
+        };
+        await _registry.RegisterAsync(schema);
+
+        var act = () => _sut.GetSchema(new GetSchemaRequest(), MakeContext());
+
+        await act.Should().ThrowAsync<ArgumentOutOfRangeException>();
+    }
+
+    [Fact]
     public async Task GetSchema_WithReadableFk_KeepsTheRelation()
     {
         // Companion to the test above: with no FieldPermission on the FK, both the surviving

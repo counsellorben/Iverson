@@ -107,12 +107,10 @@ public sealed class ObjectMappingGrpcService(
             schemaType.Fields.AddRange(fields);
             schemaType.Relations.AddRange(
                 schema.Relations
-                    // Two conditions, both necessary. The related type must have survived pass
-                    // one, and the FK column must itself be readable: every FK property is also
-                    // an ordinary scalar column, so a FieldPermission that removed it from
-                    // `fields` would otherwise still disclose its exact name as `foreign_key`.
+                    // Two conditions. The related type must have survived pass one, and — only
+                    // where the FK column is local to this type — the FK must itself be readable.
                     .Where(r => survivingNames.Contains(r.RelatedTypeName)
-                             && (decision.AllowedFields is null || decision.AllowedFields.Contains(r.ForeignKey)))
+                             && ForeignKeyIsReadable(r, decision))
                     .Select(r => new SchemaRelation
                     {
                         PropertyName = r.PropertyName,
@@ -135,14 +133,63 @@ public sealed class ObjectMappingGrpcService(
     }
 
     /// <summary>
+    /// Whether <paramref name="relation"/>'s foreign key may be disclosed to this caller.
+    /// <para>
+    /// Every FK property is also an ordinary scalar column, so a <c>FieldPermission</c> that removed
+    /// it from <c>fields</c> would otherwise still leak its exact name as <c>foreign_key</c>. But
+    /// that reasoning only holds where the FK column lives on the <em>declaring</em> type, which
+    /// depends on the relation kind (see <c>EntityRelationResolver</c>):
+    /// </para>
+    /// <list type="bullet">
+    /// <item><c>OneToOne</c> / <c>ManyToOne</c> — reads <c>ForeignKey</c> off the declaring entity.</item>
+    /// <item><c>ManyToMany</c> — reads <c>ForeignKey</c> as a list off the declaring entity.</item>
+    /// <item><c>OneToMany</c> — <c>ForeignKey</c> is a column on the <em>related</em> type's table,
+    /// matched against this type's key. It is not a member of this schema at all.</item>
+    /// </list>
+    /// <para>
+    /// <c>AllowedFields</c> only ever holds the declaring schema's own members
+    /// (<c>RowFieldAuthorizationEvaluator</c>), so applying the check to <c>OneToMany</c> would drop
+    /// every such relation from the catalog whenever any <c>FieldPermission</c> is active — the
+    /// check can never be satisfied. Hence the kind gate.
+    /// </para>
+    /// </summary>
+    private static bool ForeignKeyIsReadable(
+        Iverson.Api.Schema.RelationDescriptor relation, AuthorizationDecision decision)
+    {
+        if (decision.AllowedFields is null)
+            return true;
+
+        return relation.Kind switch
+        {
+            SchemaRelationKind.OneToMany => true, // FK belongs to the related type, not this one.
+            SchemaRelationKind.OneToOne or
+            SchemaRelationKind.ManyToOne or
+            SchemaRelationKind.ManyToMany => decision.AllowedFields.Contains(relation.ForeignKey),
+            _ => throw new ArgumentOutOfRangeException(nameof(relation), relation.Kind,
+                $"Unhandled {nameof(SchemaRelationKind)} value — add a case above.")
+        };
+    }
+
+    /// <summary>
     /// Projects one persisted column into its wire form, or <c>null</c> when the column's SQL type
     /// is not known to this build (a descriptor persisted by an older build). Skipping the column
     /// keeps the rest of the catalog available instead of failing the whole RPC.
+    /// <para>
+    /// The <b>key column is exempt</b>: it is not optional. Emitting a type with no <c>is_key</c>
+    /// field would hand the caller a schema it cannot address a <c>Get</c> with, and the empty-field
+    /// guard in pass one assumes the key always survives. An unmapped key type is unrecoverable for
+    /// that type, so it throws and the type is failed loudly rather than silently degraded.
+    /// </para>
     /// </summary>
     private SchemaField? ProjectField(ColumnDescriptor col, SchemaDescriptor schema)
     {
         if (!SchemaBuilder.TrySqlTypeToClr(col.SqlType, out var mapping))
         {
+            if (col.Name == schema.KeyColumn.Name)
+                throw new ArgumentOutOfRangeException(nameof(col), col.SqlType,
+                    $"Key column '{schema.TypeName}.{col.Name}' has unmapped SQL type " +
+                    $"'{col.SqlType}'; the catalog cannot describe a type without its key.");
+
             _logger.LogWarning(
                 "[GetSchema] Skipping column {Type}.{Column}: unmapped SQL type '{SqlType}'.",
                 schema.TypeName.SanitizeForLog(), col.Name.SanitizeForLog(), col.SqlType.SanitizeForLog());

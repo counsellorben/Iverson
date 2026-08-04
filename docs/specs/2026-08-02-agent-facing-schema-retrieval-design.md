@@ -261,7 +261,17 @@ plumbing appears anywhere: TypeScript `callUnary`, Python channel call-credentia
    not in this build's map is skipped and logged, not fatal. `SchemaRegistry.LoadAsync` rehydrates
    descriptors written by older builds, so `GetSchema` uses the non-throwing `TrySqlTypeToClr`;
    losing one legacy column must not take discovery down for every type. The write path
-   (`ClrTypeToSql`) still throws, where failing registration is correct.
+   (`ClrTypeToSql`) still throws, where failing registration is correct. **The key column is exempt**
+   (added 2026-08-03, re-review N2): it still throws, because a type described without its key is one
+   the caller cannot issue a `Get` against, and test 4's empty-field guard assumes the key survives.
+8. **Added 2026-08-03 (re-review N1).** A `OneToMany` relation survives an active `FieldPermission`.
+   Test 6's FK-readability check applies **only** to `OneToOne`, `ManyToOne` and `ManyToMany`, whose
+   `ForeignKey` is a column on the *declaring* type. A `OneToMany`'s `ForeignKey` is a column on the
+   *related* type's table, matched against this type's key
+   (`EntityRelationResolver.ResolveOneToManyAsync` → `FetchByColumnAsync(ToTableSchema(relatedSchema),
+   relation.ForeignKey, …)`). Since `AllowedFields` only ever holds the declaring schema's own
+   members, an ungated check can never be satisfied for `OneToMany` and would drop every such
+   relation from the catalog whenever any `FieldPermission` is active.
 
 **Type recovery** — table-driven over **`Enum.GetValues<ClrType>()`**, asserting that for every
 `ClrType`, `SqlTypeToClr(ClrTypeToSql(t, isArray: false))` returns `t`, and that
