@@ -107,8 +107,15 @@ identity differently:
   **max chunk score per parent** (standard max-passage), which is also the RAG-realistic path.
 
 Output is standard TREC run format — `qid Q0 docid rank score runtag` — with the run tag encoding the
-configuration. `topK` is set to at least 50 to serve Recall@50; there is no upper clamp on `top_k`
-(A13), and the 4× over-fetch is bounded accordingly.
+configuration. There is no upper clamp on `top_k` (A13), and the 4× over-fetch is bounded accordingly.
+
+**The two RPCs need different budgets, because `top_k` counts different units (A22).** For
+`SearchSimilar` it counts entities, so `topK = 50` serves Recall@50 directly. For `SearchChunks` it
+counts *chunks*, and several chunks of one document each consume budget before max-passage
+aggregation collapses them — so a 50-chunk request yields well under 50 distinct documents. Request a
+fixed multiple of 50 chunks there, then truncate to exactly the top 50 documents after aggregation.
+The multiplier is chosen once and held constant across all eight configurations; varying it would
+compare run files built from different candidate-pool sizes.
 
 ### 5. Scoring is external
 
@@ -172,6 +179,7 @@ Verified against the codebase at `main@d3c8b3c` before this spec was written.
 | A19 | **Operational.** Every ablation build has a failing test suite | `ResultRerankerTests.cs:28-29` asserts `(0.6*0.9 + 0.3*0.5 + 0.1*0.8)/1.0 = 0.77`, with more at `:44-46` and `:62`; `ResultDiversifierTests.cs` hand-computes at λ = 0.70. Editing a constant falsifies them by construction |
 | A20 | *(Recurrence)* Every configuration in the sweep is a pure constant edit — no member of the matrix needs a code-shape change | Members enumerated: `WCentroid ∈ {0.30, 0.00}` and `Lambda ∈ {1.00, 0.70, 0.50, 0.30}`. Both symbols are `private const double` (`ResultReranker.cs:12`, `ResultDiversifier.cs:12`) read at a single expression site each, and A16's sweep confirms no other code path branches on their values |
 | A21 | A type registered without authorization rules is denied on read, and both vector RPCs return an empty stream rather than an error | `SchemaRegistrar.cs:26-30` attaches `Authorization` only for dictionary-present types; `RowFieldAuthorizationEvaluator.cs:11-12` returns `Denied` when rules are null; `ObjectSearchGrpcService.cs:126-127` and `:298-299` — `if (decision.Denied) return;` |
+| A22 | `top_k` counts entities on `SearchSimilar` and chunks on `SearchChunks`; the chunk path does not dedup by parent | `ObjectSearchGrpcService.cs:437` bounds `Diversify` over chunk points and `:442-450` writes one response per chunk carrying `ParentKey`, with no dedup; `:267` bounds the same call over entity points |
 
 ## Known issues / accepted as out of scope
 
