@@ -87,6 +87,7 @@ Newly introduced by this plan and verified at plan-write time against `main@9ab3
 | P12 | Command | The three generation scripts are runnable here | `protoc` at `~/sdk/protoc/bin/protoc` (present, executable); `protoc-gen-go` and `protoc-gen-go-grpc` on PATH; `python3 -c "import grpc_tools"` succeeds; `protoc-gen-ts_proto` in TypeScript's `node_modules/.bin` |
 | P13 | Command | Build/test commands are valid | `dotnet build Iverson.Clients/DotNet/Iverson.Client.Contracts` (has `<Protobuf Include="../../Common/Proto/*.proto" GrpcServices="Both" />` at `:17`); `mvn -f Iverson.Clients/Java/pom.xml`; `dotnet test` on the two named test projects; `pytest`; `go test -count=1 ./...`; `npm test` / `npm run build` |
 | P14 | **Consumer impact** | **Inserting `actingUserTokenProvider` before the trailing `params Assembly[]` breaks neither caller** | Two callers exist. `Iverson.Client.Sample/Program.cs:13-15` passes `grpcEndpoint:` and `entityAssemblies:` — both named. `Iverson.LoadTest/Program.cs:119-122` passes three positionally (`grpcUrl`, `clientCredentials`, a provider) then `entityAssemblies:` named. The new parameter sits after `dataPlaneTokenProvider`, so both continue to bind as before |
+| P22 | Signature | **A non-null `AllowedFields` always contains the key column, so the candidate-set intersection can never empty** | `RowFieldAuthorizationEvaluator.cs:65` filters the key out of `excluded` (`.Where(f => !string.Equals(f, schema.KeyColumn.Name, OrdinalIgnoreCase))`); `:71` seeds `allFields` with `schema.KeyColumn.Name` before subtracting `excluded`. `IRowFieldAuthorizationEvaluator.cs:21-25` states the same contract in prose. The plan's candidate set also always contains the key column, so the intersection retains at least it for any non-denied type |
 | P15 | **Consumer impact** | **The committed stubs are already out of sync with the proto — regeneration produces unrelated diff** | Running all three scripts with **no** proto change modifies `Go/generated/object_search.pb.go` (+22/−9) and `TypeScript/generated/object_search.ts` (+20/−1). `object_search.proto` last changed at `71b59f7`; the Go stub was last regenerated at `4b249fb`. The diff is doc-comment propagation only (fused-score and MMR-diversification comments) — no wire or API change. Task 1 Step 1 commits this separately so the `GetSchema` commit stays clean |
 | P16 | Code validity | `repeated` enum fields and adding an `rpc` to an existing service are valid proto3 | `object_mapping.proto:1` is `syntax = "proto3"`; the file already contains `repeated` fields and a five-`rpc` service block at `:10-16` |
 | P17 | Ordering | Tasks 3–7 depend on Task 1 only | Each client task consumes only generated types; none imports a symbol another client task creates, and none calls the server code Task 2 adds — the client tests run against mock stubs |
@@ -186,7 +187,7 @@ Pass one, per `SchemaDescriptor` in `_registry.All.Values`:
 1. `var decision = _authEvaluator.Evaluate(schema, _actingUserAccessor.ActingUser, AuthorizationAction.Read);`
 2. `decision.Denied` → omit the type entirely.
 3. Candidate fields = `KeyColumn` prepended to `ScalarColumns`. **Do not add `FkColumns`** — every FK property is already a scalar column, and only the `ColumnDescriptor` form carries the `SqlType` and `IsNullable` the projection needs. When `decision.AllowedFields` is non-null, intersect on column name.
-4. Empty field set → omit the type. A type with nothing readable is a dead end, and listing its name is itself a disclosure.
+4. Empty field set → omit the type. This is a guard, not a live path: the evaluator always retains the key column in `AllowedFields` (`RowFieldAuthorizationEvaluator.cs:65,71`) and the candidate set always contains it, so the intersection cannot empty for a type the evaluator did not deny. Keep the check so a future change to either side fails closed rather than emitting a nameless type.
 5. Project the surviving fields (Step 3) and record the type name as surviving.
 
 Pass two: for each surviving type, emit its `Relations` entries, dropping any whose `RelatedTypeName` is not in the surviving set.
@@ -218,9 +219,8 @@ Driving the enum rather than the maps is deliberate: the maps are `private stati
   1. An unrestricted caller receives every registered type with every field.
   2. A denied type is **omitted**, asserted on absence of the name — returning the name is itself the disclosure.
   3. A caller with a restricted `AllowedFields` sees only those fields, **and** the excluded field's `description` appears nowhere in the response. Asserted separately rather than riding on the field-list check, since the description leak is the specific thing this prevents.
-  4. A type where filtering leaves nothing readable is omitted.
-  5. A relation whose `related_type` was omitted is dropped from the surviving type.
-  6. Flag composition: a field declared both `metadata` and `search_key` reports both, and a field carrying both a `Summary` and a `Keywords` enrichment target reports both kinds.
+  4. A relation whose `related_type` was omitted is dropped from the surviving type.
+  5. Flag composition: a field declared both `metadata` and `search_key` reports both, and a field carrying both a `Summary` and a `Keywords` enrichment target reports both kinds.
 
 - [ ] **Step 6: Run the tests**
 ```bash
