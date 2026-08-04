@@ -30,6 +30,7 @@ public static class ServiceCollectionExtensions
         string grpcEndpoint,
         IversonClientCredentials? credentials = null,
         Func<Task<string>>? dataPlaneTokenProvider = null,
+        Func<Task<string>>? actingUserTokenProvider = null,
         params Assembly[] entityAssemblies)
     {
         var assemblies = entityAssemblies.Length > 0
@@ -74,6 +75,10 @@ public static class ServiceCollectionExtensions
         services.AddTransient(typeof(EntityCoordinator<>));
 
         services.AddSingleton<SchemaRegistrar>();
+
+        services.AddSingleton(sp => new SchemaCatalogClient(
+            sp.GetRequiredService<ObjectMappingService.ObjectMappingServiceClient>(),
+            actingUserTokenProvider));
 
         return services;
     }
