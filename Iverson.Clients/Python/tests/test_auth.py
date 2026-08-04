@@ -1,6 +1,9 @@
+from unittest.mock import MagicMock
+
 import grpc
 
 from iverson_client import IversonClient, IversonClientCredentials
+from iverson_client.generated import object_mapping_pb2 as mapping_pb
 
 
 def test_client_with_credentials_uses_secure_channel(monkeypatch):
@@ -155,3 +158,40 @@ def test_client_without_use_tls_and_acting_user_token_uses_local_channel_credent
 
     assert captured["base_creds"] is local_sentinel
     assert captured["base_creds"] is not ssl_sentinel
+
+
+def test_get_schema_builds_request_and_converts_response():
+    """get_schema must forward trace_id verbatim in the request and return the
+    response's types unmodified — not just echo whatever the mock happens to hold."""
+    client = IversonClient(host="localhost", port=1)
+    client._mapping_stub = MagicMock()
+
+    field = mapping_pb.SchemaField(
+        name="title",
+        clr_type=mapping_pb.CLR_STRING,
+        is_search_key=True,
+        search_key_order=2,
+    )
+    schema_type = mapping_pb.SchemaType(name="Article", fields=[field])
+    client._mapping_stub.GetSchema.return_value = mapping_pb.GetSchemaResponse(
+        types=[schema_type]
+    )
+
+    result = client.get_schema(trace_id="trace-abc")
+
+    # Request built correctly.
+    client._mapping_stub.GetSchema.assert_called_once()
+    sent_request = client._mapping_stub.GetSchema.call_args[0][0]
+    assert isinstance(sent_request, mapping_pb.GetSchemaRequest)
+    assert sent_request.trace_id == "trace-abc"
+
+    # Response converted correctly, with concrete field-level assertions.
+    assert len(result) == 1
+    returned_type = result[0]
+    assert returned_type.name == "Article"
+    assert len(returned_type.fields) == 1
+    returned_field = returned_type.fields[0]
+    assert returned_field.name == "title"
+    assert returned_field.clr_type == mapping_pb.CLR_STRING
+    assert returned_field.is_search_key is True
+    assert returned_field.search_key_order == 2

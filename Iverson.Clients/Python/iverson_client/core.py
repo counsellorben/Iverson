@@ -599,6 +599,13 @@ class IversonClient:
         """Return an ``EntityCoordinator`` for the given entity class."""
         return EntityCoordinator(entity_class, self._channel)
 
+    def get_schema(self, trace_id: str = "") -> list[mapping_pb.SchemaType]:
+        """Return the catalog of registered types this identity may read."""
+        response = self._mapping_stub.GetSchema(
+            mapping_pb.GetSchemaRequest(trace_id=trace_id)
+        )
+        return list(response.types)
+
     def registrar(self, *entity_classes: type) -> SchemaRegistrar:
         """Return a ``SchemaRegistrar`` for the given entity classes."""
         return SchemaRegistrar(self._mapping_stub, *entity_classes)
