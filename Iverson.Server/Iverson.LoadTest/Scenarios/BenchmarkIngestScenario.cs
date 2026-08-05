@@ -55,6 +55,13 @@ public sealed class BenchmarkIngestScenario(
             throw new InvalidOperationException("No corpus found at the given --corpus-path.");
         }
 
+        // Baseline the DLQ before a single document is posted. MessageDispatcher retries 3x and then
+        // routes to the DLQ and *returns normally*, so KafkaConsumer commits the offset and a
+        // dead-lettered event drives consumer lag to zero exactly like a successful one. Lag alone
+        // therefore cannot tell "corpus is searchable" from "some of it was dropped".
+        var dlqBaseline = QueryDlqHighWatermark();
+        Console.WriteLine($"[benchmark-ingest] DLQ high watermark before ingest: {dlqBaseline:N0}");
+
         var keyMap = new Dictionary<string, string>();
         long succeeded = 0, failed = 0;
 
@@ -96,7 +103,59 @@ public sealed class BenchmarkIngestScenario(
         // wait for it here so a "success" from this command means the corpus is actually searchable.
         Console.WriteLine("[benchmark-ingest] Waiting for the intelligence consumer to drain...");
         await DrainIntelligenceConsumerAsync(ct);
+
+        var dlqAfter = QueryDlqHighWatermark();
+        if (dlqAfter > dlqBaseline)
+            throw new InvalidOperationException(
+                $"[benchmark-ingest] {dlqAfter - dlqBaseline:N0} event(s) were dead-lettered during " +
+                $"this ingest (DLQ high watermark {dlqBaseline:N0} -> {dlqAfter:N0}). Those documents " +
+                "are not indexed, so the corpus is partial and every Recall number computed from it " +
+                "would be depressed by an unknown amount.");
+
         Console.WriteLine("[benchmark-ingest] Intelligence consumer drained — corpus is searchable.");
+    }
+
+    /// <summary>
+    /// Sums the high watermark across every partition of <see cref="EntityTopics.Dlq"/>. Compared
+    /// before and after the ingest this detects dead-lettered events, which the lag-based drain wait
+    /// is structurally blind to (a DLQ'd event is committed like any other).
+    /// </summary>
+    private long QueryDlqHighWatermark()
+    {
+        var adminConfig = new AdminClientConfig { BootstrapServers = config.KafkaBootstrap };
+        ApplyKafkaSecurity(adminConfig);
+        using var admin = new AdminClientBuilder(adminConfig).Build();
+
+        var consumerConfig = new ConsumerConfig
+        {
+            BootstrapServers = config.KafkaBootstrap,
+            GroupId          = "iverson.loadtest.dlq-watermark-probe",
+            EnableAutoCommit = false,
+        };
+        ApplyKafkaSecurity(consumerConfig);
+        using var consumer = new ConsumerBuilder<Ignore, Ignore>(consumerConfig).Build();
+
+        var metadata = admin.GetMetadata(EntityTopics.Dlq, TimeSpan.FromSeconds(10));
+        var topic    = metadata.Topics.SingleOrDefault(t => t.Topic == EntityTopics.Dlq);
+
+        // The DLQ topic not existing yet is the normal state of a fresh stack: nothing has been
+        // dead-lettered, so the watermark is zero.
+        if (topic is null || topic.Error.Code == ErrorCode.UnknownTopicOrPart)
+            return 0;
+        if (topic.Error.IsError)
+            throw new InvalidOperationException(
+                $"Kafka DLQ watermark probe for topic '{EntityTopics.Dlq}' failed: {topic.Error.Reason}");
+
+        long total = 0;
+        foreach (var partition in topic.Partitions)
+        {
+            var wm = consumer.QueryWatermarkOffsets(
+                new TopicPartition(EntityTopics.Dlq, new Partition(partition.PartitionId)),
+                TimeSpan.FromSeconds(5));
+            total += Math.Max(0, wm.High.Value);
+        }
+
+        return total;
     }
 
     private async Task<(long Succeeded, long Failed)> IngestAsync(
@@ -110,12 +169,16 @@ public sealed class BenchmarkIngestScenario(
         {
             ct.ThrowIfCancellationRequested();
 
-            var identity = identities.PickRandom();
+            // Bypass only — NOT PickRandom(). BuildAuthorizationRules restricts Body to the
+            // iverson-loadtest-bypass role for both read and write, so the regular identity's
+            // PersistAsync is rejected outright by RejectDisallowedFields (every payload carries
+            // Body). The latency scenarios can afford a random identity; a correctness harness
+            // cannot.
+            var identity = identities.Bypass;
             var headers  = new Grpc.Core.Metadata().WithActingUser(await identity.GetTokenAsync(ct));
-            // The server force-sets OwnerId for the owner-restricted identity on create; the
-            // bypass identity's writes are never ownership-checked, so it must set its own OwnerId
-            // (same rule WritePathRunner follows for the other benchmark entities).
-            var ownerId = identity == identities.Bypass ? await identity.GetSubAsync(ct) : "";
+            // The bypass identity's writes are never ownership-checked, so it must set its own
+            // OwnerId (same rule WritePathRunner follows for the other benchmark entities).
+            var ownerId = await identity.GetSubAsync(ct);
 
             var doc = new BenchmarkDocument
             {
@@ -197,11 +260,17 @@ public sealed class BenchmarkIngestScenario(
 
                 foreach (var groupResult in results)
                 {
-                    foreach (var tpoe in groupResult.Partitions.Where(
-                        p => p.Topic == EntityTopics.Events && p.Offset != Offset.Unset))
+                    foreach (var tpoe in groupResult.Partitions.Where(p => p.Topic == EntityTopics.Events))
                     {
                         var wm = consumer.QueryWatermarkOffsets(tpoe.TopicPartition, TimeSpan.FromSeconds(5));
-                        totalLag += Math.Max(0, wm.High.Value - tpoe.Offset.Value);
+
+                        // Offset.Unset means the group has never committed on this partition — i.e.
+                        // nothing on it has been consumed yet. Skipping it (contributing 0 lag) lets
+                        // the drain return "drained" after 4 seconds on a fresh stack with nothing
+                        // indexed, so count the whole partition as outstanding instead.
+                        totalLag += tpoe.Offset == Offset.Unset
+                            ? Math.Max(0, wm.High.Value - wm.Low.Value)
+                            : Math.Max(0, wm.High.Value - tpoe.Offset.Value);
                     }
                 }
             }
