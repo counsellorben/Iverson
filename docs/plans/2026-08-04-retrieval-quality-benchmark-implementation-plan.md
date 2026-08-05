@@ -40,7 +40,7 @@ Copied verbatim from the spec; every task must hold to these.
 - `Iverson.Server/Iverson.LoadTest.Tests/Benchmark/MaxPassageAggregatorTests.cs`
 
 **Modify**
-- `Iverson.Server/Iverson.LoadTest/Program.cs` — auth-dictionary entry, DI registrations, two switch cases
+- `Iverson.Server/Iverson.LoadTest/Program.cs` — auth-dictionary entry, `CommandFlags` fields, the `needsTenantAndSchema` gate, DI registrations, two switch cases
 - `Iverson.Server/Iverson.Server.slnx` — one `<Project>` line for the test project
 
 ## Inherited from spec
@@ -85,6 +85,8 @@ Newly introduced by this plan and verified at plan-write time against `ac0f27f`.
 | P19 | Consumer impact | Adding a `switch` case and an auth-dictionary entry is additive | `Program.cs:147-152` is a dictionary literal; `:168-190` is a `switch` over string commands — new entries touch no existing branch |
 | P20 | Consumer impact | Adding a project line to `Iverson.Server.slnx` does not disturb the existing 14 | The file is a flat `<Solution>` list of `<Project Path=…/>` elements with no ordering or grouping semantics |
 | P21 | **Not grounded in repo evidence** | A test project may reference an `OutputType=Exe` project | No existing test project references an Exe, so there is no local precedent. This rests on standard .NET SDK behaviour (a reference assembly is produced regardless of `OutputType`). If it fails at T1, fall back to extracting `Corpus/` and `Benchmark/` into a small class library referenced by both |
+| P22 | Signature | `CommandFlags` (`Program.cs:330-347`) carries only `ForceReseed`, `Concurrency`, `Count`, `Iterations`, `Type`, `Target`; `Parse` is a fixed initializer with `StrFlag`/`IntFlag` helpers at `:349+` | Read of `Program.cs:330-347` |
+| P23 | Consumer impact | Tenant provisioning and schema registration are gated on a hardcoded command list, `needsTenantAndSchema` at `Program.cs:82`, which does not include the new benchmark commands | `Program.cs:82`; gate used at `:85` (tenant provisioning) and `:142` (`RegisterAllAsync` block) |
 
 ## Tasks
 
@@ -193,9 +195,12 @@ Add to the `authorizationByTypeName` dictionary in `Program.cs`:
 - [ ] **Step 3: Prove the type registers and is readable.**
 Registration is assembly-scanned, so the new type is picked up with no further wiring (spec A17/A18). Run against a live stack:
 ```bash
-dotnet run --project Iverson.Server/Iverson.LoadTest -- seed
+dotnet run --project Iverson.Server/Iverson.LoadTest -- seed --count 1
 ```
-and confirm the console reports `Schemas registered.` without error.
+and confirm the console reports `Schemas registered.` without error. `--count 1` because the point is
+registration, not seeding; the default is 10,000. Note that `seed` is on the working side of the
+`needsTenantAndSchema` gate — this step proves the *type* registers, not that the benchmark commands
+reach registration. Task 3 adds them to that gate.
 
 This step is not ceremony. Spec A21 records that a type registered without authorization rules is denied on read and both vector RPCs return an **empty stream rather than an error** — so a mistake here surfaces as "retrieval found nothing" eight configurations later. Verify now, not then.
 
@@ -234,17 +239,38 @@ and record `key → doc.DocId`. A null return means the write failed — count i
 Report progress with plain `Console.WriteLine` every N documents, matching `ReadPathScenario`. Do **not** use `BenchmarkReport`: it is the HdrHistogram latency reporter (P12), and latency measurement is out of scope per the spec.
 
 - [ ] **Step 3: Ingest BEIR before FreshStack.**
-Take the corpus name and paths from `CommandFlags`, and run BEIR first when both are requested. BEIR is ~9K documents against FreshStack's ~50K, and it alone answers the fusion question — so ordering it first means the spec's largest open risk (A10, laptop ingest feasibility, explicitly unverified) is hit early and its stated fallback stays available.
+Take the corpus path from `CommandFlags.CorpusPath` (added in Step 4), and run BEIR first when both are requested. BEIR is ~9K documents against FreshStack's ~50K, and it alone answers the fusion question — so ordering it first means the spec's largest open risk (A10, laptop ingest feasibility, explicitly unverified) is hit early and its stated fallback stays available.
 
-- [ ] **Step 4: Save the map and wire the command.**
-Write the map next to the run-file output directory. Register the scenario in DI alongside the existing ones and add:
+- [ ] **Step 4: Extend `CommandFlags` with the fields both benchmark commands read.**
+`CommandFlags` (`Program.cs:330-347`) has no corpus, output or configuration fields, and Task 4 reads
+the same ones — so they are defined once here, with these exact names:
+```csharp
+public string CorpusPath  { get; init; } = "";
+public string OutputDir   { get; init; } = "";
+public string KeyMapPath  { get; init; } = "";
+public string ConfigLabel { get; init; } = "";
+```
+and matching entries in `Parse` using the existing `StrFlag` helper: `--corpus-path`, `--output-dir`,
+`--key-map-path`, `--config-label`.
+
+- [ ] **Step 5: Save the map and wire the command.**
+Write the map to `KeyMapPath`. Extend the registration gate at `Program.cs:82` so the new commands
+provision a tenant and register schemas:
+```csharp
+var needsTenantAndSchema = command is "seed" or "write-path" or "read-path" or "all"
+    or "benchmark-ingest" or "benchmark-query";
+```
+`benchmark-query` needs it too: it does not write, but it resolves the schema server-side on every
+search and runs as the acting user tenant provisioning creates.
+
+Register the scenario in DI alongside the existing ones and add:
 ```csharp
 case "benchmark-ingest":
     await services.GetRequiredService<BenchmarkIngestScenario>().RunAsync(flags);
     break;
 ```
 
-- [ ] **Step 5: Commit.**
+- [ ] **Step 6: Commit.**
 ```bash
 git add Iverson.Server/Iverson.LoadTest/Benchmark/KeyMap.cs Iverson.Server/Iverson.LoadTest/Scenarios/BenchmarkIngestScenario.cs Iverson.Server/Iverson.LoadTest/Program.cs
 git commit -m "add benchmark corpus ingest scenario"
@@ -261,6 +287,7 @@ git commit -m "add benchmark corpus ingest scenario"
 
 **Interfaces:**
 - Consumes: Task 1's `CorpusQuery`; Task 3's persisted key map; Task 2's registered type.
+- Consumes: Task 3's `CommandFlags` fields — `KeyMapPath`, `OutputDir`, `ConfigLabel`.
 
 - [ ] **Step 1: Write the max-passage aggregator.**
 A pure static function — `IReadOnlyList<(string DocId, double Score)> Aggregate(IEnumerable<(string ParentKey, double Score)> chunks, IReadOnlyDictionary<string,string> keyMap, int limit)`:
@@ -303,7 +330,7 @@ case "benchmark-query":
     await services.GetRequiredService<BenchmarkQueryScenario>().RunAsync(flags);
     break;
 ```
-Take the configuration label (for the run tag), the key-map path and the output directory from `CommandFlags`.
+Take the configuration label (for the run tag), the key-map path and the output directory from `CommandFlags.ConfigLabel`, `.KeyMapPath` and `.OutputDir` — the fields Task 3 Step 4 adds.
 
 - [ ] **Step 7: Run the tests.**
 ```bash
