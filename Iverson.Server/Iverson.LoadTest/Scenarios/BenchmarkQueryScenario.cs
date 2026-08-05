@@ -80,15 +80,23 @@ public sealed class BenchmarkQueryScenario(
         var chunksResults  = new List<(string QueryId, IReadOnlyList<(string DocId, double Score)> Ranked)>();
 
         var done = 0;
+        long failures = 0;
         foreach (var query in queries)
         {
             ct.ThrowIfCancellationRequested();
 
-            var identity = identities.PickRandom();
+            // Bypass only — NOT PickRandom(). Body is readable by the iverson-loadtest-bypass role
+            // alone, so the regular identity is rejected on the searched property and would
+            // contribute an empty, silently-missing result set for that query.
+            var identity = identities.Bypass;
             var headers  = new Metadata().WithActingUser(await identity.GetTokenAsync(ct));
 
-            similarResults.Add((query.QueryId, await RunSimilarAsync(query, headers, ct)));
-            chunksResults.Add((query.QueryId, await RunChunksAsync(query, headers, keyMap, ct)));
+            var similar = await RunSimilarAsync(query, headers, ct);
+            var chunks  = await RunChunksAsync(query, headers, keyMap, ct);
+            failures += similar.Failed + chunks.Failed;
+
+            similarResults.Add((query.QueryId, similar.Ranked));
+            chunksResults.Add((query.QueryId, chunks.Ranked));
 
             done++;
             if (done % 25 == 0)
@@ -103,9 +111,18 @@ public sealed class BenchmarkQueryScenario(
 
         Console.WriteLine($"[benchmark-query] Wrote {similarPath}");
         Console.WriteLine($"[benchmark-query] Wrote {chunksPath}");
+
+        // A failed RPC contributes zero rows for that query, which the external scorer reads as a
+        // score of 0 — indistinguishable from a genuine miss. The run files are written first (they
+        // are useful for diagnosis) and then the command fails, so no silently-partial run file is
+        // ever mistaken for a complete one.
+        if (failures > 0)
+            throw new InvalidOperationException(
+                $"[benchmark-query] {failures:N0} search RPC(s) failed — the run files above are " +
+                "incomplete and must not be scored.");
     }
 
-    private async Task<IReadOnlyList<(string DocId, double Score)>> RunSimilarAsync(
+    private async Task<(IReadOnlyList<(string DocId, double Score)> Ranked, int Failed)> RunSimilarAsync(
         CorpusQuery query, Metadata headers, CancellationToken ct)
     {
         var request = Query.Similar<BenchmarkDocument>(d => d.Body)
@@ -114,6 +131,7 @@ public sealed class BenchmarkQueryScenario(
             .Build();
 
         var results = new List<(string DocId, double Score)>();
+        var failed  = 0;
         try
         {
             using var call = search.SearchSimilar(request, headers, cancellationToken: ct);
@@ -121,19 +139,30 @@ public sealed class BenchmarkQueryScenario(
             {
                 // Data is a Struct of camelCase STRING fields taken from the Qdrant payload (P9);
                 // it is not a deserialized entity, and StructConverter is internal to Core (P10).
-                var docId = r.Data.Fields["docId"].StringValue;
-                results.Add((docId, r.Score));
+                // BuildObjectPointPayload omits a scalar whose value is null, so "docId" can be
+                // absent — indexing would throw KeyNotFoundException past the catch below and kill
+                // the whole sweep over one bad result.
+                if (!r.Data.Fields.TryGetValue("docId", out var docIdValue))
+                {
+                    logger.LogWarning(
+                        "SearchSimilar result for QueryId={QueryId} has no docId payload field; skipping it.",
+                        query.QueryId);
+                    continue;
+                }
+
+                results.Add((docIdValue.StringValue, r.Score));
             }
         }
         catch (RpcException ex)
         {
             logger.LogWarning(ex, "SearchSimilar failed for QueryId={QueryId}", query.QueryId);
+            failed = 1;
         }
 
-        return results.OrderByDescending(r => r.Score).Take(DocumentBudget).ToList();
+        return (results.OrderByDescending(r => r.Score).Take(DocumentBudget).ToList(), failed);
     }
 
-    private async Task<IReadOnlyList<(string DocId, double Score)>> RunChunksAsync(
+    private async Task<(IReadOnlyList<(string DocId, double Score)> Ranked, int Failed)> RunChunksAsync(
         CorpusQuery query, Metadata headers, IReadOnlyDictionary<string, string> keyMap, CancellationToken ct)
     {
         var request = Query.Chunks<BenchmarkDocument>(d => d.Body)
@@ -142,6 +171,7 @@ public sealed class BenchmarkQueryScenario(
             .Build();
 
         var chunks = new List<(string ParentKey, double Score)>();
+        var failed = 0;
         try
         {
             using var call = search.SearchChunks(request, headers, cancellationToken: ct);
@@ -151,9 +181,10 @@ public sealed class BenchmarkQueryScenario(
         catch (RpcException ex)
         {
             logger.LogWarning(ex, "SearchChunks failed for QueryId={QueryId}", query.QueryId);
+            failed = 1;
         }
 
-        return MaxPassageAggregator.Aggregate(chunks, keyMap, DocumentBudget);
+        return (MaxPassageAggregator.Aggregate(chunks, keyMap, DocumentBudget), failed);
     }
 
     private static List<CorpusQuery> LoadQueries(string corpusPath)
