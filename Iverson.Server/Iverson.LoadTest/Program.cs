@@ -149,6 +149,7 @@ if (needsTenantAndSchema)
             ["BenchmarkArticle"] = BuildAuthorizationRules("Body"),
             ["BenchmarkAuthor"]  = BuildAuthorizationRules("Email"),
             ["BenchmarkTag"]     = BuildAuthorizationRules("Category"),
+            ["BenchmarkDocument"] = BuildAuthorizationRules("Body"),
         };
         await services.GetRequiredService<SchemaRegistrar>().RegisterAllAsync(authorizationByTypeName);
         Console.WriteLine("Schemas registered.\n");
