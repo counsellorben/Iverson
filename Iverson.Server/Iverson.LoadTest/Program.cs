@@ -139,6 +139,7 @@ var services = new ServiceCollection()
     .AddSingleton<KindWritePathScenario>()
     .AddSingleton<ReadPathScenario>()
     .AddSingleton<BenchmarkIngestScenario>()
+    .AddSingleton<BenchmarkQueryScenario>()
     .BuildServiceProvider();
 
 if (needsTenantAndSchema)
@@ -181,6 +182,9 @@ switch (command)
         break;
     case "benchmark-ingest":
         await services.GetRequiredService<BenchmarkIngestScenario>().RunAsync(flags);
+        break;
+    case "benchmark-query":
+        await services.GetRequiredService<BenchmarkQueryScenario>().RunAsync(flags);
         break;
     case "all":
         await services.GetRequiredService<DirectSeeder>().RunAsync(flags);
@@ -225,6 +229,9 @@ switch (command)
               benchmark-ingest  Stream a BEIR and/or FreshStack corpus through PersistAsync into
                                 BenchmarkDocument, wait for the intelligence consumer to drain, and
                                 save the ParentKey -> DocId map for benchmark-query
+              benchmark-query   Run SearchSimilar and SearchChunks over the ingested corpus's queries,
+                                aggregate chunk results to documents (max-passage), and write one
+                                TREC run file per RPC into --output-dir
 
             Options:
               --force-reseed         Truncate and re-seed even if data already present
