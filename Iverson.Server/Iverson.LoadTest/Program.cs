@@ -79,7 +79,8 @@ var clientCredentials = clientId is not null && clientSecret is not null && toke
     ? new IversonClientCredentials(clientId, clientSecret, tokenEndpoint, clientScope)
     : null;
 
-var needsTenantAndSchema = command is "seed" or "write-path" or "read-path" or "all";
+var needsTenantAndSchema = command is "seed" or "write-path" or "read-path" or "all"
+    or "benchmark-ingest" or "benchmark-query";
 
 ActingUserTokenProvider? tenantAdminTokenProvider = null;
 if (needsTenantAndSchema && clientCredentials is not null)
@@ -137,6 +138,7 @@ var services = new ServiceCollection()
     .AddSingleton<WritePathScenario>()
     .AddSingleton<KindWritePathScenario>()
     .AddSingleton<ReadPathScenario>()
+    .AddSingleton<BenchmarkIngestScenario>()
     .BuildServiceProvider();
 
 if (needsTenantAndSchema)
@@ -176,6 +178,9 @@ switch (command)
         break;
     case "read-path":
         await services.GetRequiredService<ReadPathScenario>().RunAsync(flags);
+        break;
+    case "benchmark-ingest":
+        await services.GetRequiredService<BenchmarkIngestScenario>().RunAsync(flags);
         break;
     case "all":
         await services.GetRequiredService<DirectSeeder>().RunAsync(flags);
@@ -217,6 +222,9 @@ switch (command)
               clear-data     Drop all StarRocks tables and truncate Postgres benchmark tables for greenfield re-registration
               acting-user-smoke-test  Exercise the acting-user auth layer with an Aggregate call carrying
                                       IVERSON_ACTING_USER_TOKEN via the x-acting-user-authorization metadata header
+              benchmark-ingest  Stream a BEIR and/or FreshStack corpus through PersistAsync into
+                                BenchmarkDocument, wait for the intelligence consumer to drain, and
+                                save the ParentKey -> DocId map for benchmark-query
 
             Options:
               --force-reseed         Truncate and re-seed even if data already present
@@ -229,6 +237,13 @@ switch (command)
                                      Kafka (kind/cloud Helm charts) — requires IVERSON_KAFKA_SECURITY_PROTOCOL,
                                      IVERSON_KAFKA_SASL_MECHANISM, IVERSON_KAFKA_SASL_USERNAME,
                                      IVERSON_KAFKA_SASL_PASSWORD, IVERSON_KAFKA_SSL_CA_LOCATION.
+              --corpus-path <dir>    Root directory for benchmark-ingest; expects beir/corpus.jsonl
+                                     and/or freshstack/corpus.jsonl beneath it
+              --output-dir <dir>     Directory benchmark-query writes TREC run files to
+              --key-map-path <file> Path benchmark-ingest saves the ParentKey -> DocId map to, and
+                                     benchmark-query reads it from
+              --config-label <name> Label identifying one of the sweep's eight configurations,
+                                     used by benchmark-query when naming its run file
             """);
         break;
 }
@@ -336,6 +351,10 @@ public sealed class CommandFlags
     public int    Iterations  { get; init; } = 1_000;
     public string Type        { get; init; } = "Article";
     public string Target      { get; init; } = "containers";
+    public string CorpusPath  { get; init; } = "";
+    public string OutputDir   { get; init; } = "";
+    public string KeyMapPath  { get; init; } = "";
+    public string ConfigLabel { get; init; } = "";
 
     public static CommandFlags Parse(string[] args) => new()
     {
@@ -345,6 +364,10 @@ public sealed class CommandFlags
         Iterations  = IntFlag(args, "--iterations",  1_000),
         Type        = StrFlag(args, "--type",        "Article"),
         Target      = StrFlag(args, "--target",      "containers"),
+        CorpusPath  = StrFlag(args, "--corpus-path",  ""),
+        OutputDir   = StrFlag(args, "--output-dir",   ""),
+        KeyMapPath  = StrFlag(args, "--key-map-path", ""),
+        ConfigLabel = StrFlag(args, "--config-label", ""),
     };
 
     private static int    IntFlag(
