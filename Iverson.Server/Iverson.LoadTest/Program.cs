@@ -75,8 +75,12 @@ if (flags.Target == "kind" && string.IsNullOrWhiteSpace(kafkaOptions.SecurityPro
     return 1;
 }
 
+// HostHeader reuses the same Authentik host as the acting-user flow (same instance) — see
+// IversonClientCredentials.HostHeader's doc comment for why this is required: Authentik's
+// issuer_mode:global stamps the JWT's `iss` claim from the request's Host header, so a client
+// reaching the host-exposed port as localhost mints a token the API rejects on issuer validation.
 var clientCredentials = clientId is not null && clientSecret is not null && tokenEndpoint is not null
-    ? new IversonClientCredentials(clientId, clientSecret, tokenEndpoint, clientScope)
+    ? new IversonClientCredentials(clientId, clientSecret, tokenEndpoint, clientScope, HostHeader: actingUserHostHeader)
     : null;
 
 var needsTenantAndSchema = command is "seed" or "write-path" or "read-path" or "all";
@@ -240,13 +244,21 @@ static string Env(string key, string def) =>
 static async Task<string> MintClientCredentialsTokenAsync(IversonClientCredentials creds)
 {
     using var http = new HttpClient();
-    var response = await http.RequestClientCredentialsTokenAsync(new ClientCredentialsTokenRequest
+    var request = new ClientCredentialsTokenRequest
     {
         Address      = creds.TokenEndpoint,
         ClientId     = creds.ClientId,
         ClientSecret = creds.ClientSecret,
         Scope        = creds.Scope,
-    });
+    };
+    // This is a second minting path alongside CachedClientCredentialsTokenProvider, and it must
+    // honour HostHeader for the same reason: Authentik's issuer_mode:global stamps the JWT's `iss`
+    // from the request's Host header, so minting via localhost yields iss=http://localhost:9000/,
+    // which the API rejects with a 401 before any authorization is evaluated.
+    if (creds.HostHeader is { Length: > 0 } host)
+        request.Headers.Host = host;
+
+    var response = await http.RequestClientCredentialsTokenAsync(request);
     if (response.IsError)
         throw new InvalidOperationException($"Failed to acquire admin-automation token: {response.Error}");
     return response.AccessToken!;

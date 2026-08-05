@@ -279,6 +279,12 @@ services:
       - Authentication__ValidAudiences__1=dev-iverson-loadtest-client-id
       - Authentication__ValidAudiences__2=dev-iverson-webtest-client-id
       - Authentication__ValidAudiences__3=dev-iverson-admin-automation-client-id
+      # The LoadTest's data-plane calls (Post/Get/Search) carry the tenant-admin *user* token as
+      # their service credential — AddIversonClient routes the persistence/retrieval/search stubs
+      # through dataPlaneTokenProvider, leaving only the mapping stub on client credentials. That
+      # token is minted via the human OIDC client below, so without this audience every Post fails
+      # the default scheme with a bare HTTP 401 while RegisterSchema still succeeds.
+      - Authentication__ValidAudiences__4=dev-iverson-loadtest-human-client-id
       - Authentication__ActingUser__Authority=http://authentik-server:9000/application/o/iverson-api/
       - Authentication__ActingUser__ValidAudiences__0=dev-iverson-loadtest-human-client-id
       - Authentik__BaseUrl=http://authentik-server:9000
