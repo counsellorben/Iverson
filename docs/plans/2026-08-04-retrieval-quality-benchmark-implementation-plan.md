@@ -87,6 +87,7 @@ Newly introduced by this plan and verified at plan-write time against `ac0f27f`.
 | P21 | **Not grounded in repo evidence** | A test project may reference an `OutputType=Exe` project | No existing test project references an Exe, so there is no local precedent. This rests on standard .NET SDK behaviour (a reference assembly is produced regardless of `OutputType`). If it fails at T1, fall back to extracting `Corpus/` and `Benchmark/` into a small class library referenced by both |
 | P22 | Signature | `CommandFlags` (`Program.cs:330-347`) carries only `ForceReseed`, `Concurrency`, `Count`, `Iterations`, `Type`, `Target`; `Parse` is a fixed initializer with `StrFlag`/`IntFlag` helpers at `:349+` | Read of `Program.cs:330-347` |
 | P23 | Consumer impact | Tenant provisioning and schema registration are gated on a hardcoded command list, `needsTenantAndSchema` at `Program.cs:82`, which does not include the new benchmark commands | `Program.cs:82`; gate used at `:85` (tenant provisioning) and `:142` (`RegisterAllAsync` block) |
+| P24 | Ordering | `PersistAsync` returning does not mean the document is indexed; chunk/embed/upsert happen asynchronously in `IntelligenceStoreConsumer`, and the existing lag probe gives up after 60s without reporting whether it drained | `EntityCoordinator.cs:98-111`; `IntelligenceStoreConsumer.cs:144,162`; `WritePathRunner.cs:240` (60s deadline), `:279` (two-consecutive-zero exit), `:283` (returns void) |
 
 ## Tasks
 
@@ -270,7 +271,23 @@ case "benchmark-ingest":
     break;
 ```
 
-- [ ] **Step 6: Commit.**
+- [ ] **Step 6: Wait for the intelligence consumer to drain before reporting success.**
+`PersistAsync` returns when the API has accepted the write; chunking, embedding and the Qdrant
+upsert happen afterwards in `IntelligenceStoreConsumer`. Querying before that drains scores a
+partial corpus and produces well-formed run files with wrong numbers.
+
+`WritePathRunner.PrintKafkaLagAsync` (`:202`) is the existing probe and is `internal static` in this
+assembly, but it is **not** reusable as-is: it gives up at a hard 60-second deadline (`:240`),
+returns `void`, and cannot tell the caller whether lag reached zero or the deadline passed. On ~59K
+documents through CPU Ollama the drain may take hours.
+
+Add a drain wait modelled on it — same `ListConsumerGroupOffsetsAsync` + `QueryWatermarkOffsets`
+probe against group `iverson.consumer.intelligence` on topic `EntityTopics.Events` — with no fixed
+deadline, printing remaining lag each poll so a long drain is visibly progressing rather than
+looking hung, and returning success only once lag reaches zero on two consecutive reads. Fail the
+run if the probe itself errors; a silent `break` here would reintroduce the false-completion signal.
+
+- [ ] **Step 7: Commit.**
 ```bash
 git add Iverson.Server/Iverson.LoadTest/Benchmark/KeyMap.cs Iverson.Server/Iverson.LoadTest/Scenarios/BenchmarkIngestScenario.cs Iverson.Server/Iverson.LoadTest/Program.cs
 git commit -m "add benchmark corpus ingest scenario"
@@ -301,6 +318,8 @@ Three cases, all from the spec's Testing section plus the budget rule: several c
 
 - [ ] **Step 4: Write the query scenario.**
 Constructor-inject `ObjectSearchService.ObjectSearchServiceClient`, `ActingUserIdentities`, and the logger — **not** `EntityCoordinator`. Its search methods take no `Metadata` (P5), so they cannot carry an acting user, and an unauthenticated query is denied into an empty stream (spec A21).
+
+This scenario assumes a fully drained ingest — Task 3 Step 6 is what establishes that. Querying a partially indexed corpus produces non-empty run files with silently wrong numbers.
 
 Build each request with the public builder and send it through the raw client with acting-user headers:
 ```csharp
