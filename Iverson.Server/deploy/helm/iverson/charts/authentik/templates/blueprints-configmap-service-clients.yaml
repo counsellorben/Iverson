@@ -37,7 +37,10 @@ data:
         attrs:
           name: "Iverson: group membership"
           description: Exposes the authenticated user's Authentik group names
-          expression: "return [group.name for group in user.ak_groups.all()]"
+          # Must return a DICT — a scope mapping's returned mapping is merged into the token's
+          # claims, so a bare list emits no "groups" claim and RowFieldAuthorizationEvaluator's
+          # FindAll("groups") finds nothing, denying every role-gated read and write.
+          expression: 'return {"groups": [group.name for group in user.ak_groups.all()]}'
       - model: authentik_providers_oauth2.scopemapping
         identifiers:
           scope_name: tenant_id

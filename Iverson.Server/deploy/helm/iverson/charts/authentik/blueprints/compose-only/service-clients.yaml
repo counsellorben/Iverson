@@ -40,7 +40,12 @@ entries:
     attrs:
       name: "Iverson: group membership"
       description: Exposes the authenticated user's Authentik group names
-      expression: "return [group.name for group in user.ak_groups.all()]"
+      # Must return a DICT — Authentik merges a scope mapping's returned mapping into the token's
+      # claims, so a bare list emits no "groups" claim at all. RowFieldAuthorizationEvaluator reads
+      # roles via FindAll("groups"), so with the list form no caller ever matched a RowPermission or
+      # a FieldPermission's WritableRoles: every restricted-field write was refused for every
+      # identity, including the bypass one. Compare the tenant_id mapping below, which returns a dict.
+      expression: 'return {"groups": [group.name for group in user.ak_groups.all()]}'
   - model: authentik_providers_oauth2.scopemapping
     identifiers:
       scope_name: tenant_id
@@ -293,6 +298,15 @@ entries:
     identifiers:
       name: tenant-admins
     attrs: {}
+  # Authentik derives User.is_superuser from group membership — it is a property computed over the
+  # user's groups, not a writable field — so `is_superuser: true` set directly on the user was
+  # silently discarded, leaving the orchestrator with no admin rights and every IdpAdminClient call
+  # failing 403. The superuser flag has to live on a group the user belongs to.
+  - model: authentik_core.group
+    identifiers:
+      name: iverson-admin-orchestrators
+    attrs:
+      is_superuser: true
   - model: authentik_core.user
     identifiers:
       username: iverson-admin-orchestrator
@@ -302,7 +316,8 @@ entries:
       email: iverson-admin-orchestrator@example.invalid
       password: "dev-only-not-for-production-admin-orchestrator-password"
       is_active: true
-      is_superuser: true
+      groups:
+        - !Find [authentik_core.group, [name, iverson-admin-orchestrators]]
   - model: authentik_core.token
     identifiers:
       identifier: iverson-admin-orchestrator-token
@@ -310,3 +325,9 @@ entries:
       key: "dev-only-not-for-production-admin-orchestrator-token"
       user: !Find [authentik_core.user, [username, iverson-admin-orchestrator]]
       intent: api
+      # Authentik's Token model defaults `expiring` to true, and an expiring intent:api token has
+      # its secret rotated on save — so without this the fixed `key` above is replaced by a random
+      # one the moment the blueprint applies, and docker-compose's Authentik__AdminToken (which
+      # hardcodes the value above) is wrong from the first boot of a fresh stack. Every CreateTenant
+      # then fails with a 403 out of IdpAdminClient.ResolveGroupPkAsync.
+      expiring: false
