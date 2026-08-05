@@ -53,9 +53,9 @@ internal static class AuthorizationFieldMasking
             // callers too, unlike ownership below). Force-set the owner field for
             // ownership-required callers; leave it untouched for bypass callers.
             if (decision.TenantColumn is not null)
-                payload.Fields[decision.TenantColumn] = Value.ForString(decision.TenantValue!);
+                SetAuthoritativeField(payload, decision.TenantColumn, decision.TenantValue!);
             if (decision.OwnershipRequired)
-                payload.Fields[decision.OwnerFieldName!] = Value.ForString(decision.OwnerValue!);
+                SetAuthoritativeField(payload, decision.OwnerFieldName!, decision.OwnerValue!);
         }
         else
         {
@@ -103,6 +103,31 @@ internal static class AuthorizationFieldMasking
         }
 
         RejectDisallowedFields(payload, decision.AllowedFields, exemptField: decision.OwnerFieldName);
+    }
+
+    /// <summary>
+    /// Writes a server-computed, authoritative column (tenant or owner) into the payload under the
+    /// schema's canonical casing, first dropping any client-supplied key that differs only by case.
+    /// <para>
+    /// The .NET client serializes with a camelCase naming policy, so a payload arrives with
+    /// <c>tenantId</c>/<c>ownerId</c> while the schema column is <c>TenantId</c>/<c>OwnerId</c>.
+    /// Setting the canonical key without removing the camelCase one leaves BOTH in the Struct, and
+    /// <see cref="StructSerializer.SerializePayload"/> then UpperFirst()es every key into a
+    /// Dictionary — throwing "An item with the same key has already been added. Key: TenantId" and
+    /// failing the write with a bare Unknown status. The server-computed value must win: it is
+    /// derived from the caller's token, not from client-supplied data.
+    /// </para>
+    /// </summary>
+    private static void SetAuthoritativeField(Struct payload, string canonicalName, string value)
+    {
+        var duplicates = payload.Fields.Keys
+            .Where(k => k != canonicalName
+                        && string.Equals(StructSerializer.UpperFirst(k), canonicalName, StringComparison.Ordinal))
+            .ToList();
+        foreach (var key in duplicates)
+            payload.Fields.Remove(key);
+
+        payload.Fields[canonicalName] = Value.ForString(value);
     }
 
     public static void MaskDisallowedFields(

@@ -40,17 +40,17 @@ public sealed class IdpAdminClient(IHttpClientFactory httpClientFactory) : IIdpA
             groups = groupPks
         };
 
-        using var createResponse = await client.PostAsJsonAsync("/api/v3/core/users/", createBody);
-        createResponse.EnsureSuccessStatusCode();
+        using var createResponse = await client.PostAsync("/api/v3/core/users/", JsonBody(createBody));
+        await EnsureSuccessWithBodyAsync(createResponse, "create user");
 
         await using var createdStream = await createResponse.Content.ReadAsStreamAsync();
         using var createdDoc = await JsonDocument.ParseAsync(createdStream);
         var userId = ReadPk(createdDoc.RootElement);
 
-        using var setPasswordResponse = await client.PostAsJsonAsync(
+        using var setPasswordResponse = await client.PostAsync(
             $"/api/v3/core/users/{userId}/set_password/",
-            new { password });
-        setPasswordResponse.EnsureSuccessStatusCode();
+            JsonBody(new { password }));
+        await EnsureSuccessWithBodyAsync(setPasswordResponse, "set password");
 
         return userId;
     }
@@ -127,10 +127,10 @@ public sealed class IdpAdminClient(IHttpClientFactory httpClientFactory) : IIdpA
         // extrapolation from general Authentik API conventions (mirroring the Django-admin-style
         // bulk membership actions Authentik exposes) — not explicitly named in the task brief and
         // not verified against a live instance or OpenAPI schema.
-        using var response = await client.PostAsJsonAsync(
+        using var response = await client.PostAsync(
             $"/api/v3/core/groups/{groupPk}/add_user/",
-            new { pk = UserPkJsonValue(userId) });
-        response.EnsureSuccessStatusCode();
+            JsonBody(new { pk = UserPkJsonValue(userId) }));
+        await EnsureSuccessWithBodyAsync(response, "add user to group");
     }
 
     public async Task RemoveGroupAsync(string userId, string groupName)
@@ -138,20 +138,20 @@ public sealed class IdpAdminClient(IHttpClientFactory httpClientFactory) : IIdpA
         using var client = httpClientFactory.CreateClient(HttpClientName);
         var groupPk = await ResolveGroupPkAsync(client, groupName);
 
-        using var response = await client.PostAsJsonAsync(
+        using var response = await client.PostAsync(
             $"/api/v3/core/groups/{groupPk}/remove_user/",
-            new { pk = UserPkJsonValue(userId) });
-        response.EnsureSuccessStatusCode();
+            JsonBody(new { pk = UserPkJsonValue(userId) }));
+        await EnsureSuccessWithBodyAsync(response, "remove user from group");
     }
 
     private static async Task PatchIsActiveAsync(HttpClient client, string userId, bool isActive)
     {
         using var request = new HttpRequestMessage(HttpMethod.Patch, $"/api/v3/core/users/{userId}/")
         {
-            Content = JsonContent.Create(new { is_active = isActive })
+            Content = JsonBody(new { is_active = isActive })
         };
         using var response = await client.SendAsync(request);
-        response.EnsureSuccessStatusCode();
+        await EnsureSuccessWithBodyAsync(response, "patch is_active");
     }
 
     private static async Task<string> ResolveGroupPkAsync(HttpClient client, string groupName)
@@ -175,6 +175,40 @@ public sealed class IdpAdminClient(IHttpClientFactory httpClientFactory) : IIdpA
     // to match the integer type Authentik's user model actually uses.
     private static object UserPkJsonValue(string userId) =>
         int.TryParse(userId, out var numeric) ? numeric : userId;
+
+    /// <summary>
+    /// Serializes a request body to a length-delimited <see cref="StringContent"/>.
+    /// <para>
+    /// PostAsJsonAsync/JsonContent serialize lazily and so leave Content-Length unset, which makes
+    /// HttpClient fall back to <c>Transfer-Encoding: chunked</c>. Authentik's ASGI server silently
+    /// DISCARDS a chunked request body — DRF then sees an empty payload and rejects the call with
+    /// "This field is required." for every required field, while the fields were in fact sent.
+    /// Verified against the live instance: byte-identical JSON succeeds with Content-Length and
+    /// fails chunked. Every request body in this class must therefore go through here.
+    /// </para>
+    /// </summary>
+    private static StringContent JsonBody(object body) =>
+        new(
+            JsonSerializer.Serialize(body, new JsonSerializerOptions(JsonSerializerDefaults.Web)),
+            System.Text.Encoding.UTF8,
+            "application/json");
+
+    /// <summary>
+    /// EnsureSuccessStatusCode() discards the response body, and Authentik's DRF layer puts its
+    /// per-field validation errors there — so a rejected request surfaced only as a bare
+    /// "400 (Bad Request)" with nothing saying which field it disliked. Given this class's
+    /// standing caveat that its JSON field names were never verified against a live instance,
+    /// that body is the first thing anyone diagnosing a failure here needs.
+    /// </summary>
+    private static async Task EnsureSuccessWithBodyAsync(HttpResponseMessage response, string operation)
+    {
+        if (response.IsSuccessStatusCode)
+            return;
+
+        var body = await response.Content.ReadAsStringAsync();
+        throw new HttpRequestException(
+            $"Authentik {operation} failed with {(int)response.StatusCode} {response.ReasonPhrase}: {body}");
+    }
 
     private static string ReadPk(JsonElement element)
     {
