@@ -20,7 +20,7 @@ public class TenantLifecycleGrpcServiceTests
     private readonly Iverson.Api.Grpc.TenantLifecycleGrpcService _sut;
 
     private static readonly TenantRow ExistingTenant =
-        new("acme", "Acme Corp", "active", DateTimeOffset.UtcNow);
+        new("acme", "Acme Corp", "active", DateTime.UtcNow);
 
     public TenantLifecycleGrpcServiceTests()
     {
@@ -136,8 +136,8 @@ public class TenantLifecycleGrpcServiceTests
     {
         var tenants = new[]
         {
-            new TenantRow("acme", "Acme Corp", "active", DateTimeOffset.UtcNow),
-            new TenantRow("globex", "Globex", "suspended", DateTimeOffset.UtcNow)
+            new TenantRow("acme", "Acme Corp", "active", DateTime.UtcNow),
+            new TenantRow("globex", "Globex", "suspended", DateTime.UtcNow)
         };
         _tenantRepository.ListAsync().Returns(Task.FromResult<IEnumerable<TenantRow>>(tenants));
 

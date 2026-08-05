@@ -25,7 +25,7 @@ public class TenantStatusCacheTests
     {
         _repository
             .GetAsync("tenant-a")
-            .Returns(new TenantRow("tenant-a", "Tenant A", "active", DateTimeOffset.UtcNow));
+            .Returns(new TenantRow("tenant-a", "Tenant A", "active", DateTime.UtcNow));
 
         var status = await _sut.GetStatusAsync("tenant-a");
 
@@ -38,7 +38,7 @@ public class TenantStatusCacheTests
     {
         _repository
             .GetAsync("tenant-b")
-            .Returns(new TenantRow("tenant-b", "Tenant B", "suspended", DateTimeOffset.UtcNow));
+            .Returns(new TenantRow("tenant-b", "Tenant B", "suspended", DateTime.UtcNow));
 
         var status = await _sut.GetStatusAsync("tenant-b");
 
@@ -60,7 +60,7 @@ public class TenantStatusCacheTests
     {
         _repository
             .GetAsync("tenant-c")
-            .Returns(new TenantRow("tenant-c", "Tenant C", "active", DateTimeOffset.UtcNow));
+            .Returns(new TenantRow("tenant-c", "Tenant C", "active", DateTime.UtcNow));
 
         var first = await _sut.GetStatusAsync("tenant-c");
         var second = await _sut.GetStatusAsync("tenant-c");

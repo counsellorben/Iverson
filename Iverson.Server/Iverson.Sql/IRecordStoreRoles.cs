@@ -111,7 +111,14 @@ public interface ITenantRepository
     Task DeleteAsync(string id);
 }
 
-public sealed record TenantRow(string Id, string DisplayName, string Status, DateTimeOffset CreatedAt);
+/// <param name="CreatedAt">
+/// <see cref="DateTime"/>, not <see cref="DateTimeOffset"/>: the column is
+/// <c>timestamp with time zone</c>, which Npgsql materializes as a UTC <see cref="DateTime"/>.
+/// Dapper matches a record's constructor by parameter type, so declaring this as
+/// <see cref="DateTimeOffset"/> made every <c>GetAsync</c>/<c>ListAsync</c> throw
+/// "a parameterless default constructor or one matching signature ... is required" at runtime.
+/// </param>
+public sealed record TenantRow(string Id, string DisplayName, string Status, DateTime CreatedAt);
 
 public sealed record TableSchema(
     string TableName,
