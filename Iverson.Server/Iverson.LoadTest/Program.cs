@@ -341,6 +341,16 @@ static async Task ClearDataAsync(string starRocksCs, string postgresCs)
         "TRUNCATE benchmark_articles, benchmark_authors, benchmark_tags RESTART IDENTITY CASCADE");
     Console.WriteLine("Postgres: truncated benchmark_articles, benchmark_authors, benchmark_tags.");
 
+    // benchmark_documents is created only by the retrieval-quality benchmark commands, so it may
+    // not exist on a stack that has only run the latency scenarios.
+    await pg.ExecuteAsync(
+        "DO $$ BEGIN IF EXISTS (SELECT 1 FROM pg_tables WHERE tablename = 'benchmark_documents') THEN TRUNCATE benchmark_documents RESTART IDENTITY CASCADE; END IF; END $$");
+    Console.WriteLine("Postgres: cleared benchmark_documents (retrieval-quality benchmark corpus).");
+    Console.WriteLine(
+        "NOTE: clear-data does NOT touch Qdrant. Drop the tenant's Qdrant collection by hand before " +
+        "re-running benchmark-ingest, or orphaned points from the previous corpus will survive into " +
+        "the next sweep and their ParentKeys will not be in the new key map.");
+
     await pg.ExecuteAsync(
         "DO $$ BEGIN IF EXISTS (SELECT 1 FROM pg_tables WHERE tablename = 'benchmark_users') THEN TRUNCATE benchmark_users CASCADE; END IF; END $$");
     Console.WriteLine("Postgres: cleared benchmark_users (legacy).");
