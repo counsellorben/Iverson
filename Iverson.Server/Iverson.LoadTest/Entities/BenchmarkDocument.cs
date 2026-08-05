@@ -17,5 +17,6 @@ public sealed class BenchmarkDocument
     [IversonChunk]
     public string Body { get; set; } = "";
 
+    public string OwnerId { get; set; } = "";
     [IversonTenant] public string TenantId { get; set; } = "";
 }
