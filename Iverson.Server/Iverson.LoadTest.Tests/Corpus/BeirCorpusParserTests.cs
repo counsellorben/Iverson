@@ -57,6 +57,26 @@ public class BeirCorpusParserTests
     }
 
     [Fact]
+    public void ParseCorpus_MissingText_ThrowsRatherThanYieldingAnUnindexableDocument()
+    {
+        var input = """{"_id": "doc1", "title": "T"}""";
+
+        var act = () => BeirCorpusParser.ParseCorpus(new StringReader(input));
+
+        act.Should().Throw<FormatException>().WithMessage("*line 1*text*");
+    }
+
+    [Fact]
+    public void ParseCorpus_WhitespaceOnlyText_ThrowsRatherThanYieldingAnUnindexableDocument()
+    {
+        var input = """{"_id": "doc1", "title": "T", "text": "   "}""";
+
+        var act = () => BeirCorpusParser.ParseCorpus(new StringReader(input));
+
+        act.Should().Throw<FormatException>().WithMessage("*line 1*text*");
+    }
+
+    [Fact]
     public void ParseQueries_WellFormedMultiLine_ParsesAllQueries()
     {
         var input = """

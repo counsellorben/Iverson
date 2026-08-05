@@ -35,6 +35,18 @@ public static class BeirCorpusParser
             var title = root.TryGetProperty("title", out var titleProp) ? titleProp.GetString() ?? "" : "";
             var text = root.TryGetProperty("text", out var textProp) ? textProp.GetString() ?? "" : "";
 
+            // Fail as loudly as a missing "_id" does. A document with empty body text persists fine
+            // and counts as a success, but IntelligenceStoreConsumer skips whitespace-only text on
+            // both the vector and the chunk path — so it is invisible to every query. A body field
+            // that is actually named something else would otherwise produce a full corpus of these
+            // and an entirely empty run file, with success reported at every checkpoint.
+            if (string.IsNullOrWhiteSpace(text))
+            {
+                throw new FormatException(
+                    $"BEIR corpus line {lineNumber} (_id \"{id}\"): missing or empty \"text\". A document " +
+                    "with no body is never indexed and would silently vanish from every result set.");
+            }
+
             documents.Add(new CorpusDocument(id, title, text));
         }
 

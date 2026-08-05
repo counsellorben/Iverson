@@ -55,6 +55,20 @@ public static class FreshStackCorpusParser
             var title = root.TryGetProperty("title", out var titleProp) ? titleProp.GetString() ?? "" : "";
             var text = root.TryGetProperty("text", out var textProp) ? textProp.GetString() ?? "" : "";
 
+            // Fail as loudly as a missing "_id" does — and doubly so here, where the field name is
+            // itself a guess (see the UNRESOLVED note on this type). A document with empty body text
+            // persists and counts as a success but is skipped by IntelligenceStoreConsumer on both
+            // the vector and the chunk path, so a wrong body-field name would otherwise yield a
+            // fully "successful" ingest and an empty run file.
+            if (string.IsNullOrWhiteSpace(text))
+            {
+                throw new FormatException(
+                    $"FreshStack corpus line {lineNumber} (_id \"{id}\"): missing or empty \"text\". A " +
+                    "document with no body is never indexed and would silently vanish from every " +
+                    "result set; if FreshStack names the body field something other than \"text\", " +
+                    "correct this parser rather than relaxing this check.");
+            }
+
             documents.Add(new CorpusDocument(id, title, text));
         }
 
