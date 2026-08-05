@@ -208,7 +208,8 @@ ship without Part 1.**
 ## Verified assumptions
 
 Verified against `origin/main@b4b2d27`. 18 listed cold before any verification; 16 held, 2 failed
-and changed the design.
+and changed the design. A19-A21 were added afterwards by the round-1 review's span check, which
+found them uncovered by the original 18; each was verified in-round.
 
 | # | Assumption | Result |
 |---|---|---|
@@ -230,6 +231,9 @@ and changed the design.
 | A16 | `isExistingEntity` is the right reference/new discriminator | HOLDS — non-empty, parseable, non-`Guid.Empty` |
 | A17 | Existing test helpers can express the new cases | HOLDS — `SchemaWithAuthorization` (`Relations = []`), `MakeSchemaWithRelation` |
 | A18 | Nothing depends on the current behavior | HOLDS — one existing nav-property test, none asserting the FK stays unset |
+| A19 | The FK column also appears in `ScalarColumns`, not only `FkColumns` | HOLDS — `SchemaBuilder.cs:53-56` runs `scalars.Add(...)` for every non-key property before the `Id`/`Ids` branch adds to `fks`. Load-bearing for `ValidateSingleRelation`'s nullability lookup once a null FK is routed past the GUID branch |
+| A20 | All four write paths evaluate with `AuthorizationAction.Write` | HOLDS — `ObjectPersistenceGrpcService.cs:38`, `:109`; `ObjectMappingGrpcService.cs:295`, `:346`. Load-bearing for the write-only gate: a site passing a different action would silently admit no relation names |
+| A21 | A nested object carrying a key plus extra fields is rejected before normalization applies | HOLDS — `RelationValidator.cs:124-127` errors on `isExistingEntity && nested.Fields.Count > 1`; errors accumulate and throw at the end of the pass, so normalization order within it is immaterial. Bounds normalization's input to key-only references |
 
 A14 was verified by a temporary probe test that serialized a POCO with a null nullable FK and a
 null navigation property through `StructConverter.ToStruct` and dumped the resulting Struct keys.
