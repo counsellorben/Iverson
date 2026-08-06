@@ -63,7 +63,10 @@ public sealed class RowFieldAuthorizationEvaluator : IRowFieldAuthorizationEvalu
                 })
                 .Select(fp => fp.FieldName)
                 .Where(f => !string.Equals(f, schema.KeyColumn.Name, StringComparison.OrdinalIgnoreCase))
-                .ToHashSet();
+                // Case-insensitive to match the key-column filter above: a FieldPermission naming
+                // `authorId` must exclude the column `AuthorId`. Ordinal comparison let a
+                // case-mismatched permission silently protect nothing.
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
 
             if (excluded.Count > 0)
             {

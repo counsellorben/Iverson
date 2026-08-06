@@ -307,4 +307,46 @@ public class RelationValidatorTests
         act.Should().NotThrow();
         payload.Fields.Should().NotContainKey("AuthorId");
     }
+
+    [Fact]
+    public void ValidateAndNormalizeRelations_ManyToMany_ScalarInNavList_ThrowsAndWritesNoForeignKey()
+    {
+        var schema = MakeSchemaWithRelation(RelationKind.ManyToMany, fkNullable: true) with
+        {
+            Relations = [new RelationDescriptor("Tags", RelationKind.ManyToMany, "Tag", "TagIds")]
+        };
+        var payload = new Struct();
+        var nested = new Struct();
+        nested.Fields["Id"] = Value.ForString(Guid.NewGuid().ToString());
+        payload.Fields["Tags"] = Value.ForList(Value.ForStruct(nested), Value.ForString("not-an-object"));
+
+        var act = () => _sut.ValidateAndNormalizeRelations(payload, schema);
+
+        act.Should().Throw<RpcException>()
+            .Where(e => e.Status.Detail.Contains("'Tags[1]': expected an object, got a scalar"));
+        // The one resolvable item must NOT be written on its own — a partial FK list would silently
+        // drop the unresolved reference on the full-document upsert.
+        payload.Fields.Should().NotContainKey("TagIds");
+    }
+
+    [Fact]
+    public void ValidateAndNormalizeRelations_ManyToOne_EmbeddedObjectWhenForeignKeyIsNotALocalColumn_Throws()
+    {
+        // The relation names an FK column this type does not have. Normalizing would inject a
+        // phantom key that the stores silently ignore, so it must be an explicit error instead.
+        var schema = MakeSchemaWithRelation(RelationKind.ManyToOne, fkNullable: true) with
+        {
+            ScalarColumns = []
+        };
+        var payload = new Struct();
+        var nested = new Struct();
+        nested.Fields["Id"] = Value.ForString(Guid.NewGuid().ToString());
+        payload.Fields["Author"] = Value.ForStruct(nested);
+
+        var act = () => _sut.ValidateAndNormalizeRelations(payload, schema);
+
+        act.Should().Throw<RpcException>()
+            .Where(e => e.Status.Detail.Contains("'AuthorId' is not a column on this type"));
+        payload.Fields.Should().NotContainKey("AuthorId");
+    }
 }

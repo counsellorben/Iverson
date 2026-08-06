@@ -52,6 +52,12 @@ public sealed class RelationValidator(SchemaRegistry registry) : IRelationValida
         SchemaDescriptor schema,
         List<string> errors)
     {
+        // Resolved before the nav branch: normalizing an embedded reference writes this column into
+        // the payload, so a relation whose FK is not a local column must error rather than have a
+        // phantom key injected (the stores silently ignore unknown keys, so it would be a no-op).
+        var fkCol = schema.ScalarColumns.FirstOrDefault(c =>
+            string.Equals(c.Name, relation.ForeignKey, StringComparison.OrdinalIgnoreCase));
+
         var fkValue = StructFieldAccess.GetFieldValue(payload, relation.ForeignKey);
         // A NullValue FK counts as ABSENT. The .NET client serializes every property, so a null
         // nullable FK arrives as `authorId: null`; treating that as present made it fail GUID
@@ -67,15 +73,20 @@ public sealed class RelationValidator(SchemaRegistry registry) : IRelationValida
         var navValue = StructFieldAccess.GetFieldValue(payload, relation.PropertyName);
         if (navValue?.StructValue is { } nested)
         {
+            if (fkCol is null)
+            {
+                errors.Add(
+                    $"Relation '{relation.PropertyName}' ({relation.Kind}) cannot be set by embedded " +
+                    $"object: '{relation.ForeignKey}' is not a column on this type.");
+                return;
+            }
+
             var nestedKey = ValidateNestedObject(
                 nested, relation.PropertyName, relation.RelatedTypeName, relation.ForeignKey, errors);
             if (nestedKey is not null)
                 StructFieldAccess.SetField(payload, relation.ForeignKey, Value.ForString(nestedKey));
             return;
         }
-
-        var fkCol = schema.ScalarColumns.FirstOrDefault(c =>
-            string.Equals(c.Name, relation.ForeignKey, StringComparison.OrdinalIgnoreCase));
 
         if (fkCol is null || !fkCol.IsNullable)
             errors.Add(

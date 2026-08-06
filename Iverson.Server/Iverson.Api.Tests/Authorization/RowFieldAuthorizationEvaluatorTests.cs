@@ -399,6 +399,27 @@ public class RowFieldAuthorizationEvaluatorTests
     }
 
     [Fact]
+    public void Evaluate_FieldPermissionNamedInDifferentCase_StillExcludesTheColumn()
+    {
+        // Clients serialize camelCase, and a declaration may name the field either way. An ordinal
+        // exclusion set let a case-mismatched FieldPermission silently protect nothing.
+        var rules = new AuthorizationRules(
+            "OwnerId",
+            new List<RowPermission>(),
+            new List<FieldPermission>
+            {
+                new("name", new List<string> { "editor" }, new List<string> { "editor" })
+            });
+        var schema = SchemaWithAuthorization(rules);
+        var user = ActingUser("user123", "viewer");
+
+        var result = _evaluator.Evaluate(schema, user, AuthorizationAction.Read);
+
+        result.AllowedFields.Should().NotBeNull();
+        result.AllowedFields.Should().NotContain("Name");
+    }
+
+    [Fact]
     public void Evaluate_WriteActionUsesWritableRolesNotReadableRoles()
     {
         var rules = new AuthorizationRules(
