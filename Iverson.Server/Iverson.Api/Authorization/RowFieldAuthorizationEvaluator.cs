@@ -72,6 +72,25 @@ public sealed class RowFieldAuthorizationEvaluator : IRowFieldAuthorizationEvalu
                     .Concat(schema.FkColumns.Select(fk => fk.ColumnName))
                     .Concat(schema.VectorFields.Select(v => v.PropertyName))
                     .Concat(schema.ChunkFields.Select(c => c.PropertyName));
+
+                // A relation property is writable exactly when its FK column is writable: writing
+                // `Author` IS writing `AuthorId`, so one permission governs one concept. Without
+                // this, restricting `AuthorId` gives no protection from a caller sending `Author`
+                // instead — which matters because RelationValidator normalizes the embedded form
+                // into the FK column *after* this check runs.
+                //
+                // OneToMany is the carve-out: its FK lives on the RELATED entity, so there is no
+                // local column to gate on. Permitted unconditionally — inert on write (the
+                // validator skips the kind) and injected on read after masking.
+                //
+                // Write actions only: AllowedFields also drives search filter/sort/vector
+                // authorization, which evaluates with Read; relation names have no meaning there
+                // and admitting them would widen search permissions.
+                if (action == AuthorizationAction.Write)
+                    allFields = allFields.Concat(schema.Relations
+                        .Where(r => r.Kind == RelationKind.OneToMany || !excluded.Contains(r.ForeignKey))
+                        .Select(r => r.PropertyName));
+
                 allowedFields = allFields.Where(f => !excluded.Contains(f)).ToHashSet();
             }
         }
