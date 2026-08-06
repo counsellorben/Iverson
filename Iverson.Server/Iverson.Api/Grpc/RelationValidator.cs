@@ -6,12 +6,12 @@ namespace Iverson.Api.Grpc;
 
 public interface IRelationValidator
 {
-    void ValidateRelations(Struct payload, SchemaDescriptor schema);
+    void ValidateAndNormalizeRelations(Struct payload, SchemaDescriptor schema);
 }
 
 public sealed class RelationValidator(SchemaRegistry registry) : IRelationValidator
 {
-    public void ValidateRelations(Struct payload, SchemaDescriptor schema)
+    public void ValidateAndNormalizeRelations(Struct payload, SchemaDescriptor schema)
     {
         var errors = new List<string>();
 
@@ -53,7 +53,11 @@ public sealed class RelationValidator(SchemaRegistry registry) : IRelationValida
         List<string> errors)
     {
         var fkValue = StructFieldAccess.GetFieldValue(payload, relation.ForeignKey);
-        if (fkValue is not null)
+        // A NullValue FK counts as ABSENT. The .NET client serializes every property, so a null
+        // nullable FK arrives as `authorId: null`; treating that as present made it fail GUID
+        // validation (a nullable FK the validator explicitly intends to be omittable) and made
+        // the embedded-object branch unreachable from that client entirely.
+        if (fkValue is not null && fkValue.KindCase != Value.KindOneofCase.NullValue)
         {
             if (!Guid.TryParse(fkValue.StringValue, out var g) || g == Guid.Empty)
                 errors.Add($"'{relation.ForeignKey}': must be a valid non-empty GUID.");
@@ -63,7 +67,10 @@ public sealed class RelationValidator(SchemaRegistry registry) : IRelationValida
         var navValue = StructFieldAccess.GetFieldValue(payload, relation.PropertyName);
         if (navValue?.StructValue is { } nested)
         {
-            ValidateNestedObject(nested, relation.PropertyName, relation.RelatedTypeName, errors);
+            var nestedKey = ValidateNestedObject(
+                nested, relation.PropertyName, relation.RelatedTypeName, relation.ForeignKey, errors);
+            if (nestedKey is not null)
+                StructFieldAccess.SetField(payload, relation.ForeignKey, Value.ForString(nestedKey));
             return;
         }
 
@@ -95,21 +102,41 @@ public sealed class RelationValidator(SchemaRegistry registry) : IRelationValida
         var navValue = StructFieldAccess.GetFieldValue(payload, relation.PropertyName);
         if (navValue?.ListValue is { } navList)
         {
+            var keys = new List<Value>(navList.Values.Count);
+            var allResolved = true;
+
             for (var i = 0; i < navList.Values.Count; i++)
             {
                 var item = navList.Values[i].StructValue;
                 if (item is null)
                 {
                     errors.Add($"'{relation.PropertyName}[{i}]': expected an object, got a scalar.");
+                    allResolved = false;
                     continue;
                 }
-                ValidateNestedObject(item, $"{relation.PropertyName}[{i}]", relation.RelatedTypeName, errors);
+
+                var key = ValidateNestedObject(
+                    item, $"{relation.PropertyName}[{i}]", relation.RelatedTypeName,
+                    relation.ForeignKey, errors);
+                if (key is null)
+                    allResolved = false;
+                else
+                    keys.Add(Value.ForString(key));
             }
+
+            if (allResolved)
+                StructFieldAccess.SetField(payload, relation.ForeignKey, Value.ForList(keys.ToArray()));
         }
         // empty collection is valid
     }
 
-    private void ValidateNestedObject(Struct nested, string path, string relatedTypeName, List<string> errors)
+    /// <returns>
+    /// The nested entity's key when it is a valid existing-entity reference, or null when it is
+    /// not — in which case an error has been recorded. Callers use the returned key to normalize
+    /// the reference into the FK column.
+    /// </returns>
+    private string? ValidateNestedObject(
+        Struct nested, string path, string relatedTypeName, string foreignKey, List<string> errors)
     {
         var relatedSchema  = registry.Get(relatedTypeName);
         var keyColumnName  = relatedSchema?.KeyColumn.Name ?? "Id";
@@ -120,9 +147,26 @@ public sealed class RelationValidator(SchemaRegistry registry) : IRelationValida
                             && nestedKey != Guid.Empty.ToString()
                             && Guid.TryParse(nestedKey, out _);
 
-        if (isExistingEntity && nested.Fields.Count > 1)
+        // Previously a keyless nested object passed silently and the FK was never populated, so
+        // the row was written with a NULL FK. Cascade-inserting the related entity is out of
+        // scope, so this is an explicit error instead.
+        if (!isExistingEntity)
+        {
+            errors.Add(
+                $"'{path}': embedded new entities are not supported — create the related " +
+                $"{relatedTypeName} first, then reference it by '{foreignKey}' (GUID) or by an " +
+                $"embedded object containing only '{keyColumnName}'.");
+            return null;
+        }
+
+        if (nested.Fields.Count > 1)
+        {
             errors.Add(
                 $"'{path}': existing entity (key='{nestedKey}') must only include " +
                 $"the key field '{keyColumnName}' — remove extra properties.");
+            return null;
+        }
+
+        return nestedKey;
     }
 }

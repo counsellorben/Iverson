@@ -40,7 +40,7 @@ public sealed class ObjectPersistenceGrpcService(
             existingRowJson: null,
             auditLog);
 
-        relationValidator.ValidateRelations(request.Payload, schema);
+        relationValidator.ValidateAndNormalizeRelations(request.Payload, schema);
 
         var targetStores = StoreTargeting.DetermineTargetStores(schema);
 
@@ -111,7 +111,7 @@ public sealed class ObjectPersistenceGrpcService(
             existingRowJson,
             auditLog);
 
-        relationValidator.ValidateRelations(request.Payload, schema);
+        relationValidator.ValidateAndNormalizeRelations(request.Payload, schema);
 
         var targetStores = StoreTargeting.DetermineTargetStores(schema);
 

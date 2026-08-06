@@ -295,7 +295,7 @@ public sealed class ObjectMappingGrpcService(
             _authEvaluator, _actingUserAccessor.ActingUser, schema, request.Payload,
             AuthorizationAction.Write, "Not authorized to create this entity.", existingRowJson: null, _auditLog);
 
-        _relationValidator.ValidateRelations(request.Payload, schema);
+        _relationValidator.ValidateAndNormalizeRelations(request.Payload, schema);
 
         var key = _keyAccessor.ExtractKey(request.Payload, schema.KeyColumn.Name);
         if (string.IsNullOrWhiteSpace(key) || key == Guid.Empty.ToString())
@@ -348,7 +348,7 @@ public sealed class ObjectMappingGrpcService(
             existingRowJson,
             _auditLog);
 
-        _relationValidator.ValidateRelations(request.Payload, schema);
+        _relationValidator.ValidateAndNormalizeRelations(request.Payload, schema);
 
         var payloadJson = StructSerializer.SerializePayload(request.Payload);
 
