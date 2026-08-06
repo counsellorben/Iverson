@@ -64,12 +64,14 @@ Verified by `thorough-brainstorming` at spec-write time (18 listed cold, 2 faile
 
 ## Verified plan-level assumptions
 
-Newly introduced by this plan and verified at plan-write time against `d2b8e05`.
+Newly introduced by this plan and verified at plan-write time against `d2b8e05`. P25-P26 were added
+afterwards by CIR round 1's span check, which found them uncovered; both were verified in-round
+against `dcc25f4`.
 
 | # | Category | Assumption | Evidence |
 |---|---|---|---|
 | P1-P7 | File path | All 7 files exist at the exact paths this plan names | `RowFieldAuthorizationEvaluator.cs` (82 lines), `IRowFieldAuthorizationEvaluator.cs` (29), `RowFieldAuthorizationEvaluatorTests.cs` (541), `AuthorizationFieldMaskingTests.cs` (139), `StructFieldAccess.cs` (43), `RelationValidator.cs` (128), `RelationValidatorTests.cs` (131) |
-| P8 | Code validity | `RelationKind` resolves in the evaluator | `using Iverson.Api.Schema;` at `RowFieldAuthorizationEvaluator.cs:2` |
+| P8 | Code validity | `RelationKind` resolves in the evaluator, unambiguously | `using Iverson.Api.Schema;` at `RowFieldAuthorizationEvaluator.cs:2` — and that file imports *only* it plus `System.Security.Claims`, with no `GlobalUsings.cs`/`Usings.cs` under `Iverson.Api`. This matters because a second `Iverson.Client.Contracts.RelationKind` exists (`SchemaBuilder.cs:6-7` aliases both); adding a Contracts using to this file during execution would silently rebind the enum |
 | P10 | Code validity | `allFields` is `IEnumerable<string>`, so conditional reassignment compiles | `RowFieldAuthorizationEvaluator.cs:70-74` — chained `.Concat(...)`. **Changed from the draft:** a `cond ? seq : []` ternary would depend on collection-expression target typing; reassignment does not |
 | P11 | Signature | `internal static StructFieldAccess` is callable from `public sealed RelationValidator` | both in `Iverson.Api.Grpc`, same assembly (`StructFieldAccess.cs:3,8`) |
 | P12 | Signature | `SetAuthoritativeField(Struct, string, string)` is `private static` with 2 call sites | `AuthorizationFieldMasking.cs:121`, called at `:56`, `:58` |
@@ -84,6 +86,8 @@ Newly introduced by this plan and verified at plan-write time against `d2b8e05`.
 | P22 | Signature | `SchemaRegistry.Get` returns `SchemaDescriptor?` | `SchemaRegistry.cs:15` |
 | P23 | Consumer impact | `RelationValidator` is the only `IRelationValidator` implementation | full-repo grep; only other reference is one NSubstitute construction |
 | P24 | Command | No pre-commit hook or extra build gate | `.git/hooks/` contains only `.sample` files |
+| P25 | Consumer impact | `StructFieldAccess.SetField`'s dedup is equivalent to `SetAuthoritativeField`'s current one | old form removed keys where `UpperFirst(k) == canonicalName && k != canonicalName`; `Candidates(canonicalName)` yields exactly the canonical and first-char-lowered forms, so for any PascalCase canonical name the two sets coincide, and a key differing beyond the first character (`AUTHORID`) is removed by neither. The 3 existing masking tests therefore still guard the shipped behavior |
+| P26 | Command | The 608-test baseline behind the expected counts (614 after Task 1, 622 after Task 2) | last full `Iverson.Api.Tests` run on this tree: `Passed! - Failed: 0, Passed: 608`; the only commit since (`dcc25f4`) touches markdown only. An expectation, not a correctness gate — a mismatch signals miscounted tests, not a broken outcome |
 
 ## Tasks
 
