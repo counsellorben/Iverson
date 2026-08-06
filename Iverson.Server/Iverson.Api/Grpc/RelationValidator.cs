@@ -159,11 +159,23 @@ public sealed class RelationValidator(SchemaRegistry registry) : IRelationValida
             return null;
         }
 
-        if (nested.Fields.Count > 1)
+        // Only *meaningful* siblings count as extra properties. The .NET client serializes every
+        // property, so `new Author { Id = id }` arrives as the key plus a null for each unset
+        // property — the same fact that forces the NullValue-FK-means-absent rule above. A key
+        // plus only nulls is still a reference, so nothing is cascade-inserted by accepting it.
+        var keyNames = StructFieldAccess.Candidates(keyColumnName).ToHashSet(StringComparer.Ordinal);
+        var extras = nested.Fields
+            .Where(f => !keyNames.Contains(f.Key) && f.Value.KindCase != Value.KindOneofCase.NullValue)
+            .Select(f => f.Key)
+            .OrderBy(n => n, StringComparer.Ordinal)
+            .ToList();
+
+        if (extras.Count > 0)
         {
             errors.Add(
                 $"'{path}': existing entity (key='{nestedKey}') must only include " +
-                $"the key field '{keyColumnName}' — remove extra properties.");
+                $"the key field '{keyColumnName}' — remove extra properties " +
+                $"({string.Join(", ", extras.Select(n => $"'{n}'"))}).");
             return null;
         }
 

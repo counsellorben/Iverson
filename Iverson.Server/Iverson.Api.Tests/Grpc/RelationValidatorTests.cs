@@ -251,7 +251,44 @@ public class RelationValidatorTests
 
         var act = () => _sut.ValidateAndNormalizeRelations(payload, schema);
 
-        act.Should().Throw<RpcException>();
+        act.Should().Throw<RpcException>().Where(e => e.Status.Detail.Contains("'Tags[1]'"));
+    }
+
+    [Fact]
+    public void ValidateAndNormalizeRelations_ManyToOne_ReferenceWithNullSiblings_PopulatesForeignKey()
+    {
+        // The .NET client serializes every property, so the canonical `post.Author = new Author
+        // { Id = id }` arrives with null siblings alongside the key — a key-only Struct built by
+        // hand does not exercise this shape.
+        var schema = MakeSchemaWithRelation(RelationKind.ManyToOne, fkNullable: true);
+        var payload = new Struct();
+        var authorId = Guid.NewGuid().ToString();
+        var nested = new Struct();
+        nested.Fields["id"]   = Value.ForString(authorId);
+        nested.Fields["name"] = Value.ForNull();
+        nested.Fields["bio"]  = Value.ForNull();
+        payload.Fields["Author"] = Value.ForStruct(nested);
+
+        _sut.ValidateAndNormalizeRelations(payload, schema);
+
+        payload.Fields["AuthorId"].StringValue.Should().Be(authorId);
+    }
+
+    [Fact]
+    public void ValidateAndNormalizeRelations_ManyToMany_EmptyNavList_ClearsForeignKeyList()
+    {
+        // Writes are full-document upserts, so an empty nav list deliberately clears the stored
+        // FK list. Pinned because it is the one branch that destroys data.
+        var schema = MakeSchemaWithRelation(RelationKind.ManyToMany, fkNullable: true) with
+        {
+            Relations = [new RelationDescriptor("Tags", RelationKind.ManyToMany, "Tag", "TagIds")]
+        };
+        var payload = new Struct();
+        payload.Fields["Tags"] = Value.ForList();
+
+        _sut.ValidateAndNormalizeRelations(payload, schema);
+
+        payload.Fields["TagIds"].ListValue.Values.Should().BeEmpty();
     }
 
     [Fact]
