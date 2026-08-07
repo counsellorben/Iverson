@@ -75,6 +75,11 @@ What remains, per relation:
 
 1. If the nav property key is present and distinct from the FK, record
    `Relation '<Name>' is a navigation property and cannot be written — send '<ForeignKey>' instead.`
+   A `NullValue` nav key **counts as present** and is rejected. This deliberately diverges from
+   the foreign-key rule at `RelationValidator.cs:78-81`, where `NullValue` means absent because a
+   nullable FK must stay omittable. A nav property has no legitimate null form, so the strict
+   reading is chosen: it catches a partially-updated client immediately, at the cost of breaking
+   any direct caller that serializes nulls.
 2. Validate the FK: GUID well-formedness and non-emptiness for singles, per-element for
    ManyToMany lists.
 3. Keep the required-relation check for a non-nullable FK column. Its message loses the
@@ -99,22 +104,30 @@ which remains correct.
 
 ## Clients
 
-The distinguishing question is not what the relation-marked member is *called* but what it
-*holds*. A name-based test is unsafe: TypeScript and Python infer a ManyToOne FK as
-`{RelatedType}Id`, so a field named `writerId` for an `Author` relation would be
-misclassified as a nav property and its FK silently dropped.
+The classification is by **relation kind first**, not by member type. A type-based test is
+not decidable in Python or TypeScript — TypeScript erases types, and Python's annotations
+carry no element type, so an empty collection is indistinguishable from an empty id list. A
+name-based test is equally unsafe: a field named `writerId` for an `Author` relation would
+be misclassified and its FK silently dropped.
 
-**Marked member holds ids** (string, UUID, or an array of those) — it *is* the foreign key.
-Serialize its value under the **inferred FK column name**, not the field's own name. For
-Python's `author_id` and TypeScript's `authorId` the inferred name equals what they send
-today, so nothing changes on the wire; for Go's `Articles []string` it is `ArticleIds`.
+**`OneToMany` — always omitted, in every client.** Its foreign key lives on the related
+entity's row, so it contributes no key to this payload under any declaration style. This is
+the only case where Python's and TypeScript's ambiguity would otherwise be reachable.
 
-**Marked member holds entities** (an entity type or a collection of them) — it is a
-navigation property. Omit it entirely. The FK comes from the separate plain field beside
-it, which carries no relation marker and serializes normally.
+**`ManyToOne` / `OneToOne` / `ManyToMany`** — in the clients that mark the FK-bearing member
+(Go, Python, TypeScript) the marked member *is* the foreign key by construction; serialize
+its value under the **inferred FK column name**, with no type test. For Python's `author_id`
+and TypeScript's `authorId` the inferred name equals what they send today; for Go's
+`Articles []string` it is `ArticleIds`.
 
-OneToMany needs no special case under this rule *except in Go* (below): its marked member
-holds entities in .NET, Java, Python and TypeScript, so it is always omitted.
+In .NET and Java, where a nav member and an FK field genuinely coexist, the declared type is
+available at the decision point and distinguishes them: a member typed as an entity or a
+collection of entities is a navigation property and is omitted; the FK comes from the
+separate plain field beside it, which carries no relation marker and serializes normally.
+
+The relation kind is present at every decision point: `meta["relations"]` carries `kind`
+(`core.py:166`), TypeScript's `getRelations()` returns `RelationMeta.kind`, and Go's
+`ParseTag` yields `fm.RelationKind`.
 
 ### Per-client work
 
@@ -139,8 +152,8 @@ recursively-converted elements; the fallback stays for genuinely unknown types.
 on the read path — those callers read FK values only and are unaffected, but the signature
 change must keep them compiling.
 
-**Python** — `_entity_to_struct` applies the FK-name mapping and omits entity-valued
-relation members. It already reads `_iverson_meta` (`core.py:314`), and `core.py:166`
+**Python** — `_entity_to_struct` omits `OneToMany` members and maps the rest through the
+inferred FK name. It already reads `_iverson_meta` (`core.py:314`), and `core.py:166`
 establishes the precedent of building a relation-field set from it.
 
 **TypeScript** — `entityToPayload` does the same. `getRelations` is already imported
@@ -168,6 +181,10 @@ caller still sending a nav property starts failing hard.
 `RelationValidatorTests` currently holds 34 tests dominated by embedded-object scenarios;
 roughly eighteen are deleted rather than adapted, replaced by per-kind rejection tests plus
 the retained FK-validation cases.
+
+`ObjectMappingGrpcServiceTests.cs:725` and `:753` assert the echoed response retains the nav
+property, and `AuthorizationFieldMaskingTests.cs` references nav property names. The first
+two are deleted with the capture/restore machinery; the third needs a read.
 
 Each client needs a serialization test asserting that a written payload contains the FK key
 and does **not** contain the nav key. Go needs one asserting `AuthorId` is present at all —
@@ -206,6 +223,7 @@ checked against the codebase. Twenty-three held; three are recorded below.
 | A24 | No client test asserts nav properties are sent in write payloads | ✅ no payload-content assertions in the client suites |
 | A25 | The four relation kinds are exhaustive in every client | ✅ |
 | A26 | LoadTest entities are unaffected | ✅ `BenchmarkArticle` has both `BenchmarkAuthorId` and a nav property; inferred name matches |
+| A27 | No test outside `RelationValidatorTests` depends on capture/restore | ❌ **FAILED** — `ObjectMappingGrpcServiceTests.cs:725,753` pin the echoed-payload behavior this design makes unreachable; both are deleted, not adapted |
 
 ## Known issues / accepted as out of scope
 
