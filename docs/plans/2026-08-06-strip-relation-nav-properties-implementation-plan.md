@@ -16,7 +16,8 @@
 
 - **The name guard is load-bearing.** `PropertyName` and `ForeignKey` are not guaranteed distinct (spec A7). When they collide, the nav property and the FK are the *same payload key*: stripping would delete the FK, and conflict detection would misread the FK's GUID strings as embedded objects. Both operations must be gated on `navIsDistinctKey`.
 - **Nav properties arrive fully hydrated** (spec A17). The key-only rule must never gate cross-checking — only the FK-absent normalize path.
-- **Comparison is on parsed `Guid` values, never raw strings.**
+- **Comparison is on parsed `Guid` values, never raw strings.** Comparison only — the value *written* into the FK column stays the raw spelling the caller sent.
+- **The Mapping service echoes the mutated payload.** `Post` and `Update` return `Data = request.Payload`. Stripping must not change what the caller gets back — capture before validating, restore after serialising.
 - **Commit messages:** plain lowercase imperative, no Conventional-Commits prefix (verified: dominant in the last 20 commits; the `chore(deps)` entries are Dependabot's).
 
 ## File Structure
@@ -73,6 +74,7 @@ Newly introduced by this plan and verified at plan-write time:
 | P15 | Consumer impact | Nothing outside `RelationValidator.cs` calls the private methods being split | repo-wide grep for all three names returned no hits outside that file |
 | P16 | Consumer impact (sibling sweep) | **Every existing test whose payload carries a relation `PropertyName` key still holds once that key is stripped.** 12 such tests; none asserts the nav key remains — all assert FK keys or thrown message text | payload-key assertions at `RelationValidatorTests.cs:190,191,308,329,350`; message assertions at `:158,:254` |
 | P17 | Consumer impact | `AuthorizationFieldMaskingTests.EnforceWriteAuthorization_FieldRestrictedCaller_NestedRelationStructNotRejected` exercises masking only and never invokes the validator, so stripping cannot affect it | `AuthorizationFieldMaskingTests.cs:141-171` |
+| P18 | Consumer impact | The **Mapping** write RPCs echo the mutated payload back: `Post` and `Update` both return `Data = request.Payload`, and the .NET client deserializes it into the caller's entity. Inherited A14 covers only `PersistResponse` | `ObjectMappingGrpcService.cs:324,377`; `EntityCoordinator.cs:59-60,76-77` |
 
 ## Tasks
 
@@ -81,7 +83,9 @@ Newly introduced by this plan and verified at plan-write time:
 **Files:**
 - Modify: `Iverson.Server/Iverson.Api/Grpc/StructFieldAccess.cs`
 - Modify: `Iverson.Server/Iverson.Api/Grpc/RelationValidator.cs:18-40`
+- Modify: `Iverson.Server/Iverson.Api/Grpc/ObjectMappingGrpcService.cs`
 - Test: `Iverson.Server/Iverson.Api.Tests/Grpc/RelationValidatorTests.cs`
+- Test: `Iverson.Server/Iverson.Api.Tests/Grpc/ObjectMappingGrpcServiceTests.cs`
 
 **Interfaces:**
 - Produces: the `navIsDistinctKey` local in `ValidateAndNormalizeRelations`'s loop, which Task 2 passes to both per-kind methods.
@@ -131,7 +135,42 @@ In `ValidateAndNormalizeRelations`, inside `foreach (var relation in schema.Rela
 
 The per-kind methods need no change in this task. In the collision case with the FK absent, the FK and nav lookups hit the same absent key, so existing behavior is already correct; the guard only becomes load-bearing for the nav *read* in Task 2.
 
-- [ ] **Step 3: Add tests**
+- [ ] **Step 3: Preserve the nav properties the Mapping service echoes back**
+
+`ObjectMappingGrpcService.Post` and `Update` return `Data = request.Payload` (`:324`, `:377`) — the
+same `Struct` the validator strips in place — and `EntityCoordinator.PostMappedAsync` /
+`UpdateMappedAsync` deserialize that straight back into the caller's entity. Without this step,
+stripping silently nulls the caller's nav property. `PersistResponse` carries no payload, so the
+Persistence handlers need no equivalent.
+
+Add two file-local helpers to `ObjectMappingGrpcService` rather than duplicating the loop in both
+handlers:
+
+```csharp
+    // The write handlers echo request.Payload back to the caller, and RelationValidator strips
+    // relation properties from it in place. Capture before validating, restore after serialising,
+    // so the response keeps the shape the caller sent.
+    private static List<(string Name, Value Value)> CaptureNavProperties(
+        Struct payload, SchemaDescriptor schema) =>
+        schema.Relations
+            .Where(r => !string.Equals(r.PropertyName, r.ForeignKey, StringComparison.OrdinalIgnoreCase))
+            .Select(r => (r.PropertyName, Value: StructFieldAccess.GetFieldValue(payload, r.PropertyName)))
+            .Where(x => x.Value is not null)
+            .Select(x => (x.PropertyName, x.Value!))
+            .ToList();
+
+    private static void RestoreNavProperties(Struct payload, List<(string Name, Value Value)> captured)
+    {
+        foreach (var (name, value) in captured)
+            StructFieldAccess.SetField(payload, name, value);
+    }
+```
+
+In **both** `Post` and `Update`, capture immediately before the `ValidateAndNormalizeRelations` call
+and restore immediately after the `SerializePayload` call — the FK the validator normalized must
+already be in `payloadJson` before anything is put back.
+
+- [ ] **Step 4: Add tests**
 
 Append to `RelationValidatorTests.cs`, following the file's existing style:
 
@@ -141,18 +180,22 @@ Append to `RelationValidatorTests.cs`, following the file's existing style:
 4. `OneToMany_NavPropertyStripped` — `Author` list on a `OneToMany` relation; assert it is removed and no FK is written.
 5. `PropertyNameEqualsForeignKey_KeyNotStripped` — schema with `RelationDescriptor("TagIds", ManyToMany, "Tag", "TagIds")` and a payload carrying `TagIds` as a GUID list; assert `TagIds` **survives** with its values intact. This is the A7 regression guard: without the name guard the FK is deleted.
 
-- [ ] **Step 4: Run the suite**
+And to `ObjectMappingGrpcServiceTests.cs`:
+
+6. `MappingPost_NavPropertyPresentInResponsePayload` — Post an entity carrying a nav property; assert `response.Data` still contains it, while the payload JSON that reached the outbox does not.
+
+- [ ] **Step 5: Run the suite**
 
 ```bash
 dotnet test Iverson.Server/Iverson.Api.Tests/Iverson.Api.Tests.csproj
 ```
 
-Expect **632 passed / 0 failed** (627 baseline + 5). Run it in the foreground and wait for it to finish.
+Expect **633 passed / 0 failed** (627 baseline + 6). Run it in the foreground and wait for it to finish.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 6: Commit**
 
 ```bash
-git add Iverson.Server/Iverson.Api/Grpc/StructFieldAccess.cs Iverson.Server/Iverson.Api/Grpc/RelationValidator.cs Iverson.Server/Iverson.Api.Tests/Grpc/RelationValidatorTests.cs
+git add Iverson.Server/Iverson.Api/Grpc/StructFieldAccess.cs Iverson.Server/Iverson.Api/Grpc/RelationValidator.cs Iverson.Server/Iverson.Api/Grpc/ObjectMappingGrpcService.cs Iverson.Server/Iverson.Api.Tests/Grpc/RelationValidatorTests.cs Iverson.Server/Iverson.Api.Tests/Grpc/ObjectMappingGrpcServiceTests.cs
 git commit -m "strip relation nav properties from write payloads"
 ```
 
@@ -203,9 +246,9 @@ Its contract is unchanged — it still enforces the key-only rule and returns `s
         Struct nested, string path, string relatedTypeName, string foreignKey, List<string> errors)
     {
         var keyColumnName = KeyColumnNameFor(relatedTypeName);
-        var nestedKey     = ReadNestedKey(nested, relatedTypeName);
+        var rawKey        = StructFieldAccess.GetFieldValue(nested, keyColumnName)?.StringValue;
 
-        if (nestedKey is null)
+        if (ReadNestedKey(nested, relatedTypeName) is null)
         {
             errors.Add(
                 $"'{path}': embedded new entities are not supported — create the related " +
@@ -214,16 +257,14 @@ Its contract is unchanged — it still enforces the key-only rule and returns `s
             return null;
         }
 
-        // ... existing `extras` block, unchanged, using keyColumnName and nestedKey ...
+        // ... existing `extras` block, unchanged, using keyColumnName and rawKey ...
 
-        return nestedKey.Value.ToString();
+        // The RAW spelling, not the parsed form: this value is written into the FK column, and the
+        // projection stores keep payload strings verbatim. Canonicalising here would write an FK
+        // that no longer matches the related row's key in StarRocks and Qdrant.
+        return rawKey;
     }
 ```
-
-`nestedKey` changes type from `string?` to `Guid?` here. The `extras` block uses it only inside
-string interpolation, so it still compiles; the only visible difference is that the error message
-now prints the canonical GUID form rather than the raw payload spelling. No test asserts that
-substring.
 
 - [ ] **Step 3: Cross-check in `ValidateSingleRelation`**
 
@@ -368,7 +409,7 @@ In the top-level `switch`, forward `navIsDistinctKey`:
 dotnet test Iverson.Server/Iverson.Api.Tests/Iverson.Api.Tests.csproj
 ```
 
-Expect **640 passed / 0 failed** (632 after Task 1 + 8). Run it in the foreground and wait for it to finish.
+Expect **641 passed / 0 failed** (633 after Task 1 + 8). Run it in the foreground and wait for it to finish.
 
 - [ ] **Step 8: Commit**
 
