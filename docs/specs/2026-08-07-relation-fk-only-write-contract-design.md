@@ -15,11 +15,11 @@ client-side defects rather than fixing them.
 Investigating what remained found the five clients disagree on almost everything about
 relation serialization, including one client that cannot write a foreign key at all.
 
-| Client | Where the relation is declared | FK reaches the server? | Nav property sent? |
+| Client | Where the relation is declared | FK persists? | Nav property sent? |
 |---|---|---|---|
-| Go | On the FK-bearing field itself | **Never** — the serializer skips every relation-tagged field | none declared |
-| Python | On the FK-bearing field | Yes | `articles` list → `str(value)` junk |
-| TypeScript | Decorator on the FK field; the serializer ignores decorators | Yes, by naming convention | yes, raw |
+| Go | On the FK-bearing field itself | **Never** — the serializer skips every relation-tagged field, and no FK column is declared | none declared |
+| Python | On the FK-bearing field | **Never** — reaches the payload, but no FK column is declared to hold it | `articles` list → `str(value)` junk |
+| TypeScript | Decorator on the FK field; the serializer ignores decorators | **Never** — same as Python | yes, raw |
 | Java | Separate nav member; **no FK field for ManyToMany** | Scalars yes, m2m never | yes; collections hit a `toString()` fallback |
 | .NET | Separate nav member plus a plain FK field | Yes, except on `Tag` | yes, whole object graph |
 
@@ -31,6 +31,20 @@ relation serialization, including one client that cannot write a foreign key at 
 `KindManyToOne` included. Every entity the Go client has ever written carries a **null
 foreign key**, silently — the field is simply absent from the payload, so the server has
 nothing to reject. This affects ManyToOne and OneToOne, not only ManyToMany.
+
+### The undeclared foreign-key column
+
+All three clients that mark the FK-bearing field exclude that field from the properties they
+register: Go at `tags.go:315-325` (*"Relations never reach `meta.Fields`"*, and
+`registrar.go:64` builds properties from `meta.Fields`), Python at `core.py:187-188`, and
+TypeScript at `core.ts:238`. `SchemaBuilder.cs:56` builds `ScalarColumns` from properties, so
+no `AuthorId` column exists in Postgres or StarRocks for any entity these three register.
+
+This is why fixing the Go serializer alone is not enough: the value would reach the payload
+under a key with no column behind it, and the stores ignore unknown keys. Python and
+TypeScript have the same defect by a different mechanism — their foreign keys have always
+reached the payload and never landed anywhere. .NET and Java are unaffected: their FK fields
+are plain properties carrying no relation marker, so they are declared normally.
 
 ### The declaration-model split
 
@@ -102,6 +116,33 @@ govern both. Under this design nothing is normalized; the carve-out exists solel
 rejection is legible. A caller whose `AuthorId` is excluded still fails at authorization,
 which remains correct.
 
+## Registration
+
+Serialization and registration must follow the same rule, or the payload key and the column
+name diverge and the write is silently discarded. Both are stated in terms of the same
+inferred FK name.
+
+**Declaration.** In the clients that mark the FK-bearing field (Go, Python, TypeScript), a
+`ManyToOne` / `OneToOne` / `ManyToMany` relation declares its marked field as a property
+**under the inferred FK column name**, in addition to emitting the relation descriptor. The
+existing exclusions (`tags.go:315-325`, `core.py:187-188`, `core.ts:238`) become
+kind-conditional rather than unconditional. `OneToMany` continues to declare nothing — its
+foreign key is a column on the related type's row, and declaring it here would create a
+column this entity has no business holding. .NET and Java need no change; their FK fields are
+already plain declared properties.
+
+**Validation.** `SchemaRegistrationOrchestrator` gains a check, alongside the existing
+`owner_field` and `tenant_field` checks, that every `ManyToOne` / `OneToOne` / `ManyToMany`
+relation's `ForeignKey` matches a declared column, rejecting with `InvalidArgument`
+otherwise. `OneToMany` is exempt for the same reason it declares nothing.
+
+This cannot reuse `ValidateFieldReference`: that helper additionally requires a string-valued
+`SqlType` for Qdrant filtering (`SchemaRegistrationOrchestrator.cs:109-115`), which a
+ManyToMany's `UUID[]` foreign key is not. The new check tests membership only.
+
+The validation is what keeps the two rules from drifting apart again — it fails registration
+at the point where a client declares a relation whose foreign key nothing can hold.
+
 ## Clients
 
 The classification is by **relation kind first**, not by member type. A type-based test is
@@ -137,7 +178,9 @@ under `inferFK`'s `{RelatedType}Ids`. **OneToMany is excluded explicitly**: `inf
 returns `{ThisType}Id` for that kind, which names a column on the *related* entity's row,
 and `Author.Articles []string` is a real declaration that would otherwise emit under
 `AuthorId`. A Go relation field holding structs is omitted as a nav property; none exist
-today, but the rule should not depend on that.
+today, but the rule should not depend on that. `registrar.go` additionally declares the
+marked field as a property under the inferred FK name for the three non-OneToMany kinds, per
+Registration — without it the newly-emitted `AuthorId` still has no column.
 
 **Java** — three changes. Entities with a `@ManyToMany` gain a plain `List<UUID> tagIds`
 beside the nav collection. `toStruct` skips members carrying a relation annotation whose
@@ -158,16 +201,22 @@ elements — without it a ManyToMany id list reaches the `str(value)` fallback (
 and arrives as a string, which the validator's `fkValue?.ListValue` read silently ignores.
 This is the same fix as Java's `Collection` branch. It already reads `_iverson_meta`
 (`core.py:314`), and `core.py:166` establishes the precedent of building a relation-field
-set from it.
+set from it. Its property loop (`core.py:187-188`) becomes kind-conditional per Registration.
 
 **TypeScript** — `entityToPayload` does the same. `getRelations` is already imported
-(`core.ts:59`).
+(`core.ts:59`). Its property loop (`core.ts:238`) becomes kind-conditional per Registration.
 
 ## Consequences
 
-**Go writes change behavior.** Writes that silently persisted a null foreign key will
-persist the real one. Data written by the Go client to date has null FKs that this change
-does not backfill.
+**Go, Python and TypeScript writes change behavior.** All three begin persisting foreign
+keys that previously went nowhere — Go's were never serialized, Python's and TypeScript's
+were serialized into a column that did not exist. Data written by any of the three to date
+has null FKs that this change does not backfill.
+
+**Registration becomes stricter and adds a column.** The three clients' entities gain an FK
+column they did not previously declare, which is a schema change applied through the existing
+`ApplySchemaAsync` drift path. A relation whose foreign key matches no declared column now
+fails registration outright rather than registering and silently discarding writes.
 
 **Two entities become StarRocks-eligible.** `StoreTargeting.IsEngagementEligible` marks a
 ManyToMany eligible only when a declared FK column matches its foreign key, and
@@ -175,7 +224,9 @@ ManyToMany eligible only when a declared FK column matches its foreign key, and
 Neither .NET `Tag` nor Java `Article` has one today, so both are ineligible. Adding the FK
 fields makes them eligible and they will begin projecting into the engagement store.
 **Ben accepted this on 2026-08-07 as the correct outcome** — a many-to-many whose ids live
-in a real column should be projectable.
+in a real column should be projectable. The Registration change extends the same effect to
+Go, Python and TypeScript entities, whose ManyToMany foreign keys also become declared
+columns for the first time.
 
 **Server and clients must ship together.** Rejection is not backward-compatible: any
 caller still sending a nav property starts failing hard.
@@ -194,10 +245,17 @@ Each client needs a serialization test asserting that a written payload contains
 and does **not** contain the nav key. Go needs one asserting `AuthorId` is present at all —
 the defect that motivated this work has no existing coverage.
 
+Go, Python and TypeScript each need a registration test asserting the FK column is declared
+under the inferred name for the three non-OneToMany kinds, and absent for `OneToMany`. The
+server needs one per kind for the new registration check — rejected when the foreign key
+matches no column, accepted for `OneToMany`, and accepted for a ManyToMany whose FK column is
+an array type (the case `ValidateFieldReference` would have wrongly rejected).
+
 ## Verified assumptions
 
-Twenty-six assumptions were enumerated against the design before any verification, then
-checked against the codebase. Twenty-three held; three are recorded below.
+Thirty-one assumptions, enumerated against the design before verification and checked against
+the codebase. Twenty-four held; the rest are recorded below. A27–A31 were added across two
+review rounds and the A22 fix; A29 is the one that changed the design most.
 
 | # | Assumption | Result |
 |---|---|---|
@@ -222,21 +280,20 @@ checked against the codebase. Twenty-three held; three are recorded below.
 | A19 | Go `entityToStruct` is the sole write serializer and can reach `inferFK` | ✅ same package |
 | A20 | Go declares no struct-typed relation fields | ✅ all are `string`/`[]string` |
 | A21 | Whether Go `one_to_many` is declared anywhere | ✅ it is — `author.go:8` `Articles []string`. The OneToMany exclusion is load-bearing, not hypothetical |
-| A22 | The server enforces `{RelatedTypeName}Id` FK naming | ❌ **FAILED** — nothing validates that a relation's `ForeignKey` names a real column. The only detector is the embedded path's `fkCol is null` error at `RelationValidator.cs:106-111`, which this design deletes. See Known issues |
+| A22 | The server enforces `{RelatedTypeName}Id` FK naming | ❌ **FAILED** — nothing validates that a relation's `ForeignKey` names a real column. The only detector was the embedded path's `fkCol is null` error at `RelationValidator.cs:106-111`, which this design deletes. **Now addressed by the Registration section** rather than deferred; investigating the fix is what surfaced A29 |
 | A23 | The read path re-fetches relations and never reads a stored nav property | ✅ `EntityRelationResolver.cs:96,137,176` write into fresh results |
 | A24 | No client test asserts nav properties are sent in write payloads | ✅ no payload-content assertions in the client suites |
 | A25 | The four relation kinds are exhaustive in every client | ✅ |
 | A26 | LoadTest entities are unaffected | ✅ `BenchmarkArticle` has both `BenchmarkAuthorId` and a nav property; inferred name matches |
 | A27 | No test outside `RelationValidatorTests` depends on capture/restore | ❌ **FAILED** — `ObjectMappingGrpcServiceTests.cs:725,753` pin the echoed-payload behavior this design makes unreachable; both are deleted, not adapted |
 | A28 | Every client can serialize the FK value type it is required to emit | ❌ **FAILED for Python** — Go's `goValueToProtoValue` handles `[]string`; TS assigns arrays raw and the proto layer yields `ListValue`; .NET's `Guid[]` round-trips through `JsonParser`; Java gains the `Collection` branch this design specifies. Python's `_entity_to_struct` has no list branch (`core.py:330-341`) — see the Python per-client fix |
+| A29 | The FK-on-field clients declare the FK-bearing field as a property | ❌ **FAILED — all three** — Go `tags.go:315-325` + `registrar.go:64`, Python `core.py:187-188`, TypeScript `core.ts:238` all exclude relation-marked fields from the registered properties, and `SchemaBuilder.cs:56` builds `ScalarColumns` from properties. No FK column has ever existed for these clients, so the Go serializer fix alone would not persist anything. Design updated: see Registration |
+| A30 | The registration check can reuse `ValidateFieldReference` | ❌ **FAILED** — it additionally requires a string-valued `SqlType` for Qdrant filtering (`SchemaRegistrationOrchestrator.cs:109-115`), which rejects a ManyToMany's `UUID[]` foreign key. The new check tests column membership only |
+| A31 | `SchemaRegistrationOrchestrator` is the right place, with an established pattern | ✅ `:53-66` already performs `ValidateEnrichmentTargets`, `owner_field` and mandatory `tenant_field` checks, all throwing `RpcException(InvalidArgument)` |
 
 ## Known issues / accepted as out of scope
 
-- **A misdeclared relation loses its only detector (A22).** After the embedded path is
-  deleted, a relation whose `ForeignKey` names no column surfaces as a misleading
-  "relation is required" error rather than naming the real cause. Adding registration-time
-  validation would be the real fix and is deliberately not in scope.
-- **Go's historical null foreign keys are not backfilled.**
+- **Historical null foreign keys are not backfilled** for Go, Python or TypeScript.
 - **Python `str()` serialization for non-relation types.** The list branch above covers
   relation id lists; Python's converter still falls through to `str(value)` for any other
   unhandled type.
