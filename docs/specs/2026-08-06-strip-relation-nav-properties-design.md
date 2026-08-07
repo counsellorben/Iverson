@@ -99,6 +99,15 @@ A payload carrying both an FK and a nav property that disagree currently resolve
 FK's favour, because both validate methods return as soon as they find an FK. Disagreement becomes
 an explicit error. Both methods must therefore examine the nav property even when the FK is present.
 
+**Key extraction is separate from bare-reference validation.** `ValidateNestedObject` currently fuses
+two jobs: reading the nested key, and enforcing that the object carries *only* that key. The key-only
+rule exists to stop an ambiguous cascade-insert request on the FK-absent path, where the nav object
+is the sole source of the FK. It must not gate cross-checking: nav properties arrive fully hydrated
+(A17), so applying it to a round-tripped payload rejects every entity read with `Depth > 0`. Split
+the method into a key reader — returns the nested key when the object carries a valid one, no extras
+enforcement — and the existing key-only enforcement. Conflict detection calls the key reader alone.
+The FK-absent normalize path calls both, exactly as today, so cascade-insert protection is unchanged.
+
 **Single relations** (`ManyToOne`, `OneToOne`):
 
 | FK | Nav object | Result |
@@ -106,7 +115,7 @@ an explicit error. Both methods must therefore examine the nav property even whe
 | valid GUID | absent | unchanged |
 | valid GUID | resolves to same key | accepted |
 | valid GUID | resolves to different key | **error** |
-| valid GUID | keyless / malformed | existing nested-validation error |
+| valid GUID | no resolvable key | FK stands; no error |
 | absent or `NullValue` | present | normalize into FK |
 | absent | absent | existing required/nullable check |
 
@@ -120,7 +129,8 @@ build the sets from parsed `Guid` values.
 
 **Collections** (`ManyToMany`): conflict is checked only when the FK list is present *and* the nav
 list is non-empty. Any difference then errors. An empty nav list means "not supplied" and the FK
-list wins.
+list wins. Collection items are resolved by the same key reader, for the same reason:
+`EntityRelationResolver.cs:137,176` inject lists of fully hydrated related entities.
 
 This does not disturb the empty-list behavior pinned by
 `ValidateAndNormalizeRelations_ManyToMany_EmptyNavList_ClearsForeignKeyList`: that test covers FK
@@ -167,6 +177,7 @@ Verified against the codebase before this spec was written. Two failed and chang
 | A14 | Write RPCs do not echo the request payload back | ✅ `PersistResponse` carries `success`/`key`/`trace_id`/`error` only |
 | A15 | The 4 relation kinds are the complete set | ✅ switch has a throwing `default` |
 | A16 | Every client's payload keys fall within `Candidates`' range (canonical or first-char-lowered) | ✅ .NET camelCase (`JsonNamingPolicy.CamelCase`); Python `core.py:329`, TypeScript `core.ts:364,379`, Java `StructConverter.java:34` all PascalCase; Go sends no relation fields (`coordinator.go:446`). No client sends snake_case payload keys. |
+| A17 | A nav property arriving alongside a present FK is a **fully hydrated entity**, not a bare key reference | ❌ **FAILED as originally assumed** — `EntityRelationResolver.cs:96,137,176` assign the whole related struct; `GraphAssembler.cs:84-86,117-121` deserializes complete related entities; `EntityRelationResolverTests.cs:55-56` pins that the injected `Author` carries `Name`. Drove the key-extraction/validation split in Conflict detection. |
 
 ### A7 failed — `PropertyName` can equal `ForeignKey`
 
