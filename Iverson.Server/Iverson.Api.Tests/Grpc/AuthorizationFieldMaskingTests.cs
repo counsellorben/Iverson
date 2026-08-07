@@ -136,4 +136,66 @@ public sealed class AuthorizationFieldMaskingTests
 
         payload.Fields["TenantId"].StringValue.Should().Be("tenant-from-token");
     }
+
+    [Fact]
+    public void EnforceWriteAuthorization_FieldRestrictedCaller_NestedRelationStructNotRejected()
+    {
+        // Exercises the real evaluator (not a mock) so this test depends on
+        // RowFieldAuthorizationEvaluator actually admitting relation names into the write-side
+        // AllowedFields set. Without that production change, "Author" would be missing from
+        // AllowedFields and RejectDisallowedFields would throw InvalidArgument for the nested
+        // relation struct below.
+        var schema = new SchemaDescriptor
+        {
+            TypeName      = "BenchmarkTag",
+            TableName     = "benchmark_tags",
+            KeyColumn     = new ColumnDescriptor("Id", "VARCHAR(255)", false),
+            ScalarColumns =
+            [
+                new ColumnDescriptor("Name", "VARCHAR(255)", false),
+                new ColumnDescriptor("OwnerId", "VARCHAR(255)", false),
+                new ColumnDescriptor("TenantId", "VARCHAR(255)", false),
+            ],
+            FkColumns    = [new ForeignKeyDescriptor("AuthorId", "Author")],
+            VectorFields = [],
+            ChunkFields  = [],
+            Relations    = [new RelationDescriptor("Author", RelationKind.ManyToOne, "Author", "AuthorId")],
+            TenantColumn = "TenantId",
+            Authorization = new AuthorizationRules(
+                "OwnerId",
+                new List<RowPermission>(),
+                new List<FieldPermission>
+                {
+                    // Excludes an unrelated field for a role the caller doesn't hold, which is
+                    // what forces the evaluator down the non-null AllowedFields branch.
+                    new("Name", new List<string>(), new List<string> { "editor" })
+                }),
+        };
+
+        var payload = new Struct
+        {
+            Fields =
+            {
+                ["id"]       = Value.ForString("tag-1"),
+                ["AuthorId"] = Value.ForString("author-1"),
+                ["Author"]   = Value.ForStruct(new Struct
+                {
+                    Fields = { ["Id"] = Value.ForString("author-1"), ["Name"] = Value.ForString("A. Author") }
+                }),
+            }
+        };
+
+        var act = () => AuthorizationFieldMasking.EnforceWriteAuthorization(
+            new RowFieldAuthorizationEvaluator(),
+            new ClaimsPrincipal(new ClaimsIdentity(
+                [new Claim("sub", "user-1"), new Claim("tenant_id", "tenant-1")], "test")),
+            schema,
+            payload,
+            AuthorizationAction.Write,
+            "Not authorized to create this entity.",
+            existingRowJson: null,
+            new AuditLog(NullLogger<AuditLog>.Instance));
+
+        act.Should().NotThrow();
+    }
 }

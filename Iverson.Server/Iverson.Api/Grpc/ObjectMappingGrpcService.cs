@@ -295,7 +295,8 @@ public sealed class ObjectMappingGrpcService(
             _authEvaluator, _actingUserAccessor.ActingUser, schema, request.Payload,
             AuthorizationAction.Write, "Not authorized to create this entity.", existingRowJson: null, _auditLog);
 
-        _relationValidator.ValidateRelations(request.Payload, schema);
+        var capturedNavProperties = CaptureNavProperties(request.Payload, schema);
+        _relationValidator.ValidateAndNormalizeRelations(request.Payload, schema);
 
         var key = _keyAccessor.ExtractKey(request.Payload, schema.KeyColumn.Name);
         if (string.IsNullOrWhiteSpace(key) || key == Guid.Empty.ToString())
@@ -305,6 +306,7 @@ public sealed class ObjectMappingGrpcService(
         }
 
         var payloadJson = StructSerializer.SerializePayload(request.Payload);
+        RestoreNavProperties(request.Payload, capturedNavProperties);
 
         var decision = _authEvaluator.Evaluate(schema, _actingUserAccessor.ActingUser, AuthorizationAction.Write);
         var outboxRowId = await _outboxWriter.UpsertAndEnqueueOutboxAsync(
@@ -348,9 +350,11 @@ public sealed class ObjectMappingGrpcService(
             existingRowJson,
             _auditLog);
 
-        _relationValidator.ValidateRelations(request.Payload, schema);
+        var capturedNavProperties = CaptureNavProperties(request.Payload, schema);
+        _relationValidator.ValidateAndNormalizeRelations(request.Payload, schema);
 
         var payloadJson = StructSerializer.SerializePayload(request.Payload);
+        RestoreNavProperties(request.Payload, capturedNavProperties);
 
         var decision = _authEvaluator.Evaluate(schema, _actingUserAccessor.ActingUser, AuthorizationAction.Write);
         var outboxRowId = await _outboxWriter.UpsertAndEnqueueOutboxAsync(
@@ -375,6 +379,27 @@ public sealed class ObjectMappingGrpcService(
             "Mapping.Update");
 
         return new MappingResponse { Success = true, Data = request.Payload, TraceId = request.TraceId };
+    }
+
+    // The write handlers echo request.Payload back to the caller, and RelationValidator strips
+    // relation properties from it in place. Capture before validating, restore after serialising,
+    // so the response keeps the shape the caller sent. Captured under the EXACT key the caller
+    // used (which may be the camelCase variant) rather than the schema's canonical PascalCase
+    // name — restoring through SetField would rewrite `author` back as `Author`, silently
+    // changing the payload the caller gets back.
+    private static List<(string Key, Value Value)> CaptureNavProperties(
+        Struct payload, SchemaDescriptor schema) =>
+        schema.Relations
+            .Where(r => !string.Equals(r.PropertyName, r.ForeignKey, StringComparison.OrdinalIgnoreCase))
+            .SelectMany(r => StructFieldAccess.Candidates(r.PropertyName)
+                .Where(payload.Fields.ContainsKey))
+            .Select(key => (key, Value: payload.Fields[key]))
+            .ToList();
+
+    private static void RestoreNavProperties(Struct payload, List<(string Key, Value Value)> captured)
+    {
+        foreach (var (key, value) in captured)
+            payload.Fields[key] = value;
     }
 
     public override async Task<MappingDeleteResponse> Delete(

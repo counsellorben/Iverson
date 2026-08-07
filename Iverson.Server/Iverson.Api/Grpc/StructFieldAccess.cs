@@ -40,4 +40,32 @@ internal static class StructFieldAccess
                     .ToList();
         return [];
     }
+
+    /// <summary>
+    /// Sets <paramref name="canonicalName"/>, first removing any key that differs from it only by
+    /// the leading character's case. Clients serialize camelCase, so a payload arrives carrying
+    /// <c>authorId</c> while the schema column is <c>AuthorId</c>; setting the canonical key
+    /// without removing the camelCase one leaves BOTH in the Struct, and
+    /// <c>StructSerializer.SerializePayload</c> upper-firsts every key into a Dictionary —
+    /// throwing "An item with the same key has already been added."
+    /// </summary>
+    public static void SetField(Struct s, string canonicalName, Value value)
+    {
+        foreach (var candidate in Candidates(canonicalName))
+            if (candidate != canonicalName)
+                s.Fields.Remove(candidate);
+
+        s.Fields[canonicalName] = value;
+    }
+
+    /// <summary>
+    /// Removes <paramref name="canonicalName"/> and every case variant of it. Mirrors
+    /// <see cref="SetField"/>'s variant handling: clients send camelCase while schemas declare
+    /// PascalCase, so removing only the declared spelling would leave the camelCase key behind.
+    /// </summary>
+    public static void RemoveField(Struct s, string canonicalName)
+    {
+        foreach (var candidate in Candidates(canonicalName))
+            s.Fields.Remove(candidate);
+    }
 }

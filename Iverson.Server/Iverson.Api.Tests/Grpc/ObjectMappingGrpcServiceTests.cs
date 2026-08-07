@@ -722,6 +722,59 @@ public class ObjectMappingGrpcServiceTests
     }
 
     [Fact]
+    public async Task MappingPost_NavPropertyPresentInResponsePayload()
+    {
+        await _registry.RegisterAsync(SchemaFixtures.ArticleSchema());
+        EntityEvent? evt = null;
+        _events.When(e => e.ProduceAsync(EntityTopics.Events, Arg.Any<string>(), Arg.Any<EntityEvent>()))
+               .Do(call => evt = call.ArgAt<EntityEvent>(2));
+
+        var author = new Struct();
+        author.Fields["Id"] = Value.ForString(AuthorId);
+        var payload = MakePayload(new()
+        {
+            ["Id"]     = Value.ForString(ArticleId),
+            ["Title"]  = Value.ForString("Hello"),
+            ["Body"]   = Value.ForString("World"),
+            ["Author"] = Value.ForStruct(author)
+        });
+        var request = new MappingWriteRequest { TypeName = "Article", Payload = payload };
+
+        var response = await _sut.Post(request, MakeContext());
+
+        // The caller's echoed payload keeps the nav property...
+        response.Data.Fields.Should().ContainKey("Author");
+        // ...but the payload that reached the outbox (and from there, Kafka) does not.
+        evt.Should().NotBeNull();
+        evt!.PayloadJson.Should().NotContain("\"Author\"");
+    }
+
+    [Fact]
+    public async Task MappingPost_CamelCaseNavPropertyKeyPreservedInResponsePayload()
+    {
+        // Regression guard: a caller who sent the camelCase key `author` must get `author` back
+        // in response.Data, not the schema's canonical `Author`. RestoreNavProperties must not
+        // canonicalize the key it writes back.
+        await _registry.RegisterAsync(SchemaFixtures.ArticleSchema());
+
+        var author = new Struct();
+        author.Fields["Id"] = Value.ForString(AuthorId);
+        var payload = MakePayload(new()
+        {
+            ["Id"]     = Value.ForString(ArticleId),
+            ["Title"]  = Value.ForString("Hello"),
+            ["Body"]   = Value.ForString("World"),
+            ["author"] = Value.ForStruct(author)
+        });
+        var request = new MappingWriteRequest { TypeName = "Article", Payload = payload };
+
+        var response = await _sut.Post(request, MakeContext());
+
+        response.Data.Fields.Should().ContainKey("author");
+        response.Data.Fields.Should().NotContainKey("Author");
+    }
+
+    [Fact]
     public async Task Post_WithInvalidFkGuid_ThrowsInvalidArgument()
     {
         await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());

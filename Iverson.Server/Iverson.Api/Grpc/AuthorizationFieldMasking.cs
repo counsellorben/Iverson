@@ -118,17 +118,8 @@ internal static class AuthorizationFieldMasking
     /// derived from the caller's token, not from client-supplied data.
     /// </para>
     /// </summary>
-    private static void SetAuthoritativeField(Struct payload, string canonicalName, string value)
-    {
-        var duplicates = payload.Fields.Keys
-            .Where(k => k != canonicalName
-                        && string.Equals(StructSerializer.UpperFirst(k), canonicalName, StringComparison.Ordinal))
-            .ToList();
-        foreach (var key in duplicates)
-            payload.Fields.Remove(key);
-
-        payload.Fields[canonicalName] = Value.ForString(value);
-    }
+    private static void SetAuthoritativeField(Struct payload, string canonicalName, string value) =>
+        StructFieldAccess.SetField(payload, canonicalName, Value.ForString(value));
 
     public static void MaskDisallowedFields(
         Struct payload,
