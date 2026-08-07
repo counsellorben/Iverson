@@ -80,3 +80,33 @@ Task 2: minor (deferred): the ManyToMany disagreement message names neither the 
   the direction, unlike its ManyToOne sibling which quotes both GUIDs. Brief-specified, but it makes
   the plan's Known-issue "partial nav subset on deleted/unreadable rows" hard to diagnose.
 Task 2: complete (commits 1c401ed..8ef9684, review CHANGES REQUESTED then addressed).
+
+FINAL WHOLE-BRANCH REVIEW (ae73e0a..99e3dca) — 0 Critical, 1 Important, 3 Minor.
+  Verdict "Ready to merge: Yes". The earlier stacked plan's normalization substrate is not broken or
+  contradicted by this one. Reviewer independently confirmed the end-to-end trace: payloadJson is
+  computed BEFORE RestoreNavProperties and the outbox/Kafka publish consume the string, not the
+  Struct, so no nav property reaches Postgres, StarRocks, Qdrant or the event body; no consumer reads
+  a relation PropertyName from a payload; only the 2 call sites that echo request.Payload
+  capture/restore, and the 2 in ObjectPersistenceGrpcService correctly do not.
+  IMPORTANT (fixed, commit below): ValidateCollectionRelation treated a nav list with NO readable
+  keys as a disagreement, while ValidateSingleRelation treats an unreadable nested key as "no second
+  opinion". A write that succeeded before this branch would now return InvalidArgument naming neither
+  the offending item nor the cause. Fixed by gating the SetEquals on navKeys.Count > 0, mirroring the
+  ManyToOne rule, plus a regression test (ManyToMany_NavListWithNoReadableKeys_ForeignKeyListStands).
+  This SUPERSEDES the Task 2 deferred minor about scalar nav lists — and note the ledger's recorded
+  justification for deferring it was WRONG: Python/TS/Java only collide PropertyName with ForeignKey
+  when the m2m field is NAMED tag_ids/tagIds; a field named `tags` is distinct and unguarded. Python
+  and Java are saved instead by their converters stringifying collections. Lesson: a deferral is only
+  as good as its stated reason; the reason, not just the verdict, needs checking.
+  Controller re-ran the Api suite: 643 passed / 0 failed / 643 total.
+  MINOR (deferred): KeyColumnNameFor's `?? "Id"` registry-miss fallback is silent, and Task 2 raised
+  its consequence from "FK not normalized" to "write rejected". Worth logging the miss.
+  MINOR (deferred): the navIsDistinctKey predicate is duplicated in RelationValidator and
+  ObjectMappingGrpcService.CaptureNavProperties. Composed with Ben's caller-spelling ruling this is a
+  contract risk — if the two diverge, strip-without-capture makes the nav property vanish from the
+  echoed response, and no test couples them.
+  MINOR (deferred) coverage gaps no single task owned: Mapping.Update's capture/restore pair is
+  untested (only Mapping.Post is); echo tests cover ManyToOne only, not ManyToMany or OneToMany.
+  OUT OF SCOPE, worth its own investigation: Java StructConverter.toValue falls through to
+  val.toString() for collections, so a Java client sends TagIds as a STRING, not a ListValue — the
+  Java sibling of the Go issue the spec already flags.

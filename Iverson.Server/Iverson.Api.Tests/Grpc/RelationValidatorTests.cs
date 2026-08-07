@@ -566,6 +566,28 @@ public class RelationValidatorTests
     }
 
     [Fact]
+    public void ManyToMany_NavListWithNoReadableKeys_ForeignKeyListStands()
+    {
+        // A nav list whose items yield no key at all is silence, not disagreement — the same rule
+        // ManyToOne applies to an unreadable nested key. Without this, a scalar nav list (or a
+        // registry miss inside KeyColumnNameFor) would reject the write with a "disagree" message
+        // naming neither the item nor the cause.
+        var schema = MakeSchemaWithRelation(RelationKind.ManyToMany, fkNullable: true) with
+        {
+            Relations = [new RelationDescriptor("Tags", RelationKind.ManyToMany, "Tag", "TagIds")]
+        };
+        var payload = new Struct();
+        var id1 = Guid.NewGuid().ToString();
+        payload.Fields["TagIds"] = Value.ForList(Value.ForString(id1));
+        payload.Fields["Tags"] = Value.ForList(Value.ForString("not-an-object"));
+
+        var act = () => _sut.ValidateAndNormalizeRelations(payload, schema);
+
+        act.Should().NotThrow();
+        payload.Fields["TagIds"].ListValue.Values.Single().StringValue.Should().Be(id1);
+    }
+
+    [Fact]
     public void ManyToMany_EmptyNavListWithFkList_Accepted()
     {
         var schema = MakeSchemaWithRelation(RelationKind.ManyToMany, fkNullable: true) with

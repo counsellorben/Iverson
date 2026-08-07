@@ -162,7 +162,12 @@ public sealed class RelationValidator(SchemaRegistry registry) : IRelationValida
                         && ReadNestedKey(nested, relation.RelatedTypeName) is { } key)
                         navKeys.Add(key);
 
-                if (!navKeys.SetEquals(fkKeys))
+                // No item yielded a readable key, so the nav list offers no second opinion at all.
+                // Treat that as silence rather than disagreement, matching ValidateSingleRelation's
+                // rule for an unreadable nested key. Reporting "disagree" here would reject a write
+                // whose real problem is item shape (or a registry miss in KeyColumnNameFor) with a
+                // message naming neither.
+                if (navKeys.Count > 0 && !navKeys.SetEquals(fkKeys))
                     errors.Add(
                         $"'{relation.PropertyName}' and '{relation.ForeignKey}' disagree. " +
                         $"Remove one, or make them agree.");
