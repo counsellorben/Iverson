@@ -65,7 +65,15 @@ no schema, so it cannot distinguish a relation property from an ordinary field.
 One unconditional removal per relation in the top-level loop, after the `switch`:
 
 ```csharp
-if (!string.Equals(relation.PropertyName, relation.ForeignKey, StringComparison.OrdinalIgnoreCase))
+// Computed once per relation: when the names collide (see A7), the "nav property" and the
+// foreign key are the SAME payload key. There is no separate nav object to conflict with,
+// and stripping would delete the FK itself.
+var navIsDistinctKey = !string.Equals(
+    relation.PropertyName, relation.ForeignKey, StringComparison.OrdinalIgnoreCase);
+
+// ... per-kind validation, which reads the nav property only when navIsDistinctKey ...
+
+if (navIsDistinctKey)
     StructFieldAccess.RemoveField(payload, relation.PropertyName);
 ```
 
@@ -76,7 +84,8 @@ immediately — a per-branch approach would need four scattered call sites and w
 
 **The name guard is load-bearing.** `PropertyName` and `ForeignKey` are not guaranteed distinct —
 see assumption A7 below. Without the guard, a many-to-many relation whose property name matches its
-inferred FK would have its foreign key deleted by the strip.
+inferred FK would have its foreign key deleted by the strip **and** its FK list misread as embedded
+objects by conflict detection.
 
 `StructFieldAccess.RemoveField(Struct, string)` is new, removing the canonical name and its case
 variants via the existing `Candidates`, mirroring `SetField`. Clients serialize camelCase (`author`)
@@ -101,6 +110,14 @@ an explicit error. Both methods must therefore examine the nav property even whe
 | absent or `NullValue` | present | normalize into FK |
 | absent | absent | existing required/nullable check |
 
+**Comparison is on parsed `Guid` values, not raw strings.** `Guid.TryParse` accepts several
+spellings of the same value — differing hex case, and the `{...}` and `(...)` delimited forms — so
+two payload strings that denote the same entity can compare unequal and raise a conflict on a
+payload that in fact agrees. `ValidateNestedObject` already parses the nested key to validate it
+(`RelationValidator.cs:148`) and the FK side is parsed at `RelationValidator.cs:62`; returning and
+comparing the parsed values costs nothing. The same rule applies to collection set membership:
+build the sets from parsed `Guid` values.
+
 **Collections** (`ManyToMany`): conflict is checked only when the FK list is present *and* the nav
 list is non-empty. Any difference then errors. An empty nav list means "not supplied" and the FK
 list wins.
@@ -114,6 +131,12 @@ Comparison is by **set**, not sequence. `GetMany` does preserve request key orde
 is incidental to how the retrieval loop happens to be written, and relation membership is a set
 concept. Duplicate keys within a list collapse under set comparison; this edge case is deliberately
 not handled.
+
+**When `PropertyName` and `ForeignKey` collide** (the A7 case), conflict detection is skipped
+entirely along with stripping: the two lookups resolve to one key, so there is no second value to
+disagree with. `ValidateCollectionRelation` keeps its existing early return in that case. Without
+this, the FK's list of GUID strings would be read as a list of embedded objects and every element
+would fail nested validation — rejecting the primary way to write a many-to-many relation.
 
 **`OneToMany`**: the FK lives on the related entity, so no local FK exists and no conflict is
 possible. Strip only, subject to the same name guard.
@@ -143,6 +166,7 @@ Verified against the codebase before this spec was written. Two failed and chang
 | A13 | FK values, nested keys, and FK-list elements are all `StringValue` | ✅ |
 | A14 | Write RPCs do not echo the request payload back | ✅ `PersistResponse` carries `success`/`key`/`trace_id`/`error` only |
 | A15 | The 4 relation kinds are the complete set | ✅ switch has a throwing `default` |
+| A16 | Every client's payload keys fall within `Candidates`' range (canonical or first-char-lowered) | ✅ .NET camelCase (`JsonNamingPolicy.CamelCase`); Python `core.py:329`, TypeScript `core.ts:364,379`, Java `StructConverter.java:34` all PascalCase; Go sends no relation fields (`coordinator.go:446`). No client sends snake_case payload keys. |
 
 ### A7 failed — `PropertyName` can equal `ForeignKey`
 
