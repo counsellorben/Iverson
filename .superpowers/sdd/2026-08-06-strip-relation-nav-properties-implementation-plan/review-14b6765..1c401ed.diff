@@ -1,0 +1,111 @@
+# Review package: 14b6765..HEAD
+
+## Commits
+1c401ed preserve caller's nav property key case when restoring echoed payload
+
+## Files changed
+ .../Grpc/ObjectMappingGrpcServiceTests.cs          | 25 ++++++++++++++++++++++
+ .../Iverson.Api/Grpc/ObjectMappingGrpcService.cs   | 19 +++++++++-------
+ 2 files changed, 36 insertions(+), 8 deletions(-)
+
+## Diff
+diff --git a/Iverson.Server/Iverson.Api.Tests/Grpc/ObjectMappingGrpcServiceTests.cs b/Iverson.Server/Iverson.Api.Tests/Grpc/ObjectMappingGrpcServiceTests.cs
+index 1b495d0..6132c8e 100644
+--- a/Iverson.Server/Iverson.Api.Tests/Grpc/ObjectMappingGrpcServiceTests.cs
++++ b/Iverson.Server/Iverson.Api.Tests/Grpc/ObjectMappingGrpcServiceTests.cs
+@@ -742,20 +742,45 @@ public class ObjectMappingGrpcServiceTests
+ 
+         var response = await _sut.Post(request, MakeContext());
+ 
+         // The caller's echoed payload keeps the nav property...
+         response.Data.Fields.Should().ContainKey("Author");
+         // ...but the payload that reached the outbox (and from there, Kafka) does not.
+         evt.Should().NotBeNull();
+         evt!.PayloadJson.Should().NotContain("\"Author\"");
+     }
+ 
++    [Fact]
++    public async Task MappingPost_CamelCaseNavPropertyKeyPreservedInResponsePayload()
++    {
++        // Regression guard: a caller who sent the camelCase key `author` must get `author` back
++        // in response.Data, not the schema's canonical `Author`. RestoreNavProperties must not
++        // canonicalize the key it writes back.
++        await _registry.RegisterAsync(SchemaFixtures.ArticleSchema());
++
++        var author = new Struct();
++        author.Fields["Id"] = Value.ForString(AuthorId);
++        var payload = MakePayload(new()
++        {
++            ["Id"]     = Value.ForString(ArticleId),
++            ["Title"]  = Value.ForString("Hello"),
++            ["Body"]   = Value.ForString("World"),
++            ["author"] = Value.ForStruct(author)
++        });
++        var request = new MappingWriteRequest { TypeName = "Article", Payload = payload };
++
++        var response = await _sut.Post(request, MakeContext());
++
++        response.Data.Fields.Should().ContainKey("author");
++        response.Data.Fields.Should().NotContainKey("Author");
++    }
++
+     [Fact]
+     public async Task Post_WithInvalidFkGuid_ThrowsInvalidArgument()
+     {
+         await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
+         await _registry.RegisterAsync(SchemaFixtures.ArticleSchema());
+         _sql.QuerySingleOrDefaultAsync<string>(Arg.Any<string>(), Arg.Any<object?>())
+             .Returns(ArticleJson);
+ 
+         var payload = MakePayload(new()
+         {
+diff --git a/Iverson.Server/Iverson.Api/Grpc/ObjectMappingGrpcService.cs b/Iverson.Server/Iverson.Api/Grpc/ObjectMappingGrpcService.cs
+index b0097af..0129aeb 100644
+--- a/Iverson.Server/Iverson.Api/Grpc/ObjectMappingGrpcService.cs
++++ b/Iverson.Server/Iverson.Api/Grpc/ObjectMappingGrpcService.cs
+@@ -376,34 +376,37 @@ public sealed class ObjectMappingGrpcService(
+             request.TraceId,
+             targetStores,
+             outboxRowId,
+             "Mapping.Update");
+ 
+         return new MappingResponse { Success = true, Data = request.Payload, TraceId = request.TraceId };
+     }
+ 
+     // The write handlers echo request.Payload back to the caller, and RelationValidator strips
+     // relation properties from it in place. Capture before validating, restore after serialising,
+-    // so the response keeps the shape the caller sent.
+-    private static List<(string Name, Value Value)> CaptureNavProperties(
++    // so the response keeps the shape the caller sent. Captured under the EXACT key the caller
++    // used (which may be the camelCase variant) rather than the schema's canonical PascalCase
++    // name — restoring through SetField would rewrite `author` back as `Author`, silently
++    // changing the payload the caller gets back.
++    private static List<(string Key, Value Value)> CaptureNavProperties(
+         Struct payload, SchemaDescriptor schema) =>
+         schema.Relations
+             .Where(r => !string.Equals(r.PropertyName, r.ForeignKey, StringComparison.OrdinalIgnoreCase))
+-            .Select(r => (r.PropertyName, Value: StructFieldAccess.GetFieldValue(payload, r.PropertyName)))
+-            .Where(x => x.Value is not null)
+-            .Select(x => (x.PropertyName, x.Value!))
++            .SelectMany(r => StructFieldAccess.Candidates(r.PropertyName)
++                .Where(payload.Fields.ContainsKey))
++            .Select(key => (key, Value: payload.Fields[key]))
+             .ToList();
+ 
+-    private static void RestoreNavProperties(Struct payload, List<(string Name, Value Value)> captured)
++    private static void RestoreNavProperties(Struct payload, List<(string Key, Value Value)> captured)
+     {
+-        foreach (var (name, value) in captured)
+-            StructFieldAccess.SetField(payload, name, value);
++        foreach (var (key, value) in captured)
++            payload.Fields[key] = value;
+     }
+ 
+     public override async Task<MappingDeleteResponse> Delete(
+         MappingDeleteRequest request, ServerCallContext context)
+     {
+         _logger.LogInformation("[Mapping.Delete] type={Type} key={Key}", request.TypeName.SanitizeForLog(), request.Key);
+ 
+         var schema = RequireSchema(request.TypeName);
+ 
+         var rowJson = await FetchByKeyAsync(schema, request.Key,

@@ -1,0 +1,353 @@
+# Review package: 54baf7d..HEAD
+
+## Commits
+14b6765 strip relation nav properties from write payloads
+
+## Files changed
+ .../Grpc/ObjectMappingGrpcServiceTests.cs          | 28 ++++++++
+ .../Grpc/RelationValidatorTests.cs                 | 84 ++++++++++++++++++++++
+ .../Iverson.Api/Grpc/ObjectMappingGrpcService.cs   | 22 ++++++
+ .../Iverson.Api/Grpc/RelationValidator.cs          | 12 ++++
+ .../Iverson.Api/Grpc/StructFieldAccess.cs          | 11 +++
+ 5 files changed, 157 insertions(+)
+
+## Diff
+diff --git a/Iverson.Server/Iverson.Api.Tests/Grpc/ObjectMappingGrpcServiceTests.cs b/Iverson.Server/Iverson.Api.Tests/Grpc/ObjectMappingGrpcServiceTests.cs
+index eedeb54..1b495d0 100644
+--- a/Iverson.Server/Iverson.Api.Tests/Grpc/ObjectMappingGrpcServiceTests.cs
++++ b/Iverson.Server/Iverson.Api.Tests/Grpc/ObjectMappingGrpcServiceTests.cs
+@@ -714,20 +714,48 @@ public class ObjectMappingGrpcServiceTests
+ 
+         var response = await _sut.Post(request, MakeContext());
+ 
+         response.Success.Should().BeTrue();
+         response.Data.Should().BeSameAs(request.Payload);
+         response.TraceId.Should().Be("t1");
+         _ = _sql.DidNotReceive().QuerySingleOrDefaultAsync<string>(
+             Arg.Any<string>(), Arg.Any<object>());
+     }
+ 
++    [Fact]
++    public async Task MappingPost_NavPropertyPresentInResponsePayload()
++    {
++        await _registry.RegisterAsync(SchemaFixtures.ArticleSchema());
++        EntityEvent? evt = null;
++        _events.When(e => e.ProduceAsync(EntityTopics.Events, Arg.Any<string>(), Arg.Any<EntityEvent>()))
++               .Do(call => evt = call.ArgAt<EntityEvent>(2));
++
++        var author = new Struct();
++        author.Fields["Id"] = Value.ForString(AuthorId);
++        var payload = MakePayload(new()
++        {
++            ["Id"]     = Value.ForString(ArticleId),
++            ["Title"]  = Value.ForString("Hello"),
++            ["Body"]   = Value.ForString("World"),
++            ["Author"] = Value.ForStruct(author)
++        });
++        var request = new MappingWriteRequest { TypeName = "Article", Payload = payload };
++
++        var response = await _sut.Post(request, MakeContext());
++
++        // The caller's echoed payload keeps the nav property...
++        response.Data.Fields.Should().ContainKey("Author");
++        // ...but the payload that reached the outbox (and from there, Kafka) does not.
++        evt.Should().NotBeNull();
++        evt!.PayloadJson.Should().NotContain("\"Author\"");
++    }
++
+     [Fact]
+     public async Task Post_WithInvalidFkGuid_ThrowsInvalidArgument()
+     {
+         await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
+         await _registry.RegisterAsync(SchemaFixtures.ArticleSchema());
+         _sql.QuerySingleOrDefaultAsync<string>(Arg.Any<string>(), Arg.Any<object?>())
+             .Returns(ArticleJson);
+ 
+         var payload = MakePayload(new()
+         {
+diff --git a/Iverson.Server/Iverson.Api.Tests/Grpc/RelationValidatorTests.cs b/Iverson.Server/Iverson.Api.Tests/Grpc/RelationValidatorTests.cs
+index d20de5d..0f80db7 100644
+--- a/Iverson.Server/Iverson.Api.Tests/Grpc/RelationValidatorTests.cs
++++ b/Iverson.Server/Iverson.Api.Tests/Grpc/RelationValidatorTests.cs
+@@ -342,11 +342,95 @@ public class RelationValidatorTests
+         var nested = new Struct();
+         nested.Fields["Id"] = Value.ForString(Guid.NewGuid().ToString());
+         payload.Fields["Author"] = Value.ForStruct(nested);
+ 
+         var act = () => _sut.ValidateAndNormalizeRelations(payload, schema);
+ 
+         act.Should().Throw<RpcException>()
+             .Where(e => e.Status.Detail.Contains("'AuthorId' is not a column on this type"));
+         payload.Fields.Should().NotContainKey("AuthorId");
+     }
++
++    [Fact]
++    public void ManyToOne_NavPropertyStrippedAndForeignKeySurvives()
++    {
++        var schema = MakeSchemaWithRelation(RelationKind.ManyToOne, fkNullable: true);
++        var payload = new Struct();
++        var authorId = Guid.NewGuid().ToString();
++        var nested = new Struct();
++        nested.Fields["Id"] = Value.ForString(authorId);
++        payload.Fields["Author"] = Value.ForStruct(nested);
++
++        _sut.ValidateAndNormalizeRelations(payload, schema);
++
++        payload.Fields["AuthorId"].StringValue.Should().Be(authorId);
++        payload.Fields.Should().NotContainKey("Author");
++    }
++
++    [Fact]
++    public void ManyToOne_CamelCaseNavPropertyStripped()
++    {
++        var schema = MakeSchemaWithRelation(RelationKind.ManyToOne, fkNullable: true);
++        var payload = new Struct();
++        var nested = new Struct();
++        nested.Fields["Id"] = Value.ForString(Guid.NewGuid().ToString());
++        payload.Fields["author"] = Value.ForStruct(nested);
++
++        _sut.ValidateAndNormalizeRelations(payload, schema);
++
++        payload.Fields.Should().NotContainKey("author");
++        payload.Fields.Should().NotContainKey("Author");
++    }
++
++    [Fact]
++    public void ManyToMany_NavListStripped()
++    {
++        var schema = MakeSchemaWithRelation(RelationKind.ManyToMany, fkNullable: true) with
++        {
++            Relations = [new RelationDescriptor("Tags", RelationKind.ManyToMany, "Tag", "TagIds")]
++        };
++        var payload = new Struct();
++        var nested = new Struct();
++        nested.Fields["Id"] = Value.ForString(Guid.NewGuid().ToString());
++        payload.Fields["Tags"] = Value.ForList(Value.ForStruct(nested));
++
++        _sut.ValidateAndNormalizeRelations(payload, schema);
++
++        payload.Fields["TagIds"].ListValue.Values.Should().HaveCount(1);
++        payload.Fields.Should().NotContainKey("Tags");
++    }
++
++    [Fact]
++    public void OneToMany_NavPropertyStripped()
++    {
++        var schema = MakeSchemaWithRelation(RelationKind.OneToMany, fkNullable: false);
++        var payload = new Struct();
++        var nested = new Struct();
++        nested.Fields["Id"] = Value.ForString(Guid.NewGuid().ToString());
++        payload.Fields["Author"] = Value.ForList(Value.ForStruct(nested));
++
++        _sut.ValidateAndNormalizeRelations(payload, schema);
++
++        payload.Fields.Should().NotContainKey("Author");
++        payload.Fields.Should().NotContainKey("AuthorId");
++    }
++
++    [Fact]
++    public void PropertyNameEqualsForeignKey_KeyNotStripped()
++    {
++        // A7 regression guard: when PropertyName and ForeignKey collide, the nav property IS the
++        // FK payload key. Without the name guard, stripping the nav property deletes the FK too.
++        var schema = MakeSchemaWithRelation(RelationKind.ManyToMany, fkNullable: true) with
++        {
++            Relations = [new RelationDescriptor("TagIds", RelationKind.ManyToMany, "Tag", "TagIds")]
++        };
++        var payload = new Struct();
++        var id1 = Guid.NewGuid().ToString();
++        var id2 = Guid.NewGuid().ToString();
++        payload.Fields["TagIds"] = Value.ForList(Value.ForString(id1), Value.ForString(id2));
++
++        _sut.ValidateAndNormalizeRelations(payload, schema);
++
++        payload.Fields.Should().ContainKey("TagIds");
++        payload.Fields["TagIds"].ListValue.Values.Select(v => v.StringValue).Should().Equal(id1, id2);
++    }
+ }
+diff --git a/Iverson.Server/Iverson.Api/Grpc/ObjectMappingGrpcService.cs b/Iverson.Server/Iverson.Api/Grpc/ObjectMappingGrpcService.cs
+index 500d72f..b0097af 100644
+--- a/Iverson.Server/Iverson.Api/Grpc/ObjectMappingGrpcService.cs
++++ b/Iverson.Server/Iverson.Api/Grpc/ObjectMappingGrpcService.cs
+@@ -288,30 +288,32 @@ public sealed class ObjectMappingGrpcService(
+         ServerCallContext context)
+     {
+         _logger.LogInformation("[Mapping.Post] type={Type}", request.TypeName.SanitizeForLog());
+ 
+         var schema = RequireSchema(request.TypeName);
+ 
+         AuthorizationFieldMasking.EnforceWriteAuthorization(
+             _authEvaluator, _actingUserAccessor.ActingUser, schema, request.Payload,
+             AuthorizationAction.Write, "Not authorized to create this entity.", existingRowJson: null, _auditLog);
+ 
++        var capturedNavProperties = CaptureNavProperties(request.Payload, schema);
+         _relationValidator.ValidateAndNormalizeRelations(request.Payload, schema);
+ 
+         var key = _keyAccessor.ExtractKey(request.Payload, schema.KeyColumn.Name);
+         if (string.IsNullOrWhiteSpace(key) || key == Guid.Empty.ToString())
+         {
+             key = Guid.CreateVersion7().ToString();
+             _keyAccessor.SetKey(request.Payload, schema.KeyColumn.Name, key);
+         }
+ 
+         var payloadJson = StructSerializer.SerializePayload(request.Payload);
++        RestoreNavProperties(request.Payload, capturedNavProperties);
+ 
+         var decision = _authEvaluator.Evaluate(schema, _actingUserAccessor.ActingUser, AuthorizationAction.Write);
+         var outboxRowId = await _outboxWriter.UpsertAndEnqueueOutboxAsync(
+             SchemaBuilder.ToTableSchema(schema), request.TypeName, key, payloadJson,
+             tenantId: decision.TenantValue);
+         var targetStores = StoreTargeting.DetermineTargetStores(schema);
+ 
+         // Opportunistic fast-path publish: the durability guarantee already exists (the
+         // outbox row committed above, in the same transaction as the entity write), so a
+         // failure here is not data loss — the existing ReconciliationQueueWorker (which now
+@@ -341,23 +343,25 @@ public sealed class ObjectMappingGrpcService(
+         AuthorizationFieldMasking.EnforceWriteAuthorization(
+             _authEvaluator,
+             _actingUserAccessor.ActingUser,
+             schema,
+             request.Payload,
+             AuthorizationAction.Write,
+             "Not authorized to update this entity.",
+             existingRowJson,
+             _auditLog);
+ 
++        var capturedNavProperties = CaptureNavProperties(request.Payload, schema);
+         _relationValidator.ValidateAndNormalizeRelations(request.Payload, schema);
+ 
+         var payloadJson = StructSerializer.SerializePayload(request.Payload);
++        RestoreNavProperties(request.Payload, capturedNavProperties);
+ 
+         var decision = _authEvaluator.Evaluate(schema, _actingUserAccessor.ActingUser, AuthorizationAction.Write);
+         var outboxRowId = await _outboxWriter.UpsertAndEnqueueOutboxAsync(
+             SchemaBuilder.ToTableSchema(schema), request.TypeName, key, payloadJson,
+             tenantId: decision.TenantValue);
+         var targetStores = StoreTargeting.DetermineTargetStores(schema);
+ 
+         // Opportunistic fast-path publish: the durability guarantee already exists (the
+         // outbox row committed above, in the same transaction as the entity write), so a
+         // failure here is not data loss — the existing ReconciliationQueueWorker (which now
+@@ -370,20 +374,38 @@ public sealed class ObjectMappingGrpcService(
+             key,
+             payloadJson,
+             request.TraceId,
+             targetStores,
+             outboxRowId,
+             "Mapping.Update");
+ 
+         return new MappingResponse { Success = true, Data = request.Payload, TraceId = request.TraceId };
+     }
+ 
++    // The write handlers echo request.Payload back to the caller, and RelationValidator strips
++    // relation properties from it in place. Capture before validating, restore after serialising,
++    // so the response keeps the shape the caller sent.
++    private static List<(string Name, Value Value)> CaptureNavProperties(
++        Struct payload, SchemaDescriptor schema) =>
++        schema.Relations
++            .Where(r => !string.Equals(r.PropertyName, r.ForeignKey, StringComparison.OrdinalIgnoreCase))
++            .Select(r => (r.PropertyName, Value: StructFieldAccess.GetFieldValue(payload, r.PropertyName)))
++            .Where(x => x.Value is not null)
++            .Select(x => (x.PropertyName, x.Value!))
++            .ToList();
++
++    private static void RestoreNavProperties(Struct payload, List<(string Name, Value Value)> captured)
++    {
++        foreach (var (name, value) in captured)
++            StructFieldAccess.SetField(payload, name, value);
++    }
++
+     public override async Task<MappingDeleteResponse> Delete(
+         MappingDeleteRequest request, ServerCallContext context)
+     {
+         _logger.LogInformation("[Mapping.Delete] type={Type} key={Key}", request.TypeName.SanitizeForLog(), request.Key);
+ 
+         var schema = RequireSchema(request.TypeName);
+ 
+         var rowJson = await FetchByKeyAsync(schema, request.Key,
+             tenantScoped: schema.TenantColumn is not null,
+             tenantId: _actingUserAccessor.ActingUser?.FindFirst("tenant_id")?.Value);
+diff --git a/Iverson.Server/Iverson.Api/Grpc/RelationValidator.cs b/Iverson.Server/Iverson.Api/Grpc/RelationValidator.cs
+index dfeeb33..c0f2c0d 100644
+--- a/Iverson.Server/Iverson.Api/Grpc/RelationValidator.cs
++++ b/Iverson.Server/Iverson.Api/Grpc/RelationValidator.cs
+@@ -10,40 +10,52 @@ public interface IRelationValidator
+ }
+ 
+ public sealed class RelationValidator(SchemaRegistry registry) : IRelationValidator
+ {
+     public void ValidateAndNormalizeRelations(Struct payload, SchemaDescriptor schema)
+     {
+         var errors = new List<string>();
+ 
+         foreach (var relation in schema.Relations)
+         {
++            // When PropertyName and ForeignKey collide — Python, TypeScript and Java can all
++            // produce that for ManyToMany — the "nav property" and the foreign key are the SAME
++            // payload key. There is no separate object to strip, and stripping would delete the
++            // foreign key itself.
++            var navIsDistinctKey = !string.Equals(
++                relation.PropertyName, relation.ForeignKey, StringComparison.OrdinalIgnoreCase);
++
+             switch (relation.Kind)
+             {
+                 case RelationKind.ManyToOne:
+                 case RelationKind.OneToOne:
+                     ValidateSingleRelation(payload, relation, schema, errors);
+                     break;
+ 
+                 case RelationKind.ManyToMany:
+                     ValidateCollectionRelation(payload, relation, errors);
+                     break;
+ 
+                 case RelationKind.OneToMany:
+                     break; // FK lives on the related entity
+ 
+                 default:
+                     throw new ArgumentOutOfRangeException(
+                         nameof(relation.Kind),
+                         relation.Kind,
+                         $"Unhandled {nameof(RelationKind)} value in relation validation — add a case above.");
+             }
++
++            // The stores already ignore nav properties; removing them here keeps them out of the
++            // Kafka event body, which is the only place they were still observable.
++            if (navIsDistinctKey)
++                StructFieldAccess.RemoveField(payload, relation.PropertyName);
+         }
+ 
+         if (errors.Count > 0)
+             throw new RpcException(
+                 new Status(
+                     StatusCode.InvalidArgument,
+                     string.Join(" | ", errors)));
+     }
+ 
+     private void ValidateSingleRelation(
+diff --git a/Iverson.Server/Iverson.Api/Grpc/StructFieldAccess.cs b/Iverson.Server/Iverson.Api/Grpc/StructFieldAccess.cs
+index 4abeffb..e43c88e 100644
+--- a/Iverson.Server/Iverson.Api/Grpc/StructFieldAccess.cs
++++ b/Iverson.Server/Iverson.Api/Grpc/StructFieldAccess.cs
+@@ -50,11 +50,22 @@ internal static class StructFieldAccess
+     /// throwing "An item with the same key has already been added."
+     /// </summary>
+     public static void SetField(Struct s, string canonicalName, Value value)
+     {
+         foreach (var candidate in Candidates(canonicalName))
+             if (candidate != canonicalName)
+                 s.Fields.Remove(candidate);
+ 
+         s.Fields[canonicalName] = value;
+     }
++
++    /// <summary>
++    /// Removes <paramref name="canonicalName"/> and every case variant of it. Mirrors
++    /// <see cref="SetField"/>'s variant handling: clients send camelCase while schemas declare
++    /// PascalCase, so removing only the declared spelling would leave the camelCase key behind.
++    /// </summary>
++    public static void RemoveField(Struct s, string canonicalName)
++    {
++        foreach (var candidate in Candidates(canonicalName))
++            s.Fields.Remove(candidate);
++    }
+ }
