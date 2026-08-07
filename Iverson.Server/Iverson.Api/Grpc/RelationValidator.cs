@@ -28,11 +28,11 @@ public sealed class RelationValidator(SchemaRegistry registry) : IRelationValida
             {
                 case RelationKind.ManyToOne:
                 case RelationKind.OneToOne:
-                    ValidateSingleRelation(payload, relation, schema, errors);
+                    ValidateSingleRelation(payload, relation, schema, navIsDistinctKey, errors);
                     break;
 
                 case RelationKind.ManyToMany:
-                    ValidateCollectionRelation(payload, relation, errors);
+                    ValidateCollectionRelation(payload, relation, navIsDistinctKey, errors);
                     break;
 
                 case RelationKind.OneToMany:
@@ -62,6 +62,7 @@ public sealed class RelationValidator(SchemaRegistry registry) : IRelationValida
         Struct payload,
         RelationDescriptor relation,
         SchemaDescriptor schema,
+        bool navIsDistinctKey,
         List<string> errors)
     {
         // Resolved before the nav branch: normalizing an embedded reference writes this column into
@@ -71,18 +72,35 @@ public sealed class RelationValidator(SchemaRegistry registry) : IRelationValida
             string.Equals(c.Name, relation.ForeignKey, StringComparison.OrdinalIgnoreCase));
 
         var fkValue = StructFieldAccess.GetFieldValue(payload, relation.ForeignKey);
+        var navValue = navIsDistinctKey
+            ? StructFieldAccess.GetFieldValue(payload, relation.PropertyName)
+            : null;
         // A NullValue FK counts as ABSENT. The .NET client serializes every property, so a null
         // nullable FK arrives as `authorId: null`; treating that as present made it fail GUID
         // validation (a nullable FK the validator explicitly intends to be omittable) and made
         // the embedded-object branch unreachable from that client entirely.
         if (fkValue is not null && fkValue.KindCase != Value.KindOneofCase.NullValue)
         {
-            if (!Guid.TryParse(fkValue.StringValue, out var g) || g == Guid.Empty)
+            if (!Guid.TryParse(fkValue.StringValue, out var fk) || fk == Guid.Empty)
+            {
                 errors.Add($"'{relation.ForeignKey}': must be a valid non-empty GUID.");
+                return;
+            }
+
+            // Cross-check only. The nav object arrives fully hydrated from the read path, so the
+            // key-only rule must not apply; an unreadable key just means no second opinion.
+            if (navValue?.StructValue is { } crossCheck
+                && ReadNestedKey(crossCheck, relation.RelatedTypeName) is { } navKey
+                && navKey != fk)
+            {
+                errors.Add(
+                    $"'{relation.PropertyName}' references '{navKey}' but '{relation.ForeignKey}' " +
+                    $"is '{fk}'. Remove one, or make them agree.");
+            }
+
             return;
         }
 
-        var navValue = StructFieldAccess.GetFieldValue(payload, relation.PropertyName);
         if (navValue?.StructValue is { } nested)
         {
             if (fkCol is null)
@@ -108,21 +126,51 @@ public sealed class RelationValidator(SchemaRegistry registry) : IRelationValida
     }
 
     private void ValidateCollectionRelation(
-        Struct payload, RelationDescriptor relation, List<string> errors)
+        Struct payload, RelationDescriptor relation, bool navIsDistinctKey, List<string> errors)
     {
         var fkValue = StructFieldAccess.GetFieldValue(payload, relation.ForeignKey);
+        var navValue = navIsDistinctKey
+            ? StructFieldAccess.GetFieldValue(payload, relation.PropertyName)
+            : null;
+
         if (fkValue?.ListValue is { } fkList)
         {
+            var fkKeys     = new HashSet<Guid>();
+            var fkAllValid = true;
+
             for (var i = 0; i < fkList.Values.Count; i++)
             {
                 var str = fkList.Values[i].StringValue;
-                if (!Guid.TryParse(str, out var g) || g == Guid.Empty)
+                if (!Guid.TryParse(str, out var key) || key == Guid.Empty)
+                {
                     errors.Add($"'{relation.ForeignKey}[{i}]': invalid GUID '{str}'.");
+                    fkAllValid = false;
+                }
+                else
+                {
+                    fkKeys.Add(key);
+                }
             }
+
+            // An empty nav list means "not supplied" and the FK list wins. A non-empty one is a
+            // second opinion and must agree exactly.
+            if (fkAllValid && navValue?.ListValue is { } crossList && crossList.Values.Count > 0)
+            {
+                var navKeys = new HashSet<Guid>();
+                foreach (var item in crossList.Values)
+                    if (item.StructValue is { } nested
+                        && ReadNestedKey(nested, relation.RelatedTypeName) is { } key)
+                        navKeys.Add(key);
+
+                if (!navKeys.SetEquals(fkKeys))
+                    errors.Add(
+                        $"'{relation.PropertyName}' and '{relation.ForeignKey}' disagree. " +
+                        $"Remove one, or make them agree.");
+            }
+
             return;
         }
 
-        var navValue = StructFieldAccess.GetFieldValue(payload, relation.PropertyName);
         if (navValue?.ListValue is { } navList)
         {
             var keys = new List<Value>(navList.Values.Count);
@@ -153,27 +201,37 @@ public sealed class RelationValidator(SchemaRegistry registry) : IRelationValida
         // empty collection is valid
     }
 
+    private string KeyColumnNameFor(string relatedTypeName) =>
+        registry.Get(relatedTypeName)?.KeyColumn.Name ?? "Id";
+
+    /// <summary>
+    /// Reads a nested object's key as a parsed <see cref="Guid"/>, or null when it carries no
+    /// usable one. Records NO error: callers decide what an unusable key means. The normalize
+    /// path treats it as an unsupported cascade-insert; conflict detection treats it as "no
+    /// second opinion" and lets the foreign key stand.
+    /// </summary>
+    private Guid? ReadNestedKey(Struct nested, string relatedTypeName)
+    {
+        var keyValue = StructFieldAccess.GetFieldValue(nested, KeyColumnNameFor(relatedTypeName));
+        return Guid.TryParse(keyValue?.StringValue, out var key) && key != Guid.Empty ? key : null;
+    }
+
     /// <returns>
-    /// The nested entity's key when it is a valid existing-entity reference, or null when it is
-    /// not — in which case an error has been recorded. Callers use the returned key to normalize
-    /// the reference into the FK column.
+    /// The nested entity's key when it is a valid bare existing-entity reference, or null when it
+    /// is not — in which case an error has been recorded. Used by the normalize path only;
+    /// conflict detection calls <see cref="ReadNestedKey"/> directly, because a cross-checked nav
+    /// property arrives fully hydrated and must not be held to the key-only rule.
     /// </returns>
     private string? ValidateNestedObject(
         Struct nested, string path, string relatedTypeName, string foreignKey, List<string> errors)
     {
-        var relatedSchema  = registry.Get(relatedTypeName);
-        var keyColumnName  = relatedSchema?.KeyColumn.Name ?? "Id";
-        var nestedKeyValue = StructFieldAccess.GetFieldValue(nested, keyColumnName);
-        var nestedKey      = nestedKeyValue?.StringValue;
-
-        var isExistingEntity = !string.IsNullOrWhiteSpace(nestedKey)
-                            && nestedKey != Guid.Empty.ToString()
-                            && Guid.TryParse(nestedKey, out _);
+        var keyColumnName = KeyColumnNameFor(relatedTypeName);
+        var rawKey        = StructFieldAccess.GetFieldValue(nested, keyColumnName)?.StringValue;
 
         // Previously a keyless nested object passed silently and the FK was never populated, so
         // the row was written with a NULL FK. Cascade-inserting the related entity is out of
         // scope, so this is an explicit error instead.
-        if (!isExistingEntity)
+        if (ReadNestedKey(nested, relatedTypeName) is null)
         {
             errors.Add(
                 $"'{path}': embedded new entities are not supported — create the related " +
@@ -196,12 +254,15 @@ public sealed class RelationValidator(SchemaRegistry registry) : IRelationValida
         if (extras.Count > 0)
         {
             errors.Add(
-                $"'{path}': existing entity (key='{nestedKey}') must only include " +
+                $"'{path}': existing entity (key='{rawKey}') must only include " +
                 $"the key field '{keyColumnName}' — remove extra properties " +
                 $"({string.Join(", ", extras.Select(n => $"'{n}'"))}).");
             return null;
         }
 
-        return nestedKey;
+        // The RAW spelling, not the parsed form: this value is written into the FK column, and the
+        // projection stores keep payload strings verbatim. Canonicalising here would write an FK
+        // that no longer matches the related row's key in StarRocks and Qdrant.
+        return rawKey;
     }
 }
