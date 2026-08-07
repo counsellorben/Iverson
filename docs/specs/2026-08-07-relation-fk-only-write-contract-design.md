@@ -75,11 +75,11 @@ What remains, per relation:
 
 1. If the nav property key is present and distinct from the FK, record
    `Relation '<Name>' is a navigation property and cannot be written — send '<ForeignKey>' instead.`
-   A `NullValue` nav key **counts as present** and is rejected. This deliberately diverges from
-   the foreign-key rule at `RelationValidator.cs:78-81`, where `NullValue` means absent because a
-   nullable FK must stay omittable. A nav property has no legitimate null form, so the strict
-   reading is chosen: it catches a partially-updated client immediately, at the cost of breaking
-   any direct caller that serializes nulls.
+   A `NullValue` nav key **counts as absent** and is tolerated, matching the foreign-key rule at
+   `RelationValidator.cs:78-81` — the same fact drives both: .NET and Java serialize every
+   property, so an unset nav member arrives as `Author: null`. A caller who meant to send an
+   embedded object but produced a null therefore gets no diagnostic; that is accepted in exchange
+   for one consistent null rule across every payload key.
 2. Validate the FK: GUID well-formedness and non-emptiness for singles, per-element for
    ManyToMany lists.
 3. Keep the required-relation check for a non-nullable FK column. Its message loses the
