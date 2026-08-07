@@ -349,4 +349,88 @@ public class RelationValidatorTests
             .Where(e => e.Status.Detail.Contains("'AuthorId' is not a column on this type"));
         payload.Fields.Should().NotContainKey("AuthorId");
     }
+
+    [Fact]
+    public void ManyToOne_NavPropertyStrippedAndForeignKeySurvives()
+    {
+        var schema = MakeSchemaWithRelation(RelationKind.ManyToOne, fkNullable: true);
+        var payload = new Struct();
+        var authorId = Guid.NewGuid().ToString();
+        var nested = new Struct();
+        nested.Fields["Id"] = Value.ForString(authorId);
+        payload.Fields["Author"] = Value.ForStruct(nested);
+
+        _sut.ValidateAndNormalizeRelations(payload, schema);
+
+        payload.Fields["AuthorId"].StringValue.Should().Be(authorId);
+        payload.Fields.Should().NotContainKey("Author");
+    }
+
+    [Fact]
+    public void ManyToOne_CamelCaseNavPropertyStripped()
+    {
+        var schema = MakeSchemaWithRelation(RelationKind.ManyToOne, fkNullable: true);
+        var payload = new Struct();
+        var nested = new Struct();
+        nested.Fields["Id"] = Value.ForString(Guid.NewGuid().ToString());
+        payload.Fields["author"] = Value.ForStruct(nested);
+
+        _sut.ValidateAndNormalizeRelations(payload, schema);
+
+        payload.Fields.Should().NotContainKey("author");
+        payload.Fields.Should().NotContainKey("Author");
+    }
+
+    [Fact]
+    public void ManyToMany_NavListStripped()
+    {
+        var schema = MakeSchemaWithRelation(RelationKind.ManyToMany, fkNullable: true) with
+        {
+            Relations = [new RelationDescriptor("Tags", RelationKind.ManyToMany, "Tag", "TagIds")]
+        };
+        var payload = new Struct();
+        var nested = new Struct();
+        nested.Fields["Id"] = Value.ForString(Guid.NewGuid().ToString());
+        payload.Fields["Tags"] = Value.ForList(Value.ForStruct(nested));
+
+        _sut.ValidateAndNormalizeRelations(payload, schema);
+
+        payload.Fields["TagIds"].ListValue.Values.Should().HaveCount(1);
+        payload.Fields.Should().NotContainKey("Tags");
+    }
+
+    [Fact]
+    public void OneToMany_NavPropertyStripped()
+    {
+        var schema = MakeSchemaWithRelation(RelationKind.OneToMany, fkNullable: false);
+        var payload = new Struct();
+        var nested = new Struct();
+        nested.Fields["Id"] = Value.ForString(Guid.NewGuid().ToString());
+        payload.Fields["Author"] = Value.ForList(Value.ForStruct(nested));
+
+        _sut.ValidateAndNormalizeRelations(payload, schema);
+
+        payload.Fields.Should().NotContainKey("Author");
+        payload.Fields.Should().NotContainKey("AuthorId");
+    }
+
+    [Fact]
+    public void PropertyNameEqualsForeignKey_KeyNotStripped()
+    {
+        // A7 regression guard: when PropertyName and ForeignKey collide, the nav property IS the
+        // FK payload key. Without the name guard, stripping the nav property deletes the FK too.
+        var schema = MakeSchemaWithRelation(RelationKind.ManyToMany, fkNullable: true) with
+        {
+            Relations = [new RelationDescriptor("TagIds", RelationKind.ManyToMany, "Tag", "TagIds")]
+        };
+        var payload = new Struct();
+        var id1 = Guid.NewGuid().ToString();
+        var id2 = Guid.NewGuid().ToString();
+        payload.Fields["TagIds"] = Value.ForList(Value.ForString(id1), Value.ForString(id2));
+
+        _sut.ValidateAndNormalizeRelations(payload, schema);
+
+        payload.Fields.Should().ContainKey("TagIds");
+        payload.Fields["TagIds"].ListValue.Values.Select(v => v.StringValue).Should().Equal(id1, id2);
+    }
 }

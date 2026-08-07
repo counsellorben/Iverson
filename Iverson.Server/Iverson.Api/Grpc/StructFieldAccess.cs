@@ -57,4 +57,15 @@ internal static class StructFieldAccess
 
         s.Fields[canonicalName] = value;
     }
+
+    /// <summary>
+    /// Removes <paramref name="canonicalName"/> and every case variant of it. Mirrors
+    /// <see cref="SetField"/>'s variant handling: clients send camelCase while schemas declare
+    /// PascalCase, so removing only the declared spelling would leave the camelCase key behind.
+    /// </summary>
+    public static void RemoveField(Struct s, string canonicalName)
+    {
+        foreach (var candidate in Candidates(canonicalName))
+            s.Fields.Remove(candidate);
+    }
 }

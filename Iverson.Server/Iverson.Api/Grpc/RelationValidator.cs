@@ -17,6 +17,13 @@ public sealed class RelationValidator(SchemaRegistry registry) : IRelationValida
 
         foreach (var relation in schema.Relations)
         {
+            // When PropertyName and ForeignKey collide — Python, TypeScript and Java can all
+            // produce that for ManyToMany — the "nav property" and the foreign key are the SAME
+            // payload key. There is no separate object to strip, and stripping would delete the
+            // foreign key itself.
+            var navIsDistinctKey = !string.Equals(
+                relation.PropertyName, relation.ForeignKey, StringComparison.OrdinalIgnoreCase);
+
             switch (relation.Kind)
             {
                 case RelationKind.ManyToOne:
@@ -37,6 +44,11 @@ public sealed class RelationValidator(SchemaRegistry registry) : IRelationValida
                         relation.Kind,
                         $"Unhandled {nameof(RelationKind)} value in relation validation — add a case above.");
             }
+
+            // The stores already ignore nav properties; removing them here keeps them out of the
+            // Kafka event body, which is the only place they were still observable.
+            if (navIsDistinctKey)
+                StructFieldAccess.RemoveField(payload, relation.PropertyName);
         }
 
         if (errors.Count > 0)

@@ -295,6 +295,7 @@ public sealed class ObjectMappingGrpcService(
             _authEvaluator, _actingUserAccessor.ActingUser, schema, request.Payload,
             AuthorizationAction.Write, "Not authorized to create this entity.", existingRowJson: null, _auditLog);
 
+        var capturedNavProperties = CaptureNavProperties(request.Payload, schema);
         _relationValidator.ValidateAndNormalizeRelations(request.Payload, schema);
 
         var key = _keyAccessor.ExtractKey(request.Payload, schema.KeyColumn.Name);
@@ -305,6 +306,7 @@ public sealed class ObjectMappingGrpcService(
         }
 
         var payloadJson = StructSerializer.SerializePayload(request.Payload);
+        RestoreNavProperties(request.Payload, capturedNavProperties);
 
         var decision = _authEvaluator.Evaluate(schema, _actingUserAccessor.ActingUser, AuthorizationAction.Write);
         var outboxRowId = await _outboxWriter.UpsertAndEnqueueOutboxAsync(
@@ -348,9 +350,11 @@ public sealed class ObjectMappingGrpcService(
             existingRowJson,
             _auditLog);
 
+        var capturedNavProperties = CaptureNavProperties(request.Payload, schema);
         _relationValidator.ValidateAndNormalizeRelations(request.Payload, schema);
 
         var payloadJson = StructSerializer.SerializePayload(request.Payload);
+        RestoreNavProperties(request.Payload, capturedNavProperties);
 
         var decision = _authEvaluator.Evaluate(schema, _actingUserAccessor.ActingUser, AuthorizationAction.Write);
         var outboxRowId = await _outboxWriter.UpsertAndEnqueueOutboxAsync(
@@ -375,6 +379,24 @@ public sealed class ObjectMappingGrpcService(
             "Mapping.Update");
 
         return new MappingResponse { Success = true, Data = request.Payload, TraceId = request.TraceId };
+    }
+
+    // The write handlers echo request.Payload back to the caller, and RelationValidator strips
+    // relation properties from it in place. Capture before validating, restore after serialising,
+    // so the response keeps the shape the caller sent.
+    private static List<(string Name, Value Value)> CaptureNavProperties(
+        Struct payload, SchemaDescriptor schema) =>
+        schema.Relations
+            .Where(r => !string.Equals(r.PropertyName, r.ForeignKey, StringComparison.OrdinalIgnoreCase))
+            .Select(r => (r.PropertyName, Value: StructFieldAccess.GetFieldValue(payload, r.PropertyName)))
+            .Where(x => x.Value is not null)
+            .Select(x => (x.PropertyName, x.Value!))
+            .ToList();
+
+    private static void RestoreNavProperties(Struct payload, List<(string Name, Value Value)> captured)
+    {
+        foreach (var (name, value) in captured)
+            StructFieldAccess.SetField(payload, name, value);
     }
 
     public override async Task<MappingDeleteResponse> Delete(
