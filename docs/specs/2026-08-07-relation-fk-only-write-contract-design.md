@@ -153,8 +153,12 @@ on the read path — those callers read FK values only and are unaffected, but t
 change must keep them compiling.
 
 **Python** — `_entity_to_struct` omits `OneToMany` members and maps the rest through the
-inferred FK name. It already reads `_iverson_meta` (`core.py:314`), and `core.py:166`
-establishes the precedent of building a relation-field set from it.
+inferred FK name. It gains a list branch emitting a `ListValue` of recursively-converted
+elements — without it a ManyToMany id list reaches the `str(value)` fallback (`core.py:341`)
+and arrives as a string, which the validator's `fkValue?.ListValue` read silently ignores.
+This is the same fix as Java's `Collection` branch. It already reads `_iverson_meta`
+(`core.py:314`), and `core.py:166` establishes the precedent of building a relation-field
+set from it.
 
 **TypeScript** — `entityToPayload` does the same. `getRelations` is already imported
 (`core.ts:59`).
@@ -224,6 +228,7 @@ checked against the codebase. Twenty-three held; three are recorded below.
 | A25 | The four relation kinds are exhaustive in every client | ✅ |
 | A26 | LoadTest entities are unaffected | ✅ `BenchmarkArticle` has both `BenchmarkAuthorId` and a nav property; inferred name matches |
 | A27 | No test outside `RelationValidatorTests` depends on capture/restore | ❌ **FAILED** — `ObjectMappingGrpcServiceTests.cs:725,753` pin the echoed-payload behavior this design makes unreachable; both are deleted, not adapted |
+| A28 | Every client can serialize the FK value type it is required to emit | ❌ **FAILED for Python** — Go's `goValueToProtoValue` handles `[]string`; TS assigns arrays raw and the proto layer yields `ListValue`; .NET's `Guid[]` round-trips through `JsonParser`; Java gains the `Collection` branch this design specifies. Python's `_entity_to_struct` has no list branch (`core.py:330-341`) — see the Python per-client fix |
 
 ## Known issues / accepted as out of scope
 
@@ -232,7 +237,7 @@ checked against the codebase. Twenty-three held; three are recorded below.
   "relation is required" error rather than naming the real cause. Adding registration-time
   validation would be the real fix and is deliberately not in scope.
 - **Go's historical null foreign keys are not backfilled.**
-- **Python `str()` serialization generally.** This design omits entity-valued relation
-  members, which removes the observed junk, but Python's converter still falls through to
-  `str(value)` for any other unhandled type.
+- **Python `str()` serialization for non-relation types.** The list branch above covers
+  relation id lists; Python's converter still falls through to `str(value)` for any other
+  unhandled type.
 - **Client-side bandwidth for non-relation fields** is untouched.
