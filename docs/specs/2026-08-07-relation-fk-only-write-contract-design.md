@@ -123,13 +123,17 @@ name diverge and the write is silently discarded. Both are stated in terms of th
 inferred FK name.
 
 **Declaration.** In the clients that mark the FK-bearing field (Go, Python, TypeScript), a
-`ManyToOne` / `OneToOne` / `ManyToMany` relation declares its marked field as a property
-**under the inferred FK column name**, in addition to emitting the relation descriptor. The
-existing exclusions (`tags.go:315-325`, `core.py:187-188`, `core.ts:238`) become
-kind-conditional rather than unconditional. `OneToMany` continues to declare nothing — its
-foreign key is a column on the related type's row, and declaring it here would create a
-column this entity has no business holding. .NET and Java need no change; their FK fields are
-already plain declared properties.
+`ManyToOne` / `OneToOne` / `ManyToMany` relation declares an FK property in addition to
+emitting the relation descriptor. Each client appends that property **after** its existing
+field loop, built from the relation descriptor — named by the inferred FK column name, typed
+as a string id (an array of them for ManyToMany), and omitted entirely for `OneToMany`, whose
+foreign key is a column on the related type's row. The existing exclusions stay
+**unconditional**: Go's also enforces that a tenant marker on a relation is not a tenant
+declaration (`tags.go:316-318`), and TypeScript's field loop rejects any array property
+lacking `@IversonArray` (`core.ts:242-250`), which a reflected ManyToMany FK would trip.
+Synthesizing from the descriptor also supplies the element type directly and gets the m2m
+name right, which a field loop would not — it names properties after the field. .NET and Java
+need no change; their FK fields are already plain declared properties.
 
 **Validation.** `SchemaRegistrationOrchestrator` gains a check, alongside the existing
 `owner_field` and `tenant_field` checks, that every `ManyToOne` / `OneToOne` / `ManyToMany`
@@ -178,9 +182,9 @@ under `inferFK`'s `{RelatedType}Ids`. **OneToMany is excluded explicitly**: `inf
 returns `{ThisType}Id` for that kind, which names a column on the *related* entity's row,
 and `Author.Articles []string` is a real declaration that would otherwise emit under
 `AuthorId`. A Go relation field holding structs is omitted as a nav property; none exist
-today, but the rule should not depend on that. `registrar.go` additionally declares the
-marked field as a property under the inferred FK name for the three non-OneToMany kinds, per
-Registration — without it the newly-emitted `AuthorId` still has no column.
+today, but the rule should not depend on that. `registrar.go` additionally appends the
+synthesized FK property per Registration — without it the newly-emitted `AuthorId` still has
+no column. `tags.go`'s `meta.Fields`/`meta.Relations` split is left alone.
 
 **Java** — three changes. Entities with a `@ManyToMany` gain a plain `List<UUID> tagIds`
 beside the nav collection. `toStruct` skips members carrying a relation annotation whose
@@ -201,10 +205,12 @@ elements — without it a ManyToMany id list reaches the `str(value)` fallback (
 and arrives as a string, which the validator's `fkValue?.ListValue` read silently ignores.
 This is the same fix as Java's `Collection` branch. It already reads `_iverson_meta`
 (`core.py:314`), and `core.py:166` establishes the precedent of building a relation-field
-set from it. Its property loop (`core.py:187-188`) becomes kind-conditional per Registration.
+set from it. It appends the synthesized FK property per Registration; the exclusion at
+`core.py:187-188` is unchanged.
 
 **TypeScript** — `entityToPayload` does the same. `getRelations` is already imported
-(`core.ts:59`). Its property loop (`core.ts:238`) becomes kind-conditional per Registration.
+(`core.ts:59`). It appends the synthesized FK property per Registration; the exclusion at
+`core.ts:238` is unchanged.
 
 ## Consequences
 
@@ -253,8 +259,8 @@ an array type (the case `ValidateFieldReference` would have wrongly rejected).
 
 ## Verified assumptions
 
-Thirty-one assumptions, enumerated against the design before verification and checked against
-the codebase. Twenty-four held; the rest are recorded below. A27–A31 were added across two
+Thirty-two assumptions, enumerated against the design before verification and checked against
+the codebase. Twenty-four held; the rest are recorded below. A27–A32 were added across three
 review rounds and the A22 fix; A29 is the one that changed the design most.
 
 | # | Assumption | Result |
@@ -290,6 +296,7 @@ review rounds and the A22 fix; A29 is the one that changed the design most.
 | A29 | The FK-on-field clients declare the FK-bearing field as a property | ❌ **FAILED — all three** — Go `tags.go:315-325` + `registrar.go:64`, Python `core.py:187-188`, TypeScript `core.ts:238` all exclude relation-marked fields from the registered properties, and `SchemaBuilder.cs:56` builds `ScalarColumns` from properties. No FK column has ever existed for these clients, so the Go serializer fix alone would not persist anything. Design updated: see Registration |
 | A30 | The registration check can reuse `ValidateFieldReference` | ❌ **FAILED** — it additionally requires a string-valued `SqlType` for Qdrant filtering (`SchemaRegistrationOrchestrator.cs:109-115`), which rejects a ManyToMany's `UUID[]` foreign key. The new check tests column membership only |
 | A31 | `SchemaRegistrationOrchestrator` is the right place, with an established pattern | ✅ `:53-66` already performs `ValidateEnrichmentTargets`, `owner_field` and mandatory `tenant_field` checks, all throwing `RpcException(InvalidArgument)` |
+| A32 | The FK-bearing field can safely enter each client's property loop | ❌ **FAILED for Go and TypeScript** — Go's exclusion also gates the tenant-declaration check (`tags.go:316-323`); TypeScript's loop throws on any array property lacking `@IversonArray` (`core.ts:242-250`), which a ManyToMany FK necessarily is. Python's loop is safe (`_python_type_to_clr` handles `list[str]`). Design updated: the FK property is synthesized from the relation descriptor instead |
 
 ## Known issues / accepted as out of scope
 
