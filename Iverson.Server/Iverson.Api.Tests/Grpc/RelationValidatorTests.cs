@@ -490,6 +490,11 @@ public class RelationValidatorTests
         var act = () => _sut.ValidateAndNormalizeRelations(payload, schema);
 
         act.Should().NotThrow();
+        // The two spellings parse to the same Guid, so this is the only test that can prove the
+        // present FK is not renormalized from the nav object's spelling. Its sibling
+        // ForeignKeyAlreadyPresent_MatchingNavPropertyNotOverridden uses one spelling for both and
+        // therefore cannot.
+        payload.Fields["AuthorId"].StringValue.Should().Be(authorId.ToString().ToUpperInvariant());
     }
 
     [Fact]
