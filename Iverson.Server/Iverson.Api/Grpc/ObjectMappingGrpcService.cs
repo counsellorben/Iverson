@@ -383,20 +383,23 @@ public sealed class ObjectMappingGrpcService(
 
     // The write handlers echo request.Payload back to the caller, and RelationValidator strips
     // relation properties from it in place. Capture before validating, restore after serialising,
-    // so the response keeps the shape the caller sent.
-    private static List<(string Name, Value Value)> CaptureNavProperties(
+    // so the response keeps the shape the caller sent. Captured under the EXACT key the caller
+    // used (which may be the camelCase variant) rather than the schema's canonical PascalCase
+    // name — restoring through SetField would rewrite `author` back as `Author`, silently
+    // changing the payload the caller gets back.
+    private static List<(string Key, Value Value)> CaptureNavProperties(
         Struct payload, SchemaDescriptor schema) =>
         schema.Relations
             .Where(r => !string.Equals(r.PropertyName, r.ForeignKey, StringComparison.OrdinalIgnoreCase))
-            .Select(r => (r.PropertyName, Value: StructFieldAccess.GetFieldValue(payload, r.PropertyName)))
-            .Where(x => x.Value is not null)
-            .Select(x => (x.PropertyName, x.Value!))
+            .SelectMany(r => StructFieldAccess.Candidates(r.PropertyName)
+                .Where(payload.Fields.ContainsKey))
+            .Select(key => (key, Value: payload.Fields[key]))
             .ToList();
 
-    private static void RestoreNavProperties(Struct payload, List<(string Name, Value Value)> captured)
+    private static void RestoreNavProperties(Struct payload, List<(string Key, Value Value)> captured)
     {
-        foreach (var (name, value) in captured)
-            StructFieldAccess.SetField(payload, name, value);
+        foreach (var (key, value) in captured)
+            payload.Fields[key] = value;
     }
 
     public override async Task<MappingDeleteResponse> Delete(
