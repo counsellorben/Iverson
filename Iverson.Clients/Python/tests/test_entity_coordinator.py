@@ -9,8 +9,8 @@ from unittest.mock import MagicMock
 import grpc
 from google.protobuf import struct_pb2
 
-from iverson_client.annotations import iverson_entity, iverson_key
-from iverson_client.core import EntityCoordinator
+from iverson_client.annotations import iverson_entity, iverson_key, many_to_one, many_to_many
+from iverson_client.core import EntityCoordinator, _entity_to_struct
 from iverson_client.generated import (
     object_search_pb2 as pb,
     object_search_pb2_grpc as search_grpc,
@@ -23,6 +23,14 @@ from iverson_client.generated import (
 class CoordArticle:
     id: str = iverson_key()
     title: str = None
+
+
+@iverson_entity
+class CoordAuthor:
+    id: str = iverson_key()
+    name: str = None
+    tag_ids: list[str] = many_to_many("CoordTag")
+    coord_article_id: str = many_to_one("CoordArticle")
 
 
 # ── Fixtures ───────────────────────────────────────────────────────────────────
@@ -116,3 +124,53 @@ class TestEntityCoordinatorSearchFamily:
         result = coordinator.aggregate(pb.AggregateRequest(type_name="CoordArticle"))
 
         assert result is response
+
+
+# ── Relation write/read contract ────────────────────────────────────────────────
+
+class TestRelationForeignKeyOnlyContract:
+    def test_write_payload_carries_fk_not_nav_property_name(self):
+        author = CoordAuthor()
+        author.id = "1"
+        author.name = "Ada"
+        author.coord_article_id = "art-1"
+        author.tag_ids = ["t1", "t2"]
+
+        s = _entity_to_struct(author)
+
+        assert "CoordArticleId" in s.fields
+        assert s.fields["CoordArticleId"].string_value == "art-1"
+
+    def test_many_to_many_id_list_arrives_as_list_value_not_string(self):
+        author = CoordAuthor()
+        author.id = "1"
+        author.name = "Ada"
+        author.coord_article_id = "art-1"
+        author.tag_ids = ["t1", "t2"]
+
+        s = _entity_to_struct(author)
+
+        field = s.fields["CoordTagIds"]
+        assert field.WhichOneof("kind") == "list_value"
+        assert [v.string_value for v in field.list_value.values] == ["t1", "t2"]
+
+    def test_many_to_many_round_trips_through_struct(self):
+        coordinator = make_coordinator_for(CoordAuthor)
+        author = CoordAuthor()
+        author.id = "1"
+        author.name = "Ada"
+        author.coord_article_id = "art-1"
+        author.tag_ids = ["t1", "t2"]
+
+        s = _entity_to_struct(author)
+        restored = coordinator._from_struct(s)
+
+        assert restored.tag_ids == ["t1", "t2"]
+        assert restored.coord_article_id == "art-1"
+
+
+def make_coordinator_for(cls: type) -> EntityCoordinator:
+    channel = grpc.insecure_channel("localhost:1")
+    coordinator = EntityCoordinator(cls, channel)
+    coordinator._search = MagicMock()
+    return coordinator
