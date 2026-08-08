@@ -68,7 +68,7 @@ class RegArticle {
     publishedAt: Date = new Date();
 
     @ManyToOne(() => RegAuthor)
-    authorId: string = '';
+    regAuthorId: string = '';
 }
 
 // ── Mock helpers ──────────────────────────────────────────────────────────────

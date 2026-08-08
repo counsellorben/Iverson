@@ -225,6 +225,18 @@ export function describeEntity(cls: Function): TypeDescriptor {
     const relations = getRelations(cls);
     const relationFields = new Set(relations.map(r => r.field));
 
+    for (const rel of relations) {
+        if (rel.kind !== 'many_to_one' && rel.kind !== 'one_to_one') continue;
+        const required = `${rel.relatedType}Id`;
+        if (toPascalCase(rel.field) !== required) {
+            throw new Error(
+                `${typeName}.${rel.field} is a ${rel.kind} relation to ${rel.relatedType}; ` +
+                `its member name PascalCases to '${toPascalCase(rel.field)}' but must PascalCase to ` +
+                `'${required}'. Rename ${rel.field} to '${required.charAt(0).toLowerCase()}${required.slice(1)}'.`,
+            );
+        }
+    }
+
     // Reflect on instance property types via design:type metadata
     // We use a temporary instance approach: instantiate to get prototype
     // then reflect on each property. design:type is set by TypeScript
@@ -280,6 +292,34 @@ export function describeEntity(cls: Function): TypeDescriptor {
             isKeywordsTarget: keywordsFields.has(fieldName),
             extractHint: extractedByField.get(fieldName)?.hint ?? '',
             chunkContextual: chunkMeta?.contextual ?? false,
+        });
+    }
+
+    for (const rel of relations) {
+        if (rel.kind === 'one_to_many') continue;
+        properties.push({
+            name: inferFk(rel.kind, rel.relatedType, typeName),
+            clrType: ClrType.CLR_STRING,
+            isKey: false,
+            isNullable: true,
+            isArray: rel.kind === 'many_to_many',
+            isEmbedding: false,
+            vectorDim: 0,
+            modelId: '',
+            isChunk: false,
+            chunkMaxTokens: 0,
+            chunkOverlap: 0,
+            chunkModelId: '',
+            chunkVectorDim: 0,
+            isSearchKey: false,
+            searchKeyOrder: 0,
+            isLargeField: false,
+            isMetadata: false,
+            description: '',
+            isSummaryTarget: false,
+            isKeywordsTarget: false,
+            extractHint: '',
+            chunkContextual: false,
         });
     }
 
@@ -355,13 +395,17 @@ export class SchemaRegistrar {
 
 // ── Struct conversion helpers ─────────────────────────────────────────────────
 
-function entityToPayload(entity: object): Record<string, unknown> {
+function entityToPayload(entity: object, cls: Function): Record<string, unknown> {
     const payload: Record<string, unknown> = {};
+    const typeName = cls.name;
+    const relationByField = new Map(getRelations(cls).map(r => [r.field, r] as const));
     const allFields = Object.getOwnPropertyNames(entity);
     for (const field of allFields) {
         const value = (entity as Record<string, unknown>)[field];
         if (value === undefined) continue;
-        const key = toPascalCase(field);
+        const rel = relationByField.get(field);
+        if (rel?.kind === 'one_to_many') continue;
+        const key = rel !== undefined ? inferFk(rel.kind, rel.relatedType, typeName) : toPascalCase(field);
         if (value instanceof Date) {
             payload[key] = value.toISOString();
         } else {
@@ -374,9 +418,15 @@ function entityToPayload(entity: object): Record<string, unknown> {
 function payloadToEntity<T extends object>(cls: new () => T, data: Record<string, unknown>): T {
     const instance = Object.create(cls.prototype) as Record<string, unknown>;
     const template = new cls();
+    const typeName = (cls as unknown as Function).name;
+    const relations = getRelations(cls as unknown as Function);
+    const relationByField = new Map(relations.map(r => [r.field, r] as const));
     const allFields = Object.getOwnPropertyNames(template);
     for (const field of allFields) {
-        const key = toPascalCase(field);
+        const rel = relationByField.get(field);
+        const key = rel?.kind === 'many_to_many'
+            ? inferFk(rel.kind, rel.relatedType, typeName)
+            : toPascalCase(field);
         if (key in data) {
             instance[field] = data[key];
         }
@@ -426,7 +476,7 @@ export class EntityCoordinator<T extends object> {
     async persist(entity: T, traceId: string = ''): Promise<string> {
         const request: PersistRequest = {
             typeName: this._typeName,
-            payload: entityToPayload(entity),
+            payload: entityToPayload(entity, this._cls),
             traceId,
         };
         const response = await callUnary<PersistRequest, PersistResponse>(
@@ -445,7 +495,7 @@ export class EntityCoordinator<T extends object> {
     async update(entity: T, traceId: string = ''): Promise<void> {
         const request: PersistRequest = {
             typeName: this._typeName,
-            payload: entityToPayload(entity),
+            payload: entityToPayload(entity, this._cls),
             traceId,
         };
         const response = await callUnary<PersistRequest, PersistResponse>(
