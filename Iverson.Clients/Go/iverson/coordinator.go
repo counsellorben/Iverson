@@ -455,6 +455,26 @@ func entityToStruct(entity interface{}) (*structpb.Struct, error) {
 			if fm.RelationKind == KindOneToMany {
 				continue
 			}
+			// A relation field's own Go type may still be a nav property (a struct
+			// or slice-of-struct) rather than the FK-bearing scalar the contract
+			// requires; skip it as a nav property rather than serializing it. None
+			// exist today, but the rule should not depend on that.
+			ft := sf.Type
+			if ft.Kind() == reflect.Ptr {
+				ft = ft.Elem()
+			}
+			if ft.Kind() == reflect.Struct {
+				continue
+			}
+			if ft.Kind() == reflect.Slice {
+				elem := ft.Elem()
+				if elem.Kind() == reflect.Ptr {
+					elem = elem.Elem()
+				}
+				if elem.Kind() == reflect.Struct {
+					continue
+				}
+			}
 
 			val, err := goValueToProtoValue(fv)
 			if err != nil {

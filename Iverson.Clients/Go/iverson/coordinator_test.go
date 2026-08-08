@@ -43,7 +43,11 @@ type Author struct {
 	Id       string `iverson_key:"true"`
 	TenantId string `iverson_tenant:"true"`
 	Name     string
-	Articles []Article `iverson:"one_to_many:Article"`
+	// []string mirrors sample/models/author.go:8, the real production one_to_many
+	// declaration — a Go relation field holding structs is omitted as a nav
+	// property by a separate type guard, so this keeps the KindOneToMany kind
+	// check the only thing gating emission here.
+	Articles []string `iverson:"one_to_many:Article"`
 }
 
 type WriterAuthor struct {
@@ -97,7 +101,7 @@ func TestEntityToStruct_ManyToMany_WritesIdListUnderRelatedTypeIds(t *testing.T)
 }
 
 func TestEntityToStruct_OneToMany_EmitsNothing(t *testing.T) {
-	author := Author{Id: "1", TenantId: "t1", Name: "Ben", Articles: []Article{{Id: "a1"}}}
+	author := Author{Id: "1", TenantId: "t1", Name: "Ben", Articles: []string{"a1"}}
 	s, err := entityToStruct(author)
 	if err != nil {
 		t.Fatalf("entityToStruct: %v", err)
@@ -122,6 +126,37 @@ func TestEntityToStruct_RoundTrip_ManyToMany(t *testing.T) {
 	}
 	if len(got.Articles) != 2 || got.Articles[0] != "a1" || got.Articles[1] != "a2" {
 		t.Errorf("round-trip Articles = %+v, want [a1 a2]", got.Articles)
+	}
+}
+
+func TestStructToEntity_OneToMany_HydratedChildStructsLeaveFieldEmpty(t *testing.T) {
+	// Mirrors what EntityRelationResolver injects on a depth-resolved read: the
+	// server puts hydrated child STRUCTS under the field's own name ("Articles"),
+	// not a list of ids. Without the KindOneToMany read-side skip, the new
+	// ListValue case in protoValueToGoValue would try to parse each child struct
+	// as a string element and silently fill the []string with one empty string
+	// per child, instead of leaving it nil/empty.
+	childStruct, err := structpb.NewStruct(map[string]interface{}{"Id": "a1", "Title": "hello"})
+	if err != nil {
+		t.Fatalf("structpb.NewStruct: %v", err)
+	}
+	s := &structpb.Struct{
+		Fields: map[string]*structpb.Value{
+			"Id":       structpb.NewStringValue("1"),
+			"TenantId": structpb.NewStringValue("t1"),
+			"Name":     structpb.NewStringValue("Ben"),
+			"Articles": structpb.NewListValue(&structpb.ListValue{
+				Values: []*structpb.Value{structpb.NewStructValue(childStruct)},
+			}),
+		},
+	}
+
+	got, err := structToEntity[Author](s)
+	if err != nil {
+		t.Fatalf("structToEntity: %v", err)
+	}
+	if len(got.Articles) != 0 {
+		t.Errorf("Articles = %+v, want empty/nil (hydrated child structs must not be parsed as an id list)", got.Articles)
 	}
 }
 
