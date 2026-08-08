@@ -124,9 +124,10 @@ func TestSchemaRegistrar_RegisterAll_Properties(t *testing.T) {
 	_ = registrar.RegisterAll(context.Background(), "")
 
 	props := mock.capturedReq.RootType.Properties
-	// Should have 8 properties (Id, TenantId, Title, Body, Category, WordCount, PublishedAt, Summary)
-	if len(props) != 8 {
-		t.Errorf("expected 8 properties, got %d", len(props))
+	// Should have 9 properties (Id, TenantId, Title, Body, Category, WordCount, PublishedAt,
+	// Summary, plus the synthesized AuthorId foreign-key property for the many_to_one relation).
+	if len(props) != 9 {
+		t.Errorf("expected 9 properties, got %d", len(props))
 	}
 }
 

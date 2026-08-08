@@ -15,6 +15,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"strings"
 	"testing"
 
 	pb "github.com/iverson/clients/go/generated"
@@ -27,6 +28,139 @@ type coordinatorArticle struct {
 	Id       string `iverson_key:"true"`
 	TenantId string `iverson_tenant:"true"`
 	Category string
+}
+
+// ── Relation write/read fixtures ───────────────────────────────────────────────
+
+type Article struct {
+	Id       string `iverson_key:"true"`
+	TenantId string `iverson_tenant:"true"`
+	Title    string
+	AuthorId string `iverson:"many_to_one:Author"`
+}
+
+type Author struct {
+	Id       string `iverson_key:"true"`
+	TenantId string `iverson_tenant:"true"`
+	Name     string
+	Articles []Article `iverson:"one_to_many:Article"`
+}
+
+type WriterAuthor struct {
+	Id       string `iverson_key:"true"`
+	TenantId string `iverson_tenant:"true"`
+	WriterId string `iverson:"many_to_one:Author"`
+}
+
+type Tag struct {
+	Id       string   `iverson_key:"true"`
+	TenantId string   `iverson_tenant:"true"`
+	Name     string
+	Articles []string `iverson:"many_to_many:Article"`
+}
+
+func TestEntityToStruct_ManyToOne_WritesForeignKey(t *testing.T) {
+	a := Article{Id: "1", TenantId: "t1", Title: "hello", AuthorId: "author-1"}
+	s, err := entityToStruct(a)
+	if err != nil {
+		t.Fatalf("entityToStruct: %v", err)
+	}
+	got, ok := s.Fields["AuthorId"]
+	if !ok {
+		t.Fatalf("expected AuthorId in payload, fields: %+v", s.Fields)
+	}
+	if got.GetStringValue() != "author-1" {
+		t.Errorf("AuthorId = %q, want %q", got.GetStringValue(), "author-1")
+	}
+}
+
+func TestEntityToStruct_ManyToMany_WritesIdListUnderRelatedTypeIds(t *testing.T) {
+	tag := Tag{Id: "1", TenantId: "t1", Name: "go", Articles: []string{"a1", "a2"}}
+	s, err := entityToStruct(tag)
+	if err != nil {
+		t.Fatalf("entityToStruct: %v", err)
+	}
+	got, ok := s.Fields["ArticleIds"]
+	if !ok {
+		t.Fatalf("expected ArticleIds in payload, fields: %+v", s.Fields)
+	}
+	lv := got.GetListValue()
+	if lv == nil {
+		t.Fatalf("ArticleIds is not a ListValue: %+v", got)
+	}
+	if len(lv.Values) != 2 || lv.Values[0].GetStringValue() != "a1" || lv.Values[1].GetStringValue() != "a2" {
+		t.Errorf("unexpected ArticleIds: %+v", lv.Values)
+	}
+	if _, ok := s.Fields["Articles"]; ok {
+		t.Errorf("Articles should not appear in payload under its own name")
+	}
+}
+
+func TestEntityToStruct_OneToMany_EmitsNothing(t *testing.T) {
+	author := Author{Id: "1", TenantId: "t1", Name: "Ben", Articles: []Article{{Id: "a1"}}}
+	s, err := entityToStruct(author)
+	if err != nil {
+		t.Fatalf("entityToStruct: %v", err)
+	}
+	if _, ok := s.Fields["Articles"]; ok {
+		t.Errorf("Articles (nav property) must not appear in payload")
+	}
+	if _, ok := s.Fields["AuthorId"]; ok {
+		t.Errorf("AuthorId must not appear in payload: one_to_many has no FK on this side")
+	}
+}
+
+func TestEntityToStruct_RoundTrip_ManyToMany(t *testing.T) {
+	tag := Tag{Id: "1", TenantId: "t1", Name: "go", Articles: []string{"a1", "a2"}}
+	s, err := entityToStruct(tag)
+	if err != nil {
+		t.Fatalf("entityToStruct: %v", err)
+	}
+	got, err := structToEntity[Tag](s)
+	if err != nil {
+		t.Fatalf("structToEntity: %v", err)
+	}
+	if len(got.Articles) != 2 || got.Articles[0] != "a1" || got.Articles[1] != "a2" {
+		t.Errorf("round-trip Articles = %+v, want [a1 a2]", got.Articles)
+	}
+}
+
+func TestBuildRequest_ManyToOne_DeclaresForeignKeyProperty(t *testing.T) {
+	r := NewSchemaRegistrar(nil, Article{})
+	req, err := r.buildRequest(Article{}, "trace")
+	if err != nil {
+		t.Fatalf("buildRequest: %v", err)
+	}
+	_ = r
+	found := false
+	for _, p := range req.RootType.Properties {
+		if p.Name == "AuthorId" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected AuthorId property in schema, got: %+v", req.RootType.Properties)
+	}
+}
+
+func TestBuildRequest_ManyToOne_CorrectlyNamedFieldRegisters(t *testing.T) {
+	r := NewSchemaRegistrar(nil, Article{})
+	_, err := r.buildRequest(Article{}, "trace")
+	if err != nil {
+		t.Fatalf("expected no error for correctly-named AuthorId field: %v", err)
+	}
+}
+
+func TestBuildRequest_ManyToOne_WronglyNamedFieldRejected(t *testing.T) {
+	r := NewSchemaRegistrar(nil, WriterAuthor{})
+	_, err := r.buildRequest(WriterAuthor{}, "trace")
+	if err == nil {
+		t.Fatal("expected error for WriterId field on a many_to_one Author relation")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "WriterId") || !strings.Contains(msg, "AuthorId") {
+		t.Errorf("error should name both WriterId and AuthorId, got: %v", err)
+	}
 }
 
 // ── Mock SearchClient ────────────────────────────────────────────────────────

@@ -107,6 +107,10 @@ func (r *SchemaRegistrar) buildRequest(e interface{}, traceID string) (*pb.Schem
 
 	relations := make([]*pb.RelationDescriptor, 0, len(meta.Relations))
 	for _, fm := range meta.Relations {
+		if (fm.RelationKind == KindManyToOne || fm.RelationKind == KindOneToOne) && fm.Name != fm.RelatedType+"Id" {
+			return nil, fmt.Errorf("field %s is a %s relation to %s but is named %q; it must be named %q, since the field itself is the foreign key", fm.Name, fm.RelationKind, fm.RelatedType, fm.Name, fm.RelatedType+"Id")
+		}
+
 		kind := relationKindToProto(fm.RelationKind)
 		fk := inferFK(fm, meta.TypeName)
 		propName := relationPropertyName(fm)
@@ -117,6 +121,16 @@ func (r *SchemaRegistrar) buildRequest(e interface{}, traceID string) (*pb.Schem
 			ForeignKey:   fk,
 		}
 		relations = append(relations, rel)
+
+		if fm.RelationKind != KindOneToMany {
+			properties = append(properties, &pb.PropertyDescriptor{
+				Name:       fk,
+				ClrType:    pb.ClrType_CLR_STRING,
+				IsArray:    fm.RelationKind == KindManyToMany,
+				IsNullable: true,
+				IsKey:      false,
+			})
+		}
 	}
 
 	var tenantField string
