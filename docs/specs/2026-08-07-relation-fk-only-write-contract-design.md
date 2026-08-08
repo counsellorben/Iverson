@@ -75,8 +75,9 @@ on the FK-bearing field, the emitted key is the inferred FK column name, which d
 the field's own name for ManyToMany — so Go, Python and TypeScript must read their
 ManyToMany ids under `{RelatedType}Ids`, not under the field name. Without this the ids
 persist and are queryable server-side but never reload into the field they were set on.
-ManyToOne and OneToOne need no change: the field name already equals the inferred FK. .NET
-and Java are unaffected — their FK fields are *named* after the foreign key.
+ManyToOne and OneToOne need no read change, because Registration's naming enforcement
+*requires* the field name to equal the inferred FK rather than assuming it. .NET and Java are
+unaffected — their FK fields are separate plain fields named after the foreign key.
 
 Embedded-object writes are retired. A nav property in a write payload is a caller error
 and is rejected with `InvalidArgument`.
@@ -156,6 +157,29 @@ ManyToMany's `UUID[]` foreign key is not. The new check tests membership only.
 The validation is what keeps the two rules from drifting apart again — it fails registration
 at the point where a client declares a relation whose foreign key nothing can hold.
 
+**Naming enforcement for ManyToOne and OneToOne.** In the clients that mark the FK-bearing
+field, that field's PascalCase name must equal `{RelatedType}Id`. Registration fails with a
+message naming the member, the name it has, and the name it must have.
+
+This is enforced rather than assumed because the read path depends on it. Python and
+TypeScript infer a ManyToOne foreign key as `{RelatedType}Id` regardless of what the member
+is called (`core.py:103-104`, `core.ts:94-96`), so a member named `writer_id` on an `Author`
+relation is written under `AuthorId` and read back under `WriterId` — the ids persist and
+never reload. The alternative to enforcing the name is redirecting ManyToOne on read as well,
+which would make every client's read path carry a mapping to guard against a declaration
+nobody intends to write.
+
+Go cannot produce that divergence — its `inferFK` returns the field's own name for these two
+kinds (`registrar.go:266-269`), so write key and read key always agree — but it can silently
+register a foreign key column called `WriterId`, which no other client would infer and which
+breaks the `{RelatedType}Id` convention the server's relation descriptors assume. The same
+check therefore applies to all three, and it makes Go's `inferFK` branch for these kinds
+equivalent to `{RelatedType}Id` in practice.
+
+.NET and Java need no such check: their foreign key is a separate plain field, so a misnamed
+one leaves the relation's `ForeignKey` matching no declared column and the Validation check
+above already rejects it.
+
 ## Clients
 
 The classification is by **relation kind first**, not by member type. A type-based test is
@@ -200,6 +224,11 @@ The mapping is the mirror of the write rule and uses the same inference helper, 
 sides cannot drift: a ManyToMany member is read from `inferFK`'s name, everything else from
 the member's own name.
 
+The redirect is safe to limit to ManyToMany **because** Registration's naming enforcement
+makes a ManyToOne or OneToOne member's name equal its inferred foreign key. Without that
+check the limit would rest on a convention nothing verifies, and a misnamed member's ids
+would persist and never reload.
+
 ### Per-client work
 
 **Go** — `entityToStruct` stops discarding relation-tagged fields. ManyToOne and OneToOne
@@ -210,7 +239,8 @@ and `Author.Articles []string` is a real declaration that would otherwise emit u
 `AuthorId`. A Go relation field holding structs is omitted as a nav property; none exist
 today, but the rule should not depend on that. `registrar.go` additionally appends the
 synthesized FK property per Registration — without it the newly-emitted `AuthorId` still has
-no column. `tags.go`'s `meta.Fields`/`meta.Relations` split is left alone. On the read side,
+no column, and rejects a `many_to_one`/`one_to_one` field whose name is not `{RelatedType}Id`
+per Registration. `tags.go`'s `meta.Fields`/`meta.Relations` split is left alone. On the read side,
 `structToEntity` looks up a ManyToMany member under `inferFK`'s name, and
 `protoValueToGoValue` gains a `*structpb.Value_ListValue` case populating a slice target —
 the mirror of the write-side slice branch, and without it the ids never reach the field.
@@ -235,13 +265,17 @@ and arrives as a string, which the validator's `fkValue?.ListValue` read silentl
 This is the same fix as Java's `Collection` branch. It already reads `_iverson_meta`
 (`core.py:314`), and `core.py:166` establishes the precedent of building a relation-field
 set from it. It appends the synthesized FK property per Registration; the exclusion at
-`core.py:187-188` is unchanged. On the read side, `_from_struct` looks up a ManyToMany member
+`core.py:187-188` is unchanged. It rejects a `many_to_one`/`one_to_one` member whose
+PascalCase name is not `{RelatedType}Id`, alongside the existing `_validate_key_declarations`
+checks. On the read side, `_from_struct` looks up a ManyToMany member
 under `_infer_fk`'s name and gains a `list_value` branch — without it the ids are read and
 then discarded as `None` by the ladder's `else`.
 
 **TypeScript** — `entityToPayload` does the same. `getRelations` is already imported
 (`core.ts:59`). It appends the synthesized FK property per Registration; the exclusion at
-`core.ts:238` is unchanged. On the read side, `payloadToEntity` looks up a ManyToMany member
+`core.ts:238` is unchanged. It throws on a `'many_to_one'`/`'one_to_one'` member whose
+PascalCase name is not `{RelatedType}Id`, matching how the property loop already rejects an
+array without `@IversonArray`. On the read side, `payloadToEntity` looks up a ManyToMany member
 under `inferFk`'s name; its value assignment is untyped and already passes arrays through, so
 no value-ladder change is needed.
 
@@ -288,6 +322,10 @@ Go, Python and TypeScript each need a **round-trip** test for ManyToMany: set th
 read back, assert the same ids are in the same member. A write-only test passes while the
 read key is wrong, which is how this gap survived the first three review rounds.
 
+Go, Python and TypeScript each need a naming-enforcement test: a `many_to_one` member named
+`{RelatedType}Id` registers, and one named anything else is rejected with a message naming
+the member and both names.
+
 Go, Python and TypeScript each need a registration test asserting the FK column is declared
 under the inferred name for the three non-OneToMany kinds, and absent for `OneToMany`. The
 server needs one per kind for the new registration check — rejected when the foreign key
@@ -296,10 +334,10 @@ an array type (the case `ValidateFieldReference` would have wrongly rejected).
 
 ## Verified assumptions
 
-Thirty-four assumptions, enumerated against the design before verification and checked against
-the codebase. Twenty-four held; the rest are recorded below. A27–A34 were added across three
-review rounds, the A22 fix, and the ManyToMany read-symmetry fix; A29 is the one that changed
-the design most.
+Thirty-five assumptions, enumerated against the design before verification and checked against
+the codebase. Twenty-four held; the rest are recorded below. A27–A35 were added across three
+review rounds, the A22 fix, the ManyToMany read-symmetry fix, and the ManyToOne/OneToOne
+naming enforcement; A29 is the one that changed the design most.
 
 | # | Assumption | Result |
 |---|---|---|
@@ -337,6 +375,7 @@ the design most.
 | A32 | The FK-bearing field can safely enter each client's property loop | ❌ **FAILED for Go and TypeScript** — Go's exclusion also gates the tenant-declaration check (`tags.go:316-323`); TypeScript's loop throws on any array property lacking `@IversonArray` (`core.ts:242-250`), which a ManyToMany FK necessarily is. Python's loop is safe (`_python_type_to_clr` handles `list[str]`). Design updated: the FK property is synthesized from the relation descriptor instead |
 | A33 | Client read paths look up members by the same key the write path emits | ❌ **FAILED for all three FK-on-field clients** — Go `structToEntity` reads `s.Fields[sf.Name]` (`coordinator.go:505`), Python `_from_struct` reads `_to_pascal_case(field_name)` (`core.py:514`), TS `payloadToEntity` reads `toPascalCase(field)` (`core.ts:379`). ManyToMany is the only kind where the emitted key differs from the member name, so it is the only kind affected. Design updated: see Read symmetry |
 | A34 | Client read value-ladders can decode a list | ❌ **FAILED for Go and Python** — Go's `protoValueToGoValue` handles String/Number/Bool only (`coordinator.go:519-553`); Python's ladder sends any non-scalar to `else: … None` (`core.py:517-527`). TypeScript assigns raw and is unaffected. The read ladders have exactly the gaps their write ladders have |
+| A35 | Whether a ManyToOne/OneToOne member's name can diverge from its inferred foreign key | ❌ **FAILED for Python and TypeScript** — both infer `{RelatedType}Id` regardless of the member's name (`core.py:103-104`, `core.ts:94-96`), so a `writer_id` member on an `Author` relation writes `AuthorId` and reads `WriterId`. Go cannot diverge (`inferFK` returns `fm.Name`, `registrar.go:266-269`) but can register a non-conventional column name. .NET and Java are already covered by the Validation check, since their foreign key is a separate declared field. Design updated: see Naming enforcement |
 
 ## Known issues / accepted as out of scope
 
