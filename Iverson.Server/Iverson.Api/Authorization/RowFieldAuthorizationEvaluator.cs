@@ -77,10 +77,12 @@ public sealed class RowFieldAuthorizationEvaluator : IRowFieldAuthorizationEvalu
                     .Concat(schema.ChunkFields.Select(c => c.PropertyName));
 
                 // A relation property is writable exactly when its FK column is writable: writing
-                // `Author` IS writing `AuthorId`, so one permission governs one concept. Without
-                // this, restricting `AuthorId` gives no protection from a caller sending `Author`
-                // instead — which matters because RelationValidator normalizes the embedded form
-                // into the FK column *after* this check runs.
+                // `Author` IS writing `AuthorId`, so one permission governs one concept. Nothing
+                // is normalized any more — RelationValidator rejects a nav property outright — but
+                // this carve-out still matters: without it, a caller sending `Author` while
+                // `AuthorId` is excluded would fail here with an opaque authorization error instead
+                // of reaching the validator's clearer nav-property rejection. A caller whose
+                // `AuthorId` is excluded still fails at authorization, which remains correct.
                 //
                 // OneToMany is the carve-out: its FK lives on the RELATED entity, so there is no
                 // local column to gate on. Permitted unconditionally — inert on write (the
