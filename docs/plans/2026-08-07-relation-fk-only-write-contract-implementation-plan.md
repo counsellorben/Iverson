@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Source spec:** `docs/specs/2026-08-07-relation-fk-only-write-contract-design.md` (commit SHA: `03d835d`)
+**Source spec:** `docs/specs/2026-08-07-relation-fk-only-write-contract-design.md` (commit SHA: `25dba96`)
 
 **Goal:** Make every client write relations as foreign keys only, declare the FK columns those keys land in, and reject navigation properties on the server.
 
@@ -19,7 +19,7 @@ Project-wide rules every task must hold to, taken from the spec:
 - **A write payload carries foreign keys only.** ManyToOne/OneToOne → `{RelatedType}Id`; ManyToMany → `{RelatedType}Ids`, a list of id strings; OneToMany → no key at all.
 - **Classification is by relation kind first, never by member type or name.** `OneToMany` is omitted in every client. A type test is used only in .NET and Java, where a nav member and an FK field genuinely coexist.
 - **The FK is emitted under the inferred FK column name**, not the field's own name.
-- **Reads are unaffected.** This contract governs writes only.
+- **Client reads stay symmetric with writes.** Whatever key a client emits an FK under, it reads that same key back into the same member. This bites ManyToMany only, and only in Go, Python and TypeScript — everywhere else the member name already equals the inferred FK. Server-side reads are unaffected.
 - **Server and clients must ship together** — nav-property rejection is not backward-compatible. This is a merge-time property of the branch, not a task ordering constraint.
 
 ## File Structure
@@ -43,11 +43,11 @@ Project-wide rules every task must hold to, taken from the spec:
 - `Iverson.Server/Iverson.Api.Tests/Grpc/ObjectMappingGrpcServiceTests.cs` — delete two cases, fix six constructor calls (Task 1)
 - `Iverson.Server/Iverson.Api.Tests/Grpc/ObjectPersistenceGrpcServiceTests.cs` — fix one constructor call (Task 1)
 - `Iverson.Server/Iverson.Api.Tests/Grpc/SchemaRegistrationOrchestratorTests.cs` (Task 2)
-- One serialization/registration test file per client (Tasks 3–7)
+- `Iverson.Clients/DotNet/Iverson.Client.Core.Tests/` (Task 3), `Iverson.Clients/Java/client/src/test/java/io/iverson/client/core/StructConverterTest.java` (Task 4), `Iverson.Clients/Python/tests/test_entity_coordinator.py` (Task 5), `Iverson.Clients/TypeScript/tests/core.test.ts` (Task 6), `Iverson.Clients/Go/iverson/coordinator_test.go` (Task 7 — the **internal** test file; the unexported functions are unreachable from `package iverson_test`)
 
 ## Inherited from spec
 
-Verified by `thorough-brainstorming` at spec-write time across three review rounds; **not re-verified here**. Full evidence is in the spec's `Verified assumptions` table (A1–A32). The load-bearing ones:
+Verified by `thorough-brainstorming` at spec-write time across three review rounds plus the read-symmetry fix; **not re-verified here**. Full evidence is in the spec's `Verified assumptions` table (A1–A34). The load-bearing ones:
 
 - **A1–A3, A7** — the symbols Task 1 deletes (`registry` usage, `RemoveField`, capture/restore) have no consumer outside the code Task 1 touches; `StructFieldAccess.Candidates` survives via `EntityKeyAccessor`.
 - **A4** — field authorization runs before the validator (`ObjectMappingGrpcService.cs:294` vs `:299`); the carve-out at `RowFieldAuthorizationEvaluator.cs:92-95` must stay.
@@ -61,6 +61,7 @@ Verified by `thorough-brainstorming` at spec-write time across three review roun
 - **A29** — none of Go, Python, TypeScript declares its FK-bearing field as a property.
 - **A30** — the registration check cannot reuse `ValidateFieldReference` (its string-valued `SqlType` gate rejects a `UUID[]` FK).
 - **A32** — the FK field cannot safely enter Go's or TypeScript's property loop; the FK property must be synthesized.
+- **A33, A34** — all three FK-on-field clients read members back by the member's own name, and Go's and Python's read value-ladders cannot decode a list. ManyToMany is the only kind affected, since it is the only one whose emitted key differs from the member name.
 
 ## Verified plan-level assumptions
 
@@ -86,6 +87,14 @@ Newly introduced by this plan and verified at plan-write time.
 | PA16 | Command | Commit convention is plain lowercase imperative, no Conventional-Commits prefix | `git log --oneline -20` — e.g. `strip relation nav properties from write payloads`, `preserve caller's nav property key case when restoring echoed payload` |
 | PA17 | Ordering | No task consumes a symbol another task introduces | Tasks 1 and 2 touch disjoint server files; Tasks 3–7 are five separate languages with separate build and test tooling. All seven are independent |
 | PA18 | Sibling set | Payload-key casing per client, against which the omission and synthesis steps match names | **.NET emits camelCase** — `StructConverter.cs:12-17` `PropertyNamingPolicy = JsonNamingPolicy.CamelCase`. The other four emit PascalCase: Python `_to_pascal_case` (`core.py:329`), TS `toPascalCase` (`core.ts:364`), Java `toPascalCase` (`StructConverter.java:34`), Go raw field names (`coordinator.go:449`). See Task 3 Step 3 |
+| PA19 | Signature | Python `_from_struct` can reach relation metadata | `core.py:505` is a method on `EntityCoordinator`; `self._cls` set at `:382`, so `_iverson_meta` is reachable exactly as on the write side. `_infer_fk` is module-level (`:99`) |
+| PA20 | Code validity | Python's read ladder discards non-scalars | `core.py:517-527` — `string_value`/`number_value`/`bool_value` then `else: setattr(obj, field_name, None)`. A `list_value` reads as `None` |
+| PA21 | Signature | TypeScript's read side needs **no** signature change | `core.ts:374` — `payloadToEntity<T>(cls: new () => T, data)` already takes the class, so `getRelations(cls)` is in scope. All four call sites already pass one (`:499`, `:519`, `:598`, `:608`). Asymmetric with the write side, which does need threading |
+| PA22 | Code validity | Go's `structToEntity` parses **no** struct tags today | `coordinator.go:494-516` uses only `sf.Name` and `sf.Type`; zero `ParseTag` occurrences. Step 5 adds tag parsing, not just a lookup change. `t` is in scope at `:496` for `t.Name()` |
+| PA23 | Signature | Go's `protoValueToGoValue` can populate a slice target | `coordinator.go:519` — `(pbVal *structpb.Value, target reflect.Value, targetType reflect.Type)`; `reflect.MakeSlice(targetType, …)` fits. Currently handles String/Number/Bool only (`:521-551`) |
+| PA24 | File path | Go's round-trip test has an internal home | `Iverson.Clients/Go/iverson/coordinator_test.go` is `package iverson` with 14 tests. Required: `entityToStruct`/`structToEntity` are unexported, so the external `package iverson_test` files cannot reach them |
+| PA25 | Consumer impact | Java needs no read-side change | `StructConverter.java:49-61` builds a `toPascalCase(field).toLowerCase()` lookup and matches incoming keys case-insensitively; `tagIds` → `TagIds` matches the emitted key. Same for .NET, whose FK fields are named after the FK |
+| PA26 | Sibling set | Round-trip test home per client | Python `tests/test_entity_coordinator.py`; TypeScript `tests/core.test.ts`; Go `iverson/coordinator_test.go` (internal, per PA24); Java `EntityCoordinatorTest.java`; .NET `Iverson.Client.Core.Tests` |
 
 ## Tasks
 
@@ -256,13 +265,13 @@ git commit -m "send foreign keys only from the java client"
 
 ---
 
-### Task 5: Python client — kind-first serialization, list values, and a declared FK column
+### Task 5: Python client — kind-first serialization, list values, a declared FK column, and read symmetry
 
 **Files:**
 - Modify: `Iverson.Clients/Python/iverson_client/core.py`
-- Test: `Iverson.Clients/Python/tests/` (new or existing)
+- Test: `Iverson.Clients/Python/tests/test_entity_coordinator.py`
 
-- [ ] **Step 1: Write the tests.** Three: a written `Article` payload contains `AuthorId` and not `Articles`; a ManyToMany id list arrives as a `ListValue`, not a string; and a registered schema declares the FK column under the inferred name for the three non-`OneToMany` kinds and declares nothing for `OneToMany`.
+- [ ] **Step 1: Write the tests.** Four: a written `Article` payload contains `AuthorId` and not `Articles`; a ManyToMany id list arrives as a `ListValue`, not a string; a registered schema declares the FK column under the inferred name for the three non-`OneToMany` kinds and declares nothing for `OneToMany`; and a **round-trip** — set ManyToMany ids, `_entity_to_struct`, `_from_struct`, assert the same ids are back in the same member. The round-trip is the one that catches a wrong read key; a write-only assertion passes while the read side is broken.
 
 - [ ] **Step 2: Add the list branch to `_entity_to_struct`.**
 The type ladder at `core.py:330-341` ends in `else: s.fields[pascal].string_value = str(value)`. Insert a `list`/`tuple` branch before it emitting a `ListValue` of recursively-converted elements. Without this a ManyToMany id list arrives as a string and the server's `fkValue?.ListValue` read silently ignores it.
@@ -273,12 +282,18 @@ Build a `{field: kind}` map from `meta["relations"]` — `core.py:166` already b
 - [ ] **Step 4: Append the synthesized FK property at registration.**
 Leave the exclusion at `core.py:186-188` unchanged. After the property loop, append one `PropertyDescriptor` per non-`OneToMany` relation: named by `_infer_fk`, `clr_type=CLR_STRING`, `is_array=True` for `many_to_many` and `False` otherwise, `is_nullable=True`, `is_key=False`.
 
-- [ ] **Step 5: Run the tests.**
+- [ ] **Step 5: Make the read path symmetric.**
+`_from_struct` (`core.py:505`) looks every member up under `_to_pascal_case(field_name)`. Build the same `{field: kind}` map — it is a method on `EntityCoordinator` and `self._cls` is in scope (`core.py:382`), so `_iverson_meta` is reachable exactly as on the write side — and look a `many_to_many` member up under `_infer_fk` instead. `many_to_one`/`one_to_one` are unchanged because the inferred name already equals the member's PascalCase name.
+
+- [ ] **Step 6: Add the read-side list branch.**
+The read ladder ends `else: setattr(obj, field_name, None)` (`core.py:526-527`), so a `list_value` is read and then discarded. Add a `list_value` branch converting elements back through the same scalar cases. Without it Step 5 finds the right key and still yields `None`.
+
+- [ ] **Step 7: Run the tests.**
 ```bash
 cd Iverson.Clients/Python && pytest
 ```
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 8: Commit**
 ```bash
 git add Iverson.Clients/Python/iverson_client/core.py Iverson.Clients/Python/tests/
 git commit -m "send and declare foreign keys only from the python client"
@@ -286,13 +301,13 @@ git commit -m "send and declare foreign keys only from the python client"
 
 ---
 
-### Task 6: TypeScript client — kind-first serialization and a declared FK column
+### Task 6: TypeScript client — kind-first serialization, a declared FK column, and read symmetry
 
 **Files:**
 - Modify: `Iverson.Clients/TypeScript/src/core.ts`
 - Test: `Iverson.Clients/TypeScript/tests/core.test.ts`
 
-- [ ] **Step 1: Write the tests.** A written payload contains the FK key and not the nav key; a registered schema declares the FK column under the inferred name for the three non-`OneToMany` kinds and nothing for `OneToMany`.
+- [ ] **Step 1: Write the tests.** Three: a written payload contains the FK key and not the nav key; a registered schema declares the FK column under the inferred name for the three non-`OneToMany` kinds and nothing for `OneToMany`; and a **round-trip** — set ManyToMany ids, `entityToPayload`, `payloadToEntity`, assert the same ids are back in the same member.
 
 - [ ] **Step 2: Make `entityToPayload` kind-first.**
 `entityToPayload` (`core.ts:358`) currently copies every own property and takes only the instance, so it has no class to read metadata from — widen it to `entityToPayload(entity: object, cls: Function)` and pass `this._cls` at both call sites (`core.ts:428` in `persist`, `:448` in `update`). Build a `{field: kind}` map from `getRelations(cls)` — already imported at `core.ts:59`. Omit fields whose kind is `'one_to_many'`; emit the rest under `inferFk(kind, relatedType, typeName)` (`core.ts:92`) instead of `toPascalCase(field)`. Arrays are assigned raw and survive as `ListValue` through the proto layer, so no value-conversion change is needed.
@@ -300,12 +315,15 @@ git commit -m "send and declare foreign keys only from the python client"
 - [ ] **Step 3: Append the synthesized FK property at registration.**
 Leave the exclusion at `core.ts:238` unchanged — the loop below it throws on any array property lacking `@IversonArray`, which a reflected ManyToMany FK would trip. After the loop, append one `PropertyDescriptor` per non-`OneToMany` relation: named by `inferFk`, `clrType: ClrType.CLR_STRING`, `isArray` true for `'many_to_many'` and false otherwise.
 
-- [ ] **Step 4: Run the tests** (this also type-checks `tests/`).
+- [ ] **Step 4: Make the read path symmetric.**
+`payloadToEntity` (`core.ts:374`) looks every member up under `toPascalCase(field)`. It **already takes `cls` as its first parameter**, so `getRelations(cls)` is in scope with no signature change and no call-site changes — unlike the write side in Step 2. Look a `'many_to_many'` member up under `inferFk` instead. Its value assignment is untyped (`instance[field] = data[key]`), so arrays already pass through and no value-conversion change is needed.
+
+- [ ] **Step 5: Run the tests** (this also type-checks `tests/`).
 ```bash
 cd Iverson.Clients/TypeScript && npm test
 ```
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 6: Commit**
 ```bash
 git add Iverson.Clients/TypeScript/src/core.ts Iverson.Clients/TypeScript/tests/core.test.ts
 git commit -m "send and declare foreign keys only from the typescript client"
@@ -313,34 +331,42 @@ git commit -m "send and declare foreign keys only from the typescript client"
 
 ---
 
-### Task 7: Go client — serialize relation fields at all, including slices, and declare the FK column
+### Task 7: Go client — serialize relation fields at all, including slices, declare the FK column, and read symmetry
 
 **Files:**
 - Modify: `Iverson.Clients/Go/iverson/coordinator.go`
 - Modify: `Iverson.Clients/Go/iverson/registrar.go`
-- Test: `Iverson.Clients/Go/iverson_test/` (new or existing)
+- Test: `Iverson.Clients/Go/iverson/coordinator_test.go`
 
 This is the task that fixes the defect motivating the whole design: the Go client has never written a foreign key.
 
-- [ ] **Step 1: Write the tests.** A written `Article` payload contains `AuthorId` at all — there is no existing coverage for this. A `Tag`'s `Articles` emits under `ArticleIds` as a `ListValue` of strings. An `Author`'s `one_to_many` `Articles` emits **nothing**. A registered `Article` schema declares an `AuthorId` property.
+The test file is the **internal** one (`package iverson`, 14 existing tests), not `iverson_test/`. `entityToStruct` and `structToEntity` are unexported, so the external `package iverson_test` used by the other Go test files cannot reach them.
+
+- [ ] **Step 1: Write the tests.** A written `Article` payload contains `AuthorId` at all — there is no existing coverage for this. A `Tag`'s `Articles` emits under `ArticleIds` as a `ListValue` of strings. An `Author`'s `one_to_many` `Articles` emits **nothing**. A registered `Article` schema declares an `AuthorId` property. And a **round-trip** — `entityToStruct` then `structToEntity` on a `Tag`, asserting `Articles` holds the same ids.
 
 - [ ] **Step 2: Add the slice branch to `goValueToProtoValue`.**
 `coordinator.go:462-490` has no `reflect.Slice` case, so every slice falls to `default: structpb.NewNullValue()` — a ManyToMany id list would serialize as null even after Step 3. Add a `reflect.Slice`/`reflect.Array` case emitting a `ListValue` of recursively-converted elements, guarding `[]byte` (`Elem().Kind() == reflect.Uint8`) as `registrar.go:185-195` already does on the schema side. This also repairs non-relation array fields, which have the same defect today.
 
 - [ ] **Step 3: Stop discarding relation fields in `entityToStruct`.**
-Replace the blanket `continue` at `coordinator.go:440-447`. Skip only `KindOneToMany` — `inferFK` returns `{ThisType}Id` for that kind, which names a column on the *related* row, and `author.go:8` is a real declaration that would otherwise emit under `AuthorId`. Skip a relation field whose type is a struct or slice-of-struct as a nav property. Emit everything else under `inferFK(fm, meta.TypeName)`: for ManyToOne and OneToOne that returns the field's own name; for ManyToMany it returns `{RelatedType}Ids`.
+Replace the blanket `continue` at `coordinator.go:440-447`. Parse the tag once per field and keep the result in scope through the emit: `fm` is currently declared *inside* the `if tag != ""` block and is gone by the emit site, so it must be hoisted (with a flag or zero-value kind for untagged fields). Skip only `KindOneToMany` — `inferFK` returns `{ThisType}Id` for that kind, which names a column on the *related* row, and `author.go:8` is a real declaration that would otherwise emit under `AuthorId`. Skip a relation field whose type is a struct or slice-of-struct as a nav property. Emit a tagged field under `inferFK(fm, t.Name())` — **`meta` is not in scope in this function**, unlike `registrar.go`; `t` is the reflected type and `t.Name()` is the type name here — and an untagged field under `sf.Name` as today. For ManyToOne and OneToOne `inferFK` returns the field's own name; for ManyToMany it returns `{RelatedType}Ids`.
 
 - [ ] **Step 4: Append the synthesized FK property at registration.**
-Leave `tags.go`'s `meta.Fields`/`meta.Relations` split untouched — it also enforces that a tenant marker on a relation is not a tenant declaration (`tags.go:316-318`). In `registrar.go`, after the property loop at `:64`, append one `PropertyDescriptor` per non-`OneToMany` relation: `Name: inferFK(fm, meta.TypeName)`, `ClrType: CLR_STRING`, `IsArray: fm.RelationKind == KindManyToMany`, `IsNullable: true`, `IsKey: false`.
+Leave `tags.go`'s `meta.Fields`/`meta.Relations` split untouched — it also enforces that a tenant marker on a relation is not a tenant declaration (`tags.go:316-318`). In `registrar.go`, after the property loop at `:64`, append one `PropertyDescriptor` per non-`OneToMany` relation: `Name: inferFK(fm, meta.TypeName)` — `meta` **is** in scope here (`registrar.go:108-111`), unlike in `entityToStruct` — `ClrType: CLR_STRING`, `IsArray: fm.RelationKind == KindManyToMany`, `IsNullable: true`, `IsKey: false`.
 
-- [ ] **Step 5: Run the tests.**
+- [ ] **Step 5: Make the read path symmetric.**
+`structToEntity` (`coordinator.go:494`) looks every field up under `s.Fields[sf.Name]` and **parses no struct tags at all** today — so this step adds tag parsing as well as changing the lookup. For a field whose kind is `KindManyToMany`, look it up under `inferFK(fm, t.Name())`; everything else keeps `sf.Name`. `t` is already in scope (`:496`).
+
+- [ ] **Step 6: Add the read-side list case.**
+`protoValueToGoValue` (`coordinator.go:519-553`) handles `StringValue`, `NumberValue` and `BoolValue` only, so a `[]string` target is never populated. Add a `*structpb.Value_ListValue` case building the slice via `reflect.MakeSlice(targetType, ...)` and converting each element through the same function. This is the mirror of Step 2's write-side slice branch; without it Step 5 finds the right key and the field stays empty.
+
+- [ ] **Step 7: Run the tests.**
 ```bash
 cd Iverson.Clients/Go && go test ./...
 ```
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 8: Commit**
 ```bash
-git add Iverson.Clients/Go/iverson/coordinator.go Iverson.Clients/Go/iverson/registrar.go Iverson.Clients/Go/iverson_test/
+git add Iverson.Clients/Go/iverson/coordinator.go Iverson.Clients/Go/iverson/registrar.go Iverson.Clients/Go/iverson/coordinator_test.go
 git commit -m "send and declare foreign keys from the go client"
 ```
 
