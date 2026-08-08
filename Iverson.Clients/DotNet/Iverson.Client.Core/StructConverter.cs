@@ -16,11 +16,31 @@ internal static class StructConverter
         WriteIndented               = false
     };
 
-    /// <summary>Serializes a POCO to a protobuf Struct via JSON round-trip.</summary>
-    public static Struct ToStruct<T>(T obj) where T : class
+    /// <summary>
+    /// Serializes a POCO to a protobuf Struct via JSON round-trip.
+    /// </summary>
+    /// <param name="omitProperties">
+    /// Names of navigation properties (PascalCase, as declared on the type) to exclude from the
+    /// resulting Struct. The Struct's own keys are camelCase (<see cref="_jsonOpts"/> sets
+    /// <c>PropertyNamingPolicy = JsonNamingPolicy.CamelCase</c>), so removal matches
+    /// case-insensitively on the leading character rather than requiring an exact key match —
+    /// mirroring the server's <c>StructFieldAccess.Candidates</c> behaviour.
+    /// </param>
+    public static Struct ToStruct<T>(T obj, IReadOnlyCollection<string>? omitProperties = null) where T : class
     {
-        var json = JsonSerializer.Serialize(obj, _jsonOpts);
-        return JsonParser.Default.Parse<Struct>(json);
+        var json   = JsonSerializer.Serialize(obj, _jsonOpts);
+        var result = JsonParser.Default.Parse<Struct>(json);
+
+        if (omitProperties is { Count: > 0 })
+        {
+            foreach (var key in result.Fields.Keys.ToList())
+            {
+                if (omitProperties.Any(p => string.Equals(p, key, StringComparison.OrdinalIgnoreCase)))
+                    result.Fields.Remove(key);
+            }
+        }
+
+        return result;
     }
 
     /// <summary>Deserializes a protobuf Struct back to a POCO via JSON round-trip.</summary>
