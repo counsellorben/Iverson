@@ -274,6 +274,7 @@ git commit -m "send foreign keys only from the java client"
 **Files:**
 - Modify: `Iverson.Clients/Python/iverson_client/core.py`
 - Test: `Iverson.Clients/Python/tests/test_entity_coordinator.py`
+- Test: `Iverson.Clients/Python/tests/test_schema_registrar.py`
 
 - [ ] **Step 1: Write the tests.** Five: a written `Article` payload contains `AuthorId` and not `Articles`; a ManyToMany id list arrives as a `ListValue`, not a string; a registered schema declares the FK column under the inferred name for the three non-`OneToMany` kinds and declares nothing for `OneToMany`; a correctly-named `many_to_one` member registers while one named `writer_id` on an `Author` relation is rejected with a message naming both names; and a **round-trip** — set ManyToMany ids, `_entity_to_struct`, `_from_struct`, assert the same ids are back in the same member. The round-trip is the one that catches a wrong read key; a write-only assertion passes while the read side is broken.
 
@@ -288,6 +289,8 @@ Leave the exclusion at `core.py:186-188` unchanged. After the property loop, app
 
 - [ ] **Step 5: Reject a misnamed `many_to_one`/`one_to_one` member.**
 Beside the existing `_validate_key_declarations` call (`core.py:172`), for each relation whose kind is `"many_to_one"` or `"one_to_one"`, raise `ValueError` when `_to_pascal_case(r["field"]) != f'{r["related_type"]}Id'`. The message names the member, the name it has, and the name it must have. This is what lets Step 6's read redirect stay ManyToMany-only: without it, a `writer_id` member on an `Author` relation writes `AuthorId` and reads `WriterId`, and its ids never reload.
+
+Rename `RegArticle.author_id` to `reg_author_id` in `tests/test_schema_registrar.py:43`; it declares `many_to_one("RegAuthor")` and is the fixture the whole registrar suite registers, so the new check would otherwise fail every test in that file. `:286`'s `assert rel.foreign_key == "RegAuthorId"` is unaffected — the FK is inferred from the related type, not the member.
 
 - [ ] **Step 6: Make the read path symmetric.**
 `_from_struct` (`core.py:505`) looks every member up under `_to_pascal_case(field_name)`. Build the same `{field: kind}` map — it is a method on `EntityCoordinator` and `self._cls` is in scope (`core.py:382`), so `_iverson_meta` is reachable exactly as on the write side — and look a `many_to_many` member up under `_infer_fk` instead. `many_to_one`/`one_to_one` are unchanged because the inferred name already equals the member's PascalCase name.
@@ -313,6 +316,7 @@ git commit -m "send and declare foreign keys only from the python client"
 **Files:**
 - Modify: `Iverson.Clients/TypeScript/src/core.ts`
 - Test: `Iverson.Clients/TypeScript/tests/core.test.ts`
+- Test: `Iverson.Clients/TypeScript/tests/schema-registrar.test.ts`
 
 - [ ] **Step 1: Write the tests.** Four: a written payload contains the FK key and not the nav key; a registered schema declares the FK column under the inferred name for the three non-`OneToMany` kinds and nothing for `OneToMany`; a correctly-named `'many_to_one'` member registers while one named `writerId` on an `Author` relation throws with a message naming both names; and a **round-trip** — set ManyToMany ids, `entityToPayload`, `payloadToEntity`, assert the same ids are back in the same member.
 
@@ -325,6 +329,8 @@ Leave the exclusion at `core.ts:238` unchanged — the loop below it throws on a
 - [ ] **Step 4: Reject a misnamed `'many_to_one'`/`'one_to_one'` member.**
 After `const relations = getRelations(cls)` (`core.ts:225`), throw when a relation of either kind has `toPascalCase(rel.field) !== \`${rel.relatedType}Id\``, with a message naming the member, the name it has, and the name it must have. This matches how the property loop below already throws on an array property lacking `@IversonArray`, and it is what lets Step 5's read redirect stay ManyToMany-only.
 
+Rename `RegArticle.authorId` to `regAuthorId` in `tests/schema-registrar.test.ts:70`, for the same reason Task 5 renames its Python counterpart; `:256-262`'s `expect(rel.foreignKey).toBe('RegAuthorId')` is unaffected.
+
 - [ ] **Step 5: Make the read path symmetric.**
 `payloadToEntity` (`core.ts:374`) looks every member up under `toPascalCase(field)`. It **already takes `cls` as its first parameter**, so `getRelations(cls)` is in scope with no signature change and no call-site changes — unlike the write side in Step 2. Look a `'many_to_many'` member up under `inferFk` instead. Its value assignment is untyped (`instance[field] = data[key]`), so arrays already pass through and no value-conversion change is needed.
 
@@ -335,7 +341,7 @@ cd Iverson.Clients/TypeScript && npm test
 
 - [ ] **Step 7: Commit**
 ```bash
-git add Iverson.Clients/TypeScript/src/core.ts Iverson.Clients/TypeScript/tests/core.test.ts
+git add Iverson.Clients/TypeScript/src/core.ts Iverson.Clients/TypeScript/tests/core.test.ts Iverson.Clients/TypeScript/tests/schema-registrar.test.ts
 git commit -m "send and declare foreign keys only from the typescript client"
 ```
 
@@ -364,6 +370,8 @@ Replace the blanket `continue` at `coordinator.go:440-447`. Parse the tag once p
 Leave `tags.go`'s `meta.Fields`/`meta.Relations` split untouched — it also enforces that a tenant marker on a relation is not a tenant declaration (`tags.go:316-318`). In `registrar.go`, after the property loop at `:64`, append one `PropertyDescriptor` per non-`OneToMany` relation: `Name: inferFK(fm, meta.TypeName)` — `meta` **is** in scope here (`registrar.go:108-111`), unlike in `entityToStruct` — `ClrType: CLR_STRING`, `IsArray: fm.RelationKind == KindManyToMany`, `IsNullable: true`, `IsKey: false`.
 
 In the same relation loop (`registrar.go:108-118`), return `fmt.Errorf` when `fm.RelationKind` is `KindManyToOne` or `KindOneToOne` and `fm.Name != fm.RelatedType+"Id"`, naming the field, the name it has, and the name it must have. `buildSchema` already returns an `error` (`:71`). This check is **not** redundant with Python's and TypeScript's despite sharing a message: Go's `inferFK` returns `fm.Name` for these kinds (`registrar.go:264-269`), so its write and read keys always agree and no mismatch is possible. What the check prevents here is a foreign key *column* named `WriterId` — which no other client would infer and which breaks the `{RelatedType}Id` convention the server's relation descriptors assume.
+
+No fixture rename is needed here, unlike Tasks 5 and 6: every Go `many_to_one` declaration in the repo already names its field `AuthorId` for an `Author` relation.
 
 - [ ] **Step 5: Make the read path symmetric.**
 `structToEntity` (`coordinator.go:494`) looks every field up under `s.Fields[sf.Name]` and **parses no struct tags at all** today — so this step adds tag parsing as well as changing the lookup. Skip `KindOneToMany` fields entirely, mirroring Step 3's write-side exclusion: the server injects hydrated child *structs* under that field's own name on depth-resolved reads (`EntityRelationResolver.cs:176`), and without the skip Step 6's new list case would fill a `[]string` with one empty string per child. For a field whose kind is `KindManyToMany`, look it up under `inferFK(fm, t.Name())`; everything else keeps `sf.Name`. `t` is already in scope (`:496`).
