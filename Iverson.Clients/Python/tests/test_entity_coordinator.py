@@ -9,7 +9,7 @@ from unittest.mock import MagicMock
 import grpc
 from google.protobuf import struct_pb2
 
-from iverson_client.annotations import iverson_entity, iverson_key, many_to_one, many_to_many
+from iverson_client.annotations import iverson_entity, iverson_key, many_to_one, many_to_many, one_to_many
 from iverson_client.core import EntityCoordinator, _entity_to_struct
 from iverson_client.generated import (
     object_search_pb2 as pb,
@@ -31,6 +31,7 @@ class CoordAuthor:
     name: str = None
     tag_ids: list[str] = many_to_many("CoordTag")
     coord_article_id: str = many_to_one("CoordArticle")
+    articles: list = one_to_many("CoordArticle")
 
 
 # ── Fixtures ───────────────────────────────────────────────────────────────────
@@ -140,6 +141,21 @@ class TestRelationForeignKeyOnlyContract:
 
         assert "CoordArticleId" in s.fields
         assert s.fields["CoordArticleId"].string_value == "art-1"
+
+    def test_write_payload_omits_one_to_many_member(self):
+        author = CoordAuthor()
+        author.id = "1"
+        author.name = "Ada"
+        author.coord_article_id = "art-1"
+        author.tag_ids = ["t1", "t2"]
+        author.articles = ["some-article-object"]
+
+        s = _entity_to_struct(author)
+
+        # a one_to_many member carries no foreign key on the write side at all;
+        # without the skip, _infer_fk would emit it under "CoordAuthorId"
+        assert "Articles" not in s.fields
+        assert "CoordAuthorId" not in s.fields
 
     def test_many_to_many_id_list_arrives_as_list_value_not_string(self):
         author = CoordAuthor()
