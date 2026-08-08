@@ -66,8 +66,17 @@ A write payload carries **foreign keys only**.
 A navigation property must not appear in a write payload. Where the relation marker sits
 *on* the FK-bearing member, that member is not a nav property and is sent normally.
 
-Reads are unaffected. `EntityRelationResolver` and the client `GraphAssembler`s keep
-hydrating nav properties on the way back; this contract governs writes only.
+Server-side reads are unaffected. `EntityRelationResolver` and the client `GraphAssembler`s
+keep hydrating nav properties on the way back.
+
+Client-side reads must stay **symmetric with writes**: whatever key a client emits an FK
+under, it must read that same key back into the same member. Where the relation marker sits
+on the FK-bearing field, the emitted key is the inferred FK column name, which differs from
+the field's own name for ManyToMany — so Go, Python and TypeScript must read their
+ManyToMany ids under `{RelatedType}Ids`, not under the field name. Without this the ids
+persist and are queryable server-side but never reload into the field they were set on.
+ManyToOne and OneToOne need no change: the field name already equals the inferred FK. .NET
+and Java are unaffected — their FK fields are *named* after the foreign key.
 
 Embedded-object writes are retired. A nav property in a write payload is a caller error
 and is rejected with `InvalidArgument`.
@@ -174,6 +183,23 @@ The relation kind is present at every decision point: `meta["relations"]` carrie
 (`core.py:166`), TypeScript's `getRelations()` returns `RelationMeta.kind`, and Go's
 `ParseTag` yields `fm.RelationKind`.
 
+### Read symmetry for ManyToMany
+
+The three FK-on-field clients each read entities back by the member's own name, so the
+ManyToMany key they now write (`{RelatedType}Ids`) is not the key they look for. Each needs
+the same two corrections its write path needs — the key mapping, and a list branch on the
+value ladder:
+
+| Client | Read key today | List value on read |
+|---|---|---|
+| Go | `structToEntity` → `s.Fields[sf.Name]` (`coordinator.go:505`) | `protoValueToGoValue` handles String/Number/Bool only (`:519-553`) — a `[]string` field is never populated |
+| Python | `_from_struct` → `_to_pascal_case(field_name)` (`core.py:514`) | the ladder ends `else: setattr(obj, field_name, None)` — a `list_value` reads as `None` |
+| TypeScript | `payloadToEntity` → `toPascalCase(field)` (`core.ts:379`) | raw assignment; arrays already pass through unchanged |
+
+The mapping is the mirror of the write rule and uses the same inference helper, so the two
+sides cannot drift: a ManyToMany member is read from `inferFK`'s name, everything else from
+the member's own name.
+
 ### Per-client work
 
 **Go** — `entityToStruct` stops discarding relation-tagged fields. ManyToOne and OneToOne
@@ -184,7 +210,10 @@ and `Author.Articles []string` is a real declaration that would otherwise emit u
 `AuthorId`. A Go relation field holding structs is omitted as a nav property; none exist
 today, but the rule should not depend on that. `registrar.go` additionally appends the
 synthesized FK property per Registration — without it the newly-emitted `AuthorId` still has
-no column. `tags.go`'s `meta.Fields`/`meta.Relations` split is left alone.
+no column. `tags.go`'s `meta.Fields`/`meta.Relations` split is left alone. On the read side,
+`structToEntity` looks up a ManyToMany member under `inferFK`'s name, and
+`protoValueToGoValue` gains a `*structpb.Value_ListValue` case populating a slice target —
+the mirror of the write-side slice branch, and without it the ids never reach the field.
 
 **Java** — three changes. Entities with a `@ManyToMany` gain a plain `List<UUID> tagIds`
 beside the nav collection. `toStruct` skips members carrying a relation annotation whose
@@ -206,11 +235,15 @@ and arrives as a string, which the validator's `fkValue?.ListValue` read silentl
 This is the same fix as Java's `Collection` branch. It already reads `_iverson_meta`
 (`core.py:314`), and `core.py:166` establishes the precedent of building a relation-field
 set from it. It appends the synthesized FK property per Registration; the exclusion at
-`core.py:187-188` is unchanged.
+`core.py:187-188` is unchanged. On the read side, `_from_struct` looks up a ManyToMany member
+under `_infer_fk`'s name and gains a `list_value` branch — without it the ids are read and
+then discarded as `None` by the ladder's `else`.
 
 **TypeScript** — `entityToPayload` does the same. `getRelations` is already imported
 (`core.ts:59`). It appends the synthesized FK property per Registration; the exclusion at
-`core.ts:238` is unchanged.
+`core.ts:238` is unchanged. On the read side, `payloadToEntity` looks up a ManyToMany member
+under `inferFk`'s name; its value assignment is untyped and already passes arrays through, so
+no value-ladder change is needed.
 
 ## Consequences
 
@@ -251,6 +284,10 @@ Each client needs a serialization test asserting that a written payload contains
 and does **not** contain the nav key. Go needs one asserting `AuthorId` is present at all —
 the defect that motivated this work has no existing coverage.
 
+Go, Python and TypeScript each need a **round-trip** test for ManyToMany: set the ids, write,
+read back, assert the same ids are in the same member. A write-only test passes while the
+read key is wrong, which is how this gap survived the first three review rounds.
+
 Go, Python and TypeScript each need a registration test asserting the FK column is declared
 under the inferred name for the three non-OneToMany kinds, and absent for `OneToMany`. The
 server needs one per kind for the new registration check — rejected when the foreign key
@@ -259,9 +296,10 @@ an array type (the case `ValidateFieldReference` would have wrongly rejected).
 
 ## Verified assumptions
 
-Thirty-two assumptions, enumerated against the design before verification and checked against
-the codebase. Twenty-four held; the rest are recorded below. A27–A32 were added across three
-review rounds and the A22 fix; A29 is the one that changed the design most.
+Thirty-four assumptions, enumerated against the design before verification and checked against
+the codebase. Twenty-four held; the rest are recorded below. A27–A34 were added across three
+review rounds, the A22 fix, and the ManyToMany read-symmetry fix; A29 is the one that changed
+the design most.
 
 | # | Assumption | Result |
 |---|---|---|
@@ -297,6 +335,8 @@ review rounds and the A22 fix; A29 is the one that changed the design most.
 | A30 | The registration check can reuse `ValidateFieldReference` | ❌ **FAILED** — it additionally requires a string-valued `SqlType` for Qdrant filtering (`SchemaRegistrationOrchestrator.cs:109-115`), which rejects a ManyToMany's `UUID[]` foreign key. The new check tests column membership only |
 | A31 | `SchemaRegistrationOrchestrator` is the right place, with an established pattern | ✅ `:53-66` already performs `ValidateEnrichmentTargets`, `owner_field` and mandatory `tenant_field` checks, all throwing `RpcException(InvalidArgument)` |
 | A32 | The FK-bearing field can safely enter each client's property loop | ❌ **FAILED for Go and TypeScript** — Go's exclusion also gates the tenant-declaration check (`tags.go:316-323`); TypeScript's loop throws on any array property lacking `@IversonArray` (`core.ts:242-250`), which a ManyToMany FK necessarily is. Python's loop is safe (`_python_type_to_clr` handles `list[str]`). Design updated: the FK property is synthesized from the relation descriptor instead |
+| A33 | Client read paths look up members by the same key the write path emits | ❌ **FAILED for all three FK-on-field clients** — Go `structToEntity` reads `s.Fields[sf.Name]` (`coordinator.go:505`), Python `_from_struct` reads `_to_pascal_case(field_name)` (`core.py:514`), TS `payloadToEntity` reads `toPascalCase(field)` (`core.ts:379`). ManyToMany is the only kind where the emitted key differs from the member name, so it is the only kind affected. Design updated: see Read symmetry |
+| A34 | Client read value-ladders can decode a list | ❌ **FAILED for Go and Python** — Go's `protoValueToGoValue` handles String/Number/Bool only (`coordinator.go:519-553`); Python's ladder sends any non-scalar to `else: … None` (`core.py:517-527`). TypeScript assigns raw and is unaffected. The read ladders have exactly the gaps their write ladders have |
 
 ## Known issues / accepted as out of scope
 
