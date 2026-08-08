@@ -88,6 +88,22 @@ function toPascalCase(field: string): string {
     return field.charAt(0).toUpperCase() + field.slice(1);
 }
 
+/**
+ * Derive the navigation property name from the relation's member name.
+ * For many_to_one / one_to_one the member itself is the foreign key
+ * (authorId → AuthorId), so strip the trailing "Id" to get the navigation
+ * property name (Author). Other kinds use the PascalCase member name as-is.
+ */
+function relationPropertyName(kind: RelationKindString, field: string): string {
+    const pascal = toPascalCase(field);
+    if (kind === 'many_to_one' || kind === 'one_to_one') {
+        if (pascal.length > 2 && pascal.endsWith('Id')) {
+            return pascal.slice(0, -2);
+        }
+    }
+    return pascal;
+}
+
 /** Infer FK column name from relation metadata. */
 function inferFk(kind: RelationKindString, relatedType: string, thisTypeName: string): string {
     switch (kind) {
@@ -324,7 +340,7 @@ export function describeEntity(cls: Function): TypeDescriptor {
     }
 
     const relationDescriptors: RelationDescriptor[] = relations.map(rel => ({
-        propertyName: toPascalCase(rel.field),
+        propertyName: relationPropertyName(rel.kind, rel.field),
         kind: RELATION_KIND_MAP[rel.kind] ?? RelationKind.MANY_TO_ONE,
         relatedType: rel.relatedType,
         foreignKey: inferFk(rel.kind, rel.relatedType, typeName),

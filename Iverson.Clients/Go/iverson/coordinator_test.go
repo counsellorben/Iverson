@@ -56,6 +56,12 @@ type WriterAuthor struct {
 	WriterId string `iverson:"many_to_one:Author"`
 }
 
+type Profile struct {
+	Id       string `iverson_key:"true"`
+	TenantId string `iverson_tenant:"true"`
+	UserId   string `iverson:"one_to_one:User"`
+}
+
 type Tag struct {
 	Id       string   `iverson_key:"true"`
 	TenantId string   `iverson_tenant:"true"`
@@ -160,21 +166,65 @@ func TestStructToEntity_OneToMany_HydratedChildStructsLeaveFieldEmpty(t *testing
 	}
 }
 
-func TestBuildRequest_ManyToOne_DeclaresForeignKeyProperty(t *testing.T) {
-	r := NewSchemaRegistrar(nil, Article{})
-	req, err := r.buildRequest(Article{}, "trace")
+// propsByName indexes a built request's synthesized properties for assertion.
+func propsByName(t *testing.T, e interface{}) map[string]*pb.PropertyDescriptor {
+	t.Helper()
+	r := NewSchemaRegistrar(nil, e)
+	req, err := r.buildRequest(e, "trace")
 	if err != nil {
 		t.Fatalf("buildRequest: %v", err)
 	}
-	_ = r
-	found := false
+	out := make(map[string]*pb.PropertyDescriptor, len(req.RootType.Properties))
 	for _, p := range req.RootType.Properties {
-		if p.Name == "AuthorId" {
-			found = true
-		}
+		out[p.Name] = p
 	}
-	if !found {
-		t.Errorf("expected AuthorId property in schema, got: %+v", req.RootType.Properties)
+	return out
+}
+
+func assertFkProperty(t *testing.T, props map[string]*pb.PropertyDescriptor, name string, wantArray bool) {
+	t.Helper()
+	p, ok := props[name]
+	if !ok {
+		t.Fatalf("expected %s property in schema, got: %v", name, props)
+	}
+	if p.ClrType != pb.ClrType_CLR_STRING {
+		t.Errorf("%s.ClrType = %v, want CLR_STRING", name, p.ClrType)
+	}
+	if p.IsArray != wantArray {
+		t.Errorf("%s.IsArray = %v, want %v", name, p.IsArray, wantArray)
+	}
+	if !p.IsNullable {
+		t.Errorf("%s.IsNullable = false, want true", name)
+	}
+	if p.IsKey {
+		t.Errorf("%s.IsKey = true, want false", name)
+	}
+}
+
+func TestBuildRequest_ManyToOne_DeclaresScalarForeignKeyProperty(t *testing.T) {
+	assertFkProperty(t, propsByName(t, Article{}), "AuthorId", false)
+}
+
+func TestBuildRequest_OneToOne_DeclaresScalarForeignKeyProperty(t *testing.T) {
+	assertFkProperty(t, propsByName(t, Profile{}), "UserId", false)
+}
+
+func TestBuildRequest_ManyToMany_DeclaresArrayForeignKeyProperty(t *testing.T) {
+	assertFkProperty(t, propsByName(t, Tag{}), "ArticleIds", true)
+}
+
+func TestBuildRequest_OneToMany_DeclaresNoForeignKeyProperty(t *testing.T) {
+	props := propsByName(t, Author{})
+	// Author.Articles is one_to_many:Article — its FK lives on the Article row,
+	// so no column may be synthesized on this side.
+	if _, ok := props["AuthorId"]; ok {
+		t.Errorf("one_to_many must not synthesize AuthorId, got: %v", props)
+	}
+	if _, ok := props["ArticleId"]; ok {
+		t.Errorf("one_to_many must not synthesize ArticleId, got: %v", props)
+	}
+	if _, ok := props["Articles"]; ok {
+		t.Errorf("one_to_many relation field must not become a property, got: %v", props)
 	}
 }
 

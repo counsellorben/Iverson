@@ -338,6 +338,26 @@ class TestSchemaRegistrar:
         assert "RegAuthorId" in props2  # one_to_one
         assert props2["RegAuthorId"].is_array is False
 
+    def test_many_to_one_property_name_differs_from_foreign_key(self):
+        @iverson_entity
+        class RegNavArticle:
+            id: str = iverson_key()
+            author_id: str = many_to_one("Author")
+            tenant_id: str = iverson_tenant()
+
+        stub = make_stub()
+        stub.RegisterSchema.return_value = mapping_pb.SchemaResponse(success=True)
+        registrar = SchemaRegistrar(stub, RegNavArticle)
+        registrar.register_all()
+
+        request: mapping_pb.SchemaRequest = stub.RegisterSchema.call_args[0][0]
+        rel = request.root_type.relations[0]
+        # The navigation property name must NOT collide with the FK column, or a
+        # depth-resolved read overwrites the FK value with the hydrated entity.
+        assert rel.property_name != rel.foreign_key
+        assert rel.property_name == "Author"
+        assert rel.foreign_key == "AuthorId"
+
     def test_correctly_named_many_to_one_registers(self):
         @iverson_entity
         class RegGoodArticle:

@@ -50,9 +50,16 @@ public sealed class RelationValidator : IRelationValidator
                 // A NullValue nav key counts as ABSENT, matching the foreign-key rule below: .NET and
                 // Java serialize every property, so an unset nav member arrives as `Author: null`.
                 if (navValue is not null && navValue.KindCase != Value.KindOneofCase.NullValue)
+                {
+                    // A OneToMany carries no key in the payload at all: its foreign key is a column
+                    // on the related entity's row, so there is no key to name as the alternative.
+                    var remedy = relation.Kind == RelationKind.OneToMany
+                        ? $"set '{relation.ForeignKey}' on each related {relation.RelatedTypeName} instead."
+                        : $"send '{relation.ForeignKey}' instead.";
                     errors.Add(
                         $"Relation '{relation.PropertyName}' is a navigation property and cannot be " +
-                        $"written — send '{relation.ForeignKey}' instead.");
+                        $"written — {remedy}");
+                }
             }
         }
 

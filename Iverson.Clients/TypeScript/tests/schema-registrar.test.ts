@@ -261,6 +261,35 @@ describe('SchemaRegistrar', () => {
             expect(rel.foreignKey).toBe('RegAuthorId');
         });
 
+        it('gives a ManyToOne relation a property name distinct from its FK', () => {
+            @IversonEntity()
+            class Author {
+                @IversonKey()
+                @IversonTenant()
+                id: string = '';
+            }
+
+            @IversonEntity()
+            class NavArticle {
+                @IversonKey()
+                @IversonTenant()
+                id: string = '';
+
+                @ManyToOne(() => Author)
+                authorId: string = '';
+            }
+
+            const stub = makeStub();
+            const registrar = new SchemaRegistrar(stub, [NavArticle]);
+            const req = registrar._buildRequest(NavArticle);
+            const rel = req.rootType!.relations[0];
+            // The navigation property name must NOT collide with the FK column, or a
+            // depth-resolved read overwrites the FK value with the hydrated entity.
+            expect(rel.propertyName).not.toBe(rel.foreignKey);
+            expect(rel.propertyName).toBe('Author');
+            expect(rel.foreignKey).toBe('AuthorId');
+        });
+
         it('infers FK as {ThisType}Id for OneToMany', () => {
             @IversonEntity()
             class Post {

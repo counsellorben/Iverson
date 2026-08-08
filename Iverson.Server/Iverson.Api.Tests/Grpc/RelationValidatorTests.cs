@@ -218,8 +218,12 @@ public class RelationValidatorTests
 
         var act = () => _sut.ValidateAndNormalizeRelations(payload, schema);
 
+        // A OneToMany payload carries no key at all — the FK is a column on the related
+        // entity's row — so the message must not tell the caller to "send 'AuthorId'".
         act.Should().Throw<RpcException>()
-            .Where(e => e.Status.Detail.Contains("'Author'") && e.Status.Detail.Contains("'AuthorId'"));
+            .Where(e => e.Status.Detail.Contains("'Author'")
+                     && e.Status.Detail.Contains("set 'AuthorId' on each related Author instead.")
+                     && !e.Status.Detail.Contains("send 'AuthorId'"));
     }
 
     [Fact]

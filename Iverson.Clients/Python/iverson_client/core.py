@@ -96,6 +96,20 @@ def _to_pascal_case(snake: str) -> str:
     return "".join(part.capitalize() for part in snake.split("_"))
 
 
+def _relation_property_name(relation: dict) -> str:
+    """Derive the navigation property name from the relation's member name.
+
+    For many_to_one / one_to_one the member itself is the foreign key
+    (author_id → AuthorId), so strip the trailing "Id" to get the navigation
+    property name (Author). Other kinds use the PascalCase member name as-is.
+    """
+    pascal = _to_pascal_case(relation["field"])
+    if relation["kind"] in ("many_to_one", "one_to_one"):
+        if len(pascal) > 2 and pascal.endswith("Id"):
+            return pascal[:-2]
+    return pascal
+
+
 def _infer_fk(relation: dict, this_type_name: str) -> str:
     """Infer the FK column name from relation metadata."""
     kind = relation["kind"]
@@ -249,7 +263,7 @@ class SchemaRegistrar:
             fk = _infer_fk(rel, type_name)
             relations.append(
                 mapping_pb.RelationDescriptor(
-                    property_name=_to_pascal_case(rel["field"]),
+                    property_name=_relation_property_name(rel),
                     kind=_RELATION_KIND_MAP.get(rel["kind"], mapping_pb.MANY_TO_ONE),
                     related_type=rel.get("related_type") or "",
                     foreign_key=fk,
