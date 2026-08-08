@@ -419,11 +419,14 @@ describe('entityToPayload — FK-only write contract', () => {
 
         const entity = new FkArticle();
         entity.fkAuthorId = 'auth-1';
+        entity.comments = 'ignored-nav-value';
         await coordinator.persist(entity);
 
         const payload = calls[0].req.payload as Record<string, unknown>;
         expect(payload['FkAuthorId']).toBe('auth-1');
         expect(Object.keys(payload)).not.toContain('AuthorId');
+        expect(Object.keys(payload)).not.toContain('FkArticleId');
+        expect(Object.keys(payload)).not.toContain('Comments');
     });
 });
 
