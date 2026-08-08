@@ -85,6 +85,7 @@ Newly introduced by this plan and verified at plan-write time.
 | PA15 | Command | Per-task verification command exists | `Iverson.Api.Tests.csproj` and `Iverson.Client.Core.Tests.csproj` exist; `Iverson.Clients/Java/pom.xml` (`iverson-client-java`); `pyproject.toml` `[tool.pytest.ini_options] testpaths=["tests"]`; `package.json` `"test": "npm run typecheck && vitest run"`; `Iverson.Clients/Go/go.mod` |
 | PA16 | Command | Commit convention is plain lowercase imperative, no Conventional-Commits prefix | `git log --oneline -20` — e.g. `strip relation nav properties from write payloads`, `preserve caller's nav property key case when restoring echoed payload` |
 | PA17 | Ordering | No task consumes a symbol another task introduces | Tasks 1 and 2 touch disjoint server files; Tasks 3–7 are five separate languages with separate build and test tooling. All seven are independent |
+| PA18 | Sibling set | Payload-key casing per client, against which the omission and synthesis steps match names | **.NET emits camelCase** — `StructConverter.cs:12-17` `PropertyNamingPolicy = JsonNamingPolicy.CamelCase`. The other four emit PascalCase: Python `_to_pascal_case` (`core.py:329`), TS `toPascalCase` (`core.ts:364`), Java `toPascalCase` (`StructConverter.java:34`), Go raw field names (`coordinator.go:449`). See Task 3 Step 3 |
 
 ## Tasks
 
@@ -200,13 +201,13 @@ git commit -m "reject a relation whose foreign key names no declared column"
 - Modify: `Iverson.Clients/DotNet/Iverson.Client.Core/EntityCoordinator.cs`
 - Test: `Iverson.Clients/DotNet/Iverson.Client.Core.Tests/` (new or existing serialization test file)
 
-- [ ] **Step 1: Write a serialization test** asserting a written `Article` payload contains `AuthorId` and `TagIds` and does **not** contain `Author`, `Tags` or `UserArticles`.
+- [ ] **Step 1: Write a serialization test** asserting a written `Article` payload contains the foreign keys and contains **neither casing** of each nav property — not `Author` and not `author`, not `Tags` and not `tags`, not `UserArticles` and not `userArticles`. Asserting only the PascalCase form passes whether or not the omission works. Note the payload keys are camelCase, so the FK assertions read `authorId` and `tagIds`.
 
 - [ ] **Step 2: Give `Tag` its foreign key.**
 `Tag.cs` gains `public Guid[] ArticleIds { get; set; } = [];` beside the existing `[ManyToMany(typeof(Article))] List<Article> Articles`, mirroring how `Article` carries both `TagIds` and `Tags`. The stale comment claiming the convention is already followed goes.
 
 - [ ] **Step 3: Teach `ToStruct` to omit nav properties.**
-Add an optional parameter carrying the property names to omit, defaulted so `GraphAssembler.cs:95,209` keep compiling unchanged — they read FK values only and must not be disturbed. Remove the named keys after the JSON round-trip.
+Add an optional parameter carrying the property names to omit, defaulted so `GraphAssembler.cs:95,209` keep compiling unchanged — they read FK values only and must not be disturbed. Remove the named keys after the JSON round-trip, matching **case-insensitively on the leading character**: `_jsonOpts` sets `PropertyNamingPolicy = JsonNamingPolicy.CamelCase` (`StructConverter.cs:12-17`), so the Struct's keys are `author` and `tags` while the descriptor's names are `Author` and `Tags`. An exact-match removal silently removes nothing. `StructFieldAccess.Candidates` on the server exists for exactly this variance and is the behaviour to mirror.
 
 - [ ] **Step 4: Supply the names at the four write call sites.**
 `EntityCoordinator.cs:54,70,105,121` pass the nav-property names from `_descriptor.Relations` — the members whose declared type is an entity or a collection of entities. `_descriptor` is already in scope.
@@ -294,7 +295,7 @@ git commit -m "send and declare foreign keys only from the python client"
 - [ ] **Step 1: Write the tests.** A written payload contains the FK key and not the nav key; a registered schema declares the FK column under the inferred name for the three non-`OneToMany` kinds and nothing for `OneToMany`.
 
 - [ ] **Step 2: Make `entityToPayload` kind-first.**
-`entityToPayload` (`core.ts:358`) currently copies every own property. Build a `{field: kind}` map from `getRelations(cls)` — already imported at `core.ts:59`. Omit fields whose kind is `'one_to_many'`; emit the rest under `inferFk(kind, relatedType, typeName)` (`core.ts:92`) instead of `toPascalCase(field)`. Arrays are assigned raw and survive as `ListValue` through the proto layer, so no value-conversion change is needed.
+`entityToPayload` (`core.ts:358`) currently copies every own property and takes only the instance, so it has no class to read metadata from — widen it to `entityToPayload(entity: object, cls: Function)` and pass `this._cls` at both call sites (`core.ts:428` in `persist`, `:448` in `update`). Build a `{field: kind}` map from `getRelations(cls)` — already imported at `core.ts:59`. Omit fields whose kind is `'one_to_many'`; emit the rest under `inferFk(kind, relatedType, typeName)` (`core.ts:92`) instead of `toPascalCase(field)`. Arrays are assigned raw and survive as `ListValue` through the proto layer, so no value-conversion change is needed.
 
 - [ ] **Step 3: Append the synthesized FK property at registration.**
 Leave the exclusion at `core.ts:238` unchanged — the loop below it throws on any array property lacking `@IversonArray`, which a reflected ManyToMany FK would trip. After the loop, append one `PropertyDescriptor` per non-`OneToMany` relation: named by `inferFk`, `clrType: ClrType.CLR_STRING`, `isArray` true for `'many_to_many'` and false otherwise.
