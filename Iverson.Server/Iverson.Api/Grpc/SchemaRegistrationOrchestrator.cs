@@ -65,6 +65,20 @@ public sealed class SchemaRegistrationOrchestrator(
             }
             ValidateFieldReference(descriptor, descriptor.TenantColumn, "tenant_field");
 
+            // Membership only — NOT ValidateFieldReference, which additionally requires a string-valued
+            // SqlType for Qdrant filtering and would reject a ManyToMany's UUID[] foreign key.
+            // OneToMany is exempt: its foreign key is a column on the RELATED type's row.
+            foreach (var relation in descriptor.Relations.Where(r => r.Kind != Schema.RelationKind.OneToMany))
+            {
+                if (!descriptor.ScalarColumns.Any(c =>
+                        string.Equals(c.Name, relation.ForeignKey, StringComparison.OrdinalIgnoreCase)))
+                {
+                    throw new RpcException(new Status(StatusCode.InvalidArgument,
+                        $"Relation '{relation.PropertyName}' ({relation.Kind}) on '{descriptor.TypeName}' " +
+                        $"declares foreign key '{relation.ForeignKey}', which is not a declared property."));
+                }
+            }
+
             try
             {
                 await schemaManager.ApplySchemaAsync(SchemaBuilder.ToTableSchema(descriptor), SchemaDriftPolicy.Throw);

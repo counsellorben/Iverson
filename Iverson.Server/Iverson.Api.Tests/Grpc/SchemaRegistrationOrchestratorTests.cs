@@ -381,4 +381,76 @@ public class SchemaRegistrationOrchestratorTests
         await act.Should().ThrowAsync<RpcException>()
             .Where(e => e.StatusCode == StatusCode.InvalidArgument);
     }
+
+    [Fact]
+    public async Task RegisterAsync_WithManyToOneForeignKeyMatchingNoColumn_ThrowsInvalidArgument()
+    {
+        var td = SimpleType("Widget", "Name");
+        td.Relations.Add(new Client.Contracts.RelationDescriptor
+        {
+            PropertyName = "Owner",
+            Kind = Client.Contracts.RelationKind.ManyToOne,
+            RelatedType = "User",
+            ForeignKey = "OwnerId"
+        });
+
+        var act = () => _sut.RegisterAsync(new SchemaRequest { RootType = td }, CancellationToken.None);
+
+        var ex = await act.Should().ThrowAsync<RpcException>();
+        ex.Which.StatusCode.Should().Be(StatusCode.InvalidArgument);
+        ex.Which.Status.Detail.Should().Contain("Owner").And.Contain("OwnerId");
+    }
+
+    [Fact]
+    public async Task RegisterAsync_WithOneToManyForeignKeyMatchingNoColumn_DoesNotThrow()
+    {
+        var td = SimpleType("Widget", "Name");
+        td.Relations.Add(new Client.Contracts.RelationDescriptor
+        {
+            PropertyName = "Children",
+            Kind = Client.Contracts.RelationKind.OneToMany,
+            RelatedType = "Gadget",
+            ForeignKey = "WidgetId" // lives on Gadget's row, not Widget's
+        });
+
+        var act = () => _sut.RegisterAsync(new SchemaRequest { RootType = td }, CancellationToken.None);
+
+        await act.Should().NotThrowAsync();
+    }
+
+    [Fact]
+    public async Task RegisterAsync_WithManyToManyArrayForeignKeyColumn_DoesNotThrow()
+    {
+        var td = SimpleType("Widget", "Name");
+        td.Properties.Add(new PropertyDescriptor
+            { Name = "TagIds", ClrType = ClrType.ClrGuid, IsArray = true });
+        td.Relations.Add(new Client.Contracts.RelationDescriptor
+        {
+            PropertyName = "Tags",
+            Kind = Client.Contracts.RelationKind.ManyToMany,
+            RelatedType = "Tag",
+            ForeignKey = "TagIds"
+        });
+
+        var act = () => _sut.RegisterAsync(new SchemaRequest { RootType = td }, CancellationToken.None);
+
+        await act.Should().NotThrowAsync();
+    }
+
+    [Fact]
+    public async Task RegisterAsync_WithWellFormedManyToOneForeignKey_Registers()
+    {
+        var td = SimpleType("Widget", "Name", "OwnerId");
+        td.Relations.Add(new Client.Contracts.RelationDescriptor
+        {
+            PropertyName = "Owner",
+            Kind = Client.Contracts.RelationKind.ManyToOne,
+            RelatedType = "User",
+            ForeignKey = "OwnerId"
+        });
+
+        var registered = await _sut.RegisterAsync(new SchemaRequest { RootType = td }, CancellationToken.None);
+
+        registered.Should().Contain("Widget");
+    }
 }
