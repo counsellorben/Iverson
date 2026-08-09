@@ -245,6 +245,66 @@ func TestGuidTagYieldsClrGuid(t *testing.T) {
 	}
 }
 
+func TestGuidTagOnStringSliceYieldsClrGuidArray(t *testing.T) {
+	type GuidSliceEntity struct {
+		Id       string   `iverson_key:"true"`
+		TagIds   []string `iverson_guid:"true"`
+		TenantId string   `iverson_tenant:"true"`
+	}
+
+	props := propsByName(t, &GuidSliceEntity{})
+
+	p, ok := props["TagIds"]
+	if !ok {
+		t.Fatalf("expected TagIds property, got: %v", props)
+	}
+	if p.ClrType != pb.ClrType_CLR_GUID {
+		t.Errorf("TagIds.ClrType = %v, want CLR_GUID", p.ClrType)
+	}
+	if !p.IsArray {
+		t.Errorf("TagIds.IsArray = false, want true")
+	}
+}
+
+func TestGuidTagOnNonStringFieldRejected(t *testing.T) {
+	type GuidOnIntEntity struct {
+		Id        string `iverson_key:"true"`
+		WordCount int    `iverson_guid:"true"`
+		TenantId  string `iverson_tenant:"true"`
+	}
+
+	r := NewSchemaRegistrar(nil, GuidOnIntEntity{})
+	_, err := r.buildRequest(GuidOnIntEntity{}, "trace")
+	if err == nil {
+		t.Fatal("expected error for iverson_guid on a non-string field")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "WordCount") {
+		t.Errorf("error should name the field WordCount, got: %v", err)
+	}
+	if !strings.Contains(msg, "iverson_guid") {
+		t.Errorf("error should name the iverson_guid tag, got: %v", err)
+	}
+}
+
+func TestGuidTagOnNonStringSliceRejected(t *testing.T) {
+	type GuidOnIntSliceEntity struct {
+		Id        string `iverson_key:"true"`
+		Counts    []int  `iverson_guid:"true"`
+		TenantId  string `iverson_tenant:"true"`
+	}
+
+	r := NewSchemaRegistrar(nil, GuidOnIntSliceEntity{})
+	_, err := r.buildRequest(GuidOnIntSliceEntity{}, "trace")
+	if err == nil {
+		t.Fatal("expected error for iverson_guid on a []int field")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "Counts") {
+		t.Errorf("error should name the field Counts, got: %v", err)
+	}
+}
+
 func TestBuildRequest_ManyToOne_CorrectlyNamedFieldRegisters(t *testing.T) {
 	r := NewSchemaRegistrar(nil, Article{})
 	_, err := r.buildRequest(Article{}, "trace")
