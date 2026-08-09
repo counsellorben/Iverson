@@ -330,6 +330,41 @@ describe('SchemaRegistrar', () => {
             expect(props['Name'].clrType).toBe(ClrType.CLR_STRING);
         });
 
+        it('rejects @IversonGuid() on a non-string property', () => {
+            @IversonEntity()
+            class GuidOnNumberEntity {
+                @IversonKey()
+                id: string = '';
+                @IversonGuid()
+                wordCount: number = 0;
+                @IversonTenant()
+                tenantId: string = '';
+            }
+
+            const stub = makeStub();
+            const registrar = new SchemaRegistrar(stub, [GuidOnNumberEntity]);
+            expect(() => registrar._buildRequest(GuidOnNumberEntity)).toThrow(/wordCount/);
+            expect(() => registrar._buildRequest(GuidOnNumberEntity)).toThrow(/IversonGuid/);
+        });
+
+        it('rejects @IversonGuid() on an array property, pointing at @IversonArray(ClrType.CLR_GUID)', () => {
+            @IversonEntity()
+            class GuidOnArrayEntity {
+                @IversonKey()
+                id: string = '';
+                @IversonArray(ClrType.CLR_STRING)
+                @IversonGuid()
+                tagIds: string[] = [];
+                @IversonTenant()
+                tenantId: string = '';
+            }
+
+            const stub = makeStub();
+            const registrar = new SchemaRegistrar(stub, [GuidOnArrayEntity]);
+            expect(() => registrar._buildRequest(GuidOnArrayEntity)).toThrow(/tagIds/);
+            expect(() => registrar._buildRequest(GuidOnArrayEntity)).toThrow(/IversonArray\(ClrType\.CLR_GUID\)/);
+        });
+
         it('synthesizes relation foreign keys as CLR_GUID', () => {
             const stub = makeStub();
             const registrar = new SchemaRegistrar(stub, [RegArticle]);

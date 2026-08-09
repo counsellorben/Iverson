@@ -278,6 +278,29 @@ export function describeEntity(cls: Function): TypeDescriptor {
                 'Add @IversonArray(ClrType.CLR_…) naming the element type.',
             );
         }
+        if (guidFields.has(fieldName)) {
+            if (looksArray) {
+                throw new Error(
+                    `${typeName}.${fieldName} is decorated with @IversonGuid() but is an array property; ` +
+                    '@IversonGuid() is scalar-only. Use @IversonArray(ClrType.CLR_GUID) to declare a UUID array column.',
+                );
+            }
+            // design:type is only populated when the consumer's build emits decorator metadata
+            // (tsc with emitDecoratorMetadata); under esbuild-based test tooling it is undefined,
+            // so fall back to the runtime type of the field's own initializer, mirroring the
+            // Array.isArray(...) fallback `looksArray` already uses above for the same reason.
+            const runtimeType = typeof instance[fieldName];
+            const isStringType = designType !== undefined ? designType === String : runtimeType === 'string';
+            if (!isStringType) {
+                const observed = designType?.name ?? runtimeType;
+                throw new Error(
+                    `${typeName}.${fieldName} is decorated with @IversonGuid() but its type is ` +
+                    `${observed}, not string; @IversonGuid() only applies to string-typed properties, ` +
+                    'since a GUID is carried as a string. Remove @IversonGuid() or change the property to a string.',
+                );
+            }
+        }
+
         const isArray = arrayElement !== undefined;
         const clrType = arrayElement
             ?? (guidFields.has(fieldName)
