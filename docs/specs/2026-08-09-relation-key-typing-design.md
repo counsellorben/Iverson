@@ -76,7 +76,13 @@ enforcement on 2026-08-09.**
 `tenant_field` validations (`:53-66`) and the foreign-key-column check added by the FK-only work:
 
 - the key column's SQL type must be `UUID`
-- every non-`OneToMany` relation's foreign-key column's SQL type must be `UUID`
+- a `ManyToOne` or `OneToOne` relation's foreign-key column's SQL type must be `UUID`
+- a `ManyToMany` relation's foreign-key column's SQL type must be `UUID[]` — the array form
+  `ClrTypeToSql` produces for `CLR_GUID`
+
+Only the `OneToMany` reverse lookup compares a foreign-key column in SQL. Many-to-many resolution
+reads the id list from the payload and matches the related type's *key* via `= ANY(@Keys)`, so the
+`UUID[]` requirement is a consistency rule rather than one a read path depends on.
 
 Both reject with `InvalidArgument`, naming the type, the offending field, its declared type, and
 the required one. The message must be actionable by a client developer who has never read the
@@ -160,7 +166,7 @@ declarations.
 
 ## Verified assumptions
 
-Eight assumptions, enumerated against the design before verification, checked against the codebase
+Nine assumptions, enumerated against the design before verification, checked against the codebase
 and a running stack. Two failed; both failures are the defects this spec fixes.
 
 | # | Assumption | Result |
@@ -173,6 +179,7 @@ and a running stack. Two failed; both failures are the defects this spec fixes.
 | B6 | The guard belongs in `SchemaRegistrationOrchestrator` | ✅ `:53-66` already performs `owner_field` and mandatory `tenant_field` checks, both throwing `RpcException(InvalidArgument)` |
 | B7 | The synthesized foreign-key column type is compatible with one-to-many resolution | ❌ **FAILED** — Go/Python/TS emit `CLR_STRING` → `TEXT`; `EntityRelationResolver:154` → `FetchByColumnAsync` casts `@Key::uuid`. Confirmed live: `FkTAuthorId | text`, author `depth=1` throws `42883` |
 | B8 | Key columns of any declared type are readable | ❌ **FAILED** — `EntityRepository` hardcodes `@Key::uuid` in four predicates and `Guid.Parse` in a fifth. Confirmed live: a text-keyed type accepted a write, then failed `depth=0` *and* `depth=1` reads |
+| B9 | A ManyToMany foreign-key column's SQL type is distinguishable from a ManyToOne's | ✅ `ClrTypeToSql(t, isArray)` (`SchemaBuilder.cs:278-281`) consults `ArrayTypeOverrides` first: `ClrGuid` + array → `UUID[]` (`:252`), scalar `ClrGuid` → `UUID` (`:236`). The guard must accept both forms |
 
 Additionally inherited from the conformance-harness spec's verification (2026-08-09): Go's
 `goScalarToClr` has no UUID case and TypeScript's `jsTypeToClr` defaults to `CLR_STRING`, so
