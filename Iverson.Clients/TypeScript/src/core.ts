@@ -290,7 +290,13 @@ export function describeEntity(cls: Function): TypeDescriptor {
             // so fall back to the runtime type of the field's own initializer, mirroring the
             // Array.isArray(...) fallback `looksArray` already uses above for the same reason.
             const runtimeType = typeof instance[fieldName];
-            const isStringType = designType !== undefined ? designType === String : runtimeType === 'string';
+            // When design:type is unavailable and the field has no initializer (runtimeType
+            // 'undefined'), the underlying type is genuinely unknown at this point — accept
+            // rather than false-reject. Every case this check needs to catch (a number
+            // initializer, an array, etc.) has an observable non-string runtime value.
+            const isStringType = designType !== undefined
+                ? designType === String
+                : (runtimeType === 'string' || runtimeType === 'undefined');
             if (!isStringType) {
                 const observed = designType?.name ?? runtimeType;
                 throw new Error(

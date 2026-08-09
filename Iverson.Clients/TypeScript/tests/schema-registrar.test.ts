@@ -365,6 +365,59 @@ describe('SchemaRegistrar', () => {
             expect(() => registrar._buildRequest(GuidOnArrayEntity)).toThrow(/IversonArray\(ClrType\.CLR_GUID\)/);
         });
 
+        it('accepts @IversonGuid() when design:type metadata says String (tsc production path)', () => {
+            @IversonEntity()
+            class GuidMetadataStringEntity {
+                @IversonKey() @IversonGuid()
+                id: string = '';
+                @IversonTenant()
+                tenantId: string = '';
+            }
+
+            Reflect.defineMetadata('design:type', String, GuidMetadataStringEntity.prototype, 'id');
+
+            const stub = makeStub();
+            const registrar = new SchemaRegistrar(stub, [GuidMetadataStringEntity]);
+            const req = registrar._buildRequest(GuidMetadataStringEntity);
+            const props = Object.fromEntries(req.rootType!.properties.map(p => [p.name, p]));
+            expect(props['Id'].clrType).toBe(ClrType.CLR_GUID);
+        });
+
+        it('rejects @IversonGuid() when design:type metadata says Number (tsc production path)', () => {
+            @IversonEntity()
+            class GuidMetadataNumberEntity {
+                @IversonKey()
+                id: string = '';
+                @IversonGuid()
+                wordCount: number = 0;
+                @IversonTenant()
+                tenantId: string = '';
+            }
+
+            Reflect.defineMetadata('design:type', Number, GuidMetadataNumberEntity.prototype, 'wordCount');
+
+            const stub = makeStub();
+            const registrar = new SchemaRegistrar(stub, [GuidMetadataNumberEntity]);
+            expect(() => registrar._buildRequest(GuidMetadataNumberEntity)).toThrow(/wordCount/);
+            expect(() => registrar._buildRequest(GuidMetadataNumberEntity)).toThrow(/IversonGuid/);
+        });
+
+        it('accepts @IversonGuid() on an initializer-less string property (no design:type, undefined runtime value)', () => {
+            @IversonEntity()
+            class GuidNoInitializerEntity {
+                @IversonKey() @IversonGuid()
+                id!: string;
+                @IversonTenant()
+                tenantId: string = '';
+            }
+
+            const stub = makeStub();
+            const registrar = new SchemaRegistrar(stub, [GuidNoInitializerEntity]);
+            const req = registrar._buildRequest(GuidNoInitializerEntity);
+            const props = Object.fromEntries(req.rootType!.properties.map(p => [p.name, p]));
+            expect(props['Id'].clrType).toBe(ClrType.CLR_GUID);
+        });
+
         it('synthesizes relation foreign keys as CLR_GUID', () => {
             const stub = makeStub();
             const registrar = new SchemaRegistrar(stub, [RegArticle]);
