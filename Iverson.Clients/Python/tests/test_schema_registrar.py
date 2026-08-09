@@ -312,14 +312,14 @@ class TestSchemaRegistrar:
 
         assert "RegAuthorId" in props  # many_to_one
         fk_prop = props["RegAuthorId"]
-        assert fk_prop.clr_type == mapping_pb.CLR_STRING
+        assert fk_prop.clr_type == mapping_pb.CLR_GUID
         assert fk_prop.is_array is False
         assert fk_prop.is_nullable is True
         assert fk_prop.is_key is False
 
         assert "RegTagIds" in props  # many_to_many
         mtm_prop = props["RegTagIds"]
-        assert mtm_prop.clr_type == mapping_pb.CLR_STRING
+        assert mtm_prop.clr_type == mapping_pb.CLR_GUID
         assert mtm_prop.is_array is True
         assert mtm_prop.is_nullable is True
         assert mtm_prop.is_key is False

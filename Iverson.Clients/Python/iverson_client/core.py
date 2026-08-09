@@ -251,7 +251,7 @@ class SchemaRegistrar:
             properties.append(
                 mapping_pb.PropertyDescriptor(
                     name=fk_name,
-                    clr_type=mapping_pb.CLR_STRING,
+                    clr_type=mapping_pb.CLR_GUID,
                     is_key=False,
                     is_nullable=True,
                     is_array=(rel["kind"] == "many_to_many"),

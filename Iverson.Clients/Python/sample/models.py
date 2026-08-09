@@ -1,6 +1,7 @@
 """Sample entity definitions demonstrating the iverson_client annotation API."""
 from __future__ import annotations
 
+import uuid
 from datetime import datetime
 
 from iverson_client.annotations import (
@@ -16,14 +17,14 @@ from iverson_client.annotations import (
 
 @iverson_entity
 class Tag:
-    id: str = iverson_key()
+    id: uuid.UUID = iverson_key()
     name: str = None
     tenant_id: str = iverson_tenant()
 
 
 @iverson_entity
 class Author:
-    id: str = iverson_key()
+    id: uuid.UUID = iverson_key()
     name: str = None
     bio: str = iverson_large_field()
     articles: list = one_to_many("Article")
@@ -32,7 +33,7 @@ class Author:
 
 @iverson_entity
 class Article:
-    id: str = iverson_key()
+    id: uuid.UUID = iverson_key()
     title: str = None
     body: str = iverson_large_field()
     category: str = iverson_search_key(order=0)
