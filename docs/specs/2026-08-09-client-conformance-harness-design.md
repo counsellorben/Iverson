@@ -2,6 +2,8 @@
 
 **Date:** 2026-08-09
 **Status:** Design approved, not yet planned
+**Depends on:** `2026-08-09-relation-key-typing-design.md` — Go and TypeScript cannot pass this
+harness's read steps until that fix lands
 
 ## Problem
 
@@ -208,10 +210,14 @@ tick.
 
 ## Expected failures
 
-Go and TypeScript are marked **expected-fail on every read step** of S1 and S4, with the cause
-recorded in the report, until the key-column typing issue in **Known issues** is resolved. They run
-rather than being skipped, so the harness continues to report the defect instead of hiding it. When
-the underlying issue is fixed, removing the `xfail` marks is the regression test.
+Go and TypeScript are marked **expected-fail on every read step** of S1 and S4, and all three
+FK-on-field clients (Go, Python, TypeScript) are expected-fail on any step exercising a
+`one_to_many` read, with the cause recorded in the report. Both are resolved by
+`2026-08-09-relation-key-typing-design.md`.
+
+They run rather than being skipped, so the harness continues to report the defects instead of
+hiding them. When that spec lands, removing the `xfail` marks is the regression test — and if the
+harness is built first, its first green run is the proof that the fix worked.
 
 ## Lifecycle
 
@@ -255,8 +261,10 @@ people will trust.
 **Five drivers must be maintained.** A change to any client's public API may require a driver
 change in that language. This is the standing cost of the design.
 
-**Two clients fail from day one.** Go and TypeScript cannot pass the read steps until the key-typing
-issue is fixed. The harness's first report will be red, which is the correct outcome.
+**The harness is red on its first run, by design.** Go and TypeScript fail every read step, and all
+three FK-on-field clients fail `one_to_many` reads, until
+`2026-08-09-relation-key-typing-design.md` lands. That is the correct outcome: the harness reports
+what is true.
 
 **The harness will find more than it was built for.** Verifying this design alone surfaced a
 shipping defect that all prior review layers missed.
@@ -286,17 +294,21 @@ codebase and a running stack. Eleven held.
 
 ## Known issues / accepted as out of scope
 
-**Go- and TypeScript-registered entities cannot be read by key on a live server.** Neither client
-maps any type to `CLR_GUID` (A8), so their key columns are `text`. `EntityRepository` hardcodes
-`WHERE "{key}" = @Key::uuid` in `FetchByKeyAsync`, `FetchByColumnAsync`, delete and update, and
-`FetchManyByKeysAsync` calls `Guid.Parse` on every key. Confirmed live on 2026-08-09: a text-keyed
-type accepted a write, then failed **both** `depth=0` and `depth=1` reads with
-`42883: operator does not exist: text = uuid`.
+**Two live defects found while verifying this design are fixed elsewhere.** Both were confirmed
+against a running stack on 2026-08-09 and are specified in
+`2026-08-09-relation-key-typing-design.md`, which **Ben chose on 2026-08-09** to split out rather
+than fold in — it is a production correctness fix, not a test tool, and warrants its own review.
 
-This predates the foreign-key-only work — it concerns key-column typing, not relations — and went
-unnoticed because every live-stack exercise to date used the .NET LoadTest. **Ben accepted this as
-out of scope for this spec on 2026-08-09**, to be addressed separately. The harness marks the
-affected steps expected-fail rather than skipping them, so the defect stays visible.
+- **Go- and TypeScript-registered entities cannot be read by key.** Neither client maps any type to
+  `CLR_GUID` (A8), so their key columns are `text`, and `EntityRepository` hardcodes `@Key::uuid`.
+  A text-keyed type accepted a write, then failed both `depth=0` and `depth=1` reads.
+- **One-to-many resolution is broken for Go, Python and TypeScript.** All three synthesize their
+  relation foreign key as `CLR_STRING` → a `TEXT` column, while `EntityRelationResolver:154`
+  resolves the reverse direction through `FetchByColumnAsync`, which casts to uuid.
+
+The second was introduced by the foreign-key-only work days earlier and passed every review layer,
+because the many-to-one direction — the one exercised live — is unaffected. Finding it during the
+design of a conformance harness, rather than by running one, is the argument for building it.
 
 **The harness does not manage the docker compose stack.** It verifies the stack is up and fails with
 instructions otherwise.
