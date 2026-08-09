@@ -187,8 +187,8 @@ func assertFkProperty(t *testing.T, props map[string]*pb.PropertyDescriptor, nam
 	if !ok {
 		t.Fatalf("expected %s property in schema, got: %v", name, props)
 	}
-	if p.ClrType != pb.ClrType_CLR_STRING {
-		t.Errorf("%s.ClrType = %v, want CLR_STRING", name, p.ClrType)
+	if p.ClrType != pb.ClrType_CLR_GUID {
+		t.Errorf("%s.ClrType = %v, want CLR_GUID", name, p.ClrType)
 	}
 	if p.IsArray != wantArray {
 		t.Errorf("%s.IsArray = %v, want %v", name, p.IsArray, wantArray)
@@ -225,6 +225,23 @@ func TestBuildRequest_OneToMany_DeclaresNoForeignKeyProperty(t *testing.T) {
 	}
 	if _, ok := props["Articles"]; ok {
 		t.Errorf("one_to_many relation field must not become a property, got: %v", props)
+	}
+}
+
+func TestGuidTagYieldsClrGuid(t *testing.T) {
+	type GuidTagEntity struct {
+		Id       string `iverson_key:"true" iverson_guid:"true"`
+		Name     string
+		TenantId string `iverson_tenant:"true"`
+	}
+
+	props := propsByName(t, &GuidTagEntity{})
+
+	if got := props["Id"].ClrType; got != pb.ClrType_CLR_GUID {
+		t.Errorf("Id.ClrType = %v, want CLR_GUID", got)
+	}
+	if got := props["Name"].ClrType; got != pb.ClrType_CLR_STRING {
+		t.Errorf("Name.ClrType = %v, want CLR_STRING (untagged string stays a string)", got)
 	}
 }
 

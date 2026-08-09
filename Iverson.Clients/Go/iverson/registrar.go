@@ -70,6 +70,9 @@ func (r *SchemaRegistrar) buildRequest(e interface{}, traceID string) (*pb.Schem
 		if err != nil {
 			return nil, fmt.Errorf("field %s: %w", fm.Name, err)
 		}
+		if fm.IsGuid {
+			clrType = pb.ClrType_CLR_GUID
+		}
 		searchKeyOrder, err := int32FromInt(fm.SearchKeyOrder)
 		if err != nil {
 			return nil, fmt.Errorf("field %s: SearchKeyOrder %w", fm.Name, err)
@@ -125,7 +128,7 @@ func (r *SchemaRegistrar) buildRequest(e interface{}, traceID string) (*pb.Schem
 		if fm.RelationKind != KindOneToMany {
 			properties = append(properties, &pb.PropertyDescriptor{
 				Name:       fk,
-				ClrType:    pb.ClrType_CLR_STRING,
+				ClrType:    pb.ClrType_CLR_GUID,
 				IsArray:    fm.RelationKind == KindManyToMany,
 				IsNullable: true,
 				IsKey:      false,

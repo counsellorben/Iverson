@@ -99,6 +99,10 @@ const ContextualTagKey = "iverson_contextual"
 // KeyTagKey marks the primary key field: `iverson_key:"true"`.
 const KeyTagKey = "iverson_key"
 
+// GuidTagKey marks a property as a UUID column: `iverson_guid:"true"`. Go has no
+// UUID type in this client's dependency set, so the tag carries what the type cannot.
+const GuidTagKey = "iverson_guid"
+
 // SearchKeyTagKey declares a sort key at a 0-based position: `iverson_search_key:"0"`.
 const SearchKeyTagKey = "iverson_search_key"
 
@@ -131,6 +135,8 @@ type FieldMeta struct {
 	RelationKind string
 	// IsKey reports whether the field carries `iverson_key:"true"`.
 	IsKey bool
+	// IsGuid reports whether the field carries `iverson_guid:"true"`.
+	IsGuid bool
 	// IsSearchKey reports whether the field carries `iverson_search_key:"N"`.
 	IsSearchKey bool
 	// IsLargeField reports whether the field carries `iverson_large_field:"true"`.
@@ -233,6 +239,7 @@ func InspectType(v interface{}) (EntityMeta, error) {
 		fm.IsKeywordsTarget = sf.Tag.Get(KeywordsTagKey) == "true"
 
 		fm.IsKey = sf.Tag.Get(KeyTagKey) == "true"
+		fm.IsGuid = sf.Tag.Get(GuidTagKey) == "true"
 		fm.IsLargeField = sf.Tag.Get(LargeFieldTagKey) == "true"
 		fm.IsEmbedding = sf.Tag.Get(EmbeddingTagKey) == "true"
 
