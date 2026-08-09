@@ -73,7 +73,8 @@ public sealed class SchemaRegistrationOrchestrator(
                 throw new RpcException(new Status(StatusCode.InvalidArgument,
                     $"Key property '{descriptor.KeyColumn.Name}' on '{descriptor.TypeName}' has SQL type " +
                     $"'{descriptor.KeyColumn.SqlType}', but a key column must be UUID. Declare the key as a " +
-                    $"GUID/UUID-typed property in your client model."));
+                    $"GUID/UUID-typed property in your client model (.NET: Guid; Java: UUID; Python: uuid.UUID; " +
+                    $"Go: add the `iverson_guid:\"true\"` struct tag; TypeScript: add the @IversonGuid() decorator)."));
             }
 
             // Membership only — NOT ValidateFieldReference, which additionally requires a string-valued
@@ -101,7 +102,9 @@ public sealed class SchemaRegistrationOrchestrator(
                         $"Relation '{relation.PropertyName}' ({relation.Kind}) on '{descriptor.TypeName}' " +
                         $"declares foreign key '{relation.ForeignKey}' with SQL type '{column.SqlType}', " +
                         $"but a {relation.Kind} foreign key must be {requiredSqlType}. Declare it as a " +
-                        $"GUID/UUID-typed property{(relation.Kind == Schema.RelationKind.ManyToMany ? " array" : "")}."));
+                        $"GUID/UUID-typed property{(relation.Kind == Schema.RelationKind.ManyToMany ? " array" : "")} " +
+                        $"(.NET: Guid; Java: UUID; Python: uuid.UUID; Go: add the `iverson_guid:\"true\"` struct tag; " +
+                        $"TypeScript: add the @IversonGuid() decorator)."));
                 }
             }
 
