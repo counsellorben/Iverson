@@ -62,7 +62,7 @@ Also inherited: Go's `goScalarToClr` has no UUID case and TypeScript's `jsTypeTo
 | 9 | Signature | Go's property loop has a single override point that preserves `isArray` | `registrar.go:69` `clrType, isArray, err := goTypeToClr(sf.Type)`, feeding `:87-88`. `goTypeToClr` has exactly one caller (`:69`) and `goScalarToClr` two (`:212`, `:218`), both inside `goTypeToClr` |
 | 10 | Signature | Go tag parsing is per-tag via `sf.Tag.Get` | `tags.go:230-237`, e.g. `fm.IsKey = sf.Tag.Get(KeyTagKey) == "true"` |
 | 11 | Signature | TypeScript's decorator-metadata pattern to mirror | `annotations.ts:240` `const IVERSON_ARRAY_KEY = Symbol('iverson:array')`, `:250` the decorator, `:259` `getArrayFields(target)` |
-| 12 | Signature | TypeScript's single clrType derivation point | `core.ts:280` `const clrType = arrayElement ?? (designType ? jsTypeToClr(designType.name) : ClrType.CLR_STRING)`; `jsTypeToClr` (`:73`) has this one caller |
+| 12 | Signature | TypeScript's single clrType derivation point, and the function enclosing it | `core.ts:280` `const clrType = arrayElement ?? (designType ? jsTypeToClr(designType.name) : ClrType.CLR_STRING)`; `jsTypeToClr` (`:73`) has this one caller. The loop (`:265-291`), the `arrayFields` resolution (`:216`), and `:280` all live inside **`describeEntity`** (`:200`) |
 | 13 | Code validity | A guid key is scalar, so `core.ts:271-278`'s "array without `@IversonArray`" throw is not engaged | `looksArray` is `designType === Array || Array.isArray(instance[field])`; a `string` key is neither |
 | 14 | Consumer impact | The synthesized-FK `clr_type` assertions that must flip | Go `coordinator_test.go:190` in `assertFkProperty`; Python `test_schema_registrar.py:315`. **TypeScript has none** — its `CLR_STRING` hits at `:570`, `:625`, `:658` are `@IversonArray` and `GetSchema` fixtures, so Task 3 adds a new test rather than flipping one |
 | 15 | Consumer impact | Sample key fields to change | Go `sample/models/{tag,author,article}.go:5,5,7` `Id string \`iverson_key:"true"\``; TS `sample/models/{Tag,Article,Author}.ts:7,15,7` `id: string = ''`; Python `sample/models.py:19,26,35` `id: str = iverson_key()` |
@@ -72,7 +72,7 @@ Also inherited: Go's `goScalarToClr` has no UUID case and TypeScript's `jsTypeTo
 | 19 | Command | Python tests: `pytest` from `Iverson.Clients/Python` | `pyproject.toml:25-26` `[tool.pytest.ini_options] testpaths = ["tests"]` |
 | 20 | Ordering | Tasks 1–4 are mutually independent | Disjoint file sets across four language trees; the client tasks mock the transport (B4), so none depends on the server guard existing |
 | 21 | Code validity | Server test style | `SchemaRegistrationOrchestratorTests.cs:1-10` — xUnit `[Fact]`, FluentAssertions, NSubstitute; existing rejection tests assert `ex.Which.Status.Detail.Should().Contain(...)` (`:401`) |
-| 22 | Code validity | Client test styles | Go: plain `testing` with `t.Errorf` helpers, no testify (`coordinator_test.go:184-200`). TS: vitest `describe`/`it`/`expect` with decorators enabled (`@IversonArray` used at `schema-registrar.test.ts:560`). Python: pytest plain asserts with a `make_stub()` helper (`test_schema_registrar.py:305-320`) |
+| 22 | Code validity | Client test styles and the specific helpers/fixtures the plan's test code calls | Go: plain `testing` with `t.Errorf` helpers, no testify (`coordinator_test.go:184-200`). TS: vitest `describe`/`it`/`expect` with decorators enabled; the relations block is `describe('_buildRequest — relations')` (`schema-registrar.test.ts:244`), which indexes properties inline via `Object.fromEntries` (`:164`, `:206`) rather than a helper — **`propsOf` (`:335`, `:410`) is scoped to two other describes and there is no `propertiesOf`**; top-level fixtures are `RegAuthor` (`:37`) and `RegArticle` (`:48`, ManyToOne only — **no many-to-many fixture exists**). Python: pytest plain asserts with a `make_stub()` helper (`test_schema_registrar.py:305-320`) |
 
 ## Tasks
 
@@ -336,37 +336,50 @@ Note on fixtures: the spec's B4 scopes fixture impact to *client* fixtures. Two 
 
 - [ ] **Step 1: Write the failing tests**
 
-  No existing assertion covers the synthesized foreign key's `clrType`, so both tests here are new. Add to `schema-registrar.test.ts`:
+  No existing assertion covers the synthesized foreign key's `clrType`, so both tests here are new. Add them inside `describe('_buildRequest — relations')` (`schema-registrar.test.ts:244`), following that block's own idiom — build with `registrar._buildRequest(...)` and index with `Object.fromEntries(...)`, as at `:164` and `:206`. The block already declares fixtures locally inside a test (`NavArticle`, `:265-275`); the many-to-many one does the same, since no top-level fixture carries a `@ManyToMany`.
 
   ```typescript
   it('registers a @IversonGuid property as CLR_GUID and leaves untagged strings alone', () => {
       @IversonEntity()
       class GuidKeyEntity {
-          @IversonKey()
-          @IversonGuid()
+          @IversonKey() @IversonGuid()
           id: string = '';
-
           name: string = '';
-
           @IversonTenant()
           tenantId: string = '';
       }
 
-      const props = propertiesOf(GuidKeyEntity);
+      const registrar = new SchemaRegistrar(makeStub());
+      const req = registrar._buildRequest(GuidKeyEntity);
+      const props = Object.fromEntries(req.rootType!.properties.map(p => [p.name, p]));
+
       expect(props['Id'].clrType).toBe(ClrType.CLR_GUID);
       expect(props['Name'].clrType).toBe(ClrType.CLR_STRING);
   });
 
   it('synthesizes relation foreign keys as CLR_GUID', () => {
-      const props = propertiesOf(RegRelKindsArticle);
+      const registrar = new SchemaRegistrar(makeStub());
+      const props = Object.fromEntries(
+          registrar._buildRequest(RegArticle).rootType!.properties.map(p => [p.name, p]));
       expect(props['RegAuthorId'].clrType).toBe(ClrType.CLR_GUID);
       expect(props['RegAuthorId'].isArray).toBe(false);
-      expect(props['RegTagIds'].clrType).toBe(ClrType.CLR_GUID);
-      expect(props['RegTagIds'].isArray).toBe(true);
+
+      @IversonEntity()
+      class TaggedPost {
+          @IversonKey() id: string = '';
+          @IversonTenant() tenantId: string = '';
+          @ManyToMany(() => RegAuthor)
+          regAuthorIds: string[] = [];
+      }
+
+      const mtm = Object.fromEntries(
+          new SchemaRegistrar(makeStub())._buildRequest(TaggedPost).rootType!.properties.map(p => [p.name, p]));
+      expect(mtm['RegAuthorIds'].clrType).toBe(ClrType.CLR_GUID);
+      expect(mtm['RegAuthorIds'].isArray).toBe(true);
   });
   ```
 
-  Reuse the file's existing helper for indexing a built request's properties by name and its existing relation fixture class; if the file indexes properties inline rather than through a helper, follow whichever shape the neighbouring tests use rather than introducing a new one.
+  Match the surrounding tests' exact registrar/stub construction rather than the sketch above if the block instantiates them differently.
 
 - [ ] **Step 2: Run and confirm failure**
   ```bash
@@ -400,7 +413,7 @@ Note on fixtures: the spec's B4 scopes fixture impact to *client* fixtures. Two 
 
 - [ ] **Step 4: Consult it in the property loop and retype the synthesized foreign key**
 
-  In `core.ts`, import `getGuidFields` alongside the existing `getArrayFields` import and resolve it beside `arrayFields` in `getRelations`' sibling setup (`const guidFields = getGuidFields(cls);`). Then change `:280` to consult it before falling back to `jsTypeToClr`:
+  In `core.ts`, import `getGuidFields` alongside the existing `getArrayFields` import and add `const guidFields = getGuidFields(cls);` beside `const arrayFields = getArrayFields(cls);` at `core.ts:216`, inside `describeEntity`. Then change `:280` to consult it before falling back to `jsTypeToClr`:
   ```typescript
   const clrType = arrayElement
       ?? (guidFields.has(fieldName)
