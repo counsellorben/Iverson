@@ -65,17 +65,43 @@ public sealed class SchemaRegistrationOrchestrator(
             }
             ValidateFieldReference(descriptor, descriptor.TenantColumn, "tenant_field");
 
+            // The key column is compared against a uuid parameter in every EntityRepository
+            // predicate (FetchByKey/FetchMany/FetchByColumn/Delete/Update). A non-UUID key
+            // registers cleanly and then fails every read with Postgres 42883.
+            if (!string.Equals(descriptor.KeyColumn.SqlType, "UUID", StringComparison.Ordinal))
+            {
+                throw new RpcException(new Status(StatusCode.InvalidArgument,
+                    $"Key property '{descriptor.KeyColumn.Name}' on '{descriptor.TypeName}' has SQL type " +
+                    $"'{descriptor.KeyColumn.SqlType}', but a key column must be UUID. Declare the key as a " +
+                    $"GUID/UUID-typed property in your client model."));
+            }
+
             // Membership only — NOT ValidateFieldReference, which additionally requires a string-valued
             // SqlType for Qdrant filtering and would reject a ManyToMany's UUID[] foreign key.
             // OneToMany is exempt: its foreign key is a column on the RELATED type's row.
             foreach (var relation in descriptor.Relations.Where(r => r.Kind != Schema.RelationKind.OneToMany))
             {
-                if (!descriptor.ScalarColumns.Any(c =>
-                        string.Equals(c.Name, relation.ForeignKey, StringComparison.OrdinalIgnoreCase)))
+                var column = descriptor.ScalarColumns.FirstOrDefault(c =>
+                    string.Equals(c.Name, relation.ForeignKey, StringComparison.OrdinalIgnoreCase));
+
+                if (column is null)
                 {
                     throw new RpcException(new Status(StatusCode.InvalidArgument,
                         $"Relation '{relation.PropertyName}' ({relation.Kind}) on '{descriptor.TypeName}' " +
                         $"declares foreign key '{relation.ForeignKey}', which is not a declared property."));
+                }
+
+                // ManyToMany's foreign key is a list of ids (UUID[]); the others are a single id (UUID).
+                // Only the OneToMany reverse lookup compares an FK column in SQL, so the UUID[] arm is a
+                // consistency rule — but a TEXT[] column would still be wrong by construction.
+                var requiredSqlType = relation.Kind == Schema.RelationKind.ManyToMany ? "UUID[]" : "UUID";
+                if (!string.Equals(column.SqlType, requiredSqlType, StringComparison.Ordinal))
+                {
+                    throw new RpcException(new Status(StatusCode.InvalidArgument,
+                        $"Relation '{relation.PropertyName}' ({relation.Kind}) on '{descriptor.TypeName}' " +
+                        $"declares foreign key '{relation.ForeignKey}' with SQL type '{column.SqlType}', " +
+                        $"but a {relation.Kind} foreign key must be {requiredSqlType}. Declare it as a " +
+                        $"GUID/UUID-typed property{(relation.Kind == Schema.RelationKind.ManyToMany ? " array" : "")}."));
                 }
             }
 
