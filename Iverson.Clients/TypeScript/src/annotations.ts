@@ -260,6 +260,28 @@ export function getArrayFields(target: Function): Map<string, ClrType> {
     return Reflect.getMetadata(IVERSON_ARRAY_KEY, target) ?? new Map();
 }
 
+// ── @IversonGuid() ──────────────────────────────────────────────────────────
+
+const IVERSON_GUID_KEY = Symbol('iverson:guid');
+
+/**
+ * Declares a property as a UUID column. TypeScript has no UUID type — a GUID is
+ * carried as a `string` — so the runtime cannot distinguish it from any other
+ * string. The server requires key and foreign-key columns to be UUID.
+ */
+export function IversonGuid(): PropertyDecorator {
+    return (target, propertyKey) => {
+        const existing: Set<string> =
+            Reflect.getMetadata(IVERSON_GUID_KEY, target.constructor) ?? new Set();
+        existing.add(String(propertyKey));
+        Reflect.defineMetadata(IVERSON_GUID_KEY, existing, target.constructor);
+    };
+}
+
+export function getGuidFields(target: Function): Set<string> {
+    return Reflect.getMetadata(IVERSON_GUID_KEY, target) ?? new Set();
+}
+
 // ── @IversonTenant() ────────────────────────────────────────────────────────
 
 /**

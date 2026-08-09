@@ -18,7 +18,9 @@ import {
     IversonExtracted,
     IversonTenant,
     IversonArray,
+    IversonGuid,
     ManyToOne,
+    ManyToMany,
     OneToMany,
 } from '../src/annotations.js';
 import { IversonClient, SchemaRegistrar } from '../src/core.js';
@@ -307,6 +309,47 @@ describe('SchemaRegistrar', () => {
             const rel = req.rootType!.relations[0];
             expect(rel.foreignKey).toBe('PostId');
             expect(rel.kind).toBe(RelationKind.ONE_TO_MANY);
+        });
+
+        it('registers a @IversonGuid property as CLR_GUID and leaves untagged strings alone', () => {
+            @IversonEntity()
+            class GuidKeyEntity {
+                @IversonKey() @IversonGuid()
+                id: string = '';
+                name: string = '';
+                @IversonTenant()
+                tenantId: string = '';
+            }
+
+            const stub = makeStub();
+            const registrar = new SchemaRegistrar(stub, [GuidKeyEntity]);
+            const req = registrar._buildRequest(GuidKeyEntity);
+            const props = Object.fromEntries(req.rootType!.properties.map(p => [p.name, p]));
+
+            expect(props['Id'].clrType).toBe(ClrType.CLR_GUID);
+            expect(props['Name'].clrType).toBe(ClrType.CLR_STRING);
+        });
+
+        it('synthesizes relation foreign keys as CLR_GUID', () => {
+            const stub = makeStub();
+            const registrar = new SchemaRegistrar(stub, [RegArticle]);
+            const props = Object.fromEntries(
+                registrar._buildRequest(RegArticle).rootType!.properties.map(p => [p.name, p]));
+            expect(props['RegAuthorId'].clrType).toBe(ClrType.CLR_GUID);
+            expect(props['RegAuthorId'].isArray).toBe(false);
+
+            @IversonEntity()
+            class TaggedPost {
+                @IversonKey() id: string = '';
+                @IversonTenant() tenantId: string = '';
+                @ManyToMany(() => RegAuthor)
+                regAuthorIds: string[] = [];
+            }
+
+            const mtm = Object.fromEntries(
+                new SchemaRegistrar(makeStub(), [TaggedPost])._buildRequest(TaggedPost).rootType!.properties.map(p => [p.name, p]));
+            expect(mtm['RegAuthorIds'].clrType).toBe(ClrType.CLR_GUID);
+            expect(mtm['RegAuthorIds'].isArray).toBe(true);
         });
     });
 });

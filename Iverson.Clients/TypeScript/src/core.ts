@@ -48,6 +48,7 @@ import {
 
 import {
     getArrayFields,
+    getGuidFields,
     getChunkFields,
     getEmbeddingFields,
     getExtractedFields,
@@ -214,6 +215,7 @@ export function describeEntity(cls: Function): TypeDescriptor {
     const keywordsFields = new Set(getKeywordsFields(cls));
     const extractedByField = new Map(getExtractedFields(cls).map(e => [e.field, e]));
     const arrayFields = getArrayFields(cls);
+    const guidFields = getGuidFields(cls);
     if (keyField !== undefined) {
         // The server builds every per-property declaration from non-key properties only, so
         // anything but a description on the key is accepted and silently dropped.
@@ -277,7 +279,10 @@ export function describeEntity(cls: Function): TypeDescriptor {
             );
         }
         const isArray = arrayElement !== undefined;
-        const clrType = arrayElement ?? (designType ? jsTypeToClr(designType.name) : ClrType.CLR_STRING);
+        const clrType = arrayElement
+            ?? (guidFields.has(fieldName)
+                ? ClrType.CLR_GUID
+                : (designType ? jsTypeToClr(designType.name) : ClrType.CLR_STRING));
 
         const isKey = fieldName === keyField;
         const isSearchKey = searchKeysByField.has(fieldName);
@@ -315,7 +320,7 @@ export function describeEntity(cls: Function): TypeDescriptor {
         if (rel.kind === 'one_to_many') continue;
         properties.push({
             name: inferFk(rel.kind, rel.relatedType, typeName),
-            clrType: ClrType.CLR_STRING,
+            clrType: ClrType.CLR_GUID,
             isKey: false,
             isNullable: true,
             isArray: rel.kind === 'many_to_many',
