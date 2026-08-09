@@ -88,10 +88,7 @@ TypeScript's `console.log` and Java's SLF4J default output would corrupt it.
   "language": "python",
   "steps": [
     {"name": "register", "ok": true,
-     "descriptor": {"relations": [{"propertyName": "PyAuthor",
-                                   "foreignKey": "PyAuthorId",
-                                   "kind": "many_to_one"}],
-                    "properties": ["Id", "Title", "TenantId", "PyAuthorId"]}},
+     "typeDescriptor": { … the exact TypeDescriptor the client sent, serialized … }},
     {"name": "write",  "ok": true, "key": "…"},
     {"name": "get",    "ok": true, "entity": {"id": "…", "pyAuthorId": "c60c…"}},
     {"name": "update", "ok": true},
@@ -100,7 +97,7 @@ TypeScript's `console.log` and Java's SLF4J default output would corrupt it.
 }
 ```
 
-Three properties make this work:
+Four properties make this work:
 
 - **Drivers report, never assert.** Correctness lives in one place and cannot drift.
 - **Drivers use only their client's public API** — `SchemaRegistrar`, `EntityCoordinator` — so they
@@ -108,6 +105,10 @@ Three properties make this work:
 - **`entity` is the driver's own typed object after deserialization**, serialized to JSON. This is
   the only way to catch a read path that finds the right key and drops the value, which is the
   shape of the Python `list_value` → `None` defect.
+- **The register step reports the full `TypeDescriptor` the client sent**, not a summary of it.
+  Every client builds one before calling `RegisterSchema`, so this is a serialization rather than
+  new logic. It is what makes the orchestrator's re-registration shape-preserving, and it carries
+  the `is_array` flag the registration assertion checks.
 
 A step that throws sets `"ok": false` with `"error"`, and the driver still exits 0 — a failed step
 is data. A non-zero exit means the driver itself broke.
@@ -124,8 +125,16 @@ hardcodes `authorization: undefined` and Python, Go and Java have no support (A7
 by nobody.
 
 The harness therefore registers twice. The driver registers via its own client — that descriptor is
-what is under test — and the orchestrator then re-registers the same shape with row permissions
-attached. Re-registration with an unchanged column shape is idempotent (A12).
+what is under test — and the orchestrator then re-registers **the driver's own reported
+`TypeDescriptor`, altering only the authorization block**. Nothing else may change:
+`SchemaRegistry.RegisterAsync` replaces the stored descriptor wholesale rather than merging
+(`SchemaRegistry.cs:47-56`), so a re-registration that reconstructed an approximate shape would
+overwrite the very relation descriptor S1's depth-1 check exists to inspect — silently correcting a
+`PropertyName`/`ForeignKey` collision before the assertion that looks for it. Re-registration with
+an unchanged column shape is idempotent (A12).
+
+The alternative — giving the four non-.NET registrars an authorization parameter — was rejected: it
+reshapes production clients that this harness exists to test, for the benefit of the harness.
 
 ## Scenarios
 
@@ -164,16 +173,20 @@ navigation-property key and posts it over raw gRPC, asserting `InvalidArgument` 
 naming both the property and the foreign key.
 
 **S4 — `interop`** (shared type, all languages). The .NET driver registers `SharedAuthor` and
-`SharedArticle` once. Every language writes one row keyed `shared-<lang>-<runid>`, then every
-language reads all five rows. The orchestrator asserts all twenty-five reads agree on the foreign
-key value.
+`SharedArticle` once. Every language writes one row whose key is a UUIDv5 derived from
+`(runId, language, "SharedArticle")`, then every language reads all five rows. The orchestrator
+asserts all twenty-five reads agree on the foreign key value.
 
 S4 is the only scenario that can catch two clients disagreeing about the wire format while each
 passes its own isolated test. Its cost is a second entity declaration per driver.
 
 **Isolation.** Every scenario takes an `--id-prefix` run id. Type names stay stable so schema drift
-detection remains meaningful across runs; row keys are prefixed so runs never collide. The
-orchestrator deletes its rows on completion unless `--keep` is passed.
+detection remains meaningful across runs. Row keys are **UUIDv5 values derived from the run id, the
+language and the row's logical name** — keys must be UUIDs, since a key column's SQL type is `UUID`
+and relation foreign-key values must be well-formed GUIDs, so a literal prefix is not writable.
+Deriving them keeps runs collision-free and reproducible; the report records the
+logical-name-to-UUID mapping so a failure is still traceable to `shared-go-run7a3f` in human terms.
+The orchestrator deletes its rows on completion unless `--keep` is passed.
 
 ## Verification
 
@@ -210,14 +223,20 @@ tick.
 
 ## Expected failures
 
-Go and TypeScript are marked **expected-fail on every read step** of S1 and S4, and all three
-FK-on-field clients (Go, Python, TypeScript) are expected-fail on any step exercising a
-`one_to_many` read, with the cause recorded in the report. Both are resolved by
-`2026-08-09-relation-key-typing-design.md`.
+The dependency has landed: `2026-08-09-relation-key-typing-design.md` is implemented and merged
+(`main@b67458d`), so a harness built against current `main` is expected to pass every step. The
+spec's original framing — build the harness first and let its first green run prove the fix — was
+overtaken by the order events took.
 
-They run rather than being skipped, so the harness continues to report the defects instead of
-hiding them. When that spec lands, removing the `xfail` marks is the regression test — and if the
-harness is built first, its first green run is the proof that the fix worked.
+Should the harness be built against a commit predating that fix, the expected-fail set is defined
+**by cause, not by step category**: every step whose SQL path casts the key to uuid fails for Go and
+TypeScript, which is read-by-key, the depth-resolved read, **and delete** (`EntityRepository.cs:39`).
+Write and update are unaffected — update routes through the outbox upsert
+(`ObjectMappingGrpcService.cs:356`), which has no cast. All three FK-on-field clients additionally
+fail any step exercising a `one_to_many` read.
+
+Expected failures run rather than being skipped, so the harness reports defects instead of hiding
+them.
 
 ## Lifecycle
 
@@ -261,18 +280,16 @@ people will trust.
 **Five drivers must be maintained.** A change to any client's public API may require a driver
 change in that language. This is the standing cost of the design.
 
-**The harness is red on its first run, by design.** Go and TypeScript fail every read step, and all
-three FK-on-field clients fail `one_to_many` reads, until
-`2026-08-09-relation-key-typing-design.md` lands. That is the correct outcome: the harness reports
-what is true.
+**The harness is expected green on its first run.** The key-typing fix it depends on has already
+landed, so the red-first-run outcome the design originally anticipated no longer applies.
 
 **The harness will find more than it was built for.** Verifying this design alone surfaced a
 shipping defect that all prior review layers missed.
 
 ## Verified assumptions
 
-Fifteen assumptions, enumerated against the design before verification and checked against the
-codebase and a running stack. Eleven held.
+Eighteen assumptions, enumerated against the design before verification and checked against the
+codebase and a running stack. Twelve held.
 
 | # | Assumption | Result |
 |---|---|---|
@@ -291,6 +308,9 @@ codebase and a running stack. Eleven held.
 | A13 | The five toolchains are available locally | ✅ dotnet 10.0.110, mvn 3.9.9, python3 3.14.4, npm 10.9.2, go, java 21.0.5 |
 | A14 | Client libraries leave stdout clean | ⚠️ **RISK** — TypeScript `console.log` and Java SLF4J may write to stdout. Design updated: drivers write JSON to `--out <path>` |
 | A15 | Referencing LoadTest's auth from a second project breaks nothing | ✅ no dependents affected |
+| A16 | The orchestrator's direct Postgres query can see rows despite row-level security | ✅ `PostgresSchemaManager.cs:138-148` enables RLS with a `current_setting('app.tenant_id')` policy, but no `FORCE ROW LEVEL SECURITY` exists and the app's connection is superuser — the runtime role is entered only inside scoped transactions (`IRecordStoreRoles.cs:52`). A superuser connection bypasses RLS, so the third verification leg is not silently empty |
+| A17 | The orchestrator can obtain a registerable `TypeDescriptor` for a driver-registered type | ❌ **FAILED** — not from the wire: `SchemaType`/`SchemaField` carry no `tenant_field`, which registration requires (`SchemaRegistrationOrchestrator.cs:61-64`), so `GetSchema` cannot reconstruct one. Design updated: the driver reports the full `TypeDescriptor` it sent |
+| A18 | Row keys may be arbitrary strings | ❌ **FAILED** — a key column's SQL type is `UUID` (`SchemaBuilder.cs:163,236`) and relation foreign-key values must be well-formed GUIDs (`RelationValidator.cs:88,110`). A prefixed string key fails on insert with `22P02`. Design updated: keys are UUIDv5 values derived from the run id |
 
 ## Known issues / accepted as out of scope
 
