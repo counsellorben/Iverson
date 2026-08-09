@@ -15,6 +15,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"strings"
 	"testing"
 
 	pb "github.com/iverson/clients/go/generated"
@@ -27,6 +28,301 @@ type coordinatorArticle struct {
 	Id       string `iverson_key:"true"`
 	TenantId string `iverson_tenant:"true"`
 	Category string
+}
+
+// ── Relation write/read fixtures ───────────────────────────────────────────────
+
+type Article struct {
+	Id       string `iverson_key:"true"`
+	TenantId string `iverson_tenant:"true"`
+	Title    string
+	AuthorId string `iverson:"many_to_one:Author"`
+}
+
+type Author struct {
+	Id       string `iverson_key:"true"`
+	TenantId string `iverson_tenant:"true"`
+	Name     string
+	// []string mirrors sample/models/author.go:8, the real production one_to_many
+	// declaration — a Go relation field holding structs is omitted as a nav
+	// property by a separate type guard, so this keeps the KindOneToMany kind
+	// check the only thing gating emission here.
+	Articles []string `iverson:"one_to_many:Article"`
+}
+
+type WriterAuthor struct {
+	Id       string `iverson_key:"true"`
+	TenantId string `iverson_tenant:"true"`
+	WriterId string `iverson:"many_to_one:Author"`
+}
+
+type Profile struct {
+	Id       string `iverson_key:"true"`
+	TenantId string `iverson_tenant:"true"`
+	UserId   string `iverson:"one_to_one:User"`
+}
+
+type Tag struct {
+	Id       string   `iverson_key:"true"`
+	TenantId string   `iverson_tenant:"true"`
+	Name     string
+	Articles []string `iverson:"many_to_many:Article"`
+}
+
+func TestEntityToStruct_ManyToOne_WritesForeignKey(t *testing.T) {
+	a := Article{Id: "1", TenantId: "t1", Title: "hello", AuthorId: "author-1"}
+	s, err := entityToStruct(a)
+	if err != nil {
+		t.Fatalf("entityToStruct: %v", err)
+	}
+	got, ok := s.Fields["AuthorId"]
+	if !ok {
+		t.Fatalf("expected AuthorId in payload, fields: %+v", s.Fields)
+	}
+	if got.GetStringValue() != "author-1" {
+		t.Errorf("AuthorId = %q, want %q", got.GetStringValue(), "author-1")
+	}
+}
+
+func TestEntityToStruct_ManyToMany_WritesIdListUnderRelatedTypeIds(t *testing.T) {
+	tag := Tag{Id: "1", TenantId: "t1", Name: "go", Articles: []string{"a1", "a2"}}
+	s, err := entityToStruct(tag)
+	if err != nil {
+		t.Fatalf("entityToStruct: %v", err)
+	}
+	got, ok := s.Fields["ArticleIds"]
+	if !ok {
+		t.Fatalf("expected ArticleIds in payload, fields: %+v", s.Fields)
+	}
+	lv := got.GetListValue()
+	if lv == nil {
+		t.Fatalf("ArticleIds is not a ListValue: %+v", got)
+	}
+	if len(lv.Values) != 2 || lv.Values[0].GetStringValue() != "a1" || lv.Values[1].GetStringValue() != "a2" {
+		t.Errorf("unexpected ArticleIds: %+v", lv.Values)
+	}
+	if _, ok := s.Fields["Articles"]; ok {
+		t.Errorf("Articles should not appear in payload under its own name")
+	}
+}
+
+func TestEntityToStruct_OneToMany_EmitsNothing(t *testing.T) {
+	author := Author{Id: "1", TenantId: "t1", Name: "Ben", Articles: []string{"a1"}}
+	s, err := entityToStruct(author)
+	if err != nil {
+		t.Fatalf("entityToStruct: %v", err)
+	}
+	if _, ok := s.Fields["Articles"]; ok {
+		t.Errorf("Articles (nav property) must not appear in payload")
+	}
+	if _, ok := s.Fields["AuthorId"]; ok {
+		t.Errorf("AuthorId must not appear in payload: one_to_many has no FK on this side")
+	}
+}
+
+func TestEntityToStruct_RoundTrip_ManyToMany(t *testing.T) {
+	tag := Tag{Id: "1", TenantId: "t1", Name: "go", Articles: []string{"a1", "a2"}}
+	s, err := entityToStruct(tag)
+	if err != nil {
+		t.Fatalf("entityToStruct: %v", err)
+	}
+	got, err := structToEntity[Tag](s)
+	if err != nil {
+		t.Fatalf("structToEntity: %v", err)
+	}
+	if len(got.Articles) != 2 || got.Articles[0] != "a1" || got.Articles[1] != "a2" {
+		t.Errorf("round-trip Articles = %+v, want [a1 a2]", got.Articles)
+	}
+}
+
+func TestStructToEntity_OneToMany_HydratedChildStructsLeaveFieldEmpty(t *testing.T) {
+	// Mirrors what EntityRelationResolver injects on a depth-resolved read: the
+	// server puts hydrated child STRUCTS under the field's own name ("Articles"),
+	// not a list of ids. Without the KindOneToMany read-side skip, the new
+	// ListValue case in protoValueToGoValue would try to parse each child struct
+	// as a string element and silently fill the []string with one empty string
+	// per child, instead of leaving it nil/empty.
+	childStruct, err := structpb.NewStruct(map[string]interface{}{"Id": "a1", "Title": "hello"})
+	if err != nil {
+		t.Fatalf("structpb.NewStruct: %v", err)
+	}
+	s := &structpb.Struct{
+		Fields: map[string]*structpb.Value{
+			"Id":       structpb.NewStringValue("1"),
+			"TenantId": structpb.NewStringValue("t1"),
+			"Name":     structpb.NewStringValue("Ben"),
+			"Articles": structpb.NewListValue(&structpb.ListValue{
+				Values: []*structpb.Value{structpb.NewStructValue(childStruct)},
+			}),
+		},
+	}
+
+	got, err := structToEntity[Author](s)
+	if err != nil {
+		t.Fatalf("structToEntity: %v", err)
+	}
+	if len(got.Articles) != 0 {
+		t.Errorf("Articles = %+v, want empty/nil (hydrated child structs must not be parsed as an id list)", got.Articles)
+	}
+}
+
+// propsByName indexes a built request's synthesized properties for assertion.
+func propsByName(t *testing.T, e interface{}) map[string]*pb.PropertyDescriptor {
+	t.Helper()
+	r := NewSchemaRegistrar(nil, e)
+	req, err := r.buildRequest(e, "trace")
+	if err != nil {
+		t.Fatalf("buildRequest: %v", err)
+	}
+	out := make(map[string]*pb.PropertyDescriptor, len(req.RootType.Properties))
+	for _, p := range req.RootType.Properties {
+		out[p.Name] = p
+	}
+	return out
+}
+
+func assertFkProperty(t *testing.T, props map[string]*pb.PropertyDescriptor, name string, wantArray bool) {
+	t.Helper()
+	p, ok := props[name]
+	if !ok {
+		t.Fatalf("expected %s property in schema, got: %v", name, props)
+	}
+	if p.ClrType != pb.ClrType_CLR_GUID {
+		t.Errorf("%s.ClrType = %v, want CLR_GUID", name, p.ClrType)
+	}
+	if p.IsArray != wantArray {
+		t.Errorf("%s.IsArray = %v, want %v", name, p.IsArray, wantArray)
+	}
+	if !p.IsNullable {
+		t.Errorf("%s.IsNullable = false, want true", name)
+	}
+	if p.IsKey {
+		t.Errorf("%s.IsKey = true, want false", name)
+	}
+}
+
+func TestBuildRequest_ManyToOne_DeclaresScalarForeignKeyProperty(t *testing.T) {
+	assertFkProperty(t, propsByName(t, Article{}), "AuthorId", false)
+}
+
+func TestBuildRequest_OneToOne_DeclaresScalarForeignKeyProperty(t *testing.T) {
+	assertFkProperty(t, propsByName(t, Profile{}), "UserId", false)
+}
+
+func TestBuildRequest_ManyToMany_DeclaresArrayForeignKeyProperty(t *testing.T) {
+	assertFkProperty(t, propsByName(t, Tag{}), "ArticleIds", true)
+}
+
+func TestBuildRequest_OneToMany_DeclaresNoForeignKeyProperty(t *testing.T) {
+	props := propsByName(t, Author{})
+	// Author.Articles is one_to_many:Article — its FK lives on the Article row,
+	// so no column may be synthesized on this side.
+	if _, ok := props["AuthorId"]; ok {
+		t.Errorf("one_to_many must not synthesize AuthorId, got: %v", props)
+	}
+	if _, ok := props["ArticleId"]; ok {
+		t.Errorf("one_to_many must not synthesize ArticleId, got: %v", props)
+	}
+	if _, ok := props["Articles"]; ok {
+		t.Errorf("one_to_many relation field must not become a property, got: %v", props)
+	}
+}
+
+func TestGuidTagYieldsClrGuid(t *testing.T) {
+	type GuidTagEntity struct {
+		Id       string `iverson_key:"true" iverson_guid:"true"`
+		Name     string
+		TenantId string `iverson_tenant:"true"`
+	}
+
+	props := propsByName(t, &GuidTagEntity{})
+
+	if got := props["Id"].ClrType; got != pb.ClrType_CLR_GUID {
+		t.Errorf("Id.ClrType = %v, want CLR_GUID", got)
+	}
+	if got := props["Name"].ClrType; got != pb.ClrType_CLR_STRING {
+		t.Errorf("Name.ClrType = %v, want CLR_STRING (untagged string stays a string)", got)
+	}
+}
+
+func TestGuidTagOnStringSliceYieldsClrGuidArray(t *testing.T) {
+	type GuidSliceEntity struct {
+		Id       string   `iverson_key:"true"`
+		TagIds   []string `iverson_guid:"true"`
+		TenantId string   `iverson_tenant:"true"`
+	}
+
+	props := propsByName(t, &GuidSliceEntity{})
+
+	p, ok := props["TagIds"]
+	if !ok {
+		t.Fatalf("expected TagIds property, got: %v", props)
+	}
+	if p.ClrType != pb.ClrType_CLR_GUID {
+		t.Errorf("TagIds.ClrType = %v, want CLR_GUID", p.ClrType)
+	}
+	if !p.IsArray {
+		t.Errorf("TagIds.IsArray = false, want true")
+	}
+}
+
+func TestGuidTagOnNonStringFieldRejected(t *testing.T) {
+	type GuidOnIntEntity struct {
+		Id        string `iverson_key:"true"`
+		WordCount int    `iverson_guid:"true"`
+		TenantId  string `iverson_tenant:"true"`
+	}
+
+	r := NewSchemaRegistrar(nil, GuidOnIntEntity{})
+	_, err := r.buildRequest(GuidOnIntEntity{}, "trace")
+	if err == nil {
+		t.Fatal("expected error for iverson_guid on a non-string field")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "WordCount") {
+		t.Errorf("error should name the field WordCount, got: %v", err)
+	}
+	if !strings.Contains(msg, "iverson_guid") {
+		t.Errorf("error should name the iverson_guid tag, got: %v", err)
+	}
+}
+
+func TestGuidTagOnNonStringSliceRejected(t *testing.T) {
+	type GuidOnIntSliceEntity struct {
+		Id        string `iverson_key:"true"`
+		Counts    []int  `iverson_guid:"true"`
+		TenantId  string `iverson_tenant:"true"`
+	}
+
+	r := NewSchemaRegistrar(nil, GuidOnIntSliceEntity{})
+	_, err := r.buildRequest(GuidOnIntSliceEntity{}, "trace")
+	if err == nil {
+		t.Fatal("expected error for iverson_guid on a []int field")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "Counts") {
+		t.Errorf("error should name the field Counts, got: %v", err)
+	}
+}
+
+func TestBuildRequest_ManyToOne_CorrectlyNamedFieldRegisters(t *testing.T) {
+	r := NewSchemaRegistrar(nil, Article{})
+	_, err := r.buildRequest(Article{}, "trace")
+	if err != nil {
+		t.Fatalf("expected no error for correctly-named AuthorId field: %v", err)
+	}
+}
+
+func TestBuildRequest_ManyToOne_WronglyNamedFieldRejected(t *testing.T) {
+	r := NewSchemaRegistrar(nil, WriterAuthor{})
+	_, err := r.buildRequest(WriterAuthor{}, "trace")
+	if err == nil {
+		t.Fatal("expected error for WriterId field on a many_to_one Author relation")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "WriterId") || !strings.Contains(msg, "AuthorId") {
+		t.Errorf("error should name both WriterId and AuthorId, got: %v", err)
+	}
 }
 
 // ── Mock SearchClient ────────────────────────────────────────────────────────

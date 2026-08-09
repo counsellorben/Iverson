@@ -18,7 +18,9 @@ import {
     IversonExtracted,
     IversonTenant,
     IversonArray,
+    IversonGuid,
     ManyToOne,
+    ManyToMany,
     OneToMany,
 } from '../src/annotations.js';
 import { IversonClient, SchemaRegistrar } from '../src/core.js';
@@ -68,7 +70,7 @@ class RegArticle {
     publishedAt: Date = new Date();
 
     @ManyToOne(() => RegAuthor)
-    authorId: string = '';
+    regAuthorId: string = '';
 }
 
 // ── Mock helpers ──────────────────────────────────────────────────────────────
@@ -261,6 +263,35 @@ describe('SchemaRegistrar', () => {
             expect(rel.foreignKey).toBe('RegAuthorId');
         });
 
+        it('gives a ManyToOne relation a property name distinct from its FK', () => {
+            @IversonEntity()
+            class Author {
+                @IversonKey()
+                @IversonTenant()
+                id: string = '';
+            }
+
+            @IversonEntity()
+            class NavArticle {
+                @IversonKey()
+                @IversonTenant()
+                id: string = '';
+
+                @ManyToOne(() => Author)
+                authorId: string = '';
+            }
+
+            const stub = makeStub();
+            const registrar = new SchemaRegistrar(stub, [NavArticle]);
+            const req = registrar._buildRequest(NavArticle);
+            const rel = req.rootType!.relations[0];
+            // The navigation property name must NOT collide with the FK column, or a
+            // depth-resolved read overwrites the FK value with the hydrated entity.
+            expect(rel.propertyName).not.toBe(rel.foreignKey);
+            expect(rel.propertyName).toBe('Author');
+            expect(rel.foreignKey).toBe('AuthorId');
+        });
+
         it('infers FK as {ThisType}Id for OneToMany', () => {
             @IversonEntity()
             class Post {
@@ -278,6 +309,135 @@ describe('SchemaRegistrar', () => {
             const rel = req.rootType!.relations[0];
             expect(rel.foreignKey).toBe('PostId');
             expect(rel.kind).toBe(RelationKind.ONE_TO_MANY);
+        });
+
+        it('registers a @IversonGuid property as CLR_GUID and leaves untagged strings alone', () => {
+            @IversonEntity()
+            class GuidKeyEntity {
+                @IversonKey() @IversonGuid()
+                id: string = '';
+                name: string = '';
+                @IversonTenant()
+                tenantId: string = '';
+            }
+
+            const stub = makeStub();
+            const registrar = new SchemaRegistrar(stub, [GuidKeyEntity]);
+            const req = registrar._buildRequest(GuidKeyEntity);
+            const props = Object.fromEntries(req.rootType!.properties.map(p => [p.name, p]));
+
+            expect(props['Id'].clrType).toBe(ClrType.CLR_GUID);
+            expect(props['Name'].clrType).toBe(ClrType.CLR_STRING);
+        });
+
+        it('rejects @IversonGuid() on a non-string property', () => {
+            @IversonEntity()
+            class GuidOnNumberEntity {
+                @IversonKey()
+                id: string = '';
+                @IversonGuid()
+                wordCount: number = 0;
+                @IversonTenant()
+                tenantId: string = '';
+            }
+
+            const stub = makeStub();
+            const registrar = new SchemaRegistrar(stub, [GuidOnNumberEntity]);
+            expect(() => registrar._buildRequest(GuidOnNumberEntity)).toThrow(/wordCount/);
+            expect(() => registrar._buildRequest(GuidOnNumberEntity)).toThrow(/IversonGuid/);
+        });
+
+        it('rejects @IversonGuid() on an array property, pointing at @IversonArray(ClrType.CLR_GUID)', () => {
+            @IversonEntity()
+            class GuidOnArrayEntity {
+                @IversonKey()
+                id: string = '';
+                @IversonArray(ClrType.CLR_STRING)
+                @IversonGuid()
+                tagIds: string[] = [];
+                @IversonTenant()
+                tenantId: string = '';
+            }
+
+            const stub = makeStub();
+            const registrar = new SchemaRegistrar(stub, [GuidOnArrayEntity]);
+            expect(() => registrar._buildRequest(GuidOnArrayEntity)).toThrow(/tagIds/);
+            expect(() => registrar._buildRequest(GuidOnArrayEntity)).toThrow(/IversonArray\(ClrType\.CLR_GUID\)/);
+        });
+
+        it('accepts @IversonGuid() when design:type metadata says String (tsc production path)', () => {
+            @IversonEntity()
+            class GuidMetadataStringEntity {
+                @IversonKey() @IversonGuid()
+                id: string = '';
+                @IversonTenant()
+                tenantId: string = '';
+            }
+
+            Reflect.defineMetadata('design:type', String, GuidMetadataStringEntity.prototype, 'id');
+
+            const stub = makeStub();
+            const registrar = new SchemaRegistrar(stub, [GuidMetadataStringEntity]);
+            const req = registrar._buildRequest(GuidMetadataStringEntity);
+            const props = Object.fromEntries(req.rootType!.properties.map(p => [p.name, p]));
+            expect(props['Id'].clrType).toBe(ClrType.CLR_GUID);
+        });
+
+        it('rejects @IversonGuid() when design:type metadata says Number (tsc production path)', () => {
+            @IversonEntity()
+            class GuidMetadataNumberEntity {
+                @IversonKey()
+                id: string = '';
+                @IversonGuid()
+                wordCount: number = 0;
+                @IversonTenant()
+                tenantId: string = '';
+            }
+
+            Reflect.defineMetadata('design:type', Number, GuidMetadataNumberEntity.prototype, 'wordCount');
+
+            const stub = makeStub();
+            const registrar = new SchemaRegistrar(stub, [GuidMetadataNumberEntity]);
+            expect(() => registrar._buildRequest(GuidMetadataNumberEntity)).toThrow(/wordCount/);
+            expect(() => registrar._buildRequest(GuidMetadataNumberEntity)).toThrow(/IversonGuid/);
+        });
+
+        it('accepts @IversonGuid() on an initializer-less string property (no design:type, undefined runtime value)', () => {
+            @IversonEntity()
+            class GuidNoInitializerEntity {
+                @IversonKey() @IversonGuid()
+                id!: string;
+                @IversonTenant()
+                tenantId: string = '';
+            }
+
+            const stub = makeStub();
+            const registrar = new SchemaRegistrar(stub, [GuidNoInitializerEntity]);
+            const req = registrar._buildRequest(GuidNoInitializerEntity);
+            const props = Object.fromEntries(req.rootType!.properties.map(p => [p.name, p]));
+            expect(props['Id'].clrType).toBe(ClrType.CLR_GUID);
+        });
+
+        it('synthesizes relation foreign keys as CLR_GUID', () => {
+            const stub = makeStub();
+            const registrar = new SchemaRegistrar(stub, [RegArticle]);
+            const props = Object.fromEntries(
+                registrar._buildRequest(RegArticle).rootType!.properties.map(p => [p.name, p]));
+            expect(props['RegAuthorId'].clrType).toBe(ClrType.CLR_GUID);
+            expect(props['RegAuthorId'].isArray).toBe(false);
+
+            @IversonEntity()
+            class TaggedPost {
+                @IversonKey() id: string = '';
+                @IversonTenant() tenantId: string = '';
+                @ManyToMany(() => RegAuthor)
+                regAuthorIds: string[] = [];
+            }
+
+            const mtm = Object.fromEntries(
+                new SchemaRegistrar(makeStub(), [TaggedPost])._buildRequest(TaggedPost).rootType!.properties.map(p => [p.name, p]));
+            expect(mtm['RegAuthorIds'].clrType).toBe(ClrType.CLR_GUID);
+            expect(mtm['RegAuthorIds'].isArray).toBe(true);
         });
     });
 });

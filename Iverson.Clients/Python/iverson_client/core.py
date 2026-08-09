@@ -96,6 +96,20 @@ def _to_pascal_case(snake: str) -> str:
     return "".join(part.capitalize() for part in snake.split("_"))
 
 
+def _relation_property_name(relation: dict) -> str:
+    """Derive the navigation property name from the relation's member name.
+
+    For many_to_one / one_to_one the member itself is the foreign key
+    (author_id → AuthorId), so strip the trailing "Id" to get the navigation
+    property name (Author). Other kinds use the PascalCase member name as-is.
+    """
+    pascal = _to_pascal_case(relation["field"])
+    if relation["kind"] in ("many_to_one", "one_to_one"):
+        if len(pascal) > 2 and pascal.endswith("Id"):
+            return pascal[:-2]
+    return pascal
+
+
 def _infer_fk(relation: dict, this_type_name: str) -> str:
     """Infer the FK column name from relation metadata."""
     kind = relation["kind"]
@@ -181,6 +195,17 @@ class SchemaRegistrar:
             keywords_fields_set,
             extracted_fields_by_name,
         )
+        for rel in meta["relations"]:
+            if rel["kind"] in ("many_to_one", "one_to_one"):
+                actual = _to_pascal_case(rel["field"])
+                expected = f'{rel["related_type"]}Id'
+                if actual != expected:
+                    raise ValueError(
+                        f'{type_name}.{rel["field"]} declares a {rel["kind"]} relation to '
+                        f'{rel["related_type"]} but is named {actual!r} on the wire; '
+                        f"a {rel['kind']} foreign-key field must be named {expected!r} "
+                        f"(rename the member to match)."
+                    )
         tenant_field = self._resolve_tenant_field(type_name, meta.get("tenant_fields", []))
 
         properties: list[mapping_pb.PropertyDescriptor] = []
@@ -219,12 +244,26 @@ class SchemaRegistrar:
             )
             properties.append(prop)
 
+        for rel in meta["relations"]:
+            if rel["kind"] == "one_to_many":
+                continue
+            fk_name = _infer_fk(rel, type_name)
+            properties.append(
+                mapping_pb.PropertyDescriptor(
+                    name=fk_name,
+                    clr_type=mapping_pb.CLR_GUID,
+                    is_key=False,
+                    is_nullable=True,
+                    is_array=(rel["kind"] == "many_to_many"),
+                )
+            )
+
         relations: list[mapping_pb.RelationDescriptor] = []
         for rel in meta["relations"]:
             fk = _infer_fk(rel, type_name)
             relations.append(
                 mapping_pb.RelationDescriptor(
-                    property_name=_to_pascal_case(rel["field"]),
+                    property_name=_relation_property_name(rel),
                     kind=_RELATION_KIND_MAP.get(rel["kind"], mapping_pb.MANY_TO_ONE),
                     related_type=rel.get("related_type") or "",
                     foreign_key=fk,
@@ -309,6 +348,23 @@ class SchemaRegistrar:
 
 # ── StructConverter ────────────────────────────────────────────────────────────
 
+def _append_list_value(list_value: struct_pb2.ListValue, item: object) -> None:
+    """Append a scalar element (recursively converted) to a protobuf ListValue."""
+    v = list_value.values.add()
+    if isinstance(item, bool):
+        v.bool_value = item
+    elif isinstance(item, int):
+        v.number_value = float(item)
+    elif isinstance(item, float):
+        v.number_value = item
+    elif isinstance(item, str):
+        v.string_value = item
+    elif isinstance(item, uuid.UUID):
+        v.string_value = str(item)
+    else:
+        v.string_value = str(item)
+
+
 def _entity_to_struct(entity: object) -> struct_pb2.Struct:
     """Convert an @iverson_entity instance to a google.protobuf.Struct."""
     meta = getattr(type(entity), "_iverson_meta", None)
@@ -322,11 +378,22 @@ def _entity_to_struct(entity: object) -> struct_pb2.Struct:
             continue
         annotations.update(getattr(base, "__annotations__", {}))
 
+    type_name = meta["type_name"]
+    relation_by_field = {r["field"]: r for r in meta["relations"]}
+
     for field_name in annotations:
         value = getattr(entity, field_name, None)
         if value is None:
             continue
-        pascal = _to_pascal_case(field_name)
+
+        relation = relation_by_field.get(field_name)
+        if relation is not None:
+            if relation["kind"] == "one_to_many":
+                continue
+            pascal = _infer_fk(relation, type_name)
+        else:
+            pascal = _to_pascal_case(field_name)
+
         if isinstance(value, bool):
             s.fields[pascal].bool_value = value
         elif isinstance(value, int):
@@ -337,9 +404,29 @@ def _entity_to_struct(entity: object) -> struct_pb2.Struct:
             s.fields[pascal].string_value = value
         elif isinstance(value, uuid.UUID):
             s.fields[pascal].string_value = str(value)
+        elif isinstance(value, (list, tuple)):
+            list_value = s.fields[pascal].list_value
+            for item in value:
+                _append_list_value(list_value, item)
         else:
             s.fields[pascal].string_value = str(value)
     return s
+
+
+def _list_value_to_list(list_value: struct_pb2.ListValue) -> list:
+    """Convert a protobuf ListValue back to a plain Python list of scalars."""
+    result = []
+    for v in list_value.values:
+        kind = v.WhichOneof("kind")
+        if kind == "string_value":
+            result.append(v.string_value)
+        elif kind == "number_value":
+            result.append(v.number_value)
+        elif kind == "bool_value":
+            result.append(v.bool_value)
+        else:
+            result.append(None)
+    return result
 
 
 def _struct_to_dict(s: struct_pb2.Struct) -> dict:
@@ -511,8 +598,17 @@ class EntityCoordinator(Generic[T]):
                 continue
             annotations.update(getattr(base, "__annotations__", {}))
 
+        meta = getattr(self._cls, "_iverson_meta", None)
+        relation_by_field = {r["field"]: r for r in (meta or {}).get("relations", [])}
+        type_name = (meta or {}).get("type_name", self._type_name)
+
         for field_name in annotations:
-            pascal = _to_pascal_case(field_name)
+            relation = relation_by_field.get(field_name)
+            if relation is not None and relation["kind"] == "many_to_many":
+                pascal = _infer_fk(relation, type_name)
+            else:
+                pascal = _to_pascal_case(field_name)
+
             if pascal in s.fields:
                 field = s.fields[pascal]
                 kind = field.WhichOneof("kind")
@@ -522,6 +618,8 @@ class EntityCoordinator(Generic[T]):
                     setattr(obj, field_name, field.number_value)
                 elif kind == "bool_value":
                     setattr(obj, field_name, field.bool_value)
+                elif kind == "list_value":
+                    setattr(obj, field_name, _list_value_to_list(field.list_value))
                 else:
                     setattr(obj, field_name, None)
             else:

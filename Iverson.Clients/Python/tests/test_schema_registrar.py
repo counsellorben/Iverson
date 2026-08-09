@@ -21,7 +21,9 @@ from iverson_client.annotations import (
     iverson_extracted,
     iverson_tenant,
     many_to_one,
+    many_to_many,
     one_to_many,
+    one_to_one,
 )
 from iverson_client.core import SchemaRegistrar
 from iverson_client.generated import (
@@ -40,7 +42,7 @@ class RegArticle:
     category: str = iverson_search_key(order=0)
     word_count: int = None
     published_at: datetime = iverson_search_key(order=1)
-    author_id: str = many_to_one("RegAuthor")
+    reg_author_id: str = many_to_one("RegAuthor")
     summary: str = iverson_chunk(max_tokens=256, overlap=32)
     tenant_id: str = iverson_tenant()
 
@@ -284,6 +286,105 @@ class TestSchemaRegistrar:
         assert rel.kind == mapping_pb.MANY_TO_ONE
         # FK inferred as {RelatedType}Id
         assert rel.foreign_key == "RegAuthorId"
+
+    def test_fk_column_declared_for_non_one_to_many_kinds(self):
+        @iverson_entity
+        class RegRelKindsArticle:
+            id: str = iverson_key()
+            reg_author_id: str = many_to_one("RegAuthor")
+            reg_tag_ids: list[str] = many_to_many("RegTag")
+            reg_comments: list = one_to_many("RegComment")
+            tenant_id: str = iverson_tenant()
+
+        @iverson_entity
+        class RegRelKindsNote:
+            id: str = iverson_key()
+            reg_author_id: str = one_to_one("RegAuthor")
+            tenant_id: str = iverson_tenant()
+
+        stub = make_stub()
+        stub.RegisterSchema.return_value = mapping_pb.SchemaResponse(success=True)
+        registrar = SchemaRegistrar(stub, RegRelKindsArticle)
+        registrar.register_all()
+
+        request: mapping_pb.SchemaRequest = stub.RegisterSchema.call_args[0][0]
+        props = {p.name: p for p in request.root_type.properties}
+
+        assert "RegAuthorId" in props  # many_to_one
+        fk_prop = props["RegAuthorId"]
+        assert fk_prop.clr_type == mapping_pb.CLR_GUID
+        assert fk_prop.is_array is False
+        assert fk_prop.is_nullable is True
+        assert fk_prop.is_key is False
+
+        assert "RegTagIds" in props  # many_to_many
+        mtm_prop = props["RegTagIds"]
+        assert mtm_prop.clr_type == mapping_pb.CLR_GUID
+        assert mtm_prop.is_array is True
+        assert mtm_prop.is_nullable is True
+        assert mtm_prop.is_key is False
+
+        # one_to_many declares no FK column at all
+        assert "RegCommentId" not in props
+        assert "RegRelKindsArticleId" not in props
+
+        stub2 = make_stub()
+        stub2.RegisterSchema.return_value = mapping_pb.SchemaResponse(success=True)
+        registrar2 = SchemaRegistrar(stub2, RegRelKindsNote)
+        registrar2.register_all()
+
+        request2: mapping_pb.SchemaRequest = stub2.RegisterSchema.call_args[0][0]
+        props2 = {p.name: p for p in request2.root_type.properties}
+        assert "RegAuthorId" in props2  # one_to_one
+        assert props2["RegAuthorId"].is_array is False
+
+    def test_many_to_one_property_name_differs_from_foreign_key(self):
+        @iverson_entity
+        class RegNavArticle:
+            id: str = iverson_key()
+            author_id: str = many_to_one("Author")
+            tenant_id: str = iverson_tenant()
+
+        stub = make_stub()
+        stub.RegisterSchema.return_value = mapping_pb.SchemaResponse(success=True)
+        registrar = SchemaRegistrar(stub, RegNavArticle)
+        registrar.register_all()
+
+        request: mapping_pb.SchemaRequest = stub.RegisterSchema.call_args[0][0]
+        rel = request.root_type.relations[0]
+        # The navigation property name must NOT collide with the FK column, or a
+        # depth-resolved read overwrites the FK value with the hydrated entity.
+        assert rel.property_name != rel.foreign_key
+        assert rel.property_name == "Author"
+        assert rel.foreign_key == "AuthorId"
+
+    def test_correctly_named_many_to_one_registers(self):
+        @iverson_entity
+        class RegGoodArticle:
+            id: str = iverson_key()
+            reg_author_id: str = many_to_one("RegAuthor")
+            tenant_id: str = iverson_tenant()
+
+        stub = make_stub()
+        stub.RegisterSchema.return_value = mapping_pb.SchemaResponse(success=True)
+        registrar = SchemaRegistrar(stub, RegGoodArticle)
+        registrar.register_all()  # should not raise
+
+        request: mapping_pb.SchemaRequest = stub.RegisterSchema.call_args[0][0]
+        assert request.root_type.relations[0].foreign_key == "RegAuthorId"
+
+    def test_misnamed_many_to_one_is_rejected(self):
+        @iverson_entity
+        class RegBadArticle:
+            id: str = iverson_key()
+            writer_id: str = many_to_one("RegAuthor")
+            tenant_id: str = iverson_tenant()
+
+        stub = make_stub()
+        registrar = SchemaRegistrar(stub, RegBadArticle)
+        with pytest.raises(ValueError, match="WriterId") as exc_info:
+            registrar.register_all()
+        assert "RegAuthorId" in str(exc_info.value)
 
     def test_field_names_pascal_case(self):
         stub = make_stub()

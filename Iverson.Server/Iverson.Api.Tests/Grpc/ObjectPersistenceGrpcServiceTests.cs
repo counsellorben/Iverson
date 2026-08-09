@@ -60,7 +60,7 @@ public class ObjectPersistenceGrpcServiceTests
         _sut = new ObjectPersistenceGrpcService(
             _outboxPublisher,
             _registry,
-            new RelationValidator(_registry),
+            new RelationValidator(),
             new EntityKeyAccessor(),
             new OutboxWriter(ReconciliationSchema.TableName, _sql, _txRunner),
             NullLogger<ObjectPersistenceGrpcService>.Instance,

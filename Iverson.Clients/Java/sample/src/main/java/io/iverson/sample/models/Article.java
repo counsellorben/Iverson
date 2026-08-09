@@ -38,6 +38,9 @@ public class Article {
     @ManyToOne(type = Author.class)
     private Author author;
 
+    /** FK column — convention: {RelatedTypeName}Ids. */
+    private List<UUID> tagIds;
+
     @ManyToMany(type = Tag.class)
     private List<Tag> tags;
 
@@ -87,6 +90,9 @@ public class Article {
 
     public List<Tag> getTags()                  { return tags; }
     public void      setTags(List<Tag> tags)    { this.tags = tags; }
+
+    public List<UUID> getTagIds()                  { return tagIds; }
+    public void       setTagIds(List<UUID> tagIds) { this.tagIds = tagIds; }
 
     @Override
     public String toString() {

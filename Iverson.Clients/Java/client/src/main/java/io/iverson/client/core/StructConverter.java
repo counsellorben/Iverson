@@ -1,11 +1,19 @@
 package io.iverson.client.core;
 
+import com.google.protobuf.ListValue;
 import com.google.protobuf.Struct;
 import com.google.protobuf.Value;
+import io.iverson.client.annotations.ManyToMany;
+import io.iverson.client.annotations.ManyToOne;
+import io.iverson.client.annotations.OneToMany;
+import io.iverson.client.annotations.OneToOne;
 
 import java.lang.reflect.Field;
+import java.lang.reflect.ParameterizedType;
+import java.lang.reflect.Type;
 import java.time.OffsetDateTime;
 import java.time.format.DateTimeFormatter;
+import java.util.Collection;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.UUID;
@@ -28,6 +36,7 @@ public final class StructConverter {
         Class<?> cls = entity.getClass();
 
         for (Field field : getAllFields(cls)) {
+            if (isNavigationProperty(field)) continue;
             field.setAccessible(true);
             try {
                 Object val = field.get(entity);
@@ -98,8 +107,46 @@ public final class StructConverter {
         if (val instanceof Number n)  return Value.newBuilder().setNumberValue(n.doubleValue()).build();
         if (val instanceof OffsetDateTime dt)
             return Value.newBuilder().setStringValue(dt.format(DateTimeFormatter.ISO_OFFSET_DATE_TIME)).build();
+        if (val instanceof Collection<?> coll) {
+            ListValue.Builder listBuilder = ListValue.newBuilder();
+            for (Object element : coll) {
+                listBuilder.addValues(toValue(element));
+            }
+            return Value.newBuilder().setListValue(listBuilder.build()).build();
+        }
         // Fallback: toString
         return Value.newBuilder().setStringValue(val.toString()).build();
+    }
+
+    /**
+     * A field is a navigation property — and therefore omitted from the write
+     * payload — when it carries a relation annotation ({@link ManyToOne},
+     * {@link OneToOne}, {@link ManyToMany}, {@link OneToMany}) and its declared
+     * type is an entity, or a {@link Collection} of entities. The foreign key
+     * itself lives in a separate, unannotated field beside it (e.g. {@code
+     * authorId}, {@code tagIds}) and is serialized normally.
+     */
+    private static boolean isNavigationProperty(Field field) {
+        boolean hasRelationAnnotation =
+            field.isAnnotationPresent(ManyToOne.class) ||
+            field.isAnnotationPresent(OneToOne.class) ||
+            field.isAnnotationPresent(ManyToMany.class) ||
+            field.isAnnotationPresent(OneToMany.class);
+        if (!hasRelationAnnotation) return false;
+
+        Class<?> fieldType = field.getType();
+        if (Collection.class.isAssignableFrom(fieldType)) {
+            Type genericType = field.getGenericType();
+            if (genericType instanceof ParameterizedType pt) {
+                Type[] typeArgs = pt.getActualTypeArguments();
+                if (typeArgs.length == 1 && typeArgs[0] instanceof Class<?> elementType) {
+                    return elementType.isAnnotationPresent(io.iverson.client.annotations.IversonEntity.class);
+                }
+            }
+            return false;
+        }
+
+        return fieldType.isAnnotationPresent(io.iverson.client.annotations.IversonEntity.class);
     }
 
     /** Untyped per-kind unwrapping, used by {@link #fromStructAsMap(Struct)}. */

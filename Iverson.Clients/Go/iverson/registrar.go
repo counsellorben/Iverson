@@ -70,6 +70,12 @@ func (r *SchemaRegistrar) buildRequest(e interface{}, traceID string) (*pb.Schem
 		if err != nil {
 			return nil, fmt.Errorf("field %s: %w", fm.Name, err)
 		}
+		if fm.IsGuid {
+			if !isGuidEligibleType(sf.Type) {
+				return nil, fmt.Errorf("field %s carries iverson_guid:\"true\" but its underlying type is %s, not string (or []string); iverson_guid marks a string-typed field as a UUID/UUID[] column, and the server would register that column type against payload data it cannot parse. Remove iverson_guid or change the field's type to string", fm.Name, sf.Type)
+			}
+			clrType = pb.ClrType_CLR_GUID
+		}
 		searchKeyOrder, err := int32FromInt(fm.SearchKeyOrder)
 		if err != nil {
 			return nil, fmt.Errorf("field %s: SearchKeyOrder %w", fm.Name, err)
@@ -107,6 +113,10 @@ func (r *SchemaRegistrar) buildRequest(e interface{}, traceID string) (*pb.Schem
 
 	relations := make([]*pb.RelationDescriptor, 0, len(meta.Relations))
 	for _, fm := range meta.Relations {
+		if (fm.RelationKind == KindManyToOne || fm.RelationKind == KindOneToOne) && fm.Name != fm.RelatedType+"Id" {
+			return nil, fmt.Errorf("field %s is a %s relation to %s but is named %q; it must be named %q, since the field itself is the foreign key", fm.Name, fm.RelationKind, fm.RelatedType, fm.Name, fm.RelatedType+"Id")
+		}
+
 		kind := relationKindToProto(fm.RelationKind)
 		fk := inferFK(fm, meta.TypeName)
 		propName := relationPropertyName(fm)
@@ -117,6 +127,16 @@ func (r *SchemaRegistrar) buildRequest(e interface{}, traceID string) (*pb.Schem
 			ForeignKey:   fk,
 		}
 		relations = append(relations, rel)
+
+		if fm.RelationKind != KindOneToMany {
+			properties = append(properties, &pb.PropertyDescriptor{
+				Name:       fk,
+				ClrType:    pb.ClrType_CLR_GUID,
+				IsArray:    fm.RelationKind == KindManyToMany,
+				IsNullable: true,
+				IsKey:      false,
+			})
+		}
 	}
 
 	var tenantField string
@@ -172,6 +192,23 @@ func int32FromInt(v int) (int32, error) {
 		return 0, fmt.Errorf("value %d overflows int32", v)
 	}
 	return int32(v), nil
+}
+
+// isGuidEligibleType reports whether t is a string, or a slice of strings, once pointers
+// are unwrapped (both the field's own pointer and, for a slice, its element's pointer).
+// iverson_guid marks a string-typed field as a UUID/UUID[] column; anything else would
+// register a column type the payload's actual data cannot satisfy.
+func isGuidEligibleType(t reflect.Type) bool {
+	if t.Kind() == reflect.Ptr {
+		t = t.Elem()
+	}
+	if t.Kind() == reflect.Slice {
+		t = t.Elem()
+		if t.Kind() == reflect.Ptr {
+			t = t.Elem()
+		}
+	}
+	return t.Kind() == reflect.String
 }
 
 // goTypeToClr maps a reflect.Type to a ClrType proto enum value and whether it is an array.

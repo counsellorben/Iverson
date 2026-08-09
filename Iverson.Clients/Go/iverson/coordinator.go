@@ -436,14 +436,54 @@ func entityToStruct(entity interface{}) (*structpb.Struct, error) {
 		sf := t.Field(i)
 		fv := v.Field(i)
 
-		// Skip relation fields
+		var fm FieldMeta
+		tagged := false
 		tag := sf.Tag.Get(TagKey)
 		if tag != "" {
-			fm, _ := ParseTag(sf.Name, tag)
-			switch fm.RelationKind {
-			case KindManyToOne, KindManyToMany, KindOneToMany, KindOneToOne:
+			var err error
+			fm, err = ParseTag(sf.Name, tag)
+			if err != nil {
+				return nil, fmt.Errorf("field %s: %w", sf.Name, err)
+			}
+			tagged = fm.RelationKind != ""
+		}
+
+		if tagged {
+			// OneToMany is the inverse side: its FK column names a property on the
+			// RELATED row, not this one, and its value is a nav slice of hydrated
+			// structs — never a write-side field.
+			if fm.RelationKind == KindOneToMany {
 				continue
 			}
+			// A relation field's own Go type may still be a nav property (a struct
+			// or slice-of-struct) rather than the FK-bearing scalar the contract
+			// requires; skip it as a nav property rather than serializing it. None
+			// exist today, but the rule should not depend on that.
+			ft := sf.Type
+			if ft.Kind() == reflect.Ptr {
+				ft = ft.Elem()
+			}
+			if ft.Kind() == reflect.Struct {
+				continue
+			}
+			if ft.Kind() == reflect.Slice {
+				elem := ft.Elem()
+				if elem.Kind() == reflect.Ptr {
+					elem = elem.Elem()
+				}
+				if elem.Kind() == reflect.Struct {
+					continue
+				}
+			}
+
+			val, err := goValueToProtoValue(fv)
+			if err != nil {
+				return nil, fmt.Errorf("field %s: %w", sf.Name, err)
+			}
+			if val != nil {
+				fields[inferFK(fm, t.Name())] = val
+			}
+			continue
 		}
 
 		val, err := goValueToProtoValue(fv)
@@ -485,6 +525,23 @@ func goValueToProtoValue(v reflect.Value) (*structpb.Value, error) {
 			return structpb.NewStringValue(t.Format(time.RFC3339Nano)), nil
 		}
 		return structpb.NewNullValue(), nil
+	case reflect.Slice, reflect.Array:
+		// []byte (and [N]byte) are scalar, not a relation id list; leave to default.
+		if v.Kind() == reflect.Slice && v.IsNil() {
+			return structpb.NewNullValue(), nil
+		}
+		if v.Type().Elem().Kind() == reflect.Uint8 {
+			return structpb.NewNullValue(), nil
+		}
+		values := make([]*structpb.Value, v.Len())
+		for i := 0; i < v.Len(); i++ {
+			elemVal, err := goValueToProtoValue(v.Index(i))
+			if err != nil {
+				return nil, err
+			}
+			values[i] = elemVal
+		}
+		return structpb.NewListValue(&structpb.ListValue{Values: values}), nil
 	default:
 		return structpb.NewNullValue(), nil
 	}
@@ -502,7 +559,26 @@ func structToEntity[T any](s *structpb.Struct) (T, error) {
 
 	for i := 0; i < t.NumField(); i++ {
 		sf := t.Field(i)
-		pbVal, ok := s.Fields[sf.Name]
+
+		key := sf.Name
+		tag := sf.Tag.Get(TagKey)
+		if tag != "" {
+			fm, err := ParseTag(sf.Name, tag)
+			if err != nil {
+				return zero, fmt.Errorf("field %s: %w", sf.Name, err)
+			}
+			// The server injects hydrated child structs under the field's own name
+			// on depth-resolved reads for the inverse (OneToMany) side; that isn't
+			// a foreign-key list and must not be parsed as one.
+			if fm.RelationKind == KindOneToMany {
+				continue
+			}
+			if fm.RelationKind == KindManyToMany {
+				key = inferFK(fm, t.Name())
+			}
+		}
+
+		pbVal, ok := s.Fields[key]
 		if !ok {
 			continue
 		}
@@ -550,6 +626,18 @@ func protoValueToGoValue(pbVal *structpb.Value, target reflect.Value, targetType
 		if targetType.Kind() == reflect.Bool {
 			target.SetBool(v.BoolValue)
 		}
+	case *structpb.Value_ListValue:
+		if targetType.Kind() != reflect.Slice {
+			return nil
+		}
+		elems := v.ListValue.Values
+		slice := reflect.MakeSlice(targetType, len(elems), len(elems))
+		for i, elemVal := range elems {
+			if err := protoValueToGoValue(elemVal, slice.Index(i), targetType.Elem()); err != nil {
+				return err
+			}
+		}
+		target.Set(slice)
 	}
 	return nil
 }

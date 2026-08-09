@@ -13,6 +13,8 @@ public class Tag
 
     [IversonTenant] public string TenantId { get; set; } = string.Empty;
 
-    [ManyToMany(typeof(Article))]  // convention: join key in payload = "ArticleIds"
+    public Guid[] ArticleIds { get; set; } = [];  // convention: {RelatedTypeName}Ids → "ArticleIds"
+
+    [ManyToMany(typeof(Article))]
     public List<Article> Articles { get; set; } = [];
 }

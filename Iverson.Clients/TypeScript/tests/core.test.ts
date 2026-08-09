@@ -22,6 +22,9 @@ import {
     IversonSearchKey,
     IversonSummary,
     IversonTenant,
+    ManyToMany,
+    ManyToOne,
+    OneToMany,
 } from '../src/annotations.js';
 import { ACTING_USER_METADATA_KEY } from '../src/auth.js';
 import { describeEntity, EntityCoordinator, IversonClient } from '../src/core.js';
@@ -376,5 +379,131 @@ describe('describeEntity key-field validation', () => {
         const key = descriptor.properties.find(p => p.name === 'Id');
         expect(key?.isKey).toBe(true);
         expect(key?.description).toBe('Stable identifier.');
+    });
+});
+
+// ── FK-only write contract ──────────────────────────────────────────────────
+
+@IversonEntity()
+class FkAuthor {
+    @IversonKey()
+    id: string = '';
+    @IversonTenant()
+    name: string = '';
+}
+
+@IversonEntity()
+class FkArticle {
+    @IversonKey()
+    id: string = '';
+    @IversonTenant()
+    tenantId: string = '';
+
+    @ManyToOne(() => FkAuthor)
+    fkAuthorId: string = '';
+
+    @ManyToMany(() => FkAuthor)
+    contributorIds: string[] = [];
+
+    @OneToMany(() => FkAuthor)
+    comments: string = '';
+}
+
+describe('entityToPayload — FK-only write contract', () => {
+    it('writes the FK column, not the nav member name', async () => {
+        const { fn, calls } = makeUnaryStub<PersistRequest, PersistResponse>({
+            success: true, key: 'k1', error: '', traceId: '',
+        });
+        const client = makeClientLike({ _persistenceClient: { post: fn } });
+        const coordinator = new EntityCoordinator(FkArticle, client);
+
+        const entity = new FkArticle();
+        entity.fkAuthorId = 'auth-1';
+        entity.comments = 'ignored-nav-value';
+        await coordinator.persist(entity);
+
+        const payload = calls[0].req.payload as Record<string, unknown>;
+        expect(payload['FkAuthorId']).toBe('auth-1');
+        expect(Object.keys(payload)).not.toContain('AuthorId');
+        expect(Object.keys(payload)).not.toContain('FkArticleId');
+        expect(Object.keys(payload)).not.toContain('Comments');
+    });
+});
+
+describe('describeEntity — declared FK columns', () => {
+    it('declares the FK column under the inferred name for the three non-OneToMany kinds, and nothing for OneToMany', () => {
+        const descriptor = describeEntity(FkArticle);
+        const propNames = descriptor.properties.map(p => p.name);
+
+        expect(propNames).toContain('FkAuthorId');
+        expect(propNames).toContain('FkAuthorIds');
+        expect(propNames).not.toContain('FkArticleId');
+    });
+});
+
+describe('describeEntity — many-to-one/one-to-one FK naming enforcement', () => {
+    it('accepts a correctly-named many_to_one member', () => {
+        @IversonEntity()
+        class GoodArticle {
+            @IversonKey()
+            @IversonTenant()
+            id: string = '';
+            @ManyToOne(() => FkAuthor)
+            fkAuthorId: string = '';
+        }
+
+        expect(() => describeEntity(GoodArticle)).not.toThrow();
+    });
+
+    it('throws when a many_to_one member is misnamed, naming both names', () => {
+        @IversonEntity()
+        class BadArticle {
+            @IversonKey()
+            @IversonTenant()
+            id: string = '';
+            @ManyToOne(() => FkAuthor)
+            writerId: string = '';
+        }
+
+        let message = '';
+        try {
+            describeEntity(BadArticle);
+        } catch (err) {
+            message = (err as Error).message;
+        }
+        expect(message).toContain('WriterId');
+        expect(message).toContain('FkAuthorId');
+    });
+});
+
+describe('read/write round-trip — ManyToMany FK column symmetry', () => {
+    it('reads back the same ids set on write under the same member', async () => {
+        const { fn: postFn, calls: postCalls } = makeUnaryStub<PersistRequest, PersistResponse>({
+            success: true, key: 'k1', error: '', traceId: '',
+        });
+        const getResponse: RetrievalResponse = {
+            found: true,
+            data: {},
+            traceId: '',
+        };
+        const { fn: getFn } = makeUnaryStub<RetrievalManyRequest, RetrievalResponse>(getResponse);
+
+        const client = makeClientLike({
+            _persistenceClient: { post: postFn },
+            _retrievalClient: { get: getFn },
+        });
+        const coordinator = new EntityCoordinator(FkArticle, client);
+
+        const entity = new FkArticle();
+        entity.contributorIds = ['a1', 'a2'];
+        await coordinator.persist(entity);
+
+        const payload = postCalls[0].req.payload as Record<string, unknown>;
+        expect(payload['FkAuthorIds']).toEqual(['a1', 'a2']);
+
+        // Feed the written payload back through the read path and confirm symmetry.
+        getResponse.data = payload;
+        const readBack = await coordinator.get('k1');
+        expect(readBack?.contributorIds).toEqual(['a1', 'a2']);
     });
 });

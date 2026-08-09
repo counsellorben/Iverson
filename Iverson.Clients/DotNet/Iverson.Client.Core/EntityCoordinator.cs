@@ -24,6 +24,9 @@ public sealed class EntityCoordinator<T>(
 {
     private readonly EntityDescriptor _descriptor = registry.Get<T>();
 
+    private IReadOnlyCollection<string> NavPropertyNames =>
+        _descriptor.Relations.Select(r => r.Property.Name).ToList();
+
     // ── Object Mapping ─────────────────────────────────────────────────────────
     // Full CRUD with server-side relationship resolution.
 
@@ -51,7 +54,7 @@ public sealed class EntityCoordinator<T>(
             new MappingWriteRequest
             {
                 TypeName = _descriptor.EntityName,
-                Payload  = StructConverter.ToStruct(entity),
+                Payload  = StructConverter.ToStruct(entity, NavPropertyNames),
                 TraceId  = CurrentTraceId()
             },
             cancellationToken: ct);
@@ -67,7 +70,7 @@ public sealed class EntityCoordinator<T>(
             new MappingWriteRequest
             {
                 TypeName = _descriptor.EntityName,
-                Payload  = StructConverter.ToStruct(entity),
+                Payload  = StructConverter.ToStruct(entity, NavPropertyNames),
                 TraceId  = CurrentTraceId()
             },
             cancellationToken: ct);
@@ -102,7 +105,7 @@ public sealed class EntityCoordinator<T>(
             new PersistRequest
             {
                 TypeName = _descriptor.EntityName,
-                Payload  = StructConverter.ToStruct(entity),
+                Payload  = StructConverter.ToStruct(entity, NavPropertyNames),
                 TraceId  = CurrentTraceId()
             },
             headers, cancellationToken: ct);
@@ -118,7 +121,7 @@ public sealed class EntityCoordinator<T>(
             new PersistRequest
             {
                 TypeName = _descriptor.EntityName,
-                Payload  = StructConverter.ToStruct(entity),
+                Payload  = StructConverter.ToStruct(entity, NavPropertyNames),
                 TraceId  = CurrentTraceId()
             },
             cancellationToken: ct);

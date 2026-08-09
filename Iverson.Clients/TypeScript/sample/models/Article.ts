@@ -1,6 +1,7 @@
 import 'reflect-metadata';
 import {
     IversonEntity,
+    IversonGuid,
     IversonKey,
     IversonLargeField,
     IversonSearchKey,
@@ -12,6 +13,7 @@ import { Author } from './Author.js';
 @IversonEntity()
 export class Article {
     @IversonKey()
+    @IversonGuid()
     id: string = '';
 
     @IversonTenant()
