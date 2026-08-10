@@ -126,6 +126,7 @@ Newly introduced by this plan and verified at plan-write time.
 | 34 | Consumer impact | `LoadCachedTotpSecret` has exactly one caller and no test references it or `IVERSON_TOTP_SECRET`, so the env fallback breaks nothing | `grep -rn "LoadCachedTotpSecret\|IVERSON_TOTP" --include=*.cs` → 2 hits, both in `AuthentikFlowExecutorClient.cs` |
 | 35 | Consumer impact | CodeQL builds C# with `autobuild`, Go with `autobuild`, and Java with an explicit `mvn -B -f Iverson.Clients/Java/pom.xml -DskipTests clean install` — so the new .NET projects, the Go package and the new Maven module must all compile in CI without a live server | `.github/workflows/codeql.yml` |
 | 36 | Consumer impact | Python's `conformance/` is invisible to `pytest` (`testpaths = ["tests"]`) and to packaging (`include = ["iverson_client*"]`) | `Python/pyproject.toml` |
+| 37 | Signature | Reads and authorization are scoped by the acting user's `tenant_id` **claim**, not by the driver's `--tenant` flag: the row fetch passes the claim as its tenant, and an empty claim short-circuits to `Denied` | `ObjectRetrievalGrpcService.cs:34-38`; `RowFieldAuthorizationEvaluator.cs:18-22` |
 
 ## Tasks
 
@@ -177,6 +178,8 @@ At `AuthentikFlowExecutorClient.cs:93`, the env var takes precedence over the ca
 
 - [ ] **Step 4: Implement `TokenBroker`** — reads `IVERSON_CLIENT_ID` / `IVERSON_CLIENT_SECRET` / `IVERSON_TOKEN_ENDPOINT` / `IVERSON_CLIENT_SCOPE` and the `IVERSON_ACTING_USER_*` set; builds one `ActingUserTokenProvider` over an `AuthentikFlowExecutorClient` for the bypass identity; exposes `GetActingTokenAsync()` and `GetOwnerIdAsync()` (`GetSubAsync`). Provision the tenant by duplicating LoadTest's ten lines against `TenantLifecycleGrpcService.TenantLifecycleGrpcServiceClient` (A3) — `ListTenantsAsync`, and `CreateTenantAsync` only when absent.
 
+The harness runs in the acting user's **own** tenant: read `IVERSON_LOADTEST_TENANT_ID` (same default as LoadTest, `iverson-loadtest-dynamic`), ensure it exists rather than creating a harness-specific one, and pass that value as every driver's `--tenant`. A dedicated conformance tenant would require provisioning the acting-user identity into it first, which this plan does not do.
+
 - [ ] **Step 5: Implement `Report`** — languages down, scenarios across; each cell `ok` / `FAIL` / `skip` / `xfail`. A skip renders distinctly and always carries a reason. Failure detail prints the assertion, the three observed values and the driver's captured stderr. `--json <path>` writes the same content. Exit 0 only when every non-skipped, non-expected-fail cell passed.
 
 - [ ] **Step 6: Build and run the existing .NET suites**
@@ -219,7 +222,17 @@ public sealed record StepResult(
 ```
 The phase enum is `register`, `write`, `read`, `update`, `delete` and it partitions the steps: each phase label selects exactly one contiguous run of driver work.
 
-- [ ] **Step 2: Implement `DriverRunner`** — one build per driver per run, then one exec per phase. The build command and the exec command are per-language (Task 3–7 each supply theirs). Absent toolchain (`mvn`, `go`, `python3`, `npm`, `dotnet` not on PATH, or a build that fails on a missing toolchain) records `skip (<tool> not found)` for that language's whole row and leaves the other four running. Non-zero exit is a driver break: the row fails with captured stderr. Phases after `register` receive `--keys <json>`, the accumulated logical-name-to-key map; every driver's `write` phase output feeds it.
+- [ ] **Step 2: Implement `DriverRunner`** — one build per driver per run, then one exec per phase, using this table:
+
+| Language | Build (once per run) | Exec (once per phase) |
+|---|---|---|
+| .NET | `dotnet build Iverson.Clients/DotNet/Iverson.Client.Conformance.Driver/Iverson.Client.Conformance.Driver.csproj` | `dotnet run --no-build --project Iverson.Clients/DotNet/Iverson.Client.Conformance.Driver -- <flags>` |
+| Python | none | `python3 conformance/driver.py <flags>` (cwd `Iverson.Clients/Python`) |
+| TypeScript | `npx tsc -p tsconfig.conformance.json` (cwd `Iverson.Clients/TypeScript`) | `node dist-conformance/conformance/driver.js <flags>` |
+| Go | `go build -o bin/conformance ./conformance` (cwd `Iverson.Clients/Go`) | `bin/conformance <flags>` |
+| Java | `mvn -B -f Iverson.Clients/Java/pom.xml -pl conformance -am -DskipTests package` | `java -jar Iverson.Clients/Java/conformance/target/iverson-conformance-driver.jar <flags>` |
+
+A build command that fails because its toolchain is absent is what produces the `skip (<tool> not found)` row for that language. Absent toolchain (`mvn`, `go`, `python3`, `npm`, `dotnet` not on PATH, or a build that fails on a missing toolchain) records `skip (<tool> not found)` for that language's whole row and leaves the other four running. Non-zero exit is a driver break: the row fails with captured stderr. Phases after `register` receive `--keys <json>`, the accumulated logical-name-to-key map; every driver's `write` phase output feeds it.
 
 - [ ] **Step 3: Implement `Reregistrar`** — take the driver's reported `TypeDescriptor` verbatim, parse it back into the proto message, set **only** `Authorization`, and call `RegisterSchema`. Nothing else may change: `SchemaRegistry.RegisterAsync` replaces the stored descriptor wholesale (`SchemaRegistry.cs:47-56`), so a reconstructed shape would overwrite the very relation descriptor S1's depth-1 check exists to inspect.
 ```csharp
@@ -290,12 +303,14 @@ No client exposes its descriptor builder (assumption 17). Wrap the mapping stub 
 `--phase` selects exactly one block. Keys are driver-chosen UUIDs incorporating `--id-prefix`; the write phase reports them by logical name (`author`, `tag`, `article`).
 ```
 register → registrar.RegisterAllAsync()               → steps: [register]
-write    → persist author, tag, article (both FKs)    → steps: [write] with keys{}
-read     → get article at depth 0                     → steps: [get] with entity
-update   → change title, update the existing row      → steps: [update]
-delete   → delete the article; get again              → steps: [delete]
+write    → persist author, tag, article (both FKs, OwnerId = --owner-id)  → steps: [write] with keys{}
+read     → get article at depth 0                                        → steps: [get] with entity
+update   → change title, update the existing row (OwnerId preserved)     → steps: [update]
+delete   → delete the article; get again                                 → steps: [delete]
 ```
-Every step wraps its body so a throw becomes `"ok": false` with `"error"` and the process still exits 0.
+Every entity written in the `write` and `update` phases sets `OwnerId` to the `--owner-id` value. This is part of the shape Tasks 4–7 mirror: with `OwnerField` rules in force, a row whose owner field does not equal the token's `sub` is an ownership violation.
+
+Every step wraps its body so a throw becomes `"ok": false` with `"error"` and the process still exits 0. The driver's build and exec forms are the ones Task 2's table names for this language.
 
 - [ ] **Step 5: Build and add to the root solution**
 ```bash
@@ -336,7 +351,7 @@ class PyArticle:
 
 - [ ] **Step 3: Capture the descriptor** — pass a wrapper around the mapping stub into `SchemaRegistrar(stub, *classes)` (assumption 18) that records `request.root_type` and forwards; serialize with `google.protobuf.json_format.MessageToJson`.
 
-- [ ] **Step 4: Implement phase dispatch and `--out` writing** — same five phases, same step names, same failed-step-is-data rule.
+- [ ] **Step 4: Implement phase dispatch and `--out` writing** — same five phases, same step names, same failed-step-is-data rule, same `OwnerId = --owner-id` on every written entity. The driver's build and exec forms are the ones Task 2's table names for this language.
 
 - [ ] **Step 5: Verify nothing regressed**
 ```bash
@@ -380,6 +395,7 @@ Add `"conformance/**/*"` to `tsconfig.test.json`'s `include` so `npm test`'s typ
 - [ ] **Step 4: Capture the descriptor** — construct `new SchemaRegistrar(wrappedMappingClient, classes, callCredentials)` directly (assumption 18); serialize the captured `TypeDescriptor` with ts-proto's generated `toJSON`.
 
 - [ ] **Step 5: Implement phase dispatch, then verify**
+Same five phases and the same `OwnerId = --owner-id` rule as Task 3; the driver's build and exec forms are the ones Task 2's table names for this language.
 ```bash
 cd Iverson.Clients/TypeScript && npx tsc -p tsconfig.conformance.json && npm test
 ```
@@ -419,6 +435,7 @@ type GoArticle struct {
 - [ ] **Step 3: Capture the descriptor** — `NewSchemaRegistrar` takes the `MappingClient` interface, so the wrapper is a struct with one method that records `req.RootType` and forwards (assumption 18); serialize with `protojson`.
 
 - [ ] **Step 4: Implement phase dispatch, then verify**
+Same five phases and the same `OwnerId = --owner-id` rule as Task 3; the driver's build and exec forms are the ones Task 2's table names for this language.
 ```bash
 cd Iverson.Clients/Go && go build ./... && go test ./...
 ```
@@ -453,6 +470,7 @@ Mirrors Task 3. Independent of Tasks 4–6.
 - [ ] **Step 4: Capture the descriptor** — `SchemaRegistrar` reads the package-private `client.mappingStub`, so capture goes on the channel: `ManagedChannelBuilder.forAddress(...).usePlaintext().intercept(new CaptureInterceptor()).build()` (assumption 18); serialize with `JsonFormat.printer()`.
 
 - [ ] **Step 5: Implement phase dispatch, then verify**
+Same five phases and the same `OwnerId = --owner-id` rule as Task 3; the driver's build and exec forms are the ones Task 2's table names for this language.
 ```bash
 mvn -B -f Iverson.Clients/Java/pom.xml -DskipTests clean install && mvn -B -f Iverson.Clients/Java/pom.xml test
 ```
@@ -477,7 +495,9 @@ git commit -m "add the java conformance driver"
 - Produces: the assertion surface Tasks 9–10 reuse.
 
 - [ ] **Step 1: Implement the registration assertions**
-Against the descriptor the driver reported: for each non-`OneToMany` relation, `propertyName != foreignKey`; the foreign key appears among the declared properties; `isArray` is set only for `many_to_many`.
+Against the descriptor the driver reported: for `ManyToOne` and `OneToOne`, `propertyName != foreignKey`; for `ManyToMany`, the foreign key is declared among the properties with `isArray` set; for every non-`OneToMany` relation, the foreign key appears among the declared properties; `isArray` is set only for `many_to_many`.
+
+`ManyToMany` is exempt from the `propertyName != foreignKey` check by design: in the FK-on-the-member clients the nav-property name and the foreign key are equal by construction, and the server treats that as correct rather than as a defect (`RelationValidator.cs:20-24`). Applying the check to m2m would fail Python, TypeScript, Go and Java on a conforming stack.
 
 - [ ] **Step 2: Implement `PostgresProbe`** — table name is `ToSnakeCase(TypeName) + "s"` (`SchemaBuilder.cs:30`), so no configuration is needed; a superuser connection is not blinded by RLS (A16).
 
