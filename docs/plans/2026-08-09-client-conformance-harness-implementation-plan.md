@@ -306,7 +306,7 @@ No client exposes its descriptor builder (assumption 17). Wrap the mapping stub 
 ```
 register → registrar.RegisterAllAsync()               → steps: [register]
 write    → persist author, tag, article (both FKs, OwnerId = --owner-id)  → steps: [write] with keys{}
-read     → get article at depth 0                                        → steps: [get] with entity
+read     → get article at depth 0, then get author at depth 0             → steps: [get, get_author], each with entity
 update   → change title, update the existing row (OwnerId preserved)     → steps: [update]
 delete   → delete the article; get again                                 → steps: [delete]
 ```
@@ -510,7 +510,7 @@ The comparison is over a named set of values — the key and each relation's for
 - [ ] **Step 4: Sequence S1**
 ```
 driver register  →  orchestrator re-register with row permissions
-driver write     →  driver read (depth 0)
+driver write     →  driver read (article and author, depth 0 — both entities need a driver leg)
 orchestrator     →  MappingGet(article, depth 1)   FK survives hydration, nav property beside it
 orchestrator     →  MappingGet(author,  depth 1)   one_to_many resolves via the reverse FK lookup
 driver update    →  driver delete
