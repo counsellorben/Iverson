@@ -83,11 +83,17 @@ switch (phase)
         // no Authorization block is writable by nobody, so reporting only the article's
         // descriptor would leave the author and tag rows un-writable in the write phase.
         //
-        // RegisterAllAsync registers every type in the registry in one call and rethrows the
-        // RpcException the server raises on a validation failure (RegisterSchema has no
-        // Success=false path), so all three steps share that single call's outcome; each carries
-        // the descriptor the client actually built and sent, attached whether or not the call
-        // succeeded, and null if that type was never reached.
+        // RegisterAllAsync issues one RegisterSchema call per type, sequentially over the
+        // registry, and rethrows the RpcException the server raises on a validation failure
+        // (RegisterSchema has no Success=false path) — so the sequence aborts at the first
+        // failing type and the types after it are never sent. All three steps therefore share
+        // the aborted sequence's outcome; what distinguishes them is `typeDescriptor`, which is
+        // present only for the types actually sent and null for those never reached.
+        //
+        // These steps deliberately bypass Step(), so clientErrors is never cleared here. That is
+        // safe only because no coordinator call precedes them in this phase — SchemaRegistrar
+        // gets its own null logger. Adding any coordinator call before this point would leak its
+        // logged error text into all three register steps; move to Step()/Clear() if that happens.
         var registerOutcome = await Run(async () =>
         {
             var registrar = new SchemaRegistrar(registry, mappingForRegistration, NullLogger<SchemaRegistrar>.Instance);
