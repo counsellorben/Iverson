@@ -94,11 +94,26 @@ switch (phase)
         // safe only because no coordinator call precedes them in this phase — SchemaRegistrar
         // gets its own null logger. Adding any coordinator call before this point would leak its
         // logged error text into all three register steps; move to Step()/Clear() if that happens.
-        var registerOutcome = await Run(async () =>
+        //
+        // Order is fixed to author -> tag -> article, matching the other four drivers, so the
+        // types the article's relations reference already exist when the article is sent. The
+        // registrar walks EntityRegistry.All, whose order is a dictionary's, so the driver drives
+        // the order itself: one RegisterAllAsync pass per type with the other two suppressed at
+        // the capture interceptor (nothing is sent for them). The first failing pass aborts the
+        // rest, preserving the abort-at-first-failure semantics the other drivers get for free.
+        string? registerOutcome = null;
+        foreach (var typeName in new[] { nameof(DotNetAuthor), nameof(DotNetTag), nameof(DotNetArticle) })
         {
-            var registrar = new SchemaRegistrar(registry, mappingForRegistration, NullLogger<SchemaRegistrar>.Instance);
-            await registrar.RegisterAllAsync();
-        });
+            capture.OnlySendTypeName = typeName;
+            registerOutcome = await Run(async () =>
+            {
+                var registrar = new SchemaRegistrar(registry, mappingForRegistration, NullLogger<SchemaRegistrar>.Instance);
+                await registrar.RegisterAllAsync();
+            });
+            if (registerOutcome is not null) break;
+        }
+
+        capture.OnlySendTypeName = null;
 
         AddStep("register", registerOutcome, capture.Select(typeHint, nameof(DotNetArticle)));
         AddStep("register_author", registerOutcome, capture.Select(nameof(DotNetAuthor)));
@@ -389,9 +404,11 @@ namespace Iverson.Client.Conformance.Driver
             {
                 var flag = argv[i];
                 if (!flag.StartsWith("--", StringComparison.Ordinal)) continue;
-                var value = i + 1 < argv.Length && !argv[i + 1].StartsWith("--", StringComparison.Ordinal)
-                    ? argv[++i]
-                    : string.Empty;
+                // The next argument is the value whatever it looks like: the harness always emits
+                // `--flag <value>` pairs (empty string included), and legitimate values — a base64
+                // token, a JSON blob — can begin with "--". Treating a leading "--" as "no value"
+                // would silently drop them.
+                var value = i + 1 < argv.Length ? argv[++i] : string.Empty;
                 parsed._values[flag] = value;
             }
             return parsed;

@@ -360,8 +360,12 @@ public final class Driver {
             for (int i = 0; i < argv.length; i++) {
                 String flag = argv[i];
                 if (!flag.startsWith("--")) continue;
+                // The next argument is the value whatever it looks like: the harness always emits
+                // `--flag <value>` pairs (empty string included), and legitimate values — a
+                // base64 token, a JSON blob — can begin with "--". Treating a leading "--" as
+                // "no value" would silently drop them.
                 String value = "";
-                if (i + 1 < argv.length && !argv[i + 1].startsWith("--")) {
+                if (i + 1 < argv.length) {
                     value = argv[++i];
                 }
                 parsed.values.put(flag, value);

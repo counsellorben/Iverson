@@ -227,6 +227,35 @@ public sealed class DriverRunner
         }
     }
 
+    /// <summary>
+    /// Canonicalizes whatever the operator supplied for the gRPC endpoint into
+    /// <c>scheme://host:port</c> — always a scheme, always an explicit port.
+    ///
+    /// The five client libraries do not agree on an endpoint syntax: .NET's
+    /// <c>GrpcChannel.ForAddress</c> and Java's <c>URI.create(...).getHost()/getPort()</c> need the
+    /// scheme (Java additionally needs the port, since <c>getPort()</c> returns -1 without one),
+    /// whereas Go's <c>grpc.Dial</c> and the TypeScript driver's host/port split need it gone. There
+    /// is therefore no raw value that works everywhere; the harness picks one canonical form here
+    /// and each driver adapts, rather than five drivers each guessing.
+    /// </summary>
+    internal static string NormalizeGrpcUrl(string value)
+    {
+        var raw = (value ?? string.Empty).Trim();
+        if (raw.Length == 0)
+            throw new ArgumentException("gRPC endpoint is empty", nameof(value));
+
+        // A bare "host:port" (or bare "host") is not an absolute URI; give it the plaintext
+        // scheme the harness's drivers dial with.
+        var withScheme = raw.Contains("://", StringComparison.Ordinal) ? raw : $"http://{raw}";
+
+        if (!Uri.TryCreate(withScheme, UriKind.Absolute, out var uri) || uri.Host.Length == 0)
+            throw new ArgumentException($"gRPC endpoint '{raw}' is not a usable host[:port] or URL", nameof(value));
+
+        // Uri supplies the scheme default (80/443) when no port was written, so Port is never -1
+        // here; emitting it explicitly is what makes the value parseable by Java's URI.getPort().
+        return $"{uri.Scheme}://{uri.Host}:{uri.Port}";
+    }
+
     internal List<string> BuildFlags(Phase phase, string language, DriverContext context, string outPath)
     {
         var flags = new List<string>
@@ -235,7 +264,13 @@ public sealed class DriverRunner
             "--phase", PhaseNames.ToToken(phase),
             "--type", context.Type,
             "--tenant", context.Tenant,
-            "--grpc", context.GrpcUrl,
+            // Normalized once, here, so that a single --grpc value is dialable by all five
+            // drivers. Do not remove: .NET (GrpcChannel.ForAddress) and Java (URI.create().getHost()
+            // /getPort()) REQUIRE the scheme and an explicit port, while Go (grpc.Dial) and
+            // TypeScript (host/port split) must strip the scheme back off — which they now do.
+            // Passing the raw value through instead resurrects a harness bug that reads as a
+            // per-language client defect.
+            "--grpc", NormalizeGrpcUrl(context.GrpcUrl),
             "--client-id", context.ClientId ?? string.Empty,
             "--client-secret", context.ClientSecret ?? string.Empty,
             "--token-endpoint", context.TokenEndpoint ?? string.Empty,

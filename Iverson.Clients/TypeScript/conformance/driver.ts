@@ -18,7 +18,7 @@ import * as fs from 'node:fs';
 import * as grpc from '@grpc/grpc-js';
 
 import { IversonClient, SchemaRegistrar } from '../src/core.js';
-import { createOAuth2ClientCredentials } from '../src/auth.js';
+import { createOAuth2ClientCredentials, createActingUserMetadata } from '../src/auth.js';
 import {
     ObjectMappingServiceClient,
     type SchemaRequest,
@@ -45,7 +45,11 @@ class Args {
                 i += 1;
                 continue;
             }
-            if (i + 1 < argv.length && !argv[i + 1].startsWith('--')) {
+            // The next argument is the value whatever it looks like: the harness always emits
+            // `--flag <value>` pairs (empty string included), and legitimate values — a base64
+            // token, a JSON blob — can begin with `--`. Treating a leading `--` as "no value"
+            // would silently drop them.
+            if (i + 1 < argv.length) {
                 this.values.set(flag, argv[i + 1]);
                 i += 2;
             } else {
@@ -135,6 +139,26 @@ function deriveKey(idPrefix: string, logicalName: string): string {
     ].join('-');
 }
 
+/**
+ * Splits a gRPC endpoint into the `host` / `port` pair `@grpc/grpc-js` needs, accepting both the
+ * scheme-qualified form the harness sends (`http://localhost:8080`) and a bare `host:port`.
+ * Throws on anything unusable so the driver fails as a driver (non-zero exit) rather than
+ * silently dialing `NaN` and reporting it as a client-library conformance failure.
+ */
+export function parseGrpcAddress(addr: string): { host: string; port: number } {
+    const withScheme = addr.includes('://') ? addr : `http://${addr}`;
+    let url: URL;
+    try {
+        url = new URL(withScheme);
+    } catch {
+        throw new Error(`unusable --grpc value '${addr}'`);
+    }
+    if (!url.hostname) throw new Error(`unusable --grpc value '${addr}'`);
+    const port = url.port ? Number(url.port) : url.protocol === 'https:' ? 443 : 80;
+    if (!Number.isInteger(port) || port <= 0) throw new Error(`unusable --grpc port in '${addr}'`);
+    return { host: url.hostname, port };
+}
+
 function parseKeys(keysJson: string | undefined, language: string): Record<string, string> {
     if (!keysJson) return {};
     try {
@@ -160,7 +184,18 @@ function parseKeys(keysJson: string | undefined, language: string): Record<strin
 class CapturingMappingClient {
     private readonly captured: Array<{ typeName: string; json: unknown }> = [];
 
-    constructor(private readonly real: ObjectMappingServiceClient) {}
+    /**
+     * @param actingToken the acting-user token to stamp on every forwarded registration.
+     *   `SchemaRegistrar` accepts only `callCredentials` (the service identity) and has no
+     *   acting-user parameter, so without this the TypeScript register phase would be the only
+     *   one of the five sending a single identity — and a server that scopes registration by
+     *   acting user would fail TypeScript alone, reading as a TypeScript client defect. The other
+     *   four drivers all carry both identities into registration.
+     */
+    constructor(
+        private readonly real: ObjectMappingServiceClient,
+        private readonly actingToken?: string,
+    ) {}
 
     registerSchema(
         request: SchemaRequest,
@@ -174,7 +209,14 @@ class CapturingMappingClient {
                 json: TypeDescriptor.toJSON(request.rootType),
             });
         }
-        return this.real.registerSchema(request, metadata, options, callback);
+        const outgoing = metadata ?? new grpc.Metadata();
+        if (this.actingToken) {
+            const actingMetadata = createActingUserMetadata(this.actingToken);
+            for (const [key, values] of Object.entries(actingMetadata.getMap())) {
+                outgoing.set(key, values as grpc.MetadataValue);
+            }
+        }
+        return this.real.registerSchema(request, outgoing, options, callback);
     }
 
     /** The descriptor for the first of `preferredTypeNames` actually sent under that exact name,
@@ -209,9 +251,12 @@ async function main(argv: string[]): Promise<number> {
     const outPath = args.require('--out');
     const typeHint = args.optional('--type');
 
+    // The harness normalizes --grpc to `scheme://host:port` (DriverRunner.NormalizeGrpcUrl),
+    // because .NET and Java cannot dial without the scheme. @grpc/grpc-js dials a bare
+    // `host:port`, so the scheme is stripped back off here rather than split on naively — a
+    // `split(':')` of `http://localhost:8080` yields host `http` and port NaN.
     const grpcAddr = args.require('--grpc');
-    const [host, portStr] = grpcAddr.includes(':') ? grpcAddr.split(':') : [grpcAddr, '5000'];
-    const port = portStr ? Number(portStr) : 5000;
+    const { host, port } = parseGrpcAddress(grpcAddr);
 
     const clientId = args.optional('--client-id');
     const clientSecret = args.optional('--client-secret');
@@ -234,7 +279,9 @@ async function main(argv: string[]): Promise<number> {
     // than reach into the client's internals).
     const registrationChannelCreds = grpc.credentials.createInsecure();
     const realMappingClient = new ObjectMappingServiceClient(`${host}:${port}`, registrationChannelCreds);
-    const capture = new CapturingMappingClient(realMappingClient);
+    // Both identities go into registration: the service identity via `callCredentials` on the
+    // registrar, the acting-user identity via the capture wrapper's per-call metadata.
+    const capture = new CapturingMappingClient(realMappingClient, actingToken);
 
     const priorKeys = parseKeys(args.optional('--keys'), LANGUAGE);
     const keyFor = (logicalName: string): string => priorKeys[logicalName] ?? deriveKey(idPrefix, logicalName);
@@ -252,7 +299,10 @@ async function main(argv: string[]): Promise<number> {
         try {
             const registrar = new SchemaRegistrar(
                 capture as unknown as ObjectMappingServiceClient,
-                [TsArticle, TsAuthor, TsTag],
+                // Author, then tag, then article — the same order in all five drivers, so the
+                // types the article's relations reference already exist when the article is
+                // sent. Registration aborts at the first failure, so the order is observable.
+                [TsAuthor, TsTag, TsArticle],
                 callCredentials,
             );
             await registrar.registerAll();

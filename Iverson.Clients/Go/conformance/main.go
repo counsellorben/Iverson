@@ -14,6 +14,8 @@ import (
 	"crypto/md5"
 	"encoding/json"
 	"fmt"
+	"net"
+	"net/url"
 	"os"
 	"strings"
 
@@ -46,7 +48,11 @@ func parseArgs(argv []string) args {
 			i++
 			continue
 		}
-		if i+1 < len(argv) && !strings.HasPrefix(argv[i+1], "--") {
+		// The next argument is the value whatever it looks like: the harness always emits
+		// `--flag <value>` pairs (empty string included), and legitimate values — a base64
+		// token, a JSON blob — can begin with "--". Treating a leading "--" as "no value"
+		// would silently drop them.
+		if i+1 < len(argv) {
 			values[flag] = argv[i+1]
 			i += 2
 		} else {
@@ -67,6 +73,28 @@ func (a args) require(flag string) (string, error) {
 
 func (a args) optional(flag string) string {
 	return a.values[flag]
+}
+
+// grpcDialTarget reduces a gRPC endpoint to the bare `host:port` target grpc.Dial accepts,
+// tolerating both the scheme-qualified form the harness sends and an already-bare one. Returns an
+// error rather than a best guess so the driver fails as a driver (non-zero exit) instead of
+// reporting an unresolvable target as a client-library conformance failure.
+func grpcDialTarget(addr string) (string, error) {
+	withScheme := addr
+	if !strings.Contains(addr, "://") {
+		withScheme = "http://" + addr
+	}
+	u, err := url.Parse(withScheme)
+	if err != nil || u.Host == "" {
+		return "", fmt.Errorf("unusable --grpc value %q", addr)
+	}
+	if u.Port() == "" {
+		if u.Scheme == "https" {
+			return net.JoinHostPort(u.Hostname(), "443"), nil
+		}
+		return net.JoinHostPort(u.Hostname(), "80"), nil
+	}
+	return u.Host, nil
 }
 
 // ── Step result / phase document ─────────────────────────────────────────────
@@ -132,6 +160,53 @@ func parseKeys(keysJSON, lang string) map[string]string {
 		return m
 	}
 	return out
+}
+
+// ── Read reporting ────────────────────────────────────────────────────────────
+
+// reportGet runs one Get and reports it in the same shape the other four drivers report.
+//
+// Go's EntityCoordinator.Get is the only one of the five that turns a not-found response into an
+// error (iverson/coordinator.go returns "entity not found" when !resp.Found); .NET, Python,
+// TypeScript and Java all hand back a null entity on an otherwise successful call. That is a
+// client-API difference, not a conformance signal, and left alone it would make get_after_delete
+// — the step whose whole purpose is separating gone from denied from broken — structurally
+// different in Go. So the shape is flattened here, in the driver, never in the client.
+//
+// Nothing is judged: this does not decide that not-found is correct, only that "the server said
+// Found=false" is reported the way the other four report it (ok:true, entity null). A denial or a
+// transport failure still reports ok:false with the client's own error text. The two are told
+// apart by asking the server itself through the public retrieval stub rather than by matching on
+// an error string.
+func reportGet(
+	ctx context.Context,
+	client *iverson.IversonClient,
+	name, typeName, key string,
+	do func() (interface{}, error),
+) stepResult {
+	entity, err := do()
+	if err == nil {
+		step := okStep(name)
+		step.Entity = entityJSON(entity)
+		return step
+	}
+
+	resp, probeErr := client.RetrievalStub.Get(ctx, &pb.RetrievalRequest{TypeName: typeName, Key: key})
+	if probeErr == nil && !resp.Found {
+		return okStep(name)
+	}
+
+	return failStep(name, err)
+}
+
+// typeNameOf reports the type name the client itself derives for an entity, so the raw retrieval
+// probe above addresses exactly the type EntityCoordinator addresses.
+func typeNameOf(entity interface{}) (string, error) {
+	meta, err := iverson.InspectType(entity)
+	if err != nil {
+		return "", err
+	}
+	return meta.TypeName, nil
 }
 
 // ── Descriptor capture ────────────────────────────────────────────────────────
@@ -247,9 +322,18 @@ func run(argv []string) int {
 		dialOpts = append(dialOpts, grpc.WithPerRPCCredentials(creds))
 	}
 
-	client, err := iverson.NewIversonClient(grpcAddr, dialOpts...)
+	// The harness normalizes --grpc to `scheme://host:port` (DriverRunner.NormalizeGrpcUrl),
+	// because .NET and Java cannot dial without the scheme. grpc.Dial takes a bare `host:port`
+	// target and cannot resolve an `http://…` one, so the scheme is stripped back off here.
+	dialTarget, err := grpcDialTarget(grpcAddr)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "connecting to %s: %v\n", grpcAddr, err)
+		fmt.Fprintln(os.Stderr, err)
+		return 2
+	}
+
+	client, err := iverson.NewIversonClient(dialTarget, dialOpts...)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "connecting to %s: %v\n", dialTarget, err)
 		return 2
 	}
 	defer client.Close()
@@ -272,7 +356,10 @@ func run(argv []string) int {
 	switch phase {
 	case "register":
 		capture := &capturingMappingClient{real: client.MappingStub}
-		registrar := iverson.NewSchemaRegistrar(capture, GoArticle{}, GoAuthor{}, GoTag{})
+		// Author, then tag, then article — the same order in all five drivers, so the types the
+		// article's relations reference already exist when the article is sent. Registration
+		// aborts at the first failure, so the order is observable.
+		registrar := iverson.NewSchemaRegistrar(capture, GoAuthor{}, GoTag{}, GoArticle{})
 		regErr := registrar.RegisterAll(ctx, idPrefix)
 
 		addRegisterStep := func(name string, descriptor json.RawMessage) {
@@ -347,25 +434,27 @@ func run(argv []string) int {
 		// Two gets at depth 0 (EntityCoordinator.Get performs no relation traversal), reported
 		// separately so a failure on one is not conflated with the other.
 		articleCoord, articleCoordErr := iverson.NewEntityCoordinator(client, GoArticle{})
+		articleTypeName, articleTypeErr := typeNameOf(GoArticle{})
 		if articleCoordErr != nil {
 			steps = append(steps, failStep("get", articleCoordErr))
-		} else if article, err := articleCoord.Get(ctx, keyFor("article")); err != nil {
-			steps = append(steps, failStep("get", err))
+		} else if articleTypeErr != nil {
+			steps = append(steps, failStep("get", articleTypeErr))
 		} else {
-			step := okStep("get")
-			step.Entity = entityJSON(article)
-			steps = append(steps, step)
+			articleKey := keyFor("article")
+			steps = append(steps, reportGet(ctx, client, "get", articleTypeName, articleKey,
+				func() (interface{}, error) { return articleCoord.Get(ctx, articleKey) }))
 		}
 
 		authorCoord, authorCoordErr := iverson.NewEntityCoordinator(client, GoAuthor{})
+		authorTypeName, authorTypeErr := typeNameOf(GoAuthor{})
 		if authorCoordErr != nil {
 			steps = append(steps, failStep("get_author", authorCoordErr))
-		} else if author, err := authorCoord.Get(ctx, keyFor("author")); err != nil {
-			steps = append(steps, failStep("get_author", err))
+		} else if authorTypeErr != nil {
+			steps = append(steps, failStep("get_author", authorTypeErr))
 		} else {
-			step := okStep("get_author")
-			step.Entity = entityJSON(author)
-			steps = append(steps, step)
+			authorKey := keyFor("author")
+			steps = append(steps, reportGet(ctx, client, "get_author", authorTypeName, authorKey,
+				func() (interface{}, error) { return authorCoord.Get(ctx, authorKey) }))
 		}
 
 	case "update":
@@ -407,13 +496,14 @@ func run(argv []string) int {
 
 		// The read-back is its own step, carrying entity (null when nothing came back) and the
 		// client's own error text when the read itself fails — a null entity alone cannot
-		// distinguish "gone" from "read denied" from a transport error.
-		if after, err := articleCoord.Get(ctx, deleteKey); err != nil {
-			steps = append(steps, failStep("get_after_delete", err))
+		// distinguish "gone" from "read denied" from a transport error. reportGet keeps that
+		// distinction while reporting the not-found case in the same shape as the other four
+		// drivers (ok:true, entity null).
+		if articleTypeName, articleTypeErr := typeNameOf(GoArticle{}); articleTypeErr != nil {
+			steps = append(steps, failStep("get_after_delete", articleTypeErr))
 		} else {
-			step := okStep("get_after_delete")
-			step.Entity = entityJSON(after)
-			steps = append(steps, step)
+			steps = append(steps, reportGet(ctx, client, "get_after_delete", articleTypeName, deleteKey,
+				func() (interface{}, error) { return articleCoord.Get(ctx, deleteKey) }))
 		}
 
 	default:

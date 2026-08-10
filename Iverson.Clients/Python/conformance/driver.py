@@ -54,7 +54,11 @@ class Args:
             if not flag.startswith("--"):
                 i += 1
                 continue
-            if i + 1 < len(argv) and not argv[i + 1].startswith("--"):
+            # The next argument is the value whatever it looks like: the harness always emits
+            # ``--flag <value>`` pairs (empty string included), and legitimate values — a base64
+            # token, a JSON blob — can begin with "--". Treating a leading "--" as "no value"
+            # would silently drop them.
+            if i + 1 < len(argv):
                 self._values[flag] = argv[i + 1]
                 i += 2
             else:
@@ -329,7 +333,10 @@ def main(argv: List[str]) -> int:
         # orchestrator which types were actually sent.
         error: Optional[str] = None
         try:
-            registrar = SchemaRegistrar(capture, PyArticle, PyAuthor, PyTag)
+            # Author, then tag, then article — the same order in all five drivers, so the types
+            # the article's relations reference already exist when the article is sent.
+            # Registration aborts at the first failure, so the order is observable.
+            registrar = SchemaRegistrar(capture, PyAuthor, PyTag, PyArticle)
             registrar.register_all()
         except Exception as exc:  # noqa: BLE001 - reported as data, not raised
             error = describe(exc)

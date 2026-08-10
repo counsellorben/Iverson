@@ -22,6 +22,19 @@ public sealed class DescriptorCaptureInterceptor : Interceptor
     public IReadOnlyList<(string TypeName, string Json)> Captured => _captured;
 
     /// <summary>
+    /// When set, only the named root type is actually sent; every other schema registration is
+    /// dropped (not captured, not forwarded) and answered with an empty response.
+    ///
+    /// This exists solely so the driver can control registration ORDER. All five drivers must
+    /// register author, then tag, then article, so a referenced type exists before the type that
+    /// references it; the other four take an explicit type list, but .NET's
+    /// <c>SchemaRegistrar.RegisterAllAsync</c> walks <c>EntityRegistry.All</c>, whose enumeration
+    /// order is a dictionary's and not the driver's to choose. Running the registrar once per type
+    /// with the other two suppressed here is the ordering control the public surface does not give.
+    /// </summary>
+    public string? OnlySendTypeName { get; set; }
+
+    /// <summary>
     /// The descriptor for the first of <paramref name="preferredTypeNames"/> that was actually sent
     /// under that exact name, or null if none of them was. Never substitutes a different type's
     /// descriptor: each register step reports one named type, and a wrong-but-present descriptor
@@ -47,8 +60,28 @@ public sealed class DescriptorCaptureInterceptor : Interceptor
         AsyncUnaryCallContinuation<TRequest, TResponse> continuation)
     {
         if (request is SchemaRequest { RootType: { } rootType })
+        {
+            if (OnlySendTypeName is { Length: > 0 } only &&
+                !string.Equals(rootType.TypeName, only, StringComparison.OrdinalIgnoreCase))
+            {
+                return Suppressed<TResponse>();
+            }
+
             _captured.Add((rootType.TypeName, Formatter.Format(rootType)));
+        }
 
         return continuation(request, context);
     }
+
+    /// <summary>
+    /// An already-completed call carrying an empty <see cref="SchemaResponse"/>, used for the
+    /// registrations <see cref="OnlySendTypeName"/> filters out. Nothing reaches the wire, and the
+    /// registrar (which reads only <c>response.Registered</c>) continues to the next type.
+    /// </summary>
+    private static AsyncUnaryCall<TResponse> Suppressed<TResponse>() =>
+        new(Task.FromResult((TResponse)(object)new SchemaResponse()),
+            Task.FromResult(new Metadata()),
+            () => Status.DefaultSuccess,
+            () => [],
+            () => { });
 }

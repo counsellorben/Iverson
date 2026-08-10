@@ -99,4 +99,35 @@ public class DriverRunnerTests
             "--acting-token", "acting-token", "--owner-id", "owner-id", "--id-prefix", "s1-",
             "--out", "/tmp/out.json"]);
     }
+
+    // The five client libraries disagree on endpoint syntax (.NET/Java need the scheme, Go/
+    // TypeScript need it gone), so --grpc must always leave here in one canonical
+    // scheme://host:port form. These pin that form.
+    [Theory]
+    [InlineData("http://localhost:8080", "http://localhost:8080")]
+    [InlineData("localhost:8080", "http://localhost:8080")]
+    [InlineData("http://localhost", "http://localhost:80")]
+    [InlineData("https://iverson.example.com", "https://iverson.example.com:443")]
+    [InlineData("  http://iverson:5000  ", "http://iverson:5000")]
+    public void NormalizeGrpcUrl_ProducesSchemeHostAndExplicitPort(string input, string expected) =>
+        DriverRunner.NormalizeGrpcUrl(input).Should().Be(expected);
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("   ")]
+    [InlineData("http://")]
+    public void NormalizeGrpcUrl_OnUnusableValue_Throws(string input) =>
+        FluentActions.Invoking(() => DriverRunner.NormalizeGrpcUrl(input))
+            .Should().Throw<ArgumentException>();
+
+    [Fact]
+    public void BuildFlags_NormalizesASchemelessGrpcEndpoint()
+    {
+        var runner = new DriverRunner(repoRoot: "/tmp");
+
+        var flags = runner.BuildFlags(
+            Phase.Read, "go", Context() with { GrpcUrl = "localhost:8080" }, "/tmp/out.json");
+
+        flags[flags.IndexOf("--grpc") + 1].Should().Be("http://localhost:8080");
+    }
 }
