@@ -24,12 +24,16 @@ import uuid
 # there is no PYTHONPATH set by the orchestrator and the package is not pip-installed.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+import time
+import urllib.parse
+import urllib.request
+
+import grpc
 from google.protobuf.json_format import MessageToJson
 
 from iverson_client.auth import IversonClientCredentials
-from iverson_client.core import SchemaRegistrar
+from iverson_client.core import IversonClient, SchemaRegistrar
 from iverson_client.generated import object_mapping_pb2_grpc as mapping_grpc
-from iverson_client.core import IversonClient
 
 from conformance.models import PyArticle, PyAuthor, PyTag
 
@@ -126,6 +130,105 @@ def parse_keys(keys_json: Optional[str], language: str) -> Dict[str, str]:
     return by_language.get(language, {}) if isinstance(by_language, dict) else {}
 
 
+# ── Registration channel (public API only) ──────────────────────────────────
+
+class _DriverBearerAuthPlugin(grpc.AuthMetadataPlugin):
+    """Fetches and caches an OAuth2 client-credentials token, refreshing 60s before expiry.
+
+    A small self-contained duplicate of the service-token machinery `IversonClient.__init__`
+    builds internally (`iverson_client/auth.py`'s `_CachedTokenProvider`/`_BearerTokenAuthPlugin`,
+    both underscore-prefixed and not part of the client's public surface). Kept local rather than
+    importing those private names, the same way the .NET driver's `Auth.cs` builds its own
+    `ServiceTokenProvider` instead of reaching into `IversonClient`/`AddIversonClient` internals.
+    """
+
+    def __init__(self, client_id: str, client_secret: str, token_endpoint: str) -> None:
+        self._client_id = client_id
+        self._client_secret = client_secret
+        self._token_endpoint = token_endpoint
+        self._token: Optional[str] = None
+        self._expires_at: float = 0.0
+
+    def __call__(self, context, callback) -> None:
+        try:
+            token = self._get_token()
+            callback((("authorization", f"Bearer {token}"),), None)
+        except Exception as exc:  # noqa: BLE001
+            callback(None, exc)
+
+    def _get_token(self) -> str:
+        if self._token is not None and time.monotonic() < self._expires_at:
+            return self._token
+        params = {
+            "grant_type": "client_credentials",
+            "client_id": self._client_id,
+            "client_secret": self._client_secret,
+        }
+        body = urllib.parse.urlencode(params).encode("utf-8")
+        request = urllib.request.Request(
+            self._token_endpoint,
+            data=body,
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+            method="POST",
+        )
+        with urllib.request.urlopen(request) as response:
+            payload = json.loads(response.read())
+        self._token = payload["access_token"]
+        self._expires_at = time.monotonic() + payload["expires_in"] - 60
+        return self._token
+
+
+class _DriverActingUserAuthPlugin(grpc.AuthMetadataPlugin):
+    """Attaches a pre-minted acting-user token to every call on this channel."""
+
+    def __init__(self, token: str) -> None:
+        self._token = token
+
+    def __call__(self, context, callback) -> None:
+        try:
+            callback((("x-acting-user-authorization", f"Bearer {self._token}"),), None)
+        except Exception as exc:  # noqa: BLE001
+            callback(None, exc)
+
+
+def build_registration_channel(
+    host: str,
+    port: int,
+    client_id: Optional[str],
+    client_secret: Optional[str],
+    token_endpoint: Optional[str],
+    acting_token: Optional[str],
+) -> grpc.Channel:
+    """Builds a second channel, independent of `IversonClient`'s internal one, carrying the same
+    two identities every other call on this driver uses. `IversonClient` exposes no public
+    accessor for a channel or a second mapping stub (only `.coordinator()` and `.registrar()`,
+    each binding its own internal stub) — the capture wrapper needs a real stub to forward to, so
+    this builds one from scratch using only public `grpc` API and the public generated stub type,
+    mirroring the composite-credentials-over-`local_channel_credentials()` pattern
+    `IversonClient.__init__` uses for h2c (`core.py:655-682`): a bare insecure channel rejects
+    `CallCredentials` outright, so some `ChannelCredentials` is always required as the base when
+    either identity is present.
+    """
+    address = f"{host}:{port}"
+    call_creds = []
+    if client_id and client_secret and token_endpoint:
+        call_creds.append(
+            grpc.metadata_call_credentials(
+                _DriverBearerAuthPlugin(client_id, client_secret, token_endpoint)
+            )
+        )
+    if acting_token:
+        call_creds.append(grpc.metadata_call_credentials(_DriverActingUserAuthPlugin(acting_token)))
+
+    if not call_creds:
+        return grpc.insecure_channel(address)
+
+    channel_creds = grpc.composite_channel_credentials(
+        grpc.local_channel_credentials(), *call_creds
+    )
+    return grpc.secure_channel(address, channel_creds)
+
+
 # ── Descriptor capture ────────────────────────────────────────────────────────
 
 class CapturingMappingStub:
@@ -197,12 +300,12 @@ def main(argv: List[str]) -> int:
         host, port, use_tls=False, credentials=credentials, acting_user_token=acting_token,
     )
 
-    # The capture wrapper needs a real, authenticated stub to forward to. IversonClient exposes
-    # no public accessor for a second mapping stub beyond `.registrar()` (which already binds its
-    # own unwrapped stub), so the underlying channel is used directly here — the same channel
-    # `.coordinator()` derives its stubs from, just plumbing to construct the wrapped stub, not a
-    # reach into business-logic internals.
-    capture = CapturingMappingStub(mapping_grpc.ObjectMappingServiceStub(client._channel))  # noqa: SLF001
+    # A second, independent channel built entirely from public API — see
+    # `build_registration_channel`'s docstring for why `client`'s own channel isn't reused.
+    registration_channel = build_registration_channel(
+        host, port, client_id, client_secret, token_endpoint, acting_token,
+    )
+    capture = CapturingMappingStub(mapping_grpc.ObjectMappingServiceStub(registration_channel))
 
     prior_keys = parse_keys(args.optional("--keys"), LANGUAGE)
 
@@ -343,6 +446,8 @@ def main(argv: List[str]) -> int:
             steps.append(StepResult("get_after_delete", False, error=describe(exc)))
 
     else:
+        registration_channel.close()
+        client.close()
         print(f"unknown phase '{phase}'", file=sys.stderr)
         return 2
 
@@ -350,6 +455,7 @@ def main(argv: List[str]) -> int:
     with open(out_path, "w", encoding="utf-8") as f:
         json.dump(document, f)
 
+    registration_channel.close()
     client.close()
     return 0
 
