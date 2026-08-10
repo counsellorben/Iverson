@@ -89,7 +89,7 @@ TypeScript's `console.log` and Java's SLF4J default output would corrupt it.
   "steps": [
     {"name": "register", "ok": true,
      "typeDescriptor": { … the exact TypeDescriptor the client sent, serialized … }},
-    {"name": "write",  "ok": true, "key": "…"},
+    {"name": "write",  "ok": true, "keys": {"author": "…", "tag": "…", "article": "…"}},
     {"name": "get",    "ok": true, "entity": {"id": "…", "pyAuthorId": "c60c…"}},
     {"name": "update", "ok": true},
     {"name": "delete", "ok": true}
@@ -176,18 +176,20 @@ navigation-property key and posts it over raw gRPC, asserting `InvalidArgument` 
 naming both the property and the foreign key.
 
 **S4 — `interop`** (shared type, all languages). The .NET driver registers `SharedAuthor` and
-`SharedArticle` once. Every language writes one row whose key is a UUIDv5 derived from
-`(runId, language, "SharedArticle")`, then every language reads all five rows. The orchestrator
-asserts all twenty-five reads agree on the foreign key value.
+`SharedArticle` once. Every language writes one row under its own run-scoped UUID key, then every
+language reads all five rows. The orchestrator asserts all twenty-five reads agree on the foreign
+key value.
 
 S4 is the only scenario that can catch two clients disagreeing about the wire format while each
 passes its own isolated test. Its cost is a second entity declaration per driver.
 
 **Isolation.** Every scenario takes an `--id-prefix` run id. Type names stay stable so schema drift
-detection remains meaningful across runs. Row keys are **UUIDv5 values derived from the run id, the
-language and the row's logical name** — keys must be UUIDs, since a key column's SQL type is `UUID`
+detection remains meaningful across runs. Row keys must be UUIDs — a key column's SQL type is `UUID`
 and relation foreign-key values must be well-formed GUIDs, so a literal prefix is not writable.
-Deriving them keeps runs collision-free and reproducible; the report records the
+**Each driver derives or generates its own keys however it likes, provided each is a UUID and
+incorporates the run id so runs never collide, and reports them by logical name on the write step.
+That reported map is what the orchestrator addresses rows with — there is no shared derivation
+algorithm for six independent implementations to agree on.** The report records the
 logical-name-to-UUID mapping so a failure is still traceable to `shared-go-run7a3f` in human terms.
 The orchestrator deletes its rows on completion unless `--keep` is passed.
 
@@ -313,7 +315,7 @@ codebase and a running stack. Twelve held.
 | A15 | Referencing LoadTest's auth from a second project breaks nothing | ✅ no dependents affected |
 | A16 | The orchestrator's direct Postgres query can see rows despite row-level security | ✅ `PostgresSchemaManager.cs:138-148` enables RLS with a `current_setting('app.tenant_id')` policy, but no `FORCE ROW LEVEL SECURITY` exists and the app's connection is superuser — the runtime role is entered only inside scoped transactions (`IRecordStoreRoles.cs:52`). A superuser connection bypasses RLS, so the third verification leg is not silently empty |
 | A17 | The orchestrator can obtain a registerable `TypeDescriptor` for a driver-registered type | ❌ **FAILED** — not from the wire: `SchemaType`/`SchemaField` carry no `tenant_field`, which registration requires (`SchemaRegistrationOrchestrator.cs:61-64`), so `GetSchema` cannot reconstruct one. Design updated: the driver reports the full `TypeDescriptor` it sent |
-| A18 | Row keys may be arbitrary strings | ❌ **FAILED** — a key column's SQL type is `UUID` (`SchemaBuilder.cs:163,236`) and relation foreign-key values must be well-formed GUIDs (`RelationValidator.cs:88,110`). A prefixed string key fails on insert with `22P02`. Design updated: keys are UUIDv5 values derived from the run id |
+| A18 | Row keys may be arbitrary strings | ❌ **FAILED** — a key column's SQL type is `UUID` (`SchemaBuilder.cs:163,236`) and relation foreign-key values must be well-formed GUIDs (`RelationValidator.cs:88,110`). A prefixed string key fails on insert with `22P02`. Design updated: keys are UUIDs, reported by the driver on the write step |
 | A19 | The harness can re-register its own types after a driver's entity shape changes | ❌ **FAILED** — registration applies with `SchemaDriftPolicy.Throw` (`SchemaRegistrationOrchestrator.cs:113`) and no unregister or drop RPC exists (`object_mapping.proto:10-15`); A12 covers only the identical-shape case. Accepted: the remedy is manual, recorded under Known issues |
 
 ## Known issues / accepted as out of scope
