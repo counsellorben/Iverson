@@ -148,6 +148,7 @@ reshapes production clients that this harness exists to test, for the benefit of
 | write author, tag, article with both FKs | m2o FK persists; m2m ids arrive as a `ListValue`, not a string |
 | get article (depth 0) | FK reads back into the client's own typed member |
 | *orchestrator* reads at depth 1 | FK survives hydration and the nav property appears beside it |
+| *orchestrator* reads the author at depth 1 | `one_to_many` resolves: the article list hydrates from the reverse foreign-key lookup |
 | update title | write path works against an existing row |
 | delete | row gone; a subsequent get reports not-found |
 
@@ -158,7 +159,9 @@ The depth-1 step belongs to the orchestrator, not the driver, because only .NET 
 depth-taking read (A6). This is the right home regardless: the `PropertyName`/`ForeignKey` collision
 lives in the registered *descriptor*, which is per-type rather than per-client, so a
 Python-registered type is corrupted when read at depth by any consumer. The driver's job is to
-register the descriptor; the orchestrator's is to read it back.
+register the descriptor; the orchestrator's is to read it back. Both depth-resolved reads belong
+there for the same reason; the second one is what exercises `one_to_many`, whose reverse lookup is
+the direction the foreign-key-only work broke.
 
 **S2 — `naming-rejected`** (Go, Python, TypeScript — negative). The driver attempts to register a
 type whose `many_to_one` member is misnamed (`writer_id` against an `Author`). Registration must
@@ -288,7 +291,7 @@ shipping defect that all prior review layers missed.
 
 ## Verified assumptions
 
-Eighteen assumptions, enumerated against the design before verification and checked against the
+Nineteen assumptions, enumerated against the design before verification and checked against the
 codebase and a running stack. Twelve held.
 
 | # | Assumption | Result |
@@ -311,6 +314,7 @@ codebase and a running stack. Twelve held.
 | A16 | The orchestrator's direct Postgres query can see rows despite row-level security | ✅ `PostgresSchemaManager.cs:138-148` enables RLS with a `current_setting('app.tenant_id')` policy, but no `FORCE ROW LEVEL SECURITY` exists and the app's connection is superuser — the runtime role is entered only inside scoped transactions (`IRecordStoreRoles.cs:52`). A superuser connection bypasses RLS, so the third verification leg is not silently empty |
 | A17 | The orchestrator can obtain a registerable `TypeDescriptor` for a driver-registered type | ❌ **FAILED** — not from the wire: `SchemaType`/`SchemaField` carry no `tenant_field`, which registration requires (`SchemaRegistrationOrchestrator.cs:61-64`), so `GetSchema` cannot reconstruct one. Design updated: the driver reports the full `TypeDescriptor` it sent |
 | A18 | Row keys may be arbitrary strings | ❌ **FAILED** — a key column's SQL type is `UUID` (`SchemaBuilder.cs:163,236`) and relation foreign-key values must be well-formed GUIDs (`RelationValidator.cs:88,110`). A prefixed string key fails on insert with `22P02`. Design updated: keys are UUIDv5 values derived from the run id |
+| A19 | The harness can re-register its own types after a driver's entity shape changes | ❌ **FAILED** — registration applies with `SchemaDriftPolicy.Throw` (`SchemaRegistrationOrchestrator.cs:113`) and no unregister or drop RPC exists (`object_mapping.proto:10-15`); A12 covers only the identical-shape case. Accepted: the remedy is manual, recorded under Known issues |
 
 ## Known issues / accepted as out of scope
 
@@ -329,6 +333,14 @@ than fold in — it is a production correctness fix, not a test tool, and warran
 The second was introduced by the foreign-key-only work days earlier and passed every review layer,
 because the many-to-one direction — the one exercised live — is unaffected. Finding it during the
 design of a conformance harness, rather than by running one, is the argument for building it.
+
+**A driver entity-shape change requires dropping its table by hand.** Type names are stable,
+registration applies with `SchemaDriftPolicy.Throw` (`SchemaRegistrationOrchestrator.cs:113`), and
+the service exposes no unregister or drop RPC (`object_mapping.proto:10-15`) — so when a driver's
+entity gains or loses a column, that type's registration fails with `FailedPrecondition` on every
+subsequent run, masking the rest of that language's row. The remedy is manual: drop the table and
+delete its `_iverson_schema` row, then re-run. Accepted rather than automated — a `--reset` would
+give the harness schema-mutating power it otherwise does not need.
 
 **The harness does not manage the docker compose stack.** It verifies the stack is up and fails with
 instructions otherwise.
