@@ -22,14 +22,14 @@ public sealed class DescriptorCaptureInterceptor : Interceptor
     public IReadOnlyList<(string TypeName, string Json)> Captured => _captured;
 
     /// <summary>
-    /// The descriptor for the first of <paramref name="preferredTypeNames"/> that was actually
-    /// sent under that exact name, else the last one sent. Selection only — the orchestrator
+    /// The descriptor for the first of <paramref name="preferredTypeNames"/> that was actually sent
+    /// under that exact name, or null if none of them was. Never substitutes a different type's
+    /// descriptor: each register step reports one named type, and a wrong-but-present descriptor
+    /// would have the orchestrator re-register the wrong schema. Selection only — the orchestrator
     /// decides what it means.
     /// </summary>
     public string? Select(params string?[] preferredTypeNames)
     {
-        if (_captured.Count == 0) return null;
-
         foreach (var preferred in preferredTypeNames)
         {
             if (string.IsNullOrEmpty(preferred)) continue;
@@ -38,7 +38,7 @@ public sealed class DescriptorCaptureInterceptor : Interceptor
                     return json;
         }
 
-        return _captured[^1].Json;
+        return null;
     }
 
     public override AsyncUnaryCall<TResponse> AsyncUnaryCall<TRequest, TResponse>(

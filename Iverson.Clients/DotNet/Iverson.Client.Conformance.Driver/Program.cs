@@ -6,6 +6,7 @@ using Iverson.Client.Conformance.Driver;
 using Iverson.Client.Conformance.Driver.Models;
 using Iverson.Client.Contracts;
 using Iverson.Client.Core;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 
 // ── The .NET conformance driver ────────────────────────────────────────────────────────────────
@@ -53,9 +54,15 @@ var search = new ObjectSearchService.ObjectSearchServiceClient(invoker);
 var registry = new EntityRegistry([typeof(DotNetArticle).Assembly]);
 var assembler = new GraphAssembler(retrieval, registry, NullLogger<GraphAssembler>.Instance);
 
+// EntityCoordinator reports a server-side refusal (MappingResponse.Success = false — denials come
+// back in the response body, not as an RpcException) by returning null and logging the server's
+// error text. Nothing else surfaces it, so the driver collects those log lines and reports them
+// verbatim: without this a fully denied write phase would look like a clean success.
+var clientErrors = new ClientErrors();
+
 EntityCoordinator<T> Coordinator<T>() where T : class =>
     new(registry, assembler, mapping, persistence, retrieval, search,
-        NullLogger<EntityCoordinator<T>>.Instance);
+        new ClientErrorLogger<EntityCoordinator<T>>(clientErrors));
 
 // Keys are driver-chosen UUIDs derived from the run id, so two runs never collide and every
 // phase after `write` can re-derive nothing — it reads them back from --keys.
@@ -71,66 +78,90 @@ switch (phase)
 {
     case "register":
     {
-        // The captured descriptor is attached whether or not the RPC succeeded: what the client
-        // built and sent is the observation, and a server-side rejection is a separate fact.
-        await Step("register",
-            async result =>
-            {
-                var registrar = new SchemaRegistrar(registry, mappingForRegistration, NullLogger<SchemaRegistrar>.Instance);
-                await registrar.RegisterAllAsync();
-                return result;
-            },
-            result => result with
-            {
-                TypeDescriptor = Json.Element(capture.Select(typeHint, nameof(DotNetArticle))),
-            });
+        // One step per registered type. Every type the orchestrator has to re-register with
+        // authorization rules needs its own descriptor reported: a type whose stored schema has
+        // no Authorization block is writable by nobody, so reporting only the article's
+        // descriptor would leave the author and tag rows un-writable in the write phase.
+        //
+        // RegisterAllAsync registers every type in the registry in one call and rethrows the
+        // RpcException the server raises on a validation failure (RegisterSchema has no
+        // Success=false path), so all three steps share that single call's outcome; each carries
+        // the descriptor the client actually built and sent, attached whether or not the call
+        // succeeded, and null if that type was never reached.
+        var registerOutcome = await Run(async () =>
+        {
+            var registrar = new SchemaRegistrar(registry, mappingForRegistration, NullLogger<SchemaRegistrar>.Instance);
+            await registrar.RegisterAllAsync();
+        });
+
+        AddStep("register", registerOutcome, capture.Select(typeHint, nameof(DotNetArticle)));
+        AddStep("register_author", registerOutcome, capture.Select(nameof(DotNetAuthor)));
+        AddStep("register_tag", registerOutcome, capture.Select(nameof(DotNetTag)));
+
+        void AddStep(string name, string? error, string? descriptorJson) =>
+            steps.Add(new StepResult(
+                name,
+                Ok: error is null,
+                Error: error,
+                TypeDescriptor: Json.Element(descriptorJson)));
+
         break;
     }
 
     case "write":
     {
-        await Step("write", async result =>
-        {
-            var authorKey = Keys.Derive(idPrefix, "author");
-            var tagKey = Keys.Derive(idPrefix, "tag");
-            var articleKey = Keys.Derive(idPrefix, "article");
+        // One step per row. A denied or failed write must not abort the other two, and each row's
+        // key is reported unconditionally (via `always`) so the orchestrator can address the row
+        // in later phases even when this write failed — a phase that reported no keys would leave
+        // the read/update/delete phases with nothing to ask for.
+        var authorKey = Keys.Derive(idPrefix, "author");
+        var tagKey = Keys.Derive(idPrefix, "tag");
+        var articleKey = Keys.Derive(idPrefix, "article");
 
-            await Coordinator<DotNetAuthor>().PostMappedAsync(new DotNetAuthor
+        await Step("write_author",
+            async result =>
             {
-                Id = authorKey,
-                TenantId = tenant,
-                OwnerId = ownerId,
-                Name = $"author-{idPrefix}",
-            });
-
-            await Coordinator<DotNetTag>().PostMappedAsync(new DotNetTag
-            {
-                Id = tagKey,
-                TenantId = tenant,
-                OwnerId = ownerId,
-                Label = $"tag-{idPrefix}",
-            });
-
-            await Coordinator<DotNetArticle>().PostMappedAsync(new DotNetArticle
-            {
-                Id = articleKey,
-                TenantId = tenant,
-                OwnerId = ownerId,
-                Title = $"title-{idPrefix}",
-                DotNetAuthorId = authorKey,
-                DotNetTagIds = [tagKey],
-            });
-
-            return result with
-            {
-                Keys = new Dictionary<string, string>
+                var written = await Coordinator<DotNetAuthor>().PostMappedAsync(new DotNetAuthor
                 {
-                    ["author"] = authorKey.ToString(),
-                    ["tag"] = tagKey.ToString(),
-                    ["article"] = articleKey.ToString(),
-                },
-            };
-        });
+                    Id = authorKey,
+                    TenantId = tenant,
+                    OwnerId = ownerId,
+                    Name = $"author-{idPrefix}",
+                });
+                return result with { Entity = Json.Element(written) };
+            },
+            result => result with { Keys = new Dictionary<string, string> { ["author"] = authorKey.ToString() } });
+
+        await Step("write_tag",
+            async result =>
+            {
+                var written = await Coordinator<DotNetTag>().PostMappedAsync(new DotNetTag
+                {
+                    Id = tagKey,
+                    TenantId = tenant,
+                    OwnerId = ownerId,
+                    Label = $"tag-{idPrefix}",
+                });
+                return result with { Entity = Json.Element(written) };
+            },
+            result => result with { Keys = new Dictionary<string, string> { ["tag"] = tagKey.ToString() } });
+
+        await Step("write_article",
+            async result =>
+            {
+                var written = await Coordinator<DotNetArticle>().PostMappedAsync(new DotNetArticle
+                {
+                    Id = articleKey,
+                    TenantId = tenant,
+                    OwnerId = ownerId,
+                    Title = $"title-{idPrefix}",
+                    DotNetAuthorId = authorKey,
+                    DotNetTagIds = [tagKey],
+                });
+                return result with { Entity = Json.Element(written) };
+            },
+            result => result with { Keys = new Dictionary<string, string> { ["article"] = articleKey.ToString() } });
+
         break;
     }
 
@@ -173,16 +204,21 @@ switch (phase)
 
     case "delete":
     {
+        var deleteCoordinator = Coordinator<DotNetArticle>();
+        var deleteKey = KeyFor("article").ToString();
+
         await Step("delete", async result =>
         {
-            var coordinator = Coordinator<DotNetArticle>();
-            var articleKey = KeyFor("article").ToString();
+            await deleteCoordinator.DeleteAsync(deleteKey);
+            return result;
+        });
 
-            await coordinator.DeleteAsync(articleKey);
-
-            // Read back after the delete. The entity is present only if the row survived —
-            // whether that is a defect is the Verifier's call, not this driver's.
-            var afterDelete = await coordinator.GetMappedAsync(articleKey, depth: 0);
+        // The read-back is its own step. A null entity alone cannot tell "gone" from "read
+        // denied" from "tenant mismatch", so the client's own error text is reported alongside
+        // it; conflating this with the delete's error text would destroy that distinction too.
+        await Step("get_after_delete", async result =>
+        {
+            var afterDelete = await deleteCoordinator.GetMappedAsync(deleteKey, depth: 0);
             return result with { Entity = Json.Element(afterDelete) };
         });
         break;
@@ -206,6 +242,8 @@ async Task Step(
     Func<StepResult, Task<StepResult>> body,
     Func<StepResult, StepResult>? always = null)
 {
+    clientErrors.Clear();
+
     var seed = new StepResult(name, true);
     StepResult outcome;
     try
@@ -217,7 +255,27 @@ async Task Step(
         outcome = seed with { Ok = false, Error = Describe(ex) };
     }
 
+    // A refusal the client surfaced by returning null and logging (rather than throwing) is
+    // reported exactly like a thrown one: the client library's own failure signal is the
+    // observation. The driver still does not look at any value to decide this.
+    if (outcome.Ok && clientErrors.Any)
+        outcome = outcome with { Ok = false, Error = clientErrors.Combined };
+
     steps.Add(always is null ? outcome : always(outcome));
+}
+
+/// <summary>Runs an action and returns its failure text, or null when it completed.</summary>
+async Task<string?> Run(Func<Task> body)
+{
+    try
+    {
+        await body();
+        return null;
+    }
+    catch (Exception ex)
+    {
+        return Describe(ex);
+    }
 }
 
 static string Describe(Exception ex) => ex is RpcException rpc
@@ -237,6 +295,41 @@ namespace Iverson.Client.Conformance.Driver
 
     /// <summary>The whole <c>--out</c> document for one phase invocation.</summary>
     internal sealed record PhaseDocument(string Language, string Phase, IReadOnlyList<StepResult> Steps);
+
+    /// <summary>
+    /// Collects the error lines the client library logs. <c>EntityCoordinator</c> reports a
+    /// server-side refusal by returning null and calling <c>LogError</c> with the server's error
+    /// text — with a null logger that text is lost and a denied call is indistinguishable from a
+    /// successful one.
+    /// </summary>
+    internal sealed class ClientErrors
+    {
+        private readonly List<string> _messages = [];
+
+        public bool Any => _messages.Count > 0;
+        public string Combined => string.Join("; ", _messages);
+
+        public void Add(string message) => _messages.Add(message);
+        public void Clear() => _messages.Clear();
+    }
+
+    internal sealed class ClientErrorLogger<T>(ClientErrors errors) : ILogger<T>
+    {
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+
+        public bool IsEnabled(LogLevel logLevel) => logLevel >= LogLevel.Error;
+
+        public void Log<TState>(
+            LogLevel logLevel,
+            EventId eventId,
+            TState state,
+            Exception? exception,
+            Func<TState, Exception?, string> formatter)
+        {
+            if (logLevel < LogLevel.Error) return;
+            errors.Add(formatter(state, exception));
+        }
+    }
 
     internal static class Json
     {
