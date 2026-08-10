@@ -91,6 +91,7 @@ public sealed class AuthentikFlowExecutorClient(
         Path.Combine(CacheDir, $"acting-user-totp-secret-{identity.CacheTargetToken}-{identity.Username}.txt");
 
     private string? LoadCachedTotpSecret() =>
+        Environment.GetEnvironmentVariable("IVERSON_TOTP_SECRET") is { Length: > 0 } env ? env :
         File.Exists(CachePath) ? File.ReadAllText(CachePath).Trim() is { Length: > 0 } s ? s : null : null;
 
     private void SaveCachedTotpSecret(string secret)
