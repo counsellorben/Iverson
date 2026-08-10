@@ -128,6 +128,7 @@ Newly introduced by this plan and verified at plan-write time.
 | 36 | Consumer impact | Python's `conformance/` is invisible to `pytest` (`testpaths = ["tests"]`) and to packaging (`include = ["iverson_client*"]`) | `Python/pyproject.toml` |
 | 37 | Signature | Reads and authorization are scoped by the acting user's `tenant_id` **claim**, not by the driver's `--tenant` flag: the row fetch passes the claim as its tenant, and an empty claim short-circuits to `Denied` | `ObjectRetrievalGrpcService.cs:34-38`; `RowFieldAuthorizationEvaluator.cs:18-22` |
 | 38 | Code validity | The Postgres and `MappingGet` legs are both keyed by the descriptor's property names (`row_to_json` over columns created verbatim from `prop.Name`; only the table name is snake-cased), while the driver leg is keyed by that language's own member naming | `EntityRepository.cs:7-9`; `SchemaBuilder.cs:30,52-54` |
+| 39 | Signature | `Post` applies its gates in order: `RequireSchema`, then `EnforceWriteAuthorization`, then `ValidateAndNormalizeRelations` — so an unregistered type or an unauthorized caller yields its own error before any relation rejection is reachable | `ObjectMappingGrpcService.cs:292,294,298` |
 
 ## Tasks
 
@@ -540,6 +541,8 @@ git commit -m "add the conformance verifier and the crud-roundtrip scenario"
 
 - [ ] **Step 2: S3** — orchestrator only, no driver. Hand-build a `Struct` carrying a navigation-property key and post it as a `MappingWriteRequest` over raw gRPC (assumption 11); assert `InvalidArgument` with a message naming both the property and the foreign key. No client can produce this payload any more, which is the point of the FK-only work.
 
+S3 registers its own single-type fixture — a type carrying one `many_to_one` — through the orchestrator's own registrar with the authorization block set, so the scenario is self-contained and runnable alone rather than depending on a type an earlier scenario happened to register. The raw-gRPC post carries the same two headers the drivers use, the service bearer and `x-acting-user-authorization`, so the request reaches relation validation rather than stopping at the authorization gate. Assert the status code alongside the message text, so a regression in either precondition is visible as itself.
+
 - [ ] **Step 3: Run both scenarios live and record the matrix.**
 
 - [ ] **Step 4: Commit**
@@ -563,11 +566,13 @@ git commit -m "add the naming-rejected and nav-property-rejected conformance sce
 
 - [ ] **Step 2: Register once** — only the .NET driver runs a `register` phase for S4. The other four must not: `SchemaRegistry.RegisterAsync` replaces the stored descriptor wholesale, so five registrations would leave four overwrites of the descriptor under test.
 
-- [ ] **Step 3: Write, then cross-read** — every language writes one row under its own run-scoped UUID key; the orchestrator collects all five `keys` maps from the write phase and hands the union to every driver's `read` phase via `--keys`; every language reads all five rows. Each driver's `read` phase iterates the five language entries for `shared_article` — that is what produces twenty-five reads rather than five. Assert all twenty-five reads agree on the foreign-key value.
+- [ ] **Step 3: Re-register once with row permissions** — after the .NET driver's `register` phase for S4 and before any driver's `write` phase, the orchestrator re-registers `SharedAuthor` and `SharedArticle` from the .NET driver's reported `TypeDescriptor` with the authorization block set, exactly as S1 does. Once, not per language: the register-once rule of Step 2 applies to this step too.
 
-- [ ] **Step 4: Run S4 live and record the matrix.**
+- [ ] **Step 4: Write, then cross-read** — every language writes one row under its own run-scoped UUID key; the orchestrator collects all five `keys` maps from the write phase and hands the union to every driver's `read` phase via `--keys`; every language reads all five rows. Each driver's `read` phase iterates the five language entries for `shared_article` — that is what produces twenty-five reads rather than five. Assert all twenty-five reads agree on the foreign-key value.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 5: Run S4 live and record the matrix.**
+
+- [ ] **Step 6: Commit**
 ```bash
 git add Iverson.Server/Iverson.ClientConformance Iverson.Clients
 git commit -m "add the interop conformance scenario"
