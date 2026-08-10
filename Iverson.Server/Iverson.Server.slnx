@@ -2,6 +2,7 @@
   <Project Path="Iverson.Api.Tests/Iverson.Api.Tests.csproj" />
   <Project Path="Iverson.Api/Iverson.Api.csproj" />
   <Project Path="Iverson.ClientConformance/Iverson.ClientConformance.csproj" />
+  <Project Path="Iverson.ClientConformance.Tests/Iverson.ClientConformance.Tests.csproj" />
   <Project Path="Iverson.Embeddings.Tests/Iverson.Embeddings.Tests.csproj" />
   <Project Path="Iverson.Embeddings/Iverson.Embeddings.csproj" />
   <Project Path="Iverson.Events.Tests/Iverson.Events.Tests.csproj" />
