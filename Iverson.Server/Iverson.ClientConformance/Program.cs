@@ -11,7 +11,9 @@ if (flags.ShowHelp)
 
 var grpcUrl = Env("IVERSON_GRPC_URL", "http://localhost:8080");
 var postgresCs = Env("IVERSON_POSTGRES_CS", "Host=localhost;Port=5432;Database=iverson;Username=iverson;Password=iverson");
-var authentikBaseUrl = Env("IVERSON_ACTING_USER_BASE_URL", "http://localhost:9000");
+// Single source of truth for the Authentik base URL — TokenBroker derives it the same way, so
+// Preflight and TokenBroker never diverge on which host they check/hit.
+var authentikBaseUrl = TokenBroker.DeriveAuthentikBaseUrl(Environment.GetEnvironmentVariable("IVERSON_TOKEN_ENDPOINT"));
 
 Console.WriteLine("Running preflight checks...");
 var preflight = new Preflight(grpcUrl, authentikBaseUrl, postgresCs);

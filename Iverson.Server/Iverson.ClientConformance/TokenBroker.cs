@@ -41,9 +41,7 @@ public sealed class TokenBroker : IDisposable
         var actingUserBypassUsername = Env("IVERSON_ACTING_USER_BYPASS_USERNAME", "iverson-loadtest-bypass-user");
         var actingUserBypassPassword = Env("IVERSON_ACTING_USER_BYPASS_PASSWORD", "dev-only-not-for-production-bypass-password-0123456789");
         var actingUserHostHeader = Env("IVERSON_ACTING_USER_HOST_HEADER", "authentik-server:9000");
-        var actingUserBaseUrl = tokenEndpoint is not null
-            ? tokenEndpoint[..tokenEndpoint.IndexOf("/application/o/token/", StringComparison.Ordinal)]
-            : "http://localhost:9000";
+        var actingUserBaseUrl = DeriveAuthentikBaseUrl(tokenEndpoint);
         // Compose is the only target this task supports; a "kind" target would need the same
         // cache-path vocabulary mapping LoadTest's Program.cs does ("containers"/"kind" ->
         // "compose"/"kind"), which is out of scope until a --target flag exists.
@@ -55,6 +53,17 @@ public sealed class TokenBroker : IDisposable
                 actingUserBaseUrl, actingUserHostHeader, actingUserCacheTarget),
             loggerFactory.CreateLogger<AuthentikFlowExecutorClient>()));
     }
+
+    /// <summary>
+    /// Derives the Authentik base URL the same way <c>Iverson.LoadTest/Program.cs:48-51</c> does:
+    /// strip the token endpoint down to its origin when <c>IVERSON_TOKEN_ENDPOINT</c> is set,
+    /// otherwise fall back to the compose default. This is the single source of truth for the
+    /// value — <see cref="Program"/> computes it once here and feeds the same string to both
+    /// <see cref="TokenBroker"/> and <see cref="Preflight"/> so the two never diverge.
+    /// </summary>
+    public static string DeriveAuthentikBaseUrl(string? tokenEndpoint) => tokenEndpoint is not null
+        ? tokenEndpoint[..tokenEndpoint.IndexOf("/application/o/token/", StringComparison.Ordinal)]
+        : "http://localhost:9000";
 
     public Task<string> GetActingTokenAsync(CancellationToken ct = default) =>
         _actingUserTokenProvider.GetTokenAsync(ct);
