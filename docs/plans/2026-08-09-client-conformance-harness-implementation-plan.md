@@ -127,6 +127,7 @@ Newly introduced by this plan and verified at plan-write time.
 | 35 | Consumer impact | CodeQL builds C# with `autobuild`, Go with `autobuild`, and Java with an explicit `mvn -B -f Iverson.Clients/Java/pom.xml -DskipTests clean install` — so the new .NET projects, the Go package and the new Maven module must all compile in CI without a live server | `.github/workflows/codeql.yml` |
 | 36 | Consumer impact | Python's `conformance/` is invisible to `pytest` (`testpaths = ["tests"]`) and to packaging (`include = ["iverson_client*"]`) | `Python/pyproject.toml` |
 | 37 | Signature | Reads and authorization are scoped by the acting user's `tenant_id` **claim**, not by the driver's `--tenant` flag: the row fetch passes the claim as its tenant, and an empty claim short-circuits to `Denied` | `ObjectRetrievalGrpcService.cs:34-38`; `RowFieldAuthorizationEvaluator.cs:18-22` |
+| 38 | Code validity | The Postgres and `MappingGet` legs are both keyed by the descriptor's property names (`row_to_json` over columns created verbatim from `prop.Name`; only the table name is snake-cased), while the driver leg is keyed by that language's own member naming | `EntityRepository.cs:7-9`; `SchemaBuilder.cs:30,52-54` |
 
 ## Tasks
 
@@ -232,7 +233,7 @@ The phase enum is `register`, `write`, `read`, `update`, `delete` and it partiti
 | Go | `go build -o bin/conformance ./conformance` (cwd `Iverson.Clients/Go`) | `bin/conformance <flags>` |
 | Java | `mvn -B -f Iverson.Clients/Java/pom.xml -pl conformance -am -DskipTests package` | `java -jar Iverson.Clients/Java/conformance/target/iverson-conformance-driver.jar <flags>` |
 
-A build command that fails because its toolchain is absent is what produces the `skip (<tool> not found)` row for that language. Absent toolchain (`mvn`, `go`, `python3`, `npm`, `dotnet` not on PATH, or a build that fails on a missing toolchain) records `skip (<tool> not found)` for that language's whole row and leaves the other four running. Non-zero exit is a driver break: the row fails with captured stderr. Phases after `register` receive `--keys <json>`, the accumulated logical-name-to-key map; every driver's `write` phase output feeds it.
+A build command that fails because its toolchain is absent is what produces the `skip (<tool> not found)` row for that language. Absent toolchain (`mvn`, `go`, `python3`, `npm`, `dotnet` not on PATH, or a build that fails on a missing toolchain) records `skip (<tool> not found)` for that language's whole row and leaves the other four running. Non-zero exit is a driver break: the row fails with captured stderr. Phases after `register` receive `--keys <json>` in the form `{"<language>": {"<logical name>": "<uuid>"}}`. Each driver's `write` document reports only its own inner logical-name-to-key map; the orchestrator adds the language key, which it already knows because it invoked the driver. Language-qualifying the key space is what lets S4 address five rows that share a logical name.
 
 - [ ] **Step 3: Implement `Reregistrar`** — take the driver's reported `TypeDescriptor` verbatim, parse it back into the proto message, set **only** `Authorization`, and call `RegisterSchema`. Nothing else may change: `SchemaRegistry.RegisterAsync` replaces the stored descriptor wholesale (`SchemaRegistry.cs:47-56`), so a reconstructed shape would overwrite the very relation descriptor S1's depth-1 check exists to inspect.
 ```csharp
@@ -503,6 +504,8 @@ Against the descriptor the driver reported: for `ManyToOne` and `OneToOne`, `pro
 
 - [ ] **Step 3: Implement the three-way comparison** — the driver's reported entity, the orchestrator's own `MappingGet`, and the Postgres row must agree. Report which pair disagrees: driver vs gRPC isolates the client's read path; gRPC vs Postgres isolates the server's read path; both agreeing but differing from what was written isolates the write path.
 
+The comparison is over a named set of values — the key and each relation's foreign key — not whole documents. Each leg's field is resolved by case-insensitive match with separator characters removed, so `py_author_id`, `pyAuthorId` and `PyAuthorId` resolve alike, and UUID values are compared parsed rather than as strings. That named set is also what the report prints as the three observed values.
+
 - [ ] **Step 4: Sequence S1**
 ```
 driver register  →  orchestrator re-register with row permissions
@@ -560,7 +563,7 @@ git commit -m "add the naming-rejected and nav-property-rejected conformance sce
 
 - [ ] **Step 2: Register once** — only the .NET driver runs a `register` phase for S4. The other four must not: `SchemaRegistry.RegisterAsync` replaces the stored descriptor wholesale, so five registrations would leave four overwrites of the descriptor under test.
 
-- [ ] **Step 3: Write, then cross-read** — every language writes one row under its own run-scoped UUID key; the orchestrator collects all five `keys` maps from the write phase and hands the union to every driver's `read` phase via `--keys`; every language reads all five rows. Assert all twenty-five reads agree on the foreign-key value.
+- [ ] **Step 3: Write, then cross-read** — every language writes one row under its own run-scoped UUID key; the orchestrator collects all five `keys` maps from the write phase and hands the union to every driver's `read` phase via `--keys`; every language reads all five rows. Each driver's `read` phase iterates the five language entries for `shared_article` — that is what produces twenty-five reads rather than five. Assert all twenty-five reads agree on the foreign-key value.
 
 - [ ] **Step 4: Run S4 live and record the matrix.**
 
