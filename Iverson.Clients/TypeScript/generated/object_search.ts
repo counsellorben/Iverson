@@ -20,8 +20,8 @@ import {
   type ServiceError,
   type UntypedServiceImplementation,
 } from "@grpc/grpc-js";
-import { Struct } from "./google/protobuf/struct";
-import { DoubleValue } from "./google/protobuf/wrappers";
+import { Struct } from "./google/protobuf/struct.js";
+import { DoubleValue } from "./google/protobuf/wrappers.js";
 
 export const protobufPackage = "iverson";
 

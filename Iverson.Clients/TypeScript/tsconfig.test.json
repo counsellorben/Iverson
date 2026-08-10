@@ -12,5 +12,5 @@
   "compilerOptions": {
     "noEmit": true
   },
-  "include": ["src/**/*", "generated/**/*", "tests/**/*", "sample/**/*", "vitest.config.ts"]
+  "include": ["src/**/*", "generated/**/*", "tests/**/*", "sample/**/*", "conformance/**/*", "vitest.config.ts"]
 }
