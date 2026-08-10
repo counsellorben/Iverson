@@ -41,7 +41,7 @@ A single orchestrator drives five thin drivers as subprocesses.
 Iverson.Server/Iverson.ClientConformance/     orchestrator (.NET)
   Program.cs        CLI: --languages, --scenarios, --json <path>, --keep
   TokenBroker.cs    mints both tokens once, via Iverson.LoadTest's auth
-  DriverRunner.cs   builds and execs one driver, reads its JSON output
+  DriverRunner.cs   builds a driver and execs it once per phase, reading each phase's JSON output
   Verifier.cs       owns every assertion
   Scenarios/        per-scenario expectations
   Report.cs         console matrix + machine-readable JSON
@@ -70,22 +70,32 @@ all. Assertions live in exactly one place.
 ### Driver protocol
 
 A driver is a subprocess with a fixed contract. It has no test framework, no assertions, and no
-knowledge of expected values.
+knowledge of expected values. It is invoked once per **phase** — `register`, `write`, `read`,
+`delete` — rather than once per scenario, so the orchestrator can run its own assertions between
+phases, and can hand a later phase the keys an earlier one reported.
 
 **Invocation:**
 
 ```
-<driver> --scenario crud-roundtrip --type PyArticle --tenant tenant-bypass \
+<driver> --scenario crud-roundtrip --phase write --type PyArticle --tenant tenant-bypass \
          --grpc http://localhost:8080 --token <T> --acting-token <A> \
-         --id-prefix run7a3f --out /tmp/py-crud.json
+         --id-prefix run7a3f --out /tmp/py-crud-write.json
 ```
 
-**Output** is one JSON document written to the `--out` path. Stdout is deliberately not used:
+Phases after `register` also take `--keys <json>`, the map of logical name to key collected from
+every driver's `write` phase.
+
+**Output** is one JSON document per phase, written to that phase's `--out` path. Stdout is
+deliberately not used:
 TypeScript's `console.log` and Java's SLF4J default output would corrupt it.
+
+Each document carries only its own phase's steps; the shapes below show all four phases together
+for reference.
 
 ```json
 {
   "language": "python",
+  "phase": "write",
   "steps": [
     {"name": "register", "ok": true,
      "typeDescriptor": { … the exact TypeDescriptor the client sent, serialized … }},
@@ -142,15 +152,19 @@ reshapes production clients that this harness exists to test, for the benefit of
 `one_to_many`, and `{Lang}Article` carrying a `many_to_one` to it plus a `many_to_many` to
 `{Lang}Tag`.
 
-| Step | Proves |
-|---|---|
-| register both types | FK column declared under the inferred name; `one_to_many` declares none |
-| write author, tag, article with both FKs | m2o FK persists; m2m ids arrive as a `ListValue`, not a string |
-| get article (depth 0) | FK reads back into the client's own typed member |
-| *orchestrator* reads at depth 1 | FK survives hydration and the nav property appears beside it |
-| *orchestrator* reads the author at depth 1 | `one_to_many` resolves: the article list hydrates from the reverse foreign-key lookup |
-| update title | write path works against an existing row |
-| delete | row gone; a subsequent get reports not-found |
+| Phase | Step | Proves |
+|---|---|---|
+| *driver* `register` | register both types | FK column declared under the inferred name; `one_to_many` declares none |
+| *orchestrator* | re-register with row permissions | the schema is writable at all (A7) |
+| *driver* `write` | write author, tag, article with both FKs | m2o FK persists; m2m ids arrive as a `ListValue`, not a string |
+| *driver* `read` | get article (depth 0) | FK reads back into the client's own typed member |
+| *orchestrator* | read the article at depth 1 | FK survives hydration and the nav property appears beside it |
+| *orchestrator* | read the author at depth 1 | `one_to_many` resolves: the article list hydrates from the reverse foreign-key lookup |
+| *driver* `write` | update title | write path works against an existing row |
+| *driver* `delete` | delete | row gone; a subsequent get reports not-found |
+
+The phase boundaries are what make this order real: the driver exits between phases, so the
+orchestrator's rows run against live data rather than after the driver has deleted it.
 
 The many-to-many leg is deliberate: Go, Python and TypeScript each had a value-ladder gap there, and
 Go's write path serialized slices as `null`.
@@ -179,6 +193,9 @@ naming both the property and the foreign key.
 `SharedArticle` once. Every language writes one row under its own run-scoped UUID key, then every
 language reads all five rows. The orchestrator asserts all twenty-five reads agree on the foreign
 key value.
+
+Each driver's `read` phase receives every driver's keys via `--keys`, which is what makes the
+cross-language reads addressable.
 
 S4 is the only scenario that can catch two clients disagreeing about the wire format while each
 passes its own isolated test. Its cost is a second entity declaration per driver.
