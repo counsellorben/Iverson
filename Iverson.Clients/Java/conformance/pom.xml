@@ -1,0 +1,82 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0
+                             http://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <parent>
+    <groupId>io.iverson</groupId>
+    <artifactId>iverson-client-java</artifactId>
+    <version>1.0.0-SNAPSHOT</version>
+  </parent>
+
+  <artifactId>iverson-conformance</artifactId>
+  <packaging>jar</packaging>
+  <name>Iverson Conformance Driver</name>
+
+  <build>
+    <!-- DriverRunner execs `java -jar Iverson.Clients/Java/conformance/target/iverson-conformance-driver.jar`,
+         so the shaded runnable jar produced below must land at exactly this path. -->
+    <finalName>iverson-conformance-driver</finalName>
+    <plugins>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-compiler-plugin</artifactId>
+        <version>3.13.0</version>
+        <configuration>
+          <source>21</source>
+          <target>21</target>
+        </configuration>
+      </plugin>
+
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-shade-plugin</artifactId>
+        <version>3.5.1</version>
+        <executions>
+          <execution>
+            <phase>package</phase>
+            <goals>
+              <goal>shade</goal>
+            </goals>
+            <configuration>
+              <transformers>
+                <transformer implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
+                  <mainClass>io.iverson.conformance.Driver</mainClass>
+                </transformer>
+                <!--
+                  Without this, grpc-core's and grpc-netty-shaded's identically-pathed
+                  META-INF/services/io.grpc.NameResolverProvider files collide and the shade
+                  plugin's default "keep one, drop the rest" behaviour silently discards the DNS
+                  resolver registration, leaving only a non-functional fallback resolver — every
+                  channel build then fails immediately. This transformer merges same-path service
+                  files across jars instead of overwriting.
+                -->
+                <transformer implementation="org.apache.maven.plugins.shade.resource.ServicesResourceTransformer" />
+              </transformers>
+            </configuration>
+          </execution>
+        </executions>
+      </plugin>
+    </plugins>
+  </build>
+
+  <dependencies>
+    <dependency>
+      <groupId>io.iverson</groupId>
+      <artifactId>iverson-client</artifactId>
+      <version>${project.version}</version>
+    </dependency>
+
+    <!--
+      protobuf-java-util is `<scope>test</scope>` in client/pom.xml (only used there for
+      cross-language golden-fixture tests), so it is not inherited for main code. The driver
+      needs JsonFormat at compile scope to serialize the captured TypeDescriptor.
+    -->
+    <dependency>
+      <groupId>com.google.protobuf</groupId>
+      <artifactId>protobuf-java-util</artifactId>
+    </dependency>
+  </dependencies>
+</project>
