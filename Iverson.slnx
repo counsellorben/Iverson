@@ -1,6 +1,7 @@
 <Solution>
   <Folder Name="/Iverson.Clients/DotNet/">
     <Project Path="Iverson.Clients/DotNet/Iverson.Client.Attributes/Iverson.Client.Attributes.csproj" />
+    <Project Path="Iverson.Clients/DotNet/Iverson.Client.Conformance.Driver/Iverson.Client.Conformance.Driver.csproj" />
     <Project Path="Iverson.Clients/DotNet/Iverson.Client.Contracts/Iverson.Client.Contracts.csproj" />
     <Project Path="Iverson.Clients/DotNet/Iverson.Client.Core.Tests/Iverson.Client.Core.Tests.csproj" />
     <Project Path="Iverson.Clients/DotNet/Iverson.Client.Core/Iverson.Client.Core.csproj" />
