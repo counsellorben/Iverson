@@ -150,12 +150,12 @@ public sealed class DriverRunner
                 var build = (ProcessOutcome.Completed)buildResult;
                 if (build.ExitCode != 0)
                 {
-                    // A build failure this early in the harness's life (no driver code exists
-                    // yet) is expected to be toolchain absence, not a real build break — the
-                    // brief treats both the same way: skip the whole row.
-                    var skipReason = $"skip ({spec.BuildCommand} build failed)";
-                    _skippedLanguages[spec.Language] = skipReason;
-                    outcomes.Add(new DriverPhaseOutcome.Skipped(spec.Language, skipReason));
+                    // The tool itself ran (Process.Start succeeded — see the ToolMissing branch
+                    // above for the "not on PATH" case) and exited non-zero. That is a genuine
+                    // build break, not toolchain absence, and must surface as Broken with its
+                    // stderr so a real compile error (e.g. once Tasks 3-7 land driver code) is
+                    // never silently reported as a skip.
+                    outcomes.Add(new DriverPhaseOutcome.Broken(spec.Language, build.ExitCode, build.Stderr));
                     continue;
                 }
 
