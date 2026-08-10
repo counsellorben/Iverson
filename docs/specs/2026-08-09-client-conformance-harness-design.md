@@ -71,7 +71,7 @@ all. Assertions live in exactly one place.
 
 A driver is a subprocess with a fixed contract. It has no test framework, no assertions, and no
 knowledge of expected values. It is invoked once per **phase** — `register`, `write`, `read`,
-`delete` — rather than once per scenario, so the orchestrator can run its own assertions between
+`update`, `delete` — rather than once per scenario, so the orchestrator can run its own assertions between
 phases, and can hand a later phase the keys an earlier one reported.
 
 **Invocation:**
@@ -89,13 +89,13 @@ every driver's `write` phase.
 deliberately not used:
 TypeScript's `console.log` and Java's SLF4J default output would corrupt it.
 
-Each document carries only its own phase's steps; the shapes below show all four phases together
+Each document carries only its own phase's steps; the shapes below show all five phases together
 for reference.
 
 ```json
 {
   "language": "python",
-  "phase": "write",
+  "phase": "<the one phase this document covers>",
   "steps": [
     {"name": "register", "ok": true,
      "typeDescriptor": { … the exact TypeDescriptor the client sent, serialized … }},
@@ -160,7 +160,7 @@ reshapes production clients that this harness exists to test, for the benefit of
 | *driver* `read` | get article (depth 0) | FK reads back into the client's own typed member |
 | *orchestrator* | read the article at depth 1 | FK survives hydration and the nav property appears beside it |
 | *orchestrator* | read the author at depth 1 | `one_to_many` resolves: the article list hydrates from the reverse foreign-key lookup |
-| *driver* `write` | update title | write path works against an existing row |
+| *driver* `update` | update title | write path works against an existing row |
 | *driver* `delete` | delete | row gone; a subsequent get reports not-found |
 
 The phase boundaries are what make this order real: the driver exits between phases, so the
