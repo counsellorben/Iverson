@@ -220,6 +220,25 @@ class SchemaRegistrarTest {
         assertTrue(keyProp.getIsKey());
     }
 
+    @Test
+    void registerAll_keyField_appearsExactlyOnce_inPropertiesList() {
+        ArgumentCaptor<SchemaRequest> captor = ArgumentCaptor.forClass(SchemaRequest.class);
+
+        sut.registerAll(SchemaTestAuthor.class);
+
+        verify(mockStub).registerSchema(captor.capture());
+        TypeDescriptor typeDesc = captor.getValue().getRootType();
+
+        List<PropertyDescriptor> idProps = typeDesc.getPropertiesList().stream()
+            .filter(p -> p.getName().equals("Id"))
+            .toList();
+
+        assertEquals(1, idProps.size(),
+            "key field must appear exactly once in the properties list, not once as key and "
+                + "once again as a non-key duplicate");
+        assertTrue(idProps.get(0).getIsKey());
+    }
+
     // ── registerAll: navigation properties skipped ────────────────────────────
 
     @Test

@@ -78,11 +78,12 @@ public final class SchemaRegistrar {
         }
 
         // Collect nav property field names (annotated with any relation annotation)
+        List<Field> allFields = getAllFields(cls);
         Set<String> navFieldNames = new HashSet<>();
         Field keyField = null;
         List<Field> tenantFields = new ArrayList<>();
 
-        for (Field field : getAllFields(cls)) {
+        for (Field field : allFields) {
             if (field.getAnnotation(IversonKey.class) != null) {
                 keyField = field;
             }
@@ -105,8 +106,8 @@ public final class SchemaRegistrar {
         builder.addProperties(buildKeyDescriptor(keyField));
 
         // Non-key scalar properties
-        for (Field field : getAllFields(cls)) {
-            if (field == keyField) continue;
+        for (Field field : allFields) {
+            if (field.getName().equals(keyField.getName())) continue;
             if (navFieldNames.contains(field.getName())) continue;
             PropertyDescriptor pd = tryBuildPropertyDescriptor(field);
             if (pd != null) builder.addProperties(pd);
@@ -115,7 +116,7 @@ public final class SchemaRegistrar {
         builder.setTenantField(resolveTenantField(cls, tenantFields));
 
         // Relation descriptors
-        for (Field field : getAllFields(cls)) {
+        for (Field field : allFields) {
             if (!isRelationField(field)) continue;
             RelationDescriptor rd = buildRelationDescriptor(field, cls.getSimpleName());
             if (rd != null) builder.addRelations(rd);
