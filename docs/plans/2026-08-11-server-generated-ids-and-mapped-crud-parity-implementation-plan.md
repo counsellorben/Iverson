@@ -98,6 +98,10 @@ Newly introduced by this plan and verified against the codebase on 2026-08-11 at
 | PA25 | Command | The load test needs its own build command — it is **not** in the solution | `Iverson.slnx` lists no `Iverson.LoadTest` project; the csproj is at `Iverson.Server/Iverson.LoadTest/Iverson.LoadTest.csproj` |
 | PA26 | Task ordering | Tasks 2–7 touch pairwise-disjoint file sets and consume no symbol any other introduces; only Task 1 is a prerequisite (it defines the contract the samples and load test are corrected for) | File sets per task listed under "File Structure" share no path. Task 1 changes server-internal code only; no client or sample references `AssignNewKey` |
 | PA27 | Test convention | Each language's coordinator-test mocking convention, which the new tests must follow rather than invent | Go: white-box `package iverson` with a hand-written mock struct and a `newTestCoordinator` helper (`coordinator_test.go:447-454`). Python: `MagicMock()` swapped onto the private stub attribute (`test_entity_coordinator.py:39-46`). TypeScript: vitest with `makeClientLike({ _mappingClient: … })` (`core.test.ts:105-118`). Java: `@Mock` + `MockitoExtension` (`EntityCoordinatorTest.java:17-19`). .NET: `Substitute.For<…Client>()` returning a hand-constructed `AsyncUnaryCall<T>` (`EntityCoordinatorPersistAsyncTests.cs:23-36`) |
+| PA28 | Test fixture | Both service-test fixtures' default acting user carries a role that passes the write-authorization gate, so Task 1's new rejection tests reach `AssignNewKey` rather than the auth gate | `ObjectMappingGrpcServiceTests.cs:86-87` sets `ActingUserFixtures.Principal("test-user", "test-bypass")`; `MakeSchema` (`:136-139`) and `SchemaFixtures.AuthorSchema()` both grant `test-bypass` full row permissions |
+| PA29 | Test convention | Mockito can stub and verify `withOption`, which is `final` on `AbstractStub` | `EntityCoordinatorTest.java:58,89` stubs and verifies it against the search stub today under Mockito 5.14.2's default inline mock maker (`pom.xml:30`). `SchemaRegistrarTest.java:757-760`'s caveat is that a mock answers the RPC regardless of call options — not that verification is impossible |
+| PA30 | Code validity | The .NET sample is a top-level program, so Task 6's early `return 1;` is legal | `Iverson.Client.Sample/Program.cs` declares no `static … Main(`; the file opens with `using` directives followed by top-level statements |
+| PA31 | Test convention | `MakePayload` has a keyless form usable for Task 1's `:707` repair | `ObjectMappingGrpcServiceTests.cs:117` — the dictionary overload accepts `MakePayload(new())` |
 
 ---
 
@@ -717,14 +721,22 @@ git commit -m "add mapped CRUD to the TypeScript client coordinator and stop the
 
 **Files:**
 - Modify: `Iverson.Clients/Java/client/src/main/java/io/iverson/client/core/EntityCoordinator.java`
-- Modify: `Iverson.Clients/Java/sample/src/main/java/io/iverson/sample/Main.java:43-46,51-65`
+- Modify: `Iverson.Clients/Java/sample/src/main/java/io/iverson/sample/Main.java:33,43-69`
 - Test: `Iverson.Clients/Java/client/src/test/java/io/iverson/client/core/EntityCoordinatorTest.java`
 
 - [ ] **Step 1: Write the three tests (they fail — the methods do not exist yet)**
 
 No new test seam is needed: `IversonClient` already has a package-private constructor taking only a mapping stub (`IversonClient.java:85-91`, used at `SchemaRegistrarTest.java:746`) (PA7). Build the coordinator as `new EntityCoordinator<>(new IversonClient(mockMappingStub), CoordinatorTestArticle.class)`.
 
-Add a `@Mock ObjectMappingServiceGrpc.ObjectMappingServiceBlockingStub mockMappingStub` beside the existing search mock, following the file's `@Mock`/`MockitoExtension` convention (`:17-19`). Stub `withOption(any(), any())` to return the mock itself so `mappingStubFor` is transparent in tests. Assert with an `ArgumentCaptor` on the sent request:
+Add a `@Mock ObjectMappingServiceGrpc.ObjectMappingServiceBlockingStub mockMappingStub` beside the existing search mock, following the file's `@Mock`/`MockitoExtension` convention (`:17-19`). Declare the `withOption` stub **`lenient()`**, exactly as `:57-58` does for the search stub and for the same reason: `MockitoExtension` defaults to `STRICT_STUBS`, which fails the class with `UnnecessaryStubbingException` if any test never exercises the stub — such as a null-token case following the `verify(mockStub, never()).withOption(any(), any())` pattern at `:99`.
+
+```java
+lenient().when(mockMappingStub.withOption(
+        eq(OAuth2ClientCredentials.ACTING_USER_TOKEN), anyString()))
+    .thenReturn(mockMappingStub);
+```
+
+Assert with an `ArgumentCaptor` on the sent request:
 - `getMappedPassesDepthThrough`
 - `postMappedReturnsEntityHydratedFromData`
 - `updateMappedSendsTheKeyItWasGiven`
@@ -802,17 +814,39 @@ Place them in a new `// ── Object Mapping (full CRUD with relation resolutio
 
 `getMapped` returns `null` on an unsuccessful response, matching `get`'s not-found convention (`:111`); the writes throw `StatusRuntimeException`, matching `persist`/`update` (`:79`, `:95`).
 
-- [ ] **Step 4: Fix the sample's client-minted keys and dangling FK**
+- [ ] **Step 4: Give the sample an identity and route its writes through the mapped path**
 
-`Main.java` currently mints an author UUID, persists (the server discards it), then uses that discarded UUID as the article's `authorId` — the same bug spec §3 documents for the .NET sample. Rewrite `:43-65`:
+`Main.java` currently mints an author UUID, persists (the server discards it), then uses that discarded UUID as the article's `authorId` — the same bug spec §3 documents for the .NET sample. It also cannot complete any write at all: `new IversonClient("localhost", 5000)` attaches no `CallCredentials` (`IversonClient.java:43-44` delegating to the no-credentials ctor at `:50-57`), and Java's `persist` attaches no acting-user token, which the server requires (`RowFieldAuthorizationEvaluator.cs:14-15`). Correcting only the key would leave the FK fix undemonstrable, so the writes move to `postMapped`, which Step 3 above gives an `actingUserToken` parameter.
+
+Replace the client construction at `:33`:
 
 ```java
+        String actingUserToken = System.getenv("IVERSON_ACTING_USER_TOKEN");
+        if (actingUserToken == null || actingUserToken.isBlank()) {
+            System.err.println(
+                "IVERSON_ACTING_USER_TOKEN is not set. Every Iverson write is denied without an\n"
+                    + "acting user, so this sample cannot seed anything. Export a user access token and re-run.");
+            return;
+        }
+
+        try (IversonClient client = new IversonClient(
+                "localhost", 5000,
+                new OAuth2ClientCredentials(
+                    System.getenv("IVERSON_CLIENT_ID"),
+                    System.getenv("IVERSON_CLIENT_SECRET"),
+                    System.getenv("IVERSON_TOKEN_ENDPOINT"),
+                    "admin schema_admin"))) {
+```
+
+Then replace the write and retrieve section at `:43-69`:
+
+```java
+            // The server assigns the key and returns the stored entity. Write order is
+            // load-bearing: the author must exist before an article can reference it.
             Author author = new Author(null, "Jane Smith", "jane@example.com");
             author.setTenantId(TENANT_ID);
-            // The server assigns the key; persist returns it. Write order is load-bearing:
-            // the author must exist before an article can reference it.
-            String persistedAuthorId = authorCoordinator.persist(author);
-            System.out.println("Persisted author: " + persistedAuthorId);
+            Author persistedAuthor = authorCoordinator.postMapped(author, actingUserToken);
+            System.out.println("Persisted author: " + persistedAuthor.getId());
 
             // ── Persist an article ─────────────────────────────────────────────
             EntityCoordinator<Article> articleCoordinator =
@@ -825,11 +859,22 @@ Place them in a new `// ── Object Mapping (full CRUD with relation resolutio
                 "technology",
                 850,
                 OffsetDateTime.now(),
-                UUID.fromString(persistedAuthorId)
+                persistedAuthor.getId()
             );
+            article.setTenantId(TENANT_ID);
+
+            Article persistedArticle = articleCoordinator.postMapped(article, actingUserToken);
+            System.out.println("Persisted article: " + persistedArticle.getId());
+
+            // ── Retrieve by key ────────────────────────────────────────────────
+            Article fetched = articleCoordinator.getMapped(
+                persistedArticle.getId().toString(), 1, actingUserToken);
+            System.out.println("Fetched: " + fetched);
 ```
 
-A null `UUID` serializes to `NullValue`, which the server reads as absent (PA14), so both `null` key arguments are accepted. `UUID.fromString(persistedAuthorId)` is the Java analogue of the .NET sample's `Guid.Parse` friction — the honest cost of not mutating the caller's entity. The `java.util.UUID` import (`:13`) is still needed for that call.
+A null `UUID` serializes to `NullValue`, which the server reads as absent (PA14), so both `null` key arguments are accepted. Because `postMapped` returns the stored entity, `persistedAuthor.getId()` is already a `UUID` — there is no `UUID.fromString` parse, which is precisely the round-trip §2 exists to enable. Two import consequences: `java.util.UUID` (`:13`) becomes unused once both `randomUUID()` calls are gone and should be removed; `OAuth2ClientCredentials` must be imported.
+
+The `get` at `:69` moves to `getMapped` so the fetch carries the same identity; left as `get` it returns `null` and the sample prints `Fetched: null`. The `search` calls at `:87-98` keep the token-less `search` overload and will return empty — that is the pre-existing Java data-plane gap spec §2 deliberately left in place, and it is out of scope here.
 
 - [ ] **Step 5: Run tests**
 
@@ -1021,7 +1066,7 @@ var ua1 = await userArticles.PostMappedAsync(new UserArticle
 | `:204` `EqualTo, userId` | `EqualTo, Guid.Parse(userId!)` — `Where`'s value is bound to the property's `Guid` type (PA16) |
 | `:319-322` the four `DeleteAsync(…Id.ToString())` | `ua1!.Id.ToString()`, `ua2!.Id.ToString()`, `article1!.Id.ToString()`, `article2!.Id.ToString()` |
 
-Add `headers` to the three mapped read/update calls at `:140`, `:144`, `:148`, `:152`, `:159`, `:164` as well — they are authorized the same way writes are.
+Add `headers` to all six mapped read/update calls — `:140`, `:144`, `:148`, `:152` and `:164` (`GetMappedAsync`) and `:159` (`UpdateMappedAsync`) — they are authorized the same way writes are. Together with the four mapped writes in Step 4 (`:74`, `:85`, `:117`, `:125`), all ten mapped call sites in `Program.cs` take `headers`. Verify this mechanically rather than by count: no `GetMappedAsync`/`PostMappedAsync`/`UpdateMappedAsync` call in the file may be left without a `headers` argument. `GetMappedAsync` logs and returns `null` on an unsuccessful response (`EntityCoordinator.cs:46`) rather than throwing, so an un-headered read fails silently — the sample prints empty output instead of erroring, and no test covers the sample.
 
 - [ ] **Step 6: Build the sample and run the client tests**
 
