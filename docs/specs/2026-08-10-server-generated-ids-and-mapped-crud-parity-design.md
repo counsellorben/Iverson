@@ -105,13 +105,26 @@ five clients already generate and use its stub.
 
 | .NET (existing) | Python | TypeScript | Go | Java |
 |---|---|---|---|---|
-| `GetMappedAsync(key, depth = 1)` | `get_mapped(id, depth=1, trace_id="")` | `getMapped(id, depth=1, traceId='')` | `GetMapped(ctx, id, depth int32)` | `getMapped(String id, int depth)` |
-| `PostMappedAsync(entity)` | `post_mapped(entity, trace_id="")` | `postMapped(entity, traceId='')` | `PostMapped(ctx, entity T)` | `postMapped(T entity)` |
-| `UpdateMappedAsync(entity)` | `update_mapped(entity, trace_id="")` | `updateMapped(entity, traceId='')` | `UpdateMapped(ctx, entity T)` | `updateMapped(T entity)` |
+| `GetMappedAsync(key, depth = 1)` | `get_mapped(id, depth=1, trace_id="")` | `getMapped(id, depth=1, traceId='')` | `GetMapped(ctx, id, depth int32)` | `getMapped(String id, int depth, String actingUserToken)` |
+| `PostMappedAsync(entity)` | `post_mapped(entity, trace_id="")` | `postMapped(entity, traceId='')` | `PostMapped(ctx, entity T)` | `postMapped(T entity, String actingUserToken)` |
+| `UpdateMappedAsync(entity)` | `update_mapped(entity, trace_id="")` | `updateMapped(entity, traceId='')` | `UpdateMapped(ctx, entity T)` | `updateMapped(T entity, String actingUserToken)` |
 
 Each body is the language's existing `persist`/`get` body with the stub and request type swapped for
 `MappingWriteRequest` / `MappingGetRequest` against the mapping stub, so each follows its own
-library's conventions rather than an imported one.
+library's conventions rather than an imported one, except for the credential handling below.
+
+**The mapped write path must carry the acting-user identity.** The server denies any write with no
+acting user (`RowFieldAuthorizationEvaluator.cs:14-15`), and that identity travels only in the
+`x-acting-user-authorization` header (`ActingUserInterceptor.cs:12,35-37`). Python, Go and TypeScript
+attach it to every call already, so their new methods inherit it. Java and .NET do not, and copying
+their existing `persist` bodies would produce methods denied for every type.
+
+- **Java** — the three new methods take the trailing `actingUserToken` parameter the search family
+  already uses (`EntityCoordinator.java:178,198,214`) and route through a mapping-stub equivalent of
+  `stubFor` (`:269-271`), rather than the bare `client.mappingStub` that `delete` uses (`:137`).
+- **.NET** — the three mapped methods gain `Metadata? headers = null`, mirroring `PersistAsync`
+  (`EntityCoordinator.cs:101`); callers pass `new Metadata().WithActingUser(token)`. The shared
+  `ObjectMappingServiceClient` keeps its schema-registration credentials untouched.
 
 **Return shape.** All three return an entity hydrated from `MappingResponse.Data` — Go `(T, error)`,
 Python `Optional[T]`, TypeScript `Promise<T>`, Java `T`. That response carries the server-assigned
@@ -271,3 +284,4 @@ marked.
 | A17 | **CHANGED.** An existing test asserts the old behaviour | `ObjectPersistenceGrpcServiceTests.cs:146` — `Post_IgnoresClientProvidedKey_AndAssignsServerKey` must be inverted and renamed |
 | A18 | Nothing depends on client-supplied keys being honoured | No re-post/import/backfill path exists; the only client-write callers outside tests are the two load-test sites in A16. Both absorb `InvalidArgument` as expected, so their breakage would be silent — recorded in section 4 |
 | A19 | No documentation describes client-assigned keys | No match across `README.md`, `CLAUDE.md` or `docs/` |
+| A20 | The mapped write path carries an acting-user identity in three of five clients only | Server denies when `actingUser` is null (`RowFieldAuthorizationEvaluator.cs:14-15`; `Denied` is the first positional field, `IRowFieldAuthorizationEvaluator.cs:16-17`), populated only from `x-acting-user-authorization` (`ActingUserInterceptor.cs:12,35-37,54`). Attached by Python (`core.py:662-664`), Go (`auth.go:52-53`), TypeScript (`core.ts:142-161`). **Not** attached by Java's data-plane methods (`EntityCoordinator.java:78,93,106,137`) or by .NET's mapping channel (`ServiceCollectionExtensions.cs:59-81`) |
