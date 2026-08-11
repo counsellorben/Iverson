@@ -102,6 +102,7 @@ Newly introduced by this plan and verified against the codebase on 2026-08-11 at
 | PA29 | Test convention | Mockito can stub and verify `withOption`, which is `final` on `AbstractStub` | `EntityCoordinatorTest.java:58,89` stubs and verifies it against the search stub today under Mockito 5.14.2's default inline mock maker (`pom.xml:30`). `SchemaRegistrarTest.java:757-760`'s caveat is that a mock answers the RPC regardless of call options — not that verification is impossible |
 | PA30 | Code validity | The .NET sample is a top-level program, so Task 6's early `return 1;` is legal | `Iverson.Client.Sample/Program.cs` declares no `static … Main(`; the file opens with `using` directives followed by top-level statements |
 | PA31 | Test convention | `MakePayload` has a keyless form usable for Task 1's `:707` repair | `ObjectMappingGrpcServiceTests.cs:117` — the dictionary overload accepts `MakePayload(new())` |
+| PA32 | Consumer impact | Authorization rules are supplied at registration, not declared on the model, and a type registered without them is denied for every read and write — so both samples must pass rules explicitly for their writes to succeed | `RowFieldAuthorizationEvaluator.cs:10-13` returns `AuthorizationDecision(Denied: true, …)` when `schema.Authorization is null`, and `Denied` is positional field 1 (`IRowFieldAuthorizationEvaluator.cs:16-17`); `SchemaBuilder.cs:148-150` passes a null `TypeDescriptor.Authorization` straight through; no authorization attribute exists in `Iverson.Client.Attributes/` and no such annotation in the Java client's `annotations/`; `Iverson.LoadTest/Program.cs:153-157` is the working in-repo example |
 
 ---
 
@@ -721,8 +722,10 @@ git commit -m "add mapped CRUD to the TypeScript client coordinator and stop the
 
 **Files:**
 - Modify: `Iverson.Clients/Java/client/src/main/java/io/iverson/client/core/EntityCoordinator.java`
-- Modify: `Iverson.Clients/Java/sample/src/main/java/io/iverson/sample/Main.java:33,43-69`
+- Modify: `Iverson.Clients/Java/client/src/main/java/io/iverson/client/core/SchemaRegistrar.java:49`
+- Modify: `Iverson.Clients/Java/sample/src/main/java/io/iverson/sample/Main.java:33,37,43-69`
 - Test: `Iverson.Clients/Java/client/src/test/java/io/iverson/client/core/EntityCoordinatorTest.java`
+- Test: `Iverson.Clients/Java/client/src/test/java/io/iverson/client/core/SchemaRegistrarTest.java`
 
 - [ ] **Step 1: Write the three tests (they fail — the methods do not exist yet)**
 
@@ -814,11 +817,41 @@ Place them in a new `// ── Object Mapping (full CRUD with relation resolutio
 
 `getMapped` returns `null` on an unsuccessful response, matching `get`'s not-found convention (`:111`); the writes throw `StatusRuntimeException`, matching `persist`/`update` (`:79`, `:95`).
 
-- [ ] **Step 4: Give the sample an identity and route its writes through the mapped path**
+- [ ] **Step 4: Add an authorization parameter to `SchemaRegistrar`, then give the sample an identity, rules and mapped writes**
 
-`Main.java` currently mints an author UUID, persists (the server discards it), then uses that discarded UUID as the article's `authorId` — the same bug spec §3 documents for the .NET sample. It also cannot complete any write at all: `new IversonClient("localhost", 5000)` attaches no `CallCredentials` (`IversonClient.java:43-44` delegating to the no-credentials ctor at `:50-57`), and Java's `persist` attaches no acting-user token, which the server requires (`RowFieldAuthorizationEvaluator.cs:14-15`). Correcting only the key would leave the FK fix undemonstrable, so the writes move to `postMapped`, which Step 3 above gives an `actingUserToken` parameter.
+`Main.java` currently mints an author UUID, persists (the server discards it), then uses that discarded UUID as the article's `authorId` — the same bug spec §3 documents for the .NET sample. It also cannot complete any write, for three independent reasons: `new IversonClient("localhost", 5000)` attaches no `CallCredentials` (`IversonClient.java:43-44` delegating to the no-credentials ctor at `:50-57`); Java's `persist` attaches no acting-user token, which the server requires (`RowFieldAuthorizationEvaluator.cs:14-15`); and Java's registrar cannot declare authorization rules at all, so every Java-registered type arrives with `Authorization = null`, which the evaluator denies unconditionally (PA32). Correcting only the key would leave the FK fix undemonstrable, so all three are addressed here.
 
-Replace the client construction at `:33`:
+First, widen `SchemaRegistrar.registerAll` to accept per-type rules, mirroring .NET's `RegisterAllAsync(IReadOnlyDictionary<string, AuthorizationRules>?, CancellationToken)` (`SchemaRegistrar.cs:19-31`). The existing signature stays and delegates, so this is not a breaking change:
+
+```java
+    public void registerAll(Class<?>... classes) {
+        registerAll(Map.of(), classes);
+    }
+
+    /**
+     * Same as {@link #registerAll(Class[])}, attaching per-type authorization rules. A type with
+     * no entry registers with no rules, which the server denies for every read and write — a null
+     * rule set is an unconditional deny, not an absence of restrictions.
+     */
+    public void registerAll(
+            Map<String, ObjectMapping.AuthorizationRules> authorizationByTypeName,
+            Class<?>... classes) {
+```
+
+Inside the loop, attach the rules when the map holds an entry for the type, leaving the proto field unset otherwise (an unset message field is what produces the server-side null):
+
+```java
+            TypeDescriptor.Builder descriptor = buildTypeDescriptor(cls).toBuilder();
+            ObjectMapping.AuthorizationRules rules =
+                authorizationByTypeName.get(cls.getSimpleName());
+            if (rules != null) descriptor.setAuthorization(rules);
+```
+
+`TypeDescriptor.authorization` is field 4 in the proto (`object_mapping.proto:99`), so the generated builder already carries `setAuthorization`; only the registrar's public surface was missing.
+
+Add one test to `SchemaRegistrarTest.java`, following that file's `mockStub` + `ArgumentCaptor` convention: the overload attaches the given rules to the sent `TypeDescriptor`, and a type absent from the map sends none. Without it the new public API path ships with no coverage.
+
+Then, in the sample, replace the client construction at `:33`:
 
 ```java
         String actingUserToken = System.getenv("IVERSON_ACTING_USER_TOKEN");
@@ -837,6 +870,23 @@ Replace the client construction at `:33`:
                     System.getenv("IVERSON_TOKEN_ENDPOINT"),
                     "admin schema_admin"))) {
 ```
+
+Declare rules at registration, replacing the `registrar.registerAll(...)` call at `:37`. `owner_field` is left empty — none of the three sample models carries an owner column — so a single bypass role carries authorization, mirroring `Iverson.LoadTest/Program.cs:289-296`:
+
+```java
+            ObjectMapping.AuthorizationRules sampleRules = ObjectMapping.AuthorizationRules.newBuilder()
+                .addRowPermissions(ObjectMapping.RowPermission.newBuilder()
+                    .setRole("iverson-sample-bypass")
+                    .setCanReadAll(true).setCanWriteAll(true).setCanDeleteAll(true))
+                .build();
+
+            SchemaRegistrar registrar = new SchemaRegistrar(client);
+            registrar.registerAll(
+                Map.of("Author", sampleRules, "Tag", sampleRules, "Article", sampleRules),
+                Author.class, Tag.class, Article.class);
+```
+
+The role is matched against the acting user's `groups` claim, so the identity behind `IVERSON_ACTING_USER_TOKEN` must belong to that Authentik group or every write is still denied.
 
 Then replace the write and retrieve section at `:43-69`:
 
@@ -872,7 +922,7 @@ Then replace the write and retrieve section at `:43-69`:
             System.out.println("Fetched: " + fetched);
 ```
 
-A null `UUID` serializes to `NullValue`, which the server reads as absent (PA14), so both `null` key arguments are accepted. Because `postMapped` returns the stored entity, `persistedAuthor.getId()` is already a `UUID` — there is no `UUID.fromString` parse, which is precisely the round-trip §2 exists to enable. Two import consequences: `java.util.UUID` (`:13`) becomes unused once both `randomUUID()` calls are gone and should be removed; `OAuth2ClientCredentials` must be imported.
+A null `UUID` serializes to `NullValue`, which the server reads as absent (PA14), so both `null` key arguments are accepted. Because `postMapped` returns the stored entity, `persistedAuthor.getId()` is already a `UUID` — there is no `UUID.fromString` parse, which is precisely the round-trip §2 exists to enable. Import consequences: `java.util.UUID` (`:13`) becomes unused once both `randomUUID()` calls are gone and should be removed; `OAuth2ClientCredentials`, `java.util.Map` and `iverson.ObjectMapping` must be imported.
 
 The `get` at `:69` moves to `getMapped` so the fetch carries the same identity; left as `get` it returns `null` and the sample prints `Fetched: null`. The `search` calls at `:87-98` keep the token-less `search` overload and will return empty — that is the pre-existing Java data-plane gap spec §2 deliberately left in place, and it is out of scope here.
 
@@ -968,7 +1018,7 @@ public async Task<T?> UpdateMappedAsync(
 
 In each body, change `cancellationToken: ct` to `headers, cancellationToken: ct`. This is source-compatible for every existing caller (PA10). The shared `ObjectMappingServiceClient`'s schema-registration credentials are untouched.
 
-- [ ] **Step 3: Give the sample an identity**
+- [ ] **Step 3: Give the sample an identity and register authorization rules**
 
 Every write is denied without an acting user, and the sample currently configures none. `ActingUserTokenProvider` and the Authentik flow executor live inside `Iverson.Server/Iverson.LoadTest/Auth/`, which the sample cannot reference, so the sample reads a pre-obtained token from the environment instead. Replace `Program.cs:11-16`:
 
@@ -1001,6 +1051,38 @@ var headers = new Metadata().WithActingUser(actingUserToken);
 ```
 
 `return 1` from a top-level program requires no signature change. `Metadata` comes from the file's existing `using Grpc.Core;` (`:1`), and `WithActingUser` from `Iverson.Client.Core` (`:3`).
+
+An identity alone is not enough: rules are supplied at registration, and a type registered without them is denied for every read and write regardless of who is calling (PA32). Replace the bare `RegisterAllAsync()` at `:18`:
+
+```csharp
+// OwnerField is left empty — none of the five sample models carries an owner column —
+// so a single bypass role carries authorization. The acting user behind
+// IVERSON_ACTING_USER_TOKEN must belong to this Authentik group, since the role is
+// matched against that token's `groups` claim.
+var sampleRules = new AuthorizationRules
+{
+    RowPermissions =
+    {
+        new RowPermission
+        {
+            Role = "iverson-sample-bypass",
+            CanReadAll = true, CanWriteAll = true, CanDeleteAll = true
+        },
+    }
+};
+
+await services.GetRequiredService<SchemaRegistrar>().RegisterAllAsync(
+    new Dictionary<string, AuthorizationRules>
+    {
+        ["Author"]      = sampleRules,
+        ["Article"]     = sampleRules,
+        ["Tag"]         = sampleRules,
+        ["User"]        = sampleRules,
+        ["UserArticle"] = sampleRules,
+    });
+```
+
+Those five are exactly the `[IversonEntity]` types in the sample; `AuthorArticleCount` is a pipeline row shape, not an entity, so it never registers. `AuthorizationRules` and `RowPermission` come from `Iverson.Client.Contracts`, already imported at `:2`, and the shape mirrors `Iverson.LoadTest/Program.cs:289-296`. `Dictionary<,>` satisfies the `IReadOnlyDictionary<,>?` parameter at `SchemaRegistrar.cs:20`.
 
 - [ ] **Step 4: Remove all ten client-minted keys and thread the returned keys forward**
 
@@ -1074,6 +1156,8 @@ Add `headers` to all six mapped read/update calls — `:140`, `:144`, `:148`, `:
 dotnet build Iverson.Clients/DotNet/Iverson.Client.Sample/Iverson.Client.Sample.csproj
 dotnet test Iverson.Clients/DotNet/Iverson.Client.Core.Tests/Iverson.Client.Core.Tests.csproj
 ```
+
+Neither command exercises schema registration or a write, so the sample's end-to-end behaviour is not verified by this task. What is verified is that it compiles and that the three mapped methods thread their headers.
 
 - [ ] **Step 7: Mutation-test**
 
