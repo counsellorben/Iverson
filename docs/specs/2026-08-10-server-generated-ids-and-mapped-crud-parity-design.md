@@ -158,8 +158,10 @@ The `Guid.NewGuid()` pre-allocation idiom is removed (lines 38-39, 60-62, 71-72,
 write's returned key becomes the variable later writes reference:
 
 ```csharp
-var authorAiId = await authors.PersistAsync(new Author { TenantId = sampleTenant, … });
-var tagBballId = await tags.PersistAsync(new Tag { Label = "Basketball", … });
+var headers = new Metadata().WithActingUser(await actingUserToken());
+
+var authorAiId = await authors.PersistAsync(new Author { TenantId = sampleTenant, … }, headers);
+var tagBballId = await tags.PersistAsync(new Tag { Label = "Basketball", … }, headers);
 
 var article1 = await articles.PostMappedAsync(new Article
 {
@@ -167,7 +169,7 @@ var article1 = await articles.PostMappedAsync(new Article
     AuthorId = Guid.Parse(authorAiId!),
     TagIds   = [Guid.Parse(tagBballId!), Guid.Parse(tagCultureId!)],
     …
-});
+}, headers);
 ```
 
 Two consequences, both intended:
@@ -178,6 +180,14 @@ Two consequences, both intended:
 - **Write order becomes load-bearing.** Authors and tags before articles, articles before
   user-articles. The sample is already in that order, so nothing is restructured — but it is now a
   requirement rather than an accident, and the comment should say so.
+
+**The sample needs a real identity.** Every write is denied without an acting user
+(`RowFieldAuthorizationEvaluator.cs:14-15`), and the sample currently configures none —
+`AddIversonClient` is called with neither `credentials` nor `actingUserTokenProvider`
+(`Program.cs:11-16`, `ServiceCollectionExtensions.cs:28-34`). The corrected sample supplies both,
+and threads the resolved acting-user token into every write as `new Metadata().WithActingUser(token)`,
+the shape `Iverson.LoadTest` already uses (`WritePathRunner.cs:80`). `PersistAsync` already accepts
+that argument (`EntityCoordinator.cs:101`); the mapped methods accept it after §2's change.
 
 `UserArticle.ArticleId` (lines 121, 129) is the one place the shape changes rather than a line being
 deleted: it must read `article1!.Id` off the entity `PostMappedAsync` returned, which is exactly the
