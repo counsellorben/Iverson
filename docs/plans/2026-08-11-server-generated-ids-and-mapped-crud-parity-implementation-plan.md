@@ -103,6 +103,7 @@ Newly introduced by this plan and verified against the codebase on 2026-08-11 at
 | PA30 | Code validity | The .NET sample is a top-level program, so Task 6's early `return 1;` is legal | `Iverson.Client.Sample/Program.cs` declares no `static … Main(`; the file opens with `using` directives followed by top-level statements |
 | PA31 | Test convention | `MakePayload` has a keyless form usable for Task 1's `:707` repair | `ObjectMappingGrpcServiceTests.cs:117` — the dictionary overload accepts `MakePayload(new())` |
 | PA32 | Consumer impact | Authorization rules are supplied at registration, not declared on the model, and a type registered without them is denied for every read and write — so both samples must pass rules explicitly for their writes to succeed | `RowFieldAuthorizationEvaluator.cs:10-13` returns `AuthorizationDecision(Denied: true, …)` when `schema.Authorization is null`, and `Denied` is positional field 1 (`IRowFieldAuthorizationEvaluator.cs:16-17`); `SchemaBuilder.cs:148-150` passes a null `TypeDescriptor.Authorization` straight through; no authorization attribute exists in `Iverson.Client.Attributes/` and no such annotation in the Java client's `annotations/`; `Iverson.LoadTest/Program.cs:153-157` is the working in-repo example |
+| PA33 | File path / signature | Three of the five client registrars cannot declare authorization rules today, which is why Tasks 2, 3 and 4 each add the parameter; the generated `AuthorizationRules` message already exists in all three, so no proto regeneration is needed | Python `register_all` (`core.py:145`) and `register_all_async` (`:155`) take only `trace_id`, building `TypeDescriptor` at `:273`; TypeScript `registerAll` (`core.ts:421`) takes only `traceId` and `_buildRequest` (`:437`) delegates to `describeEntity`, which hardcodes `authorization: undefined` (`:401`); Go `RegisterAll` (`registrar.go:33`) takes only `ctx, traceID`, building `typeDesc` at `:150`. Generated types: `object_mapping.ts:262-267`, `object_mapping.pb.go:605-611`, `object_mapping_pb2.py`. TypeScript's encoder writes the field only when `!== undefined` (`:1332-1333`), matching the omit-to-get-null semantic |
 
 ---
 
@@ -368,7 +369,9 @@ git commit -m "assign every entity key on the server and reject client-supplied 
 
 **Files:**
 - Modify: `Iverson.Clients/Go/iverson/coordinator.go:29-32,119,150,694-700`
+- Modify: `Iverson.Clients/Go/iverson/registrar.go:33,150`
 - Test: `Iverson.Clients/Go/iverson/coordinator_test.go`
+- Test: `Iverson.Clients/Go/iverson_test/registrar_test.go`
 
 Go needs one step the other three clients do not: its mapping dependency is Delete-only (spec A11), so the interface and adapter are widened first.
 
@@ -493,6 +496,46 @@ func (c *EntityCoordinator[T]) UpdateMapped(ctx context.Context, entity T) (T, e
 
 `structToEntity[T]` already returns `(T, error)` (`coordinator.go:244`), so returning it directly is correct. The acting-user header is attached by `auth.go:52-53` at the channel level, so these methods inherit it (spec A20).
 
+- [ ] **Step 3b: Let the registrar declare authorization rules**
+
+Mapped CRUD gives this client the ability to issue a relation-resolving write, but a type registered with no authorization rules is denied for every read and write, so there would be nothing writable to target (PA32, PA33).
+
+`RegisterAll` has 28 call sites in `registrar_test.go` and Go has no optional parameters, so keep the existing signature and delegate — the same shape Task 5 uses for Java's overload:
+
+```go
+// RegisterAll synchronously registers all entity schemas with no authorization rules.
+func (r *SchemaRegistrar) RegisterAll(ctx context.Context, traceID string) error {
+	return r.RegisterAllWithAuthorization(ctx, traceID, nil)
+}
+
+// RegisterAllWithAuthorization registers all entity schemas, attaching per-type
+// authorization rules. A type with no map entry registers with none, which the server
+// denies for every read and write — a nil rule set is an unconditional deny, not an
+// absence of restrictions.
+func (r *SchemaRegistrar) RegisterAllWithAuthorization(
+	ctx context.Context,
+	traceID string,
+	authByTypeName map[string]*pb.AuthorizationRules,
+) error {
+```
+
+`buildRequest` gains the map and sets the field only when the type has an entry, leaving it nil otherwise (a nil message field is what produces the server-side null):
+
+```go
+	typeDesc := &pb.TypeDescriptor{
+		TypeName:    meta.TypeName,
+		Properties:  properties,
+		Relations:   relations,
+		Description: typeDescription(e),
+		TenantField: tenantField,
+	}
+	if rules, ok := authByTypeName[meta.TypeName]; ok {
+		typeDesc.Authorization = rules
+	}
+```
+
+Add one test to `iverson_test/registrar_test.go`, following that file's existing mock-and-assert convention: register **two** types with **different** rule sets and assert each sent `TypeDescriptor` carries its own, plus one type registered through the no-rules path sending none. Two differing rule sets is what makes a key-ignoring lookup detectable.
+
 - [ ] **Step 4: Run tests and vet**
 
 ```bash
@@ -506,6 +549,7 @@ cd Iverson.Clients/Go && go test ./... && go vet ./...
 | Hard-code `Depth: 1` in `GetMapped` | `TestCoordinatorGetMapped_PassesDepthThrough` |
 | Return a fresh `var zero T` instead of `structToEntity[T](resp.Data)` in `PostMapped` | `TestCoordinatorPostMapped_ReturnsEntityHydratedFromData` |
 | Send an empty `Payload` in `UpdateMapped` | `TestCoordinatorUpdateMapped_SendsKeyItWasGiven` |
+| Ignore the per-type key in `buildRequest`'s lookup and attach the first map entry's rules to every type | the new registrar test's two-types-with-different-rules case |
 
 - [ ] **Step 6: Commit**
 
@@ -519,8 +563,9 @@ git commit -m "add mapped CRUD to the Go client coordinator"
 ### Task 3: Python mapped CRUD parity
 
 **Files:**
-- Modify: `Iverson.Clients/Python/iverson_client/core.py`
+- Modify: `Iverson.Clients/Python/iverson_client/core.py` (coordinator methods, and `SchemaRegistrar` at `:145,155,273`)
 - Test: `Iverson.Clients/Python/tests/test_entity_coordinator.py`
+- Test: `Iverson.Clients/Python/tests/test_schema_registrar.py`
 
 - [ ] **Step 1: Write the three tests (they fail — the methods do not exist yet)**
 
@@ -582,6 +627,36 @@ Each body is `persist`/`get`'s existing body with the stub and request type swap
 
 `get_mapped` returns `None` rather than raising, matching `get`'s own not-found convention (`:533-534`); the two write methods raise, matching `persist`/`update` (`:495`, `:509`). The acting-user header comes from the channel interceptor (`core.py:662-664`), so these inherit it.
 
+- [ ] **Step 2b: Let the registrar declare authorization rules**
+
+Mapped CRUD gives this client the ability to issue a relation-resolving write, but a type registered with no authorization rules is denied for every read and write, so there would be nothing writable to target (PA32, PA33).
+
+Add the parameter to **both** public entry points — `register_all` (`:145`) and `register_all_async` (`:155`). Widening only the sync one leaves the async path silently rules-less:
+
+```python
+    def register_all(
+        self,
+        trace_id: str = "",
+        authorization_by_type_name: Optional[Mapping[str, mapping_pb.AuthorizationRules]] = None,
+    ) -> None:
+```
+
+Both already delegate to `_build_request(cls, trace_id)`, so thread it through that single point and attach the field only when the type has an entry (an unset message field is what produces the server-side null):
+
+```python
+        rules = (authorization_by_type_name or {}).get(type_name)
+        type_descriptor = mapping_pb.TypeDescriptor(
+            type_name=type_name,
+            properties=properties,
+            relations=relations,
+            description=meta.get("description", ""),
+            tenant_field=_to_pascal_case(tenant_field),
+            **({"authorization": rules} if rules is not None else {}),
+        )
+```
+
+`Mapping` joins the existing `typing` import. Add one test to `tests/test_schema_registrar.py`, following that file's `make_stub()` convention: register **two** types with **different** rule sets and assert each sent `TypeDescriptor` carries its own, plus a type with no entry sending none. Two differing rule sets is what makes a key-ignoring lookup detectable.
+
 - [ ] **Step 3: Run tests**
 
 ```bash
@@ -595,6 +670,7 @@ cd Iverson.Clients/Python && pytest
 | Hard-code `depth=1` in `get_mapped` | `test_get_mapped_passes_depth_through` |
 | Return `self._cls()` instead of `self._from_struct(response.data)` in `post_mapped` | `test_post_mapped_returns_entity_hydrated_from_data` |
 | Send an empty `struct_pb2.Struct()` payload in `update_mapped` | `test_update_mapped_sends_the_key_it_was_given` |
+| Ignore the per-type key in `_build_request`'s lookup and attach the first mapping entry's rules to every type | the new registrar test's two-types-with-different-rules case |
 
 - [ ] **Step 5: Commit**
 
@@ -608,9 +684,10 @@ git commit -m "add mapped CRUD to the Python client coordinator"
 ### Task 4: TypeScript mapped CRUD parity, and its sample's client-minted key
 
 **Files:**
-- Modify: `Iverson.Clients/TypeScript/src/core.ts`
+- Modify: `Iverson.Clients/TypeScript/src/core.ts` (coordinator methods, and `SchemaRegistrar` at `:421,437`)
 - Modify: `Iverson.Clients/TypeScript/sample/main.ts:32`
 - Test: `Iverson.Clients/TypeScript/tests/core.test.ts`
+- Test: `Iverson.Clients/TypeScript/tests/schema-registrar.test.ts`
 
 - [ ] **Step 1: Write the three tests (they fail — the methods do not exist yet)**
 
@@ -691,6 +768,40 @@ Add `MappingGetRequest`, `MappingWriteRequest` and `MappingResponse` to the exis
 
 In `sample/main.ts`, delete line 32 (`article.id = crypto.randomUUID();`). `Article.id` is declared `id: string = ''` (`sample/models/Article.ts:18`), so a `new Article()` now sends an empty key, which the server reads as absent (PA14). The `const key = await articles.persist(article)` on the following lines already prints the server-assigned key, so nothing downstream changes.
 
+- [ ] **Step 3b: Let the registrar declare authorization rules**
+
+Mapped CRUD gives this client the ability to issue a relation-resolving write, but a type registered with no authorization rules is denied for every read and write, so there would be nothing writable to target (PA32, PA33).
+
+`_buildRequest` (`:437`) delegates to the shared `describeEntity`, whose header comment at `:198` says it serves other callers too, so override at the registrar rather than changing `describeEntity`:
+
+```typescript
+    /** Register all entity schemas, optionally attaching per-type authorization rules. */
+    async registerAll(
+        traceId: string = '',
+        authorizationByTypeName?: Record<string, AuthorizationRules>,
+    ): Promise<void> {
+        for (const cls of this._entityClasses) {
+            const request = this._buildRequest(cls, traceId, authorizationByTypeName);
+            // … unchanged …
+        }
+    }
+
+    _buildRequest(
+        cls: Function,
+        traceId: string = '',
+        authorizationByTypeName?: Record<string, AuthorizationRules>,
+    ): SchemaRequest {
+        const rootType = describeEntity(cls);
+        const rules = authorizationByTypeName?.[rootType.typeName];
+        if (rules !== undefined) rootType.authorization = rules;
+        return { rootType, dependents: [], traceId };
+    }
+```
+
+A type with no entry keeps `describeEntity`'s `authorization: undefined` (`:401`), and the generated encoder writes the field only when it is not undefined (`generated/object_mapping.ts:1332-1333`) — that omission is what produces the server-side null. `AuthorizationRules` joins the existing `generated/object_mapping.js` import list. Both new parameters are trailing and optional, so the sample's `registerAll('sample-trace')` and the existing `_buildRequest` tests are unaffected.
+
+Add one test to `tests/schema-registrar.test.ts`, following that file's existing stub convention: register **two** types with **different** rule sets and assert each sent `TypeDescriptor` carries its own, plus a type with no entry leaving `authorization` undefined. Two differing rule sets is what makes a key-ignoring lookup detectable.
+
 - [ ] **Step 4: Run tests — this also type-checks the sample**
 
 ```bash
@@ -706,6 +817,7 @@ cd Iverson.Clients/TypeScript && npm test
 | Hard-code `depth: 1` in `getMapped` | `getMapped() passes depth through` |
 | Return `new this._cls()` instead of `payloadToEntity(…)` in `postMapped` | `postMapped() returns an entity hydrated from Data` |
 | Send `payload: {}` in `updateMapped` | `updateMapped() sends the key it was given` |
+| Ignore the per-type key in `_buildRequest`'s lookup and attach the first record entry's rules to every type | the new registrar test's two-types-with-different-rules case |
 
 - [ ] **Step 6: Commit**
 
@@ -849,7 +961,7 @@ Inside the loop, attach the rules when the map holds an entry for the type, leav
 
 `TypeDescriptor.authorization` is field 4 in the proto (`object_mapping.proto:99`), so the generated builder already carries `setAuthorization`; only the registrar's public surface was missing.
 
-Add one test to `SchemaRegistrarTest.java`, following that file's `mockStub` + `ArgumentCaptor` convention: the overload attaches the given rules to the sent `TypeDescriptor`, and a type absent from the map sends none. Without it the new public API path ships with no coverage.
+Add one test to `SchemaRegistrarTest.java`, following that file's `mockStub` + `ArgumentCaptor` convention: register **two** types with **different** rule sets and assert each sent `TypeDescriptor` carries its own, plus a type absent from the map sending none. Two differing rule sets is what makes a key-ignoring lookup detectable — a single shared rules object would pass even if the lookup ignored its key entirely. Without this test the new public API path ships with no coverage.
 
 Then, in the sample, replace the client construction at `:33`:
 
@@ -940,6 +1052,7 @@ mvn -f Iverson.Clients/Java/pom.xml test
 | Return `entityType.getDeclaredConstructor().newInstance()` instead of `fromStruct(response.getData(), …)` in `postMapped` | `postMappedReturnsEntityHydratedFromData` |
 | Send `Struct.getDefaultInstance()` as the payload in `updateMapped` | `updateMappedSendsTheKeyItWasGiven` |
 | Route through the bare `client.mappingStub` instead of `mappingStubFor(actingUserToken)` | a `verify(mockMappingStub).withOption(eq(OAuth2ClientCredentials.ACTING_USER_TOKEN), eq("tok"))` assertion in `postMappedReturnsEntityHydratedFromData` |
+| Ignore the per-type key in `registerAll`'s lookup and attach the first map entry's rules to every type | the new `SchemaRegistrarTest` case's two-types-with-different-rules assertion |
 
 - [ ] **Step 7: Commit**
 
