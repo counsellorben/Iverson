@@ -199,6 +199,16 @@ func reportGet(
 	return failStep(name, err)
 }
 
+// staticServiceToken attaches an already-minted service token to every call, the identity the
+// server reads out of the `authorization` header.
+type staticServiceToken struct{ token string }
+
+func (s staticServiceToken) GetRequestMetadata(_ context.Context, _ ...string) (map[string]string, error) {
+	return map[string]string{"authorization": "Bearer " + s.token}, nil
+}
+
+func (s staticServiceToken) RequireTransportSecurity() bool { return false }
+
 // typeNameOf reports the type name the client itself derives for an entity, so the raw retrieval
 // probe above addresses exactly the type EntityCoordinator addresses.
 func typeNameOf(entity interface{}) (string, error) {
@@ -311,15 +321,23 @@ func run(argv []string) int {
 	tokenEndpoint := a.optional("--token-endpoint")
 	actingToken := a.optional("--acting-token")
 
-	var creds *iverson.OAuth2ClientCredentials
+	serviceToken := a.optional("--service-token")
+
 	dialOpts := []grpc.DialOption{grpc.WithInsecure()} //nolint:staticcheck
-	if clientID != "" && clientSecret != "" && tokenEndpoint != "" {
-		creds = &iverson.OAuth2ClientCredentials{
+	// A pre-minted service token wins over the client-credentials trio. Authentik stamps the
+	// JWT's `iss` from the request's Host header and grants scopes only when the token request
+	// asks for them, so a token this driver minted for itself would be rejected by the API on
+	// issuer validation (401) and would carry no schema_admin scope (403 on RegisterSchema) —
+	// OAuth2ClientCredentials can set neither. The orchestrator mints one correctly and passes
+	// it via --service-token.
+	if serviceToken != "" {
+		dialOpts = append(dialOpts, grpc.WithPerRPCCredentials(staticServiceToken{token: serviceToken}))
+	} else if clientID != "" && clientSecret != "" && tokenEndpoint != "" {
+		dialOpts = append(dialOpts, grpc.WithPerRPCCredentials(&iverson.OAuth2ClientCredentials{
 			ClientID:      clientID,
 			ClientSecret:  clientSecret,
 			TokenEndpoint: tokenEndpoint,
-		}
-		dialOpts = append(dialOpts, grpc.WithPerRPCCredentials(creds))
+		}))
 	}
 
 	// The harness normalizes --grpc to `scheme://host:port` (DriverRunner.NormalizeGrpcUrl),

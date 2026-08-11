@@ -65,6 +65,18 @@ public sealed class TokenBroker : IDisposable
         ? tokenEndpoint[..tokenEndpoint.IndexOf("/application/o/token/", StringComparison.Ordinal)]
         : "http://localhost:9000";
 
+    /// <summary>
+    /// The SERVICE identity token — what the server reads out of the <c>authorization</c> header
+    /// and evaluates <c>schema_admin</c>/tenant scopes against. Distinct from
+    /// <see cref="GetActingTokenAsync"/>, which is the end-user identity the row/field
+    /// authorization is evaluated against and rides in <c>x-acting-user-authorization</c>.
+    /// </summary>
+    public Task<string> GetServiceTokenAsync(CancellationToken ct = default) =>
+        _clientCredentials is null
+            ? throw new InvalidOperationException(
+                "Client credentials not configured (IVERSON_CLIENT_ID/IVERSON_CLIENT_SECRET/IVERSON_TOKEN_ENDPOINT).")
+            : MintClientCredentialsTokenAsync(_clientCredentials, ct);
+
     public Task<string> GetActingTokenAsync(CancellationToken ct = default) =>
         _actingUserTokenProvider.GetTokenAsync(ct);
 
@@ -74,38 +86,34 @@ public sealed class TokenBroker : IDisposable
     public string TenantId => _tenantId;
 
     /// <summary>
-    /// Ensures <see cref="TenantId"/> exists, creating it only when absent. Requires client
-    /// credentials (<c>IVERSON_CLIENT_ID</c>/<c>IVERSON_CLIENT_SECRET</c>/<c>IVERSON_TOKEN_ENDPOINT</c>)
-    /// scoped to admin/schema_admin.
+    /// The tenant every driver must stamp on the rows it writes: the acting user's own
+    /// <c>tenant_id</c> claim.
+    ///
+    /// This is NOT <see cref="TenantId"/> (<c>IVERSON_LOADTEST_TENANT_ID</c>). The server derives
+    /// the tenant it scopes reads and writes to from the acting-user token alone
+    /// (<c>ObjectMappingGrpcService.cs:245</c>), and rejects any row whose tenant column
+    /// disagrees with that claim as a tenant mismatch. Passing the provisioning tenant id to the
+    /// drivers instead would have every language write rows the server then refuses to read
+    /// back — a harness bug that reads as five identical client defects.
     /// </summary>
-    public async Task EnsureTenantProvisionedAsync(CancellationToken ct = default)
+    public async Task<string> GetActingTenantAsync(CancellationToken ct = default)
     {
-        if (_clientCredentials is null)
-            throw new InvalidOperationException(
-                "Client credentials not configured (IVERSON_CLIENT_ID/IVERSON_CLIENT_SECRET/IVERSON_TOKEN_ENDPOINT) — cannot provision the tenant.");
+        var claim = ReadClaim(await GetActingTokenAsync(ct), "tenant_id");
+        return claim ?? throw new InvalidOperationException(
+            "The acting-user token carries no 'tenant_id' claim — the server cannot scope any " +
+            "read or write without one. Check the acting-user OAuth provider's scope mappings.");
+    }
 
-        var adminToken = await MintClientCredentialsTokenAsync(_clientCredentials, ct);
+    private static string? ReadClaim(string jwt, string claim)
+    {
+        var parts = jwt.Split('.');
+        if (parts.Length < 2) return null;
 
-        using var channel = GrpcChannel.ForAddress(_grpcUrl);
-        var client = new TenantLifecycleGrpcService.TenantLifecycleGrpcServiceClient(channel);
-        var headers = new Metadata { { "authorization", $"Bearer {adminToken}" } };
+        var payload = parts[1].Replace('-', '+').Replace('_', '/');
+        payload = payload.PadRight(payload.Length + (4 - payload.Length % 4) % 4, '=');
 
-        var existing = await client.ListTenantsAsync(new ListTenantsRequest(), headers, cancellationToken: ct);
-        if (existing.Tenants.Any(t => t.TenantId == _tenantId))
-            return;
-
-        var tenantAdminUsername = Env("IVERSON_LOADTEST_TENANT_ADMIN_USERNAME", "iverson-loadtest-tenant-admin");
-        var tenantAdminEmail = Env("IVERSON_LOADTEST_TENANT_ADMIN_EMAIL", "iverson-loadtest-tenant-admin@iverson.local");
-        var tenantAdminPassword = Env("IVERSON_LOADTEST_TENANT_ADMIN_PASSWORD", "dev-only-not-for-production-tenant-admin-password-0123456789");
-
-        await client.CreateTenantAsync(new CreateTenantRequest
-        {
-            TenantId = _tenantId,
-            DisplayName = "Iverson LoadTest (dynamic)",
-            AdminUsername = tenantAdminUsername,
-            AdminEmail = tenantAdminEmail,
-            AdminInitialPassword = tenantAdminPassword,
-        }, headers, cancellationToken: ct);
+        using var document = System.Text.Json.JsonDocument.Parse(Convert.FromBase64String(payload));
+        return document.RootElement.TryGetProperty(claim, out var value) ? value.GetString() : null;
     }
 
     private static async Task<string> MintClientCredentialsTokenAsync(IversonClientCredentials creds, CancellationToken ct)

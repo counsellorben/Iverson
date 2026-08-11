@@ -18,7 +18,8 @@ public sealed record DriverContext(
     string? TokenEndpoint,
     string ActingToken,
     string OwnerId,
-    string IdPrefix);
+    string IdPrefix,
+    string ServiceToken = "");
 
 /// <summary>
 /// The outcome of running one language's driver for one phase. Exactly one of the three shapes
@@ -166,7 +167,8 @@ public sealed class DriverRunner
             var execArgs = new List<string>(spec.ExecArgs);
             execArgs.AddRange(BuildFlags(phase, spec.Language, context, outPath));
 
-            var execResult = await RunProcessAsync(spec.ExecCommand, execArgs, ResolveCwd(spec.Cwd), ct);
+            var cwd = ResolveCwd(spec.Cwd);
+            var execResult = await RunProcessAsync(ResolveCommand(spec.ExecCommand, cwd), execArgs, cwd, ct);
 
             if (execResult is ProcessOutcome.ToolMissing execMissing)
             {
@@ -274,6 +276,16 @@ public sealed class DriverRunner
             "--client-id", context.ClientId ?? string.Empty,
             "--client-secret", context.ClientSecret ?? string.Empty,
             "--token-endpoint", context.TokenEndpoint ?? string.Empty,
+            // A pre-minted service token, and the only one the drivers should ever use. The
+            // client-credentials trio above is left in the contract for a driver run by hand,
+            // but a driver that mints its own token cannot produce a usable one here: Authentik
+            // stamps the JWT's `iss` from the request's Host header, so a token fetched from
+            // localhost carries an issuer the API rejects outright (401), and none of the five
+            // drivers passes a scope, so even an accepted token would lack `schema_admin` (403
+            // on RegisterSchema). The orchestrator already mints this correctly once, with both
+            // the Host header and the scope, so it hands the result over rather than having
+            // five languages each re-derive Authentik's issuer semantics.
+            "--service-token", context.ServiceToken,
             "--acting-token", context.ActingToken,
             "--owner-id", context.OwnerId,
             "--id-prefix", context.IdPrefix,
@@ -289,8 +301,34 @@ public sealed class DriverRunner
         return flags;
     }
 
+    /// <summary>
+    /// Turns a driver-relative executable path into an absolute one. <c>ProcessStartInfo</c>
+    /// resolves a relative <c>FileName</c> against the CALLING process's current directory, not
+    /// against <c>WorkingDirectory</c> — so Go's <c>bin/conformance</c> (the one driver executed
+    /// as a built artifact rather than through a tool on PATH) was reported as a missing
+    /// toolchain and its whole row silently skipped, even though the build had just produced it.
+    /// A bare command name is left alone so PATH lookup still happens.
+    /// </summary>
+    internal static string ResolveCommand(string command, string cwd)
+    {
+        if (Path.IsPathRooted(command))
+            return command;
+
+        var namesADirectory = command.Contains('/') || command.Contains(Path.DirectorySeparatorChar);
+        return namesADirectory ? Path.GetFullPath(Path.Combine(cwd, command)) : command;
+    }
+
     private string ResolveCwd(string? relativeCwd) =>
         relativeCwd is null ? _repoRoot : Path.Combine(_repoRoot, relativeCwd);
+
+    /// <summary>
+    /// The wall-clock ceiling on any one driver build or exec. Without it a driver that hangs —
+    /// on a channel that never connects, or an interactive prompt nothing will ever answer —
+    /// blocks the entire run indefinitely with no output. A blown deadline is reported as a
+    /// non-zero exit (hence <see cref="DriverPhaseOutcome.Broken"/>) carrying the timeout in its
+    /// stderr, never as a skip: a hang is a failure of the subject, not an absent toolchain.
+    /// </summary>
+    internal static TimeSpan ProcessTimeout { get; set; } = TimeSpan.FromMinutes(10);
 
     private static async Task<ProcessOutcome> RunProcessAsync(
         string command, IReadOnlyList<string> args, string cwd, CancellationToken ct)
@@ -320,9 +358,26 @@ public sealed class DriverRunner
             return new ProcessOutcome.ToolMissing(command);
         }
 
-        var stdoutTask = process.StandardOutput.ReadToEndAsync(ct);
-        var stderrTask = process.StandardError.ReadToEndAsync(ct);
-        await process.WaitForExitAsync(ct);
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        deadline.CancelAfter(ProcessTimeout);
+
+        var stdoutTask = process.StandardOutput.ReadToEndAsync(deadline.Token);
+        var stderrTask = process.StandardError.ReadToEndAsync(deadline.Token);
+
+        try
+        {
+            await process.WaitForExitAsync(deadline.Token);
+        }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+        {
+            // Kill the whole tree: `dotnet run`, `mvn` and `npx` all spawn children that outlive
+            // the parent, and leaving them behind would hold the driver's --out file and its
+            // gRPC connections open for the rest of the run.
+            try { process.Kill(entireProcessTree: true); } catch (InvalidOperationException) { }
+            return new ProcessOutcome.Completed(
+                -1, $"timed out after {ProcessTimeout.TotalSeconds:0}s running: {command} {string.Join(' ', args)}");
+        }
+
         var stderr = await stderrTask;
         _ = await stdoutTask;
 

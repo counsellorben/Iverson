@@ -1,0 +1,347 @@
+using System.Text.Json;
+using Google.Protobuf;
+using Iverson.Client.Contracts;
+
+namespace Iverson.ClientConformance;
+
+/// <summary>
+/// One judgement the orchestrator made. Assertions live only here and in the scenarios that call
+/// this class — never in a driver, which reports and never judges.
+/// </summary>
+public sealed record Assertion(string Name, bool Passed, string Detail = "")
+{
+    public static Assertion Pass(string name, string detail = "") => new(name, true, detail);
+    public static Assertion Fail(string name, string detail) => new(name, false, detail);
+    public static Assertion From(string name, bool passed, string detail) => new(name, passed, detail);
+}
+
+/// <summary>
+/// The three independent observations of one named value. Each leg is resolved from a different
+/// source so that agreement is evidence rather than tautology:
+/// <list type="bullet">
+/// <item><description><see cref="Driver"/> — what the client library handed back from its own
+/// <c>read</c> phase. Deliberately NOT taken from the write/update steps: only the .NET driver
+/// returns the server's entity there; Python, TypeScript and Go report the locally constructed
+/// pre-call object and Java reports null, so a write-phase leg would compare the driver's own
+/// input against the server's state and agree by construction.</description></item>
+/// <item><description><see cref="Grpc"/> — the orchestrator's own <c>MappingGet</c>.</description></item>
+/// <item><description><see cref="Postgres"/> — a direct query against the row.</description></item>
+/// </list>
+/// </summary>
+public sealed record ThreeLegs(ObservedValue Driver, ObservedValue Grpc, ObservedValue Postgres);
+
+/// <summary>
+/// One leg's observation of one named value, canonicalized to a set of UUIDs so that the three
+/// legs are compared parsed rather than as strings (they spell and format UUIDs differently).
+/// <see cref="Uuids"/> is null when the raw value could not be read as UUIDs at all — which is a
+/// failure, distinct from an empty set.
+///
+/// An ABSENT field and a NULL field produce the same value here, on purpose: Java's Gson omits
+/// null fields where the other four emit them explicitly, so any check that told the two apart
+/// would fail for Java only.
+/// </summary>
+public sealed record ObservedValue(string Raw, IReadOnlyList<Guid>? Uuids)
+{
+    public static readonly ObservedValue Missing = new("(absent/null)", []);
+
+    public static ObservedValue Unreadable(string raw) => new(raw, null);
+
+    public bool IsEmpty => Uuids is { Count: 0 };
+
+    /// <summary>Order-insensitive: a multi-valued FK is a set, and no client promises an order.</summary>
+    public bool Matches(ObservedValue other) =>
+        Uuids is not null && other.Uuids is not null &&
+        Uuids.Order().SequenceEqual(other.Uuids.Order());
+
+    public override string ToString() => Uuids is null
+        ? $"<unreadable: {Raw}>"
+        : Uuids.Count switch
+        {
+            0 => "<none>",
+            1 => Uuids[0].ToString(),
+            _ => "[" + string.Join(", ", Uuids.Order()) + "]",
+        };
+}
+
+/// <summary>
+/// Every assertion S1 makes, as pure functions over reported data. Nothing here talks to a
+/// process, a channel or a database — the scenario gathers the observations and this class judges
+/// them, so each judgement is unit-testable without a live stack.
+/// </summary>
+public static class Verifier
+{
+    private static readonly JsonParser DescriptorParser =
+        new(JsonParser.Settings.Default.WithIgnoreUnknownFields(true));
+
+    /// <summary>
+    /// Parses a driver-reported descriptor into the strongly typed contract message. Going
+    /// through protobuf's own JSON parser rather than reading the <see cref="JsonElement"/> by
+    /// hand is what makes the five drivers comparable at all: they variously emit camelCase or
+    /// snake_case names, enum values as names or as numbers, and (Go, TypeScript) omit
+    /// proto3 default values entirely. The parser resolves all of that to one shape, and an
+    /// omitted field lands on the same default as an explicitly-default one — the absent/null
+    /// equivalence the harness requires.
+    /// </summary>
+    public static TypeDescriptor ParseDescriptor(JsonElement json) =>
+        DescriptorParser.Parse<TypeDescriptor>(json.GetRawText());
+
+    /// <summary>
+    /// Case-insensitive, separator-insensitive identifier key: <c>py_author_id</c>,
+    /// <c>pyAuthorId</c> and <c>PyAuthorId</c> all normalize alike. The three legs genuinely
+    /// spell their names differently — Postgres and <c>MappingGet</c> use the descriptor's
+    /// property names, the driver uses its own language's member naming.
+    /// </summary>
+    public static string Normalize(string name) =>
+        string.Concat(name.Where(char.IsLetterOrDigit)).ToLowerInvariant();
+
+    // ── Registration ─────────────────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// The kind-scoped registration assertions, against the descriptor the driver actually sent.
+    ///
+    /// <c>ManyToMany</c> is exempt from the propertyName != foreignKey check BY DESIGN: in the
+    /// FK-on-the-member clients (Python, TypeScript, Go, Java) the nav-property name and the
+    /// foreign key are equal by construction, and the server treats that as correct rather than
+    /// as a defect — see <c>Iverson.Server/Iverson.Api/Grpc/RelationValidator.cs:20-24</c>.
+    /// Applying the check to m2m would fail four conforming clients.
+    /// </summary>
+    public static IReadOnlyList<Assertion> VerifyRegistration(string label, TypeDescriptor descriptor)
+    {
+        var results = new List<Assertion>();
+
+        var propertiesByName = new Dictionary<string, PropertyDescriptor>(StringComparer.Ordinal);
+        foreach (var property in descriptor.Properties)
+            propertiesByName.TryAdd(Normalize(property.Name), property);
+
+        results.Add(Assertion.From(
+            $"{label}: declares exactly one key property",
+            descriptor.Properties.Count(p => p.IsKey) == 1,
+            $"keys=[{string.Join(", ", descriptor.Properties.Where(p => p.IsKey).Select(p => p.Name))}]"));
+
+        results.Add(Assertion.From(
+            $"{label}: declares a tenant field",
+            descriptor.TenantField.Length > 0 &&
+            propertiesByName.ContainsKey(Normalize(descriptor.TenantField)),
+            $"tenantField='{descriptor.TenantField}'"));
+
+        // Foreign keys of many-to-many relations — the only relations whose key is allowed (and
+        // required) to be an array-typed property.
+        var manyToManyForeignKeys = descriptor.Relations
+            .Where(r => r.Kind == RelationKind.ManyToMany)
+            .Select(r => Normalize(r.ForeignKey))
+            .ToHashSet(StringComparer.Ordinal);
+
+        foreach (var relation in descriptor.Relations)
+        {
+            var name = $"{label}.{relation.PropertyName} ({relation.Kind})";
+
+            if (relation.Kind is RelationKind.ManyToOne or RelationKind.OneToOne)
+            {
+                results.Add(Assertion.From(
+                    $"{name}: nav property is distinct from the foreign key",
+                    !string.Equals(relation.PropertyName, relation.ForeignKey, StringComparison.OrdinalIgnoreCase),
+                    $"propertyName='{relation.PropertyName}' foreignKey='{relation.ForeignKey}'"));
+            }
+
+            if (relation.Kind == RelationKind.OneToMany)
+            {
+                // The foreign key lives on the related type's row; there is nothing on this type
+                // to look for.
+                continue;
+            }
+
+            var declared = propertiesByName.TryGetValue(Normalize(relation.ForeignKey), out var fkProperty);
+
+            results.Add(Assertion.From(
+                $"{name}: foreign key '{relation.ForeignKey}' is a declared property",
+                relation.ForeignKey.Length > 0 && declared,
+                declared
+                    ? $"declared as '{fkProperty!.Name}'"
+                    : $"declared properties: [{string.Join(", ", descriptor.Properties.Select(p => p.Name))}]"));
+
+            if (relation.Kind == RelationKind.ManyToMany)
+            {
+                results.Add(Assertion.From(
+                    $"{name}: foreign key '{relation.ForeignKey}' is declared isArray",
+                    declared && fkProperty!.IsArray,
+                    declared ? $"isArray={fkProperty!.IsArray}" : "foreign key not declared"));
+            }
+        }
+
+        foreach (var property in descriptor.Properties.Where(p => p.IsArray))
+        {
+            results.Add(Assertion.From(
+                $"{label}.{property.Name}: isArray is set only for a many-to-many foreign key",
+                manyToManyForeignKeys.Contains(Normalize(property.Name)),
+                $"many-to-many foreign keys: [{string.Join(", ", descriptor.Relations
+                    .Where(r => r.Kind == RelationKind.ManyToMany).Select(r => r.ForeignKey))}]"));
+        }
+
+        return results;
+    }
+
+    /// <summary>
+    /// The named set of values S1 compares three ways for one type: the key, plus the foreign key
+    /// of every relation whose key lives on this type's own row. Whole-document comparison is
+    /// deliberately avoided — the five languages legitimately differ on which fields they
+    /// materialize and how they name them.
+    /// </summary>
+    public static IReadOnlyList<string> ComparedValueNames(TypeDescriptor descriptor)
+    {
+        var names = new List<string>();
+
+        var key = descriptor.Properties.FirstOrDefault(p => p.IsKey);
+        if (key is not null)
+            names.Add(key.Name);
+
+        foreach (var relation in descriptor.Relations)
+        {
+            if (relation.Kind == RelationKind.OneToMany || relation.ForeignKey.Length == 0)
+                continue;
+            if (!names.Contains(relation.ForeignKey, StringComparer.OrdinalIgnoreCase))
+                names.Add(relation.ForeignKey);
+        }
+
+        return names;
+    }
+
+    // ── Value resolution ─────────────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Resolves <paramref name="name"/> out of a driver- or server-reported JSON object by
+    /// normalized name and canonicalizes it. A missing property and an explicit null both yield
+    /// <see cref="ObservedValue.Missing"/>.
+    /// </summary>
+    public static ObservedValue FromJson(JsonElement? document, string name)
+    {
+        if (document is not { ValueKind: JsonValueKind.Object } obj)
+            return ObservedValue.Missing;
+
+        var normalized = Normalize(name);
+        foreach (var property in obj.EnumerateObject())
+        {
+            if (Normalize(property.Name) != normalized)
+                continue;
+            return FromJsonValue(property.Value);
+        }
+
+        return ObservedValue.Missing;
+    }
+
+    private static ObservedValue FromJsonValue(JsonElement value)
+    {
+        switch (value.ValueKind)
+        {
+            case JsonValueKind.Null or JsonValueKind.Undefined:
+                return ObservedValue.Missing;
+
+            case JsonValueKind.String:
+            {
+                var raw = value.GetString() ?? string.Empty;
+                if (raw.Length == 0)
+                    return ObservedValue.Missing;
+                return Guid.TryParse(raw, out var parsed)
+                    ? new ObservedValue(raw, [parsed])
+                    : ObservedValue.Unreadable(raw);
+            }
+
+            case JsonValueKind.Array:
+            {
+                var uuids = new List<Guid>();
+                foreach (var element in value.EnumerateArray())
+                {
+                    var single = FromJsonValue(element);
+                    if (single.Uuids is null)
+                        return ObservedValue.Unreadable(value.GetRawText());
+                    uuids.AddRange(single.Uuids);
+                }
+                return new ObservedValue(value.GetRawText(), uuids);
+            }
+
+            default:
+                return ObservedValue.Unreadable(value.GetRawText());
+        }
+    }
+
+    /// <summary>
+    /// Resolves <paramref name="name"/> out of a Postgres row by normalized column name. Npgsql
+    /// hands back <see cref="Guid"/>/<c>Guid[]</c> for uuid columns and strings for text ones;
+    /// both are canonicalized the same way. <see cref="DBNull"/> is treated as absent.
+    /// </summary>
+    public static ObservedValue FromRow(IReadOnlyDictionary<string, object?>? row, string name)
+    {
+        if (row is null)
+            return ObservedValue.Missing;
+
+        var normalized = Normalize(name);
+        foreach (var (column, value) in row)
+        {
+            if (Normalize(column) != normalized)
+                continue;
+            return FromRowValue(value);
+        }
+
+        return ObservedValue.Missing;
+    }
+
+    private static ObservedValue FromRowValue(object? value) => value switch
+    {
+        null or DBNull => ObservedValue.Missing,
+        Guid guid => new ObservedValue(guid.ToString(), [guid]),
+        string { Length: 0 } => ObservedValue.Missing,
+        string text => Guid.TryParse(text, out var parsed)
+            ? new ObservedValue(text, [parsed])
+            : ObservedValue.Unreadable(text),
+        System.Collections.IEnumerable sequence => FromRowSequence(sequence),
+        _ => ObservedValue.Unreadable(value.ToString() ?? "?"),
+    };
+
+    private static ObservedValue FromRowSequence(System.Collections.IEnumerable sequence)
+    {
+        var uuids = new List<Guid>();
+        var raw = new List<string>();
+        foreach (var item in sequence)
+        {
+            var single = FromRowValue(item);
+            raw.Add(single.Raw);
+            if (single.Uuids is null)
+                return ObservedValue.Unreadable(string.Join(",", raw));
+            uuids.AddRange(single.Uuids);
+        }
+        return new ObservedValue("[" + string.Join(",", raw) + "]", uuids);
+    }
+
+    // ── Three-way comparison ─────────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Judges one named value across its three legs and names the disagreeing pair: driver vs
+    /// gRPC isolates the client's read path; gRPC vs Postgres isolates the server's read path;
+    /// the two agreeing but both empty isolates the write path.
+    /// </summary>
+    public static IReadOnlyList<Assertion> VerifyThreeWay(string label, string valueName, ThreeLegs legs)
+    {
+        var observed =
+            $"driver={legs.Driver} grpc={legs.Grpc} postgres={legs.Postgres}";
+
+        return
+        [
+            // A value all three legs agree is empty would pass a pure agreement check while
+            // certifying nothing — the gRPC leg is the server's own answer, so requiring it to
+            // carry a value is what makes the agreement below meaningful.
+            Assertion.From(
+                $"{label}.{valueName}: server returned a value",
+                legs.Grpc.Uuids is { Count: > 0 },
+                observed),
+
+            Assertion.From(
+                $"{label}.{valueName}: driver read agrees with the orchestrator's gRPC read",
+                legs.Driver.Matches(legs.Grpc),
+                observed),
+
+            Assertion.From(
+                $"{label}.{valueName}: the orchestrator's gRPC read agrees with the Postgres row",
+                legs.Grpc.Matches(legs.Postgres),
+                observed),
+        ];
+    }
+}

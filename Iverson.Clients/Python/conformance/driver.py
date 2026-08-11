@@ -31,8 +31,7 @@ import urllib.request
 import grpc
 from google.protobuf.json_format import MessageToJson
 
-from iverson_client.auth import IversonClientCredentials
-from iverson_client.core import IversonClient, SchemaRegistrar
+from iverson_client.core import EntityCoordinator, SchemaRegistrar
 from iverson_client.generated import object_mapping_pb2_grpc as mapping_grpc
 
 from conformance.models import PyArticle, PyAuthor, PyTag
@@ -110,9 +109,21 @@ def entity_to_dict(entity: Any) -> Optional[dict]:
         if base is object:
             continue
         for name in getattr(base, "__annotations__", {}):
-            value = getattr(entity, name, None)
-            out[name] = str(value) if isinstance(value, uuid.UUID) else value
+            out[name] = _json_safe(getattr(entity, name, None))
     return out
+
+
+def _json_safe(value: Any) -> Any:
+    """UUIDs are not JSON-serializable and appear both bare and inside a list (a many-to-many
+    foreign key is a list of UUIDs), so the conversion has to recurse rather than test the top
+    level only — `json.dump` fails the whole phase document on the first one it meets."""
+    if isinstance(value, uuid.UUID):
+        return str(value)
+    if isinstance(value, (list, tuple)):
+        return [_json_safe(item) for item in value]
+    if isinstance(value, dict):
+        return {key: _json_safe(item) for key, item in value.items()}
+    return value
 
 
 def describe(exc: Exception) -> str:
@@ -182,6 +193,27 @@ class _DriverBearerAuthPlugin(grpc.AuthMetadataPlugin):
         return self._token
 
 
+class _DriverStaticBearerAuthPlugin(grpc.AuthMetadataPlugin):
+    """Attaches an already-minted service token to every call.
+
+    Preferred over `_DriverBearerAuthPlugin` whenever the orchestrator supplies one. Authentik
+    stamps the JWT's `iss` from the request's Host header and grants scopes only when the token
+    request asks for them; neither is expressible through `IversonClientCredentials`, so a token
+    this driver minted for itself is rejected by the API on issuer validation (401) and carries
+    no `schema_admin` scope (403 on RegisterSchema). The orchestrator mints one correctly and
+    passes it via --service-token.
+    """
+
+    def __init__(self, token: str) -> None:
+        self._token = token
+
+    def __call__(self, context, callback) -> None:
+        try:
+            callback((("authorization", f"Bearer {self._token}"),), None)
+        except Exception as exc:  # noqa: BLE001
+            callback(None, exc)
+
+
 class _DriverActingUserAuthPlugin(grpc.AuthMetadataPlugin):
     """Attaches a pre-minted acting-user token to every call on this channel."""
 
@@ -195,27 +227,31 @@ class _DriverActingUserAuthPlugin(grpc.AuthMetadataPlugin):
             callback(None, exc)
 
 
-def build_registration_channel(
+def build_driver_channel(
     host: str,
     port: int,
     client_id: Optional[str],
     client_secret: Optional[str],
     token_endpoint: Optional[str],
     acting_token: Optional[str],
+    service_token: Optional[str] = None,
 ) -> grpc.Channel:
-    """Builds a second channel, independent of `IversonClient`'s internal one, carrying the same
-    two identities every other call on this driver uses. `IversonClient` exposes no public
-    accessor for a channel or a second mapping stub (only `.coordinator()` and `.registrar()`,
-    each binding its own internal stub) — the capture wrapper needs a real stub to forward to, so
-    this builds one from scratch using only public `grpc` API and the public generated stub type,
-    mirroring the composite-credentials-over-`local_channel_credentials()` pattern
-    `IversonClient.__init__` uses for h2c (`core.py:655-682`): a bare insecure channel rejects
-    `CallCredentials` outright, so some `ChannelCredentials` is always required as the base when
-    either identity is present.
+    """Builds the driver's single channel, carrying both identities, from public `grpc` API only.
+
+    The capture wrapper needs a real stub to forward to and `EntityCoordinator` takes a channel
+    directly, so one channel serves both. It mirrors the
+    composite-credentials-over-`local_channel_credentials()` pattern `IversonClient.__init__`
+    uses for h2c (`core.py:655-682`): a bare insecure channel rejects `CallCredentials`
+    outright, so some `ChannelCredentials` is always required as the base when either identity
+    is present.
     """
     address = f"{host}:{port}"
     call_creds = []
-    if client_id and client_secret and token_endpoint:
+    if service_token:
+        call_creds.append(
+            grpc.metadata_call_credentials(_DriverStaticBearerAuthPlugin(service_token))
+        )
+    elif client_id and client_secret and token_endpoint:
         call_creds.append(
             grpc.metadata_call_credentials(
                 _DriverBearerAuthPlugin(client_id, client_secret, token_endpoint)
@@ -294,22 +330,24 @@ def main(argv: List[str]) -> int:
     token_endpoint = args.optional("--token-endpoint")
     acting_token = args.optional("--acting-token")
 
-    credentials = None
-    if client_id and client_secret and token_endpoint:
-        credentials = IversonClientCredentials(
-            client_id=client_id, client_secret=client_secret, token_endpoint=token_endpoint,
-        )
+    service_token = args.optional("--service-token")
 
-    client = IversonClient(
-        host, port, use_tls=False, credentials=credentials, acting_user_token=acting_token,
+    # One channel, built entirely from public `grpc` API, carrying both identities and shared by
+    # the registration stub and every coordinator. `IversonClient` is deliberately not used: it
+    # accepts only an `IversonClientCredentials`, which can express neither the Host header
+    # Authentik derives the token's issuer from nor a scope, so it cannot carry the
+    # orchestrator's pre-minted service token. This mirrors the .NET driver, which likewise
+    # builds its own invoker rather than going through `AddIversonClient`; `EntityCoordinator` —
+    # the actual subject — is public and takes a channel directly, exactly as
+    # `IversonClient.coordinator` constructs it.
+    channel = build_driver_channel(
+        host, port, client_id, client_secret, token_endpoint, acting_token, service_token,
     )
 
-    # A second, independent channel built entirely from public API — see
-    # `build_registration_channel`'s docstring for why `client`'s own channel isn't reused.
-    registration_channel = build_registration_channel(
-        host, port, client_id, client_secret, token_endpoint, acting_token,
-    )
-    capture = CapturingMappingStub(mapping_grpc.ObjectMappingServiceStub(registration_channel))
+    def coordinator(entity_class: type) -> EntityCoordinator:
+        return EntityCoordinator(entity_class, channel)
+
+    capture = CapturingMappingStub(mapping_grpc.ObjectMappingServiceStub(channel))
 
     prior_keys = parse_keys(args.optional("--keys"), LANGUAGE)
 
@@ -364,7 +402,7 @@ def main(argv: List[str]) -> int:
             entity.tenant_id = tenant
             entity.owner_id = owner_id
             entity.name = f"author-{id_prefix}"
-            client.coordinator(PyAuthor).persist(entity)
+            coordinator(PyAuthor).persist(entity)
             return StepResult("write_author", True, entity=entity_to_dict(entity))
 
         def write_tag() -> StepResult:
@@ -373,7 +411,7 @@ def main(argv: List[str]) -> int:
             entity.tenant_id = tenant
             entity.owner_id = owner_id
             entity.label = f"tag-{id_prefix}"
-            client.coordinator(PyTag).persist(entity)
+            coordinator(PyTag).persist(entity)
             return StepResult("write_tag", True, entity=entity_to_dict(entity))
 
         def write_article() -> StepResult:
@@ -384,7 +422,7 @@ def main(argv: List[str]) -> int:
             entity.title = f"title-{id_prefix}"
             entity.py_author_id = author_key
             entity.py_tag_ids = [tag_key]
-            client.coordinator(PyArticle).persist(entity)
+            coordinator(PyArticle).persist(entity)
             return StepResult("write_article", True, entity=entity_to_dict(entity))
 
         # One step per row: a denied or failed write must not abort the others, and each row's
@@ -406,13 +444,13 @@ def main(argv: List[str]) -> int:
         # Two gets at depth 0 (EntityCoordinator.get performs no relation traversal), reported
         # separately so a failure on one is not conflated with the other.
         try:
-            article = client.coordinator(PyArticle).get(str(key_for("article")))
+            article = coordinator(PyArticle).get(str(key_for("article")))
             steps.append(StepResult("get", True, entity=entity_to_dict(article)))
         except Exception as exc:  # noqa: BLE001
             steps.append(StepResult("get", False, error=describe(exc)))
 
         try:
-            author = client.coordinator(PyAuthor).get(str(key_for("author")))
+            author = coordinator(PyAuthor).get(str(key_for("author")))
             steps.append(StepResult("get_author", True, entity=entity_to_dict(author)))
         except Exception as exc:  # noqa: BLE001
             steps.append(StepResult("get_author", False, error=describe(exc)))
@@ -429,7 +467,7 @@ def main(argv: List[str]) -> int:
             # EntityCoordinator.update() returns nothing (unlike .NET's UpdateMappedAsync, which
             # returns the server's response entity) — the entity reported here is what the driver
             # sent, which is the only observable this API surface offers.
-            client.coordinator(PyArticle).update(entity)
+            coordinator(PyArticle).update(entity)
             steps.append(StepResult("update", True, entity=entity_to_dict(entity)))
         except Exception as exc:  # noqa: BLE001
             steps.append(StepResult("update", False, error=describe(exc)))
@@ -438,7 +476,7 @@ def main(argv: List[str]) -> int:
         delete_key = str(key_for("article"))
 
         try:
-            client.coordinator(PyArticle).delete(delete_key)
+            coordinator(PyArticle).delete(delete_key)
             steps.append(StepResult("delete", True))
         except Exception as exc:  # noqa: BLE001
             steps.append(StepResult("delete", False, error=describe(exc)))
@@ -447,14 +485,13 @@ def main(argv: List[str]) -> int:
         # client's own error text when the read itself fails — a null entity alone cannot
         # distinguish "gone" from "read denied" from a transport error.
         try:
-            after = client.coordinator(PyArticle).get(delete_key)
+            after = coordinator(PyArticle).get(delete_key)
             steps.append(StepResult("get_after_delete", True, entity=entity_to_dict(after)))
         except Exception as exc:  # noqa: BLE001
             steps.append(StepResult("get_after_delete", False, error=describe(exc)))
 
     else:
-        registration_channel.close()
-        client.close()
+        channel.close()
         print(f"unknown phase '{phase}'", file=sys.stderr)
         return 2
 
@@ -462,8 +499,7 @@ def main(argv: List[str]) -> int:
     with open(out_path, "w", encoding="utf-8") as f:
         json.dump(document, f)
 
-    registration_channel.close()
-    client.close()
+    channel.close()
     return 0
 
 

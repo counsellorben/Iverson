@@ -34,7 +34,12 @@ public sealed class Reregistrar(ObjectMappingService.ObjectMappingServiceClient 
         var descriptor = Parser.Parse<TypeDescriptor>(typeDescriptorJson.GetRawText());
         descriptor.Authorization = Rules(ownerField);
 
-        var headers = new Metadata { { "authorization", $"Bearer {actingToken}" } };
+        // The acting-user token rides in `x-acting-user-authorization`, NOT in `authorization`:
+        // the server reads `authorization` as the SERVICE identity and requires the
+        // `schema_admin` scope on it for RegisterSchema (SchemaAdminAuthorizationPolicy.cs),
+        // which the acting user does not carry. The service identity is supplied by the channel
+        // this client was built on, exactly as the five drivers do it.
+        var headers = new Metadata { { "x-acting-user-authorization", $"Bearer {actingToken}" } };
         await client.RegisterSchemaAsync(
             new SchemaRequest
             {

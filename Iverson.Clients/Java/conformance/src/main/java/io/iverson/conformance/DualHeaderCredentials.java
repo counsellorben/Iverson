@@ -34,15 +34,18 @@ final class DualHeaderCredentials extends CallCredentials {
     private final String clientSecret;
     private final String tokenEndpoint;
     private final String actingToken;
+    private final String serviceToken;
     private final HttpClient httpClient = HttpClient.newHttpClient();
 
     private volatile String cachedToken;
 
-    DualHeaderCredentials(String clientId, String clientSecret, String tokenEndpoint, String actingToken) {
+    DualHeaderCredentials(
+            String clientId, String clientSecret, String tokenEndpoint, String actingToken, String serviceToken) {
         this.clientId = clientId;
         this.clientSecret = clientSecret;
         this.tokenEndpoint = tokenEndpoint;
         this.actingToken = actingToken;
+        this.serviceToken = serviceToken;
     }
 
     @Override
@@ -71,12 +74,22 @@ final class DualHeaderCredentials extends CallCredentials {
     }
 
     private boolean hasServiceCredentials() {
+        if (serviceToken != null && !serviceToken.isEmpty()) return true;
         return clientId != null && !clientId.isEmpty()
             && clientSecret != null && !clientSecret.isEmpty()
             && tokenEndpoint != null && !tokenEndpoint.isEmpty();
     }
 
+    /**
+     * A pre-minted service token wins over the client-credentials trio. Authentik stamps the
+     * JWT's {@code iss} from the request's Host header and grants scopes only when the token
+     * request asks for them, so a token this driver minted for itself would be rejected by the
+     * API on issuer validation (401) and would carry no {@code schema_admin} scope (403 on
+     * RegisterSchema). The orchestrator mints one correctly and passes it via
+     * {@code --service-token}.
+     */
     private String fetchServiceToken() throws Exception {
+        if (serviceToken != null && !serviceToken.isEmpty()) return serviceToken;
         if (cachedToken != null) return cachedToken;
         synchronized (this) {
             if (cachedToken != null) return cachedToken;

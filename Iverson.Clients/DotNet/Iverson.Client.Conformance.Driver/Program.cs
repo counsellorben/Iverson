@@ -39,7 +39,8 @@ var invoker = Auth.BuildInvoker(
     args_.Optional("--client-id"),
     args_.Optional("--client-secret"),
     args_.Optional("--token-endpoint"),
-    args_.Optional("--acting-token") ?? string.Empty);
+    args_.Optional("--acting-token") ?? string.Empty,
+    args_.Optional("--service-token"));
 
 var capture = new DescriptorCaptureInterceptor();
 // The capture seam wraps only the mapping stub used for schema registration; every other stub

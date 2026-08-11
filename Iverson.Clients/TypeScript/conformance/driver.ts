@@ -263,10 +263,22 @@ async function main(argv: string[]): Promise<number> {
     const tokenEndpoint = args.optional('--token-endpoint');
     const actingToken = args.optional('--acting-token');
 
-    const callCredentials =
-        clientId && clientSecret && tokenEndpoint
-            ? createOAuth2ClientCredentials(clientId, clientSecret, tokenEndpoint)
-            : undefined;
+    const serviceToken = args.optional('--service-token');
+
+    // A pre-minted service token wins over the client-credentials trio. Authentik stamps the
+    // JWT's `iss` from the request's Host header and grants scopes only when the token request
+    // asks for them, so a token this driver minted for itself would be rejected by the API on
+    // issuer validation (401) and would carry no `schema_admin` scope (403 on RegisterSchema).
+    // The orchestrator mints one correctly and passes it via --service-token.
+    const callCredentials = serviceToken
+        ? grpc.credentials.createFromMetadataGenerator((_options, callback) => {
+              const metadata = new grpc.Metadata();
+              metadata.add('authorization', `Bearer ${serviceToken}`);
+              callback(null, metadata);
+          })
+        : clientId && clientSecret && tokenEndpoint
+          ? createOAuth2ClientCredentials(clientId, clientSecret, tokenEndpoint)
+          : undefined;
 
     const client = new IversonClient(host, port, false, callCredentials, actingToken);
 

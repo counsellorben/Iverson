@@ -1,4 +1,8 @@
+using Grpc.Core;
+using Grpc.Net.Client;
+using Iverson.Client.Contracts;
 using Iverson.ClientConformance;
+using Iverson.ClientConformance.Scenarios;
 using Microsoft.Extensions.Logging;
 
 var flags = CliFlags.Parse(args);
@@ -29,22 +33,91 @@ Console.WriteLine("Preflight checks passed.\n");
 using var loggerFactory = LoggerFactory.Create(b => b.AddConsole().SetMinimumLevel(LogLevel.Warning));
 using var tokenBroker = new TokenBroker(grpcUrl, loggerFactory);
 
+// The harness runs entirely inside the acting user's own tenant and never creates one. That
+// tenant needs no provisioning call to be checked: the server validates it on EVERY call
+// carrying an acting-user token (ActingUserInterceptor rejects an absent, suspended or deleted
+// tenant with PermissionDenied), so an unusable tenant surfaces immediately and with a better
+// message than a probe here could produce. What DOES have to be resolved up front is which
+// tenant that is — the drivers must stamp the acting user's own tenant_id on the rows they
+// write, or the server refuses to read a single one of them back.
+string actingTenant;
 try
 {
-    Console.WriteLine($"Ensuring tenant '{tokenBroker.TenantId}' is provisioned...");
-    await tokenBroker.EnsureTenantProvisionedAsync();
-    Console.WriteLine($"Tenant '{tokenBroker.TenantId}' ready.\n");
+    actingTenant = await tokenBroker.GetActingTenantAsync();
+    Console.WriteLine($"Acting user's tenant: '{actingTenant}'.\n");
 }
 catch (Exception ex)
 {
-    Console.Error.WriteLine($"Tenant provisioning failed: {ex.Message}");
+    Console.Error.WriteLine($"Could not resolve the acting user's tenant: {ex.Message}");
     return 1;
 }
 
-// Driver invocation and scenario execution are wired in later tasks; this task's Program.cs only
-// proves the CLI, preflight, token broker and report skeleton hold together end to end.
 var report = new Report();
 
+try
+{
+    // The five driver rows the matrix has, in report order.
+    string[] allLanguages = ["dotnet", "python", "typescript", "go", "java"];
+    var languages = flags.Languages ?? allLanguages;
+    var scenarios = flags.Scenarios ?? [CrudRoundtripScenario.Name];
+
+    var actingToken = await tokenBroker.GetActingTokenAsync();
+    var ownerId = await tokenBroker.GetOwnerIdAsync();
+    var serviceToken = await tokenBroker.GetServiceTokenAsync();
+
+    // Both identities on one channel, exactly as the drivers wire them: the service token as
+    // channel call credentials (`authorization`), the acting-user token per call
+    // (`x-acting-user-authorization`). UnsafeUseInsecureChannelCallCredentials is required or
+    // the credentials are silently dropped over plaintext h2c — no exception, no header.
+    var callCredentials = CallCredentials.FromInterceptor((_, metadata) =>
+    {
+        metadata.Add("Authorization", $"Bearer {serviceToken}");
+        return Task.CompletedTask;
+    });
+    using var channel = GrpcChannel.ForAddress(grpcUrl, new GrpcChannelOptions
+    {
+        UnsafeUseInsecureChannelCallCredentials = true,
+        Credentials = ChannelCredentials.Create(ChannelCredentials.Insecure, callCredentials),
+    });
+
+    var mapping = new ObjectMappingService.ObjectMappingServiceClient(channel);
+    var runner = new DriverRunner();
+    var scenario = new CrudRoundtripScenario(
+        runner, mapping, new Reregistrar(mapping), new PostgresProbe(postgresCs), Console.WriteLine);
+
+    if (scenarios.Contains(CrudRoundtripScenario.Name, StringComparer.OrdinalIgnoreCase))
+    {
+        Console.WriteLine($"Running scenario '{CrudRoundtripScenario.Name}'...");
+        var context = new DriverContext(
+            Scenario: CrudRoundtripScenario.Name,
+            // Empty on purpose: `--type` is only a per-driver hint for which captured descriptor
+            // is the root type, and every driver falls back to its own root when it is empty.
+            // One shared context cannot name five different language-specific type names.
+            Type: string.Empty,
+            Tenant: actingTenant,
+            GrpcUrl: grpcUrl,
+            ClientId: Environment.GetEnvironmentVariable("IVERSON_CLIENT_ID"),
+            ClientSecret: Environment.GetEnvironmentVariable("IVERSON_CLIENT_SECRET"),
+            TokenEndpoint: Environment.GetEnvironmentVariable("IVERSON_TOKEN_ENDPOINT"),
+            ActingToken: actingToken,
+            OwnerId: ownerId,
+            IdPrefix: $"c{DateTime.UtcNow:yyyyMMddHHmmss}",
+            ServiceToken: serviceToken);
+
+        foreach (var cell in await scenario.RunAsync(languages, context, actingToken))
+            report.Add(cell);
+    }
+
+    foreach (var unknown in scenarios.Where(s => !string.Equals(s, CrudRoundtripScenario.Name, StringComparison.OrdinalIgnoreCase)))
+        Console.Error.WriteLine($"  unknown scenario '{unknown}' — ignored");
+}
+catch (Exception ex)
+{
+    Console.Error.WriteLine($"Harness run failed: {ex}");
+    return 1;
+}
+
+Console.WriteLine();
 Console.WriteLine(report.RenderText());
 
 if (flags.JsonPath is not null)

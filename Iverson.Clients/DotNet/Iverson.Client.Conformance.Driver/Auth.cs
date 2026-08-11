@@ -26,7 +26,8 @@ public static class Auth
         string? clientId,
         string? clientSecret,
         string? tokenEndpoint,
-        string actingToken)
+        string actingToken,
+        string? serviceToken = null)
     {
         var options = new GrpcChannelOptions
         {
@@ -35,7 +36,21 @@ public static class Auth
             UnsafeUseInsecureChannelCallCredentials = true,
         };
 
-        if (!string.IsNullOrEmpty(clientId) &&
+        // A pre-minted service token wins over the client-credentials trio. Authentik stamps the
+        // JWT's `iss` from the request's Host header and grants scopes only when the token
+        // request asks for them, so a token this driver minted for itself would be rejected by
+        // the API on issuer validation (401) and would carry no `schema_admin` scope (403).
+        // The orchestrator mints one correctly and passes it via --service-token.
+        if (!string.IsNullOrEmpty(serviceToken))
+        {
+            var staticCredentials = CallCredentials.FromInterceptor((_, metadata) =>
+            {
+                metadata.Add("Authorization", $"Bearer {serviceToken}");
+                return Task.CompletedTask;
+            });
+            options.Credentials = ChannelCredentials.Create(ChannelCredentials.Insecure, staticCredentials);
+        }
+        else if (!string.IsNullOrEmpty(clientId) &&
             !string.IsNullOrEmpty(clientSecret) &&
             !string.IsNullOrEmpty(tokenEndpoint))
         {

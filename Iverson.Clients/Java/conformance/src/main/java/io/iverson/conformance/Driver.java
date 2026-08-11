@@ -74,7 +74,8 @@ public final class Driver {
             parsedArgs.optional("--client-id"),
             parsedArgs.optional("--client-secret"),
             parsedArgs.optional("--token-endpoint"),
-            parsedArgs.optional("--acting-token"));
+            parsedArgs.optional("--acting-token"),
+            parsedArgs.optional("--service-token"));
 
         ManagedChannel channel = ManagedChannelBuilder.forAddress(grpcUri.getHost(), grpcUri.getPort())
             .usePlaintext()
