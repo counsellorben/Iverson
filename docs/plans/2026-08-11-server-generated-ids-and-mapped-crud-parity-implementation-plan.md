@@ -50,7 +50,7 @@ Copied from the spec; every task must hold to these.
 - `Iverson.Server/Iverson.Api.Tests/Grpc/EntityKeyAccessorTests.cs` — modify: `AssignNewKey` boundary and round-trip tests.
 - `Iverson.Server/Iverson.Api.Tests/Grpc/ObjectPersistenceGrpcServiceTests.cs` — modify: invert one old-contract test; add rejection, assignment and gate-ordering tests.
 - `Iverson.Server/Iverson.Api.Tests/Grpc/ObjectMappingGrpcServiceTests.cs` — modify: invert one old-contract test; repair eleven pre-set-key `Post` tests; add rejection, assignment and gate-ordering tests.
-- `Iverson.Clients/Go/iverson/coordinator_test.go` — modify: mock `MappingClient` plus three tests.
+- `Iverson.Clients/Go/iverson/coordinator_test.go` — modify: mock `MappingCrudClient` plus three tests.
 - `Iverson.Clients/Python/tests/test_entity_coordinator.py` — modify: three tests.
 - `Iverson.Clients/TypeScript/tests/core.test.ts` — modify: three tests.
 - `Iverson.Clients/Java/client/src/test/java/io/iverson/client/core/EntityCoordinatorTest.java` — modify: three tests.
@@ -81,7 +81,7 @@ Newly introduced by this plan and verified against the codebase on 2026-08-11 at
 | PA8 | Signature | Java's `mappingStub` carries `CallCredentials`, so a `withOption(ACTING_USER_TOKEN, …)` equivalent of `stubFor` actually emits the header | `IversonClient.java:75` applies `.withCallCredentials(credentials)` to `mappingStub`; `OAuth2ClientCredentials.java:35-36` declares `ACTING_USER_TOKEN` and `:56` reads it off the call options to emit `x-acting-user-authorization` (`:37`) |
 | PA9 | Signature | .NET's new tests must use the existing `TestCoordinatorFactory`, which already accepts a mapping client | `TestCoordinatorFactory.Create<T>(search, mapping, persistence, retrieval)` — all optional, substitutes filled in for the rest |
 | PA10 | Consumer impact | Adding `Metadata? headers = null` to the three .NET mapped methods breaks no caller | The only call sites outside `EntityCoordinator.cs` are in `Iverson.Client.Sample/Program.cs:74,85,117,125,140,144,148,152,159,164`; none passes an argument positionally past `depth`, so inserting `headers` before `ct` is source-compatible |
-| PA11 | Consumer impact | Renaming Go's `MappingDeleteClient` → `MappingClient` and its adapter touches nothing outside one file | All six references are in `coordinator.go` (`:29,30,119,150,694,698`); no sample or test names either symbol |
+| PA11 | Consumer impact | Widening Go's `MappingDeleteClient` touches nothing outside `coordinator.go`, but the name `MappingClient` is **already taken** in the same package, so the widened interface is renamed `MappingCrudClient` instead | All six references to `MappingDeleteClient` are in `coordinator.go` (`:29,30,119,150,694,698`); no sample or test names that symbol. `registrar.go:14` declares `type MappingClient interface { RegisterSchema(...) }` and `registrar.go:1`/`coordinator.go:1` are both `package iverson`, so reusing that name would be a redeclaration; `registrar_test.go:18-24`'s mock implements only `RegisterSchema`, ruling out merging the two interfaces |
 | PA12 | File path | All four generated mapping stubs already expose `Get`/`Post`/`Update` | Python `object_mapping_pb2_grpc.py:39,44,49`; TypeScript `generated/object_mapping.ts:2872,2881,2890`; Go `generated/object_mapping_grpc.pb.go:37-39`; Java `ObjectMappingServiceGrpc.java:424,431,438` (blocking stub) |
 | PA13 | Signature | `MappingGetRequest` carries `depth`, so `getMapped` has something to pass through | `Common/Proto/object_mapping.proto:165-170` — `type_name`, `key`, `depth` (int32), `trace_id` |
 | PA14 | Code validity | An unset key serializes as absent in every language whose sample or tests exercise it | Python `core.py:389` skips `value is None`; TypeScript `core.ts:454` skips `value === undefined`, and `sample/models/Article.ts:18` declares `id: string = ''` so a `new Article()` sends `""`; Java `StructConverter.java:103` maps a null `UUID` to `NullValue`, which `ExtractKey` reads as `""`; .NET/Go send the all-zeroes `Guid` / empty `string` |
@@ -104,6 +104,7 @@ Newly introduced by this plan and verified against the codebase on 2026-08-11 at
 | PA31 | Test convention | `MakePayload` has a keyless form usable for Task 1's `:707` repair | `ObjectMappingGrpcServiceTests.cs:117` — the dictionary overload accepts `MakePayload(new())` |
 | PA32 | Consumer impact | Authorization rules are supplied at registration, not declared on the model, and a type registered without them is denied for every read and write — so both samples must pass rules explicitly for their writes to succeed | `RowFieldAuthorizationEvaluator.cs:10-13` returns `AuthorizationDecision(Denied: true, …)` when `schema.Authorization is null`, and `Denied` is positional field 1 (`IRowFieldAuthorizationEvaluator.cs:16-17`); `SchemaBuilder.cs:148-150` passes a null `TypeDescriptor.Authorization` straight through; no authorization attribute exists in `Iverson.Client.Attributes/` and no such annotation in the Java client's `annotations/`; `Iverson.LoadTest/Program.cs:153-157` is the working in-repo example |
 | PA33 | File path / signature | Three of the five client registrars cannot declare authorization rules today, which is why Tasks 2, 3 and 4 each add the parameter; the generated `AuthorizationRules` message already exists in all three, so no proto regeneration is needed | Python `register_all` (`core.py:145`) and `register_all_async` (`:155`) take only `trace_id`, building `TypeDescriptor` at `:273`; TypeScript `registerAll` (`core.ts:421`) takes only `traceId` and `_buildRequest` (`:437`) delegates to `describeEntity`, which hardcodes `authorization: undefined` (`:401`); Go `RegisterAll` (`registrar.go:33`) takes only `ctx, traceID`, building `typeDesc` at `:150`. Generated types: `object_mapping.ts:262-267`, `object_mapping.pb.go:605-611`, `object_mapping_pb2.py`. TypeScript's encoder writes the field only when `!== undefined` (`:1332-1333`), matching the omit-to-get-null semantic |
+| PA34 | Consumer impact | An authorized write needs more than group membership: the evaluator denies on a missing tenant column or a missing `tenant_id` claim **before** it consults roles, so both samples' acting-user tokens must carry that claim | `RowFieldAuthorizationEvaluator.cs:18-23` returns `AuthorizationDecision(Denied: true, …)` when `schema.TenantColumn` is empty or when `actingUser.FindFirst("tenant_id")` is null; `FindAll("groups")` is only reached afterwards at `:25`. The sample models do declare a tenant column (`[IversonTenant] TenantId` on all five .NET models, `@IversonTenant` on the Java ones), so the claim is the live gate. `Iverson.LoadTest` satisfies it by provisioning a real tenant and its identities via `EnsureTenantProvisionedAsync` (`Program.cs:95-105`) |
 
 ---
 
@@ -380,9 +381,9 @@ Go needs one step the other three clients do not: its mapping dependency is Dele
 Replace `:29-32`:
 
 ```go
-// MappingClient is the interface for the ObjectMappingService operations the coordinator
+// MappingCrudClient is the interface for the ObjectMappingService operations the coordinator
 // uses: full CRUD with server-side relation resolution, plus Delete.
-type MappingClient interface {
+type MappingCrudClient interface {
 	Get(ctx context.Context, req *pb.MappingGetRequest) (*pb.MappingResponse, error)
 	Post(ctx context.Context, req *pb.MappingWriteRequest) (*pb.MappingResponse, error)
 	Update(ctx context.Context, req *pb.MappingWriteRequest) (*pb.MappingResponse, error)
@@ -390,7 +391,9 @@ type MappingClient interface {
 }
 ```
 
-Update `coordinatorDeps.mapping` at `:119` to `mapping MappingClient`. The rename is breaking only for code constructing a coordinator with custom `deps`, which is test-only in this repo (PA11).
+The name `MappingClient` is unavailable: `registrar.go:14` already declares it in this package for the registrar's narrow `RegisterSchema`-only dependency, and widening that type would break the ~40 `mockMappingClient` constructions in `registrar_test.go`, which implement only `RegisterSchema`. `MappingCrudClient` keeps the "what it can do" framing the original `MappingDeleteClient` used.
+
+Update `coordinatorDeps.mapping` at `:119` to `mapping MappingCrudClient`. The rename is breaking only for code constructing a coordinator with custom `deps`, which is test-only in this repo (PA11).
 
 - [ ] **Step 2: Extend the adapter**
 
@@ -998,7 +1001,7 @@ Declare rules at registration, replacing the `registrar.registerAll(...)` call a
                 Author.class, Tag.class, Article.class);
 ```
 
-The role is matched against the acting user's `groups` claim, so the identity behind `IVERSON_ACTING_USER_TOKEN` must belong to that Authentik group or every write is still denied.
+The role is matched against the acting user's `groups` claim, so the identity behind `IVERSON_ACTING_USER_TOKEN` must belong to that Authentik group. It must **also** carry a `tenant_id` claim: the evaluator denies on a missing tenant claim before it consults roles (`RowFieldAuthorizationEvaluator.cs:18-23`), so a correctly-grouped token without one is still denied on every write (PA34).
 
 Then replace the write and retrieve section at `:43-69`:
 
@@ -1171,7 +1174,10 @@ An identity alone is not enough: rules are supplied at registration, and a type 
 // OwnerField is left empty — none of the five sample models carries an owner column —
 // so a single bypass role carries authorization. The acting user behind
 // IVERSON_ACTING_USER_TOKEN must belong to this Authentik group, since the role is
-// matched against that token's `groups` claim.
+// matched against that token's `groups` claim, AND must carry a `tenant_id` claim —
+// the evaluator denies on a missing tenant claim before it consults roles
+// (RowFieldAuthorizationEvaluator.cs:18-23). The server stamps each row's tenant from
+// that claim, which is why the sampleTenant literal below is not what determines tenancy.
 var sampleRules = new AuthorizationRules
 {
     RowPermissions =
