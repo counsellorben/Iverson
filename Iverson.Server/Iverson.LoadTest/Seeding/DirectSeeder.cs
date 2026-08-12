@@ -113,7 +113,6 @@ public sealed class DirectSeeder(
             var identity = i % 2 == 0 ? identities.Regular : identities.Bypass;
             var entity = new BenchmarkAuthor
             {
-                Id      = Guid.NewGuid(),
                 Name    = $"Author {i}",
                 Email   = $"author{i}@benchmark.dev",
                 Bio     = new string('x', 200),
@@ -175,7 +174,6 @@ public sealed class DirectSeeder(
             var identity = i % 2 == 0 ? identities.Regular : identities.Bypass;
             var entity = new BenchmarkTag
             {
-                Id       = Guid.NewGuid(),
                 Name     = $"tag-{i}",
                 Category = Categories[i % Categories.Length],
                 OwnerId  = identity == identities.Bypass ? await identity.GetSubAsync(ct) : "",
@@ -251,7 +249,6 @@ public sealed class DirectSeeder(
             var body = GenerateBody(i);
             var entity = new BenchmarkArticle
             {
-                Id                = Guid.NewGuid(),
                 Title             = $"Benchmark Article {i}: {cat}",
                 Body              = body,
                 BenchmarkAuthorId = authorIds[i % authorIds.Length],
