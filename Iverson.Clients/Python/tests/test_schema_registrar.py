@@ -675,3 +675,26 @@ class TestArrayProperties:
         message = str(exc.value)
         assert "widgets" in message
         assert "_CustomElement" in message
+
+
+class TestAuthorizationRules:
+    def test_each_type_gets_its_own_rules_and_unlisted_type_gets_none(self):
+        stub = make_stub()
+        registrar = SchemaRegistrar(stub, RegArticle, RegAuthor, RegDescribedKeyArticle)
+        article_rules = mapping_pb.AuthorizationRules(owner_field="OwnerOne")
+        author_rules = mapping_pb.AuthorizationRules(owner_field="OwnerTwo")
+
+        registrar.register_all(
+            authorization_by_type_name={
+                "RegArticle": article_rules,
+                "RegAuthor": author_rules,
+            }
+        )
+
+        requests = {
+            c.args[0].root_type.type_name: c.args[0]
+            for c in stub.RegisterSchema.call_args_list
+        }
+        assert requests["RegArticle"].root_type.authorization.owner_field == "OwnerOne"
+        assert requests["RegAuthor"].root_type.authorization.owner_field == "OwnerTwo"
+        assert requests["RegDescribedKeyArticle"].root_type.HasField("authorization") is False
