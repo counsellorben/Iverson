@@ -863,7 +863,7 @@ type ruleUnrestricted struct {
 	TenantId string `iverson_tenant:"true"`
 }
 
-func TestSchemaRegistrar_RegisterAllWithAuthorization_PerTypeRules(t *testing.T) {
+func TestSchemaRegistrar_RegisterAll_PerTypeRules(t *testing.T) {
 	mock := &recordingMappingClient{response: &pb.SchemaResponse{Success: true}}
 	registrar := iverson.NewSchemaRegistrar(mock, ruleArticle{}, ruleAuthor{}, ruleUnrestricted{})
 
