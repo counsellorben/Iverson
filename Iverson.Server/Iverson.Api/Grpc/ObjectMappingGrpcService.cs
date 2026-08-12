@@ -297,12 +297,7 @@ public sealed class ObjectMappingGrpcService(
 
         _relationValidator.ValidateAndNormalizeRelations(request.Payload, schema);
 
-        var key = _keyAccessor.ExtractKey(request.Payload, schema.KeyColumn.Name);
-        if (string.IsNullOrWhiteSpace(key) || key == Guid.Empty.ToString())
-        {
-            key = Guid.CreateVersion7().ToString();
-            _keyAccessor.SetKey(request.Payload, schema.KeyColumn.Name, key);
-        }
+        var key = _keyAccessor.AssignNewKey(request.Payload, schema.KeyColumn.Name);
 
         var payloadJson = StructSerializer.SerializePayload(request.Payload);
 

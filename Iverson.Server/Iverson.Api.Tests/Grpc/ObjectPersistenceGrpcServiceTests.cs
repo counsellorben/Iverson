@@ -144,21 +144,21 @@ public class ObjectPersistenceGrpcServiceTests
     }
 
     [Fact]
-    public async Task Post_IgnoresClientProvidedKey_AndAssignsServerKey()
+    public async Task Post_WithClientProvidedKey_ThrowsInvalidArgument()
     {
         await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
-        var clientGuid = Guid.NewGuid().ToString();
         var payload = MakePayload(new()
         {
-            ["Id"]   = Value.ForString(clientGuid),
+            ["Id"]   = Value.ForString(Guid.NewGuid().ToString()),
             ["Name"] = Value.ForString("Bob")
         });
         var request = new PersistRequest { TypeName = "Author", Payload = payload };
 
-        var response = await _sut.Post(request, TestServerCallContext.Create());
+        var act = () => _sut.Post(request, TestServerCallContext.Create());
 
-        response.Key.Should().NotBe(clientGuid);
-        Guid.TryParse(response.Key, out _).Should().BeTrue();
+        var ex = await act.Should().ThrowAsync<RpcException>();
+        ex.Which.StatusCode.Should().Be(StatusCode.InvalidArgument);
+        ex.Which.Status.Detail.Should().Contain("server-generated");
     }
 
     [Fact]
@@ -335,6 +335,25 @@ public class ObjectPersistenceGrpcServiceTests
 
         await act.Should().ThrowAsync<RpcException>()
             .Where(e => e.Status.StatusCode == StatusCode.PermissionDenied);
+    }
+
+    [Fact]
+    public async Task Post_WithSuppliedKey_AndUnauthorizedCaller_ThrowsPermissionDenied_NotInvalidArgument()
+    {
+        var schema = SchemaFixtures.AuthorSchema() with { Authorization = null };
+        await _registry.RegisterAsync(schema);
+        var payload = MakePayload(new()
+        {
+            ["Id"]   = Value.ForString(Guid.NewGuid().ToString()),
+            ["Name"] = Value.ForString("Alice")
+        });
+
+        var act = () => _sut.Post(
+            new PersistRequest { TypeName = "Author", Payload = payload },
+            TestServerCallContext.Create());
+
+        var ex = await act.Should().ThrowAsync<RpcException>();
+        ex.Which.StatusCode.Should().Be(StatusCode.PermissionDenied);
     }
 
     [Theory]
