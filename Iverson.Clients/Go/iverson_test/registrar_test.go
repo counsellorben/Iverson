@@ -828,3 +828,77 @@ func TestIversonClient_GetSchema_PropagatesError(t *testing.T) {
 		t.Errorf("expected error to wrap %q, got %q", "boom", err.Error())
 	}
 }
+
+// ── RegisterAllWithAuthorization ────────────────────────────────────────────────
+
+// recordingMappingClient records every SchemaRequest it receives, keyed by TypeName,
+// so a test can assert what each of several registered types was sent — a plain
+// "last captured request" field (as mockMappingClient above uses) can't distinguish
+// per-type payloads when RegisterAll iterates over multiple entities.
+type recordingMappingClient struct {
+	response *pb.SchemaResponse
+	byType   map[string]*pb.SchemaRequest
+}
+
+func (m *recordingMappingClient) RegisterSchema(_ context.Context, req *pb.SchemaRequest) (*pb.SchemaResponse, error) {
+	if m.byType == nil {
+		m.byType = make(map[string]*pb.SchemaRequest)
+	}
+	m.byType[req.RootType.TypeName] = req
+	return m.response, nil
+}
+
+type ruleArticle struct {
+	Id       string `iverson_key:"true"`
+	TenantId string `iverson_tenant:"true"`
+}
+
+type ruleAuthor struct {
+	Id       string `iverson_key:"true"`
+	TenantId string `iverson_tenant:"true"`
+}
+
+type ruleUnrestricted struct {
+	Id       string `iverson_key:"true"`
+	TenantId string `iverson_tenant:"true"`
+}
+
+func TestSchemaRegistrar_RegisterAllWithAuthorization_PerTypeRules(t *testing.T) {
+	mock := &recordingMappingClient{response: &pb.SchemaResponse{Success: true}}
+	registrar := iverson.NewSchemaRegistrar(mock, ruleArticle{}, ruleAuthor{}, ruleUnrestricted{})
+
+	articleRules := &pb.AuthorizationRules{OwnerField: "AuthorId"}
+	authorRules := &pb.AuthorizationRules{OwnerField: "EditorId"}
+
+	err := registrar.RegisterAllWithAuthorization(context.Background(), "", map[string]*pb.AuthorizationRules{
+		"ruleArticle": articleRules,
+		"ruleAuthor":  authorRules,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	articleReq, ok := mock.byType["ruleArticle"]
+	if !ok {
+		t.Fatal("no request captured for ruleArticle")
+	}
+	if articleReq.RootType.Authorization.GetOwnerField() != "AuthorId" {
+		t.Errorf("ruleArticle authorization OwnerField = %q, want %q", articleReq.RootType.Authorization.GetOwnerField(), "AuthorId")
+	}
+
+	authorReq, ok := mock.byType["ruleAuthor"]
+	if !ok {
+		t.Fatal("no request captured for ruleAuthor")
+	}
+	if authorReq.RootType.Authorization.GetOwnerField() != "EditorId" {
+		t.Errorf("ruleAuthor authorization OwnerField = %q, want %q", authorReq.RootType.Authorization.GetOwnerField(), "EditorId")
+	}
+
+	unrestrictedReq, ok := mock.byType["ruleUnrestricted"]
+	if !ok {
+		t.Fatal("no request captured for ruleUnrestricted")
+	}
+	if unrestrictedReq.RootType.Authorization != nil {
+		t.Errorf("ruleUnrestricted authorization = %v, want nil", unrestrictedReq.RootType.Authorization)
+	}
+}
