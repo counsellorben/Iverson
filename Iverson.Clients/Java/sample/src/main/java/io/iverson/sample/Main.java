@@ -2,15 +2,17 @@ package io.iverson.sample;
 
 import io.iverson.client.core.EntityCoordinator;
 import io.iverson.client.core.IversonClient;
+import io.iverson.client.core.OAuth2ClientCredentials;
 import io.iverson.client.core.SchemaRegistrar;
 import io.iverson.client.search.Query;
 import io.iverson.sample.models.Article;
 import io.iverson.sample.models.Author;
 import io.iverson.sample.models.Tag;
+import iverson.ObjectMapping;
 import iverson.ObjectSearch.SearchRequest;
 
 import java.time.OffsetDateTime;
-import java.util.UUID;
+import java.util.Map;
 
 /**
  * Sample application demonstrating the Iverson Java client API.
@@ -29,44 +31,67 @@ public class Main {
     private static final String TENANT_ID = "sample-tenant";
 
     public static void main(String[] args) throws Exception {
+        String actingUserToken = System.getenv("IVERSON_ACTING_USER_TOKEN");
+        if (actingUserToken == null || actingUserToken.isBlank()) {
+            System.err.println(
+                "IVERSON_ACTING_USER_TOKEN is not set. Every Iverson write is denied without an\n"
+                    + "acting user, so this sample cannot seed anything. Export a user access token and re-run.");
+            return;
+        }
+
         // ── Connect ────────────────────────────────────────────────────────────
-        try (IversonClient client = new IversonClient("localhost", 5000)) {
+        try (IversonClient client = new IversonClient(
+                "localhost", 5000,
+                new OAuth2ClientCredentials(
+                    System.getenv("IVERSON_CLIENT_ID"),
+                    System.getenv("IVERSON_CLIENT_SECRET"),
+                    System.getenv("IVERSON_TOKEN_ENDPOINT"),
+                    "admin schema_admin"))) {
 
             // ── Register schemas ───────────────────────────────────────────────
+            ObjectMapping.AuthorizationRules sampleRules = ObjectMapping.AuthorizationRules.newBuilder()
+                .addRowPermissions(ObjectMapping.RowPermission.newBuilder()
+                    .setRole("iverson-sample-bypass")
+                    .setCanReadAll(true).setCanWriteAll(true).setCanDeleteAll(true))
+                .build();
+
             SchemaRegistrar registrar = new SchemaRegistrar(client);
-            registrar.registerAll(Author.class, Tag.class, Article.class);
+            registrar.registerAll(
+                Map.of("Author", sampleRules, "Tag", sampleRules, "Article", sampleRules),
+                Author.class, Tag.class, Article.class);
 
             // ── Persist an author ──────────────────────────────────────────────
             EntityCoordinator<Author> authorCoordinator =
                 new EntityCoordinator<>(client, Author.class);
 
-            UUID authorId = UUID.randomUUID();
-            Author author = new Author(authorId, "Jane Smith", "jane@example.com");
+            // The server assigns the key and returns the stored entity. Write order is
+            // load-bearing: the author must exist before an article can reference it.
+            Author author = new Author(null, "Jane Smith", "jane@example.com");
             author.setTenantId(TENANT_ID);
-            String persistedAuthorId = authorCoordinator.persist(author);
-            System.out.println("Persisted author: " + persistedAuthorId);
+            Author persistedAuthor = authorCoordinator.postMapped(author, actingUserToken);
+            System.out.println("Persisted author: " + persistedAuthor.getId());
 
             // ── Persist an article ─────────────────────────────────────────────
             EntityCoordinator<Article> articleCoordinator =
                 new EntityCoordinator<>(client, Article.class);
 
             Article article = new Article(
-                UUID.randomUUID(),
+                null,
                 "The Rise of Functional Programming",
                 "Functional programming is transforming how we write software...",
                 "technology",
                 850,
                 OffsetDateTime.now(),
-                authorId
+                persistedAuthor.getId()
             );
-
             article.setTenantId(TENANT_ID);
 
-            String articleId = articleCoordinator.persist(article);
-            System.out.println("Persisted article: " + articleId);
+            Article persistedArticle = articleCoordinator.postMapped(article, actingUserToken);
+            System.out.println("Persisted article: " + persistedArticle.getId());
 
             // ── Retrieve by key ────────────────────────────────────────────────
-            Article fetched = articleCoordinator.get(articleId);
+            Article fetched = articleCoordinator.getMapped(
+                persistedArticle.getId().toString(), 1, actingUserToken);
             System.out.println("Fetched: " + fetched);
 
             // ── Search with QueryBuilder ───────────────────────────────────────

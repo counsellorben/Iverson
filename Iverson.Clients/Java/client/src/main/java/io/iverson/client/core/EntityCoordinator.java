@@ -10,6 +10,7 @@ import io.iverson.client.search.PipelineBuilder;
 import io.iverson.client.search.QueryBuilder;
 import io.iverson.client.search.SimilarBuilder;
 import iverson.ObjectMapping;
+import iverson.ObjectMappingServiceGrpc;
 import iverson.ObjectPersistence;
 import iverson.ObjectRetrieval;
 import iverson.ObjectSearch;
@@ -148,6 +149,55 @@ public final class EntityCoordinator<T> {
         }
     }
 
+    // ── Object Mapping (full CRUD with relation resolution) ────────────────────
+
+    /**
+     * Fetches a single entity by key with server-side relation resolution to {@code depth}.
+     * Returns {@code null} if not found.
+     */
+    public T getMapped(String id, int depth, String actingUserToken) throws StatusRuntimeException {
+        ObjectMapping.MappingGetRequest request = ObjectMapping.MappingGetRequest.newBuilder()
+            .setTypeName(typeName)
+            .setKey(id)
+            .setDepth(depth)
+            .build();
+        ObjectMapping.MappingResponse response = mappingStubFor(actingUserToken).get(request);
+        if (!response.getSuccess()) return null;
+        return StructConverter.fromStruct(response.getData(), entityType);
+    }
+
+    /**
+     * Creates an entity through the mapping path, which resolves its relations server-side.
+     * Returns the entity hydrated from the response, carrying the server-assigned key — the
+     * caller never assigns one.
+     */
+    public T postMapped(T entity, String actingUserToken) throws StatusRuntimeException {
+        ObjectMapping.MappingWriteRequest request = ObjectMapping.MappingWriteRequest.newBuilder()
+            .setTypeName(typeName)
+            .setPayload(StructConverter.toStruct(entity))
+            .build();
+        ObjectMapping.MappingResponse response = mappingStubFor(actingUserToken).post(request);
+        if (!response.getSuccess()) {
+            throw new StatusRuntimeException(
+                io.grpc.Status.INTERNAL.withDescription(response.getError()));
+        }
+        return StructConverter.fromStruct(response.getData(), entityType);
+    }
+
+    /** Updates an existing entity through the mapping path. */
+    public T updateMapped(T entity, String actingUserToken) throws StatusRuntimeException {
+        ObjectMapping.MappingWriteRequest request = ObjectMapping.MappingWriteRequest.newBuilder()
+            .setTypeName(typeName)
+            .setPayload(StructConverter.toStruct(entity))
+            .build();
+        ObjectMapping.MappingResponse response = mappingStubFor(actingUserToken).update(request);
+        if (!response.getSuccess()) {
+            throw new StatusRuntimeException(
+                io.grpc.Status.INTERNAL.withDescription(response.getError()));
+        }
+        return StructConverter.fromStruct(response.getData(), entityType);
+    }
+
     // ── Object Search ──────────────────────────────────────────────────────────
 
     /**
@@ -270,6 +320,18 @@ public final class EntityCoordinator<T> {
         return actingUserToken != null
             ? searchStub.withOption(OAuth2ClientCredentials.ACTING_USER_TOKEN, actingUserToken)
             : searchStub;
+    }
+
+    /**
+     * Returns the mapping stub to invoke, attaching the acting-user token as a call option
+     * (consumed by {@link OAuth2ClientCredentials}) when one is given. The constructor's
+     * {@link io.grpc.CallCredentials} are the service's own client-credentials token and do
+     * <em>not</em> identify an acting user; the server denies any write without one.
+     */
+    private ObjectMappingServiceGrpc.ObjectMappingServiceBlockingStub mappingStubFor(String actingUserToken) {
+        return actingUserToken != null
+            ? client.mappingStub.withOption(OAuth2ClientCredentials.ACTING_USER_TOKEN, actingUserToken)
+            : client.mappingStub;
     }
 
     // ── Helpers ────────────────────────────────────────────────────────────────

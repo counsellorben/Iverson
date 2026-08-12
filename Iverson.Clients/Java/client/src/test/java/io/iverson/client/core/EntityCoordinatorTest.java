@@ -2,6 +2,7 @@ package io.iverson.client.core;
 
 import com.google.protobuf.Struct;
 import com.google.protobuf.Value;
+import io.grpc.StatusRuntimeException;
 import io.iverson.client.annotations.IversonEntity;
 import io.iverson.client.annotations.IversonKey;
 import io.iverson.client.search.AggregateBuilder;
@@ -10,11 +11,14 @@ import io.iverson.client.search.GroupByBuilder;
 import io.iverson.client.search.PipelineBuilder;
 import io.iverson.client.search.Query;
 import io.iverson.client.search.SimilarBuilder;
+import iverson.ObjectMapping;
+import iverson.ObjectMappingServiceGrpc;
 import iverson.ObjectSearch;
 import iverson.ObjectSearchServiceGrpc;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
@@ -50,7 +54,11 @@ class EntityCoordinatorTest {
     @Mock
     private ObjectSearchServiceGrpc.ObjectSearchServiceBlockingStub mockStub;
 
+    @Mock
+    private ObjectMappingServiceGrpc.ObjectMappingServiceBlockingStub mockMappingStub;
+
     private EntityCoordinator<CoordinatorTestArticle> sut;
+    private EntityCoordinator<CoordinatorTestArticle> mappingSut;
 
     @BeforeEach
     void setUp() {
@@ -58,6 +66,11 @@ class EntityCoordinatorTest {
         lenient().when(mockStub.withOption(eq(OAuth2ClientCredentials.ACTING_USER_TOKEN), anyString()))
             .thenReturn(mockStub);
         sut = new EntityCoordinator<>(mockStub, CoordinatorTestArticle.class);
+
+        lenient().when(mockMappingStub.withOption(
+                eq(OAuth2ClientCredentials.ACTING_USER_TOKEN), anyString()))
+            .thenReturn(mockMappingStub);
+        mappingSut = new EntityCoordinator<>(new IversonClient(mockMappingStub), CoordinatorTestArticle.class);
     }
 
     // ── groupBy ─────────────────────────────────────────────────────────────────
@@ -213,5 +226,113 @@ class EntityCoordinatorTest {
         sut.searchChunks(builder, "user-token-789");
 
         verify(mockStub).withOption(OAuth2ClientCredentials.ACTING_USER_TOKEN, "user-token-789");
+    }
+
+    // ── getMapped / postMapped / updateMapped ──────────────────────────────────
+
+    @Test
+    void getMappedPassesDepthThrough() {
+        UUID id = UUID.randomUUID();
+        ObjectMapping.MappingResponse response = ObjectMapping.MappingResponse.newBuilder()
+            .setSuccess(true)
+            .setData(Struct.newBuilder()
+                .putFields("Id", Value.newBuilder().setStringValue(id.toString()).build())
+                .putFields("Title", Value.newBuilder().setStringValue("Hello").build())
+                .build())
+            .build();
+        when(mockMappingStub.get(any())).thenReturn(response);
+
+        CoordinatorTestArticle result = mappingSut.getMapped(id.toString(), 3, "tok");
+
+        assertNotNull(result);
+        assertEquals("Hello", result.title);
+
+        ArgumentCaptor<ObjectMapping.MappingGetRequest> captor =
+            ArgumentCaptor.forClass(ObjectMapping.MappingGetRequest.class);
+        verify(mockMappingStub).get(captor.capture());
+        assertEquals(3, captor.getValue().getDepth());
+        assertEquals(id.toString(), captor.getValue().getKey());
+    }
+
+    @Test
+    void getMapped_returnsNull_whenNotFound() {
+        ObjectMapping.MappingResponse response = ObjectMapping.MappingResponse.newBuilder()
+            .setSuccess(false)
+            .build();
+        when(mockMappingStub.get(any())).thenReturn(response);
+
+        assertNull(mappingSut.getMapped("missing-id", 1, "tok"));
+    }
+
+    @Test
+    void postMappedReturnsEntityHydratedFromData() {
+        UUID id = UUID.randomUUID();
+        ObjectMapping.MappingResponse response = ObjectMapping.MappingResponse.newBuilder()
+            .setSuccess(true)
+            .setData(Struct.newBuilder()
+                .putFields("Id", Value.newBuilder().setStringValue(id.toString()).build())
+                .putFields("Title", Value.newBuilder().setStringValue("Server Title").build())
+                .build())
+            .build();
+        when(mockMappingStub.post(any())).thenReturn(response);
+
+        CoordinatorTestArticle entity = new CoordinatorTestArticle();
+        entity.title = "Client Title";
+
+        CoordinatorTestArticle result = mappingSut.postMapped(entity, "tok");
+
+        assertEquals(id, result.id);
+        assertEquals("Server Title", result.title);
+
+        verify(mockMappingStub).withOption(eq(OAuth2ClientCredentials.ACTING_USER_TOKEN), eq("tok"));
+    }
+
+    @Test
+    void postMapped_throws_whenServerReportsFailure() {
+        ObjectMapping.MappingResponse response = ObjectMapping.MappingResponse.newBuilder()
+            .setSuccess(false)
+            .setError("denied")
+            .build();
+        when(mockMappingStub.post(any())).thenReturn(response);
+
+        CoordinatorTestArticle entity = new CoordinatorTestArticle();
+        assertThrows(StatusRuntimeException.class, () -> mappingSut.postMapped(entity, "tok"));
+    }
+
+    @Test
+    void updateMappedSendsTheKeyItWasGiven() {
+        UUID id = UUID.randomUUID();
+        ObjectMapping.MappingResponse response = ObjectMapping.MappingResponse.newBuilder()
+            .setSuccess(true)
+            .setData(Struct.newBuilder()
+                .putFields("Id", Value.newBuilder().setStringValue(id.toString()).build())
+                .build())
+            .build();
+        when(mockMappingStub.update(any())).thenReturn(response);
+
+        CoordinatorTestArticle entity = new CoordinatorTestArticle();
+        entity.id = id;
+        entity.title = "Updated Title";
+
+        mappingSut.updateMapped(entity, "tok");
+
+        ArgumentCaptor<ObjectMapping.MappingWriteRequest> captor =
+            ArgumentCaptor.forClass(ObjectMapping.MappingWriteRequest.class);
+        verify(mockMappingStub).update(captor.capture());
+        Struct sentPayload = captor.getValue().getPayload();
+        assertEquals(id.toString(), sentPayload.getFieldsOrThrow("Id").getStringValue());
+        assertEquals("Updated Title", sentPayload.getFieldsOrThrow("Title").getStringValue());
+    }
+
+    @Test
+    void updateMapped_throws_whenServerReportsFailure() {
+        ObjectMapping.MappingResponse response = ObjectMapping.MappingResponse.newBuilder()
+            .setSuccess(false)
+            .setError("denied")
+            .build();
+        when(mockMappingStub.update(any())).thenReturn(response);
+
+        CoordinatorTestArticle entity = new CoordinatorTestArticle();
+        assertThrows(StatusRuntimeException.class, () -> mappingSut.updateMapped(entity, "tok"));
     }
 }
