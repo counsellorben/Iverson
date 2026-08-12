@@ -25,6 +25,7 @@ import {
 } from '../src/annotations.js';
 import { IversonClient, SchemaRegistrar } from '../src/core.js';
 import {
+    AuthorizationRules,
     ClrType,
     GetSchemaResponse,
     ObjectMappingServiceClient,
@@ -146,6 +147,36 @@ describe('SchemaRegistrar', () => {
 
             const capturedReq = (stub.registerSchema as ReturnType<typeof vi.fn>).mock.calls[0][0] as SchemaRequest;
             expect(capturedReq.traceId).toBe('test-trace-123');
+        });
+
+        it('attaches per-type authorization rules by type name, leaving an unlisted type undefined', async () => {
+            const stub = makeStub();
+            const registrar = new SchemaRegistrar(stub, [RegArticle, RegAuthor]);
+
+            const articleRules: AuthorizationRules = { ownerField: 'authorId', rowPermissions: [], fieldPermissions: [] };
+            const authorRules: AuthorizationRules = { ownerField: 'ownerId', rowPermissions: [], fieldPermissions: [] };
+
+            await registrar.registerAll('trace', { RegArticle: articleRules, RegAuthor: authorRules });
+
+            const calls = (stub.registerSchema as ReturnType<typeof vi.fn>).mock.calls;
+            const byTypeName = new Map(
+                calls.map(call => {
+                    const req = call[0] as SchemaRequest;
+                    return [req.rootType!.typeName, req.rootType!.authorization] as const;
+                }),
+            );
+            expect(byTypeName.get('RegArticle')?.ownerField).toBe('authorId');
+            expect(byTypeName.get('RegAuthor')?.ownerField).toBe('ownerId');
+        });
+
+        it('leaves authorization undefined for a type with no entry in the map', async () => {
+            const stub = makeStub();
+            const registrar = new SchemaRegistrar(stub, [RegArticle]);
+
+            await registrar.registerAll('trace', { RegAuthor: { ownerField: 'ownerId', rowPermissions: [], fieldPermissions: [] } });
+
+            const capturedReq = (stub.registerSchema as ReturnType<typeof vi.fn>).mock.calls[0][0] as SchemaRequest;
+            expect(capturedReq.rootType!.authorization).toBeUndefined();
         });
     });
 

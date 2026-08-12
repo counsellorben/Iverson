@@ -29,7 +29,6 @@ async function main() {
     const articles = client.coordinator(Article);
 
     const article = new Article();
-    article.id = crypto.randomUUID();
     article.tenantId = 'sample-tenant';
     article.title = 'Hello Iverson';
     article.category = 'tech';
