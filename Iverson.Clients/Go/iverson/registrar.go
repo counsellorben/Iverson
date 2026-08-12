@@ -29,16 +29,11 @@ func NewSchemaRegistrar(client MappingClient, entities ...interface{}) *SchemaRe
 	return &SchemaRegistrar{client: client, types: entities}
 }
 
-// RegisterAll synchronously registers all entity schemas with no authorization rules.
-func (r *SchemaRegistrar) RegisterAll(ctx context.Context, traceID string) error {
-	return r.RegisterAllWithAuthorization(ctx, traceID, nil)
-}
-
-// RegisterAllWithAuthorization registers all entity schemas, attaching per-type
+// RegisterAll synchronously registers all entity schemas, attaching per-type
 // authorization rules. A type with no map entry registers with none, which the server
 // denies for every read and write — a nil rule set is an unconditional deny, not an
 // absence of restrictions.
-func (r *SchemaRegistrar) RegisterAllWithAuthorization(
+func (r *SchemaRegistrar) RegisterAll(
 	ctx context.Context,
 	traceID string,
 	authByTypeName map[string]*pb.AuthorizationRules,

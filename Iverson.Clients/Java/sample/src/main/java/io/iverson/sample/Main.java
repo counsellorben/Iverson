@@ -32,10 +32,20 @@ public class Main {
 
     public static void main(String[] args) throws Exception {
         String actingUserToken = System.getenv("IVERSON_ACTING_USER_TOKEN");
-        if (actingUserToken == null || actingUserToken.isBlank()) {
+        String clientId        = System.getenv("IVERSON_CLIENT_ID");
+        String clientSecret    = System.getenv("IVERSON_CLIENT_SECRET");
+        String tokenEndpoint   = System.getenv("IVERSON_TOKEN_ENDPOINT");
+
+        StringBuilder missingEnvVars = new StringBuilder();
+        if (actingUserToken == null || actingUserToken.isBlank()) missingEnvVars.append("IVERSON_ACTING_USER_TOKEN, ");
+        if (clientId == null || clientId.isBlank())               missingEnvVars.append("IVERSON_CLIENT_ID, ");
+        if (clientSecret == null || clientSecret.isBlank())       missingEnvVars.append("IVERSON_CLIENT_SECRET, ");
+        if (tokenEndpoint == null || tokenEndpoint.isBlank())     missingEnvVars.append("IVERSON_TOKEN_ENDPOINT, ");
+        if (missingEnvVars.length() > 0) {
             System.err.println(
-                "IVERSON_ACTING_USER_TOKEN is not set. Every Iverson write is denied without an\n"
-                    + "acting user, so this sample cannot seed anything. Export a user access token and re-run.");
+                missingEnvVars.substring(0, missingEnvVars.length() - 2) + " not set. Every Iverson write is\n"
+                    + "denied without an acting user, and the client needs its OAuth2 credentials to talk to the\n"
+                    + "server, so this sample cannot seed anything. Export the missing variable(s) and re-run.");
             return;
         }
 
@@ -43,9 +53,9 @@ public class Main {
         try (IversonClient client = new IversonClient(
                 "localhost", 5000,
                 new OAuth2ClientCredentials(
-                    System.getenv("IVERSON_CLIENT_ID"),
-                    System.getenv("IVERSON_CLIENT_SECRET"),
-                    System.getenv("IVERSON_TOKEN_ENDPOINT"),
+                    clientId,
+                    clientSecret,
+                    tokenEndpoint,
                     "admin schema_admin"))) {
 
             // ── Register schemas ───────────────────────────────────────────────

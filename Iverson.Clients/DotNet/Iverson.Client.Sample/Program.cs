@@ -11,11 +11,21 @@ using static Iverson.Client.Search.SearchOperators;
 // Every Iverson write is authorized against an acting user; there is no anonymous write.
 // Obtain a user access token from your IdP and export it before running this sample.
 var actingUserToken = Environment.GetEnvironmentVariable("IVERSON_ACTING_USER_TOKEN");
-if (string.IsNullOrWhiteSpace(actingUserToken))
+var clientId        = Environment.GetEnvironmentVariable("IVERSON_CLIENT_ID");
+var clientSecret    = Environment.GetEnvironmentVariable("IVERSON_CLIENT_SECRET");
+var tokenEndpoint   = Environment.GetEnvironmentVariable("IVERSON_TOKEN_ENDPOINT");
+
+var missingEnvVars = new List<string>();
+if (string.IsNullOrWhiteSpace(actingUserToken)) missingEnvVars.Add("IVERSON_ACTING_USER_TOKEN");
+if (string.IsNullOrWhiteSpace(clientId))        missingEnvVars.Add("IVERSON_CLIENT_ID");
+if (string.IsNullOrWhiteSpace(clientSecret))    missingEnvVars.Add("IVERSON_CLIENT_SECRET");
+if (string.IsNullOrWhiteSpace(tokenEndpoint))   missingEnvVars.Add("IVERSON_TOKEN_ENDPOINT");
+if (missingEnvVars.Count > 0)
 {
     Console.Error.WriteLine(
-        "IVERSON_ACTING_USER_TOKEN is not set. Every Iverson write is denied without an\n" +
-        "acting user, so this sample cannot seed anything. Export a user access token and re-run.");
+        $"{string.Join(", ", missingEnvVars)} not set. Every Iverson write is denied without an\n" +
+        "acting user, and the client needs its OAuth2 credentials to talk to the server, so this\n" +
+        "sample cannot seed anything. Export the missing variable(s) and re-run.");
     return 1;
 }
 
@@ -24,9 +34,9 @@ var services = new ServiceCollection()
     .AddIversonClient(
         grpcEndpoint: "https://localhost:7142",
         credentials: new IversonClientCredentials(
-            Environment.GetEnvironmentVariable("IVERSON_CLIENT_ID") ?? "",
-            Environment.GetEnvironmentVariable("IVERSON_CLIENT_SECRET") ?? "",
-            Environment.GetEnvironmentVariable("IVERSON_TOKEN_ENDPOINT") ?? "",
+            clientId!,
+            clientSecret!,
+            tokenEndpoint!,
             Scope: "admin schema_admin"),
         actingUserTokenProvider: () => Task.FromResult(actingUserToken),
         entityAssemblies: [typeof(Article).Assembly])
@@ -89,6 +99,15 @@ var authorAiId   = await authors.PersistAsync(new Author
     Email = "ai@iverson.dev",
     Bio   = "The original AI. Point guard. Hall of Famer."
 }, headers);
+if (authorAiId is null)
+{
+    Console.Error.WriteLine(
+        "The first write returned null, which means the server rejected it. The acting user\n" +
+        "behind IVERSON_ACTING_USER_TOKEN must belong to the 'iverson-sample-bypass' group AND\n" +
+        "carry a tenant_id claim — the evaluator denies on a missing tenant claim before it even\n" +
+        "consults roles. Check the token's groups and tenant_id claims, then re-run.");
+    return 1;
+}
 var authorKobeId = await authors.PersistAsync(new Author
 {
     TenantId = sampleTenant,
