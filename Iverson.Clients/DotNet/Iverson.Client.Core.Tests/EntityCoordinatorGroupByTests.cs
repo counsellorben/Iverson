@@ -66,7 +66,7 @@ public class EntityCoordinatorGroupByTests
     }
 
     [Fact]
-    public async Task GroupByAsync_WithNoHeaders_PassesNull()
+    public async Task GroupByAsync_WithNoHeaders_EmitsNoActingUser()
     {
         var search = Substitute.For<ObjectSearchService.ObjectSearchServiceClient>();
         Metadata? capturedHeaders = null;
@@ -81,6 +81,7 @@ public class EntityCoordinatorGroupByTests
 
         await foreach (var _ in coordinator.GroupByAsync(Query.GroupBy("TestArticle").CountAll("n"))) { }
 
-        capturedHeaders.Should().BeNull();
+        capturedHeaders.Should().NotBeNull();
+        capturedHeaders!.Get(ActingUserMetadata.MetadataKey).Should().BeNull();
     }
 }

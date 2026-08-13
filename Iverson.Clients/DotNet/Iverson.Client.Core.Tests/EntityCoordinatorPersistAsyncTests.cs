@@ -45,7 +45,7 @@ public class EntityCoordinatorPersistAsyncTests
     }
 
     [Fact]
-    public async Task PersistAsync_WithNoHeaders_PassesNull()
+    public async Task PersistAsync_WithNoHeaders_EmitsNoActingUser()
     {
         var persistence = Substitute.For<ObjectPersistenceService.ObjectPersistenceServiceClient>();
         Metadata? capturedHeaders = null;
@@ -66,6 +66,7 @@ public class EntityCoordinatorPersistAsyncTests
 
         await sut.PersistAsync(new PersistAsyncTestEntity { Id = Guid.NewGuid(), Name = "x" });
 
-        capturedHeaders.Should().BeNull();
+        capturedHeaders.Should().NotBeNull();
+        capturedHeaders!.Get(ActingUserMetadata.MetadataKey).Should().BeNull();
     }
 }

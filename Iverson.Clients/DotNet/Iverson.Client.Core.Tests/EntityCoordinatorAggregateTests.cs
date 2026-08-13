@@ -74,7 +74,7 @@ public class EntityCoordinatorAggregateTests
     }
 
     [Fact]
-    public async Task AggregateAsync_WithNoHeaders_PassesNull()
+    public async Task AggregateAsync_WithNoHeaders_EmitsNoActingUser()
     {
         var search = Substitute.For<ObjectSearchService.ObjectSearchServiceClient>();
         Metadata? capturedHeaders = null;
@@ -89,6 +89,7 @@ public class EntityCoordinatorAggregateTests
 
         await coordinator.AggregateAsync(new AggregateBuilder("TestArticle").CountAll("n"));
 
-        capturedHeaders.Should().BeNull();
+        capturedHeaders.Should().NotBeNull();
+        capturedHeaders!.Get(ActingUserMetadata.MetadataKey).Should().BeNull();
     }
 }
