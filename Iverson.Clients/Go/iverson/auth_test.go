@@ -48,10 +48,10 @@ func TestGetRequestMetadata_CtxTokenWinsOverDefault(t *testing.T) {
 	defer server.Close()
 
 	creds := &OAuth2ClientCredentials{
-		ClientID:                "id",
-		ClientSecret:            "secret",
-		TokenEndpoint:           server.URL,
-		DefaultActingUserToken:  "ambient",
+		ClientID:               "id",
+		ClientSecret:           "secret",
+		TokenEndpoint:          server.URL,
+		DefaultActingUserToken: "ambient",
 	}
 
 	ctx := WithActingUserToken(context.Background(), "percall")
@@ -71,10 +71,10 @@ func TestGetRequestMetadata_DefaultAppliesWhenCtxHasNone(t *testing.T) {
 	defer server.Close()
 
 	creds := &OAuth2ClientCredentials{
-		ClientID:                "id",
-		ClientSecret:            "secret",
-		TokenEndpoint:           server.URL,
-		DefaultActingUserToken:  "ambient",
+		ClientID:               "id",
+		ClientSecret:           "secret",
+		TokenEndpoint:          server.URL,
+		DefaultActingUserToken: "ambient",
 	}
 
 	md, err := creds.GetRequestMetadata(context.Background())
@@ -93,9 +93,9 @@ func TestGetRequestMetadata_NoTokenAnywhereOmitsHeader(t *testing.T) {
 	defer server.Close()
 
 	creds := &OAuth2ClientCredentials{
-		ClientID:       "id",
-		ClientSecret:   "secret",
-		TokenEndpoint:  server.URL,
+		ClientID:      "id",
+		ClientSecret:  "secret",
+		TokenEndpoint: server.URL,
 	}
 
 	md, err := creds.GetRequestMetadata(context.Background())
