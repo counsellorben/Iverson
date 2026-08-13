@@ -281,6 +281,21 @@ class TestEntityCoordinatorActingUserIdentity:
         sent_metadata = coordinator._retrieval.Get.call_args.kwargs["metadata"]
         assert sent_metadata == ()
 
+    def test_an_empty_string_token_still_emits_the_header_and_fails_loudly(self):
+        """An empty-string token is a caller error, not "no identity": it must still
+        produce a `Bearer ` header (with an empty token) so the server rejects the
+        call with Unauthenticated, rather than being swallowed into rule 4 (no header,
+        silent unauthenticated read)."""
+        channel = grpc.insecure_channel("localhost:1")
+        coordinator = EntityCoordinator(CoordArticle, channel, "")
+        coordinator._retrieval = MagicMock()
+        coordinator._retrieval.Get.return_value = retrieval_pb.RetrievalResponse(found=False)
+
+        coordinator.get("some-id")
+
+        sent_metadata = coordinator._retrieval.Get.call_args.kwargs["metadata"]
+        assert sent_metadata == (("x-acting-user-authorization", "Bearer "),)
+
     def test_with_acting_user_does_not_mutate_the_receiver(self):
         """The non-mutation test: with_acting_user must return a new bound coordinator,
         never rebind the receiver it was called on."""

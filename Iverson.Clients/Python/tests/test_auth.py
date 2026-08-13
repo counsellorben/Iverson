@@ -231,6 +231,35 @@ def test_coordinator_call_sends_exactly_one_acting_user_metadata_entry(monkeypat
     assert matching[0] == ("x-acting-user-authorization", "Bearer user-token-123")
 
 
+def test_client_with_empty_string_acting_user_token_still_emits_the_header(monkeypatch):
+    """An empty-string acting_user_token is a caller error, not "no identity": it must
+    still produce a `Bearer ` header (with an empty token) so the server rejects the
+    call with Unauthenticated, rather than being swallowed into rule 4 (no header,
+    silent unauthenticated read)."""
+    captured_call_creds_plugins = []
+    real_metadata_call_credentials = grpc.metadata_call_credentials
+
+    def fake_metadata_call_credentials(plugin):
+        captured_call_creds_plugins.append(plugin)
+        return real_metadata_call_credentials(plugin)
+
+    monkeypatch.setattr(
+        "iverson_client.core.grpc.metadata_call_credentials", fake_metadata_call_credentials
+    )
+
+    client = IversonClient(host="localhost", port=1, acting_user_token="")
+    client._mapping_stub = MagicMock()
+    client._mapping_stub.GetSchema.return_value = mapping_pb.GetSchemaResponse(types=[])
+
+    client.get_schema(trace_id="trace-abc")
+
+    client._mapping_stub.GetSchema.assert_called_once()
+    sent_metadata = client._mapping_stub.GetSchema.call_args.kwargs["metadata"]
+    matching = _collect_acting_user_entries(sent_metadata, captured_call_creds_plugins)
+    assert len(matching) == 1
+    assert matching[0] == ("x-acting-user-authorization", "Bearer ")
+
+
 def test_get_schema_builds_request_and_converts_response():
     """get_schema must forward trace_id verbatim in the request and return the
     response's types unmodified — not just echo whatever the mock happens to hold."""

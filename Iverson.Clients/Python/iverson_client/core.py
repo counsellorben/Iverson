@@ -503,7 +503,10 @@ class EntityCoordinator(Generic[T]):
         return bound
 
     def _acting_user_metadata(self) -> tuple[tuple[str, str], ...]:
-        if not self._acting_user_token:
+        # Use `is None`, not a falsy check: an empty-string token is a caller
+        # error that must reach the server and be rejected loudly, not be
+        # silently downgraded to an unauthenticated call.
+        if self._acting_user_token is None:
             return ()
         return ((ACTING_USER_METADATA_KEY, f"Bearer {self._acting_user_token}"),)
 
@@ -765,7 +768,10 @@ class IversonClient:
 
     def _acting_user_metadata(self) -> tuple[tuple[str, str], ...]:
         """Per-call metadata carrying the ambient acting-user identity, or empty when none."""
-        if not self._acting_user_token:
+        # Use `is None`, not a falsy check: an empty-string token is a caller
+        # error that must reach the server and be rejected loudly, not be
+        # silently downgraded to an unauthenticated call.
+        if self._acting_user_token is None:
             return ()
         return ((ACTING_USER_METADATA_KEY, f"Bearer {self._acting_user_token}"),)
 
