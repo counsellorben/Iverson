@@ -27,10 +27,11 @@ reports success.
 Two further facts make this a class of bug rather than an instance. The five clients do not share
 one identity model: Go carries identity in `context.Context`, Python and TypeScript bind it at
 client construction, and .NET and Java pass it per call. And the server does not tolerate a
-duplicated identity header — `Headers["x-acting-user-authorization"].ToString()` joins two values
-into `"Bearer A, Bearer B"`, which still satisfies the `StartsWith("Bearer ")` check, so
-`context.Token` becomes the corrupt `"A, Bearer B"` and JWT validation fails. A caller that sends
-identity twice becomes unauthenticated rather than denied.
+duplicated identity header — `Headers["x-acting-user-authorization"].ToString()` joins the two
+values into a single string beginning `"Bearer "`, which still satisfies the
+`StartsWith("Bearer ")` check, so `context.Token` becomes a corrupt string containing both tokens
+and JWT validation fails. A caller that sends identity twice becomes unauthenticated rather than
+denied.
 
 ## Design
 
@@ -146,9 +147,20 @@ grpcio rejects `CallCredentials` on a bare insecure channel (`core.py:727-730`),
 metadata does not need. The `if credentials is not None or acting_user_token is not None:` guard
 narrows to `credentials is not None`.
 
+**Non-coordinator paths carry the token too.** Relocating the token off the channel means every
+consumer of the old injection must now pass it explicitly, not just coordinators.
+`IversonClient.get_schema` (`core.py:758-763`) calls the mapping stub directly with no
+`metadata=`, so leaving it alone would silently empty it: the server evaluates read authorization
+per schema and skips every denied one (`ObjectMappingGrpcService.cs:79-80`), and a null acting
+user is denied unconditionally, so the method would return `[]` rather than the identity's
+catalog. `get_schema` therefore passes the client's ambient token as `metadata=` exactly as the
+coordinator methods do. `registrar()` (`core.py:765`) is unaffected and stays as-is:
+`RegisterSchema` is authorized by the `schema_admin` client-credentials scope rather than by the
+acting user.
+
 **Sequencing risk.** Nothing in this repo currently passes `metadata=` to a Python stub call. It
-is standard grpcio, but unprecedented here, so the first Python task must prove one method
-end-to-end before the remaining methods follow.
+is standard grpcio, but unprecedented here, so the first Python task proves it on `get_schema` —
+a single-call method with an existing test surface — before the ten coordinator methods follow.
 
 ### 7. Callers
 
@@ -176,9 +188,11 @@ will rot:
 - `WithActingUser` does not mutate the receiver — the original still resolves to ambient.
 
 Plus, in .NET only, the two merge cases: an explicit identity in `Metadata` wins untouched, and
-non-identity headers receive the resolved identity. And in Python specifically, a test that
+non-identity headers receive the resolved identity. And in Python specifically, two tests: that
 exactly **one** `x-acting-user-authorization` header is emitted — the failure mode that motivated
-moving off channel credentials needs a test that would catch a regression to it.
+moving off channel credentials needs a test that would catch a regression to it — and that
+`get_schema` emits the identity header at all, since it is the one non-coordinator path the
+relocation puts at risk.
 
 Every assertion is on the metadata actually handed to the stub, never on a client-side field: a
 bound-but-unused token is precisely the bug that would otherwise pass.
@@ -222,11 +236,12 @@ Verified against the codebase on 2026-08-12 at `356708d`.
 | A18 | **Sequencing risk.** No in-repo precedent for `metadata=` on a Python stub call | Only match for `metadata=` in `core.py` is `:242` `is_metadata=`, unrelated |
 | A21 | Go's `OAuth2ClientCredentials` is built as a field-named struct literal, so adding a field breaks nothing | `Go/iverson/auth_test.go:19,38`; no production construction site in-repo |
 | A22 | Every Go coordinator method takes and forwards `ctx`, so ambient/ctx reaches reads too | `coordinator.go:183,202,221,236,255,275,295,315,356,382,408,431,454,476` |
-| A24 | The server corrupts rather than disambiguates a duplicated identity header | `Iverson.Api/Program.cs:131-134` — `Headers[key].ToString()` joins `StringValues` with `", "`, still matches `StartsWith("Bearer ")`, so `context.Token` becomes `"A, Bearer B"` |
+| A24 | The server corrupts rather than disambiguates a duplicated identity header | `Iverson.Api/Program.cs:131-134` — `Headers[key].ToString()` flattens a multi-valued `StringValues` into one delimited string, which still matches `StartsWith("Bearer ")`, so `context.Token` is set to a corrupt value carrying both tokens. The exact delimiter was not executed against a live `StringValues`; the conclusion holds for any delimiter, since the `"Bearer "` prefix survives the join either way |
 | A23 | The Go and Python samples never write, so they need no identity and are untouched | `Go/sample/main.go` is schema-inspection and QueryBuilder only (its own header states it does not connect to a live server); `Python/sample/main.py` calls only `demo_query_builder` / `demo_in_operator` |
 | A25 | Each client's existing coordinator-test mocking convention, which the new resolution-rule tests must follow rather than invent | Go: white-box `package iverson` hand-written mock plus `newTestCoordinator` (`coordinator_test.go:447-454`). Python: `MagicMock()` swapped onto the private stub attribute (`test_entity_coordinator.py:39-46`). TypeScript: `makeClientLike({ _mappingClient: … })` (`core.test.ts:105-118`). Java: `@Mock` + `MockitoExtension`, `withOption` stubs declared `lenient()` (`EntityCoordinatorTest.java:17-19,57-58`). .NET: `Substitute.For<…Client>()` with a hand-built `AsyncUnaryCall<T>` via `TestCoordinatorFactory` |
 | A26 | The only in-repo consumers of the five coordinators are the samples and the clients' own tests | Full-tree grep for `EntityCoordinator` outside client source: `Python/sample/main.py`, `DotNet/Iverson.Client.Sample/Program.cs`, `Java/sample/.../Main.java`, plus each client's test files |
 | A27 | **Corrects the draft design.** `SchemaCatalogClient` has its own tests constructing it with the raw `Func`, so changing its signature is avoidable churn | `SchemaCatalogClientTests.cs` exists; ctor is `SchemaCatalogClient(mapping, Func<Task<string>>? = null)` at `SchemaCatalogClient.cs:11-13` |
+| A28 | Four of .NET's 15 stub call sites are `async IAsyncEnumerable` iterators, and awaiting the identity resolver inside them is legal — they already await | `EntityCoordinator.cs:158-160` declares `public async IAsyncEnumerable<T> GetManyAsync(...)` and `:171` already does `await foreach (var response in stream.ResponseStream.ReadAllAsync(ct))` inside it |
 
 ## Known issues / accepted as out of scope
 
