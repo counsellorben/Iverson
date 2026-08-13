@@ -82,6 +82,7 @@ Newly introduced by this plan and verified against the codebase on 2026-08-12 at
 | PA19 | Task ordering | No task consumes a symbol another task introduces; the five file sets are pairwise disjoint | Per "File Structure" — each task's paths sit under a different client directory, and the only new cross-file symbol (`ActingUserIdentity`) is created and consumed inside Task 5 alone |
 | PA20 | Sibling sweep | Every identifier the plan names resolves at its point of use | Pre-existing and confirmed: `ActingUserToken` (`core.ts:135`), `makeClientLike` (`core.test.ts:114`), `ACTING_USER_METADATA_KEY` (`auth.ts:71`), `WithActingUserToken`/`actingUserTokenKey`/`ActingUserMetadataKey` (`auth.go:23,14,18`), `_ActingUserAuthPlugin`/`_BearerTokenAuthPlugin` (`auth.py:82`, composed `core.py:715-722`), `stubFor`/`mappingStubFor` (`EntityCoordinator.java:319,329`), `OAuth2ClientCredentials.ACTING_USER_TOKEN`, `TestCoordinatorFactory.Create` (`TestCoordinatorFactory.cs:18`), `Metadata.Get` (5 test call sites), `ActingUserMetadata.WithActingUser` (`ActingUserMetadata.cs:9`). Newly introduced by this plan, so unresolvable until their task runs: `ActingUserIdentity`, `ResolveHeadersAsync`, `withActingUser`/`with_acting_user`, `DefaultActingUserToken` |
 | PA21 | Command | Commit messages are lowercase imperative sentences with no Conventional-Commits prefix | `git log --oneline -8`: "stop the load test assigning entity keys it cannot own", "add acting-user identity parity design spec", "rename the Go registrar rules test after the collapsed RegisterAll signature" |
+| PA22 | Signature | The Python coordinator **discards** the channel after building four stubs from it, and its tests inject mocks by overwriting those stub attributes after construction — so a bound clone must copy state, not reconstruct from a channel | `core.py:478-490` assigns `_cls`, `_type_name`, `_key_field`, `_mapping`, `_persistence`, `_retrieval`, `_search` and no `self._channel`. `tests/test_entity_coordinator.py:44-46` does `coordinator._search = MagicMock()` after constructing, `:52-53` the same for `_mapping` — mocks a rebuilt clone would not carry |
 
 ---
 
@@ -217,11 +218,11 @@ git commit -m "fall back to an ambient acting-user token in the Go credentials"
 - Test: `Iverson.Clients/Python/tests/test_auth.py`
 - Test: `Iverson.Clients/Python/tests/test_entity_coordinator.py`
 
-The step order here is load-bearing, not stylistic. Step 1 proves `metadata=` works on one call before fourteen more depend on it, discharging the spec's sequencing risk; Step 2 cannot land before Step 1, because the moment the plugin leaves the credential composition, `get_schema` is identity-less.
+The step order here is load-bearing, not stylistic. Step 1 proves `metadata=` works on one call before fourteen more depend on it, discharging the spec's sequencing risk. Steps 1 and 2 are one indivisible change: Step 1's test asserts exactly one identity header, which cannot pass while the plugin is still composed, so Step 2 must land with it. A presence-only assertion in Step 1 would prove nothing — the plugin supplies the header on every call regardless of whether `metadata=` worked.
 
 - [ ] **Step 1: Convert `get_schema` first, with its test**
 
-Add to `tests/test_auth.py` (PA8 — this is where `get_schema` is already covered) a test asserting the call receives the identity as per-call metadata. Then hold the ambient token on the client and pass it:
+Add to `tests/test_auth.py` (PA8 — this is where `get_schema` is already covered) a test asserting the call receives **exactly one** `x-acting-user-authorization` entry, not merely that one is present. With `_ActingUserAuthPlugin` still composed the count is two, so this test is what forces Step 2 to land alongside Step 1 — and once the plugin is gone, a passing count of one is proof that `metadata=` carried the identity itself. Then hold the ambient token on the client and pass it:
 
 ```python
     def get_schema(self, trace_id: str = "") -> list[mapping_pb.SchemaType]:
@@ -273,7 +274,9 @@ Then the bound view and the resolver, mirroring Step 1's helper:
 ```python
     def with_acting_user(self, token: str) -> "EntityCoordinator[T]":
         """Return a coordinator bound to ``token``, leaving this one untouched."""
-        return EntityCoordinator(self._cls, self._channel, token)
+        bound = copy.copy(self)
+        bound._acting_user_token = token
+        return bound
 
     def _acting_user_metadata(self) -> tuple[tuple[str, str], ...]:
         if not self._acting_user_token:
@@ -281,7 +284,7 @@ Then the bound view and the resolver, mirroring Step 1's helper:
         return ((ACTING_USER_METADATA_KEY, f"Bearer {self._acting_user_token}"),)
 ```
 
-Because `with_acting_user` constructs a fresh coordinator rather than copying state, non-mutation of the receiver is structural.
+`copy.copy` is a shallow copy, so the bound coordinator shares the receiver's four stub references — which is what makes the test convention work, since those tests overwrite `_mapping`/`_search` after construction and a rebuilt clone would not carry the mocks (PA22). The receiver is never written, so non-mutation is structural. Add `import copy` to `core.py`'s imports.
 
 Add the four resolution-rule tests to `tests/test_entity_coordinator.py`, following its `MagicMock()`-on-the-private-stub convention (`:39-46`) and asserting on the `metadata=` keyword the stub actually received.
 
@@ -293,7 +296,7 @@ Verify mechanically rather than by count: no `self._mapping.`/`self._persistence
 
 - [ ] **Step 5: Add the single-header test**
 
-In `tests/test_auth.py`, assert that a client built with an acting-user token emits **exactly one** `x-acting-user-authorization` entry. This is the regression test for the duplicate-header corruption that motivated the relocation: with the plugin still composed, the count would be two.
+In `tests/test_auth.py`, assert that a **coordinator** call emits exactly one `x-acting-user-authorization` entry. Step 1 established the count on `get_schema`; this is the permanent regression guard on the coordinator path that Step 4 threads, where a re-added plugin would again produce two.
 
 - [ ] **Step 6: Run tests**
 
