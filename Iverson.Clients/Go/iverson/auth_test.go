@@ -86,6 +86,51 @@ func TestGetRequestMetadata_DefaultAppliesWhenCtxHasNone(t *testing.T) {
 	}
 }
 
+func TestGetRequestMetadata_ExplicitEmptyPerCallTokenEmitsLoudBearer(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(tokenResponse{AccessToken: "test-token", ExpiresIn: 3600})
+	}))
+	defer server.Close()
+
+	creds := &OAuth2ClientCredentials{
+		ClientID:      "id",
+		ClientSecret:  "secret",
+		TokenEndpoint: server.URL,
+	}
+
+	ctx := WithActingUserToken(context.Background(), "")
+	md, err := creds.GetRequestMetadata(ctx)
+	if err != nil {
+		t.Fatalf("GetRequestMetadata: %v", err)
+	}
+	if md[ActingUserMetadataKey] != "Bearer " {
+		t.Errorf("got %q, want %q", md[ActingUserMetadataKey], "Bearer ")
+	}
+}
+
+func TestGetRequestMetadata_ExplicitEmptyPerCallTokenDoesNotFallThroughToDefault(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(tokenResponse{AccessToken: "test-token", ExpiresIn: 3600})
+	}))
+	defer server.Close()
+
+	creds := &OAuth2ClientCredentials{
+		ClientID:               "id",
+		ClientSecret:           "secret",
+		TokenEndpoint:          server.URL,
+		DefaultActingUserToken: "ambient",
+	}
+
+	ctx := WithActingUserToken(context.Background(), "")
+	md, err := creds.GetRequestMetadata(ctx)
+	if err != nil {
+		t.Fatalf("GetRequestMetadata: %v", err)
+	}
+	if md[ActingUserMetadataKey] != "Bearer " {
+		t.Errorf("got %q, want %q (must not fall through to ambient default)", md[ActingUserMetadataKey], "Bearer ")
+	}
+}
+
 func TestGetRequestMetadata_NoTokenAnywhereOmitsHeader(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(tokenResponse{AccessToken: "test-token", ExpiresIn: 3600})

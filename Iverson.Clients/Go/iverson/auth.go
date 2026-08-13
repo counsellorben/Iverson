@@ -50,9 +50,17 @@ func (c *OAuth2ClientCredentials) GetRequestMetadata(ctx context.Context, _ ...s
 		return nil, err
 	}
 	md := map[string]string{"authorization": "Bearer " + token}
-	if actingUserToken, ok := ctx.Value(actingUserTokenKey{}).(string); ok && actingUserToken != "" {
+	// An explicitly-supplied per-call token (including "") must win and be
+	// forwarded as-is: an empty token is a caller error that must reach the
+	// server and be rejected loudly, and must never silently fall through to
+	// the ambient default below.
+	if actingUserToken, ok := ctx.Value(actingUserTokenKey{}).(string); ok {
 		md[ActingUserMetadataKey] = "Bearer " + actingUserToken
 	} else if c.DefaultActingUserToken != "" {
+		// Unlike the per-call arm above, "" here means "never configured" —
+		// DefaultActingUserToken is a plain string with no way to distinguish
+		// "unconfigured" from "configured as empty", so this arm stays a
+		// falsy check. This asymmetry with the per-call arm is intentional.
 		md[ActingUserMetadataKey] = "Bearer " + c.DefaultActingUserToken
 	}
 	return md, nil
