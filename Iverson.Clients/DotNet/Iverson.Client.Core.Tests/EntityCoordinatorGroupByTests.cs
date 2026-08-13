@@ -57,12 +57,12 @@ public class EntityCoordinatorGroupByTests
               .Returns(MakeCall(new List<SearchResponse>()));
 
         var coordinator = TestCoordinatorFactory.Create<TestArticle>(search);
-        var headers = new Metadata { { "x-acting-user-authorization", "Bearer test-token" } };
+        var headers = new Metadata { { "x-trace-id", "Bearer test-token" } };
 
         await foreach (var _ in coordinator.GroupByAsync(Query.GroupBy("TestArticle").CountAll("n"), headers)) { }
 
         capturedHeaders.Should().NotBeNull();
-        capturedHeaders!.Get("x-acting-user-authorization")!.Value.Should().Be("Bearer test-token");
+        capturedHeaders!.Get("x-trace-id")!.Value.Should().Be("Bearer test-token");
     }
 
     [Fact]

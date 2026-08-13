@@ -35,8 +35,8 @@ public sealed class EntityCoordinator<T>(
 
     /// <summary>
     /// Returns a coordinator bound to <paramref name="tokenProvider"/>, leaving this one
-    /// untouched. The bound identity outranks the client's ambient one; explicit headers
-    /// carrying an acting-user entry outrank both.
+    /// untouched. The bound identity outranks the client's ambient one. This is the only
+    /// per-call override; the Metadata bag passed to individual calls is not an identity channel.
     /// </summary>
     public EntityCoordinator<T> WithActingUser(Func<Task<string>> tokenProvider) =>
         new(registry, assembler, mapping, persistence, retrieval, search, logger, identity)
@@ -44,25 +44,36 @@ public sealed class EntityCoordinator<T>(
             _boundActingUser = tokenProvider,
         };
 
+    // The per-call Metadata bag is no longer an identity channel: any acting-user entry the
+    // caller supplies in it is stripped, never honored. Identity resolves from bound-then-ambient
+    // only. The per-call override is WithActingUser(...), matching the other four clients.
     private async Task<Metadata> ResolveHeadersAsync(Metadata? headers)
     {
         headers ??= new Metadata();
-        if (headers.Get(ActingUserMetadata.MetadataKey) is not null)
-            return headers;
 
         var provider = _boundActingUser ?? identity?.TokenProvider;
-        if (provider is null)
-            return headers;
 
         // Never write into the caller's own Metadata instance: build a fresh copy so a bag the
         // caller reuses across calls (e.g. on different coordinators bound to different
-        // identities) isn't mutated out from under them.
+        // identities) isn't mutated out from under them. The copy excludes any acting-user entry
+        // the caller supplied — otherwise, when an identity also resolves below, the call would
+        // carry two x-acting-user-authorization entries. gRPC/the server flattens multi-valued
+        // headers into one corrupt string that still passes the "Bearer " prefix check, so the
+        // request fails JWT validation as UNAUTHENTICATED instead of being cleanly denied. Exactly
+        // one acting-user entry, or zero, must ever be emitted.
         var resolved = new Metadata();
         foreach (var entry in headers)
+        {
+            if (entry.Key == ActingUserMetadata.MetadataKey)
+                continue;
+
             resolved.Add(entry.IsBinary
                 ? new Metadata.Entry(entry.Key, entry.ValueBytes)
                 : new Metadata.Entry(entry.Key, entry.Value));
-        resolved.WithActingUser(await provider());
+        }
+
+        if (provider is not null)
+            resolved.WithActingUser(await provider());
 
         return resolved;
     }

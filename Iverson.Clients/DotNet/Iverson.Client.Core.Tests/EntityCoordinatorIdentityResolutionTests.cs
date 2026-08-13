@@ -17,6 +17,10 @@ internal sealed class IdentityResolutionTestEntity
     public string Name { get; set; } = "";
 }
 
+// Owner ruling: the per-call Metadata bag is no longer an identity channel — this class used to
+// carry a test asserting a caller-supplied acting-user entry in Metadata passed through untouched
+// even over an ambient identity. That behavior has been removed by design; WithActingUser(...) is
+// now the only per-call override, matching the other four Iverson clients.
 public class EntityCoordinatorIdentityResolutionTests
 {
     private const string MetadataKey = ActingUserMetadata.MetadataKey;
@@ -110,16 +114,30 @@ public class EntityCoordinatorIdentityResolutionTests
     }
 
     [Fact]
-    public async Task SuppliedHeaders_WithExistingActingUserEntry_PassThroughUntouched()
+    public async Task SuppliedHeaders_WithActingUserEntry_AreDroppedAndReplacedByBoundIdentity_NoDuplicate()
     {
-        var ambient = new ActingUserIdentity(() => Task.FromResult("ambient-token"));
-        var (sut, captured) = CreateSut(ambient);
-        var headers = new Metadata { { MetadataKey, "Bearer explicit-token" } };
+        // Anti-duplication regression guard: a caller-supplied bag carrying BOTH an unrelated
+        // header AND a (now-inert) acting-user entry, on a coordinator with a bound identity, must
+        // emit exactly ONE acting-user entry — the bound one — never two. Two entries on the wire
+        // get flattened by the server into a corrupt header value that still passes the
+        // "Bearer " prefix check, so the caller fails as UNAUTHENTICATED instead of being denied.
+        // A presence-only assertion on the bound value would pass even if duplication occurred, so
+        // this asserts the exact count.
+        var (sut, captured) = CreateSut();
+        var bound = sut.WithActingUser(() => Task.FromResult("bound-token"));
+        var headers = new Metadata
+        {
+            { "x-trace-id", "abc-123" },
+            { MetadataKey, "Bearer stale-caller-token" },
+        };
 
-        await sut.PostMappedAsync(NewEntity(), headers);
+        await bound.PostMappedAsync(NewEntity(), headers);
 
         captured().Should().NotBeNull();
-        captured()!.Get(MetadataKey)!.Value.Should().Be("Bearer explicit-token");
+        var actingUserEntries = captured()!.Where(e => e.Key == MetadataKey).ToList();
+        actingUserEntries.Should().ContainSingle();
+        actingUserEntries[0].Value.Should().Be("Bearer bound-token");
+        captured()!.Get("x-trace-id")!.Value.Should().Be("abc-123");
     }
 
     [Fact]
