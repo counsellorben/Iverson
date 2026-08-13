@@ -738,11 +738,10 @@ class IversonClient:
 
         if credentials is not None:
             call_creds_list = []
-            if credentials is not None:
-                provider = _CachedTokenProvider(credentials)
-                call_creds_list.append(
-                    grpc.metadata_call_credentials(_BearerTokenAuthPlugin(provider))
-                )
+            provider = _CachedTokenProvider(credentials)
+            call_creds_list.append(
+                grpc.metadata_call_credentials(_BearerTokenAuthPlugin(provider))
+            )
             # grpcio rejects CallCredentials on a bare insecure_channel with
             # "UNAUTHENTICATED: Established channel does not have a sufficient security
             # level to transfer call credential" — confirmed live. Some ChannelCredentials
