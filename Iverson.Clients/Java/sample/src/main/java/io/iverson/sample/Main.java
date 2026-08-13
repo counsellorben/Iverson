@@ -79,7 +79,7 @@ public class Main {
             // load-bearing: the author must exist before an article can reference it.
             Author author = new Author(null, "Jane Smith", "jane@example.com");
             author.setTenantId(TENANT_ID);
-            Author persistedAuthor = authorCoordinator.postMapped(author, null);
+            Author persistedAuthor = authorCoordinator.postMapped(author);
             System.out.println("Persisted author: " + persistedAuthor.getId());
 
             // ── Persist an article ─────────────────────────────────────────────
@@ -97,12 +97,12 @@ public class Main {
             );
             article.setTenantId(TENANT_ID);
 
-            Article persistedArticle = articleCoordinator.postMapped(article, null);
+            Article persistedArticle = articleCoordinator.postMapped(article);
             System.out.println("Persisted article: " + persistedArticle.getId());
 
             // ── Retrieve by key ────────────────────────────────────────────────
             Article fetched = articleCoordinator.getMapped(
-                persistedArticle.getId().toString(), 1, null);
+                persistedArticle.getId().toString(), 1);
             System.out.println("Fetched: " + fetched);
 
             // ── Search with QueryBuilder ───────────────────────────────────────

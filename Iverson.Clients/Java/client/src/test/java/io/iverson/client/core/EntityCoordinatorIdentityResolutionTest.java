@@ -139,6 +139,23 @@ class EntityCoordinatorIdentityResolutionTest {
     }
 
     // ── Rule 2: coordinator-bound token (withActingUser) takes precedence over ambient ─────
+    //
+    // There is no separate "Rule 1: explicit per-call token" test suite for EntityCoordinator.
+    // As of the acting-user-identity-parity branch (2026-08-12), EntityCoordinator's per-call
+    // trailing `actingUserToken` parameters were removed from all 8 write/read/search methods.
+    // The per-call override is now spelled `coordinator.withActingUser(token).method(...)` —
+    // i.e. the "bound" level IS the per-call level here. Levels 1 and 2 of the four-level
+    // resolution rule were deliberately merged into one on this type; there is no longer any
+    // way to express them as two distinct behaviors on EntityCoordinator. So
+    // boundIdentity_takesPrecedenceOverAmbient below is what covers "a caller overrides
+    // identity for a single call" — asserting a separate "explicit beats bound" test here would
+    // duplicate it exactly and falsely imply the two levels are still distinguishable.
+    //
+    // Rule 1 as a genuinely distinct level (an explicit per-call token argument, separate from
+    // any bound/coordinator concept) still exists only on IversonClient.getSchema, which kept
+    // its trailing actingUserToken parameter by explicit ruling. See
+    // getSchema_fallsBackToAmbientIdentity_whenNoExplicitTokenGiven and
+    // getSchema_explicitToken_takesPrecedenceOverAmbientIdentity below for that coverage.
 
     @Test
     void boundIdentity_takesPrecedenceOverAmbient() {
@@ -175,20 +192,6 @@ class EntityCoordinatorIdentityResolutionTest {
         original.persist(new IdentityTestArticle());
 
         verify(mockPersistenceStub, never()).withOption(any(), any());
-    }
-
-    // ── Rule 1: explicit per-call token takes precedence over bound and ambient ────────────
-
-    @Test
-    void explicitToken_takesPrecedenceOverBoundAndAmbient() {
-        when(mockMappingStub.get(any())).thenReturn(
-            ObjectMapping.MappingResponse.newBuilder().setSuccess(false).build());
-
-        EntityCoordinator<IdentityTestArticle> sut =
-            coordinatorWithAmbient("ambient-token").withActingUser("bound");
-        sut.getMapped("some-id", 1, "explicit");
-
-        verify(mockMappingStub).withOption(OAuth2ClientCredentials.ACTING_USER_TOKEN, "explicit");
     }
 
     // ── IversonClient.getSchema: ambient identity must reach the mapping stub ──────────────

@@ -97,17 +97,17 @@ class EntityCoordinatorTest {
         when(mockStub.groupBy(any())).thenReturn(List.<ObjectSearch.SearchResponse>of().iterator());
 
         GroupByBuilder builder = Query.groupBy("CoordinatorTestArticle").keys("Category").countAll("n");
-        sut.groupBy(builder, "user-token-123");
+        sut.withActingUser("user-token-123").groupBy(builder);
 
         verify(mockStub).withOption(OAuth2ClientCredentials.ACTING_USER_TOKEN, "user-token-123");
     }
 
     @Test
-    void groupBy_withNullActingUserToken_doesNotCallWithOption() {
+    void groupBy_withNoActingUserBound_doesNotCallWithOption() {
         when(mockStub.groupBy(any())).thenReturn(List.<ObjectSearch.SearchResponse>of().iterator());
 
         GroupByBuilder builder = Query.groupBy("CoordinatorTestArticle").keys("Category").countAll("n");
-        sut.groupBy(builder, null);
+        sut.groupBy(builder);
 
         verify(mockStub, never()).withOption(any(), any());
     }
@@ -133,7 +133,7 @@ class EntityCoordinatorTest {
         when(mockStub.aggregate(any())).thenReturn(ObjectSearch.AggregateResponse.getDefaultInstance());
 
         AggregateBuilder builder = Query.aggregate("CoordinatorTestArticle").countAll("n");
-        sut.aggregate(builder, "user-token-456");
+        sut.withActingUser("user-token-456").aggregate(builder);
 
         verify(mockStub).withOption(OAuth2ClientCredentials.ACTING_USER_TOKEN, "user-token-456");
     }
@@ -161,7 +161,7 @@ class EntityCoordinatorTest {
         when(mockStub.pipeline(any())).thenReturn(List.<ObjectSearch.SearchResponse>of().iterator());
 
         PipelineBuilder builder = Query.pipeline("CoordinatorTestArticle");
-        sut.pipeline(builder, "user-token-999");
+        sut.withActingUser("user-token-999").pipeline(builder);
 
         verify(mockStub).withOption(OAuth2ClientCredentials.ACTING_USER_TOKEN, "user-token-999");
     }
@@ -193,7 +193,7 @@ class EntityCoordinatorTest {
         when(mockStub.searchSimilar(any())).thenReturn(List.<ObjectSearch.SearchResponse>of().iterator());
 
         SimilarBuilder builder = Query.similar("CoordinatorTestArticle", "title").text("hello");
-        sut.searchSimilar(builder, "user-token-321");
+        sut.withActingUser("user-token-321").searchSimilar(builder);
 
         verify(mockStub).withOption(OAuth2ClientCredentials.ACTING_USER_TOKEN, "user-token-321");
     }
@@ -223,7 +223,7 @@ class EntityCoordinatorTest {
         when(mockStub.searchChunks(any())).thenReturn(List.<ObjectSearch.ChunkSearchResponse>of().iterator());
 
         ChunksBuilder builder = Query.chunks("CoordinatorTestArticle", "summary").text("hello");
-        sut.searchChunks(builder, "user-token-789");
+        sut.withActingUser("user-token-789").searchChunks(builder);
 
         verify(mockStub).withOption(OAuth2ClientCredentials.ACTING_USER_TOKEN, "user-token-789");
     }
@@ -242,7 +242,7 @@ class EntityCoordinatorTest {
             .build();
         when(mockMappingStub.get(any())).thenReturn(response);
 
-        CoordinatorTestArticle result = mappingSut.getMapped(id.toString(), 3, "tok");
+        CoordinatorTestArticle result = mappingSut.withActingUser("tok").getMapped(id.toString(), 3);
 
         assertNotNull(result);
         assertEquals("Hello", result.title);
@@ -261,7 +261,7 @@ class EntityCoordinatorTest {
             .build();
         when(mockMappingStub.get(any())).thenReturn(response);
 
-        assertNull(mappingSut.getMapped("missing-id", 1, "tok"));
+        assertNull(mappingSut.withActingUser("tok").getMapped("missing-id", 1));
     }
 
     @Test
@@ -279,7 +279,7 @@ class EntityCoordinatorTest {
         CoordinatorTestArticle entity = new CoordinatorTestArticle();
         entity.title = "Client Title";
 
-        CoordinatorTestArticle result = mappingSut.postMapped(entity, "tok");
+        CoordinatorTestArticle result = mappingSut.withActingUser("tok").postMapped(entity);
 
         assertEquals(id, result.id);
         assertEquals("Server Title", result.title);
@@ -296,7 +296,7 @@ class EntityCoordinatorTest {
         when(mockMappingStub.post(any())).thenReturn(response);
 
         CoordinatorTestArticle entity = new CoordinatorTestArticle();
-        assertThrows(StatusRuntimeException.class, () -> mappingSut.postMapped(entity, "tok"));
+        assertThrows(StatusRuntimeException.class, () -> mappingSut.withActingUser("tok").postMapped(entity));
     }
 
     @Test
@@ -314,7 +314,7 @@ class EntityCoordinatorTest {
         entity.id = id;
         entity.title = "Updated Title";
 
-        mappingSut.updateMapped(entity, "tok");
+        mappingSut.withActingUser("tok").updateMapped(entity);
 
         ArgumentCaptor<ObjectMapping.MappingWriteRequest> captor =
             ArgumentCaptor.forClass(ObjectMapping.MappingWriteRequest.class);
@@ -333,6 +333,6 @@ class EntityCoordinatorTest {
         when(mockMappingStub.update(any())).thenReturn(response);
 
         CoordinatorTestArticle entity = new CoordinatorTestArticle();
-        assertThrows(StatusRuntimeException.class, () -> mappingSut.updateMapped(entity, "tok"));
+        assertThrows(StatusRuntimeException.class, () -> mappingSut.withActingUser("tok").updateMapped(entity));
     }
 }
