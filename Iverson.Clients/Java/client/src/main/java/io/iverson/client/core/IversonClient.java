@@ -37,6 +37,9 @@ public final class IversonClient implements AutoCloseable {
     final ObjectRetrievalServiceGrpc.ObjectRetrievalServiceBlockingStub retrievalStub;
     final ObjectSearchServiceGrpc.ObjectSearchServiceBlockingStub       searchStub;
 
+    /** Ambient acting-user identity applied when no explicit or coordinator-bound token exists. */
+    final String actingUserToken;
+
     /**
      * Creates a plain-text (h2c) channel to the given host and port.
      */
@@ -54,6 +57,7 @@ public final class IversonClient implements AutoCloseable {
         this.persistenceStub = ObjectPersistenceServiceGrpc.newBlockingStub(channel);
         this.retrievalStub   = ObjectRetrievalServiceGrpc.newBlockingStub(channel);
         this.searchStub      = ObjectSearchServiceGrpc.newBlockingStub(channel);
+        this.actingUserToken = null;
     }
 
     /**
@@ -62,6 +66,15 @@ public final class IversonClient implements AutoCloseable {
      */
     public IversonClient(String host, int port, CallCredentials credentials) {
         this(ManagedChannelBuilder.forAddress(host, port).usePlaintext().build(), credentials);
+    }
+
+    /**
+     * Creates a plain-text (h2c) channel to the given host and port, authenticating every call
+     * with the given credentials, and carrying an ambient acting-user token as described in
+     * {@link #IversonClient(ManagedChannel, CallCredentials, String)}.
+     */
+    public IversonClient(String host, int port, CallCredentials credentials, String actingUserToken) {
+        this(ManagedChannelBuilder.forAddress(host, port).usePlaintext().build(), credentials, actingUserToken);
     }
 
     /**
@@ -76,6 +89,22 @@ public final class IversonClient implements AutoCloseable {
         this.persistenceStub = ObjectPersistenceServiceGrpc.newBlockingStub(channel).withCallCredentials(credentials);
         this.retrievalStub   = ObjectRetrievalServiceGrpc.newBlockingStub(channel).withCallCredentials(credentials);
         this.searchStub      = ObjectSearchServiceGrpc.newBlockingStub(channel).withCallCredentials(credentials);
+        this.actingUserToken = null;
+    }
+
+    /**
+     * Creates a client using an already-configured channel and call credentials, plus an
+     * ambient acting-user token applied to every call that carries no more specific identity
+     * (per-call explicit token, then coordinator-bound token via {@code withActingUser}, then
+     * this ambient one).
+     */
+    public IversonClient(ManagedChannel channel, CallCredentials credentials, String actingUserToken) {
+        this.channel         = channel;
+        this.mappingStub     = ObjectMappingServiceGrpc.newBlockingStub(channel).withCallCredentials(credentials);
+        this.persistenceStub = ObjectPersistenceServiceGrpc.newBlockingStub(channel).withCallCredentials(credentials);
+        this.retrievalStub   = ObjectRetrievalServiceGrpc.newBlockingStub(channel).withCallCredentials(credentials);
+        this.searchStub      = ObjectSearchServiceGrpc.newBlockingStub(channel).withCallCredentials(credentials);
+        this.actingUserToken = actingUserToken;
     }
 
     /**
@@ -89,6 +118,25 @@ public final class IversonClient implements AutoCloseable {
         this.persistenceStub = null;
         this.retrievalStub   = null;
         this.searchStub      = null;
+        this.actingUserToken = null;
+    }
+
+    /**
+     * Test seam: builds a client over pre-made stubs (any of which may be null) and an
+     * ambient acting-user token, bypassing channel construction. {@link #close()} is a no-op
+     * for a client built this way.
+     */
+    IversonClient(ObjectPersistenceServiceGrpc.ObjectPersistenceServiceBlockingStub persistenceStub,
+                  ObjectRetrievalServiceGrpc.ObjectRetrievalServiceBlockingStub retrievalStub,
+                  ObjectMappingServiceGrpc.ObjectMappingServiceBlockingStub mappingStub,
+                  ObjectSearchServiceGrpc.ObjectSearchServiceBlockingStub searchStub,
+                  String actingUserToken) {
+        this.channel         = null;
+        this.persistenceStub = persistenceStub;
+        this.retrievalStub   = retrievalStub;
+        this.mappingStub     = mappingStub;
+        this.searchStub      = searchStub;
+        this.actingUserToken = actingUserToken;
     }
 
     /**

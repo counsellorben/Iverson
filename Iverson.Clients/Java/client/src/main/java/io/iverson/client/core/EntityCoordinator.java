@@ -1,6 +1,7 @@
 package io.iverson.client.core;
 
 import io.grpc.StatusRuntimeException;
+import io.grpc.stub.AbstractStub;
 import io.iverson.client.annotations.IversonEntity;
 import io.iverson.client.annotations.IversonKey;
 import io.iverson.client.search.AggregateBuilder;
@@ -37,16 +38,18 @@ public final class EntityCoordinator<T> {
     private final Class<T> entityType;
     private final String typeName;
     private final ObjectSearchServiceGrpc.ObjectSearchServiceBlockingStub searchStub;
+    private final String boundActingUserToken;
 
     public EntityCoordinator(IversonClient client, Class<T> entityType) {
         if (entityType.getAnnotation(IversonEntity.class) == null) {
             throw new IllegalArgumentException(
                 entityType.getSimpleName() + " is not annotated with @IversonEntity");
         }
-        this.client     = client;
-        this.entityType = entityType;
-        this.typeName   = entityType.getSimpleName();
-        this.searchStub = client.searchStub;
+        this.client               = client;
+        this.entityType           = entityType;
+        this.typeName             = entityType.getSimpleName();
+        this.searchStub           = client.searchStub;
+        this.boundActingUserToken = null;
         // Validate that a key field exists
         findKeyField(entityType);
     }
@@ -57,12 +60,34 @@ public final class EntityCoordinator<T> {
             throw new IllegalArgumentException(
                 entityType.getSimpleName() + " is not annotated with @IversonEntity");
         }
-        this.client     = null;
-        this.entityType = entityType;
-        this.typeName   = entityType.getSimpleName();
-        this.searchStub = searchStub;
+        this.client               = null;
+        this.entityType           = entityType;
+        this.typeName             = entityType.getSimpleName();
+        this.searchStub           = searchStub;
+        this.boundActingUserToken = null;
         // Validate that a key field exists
         findKeyField(entityType);
+    }
+
+    /** Copy constructor backing {@link #withActingUser(String)}. {@code client} may be null. */
+    private EntityCoordinator(IversonClient client,
+                               ObjectSearchServiceGrpc.ObjectSearchServiceBlockingStub searchStub,
+                               Class<T> entityType,
+                               String boundActingUserToken) {
+        this.client               = client;
+        this.entityType           = entityType;
+        this.typeName             = entityType.getSimpleName();
+        this.searchStub           = searchStub;
+        this.boundActingUserToken = boundActingUserToken;
+    }
+
+    /**
+     * Returns a copy of this coordinator bound to the given acting-user identity. The bound
+     * token applies to every subsequent call on the returned coordinator that supplies no more
+     * specific (per-call explicit) token, taking precedence over the client's ambient identity.
+     */
+    public EntityCoordinator<T> withActingUser(String actingUserToken) {
+        return new EntityCoordinator<>(client, searchStub, entityType, actingUserToken);
     }
 
     // ── Object Persistence (lightweight writes) ────────────────────────────────
@@ -75,7 +100,7 @@ public final class EntityCoordinator<T> {
             .setTypeName(typeName)
             .setPayload(StructConverter.toStruct(entity))
             .build();
-        ObjectPersistence.PersistResponse response = client.persistenceStub.post(request);
+        ObjectPersistence.PersistResponse response = withIdentity(client.persistenceStub, null).post(request);
         if (!response.getSuccess()) {
             throw new StatusRuntimeException(
                 io.grpc.Status.INTERNAL.withDescription(response.getError()));
@@ -91,7 +116,7 @@ public final class EntityCoordinator<T> {
             .setTypeName(typeName)
             .setPayload(StructConverter.toStruct(entity))
             .build();
-        ObjectPersistence.PersistResponse response = client.persistenceStub.update(request);
+        ObjectPersistence.PersistResponse response = withIdentity(client.persistenceStub, null).update(request);
         if (!response.getSuccess()) {
             throw new StatusRuntimeException(
                 io.grpc.Status.INTERNAL.withDescription(response.getError()));
@@ -108,7 +133,7 @@ public final class EntityCoordinator<T> {
             .setTypeName(typeName)
             .setKey(id)
             .build();
-        ObjectRetrieval.RetrievalResponse response = client.retrievalStub.get(request);
+        ObjectRetrieval.RetrievalResponse response = withIdentity(client.retrievalStub, null).get(request);
         if (!response.getFound()) return null;
         return StructConverter.fromStruct(response.getData(), entityType);
     }
@@ -121,7 +146,7 @@ public final class EntityCoordinator<T> {
             .setTypeName(typeName)
             .addAllKeys(ids)
             .build();
-        Iterator<ObjectRetrieval.RetrievalResponse> stream = client.retrievalStub.getMany(request);
+        Iterator<ObjectRetrieval.RetrievalResponse> stream = withIdentity(client.retrievalStub, null).getMany(request);
         List<T> results = new ArrayList<>();
         while (stream.hasNext()) {
             ObjectRetrieval.RetrievalResponse response = stream.next();
@@ -142,7 +167,7 @@ public final class EntityCoordinator<T> {
                 .setKey(id)
                 .build();
         ObjectMapping.MappingDeleteResponse response =
-            client.mappingStub.delete(request);
+            withIdentity(client.mappingStub, null).delete(request);
         if (!response.getSuccess()) {
             throw new StatusRuntimeException(
                 io.grpc.Status.INTERNAL.withDescription(response.getError()));
@@ -205,7 +230,7 @@ public final class EntityCoordinator<T> {
      */
     public List<SearchResult<T>> search(QueryBuilder<T> queryBuilder) throws StatusRuntimeException {
         ObjectSearch.SearchRequest request = queryBuilder.build();
-        Iterator<ObjectSearch.SearchResponse> stream = searchStub.search(request);
+        Iterator<ObjectSearch.SearchResponse> stream = stubFor(null).search(request);
         List<SearchResult<T>> results = new ArrayList<>();
         while (stream.hasNext()) {
             ObjectSearch.SearchResponse response = stream.next();
@@ -313,25 +338,33 @@ public final class EntityCoordinator<T> {
     }
 
     /**
-     * Returns the search stub to invoke, attaching the acting-user token as a call option
-     * (consumed by {@link OAuth2ClientCredentials}) when one is given.
+     * Attaches the resolved acting-user identity to {@code stub} as a call option (consumed by
+     * {@link OAuth2ClientCredentials}). Resolution order: the caller's explicit token, then this
+     * coordinator's bound identity, then the client's ambient one; none attaches nothing.
      */
-    private ObjectSearchServiceGrpc.ObjectSearchServiceBlockingStub stubFor(String actingUserToken) {
-        return actingUserToken != null
-            ? searchStub.withOption(OAuth2ClientCredentials.ACTING_USER_TOKEN, actingUserToken)
-            : searchStub;
+    private <S extends AbstractStub<S>> S withIdentity(S stub, String explicitToken) {
+        String token = explicitToken != null ? explicitToken
+            : boundActingUserToken != null ? boundActingUserToken
+            : (client != null ? client.actingUserToken : null);
+        return token != null ? stub.withOption(OAuth2ClientCredentials.ACTING_USER_TOKEN, token) : stub;
     }
 
     /**
-     * Returns the mapping stub to invoke, attaching the acting-user token as a call option
-     * (consumed by {@link OAuth2ClientCredentials}) when one is given. The constructor's
+     * Returns the search stub to invoke, attaching the resolved acting-user identity as a call
+     * option (consumed by {@link OAuth2ClientCredentials}).
+     */
+    private ObjectSearchServiceGrpc.ObjectSearchServiceBlockingStub stubFor(String actingUserToken) {
+        return withIdentity(searchStub, actingUserToken);
+    }
+
+    /**
+     * Returns the mapping stub to invoke, attaching the resolved acting-user identity as a call
+     * option (consumed by {@link OAuth2ClientCredentials}). The constructor's
      * {@link io.grpc.CallCredentials} are the service's own client-credentials token and do
      * <em>not</em> identify an acting user; the server denies any write without one.
      */
     private ObjectMappingServiceGrpc.ObjectMappingServiceBlockingStub mappingStubFor(String actingUserToken) {
-        return actingUserToken != null
-            ? client.mappingStub.withOption(OAuth2ClientCredentials.ACTING_USER_TOKEN, actingUserToken)
-            : client.mappingStub;
+        return withIdentity(client.mappingStub, actingUserToken);
     }
 
     // ── Helpers ────────────────────────────────────────────────────────────────
