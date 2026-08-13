@@ -39,7 +39,7 @@ public class EntityCoordinatorAggregateTests
             Type        = AggregationType.Count,
             MetricValue = 4
         });
-        search.AggregateAsync(Arg.Any<AggregateRequest>(), cancellationToken: Arg.Any<CancellationToken>())
+        search.AggregateAsync(Arg.Any<AggregateRequest>(), Arg.Any<Metadata>(), cancellationToken: Arg.Any<CancellationToken>())
               .Returns(MakeUnaryCall(response));
 
         var coordinator = TestCoordinatorFactory.Create<TestArticle>(search);

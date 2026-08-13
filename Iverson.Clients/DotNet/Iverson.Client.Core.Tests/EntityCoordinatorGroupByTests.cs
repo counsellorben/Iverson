@@ -30,7 +30,7 @@ public class EntityCoordinatorGroupByTests
         data.Fields["category"] = Value.ForString("tech");
         data.Fields["n"] = Value.ForNumber(4);
         var responses = new List<SearchResponse> { new() { Data = data } };
-        search.GroupBy(Arg.Any<GroupByRequest>(), cancellationToken: Arg.Any<CancellationToken>())
+        search.GroupBy(Arg.Any<GroupByRequest>(), Arg.Any<Metadata>(), cancellationToken: Arg.Any<CancellationToken>())
               .Returns(MakeCall(responses));
 
         var coordinator = TestCoordinatorFactory.Create<TestArticle>(search);

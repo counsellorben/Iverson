@@ -1,5 +1,6 @@
 using FluentAssertions;
 using Google.Protobuf.WellKnownTypes;
+using Grpc.Core;
 using Iverson.Client.Attributes;
 using Iverson.Client.Contracts;
 using Iverson.Client.Search;
@@ -34,7 +35,7 @@ public class EntityCoordinatorPipelineTests
         var data = new Struct();
         data.Fields["authorId"] = Value.ForString("A");
         var responses = new List<SearchResponse> { new() { Data = data } };
-        search.Pipeline(Arg.Any<PipelineRequest>(), cancellationToken: Arg.Any<CancellationToken>())
+        search.Pipeline(Arg.Any<PipelineRequest>(), Arg.Any<Metadata>(), cancellationToken: Arg.Any<CancellationToken>())
               .Returns(MakeCall(responses));
 
         var coordinator = TestCoordinatorFactory.Create<TestArticle>(search);
@@ -55,7 +56,7 @@ public class EntityCoordinatorPipelineTests
         data.Fields["authorId"] = Value.ForString("A");
         data.Fields["articles"] = Value.ForNumber(4);
         var responses = new List<SearchResponse> { new() { Data = data } };
-        search.Pipeline(Arg.Any<PipelineRequest>(), cancellationToken: Arg.Any<CancellationToken>())
+        search.Pipeline(Arg.Any<PipelineRequest>(), Arg.Any<Metadata>(), cancellationToken: Arg.Any<CancellationToken>())
               .Returns(MakeCall(responses));
 
         var coordinator = TestCoordinatorFactory.Create<TestArticle>(search);
