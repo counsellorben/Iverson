@@ -40,3 +40,69 @@ func TestOAuth2ClientCredentials_RequireTransportSecurity_ReturnsFalse(t *testin
 		t.Error("RequireTransportSecurity() = true, want false (plaintext h2c deployment)")
 	}
 }
+
+func TestGetRequestMetadata_CtxTokenWinsOverDefault(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(tokenResponse{AccessToken: "test-token", ExpiresIn: 3600})
+	}))
+	defer server.Close()
+
+	creds := &OAuth2ClientCredentials{
+		ClientID:                "id",
+		ClientSecret:            "secret",
+		TokenEndpoint:           server.URL,
+		DefaultActingUserToken:  "ambient",
+	}
+
+	ctx := WithActingUserToken(context.Background(), "percall")
+	md, err := creds.GetRequestMetadata(ctx)
+	if err != nil {
+		t.Fatalf("GetRequestMetadata: %v", err)
+	}
+	if md[ActingUserMetadataKey] != "Bearer percall" {
+		t.Errorf("got %q, want %q", md[ActingUserMetadataKey], "Bearer percall")
+	}
+}
+
+func TestGetRequestMetadata_DefaultAppliesWhenCtxHasNone(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(tokenResponse{AccessToken: "test-token", ExpiresIn: 3600})
+	}))
+	defer server.Close()
+
+	creds := &OAuth2ClientCredentials{
+		ClientID:                "id",
+		ClientSecret:            "secret",
+		TokenEndpoint:           server.URL,
+		DefaultActingUserToken:  "ambient",
+	}
+
+	md, err := creds.GetRequestMetadata(context.Background())
+	if err != nil {
+		t.Fatalf("GetRequestMetadata: %v", err)
+	}
+	if md[ActingUserMetadataKey] != "Bearer ambient" {
+		t.Errorf("got %q, want %q", md[ActingUserMetadataKey], "Bearer ambient")
+	}
+}
+
+func TestGetRequestMetadata_NoTokenAnywhereOmitsHeader(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(tokenResponse{AccessToken: "test-token", ExpiresIn: 3600})
+	}))
+	defer server.Close()
+
+	creds := &OAuth2ClientCredentials{
+		ClientID:       "id",
+		ClientSecret:   "secret",
+		TokenEndpoint:  server.URL,
+	}
+
+	md, err := creds.GetRequestMetadata(context.Background())
+	if err != nil {
+		t.Fatalf("GetRequestMetadata: %v", err)
+	}
+	if _, exists := md[ActingUserMetadataKey]; exists {
+		t.Errorf("ActingUserMetadataKey should be absent from metadata, but got %q", md[ActingUserMetadataKey])
+	}
+}

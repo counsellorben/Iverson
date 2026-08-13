@@ -28,10 +28,11 @@ func WithActingUserToken(ctx context.Context, token string) context.Context {
 // OAuth2 client-credentials Bearer token to every RPC. The token is fetched lazily
 // and cached in memory, refreshing 60 seconds before expiry.
 type OAuth2ClientCredentials struct {
-	ClientID      string
-	ClientSecret  string
-	TokenEndpoint string
-	Scope         string
+	ClientID                string
+	ClientSecret            string
+	TokenEndpoint           string
+	Scope                   string
+	DefaultActingUserToken  string
 
 	mu        sync.Mutex
 	token     string
@@ -51,6 +52,8 @@ func (c *OAuth2ClientCredentials) GetRequestMetadata(ctx context.Context, _ ...s
 	md := map[string]string{"authorization": "Bearer " + token}
 	if actingUserToken, ok := ctx.Value(actingUserTokenKey{}).(string); ok && actingUserToken != "" {
 		md[ActingUserMetadataKey] = "Bearer " + actingUserToken
+	} else if c.DefaultActingUserToken != "" {
+		md[ActingUserMetadataKey] = "Bearer " + c.DefaultActingUserToken
 	}
 	return md, nil
 }
