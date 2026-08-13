@@ -84,6 +84,7 @@ Newly introduced by this plan and verified against the codebase on 2026-08-12 at
 | PA21 | Command | Commit messages are lowercase imperative sentences with no Conventional-Commits prefix | `git log --oneline -8`: "stop the load test assigning entity keys it cannot own", "add acting-user identity parity design spec", "rename the Go registrar rules test after the collapsed RegisterAll signature" |
 | PA22 | Signature | The Python coordinator **discards** the channel after building four stubs from it, and its tests inject mocks by overwriting those stub attributes after construction — so a bound clone must copy state, not reconstruct from a channel | `core.py:478-490` assigns `_cls`, `_type_name`, `_key_field`, `_mapping`, `_persistence`, `_retrieval`, `_search` and no `self._channel`. `tests/test_entity_coordinator.py:44-46` does `coordinator._search = MagicMock()` after constructing, `:52-53` the same for `_mapping` — mocks a rebuilt clone would not carry |
 | PA23 | Consumer impact | Java's coordinator reaches its four stubs by four different routes, so a helper covers a stub family rather than a method: `mappingStubFor` serves the mapped trio, `stubFor` serves the search family, and five methods call a stub field directly | `EntityCoordinator.java:78,94` use `client.persistenceStub`; `:111,124` use `client.retrievalStub`; `:145` uses the bare `client.mappingStub` rather than `mappingStubFor` (`:331`); `:208` uses the bare `searchStub` rather than `stubFor` (`:319`) |
+| PA24 | Code validity | `EntityCoordinator.java` imports exactly one `io.grpc.*` type, so Step 4's generic helper needs `io.grpc.stub.AbstractStub` added — the existing `withOption` calls compile only because the concrete generated stubs inherit it, without the base type ever being named | `EntityCoordinator.java:3` is the file's only `io.grpc.*` import (`StatusRuntimeException`); `:321,333` call `withOption` on `ObjectSearchServiceBlockingStub` / `ObjectMappingServiceBlockingStub`, which extend `AbstractBlockingStub<Self>` and thence `AbstractStub<Self>` |
 
 ---
 
@@ -345,11 +346,11 @@ The four cases must cover more than the search stub: assert at least one per new
 
 - [ ] **Step 2: Add the ambient identity to `IversonClient`**
 
-A package-private field plus a constructor overload carrying it. The four existing public constructors (`:43,51,63,73`) keep working unchanged, and the package-private test seam at `:85` is untouched.
+A package-private field named `actingUserToken` plus a constructor overload carrying it. The four existing public constructors (`:43,51,63,73`) keep working unchanged, and the package-private test seam at `:85` is untouched.
 
 - [ ] **Step 3: Add the copy path and `withActingUser`**
 
-The clone must tolerate a null `client`: the package-private constructor at `:55` sets `this.client = null` and is used by `EntityCoordinatorTest.java:68`, so a copy that dereferences `client` would break the existing search tests. Add a private constructor that carries `client`, `searchStub`, `entityType` and the bound token verbatim — `client` may be null — and have `withActingUser(token)` call it.
+The clone must tolerate a null `client`: the package-private constructor at `:55` sets `this.client = null` and is used by `EntityCoordinatorTest.java:68`, so a copy that dereferences `client` would break the existing search tests. Add a private constructor that carries `client`, `searchStub`, `entityType` and the bound token — held as `boundActingUserToken`, the name Step 4's helper reads — verbatim; `client` may be null; and have `withActingUser(token)` call it.
 
 - [ ] **Step 4: Make identity resolution reach every stub family**
 
@@ -364,10 +365,12 @@ Identity attaches per *stub family* in Java, not per method (PA23), and the coor
     private <S extends AbstractStub<S>> S withIdentity(S stub, String explicitToken) {
         String token = explicitToken != null ? explicitToken
             : boundActingUserToken != null ? boundActingUserToken
-            : (client != null ? client.actingUserToken() : null);
+            : (client != null ? client.actingUserToken : null);
         return token != null ? stub.withOption(OAuth2ClientCredentials.ACTING_USER_TOKEN, token) : stub;
     }
 ```
+
+`EntityCoordinator.java` needs `import io.grpc.stub.AbstractStub;` for the helper's generic bound (PA24) — the existing `withOption` calls compile without it only because the concrete stubs inherit the method.
 
 `stubFor` (`:319`) and `mappingStubFor` (`:331`) become one-line delegations to it, so their existing call sites are untouched. The null-client guard lives here once rather than per family. Then route the five bare-stub calls through it: `:78` and `:94` (`client.persistenceStub`), `:111` and `:124` (`client.retrievalStub`), and `:145` (`client.mappingStub`, which bypasses `mappingStubFor` today). The five existing token overloads keep working as the explicit per-call form.
 
