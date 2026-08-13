@@ -28,11 +28,16 @@ func WithActingUserToken(ctx context.Context, token string) context.Context {
 // OAuth2 client-credentials Bearer token to every RPC. The token is fetched lazily
 // and cached in memory, refreshing 60 seconds before expiry.
 type OAuth2ClientCredentials struct {
-	ClientID               string
-	ClientSecret           string
-	TokenEndpoint          string
-	Scope                  string
-	DefaultActingUserToken string
+	ClientID      string
+	ClientSecret  string
+	TokenEndpoint string
+	Scope         string
+	// DefaultActingUserToken is the ambient acting-user token attached when no
+	// per-call token is present in ctx. nil means no ambient identity is
+	// configured. A non-nil pointer to an empty string is a caller error,
+	// deliberately forwarded so the server rejects it loudly rather than the
+	// client silently swallowing it into "no identity".
+	DefaultActingUserToken *string
 
 	mu        sync.Mutex
 	token     string
@@ -56,12 +61,10 @@ func (c *OAuth2ClientCredentials) GetRequestMetadata(ctx context.Context, _ ...s
 	// the ambient default below.
 	if actingUserToken, ok := ctx.Value(actingUserTokenKey{}).(string); ok {
 		md[ActingUserMetadataKey] = "Bearer " + actingUserToken
-	} else if c.DefaultActingUserToken != "" {
-		// Unlike the per-call arm above, "" here means "never configured" —
-		// DefaultActingUserToken is a plain string with no way to distinguish
-		// "unconfigured" from "configured as empty", so this arm stays a
-		// falsy check. This asymmetry with the per-call arm is intentional.
-		md[ActingUserMetadataKey] = "Bearer " + c.DefaultActingUserToken
+	} else if c.DefaultActingUserToken != nil {
+		// A non-nil pointer to "" is deliberately forwarded as "Bearer " so
+		// the server rejects it loudly, rather than being swallowed here.
+		md[ActingUserMetadataKey] = "Bearer " + *c.DefaultActingUserToken
 	}
 	return md, nil
 }

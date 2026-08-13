@@ -8,6 +8,8 @@ import (
 	"testing"
 )
 
+func stringPtr(s string) *string { return &s }
+
 func TestOAuth2ClientCredentials_GetRequestMetadata_FetchesAndCachesToken(t *testing.T) {
 	requestCount := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -51,7 +53,7 @@ func TestGetRequestMetadata_CtxTokenWinsOverDefault(t *testing.T) {
 		ClientID:               "id",
 		ClientSecret:           "secret",
 		TokenEndpoint:          server.URL,
-		DefaultActingUserToken: "ambient",
+		DefaultActingUserToken: stringPtr("ambient"),
 	}
 
 	ctx := WithActingUserToken(context.Background(), "percall")
@@ -74,7 +76,7 @@ func TestGetRequestMetadata_DefaultAppliesWhenCtxHasNone(t *testing.T) {
 		ClientID:               "id",
 		ClientSecret:           "secret",
 		TokenEndpoint:          server.URL,
-		DefaultActingUserToken: "ambient",
+		DefaultActingUserToken: stringPtr("ambient"),
 	}
 
 	md, err := creds.GetRequestMetadata(context.Background())
@@ -118,7 +120,7 @@ func TestGetRequestMetadata_ExplicitEmptyPerCallTokenDoesNotFallThroughToDefault
 		ClientID:               "id",
 		ClientSecret:           "secret",
 		TokenEndpoint:          server.URL,
-		DefaultActingUserToken: "ambient",
+		DefaultActingUserToken: stringPtr("ambient"),
 	}
 
 	ctx := WithActingUserToken(context.Background(), "")
@@ -128,6 +130,28 @@ func TestGetRequestMetadata_ExplicitEmptyPerCallTokenDoesNotFallThroughToDefault
 	}
 	if md[ActingUserMetadataKey] != "Bearer " {
 		t.Errorf("got %q, want %q (must not fall through to ambient default)", md[ActingUserMetadataKey], "Bearer ")
+	}
+}
+
+func TestGetRequestMetadata_AmbientEmptyPointerEmitsLoudBearer(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(tokenResponse{AccessToken: "test-token", ExpiresIn: 3600})
+	}))
+	defer server.Close()
+
+	creds := &OAuth2ClientCredentials{
+		ClientID:               "id",
+		ClientSecret:           "secret",
+		TokenEndpoint:          server.URL,
+		DefaultActingUserToken: stringPtr(""),
+	}
+
+	md, err := creds.GetRequestMetadata(context.Background())
+	if err != nil {
+		t.Fatalf("GetRequestMetadata: %v", err)
+	}
+	if md[ActingUserMetadataKey] != "Bearer " {
+		t.Errorf("got %q, want %q", md[ActingUserMetadataKey], "Bearer ")
 	}
 }
 
