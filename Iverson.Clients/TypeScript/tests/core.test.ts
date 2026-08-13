@@ -189,6 +189,59 @@ describe('EntityCoordinator — acting-user token threading', () => {
     });
 });
 
+// ── EntityCoordinator — acting-user identity resolution (per-call → bound → ambient → none) ──
+
+describe('EntityCoordinator — acting-user identity resolution', () => {
+    it("withActingUser() binds an identity that wins over the client's ambient one", async () => {
+        const { fn, calls } = makeUnaryStub<PersistRequest, PersistResponse>({
+            success: true, key: 'k1', error: '', traceId: '',
+        });
+        const client = makeClientLike({ _persistenceClient: { post: fn }, _actingUserToken: 'ambient' });
+        const coordinator = new EntityCoordinator(TestEntity, client).withActingUser('bound');
+
+        await coordinator.persist(new TestEntity());
+
+        expect(calls[0].metadata.get(ACTING_USER_METADATA_KEY)).toEqual(['Bearer bound']);
+    });
+
+    it("the client's ambient identity applies when nothing is bound", async () => {
+        const { fn, calls } = makeUnaryStub<PersistRequest, PersistResponse>({
+            success: true, key: 'k1', error: '', traceId: '',
+        });
+        const client = makeClientLike({ _persistenceClient: { post: fn }, _actingUserToken: 'ambient' });
+        const coordinator = new EntityCoordinator(TestEntity, client);
+
+        await coordinator.persist(new TestEntity());
+
+        expect(calls[0].metadata.get(ACTING_USER_METADATA_KEY)).toEqual(['Bearer ambient']);
+    });
+
+    it('no identity anywhere emits no acting-user header', async () => {
+        const { fn, calls } = makeUnaryStub<PersistRequest, PersistResponse>({
+            success: true, key: 'k1', error: '', traceId: '',
+        });
+        const client = makeClientLike({ _persistenceClient: { post: fn } });
+        const coordinator = new EntityCoordinator(TestEntity, client);
+
+        await coordinator.persist(new TestEntity());
+
+        expect(calls[0].metadata.get(ACTING_USER_METADATA_KEY)).toEqual([]);
+    });
+
+    it('withActingUser() does not mutate the receiver', async () => {
+        const { fn, calls } = makeUnaryStub<PersistRequest, PersistResponse>({
+            success: true, key: 'k1', error: '', traceId: '',
+        });
+        const client = makeClientLike({ _persistenceClient: { post: fn }, _actingUserToken: 'ambient' });
+        const coordinator = new EntityCoordinator(TestEntity, client);
+
+        coordinator.withActingUser('bound');
+        await coordinator.persist(new TestEntity());
+
+        expect(calls[0].metadata.get(ACTING_USER_METADATA_KEY)).toEqual(['Bearer ambient']);
+    });
+});
+
 // ── EntityCoordinator — mapped CRUD ──────────────────────────────────────────
 
 describe('EntityCoordinator — mapped CRUD', () => {
