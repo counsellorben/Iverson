@@ -35,7 +35,7 @@ Copied from the spec; every task must hold to these.
 - `Iverson.Clients/Go/iverson/auth.go` — `DefaultActingUserToken` field plus its fallback in `GetRequestMetadata`
 - `Iverson.Clients/Python/iverson_client/core.py` — client-held token, coordinator third parameter, `with_acting_user`, `get_schema` metadata, credential-guard narrowing, 14 stub call sites
 - `Iverson.Clients/Java/client/src/main/java/io/iverson/client/core/IversonClient.java` — ambient identity
-- `Iverson.Clients/Java/client/src/main/java/io/iverson/client/core/EntityCoordinator.java` — copy path, `withActingUser`, both stub helpers, `search` routing
+- `Iverson.Clients/Java/client/src/main/java/io/iverson/client/core/EntityCoordinator.java` — copy path, `withActingUser`, the generic `withIdentity` helper, and routing all four stub families through it
 - `Iverson.Clients/DotNet/Iverson.Client.Core/EntityCoordinator.cs` — 8th ctor parameter, `ResolveHeadersAsync`, `WithActingUser`, 9 call sites
 - `Iverson.Clients/DotNet/Iverson.Client.Core/ServiceCollectionExtensions.cs` — register `ActingUserIdentity`
 
@@ -83,6 +83,7 @@ Newly introduced by this plan and verified against the codebase on 2026-08-12 at
 | PA20 | Sibling sweep | Every identifier the plan names resolves at its point of use | Pre-existing and confirmed: `ActingUserToken` (`core.ts:135`), `makeClientLike` (`core.test.ts:114`), `ACTING_USER_METADATA_KEY` (`auth.ts:71`), `WithActingUserToken`/`actingUserTokenKey`/`ActingUserMetadataKey` (`auth.go:23,14,18`), `_ActingUserAuthPlugin`/`_BearerTokenAuthPlugin` (`auth.py:82`, composed `core.py:715-722`), `stubFor`/`mappingStubFor` (`EntityCoordinator.java:319,329`), `OAuth2ClientCredentials.ACTING_USER_TOKEN`, `TestCoordinatorFactory.Create` (`TestCoordinatorFactory.cs:18`), `Metadata.Get` (5 test call sites), `ActingUserMetadata.WithActingUser` (`ActingUserMetadata.cs:9`). Newly introduced by this plan, so unresolvable until their task runs: `ActingUserIdentity`, `ResolveHeadersAsync`, `withActingUser`/`with_acting_user`, `DefaultActingUserToken` |
 | PA21 | Command | Commit messages are lowercase imperative sentences with no Conventional-Commits prefix | `git log --oneline -8`: "stop the load test assigning entity keys it cannot own", "add acting-user identity parity design spec", "rename the Go registrar rules test after the collapsed RegisterAll signature" |
 | PA22 | Signature | The Python coordinator **discards** the channel after building four stubs from it, and its tests inject mocks by overwriting those stub attributes after construction — so a bound clone must copy state, not reconstruct from a channel | `core.py:478-490` assigns `_cls`, `_type_name`, `_key_field`, `_mapping`, `_persistence`, `_retrieval`, `_search` and no `self._channel`. `tests/test_entity_coordinator.py:44-46` does `coordinator._search = MagicMock()` after constructing, `:52-53` the same for `_mapping` — mocks a rebuilt clone would not carry |
+| PA23 | Consumer impact | Java's coordinator reaches its four stubs by four different routes, so a helper covers a stub family rather than a method: `mappingStubFor` serves the mapped trio, `stubFor` serves the search family, and five methods call a stub field directly | `EntityCoordinator.java:78,94` use `client.persistenceStub`; `:111,124` use `client.retrievalStub`; `:145` uses the bare `client.mappingStub` rather than `mappingStubFor` (`:331`); `:208` uses the bare `searchStub` rather than `stubFor` (`:319`) |
 
 ---
 
@@ -330,7 +331,7 @@ git commit -m "carry the Python acting-user identity per call instead of on the 
 
 **Files:**
 - Modify: `Iverson.Clients/Java/client/src/main/java/io/iverson/client/core/IversonClient.java`
-- Modify: `Iverson.Clients/Java/client/src/main/java/io/iverson/client/core/EntityCoordinator.java:208,319,329`
+- Modify: `Iverson.Clients/Java/client/src/main/java/io/iverson/client/core/EntityCoordinator.java:78,94,111,124,145,208,319,331`
 - Modify: `Iverson.Clients/Java/sample/src/main/java/io/iverson/sample/Main.java:81,99,103-104`
 - Test (create): `Iverson.Clients/Java/client/src/test/java/io/iverson/client/core/EntityCoordinatorIdentityResolutionTest.java`
 
@@ -340,6 +341,8 @@ New file, following `EntityCoordinatorTest`'s `@Mock` + `MockitoExtension` conve
 
 Assert on the call option actually applied — `verify(stub).withOption(eq(OAuth2ClientCredentials.ACTING_USER_TOKEN), eq("bound"))` for the bound case, and `verify(stub, never()).withOption(any(), any())` for the rule-4 case, mirroring `EntityCoordinatorTest.java:99`.
 
+The four cases must cover more than the search stub: assert at least one per newly-routed family — persistence (`persist`), retrieval (`get`), and `delete`'s mapping path — or the five methods Step 4 fixes ship with no coverage.
+
 - [ ] **Step 2: Add the ambient identity to `IversonClient`**
 
 A package-private field plus a constructor overload carrying it. The four existing public constructors (`:43,51,63,73`) keep working unchanged, and the package-private test seam at `:85` is untouched.
@@ -348,9 +351,25 @@ A package-private field plus a constructor overload carrying it. The four existi
 
 The clone must tolerate a null `client`: the package-private constructor at `:55` sets `this.client = null` and is used by `EntityCoordinatorTest.java:68`, so a copy that dereferences `client` would break the existing search tests. Add a private constructor that carries `client`, `searchStub`, `entityType` and the bound token verbatim — `client` may be null — and have `withActingUser(token)` call it.
 
-- [ ] **Step 4: Make both helpers resolve bound → ambient**
+- [ ] **Step 4: Make identity resolution reach every stub family**
 
-`stubFor` (`:319`) and `mappingStubFor` (`:329`) are the only two places identity attaches. Each resolves the first present of: the method's explicit `actingUserToken` parameter, the instance's bound token, then `client`'s ambient token — guarding the ambient read against a null `client`. The five existing token overloads keep working as the explicit per-call form.
+Identity attaches per *stub family* in Java, not per method (PA23), and the coordinator reaches its four stubs by four routes — so covering only `stubFor` and `mappingStubFor` would leave `persist`, `update`, `get`, `getMany` and `delete` with no identity at all. Because `withOption` is declared on `AbstractStub`, one generic helper covers every family:
+
+```java
+    /**
+     * Attaches the resolved acting-user identity to {@code stub} as a call option (consumed by
+     * {@link OAuth2ClientCredentials}). Resolution order: the caller's explicit token, then this
+     * coordinator's bound identity, then the client's ambient one; none attaches nothing.
+     */
+    private <S extends AbstractStub<S>> S withIdentity(S stub, String explicitToken) {
+        String token = explicitToken != null ? explicitToken
+            : boundActingUserToken != null ? boundActingUserToken
+            : (client != null ? client.actingUserToken() : null);
+        return token != null ? stub.withOption(OAuth2ClientCredentials.ACTING_USER_TOKEN, token) : stub;
+    }
+```
+
+`stubFor` (`:319`) and `mappingStubFor` (`:331`) become one-line delegations to it, so their existing call sites are untouched. The null-client guard lives here once rather than per family. Then route the five bare-stub calls through it: `:78` and `:94` (`client.persistenceStub`), `:111` and `:124` (`client.retrievalStub`), and `:145` (`client.mappingStub`, which bypasses `mappingStubFor` today). The five existing token overloads keep working as the explicit per-call form.
 
 - [ ] **Step 5: Route `search` through `stubFor`**
 
@@ -374,6 +393,7 @@ mvn -f Iverson.Clients/Java/pom.xml test
 | `withActingUser` mutates and returns `this` | the non-mutation test |
 | Both helpers consult only the explicit parameter, ignoring bound and ambient | `the ambient identity applies when nothing is bound` |
 | Both helpers attach an identity even when none is configured | the rule-4 `verify(stub, never()).withOption(...)` test |
+| Revert any one stub family to its bare stub (e.g. `client.persistenceStub.post` instead of `withIdentity(...)`) | that family's assertion in the resolution-rule test |
 
 - [ ] **Step 9: Commit**
 
