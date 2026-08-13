@@ -51,10 +51,20 @@ public sealed class EntityCoordinator<T>(
             return headers;
 
         var provider = _boundActingUser ?? identity?.TokenProvider;
-        if (provider is not null)
-            headers.WithActingUser(await provider());
+        if (provider is null)
+            return headers;
 
-        return headers;
+        // Never write into the caller's own Metadata instance: build a fresh copy so a bag the
+        // caller reuses across calls (e.g. on different coordinators bound to different
+        // identities) isn't mutated out from under them.
+        var resolved = new Metadata();
+        foreach (var entry in headers)
+            resolved.Add(entry.IsBinary
+                ? new Metadata.Entry(entry.Key, entry.ValueBytes)
+                : new Metadata.Entry(entry.Key, entry.Value));
+        resolved.WithActingUser(await provider());
+
+        return resolved;
     }
 
     // ── Object Mapping ─────────────────────────────────────────────────────────

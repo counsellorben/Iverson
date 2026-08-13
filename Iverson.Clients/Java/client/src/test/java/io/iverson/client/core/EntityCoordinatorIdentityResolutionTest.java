@@ -3,6 +3,7 @@ package io.iverson.client.core;
 import io.iverson.client.annotations.IversonEntity;
 import io.iverson.client.annotations.IversonKey;
 import iverson.ObjectMapping;
+import iverson.ObjectMapping.GetSchemaResponse;
 import iverson.ObjectMappingServiceGrpc;
 import iverson.ObjectPersistence;
 import iverson.ObjectRetrieval;
@@ -186,6 +187,30 @@ class EntityCoordinatorIdentityResolutionTest {
         EntityCoordinator<IdentityTestArticle> sut =
             coordinatorWithAmbient("ambient-token").withActingUser("bound");
         sut.getMapped("some-id", 1, "explicit");
+
+        verify(mockMappingStub).withOption(OAuth2ClientCredentials.ACTING_USER_TOKEN, "explicit");
+    }
+
+    // ── IversonClient.getSchema: ambient identity must reach the mapping stub ──────────────
+
+    @Test
+    void getSchema_fallsBackToAmbientIdentity_whenNoExplicitTokenGiven() {
+        when(mockMappingStub.getSchema(any())).thenReturn(GetSchemaResponse.newBuilder().build());
+
+        IversonClient client = new IversonClient(
+            mockPersistenceStub, mockRetrievalStub, mockMappingStub, mockSearchStub, "ambient-token");
+        client.getSchema("trace-1", null);
+
+        verify(mockMappingStub).withOption(OAuth2ClientCredentials.ACTING_USER_TOKEN, "ambient-token");
+    }
+
+    @Test
+    void getSchema_explicitToken_takesPrecedenceOverAmbientIdentity() {
+        when(mockMappingStub.getSchema(any())).thenReturn(GetSchemaResponse.newBuilder().build());
+
+        IversonClient client = new IversonClient(
+            mockPersistenceStub, mockRetrievalStub, mockMappingStub, mockSearchStub, "ambient-token");
+        client.getSchema("trace-1", "explicit");
 
         verify(mockMappingStub).withOption(OAuth2ClientCredentials.ACTING_USER_TOKEN, "explicit");
     }

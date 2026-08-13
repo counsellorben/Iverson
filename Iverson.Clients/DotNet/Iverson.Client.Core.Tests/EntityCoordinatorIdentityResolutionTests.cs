@@ -135,4 +135,31 @@ public class EntityCoordinatorIdentityResolutionTests
         captured()!.Get("x-trace-id")!.Value.Should().Be("abc-123");
         captured()!.Get(MetadataKey)!.Value.Should().Be("Bearer ambient-token");
     }
+
+    [Fact]
+    public async Task SuppliedHeaders_ReusedAcrossDifferentIdentities_AreNotMutated()
+    {
+        // Regression guard: a caller-owned Metadata bag with no acting-user entry, reused across
+        // two calls on coordinators bound to two DIFFERENT identities, must not leak the first
+        // call's resolved identity into the second — and must never end up carrying an
+        // acting-user entry itself, since ResolveHeadersAsync must copy rather than mutate it.
+        var (aliceCoordinator, aliceCaptured) = CreateSut();
+        var (bobCoordinator, bobCaptured) = CreateSut();
+        var alice = aliceCoordinator.WithActingUser(() => Task.FromResult("alice-token"));
+        var bob = bobCoordinator.WithActingUser(() => Task.FromResult("bob-token"));
+
+        var headers = new Metadata { { "x-trace-id", "1" } };
+
+        await alice.PostMappedAsync(NewEntity(), headers);
+        await bob.PostMappedAsync(NewEntity(), headers);
+
+        aliceCaptured().Should().NotBeNull();
+        aliceCaptured()!.Get(MetadataKey)!.Value.Should().Be("Bearer alice-token");
+
+        bobCaptured().Should().NotBeNull();
+        bobCaptured()!.Get(MetadataKey)!.Value.Should().Be("Bearer bob-token");
+
+        headers.Get(MetadataKey).Should().BeNull();
+        headers.Get("x-trace-id")!.Value.Should().Be("1");
+    }
 }

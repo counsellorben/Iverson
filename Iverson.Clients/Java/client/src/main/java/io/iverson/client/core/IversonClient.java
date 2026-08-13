@@ -150,12 +150,14 @@ public final class IversonClient implements AutoCloseable {
      *
      * <p>The catalog lists precisely the types the caller can actually query, so an empty result is
      * a normal authorization outcome, not an error. It means every registered type was denied for
-     * this caller. The usual causes are: a null {@code actingUserToken}; an acting user with no
-     * {@code tenant_id} claim; registered types that declare no authorization rules; or types that
-     * declare no tenant field. All four make a type unreadable through every RPC, not just this one.
+     * this caller. The usual causes are: no acting user resolved at all (neither a per-call token
+     * nor the client's ambient identity); an acting user with no {@code tenant_id} claim; registered
+     * types that declare no authorization rules; or types that declare no tenant field. All four
+     * make a type unreadable through every RPC, not just this one.
      *
-     * @param actingUserToken the end-user access token to act as; may be null, which yields an
-     *                        empty catalog.
+     * @param actingUserToken the end-user access token to act as for this call; may be null, in
+     *                        which case the client's ambient identity is used instead, and only an
+     *                        unresolved identity yields an empty catalog.
      */
     public List<SchemaType> getSchema(String traceId, String actingUserToken) {
         GetSchemaResponse response = stubFor(actingUserToken).getSchema(
@@ -164,12 +166,14 @@ public final class IversonClient implements AutoCloseable {
     }
 
     /**
-     * Returns the mapping stub to invoke, attaching the acting-user token as a call option
-     * (consumed by {@link OAuth2ClientCredentials}) when one is given.
+     * Returns the mapping stub to invoke, attaching the resolved acting-user identity as a call
+     * option (consumed by {@link OAuth2ClientCredentials}). Resolution order: the caller's explicit
+     * token, then this client's ambient identity; neither present attaches nothing.
      */
     private ObjectMappingServiceGrpc.ObjectMappingServiceBlockingStub stubFor(String actingUserToken) {
-        return actingUserToken != null
-            ? mappingStub.withOption(OAuth2ClientCredentials.ACTING_USER_TOKEN, actingUserToken)
+        String token = actingUserToken != null ? actingUserToken : this.actingUserToken;
+        return token != null
+            ? mappingStub.withOption(OAuth2ClientCredentials.ACTING_USER_TOKEN, token)
             : mappingStub;
     }
 
