@@ -337,42 +337,58 @@ export function getPropertyDescriptions(target: Function): Record<string, string
 
 // ── Relation decorators ────────────────────────────────────────────────────────
 
-function addRelation(target: object, propertyKey: string | symbol, kind: RelationKindString, relatedType: string): void {
+interface PendingRelationMeta {
+    field: string;
+    kind: RelationKindString;
+    typeFactory: () => Function;
+}
+
+function addRelation(target: object, propertyKey: string | symbol, kind: RelationKindString, typeFactory: () => Function): void {
     const ctor = (target as any).constructor;
-    const existing: RelationMeta[] =
+    const existing: PendingRelationMeta[] =
         Reflect.getMetadata(IVERSON_RELATIONS, ctor) ?? [];
-    existing.push({ field: String(propertyKey), kind, relatedType });
+    existing.push({ field: String(propertyKey), kind, typeFactory });
     Reflect.defineMetadata(IVERSON_RELATIONS, existing, ctor);
 }
 
+/**
+ * Each of these decorators stores the raw `typeFactory` rather than calling it
+ * immediately. Property decorators run at class-definition time, and calling
+ * the factory eagerly would dereference the related class before it exists
+ * for any forward reference (including the two halves of a genuine mutual
+ * reference, where reordering the classes cannot help either direction).
+ * Resolution is deferred to `getRelations`, which runs at schema-registration
+ * time after every class in the module has finished initializing.
+ */
 export function ManyToOne(typeFactory: () => Function): PropertyDecorator {
     return (target, propertyKey) => {
-        const related = typeFactory();
-        addRelation(target, propertyKey, 'many_to_one', related.name);
+        addRelation(target, propertyKey, 'many_to_one', typeFactory);
     };
 }
 
 export function ManyToMany(typeFactory: () => Function): PropertyDecorator {
     return (target, propertyKey) => {
-        const related = typeFactory();
-        addRelation(target, propertyKey, 'many_to_many', related.name);
+        addRelation(target, propertyKey, 'many_to_many', typeFactory);
     };
 }
 
 export function OneToMany(typeFactory: () => Function): PropertyDecorator {
     return (target, propertyKey) => {
-        const related = typeFactory();
-        addRelation(target, propertyKey, 'one_to_many', related.name);
+        addRelation(target, propertyKey, 'one_to_many', typeFactory);
     };
 }
 
 export function OneToOne(typeFactory: () => Function): PropertyDecorator {
     return (target, propertyKey) => {
-        const related = typeFactory();
-        addRelation(target, propertyKey, 'one_to_one', related.name);
+        addRelation(target, propertyKey, 'one_to_one', typeFactory);
     };
 }
 
 export function getRelations(target: Function): RelationMeta[] {
-    return Reflect.getMetadata(IVERSON_RELATIONS, target) ?? [];
+    const pending: PendingRelationMeta[] = Reflect.getMetadata(IVERSON_RELATIONS, target) ?? [];
+    return pending.map(({ field, kind, typeFactory }) => ({
+        field,
+        kind,
+        relatedType: typeFactory().name,
+    }));
 }
