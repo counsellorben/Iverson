@@ -136,53 +136,62 @@ switch (phase)
         // key is reported unconditionally (via `always`) so the orchestrator can address the row
         // in later phases even when this write failed — a phase that reported no keys would leave
         // the read/update/delete phases with nothing to ask for.
-        var authorKey = Keys.Derive(idPrefix, "author");
-        var tagKey = Keys.Derive(idPrefix, "tag");
-        var articleKey = Keys.Derive(idPrefix, "article");
+        // Keys are now server-assigned: create requests must omit Id, and the row's actual key is
+        // read back from the write response (and only reported if the write returned one).
+        Guid? authorKey = null;
+        Guid? tagKey = null;
 
         await Step("write_author",
             async result =>
             {
                 var written = await Coordinator<DotNetAuthor>().PostMappedAsync(new DotNetAuthor
                 {
-                    Id = authorKey,
                     TenantId = tenant,
                     OwnerId = ownerId,
                     Name = $"author-{idPrefix}",
                 });
+                authorKey = written?.Id;
                 return result with { Entity = Json.Element(written) };
             },
-            result => result with { Keys = new Dictionary<string, string> { ["author"] = authorKey.ToString() } });
+            result => authorKey is { } key
+                ? result with { Keys = new Dictionary<string, string> { ["author"] = key.ToString() } }
+                : result);
 
         await Step("write_tag",
             async result =>
             {
                 var written = await Coordinator<DotNetTag>().PostMappedAsync(new DotNetTag
                 {
-                    Id = tagKey,
                     TenantId = tenant,
                     OwnerId = ownerId,
                     Label = $"tag-{idPrefix}",
                 });
+                tagKey = written?.Id;
                 return result with { Entity = Json.Element(written) };
             },
-            result => result with { Keys = new Dictionary<string, string> { ["tag"] = tagKey.ToString() } });
+            result => tagKey is { } key
+                ? result with { Keys = new Dictionary<string, string> { ["tag"] = key.ToString() } }
+                : result);
+
+        Guid? articleKey = null;
 
         await Step("write_article",
             async result =>
             {
                 var written = await Coordinator<DotNetArticle>().PostMappedAsync(new DotNetArticle
                 {
-                    Id = articleKey,
                     TenantId = tenant,
                     OwnerId = ownerId,
                     Title = $"title-{idPrefix}",
-                    DotNetAuthorId = authorKey,
-                    DotNetTagIds = [tagKey],
+                    DotNetAuthorId = authorKey ?? Guid.Empty,
+                    DotNetTagIds = tagKey is { } t ? [t] : [],
                 });
+                articleKey = written?.Id;
                 return result with { Entity = Json.Element(written) };
             },
-            result => result with { Keys = new Dictionary<string, string> { ["article"] = articleKey.ToString() } });
+            result => articleKey is { } key
+                ? result with { Keys = new Dictionary<string, string> { ["article"] = key.ToString() } }
+                : result);
 
         break;
     }

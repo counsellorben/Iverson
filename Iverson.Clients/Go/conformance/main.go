@@ -415,58 +415,67 @@ func run(argv []string) int {
 		addRegisterStep("register_tag", capture.selectDescriptor("GoTag"))
 
 	case "write":
-		authorKey := deriveKey(idPrefix, "author")
-		tagKey := deriveKey(idPrefix, "tag")
-		articleKey := deriveKey(idPrefix, "article")
+		// Keys are server-assigned: create requests must omit Id entirely, and each row's key is
+		// only known — and only reported — once Persist returns it. authorKey/tagKey are filled
+		// in by the write_author/write_tag closures below and read by write_article, which runs
+		// after them.
+		var authorKey, tagKey string
 
 		authorCoord, authorCoordErr := iverson.NewEntityCoordinator(client, GoAuthor{})
 		tagCoord, tagCoordErr := iverson.NewEntityCoordinator(client, GoTag{})
 		articleCoord, articleCoordErr := iverson.NewEntityCoordinator(client, GoArticle{})
 
-		// One step per row: a denied or failed write must not abort the others, and each row's
-		// key is reported unconditionally so later phases can address the row even when the
-		// write that produced it failed.
-		writeStep := func(name, keyName, keyValue string, do func() (interface{}, error)) stepResult {
+		// One step per row: a denied or failed write must not abort the others. A row's key is
+		// reported only when its write actually returned one.
+		writeStep := func(name, keyName string, do func() (interface{}, string, error)) stepResult {
 			var step stepResult
-			entity, err := do()
+			entity, key, err := do()
 			if err != nil {
 				step = failStep(name, err)
 			} else {
 				step = okStep(name)
 				step.Entity = entityJSON(entity)
 			}
-			step.Keys = map[string]string{keyName: keyValue}
+			if key != "" {
+				step.Keys = map[string]string{keyName: key}
+			}
 			return step
 		}
 
-		steps = append(steps, writeStep("write_author", "author", authorKey, func() (interface{}, error) {
+		steps = append(steps, writeStep("write_author", "author", func() (interface{}, string, error) {
 			if authorCoordErr != nil {
-				return nil, authorCoordErr
+				return nil, "", authorCoordErr
 			}
-			entity := GoAuthor{Id: authorKey, TenantId: tenant, OwnerId: ownerID, Name: "author-" + idPrefix}
-			_, err := authorCoord.Persist(ctx, entity)
-			return entity, err
+			entity := GoAuthor{TenantId: tenant, OwnerId: ownerID, Name: "author-" + idPrefix}
+			key, err := authorCoord.Persist(ctx, entity)
+			if err == nil {
+				authorKey = key
+			}
+			return entity, key, err
 		}))
 
-		steps = append(steps, writeStep("write_tag", "tag", tagKey, func() (interface{}, error) {
+		steps = append(steps, writeStep("write_tag", "tag", func() (interface{}, string, error) {
 			if tagCoordErr != nil {
-				return nil, tagCoordErr
+				return nil, "", tagCoordErr
 			}
-			entity := GoTag{Id: tagKey, TenantId: tenant, OwnerId: ownerID, Label: "tag-" + idPrefix}
-			_, err := tagCoord.Persist(ctx, entity)
-			return entity, err
+			entity := GoTag{TenantId: tenant, OwnerId: ownerID, Label: "tag-" + idPrefix}
+			key, err := tagCoord.Persist(ctx, entity)
+			if err == nil {
+				tagKey = key
+			}
+			return entity, key, err
 		}))
 
-		steps = append(steps, writeStep("write_article", "article", articleKey, func() (interface{}, error) {
+		steps = append(steps, writeStep("write_article", "article", func() (interface{}, string, error) {
 			if articleCoordErr != nil {
-				return nil, articleCoordErr
+				return nil, "", articleCoordErr
 			}
 			entity := GoArticle{
-				Id: articleKey, TenantId: tenant, OwnerId: ownerID, Title: "title-" + idPrefix,
+				TenantId: tenant, OwnerId: ownerID, Title: "title-" + idPrefix,
 				GoAuthorId: authorKey, GoTagIds: []string{tagKey},
 			}
-			_, err := articleCoord.Persist(ctx, entity)
-			return entity, err
+			key, err := articleCoord.Persist(ctx, entity)
+			return entity, key, err
 		}))
 
 	case "read":

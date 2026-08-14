@@ -332,53 +332,59 @@ async function main(argv: string[]): Promise<number> {
         addRegisterStep('register_author', 'TsAuthor');
         addRegisterStep('register_tag', 'TsTag');
     } else if (phase === 'write') {
-        const authorKey = deriveKey(idPrefix, 'author');
-        const tagKey = deriveKey(idPrefix, 'tag');
-        const articleKey = deriveKey(idPrefix, 'article');
+        // Keys are server-assigned: create requests must omit id entirely, and each row's key is
+        // only known — and only reported — once persist() resolves with it. authorKey/tagKey are
+        // filled in by the closures below and read by the write_article closure, which runs after
+        // them in the same sequential loop.
+        let authorKey: string | undefined;
+        let tagKey: string | undefined;
+        let articleKey: string | undefined;
 
-        // One step per row: a denied or failed write must not abort the others, and each row's key
-        // is reported unconditionally so later phases can address the row even when the write that
-        // produced it failed.
-        const writers: Array<[string, string, string, () => Promise<StepResult>]> = [
-            ['write_author', 'author', authorKey, async () => {
+        // One step per row: a denied or failed write must not abort the others.
+        const writers: Array<[string, string, () => Promise<StepResult>]> = [
+            ['write_author', 'author', async () => {
                 const entity = new TsAuthor();
-                entity.id = authorKey;
                 entity.tenantId = tenant;
                 entity.ownerId = ownerId;
                 entity.name = `author-${idPrefix}`;
-                await client.coordinator(TsAuthor).persist(entity);
+                authorKey = await client.coordinator(TsAuthor).persist(entity);
                 return step('write_author', true, { entity: entityToPlain(entity) });
             }],
-            ['write_tag', 'tag', tagKey, async () => {
+            ['write_tag', 'tag', async () => {
                 const entity = new TsTag();
-                entity.id = tagKey;
                 entity.tenantId = tenant;
                 entity.ownerId = ownerId;
                 entity.label = `tag-${idPrefix}`;
-                await client.coordinator(TsTag).persist(entity);
+                tagKey = await client.coordinator(TsTag).persist(entity);
                 return step('write_tag', true, { entity: entityToPlain(entity) });
             }],
-            ['write_article', 'article', articleKey, async () => {
+            ['write_article', 'article', async () => {
                 const entity = new TsArticle();
-                entity.id = articleKey;
                 entity.tenantId = tenant;
                 entity.ownerId = ownerId;
                 entity.title = `title-${idPrefix}`;
-                entity.tsAuthorId = authorKey;
-                entity.tsTagIds = [tagKey];
-                await client.coordinator(TsArticle).persist(entity);
+                if (authorKey !== undefined) entity.tsAuthorId = authorKey;
+                if (tagKey !== undefined) entity.tsTagIds = [tagKey];
+                articleKey = await client.coordinator(TsArticle).persist(entity);
                 return step('write_article', true, { entity: entityToPlain(entity) });
             }],
         ];
 
-        for (const [name, keyName, keyValue, body] of writers) {
+        const keyValues: Record<string, () => string | undefined> = {
+            author: () => authorKey,
+            tag: () => tagKey,
+            article: () => articleKey,
+        };
+
+        for (const [name, keyName, body] of writers) {
             let result: StepResult;
             try {
                 result = await body();
             } catch (err) {
                 result = step(name, false, { error: describe(err) });
             }
-            result.keys = { [keyName]: keyValue };
+            const keyValue = keyValues[keyName]();
+            if (keyValue !== undefined) result.keys = { [keyName]: keyValue };
             steps.push(result);
         }
     } else if (phase === 'read') {

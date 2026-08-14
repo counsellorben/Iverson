@@ -392,52 +392,53 @@ def main(argv: List[str]) -> int:
         add_register_step("register_tag", capture.select("PyTag"))
 
     elif phase == "write":
-        author_key = derive_key(id_prefix, "author")
-        tag_key = derive_key(id_prefix, "tag")
-        article_key = derive_key(id_prefix, "article")
+        # Keys are server-assigned: create requests must omit id entirely, and each row's key is
+        # only known — and only reported — once persist() returns it. author_key/tag_key are
+        # populated by the closures below and read by write_article, which runs after them.
+        keys: dict = {"author": None, "tag": None, "article": None}
 
         def write_author() -> StepResult:
             entity = PyAuthor()
-            entity.id = author_key
             entity.tenant_id = tenant
             entity.owner_id = owner_id
             entity.name = f"author-{id_prefix}"
-            coordinator(PyAuthor).persist(entity)
+            keys["author"] = coordinator(PyAuthor).persist(entity)
             return StepResult("write_author", True, entity=entity_to_dict(entity))
 
         def write_tag() -> StepResult:
             entity = PyTag()
-            entity.id = tag_key
             entity.tenant_id = tenant
             entity.owner_id = owner_id
             entity.label = f"tag-{id_prefix}"
-            coordinator(PyTag).persist(entity)
+            keys["tag"] = coordinator(PyTag).persist(entity)
             return StepResult("write_tag", True, entity=entity_to_dict(entity))
 
         def write_article() -> StepResult:
             entity = PyArticle()
-            entity.id = article_key
             entity.tenant_id = tenant
             entity.owner_id = owner_id
             entity.title = f"title-{id_prefix}"
-            entity.py_author_id = author_key
-            entity.py_tag_ids = [tag_key]
-            coordinator(PyArticle).persist(entity)
+            if keys["author"] is not None:
+                entity.py_author_id = uuid.UUID(keys["author"])
+            if keys["tag"] is not None:
+                entity.py_tag_ids = [uuid.UUID(keys["tag"])]
+            keys["article"] = coordinator(PyArticle).persist(entity)
             return StepResult("write_article", True, entity=entity_to_dict(entity))
 
-        # One step per row: a denied or failed write must not abort the others, and each row's
-        # key is reported unconditionally so later phases can address the row even when the
-        # write that produced it failed.
-        for name, body, key_name, key_value in (
-            ("write_author", write_author, "author", author_key),
-            ("write_tag", write_tag, "tag", tag_key),
-            ("write_article", write_article, "article", article_key),
+        # One step per row: a denied or failed write must not abort the others. A row's key is
+        # reported only when its write actually returned one — there is no client-derived key to
+        # fall back to any more.
+        for name, body, key_name in (
+            ("write_author", write_author, "author"),
+            ("write_tag", write_tag, "tag"),
+            ("write_article", write_article, "article"),
         ):
             try:
                 result = body()
             except Exception as exc:  # noqa: BLE001
                 result = StepResult(name, False, error=describe(exc))
-            result.keys = {key_name: str(key_value)}
+            if keys[key_name] is not None:
+                result.keys = {key_name: str(keys[key_name])}
             steps.append(result)
 
     elif phase == "read":

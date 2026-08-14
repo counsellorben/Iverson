@@ -147,51 +147,50 @@ public final class Driver {
     // ── write ────────────────────────────────────────────────────────────────────────────────
 
     /**
-     * One step per row: a denied or failed write must not abort the other two, and each row's
-     * key is reported unconditionally so later phases can address the row even when this write
-     * failed. {@code EntityCoordinator.persist} returns only the server-assigned key (the
-     * lightweight {@code ObjectPersistenceService}, unlike the heavier mapping RPC), so
-     * {@code entity} stays null here — that is genuinely what the client returned.
+     * One step per row: a denied or failed write must not abort the other two. Keys are now
+     * server-assigned — create requests must omit Id entirely — so each row's key is only known,
+     * and only reported, when the write actually returns one. {@code EntityCoordinator.persist}
+     * returns the server-assigned key (the lightweight {@code ObjectPersistenceService}, unlike
+     * the heavier mapping RPC), so {@code entity} stays null here — that is genuinely what the
+     * client returned.
      */
     private static void doWrite(
             IversonClient client, String tenant, String ownerId, String idPrefix, List<StepResult> steps) {
-        UUID authorKey = Keys.derive(idPrefix, "author");
-        UUID tagKey = Keys.derive(idPrefix, "tag");
-        UUID articleKey = Keys.derive(idPrefix, "article");
+        String[] authorKey = new String[1];
+        String[] tagKey = new String[1];
 
         StepResult authorStep = step("write_author", r -> {
             JavaAuthor author = new JavaAuthor();
-            author.setId(authorKey);
             author.setTenantId(tenant);
             author.setOwnerId(ownerId);
             author.setName("author-" + idPrefix);
-            new EntityCoordinator<>(client, JavaAuthor.class).persist(author);
+            authorKey[0] = new EntityCoordinator<>(client, JavaAuthor.class).persist(author);
         });
-        authorStep.keys = Map.of("author", authorKey.toString());
+        if (authorKey[0] != null) authorStep.keys = Map.of("author", authorKey[0]);
         steps.add(authorStep);
 
         StepResult tagStep = step("write_tag", r -> {
             JavaTag tag = new JavaTag();
-            tag.setId(tagKey);
             tag.setTenantId(tenant);
             tag.setOwnerId(ownerId);
             tag.setLabel("tag-" + idPrefix);
-            new EntityCoordinator<>(client, JavaTag.class).persist(tag);
+            tagKey[0] = new EntityCoordinator<>(client, JavaTag.class).persist(tag);
         });
-        tagStep.keys = Map.of("tag", tagKey.toString());
+        if (tagKey[0] != null) tagStep.keys = Map.of("tag", tagKey[0]);
         steps.add(tagStep);
+
+        String[] articleKey = new String[1];
 
         StepResult articleStep = step("write_article", r -> {
             JavaArticle article = new JavaArticle();
-            article.setId(articleKey);
             article.setTenantId(tenant);
             article.setOwnerId(ownerId);
             article.setTitle("title-" + idPrefix);
-            article.setJavaAuthorId(authorKey);
-            article.setJavaTagIds(List.of(tagKey));
-            new EntityCoordinator<>(client, JavaArticle.class).persist(article);
+            if (authorKey[0] != null) article.setJavaAuthorId(UUID.fromString(authorKey[0]));
+            if (tagKey[0] != null) article.setJavaTagIds(List.of(UUID.fromString(tagKey[0])));
+            articleKey[0] = new EntityCoordinator<>(client, JavaArticle.class).persist(article);
         });
-        articleStep.keys = Map.of("article", articleKey.toString());
+        if (articleKey[0] != null) articleStep.keys = Map.of("article", articleKey[0]);
         steps.add(articleStep);
     }
 
