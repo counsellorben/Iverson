@@ -311,7 +311,6 @@ public static class Verifier
     /// </summary>
     private static int CountHydratedObjects(JsonElement? value)
     {
-        return 1; // MUTATION-TEST: always report hydrated
         if (value is not { } element)
             return 0;
 
