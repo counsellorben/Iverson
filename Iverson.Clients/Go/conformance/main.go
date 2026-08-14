@@ -200,11 +200,29 @@ func reportGet(
 }
 
 // staticServiceToken attaches an already-minted service token to every call, the identity the
-// server reads out of the `authorization` header.
-type staticServiceToken struct{ token string }
+// server reads out of the `authorization` header, plus the acting-user identity the server reads
+// out of `x-acting-user-authorization`.
+//
+// Both are required, and they authorize different things: the service token carries the
+// schema_admin scope RegisterSchema needs, while every row read and write is authorized against
+// the acting user. Emitting only the service half lets registration succeed and then denies every
+// write with `actor=unknown` — a PermissionDenied that names nothing about identity, surfacing
+// phases away from its cause. This mirrors the Java driver's DualHeaderCredentials.
+//
+// It carries the acting token as a field rather than reading it back out of the context, because
+// the context key iverson.WithActingUserToken writes under is unexported; replacing the client's
+// own OAuth2ClientCredentials (which does read it) means taking over both headers here.
+type staticServiceToken struct {
+	token       string
+	actingToken string
+}
 
 func (s staticServiceToken) GetRequestMetadata(_ context.Context, _ ...string) (map[string]string, error) {
-	return map[string]string{"authorization": "Bearer " + s.token}, nil
+	md := map[string]string{"authorization": "Bearer " + s.token}
+	if s.actingToken != "" {
+		md[iverson.ActingUserMetadataKey] = "Bearer " + s.actingToken
+	}
+	return md, nil
 }
 
 func (s staticServiceToken) RequireTransportSecurity() bool { return false }
@@ -331,7 +349,8 @@ func run(argv []string) int {
 	// OAuth2ClientCredentials can set neither. The orchestrator mints one correctly and passes
 	// it via --service-token.
 	if serviceToken != "" {
-		dialOpts = append(dialOpts, grpc.WithPerRPCCredentials(staticServiceToken{token: serviceToken}))
+		dialOpts = append(dialOpts, grpc.WithPerRPCCredentials(
+			staticServiceToken{token: serviceToken, actingToken: actingToken}))
 	} else if clientID != "" && clientSecret != "" && tokenEndpoint != "" {
 		dialOpts = append(dialOpts, grpc.WithPerRPCCredentials(&iverson.OAuth2ClientCredentials{
 			ClientID:      clientID,
@@ -378,7 +397,9 @@ func run(argv []string) int {
 		// article's relations reference already exist when the article is sent. Registration
 		// aborts at the first failure, so the order is observable.
 		registrar := iverson.NewSchemaRegistrar(capture, GoAuthor{}, GoTag{}, GoArticle{})
-		regErr := registrar.RegisterAll(ctx, idPrefix)
+		// nil authorization: S1 registers every type WITHOUT an authorization block on purpose,
+		// so the orchestrator can re-register it with one and exercise the type both ways.
+		regErr := registrar.RegisterAll(ctx, idPrefix, nil)
 
 		addRegisterStep := func(name string, descriptor json.RawMessage) {
 			step := stepResult{Name: name, Ok: regErr == nil, TypeDescriptor: descriptor}
