@@ -54,9 +54,25 @@ public sealed class CrudRoundtripScenario(
             // and NOTHING else changed. A type whose stored schema carries no authorization block
             // is writable by nobody, so all three must be re-registered or the write phase is
             // denied outright.
-            foreach (var descriptor in new[] { state.Author, tag, state.Article })
+            foreach (var (label, descriptor) in
+                     new[] { ("author", state.Author), ("tag", tag), ("article", state.Article) })
             {
-                if (descriptor is null) continue;
+                // A missing descriptor is reported, never skipped in silence. Its own step-failure
+                // assertion says the register step failed; it does NOT say that the consequence is
+                // an un-re-registered type whose every later write dies as PermissionDenied "Not
+                // authorized to create this entity" — an authorization error that names nothing
+                // about registration. Without this assertion the two are four phases apart in the
+                // report with nothing connecting them, which is exactly how Go's write failures
+                // went un-root-caused.
+                if (descriptor is null)
+                {
+                    state.Assertions.Add(Assertion.Fail(
+                        $"{label}: re-registered with row permissions",
+                        "skipped — no descriptor was reported for this type, so its stored schema " +
+                        "keeps no authorization block and every write against it will be denied"));
+                    continue;
+                }
+
                 try
                 {
                     await reregistrar.ReregisterAsync(descriptor.Json, actingToken, ct: ct);
