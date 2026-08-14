@@ -37,12 +37,12 @@ public class EntityCoordinatorMappedWriteTests
                 () => { }));
 
         var sut = TestCoordinatorFactory.Create<MappedWriteTestEntity>(mapping: mapping);
-        var headers = new Metadata { { "x-acting-user-authorization", "Bearer test-token" } };
+        var headers = new Metadata { { "x-trace-id", "Bearer test-token" } };
 
         await sut.PostMappedAsync(new MappedWriteTestEntity { Name = "x" }, headers);
 
         capturedHeaders.Should().NotBeNull();
-        capturedHeaders!.Get("x-acting-user-authorization")!.Value.Should().Be("Bearer test-token");
+        capturedHeaders!.Get("x-trace-id")!.Value.Should().Be("Bearer test-token");
     }
 
     [Fact]
@@ -64,12 +64,12 @@ public class EntityCoordinatorMappedWriteTests
                 () => { }));
 
         var sut = TestCoordinatorFactory.Create<MappedWriteTestEntity>(mapping: mapping);
-        var headers = new Metadata { { "x-acting-user-authorization", "Bearer test-token" } };
+        var headers = new Metadata { { "x-trace-id", "Bearer test-token" } };
 
         await sut.UpdateMappedAsync(new MappedWriteTestEntity { Id = Guid.NewGuid(), Name = "x" }, headers);
 
         capturedHeaders.Should().NotBeNull();
-        capturedHeaders!.Get("x-acting-user-authorization")!.Value.Should().Be("Bearer test-token");
+        capturedHeaders!.Get("x-trace-id")!.Value.Should().Be("Bearer test-token");
     }
 
     [Fact]
@@ -91,11 +91,11 @@ public class EntityCoordinatorMappedWriteTests
                 () => { }));
 
         var sut = TestCoordinatorFactory.Create<MappedWriteTestEntity>(mapping: mapping);
-        var headers = new Metadata { { "x-acting-user-authorization", "Bearer test-token" } };
+        var headers = new Metadata { { "x-trace-id", "Bearer test-token" } };
 
         await sut.GetMappedAsync("some-key", headers: headers);
 
         capturedHeaders.Should().NotBeNull();
-        capturedHeaders!.Get("x-acting-user-authorization")!.Value.Should().Be("Bearer test-token");
+        capturedHeaders!.Get("x-trace-id")!.Value.Should().Be("Bearer test-token");
     }
 }

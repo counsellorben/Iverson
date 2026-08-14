@@ -77,7 +77,6 @@ internal static class WritePathRunner
                 var identity = identities.PickRandom();
                 try
                 {
-                    var headers = new Grpc.Core.Metadata().WithActingUser(await identity.GetTokenAsync(ct));
                     // The server force-sets OwnerId for the owner-restricted identity on create; the
                     // bypass identity's writes are never ownership-checked, so it must set its own OwnerId.
                     var ownerId = identity == identities.Bypass ? await identity.GetSubAsync(ct) : "";
@@ -101,7 +100,7 @@ internal static class WritePathRunner
                                 Bio     = new string('x', 200),
                                 OwnerId = ownerId,
                             };
-                            key = await authors.PersistAsync(u, headers, ct);
+                            key = await authors.WithActingUser(() => identity.GetTokenAsync(ct)).PersistAsync(u, ct: ct);
                             break;
 
                         case "Tag":
@@ -111,7 +110,7 @@ internal static class WritePathRunner
                                 Category = Categories[seed % Categories.Length],
                                 OwnerId  = ownerId,
                             };
-                            key = await tags.PersistAsync(tg, headers, ct);
+                            key = await tags.WithActingUser(() => identity.GetTokenAsync(ct)).PersistAsync(tg, ct: ct);
                             break;
 
                         default: // Article
@@ -127,7 +126,7 @@ internal static class WritePathRunner
                                 PublishedAt       = DateTimeOffset.UtcNow,
                                 OwnerId           = ownerId,
                             };
-                            key = await articles.PersistAsync(a, headers, ct);
+                            key = await articles.WithActingUser(() => identity.GetTokenAsync(ct)).PersistAsync(a, ct: ct);
                             break;
                     }
 

@@ -13,6 +13,7 @@ from iverson_client.annotations import iverson_entity, iverson_key, many_to_one,
 from iverson_client.core import EntityCoordinator, _entity_to_struct
 from iverson_client.generated import (
     object_mapping_pb2 as mapping_pb,
+    object_retrieval_pb2 as retrieval_pb,
     object_search_pb2 as pb,
     object_search_pb2_grpc as search_grpc,
 )
@@ -239,3 +240,74 @@ class TestEntityCoordinatorMappedCrud:
 
         request = coordinator._mapping.Update.call_args[0][0]
         assert request.payload.fields["Id"].string_value == "k1"
+
+
+# ── Acting-user identity resolution ─────────────────────────────────────────────
+
+class TestEntityCoordinatorActingUserIdentity:
+    def test_a_per_call_bound_token_takes_precedence_over_the_ambient_default(self):
+        """with_acting_user's bound token wins over whatever ambient token the
+        coordinator was constructed with."""
+        channel = grpc.insecure_channel("localhost:1")
+        coordinator = EntityCoordinator(CoordArticle, channel, "ambient-token")
+        coordinator._retrieval = MagicMock()
+        coordinator._retrieval.Get.return_value = retrieval_pb.RetrievalResponse(found=False)
+
+        bound = coordinator.with_acting_user("bound-token")
+        bound.get("some-id")
+
+        sent_metadata = coordinator._retrieval.Get.call_args.kwargs["metadata"]
+        assert sent_metadata == (("x-acting-user-authorization", "Bearer bound-token"),)
+
+    def test_the_clients_ambient_identity_applies_when_nothing_is_bound(self):
+        channel = grpc.insecure_channel("localhost:1")
+        coordinator = EntityCoordinator(CoordArticle, channel, "ambient-token")
+        coordinator._retrieval = MagicMock()
+        coordinator._retrieval.Get.return_value = retrieval_pb.RetrievalResponse(found=False)
+
+        coordinator.get("some-id")
+
+        sent_metadata = coordinator._retrieval.Get.call_args.kwargs["metadata"]
+        assert sent_metadata == (("x-acting-user-authorization", "Bearer ambient-token"),)
+
+    def test_no_token_anywhere_emits_no_acting_user_header(self):
+        channel = grpc.insecure_channel("localhost:1")
+        coordinator = EntityCoordinator(CoordArticle, channel)
+        coordinator._retrieval = MagicMock()
+        coordinator._retrieval.Get.return_value = retrieval_pb.RetrievalResponse(found=False)
+
+        coordinator.get("some-id")
+
+        sent_metadata = coordinator._retrieval.Get.call_args.kwargs["metadata"]
+        assert sent_metadata == ()
+
+    def test_an_empty_string_token_still_emits_the_header_and_fails_loudly(self):
+        """An empty-string token is a caller error, not "no identity": it must still
+        produce a `Bearer ` header (with an empty token) so the server rejects the
+        call with Unauthenticated, rather than being swallowed into rule 4 (no header,
+        silent unauthenticated read)."""
+        channel = grpc.insecure_channel("localhost:1")
+        coordinator = EntityCoordinator(CoordArticle, channel, "")
+        coordinator._retrieval = MagicMock()
+        coordinator._retrieval.Get.return_value = retrieval_pb.RetrievalResponse(found=False)
+
+        coordinator.get("some-id")
+
+        sent_metadata = coordinator._retrieval.Get.call_args.kwargs["metadata"]
+        assert sent_metadata == (("x-acting-user-authorization", "Bearer "),)
+
+    def test_with_acting_user_does_not_mutate_the_receiver(self):
+        """The non-mutation test: with_acting_user must return a new bound coordinator,
+        never rebind the receiver it was called on."""
+        channel = grpc.insecure_channel("localhost:1")
+        coordinator = EntityCoordinator(CoordArticle, channel, "ambient-token")
+        coordinator._retrieval = MagicMock()
+        coordinator._retrieval.Get.return_value = retrieval_pb.RetrievalResponse(found=False)
+
+        bound = coordinator.with_acting_user("bound-token")
+        assert bound is not coordinator
+
+        coordinator.get("some-id")
+
+        sent_metadata = coordinator._retrieval.Get.call_args.kwargs["metadata"]
+        assert sent_metadata == (("x-acting-user-authorization", "Bearer ambient-token"),)

@@ -506,6 +506,7 @@ export class EntityCoordinator<T extends object> {
     private readonly _mapping: ObjectMappingServiceClient;
     private readonly _persistence: ObjectPersistenceServiceClient;
     private readonly _retrieval: ObjectRetrievalServiceClient;
+    private _boundActingUser?: ActingUserToken;
 
     constructor(
         private readonly _cls: new () => T,
@@ -519,6 +520,20 @@ export class EntityCoordinator<T extends object> {
         this._mapping = _client._mappingClient;
         this._persistence = _client._persistenceClient;
         this._retrieval = _client._retrievalClient;
+    }
+
+    /**
+     * Returns a coordinator bound to `token`, leaving this one untouched. The bound identity
+     * outranks the client's ambient one; an explicit per-call token still outranks both.
+     */
+    withActingUser(token: ActingUserToken): EntityCoordinator<T> {
+        const bound = new EntityCoordinator(this._cls, this._client);
+        bound._boundActingUser = token;
+        return bound;
+    }
+
+    private _identity(): ActingUserToken | undefined {
+        return this._boundActingUser ?? this._client._actingUserToken;
     }
 
     private _getKey(entity: T): string {
@@ -543,7 +558,7 @@ export class EntityCoordinator<T extends object> {
             (req, metadata, options, cb) => this._persistence.post(req, metadata, options, cb),
             request,
             this._client._callCredentials,
-            this._client._actingUserToken,
+            this._identity(),
         );
         if (!response.success) {
             throw new Error(`persist failed: ${response.error}`);
@@ -562,7 +577,7 @@ export class EntityCoordinator<T extends object> {
             (req, metadata, options, cb) => this._persistence.update(req, metadata, options, cb),
             request,
             this._client._callCredentials,
-            this._client._actingUserToken,
+            this._identity(),
         );
         if (!response.success) {
             throw new Error(`update failed: ${response.error}`);
@@ -585,7 +600,7 @@ export class EntityCoordinator<T extends object> {
             ) => this._mapping.delete(req, metadata, options, cb),
             request,
             this._client._callCredentials,
-            this._client._actingUserToken,
+            this._identity(),
         );
         if (!response.success) {
             throw new Error(`delete failed: ${response.error}`);
@@ -604,7 +619,7 @@ export class EntityCoordinator<T extends object> {
             (req, metadata, options, cb) => this._mapping.get(req, metadata, options, cb),
             request,
             this._client._callCredentials,
-            this._client._actingUserToken,
+            this._identity(),
         );
         if (!response.success) return null;
         return payloadToEntity(this._cls, (response.data ?? {}) as Record<string, unknown>);
@@ -625,7 +640,7 @@ export class EntityCoordinator<T extends object> {
             (req, metadata, options, cb) => this._mapping.post(req, metadata, options, cb),
             request,
             this._client._callCredentials,
-            this._client._actingUserToken,
+            this._identity(),
         );
         if (!response.success) {
             throw new Error(`postMapped failed: ${response.error}`);
@@ -644,7 +659,7 @@ export class EntityCoordinator<T extends object> {
             (req, metadata, options, cb) => this._mapping.update(req, metadata, options, cb),
             request,
             this._client._callCredentials,
-            this._client._actingUserToken,
+            this._identity(),
         );
         if (!response.success) {
             throw new Error(`updateMapped failed: ${response.error}`);
@@ -663,7 +678,7 @@ export class EntityCoordinator<T extends object> {
             (req, metadata, options, cb) => this._retrieval.get(req, metadata, options, cb),
             request,
             this._client._callCredentials,
-            this._client._actingUserToken,
+            this._identity(),
         );
         if (!response.found) return null;
         return payloadToEntity(this._cls, (response.data ?? {}) as Record<string, unknown>);
@@ -680,7 +695,7 @@ export class EntityCoordinator<T extends object> {
             (req, metadata, options) => this._retrieval.getMany(req, metadata, options),
             request,
             this._client._callCredentials,
-            this._client._actingUserToken,
+            this._identity(),
         );
         return new Promise((resolve, reject) => {
             const results: T[] = [];

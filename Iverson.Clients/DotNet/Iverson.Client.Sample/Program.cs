@@ -42,8 +42,6 @@ var services = new ServiceCollection()
         entityAssemblies: [typeof(Article).Assembly])
     .BuildServiceProvider();
 
-var headers = new Metadata().WithActingUser(actingUserToken);
-
 // OwnerField is left empty — none of the five sample models carries an owner column —
 // so a single bypass role carries authorization. The acting user behind
 // IVERSON_ACTING_USER_TOKEN must belong to this Authentik group, since the role is
@@ -98,7 +96,7 @@ var authorAiId   = await authors.PersistAsync(new Author
     Name  = "Allen Iverson",
     Email = "ai@iverson.dev",
     Bio   = "The original AI. Point guard. Hall of Famer."
-}, headers);
+});
 if (authorAiId is null)
 {
     Console.Error.WriteLine(
@@ -114,13 +112,13 @@ var authorKobeId = await authors.PersistAsync(new Author
     Name  = "Kobe Bryant",
     Email = "kb@iverson.dev",
     Bio   = "The Black Mamba. Five-time NBA champion."
-}, headers);
+});
 Console.WriteLine($"Created authors: {authorAiId}, {authorKobeId}");
 
 // Tags
-var tagBballId   = await tags.PersistAsync(new Tag { Label = "Basketball", Slug = "basketball", TenantId = sampleTenant }, headers);
-var tagCultureId = await tags.PersistAsync(new Tag { Label = "Culture",    Slug = "culture",    TenantId = sampleTenant }, headers);
-var tagLegacyId  = await tags.PersistAsync(new Tag { Label = "Legacy",     Slug = "legacy",     TenantId = sampleTenant }, headers);
+var tagBballId   = await tags.PersistAsync(new Tag { Label = "Basketball", Slug = "basketball", TenantId = sampleTenant });
+var tagCultureId = await tags.PersistAsync(new Tag { Label = "Culture",    Slug = "culture",    TenantId = sampleTenant });
+var tagLegacyId  = await tags.PersistAsync(new Tag { Label = "Legacy",     Slug = "legacy",     TenantId = sampleTenant });
 Console.WriteLine($"Created tags: basketball, culture, legacy");
 
 // Articles (PostMappedAsync so the server resolves Author and Tags and the full
@@ -134,7 +132,7 @@ var article1 = await articles.PostMappedAsync(new Article
     Body        = "Before large language models, Allen Iverson was already doing the impossible on the hardwood.",
     PublishedAt = DateTime.UtcNow.AddDays(-7),
     IsPublished = true
-}, headers);
+});
 var article2 = await articles.PostMappedAsync(new Article
 {
     TenantId    = sampleTenant,
@@ -144,7 +142,7 @@ var article2 = await articles.PostMappedAsync(new Article
     Body        = "Kobe Bryant's relentless work ethic and Mamba Mentality redefined what dedication to the game looks like.",
     PublishedAt = DateTime.UtcNow.AddDays(-3),
     IsPublished = true
-}, headers);
+});
 Console.WriteLine($"Created articles: '{article1?.Title}', '{article2?.Title}'");
 
 // User
@@ -155,7 +153,7 @@ var userId = await users.PersistAsync(new User
     Email     = "test@example.com",
     Username  = "testuser",
     CreatedAt = DateTime.UtcNow
-}, headers);
+});
 Console.WriteLine($"Created user: {userId}");
 
 // UserArticles — PostMappedAsync so the server emits a fully hydrated document
@@ -167,14 +165,14 @@ var ua1 = await userArticles.PostMappedAsync(new UserArticle
     UserId    = Guid.Parse(userId!),
     ArticleId = article1!.Id,   // read off the entity PostMappedAsync returned
     CreatedAt = DateTime.UtcNow
-}, headers);
+});
 var ua2 = await userArticles.PostMappedAsync(new UserArticle
 {
     TenantId  = sampleTenant,
     UserId    = Guid.Parse(userId!),
     ArticleId = article2!.Id,
     CreatedAt = DateTime.UtcNow
-}, headers);
+});
 Console.WriteLine($"Created user-articles: {ua1!.Id}, {ua2!.Id}");
 
 // ── Object Mapping — PostgreSQL CRUD with server-side graph resolution ─────────
@@ -182,31 +180,31 @@ Console.WriteLine($"Created user-articles: {ua1!.Id}, {ua2!.Id}");
 Console.WriteLine("\n=== Object Mapping (PostgreSQL) ===");
 
 // Author: GetMapped with depth=1 returns the Author with inline Articles list.
-var fetchedAuthor = await authors.GetMappedAsync(authorAiId!, depth: 1, headers: headers);
+var fetchedAuthor = await authors.GetMappedAsync(authorAiId!, depth: 1);
 Console.WriteLine($"Author: {fetchedAuthor?.Name} ({fetchedAuthor?.Articles.Count} articles)");
 
 // Article: GetMapped with depth=1 returns Author + Tags resolved.
-var fetchedArticle = await articles.GetMappedAsync(article1!.Id.ToString(), depth: 1, headers: headers);
+var fetchedArticle = await articles.GetMappedAsync(article1!.Id.ToString(), depth: 1);
 Console.WriteLine($"Article: '{fetchedArticle?.Title}' by {fetchedArticle?.Author?.Name} [{fetchedArticle?.Tags.Count} tags]");
 
 // Article: depth=2 also recurses into Author's Articles.
-var deepArticle = await articles.GetMappedAsync(article1!.Id.ToString(), depth: 2, headers: headers);
+var deepArticle = await articles.GetMappedAsync(article1!.Id.ToString(), depth: 2);
 Console.WriteLine($"Article (depth=2): author has {deepArticle?.Author?.Articles.Count} article(s)");
 
 // UserArticle: GetMapped with depth=1 returns both ManyToOne relations resolved.
-var fetchedUa = await userArticles.GetMappedAsync(ua1!.Id.ToString(), depth: 1, headers: headers);
+var fetchedUa = await userArticles.GetMappedAsync(ua1!.Id.ToString(), depth: 1);
 Console.WriteLine($"UserArticle: user='{fetchedUa?.User?.Name}' article='{fetchedUa?.Article?.Title}'");
 
 // Update an article title.
 if (fetchedArticle is not null)
 {
     fetchedArticle.Title = "The Original AI: Allen Iverson's Enduring Legacy";
-    var updated = await articles.UpdateMappedAsync(fetchedArticle, headers);
+    var updated = await articles.UpdateMappedAsync(fetchedArticle);
     Console.WriteLine($"Updated article: '{updated?.Title}'");
 }
 
 // Tag: GetMapped (no relations to resolve, just demonstrates the mapping path).
-var fetchedTag = await tags.GetMappedAsync(tagBballId!, headers: headers);
+var fetchedTag = await tags.GetMappedAsync(tagBballId!);
 Console.WriteLine($"Tag: {fetchedTag?.Label} (slug: {fetchedTag?.Slug})");
 
 // ── Object Retrieval — PostgreSQL key-based, client assembles the graph ────────

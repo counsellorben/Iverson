@@ -36,16 +36,16 @@ public class EntityCoordinatorPersistAsyncTests
                 () => { }));
 
         var sut = TestCoordinatorFactory.Create<PersistAsyncTestEntity>(persistence: persistence);
-        var headers = new Metadata { { "x-acting-user-authorization", "Bearer test-token" } };
+        var headers = new Metadata { { "x-trace-id", "Bearer test-token" } };
 
         await sut.PersistAsync(new PersistAsyncTestEntity { Id = Guid.NewGuid(), Name = "x" }, headers);
 
         capturedHeaders.Should().NotBeNull();
-        capturedHeaders!.Get("x-acting-user-authorization")!.Value.Should().Be("Bearer test-token");
+        capturedHeaders!.Get("x-trace-id")!.Value.Should().Be("Bearer test-token");
     }
 
     [Fact]
-    public async Task PersistAsync_WithNoHeaders_PassesNull()
+    public async Task PersistAsync_WithNoHeaders_EmitsNoActingUser()
     {
         var persistence = Substitute.For<ObjectPersistenceService.ObjectPersistenceServiceClient>();
         Metadata? capturedHeaders = null;
@@ -66,6 +66,7 @@ public class EntityCoordinatorPersistAsyncTests
 
         await sut.PersistAsync(new PersistAsyncTestEntity { Id = Guid.NewGuid(), Name = "x" });
 
-        capturedHeaders.Should().BeNull();
+        capturedHeaders.Should().NotBeNull();
+        capturedHeaders!.Get(ActingUserMetadata.MetadataKey).Should().BeNull();
     }
 }
