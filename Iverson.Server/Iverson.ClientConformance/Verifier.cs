@@ -105,7 +105,10 @@ public static class Verifier
     /// as a defect — see <c>Iverson.Server/Iverson.Api/Grpc/RelationValidator.cs:20-24</c>.
     /// Applying the check to m2m would fail four conforming clients.
     /// </summary>
-    public static IReadOnlyList<Assertion> VerifyRegistration(string label, TypeDescriptor descriptor)
+    public static IReadOnlyList<Assertion> VerifyRegistration(
+        string label,
+        TypeDescriptor descriptor,
+        IReadOnlyCollection<RelationKind>? expectedRelationKinds = null)
     {
         var results = new List<Assertion>();
 
@@ -117,6 +120,27 @@ public static class Verifier
             $"{label}: declares exactly one key property",
             descriptor.Properties.Count(p => p.IsKey) == 1,
             $"keys=[{string.Join(", ", descriptor.Properties.Where(p => p.IsKey).Select(p => p.Name))}]"));
+
+        // Asserted unconditionally — including (and especially) when Relations is empty. Every
+        // other relation assertion below lives inside `foreach (var relation in
+        // descriptor.Relations)`, so a client that silently drops all its relations previously
+        // ran zero loop iterations and emitted zero relation assertions: a fully green result
+        // that proved nothing about the relation shape the scenario exists to check. This is the
+        // one relation assertion that fires regardless of how many relations were reported.
+        //
+        // `expectedRelationKinds` is null only from call sites that genuinely have no
+        // expectation to check (kept solely so pre-existing unit tests compile); every real
+        // scenario call site passes an explicit collection, including the empty one for
+        // "author"/"tag".
+        if (expectedRelationKinds is not null)
+        {
+            var actualKinds = descriptor.Relations.Select(r => r.Kind).OrderBy(k => k).ToList();
+            var expectedKinds = expectedRelationKinds.OrderBy(k => k).ToList();
+            results.Add(Assertion.From(
+                $"{label}: declares exactly the expected relation kinds",
+                actualKinds.SequenceEqual(expectedKinds),
+                $"expected=[{string.Join(", ", expectedKinds)}] actual=[{string.Join(", ", actualKinds)}]"));
+        }
 
         results.Add(Assertion.From(
             $"{label}: declares a tenant field",

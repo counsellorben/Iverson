@@ -96,6 +96,23 @@ public class PhaseDocumentTests
     }
 
     [Fact]
+    public void Deserialize_DocumentWithNoStepsKey_NormalizesToEmptyListNotNull()
+    {
+        // System.Text.Json binds a missing "steps" key to null regardless of the record's
+        // non-nullable declaration. Without PhaseDocument's own normalization, MergeKeys'
+        // `foreach (var step in document.Steps)` throws a NullReferenceException that the
+        // driver-runner's catch filter does not cover, escaping past a single language's row to
+        // abort the entire harness run.
+        var json = """{ "language": "python", "phase": "read" }""";
+
+        var document = JsonSerializer.Deserialize<PhaseDocument>(json, Options);
+
+        document.Should().NotBeNull();
+        document!.Steps.Should().NotBeNull();
+        document.Steps.Should().BeEmpty();
+    }
+
+    [Fact]
     public void PhaseNames_RoundTripAllFivePhases()
     {
         PhaseNames.ToToken(Phase.Register).Should().Be("register");

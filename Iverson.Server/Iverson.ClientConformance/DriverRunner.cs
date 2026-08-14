@@ -191,6 +191,14 @@ public sealed class DriverRunner
                 var json = await File.ReadAllTextAsync(outPath, ct);
                 document = JsonSerializer.Deserialize<PhaseDocument>(json, JsonOptions)
                     ?? throw new InvalidOperationException("driver wrote an empty/null phase document");
+
+                // A missing/null "steps" key normalizes to an empty list (PhaseDocument's own
+                // constructor) rather than null, so this can never NRE downstream — but zero
+                // steps is itself evidence of a malformed document (early return, truncated
+                // write, ...) and must be reported as a failure for this one language, not
+                // silently treated as "the driver did nothing this phase and that's fine".
+                if (document.Steps.Count == 0)
+                    throw new InvalidOperationException("the driver reported no steps");
             }
             catch (Exception ex) when (ex is IOException or JsonException or InvalidOperationException)
             {

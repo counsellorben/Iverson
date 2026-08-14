@@ -188,6 +188,46 @@ public class VerifierTests
             .Should().Contain(r => !r.Passed && r.Name.Contains("isArray is set only for"));
     }
 
+    [Fact]
+    public void VerifyRegistration_fails_when_a_descriptor_with_no_relations_is_expected_to_have_some()
+    {
+        // A client whose relations silently vanish (e.g. a serialization bug that drops the
+        // "relations" array entirely) must not pass registration for a type expected to declare
+        // any. Every OTHER relation assertion lives inside `foreach (var relation in
+        // descriptor.Relations)`, so with Relations empty none of them fire — this is the one
+        // assertion that still catches it.
+        var descriptor = Verifier.ParseDescriptor(Json("""
+            {
+              "typeName": "Article", "tenantField": "tenant_id",
+              "properties": [ { "name": "id", "isKey": true }, { "name": "tenant_id" } ],
+              "relations": []
+            }
+            """));
+
+        var results = Verifier.VerifyRegistration(
+            "article", descriptor, [RelationKind.ManyToOne, RelationKind.ManyToMany]);
+
+        results.Should().Contain(r => !r.Passed && r.Name.Contains("expected relation kinds"));
+    }
+
+    [Fact]
+    public void VerifyRegistration_passes_a_descriptor_with_no_relations_when_none_are_expected()
+    {
+        // "author" and "tag" genuinely declare zero relations of their own — that must be an
+        // asserted, passing shape, not merely an unchecked absence of failures.
+        var descriptor = Verifier.ParseDescriptor(Json("""
+            {
+              "typeName": "Tag", "tenantField": "tenant_id",
+              "properties": [ { "name": "id", "isKey": true }, { "name": "tenant_id" } ],
+              "relations": []
+            }
+            """));
+
+        var results = Verifier.VerifyRegistration("tag", descriptor, []);
+
+        results.Should().Contain(r => r.Passed && r.Name.Contains("expected relation kinds"));
+    }
+
     // ── compared value set ───────────────────────────────────────────────────────────────────
 
     [Fact]

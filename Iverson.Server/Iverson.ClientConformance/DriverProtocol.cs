@@ -39,7 +39,14 @@ public static class PhaseNames
 /// orchestrator's Verifier (Task 8) to judge, including failed steps (<c>ok: false</c> with
 /// <see cref="StepResult.Error"/> set, and the driver still exits 0).
 /// </summary>
-public sealed record PhaseDocument(string Language, string Phase, IReadOnlyList<StepResult> Steps);
+public sealed record PhaseDocument(string Language, string Phase, IReadOnlyList<StepResult> Steps)
+{
+    // System.Text.Json binds a missing "steps" key to null regardless of the non-nullable
+    // declaration above. Normalizing here — where the document is created — means every
+    // consumer (MergeKeys, CrudRoundtripScenario) can rely on Steps never being null, instead of
+    // each call site needing its own null guard.
+    public IReadOnlyList<StepResult> Steps { get; init; } = Steps ?? [];
+}
 
 /// <summary>
 /// One step's outcome within a phase document. <see cref="TypeDescriptor"/> is populated on the

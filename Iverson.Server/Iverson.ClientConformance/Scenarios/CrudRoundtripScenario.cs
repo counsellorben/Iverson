@@ -46,9 +46,14 @@ public sealed class CrudRoundtripScenario(
         {
             var state = states[language];
 
-            state.Article = TakeDescriptor(state, document, "register", "article");
-            state.Author = TakeDescriptor(state, document, "register_author", "author");
-            var tag = TakeDescriptor(state, document, "register_tag", "tag");
+            // Each type's expected relation shape comes from the caller, which knows the label:
+            // the author's one-to-many is resolved server-side by reverse foreign-key lookup and
+            // is never declared on its own descriptor, and tag declares no relations at all — so
+            // "no relations" is the CORRECT, asserted shape for those two, not an unchecked gap.
+            state.Article = TakeDescriptor(state, document, "register", "article",
+                [RelationKind.ManyToOne, RelationKind.ManyToMany]);
+            state.Author = TakeDescriptor(state, document, "register_author", "author", []);
+            var tag = TakeDescriptor(state, document, "register_tag", "tag", []);
 
             // The orchestrator re-registers each reported descriptor with row permissions added
             // and NOTHING else changed. A type whose stored schema carries no authorization block
@@ -244,8 +249,10 @@ public sealed class CrudRoundtripScenario(
         log?.Invoke($"  phase {PhaseNames.ToToken(phase)}: {string.Join(", ", alive)}");
 
         var documents = new List<(string, PhaseDocument)>();
+        var reported = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var outcome in await runner.RunPhaseAsync(phase, alive, context, ct))
         {
+            reported.Add(outcome.Language);
             var state = states[outcome.Language];
             switch (outcome)
             {
@@ -261,6 +268,17 @@ public sealed class CrudRoundtripScenario(
                         $"(exit {broken.ExitCode}): {Truncate(broken.Stderr)}");
                     break;
             }
+        }
+
+        // DriverRunner only iterates its own five known driver specs, so a requested language it
+        // does not recognize produces no outcome at all — no terminal state, no assertions — and
+        // would otherwise fall through every later phase and reach Cell() with zero failed
+        // assertions, i.e. a green row for a typo like "typescrpt". Any language left alive with
+        // no outcome for this phase is exactly that case.
+        foreach (var language in alive.Where(l => !reported.Contains(l)))
+        {
+            states[language].Terminal = ReportCell.Fail(language, Name,
+                $"'{language}' is not a recognized conformance driver language");
         }
 
         return documents;
@@ -284,7 +302,8 @@ public sealed class CrudRoundtripScenario(
     }
 
     private static CapturedDescriptor? TakeDescriptor(
-        LanguageState state, PhaseDocument document, string stepName, string label)
+        LanguageState state, PhaseDocument document, string stepName, string label,
+        IReadOnlyCollection<RelationKind> expectedRelationKinds)
     {
         var step = RequireStepOk(state, document, stepName);
         if (step?.TypeDescriptor is not { } json)
@@ -305,7 +324,7 @@ public sealed class CrudRoundtripScenario(
             return null;
         }
 
-        state.Assertions.AddRange(Verifier.VerifyRegistration(label, descriptor));
+        state.Assertions.AddRange(Verifier.VerifyRegistration(label, descriptor, expectedRelationKinds));
         return new CapturedDescriptor(descriptor, json);
     }
 
