@@ -89,8 +89,22 @@ generic type rather than its raw type — the same `ParameterizedType` unwrap
 
 Elements recurse through the existing typed `fromValue`, so `List<UUID>`,
 `List<String>` and `List<Integer>` are handled uniformly with no new type table.
-Nested lists and lists of structs stay unsupported, matching what `toStruct` can
-produce for a declared array column.
+Nested lists and lists of structs stay unsupported.
+
+`fromStruct` must also gain the navigation-property skip that `toStruct` already
+has. `isNavigationProperty` has a single call site, in `toStruct` (`:39`), while
+`fromStruct` builds its field map from `getAllFields(type)` (`:63-66`) with no
+filter. Its input is therefore not "what `toStruct` wrote" but whatever the
+server sends, which at depth >= 1 includes hydrated navigation properties —
+`JavaArticle.javaTags` is a `List<JavaTag>` (`JavaArticle.java:38`), and
+`EntityCoordinator.getMapped(id, depth)` (`:185`) is public API. Without the
+skip, the new `LIST_VALUE` case recurses into `STRUCT_VALUE` elements the typed
+`fromValue` still cannot convert, yielding `javaTags = [null, null]` —
+indistinguishable from two tags that failed to load, and a worse failure than
+today's plain `null`. Reusing the existing `isNavigationProperty(Field)`
+predicate when building `fieldMap` keeps lists-of-structs genuinely out of
+scope. Populating navigation properties from hydrated structs is a separate
+feature and stays out of this spec.
 
 The untyped `fromValue(Value)` gains a `LIST_VALUE` case producing
 `List<Object>`, so `fromStructAsMap` stops dropping array columns.
@@ -132,8 +146,9 @@ name, so none needs changing.
 Part B: `StructConverterTest` exercises `tagIds` in the `toStruct` direction
 only (`:110-120`). There is no `fromStruct` array test at all — that absence is
 why the gap went unnoticed. Add round-trip coverage asserting a `List<UUID>`
-field survives struct→POJO, and a `fromStructAsMap` case asserting an array
-column arrives as a list.
+field survives struct→POJO, a `fromStructAsMap` case asserting an array
+column arrives as a list, and a depth-1 case asserting a hydrated navigation
+property is skipped rather than populated with nulls.
 
 Both parts must be mutation-tested: revert the production change and confirm the
 new tests go red.
@@ -157,6 +172,7 @@ Verified 2026-08-14 against `client-conformance-harness` at `53daa85`.
 | B4 | `toStruct` emits `LIST_VALUE` for `Collection`, making the gap one-directional | `StructConverter.java:110-115` | Holds |
 | B5 | `fromStructAsMap` callers tolerate `List<Object>` values | `EntityCoordinator.java:250-258, 274-282` return `List<Map<String, Object>>` to the caller untouched; values were previously `null` | Holds — change is additive |
 | B6 | No existing Java test asserts null/absent for an array field on read | `StructConverterTest.java` covers `tagIds` only via `getFieldsOrThrow("TagIds")` on the write side | Holds — and the absence is the root cause |
+| B7 | `fromStruct` reads only what `toStruct` writes (Part B's element-scope rationale) | `StructConverter.java:39` is the sole `isNavigationProperty` call site and it sits in `toStruct`; `fromStruct` builds its field map from `getAllFields(type)` at `:63-66` with no equivalent filter | **Failed** — `fromStruct` also receives hydrated navigation properties at depth >= 1 via `getMapped(id, depth)` (`EntityCoordinator.java:185`). Addressed by the navigation-property skip in Part B |
 | C1 | .NET shares none of the changed derivation code | `SchemaRegistrar.cs:85` uses `relation.Property.Name` directly; `InferForeignKey` at `:268` is separate | Holds |
 
 ## Out of scope
