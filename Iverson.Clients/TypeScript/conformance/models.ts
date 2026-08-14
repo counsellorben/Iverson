@@ -15,8 +15,13 @@ import {
     IversonTenant,
     ManyToMany,
     ManyToOne,
+    OneToMany,
 } from '../src/annotations.js';
 
+/**
+ * S1's "one" side. Carries the reverse `OneToMany` navigation the foreign-key-only write
+ * contract work broke, so the harness observes it end to end.
+ */
 @IversonEntity()
 export class TsAuthor {
     @IversonKey()
@@ -29,6 +34,9 @@ export class TsAuthor {
     ownerId: string = '';
 
     name: string = '';
+
+    @OneToMany(() => TsArticle)
+    tsArticles: TsArticle[] = [];
 }
 
 @IversonEntity()

@@ -8,12 +8,15 @@
 // style this mirrors).
 package main
 
-// GoAuthor is the S1 author entity.
+// GoAuthor is the S1 author entity. GoArticles carries the reverse one_to_many
+// navigation the foreign-key-only write contract work broke, so the harness observes
+// it end to end.
 type GoAuthor struct {
-	Id       string `iverson_key:"true" iverson_guid:"true"`
-	TenantId string `iverson_tenant:"true"`
-	OwnerId  string
-	Name     string
+	Id         string `iverson_key:"true" iverson_guid:"true"`
+	TenantId   string `iverson_tenant:"true"`
+	OwnerId    string
+	Name       string
+	GoArticles []string `iverson:"one_to_many:GoArticle"`
 }
 
 // GoTag is the S1 tag entity.

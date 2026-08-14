@@ -16,7 +16,8 @@ namespace Iverson.ClientConformance.Scenarios;
 /// driver register  →  orchestrator re-register with row permissions
 /// driver write     →  driver read (article and author, depth 0)
 /// orchestrator     →  MappingGet(article, depth 1)   FK survives hydration, nav property beside it
-/// orchestrator     →  MappingGet(author,  depth 1)   one_to_many resolves via the reverse FK lookup
+/// orchestrator     →  MappingGet(author,  depth 1)   one_to_many resolves — the reverse nav is
+///                                                      declared explicitly on the author descriptor
 /// driver update    →  driver delete
 /// </code>
 /// </summary>
@@ -46,13 +47,17 @@ public sealed class CrudRoundtripScenario(
         {
             var state = states[language];
 
-            // Each type's expected relation shape comes from the caller, which knows the label:
-            // the author's one-to-many is resolved server-side by reverse foreign-key lookup and
-            // is never declared on its own descriptor, and tag declares no relations at all — so
-            // "no relations" is the CORRECT, asserted shape for those two, not an unchecked gap.
+            // Each type's expected relation shape comes from the caller, which knows the label.
+            // EntityRelationResolver (Iverson.Server/Iverson.Api/Grpc/EntityRelationResolver.cs)
+            // only ever iterates relations on the entity's OWN stored schema — there is no
+            // reverse-derivation on the server. So the author's one-to-many hydrates only because
+            // every driver declares the reverse navigation explicitly on its own descriptor (see
+            // DotNetAuthor.cs, JavaAuthor.java, and the Python/TypeScript/Go models added
+            // alongside this comment); tag genuinely declares no relations at all.
             state.Article = TakeDescriptor(state, document, "register", "article",
                 [RelationKind.ManyToOne, RelationKind.ManyToMany]);
-            state.Author = TakeDescriptor(state, document, "register_author", "author", []);
+            state.Author = TakeDescriptor(state, document, "register_author", "author",
+                [RelationKind.OneToMany]);
             var tag = TakeDescriptor(state, document, "register_tag", "tag", []);
 
             // The orchestrator re-registers each reported descriptor with row permissions added
@@ -347,7 +352,8 @@ public sealed class CrudRoundtripScenario(
         }
 
         // depth 1: the foreign key must survive hydration with the nav property beside it, and
-        // the author's one_to_many must resolve via the reverse foreign-key lookup.
+        // the author's one_to_many must resolve — see Verifier.VerifyRelationHydrated below for
+        // what actually proves that, rather than merely asserting the pre-hydration scalars.
         var grpc = await MappingGetAsync(captured.Descriptor.TypeName, key, 1, actingToken, ct);
         state.Assertions.Add(Assertion.From(
             $"{label}: the orchestrator's gRPC read found the row", grpc is not null, $"key={key}"));
@@ -357,13 +363,24 @@ public sealed class CrudRoundtripScenario(
             $"{label}: the Postgres row exists", row is not null,
             $"table={PostgresProbe.TableName(captured.Descriptor.TypeName)} key={key}"));
 
+        var keyPropertyName = captured.Descriptor.Properties.FirstOrDefault(p => p.IsKey)?.Name;
+
         foreach (var valueName in Verifier.ComparedValueNames(captured.Descriptor))
         {
+            var isKey = keyPropertyName is not null &&
+                        string.Equals(Verifier.Normalize(keyPropertyName), Verifier.Normalize(valueName),
+                            StringComparison.Ordinal);
+
             state.Assertions.AddRange(Verifier.VerifyThreeWay(label, valueName, new ThreeLegs(
                 Verifier.FromJson(driverEntity, valueName),
                 Verifier.FromJson(grpc, valueName),
-                Verifier.FromRow(row, valueName))));
+                Verifier.FromRow(row, valueName)), isKey));
         }
+
+        // The depth-1 hydration itself: every relation the descriptor declares must actually have
+        // hydrated in the gRPC read above, not merely have its pre-hydration scalar present.
+        foreach (var relation in captured.Descriptor.Relations)
+            state.Assertions.AddRange(Verifier.VerifyRelationHydrated(label, relation, grpc));
 
         return new ObservedTitle(TitleOf(grpc));
     }

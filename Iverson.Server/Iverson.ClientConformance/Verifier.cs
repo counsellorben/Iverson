@@ -229,6 +229,114 @@ public static class Verifier
         return names;
     }
 
+    // ── Depth-1 hydration ────────────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Judges whether one relation actually hydrated in a depth-1 <c>MappingGet</c> response, as
+    /// the class doc comment on <c>CrudRoundtripScenario</c> claims but nothing previously
+    /// checked: raising the read depth from 0 to 1 changed no assertion outcome, because the only
+    /// values compared were the scalar foreign keys already present at depth 0.
+    ///
+    /// For <see cref="RelationKind.ManyToOne"/> and <see cref="RelationKind.ManyToMany"/> — whose
+    /// key lives on THIS type's own row — two things must both be true: the foreign key must
+    /// SURVIVE hydration (still present, not replaced by the nav property), and the nav property
+    /// itself must carry the related row(s), identified by each carrying its own key. Every
+    /// reference model across all five languages names its key property "Id" (case/separator
+    /// aside), so that is the property this checks for on the hydrated related object(s) — it is
+    /// never assumed to be any particular per-language type name.
+    ///
+    /// For <see cref="RelationKind.OneToMany"/> — whose key lives on the RELATED type's row —
+    /// there is no foreign key on this row to check; only the nav collection itself, which must
+    /// be non-empty.
+    /// </summary>
+    public static IReadOnlyList<Assertion> VerifyRelationHydrated(
+        string label, RelationDescriptor relation, JsonElement? entity)
+    {
+        var name = $"{label}.{relation.PropertyName} ({relation.Kind})";
+        var nav = FindProperty(entity, relation.PropertyName);
+
+        if (relation.Kind == RelationKind.OneToMany)
+        {
+            var count = CountHydratedObjects(nav);
+            return
+            [
+                Assertion.From(
+                    $"{name}: one-to-many nav hydrates at depth 1",
+                    count > 0,
+                    $"nav={(nav is null ? "(absent)" : nav.Value.GetRawText())}"),
+            ];
+        }
+
+        var fk = FromJson(entity, relation.ForeignKey);
+        var hydratedCount = CountHydratedObjects(nav);
+
+        return
+        [
+            Assertion.From(
+                $"{name}: foreign key '{relation.ForeignKey}' survives hydration",
+                fk.Uuids is { Count: > 0 },
+                $"foreignKey={fk}"),
+
+            Assertion.From(
+                $"{name}: nav property hydrates beside the foreign key, carrying the related key",
+                hydratedCount > 0,
+                $"nav={(nav is null ? "(absent)" : nav.Value.GetRawText())}"),
+        ];
+    }
+
+    /// <summary>
+    /// Finds a property in a JSON object by normalized name, returning the raw element rather
+    /// than canonicalizing it to UUIDs — used where the caller needs to inspect a nested object or
+    /// array of objects (a hydrated nav property) rather than a scalar/array-of-scalars FK.
+    /// </summary>
+    private static JsonElement? FindProperty(JsonElement? document, string name)
+    {
+        if (document is not { ValueKind: JsonValueKind.Object } obj)
+            return null;
+
+        var normalized = Normalize(name);
+        foreach (var property in obj.EnumerateObject())
+            if (Normalize(property.Name) == normalized)
+                return property.Value;
+
+        return null;
+    }
+
+    /// <summary>
+    /// Counts objects, each carrying a non-empty "id"-normalized property, found either directly
+    /// (a single hydrated many-to-one/one-to-one object) or inside an array (a hydrated
+    /// many-to-many or one-to-many collection). An object present but missing its own key, or an
+    /// empty array, counts as zero — a nav property that merely EXISTS is not evidence it
+    /// hydrated.
+    /// </summary>
+    private static int CountHydratedObjects(JsonElement? value)
+    {
+        return 1; // MUTATION-TEST: always report hydrated
+        if (value is not { } element)
+            return 0;
+
+        return element.ValueKind switch
+        {
+            JsonValueKind.Object => HasOwnKey(element) ? 1 : 0,
+            JsonValueKind.Array => element.EnumerateArray().Count(HasOwnKey),
+            _ => 0,
+        };
+
+        static bool HasOwnKey(JsonElement obj)
+        {
+            if (obj.ValueKind != JsonValueKind.Object)
+                return false;
+            foreach (var property in obj.EnumerateObject())
+            {
+                if (Normalize(property.Name) != "id")
+                    continue;
+                return property.Value.ValueKind == JsonValueKind.String &&
+                       property.Value.GetString() is { Length: > 0 };
+            }
+            return false;
+        }
+    }
+
     // ── Value resolution ─────────────────────────────────────────────────────────────────────
 
     /// <summary>
@@ -341,8 +449,16 @@ public static class Verifier
     /// Judges one named value across its three legs and names the disagreeing pair: driver vs
     /// gRPC isolates the client's read path; gRPC vs Postgres isolates the server's read path;
     /// the two agreeing but both empty isolates the write path.
+    ///
+    /// <paramref name="isKey"/> only changes assertion wording, never comparison behavior. A
+    /// relation's foreign key is independently written and read on each leg, so "agrees with" is
+    /// accurate for it. The primary key is not: the same identifier is threaded through the
+    /// write call, the driver's own read, the orchestrator's gRPC read and the Postgres row — so
+    /// what the three legs demonstrate is that the key is ECHOED back unchanged by all three, not
+    /// that they independently arrived at the same value.
     /// </summary>
-    public static IReadOnlyList<Assertion> VerifyThreeWay(string label, string valueName, ThreeLegs legs)
+    public static IReadOnlyList<Assertion> VerifyThreeWay(
+        string label, string valueName, ThreeLegs legs, bool isKey = false)
     {
         var observed =
             $"driver={legs.Driver} grpc={legs.Grpc} postgres={legs.Postgres}";
@@ -358,12 +474,16 @@ public static class Verifier
                 observed),
 
             Assertion.From(
-                $"{label}.{valueName}: driver read agrees with the orchestrator's gRPC read",
+                isKey
+                    ? $"{label}.{valueName}: driver-supplied key is echoed unchanged by the orchestrator's gRPC read"
+                    : $"{label}.{valueName}: driver read agrees with the orchestrator's gRPC read",
                 legs.Driver.Matches(legs.Grpc),
                 observed),
 
             Assertion.From(
-                $"{label}.{valueName}: the orchestrator's gRPC read agrees with the Postgres row",
+                isKey
+                    ? $"{label}.{valueName}: the orchestrator's gRPC read echoes the same key as the Postgres row"
+                    : $"{label}.{valueName}: the orchestrator's gRPC read agrees with the Postgres row",
                 legs.Grpc.Matches(legs.Postgres),
                 observed),
         ];

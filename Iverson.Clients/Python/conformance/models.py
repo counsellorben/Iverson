@@ -15,15 +15,20 @@ from iverson_client.annotations import (
     iverson_tenant,
     many_to_many,
     many_to_one,
+    one_to_many,
 )
 
 
 @iverson_entity
 class PyAuthor:
+    """S1's "one" side. Carries the reverse ``one_to_many`` navigation the foreign-key-only
+    write contract work broke, so the harness observes it end to end."""
+
     id: uuid.UUID = iverson_key()
     tenant_id: str = iverson_tenant()
     owner_id: str = None
     name: str = None
+    py_articles: list = one_to_many("PyArticle")
 
 
 @iverson_entity

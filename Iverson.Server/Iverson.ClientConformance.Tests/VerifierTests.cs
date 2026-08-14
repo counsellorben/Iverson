@@ -310,6 +310,135 @@ public class VerifierTests
         Verifier.FromRow(null, "id").Should().Be(ObservedValue.Missing);
     }
 
+    // ── depth-1 hydration ────────────────────────────────────────────────────────────────────
+
+    private static RelationDescriptor ManyToOneAuthor => new()
+    {
+        PropertyName = "PyAuthor", Kind = RelationKind.ManyToOne,
+        RelatedType = "PyAuthor", ForeignKey = "py_author_id",
+    };
+
+    private static RelationDescriptor ManyToManyTags => new()
+    {
+        PropertyName = "py_tag_ids", Kind = RelationKind.ManyToMany,
+        RelatedType = "PyTag", ForeignKey = "py_tag_ids",
+    };
+
+    private static RelationDescriptor OneToManyArticles => new()
+    {
+        PropertyName = "py_articles", Kind = RelationKind.OneToMany,
+        RelatedType = "PyArticle", ForeignKey = "py_author_id",
+    };
+
+    [Fact]
+    public void VerifyRelationHydrated_passes_a_many_to_one_whose_fk_and_nav_both_hydrate()
+    {
+        var authorId = Guid.NewGuid();
+        var entity = Json($$"""
+            { "py_author_id": "{{authorId}}", "PyAuthor": { "id": "{{authorId}}", "name": "A" } }
+            """);
+
+        Verifier.VerifyRelationHydrated("article", ManyToOneAuthor, entity)
+            .Where(a => !a.Passed).Should().BeEmpty();
+    }
+
+    [Fact]
+    public void VerifyRelationHydrated_fails_a_many_to_one_when_the_nav_property_is_absent()
+    {
+        var authorId = Guid.NewGuid();
+        var entity = Json($$"""{ "py_author_id": "{{authorId}}" }""");
+
+        Verifier.VerifyRelationHydrated("article", ManyToOneAuthor, entity)
+            .Should().Contain(a => !a.Passed && a.Name.Contains("nav property hydrates"));
+    }
+
+    [Fact]
+    public void VerifyRelationHydrated_fails_a_many_to_one_when_the_foreign_key_is_gone_but_the_nav_is_present()
+    {
+        var authorId = Guid.NewGuid();
+        var entity = Json($$"""
+            { "PyAuthor": { "id": "{{authorId}}", "name": "A" } }
+            """);
+
+        var results = Verifier.VerifyRelationHydrated("article", ManyToOneAuthor, entity);
+
+        results.Should().Contain(a => !a.Passed && a.Name.Contains("survives hydration"));
+        results.Should().Contain(a => a.Passed && a.Name.Contains("nav property hydrates"));
+    }
+
+    [Fact]
+    public void VerifyRelationHydrated_fails_a_many_to_one_when_the_nav_object_carries_no_key_of_its_own()
+    {
+        var authorId = Guid.NewGuid();
+        var entity = Json($$"""
+            { "py_author_id": "{{authorId}}", "PyAuthor": { "name": "A" } }
+            """);
+
+        Verifier.VerifyRelationHydrated("article", ManyToOneAuthor, entity)
+            .Should().Contain(a => !a.Passed && a.Name.Contains("nav property hydrates"));
+    }
+
+    [Fact]
+    public void VerifyRelationHydrated_passes_a_many_to_many_whose_fk_array_and_nav_array_both_hydrate()
+    {
+        var tagId = Guid.NewGuid();
+        var entity = Json($$"""
+            { "py_tag_ids": ["{{tagId}}"] }
+            """);
+        // The m2m nav property and its foreign key share a name by construction (see
+        // VerifyRegistration's m2m exemption), so the server response carries hydrated child
+        // objects under that single shared key, replacing the scalar array.
+        var hydrated = Json($$"""
+            { "py_tag_ids": [ { "id": "{{tagId}}", "name": "T" } ] }
+            """);
+
+        // A many-to-many nav hydrates by REPLACING the array-of-ids with an array-of-objects
+        // under the same property name — there is no separate scalar FK left beside it once
+        // hydrated, since propertyName == foreignKey for m2m. What must still be true is that the
+        // hydrated collection carries the related rows' own keys.
+        Verifier.VerifyRelationHydrated("article", ManyToManyTags, hydrated)
+            .Should().Contain(a => a.Passed && a.Name.Contains("nav property hydrates"));
+    }
+
+    [Fact]
+    public void VerifyRelationHydrated_fails_a_many_to_many_whose_array_is_empty()
+    {
+        var entity = Json("""{ "py_tag_ids": [] }""");
+
+        Verifier.VerifyRelationHydrated("article", ManyToManyTags, entity)
+            .Should().Contain(a => !a.Passed && a.Name.Contains("nav property hydrates"));
+    }
+
+    [Fact]
+    public void VerifyRelationHydrated_passes_a_one_to_many_whose_collection_hydrates()
+    {
+        var articleId = Guid.NewGuid();
+        var entity = Json($$"""
+            { "py_articles": [ { "id": "{{articleId}}", "title": "hi" } ] }
+            """);
+
+        Verifier.VerifyRelationHydrated("author", OneToManyArticles, entity)
+            .Where(a => !a.Passed).Should().BeEmpty();
+    }
+
+    [Fact]
+    public void VerifyRelationHydrated_fails_a_one_to_many_whose_collection_is_absent()
+    {
+        var entity = Json("""{ "name": "A" }""");
+
+        Verifier.VerifyRelationHydrated("author", OneToManyArticles, entity)
+            .Should().Contain(a => !a.Passed && a.Name.Contains("hydrates at depth 1"));
+    }
+
+    [Fact]
+    public void VerifyRelationHydrated_fails_a_one_to_many_whose_collection_is_empty()
+    {
+        var entity = Json("""{ "py_articles": [] }""");
+
+        Verifier.VerifyRelationHydrated("author", OneToManyArticles, entity)
+            .Should().Contain(a => !a.Passed && a.Name.Contains("hydrates at depth 1"));
+    }
+
     // ── three-way comparison ─────────────────────────────────────────────────────────────────
 
     private static ThreeLegs Legs(string? driver, string? grpc, string? postgres) => new(
@@ -362,6 +491,126 @@ public class VerifierTests
     [InlineData("GoTag", "go_tags")]
     public void TableName_mirrors_the_servers_own_derivation(string typeName, string expected) =>
         PostgresProbe.TableName(typeName).Should().Be(expected);
+
+    // ── VerifyThreeWay: isKey wording ───────────────────────────────────────────────────────
+
+    [Fact]
+    public void VerifyThreeWay_isKey_true_uses_echo_wording_not_agreement_wording()
+    {
+        var id = Guid.NewGuid().ToString();
+        var results = Verifier.VerifyThreeWay("article", "Id", Legs(id, id, id), isKey: true);
+
+        results.Should().Contain(a => a.Name.Contains("is echoed"));
+        results.Should().NotContain(a => a.Name.Contains("agrees with"));
+    }
+
+    [Fact]
+    public void VerifyThreeWay_isKey_false_keeps_agreement_wording()
+    {
+        var id = Guid.NewGuid().ToString();
+        var results = Verifier.VerifyThreeWay("article", "AuthorId", Legs(id, id, id), isKey: false);
+
+        results.Should().Contain(a => a.Name.Contains("agrees with"));
+        results.Should().NotContain(a => a.Name.Contains("is echoed"));
+    }
+
+    // ── VerifyRelationHydrated: depth-1 hydration ───────────────────────────────────────────
+
+    private static RelationDescriptor Relation(RelationKind kind, string propertyName, string relatedType, string foreignKey) =>
+        new() { Kind = kind, PropertyName = propertyName, RelatedType = relatedType, ForeignKey = foreignKey };
+
+    [Fact]
+    public void VerifyRelationHydrated_ManyToOne_passes_when_fk_survives_and_nav_carries_the_related_key()
+    {
+        var relation = Relation(RelationKind.ManyToOne, "author", "PyAuthor", "py_author_id");
+        var entity = Json("""
+            { "id": "a1", "py_author_id": "11111111-1111-1111-1111-111111111111",
+              "author": { "id": "11111111-1111-1111-1111-111111111111", "name": "N" } }
+            """);
+
+        Verifier.VerifyRelationHydrated("article", relation, entity)
+            .Where(a => !a.Passed).Should().BeEmpty();
+    }
+
+    [Fact]
+    public void VerifyRelationHydrated_ManyToOne_fails_when_nav_property_is_missing()
+    {
+        // Mutation: drop the nav property entirely, leaving only the pre-hydration FK — this is
+        // exactly the "depth 0/1 make no difference" bug the assertion exists to catch.
+        var relation = Relation(RelationKind.ManyToOne, "author", "PyAuthor", "py_author_id");
+        var entity = Json("""{ "id": "a1", "py_author_id": "11111111-1111-1111-1111-111111111111" }""");
+
+        Verifier.VerifyRelationHydrated("article", relation, entity)
+            .Should().Contain(a => !a.Passed && a.Name.Contains("nav property hydrates"));
+    }
+
+    [Fact]
+    public void VerifyRelationHydrated_ManyToOne_fails_when_foreign_key_does_not_survive_hydration()
+    {
+        // Mutation: nav hydrates but the FK itself was dropped/blanked by hydration.
+        var relation = Relation(RelationKind.ManyToOne, "author", "PyAuthor", "py_author_id");
+        var entity = Json("""
+            { "id": "a1", "py_author_id": "",
+              "author": { "id": "11111111-1111-1111-1111-111111111111", "name": "N" } }
+            """);
+
+        Verifier.VerifyRelationHydrated("article", relation, entity)
+            .Should().Contain(a => !a.Passed && a.Name.Contains("survives hydration"));
+    }
+
+    [Fact]
+    public void VerifyRelationHydrated_ManyToMany_fails_when_nav_array_elements_lack_their_own_key()
+    {
+        // Mutation: array present but elements are bare FK strings, not hydrated objects.
+        var relation = Relation(RelationKind.ManyToMany, "tags", "PyTag", "py_tag_ids");
+        var entity = Json("""
+            { "id": "a1",
+              "py_tag_ids": ["22222222-2222-2222-2222-222222222222", "33333333-3333-3333-3333-333333333333"],
+              "tags": ["22222222-2222-2222-2222-222222222222", "33333333-3333-3333-3333-333333333333"] }
+            """);
+
+        Verifier.VerifyRelationHydrated("article", relation, entity)
+            .Should().Contain(a => !a.Passed && a.Name.Contains("nav property hydrates"));
+    }
+
+    [Fact]
+    public void VerifyRelationHydrated_ManyToMany_passes_when_nav_array_holds_hydrated_objects()
+    {
+        var relation = Relation(RelationKind.ManyToMany, "tags", "PyTag", "py_tag_ids");
+        var entity = Json("""
+            { "id": "a1", "py_tag_ids": ["22222222-2222-2222-2222-222222222222"],
+              "tags": [ { "id": "22222222-2222-2222-2222-222222222222", "label": "L" } ] }
+            """);
+
+        Verifier.VerifyRelationHydrated("article", relation, entity)
+            .Where(a => !a.Passed).Should().BeEmpty();
+    }
+
+    [Fact]
+    public void VerifyRelationHydrated_OneToMany_fails_when_nav_collection_is_absent_or_empty()
+    {
+        // Mutation: author's reverse nav never hydrates — the exact production bug this
+        // scenario-level assertion exists to catch (S1 previously asserted only pre-hydration
+        // scalars, so raising depth 0 → 1 changed no outcome for this relation).
+        var relation = Relation(RelationKind.OneToMany, "articles", "PyArticle", "py_author_id");
+        var entity = Json("""{ "id": "au1", "name": "N" }""");
+
+        Verifier.VerifyRelationHydrated("author", relation, entity)
+            .Should().Contain(a => !a.Passed && a.Name.Contains("one-to-many nav hydrates"));
+    }
+
+    [Fact]
+    public void VerifyRelationHydrated_OneToMany_passes_when_nav_collection_carries_hydrated_objects()
+    {
+        var relation = Relation(RelationKind.OneToMany, "articles", "PyArticle", "py_author_id");
+        var entity = Json("""
+            { "id": "au1", "name": "N",
+              "articles": [ { "id": "a1", "title": "T" } ] }
+            """);
+
+        Verifier.VerifyRelationHydrated("author", relation, entity)
+            .Where(a => !a.Passed).Should().BeEmpty();
+    }
 }
 
 public class DriverRunnerCommandResolutionTests
