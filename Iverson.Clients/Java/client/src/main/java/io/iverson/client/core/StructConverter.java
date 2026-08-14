@@ -13,8 +13,10 @@ import java.lang.reflect.ParameterizedType;
 import java.lang.reflect.Type;
 import java.time.OffsetDateTime;
 import java.time.format.DateTimeFormatter;
+import java.util.ArrayList;
 import java.util.Collection;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 
@@ -63,6 +65,7 @@ public final class StructConverter {
             // Build a lookup: lowercase(pascalCase) -> field
             Map<String, Field> fieldMap = new HashMap<>();
             for (Field f : getAllFields(type)) {
+                if (isNavigationProperty(f)) continue;
                 fieldMap.put(toPascalCase(f.getName()).toLowerCase(), f);
             }
 
@@ -70,7 +73,7 @@ public final class StructConverter {
                 Field f = fieldMap.get(entry.getKey().toLowerCase());
                 if (f == null) continue;
                 f.setAccessible(true);
-                f.set(instance, fromValue(entry.getValue(), f.getType()));
+                f.set(instance, fromValue(entry.getValue(), f.getType(), f.getGenericType()));
             }
 
             return instance;
@@ -155,11 +158,28 @@ public final class StructConverter {
             case STRING_VALUE -> value.getStringValue();
             case NUMBER_VALUE -> value.getNumberValue();
             case BOOL_VALUE   -> value.getBoolValue();
+            case LIST_VALUE   -> {
+                List<Object> items = new ArrayList<>();
+                for (Value element : value.getListValue().getValuesList()) {
+                    items.add(fromValue(element));
+                }
+                yield items;
+            }
             default           -> null;
         };
     }
 
-    private static Object fromValue(Value value, Class<?> targetType) {
+    private static Object fromValue(Value value, Class<?> targetType, Type genericType) {
+        if (value.getKindCase() == Value.KindCase.LIST_VALUE) {
+            if (!Collection.class.isAssignableFrom(targetType)) return null;
+            Class<?> elementType = elementTypeOf(genericType);
+            if (elementType == null) return null;
+            List<Object> items = new ArrayList<>();
+            for (Value element : value.getListValue().getValuesList()) {
+                items.add(fromValue(element, elementType, null));
+            }
+            return items;
+        }
         return switch (value.getKindCase()) {
             case STRING_VALUE -> {
                 String s = value.getStringValue();
@@ -177,6 +197,15 @@ public final class StructConverter {
             case BOOL_VALUE   -> value.getBoolValue();
             default           -> null;
         };
+    }
+
+    /** The single type argument of a parameterized collection, or null when not resolvable. */
+    private static Class<?> elementTypeOf(Type genericType) {
+        if (genericType instanceof ParameterizedType pt) {
+            Type[] args = pt.getActualTypeArguments();
+            if (args.length == 1 && args[0] instanceof Class<?> element) return element;
+        }
+        return null;
     }
 
     private static java.util.List<Field> getAllFields(Class<?> cls) {

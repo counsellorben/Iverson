@@ -120,4 +120,57 @@ class StructConverterTest {
             .toList();
         assertEquals(List.of(tagId1.toString(), tagId2.toString()), ids);
     }
+
+    @Test
+    void fromStruct_deserializesListValueIntoCollectionField() {
+        UUID tagId1 = UUID.randomUUID();
+        UUID tagId2 = UUID.randomUUID();
+        Struct struct = Struct.newBuilder()
+            .putFields("TagIds", Value.newBuilder()
+                .setListValue(com.google.protobuf.ListValue.newBuilder()
+                    .addValues(Value.newBuilder().setStringValue(tagId1.toString()).build())
+                    .addValues(Value.newBuilder().setStringValue(tagId2.toString()).build())
+                    .build())
+                .build())
+            .build();
+
+        StructTestArticle article = StructConverter.fromStruct(struct, StructTestArticle.class);
+
+        assertEquals(List.of(tagId1, tagId2), article.tagIds);
+    }
+
+    @Test
+    void fromStructAsMap_returnsListForArrayColumn() {
+        Struct struct = Struct.newBuilder()
+            .putFields("Tags", Value.newBuilder()
+                .setListValue(com.google.protobuf.ListValue.newBuilder()
+                    .addValues(Value.newBuilder().setStringValue("news").build())
+                    .addValues(Value.newBuilder().setStringValue("sports").build())
+                    .build())
+                .build())
+            .build();
+
+        var result = StructConverter.fromStructAsMap(struct);
+
+        assertEquals(List.of("news", "sports"), result.get("Tags"));
+    }
+
+    @Test
+    void fromStruct_skipsNavigationPropertyLeavingItNull() {
+        Struct struct = Struct.newBuilder()
+            .putFields("Tags", Value.newBuilder()
+                .setListValue(com.google.protobuf.ListValue.newBuilder()
+                    .addValues(Value.newBuilder()
+                        .setStructValue(Struct.newBuilder()
+                            .putFields("Label", Value.newBuilder().setStringValue("news").build())
+                            .build())
+                        .build())
+                    .build())
+                .build())
+            .build();
+
+        StructTestArticle article = StructConverter.fromStruct(struct, StructTestArticle.class);
+
+        assertNull(article.tags);
+    }
 }
