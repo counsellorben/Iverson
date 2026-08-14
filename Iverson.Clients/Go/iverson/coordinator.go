@@ -26,8 +26,12 @@ type RetrievalClient interface {
 	GetMany(ctx context.Context, req *pb.RetrievalManyRequest) (RetrievalStream, error)
 }
 
-// MappingDeleteClient is the interface for delete operations via ObjectMappingService.
-type MappingDeleteClient interface {
+// MappingCrudClient is the interface for the ObjectMappingService operations the coordinator
+// uses: full CRUD with server-side relation resolution, plus Delete.
+type MappingCrudClient interface {
+	Get(ctx context.Context, req *pb.MappingGetRequest) (*pb.MappingResponse, error)
+	Post(ctx context.Context, req *pb.MappingWriteRequest) (*pb.MappingResponse, error)
+	Update(ctx context.Context, req *pb.MappingWriteRequest) (*pb.MappingResponse, error)
 	Delete(ctx context.Context, req *pb.MappingDeleteRequest) (*pb.MappingDeleteResponse, error)
 }
 
@@ -116,7 +120,7 @@ func (c *IversonClient) GetSchema(ctx context.Context, traceID string) ([]*pb.Sc
 type coordinatorDeps struct {
 	persistence PersistenceClient
 	retrieval   RetrievalClient
-	mapping     MappingDeleteClient
+	mapping     MappingCrudClient
 	search      SearchClient
 }
 
@@ -147,7 +151,7 @@ func NewEntityCoordinator[T any](client *IversonClient, entity T) (*EntityCoordi
 		deps: coordinatorDeps{
 			persistence: &persistenceAdapter{client.PersistenceStub},
 			retrieval:   &retrievalAdapter{client.RetrievalStub},
-			mapping:     &mappingDeleteAdapter{client.MappingStub},
+			mapping:     &mappingAdapter{client.MappingStub},
 			search:      &searchAdapter{client.SearchStub},
 		},
 		typeName: meta.TypeName,
@@ -226,6 +230,65 @@ func (c *EntityCoordinator[T]) Delete(ctx context.Context, id string) error {
 		return fmt.Errorf("Delete: %s", resp.Error)
 	}
 	return nil
+}
+
+// GetMapped retrieves an entity by key with server-side relation resolution to the given depth.
+func (c *EntityCoordinator[T]) GetMapped(ctx context.Context, id string, depth int32) (T, error) {
+	var zero T
+	resp, err := c.deps.mapping.Get(ctx, &pb.MappingGetRequest{
+		TypeName: c.typeName,
+		Key:      id,
+		Depth:    depth,
+	})
+	if err != nil {
+		return zero, fmt.Errorf("GetMapped: %w", err)
+	}
+	if !resp.Success {
+		return zero, fmt.Errorf("GetMapped: %s", resp.Error)
+	}
+	return structToEntity[T](resp.Data)
+}
+
+// PostMapped creates an entity through the mapping path, which resolves its relations
+// server-side. Returns the entity hydrated from the response, carrying the
+// server-assigned key — the caller never assigns one.
+func (c *EntityCoordinator[T]) PostMapped(ctx context.Context, entity T) (T, error) {
+	var zero T
+	payload, err := entityToStruct(entity)
+	if err != nil {
+		return zero, err
+	}
+	resp, err := c.deps.mapping.Post(ctx, &pb.MappingWriteRequest{
+		TypeName: c.typeName,
+		Payload:  payload,
+	})
+	if err != nil {
+		return zero, fmt.Errorf("PostMapped: %w", err)
+	}
+	if !resp.Success {
+		return zero, fmt.Errorf("PostMapped: %s", resp.Error)
+	}
+	return structToEntity[T](resp.Data)
+}
+
+// UpdateMapped updates an existing entity through the mapping path.
+func (c *EntityCoordinator[T]) UpdateMapped(ctx context.Context, entity T) (T, error) {
+	var zero T
+	payload, err := entityToStruct(entity)
+	if err != nil {
+		return zero, err
+	}
+	resp, err := c.deps.mapping.Update(ctx, &pb.MappingWriteRequest{
+		TypeName: c.typeName,
+		Payload:  payload,
+	})
+	if err != nil {
+		return zero, fmt.Errorf("UpdateMapped: %w", err)
+	}
+	if !resp.Success {
+		return zero, fmt.Errorf("UpdateMapped: %s", resp.Error)
+	}
+	return structToEntity[T](resp.Data)
 }
 
 // Get retrieves an entity by key. Returns an error if not found.
@@ -691,11 +754,23 @@ func (a *retrievalAdapter) GetMany(ctx context.Context, req *pb.RetrievalManyReq
 	return a.stub.GetMany(ctx, req)
 }
 
-type mappingDeleteAdapter struct {
+type mappingAdapter struct {
 	stub pb.ObjectMappingServiceClient
 }
 
-func (a *mappingDeleteAdapter) Delete(ctx context.Context, req *pb.MappingDeleteRequest) (*pb.MappingDeleteResponse, error) {
+func (a *mappingAdapter) Get(ctx context.Context, req *pb.MappingGetRequest) (*pb.MappingResponse, error) {
+	return a.stub.Get(ctx, req)
+}
+
+func (a *mappingAdapter) Post(ctx context.Context, req *pb.MappingWriteRequest) (*pb.MappingResponse, error) {
+	return a.stub.Post(ctx, req)
+}
+
+func (a *mappingAdapter) Update(ctx context.Context, req *pb.MappingWriteRequest) (*pb.MappingResponse, error) {
+	return a.stub.Update(ctx, req)
+}
+
+func (a *mappingAdapter) Delete(ctx context.Context, req *pb.MappingDeleteRequest) (*pb.MappingDeleteResponse, error) {
 	return a.stub.Delete(ctx, req)
 }
 

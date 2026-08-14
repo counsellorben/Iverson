@@ -29,10 +29,17 @@ func NewSchemaRegistrar(client MappingClient, entities ...interface{}) *SchemaRe
 	return &SchemaRegistrar{client: client, types: entities}
 }
 
-// RegisterAll synchronously registers all entity schemas.
-func (r *SchemaRegistrar) RegisterAll(ctx context.Context, traceID string) error {
+// RegisterAll synchronously registers all entity schemas, attaching per-type
+// authorization rules. A type with no map entry registers with none, which the server
+// denies for every read and write — a nil rule set is an unconditional deny, not an
+// absence of restrictions.
+func (r *SchemaRegistrar) RegisterAll(
+	ctx context.Context,
+	traceID string,
+	authByTypeName map[string]*pb.AuthorizationRules,
+) error {
 	for _, e := range r.types {
-		req, err := r.buildRequest(e, traceID)
+		req, err := r.buildRequest(e, traceID, authByTypeName)
 		if err != nil {
 			return err
 		}
@@ -48,7 +55,7 @@ func (r *SchemaRegistrar) RegisterAll(ctx context.Context, traceID string) error
 }
 
 // buildRequest reflects on entity e and constructs a SchemaRequest proto.
-func (r *SchemaRegistrar) buildRequest(e interface{}, traceID string) (*pb.SchemaRequest, error) {
+func (r *SchemaRegistrar) buildRequest(e interface{}, traceID string, authByTypeName map[string]*pb.AuthorizationRules) (*pb.SchemaRequest, error) {
 	meta, err := InspectType(e)
 	if err != nil {
 		return nil, err
@@ -153,6 +160,9 @@ func (r *SchemaRegistrar) buildRequest(e interface{}, traceID string) (*pb.Schem
 		Relations:   relations,
 		Description: typeDescription(e),
 		TenantField: tenantField,
+	}
+	if rules, ok := authByTypeName[meta.TypeName]; ok {
+		typeDesc.Authorization = rules
 	}
 	return &pb.SchemaRequest{
 		RootType: typeDesc,

@@ -82,10 +82,10 @@ internal static class WritePathRunner
                     // bypass identity's writes are never ownership-checked, so it must set its own OwnerId.
                     var ownerId = identity == identities.Bypass ? await identity.GetSubAsync(ct) : "";
                     var t0 = BenchmarkReport.NowMicros();
-                    // ObjectPersistenceGrpcService.Post always assigns its own server-generated
-                    // UUIDv7 key and ignores whatever Id the client sets locally — the key that
-                    // actually lands in Postgres is PersistAsync's return value (response.Key),
-                    // never the client-side entity's own Id. A null return means an
+                    // ObjectPersistenceGrpcService.Post assigns the server-generated UUIDv7
+                    // key and rejects any client-supplied Id with InvalidArgument, so these
+                    // entities deliberately leave Id unset. The key that lands in Postgres is
+                    // PersistAsync's return value (response.Key). A null return means an
                     // application-level failure (response.Success == false), a different failure
                     // mode than a thrown RpcException, so it must be recorded as an error too
                     // rather than silently treated as a success.
@@ -96,7 +96,6 @@ internal static class WritePathRunner
                         case "Author":
                             var u = new BenchmarkAuthor
                             {
-                                Id      = Guid.NewGuid(),
                                 Name    = $"WPAuthor {seed}",
                                 Email   = $"wpauthor{seed}@benchmark.dev",
                                 Bio     = new string('x', 200),
@@ -108,7 +107,6 @@ internal static class WritePathRunner
                         case "Tag":
                             var tg = new BenchmarkTag
                             {
-                                Id       = Guid.NewGuid(),
                                 Name     = $"wptag-{seed}",
                                 Category = Categories[seed % Categories.Length],
                                 OwnerId  = ownerId,
@@ -119,7 +117,6 @@ internal static class WritePathRunner
                         default: // Article
                             var a = new BenchmarkArticle
                             {
-                                Id                = Guid.NewGuid(),
                                 Title             = $"WP Article {seed}",
                                 Body              = GenerateBody(seed),
                                 BenchmarkAuthorId = authorIds.Length > 0

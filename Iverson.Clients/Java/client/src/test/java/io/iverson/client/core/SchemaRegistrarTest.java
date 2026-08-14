@@ -28,6 +28,7 @@ import org.mockito.junit.jupiter.MockitoExtension;
 
 import java.time.OffsetDateTime;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -715,6 +716,47 @@ class SchemaRegistrarTest {
         assertEquals("Tags", oneToMany.getPropertyName());
         assertEquals("SchemaTestTag", oneToMany.getRelatedType());
         assertEquals("SchemaTestArticleId", oneToMany.getForeignKey());
+    }
+
+    // ── registerAll: per-type authorization rules ──────────────────────────────
+
+    @Test
+    void registerAll_attachesPerTypeAuthorizationRules_andLeavesUnlistedTypesUnset() {
+        ObjectMapping.AuthorizationRules authorRules = ObjectMapping.AuthorizationRules.newBuilder()
+            .setOwnerField("OwnerId")
+            .build();
+        ObjectMapping.AuthorizationRules tagRules = ObjectMapping.AuthorizationRules.newBuilder()
+            .setOwnerField("CreatedBy")
+            .build();
+
+        ArgumentCaptor<SchemaRequest> captor = ArgumentCaptor.forClass(SchemaRequest.class);
+
+        sut.registerAll(
+            Map.of("SchemaTestAuthor", authorRules, "SchemaTestTag", tagRules),
+            SchemaTestAuthor.class, SchemaTestTag.class, SchemaTestArticle.class);
+
+        verify(mockStub, times(3)).registerSchema(captor.capture());
+
+        TypeDescriptor authorDesc = captor.getAllValues().stream()
+            .map(SchemaRequest::getRootType)
+            .filter(td -> td.getTypeName().equals("SchemaTestAuthor"))
+            .findFirst().orElseThrow();
+        assertTrue(authorDesc.hasAuthorization());
+        assertEquals("OwnerId", authorDesc.getAuthorization().getOwnerField());
+
+        TypeDescriptor tagDesc = captor.getAllValues().stream()
+            .map(SchemaRequest::getRootType)
+            .filter(td -> td.getTypeName().equals("SchemaTestTag"))
+            .findFirst().orElseThrow();
+        assertTrue(tagDesc.hasAuthorization());
+        assertEquals("CreatedBy", tagDesc.getAuthorization().getOwnerField());
+
+        TypeDescriptor articleDesc = captor.getAllValues().stream()
+            .map(SchemaRequest::getRootType)
+            .filter(td -> td.getTypeName().equals("SchemaTestArticle"))
+            .findFirst().orElseThrow();
+        assertFalse(articleDesc.hasAuthorization(),
+            "a type absent from the map must register with no authorization rules");
     }
 
     // ── registerAll: error handling ────────────────────────────────────────────

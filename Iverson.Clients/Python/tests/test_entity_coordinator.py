@@ -12,6 +12,7 @@ from google.protobuf import struct_pb2
 from iverson_client.annotations import iverson_entity, iverson_key, many_to_one, many_to_many, one_to_many
 from iverson_client.core import EntityCoordinator, _entity_to_struct
 from iverson_client.generated import (
+    object_mapping_pb2 as mapping_pb,
     object_search_pb2 as pb,
     object_search_pb2_grpc as search_grpc,
 )
@@ -44,6 +45,20 @@ def make_coordinator() -> EntityCoordinator:
     coordinator = EntityCoordinator(CoordArticle, channel)
     coordinator._search = MagicMock()
     return coordinator
+
+
+def make_mapped_coordinator() -> EntityCoordinator:
+    channel = grpc.insecure_channel("localhost:1")
+    coordinator = EntityCoordinator(CoordArticle, channel)
+    coordinator._mapping = MagicMock()
+    return coordinator
+
+
+def _mapped_response(**fields) -> mapping_pb.MappingResponse:
+    s = struct_pb2.Struct()
+    for name, value in fields.items():
+        s.fields[name].string_value = value
+    return mapping_pb.MappingResponse(success=True, data=s)
 
 
 def _row(id_: str, title: str) -> pb.SearchResponse:
@@ -190,3 +205,37 @@ def make_coordinator_for(cls: type) -> EntityCoordinator:
     coordinator = EntityCoordinator(cls, channel)
     coordinator._search = MagicMock()
     return coordinator
+
+
+class TestEntityCoordinatorMappedCrud:
+    def test_get_mapped_passes_depth_through(self):
+        coordinator = make_mapped_coordinator()
+        coordinator._mapping.Get.return_value = _mapped_response(Id="k")
+
+        coordinator.get_mapped("k", depth=2)
+
+        request = coordinator._mapping.Get.call_args[0][0]
+        assert request.depth == 2
+        assert request.key == "k"
+
+    def test_post_mapped_returns_entity_hydrated_from_data(self):
+        coordinator = make_mapped_coordinator()
+        coordinator._mapping.Post.return_value = _mapped_response(Id="server-assigned")
+        entity = CoordArticle()
+        entity.title = "Hello"
+
+        result = coordinator.post_mapped(entity)
+
+        assert result.id == "server-assigned"
+
+    def test_update_mapped_sends_the_key_it_was_given(self):
+        coordinator = make_mapped_coordinator()
+        coordinator._mapping.Update.return_value = _mapped_response(Id="k1")
+        entity = CoordArticle()
+        entity.id = "k1"
+        entity.title = "Hello"
+
+        coordinator.update_mapped(entity)
+
+        request = coordinator._mapping.Update.call_args[0][0]
+        assert request.payload.fields["Id"].string_value == "k1"

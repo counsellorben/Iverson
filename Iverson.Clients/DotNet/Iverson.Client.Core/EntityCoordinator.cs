@@ -30,7 +30,8 @@ public sealed class EntityCoordinator<T>(
     // ── Object Mapping ─────────────────────────────────────────────────────────
     // Full CRUD with server-side relationship resolution.
 
-    public async Task<T?> GetMappedAsync(string key, int depth = 1, CancellationToken ct = default)
+    public async Task<T?> GetMappedAsync(
+        string key, int depth = 1, Metadata? headers = null, CancellationToken ct = default)
     {
         logger.LogDebug("ObjectMapping.Get {Entity}:{Key} depth={Depth}", _descriptor.EntityName, key, depth);
         var response = await mapping.GetAsync(
@@ -41,13 +42,13 @@ public sealed class EntityCoordinator<T>(
                 Depth    = depth,
                 TraceId  = CurrentTraceId()
             },
-            cancellationToken: ct);
+            headers, cancellationToken: ct);
 
         if (!response.Success) { LogError(response.Error); return null; }
         return StructConverter.FromStruct<T>(response.Data);
     }
 
-    public async Task<T?> PostMappedAsync(T entity, CancellationToken ct = default)
+    public async Task<T?> PostMappedAsync(T entity, Metadata? headers = null, CancellationToken ct = default)
     {
         logger.LogDebug("ObjectMapping.Post {Entity}", _descriptor.EntityName);
         var response = await mapping.PostAsync(
@@ -57,13 +58,13 @@ public sealed class EntityCoordinator<T>(
                 Payload  = StructConverter.ToStruct(entity, NavPropertyNames),
                 TraceId  = CurrentTraceId()
             },
-            cancellationToken: ct);
+            headers, cancellationToken: ct);
 
         if (!response.Success) { LogError(response.Error); return null; }
         return StructConverter.FromStruct<T>(response.Data);
     }
 
-    public async Task<T?> UpdateMappedAsync(T entity, CancellationToken ct = default)
+    public async Task<T?> UpdateMappedAsync(T entity, Metadata? headers = null, CancellationToken ct = default)
     {
         logger.LogDebug("ObjectMapping.Update {Entity}", _descriptor.EntityName);
         var response = await mapping.UpdateAsync(
@@ -73,7 +74,7 @@ public sealed class EntityCoordinator<T>(
                 Payload  = StructConverter.ToStruct(entity, NavPropertyNames),
                 TraceId  = CurrentTraceId()
             },
-            cancellationToken: ct);
+            headers, cancellationToken: ct);
 
         if (!response.Success) { LogError(response.Error); return null; }
         return StructConverter.FromStruct<T>(response.Data);

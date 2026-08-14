@@ -590,26 +590,22 @@ public class ObjectMappingGrpcServiceTests
     }
 
     [Fact]
-    public async Task Post_WithExistingKey_PreservesClientKey()
+    public async Task Post_WithClientProvidedKey_ThrowsInvalidArgument()
     {
         await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
-        _sql.QuerySingleOrDefaultAsync<string>(Arg.Any<string>(), Arg.Any<object?>())
-            .Returns(AuthorJson);
-
-        EntityEvent? evt = null;
-        _events.When(e => e.ProduceAsync(EntityTopics.Events, Arg.Any<string>(), Arg.Any<EntityEvent>()))
-               .Do(call => evt = call.ArgAt<EntityEvent>(2));
 
         var payload = MakePayload(new()
         {
             ["Id"]   = Value.ForString(AuthorId),
             ["Name"] = Value.ForString("Alice")
         });
-        await _sut.Post(
+        var act = () => _sut.Post(
             new MappingWriteRequest { TypeName = "Author", Payload = payload },
             TestServerCallContext.Create());
 
-        evt!.Key.Should().Be(AuthorId);
+        var ex = await act.Should().ThrowAsync<RpcException>();
+        ex.Which.StatusCode.Should().Be(StatusCode.InvalidArgument);
+        ex.Which.Status.Detail.Should().Contain("server-generated");
     }
 
     [Fact]
@@ -620,7 +616,6 @@ public class ObjectMappingGrpcServiceTests
 
         var payload = MakePayload(new()
         {
-            ["Id"]   = Value.ForString(AuthorId),
             ["Name"] = Value.ForString("Alice")
         });
         await _sut.Post(
@@ -641,7 +636,6 @@ public class ObjectMappingGrpcServiceTests
 
         var payload = MakePayload(new()
         {
-            ["Id"]       = Value.ForString(ArticleId),
             ["Title"]    = Value.ForString("Test"),
             ["AuthorId"] = Value.ForString(AuthorId)
         });
@@ -678,7 +672,6 @@ public class ObjectMappingGrpcServiceTests
 
         var payload = MakePayload(new()
         {
-            ["Id"]   = Value.ForString(AuthorId),
             ["Name"] = Value.ForString("Alice")
         });
         await _sut.Post(
@@ -687,7 +680,7 @@ public class ObjectMappingGrpcServiceTests
 
         evt.Should().NotBeNull();
         evt!.TypeName.Should().Be("Author");
-        evt.Key.Should().Be(AuthorId);
+        Guid.TryParse(evt.Key, out _).Should().BeTrue();
         evt.EventType.Should().Be(EntityEventType.Created);
     }
 
@@ -708,8 +701,7 @@ public class ObjectMappingGrpcServiceTests
     {
         var schema = MakeSchema("Player");
         await _registry.RegisterAsync(schema);
-        var sentKey = Guid.NewGuid().ToString();
-        var payload = MakePayload(schema.KeyColumn.Name, sentKey);
+        var payload = MakePayload(new Dictionary<string, Value>());
         var request = new MappingWriteRequest { TypeName = "Player", Payload = payload, TraceId = "t1" };
 
         var response = await _sut.Post(request, MakeContext());
@@ -731,7 +723,6 @@ public class ObjectMappingGrpcServiceTests
 
         var payload = MakePayload(new()
         {
-            ["Id"]       = Value.ForString(ArticleId),
             ["Title"]    = Value.ForString("Hello"),
             ["AuthorId"] = Value.ForString("not-a-guid")
         });
@@ -775,6 +766,25 @@ public class ObjectMappingGrpcServiceTests
         ex.Which.StatusCode.Should().Be(StatusCode.PermissionDenied);
     }
 
+    [Fact]
+    public async Task Post_WithSuppliedKey_AndUnauthorizedCaller_ThrowsPermissionDenied_NotInvalidArgument()
+    {
+        var schema = SchemaFixtures.AuthorSchema() with { Authorization = null };
+        await _registry.RegisterAsync(schema);
+        var payload = MakePayload(new()
+        {
+            ["Id"]   = Value.ForString(Guid.NewGuid().ToString()),
+            ["Name"] = Value.ForString("Alice")
+        });
+
+        var act = () => _sut.Post(
+            new MappingWriteRequest { TypeName = "Author", Payload = payload },
+            TestServerCallContext.Create());
+
+        var ex = await act.Should().ThrowAsync<RpcException>();
+        ex.Which.StatusCode.Should().Be(StatusCode.PermissionDenied);
+    }
+
     [Theory]
     [InlineData(null)]
     [InlineData("someone-else")]
@@ -784,7 +794,6 @@ public class ObjectMappingGrpcServiceTests
 
         var fields = new Dictionary<string, Value>
         {
-            ["Id"]   = Value.ForString(AuthorId),
             ["Name"] = Value.ForString("Alice")
         };
         if (clientSuppliedOwnerId is not null)
@@ -808,7 +817,6 @@ public class ObjectMappingGrpcServiceTests
 
         var fields = new Dictionary<string, Value>
         {
-            ["Id"]   = Value.ForString(AuthorId),
             ["Name"] = Value.ForString("Alice")
         };
         if (clientSuppliedOwnerId is not null)
@@ -833,7 +841,6 @@ public class ObjectMappingGrpcServiceTests
 
         var payload = MakePayload(new()
         {
-            ["Id"]   = Value.ForString(AuthorId),
             ["Name"] = Value.ForString("Alice")
         });
 
@@ -855,7 +862,6 @@ public class ObjectMappingGrpcServiceTests
 
         var payload = MakePayload(new()
         {
-            ["Id"]   = Value.ForString(AuthorId),
             ["Name"] = Value.ForString("Alice")
         });
 
@@ -884,7 +890,6 @@ public class ObjectMappingGrpcServiceTests
 
         var payload = MakePayload(new()
         {
-            ["Id"]   = Value.ForString(AuthorId),
             ["Name"] = Value.ForString("Alice"),
             ["Bio"]  = Value.ForString("Writer")
         });
@@ -913,7 +918,6 @@ public class ObjectMappingGrpcServiceTests
 
         var payload = MakePayload(new()
         {
-            ["Id"]   = Value.ForString(AuthorId),
             ["Name"] = Value.ForString("Alice")
         });
 
