@@ -6,10 +6,14 @@ import 'reflect-metadata';
 import * as grpc from '@grpc/grpc-js';
 
 import {
+    AuthorizationRules,
     ClrType,
     GetSchemaRequest,
     GetSchemaResponse,
     MappingDeleteRequest,
+    MappingGetRequest,
+    MappingResponse,
+    MappingWriteRequest,
     ObjectMappingServiceClient,
     PropertyDescriptor,
     RelationDescriptor,
@@ -417,10 +421,13 @@ export class SchemaRegistrar {
         private readonly _callCredentials?: grpc.CallCredentials,
     ) {}
 
-    /** Register all entity schemas. */
-    async registerAll(traceId: string = ''): Promise<void> {
+    /** Register all entity schemas, optionally attaching per-type authorization rules. */
+    async registerAll(
+        traceId: string = '',
+        authorizationByTypeName?: Record<string, AuthorizationRules>,
+    ): Promise<void> {
         for (const cls of this._entityClasses) {
-            const request = this._buildRequest(cls, traceId);
+            const request = this._buildRequest(cls, traceId, authorizationByTypeName);
             const response = await callUnary<SchemaRequest, SchemaResponse>(
                 (req, metadata, options, cb) => this._mappingClient.registerSchema(req, metadata, options, cb),
                 request,
@@ -434,12 +441,15 @@ export class SchemaRegistrar {
         }
     }
 
-    _buildRequest(cls: Function, traceId: string = ''): SchemaRequest {
-        return {
-            rootType: describeEntity(cls),
-            dependents: [],
-            traceId,
-        };
+    _buildRequest(
+        cls: Function,
+        traceId: string = '',
+        authorizationByTypeName?: Record<string, AuthorizationRules>,
+    ): SchemaRequest {
+        const rootType = describeEntity(cls);
+        const rules = authorizationByTypeName?.[rootType.typeName];
+        if (rules !== undefined) rootType.authorization = rules;
+        return { rootType, dependents: [], traceId };
     }
 }
 
@@ -496,6 +506,7 @@ export class EntityCoordinator<T extends object> {
     private readonly _mapping: ObjectMappingServiceClient;
     private readonly _persistence: ObjectPersistenceServiceClient;
     private readonly _retrieval: ObjectRetrievalServiceClient;
+    private _boundActingUser?: ActingUserToken;
 
     constructor(
         private readonly _cls: new () => T,
@@ -509,6 +520,20 @@ export class EntityCoordinator<T extends object> {
         this._mapping = _client._mappingClient;
         this._persistence = _client._persistenceClient;
         this._retrieval = _client._retrievalClient;
+    }
+
+    /**
+     * Returns a coordinator bound to `token`, leaving this one untouched. The bound identity
+     * outranks the client's ambient one; an explicit per-call token still outranks both.
+     */
+    withActingUser(token: ActingUserToken): EntityCoordinator<T> {
+        const bound = new EntityCoordinator(this._cls, this._client);
+        bound._boundActingUser = token;
+        return bound;
+    }
+
+    private _identity(): ActingUserToken | undefined {
+        return this._boundActingUser ?? this._client._actingUserToken;
     }
 
     private _getKey(entity: T): string {
@@ -533,7 +558,7 @@ export class EntityCoordinator<T extends object> {
             (req, metadata, options, cb) => this._persistence.post(req, metadata, options, cb),
             request,
             this._client._callCredentials,
-            this._client._actingUserToken,
+            this._identity(),
         );
         if (!response.success) {
             throw new Error(`persist failed: ${response.error}`);
@@ -552,7 +577,7 @@ export class EntityCoordinator<T extends object> {
             (req, metadata, options, cb) => this._persistence.update(req, metadata, options, cb),
             request,
             this._client._callCredentials,
-            this._client._actingUserToken,
+            this._identity(),
         );
         if (!response.success) {
             throw new Error(`update failed: ${response.error}`);
@@ -575,11 +600,71 @@ export class EntityCoordinator<T extends object> {
             ) => this._mapping.delete(req, metadata, options, cb),
             request,
             this._client._callCredentials,
-            this._client._actingUserToken,
+            this._identity(),
         );
         if (!response.success) {
             throw new Error(`delete failed: ${response.error}`);
         }
+    }
+
+    /** Retrieve an entity by key with server-side relation resolution to `depth`. */
+    async getMapped(id: string, depth: number = 1, traceId: string = ''): Promise<T | null> {
+        const request: MappingGetRequest = {
+            typeName: this._typeName,
+            key: id,
+            depth,
+            traceId,
+        };
+        const response = await callUnary<MappingGetRequest, MappingResponse>(
+            (req, metadata, options, cb) => this._mapping.get(req, metadata, options, cb),
+            request,
+            this._client._callCredentials,
+            this._identity(),
+        );
+        if (!response.success) return null;
+        return payloadToEntity(this._cls, (response.data ?? {}) as Record<string, unknown>);
+    }
+
+    /**
+     * Create an entity through the mapping path, which resolves its relations server-side.
+     * Resolves to the entity hydrated from the response, carrying the server-assigned key —
+     * the caller never assigns one.
+     */
+    async postMapped(entity: T, traceId: string = ''): Promise<T> {
+        const request: MappingWriteRequest = {
+            typeName: this._typeName,
+            payload: entityToPayload(entity, this._cls),
+            traceId,
+        };
+        const response = await callUnary<MappingWriteRequest, MappingResponse>(
+            (req, metadata, options, cb) => this._mapping.post(req, metadata, options, cb),
+            request,
+            this._client._callCredentials,
+            this._identity(),
+        );
+        if (!response.success) {
+            throw new Error(`postMapped failed: ${response.error}`);
+        }
+        return payloadToEntity(this._cls, (response.data ?? {}) as Record<string, unknown>);
+    }
+
+    /** Update an existing entity through the mapping path. */
+    async updateMapped(entity: T, traceId: string = ''): Promise<T> {
+        const request: MappingWriteRequest = {
+            typeName: this._typeName,
+            payload: entityToPayload(entity, this._cls),
+            traceId,
+        };
+        const response = await callUnary<MappingWriteRequest, MappingResponse>(
+            (req, metadata, options, cb) => this._mapping.update(req, metadata, options, cb),
+            request,
+            this._client._callCredentials,
+            this._identity(),
+        );
+        if (!response.success) {
+            throw new Error(`updateMapped failed: ${response.error}`);
+        }
+        return payloadToEntity(this._cls, (response.data ?? {}) as Record<string, unknown>);
     }
 
     /** Retrieve an entity by key. Returns null if not found. */
@@ -593,7 +678,7 @@ export class EntityCoordinator<T extends object> {
             (req, metadata, options, cb) => this._retrieval.get(req, metadata, options, cb),
             request,
             this._client._callCredentials,
-            this._client._actingUserToken,
+            this._identity(),
         );
         if (!response.found) return null;
         return payloadToEntity(this._cls, (response.data ?? {}) as Record<string, unknown>);
@@ -610,7 +695,7 @@ export class EntityCoordinator<T extends object> {
             (req, metadata, options) => this._retrieval.getMany(req, metadata, options),
             request,
             this._client._callCredentials,
-            this._client._actingUserToken,
+            this._identity(),
         );
         return new Promise((resolve, reject) => {
             const results: T[] = [];

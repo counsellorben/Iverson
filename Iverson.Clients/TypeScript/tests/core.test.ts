@@ -30,6 +30,11 @@ import { ACTING_USER_METADATA_KEY } from '../src/auth.js';
 import { describeEntity, EntityCoordinator, IversonClient } from '../src/core.js';
 
 import {
+    MappingGetRequest,
+    MappingResponse,
+    MappingWriteRequest,
+} from '../generated/object_mapping.js';
+import {
     ObjectPersistenceServiceClient,
     PersistRequest,
     PersistResponse,
@@ -181,6 +186,102 @@ describe('EntityCoordinator — acting-user token threading', () => {
         await coordinator.getMany(['1']);
 
         expect(calls[0].metadata.get(ACTING_USER_METADATA_KEY)).toEqual(['Bearer tok-2']);
+    });
+});
+
+// ── EntityCoordinator — acting-user identity resolution (per-call → bound → ambient → none) ──
+
+describe('EntityCoordinator — acting-user identity resolution', () => {
+    it("withActingUser() binds an identity that wins over the client's ambient one", async () => {
+        const { fn, calls } = makeUnaryStub<PersistRequest, PersistResponse>({
+            success: true, key: 'k1', error: '', traceId: '',
+        });
+        const client = makeClientLike({ _persistenceClient: { post: fn }, _actingUserToken: 'ambient' });
+        const coordinator = new EntityCoordinator(TestEntity, client).withActingUser('bound');
+
+        await coordinator.persist(new TestEntity());
+
+        expect(calls[0].metadata.get(ACTING_USER_METADATA_KEY)).toEqual(['Bearer bound']);
+    });
+
+    it("the client's ambient identity applies when nothing is bound", async () => {
+        const { fn, calls } = makeUnaryStub<PersistRequest, PersistResponse>({
+            success: true, key: 'k1', error: '', traceId: '',
+        });
+        const client = makeClientLike({ _persistenceClient: { post: fn }, _actingUserToken: 'ambient' });
+        const coordinator = new EntityCoordinator(TestEntity, client);
+
+        await coordinator.persist(new TestEntity());
+
+        expect(calls[0].metadata.get(ACTING_USER_METADATA_KEY)).toEqual(['Bearer ambient']);
+    });
+
+    it('no identity anywhere emits no acting-user header', async () => {
+        const { fn, calls } = makeUnaryStub<PersistRequest, PersistResponse>({
+            success: true, key: 'k1', error: '', traceId: '',
+        });
+        const client = makeClientLike({ _persistenceClient: { post: fn } });
+        const coordinator = new EntityCoordinator(TestEntity, client);
+
+        await coordinator.persist(new TestEntity());
+
+        expect(calls[0].metadata.get(ACTING_USER_METADATA_KEY)).toEqual([]);
+    });
+
+    it('withActingUser() does not mutate the receiver', async () => {
+        const { fn, calls } = makeUnaryStub<PersistRequest, PersistResponse>({
+            success: true, key: 'k1', error: '', traceId: '',
+        });
+        const client = makeClientLike({ _persistenceClient: { post: fn }, _actingUserToken: 'ambient' });
+        const coordinator = new EntityCoordinator(TestEntity, client);
+
+        coordinator.withActingUser('bound');
+        await coordinator.persist(new TestEntity());
+
+        expect(calls[0].metadata.get(ACTING_USER_METADATA_KEY)).toEqual(['Bearer ambient']);
+    });
+});
+
+// ── EntityCoordinator — mapped CRUD ──────────────────────────────────────────
+
+describe('EntityCoordinator — mapped CRUD', () => {
+    it('getMapped() passes depth through', async () => {
+        const { fn, calls } = makeUnaryStub<MappingGetRequest, MappingResponse>({
+            success: true, data: { Id: '1', Name: 'n' }, error: '', traceId: '',
+        });
+        const client = makeClientLike({ _mappingClient: { get: fn } });
+        const coordinator = new EntityCoordinator(TestEntity, client);
+
+        await coordinator.getMapped('1', 2);
+
+        expect((calls[0].req as MappingGetRequest).depth).toBe(2);
+    });
+
+    it('postMapped() returns an entity hydrated from Data', async () => {
+        const { fn } = makeUnaryStub<MappingWriteRequest, MappingResponse>({
+            success: true, data: { Id: 'server-assigned-id', Name: 'n' }, error: '', traceId: '',
+        });
+        const client = makeClientLike({ _mappingClient: { post: fn } });
+        const coordinator = new EntityCoordinator(TestEntity, client);
+
+        const entity = new TestEntity();
+        const result = await coordinator.postMapped(entity);
+
+        expect(result.id).toBe('server-assigned-id');
+    });
+
+    it('updateMapped() sends the key it was given', async () => {
+        const { fn, calls } = makeUnaryStub<MappingWriteRequest, MappingResponse>({
+            success: true, data: { Id: 'k1', Name: 'n' }, error: '', traceId: '',
+        });
+        const client = makeClientLike({ _mappingClient: { update: fn } });
+        const coordinator = new EntityCoordinator(TestEntity, client);
+
+        const entity = new TestEntity();
+        entity.id = 'k1';
+        await coordinator.updateMapped(entity);
+
+        expect((calls[0].req as MappingWriteRequest).payload!.Id).toBe('k1');
     });
 });
 

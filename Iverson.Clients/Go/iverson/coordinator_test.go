@@ -170,7 +170,7 @@ func TestStructToEntity_OneToMany_HydratedChildStructsLeaveFieldEmpty(t *testing
 func propsByName(t *testing.T, e interface{}) map[string]*pb.PropertyDescriptor {
 	t.Helper()
 	r := NewSchemaRegistrar(nil, e)
-	req, err := r.buildRequest(e, "trace")
+	req, err := r.buildRequest(e, "trace", nil)
 	if err != nil {
 		t.Fatalf("buildRequest: %v", err)
 	}
@@ -274,7 +274,7 @@ func TestGuidTagOnNonStringFieldRejected(t *testing.T) {
 	}
 
 	r := NewSchemaRegistrar(nil, GuidOnIntEntity{})
-	_, err := r.buildRequest(GuidOnIntEntity{}, "trace")
+	_, err := r.buildRequest(GuidOnIntEntity{}, "trace", nil)
 	if err == nil {
 		t.Fatal("expected error for iverson_guid on a non-string field")
 	}
@@ -295,7 +295,7 @@ func TestGuidTagOnNonStringSliceRejected(t *testing.T) {
 	}
 
 	r := NewSchemaRegistrar(nil, GuidOnIntSliceEntity{})
-	_, err := r.buildRequest(GuidOnIntSliceEntity{}, "trace")
+	_, err := r.buildRequest(GuidOnIntSliceEntity{}, "trace", nil)
 	if err == nil {
 		t.Fatal("expected error for iverson_guid on a []int field")
 	}
@@ -307,7 +307,7 @@ func TestGuidTagOnNonStringSliceRejected(t *testing.T) {
 
 func TestBuildRequest_ManyToOne_CorrectlyNamedFieldRegisters(t *testing.T) {
 	r := NewSchemaRegistrar(nil, Article{})
-	_, err := r.buildRequest(Article{}, "trace")
+	_, err := r.buildRequest(Article{}, "trace", nil)
 	if err != nil {
 		t.Fatalf("expected no error for correctly-named AuthorId field: %v", err)
 	}
@@ -315,7 +315,7 @@ func TestBuildRequest_ManyToOne_CorrectlyNamedFieldRegisters(t *testing.T) {
 
 func TestBuildRequest_ManyToOne_WronglyNamedFieldRejected(t *testing.T) {
 	r := NewSchemaRegistrar(nil, WriterAuthor{})
-	_, err := r.buildRequest(WriterAuthor{}, "trace")
+	_, err := r.buildRequest(WriterAuthor{}, "trace", nil)
 	if err == nil {
 		t.Fatal("expected error for WriterId field on a many_to_one Author relation")
 	}
@@ -670,5 +670,128 @@ func TestCoordinatorAggregate_PropagatesError(t *testing.T) {
 	_, err := c.Aggregate(context.Background(), &pb.AggregateRequest{})
 	if err == nil {
 		t.Fatal("expected error")
+	}
+}
+
+// ── Mapped CRUD ───────────────────────────────────────────────────────────────
+
+type mockMappingClient struct {
+	getResp    *pb.MappingResponse
+	getErr     error
+	postResp   *pb.MappingResponse
+	postErr    error
+	updateResp *pb.MappingResponse
+	updateErr  error
+	deleteResp *pb.MappingDeleteResponse
+	deleteErr  error
+
+	capturedGet    *pb.MappingGetRequest
+	capturedPost   *pb.MappingWriteRequest
+	capturedUpdate *pb.MappingWriteRequest
+	capturedDelete *pb.MappingDeleteRequest
+}
+
+func (m *mockMappingClient) Get(_ context.Context, req *pb.MappingGetRequest) (*pb.MappingResponse, error) {
+	m.capturedGet = req
+	if m.getErr != nil {
+		return nil, m.getErr
+	}
+	return m.getResp, nil
+}
+
+func (m *mockMappingClient) Post(_ context.Context, req *pb.MappingWriteRequest) (*pb.MappingResponse, error) {
+	m.capturedPost = req
+	if m.postErr != nil {
+		return nil, m.postErr
+	}
+	return m.postResp, nil
+}
+
+func (m *mockMappingClient) Update(_ context.Context, req *pb.MappingWriteRequest) (*pb.MappingResponse, error) {
+	m.capturedUpdate = req
+	if m.updateErr != nil {
+		return nil, m.updateErr
+	}
+	return m.updateResp, nil
+}
+
+func (m *mockMappingClient) Delete(_ context.Context, req *pb.MappingDeleteRequest) (*pb.MappingDeleteResponse, error) {
+	m.capturedDelete = req
+	if m.deleteErr != nil {
+		return nil, m.deleteErr
+	}
+	return m.deleteResp, nil
+}
+
+func newTestMappedCoordinator(t *testing.T, mapping *mockMappingClient) *EntityCoordinator[coordinatorArticle] {
+	t.Helper()
+	c, err := newEntityCoordinatorWithDeps(coordinatorDeps{mapping: mapping}, coordinatorArticle{})
+	if err != nil {
+		t.Fatalf("newEntityCoordinatorWithDeps: %v", err)
+	}
+	return c
+}
+
+func TestCoordinatorGetMapped_PassesDepthThrough(t *testing.T) {
+	mapping := &mockMappingClient{
+		getResp: &pb.MappingResponse{
+			Success: true,
+			Data:    mustStruct(t, map[string]interface{}{"Id": "k", "Category": "tech"}),
+		},
+	}
+	c := newTestMappedCoordinator(t, mapping)
+
+	_, err := c.GetMapped(context.Background(), "k", 2)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if mapping.capturedGet == nil {
+		t.Fatal("request not passed through")
+	}
+	if mapping.capturedGet.Depth != 2 {
+		t.Errorf("Depth = %d, want 2", mapping.capturedGet.Depth)
+	}
+	if mapping.capturedGet.Key != "k" {
+		t.Errorf("Key = %q, want %q", mapping.capturedGet.Key, "k")
+	}
+}
+
+func TestCoordinatorPostMapped_ReturnsEntityHydratedFromData(t *testing.T) {
+	mapping := &mockMappingClient{
+		postResp: &pb.MappingResponse{
+			Success: true,
+			Data:    mustStruct(t, map[string]interface{}{"Id": "server-assigned-id", "Category": "tech"}),
+		},
+	}
+	c := newTestMappedCoordinator(t, mapping)
+
+	entity, err := c.PostMapped(context.Background(), coordinatorArticle{Id: "client-supplied-id", Category: "tech"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if entity.Id != "server-assigned-id" {
+		t.Errorf("Id = %q, want %q", entity.Id, "server-assigned-id")
+	}
+}
+
+func TestCoordinatorUpdateMapped_SendsKeyItWasGiven(t *testing.T) {
+	mapping := &mockMappingClient{
+		updateResp: &pb.MappingResponse{
+			Success: true,
+			Data:    mustStruct(t, map[string]interface{}{"Id": "k", "Category": "tech"}),
+		},
+	}
+	c := newTestMappedCoordinator(t, mapping)
+
+	_, err := c.UpdateMapped(context.Background(), coordinatorArticle{Id: "k", Category: "tech"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if mapping.capturedUpdate == nil {
+		t.Fatal("request not passed through")
+	}
+	gotKey := mapping.capturedUpdate.Payload.Fields["Id"].GetStringValue()
+	if gotKey != "k" {
+		t.Errorf("Payload Id = %q, want %q", gotKey, "k")
 	}
 }

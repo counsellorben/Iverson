@@ -3,19 +3,20 @@ Core client classes: IversonClient, SchemaRegistrar, EntityCoordinator.
 """
 from __future__ import annotations
 
+import copy
 import re
 import uuid
 from dataclasses import dataclass
-from typing import Generic, List, Optional, TypeVar, get_args, get_origin, get_type_hints
+from typing import Generic, List, Mapping, Optional, TypeVar, get_args, get_origin, get_type_hints
 
 import grpc
 from google.protobuf import struct_pb2
 
 from iverson_client.auth import (
+    ACTING_USER_METADATA_KEY,
     IversonClientCredentials,
     _CachedTokenProvider,
     _BearerTokenAuthPlugin,
-    _ActingUserAuthPlugin,
 )
 from iverson_client.generated import (
     object_mapping_pb2 as mapping_pb,
@@ -142,27 +143,40 @@ class SchemaRegistrar:
         self._stub = mapping_stub
         self._classes = list(entity_classes)
 
-    def register_all(self, trace_id: str = "") -> None:
+    def register_all(
+        self,
+        trace_id: str = "",
+        authorization_by_type_name: Optional[Mapping[str, mapping_pb.AuthorizationRules]] = None,
+    ) -> None:
         """Synchronously register all entity schemas."""
         for cls in self._classes:
-            request = self._build_request(cls, trace_id)
+            request = self._build_request(cls, trace_id, authorization_by_type_name)
             response = self._stub.RegisterSchema(request)
             if not response.success:
                 raise RuntimeError(
                     f"Schema registration failed for {cls.__name__}: {response.error}"
                 )
 
-    async def register_all_async(self, trace_id: str = "") -> None:
+    async def register_all_async(
+        self,
+        trace_id: str = "",
+        authorization_by_type_name: Optional[Mapping[str, mapping_pb.AuthorizationRules]] = None,
+    ) -> None:
         """Asynchronously register all entity schemas (requires async channel)."""
         for cls in self._classes:
-            request = self._build_request(cls, trace_id)
+            request = self._build_request(cls, trace_id, authorization_by_type_name)
             response = await self._stub.RegisterSchema(request)
             if not response.success:
                 raise RuntimeError(
                     f"Schema registration failed for {cls.__name__}: {response.error}"
                 )
 
-    def _build_request(self, cls: type, trace_id: str) -> mapping_pb.SchemaRequest:
+    def _build_request(
+        self,
+        cls: type,
+        trace_id: str,
+        authorization_by_type_name: Optional[Mapping[str, mapping_pb.AuthorizationRules]] = None,
+    ) -> mapping_pb.SchemaRequest:
         meta = getattr(cls, "_iverson_meta", None)
         if meta is None:
             raise ValueError(
@@ -270,12 +284,14 @@ class SchemaRegistrar:
                 )
             )
 
+        rules = (authorization_by_type_name or {}).get(type_name)
         type_descriptor = mapping_pb.TypeDescriptor(
             type_name=type_name,
             properties=properties,
             relations=relations,
             description=meta.get("description", ""),
             tenant_field=_to_pascal_case(tenant_field),
+            **({"authorization": rules} if rules is not None else {}),
         )
         return mapping_pb.SchemaRequest(root_type=type_descriptor, trace_id=trace_id)
 
@@ -460,7 +476,12 @@ class EntityCoordinator(Generic[T]):
         channel: an open ``grpc.Channel``.
     """
 
-    def __init__(self, entity_class: type, channel: grpc.Channel) -> None:
+    def __init__(
+        self,
+        entity_class: type,
+        channel: grpc.Channel,
+        acting_user_token: str | None = None,
+    ) -> None:
         meta = getattr(entity_class, "_iverson_meta", None)
         if meta is None:
             raise ValueError(
@@ -473,6 +494,21 @@ class EntityCoordinator(Generic[T]):
         self._persistence = persist_grpc.ObjectPersistenceServiceStub(channel)
         self._retrieval = retrieval_grpc.ObjectRetrievalServiceStub(channel)
         self._search = search_grpc.ObjectSearchServiceStub(channel)
+        self._acting_user_token = acting_user_token
+
+    def with_acting_user(self, token: str) -> "EntityCoordinator[T]":
+        """Return a coordinator bound to ``token``, leaving this one untouched."""
+        bound = copy.copy(self)
+        bound._acting_user_token = token
+        return bound
+
+    def _acting_user_metadata(self) -> tuple[tuple[str, str], ...]:
+        # Use `is None`, not a falsy check: an empty-string token is a caller
+        # error that must reach the server and be rejected loudly, not be
+        # silently downgraded to an unauthenticated call.
+        if self._acting_user_token is None:
+            return ()
+        return ((ACTING_USER_METADATA_KEY, f"Bearer {self._acting_user_token}"),)
 
     def _get_key(self, entity: T) -> str:
         if self._key_field is None:
@@ -490,7 +526,8 @@ class EntityCoordinator(Generic[T]):
                 type_name=self._type_name,
                 payload=payload,
                 trace_id=trace_id,
-            )
+            ),
+            metadata=self._acting_user_metadata(),
         )
         if not response.success:
             raise RuntimeError(f"persist failed: {response.error}")
@@ -504,7 +541,8 @@ class EntityCoordinator(Generic[T]):
                 type_name=self._type_name,
                 payload=payload,
                 trace_id=trace_id,
-            )
+            ),
+            metadata=self._acting_user_metadata(),
         )
         if not response.success:
             raise RuntimeError(f"update failed: {response.error}")
@@ -516,10 +554,57 @@ class EntityCoordinator(Generic[T]):
                 type_name=self._type_name,
                 key=id,
                 trace_id=trace_id,
-            )
+            ),
+            metadata=self._acting_user_metadata(),
         )
         if not response.success:
             raise RuntimeError(f"delete failed: {response.error}")
+
+    def get_mapped(self, id: str, depth: int = 1, trace_id: str = "") -> Optional[T]:
+        """Retrieve an entity by key with server-side relation resolution to ``depth``.
+        Returns None if not found."""
+        response = self._mapping.Get(
+            mapping_pb.MappingGetRequest(
+                type_name=self._type_name,
+                key=id,
+                depth=depth,
+                trace_id=trace_id,
+            ),
+            metadata=self._acting_user_metadata(),
+        )
+        if not response.success:
+            return None
+        return self._from_struct(response.data)
+
+    def post_mapped(self, entity: T, trace_id: str = "") -> Optional[T]:
+        """Create an entity through the mapping path, which resolves its relations
+        server-side. Returns the entity hydrated from the response, carrying the
+        server-assigned key — the caller never assigns one."""
+        response = self._mapping.Post(
+            mapping_pb.MappingWriteRequest(
+                type_name=self._type_name,
+                payload=_entity_to_struct(entity),
+                trace_id=trace_id,
+            ),
+            metadata=self._acting_user_metadata(),
+        )
+        if not response.success:
+            raise RuntimeError(f"post_mapped failed: {response.error}")
+        return self._from_struct(response.data)
+
+    def update_mapped(self, entity: T, trace_id: str = "") -> Optional[T]:
+        """Update an existing entity through the mapping path."""
+        response = self._mapping.Update(
+            mapping_pb.MappingWriteRequest(
+                type_name=self._type_name,
+                payload=_entity_to_struct(entity),
+                trace_id=trace_id,
+            ),
+            metadata=self._acting_user_metadata(),
+        )
+        if not response.success:
+            raise RuntimeError(f"update_mapped failed: {response.error}")
+        return self._from_struct(response.data)
 
     def get(self, id: str, trace_id: str = "") -> Optional[T]:
         """Retrieve an entity by key. Returns None if not found."""
@@ -528,7 +613,8 @@ class EntityCoordinator(Generic[T]):
                 type_name=self._type_name,
                 key=id,
                 trace_id=trace_id,
-            )
+            ),
+            metadata=self._acting_user_metadata(),
         )
         if not response.found:
             return None
@@ -542,7 +628,8 @@ class EntityCoordinator(Generic[T]):
                 type_name=self._type_name,
                 keys=ids,
                 trace_id=trace_id,
-            )
+            ),
+            metadata=self._acting_user_metadata(),
         ):
             if response.found:
                 results.append(self._from_struct(response.data))
@@ -556,7 +643,7 @@ class EntityCoordinator(Generic[T]):
         ``SearchResult``."""
         return [
             SearchResult(self._from_struct(row.data), row.score)
-            for row in self._search.Search(request)
+            for row in self._search.Search(request, metadata=self._acting_user_metadata())
         ]
 
     def search_similar(self, request: search_pb.SearchSimilarRequest) -> List[SearchResult[T]]:
@@ -565,29 +652,29 @@ class EntityCoordinator(Generic[T]):
         in a ``SearchResult``."""
         return [
             SearchResult(self._from_struct(row.data), row.score)
-            for row in self._search.SearchSimilar(request)
+            for row in self._search.SearchSimilar(request, metadata=self._acting_user_metadata())
         ]
 
     def search_chunks(self, request: search_pb.SearchChunksRequest) -> List[search_pb.ChunkSearchResponse]:
         """Execute a SearchChunks request. Returns the flat chunk messages as-is."""
-        return list(self._search.SearchChunks(request))
+        return list(self._search.SearchChunks(request, metadata=self._acting_user_metadata()))
 
     def group_by(self, request: search_pb.GroupByRequest) -> List[dict]:
         """Execute a GroupBy request. Columns are aggregated/aliased and don't match
         ``T``'s own fields, so each row is converted via ``_struct_to_dict`` instead
         of ``_from_struct``."""
-        return [_struct_to_dict(row.data) for row in self._search.GroupBy(request)]
+        return [_struct_to_dict(row.data) for row in self._search.GroupBy(request, metadata=self._acting_user_metadata())]
 
     def aggregate(self, request: search_pb.AggregateRequest) -> search_pb.AggregateResponse:
         """Execute an Aggregate request. Single call; returns the ``AggregateResponse``
         as-is."""
-        return self._search.Aggregate(request)
+        return self._search.Aggregate(request, metadata=self._acting_user_metadata())
 
     def pipeline(self, request: search_pb.PipelineRequest) -> List[dict]:
         """Execute a Pipeline request. Columns are aggregated/aliased and don't match
         ``T``'s own fields, so each row is converted via ``_struct_to_dict`` instead
         of ``_from_struct``."""
-        return [_struct_to_dict(row.data) for row in self._search.Pipeline(request)]
+        return [_struct_to_dict(row.data) for row in self._search.Pipeline(request, metadata=self._acting_user_metadata())]
 
     def _from_struct(self, s: struct_pb2.Struct) -> T:
         """Construct an entity instance from a Struct proto."""
@@ -652,17 +739,12 @@ class IversonClient:
     ) -> None:
         address = f"{host}:{port}"
 
-        if credentials is not None or acting_user_token is not None:
+        if credentials is not None:
             call_creds_list = []
-            if credentials is not None:
-                provider = _CachedTokenProvider(credentials)
-                call_creds_list.append(
-                    grpc.metadata_call_credentials(_BearerTokenAuthPlugin(provider))
-                )
-            if acting_user_token is not None:
-                call_creds_list.append(
-                    grpc.metadata_call_credentials(_ActingUserAuthPlugin(acting_user_token))
-                )
+            provider = _CachedTokenProvider(credentials)
+            call_creds_list.append(
+                grpc.metadata_call_credentials(_BearerTokenAuthPlugin(provider))
+            )
             # grpcio rejects CallCredentials on a bare insecure_channel with
             # "UNAUTHENTICATED: Established channel does not have a sufficient security
             # level to transfer call credential" — confirmed live. Some ChannelCredentials
@@ -682,6 +764,16 @@ class IversonClient:
             self._channel = grpc.insecure_channel(address)
 
         self._mapping_stub = mapping_grpc.ObjectMappingServiceStub(self._channel)
+        self._acting_user_token = acting_user_token
+
+    def _acting_user_metadata(self) -> tuple[tuple[str, str], ...]:
+        """Per-call metadata carrying the ambient acting-user identity, or empty when none."""
+        # Use `is None`, not a falsy check: an empty-string token is a caller
+        # error that must reach the server and be rejected loudly, not be
+        # silently downgraded to an unauthenticated call.
+        if self._acting_user_token is None:
+            return ()
+        return ((ACTING_USER_METADATA_KEY, f"Bearer {self._acting_user_token}"),)
 
     def close(self) -> None:
         """Close the underlying gRPC channel."""
@@ -695,12 +787,13 @@ class IversonClient:
 
     def coordinator(self, entity_class: type) -> EntityCoordinator:
         """Return an ``EntityCoordinator`` for the given entity class."""
-        return EntityCoordinator(entity_class, self._channel)
+        return EntityCoordinator(entity_class, self._channel, self._acting_user_token)
 
     def get_schema(self, trace_id: str = "") -> list[mapping_pb.SchemaType]:
         """Return the catalog of registered types this identity may read."""
         response = self._mapping_stub.GetSchema(
-            mapping_pb.GetSchemaRequest(trace_id=trace_id)
+            mapping_pb.GetSchemaRequest(trace_id=trace_id),
+            metadata=self._acting_user_metadata(),
         )
         return list(response.types)
 

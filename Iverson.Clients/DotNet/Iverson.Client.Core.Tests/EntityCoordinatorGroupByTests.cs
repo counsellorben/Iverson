@@ -30,7 +30,7 @@ public class EntityCoordinatorGroupByTests
         data.Fields["category"] = Value.ForString("tech");
         data.Fields["n"] = Value.ForNumber(4);
         var responses = new List<SearchResponse> { new() { Data = data } };
-        search.GroupBy(Arg.Any<GroupByRequest>(), cancellationToken: Arg.Any<CancellationToken>())
+        search.GroupBy(Arg.Any<GroupByRequest>(), Arg.Any<Metadata>(), cancellationToken: Arg.Any<CancellationToken>())
               .Returns(MakeCall(responses));
 
         var coordinator = TestCoordinatorFactory.Create<TestArticle>(search);
@@ -57,16 +57,16 @@ public class EntityCoordinatorGroupByTests
               .Returns(MakeCall(new List<SearchResponse>()));
 
         var coordinator = TestCoordinatorFactory.Create<TestArticle>(search);
-        var headers = new Metadata { { "x-acting-user-authorization", "Bearer test-token" } };
+        var headers = new Metadata { { "x-trace-id", "Bearer test-token" } };
 
         await foreach (var _ in coordinator.GroupByAsync(Query.GroupBy("TestArticle").CountAll("n"), headers)) { }
 
         capturedHeaders.Should().NotBeNull();
-        capturedHeaders!.Get("x-acting-user-authorization")!.Value.Should().Be("Bearer test-token");
+        capturedHeaders!.Get("x-trace-id")!.Value.Should().Be("Bearer test-token");
     }
 
     [Fact]
-    public async Task GroupByAsync_WithNoHeaders_PassesNull()
+    public async Task GroupByAsync_WithNoHeaders_EmitsNoActingUser()
     {
         var search = Substitute.For<ObjectSearchService.ObjectSearchServiceClient>();
         Metadata? capturedHeaders = null;
@@ -81,6 +81,7 @@ public class EntityCoordinatorGroupByTests
 
         await foreach (var _ in coordinator.GroupByAsync(Query.GroupBy("TestArticle").CountAll("n"))) { }
 
-        capturedHeaders.Should().BeNull();
+        capturedHeaders.Should().NotBeNull();
+        capturedHeaders!.Get(ActingUserMetadata.MetadataKey).Should().BeNull();
     }
 }

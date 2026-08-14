@@ -113,14 +113,12 @@ public sealed class DirectSeeder(
             var identity = i % 2 == 0 ? identities.Regular : identities.Bypass;
             var entity = new BenchmarkAuthor
             {
-                Id      = Guid.NewGuid(),
                 Name    = $"Author {i}",
                 Email   = $"author{i}@benchmark.dev",
                 Bio     = new string('x', 200),
                 OwnerId = identity == identities.Bypass ? await identity.GetSubAsync(ct) : "",
             };
-            var headers = new Grpc.Core.Metadata().WithActingUser(await identity.GetTokenAsync(ct));
-            await authorCoordinator.PersistAsync(entity, headers, ct);
+            await authorCoordinator.WithActingUser(() => identity.GetTokenAsync(ct)).PersistAsync(entity, ct: ct);
         }, ct);
 
         Console.WriteLine($"\n[Authors] Seeded {AuthorTarget:N0} rows — {sw.Elapsed.TotalSeconds:F1}s");
@@ -175,13 +173,11 @@ public sealed class DirectSeeder(
             var identity = i % 2 == 0 ? identities.Regular : identities.Bypass;
             var entity = new BenchmarkTag
             {
-                Id       = Guid.NewGuid(),
                 Name     = $"tag-{i}",
                 Category = Categories[i % Categories.Length],
                 OwnerId  = identity == identities.Bypass ? await identity.GetSubAsync(ct) : "",
             };
-            var headers = new Grpc.Core.Metadata().WithActingUser(await identity.GetTokenAsync(ct));
-            await tagCoordinator.PersistAsync(entity, headers, ct);
+            await tagCoordinator.WithActingUser(() => identity.GetTokenAsync(ct)).PersistAsync(entity, ct: ct);
         }, ct);
 
         Console.WriteLine($"[Tags] Seeded {TagTarget:N0} rows — {sw.Elapsed.TotalSeconds:F1}s");
@@ -251,7 +247,6 @@ public sealed class DirectSeeder(
             var body = GenerateBody(i);
             var entity = new BenchmarkArticle
             {
-                Id                = Guid.NewGuid(),
                 Title             = $"Benchmark Article {i}: {cat}",
                 Body              = body,
                 BenchmarkAuthorId = authorIds[i % authorIds.Length],
@@ -260,8 +255,7 @@ public sealed class DirectSeeder(
                 PublishedAt       = baseDate.AddDays(i % 2190),
                 OwnerId           = identity == identities.Bypass ? await identity.GetSubAsync(ct) : "",
             };
-            var headers = new Grpc.Core.Metadata().WithActingUser(await identity.GetTokenAsync(ct));
-            await articleCoordinator.PersistAsync(entity, headers, ct);
+            await articleCoordinator.WithActingUser(() => identity.GetTokenAsync(ct)).PersistAsync(entity, ct: ct);
         }, ct);
 
         Console.WriteLine($"[Articles] Seeded {ArticleTarget:N0} rows — total {sw.Elapsed.TotalSeconds:F1}s");

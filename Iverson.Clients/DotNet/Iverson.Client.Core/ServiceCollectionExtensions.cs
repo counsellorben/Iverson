@@ -73,6 +73,7 @@ public static class ServiceCollectionExtensions
         }
 
         services.AddTransient(typeof(EntityCoordinator<>));
+        services.AddSingleton(new ActingUserIdentity(actingUserTokenProvider));
 
         services.AddSingleton<SchemaRegistrar>();
 

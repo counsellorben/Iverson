@@ -47,12 +47,26 @@ public final class SchemaRegistrar {
      * @throws StatusRuntimeException if the server rejects any registration
      */
     public void registerAll(Class<?>... classes) {
+        registerAll(Map.of(), classes);
+    }
+
+    /**
+     * Same as {@link #registerAll(Class[])}, attaching per-type authorization rules. A type with
+     * no entry registers with no rules, which the server denies for every read and write — a null
+     * rule set is an unconditional deny, not an absence of restrictions.
+     */
+    public void registerAll(
+            Map<String, ObjectMapping.AuthorizationRules> authorizationByTypeName,
+            Class<?>... classes) {
         for (Class<?> cls : classes) {
             if (cls.getAnnotation(IversonEntity.class) == null) {
                 throw new IllegalArgumentException(
                     cls.getSimpleName() + " is not annotated with @IversonEntity");
             }
-            TypeDescriptor descriptor = buildTypeDescriptor(cls);
+            TypeDescriptor.Builder descriptor = buildTypeDescriptor(cls).toBuilder();
+            ObjectMapping.AuthorizationRules rules =
+                authorizationByTypeName.get(cls.getSimpleName());
+            if (rules != null) descriptor.setAuthorization(rules);
             SchemaRequest request = SchemaRequest.newBuilder()
                 .setRootType(descriptor)
                 .build();

@@ -12,6 +12,8 @@ from google.protobuf import struct_pb2
 from iverson_client.annotations import iverson_entity, iverson_key, many_to_one, many_to_many, one_to_many
 from iverson_client.core import EntityCoordinator, _entity_to_struct
 from iverson_client.generated import (
+    object_mapping_pb2 as mapping_pb,
+    object_retrieval_pb2 as retrieval_pb,
     object_search_pb2 as pb,
     object_search_pb2_grpc as search_grpc,
 )
@@ -44,6 +46,20 @@ def make_coordinator() -> EntityCoordinator:
     coordinator = EntityCoordinator(CoordArticle, channel)
     coordinator._search = MagicMock()
     return coordinator
+
+
+def make_mapped_coordinator() -> EntityCoordinator:
+    channel = grpc.insecure_channel("localhost:1")
+    coordinator = EntityCoordinator(CoordArticle, channel)
+    coordinator._mapping = MagicMock()
+    return coordinator
+
+
+def _mapped_response(**fields) -> mapping_pb.MappingResponse:
+    s = struct_pb2.Struct()
+    for name, value in fields.items():
+        s.fields[name].string_value = value
+    return mapping_pb.MappingResponse(success=True, data=s)
 
 
 def _row(id_: str, title: str) -> pb.SearchResponse:
@@ -190,3 +206,108 @@ def make_coordinator_for(cls: type) -> EntityCoordinator:
     coordinator = EntityCoordinator(cls, channel)
     coordinator._search = MagicMock()
     return coordinator
+
+
+class TestEntityCoordinatorMappedCrud:
+    def test_get_mapped_passes_depth_through(self):
+        coordinator = make_mapped_coordinator()
+        coordinator._mapping.Get.return_value = _mapped_response(Id="k")
+
+        coordinator.get_mapped("k", depth=2)
+
+        request = coordinator._mapping.Get.call_args[0][0]
+        assert request.depth == 2
+        assert request.key == "k"
+
+    def test_post_mapped_returns_entity_hydrated_from_data(self):
+        coordinator = make_mapped_coordinator()
+        coordinator._mapping.Post.return_value = _mapped_response(Id="server-assigned")
+        entity = CoordArticle()
+        entity.title = "Hello"
+
+        result = coordinator.post_mapped(entity)
+
+        assert result.id == "server-assigned"
+
+    def test_update_mapped_sends_the_key_it_was_given(self):
+        coordinator = make_mapped_coordinator()
+        coordinator._mapping.Update.return_value = _mapped_response(Id="k1")
+        entity = CoordArticle()
+        entity.id = "k1"
+        entity.title = "Hello"
+
+        coordinator.update_mapped(entity)
+
+        request = coordinator._mapping.Update.call_args[0][0]
+        assert request.payload.fields["Id"].string_value == "k1"
+
+
+# ── Acting-user identity resolution ─────────────────────────────────────────────
+
+class TestEntityCoordinatorActingUserIdentity:
+    def test_a_per_call_bound_token_takes_precedence_over_the_ambient_default(self):
+        """with_acting_user's bound token wins over whatever ambient token the
+        coordinator was constructed with."""
+        channel = grpc.insecure_channel("localhost:1")
+        coordinator = EntityCoordinator(CoordArticle, channel, "ambient-token")
+        coordinator._retrieval = MagicMock()
+        coordinator._retrieval.Get.return_value = retrieval_pb.RetrievalResponse(found=False)
+
+        bound = coordinator.with_acting_user("bound-token")
+        bound.get("some-id")
+
+        sent_metadata = coordinator._retrieval.Get.call_args.kwargs["metadata"]
+        assert sent_metadata == (("x-acting-user-authorization", "Bearer bound-token"),)
+
+    def test_the_clients_ambient_identity_applies_when_nothing_is_bound(self):
+        channel = grpc.insecure_channel("localhost:1")
+        coordinator = EntityCoordinator(CoordArticle, channel, "ambient-token")
+        coordinator._retrieval = MagicMock()
+        coordinator._retrieval.Get.return_value = retrieval_pb.RetrievalResponse(found=False)
+
+        coordinator.get("some-id")
+
+        sent_metadata = coordinator._retrieval.Get.call_args.kwargs["metadata"]
+        assert sent_metadata == (("x-acting-user-authorization", "Bearer ambient-token"),)
+
+    def test_no_token_anywhere_emits_no_acting_user_header(self):
+        channel = grpc.insecure_channel("localhost:1")
+        coordinator = EntityCoordinator(CoordArticle, channel)
+        coordinator._retrieval = MagicMock()
+        coordinator._retrieval.Get.return_value = retrieval_pb.RetrievalResponse(found=False)
+
+        coordinator.get("some-id")
+
+        sent_metadata = coordinator._retrieval.Get.call_args.kwargs["metadata"]
+        assert sent_metadata == ()
+
+    def test_an_empty_string_token_still_emits_the_header_and_fails_loudly(self):
+        """An empty-string token is a caller error, not "no identity": it must still
+        produce a `Bearer ` header (with an empty token) so the server rejects the
+        call with Unauthenticated, rather than being swallowed into rule 4 (no header,
+        silent unauthenticated read)."""
+        channel = grpc.insecure_channel("localhost:1")
+        coordinator = EntityCoordinator(CoordArticle, channel, "")
+        coordinator._retrieval = MagicMock()
+        coordinator._retrieval.Get.return_value = retrieval_pb.RetrievalResponse(found=False)
+
+        coordinator.get("some-id")
+
+        sent_metadata = coordinator._retrieval.Get.call_args.kwargs["metadata"]
+        assert sent_metadata == (("x-acting-user-authorization", "Bearer "),)
+
+    def test_with_acting_user_does_not_mutate_the_receiver(self):
+        """The non-mutation test: with_acting_user must return a new bound coordinator,
+        never rebind the receiver it was called on."""
+        channel = grpc.insecure_channel("localhost:1")
+        coordinator = EntityCoordinator(CoordArticle, channel, "ambient-token")
+        coordinator._retrieval = MagicMock()
+        coordinator._retrieval.Get.return_value = retrieval_pb.RetrievalResponse(found=False)
+
+        bound = coordinator.with_acting_user("bound-token")
+        assert bound is not coordinator
+
+        coordinator.get("some-id")
+
+        sent_metadata = coordinator._retrieval.Get.call_args.kwargs["metadata"]
+        assert sent_metadata == (("x-acting-user-authorization", "Bearer ambient-token"),)

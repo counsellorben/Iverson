@@ -37,6 +37,9 @@ public final class IversonClient implements AutoCloseable {
     final ObjectRetrievalServiceGrpc.ObjectRetrievalServiceBlockingStub retrievalStub;
     final ObjectSearchServiceGrpc.ObjectSearchServiceBlockingStub       searchStub;
 
+    /** Ambient acting-user identity applied when no explicit or coordinator-bound token exists. */
+    final String actingUserToken;
+
     /**
      * Creates a plain-text (h2c) channel to the given host and port.
      */
@@ -54,6 +57,7 @@ public final class IversonClient implements AutoCloseable {
         this.persistenceStub = ObjectPersistenceServiceGrpc.newBlockingStub(channel);
         this.retrievalStub   = ObjectRetrievalServiceGrpc.newBlockingStub(channel);
         this.searchStub      = ObjectSearchServiceGrpc.newBlockingStub(channel);
+        this.actingUserToken = null;
     }
 
     /**
@@ -62,6 +66,15 @@ public final class IversonClient implements AutoCloseable {
      */
     public IversonClient(String host, int port, CallCredentials credentials) {
         this(ManagedChannelBuilder.forAddress(host, port).usePlaintext().build(), credentials);
+    }
+
+    /**
+     * Creates a plain-text (h2c) channel to the given host and port, authenticating every call
+     * with the given credentials, and carrying an ambient acting-user token as described in
+     * {@link #IversonClient(ManagedChannel, CallCredentials, String)}.
+     */
+    public IversonClient(String host, int port, CallCredentials credentials, String actingUserToken) {
+        this(ManagedChannelBuilder.forAddress(host, port).usePlaintext().build(), credentials, actingUserToken);
     }
 
     /**
@@ -76,6 +89,22 @@ public final class IversonClient implements AutoCloseable {
         this.persistenceStub = ObjectPersistenceServiceGrpc.newBlockingStub(channel).withCallCredentials(credentials);
         this.retrievalStub   = ObjectRetrievalServiceGrpc.newBlockingStub(channel).withCallCredentials(credentials);
         this.searchStub      = ObjectSearchServiceGrpc.newBlockingStub(channel).withCallCredentials(credentials);
+        this.actingUserToken = null;
+    }
+
+    /**
+     * Creates a client using an already-configured channel and call credentials, plus an
+     * ambient acting-user token applied to every call that carries no more specific identity
+     * (per-call explicit token, then coordinator-bound token via {@code withActingUser}, then
+     * this ambient one).
+     */
+    public IversonClient(ManagedChannel channel, CallCredentials credentials, String actingUserToken) {
+        this.channel         = channel;
+        this.mappingStub     = ObjectMappingServiceGrpc.newBlockingStub(channel).withCallCredentials(credentials);
+        this.persistenceStub = ObjectPersistenceServiceGrpc.newBlockingStub(channel).withCallCredentials(credentials);
+        this.retrievalStub   = ObjectRetrievalServiceGrpc.newBlockingStub(channel).withCallCredentials(credentials);
+        this.searchStub      = ObjectSearchServiceGrpc.newBlockingStub(channel).withCallCredentials(credentials);
+        this.actingUserToken = actingUserToken;
     }
 
     /**
@@ -89,6 +118,25 @@ public final class IversonClient implements AutoCloseable {
         this.persistenceStub = null;
         this.retrievalStub   = null;
         this.searchStub      = null;
+        this.actingUserToken = null;
+    }
+
+    /**
+     * Test seam: builds a client over pre-made stubs (any of which may be null) and an
+     * ambient acting-user token, bypassing channel construction. {@link #close()} is a no-op
+     * for a client built this way.
+     */
+    IversonClient(ObjectPersistenceServiceGrpc.ObjectPersistenceServiceBlockingStub persistenceStub,
+                  ObjectRetrievalServiceGrpc.ObjectRetrievalServiceBlockingStub retrievalStub,
+                  ObjectMappingServiceGrpc.ObjectMappingServiceBlockingStub mappingStub,
+                  ObjectSearchServiceGrpc.ObjectSearchServiceBlockingStub searchStub,
+                  String actingUserToken) {
+        this.channel         = null;
+        this.persistenceStub = persistenceStub;
+        this.retrievalStub   = retrievalStub;
+        this.mappingStub     = mappingStub;
+        this.searchStub      = searchStub;
+        this.actingUserToken = actingUserToken;
     }
 
     /**
@@ -102,12 +150,14 @@ public final class IversonClient implements AutoCloseable {
      *
      * <p>The catalog lists precisely the types the caller can actually query, so an empty result is
      * a normal authorization outcome, not an error. It means every registered type was denied for
-     * this caller. The usual causes are: a null {@code actingUserToken}; an acting user with no
-     * {@code tenant_id} claim; registered types that declare no authorization rules; or types that
-     * declare no tenant field. All four make a type unreadable through every RPC, not just this one.
+     * this caller. The usual causes are: no acting user resolved at all (neither a per-call token
+     * nor the client's ambient identity); an acting user with no {@code tenant_id} claim; registered
+     * types that declare no authorization rules; or types that declare no tenant field. All four
+     * make a type unreadable through every RPC, not just this one.
      *
-     * @param actingUserToken the end-user access token to act as; may be null, which yields an
-     *                        empty catalog.
+     * @param actingUserToken the end-user access token to act as for this call; may be null, in
+     *                        which case the client's ambient identity is used instead, and only an
+     *                        unresolved identity yields an empty catalog.
      */
     public List<SchemaType> getSchema(String traceId, String actingUserToken) {
         GetSchemaResponse response = stubFor(actingUserToken).getSchema(
@@ -116,12 +166,14 @@ public final class IversonClient implements AutoCloseable {
     }
 
     /**
-     * Returns the mapping stub to invoke, attaching the acting-user token as a call option
-     * (consumed by {@link OAuth2ClientCredentials}) when one is given.
+     * Returns the mapping stub to invoke, attaching the resolved acting-user identity as a call
+     * option (consumed by {@link OAuth2ClientCredentials}). Resolution order: the caller's explicit
+     * token, then this client's ambient identity; neither present attaches nothing.
      */
     private ObjectMappingServiceGrpc.ObjectMappingServiceBlockingStub stubFor(String actingUserToken) {
-        return actingUserToken != null
-            ? mappingStub.withOption(OAuth2ClientCredentials.ACTING_USER_TOKEN, actingUserToken)
+        String token = actingUserToken != null ? actingUserToken : this.actingUserToken;
+        return token != null
+            ? mappingStub.withOption(OAuth2ClientCredentials.ACTING_USER_TOKEN, token)
             : mappingStub;
     }
 

@@ -32,6 +32,12 @@ type OAuth2ClientCredentials struct {
 	ClientSecret  string
 	TokenEndpoint string
 	Scope         string
+	// DefaultActingUserToken is the ambient acting-user token attached when no
+	// per-call token is present in ctx. nil means no ambient identity is
+	// configured. A non-nil pointer to an empty string is a caller error,
+	// deliberately forwarded so the server rejects it loudly rather than the
+	// client silently swallowing it into "no identity".
+	DefaultActingUserToken *string
 
 	mu        sync.Mutex
 	token     string
@@ -49,8 +55,16 @@ func (c *OAuth2ClientCredentials) GetRequestMetadata(ctx context.Context, _ ...s
 		return nil, err
 	}
 	md := map[string]string{"authorization": "Bearer " + token}
-	if actingUserToken, ok := ctx.Value(actingUserTokenKey{}).(string); ok && actingUserToken != "" {
+	// An explicitly-supplied per-call token (including "") must win and be
+	// forwarded as-is: an empty token is a caller error that must reach the
+	// server and be rejected loudly, and must never silently fall through to
+	// the ambient default below.
+	if actingUserToken, ok := ctx.Value(actingUserTokenKey{}).(string); ok {
 		md[ActingUserMetadataKey] = "Bearer " + actingUserToken
+	} else if c.DefaultActingUserToken != nil {
+		// A non-nil pointer to "" is deliberately forwarded as "Bearer " so
+		// the server rejects it loudly, rather than being swallowed here.
+		md[ActingUserMetadataKey] = "Bearer " + *c.DefaultActingUserToken
 	}
 	return md, nil
 }

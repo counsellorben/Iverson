@@ -81,6 +81,19 @@ Three entities live in `Entities/`, registered with the Iverson schema on every 
 each `Seed*Async` method skips itself if the table already has ≥95% of its target row count,
 unless `--force-reseed` is passed.
 
+### Keys are server-assigned
+
+Every entity key is minted by the server. The gRPC write sites deliberately leave `Id` unset and
+read the assigned key off the write's return value — `ObjectPersistenceGrpcService.Post` assigns a
+UUIDv7 and **rejects** any client-supplied `Id` with `InvalidArgument`. Don't add an
+`Id = Guid.NewGuid()` initializer to a benchmarked entity; see the note below on why that failure
+would be quiet.
+
+Two `Guid.NewGuid()` uses in the write paths are deliberate and unrelated to keys:
+`BenchmarkArticle.BenchmarkAuthorId`'s fallback (a foreign key — FKs aren't existence-checked) and
+`DirectSeeder`'s `ids[i]` assignments, which feed the bulk Postgres `COPY` half and never touch
+gRPC.
+
 ### Row/field authorization
 
 Real `AuthorizationRules` are registered for all three entities (see `Program.cs`'s
@@ -102,6 +115,12 @@ provisioned via the Authentik blueprint charts:
   include the field restricted to the bypass role, so the server always rejects them with
   `InvalidArgument` — this is expected and tracked as a separate `fieldRejections` counter in
   write-path output, not mixed into the error count.
+
+  That counter absorbs **every** `InvalidArgument`, not only field rejections, so a genuine
+  contract violation — a client-supplied key, say — would inflate it rather than failing the run.
+  This is why write-path prints the distinct rejection details beneath the count: if a `rejected:`
+  line mentions anything other than the restricted field, the writes are failing for a reason the
+  counter's name doesn't cover.
 - **Bypass** (`iverson-loadtest-bypass-user`, in the `iverson-loadtest-bypass` group) — has
   `RowPermission` bypass (`CanReadAll`/`CanWriteAll`/`CanDeleteAll`), so its writes/reads are never
   ownership- or field-restricted.
@@ -159,7 +178,10 @@ are missing.
 report to `../docs/performance/results/<timestamp>-<scenario>.txt` (relative to this project's
 directory, i.e. `Iverson.Server/docs/performance/results/`). `write-path` additionally reports:
 
-- An end-to-end visibility probe (`Post` → row visible in Postgres) for a sample of posted keys.
+- The expected field-rejection count, followed by one `rejected:` line per distinct rejection
+  detail (see the caveat under "Acting-user identities").
+- An end-to-end visibility probe (`Post` → row visible in Postgres) for a sample of up to 100 keys,
+  taken from the keys the server returned.
 - Kafka consumer lag across the projection consumer groups, polled until it drains or 60s elapses.
 
 ## Layout
