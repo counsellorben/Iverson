@@ -72,6 +72,7 @@ Newly introduced by this plan and verified at plan-write time:
 | 17 | Consumer impact | No existing test asserts a `many_to_many` `property_name`; all three assert the FK **property** instead, so none breaks | `test_schema_registrar.py:320` asserts `"RegTagIds" in props`; `schema-registrar.test.ts:469-471` asserts `mtm['RegAuthorIds']`; `coordinator_test.go:212-214` asserts `ArticleIds` |
 | 18 | Consumer impact | Go's `coordinator_test.go` fixture `Tag.Articles` is unaffected by the new branch — its member name has no `Ids` suffix | `coordinator_test.go:69` — `Articles []string \`iverson:"many_to_many:Article"\`` |
 | 19 | Consumer impact | Nothing can depend on Java nav properties being populated by `fromStruct`, because they resolve to `null` today | `fromValue(Value, Class)` `default -> null` (`:179`) covers `LIST_VALUE` and `STRUCT_VALUE` |
+| 20 | Command | Task 1 Step 5's bare `pytest` resolves, and `import iverson_client` works with no editable install | `pytest` resolves to `/home/ben/.local/bin/pytest`; no `conftest.py` exists at `Iverson.Clients/Python/` or `tests/`, so pytest's default `prepend` import mode puts `Iverson.Clients/Python` — the first non-package ancestor of `tests/` — on `sys.path`, making the top-level `iverson_client` package importable |
 
 ## Tasks
 
@@ -134,10 +135,13 @@ Do NOT modify the existing `many_to_many` tests — they assert FK properties an
 
 - [ ] **Step 5: Run each suite**
 
+Run all commands from the repository root; each `cd` is scoped to a subshell so the working
+directory does not leak between lines, and Step 7's repo-root-relative `git add` paths resolve.
+
 ```bash
-cd Iverson.Clients/Python     && pytest
-cd Iverson.Clients/TypeScript && npm test
-cd Iverson.Clients/Go         && go test ./... && go vet ./... && gofmt -l .
+(cd Iverson.Clients/Python     && pytest)
+(cd Iverson.Clients/TypeScript && npm test)
+(cd Iverson.Clients/Go         && go test ./... && go vet ./... && gofmt -l .)
 ```
 
 `gofmt -l` must print nothing. Report the pass counts; Python was 188 and TypeScript 184 before this task.
