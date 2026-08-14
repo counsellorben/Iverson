@@ -54,6 +54,9 @@ class StructConverterTest {
 
         @ManyToMany(type = StructTestTag.class)
         private List<StructTestTag> tags;
+
+        @ManyToMany(type = StructTestTag.class)
+        private List<UUID> someTagIds;
     }
 
     @Test
@@ -153,6 +156,27 @@ class StructConverterTest {
         var result = StructConverter.fromStructAsMap(struct);
 
         assertEquals(List.of("news", "sports"), result.get("Tags"));
+    }
+
+    @Test
+    void fromStruct_deserializesAnnotatedNonEntityCollectionField() {
+        UUID tagId1 = UUID.randomUUID();
+        UUID tagId2 = UUID.randomUUID();
+        Struct struct = Struct.newBuilder()
+            .putFields("SomeTagIds", Value.newBuilder()
+                .setListValue(com.google.protobuf.ListValue.newBuilder()
+                    .addValues(Value.newBuilder().setStringValue(tagId1.toString()).build())
+                    .addValues(Value.newBuilder().setStringValue(tagId2.toString()).build())
+                    .build())
+                .build())
+            .build();
+
+        StructTestArticle article = StructConverter.fromStruct(struct, StructTestArticle.class);
+
+        assertEquals(List.of(tagId1, tagId2), article.someTagIds,
+            "an annotated FK collection whose element type is not an @IversonEntity must still "
+                + "deserialize normally — isNavigationProperty requires both the relation "
+                + "annotation AND an entity element type");
     }
 
     @Test

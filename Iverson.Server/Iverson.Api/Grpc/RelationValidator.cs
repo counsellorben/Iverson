@@ -17,7 +17,7 @@ public sealed class RelationValidator : IRelationValidator
 
         foreach (var relation in schema.Relations)
         {
-            // When PropertyName and ForeignKey collide — Python, TypeScript and Java can all
+            // When PropertyName and ForeignKey collide — Java and .NET can both
             // produce that for ManyToMany — the "nav property" and the foreign key are the SAME
             // payload key. There is nothing to reject: the payload key IS the foreign key.
             var navIsDistinctKey = !string.Equals(
