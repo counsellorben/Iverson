@@ -102,12 +102,18 @@ def _relation_property_name(relation: dict) -> str:
 
     For many_to_one / one_to_one the member itself is the foreign key
     (author_id → AuthorId), so strip the trailing "Id" to get the navigation
-    property name (Author). Other kinds use the PascalCase member name as-is.
+    property name (Author). For many_to_many the member itself is the foreign
+    key (reg_tag_ids → RegTagIds), so strip the trailing "Ids" to get the
+    navigation property name (RegTags). Other kinds use the PascalCase member
+    name as-is.
     """
     pascal = _to_pascal_case(relation["field"])
     if relation["kind"] in ("many_to_one", "one_to_one"):
         if len(pascal) > 2 and pascal.endswith("Id"):
             return pascal[:-2]
+    if relation["kind"] == "many_to_many":
+        if len(pascal) > 3 and pascal.endswith("Ids"):
+            return pascal[:-3] + "s"
     return pascal
 
 

@@ -97,13 +97,21 @@ function toPascalCase(field: string): string {
  * Derive the navigation property name from the relation's member name.
  * For many_to_one / one_to_one the member itself is the foreign key
  * (authorId → AuthorId), so strip the trailing "Id" to get the navigation
- * property name (Author). Other kinds use the PascalCase member name as-is.
+ * property name (Author). For many_to_many the member itself is the foreign
+ * key (regTagIds → RegTagIds), so strip the trailing "Ids" to get the
+ * navigation property name (RegTags). Other kinds use the PascalCase member
+ * name as-is.
  */
 function relationPropertyName(kind: RelationKindString, field: string): string {
     const pascal = toPascalCase(field);
     if (kind === 'many_to_one' || kind === 'one_to_one') {
         if (pascal.length > 2 && pascal.endsWith('Id')) {
             return pascal.slice(0, -2);
+        }
+    }
+    if (kind === 'many_to_many') {
+        if (pascal.length > 3 && pascal.endsWith('Ids')) {
+            return pascal.slice(0, -3) + 's';
         }
     }
     return pascal;

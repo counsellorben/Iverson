@@ -373,6 +373,29 @@ class TestSchemaRegistrar:
         request: mapping_pb.SchemaRequest = stub.RegisterSchema.call_args[0][0]
         assert request.root_type.relations[0].foreign_key == "RegAuthorId"
 
+    def test_many_to_many_property_name_differs_from_foreign_key(self):
+        @iverson_entity
+        class RegNavTagArticle:
+            id: str = iverson_key()
+            reg_tag_ids: list[str] = many_to_many("RegTag")
+            tenant_id: str = iverson_tenant()
+
+        stub = make_stub()
+        stub.RegisterSchema.return_value = mapping_pb.SchemaResponse(success=True)
+        registrar = SchemaRegistrar(stub, RegNavTagArticle)
+        registrar.register_all()
+
+        request: mapping_pb.SchemaRequest = stub.RegisterSchema.call_args[0][0]
+        rel = request.root_type.relations[0]
+        # The navigation property name must NOT collide with the FK column, or a
+        # depth-resolved read overwrites the FK value with the hydrated entity.
+        assert rel.property_name != rel.foreign_key
+        assert rel.property_name == "RegTags"
+        assert rel.foreign_key == "RegTagIds"
+
+        props = {p.name: p for p in request.root_type.properties}
+        assert "RegTagIds" in props
+
     def test_misnamed_many_to_one_is_rejected(self):
         @iverson_entity
         class RegBadArticle:

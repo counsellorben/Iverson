@@ -324,12 +324,19 @@ func inferFK(fm FieldMeta, thisTypeName string) string {
 
 // relationPropertyName derives the navigation property name from the field name.
 // For many_to_one: AuthorId → Author (strip trailing "Id").
+// For many_to_many: RegTagIds → RegTags (strip trailing "Ids", append "s").
 // For others: use the field name as-is.
 func relationPropertyName(fm FieldMeta) string {
 	if fm.RelationKind == KindManyToOne || fm.RelationKind == KindOneToOne {
 		name := fm.Name
 		if len(name) > 2 && name[len(name)-2:] == "Id" {
 			return name[:len(name)-2]
+		}
+	}
+	if fm.RelationKind == KindManyToMany {
+		name := fm.Name
+		if len(name) > 3 && name[len(name)-3:] == "Ids" {
+			return name[:len(name)-3] + "s"
 		}
 	}
 	return fm.Name

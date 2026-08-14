@@ -63,8 +63,8 @@ type Profile struct {
 }
 
 type Tag struct {
-	Id       string   `iverson_key:"true"`
-	TenantId string   `iverson_tenant:"true"`
+	Id       string `iverson_key:"true"`
+	TenantId string `iverson_tenant:"true"`
 	Name     string
 	Articles []string `iverson:"many_to_many:Article"`
 }
@@ -213,6 +213,37 @@ func TestBuildRequest_ManyToMany_DeclaresArrayForeignKeyProperty(t *testing.T) {
 	assertFkProperty(t, propsByName(t, Tag{}), "ArticleIds", true)
 }
 
+type NavTagArticle struct {
+	Id        string   `iverson_key:"true"`
+	TenantId  string   `iverson_tenant:"true"`
+	RegTagIds []string `iverson:"many_to_many:RegTag"`
+}
+
+func TestBuildRequest_ManyToMany_PropertyNameDiffersFromForeignKey(t *testing.T) {
+	r := NewSchemaRegistrar(nil, NavTagArticle{})
+	req, err := r.buildRequest(NavTagArticle{}, "trace", nil)
+	if err != nil {
+		t.Fatalf("buildRequest: %v", err)
+	}
+	if len(req.RootType.Relations) != 1 {
+		t.Fatalf("expected 1 relation, got %d: %+v", len(req.RootType.Relations), req.RootType.Relations)
+	}
+	rel := req.RootType.Relations[0]
+	// The navigation property name must NOT collide with the FK column, or a
+	// depth-resolved read overwrites the FK value with the hydrated entity.
+	if rel.PropertyName == rel.ForeignKey {
+		t.Errorf("PropertyName (%s) must differ from ForeignKey (%s)", rel.PropertyName, rel.ForeignKey)
+	}
+	if rel.PropertyName != "RegTags" {
+		t.Errorf("PropertyName = %q, want %q", rel.PropertyName, "RegTags")
+	}
+	if rel.ForeignKey != "RegTagIds" {
+		t.Errorf("ForeignKey = %q, want %q", rel.ForeignKey, "RegTagIds")
+	}
+
+	assertFkProperty(t, propsByName(t, NavTagArticle{}), "RegTagIds", true)
+}
+
 func TestBuildRequest_OneToMany_DeclaresNoForeignKeyProperty(t *testing.T) {
 	props := propsByName(t, Author{})
 	// Author.Articles is one_to_many:Article — its FK lives on the Article row,
@@ -289,9 +320,9 @@ func TestGuidTagOnNonStringFieldRejected(t *testing.T) {
 
 func TestGuidTagOnNonStringSliceRejected(t *testing.T) {
 	type GuidOnIntSliceEntity struct {
-		Id        string `iverson_key:"true"`
-		Counts    []int  `iverson_guid:"true"`
-		TenantId  string `iverson_tenant:"true"`
+		Id       string `iverson_key:"true"`
+		Counts   []int  `iverson_guid:"true"`
+		TenantId string `iverson_tenant:"true"`
 	}
 
 	r := NewSchemaRegistrar(nil, GuidOnIntSliceEntity{})
