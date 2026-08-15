@@ -55,11 +55,16 @@ public sealed class NavPropertyRejectedScenario(
     /// server-side observation. Falls back to whichever language happens to be first when none
     /// of the requested set matches the fixed priority list (e.g. a caller passing an unrecognized
     /// name) — deterministic within a single run either way, since it always resolves the same
-    /// requested collection the same way.
+    /// requested collection the same way. An empty <paramref name="languages"/> (e.g.
+    /// <c>--languages ""</c>, which <c>CliFlags.Parse</c> turns into an empty, non-null list)
+    /// resolves to <c>""</c> rather than throwing — <see cref="RunAsync"/>'s own
+    /// <c>languages.Select(...)</c> then produces zero cells for it, same as every other scenario
+    /// does for an empty language set, instead of the whole harness run crashing.
     /// </summary>
     internal static string CanonicalLanguage(IReadOnlyCollection<string> languages) =>
         LanguagePriority.FirstOrDefault(l => languages.Contains(l, StringComparer.OrdinalIgnoreCase))
-        ?? languages.First();
+        ?? languages.FirstOrDefault()
+        ?? string.Empty;
 
     public async Task<IReadOnlyList<ReportCell>> RunAsync(
         IReadOnlyCollection<string> languages,
@@ -67,6 +72,12 @@ public sealed class NavPropertyRejectedScenario(
         string actingToken,
         CancellationToken ct = default)
     {
+        // No language requested — no cell to produce, and (unlike a non-empty request whose
+        // canonical column still has to make the one real check) nothing worth spending a
+        // gRPC round trip on either.
+        if (languages.Count == 0)
+            return [];
+
         // The same headers the drivers use: the service bearer already rides the channel's own
         // CallCredentials (see Program.cs), and the acting-user identity goes per-call — both are
         // required for the request to reach relation validation rather than stopping at the
