@@ -22,6 +22,15 @@ namespace Iverson.ClientConformance.Scenarios;
 /// (<c>ObjectMappingGrpcService.Post</c> calls <c>EnforceWriteAuthorization</c> first), so the
 /// PermissionDenied that produces would name nothing about the real precondition this scenario
 /// exists to check.
+///
+/// There is exactly ONE server-side observation here — no client library is involved at all — so
+/// it must never be rendered as five independent per-language verifications the way S1's genuinely
+/// independent driver runs are. Only one language (<see cref="CanonicalLanguage"/>, chosen
+/// deterministically so the same column always carries it) gets the real
+/// <see cref="CellStatus.Ok"/>/<see cref="CellStatus.Fail"/> outcome; every other requested
+/// language renders as <see cref="CellStatus.Skip"/> with a reason naming the canonical column,
+/// reusing S2's existing "this language did not run, and here is why" mechanism rather than
+/// inventing a new report concept for one scenario.
 /// </summary>
 public sealed class NavPropertyRejectedScenario(
     ObjectMappingService.ObjectMappingServiceClient mapping)
@@ -32,6 +41,25 @@ public sealed class NavPropertyRejectedScenario(
     private const string NavPropertyName = "Author";
     private const string ForeignKeyName = "AuthorId";
     private const string RelatedTypeName = "S3NavAuthor";
+
+    /// <summary>
+    /// Fixed priority order for picking which single requested language carries this scenario's
+    /// one real outcome — independent of the order <c>--languages</c> happened to list them in,
+    /// so re-running with the same language set always lands the result in the same column.
+    /// </summary>
+    private static readonly IReadOnlyList<string> LanguagePriority =
+        ["dotnet", "go", "java", "python", "typescript"];
+
+    /// <summary>
+    /// Picks the one language, among those requested, that carries this scenario's single
+    /// server-side observation. Falls back to whichever language happens to be first when none
+    /// of the requested set matches the fixed priority list (e.g. a caller passing an unrecognized
+    /// name) — deterministic within a single run either way, since it always resolves the same
+    /// requested collection the same way.
+    /// </summary>
+    internal static string CanonicalLanguage(IReadOnlyCollection<string> languages) =>
+        LanguagePriority.FirstOrDefault(l => languages.Contains(l, StringComparer.OrdinalIgnoreCase))
+        ?? languages.First();
 
     public async Task<IReadOnlyList<ReportCell>> RunAsync(
         IReadOnlyCollection<string> languages,
@@ -45,39 +73,50 @@ public sealed class NavPropertyRejectedScenario(
         // authorization gate (schema_admin for RegisterSchema; the fixture's own row permissions
         // for Post).
         var headers = new Metadata { { "x-acting-user-authorization", $"Bearer {actingToken}" } };
+        var canonical = CanonicalLanguage(languages);
 
+        ReportCell canonicalCell;
         try
         {
             await RegisterFixtureAsync(headers, ct);
+
+            var payload = BuildIllegalPayload(context);
+
+            RpcException? caught = null;
+            try
+            {
+                await mapping.PostAsync(
+                    new MappingWriteRequest { TypeName = TypeName, Payload = payload },
+                    headers, cancellationToken: ct);
+            }
+            catch (RpcException ex)
+            {
+                caught = ex;
+            }
+
+            var failures = Judge(caught).Where(a => !a.Passed).ToList();
+            canonicalCell = failures.Count == 0
+                ? ReportCell.Ok(canonical, Name)
+                : ReportCell.Fail(canonical, Name, string.Join(
+                    Environment.NewLine + "    ",
+                    failures.Select(f => $"{f.Name} — {f.Detail}")));
         }
         catch (Exception ex)
         {
-            var failure = $"fixture registration failed: {Describe(ex)}";
-            return languages.Select(l => ReportCell.Fail(l, Name, failure)).ToList();
+            canonicalCell = ReportCell.Fail(canonical, Name, $"fixture registration failed: {Describe(ex)}");
         }
 
-        var payload = BuildIllegalPayload(context);
-
-        RpcException? caught = null;
-        try
-        {
-            await mapping.PostAsync(
-                new MappingWriteRequest { TypeName = TypeName, Payload = payload },
-                headers, cancellationToken: ct);
-        }
-        catch (RpcException ex)
-        {
-            caught = ex;
-        }
-
-        var failures = Judge(caught).Where(a => !a.Passed).ToList();
-        if (failures.Count == 0)
-            return languages.Select(l => ReportCell.Ok(l, Name)).ToList();
-
-        var detail = string.Join(
-            Environment.NewLine + "    ",
-            failures.Select(f => $"{f.Name} — {f.Detail}"));
-        return languages.Select(l => ReportCell.Fail(l, Name, detail)).ToList();
+        // Every other requested language did not run anything for this scenario at all — reusing
+        // S2's skip-with-reason mechanism rather than a copy of the canonical outcome is what
+        // keeps the matrix from reading as five independent verifications of one server call.
+        return languages
+            .Select(l => string.Equals(l, canonical, StringComparison.OrdinalIgnoreCase)
+                ? canonicalCell
+                : ReportCell.Skip(l, Name,
+                    "nav-property-rejected is a single orchestrator-side gRPC check — no client " +
+                    "library is involved — so it runs exactly once rather than once per language; " +
+                    $"see the '{canonical}' column for the real result"))
+            .ToList();
     }
 
     /// <summary>
