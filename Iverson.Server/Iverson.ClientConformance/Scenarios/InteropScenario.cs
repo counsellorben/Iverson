@@ -108,21 +108,60 @@ public sealed class InteropScenario(
             .Where(l => languages.Contains(l, StringComparer.OrdinalIgnoreCase))
             .ToList();
 
-        var writers = orderedRequested
-            .Where(l => Alive(states).Contains(l, StringComparer.OrdinalIgnoreCase) &&
-                        runner.KeysByLanguage.TryGetValue(l, out var keys) &&
-                        keys.ContainsKey("shared_article"))
-            .ToList();
+        var aliveLanguages = new HashSet<string>(Alive(states), StringComparer.OrdinalIgnoreCase);
+        var readerLanguages = new HashSet<string>(readDocuments.Keys, StringComparer.OrdinalIgnoreCase);
 
-        var readers = orderedRequested
-            .Where(l => readDocuments.ContainsKey(l))
-            .ToList();
+        var (writers, readers, _) = SelectWriterReaderPairs(
+            orderedRequested, aliveLanguages, runner.KeysByLanguage, readerLanguages);
 
         foreach (var writer in writers)
             foreach (var (reader, assertion) in JudgeAgreement(writer, readers, readDocuments))
                 states[reader].Assertions.Add(assertion);
 
         return states.Select(kv => Cell(kv.Key, kv.Value)).ToList();
+    }
+
+    // ── writer/reader selection (the RunAsync wiring, pulled out so it is unit-testable) ────────
+
+    /// <summary>
+    /// Decides which languages count as writers, which count as readers, and every
+    /// (writer, reader) pair whose agreement <see cref="JudgeAgreement"/> must judge — the pure
+    /// decision <c>RunAsync</c> otherwise made inline. A writer must both be alive (no earlier
+    /// phase set its <see cref="LanguageState.Terminal"/>) AND have actually reported a
+    /// <c>shared_article</c> key in <paramref name="keysByLanguage"/> — a language that merely
+    /// survived the write phase without the driver reporting a key (e.g. the write itself
+    /// silently produced no row) must not enter the fan-out as a writer with nothing to read. A
+    /// reader only needs to have produced a read-phase document at all; <see cref="JudgeAgreement"/>
+    /// itself judges whether that document actually contains the expected read step.
+    ///
+    /// Both lists preserve <see cref="LanguagePriority"/> order (already applied to
+    /// <paramref name="orderedRequested"/>), so a re-run with the same language set always
+    /// produces the same writer/reader ordering — the same determinism <c>JudgeAgreement</c>'s
+    /// "first alive reader is canonical" rule depends on.
+    /// </summary>
+    internal static (IReadOnlyList<string> Writers, IReadOnlyList<string> Readers, IReadOnlyList<(string Writer, string Reader)> Pairs)
+        SelectWriterReaderPairs(
+            IReadOnlyList<string> orderedRequested,
+            IReadOnlySet<string> aliveLanguages,
+            IReadOnlyDictionary<string, IReadOnlyDictionary<string, string>> keysByLanguage,
+            IReadOnlySet<string> readerLanguages)
+    {
+        var writers = orderedRequested
+            .Where(l => aliveLanguages.Contains(l) &&
+                        keysByLanguage.TryGetValue(l, out var keys) &&
+                        keys.ContainsKey("shared_article"))
+            .ToList();
+
+        var readers = orderedRequested
+            .Where(readerLanguages.Contains)
+            .ToList();
+
+        var pairs = new List<(string, string)>();
+        foreach (var writer in writers)
+            foreach (var reader in readers)
+                pairs.Add((writer, reader));
+
+        return (writers, readers, pairs);
     }
 
     // ── the cross-client agreement check ─────────────────────────────────────────────────────
