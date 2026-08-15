@@ -87,6 +87,26 @@ public class NamingRejectedScenarioTests
         cell.Detail.Should().Contain("required foreign-key name");
     }
 
+    // Guards the "actual, misnamed member" assertion independently of the "required foreign-key
+    // name" assertion above: an error message can legitimately name AuthorId (e.g. because it is
+    // quoting the schema it expected) while never naming the member the driver actually declared
+    // ('writer'/'writerId'/'WriterId'). Without this test, disabling the actual-member-name check
+    // entirely left the whole suite green — found during Task 11's mutation pass.
+    [Fact]
+    public void Judge_ErrorMissingTheActualMemberName_Fails()
+    {
+        var document = new PhaseDocument("go", "register",
+        [
+            new StepResult("register", false,
+                Error: "a many_to_one foreign-key field must be named 'AuthorId'"),
+        ]);
+
+        var cell = NamingRejectedScenario.Judge("go", document);
+
+        cell.Status.Should().Be(CellStatus.Fail);
+        cell.Detail.Should().Contain("actual, misnamed member");
+    }
+
     [Fact]
     public void Judge_NoRegisterStepReported_Fails()
     {

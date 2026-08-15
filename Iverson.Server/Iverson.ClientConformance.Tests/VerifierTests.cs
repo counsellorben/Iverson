@@ -228,6 +228,45 @@ public class VerifierTests
         results.Should().Contain(r => r.Passed && r.Name.Contains("expected relation kinds"));
     }
 
+    // Guards the "declares exactly one key property" assertion in isolation. Without this test,
+    // hardcoding that assertion to true left the whole suite green — found during Task 11's
+    // mutation pass.
+    [Fact]
+    public void VerifyRegistration_fails_a_descriptor_with_zero_key_properties()
+    {
+        var descriptor = Verifier.ParseDescriptor(Json("""
+            {
+              "typeName": "Tag", "tenantField": "tenant_id",
+              "properties": [ { "name": "id" }, { "name": "tenant_id" } ],
+              "relations": []
+            }
+            """));
+
+        var results = Verifier.VerifyRegistration("tag", descriptor, []);
+
+        results.Should().Contain(r => !r.Passed && r.Name.Contains("exactly one key property"));
+    }
+
+    [Fact]
+    public void VerifyRegistration_fails_a_descriptor_with_two_key_properties()
+    {
+        var descriptor = Verifier.ParseDescriptor(Json("""
+            {
+              "typeName": "Tag", "tenantField": "tenant_id",
+              "properties": [
+                { "name": "id", "isKey": true },
+                { "name": "id2", "isKey": true },
+                { "name": "tenant_id" }
+              ],
+              "relations": []
+            }
+            """));
+
+        var results = Verifier.VerifyRegistration("tag", descriptor, []);
+
+        results.Should().Contain(r => !r.Passed && r.Name.Contains("exactly one key property"));
+    }
+
     // ── compared value set ───────────────────────────────────────────────────────────────────
 
     [Fact]

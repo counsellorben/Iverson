@@ -116,6 +116,30 @@ public class NavPropertyRejectedScenarioTests
         navAssertion.Passed.Should().BeTrue();
     }
 
+    // Guards the nav-property-name assertion independently of the message assertion above.
+    // Note 'AuthorId' (the required foreign key) always contains 'Author' (the navigation
+    // property) as a substring in this fixture, so a message naming the foreign key necessarily
+    // also "names" the navigation property — there is no message that passes the foreign-key
+    // check while failing this one. The only message shape that can isolate a broken
+    // nav-property-name check is one missing BOTH terms. Without this test, disabling the
+    // nav-property-name check entirely (hardcoding it to true) left the whole suite green —
+    // found during Task 11's mutation pass, the same gap S2's actual-member-name assertion had.
+    [Fact]
+    public void Judge_MessageMissingBothTerms_FailsTheNavPropertyNameAssertion()
+    {
+        var caught = new RpcException(new Status(
+            StatusCode.InvalidArgument,
+            "some unrelated validation error"));
+
+        var assertions = NavPropertyRejectedScenario.Judge(caught);
+
+        var navAssertion = assertions.Single(a => a.Name.Contains("navigation property"));
+        navAssertion.Passed.Should().BeFalse();
+
+        var fkAssertion = assertions.Single(a => a.Name.Contains("required foreign key"));
+        fkAssertion.Passed.Should().BeFalse();
+    }
+
     // ── CanonicalLanguage: the fix for the "five independent-looking ok cells for one
     // orchestrator-side check" finding. Only this one language's cell may ever carry the real
     // Ok/Fail outcome; every other requested language must render as Skip instead — see
