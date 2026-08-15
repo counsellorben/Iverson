@@ -26,12 +26,13 @@ import {
     TypeDescriptor,
 } from '../generated/object_mapping.js';
 
-import { TsArticle, TsAuthor, TsBadArticle, TsTag } from './models.js';
+import { SharedArticle, SharedAuthor, TsArticle, TsAuthor, TsBadArticle, TsTag } from './models.js';
 
 const LANGUAGE = 'typescript';
 // naming-rejected (S2) is register-phase-only: the orchestrator never invokes this driver for
-// any other phase under it.
-const SCENARIOS = new Set(['crud-roundtrip', 'naming-rejected']);
+// any other phase under it. interop (S4) is register-phase-NEVER for this driver: only .NET
+// registers SharedAuthor/SharedArticle (register-once rule).
+const SCENARIOS = new Set(['crud-roundtrip', 'naming-rejected', 'interop']);
 
 // ── Argument parsing ────────────────────────────────────────────────────────────
 
@@ -172,6 +173,19 @@ function parseKeys(keysJson: string | undefined, language: string): Record<strin
         // fall through to empty
     }
     return {};
+}
+
+/** The full language-qualified `--keys` map, unlike `parseKeys` which slices out one language. S4
+ * interop's read phase needs every language's reported `shared_article` key, not just this
+ * driver's own. */
+function parseKeysAll(keysJson: string | undefined): Record<string, Record<string, string>> {
+    if (!keysJson) return {};
+    try {
+        const byLanguage = JSON.parse(keysJson);
+        return byLanguage && typeof byLanguage === 'object' ? byLanguage : {};
+    } catch {
+        return {};
+    }
 }
 
 // ── Descriptor capture (sanctioned seam: SchemaRegistrar's mapping-client constructor param) ──
@@ -349,6 +363,64 @@ async function main(argv: string[]): Promise<number> {
         addRegisterStep('register', typeHint, 'TsArticle');
         addRegisterStep('register_author', 'TsAuthor');
         addRegisterStep('register_tag', 'TsTag');
+    } else if (phase === 'write' && scenario === 'interop') {
+        // S4 interop: writes SharedAuthor then SharedArticle, reporting keys "shared_author" and
+        // "shared_article".
+        let sharedAuthorKey: string | undefined;
+        let sharedArticleKey: string | undefined;
+
+        const sharedWriters: Array<[string, string, () => Promise<StepResult>]> = [
+            ['write_shared_author', 'shared_author', async () => {
+                const entity = new SharedAuthor();
+                entity.tenantId = tenant;
+                entity.ownerId = ownerId;
+                entity.name = `shared-author-${idPrefix}`;
+                sharedAuthorKey = await client.coordinator(SharedAuthor).persist(entity);
+                return step('write_shared_author', true, { entity: entityToPlain(entity) });
+            }],
+            ['write_shared_article', 'shared_article', async () => {
+                const entity = new SharedArticle();
+                entity.tenantId = tenant;
+                entity.ownerId = ownerId;
+                entity.title = `shared-title-${idPrefix}`;
+                if (sharedAuthorKey !== undefined) entity.sharedAuthorId = sharedAuthorKey;
+                sharedArticleKey = await client.coordinator(SharedArticle).persist(entity);
+                return step('write_shared_article', true, { entity: entityToPlain(entity) });
+            }],
+        ];
+
+        const sharedKeyValues: Record<string, () => string | undefined> = {
+            shared_author: () => sharedAuthorKey,
+            shared_article: () => sharedArticleKey,
+        };
+
+        for (const [name, keyName, body] of sharedWriters) {
+            let result: StepResult;
+            try {
+                result = await body();
+            } catch (err) {
+                result = step(name, false, { error: describe(err) });
+            }
+            const keyValue = sharedKeyValues[keyName]();
+            if (keyValue !== undefined) result.keys = { [keyName]: keyValue };
+            steps.push(result);
+        }
+    } else if (phase === 'read' && scenario === 'interop') {
+        // Iterates every language's reported "shared_article" key from the full --keys map (not
+        // just this driver's own slice), so this one driver invocation reads all five languages'
+        // rows — the fan-out that produces 25 reads across the five drivers.
+        const allKeys = parseKeysAll(args.optional('--keys'));
+        for (const writerLanguage of Object.keys(allKeys).sort()) {
+            const key = allKeys[writerLanguage]?.shared_article;
+            if (!key) continue;
+            const name = `read_shared_article_${writerLanguage}`;
+            try {
+                const article = await client.coordinator(SharedArticle).get(key);
+                steps.push(step(name, true, { entity: entityToPlain(article) }));
+            } catch (err) {
+                steps.push(step(name, false, { error: describe(err) }));
+            }
+        }
     } else if (phase === 'write') {
         // Keys are server-assigned: create requests must omit id entirely, and each row's key is
         // only known — and only reported — once persist() resolves with it. authorKey/tagKey are

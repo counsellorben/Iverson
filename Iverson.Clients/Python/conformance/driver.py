@@ -34,12 +34,13 @@ from google.protobuf.json_format import MessageToJson
 from iverson_client.core import EntityCoordinator, SchemaRegistrar
 from iverson_client.generated import object_mapping_pb2_grpc as mapping_grpc
 
-from conformance.models import PyArticle, PyAuthor, PyBadArticle, PyTag
+from conformance.models import PyArticle, PyAuthor, PyBadArticle, PyTag, SharedArticle, SharedAuthor
 
 LANGUAGE = "python"
 # naming-rejected (S2) is register-phase-only: the orchestrator never invokes this driver for
-# any other phase under it.
-SCENARIOS = {"crud-roundtrip", "naming-rejected"}
+# any other phase under it. interop (S4) is register-phase-NEVER for this driver: only .NET
+# registers SharedAuthor/SharedArticle (register-once rule).
+SCENARIOS = {"crud-roundtrip", "naming-rejected", "interop"}
 
 
 # ── Argument parsing ──────────────────────────────────────────────────────────
@@ -145,6 +146,16 @@ def parse_keys(keys_json: Optional[str], language: str) -> Dict[str, str]:
         return {}
     by_language = json.loads(keys_json)
     return by_language.get(language, {}) if isinstance(by_language, dict) else {}
+
+
+def parse_keys_all(keys_json: Optional[str]) -> Dict[str, Dict[str, str]]:
+    """The full language-qualified --keys map, unlike parse_keys which slices out one language.
+    S4 interop's read phase needs every language's reported ``shared_article`` key, not just this
+    driver's own."""
+    if not keys_json:
+        return {}
+    by_language = json.loads(keys_json)
+    return by_language if isinstance(by_language, dict) else {}
 
 
 # ── Registration channel (public API only) ──────────────────────────────────
@@ -404,6 +415,57 @@ def main(argv: List[str]) -> int:
         add_register_step("register", capture.select(type_hint, "PyArticle"))
         add_register_step("register_author", capture.select("PyAuthor"))
         add_register_step("register_tag", capture.select("PyTag"))
+
+    elif phase == "write" and scenario == "interop":
+        # S4 interop: writes SharedAuthor then SharedArticle, reporting keys "shared_author" and
+        # "shared_article".
+        shared_keys: dict = {"shared_author": None, "shared_article": None}
+
+        def write_shared_author() -> StepResult:
+            entity = SharedAuthor()
+            entity.tenant_id = tenant
+            entity.owner_id = owner_id
+            entity.name = f"shared-author-{id_prefix}"
+            shared_keys["shared_author"] = coordinator(SharedAuthor).persist(entity)
+            return StepResult("write_shared_author", True, entity=entity_to_dict(entity))
+
+        def write_shared_article() -> StepResult:
+            entity = SharedArticle()
+            entity.tenant_id = tenant
+            entity.owner_id = owner_id
+            entity.title = f"shared-title-{id_prefix}"
+            if shared_keys["shared_author"] is not None:
+                entity.shared_author_id = uuid.UUID(shared_keys["shared_author"])
+            shared_keys["shared_article"] = coordinator(SharedArticle).persist(entity)
+            return StepResult("write_shared_article", True, entity=entity_to_dict(entity))
+
+        for name, body, key_name in (
+            ("write_shared_author", write_shared_author, "shared_author"),
+            ("write_shared_article", write_shared_article, "shared_article"),
+        ):
+            try:
+                result = body()
+            except Exception as exc:  # noqa: BLE001
+                result = StepResult(name, False, error=describe(exc))
+            if shared_keys[key_name] is not None:
+                result.keys = {key_name: str(shared_keys[key_name])}
+            steps.append(result)
+
+    elif phase == "read" and scenario == "interop":
+        # Iterates every language's reported "shared_article" key from the full --keys map (not
+        # just this driver's own slice), so this one driver invocation reads all five languages'
+        # rows — the fan-out that produces 25 reads across the five drivers.
+        all_keys = parse_keys_all(args.optional("--keys"))
+        for writer_language in sorted(all_keys):
+            key = all_keys[writer_language].get("shared_article")
+            if not key:
+                continue
+            name = f"read_shared_article_{writer_language}"
+            try:
+                article = coordinator(SharedArticle).get(key)
+                steps.append(StepResult(name, True, entity=entity_to_dict(article)))
+            except Exception as exc:  # noqa: BLE001
+                steps.append(StepResult(name, False, error=describe(exc)))
 
     elif phase == "write":
         # Keys are server-assigned: create requests must omit id entirely, and each row's key is

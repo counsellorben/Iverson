@@ -86,6 +86,7 @@ try
         runner, mapping, new Reregistrar(mapping), new PostgresProbe(postgresCs), Console.WriteLine);
     var namingRejected = new NamingRejectedScenario(runner);
     var navPropertyRejected = new NavPropertyRejectedScenario(mapping);
+    var interop = new InteropScenario(runner, new Reregistrar(mapping), Console.WriteLine);
 
     DriverContext BuildContext(string scenarioName) => new(
         Scenario: scenarioName,
@@ -103,7 +104,11 @@ try
         IdPrefix: $"c{DateTime.UtcNow:yyyyMMddHHmmss}",
         ServiceToken: serviceToken);
 
-    var recognizedScenarios = new[] { CrudRoundtripScenario.Name, NamingRejectedScenario.Name, NavPropertyRejectedScenario.Name };
+    var recognizedScenarios = new[]
+    {
+        CrudRoundtripScenario.Name, NamingRejectedScenario.Name, NavPropertyRejectedScenario.Name,
+        InteropScenario.Name,
+    };
 
     if (scenarios.Contains(CrudRoundtripScenario.Name, StringComparer.OrdinalIgnoreCase))
     {
@@ -123,6 +128,13 @@ try
     {
         Console.WriteLine($"Running scenario '{NavPropertyRejectedScenario.Name}'...");
         foreach (var cell in await navPropertyRejected.RunAsync(languages, BuildContext(NavPropertyRejectedScenario.Name), actingToken))
+            report.Add(cell);
+    }
+
+    if (scenarios.Contains(InteropScenario.Name, StringComparer.OrdinalIgnoreCase))
+    {
+        Console.WriteLine($"Running scenario '{InteropScenario.Name}'...");
+        foreach (var cell in await interop.RunAsync(languages, BuildContext(InteropScenario.Name), actingToken))
             report.Add(cell);
     }
 

@@ -13,6 +13,8 @@ import io.iverson.client.core.SchemaRegistrar;
 import io.iverson.conformance.models.JavaArticle;
 import io.iverson.conformance.models.JavaAuthor;
 import io.iverson.conformance.models.JavaTag;
+import io.iverson.conformance.models.SharedArticle;
+import io.iverson.conformance.models.SharedAuthor;
 
 import java.lang.reflect.Type;
 import java.net.URI;
@@ -40,7 +42,12 @@ import java.util.concurrent.TimeUnit;
 public final class Driver {
 
     private static final String LANGUAGE = "java";
-    private static final String SCENARIO = "crud-roundtrip";
+    private static final String CRUD_ROUNDTRIP_SCENARIO = "crud-roundtrip";
+    // interop (S4) is register-phase-NEVER for this driver: only .NET registers
+    // SharedAuthor/SharedArticle (register-once rule) — see doRegister, which never handles it.
+    private static final String INTEROP_SCENARIO = "interop";
+    private static final java.util.Set<String> SUPPORTED_SCENARIOS =
+        java.util.Set.of(CRUD_ROUNDTRIP_SCENARIO, INTEROP_SCENARIO);
     private static final Gson GSON = new Gson();
 
     private Driver() {}
@@ -49,9 +56,9 @@ public final class Driver {
         Args parsedArgs = Args.parse(args);
 
         String scenario = parsedArgs.require("--scenario");
-        if (!SCENARIO.equals(scenario)) {
+        if (!SUPPORTED_SCENARIOS.contains(scenario)) {
             System.err.println(
-                "unsupported scenario '" + scenario + "'; this driver implements only '" + SCENARIO + "'");
+                "unsupported scenario '" + scenario + "'; this driver implements " + SUPPORTED_SCENARIOS);
             System.exit(2);
             return;
         }
@@ -86,16 +93,28 @@ public final class Driver {
         try {
             IversonClient client = new IversonClient(channel, credentials);
 
-            switch (phase) {
-                case "register" -> doRegister(client, capture, typeHint, steps);
-                case "write" -> doWrite(client, tenant, ownerId, idPrefix, steps);
-                case "read" -> doRead(client, idPrefix, priorKeys, steps);
-                case "update" -> doUpdate(client, tenant, ownerId, idPrefix, priorKeys, steps);
-                case "delete" -> doDelete(client, idPrefix, priorKeys, steps);
-                default -> {
-                    System.err.println("unknown phase '" + phase + "'");
-                    System.exit(2);
-                    return;
+            if (INTEROP_SCENARIO.equals(scenario)) {
+                switch (phase) {
+                    case "write" -> doInteropWrite(client, tenant, ownerId, idPrefix, steps);
+                    case "read" -> doInteropRead(client, parsedArgs.optional("--keys"), steps);
+                    default -> {
+                        System.err.println("unknown phase '" + phase + "' for scenario '" + scenario + "'");
+                        System.exit(2);
+                        return;
+                    }
+                }
+            } else {
+                switch (phase) {
+                    case "register" -> doRegister(client, capture, typeHint, steps);
+                    case "write" -> doWrite(client, tenant, ownerId, idPrefix, steps);
+                    case "read" -> doRead(client, idPrefix, priorKeys, steps);
+                    case "update" -> doUpdate(client, tenant, ownerId, idPrefix, priorKeys, steps);
+                    case "delete" -> doDelete(client, idPrefix, priorKeys, steps);
+                    default -> {
+                        System.err.println("unknown phase '" + phase + "'");
+                        System.exit(2);
+                        return;
+                    }
                 }
             }
         } finally {
@@ -254,6 +273,57 @@ public final class Driver {
         }));
     }
 
+    // ── S4 interop ───────────────────────────────────────────────────────────────────────────
+
+    /** Writes SharedAuthor then SharedArticle, reporting keys "shared_author" and "shared_article". */
+    private static void doInteropWrite(
+            IversonClient client, String tenant, String ownerId, String idPrefix, List<StepResult> steps) {
+        String[] authorKey = new String[1];
+
+        StepResult authorStep = step("write_shared_author", r -> {
+            SharedAuthor author = new SharedAuthor();
+            author.setTenantId(tenant);
+            author.setOwnerId(ownerId);
+            author.setName("shared-author-" + idPrefix);
+            authorKey[0] = new EntityCoordinator<>(client, SharedAuthor.class).persist(author);
+        });
+        if (authorKey[0] != null) authorStep.keys = Map.of("shared_author", authorKey[0]);
+        steps.add(authorStep);
+
+        String[] articleKey = new String[1];
+
+        StepResult articleStep = step("write_shared_article", r -> {
+            SharedArticle article = new SharedArticle();
+            article.setTenantId(tenant);
+            article.setOwnerId(ownerId);
+            article.setTitle("shared-title-" + idPrefix);
+            if (authorKey[0] != null) article.setSharedAuthorId(UUID.fromString(authorKey[0]));
+            articleKey[0] = new EntityCoordinator<>(client, SharedArticle.class).persist(article);
+        });
+        if (articleKey[0] != null) articleStep.keys = Map.of("shared_article", articleKey[0]);
+        steps.add(articleStep);
+    }
+
+    /**
+     * Iterates every language's reported "shared_article" key from the full --keys map (not just
+     * this driver's own slice), so this one driver invocation reads all five languages' rows —
+     * the fan-out that produces 25 reads across the five drivers.
+     */
+    private static void doInteropRead(IversonClient client, String keysJson, List<StepResult> steps) {
+        Map<String, Map<String, String>> allKeys = Keys.parseAll(keysJson);
+        EntityCoordinator<SharedArticle> coordinator = new EntityCoordinator<>(client, SharedArticle.class);
+
+        allKeys.keySet().stream().sorted().forEach(writerLanguage -> {
+            String key = allKeys.get(writerLanguage).get("shared_article");
+            if (key == null || key.isEmpty()) return;
+
+            steps.add(step("read_shared_article_" + writerLanguage, r -> {
+                SharedArticle article = coordinator.get(key);
+                r.entity = article == null ? null : GSON.toJsonTree(article);
+            }));
+        });
+    }
+
     // ── helpers ──────────────────────────────────────────────────────────────────────────────
 
     @FunctionalInterface
@@ -349,6 +419,17 @@ public final class Driver {
 
             Map<String, String> mine = byLanguage.get(language);
             return mine == null ? Map.of() : mine;
+        }
+
+        /** The full language-qualified --keys map, unlike {@link #parse} which slices out one
+         * language. S4 interop's read phase needs every language's reported "shared_article" key,
+         * not just this driver's own. */
+        static Map<String, Map<String, String>> parseAll(String keysJson) {
+            if (keysJson == null || keysJson.isBlank()) return Map.of();
+
+            Type type = new TypeToken<Map<String, Map<String, String>>>() {}.getType();
+            Map<String, Map<String, String>> byLanguage = GSON.fromJson(keysJson, type);
+            return byLanguage == null ? Map.of() : byLanguage;
         }
     }
 

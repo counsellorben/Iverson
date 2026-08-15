@@ -38,6 +38,24 @@ type GoArticle struct {
 	GoTagIds   []string `iverson:"many_to_many:GoTag"`
 }
 
+// SharedAuthor and SharedArticle are S4 interop's fixtures. Every one of the five drivers declares
+// the same type names and shapes; only the .NET driver ever registers them (register-once rule),
+// so Go's own SchemaRegistrar is never invoked for these two types.
+type SharedAuthor struct {
+	Id       string `iverson_key:"true" iverson_guid:"true"`
+	TenantId string `iverson_tenant:"true"`
+	OwnerId  string
+	Name     string
+}
+
+type SharedArticle struct {
+	Id             string `iverson_key:"true" iverson_guid:"true"`
+	TenantId       string `iverson_tenant:"true"`
+	OwnerId        string
+	Title          string
+	SharedAuthorId string `iverson:"many_to_one:SharedAuthor"`
+}
+
 // GoBadArticle exists only for the naming-rejected (S2) conformance scenario. WriterId declares
 // a many_to_one relation to GoAuthor but is not named AuthorId — the name
 // iverson/registrar.go's buildRequest requires, since the field itself IS the foreign key.

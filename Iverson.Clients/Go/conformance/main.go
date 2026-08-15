@@ -17,6 +17,7 @@ import (
 	"net"
 	"net/url"
 	"os"
+	"sort"
 	"strings"
 
 	"google.golang.org/grpc"
@@ -36,6 +37,7 @@ const (
 var supportedScenarios = map[string]bool{
 	"crud-roundtrip":  true,
 	"naming-rejected": true,
+	"interop":         true,
 }
 
 // ── Argument parsing ──────────────────────────────────────────────────────────
@@ -164,6 +166,20 @@ func parseKeys(keysJSON, lang string) map[string]string {
 	}
 	if m, ok := byLanguage[lang]; ok {
 		return m
+	}
+	return out
+}
+
+// parseKeysAll returns the full language-qualified --keys map, unlike parseKeys which slices out
+// one language. S4 interop's read phase needs every language's reported "shared_article" key, not
+// just this driver's own.
+func parseKeysAll(keysJSON string) map[string]map[string]string {
+	out := map[string]map[string]string{}
+	if keysJSON == "" {
+		return out
+	}
+	if err := json.Unmarshal([]byte(keysJSON), &out); err != nil {
+		return map[string]map[string]string{}
 	}
 	return out
 }
@@ -396,8 +412,85 @@ func run(argv []string) int {
 
 	var steps []stepResult
 
-	switch phase {
-	case "register":
+	switch {
+	case phase == "write" && sc == "interop":
+		// S4 interop: writes SharedAuthor then SharedArticle, reporting keys "shared_author" and
+		// "shared_article" — no tag, no naming-rejected branch, since this scenario has neither.
+		var authorKey string
+
+		authorCoord, authorCoordErr := iverson.NewEntityCoordinator(client, SharedAuthor{})
+		articleCoord, articleCoordErr := iverson.NewEntityCoordinator(client, SharedArticle{})
+
+		writeStep := func(name, keyName string, do func() (interface{}, string, error)) stepResult {
+			var step stepResult
+			entity, key, err := do()
+			if err != nil {
+				step = failStep(name, err)
+			} else {
+				step = okStep(name)
+				step.Entity = entityJSON(entity)
+			}
+			if key != "" {
+				step.Keys = map[string]string{keyName: key}
+			}
+			return step
+		}
+
+		steps = append(steps, writeStep("write_shared_author", "shared_author", func() (interface{}, string, error) {
+			if authorCoordErr != nil {
+				return nil, "", authorCoordErr
+			}
+			entity := SharedAuthor{TenantId: tenant, OwnerId: ownerID, Name: "shared-author-" + idPrefix}
+			key, err := authorCoord.Persist(ctx, entity)
+			if err == nil {
+				authorKey = key
+			}
+			return entity, key, err
+		}))
+
+		steps = append(steps, writeStep("write_shared_article", "shared_article", func() (interface{}, string, error) {
+			if articleCoordErr != nil {
+				return nil, "", articleCoordErr
+			}
+			entity := SharedArticle{
+				TenantId: tenant, OwnerId: ownerID, Title: "shared-title-" + idPrefix,
+				SharedAuthorId: authorKey,
+			}
+			key, err := articleCoord.Persist(ctx, entity)
+			return entity, key, err
+		}))
+
+	case phase == "read" && sc == "interop":
+		// Iterates every language's reported "shared_article" key from the full --keys map (not
+		// just Go's own slice), so this one driver invocation reads all five languages' rows —
+		// the fan-out that produces 25 reads across the five drivers.
+		articleCoord, articleCoordErr := iverson.NewEntityCoordinator(client, SharedArticle{})
+		articleTypeName, articleTypeErr := typeNameOf(SharedArticle{})
+
+		allKeys := parseKeysAll(a.optional("--keys"))
+		languages := make([]string, 0, len(allKeys))
+		for lang := range allKeys {
+			languages = append(languages, lang)
+		}
+		sort.Strings(languages)
+
+		for _, writerLanguage := range languages {
+			key, ok := allKeys[writerLanguage]["shared_article"]
+			if !ok || key == "" {
+				continue
+			}
+			name := "read_shared_article_" + writerLanguage
+			if articleCoordErr != nil {
+				steps = append(steps, failStep(name, articleCoordErr))
+			} else if articleTypeErr != nil {
+				steps = append(steps, failStep(name, articleTypeErr))
+			} else {
+				steps = append(steps, reportGet(ctx, client, name, articleTypeName, key,
+					func() (interface{}, error) { return articleCoord.Get(ctx, key) }))
+			}
+		}
+
+	case phase == "register":
 		if sc == "naming-rejected" {
 			// GoBadArticle's WriterId member fails registrar.buildRequest's naming check before
 			// any RegisterSchema call is issued — the capture wrapper never sees a request to
@@ -436,7 +529,7 @@ func run(argv []string) int {
 		addRegisterStep("register_author", capture.selectDescriptor("GoAuthor"))
 		addRegisterStep("register_tag", capture.selectDescriptor("GoTag"))
 
-	case "write":
+	case phase == "write":
 		// Keys are server-assigned: create requests must omit Id entirely, and each row's key is
 		// only known — and only reported — once Persist returns it. authorKey/tagKey are filled
 		// in by the write_author/write_tag closures below and read by write_article, which runs
@@ -500,7 +593,7 @@ func run(argv []string) int {
 			return entity, key, err
 		}))
 
-	case "read":
+	case phase == "read":
 		// Two gets at depth 0 (EntityCoordinator.Get performs no relation traversal), reported
 		// separately so a failure on one is not conflated with the other.
 		articleCoord, articleCoordErr := iverson.NewEntityCoordinator(client, GoArticle{})
@@ -527,7 +620,7 @@ func run(argv []string) int {
 				func() (interface{}, error) { return authorCoord.Get(ctx, authorKey) }))
 		}
 
-	case "update":
+	case phase == "update":
 		articleCoord, articleCoordErr := iverson.NewEntityCoordinator(client, GoArticle{})
 		if articleCoordErr != nil {
 			steps = append(steps, failStep("update", articleCoordErr))
@@ -548,7 +641,7 @@ func run(argv []string) int {
 			steps = append(steps, step)
 		}
 
-	case "delete":
+	case phase == "delete":
 		articleCoord, articleCoordErr := iverson.NewEntityCoordinator(client, GoArticle{})
 		deleteKey := keyFor("article")
 

@@ -50,6 +50,29 @@ class PyArticle:
 
 
 @iverson_entity
+class SharedAuthor:
+    """S4 ``interop``'s "one" side. Every one of the five drivers declares the same type name and
+    shape; only the .NET driver ever registers it (register-once rule), so this driver's own
+    ``SchemaRegistrar`` is never invoked for it."""
+
+    id: uuid.UUID = iverson_key()
+    tenant_id: str = iverson_tenant()
+    owner_id: str = None
+    name: str = None
+
+
+@iverson_entity
+class SharedArticle:
+    """S4 ``interop``'s root type."""
+
+    id: uuid.UUID = iverson_key()
+    tenant_id: str = iverson_tenant()
+    owner_id: str = None
+    title: str = None
+    shared_author_id: str = many_to_one("SharedAuthor")
+
+
+@iverson_entity
 class PyBadArticle:
     """Exists only for the naming-rejected (S2) conformance scenario. ``writer_id`` declares a
     many_to_one relation to PyAuthor but is not named ``author_id`` — the name

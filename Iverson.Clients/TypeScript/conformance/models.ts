@@ -74,6 +74,43 @@ export class TsArticle {
 }
 
 /**
+ * S4 `interop`'s "one" side. Every one of the five drivers declares the same type name and
+ * shape; only the .NET driver ever registers it (register-once rule), so this driver's own
+ * `SchemaRegistrar` is never invoked for it.
+ */
+@IversonEntity()
+export class SharedAuthor {
+    @IversonKey()
+    @IversonGuid()
+    id: string = '';
+
+    @IversonTenant()
+    tenantId: string = '';
+
+    ownerId: string = '';
+
+    name: string = '';
+}
+
+/** S4 `interop`'s root type. */
+@IversonEntity()
+export class SharedArticle {
+    @IversonKey()
+    @IversonGuid()
+    id: string = '';
+
+    @IversonTenant()
+    tenantId: string = '';
+
+    ownerId: string = '';
+
+    title: string = '';
+
+    @ManyToOne(() => SharedAuthor)
+    sharedAuthorId: string = '';
+}
+
+/**
  * Exists only for the naming-rejected (S2) conformance scenario. `writerId` declares a
  * `ManyToOne` relation to `TsAuthor` but is not named `authorId` — the name `SchemaRegistrar`
  * requires, since the field itself IS the foreign key. Registering this type must fail

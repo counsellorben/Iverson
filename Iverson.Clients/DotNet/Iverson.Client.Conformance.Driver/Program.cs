@@ -15,15 +15,20 @@ using Microsoft.Extensions.Logging.Abstractions;
 // means the driver itself broke (bad flags, unsupported scenario, unwritable --out).
 
 const string Language = "dotnet";
-const string Scenario = "crud-roundtrip";
+const string CrudRoundtripScenario = "crud-roundtrip";
+// interop (S4): only the .NET driver ever runs this scenario's register phase — see
+// Scenarios/InteropScenario.cs for the register-once rule. The other four drivers only ever see
+// this scenario's write/read phases.
+const string InteropScenario = "interop";
+var supportedScenarios = new[] { CrudRoundtripScenario, InteropScenario };
 
 var args_ = Args.Parse(args);
 
 var scenario = args_.Require("--scenario");
-if (!string.Equals(scenario, Scenario, StringComparison.Ordinal))
+if (!supportedScenarios.Contains(scenario, StringComparer.Ordinal))
 {
     await Console.Error.WriteLineAsync(
-        $"unsupported scenario '{scenario}'; this driver implements only '{Scenario}'");
+        $"unsupported scenario '{scenario}'; this driver implements {string.Join(", ", supportedScenarios)}");
     return 2;
 }
 
@@ -75,6 +80,125 @@ Guid KeyFor(string logicalName) =>
 
 var steps = new List<StepResult>();
 
+if (scenario == InteropScenario)
+{
+    await RunInteropAsync();
+}
+else
+{
+    await RunCrudRoundtripAsync();
+}
+
+var document = new PhaseDocument(Language, phase, steps);
+Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(outPath))!);
+await File.WriteAllTextAsync(outPath, JsonSerializer.Serialize(document, Json.DocumentOptions));
+return 0;
+
+// ── S4 interop ───────────────────────────────────────────────────────────────────────────────
+async Task RunInteropAsync()
+{
+    switch (phase)
+    {
+        case "register":
+        {
+            // Only the .NET driver ever runs this phase for interop (register-once rule; see
+            // Scenarios/InteropScenario.cs). Registers SharedAuthor then SharedArticle, without
+            // an authorization block — the orchestrator re-registers both once with one added.
+            string? registerOutcome = null;
+            foreach (var typeName in new[] { nameof(SharedAuthor), nameof(SharedArticle) })
+            {
+                capture.OnlySendTypeName = typeName;
+                registerOutcome = await Run(async () =>
+                {
+                    var registrar = new SchemaRegistrar(registry, mappingForRegistration, NullLogger<SchemaRegistrar>.Instance);
+                    await registrar.RegisterAllAsync();
+                });
+                if (registerOutcome is not null) break;
+            }
+
+            capture.OnlySendTypeName = null;
+
+            steps.Add(new StepResult(
+                "register_shared_author", Ok: registerOutcome is null, Error: registerOutcome,
+                TypeDescriptor: Json.Element(capture.Select(nameof(SharedAuthor)))));
+            steps.Add(new StepResult(
+                "register_shared_article", Ok: registerOutcome is null, Error: registerOutcome,
+                TypeDescriptor: Json.Element(capture.Select(nameof(SharedArticle)))));
+            break;
+        }
+
+        case "write":
+        {
+            Guid? authorKey = null;
+
+            await Step("write_shared_author",
+                async result =>
+                {
+                    var written = await Coordinator<SharedAuthor>().PostMappedAsync(new SharedAuthor
+                    {
+                        TenantId = tenant,
+                        OwnerId = ownerId,
+                        Name = $"shared-author-{idPrefix}",
+                    });
+                    authorKey = written?.Id;
+                    return result with { Entity = Json.Element(written) };
+                },
+                result => authorKey is { } key
+                    ? result with { Keys = new Dictionary<string, string> { ["shared_author"] = key.ToString() } }
+                    : result);
+
+            await Step("write_shared_article",
+                async result =>
+                {
+                    var written = await Coordinator<SharedArticle>().PostMappedAsync(new SharedArticle
+                    {
+                        TenantId = tenant,
+                        OwnerId = ownerId,
+                        Title = $"shared-title-{idPrefix}",
+                        SharedAuthorId = authorKey ?? Guid.Empty,
+                    });
+                    return result with { Entity = Json.Element(written), Keys = written is null
+                        ? null
+                        : new Dictionary<string, string> { ["shared_article"] = written.Id.ToString() } };
+                });
+            break;
+        }
+
+        case "read":
+        {
+            // Iterates every language's reported "shared_article" key from the full --keys map
+            // (not just this language's own slice), so this one driver invocation reads all five
+            // languages' rows — the fan-out that produces 25 reads across the five drivers.
+            var allKeys = Keys.ParseAll(args_.Optional("--keys"));
+            foreach (var (writerLanguage, key) in AllSharedArticleKeys(allKeys))
+            {
+                await Step($"read_shared_article_{writerLanguage}", async result =>
+                {
+                    var article = await Coordinator<SharedArticle>().GetMappedAsync(key, depth: 0);
+                    return result with { Entity = Json.Element(article) };
+                });
+            }
+            break;
+        }
+
+        default:
+            await Console.Error.WriteLineAsync($"unknown phase '{phase}' for scenario '{scenario}'");
+            Environment.Exit(2);
+            break;
+    }
+}
+
+static IEnumerable<(string Language, string Key)> AllSharedArticleKeys(
+    IReadOnlyDictionary<string, IReadOnlyDictionary<string, string>> allKeys)
+{
+    foreach (var (language, keys) in allKeys.OrderBy(kv => kv.Key, StringComparer.Ordinal))
+        if (keys.TryGetValue("shared_article", out var key) && key.Length > 0)
+            yield return (language, key);
+}
+
+// ── S1 crud-roundtrip ────────────────────────────────────────────────────────────────────────
+async Task RunCrudRoundtripAsync()
+{
 switch (phase)
 {
     case "register":
@@ -256,14 +380,11 @@ switch (phase)
     }
 
     default:
-        await Console.Error.WriteLineAsync($"unknown phase '{phase}'");
-        return 2;
+        Console.Error.WriteLine($"unknown phase '{phase}'");
+        Environment.Exit(2);
+        break;
 }
-
-var document = new PhaseDocument(Language, phase, steps);
-Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(outPath))!);
-await File.WriteAllTextAsync(outPath, JsonSerializer.Serialize(document, Json.DocumentOptions));
-return 0;
+}
 
 // A throwing step is data, not a driver failure: it becomes ok:false with an error and the
 // process still exits 0. `always` enriches the result on both paths, for observations (like the
@@ -400,6 +521,27 @@ namespace Iverson.Client.Conformance.Driver
             return byLanguage is not null && byLanguage.TryGetValue(language, out var mine)
                 ? mine
                 : new Dictionary<string, string>();
+        }
+
+        /// <summary>
+        /// The full language-qualified <c>--keys</c> map, unlike <see cref="Parse"/> which slices
+        /// out one language. S4 interop's read phase needs every language's reported
+        /// <c>shared_article</c> key, not just this driver's own.
+        /// </summary>
+        public static IReadOnlyDictionary<string, IReadOnlyDictionary<string, string>> ParseAll(string? keysJson)
+        {
+            if (string.IsNullOrWhiteSpace(keysJson))
+                return new Dictionary<string, IReadOnlyDictionary<string, string>>();
+
+            var byLanguage = JsonSerializer.Deserialize<Dictionary<string, Dictionary<string, string>>>(
+                keysJson, Json.DocumentOptions);
+
+            return byLanguage is null
+                ? new Dictionary<string, IReadOnlyDictionary<string, string>>()
+                : byLanguage.ToDictionary(
+                    kv => kv.Key,
+                    kv => (IReadOnlyDictionary<string, string>)kv.Value,
+                    StringComparer.OrdinalIgnoreCase);
         }
     }
 
