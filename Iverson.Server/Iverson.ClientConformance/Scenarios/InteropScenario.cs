@@ -111,12 +111,22 @@ public sealed class InteropScenario(
         var aliveLanguages = new HashSet<string>(Alive(states), StringComparer.OrdinalIgnoreCase);
         var readerLanguages = new HashSet<string>(readDocuments.Keys, StringComparer.OrdinalIgnoreCase);
 
-        var (writers, readers, _) = SelectWriterReaderPairs(
+        var (writers, readers, pairs) = SelectWriterReaderPairs(
             orderedRequested, aliveLanguages, runner.KeysByLanguage, readerLanguages);
 
-        foreach (var writer in writers)
-            foreach (var (reader, assertion) in JudgeAgreement(writer, readers, readDocuments))
-                states[reader].Assertions.Add(assertion);
+        // Non-vacuity guard — see NonVacuityFailure's doc comment for why this exists.
+        var nonVacuityFailure = NonVacuityFailure(orderedRequested, aliveLanguages, writers, readers, pairs);
+        if (nonVacuityFailure is not null)
+        {
+            foreach (var language in states.Keys)
+            {
+                states[language].Assertions.Add(Assertion.Fail(
+                    "S4 interop: the cross-client fan-out is non-vacuous", nonVacuityFailure));
+            }
+        }
+
+        foreach (var (reader, assertion) in ApplyFanOut(pairs, readDocuments))
+            states[reader].Assertions.Add(assertion);
 
         return states.Select(kv => Cell(kv.Key, kv.Value)).ToList();
     }
@@ -162,6 +172,67 @@ public sealed class InteropScenario(
                 pairs.Add((writer, reader));
 
         return (writers, readers, pairs);
+    }
+
+    /// <summary>
+    /// Detects a silently vacuous or shrunk fan-out and returns the detail text to fail every
+    /// language with, or <c>null</c> when the fan-out is healthy. A language can survive the write
+    /// phase (alive, <c>write_shared_article</c> reported ok) yet still be silently dropped as a
+    /// writer if its driver simply never reported a <c>shared_article</c> key (see
+    /// <see cref="SelectWriterReaderPairs"/>'s doc comment) — a client regression, not a scenario
+    /// bug. If that happens to some or all candidate writers, <see cref="JudgeAgreement"/> is never
+    /// called for the missing rows and every affected cell would otherwise fall through to
+    /// <see cref="ReportCell.Ok"/> on the write-step assertions alone, i.e. green cells having
+    /// performed fewer — or zero — cross-client reads than the run actually attempted.
+    /// </summary>
+    internal static string? NonVacuityFailure(
+        IReadOnlyList<string> orderedRequested,
+        IReadOnlySet<string> aliveLanguages,
+        IReadOnlyList<string> writers,
+        IReadOnlyList<string> readers,
+        IReadOnlyList<(string Writer, string Reader)> pairs)
+    {
+        var candidateWriters = orderedRequested.Where(aliveLanguages.Contains).ToList();
+        if (candidateWriters.Count == 0)
+            return null; // nothing was ever eligible to write — not this guard's concern.
+
+        if (writers.Count >= candidateWriters.Count && pairs.Count > 0)
+            return null; // healthy: every eligible writer entered the fan-out and it produced reads.
+
+        var droppedWriters = candidateWriters
+            .Except(writers, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        return
+            $"S4 interop's cross-client fan-out observed {pairs.Count} (writer, reader) pair(s) " +
+            $"from {writers.Count}/{candidateWriters.Count} eligible writer(s) and {readers.Count} reader(s)" +
+            (droppedWriters.Count > 0
+                ? $"; dropped from the fan-out despite a successful write (no 'shared_article' key " +
+                  $"reported): {string.Join(", ", droppedWriters)}"
+                : "");
+    }
+
+    /// <summary>
+    /// Consumes <see cref="SelectWriterReaderPairs"/>'s <c>Pairs</c> — the actual cross product,
+    /// grouped by writer so <see cref="JudgeAgreement"/>'s "first alive reader is canonical" rule
+    /// still applies per writer — and calls <see cref="JudgeAgreement"/> for every one of them.
+    /// This is the piece <c>RunAsync</c> used to reimplement inline with its own writer/reader
+    /// nested loop, discarding <c>Pairs</c> entirely; every pair assertion in
+    /// <c>InteropScenarioTests</c> (the 25-pair cross product, the count, the content) pinned only
+    /// <see cref="SelectWriterReaderPairs"/>'s pure output, never this consumption — so a version
+    /// that silently collapsed the fan-out to a self-read-only zip (each writer reading only its
+    /// own row) rendered a fully green suite while performing zero cross-client verification. Pulled
+    /// out as its own pure, unit-testable method specifically so that regression can be pinned by a
+    /// test that does not require a live stack.
+    /// </summary>
+    internal static IReadOnlyList<(string Reader, Assertion Assertion)> ApplyFanOut(
+        IReadOnlyList<(string Writer, string Reader)> pairs,
+        IReadOnlyDictionary<string, PhaseDocument> readDocuments)
+    {
+        var results = new List<(string, Assertion)>();
+        foreach (var group in pairs.GroupBy(p => p.Writer, p => p.Reader))
+            results.AddRange(JudgeAgreement(group.Key, group.ToList(), readDocuments));
+        return results;
     }
 
     // ── the cross-client agreement check ─────────────────────────────────────────────────────

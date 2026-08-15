@@ -340,4 +340,128 @@ public class InteropScenarioTests
         readerList.Should().Equal("dotnet", "go");
         pairs.Should().BeEmpty();
     }
+
+    // ── ApplyFanOut: the RunAsync wiring that actually consumes SelectWriterReaderPairs's Pairs —
+    // this is the exact piece the Critical review finding targeted. RunAsync used to reimplement
+    // the writer/reader loop inline and discard Pairs, so the 25-pair count/content tests above
+    // pinned SelectWriterReaderPairs's output but never verified production actually consumed it.
+    // A version that collapses the fan-out to a self-read-only zip (each writer reading only its
+    // own row) must fail THIS test: the mismatch below is planted on a genuinely cross-client pair
+    // (python reading go's row), which a self-read-only zip would never even examine.
+
+    [Fact]
+    public void ApplyFanOut_FullFiveByFiveCrossProduct_CatchesAMismatchOnlyVisibleToATrueCrossPair()
+    {
+        var languages = new[] { "dotnet", "go", "java", "python", "typescript" };
+        var canonicalAuthorId = Guid.NewGuid();
+        var wrongAuthorId = Guid.NewGuid();
+
+        // Every reader correctly reads every writer's row EXCEPT python's read of go's row, which
+        // reports the wrong SharedAuthorId. A self-pairing zip (writer[i] reads only reader[i], the
+        // same language) would never construct a (writer=go, reader=python) pair at all, so it can
+        // never observe this mismatch.
+        var readDocuments = languages.ToDictionary(reader => reader, reader =>
+        {
+            var steps = languages.Select(writer =>
+            {
+                var authorId = (writer == "go" && reader == "python") ? wrongAuthorId : canonicalAuthorId;
+                return new StepResult($"read_shared_article_{writer}", Ok: true, Entity: EntityWithFk(authorId));
+            }).ToArray();
+            return new PhaseDocument(reader, "read", steps);
+        });
+
+        var pairs = languages.SelectMany(w => languages.Select(r => (Writer: w, Reader: r))).ToList();
+
+        var results = InteropScenario.ApplyFanOut(pairs, readDocuments);
+
+        // 5 writers x 5 readers = 25 individual agreement assertions — the fan-out this scenario's
+        // whole reason for existing depends on.
+        results.Should().HaveCount(25);
+
+        var failed = results.Where(r => !r.Assertion.Passed).ToList();
+        failed.Should().ContainSingle();
+        failed[0].Reader.Should().Be("python");
+        failed[0].Assertion.Name.Should().Contain("shared_article[go]");
+    }
+
+    // ── NonVacuityFailure: the guard against a silently vacuous or shrunk fan-out — a client
+    // regression can leave every language alive with a successful write but no reported
+    // shared_article key, which would otherwise render five green cells with zero cross-client
+    // reads performed. Pulled out as a pure helper for the same reason SelectWriterReaderPairs was.
+
+    [Fact]
+    public void NonVacuityFailure_HealthyFullFanOut_ReturnsNull()
+    {
+        var requested = new[] { "dotnet", "go", "java", "python", "typescript" };
+        var alive = new HashSet<string>(requested, StringComparer.OrdinalIgnoreCase);
+        var keysByLanguage = KeysByLanguage(
+            ("dotnet", "k1"), ("go", "k2"), ("java", "k3"), ("python", "k4"), ("typescript", "k5"));
+        var readers = new HashSet<string>(requested, StringComparer.OrdinalIgnoreCase);
+        var (writers, readerList, pairs) =
+            InteropScenario.SelectWriterReaderPairs(requested, alive, keysByLanguage, readers);
+
+        var failure = InteropScenario.NonVacuityFailure(requested, alive, writers, readerList, pairs);
+
+        failure.Should().BeNull();
+    }
+
+    [Fact]
+    public void NonVacuityFailure_AllWritersReportedNoKey_FailsNamingEveryDroppedWriter()
+    {
+        // The exact regression this guards against: every language survives the write phase alive,
+        // but none reports a shared_article key (e.g. a shared client-side regression), so the
+        // fan-out is silently empty and every cell would otherwise render green on write-step
+        // assertions alone.
+        var requested = new[] { "dotnet", "go" };
+        var alive = new HashSet<string>(requested, StringComparer.OrdinalIgnoreCase);
+        var keysByLanguage = KeysByLanguage(); // nobody reported a key
+        var readers = new HashSet<string>(requested, StringComparer.OrdinalIgnoreCase);
+        var (writers, readerList, pairs) =
+            InteropScenario.SelectWriterReaderPairs(requested, alive, keysByLanguage, readers);
+
+        var failure = InteropScenario.NonVacuityFailure(requested, alive, writers, readerList, pairs);
+
+        failure.Should().NotBeNull();
+        failure.Should().Contain("observed 0 (writer, reader) pair(s)");
+        failure.Should().Contain("0/2 eligible writer(s)");
+        failure.Should().Contain("dotnet").And.Contain("go");
+    }
+
+    [Fact]
+    public void NonVacuityFailure_SomeWritersReportedNoKey_FailsNamingOnlyTheDroppedOnes()
+    {
+        // A partial shrink, not just the all-five-collapse case: one language regresses, the rest
+        // are healthy. Must still fail loudly rather than silently reporting fewer reads than the
+        // run actually attempted.
+        var requested = new[] { "dotnet", "go", "java" };
+        var alive = new HashSet<string>(requested, StringComparer.OrdinalIgnoreCase);
+        var keysByLanguage = KeysByLanguage(("dotnet", "k1"), ("java", "k3")); // "go" reported nothing
+        var readers = new HashSet<string>(requested, StringComparer.OrdinalIgnoreCase);
+        var (writers, readerList, pairs) =
+            InteropScenario.SelectWriterReaderPairs(requested, alive, keysByLanguage, readers);
+
+        var failure = InteropScenario.NonVacuityFailure(requested, alive, writers, readerList, pairs);
+
+        failure.Should().NotBeNull();
+        failure.Should().Contain("2/3 eligible writer(s)");
+        failure.Should().Contain("go");
+        failure.Should().NotContain("dropped from the fan-out despite a successful write): dotnet");
+    }
+
+    [Fact]
+    public void NonVacuityFailure_NoCandidateWriters_ReturnsNull_NotThisGuardsConcern()
+    {
+        // Nothing was ever eligible to write (e.g. every language died in an earlier phase) — a
+        // separate concern already reported via each language's Terminal cell, not this guard's.
+        var requested = new[] { "dotnet", "go" };
+        var alive = new HashSet<string>(StringComparer.OrdinalIgnoreCase); // nothing alive
+        var keysByLanguage = KeysByLanguage();
+        var readers = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var (writers, readerList, pairs) =
+            InteropScenario.SelectWriterReaderPairs(requested, alive, keysByLanguage, readers);
+
+        var failure = InteropScenario.NonVacuityFailure(requested, alive, writers, readerList, pairs);
+
+        failure.Should().BeNull();
+    }
 }

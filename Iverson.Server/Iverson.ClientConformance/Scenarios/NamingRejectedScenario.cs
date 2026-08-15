@@ -11,12 +11,20 @@ namespace Iverson.ClientConformance.Scenarios;
 /// update or delete phase is ever run.
 ///
 /// .NET and Java declare the relation's foreign key as a separate field from the navigation
-/// property (an <c>AuthorId</c> scalar plus an <c>[IversonManyToOne]</c>-annotated
-/// <c>Author</c> property, rather than one member that IS both), so there is no client-side
-/// "wire name" to misalign for them — the misnaming this scenario provokes cannot even be
-/// expressed in their declaration style. They render as <c>skip</c> rather than as a driver
-/// outcome; the server's own registration check (not exercised by this scenario) is what would
-/// govern an actually-misnamed FK column for them.
+/// property (an <c>AuthorId</c> scalar plus a <c>[ManyToOne]</c>/<c>@ManyToOne</c>-annotated
+/// <c>Author</c> property, rather than one member that IS both), so this scenario's fixtures
+/// cannot be expressed for them and they render as <c>skip</c> rather than as a driver outcome.
+/// The two languages are NOT equivalent, though: Java's registrar (<c>SchemaRegistrar.inferForeignKey</c>)
+/// always derives the FK name as <c>"{RelatedTypeName}Id"</c> with no override, so a misnamed FK is as
+/// unrepresentable for Java as the scenario's premise assumes. .NET's <c>[ManyToOne]</c> attribute
+/// takes an explicit <c>foreignKey</c> argument (propagated verbatim through
+/// <c>EntityRegistry</c>/<c>SchemaRegistrar</c>), so a misnamed FK like
+/// <c>[ManyToOne(typeof(Author), "WriterId")]</c> is expressible and registers today — nothing
+/// client-side or server-side rejects it, since the server's own registration check
+/// (<c>SchemaRegistrationOrchestrator</c>) only verifies that the declared FK exists as a property
+/// with the correct SQL type (UUID/UUID[]), never that it is spelled a particular way. That is a
+/// genuine divergence from Go/Python/TypeScript, left for a human call on whether it should fail
+/// the matrix.
 /// </summary>
 public sealed class NamingRejectedScenario(DriverRunner runner)
 {
@@ -43,11 +51,7 @@ public sealed class NamingRejectedScenario(DriverRunner runner)
 
         foreach (var language in languages.Where(l => !ClientSideCheckedLanguages.Contains(l)))
         {
-            cells.Add(ReportCell.Skip(language, Name,
-                "this client declares a many_to_one relation's foreign key as a separate field " +
-                "from the navigation property, so there is no single wire name that can be " +
-                "misaligned the way this scenario provokes; the server's own registration check " +
-                "governs a misnamed FK column for this client instead"));
+            cells.Add(ReportCell.Skip(language, Name, SkipReason(language)));
         }
 
         if (driverLanguages.Count == 0)
@@ -83,6 +87,25 @@ public sealed class NamingRejectedScenario(DriverRunner runner)
 
         return cells;
     }
+
+    /// <summary>
+    /// Per-language skip text for the two clients this scenario's fixtures cannot be expressed
+    /// for. Both declare the FK as a separate field from the navigation property, but that is
+    /// where the equivalence ends — see the class doc comment for what was verified against each
+    /// client's and the server's source.
+    /// </summary>
+    internal static string SkipReason(string language) =>
+        string.Equals(language, "java", StringComparison.OrdinalIgnoreCase)
+            ? "this client declares a many_to_one relation's foreign key as a separate field from " +
+              "the navigation property, and its registrar (SchemaRegistrar.inferForeignKey) always " +
+              "derives the FK name as \"{RelatedTypeName}Id\" with no override, so the misnaming " +
+              "this scenario provokes cannot be expressed in this client's declaration style"
+            : "this client declares a many_to_one relation's foreign key as a separate field from " +
+              "the navigation property, so this scenario's fixtures cannot be expressed for it as " +
+              "written — but unlike Java, its [ManyToOne] attribute accepts an explicit foreignKey " +
+              "argument, so a misnamed FK (e.g. [ManyToOne(typeof(Author), \"WriterId\")]) IS " +
+              "expressible and registers today: the server's registration check only verifies the " +
+              "declared FK exists with the correct SQL type, never that it is named a particular way";
 
     internal static ReportCell Judge(string language, PhaseDocument document)
     {

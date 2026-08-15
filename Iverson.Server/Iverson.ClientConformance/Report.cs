@@ -73,9 +73,10 @@ public sealed class Report
         var scenarios = _cells.Select(c => c.Scenario).Distinct().ToList();
 
         var scenarioWidth = Math.Max(8, scenarios.Count == 0 ? 0 : scenarios.Max(s => s.Length));
+        var languageWidth = languages.Count == 0 ? 8 : Math.Max(8, languages.Max(l => l.Length) + 2);
         sb.Append("scenario".PadRight(scenarioWidth)).Append("  ");
         foreach (var language in languages)
-            sb.Append(language.PadRight(8));
+            sb.Append(language.PadRight(languageWidth));
         sb.AppendLine();
 
         foreach (var scenario in scenarios)
@@ -84,7 +85,7 @@ public sealed class Report
             foreach (var language in languages)
             {
                 var cell = _cells.FirstOrDefault(c => c.Language == language && c.Scenario == scenario);
-                sb.Append((cell is null ? "-" : Symbol(cell.Status)).PadRight(8));
+                sb.Append((cell is null ? "-" : Symbol(cell.Status)).PadRight(languageWidth));
             }
             sb.AppendLine();
         }
