@@ -59,7 +59,16 @@ try
     // The five driver rows the matrix has, in report order.
     string[] allLanguages = ["dotnet", "python", "typescript", "go", "java"];
     var languages = flags.Languages ?? allLanguages;
-    var scenarios = flags.Scenarios ?? [CrudRoundtripScenario.Name];
+
+    // Single source of truth: the recognized scenario names double as the default (unrestricted)
+    // run set, so a newly added scenario can never join the recognized list without also joining
+    // the default — the drift that let `--scenarios` omitted silently mean "crud-roundtrip only".
+    string[] recognizedScenarios =
+    [
+        CrudRoundtripScenario.Name, NamingRejectedScenario.Name, NavPropertyRejectedScenario.Name,
+        InteropScenario.Name,
+    ];
+    var scenarios = flags.Scenarios ?? recognizedScenarios;
 
     var actingToken = await tokenBroker.GetActingTokenAsync();
     var ownerId = await tokenBroker.GetOwnerIdAsync();
@@ -103,12 +112,6 @@ try
         OwnerId: ownerId,
         IdPrefix: $"c{DateTime.UtcNow:yyyyMMddHHmmss}",
         ServiceToken: serviceToken);
-
-    var recognizedScenarios = new[]
-    {
-        CrudRoundtripScenario.Name, NamingRejectedScenario.Name, NavPropertyRejectedScenario.Name,
-        InteropScenario.Name,
-    };
 
     if (scenarios.Contains(CrudRoundtripScenario.Name, StringComparer.OrdinalIgnoreCase))
     {
