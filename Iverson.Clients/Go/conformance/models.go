@@ -37,3 +37,14 @@ type GoArticle struct {
 	GoAuthorId string   `iverson:"many_to_one:GoAuthor"`
 	GoTagIds   []string `iverson:"many_to_many:GoTag"`
 }
+
+// GoBadArticle exists only for the naming-rejected (S2) conformance scenario. WriterId declares
+// a many_to_one relation to GoAuthor but is not named AuthorId — the name
+// iverson/registrar.go's buildRequest requires, since the field itself IS the foreign key.
+// Registering this type must fail client-side, before any RPC.
+type GoBadArticle struct {
+	Id       string `iverson_key:"true" iverson_guid:"true"`
+	TenantId string `iverson_tenant:"true"`
+	OwnerId  string
+	WriterId string `iverson:"many_to_one:GoAuthor"`
+}

@@ -34,10 +34,12 @@ from google.protobuf.json_format import MessageToJson
 from iverson_client.core import EntityCoordinator, SchemaRegistrar
 from iverson_client.generated import object_mapping_pb2_grpc as mapping_grpc
 
-from conformance.models import PyArticle, PyAuthor, PyTag
+from conformance.models import PyArticle, PyAuthor, PyBadArticle, PyTag
 
 LANGUAGE = "python"
-SCENARIO = "crud-roundtrip"
+# naming-rejected (S2) is register-phase-only: the orchestrator never invokes this driver for
+# any other phase under it.
+SCENARIOS = {"crud-roundtrip", "naming-rejected"}
 
 
 # ── Argument parsing ──────────────────────────────────────────────────────────
@@ -306,9 +308,9 @@ def main(argv: List[str]) -> int:
     args = Args(argv)
 
     scenario = args.require("--scenario")
-    if scenario != SCENARIO:
+    if scenario not in SCENARIOS:
         print(
-            f"unsupported scenario '{scenario}'; this driver implements only '{SCENARIO}'",
+            f"unsupported scenario '{scenario}'; this driver implements {sorted(SCENARIOS)}",
             file=sys.stderr,
         )
         return 2
@@ -362,7 +364,19 @@ def main(argv: List[str]) -> int:
 
     steps: List[StepResult] = []
 
-    if phase == "register":
+    if phase == "register" and scenario == "naming-rejected":
+        # PyBadArticle's writer_id member fails SchemaRegistrar's naming check before any
+        # RegisterSchema call is issued — the capture stub never sees a request to record, so
+        # there is no type_descriptor to report either.
+        error: Optional[str] = None
+        try:
+            registrar = SchemaRegistrar(capture, PyBadArticle)
+            registrar.register_all()
+        except Exception as exc:  # noqa: BLE001 - reported as data, not raised
+            error = describe(exc)
+        steps.append(StepResult(name="register", ok=error is None, error=error))
+
+    elif phase == "register":
         # SchemaRegistrar.register_all() issues one RegisterSchema call per type, sequentially,
         # and raises on the first failure (RuntimeError on Success=false, or the underlying
         # RpcException on a transport failure) — so the sequence aborts at the first failing

@@ -47,3 +47,17 @@ class PyArticle:
     title: str = None
     py_author_id: str = many_to_one("PyAuthor")
     py_tag_ids: str = many_to_many("PyTag")
+
+
+@iverson_entity
+class PyBadArticle:
+    """Exists only for the naming-rejected (S2) conformance scenario. ``writer_id`` declares a
+    many_to_one relation to PyAuthor but is not named ``author_id`` — the name
+    ``SchemaRegistrar`` requires, since the field itself IS the foreign key. Registering this
+    type must fail client-side, before any RPC (see ``iverson_client/core.py``'s relation-naming
+    check)."""
+
+    id: uuid.UUID = iverson_key()
+    tenant_id: str = iverson_tenant()
+    owner_id: str = None
+    writer_id: str = many_to_one("PyAuthor")

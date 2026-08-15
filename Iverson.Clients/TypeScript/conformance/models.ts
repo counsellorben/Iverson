@@ -72,3 +72,24 @@ export class TsArticle {
     @ManyToMany(() => TsTag)
     tsTagIds: string[] = [];
 }
+
+/**
+ * Exists only for the naming-rejected (S2) conformance scenario. `writerId` declares a
+ * `ManyToOne` relation to `TsAuthor` but is not named `authorId` — the name `SchemaRegistrar`
+ * requires, since the field itself IS the foreign key. Registering this type must fail
+ * client-side, before any RPC (see `src/core.ts`'s relation-naming check).
+ */
+@IversonEntity()
+export class TsBadArticle {
+    @IversonKey()
+    @IversonGuid()
+    id: string = '';
+
+    @IversonTenant()
+    tenantId: string = '';
+
+    ownerId: string = '';
+
+    @ManyToOne(() => TsAuthor)
+    writerId: string = '';
+}

@@ -29,8 +29,14 @@ import (
 
 const (
 	language = "go"
-	scenario = "crud-roundtrip"
 )
+
+// supportedScenarios lists every scenario this driver implements. naming-rejected (S2) is
+// register-phase-only: the orchestrator never invokes this driver for any other phase under it.
+var supportedScenarios = map[string]bool{
+	"crud-roundtrip":  true,
+	"naming-rejected": true,
+}
 
 // ── Argument parsing ──────────────────────────────────────────────────────────
 
@@ -297,8 +303,8 @@ func run(argv []string) int {
 		fmt.Fprintln(os.Stderr, err)
 		return 2
 	}
-	if sc != scenario {
-		fmt.Fprintf(os.Stderr, "unsupported scenario %q; this driver implements only %q\n", sc, scenario)
+	if !supportedScenarios[sc] {
+		fmt.Fprintf(os.Stderr, "unsupported scenario %q; this driver implements %v\n", sc, supportedScenarios)
 		return 2
 	}
 
@@ -392,6 +398,22 @@ func run(argv []string) int {
 
 	switch phase {
 	case "register":
+		if sc == "naming-rejected" {
+			// GoBadArticle's WriterId member fails registrar.buildRequest's naming check before
+			// any RegisterSchema call is issued — the capture wrapper never sees a request to
+			// record, so there is no typeDescriptor to report either.
+			capture := &capturingMappingClient{real: client.MappingStub}
+			registrar := iverson.NewSchemaRegistrar(capture, GoBadArticle{})
+			regErr := registrar.RegisterAll(ctx, idPrefix, nil)
+			step := stepResult{Name: "register", Ok: regErr == nil}
+			if regErr != nil {
+				msg := regErr.Error()
+				step.Error = &msg
+			}
+			steps = append(steps, step)
+			break
+		}
+
 		capture := &capturingMappingClient{real: client.MappingStub}
 		// Author, then tag, then article — the same order in all five drivers, so the types the
 		// article's relations reference already exist when the article is sent. Registration

@@ -26,10 +26,12 @@ import {
     TypeDescriptor,
 } from '../generated/object_mapping.js';
 
-import { TsArticle, TsAuthor, TsTag } from './models.js';
+import { TsArticle, TsAuthor, TsBadArticle, TsTag } from './models.js';
 
 const LANGUAGE = 'typescript';
-const SCENARIO = 'crud-roundtrip';
+// naming-rejected (S2) is register-phase-only: the orchestrator never invokes this driver for
+// any other phase under it.
+const SCENARIOS = new Set(['crud-roundtrip', 'naming-rejected']);
 
 // ── Argument parsing ────────────────────────────────────────────────────────────
 
@@ -237,9 +239,9 @@ async function main(argv: string[]): Promise<number> {
     const args = new Args(argv);
 
     const scenario = args.require('--scenario');
-    if (scenario !== SCENARIO) {
+    if (!SCENARIOS.has(scenario)) {
         process.stderr.write(
-            `unsupported scenario '${scenario}'; this driver implements only '${SCENARIO}'\n`,
+            `unsupported scenario '${scenario}'; this driver implements [${[...SCENARIOS].join(', ')}]\n`,
         );
         return 2;
     }
@@ -300,7 +302,23 @@ async function main(argv: string[]): Promise<number> {
 
     const steps: StepResult[] = [];
 
-    if (phase === 'register') {
+    if (phase === 'register' && scenario === 'naming-rejected') {
+        // TsBadArticle's writerId member fails SchemaRegistrar's naming check before any
+        // RegisterSchema call is issued — the capture wrapper never sees a request to record, so
+        // there is no typeDescriptor to report either.
+        let error: string | null = null;
+        try {
+            const registrar = new SchemaRegistrar(
+                capture as unknown as ObjectMappingServiceClient,
+                [TsBadArticle],
+                callCredentials,
+            );
+            await registrar.registerAll();
+        } catch (err) {
+            error = describe(err);
+        }
+        steps.push(step('register', error === null, { error }));
+    } else if (phase === 'register') {
         // SchemaRegistrar.registerAll() issues one RegisterSchema call per type, sequentially, and
         // throws on the first failure (an `Error` on `!response.success`, or the underlying
         // `ServiceError` on a transport failure) — so the sequence aborts at the first failing

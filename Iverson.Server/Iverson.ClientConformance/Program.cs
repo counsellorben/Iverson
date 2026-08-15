@@ -82,33 +82,51 @@ try
 
     var mapping = new ObjectMappingService.ObjectMappingServiceClient(channel);
     var runner = new DriverRunner();
-    var scenario = new CrudRoundtripScenario(
+    var crudRoundtrip = new CrudRoundtripScenario(
         runner, mapping, new Reregistrar(mapping), new PostgresProbe(postgresCs), Console.WriteLine);
+    var namingRejected = new NamingRejectedScenario(runner);
+    var navPropertyRejected = new NavPropertyRejectedScenario(mapping);
+
+    DriverContext BuildContext(string scenarioName) => new(
+        Scenario: scenarioName,
+        // Empty on purpose: `--type` is only a per-driver hint for which captured descriptor
+        // is the root type, and every driver falls back to its own root when it is empty.
+        // One shared context cannot name five different language-specific type names.
+        Type: string.Empty,
+        Tenant: actingTenant,
+        GrpcUrl: grpcUrl,
+        ClientId: Environment.GetEnvironmentVariable("IVERSON_CLIENT_ID"),
+        ClientSecret: Environment.GetEnvironmentVariable("IVERSON_CLIENT_SECRET"),
+        TokenEndpoint: Environment.GetEnvironmentVariable("IVERSON_TOKEN_ENDPOINT"),
+        ActingToken: actingToken,
+        OwnerId: ownerId,
+        IdPrefix: $"c{DateTime.UtcNow:yyyyMMddHHmmss}",
+        ServiceToken: serviceToken);
+
+    var recognizedScenarios = new[] { CrudRoundtripScenario.Name, NamingRejectedScenario.Name, NavPropertyRejectedScenario.Name };
 
     if (scenarios.Contains(CrudRoundtripScenario.Name, StringComparer.OrdinalIgnoreCase))
     {
         Console.WriteLine($"Running scenario '{CrudRoundtripScenario.Name}'...");
-        var context = new DriverContext(
-            Scenario: CrudRoundtripScenario.Name,
-            // Empty on purpose: `--type` is only a per-driver hint for which captured descriptor
-            // is the root type, and every driver falls back to its own root when it is empty.
-            // One shared context cannot name five different language-specific type names.
-            Type: string.Empty,
-            Tenant: actingTenant,
-            GrpcUrl: grpcUrl,
-            ClientId: Environment.GetEnvironmentVariable("IVERSON_CLIENT_ID"),
-            ClientSecret: Environment.GetEnvironmentVariable("IVERSON_CLIENT_SECRET"),
-            TokenEndpoint: Environment.GetEnvironmentVariable("IVERSON_TOKEN_ENDPOINT"),
-            ActingToken: actingToken,
-            OwnerId: ownerId,
-            IdPrefix: $"c{DateTime.UtcNow:yyyyMMddHHmmss}",
-            ServiceToken: serviceToken);
-
-        foreach (var cell in await scenario.RunAsync(languages, context, actingToken))
+        foreach (var cell in await crudRoundtrip.RunAsync(languages, BuildContext(CrudRoundtripScenario.Name), actingToken))
             report.Add(cell);
     }
 
-    foreach (var unknown in scenarios.Where(s => !string.Equals(s, CrudRoundtripScenario.Name, StringComparison.OrdinalIgnoreCase)))
+    if (scenarios.Contains(NamingRejectedScenario.Name, StringComparer.OrdinalIgnoreCase))
+    {
+        Console.WriteLine($"Running scenario '{NamingRejectedScenario.Name}'...");
+        foreach (var cell in await namingRejected.RunAsync(languages, BuildContext(NamingRejectedScenario.Name)))
+            report.Add(cell);
+    }
+
+    if (scenarios.Contains(NavPropertyRejectedScenario.Name, StringComparer.OrdinalIgnoreCase))
+    {
+        Console.WriteLine($"Running scenario '{NavPropertyRejectedScenario.Name}'...");
+        foreach (var cell in await navPropertyRejected.RunAsync(languages, BuildContext(NavPropertyRejectedScenario.Name), actingToken))
+            report.Add(cell);
+    }
+
+    foreach (var unknown in scenarios.Where(s => !recognizedScenarios.Contains(s, StringComparer.OrdinalIgnoreCase)))
         Console.Error.WriteLine($"  unknown scenario '{unknown}' — ignored");
 }
 catch (Exception ex)
