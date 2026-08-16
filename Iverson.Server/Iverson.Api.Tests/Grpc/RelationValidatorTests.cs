@@ -123,28 +123,11 @@ public class RelationValidatorTests
     [Fact]
     public void PropertyNameEqualsForeignKey_KeyNotStripped()
     {
-        // A7 regression guard: when PropertyName and ForeignKey collide, the nav property IS the
-        // FK payload key. Without the name guard, this key would be rejected as a nav property.
-        var schema = MakeSchemaWithRelation(RelationKind.ManyToMany, fkNullable: true) with
-        {
-            Relations = [new RelationDescriptor("TagIds", RelationKind.ManyToMany, "Tag", "TagIds")]
-        };
-        var payload = new Struct();
-        var id1 = Guid.NewGuid().ToString();
-        var id2 = Guid.NewGuid().ToString();
-        payload.Fields["TagIds"] = Value.ForList(Value.ForString(id1), Value.ForString(id2));
-
-        _sut.ValidateAndNormalizeRelations(payload, schema);
-
-        payload.Fields.Should().ContainKey("TagIds");
-        payload.Fields["TagIds"].ListValue.Values.Select(v => v.StringValue).Should().Equal(id1, id2);
-    }
-
-    [Fact]
-    public void ManyToMany_PropertyNameEqualsForeignKey_NoConflictError()
-    {
-        // A7 collision schema: PropertyName and ForeignKey are the same payload key, so there is
-        // no separate nav property to reject.
+        // A7 regression guard, reversed by the IVC-REL-003 ruling: a PropertyName/ForeignKey
+        // collision is now rejected at registration (SchemaRegistrationOrchestrator), so this
+        // schema shape can no longer reach RelationValidator in production. The descriptor is
+        // still buildable directly in a unit test, and RelationValidator's own collision
+        // tolerance is gone — the same payload key is now read as a nav property and rejected.
         var schema = MakeSchemaWithRelation(RelationKind.ManyToMany, fkNullable: true) with
         {
             Relations = [new RelationDescriptor("TagIds", RelationKind.ManyToMany, "Tag", "TagIds")]
@@ -156,7 +139,27 @@ public class RelationValidatorTests
 
         var act = () => _sut.ValidateAndNormalizeRelations(payload, schema);
 
-        act.Should().NotThrow();
+        act.Should().Throw<RpcException>();
+    }
+
+    [Fact]
+    public void ManyToMany_PropertyNameEqualsForeignKey_NoConflictError()
+    {
+        // A7 collision schema, reversed by the IVC-REL-003 ruling: PropertyName and ForeignKey
+        // colliding is no longer tolerated — the server rejects this shape at registration, and
+        // RelationValidator rejects it too if it is ever handed such a descriptor directly.
+        var schema = MakeSchemaWithRelation(RelationKind.ManyToMany, fkNullable: true) with
+        {
+            Relations = [new RelationDescriptor("TagIds", RelationKind.ManyToMany, "Tag", "TagIds")]
+        };
+        var payload = new Struct();
+        var id1 = Guid.NewGuid().ToString();
+        var id2 = Guid.NewGuid().ToString();
+        payload.Fields["TagIds"] = Value.ForList(Value.ForString(id1), Value.ForString(id2));
+
+        var act = () => _sut.ValidateAndNormalizeRelations(payload, schema);
+
+        act.Should().Throw<RpcException>();
     }
 
     [Fact]

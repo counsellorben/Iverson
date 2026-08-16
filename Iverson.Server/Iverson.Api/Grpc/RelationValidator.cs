@@ -17,12 +17,11 @@ public sealed class RelationValidator : IRelationValidator
 
         foreach (var relation in schema.Relations)
         {
-            // When PropertyName and ForeignKey collide — Java and .NET can both
-            // produce that for ManyToMany — the "nav property" and the foreign key are the SAME
-            // payload key. There is nothing to reject: the payload key IS the foreign key.
-            var navIsDistinctKey = !string.Equals(
-                relation.PropertyName, relation.ForeignKey, StringComparison.OrdinalIgnoreCase);
-
+            // A PropertyName/ForeignKey collision — Java and .NET could both produce that for
+            // ManyToMany — is rejected outright at registration (SchemaRegistrationOrchestrator),
+            // per the IVC-REL-003 ruling: the payload key must be distinct from the nav property
+            // name for every relation kind. A descriptor with a collision can no longer reach
+            // this validator in production, so no exemption is needed here.
             switch (relation.Kind)
             {
                 case RelationKind.ManyToOne:
@@ -44,7 +43,6 @@ public sealed class RelationValidator : IRelationValidator
                         $"Unhandled {nameof(RelationKind)} value in relation validation — add a case above.");
             }
 
-            if (navIsDistinctKey)
             {
                 var navValue = StructFieldAccess.GetFieldValue(payload, relation.PropertyName);
                 // A NullValue nav key counts as ABSENT, matching the foreign-key rule below: .NET and

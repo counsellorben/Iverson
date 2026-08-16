@@ -106,6 +106,36 @@ public sealed class SchemaRegistrationOrchestrator(
                         $"(.NET: Guid; Java: UUID; Python: uuid.UUID; Go: add the `iverson_guid:\"true\"` struct tag; " +
                         $"TypeScript: add the @IversonGuid() decorator)."));
                 }
+
+                // The foreign key must be named after the RELATED type, e.g. "AuthorId" for a
+                // relation to Author — not whatever the caller happened to call the property.
+                // OneToMany is exempt (see the loop filter above): its foreign key is named after
+                // THIS type and lives on the related type's row, so this rule does not apply to it.
+                var requiredSuffix = relation.Kind == Schema.RelationKind.ManyToMany ? "Ids" : "Id";
+                var requiredForeignKey = relation.RelatedTypeName + requiredSuffix;
+                if (!string.Equals(relation.ForeignKey, requiredForeignKey, StringComparison.OrdinalIgnoreCase))
+                {
+                    throw new RpcException(new Status(StatusCode.InvalidArgument,
+                        $"Relation '{relation.PropertyName}' ({relation.Kind}) on '{descriptor.TypeName}' " +
+                        $"declares foreign key '{relation.ForeignKey}', but a {relation.Kind} foreign key " +
+                        $"referencing '{relation.RelatedTypeName}' must be named '{requiredForeignKey}'."));
+                }
+            }
+
+            // The navigation-property name must be distinct from the foreign-key name, for every
+            // relation kind including OneToMany (per the IVC-REL-003 ruling) — unlike the naming
+            // check above, this pass is NOT filtered by kind. When the two names collide, there is
+            // no separate nav property: writes and reads of the "nav property" silently alias the
+            // foreign key, and ResolveManyToManyAsync-style hydration overwrites it outright.
+            foreach (var relation in descriptor.Relations)
+            {
+                if (string.Equals(relation.PropertyName, relation.ForeignKey, StringComparison.OrdinalIgnoreCase))
+                {
+                    throw new RpcException(new Status(StatusCode.InvalidArgument,
+                        $"Relation '{relation.PropertyName}' ({relation.Kind}) on '{descriptor.TypeName}' " +
+                        $"has a navigation-property name identical to its foreign key '{relation.ForeignKey}'. " +
+                        $"The navigation-property name must be distinct from the foreign key."));
+                }
             }
 
             try
