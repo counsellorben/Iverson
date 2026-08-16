@@ -62,7 +62,7 @@ public class NavPropertyRejectedScenarioTests
         var caught = new RpcException(new Status(
             StatusCode.InvalidArgument,
             "Relation 'Author' is a navigation property and cannot be written — send " +
-            "'AuthorId' instead."));
+            "'S3NavAuthorId' instead."));
 
         var assertions = NavPropertyRejectedScenario.Judge(caught);
 
@@ -89,7 +89,7 @@ public class NavPropertyRejectedScenarioTests
         var caught = new RpcException(new Status(
             StatusCode.PermissionDenied,
             "Relation 'Author' is a navigation property and cannot be written — send " +
-            "'AuthorId' instead."));
+            "'S3NavAuthorId' instead."));
 
         var assertions = NavPropertyRejectedScenario.Judge(caught);
 
@@ -199,7 +199,7 @@ public class NavPropertyRejectedScenarioTests
             PostThrows = new RpcException(new Status(
                 StatusCode.InvalidArgument,
                 "Relation 'Author' is a navigation property and cannot be written — send " +
-                "'AuthorId' instead.")),
+                "'S3NavAuthorId' instead.")),
         };
         var scenario = new NavPropertyRejectedScenario(client);
 

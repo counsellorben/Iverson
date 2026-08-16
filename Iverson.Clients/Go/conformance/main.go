@@ -587,7 +587,7 @@ func run(argv []string) int {
 			}
 			entity := GoArticle{
 				TenantId: tenant, OwnerId: ownerID, Title: "title-" + idPrefix,
-				GoAuthorId: authorKey, GoTagIds: []string{tagKey},
+				GoAuthorId: authorKey, GoTagIds: []string{tagKey}, GoTagId: tagKey,
 			}
 			key, err := articleCoord.Persist(ctx, entity)
 			return entity, key, err
@@ -628,7 +628,7 @@ func run(argv []string) int {
 		}
 		entity := GoArticle{
 			Id: keyFor("article"), TenantId: tenant, OwnerId: ownerID, Title: "title-" + idPrefix + "-updated",
-			GoAuthorId: keyFor("author"), GoTagIds: []string{keyFor("tag")},
+			GoAuthorId: keyFor("author"), GoTagIds: []string{keyFor("tag")}, GoTagId: keyFor("tag"),
 		}
 		// EntityCoordinator.Update returns no entity (unlike .NET's UpdateMappedAsync, which
 		// returns the server's response entity) — the entity reported here is what the driver

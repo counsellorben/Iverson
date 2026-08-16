@@ -55,7 +55,7 @@ public sealed class CrudRoundtripScenario(
             // DotNetAuthor.cs, JavaAuthor.java, and the Python/TypeScript/Go models added
             // alongside this comment); tag genuinely declares no relations at all.
             state.Article = TakeDescriptor(state, document, "register", "article",
-                [RelationKind.ManyToOne, RelationKind.ManyToMany]);
+                [RelationKind.ManyToOne, RelationKind.ManyToMany, RelationKind.OneToOne]);
             state.Author = TakeDescriptor(state, document, "register_author", "author",
                 [RelationKind.OneToMany]);
             var tag = TakeDescriptor(state, document, "register_tag", "tag", []);

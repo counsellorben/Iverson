@@ -455,6 +455,7 @@ async function main(argv: string[]): Promise<number> {
                 entity.title = `title-${idPrefix}`;
                 if (authorKey !== undefined) entity.tsAuthorId = authorKey;
                 if (tagKey !== undefined) entity.tsTagIds = [tagKey];
+                if (tagKey !== undefined) entity.tsTagId = tagKey;
                 articleKey = await client.coordinator(TsArticle).persist(entity);
                 return step('write_article', true, { entity: entityToPlain(entity) });
             }],
@@ -502,6 +503,7 @@ async function main(argv: string[]): Promise<number> {
             entity.title = `title-${idPrefix}-updated`;
             entity.tsAuthorId = keyFor('author');
             entity.tsTagIds = [keyFor('tag')];
+            entity.tsTagId = keyFor('tag');
             // EntityCoordinator.update() returns nothing (unlike .NET's mapped update, which
             // returns the server's response entity) — the entity reported here is what the driver
             // sent, which is the only observable this API surface offers.

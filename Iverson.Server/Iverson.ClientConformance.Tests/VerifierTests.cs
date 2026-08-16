@@ -68,7 +68,7 @@ public class VerifierTests
           ],
           "relations": [
             { "propertyName": "{{prefix}}Author", "kind": "MANY_TO_ONE", "relatedType": "{{prefix}}_author", "foreignKey": "{{prefix}}_author_id" },
-            { "propertyName": "{{prefix}}Tags", "kind": "MANY_TO_MANY", "relatedType": "T", "foreignKey": "{{prefix}}_tag_ids" }
+            { "propertyName": "{{prefix}}Tags", "kind": "MANY_TO_MANY", "relatedType": "{{prefix}}_tag", "foreignKey": "{{prefix}}_tag_ids" }
           ]
         }
         """));
@@ -80,6 +80,54 @@ public class VerifierTests
 
         results.Where(r => !r.Passed).Should().BeEmpty();
         results.Should().NotBeEmpty();
+    }
+
+    // IVC-REL-001/002/003 all name one_to_one explicitly, but before this test the kind was
+    // never exercised by a single unit fixture — requirement-level touch tracking cannot see a
+    // gap like that, since a sibling relation kind touching the same const looks identical to a
+    // green suite. A conforming one_to_one descriptor must pass all three.
+    [Fact]
+    public void VerifyRegistration_passes_a_conforming_one_to_one_relation()
+    {
+        var descriptor = Verifier.ParseDescriptor(Json("""
+            {
+              "typeName": "Article", "tenantField": "tenant_id",
+              "properties": [
+                { "name": "id", "isKey": true }, { "name": "tenant_id" },
+                { "name": "detail_id", "clrType": "CLR_GUID" }
+              ],
+              "relations": [
+                { "propertyName": "detail", "kind": "ONE_TO_ONE", "relatedType": "detail", "foreignKey": "detail_id" }
+              ]
+            }
+            """));
+
+        var results = Verifier.VerifyRegistration("article", descriptor);
+
+        results.Where(r => !r.Passed).Should().BeEmpty();
+        results.Should().Contain(r => r.Name.Contains("OneToOne") && r.Name.Contains("distinct from the foreign key"));
+        results.Should().Contain(r => r.Name.Contains("OneToOne") && r.Name.Contains("is named '{RelatedTypeName}Id'"));
+        results.Should().Contain(r => r.Name.Contains("OneToOne") && r.Name.Contains("is a declared property"));
+    }
+
+    [Fact]
+    public void VerifyRegistration_fails_a_one_to_one_relation_whose_nav_property_equals_its_foreign_key()
+    {
+        var descriptor = Verifier.ParseDescriptor(Json("""
+            {
+              "typeName": "Article", "tenantField": "tenant_id",
+              "properties": [
+                { "name": "id", "isKey": true }, { "name": "tenant_id" },
+                { "name": "detail_id", "clrType": "CLR_GUID" }
+              ],
+              "relations": [
+                { "propertyName": "detail_id", "kind": "ONE_TO_ONE", "relatedType": "detail", "foreignKey": "detail_id" }
+              ]
+            }
+            """));
+
+        Verifier.VerifyRegistration("article", descriptor)
+            .Should().Contain(r => !r.Passed && r.Name.Contains("OneToOne") && r.Name.Contains("distinct from the foreign key"));
     }
 
     [Fact]
@@ -186,6 +234,75 @@ public class VerifierTests
             """));
 
         Verifier.VerifyRegistration("author", descriptor).Where(r => !r.Passed).Should().BeEmpty();
+    }
+
+    // IVC-REL-001's negative clause: a client must synthesize NO foreign key for one_to_many.
+    // Before this test (and the assertion it guards) existed, a client that spuriously
+    // synthesized "{RelatedTypeName}Id" for a one_to_many relation passed registration green.
+    [Fact]
+    public void VerifyRegistration_fails_a_one_to_many_relation_with_a_spurious_foreign_key()
+    {
+        var descriptor = Verifier.ParseDescriptor(Json("""
+            {
+              "typeName": "JavaAuthor", "tenantField": "tenantId",
+              "properties": [
+                { "name": "id", "isKey": true }, { "name": "tenantId" },
+                { "name": "javaArticleId", "clrType": "CLR_GUID" }
+              ],
+              "relations": [
+                { "propertyName": "javaArticles", "kind": "ONE_TO_MANY", "relatedType": "JavaArticle", "foreignKey": "javaAuthorId" }
+              ]
+            }
+            """));
+
+        Verifier.VerifyRegistration("author", descriptor)
+            .Should().Contain(r => !r.Passed &&
+                r.Name.Contains("no foreign key was synthesized") &&
+                r.RequirementId == Requirements.RelForeignKeySynthesizedForOwningKinds);
+    }
+
+    [Fact]
+    public void VerifyRegistration_fails_when_a_many_to_many_foreign_key_is_not_named_relatedTypeIds()
+    {
+        var descriptor = Verifier.ParseDescriptor(Json("""
+            {
+              "typeName": "Bad", "tenantField": "tenant_id",
+              "properties": [
+                { "name": "id", "isKey": true }, { "name": "tenant_id" },
+                { "name": "tag_ids", "clrType": "CLR_GUID", "isArray": true }
+              ],
+              "relations": [
+                { "propertyName": "tags", "kind": "MANY_TO_MANY", "relatedType": "wrong_type", "foreignKey": "tag_ids" }
+              ]
+            }
+            """));
+
+        Verifier.VerifyRegistration("article", descriptor)
+            .Should().Contain(r => !r.Passed &&
+                r.Name.Contains("{RelatedTypeName}Ids") &&
+                r.RequirementId == Requirements.RelForeignKeyNamedRelatedTypeId);
+    }
+
+    [Fact]
+    public void VerifyRegistration_fails_when_an_owning_foreign_key_is_not_typed_uuid()
+    {
+        var descriptor = Verifier.ParseDescriptor(Json("""
+            {
+              "typeName": "Bad", "tenantField": "tenant_id",
+              "properties": [
+                { "name": "id", "isKey": true }, { "name": "tenant_id" },
+                { "name": "author_id", "clrType": "CLR_STRING" }
+              ],
+              "relations": [
+                { "propertyName": "author", "kind": "MANY_TO_ONE", "relatedType": "author", "foreignKey": "author_id" }
+              ]
+            }
+            """));
+
+        Verifier.VerifyRegistration("article", descriptor)
+            .Should().Contain(r => !r.Passed &&
+                r.Name.Contains("is typed UUID") &&
+                r.RequirementId == Requirements.RelForeignKeyWellFormedUuid);
     }
 
     [Fact]
@@ -571,6 +688,27 @@ public class VerifierTests
 
         results.Should().Contain(a => a.Name.Contains("agrees with"));
         results.Should().NotContain(a => a.Name.Contains("is echoed"));
+    }
+
+    // IVC-REL-010 must never be discharged by a primary key: ComparedValueNames always includes
+    // the key, so a type with zero owning relations would otherwise certify "foreign-key values
+    // are well-formed UUIDs" having observed no foreign key at all.
+    [Fact]
+    public void VerifyThreeWay_does_not_cite_REL010_for_the_primary_key()
+    {
+        var id = Guid.NewGuid().ToString();
+        var results = Verifier.VerifyThreeWay("article", "Id", Legs(id, id, id), isKey: true);
+
+        results.Should().NotContain(a => a.RequirementId == Requirements.RelForeignKeyWellFormedUuid);
+    }
+
+    [Fact]
+    public void VerifyThreeWay_cites_REL010_for_a_foreign_key()
+    {
+        var id = Guid.NewGuid().ToString();
+        var results = Verifier.VerifyThreeWay("article", "AuthorId", Legs(id, id, id), isKey: false);
+
+        results.Should().Contain(a => a.RequirementId == Requirements.RelForeignKeyWellFormedUuid);
     }
 
     // ── VerifyRelationHydrated: depth-1 hydration ───────────────────────────────────────────

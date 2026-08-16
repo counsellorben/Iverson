@@ -5,6 +5,7 @@ import io.iverson.client.annotations.IversonKey;
 import io.iverson.client.annotations.IversonTenant;
 import io.iverson.client.annotations.ManyToMany;
 import io.iverson.client.annotations.ManyToOne;
+import io.iverson.client.annotations.OneToOne;
 
 import java.util.List;
 import java.util.UUID;
@@ -38,6 +39,17 @@ public class JavaArticle {
     @ManyToMany(type = JavaTag.class)
     private List<JavaTag> javaTags;
 
+    /**
+     * IVC-REL-001/002/003's one_to_one fixture: a second relation to JavaTag (the many_to_many
+     * relation's own related type), through the SINGULAR "javaTagId" foreign key so it does not
+     * collide with the many_to_many's plural "javaTagIds" — exercising one_to_one end to end
+     * without a whole new entity type.
+     */
+    private UUID javaTagId;
+
+    @OneToOne(type = JavaTag.class)
+    private JavaTag javaTag;
+
     public UUID getId() { return id; }
     public void setId(UUID id) { this.id = id; }
 
@@ -61,4 +73,10 @@ public class JavaArticle {
 
     public List<JavaTag> getJavaTags() { return javaTags; }
     public void setJavaTags(List<JavaTag> javaTags) { this.javaTags = javaTags; }
+
+    public UUID getJavaTagId() { return javaTagId; }
+    public void setJavaTagId(UUID javaTagId) { this.javaTagId = javaTagId; }
+
+    public JavaTag getJavaTag() { return javaTag; }
+    public void setJavaTag(JavaTag javaTag) { this.javaTag = javaTag; }
 }

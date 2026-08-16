@@ -103,8 +103,38 @@ comment in `Requirements.cs`, per this document's own convention for an implemen
 | IVC-REL-006 | Active | Behaviour | A foreign-key value is readable at every depth, including after hydration |
 | IVC-REL-007 | Active | Behaviour | Multi-valued foreign keys are sent as a list, never a delimited string |
 | IVC-REL-008 | Active | Behaviour | `one_to_many` resolves by reverse foreign-key lookup on the related type |
-| IVC-REL-009 | Retired | Capability | A depth-resolved read is reachable through the public API — superseded by the `LIFE` depth capability, which all five clients were verified to satisfy once mapped-CRUD parity landed |
+| IVC-REL-009 | Retired | Capability | A depth-resolved read is reachable through the public API |
 | IVC-REL-010 | Active | Behaviour | Foreign-key values are well-formed UUIDs, and foreign-key columns are typed `UUID` or `UUID[]` |
+
+`IVC-REL-009` is retired — superseded by the `LIFE` depth capability, which all five clients were
+verified to satisfy once mapped-CRUD parity landed. A row's Statement cell is the statement of
+record and must stay immutable across retirement; retirement rationale belongs in this prose, never
+appended into the statement text.
+
+#### Authoring notes (for future axes)
+
+Because `REL` is the exemplar the remaining eight axes are copied from, three conventions this axis
+had to relearn the hard way are recorded here so the next axis does not repeat them:
+
+- **A row's Statement cell is immutable.** It does not change when a requirement retires, gets a
+  narrower or wider reading, or acquires a rationale — the Statement is the contract as originally
+  stated. Rationale, retirement reasoning, and scoping decisions are prose below the table (or the
+  citing const's doc comment once implemented), never text appended into the Statement itself. See
+  `IVC-REL-009` above for the corrected form.
+- **A requirement ID must be cited as an `Assertion` constructor argument, not merely in a comment
+  or doc string.** `RequirementsCoverageGateTests`'s citation check is a substring match over source
+  text, so a requirement ID appearing only in a comment would satisfy it without any assertion
+  actually failing when the requirement is violated. Every `Requirements.*` reference that is meant
+  to discharge coverage must be passed as the `requirementId` argument to `Assertion.From`/`Pass`/
+  `Fail`, e.g. `Assertion.From(name, condition, detail, Requirements.RelForeignKeySynthesizedForOwningKinds)`.
+- **State which assertion backstops a per-relation loop.** `Verifier.VerifyRegistration`'s
+  "declares exactly the expected relation kinds" assertion (fired unconditionally, outside the
+  `foreach (var relation in descriptor.Relations)` loop) is what stops a client that silently drops
+  a relation from producing a fully green, but empty, result — every assertion inside the loop is
+  otherwise vacuously true when the loop runs zero times. This backstop assertion does not itself
+  carry a requirement ID (it checks relation *shape*, which no single `IVC-REL-*` statement owns),
+  but each axis must have one, and its doc comment must say in plain language what it backstops and
+  why, exactly as this paragraph does.
 
 ### REG — Registration
 

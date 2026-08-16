@@ -16,6 +16,7 @@ from iverson_client.annotations import (
     many_to_many,
     many_to_one,
     one_to_many,
+    one_to_one,
 )
 
 
@@ -47,6 +48,11 @@ class PyArticle:
     title: str = None
     py_author_id: str = many_to_one("PyAuthor")
     py_tag_ids: str = many_to_many("PyTag")
+    # IVC-REL-001/002/003's one_to_one fixture: a second relation to PyTag (the many_to_many
+    # relation's own related type), through the SINGULAR "py_tag_id" foreign key so it does not
+    # collide with the many_to_many's plural "py_tag_ids" — exercising one_to_one end to end
+    # without a whole new entity type.
+    py_tag_id: str = one_to_one("PyTag")
 
 
 @iverson_entity

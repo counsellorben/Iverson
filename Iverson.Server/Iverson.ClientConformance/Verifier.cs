@@ -176,7 +176,20 @@ public static class Verifier
             if (relation.Kind == RelationKind.OneToMany)
             {
                 // The foreign key lives on the related type's row; there is nothing on this type
-                // to look for.
+                // to look for. But IVC-REL-001's statement has a negative half too — no foreign
+                // key is synthesized for one_to_many at all — and that half needs a real,
+                // failable assertion of its own: a client that spuriously synthesizes
+                // "{RelatedTypeName}Id" on the declaring type for a one_to_many relation must be
+                // caught, not waved through because the loop never looked.
+                var spuriousName = Normalize(relation.RelatedType) + "id";
+                var spurious = propertiesByName.ContainsKey(spuriousName);
+                results.Add(Assertion.From(
+                    $"{name}: no foreign key was synthesized on the declaring type for a one-to-many relation",
+                    !spurious,
+                    spurious
+                        ? $"found a spurious '{{RelatedTypeName}}Id'-shaped property for relatedType='{relation.RelatedType}'"
+                        : $"declared properties: [{string.Join(", ", descriptor.Properties.Select(p => p.Name))}]",
+                    Requirements.RelForeignKeySynthesizedForOwningKinds));
                 continue;
             }
 
@@ -190,18 +203,35 @@ public static class Verifier
                     : $"declared properties: [{string.Join(", ", descriptor.Properties.Select(p => p.Name))}]",
                 Requirements.RelForeignKeySynthesizedForOwningKinds));
 
-            if (relation.Kind is RelationKind.ManyToOne or RelationKind.OneToOne)
+            if (relation.Kind is RelationKind.ManyToOne or RelationKind.OneToOne or RelationKind.ManyToMany)
             {
-                // Scoped to the scalar-key kinds. `many_to_many`'s array-typed foreign key is
-                // documented elsewhere in this codebase as legitimately pluralizing
-                // ("{RelatedTypeName}Ids", e.g. SchemaRegistrar.java:351) — a variance IVC-REL-002
-                // does not adjudicate, so this check does not extend to it.
+                // The standard's statement is unqualified over every synthesized foreign key,
+                // many_to_many included — its array-typed foreign key legitimately pluralizes to
+                // "{RelatedTypeName}Ids" (e.g. SchemaRegistrar.java:351 and the other four
+                // registrars), so the expected suffix is kind-dependent but the check itself is
+                // not scoped away from any relation kind.
+                var expectedSuffix = relation.Kind == RelationKind.ManyToMany ? "Ids" : "Id";
                 results.Add(Assertion.From(
-                    $"{name}: foreign key '{relation.ForeignKey}' is named '{{RelatedTypeName}}Id'",
+                    $"{name}: foreign key '{relation.ForeignKey}' is named '{{RelatedTypeName}}{expectedSuffix}'",
                     relation.ForeignKey.Length > 0 &&
-                    string.Equals(Normalize(relation.ForeignKey), Normalize(relation.RelatedType) + "id", StringComparison.Ordinal),
+                    string.Equals(Normalize(relation.ForeignKey), Normalize(relation.RelatedType) + Normalize(expectedSuffix), StringComparison.Ordinal),
                     $"relatedType='{relation.RelatedType}' foreignKey='{relation.ForeignKey}'",
                     Requirements.RelForeignKeyNamedRelatedTypeId));
+            }
+
+            if (relation.Kind is RelationKind.ManyToOne or RelationKind.OneToOne or RelationKind.ManyToMany)
+            {
+                // IVC-REL-010's second clause — foreign-key columns typed UUID or UUID[] — is
+                // asserted here, from the descriptor the driver itself reported, rather than
+                // deferred to server-side enforcement the harness never observes. `ClrGuid` is
+                // exactly the CLR type the server maps to a `UUID`/`UUID[]` SQL column
+                // (`SchemaRegistrationOrchestrator.cs`); the array/scalar split itself is already
+                // covered by IVC-REL-004's isArray checks above.
+                results.Add(Assertion.From(
+                    $"{name}: foreign key '{relation.ForeignKey}' is typed UUID",
+                    declared && fkProperty!.ClrType == ClrType.ClrGuid,
+                    declared ? $"clrType={fkProperty!.ClrType}" : "foreign key not declared",
+                    Requirements.RelForeignKeyWellFormedUuid));
             }
 
             if (relation.Kind == RelationKind.ManyToMany)
@@ -492,11 +522,17 @@ public static class Verifier
             // A value all three legs agree is empty would pass a pure agreement check while
             // certifying nothing — the gRPC leg is the server's own answer, so requiring it to
             // carry a value is what makes the agreement below meaningful.
+            //
+            // IVC-REL-010 is cited here only for a foreign key, never for the primary key: this
+            // assertion fires once per name in ComparedValueNames, which always includes the
+            // primary key, so citing REL-010 unconditionally let a type with zero owning
+            // relations discharge "foreign-key values are well-formed UUIDs" having observed no
+            // foreign key at all.
             Assertion.From(
                 $"{label}.{valueName}: server returned a value",
                 legs.Grpc.Uuids is { Count: > 0 },
                 observed,
-                Requirements.RelForeignKeyWellFormedUuid),
+                isKey ? null : Requirements.RelForeignKeyWellFormedUuid),
 
             Assertion.From(
                 isKey

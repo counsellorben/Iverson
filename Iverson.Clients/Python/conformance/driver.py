@@ -498,6 +498,7 @@ def main(argv: List[str]) -> int:
                 entity.py_author_id = uuid.UUID(keys["author"])
             if keys["tag"] is not None:
                 entity.py_tag_ids = [uuid.UUID(keys["tag"])]
+                entity.py_tag_id = uuid.UUID(keys["tag"])
             keys["article"] = coordinator(PyArticle).persist(entity)
             return StepResult("write_article", True, entity=entity_to_dict(entity))
 
@@ -541,6 +542,7 @@ def main(argv: List[str]) -> int:
             entity.title = f"title-{id_prefix}-updated"
             entity.py_author_id = key_for("author")
             entity.py_tag_ids = [key_for("tag")]
+            entity.py_tag_id = key_for("tag")
             # EntityCoordinator.update() returns nothing (unlike .NET's UpdateMappedAsync, which
             # returns the server's response entity) — the entity reported here is what the driver
             # sent, which is the only observable this API surface offers.

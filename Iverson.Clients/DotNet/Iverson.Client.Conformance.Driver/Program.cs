@@ -309,6 +309,7 @@ switch (phase)
                     Title = $"title-{idPrefix}",
                     DotNetAuthorId = authorKey ?? Guid.Empty,
                     DotNetTagIds = tagKey is { } t ? [t] : [],
+                    DotNetTagId = tagKey ?? Guid.Empty,
                 });
                 articleKey = written?.Id;
                 return result with { Entity = Json.Element(written) };
@@ -350,6 +351,7 @@ switch (phase)
                 Title = $"title-{idPrefix}-updated",
                 DotNetAuthorId = KeyFor("author"),
                 DotNetTagIds = [KeyFor("tag")],
+                DotNetTagId = KeyFor("tag"),
             });
 
             return result with { Entity = Json.Element(updated) };

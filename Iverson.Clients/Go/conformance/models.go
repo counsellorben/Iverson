@@ -36,6 +36,11 @@ type GoArticle struct {
 	Title      string
 	GoAuthorId string   `iverson:"many_to_one:GoAuthor"`
 	GoTagIds   []string `iverson:"many_to_many:GoTag"`
+	// IVC-REL-001/002/003's one_to_one fixture: a second relation to GoTag (the many_to_many
+	// relation's own related type), through the SINGULAR "GoTagId" foreign key so it does not
+	// collide with the many_to_many's plural "GoTagIds" — exercising one_to_one end to end
+	// without a whole new entity type.
+	GoTagId string `iverson:"one_to_one:GoTag"`
 }
 
 // SharedAuthor and SharedArticle are S4 interop's fixtures. Every one of the five drivers declares

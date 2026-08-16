@@ -207,6 +207,7 @@ public final class Driver {
             article.setTitle("title-" + idPrefix);
             if (authorKey[0] != null) article.setJavaAuthorId(UUID.fromString(authorKey[0]));
             if (tagKey[0] != null) article.setJavaTagIds(List.of(UUID.fromString(tagKey[0])));
+            if (tagKey[0] != null) article.setJavaTagId(UUID.fromString(tagKey[0]));
             articleKey[0] = new EntityCoordinator<>(client, JavaArticle.class).persist(article);
         });
         if (articleKey[0] != null) articleStep.keys = Map.of("article", articleKey[0]);
@@ -250,6 +251,7 @@ public final class Driver {
             article.setTitle("title-" + idPrefix + "-updated");
             article.setJavaAuthorId(authorKey);
             article.setJavaTagIds(List.of(tagKey));
+            article.setJavaTagId(tagKey);
             new EntityCoordinator<>(client, JavaArticle.class).update(article);
         }));
     }

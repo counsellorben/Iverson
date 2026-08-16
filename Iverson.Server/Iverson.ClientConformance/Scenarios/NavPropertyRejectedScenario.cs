@@ -39,7 +39,12 @@ public sealed class NavPropertyRejectedScenario(
 
     private const string TypeName = "S3NavArticle";
     private const string NavPropertyName = "Author";
-    private const string ForeignKeyName = "AuthorId";
+    // Must be "{RelatedTypeName}Id" — Task 4's registration-time naming check
+    // (SchemaRegistrationOrchestrator.cs) now rejects a ManyToOne foreign key named anything
+    // else, and this scenario registers its own fixture through that same check. A plain
+    // "AuthorId" here fails registration before the scenario ever reaches the payload it exists
+    // to test, silently leaving IVC-REL-005 untouched.
+    private const string ForeignKeyName = "S3NavAuthorId";
     private const string RelatedTypeName = "S3NavAuthor";
 
     /// <summary>

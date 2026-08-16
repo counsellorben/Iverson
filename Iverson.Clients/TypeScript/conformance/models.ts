@@ -16,6 +16,7 @@ import {
     ManyToMany,
     ManyToOne,
     OneToMany,
+    OneToOne,
 } from '../src/annotations.js';
 
 /**
@@ -71,6 +72,13 @@ export class TsArticle {
 
     @ManyToMany(() => TsTag)
     tsTagIds: string[] = [];
+
+    // IVC-REL-001/002/003's one_to_one fixture: a second relation to TsTag (the many_to_many
+    // relation's own related type), through the SINGULAR "tsTagId" foreign key so it does not
+    // collide with the many_to_many's plural "tsTagIds" — exercising one_to_one end to end
+    // without a whole new entity type.
+    @OneToOne(() => TsTag)
+    tsTagId: string = '';
 }
 
 /**

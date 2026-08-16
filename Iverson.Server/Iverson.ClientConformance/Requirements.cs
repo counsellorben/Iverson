@@ -18,18 +18,26 @@ public static class Requirements
     /// <summary>
     /// A client synthesizes a foreign-key property for <c>many_to_one</c>, <c>one_to_one</c> and
     /// <c>many_to_many</c>, and none for <c>one_to_many</c> (whose key lives on the related
-    /// type's own row). Discharged by <c>Verifier.VerifyRegistration</c>'s "foreign key ... is a
-    /// declared property" assertion, which fires only for the three owning kinds — the loop
-    /// <c>continue</c>s for <c>OneToMany</c> before reaching it, so an <c>OneToMany</c> relation
-    /// contributes no foreign-key-declared assertion at all.
+    /// type's own row). Both halves are discharged: the positive half by
+    /// <c>Verifier.VerifyRegistration</c>'s "foreign key ... is a declared property" assertion,
+    /// fired for the three owning kinds; the negative half by that same method's "no foreign key
+    /// was synthesized on the declaring type for a one-to-many relation" assertion, which fails
+    /// if the declaring type carries a property spuriously shaped like
+    /// <c>{RelatedTypeName}Id</c> for a <c>one_to_many</c> relation's related type. Absence of an
+    /// assertion is not an assertion of absence — this const previously rationalized the negative
+    /// half as discharged by the loop's <c>continue</c>, which asserted nothing.
     /// </summary>
     public const string RelForeignKeySynthesizedForOwningKinds = "IVC-REL-001";
 
     /// <summary>
-    /// A synthesized foreign-key property is named <c>{RelatedTypeName}Id</c>. Discharged by
-    /// <c>Verifier.VerifyRegistration</c>'s dedicated naming assertion, which compares the
-    /// declared foreign key's normalized name against the relation's <c>RelatedType</c> plus
-    /// "Id".
+    /// A synthesized foreign-key property is named <c>{RelatedTypeName}Id</c>, or
+    /// <c>{RelatedTypeName}Ids</c> for the array-typed <c>many_to_many</c> form. Discharged by
+    /// <c>Verifier.VerifyRegistration</c>'s dedicated naming assertion, which now grades every
+    /// owning relation kind — <c>ManyToOne</c>, <c>OneToOne</c> and <c>ManyToMany</c> — comparing
+    /// the declared foreign key's normalized name against the relation's <c>RelatedType</c> plus
+    /// the kind-appropriate suffix. The standard's statement is unqualified over every
+    /// synthesized foreign key; a prior version of this check excluded <c>many_to_many</c>,
+    /// which weakened the statement rather than the other way around.
     /// </summary>
     public const string RelForeignKeyNamedRelatedTypeId = "IVC-REL-002";
 
@@ -93,13 +101,21 @@ public static class Requirements
 
     /// <summary>
     /// Foreign-key values are well-formed UUIDs, and foreign-key columns are typed <c>UUID</c>
-    /// or <c>UUID[]</c>. Discharged by <c>Verifier.VerifyThreeWay</c>'s "server returned a
-    /// value" assertion, which requires the gRPC leg's raw value to have parsed as one or more
+    /// or <c>UUID[]</c>. Both clauses are discharged, and both are scoped to foreign-key columns
+    /// only — never the primary key, which is also present in
+    /// <c>Verifier.ComparedValueNames</c> and would otherwise let a type with zero owning
+    /// relations discharge this requirement having observed no foreign key at all.
+    /// <list type="bullet">
+    /// <item><description>Well-formedness: <c>Verifier.VerifyThreeWay</c>'s "server returned a
+    /// value" assertion requires the gRPC leg's raw value to have parsed as one or more
     /// <see cref="System.Guid"/>s (<c>ObservedValue.Uuids</c> non-null with at least one
-    /// element) — an unreadable value or a wrongly-typed column fails it. The <c>UUID</c>/
-    /// <c>UUID[]</c> typing split itself is enforced at registration
-    /// (<c>SchemaRegistrationOrchestrator.cs</c>), which every registration assertion in this
-    /// scenario already depends on succeeding.
+    /// element), and cites this const only when <c>isKey</c> is false.</description></item>
+    /// <item><description>Typing: <c>Verifier.VerifyRegistration</c>'s "foreign key ... is typed
+    /// UUID" assertion, asserted directly from the descriptor the driver reported —
+    /// <c>fkProperty.ClrType == ClrType.ClrGuid</c> — rather than deferred to the server-side
+    /// enforcement in <c>SchemaRegistrationOrchestrator.cs</c> that the harness never
+    /// observes.</description></item>
+    /// </list>
     /// </summary>
     public const string RelForeignKeyWellFormedUuid = "IVC-REL-010";
 }
