@@ -121,13 +121,14 @@ public class RelationValidatorTests
     }
 
     [Fact]
-    public void PropertyNameEqualsForeignKey_KeyNotStripped()
+    public void ManyToMany_PropertyNameEqualsForeignKey_ListFkValid_StillRejectedAsNavProperty()
     {
         // A7 regression guard, reversed by the IVC-REL-003 ruling: a PropertyName/ForeignKey
         // collision is now rejected at registration (SchemaRegistrationOrchestrator), so this
-        // schema shape can no longer reach RelationValidator in production. The descriptor is
-        // still buildable directly in a unit test, and RelationValidator's own collision
-        // tolerance is gone — the same payload key is now read as a nav property and rejected.
+        // schema shape can no longer reach RelationValidator in production via a fresh
+        // registration. A legacy/rehydrated descriptor (SchemaRegistry.LoadAsync bypasses the
+        // orchestrator) can still carry the collision, so RelationValidator must reject it too —
+        // even though the payload's GUID list is itself well-formed.
         var schema = MakeSchemaWithRelation(RelationKind.ManyToMany, fkNullable: true) with
         {
             Relations = [new RelationDescriptor("TagIds", RelationKind.ManyToMany, "Tag", "TagIds")]
@@ -139,15 +140,21 @@ public class RelationValidatorTests
 
         var act = () => _sut.ValidateAndNormalizeRelations(payload, schema);
 
-        act.Should().Throw<RpcException>();
+        act.Should().Throw<RpcException>()
+            .Where(e => e.StatusCode == StatusCode.InvalidArgument)
+            .Where(e => e.Status.Detail.Contains("TagIds") &&
+                        e.Status.Detail.Contains("identical to its foreign key") &&
+                        e.Status.Detail.Contains("re-registered"));
     }
 
     [Fact]
-    public void ManyToMany_PropertyNameEqualsForeignKey_NoConflictError()
+    public void ManyToMany_PropertyNameEqualsForeignKey_MessageIsNotSelfContradictory()
     {
         // A7 collision schema, reversed by the IVC-REL-003 ruling: PropertyName and ForeignKey
-        // colliding is no longer tolerated — the server rejects this shape at registration, and
-        // RelationValidator rejects it too if it is ever handed such a descriptor directly.
+        // colliding is no longer tolerated — the server rejects this shape at registration. When a
+        // legacy/rehydrated descriptor still carries the collision, the write-path error must NOT
+        // tell the caller to "send TagIds instead" when TagIds is the very key they already sent —
+        // it must say the schema itself is invalid.
         var schema = MakeSchemaWithRelation(RelationKind.ManyToMany, fkNullable: true) with
         {
             Relations = [new RelationDescriptor("TagIds", RelationKind.ManyToMany, "Tag", "TagIds")]
@@ -159,7 +166,10 @@ public class RelationValidatorTests
 
         var act = () => _sut.ValidateAndNormalizeRelations(payload, schema);
 
-        act.Should().Throw<RpcException>();
+        act.Should().Throw<RpcException>()
+            .Where(e => e.StatusCode == StatusCode.InvalidArgument)
+            .Where(e => !e.Status.Detail.Contains("send 'TagIds' instead") &&
+                        e.Status.Detail.Contains("schema is invalid"));
     }
 
     [Fact]

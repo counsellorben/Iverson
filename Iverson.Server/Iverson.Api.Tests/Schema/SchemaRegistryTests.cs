@@ -2,6 +2,7 @@ using FluentAssertions;
 using Iverson.Api.Schema;
 using Iverson.Api.Tests.Helpers;
 using Iverson.Sql;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using NSubstitute;
 using Xunit;
@@ -150,5 +151,46 @@ public class SchemaRegistryTests
         descriptor!.MetadataColumns.Should().BeEmpty();
         descriptor.FieldDescriptions.Should().BeEmpty();
         descriptor.Description.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task LoadAsync_DescriptorWithNavPropertyForeignKeyCollision_LogsErrorAndStillLoads()
+    {
+        // SchemaRegistry.LoadAsync rehydrates descriptors straight from Postgres JSON and does
+        // NOT route them through SchemaRegistrationOrchestrator, so a schema persisted before the
+        // registration-time collision check existed (PropertyName == ForeignKey on a relation)
+        // can still be sitting there. Startup must NOT fail on it — that would take down a
+        // running deployment on a legacy schema — but it must be flagged loudly so it gets
+        // re-registered, since every Create/Update against it fails RelationValidator anyway.
+        var logger = Substitute.For<ILogger<SchemaRegistry>>();
+        var sut = new SchemaRegistry(_repository, logger);
+
+        var collidingSchema = SchemaFixtures.ArticleSchema() with
+        {
+            Relations = [new RelationDescriptor("AuthorId", RelationKind.ManyToOne, "Author", "AuthorId")]
+        };
+
+        _repository.LoadAllAsync()
+            .Returns(new List<(string TypeName, string SchemaJson)>
+            {
+                ("Article", System.Text.Json.JsonSerializer.Serialize(
+                    collidingSchema,
+                    new System.Text.Json.JsonSerializerOptions
+                        { PropertyNamingPolicy = System.Text.Json.JsonNamingPolicy.CamelCase }))
+            });
+
+        var act = () => sut.LoadAsync();
+
+        await act.Should().NotThrowAsync();
+
+        sut.IsRegistered("Article").Should().BeTrue();
+        sut.Get("Article")!.Relations.Single().PropertyName.Should().Be("AuthorId");
+
+        logger.Received(1).Log(
+            LogLevel.Error,
+            Arg.Any<EventId>(),
+            Arg.Is<object>(o => o.ToString()!.Contains("Article") && o.ToString()!.Contains("AuthorId")),
+            Arg.Any<Exception?>(),
+            Arg.Any<Func<object, Exception?, string>>());
     }
 }

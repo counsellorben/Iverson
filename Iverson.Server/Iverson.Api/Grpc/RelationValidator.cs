@@ -20,8 +20,12 @@ public sealed class RelationValidator : IRelationValidator
             // A PropertyName/ForeignKey collision — Java and .NET could both produce that for
             // ManyToMany — is rejected outright at registration (SchemaRegistrationOrchestrator),
             // per the IVC-REL-003 ruling: the payload key must be distinct from the nav property
-            // name for every relation kind. A descriptor with a collision can no longer reach
-            // this validator in production, so no exemption is needed here.
+            // name for every relation kind. A schema registered BEFORE this check existed can
+            // still carry a collision, though: SchemaRegistry.LoadAsync rehydrates descriptors
+            // straight from Postgres JSON and does not route them back through the orchestrator,
+            // so such a descriptor CAN still reach this validator in production (SchemaRegistry
+            // logs an ERROR for it on load). The message below accounts for that case explicitly
+            // rather than assuming it is unreachable.
             switch (relation.Kind)
             {
                 case RelationKind.ManyToOne:
@@ -49,14 +53,30 @@ public sealed class RelationValidator : IRelationValidator
                 // Java serialize every property, so an unset nav member arrives as `Author: null`.
                 if (navValue is not null && navValue.KindCase != Value.KindOneofCase.NullValue)
                 {
-                    // A OneToMany carries no key in the payload at all: its foreign key is a column
-                    // on the related entity's row, so there is no key to name as the alternative.
-                    var remedy = relation.Kind == RelationKind.OneToMany
-                        ? $"set '{relation.ForeignKey}' on each related {relation.RelatedTypeName} instead."
-                        : $"send '{relation.ForeignKey}' instead.";
-                    errors.Add(
-                        $"Relation '{relation.PropertyName}' is a navigation property and cannot be " +
-                        $"written — {remedy}");
+                    if (RelationCollisionCheck.IsCollision(relation))
+                    {
+                        // Telling the caller to "send the foreign key instead" is nonsensical when
+                        // the foreign key IS the payload key they just sent under the nav-property
+                        // name — that shape means the schema itself is broken (a legacy/rehydrated
+                        // descriptor that predates the registration-time collision check), not that
+                        // the caller did something wrong.
+                        errors.Add(
+                            $"Relation '{relation.PropertyName}' on '{schema.TypeName}' has a navigation-" +
+                            $"property name identical to its foreign key '{relation.ForeignKey}'. This " +
+                            "schema is invalid and must be re-registered with a distinct navigation " +
+                            "property name.");
+                    }
+                    else
+                    {
+                        // A OneToMany carries no key in the payload at all: its foreign key is a column
+                        // on the related entity's row, so there is no key to name as the alternative.
+                        var remedy = relation.Kind == RelationKind.OneToMany
+                            ? $"set '{relation.ForeignKey}' on each related {relation.RelatedTypeName} instead."
+                            : $"send '{relation.ForeignKey}' instead.";
+                        errors.Add(
+                            $"Relation '{relation.PropertyName}' is a navigation property and cannot be " +
+                            $"written — {remedy}");
+                    }
                 }
             }
         }

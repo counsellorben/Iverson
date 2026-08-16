@@ -399,7 +399,8 @@ public class SchemaRegistrationOrchestratorTests
 
         var ex = await act.Should().ThrowAsync<RpcException>();
         ex.Which.StatusCode.Should().Be(StatusCode.InvalidArgument);
-        ex.Which.Status.Detail.Should().Contain("Owner").And.Contain("OwnerId");
+        ex.Which.Status.Detail.Should().Contain("Owner").And.Contain("OwnerId")
+            .And.Contain("not a declared property");
     }
 
     [Fact]
@@ -609,7 +610,7 @@ public class SchemaRegistrationOrchestratorTests
 
         var ex = await act.Should().ThrowAsync<RpcException>();
         ex.Which.StatusCode.Should().Be(StatusCode.InvalidArgument);
-        ex.Which.Status.Detail.Should().Contain("AuthorId");
+        ex.Which.Status.Detail.Should().Contain("AuthorId").And.Contain("identical to its foreign key");
     }
 
     [Fact]
@@ -630,6 +631,6 @@ public class SchemaRegistrationOrchestratorTests
 
         var ex = await act.Should().ThrowAsync<RpcException>();
         ex.Which.StatusCode.Should().Be(StatusCode.InvalidArgument);
-        ex.Which.Status.Detail.Should().Contain("WidgetId");
+        ex.Which.Status.Detail.Should().Contain("WidgetId").And.Contain("identical to its foreign key");
     }
 }

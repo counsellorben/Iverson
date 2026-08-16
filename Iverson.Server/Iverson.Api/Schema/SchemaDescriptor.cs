@@ -64,6 +64,16 @@ public sealed record RelationDescriptor(
     string RelatedTypeName,
     string ForeignKey);
 
+// Shared by SchemaRegistrationOrchestrator (which rejects a colliding descriptor outright) and
+// SchemaRegistry.LoadAsync (which cannot reject — a descriptor persisted before this check existed
+// can still be sitting in Postgres, and refusing to load it would take down a running deployment on
+// a legacy schema). Both call sites must agree on exactly what counts as a collision.
+public static class RelationCollisionCheck
+{
+    public static bool IsCollision(RelationDescriptor relation) =>
+        string.Equals(relation.PropertyName, relation.ForeignKey, StringComparison.OrdinalIgnoreCase);
+}
+
 public enum RelationKind { OneToOne, OneToMany, ManyToOne, ManyToMany }
 
 public sealed record AuthorizationRules(

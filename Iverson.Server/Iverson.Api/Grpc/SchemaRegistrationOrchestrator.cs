@@ -129,7 +129,7 @@ public sealed class SchemaRegistrationOrchestrator(
             // foreign key, and ResolveManyToManyAsync-style hydration overwrites it outright.
             foreach (var relation in descriptor.Relations)
             {
-                if (string.Equals(relation.PropertyName, relation.ForeignKey, StringComparison.OrdinalIgnoreCase))
+                if (Schema.RelationCollisionCheck.IsCollision(relation))
                 {
                     throw new RpcException(new Status(StatusCode.InvalidArgument,
                         $"Relation '{relation.PropertyName}' ({relation.Kind}) on '{descriptor.TypeName}' " +

@@ -30,7 +30,28 @@ public sealed class SchemaRegistry(
             loadedTypeNames.Add(typeName);
             var descriptor = JsonSerializer.Deserialize<SchemaDescriptor>(json, s_jsonOptions);
             if (descriptor is not null)
+            {
+                // Rehydration bypasses SchemaRegistrationOrchestrator, so a descriptor persisted
+                // before the collision check existed (or otherwise corrupted) can still be sitting
+                // in Postgres. We do NOT refuse to boot on it — failing startup on a legacy schema
+                // would take down a running deployment, which is worse than the bad writes it
+                // enables. Instead, flag it loudly so it gets re-registered: every Create/Update
+                // against it will fail RelationValidator anyway.
+                foreach (var relation in descriptor.Relations)
+                {
+                    if (RelationCollisionCheck.IsCollision(relation))
+                    {
+                        logger.LogError(
+                            "Schema '{TypeName}' loaded from storage has relation '{PropertyName}' whose " +
+                            "navigation-property name is identical to its foreign key '{ForeignKey}'. This " +
+                            "schema predates (or otherwise bypassed) the registration-time collision check " +
+                            "and must be re-registered with a distinct navigation property name.",
+                            typeName, relation.PropertyName, relation.ForeignKey);
+                    }
+                }
+
                 _schemas[typeName] = descriptor;
+            }
         }
 
         // Reconcile removals: a schema present in this instance's cache but no longer
