@@ -140,6 +140,30 @@ public class NavPropertyRejectedScenarioTests
         fkAssertion.Passed.Should().BeFalse();
     }
 
+    // Round 2 fix: the nav-property assertion above previously used a bare case-insensitive
+    // Contains("Author"), and "S3NavAuthorId" (the required foreign key) contains "Author" as a
+    // substring — so a message naming ONLY the foreign key, never the navigation property at all,
+    // used to satisfy BOTH assertions and the two stopped being independent observations. This
+    // fixture is exactly that shape: it names 'S3NavAuthorId' but never quotes 'Author' the way
+    // RelationValidator.cs actually emits it ("Relation '{PropertyName}' is a navigation property
+    // ..."). The foreign-key assertion must still pass; the nav-property assertion must now fail,
+    // proving the two are falsifiable independently of one another.
+    [Fact]
+    public void Judge_MessageNamesOnlyTheForeignKey_FailsTheNavPropertyAssertionButNotTheForeignKeyAssertion()
+    {
+        var caught = new RpcException(new Status(
+            StatusCode.InvalidArgument,
+            "Schema is invalid: the required foreign key S3NavAuthorId was not supplied."));
+
+        var assertions = NavPropertyRejectedScenario.Judge(caught);
+
+        var navAssertion = assertions.Single(a => a.Name.Contains("navigation property"));
+        navAssertion.Passed.Should().BeFalse();
+
+        var fkAssertion = assertions.Single(a => a.Name.Contains("required foreign key"));
+        fkAssertion.Passed.Should().BeTrue();
+    }
+
     // ── CanonicalLanguage: the fix for the "five independent-looking ok cells for one
     // orchestrator-side check" finding. Only this one language's cell may ever carry the real
     // Ok/Fail outcome; every other requested language must render as Skip instead — see

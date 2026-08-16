@@ -164,14 +164,16 @@ public static class Verifier
         {
             var name = $"{label}.{relation.PropertyName} ({relation.Kind})";
 
-            if (relation.Kind is RelationKind.ManyToOne or RelationKind.OneToOne or RelationKind.ManyToMany)
-            {
-                results.Add(Assertion.From(
-                    $"{name}: nav property is distinct from the foreign key",
-                    !string.Equals(relation.PropertyName, relation.ForeignKey, StringComparison.OrdinalIgnoreCase),
-                    $"propertyName='{relation.PropertyName}' foreignKey='{relation.ForeignKey}'",
-                    Requirements.RelNavPropertyDistinctFromForeignKey));
-            }
+            // IVC-REL-003's statement is unqualified over every relation kind, one_to_many
+            // included: the server enforces the nav/FK collision check "for every relation kind
+            // including OneToMany" (SchemaRegistrationOrchestrator.cs), so a client that names its
+            // one_to_many navigation property identically to its ForeignKey is rejected at
+            // registration and must be caught here too, not just for the owning kinds.
+            results.Add(Assertion.From(
+                $"{name}: nav property is distinct from the foreign key",
+                !string.Equals(relation.PropertyName, relation.ForeignKey, StringComparison.OrdinalIgnoreCase),
+                $"propertyName='{relation.PropertyName}' foreignKey='{relation.ForeignKey}'",
+                Requirements.RelNavPropertyDistinctFromForeignKey));
 
             if (relation.Kind == RelationKind.OneToMany)
             {
@@ -181,14 +183,27 @@ public static class Verifier
                 // failable assertion of its own: a client that spuriously synthesizes
                 // "{RelatedTypeName}Id" on the declaring type for a one_to_many relation must be
                 // caught, not waved through because the loop never looked.
+                //
+                // That "{RelatedTypeName}Id" shape only catches a client that spuriously names the
+                // column after the RELATED type. But for a one_to_many, the foreign key that
+                // legitimately belongs to this relation is named after THIS (declaring) type and
+                // lives on the related descriptor as `relation.ForeignKey` — e.g. "authorId" is
+                // carried by the one_to_many relation on the author descriptor even though the
+                // column itself lives on the book row. A client that spuriously materializes THAT
+                // column here (on the declaring type) is a distinct wrong shape and must be caught
+                // too, not waved through because only the related-type shape was checked.
                 var spuriousName = Normalize(relation.RelatedType) + "id";
                 var spurious = propertiesByName.ContainsKey(spuriousName);
+                var spuriousForeignKeyShape = relation.ForeignKey.Length > 0 &&
+                    propertiesByName.ContainsKey(Normalize(relation.ForeignKey));
                 results.Add(Assertion.From(
                     $"{name}: no foreign key was synthesized on the declaring type for a one-to-many relation",
-                    !spurious,
+                    !spurious && !spuriousForeignKeyShape,
                     spurious
                         ? $"found a spurious '{{RelatedTypeName}}Id'-shaped property for relatedType='{relation.RelatedType}'"
-                        : $"declared properties: [{string.Join(", ", descriptor.Properties.Select(p => p.Name))}]",
+                        : spuriousForeignKeyShape
+                            ? $"found a spurious property named after the relation's own foreignKey='{relation.ForeignKey}'"
+                            : $"declared properties: [{string.Join(", ", descriptor.Properties.Select(p => p.Name))}]",
                     Requirements.RelForeignKeySynthesizedForOwningKinds));
                 continue;
             }

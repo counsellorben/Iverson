@@ -163,9 +163,18 @@ public sealed class NavPropertyRejectedScenario(
                 $"actual={caught.StatusCode}"));
 
             var message = caught.Status.Detail;
+            // NavPropertyName ("Author") is a substring of ForeignKeyName ("S3NavAuthorId"), so a
+            // bare case-insensitive Contains(NavPropertyName) is satisfied by a message that names
+            // only the foreign key — the two assertions below would then no longer be independent
+            // observations, and a server regression that dropped the nav-property mention entirely
+            // would still show both as green. RelationValidator.cs quotes the nav property in
+            // single quotes exactly as `'{relation.PropertyName}'` (see
+            // "Relation '{relation.PropertyName}' is a navigation property and cannot be written"),
+            // and that quoted form is never a substring of the unquoted foreign-key mention, so
+            // matching it makes this assertion falsifiable on its own.
             assertions.Add(Assertion.From(
                 $"post: the error names the navigation property ('{NavPropertyName}')",
-                message.Contains(NavPropertyName, StringComparison.OrdinalIgnoreCase),
+                message.Contains($"'{NavPropertyName}'", StringComparison.Ordinal),
                 $"error='{message}'"));
             assertions.Add(Assertion.From(
                 $"post: the error names the required foreign key ('{ForeignKeyName}')",

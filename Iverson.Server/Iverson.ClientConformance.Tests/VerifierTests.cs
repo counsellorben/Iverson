@@ -261,6 +261,56 @@ public class VerifierTests
                 r.RequirementId == Requirements.RelForeignKeySynthesizedForOwningKinds);
     }
 
+    // IVC-REL-001's negative clause also has a second wrong shape: a client that spuriously
+    // materializes the property named after THIS relation's own ForeignKey (e.g. "javaAuthorId",
+    // the name that legitimately belongs on the related JavaArticle row) on the declaring type
+    // itself. The "{RelatedTypeName}Id" check above does not catch this — it only looks for a
+    // property named after the RELATED type ("javaArticleId"), not this relation's ForeignKey.
+    [Fact]
+    public void VerifyRegistration_fails_a_one_to_many_relation_with_its_own_foreign_key_name_spuriously_declared()
+    {
+        var descriptor = Verifier.ParseDescriptor(Json("""
+            {
+              "typeName": "JavaAuthor", "tenantField": "tenantId",
+              "properties": [
+                { "name": "id", "isKey": true }, { "name": "tenantId" },
+                { "name": "javaAuthorId", "clrType": "CLR_GUID" }
+              ],
+              "relations": [
+                { "propertyName": "javaArticles", "kind": "ONE_TO_MANY", "relatedType": "JavaArticle", "foreignKey": "javaAuthorId" }
+              ]
+            }
+            """));
+
+        Verifier.VerifyRegistration("author", descriptor)
+            .Should().Contain(r => !r.Passed &&
+                r.Name.Contains("no foreign key was synthesized") &&
+                r.RequirementId == Requirements.RelForeignKeySynthesizedForOwningKinds);
+    }
+
+    // IVC-REL-003's statement is unqualified over every relation kind, one_to_many included: the
+    // server enforces the nav/FK collision check for one_to_many too, so a client whose reverse
+    // navigation property name collides with its ForeignKey must be caught here, not waved
+    // through because round 1 only extended the distinctness check to the owning kinds.
+    [Fact]
+    public void VerifyRegistration_fails_a_one_to_many_whose_nav_property_equals_its_foreign_key()
+    {
+        var descriptor = Verifier.ParseDescriptor(Json("""
+            {
+              "typeName": "JavaAuthor", "tenantField": "tenantId",
+              "properties": [ { "name": "id", "isKey": true }, { "name": "tenantId" } ],
+              "relations": [
+                { "propertyName": "javaAuthorId", "kind": "ONE_TO_MANY", "relatedType": "JavaArticle", "foreignKey": "javaAuthorId" }
+              ]
+            }
+            """));
+
+        Verifier.VerifyRegistration("author", descriptor)
+            .Should().Contain(r => !r.Passed &&
+                r.Name.Contains("OneToMany") && r.Name.Contains("distinct from the foreign key") &&
+                r.RequirementId == Requirements.RelNavPropertyDistinctFromForeignKey);
+    }
+
     [Fact]
     public void VerifyRegistration_fails_when_a_many_to_many_foreign_key_is_not_named_relatedTypeIds()
     {
