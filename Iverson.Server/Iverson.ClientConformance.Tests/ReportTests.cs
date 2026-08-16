@@ -15,9 +15,9 @@ public class ReportTests
     public void RenderText_LanguageNameLongerThanEightChars_HeaderAndDataCellsStayAligned()
     {
         var report = new Report();
-        report.Add(ReportCell.Ok("dotnet", "s1"));
-        report.Add(ReportCell.Ok("typescript", "s1"));
-        report.Add(ReportCell.Fail("go", "s1", "boom"));
+        report.Add(ReportCell.Ok("dotnet", "s1", []));
+        report.Add(ReportCell.Ok("typescript", "s1", []));
+        report.Add(ReportCell.Fail("go", "s1", "boom", []));
 
         var lines = report.RenderText()
             .Split(Environment.NewLine, StringSplitOptions.RemoveEmptyEntries)

@@ -71,7 +71,7 @@ public sealed class NamingRejectedScenario(DriverRunner runner)
                     break;
                 case DriverPhaseOutcome.Broken broken:
                     cells.Add(ReportCell.Fail(outcome.Language, Name,
-                        $"driver broke during the register phase (exit {broken.ExitCode}): {Truncate(broken.Stderr)}"));
+                        $"driver broke during the register phase (exit {broken.ExitCode}): {Truncate(broken.Stderr)}", []));
                     break;
             }
         }
@@ -82,7 +82,7 @@ public sealed class NamingRejectedScenario(DriverRunner runner)
         foreach (var language in driverLanguages.Where(l => !reported.Contains(l)))
         {
             cells.Add(ReportCell.Fail(language, Name,
-                $"'{language}' is not a recognized conformance driver language"));
+                $"'{language}' is not a recognized conformance driver language", []));
         }
 
         return cells;
@@ -111,7 +111,7 @@ public sealed class NamingRejectedScenario(DriverRunner runner)
     {
         var step = document.Steps.FirstOrDefault(s => s.Name == "register");
         if (step is null)
-            return ReportCell.Fail(language, Name, "the driver reported no 'register' step");
+            return ReportCell.Fail(language, Name, "the driver reported no 'register' step", []);
 
         var message = step.Error ?? string.Empty;
 
@@ -135,10 +135,10 @@ public sealed class NamingRejectedScenario(DriverRunner runner)
 
         var failures = assertions.Where(a => !a.Passed).ToList();
         return failures.Count == 0
-            ? ReportCell.Ok(language, Name)
+            ? ReportCell.Ok(language, Name, assertions)
             : ReportCell.Fail(language, Name, string.Join(
                 Environment.NewLine + "    ",
-                failures.Select(f => $"{f.Name} — {f.Detail}")));
+                failures.Select(f => $"{f.Name} — {f.Detail}")), assertions);
     }
 
     /// <summary>Lower-cased, separator-stripped — mirrors <c>Verifier.Normalize</c> so the three

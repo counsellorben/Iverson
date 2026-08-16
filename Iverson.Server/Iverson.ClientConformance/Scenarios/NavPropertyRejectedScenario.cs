@@ -105,16 +105,17 @@ public sealed class NavPropertyRejectedScenario(
                 caught = ex;
             }
 
-            var failures = Judge(caught).Where(a => !a.Passed).ToList();
+            var assertions = Judge(caught);
+            var failures = assertions.Where(a => !a.Passed).ToList();
             canonicalCell = failures.Count == 0
-                ? ReportCell.Ok(canonical, Name)
+                ? ReportCell.Ok(canonical, Name, assertions)
                 : ReportCell.Fail(canonical, Name, string.Join(
                     Environment.NewLine + "    ",
-                    failures.Select(f => $"{f.Name} — {f.Detail}")));
+                    failures.Select(f => $"{f.Name} — {f.Detail}")), assertions);
         }
         catch (Exception ex)
         {
-            canonicalCell = ReportCell.Fail(canonical, Name, $"fixture registration failed: {Describe(ex)}");
+            canonicalCell = ReportCell.Fail(canonical, Name, $"fixture registration failed: {Describe(ex)}", []);
         }
 
         // Every other requested language did not run anything for this scenario at all — reusing

@@ -71,7 +71,7 @@ public sealed class InteropScenario(
             // way rather than as a cascade of unrelated-looking write-phase denials.
             return languages
                 .Select(l => ReportCell.Fail(l, Name,
-                    $"S4 interop's register phase (run once, by '{RegisterLanguage}') failed: {registerFailure}"))
+                    $"S4 interop's register phase (run once, by '{RegisterLanguage}') failed: {registerFailure}", []))
                 .ToList();
         }
 
@@ -87,7 +87,7 @@ public sealed class InteropScenario(
             {
                 return languages
                     .Select(l => ReportCell.Fail(l, Name,
-                        $"S4 interop's one-time re-registration of '{label}' with row permissions failed: {Describe(ex)}"))
+                        $"S4 interop's one-time re-registration of '{label}' with row permissions failed: {Describe(ex)}", []))
                     .ToList();
             }
         }
@@ -341,12 +341,12 @@ public sealed class InteropScenario(
                     documents.Add((outcome.Language, success.Document));
                     break;
                 case DriverPhaseOutcome.Skipped skipped:
-                    state.Terminal = ReportCell.Skip(outcome.Language, Name, skipped.Reason);
+                    state.Terminal = ReportCell.Skip(outcome.Language, Name, skipped.Reason, state.Assertions);
                     break;
                 case DriverPhaseOutcome.Broken broken:
                     state.Terminal = ReportCell.Fail(outcome.Language, Name,
                         $"driver broke during the {PhaseNames.ToToken(phase)} phase " +
-                        $"(exit {broken.ExitCode}): {Truncate(broken.Stderr)}");
+                        $"(exit {broken.ExitCode}): {Truncate(broken.Stderr)}", state.Assertions);
                     break;
             }
         }
@@ -354,7 +354,7 @@ public sealed class InteropScenario(
         foreach (var language in alive.Where(l => !reported.Contains(l)))
         {
             states[language].Terminal = ReportCell.Fail(language, Name,
-                $"'{language}' is not a recognized conformance driver language");
+                $"'{language}' is not a recognized conformance driver language", states[language].Assertions);
         }
 
         return documents;
@@ -384,10 +384,10 @@ public sealed class InteropScenario(
 
         var failures = state.Assertions.Where(a => !a.Passed).ToList();
         return failures.Count == 0
-            ? ReportCell.Ok(language, Name)
+            ? ReportCell.Ok(language, Name, state.Assertions)
             : ReportCell.Fail(language, Name, string.Join(
                 Environment.NewLine + "    ",
-                failures.Select(f => $"{f.Name} — {f.Detail}")));
+                failures.Select(f => $"{f.Name} — {f.Detail}")), state.Assertions);
     }
 
     private static string Describe(Exception ex) => $"{ex.GetType().Name}: {ex.Message}";
