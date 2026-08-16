@@ -19,11 +19,13 @@ namespace Iverson.ClientConformance.Tests;
 ///    and the test project — i.e. it must be cited by an assertion the orchestrator actually
 ///    constructs, not merely declared.
 /// 3. Every ID (Active or Retired) parsed from the standard must match
-///    <c>IVC-[A-Z]+-\d{3}</c> with an axis drawn from the standard's known nine-axis set.
+///    <c>IVC-[A-Z]+-\d{3}</c> with an axis drawn from the standard's known nine-axis set, and no
+///    `|`-leading line inside a requirement table may be left unparsed (see
+///    <see cref="RequirementTableParser"/> — an unparsed row must never silently drop the rows
+///    that follow it from checks 1 and 3).
 /// </summary>
 public class RequirementsCoverageGateTests
 {
-    private static readonly Regex IdCellPattern = new(@"^\|\s*(IVC-[A-Za-z]+-\d+)\s*\|\s*(Active|Retired)\s*\|", RegexOptions.Compiled);
     private static readonly Regex IdShapePattern = new(@"^IVC-([A-Z]+)-\d{3}$", RegexOptions.Compiled);
 
     private static readonly string[] KnownAxes =
@@ -55,49 +57,14 @@ public class RequirementsCoverageGateTests
         Path.Combine(RepositoryRoot(), "Iverson.Server", "Iverson.ClientConformance");
 
     /// <summary>
-    /// One row parsed out of a requirement table: `| ID | Status | Kind | Statement |`. IDs
+    /// Rows declared out of a requirement table: `| ID | Status | Kind | Statement |`. IDs
     /// mentioned in prose elsewhere in the document are not requirement declarations and must
-    /// never be parsed as such — only rows that live inside one of the axis tables count.
+    /// never be parsed as such — only rows that live inside one of the axis tables count. See
+    /// <see cref="RequirementTableParser"/> for the parsing rules, including how malformed rows
+    /// are handled.
     /// </summary>
-    private static List<(string Id, string Status)> ParseDeclaredRequirements(string markdown)
-    {
-        var results = new List<(string Id, string Status)>();
-        var inRequirementTable = false;
-
-        foreach (var rawLine in markdown.Split('\n'))
-        {
-            var line = rawLine.TrimEnd('\r');
-
-            if (line.StartsWith("| ID | Status | Kind | Statement |", StringComparison.Ordinal))
-            {
-                inRequirementTable = true;
-                continue;
-            }
-
-            if (!inRequirementTable)
-            {
-                continue;
-            }
-
-            if (line.StartsWith("| --- ", StringComparison.Ordinal))
-            {
-                // header separator row, still inside the table
-                continue;
-            }
-
-            var match = IdCellPattern.Match(line);
-            if (match.Success)
-            {
-                results.Add((match.Groups[1].Value, match.Groups[2].Value));
-                continue;
-            }
-
-            // Any other line ends the table: blank line, a heading, or a non-matching pipe row.
-            inRequirementTable = false;
-        }
-
-        return results;
-    }
+    private static List<(string Id, string Status)> ParseDeclaredRequirements(string markdown) =>
+        RequirementTableParser.Parse(markdown).Rows;
 
     private static List<string> ReflectRegistryConsts()
     {
@@ -172,6 +139,17 @@ public class RequirementsCoverageGateTests
         uncited.Should().BeEmpty(
             "every const in Requirements.cs must be cited by an assertion the orchestrator constructs " +
             $"under Iverson.ClientConformance/ (excluding Requirements.cs and the test project), but these are uncited: {string.Join(", ", uncited)}");
+    }
+
+    [Fact]
+    public void Check3_NoUnparsableRowsInAnyRequirementTable()
+    {
+        var markdown = File.ReadAllText(StandardPath());
+        var malformed = RequirementTableParser.Parse(markdown).MalformedLines;
+
+        malformed.Should().BeEmpty(
+            "every `|`-leading line inside a requirement table must parse as a well-formed " +
+            $"`| ID | Status | Kind | Statement |` row, but these did not: {string.Join(" ~~~ ", malformed)}");
     }
 
     [Fact]
