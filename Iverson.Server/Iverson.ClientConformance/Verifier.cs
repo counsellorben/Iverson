@@ -8,11 +8,11 @@ namespace Iverson.ClientConformance;
 /// One judgement the orchestrator made. Assertions live only here and in the scenarios that call
 /// this class — never in a driver, which reports and never judges.
 /// </summary>
-public sealed record Assertion(string Name, bool Passed, string Detail = "")
+public sealed record Assertion(string Name, bool Passed, string Detail = "", string? RequirementId = null)
 {
-    public static Assertion Pass(string name, string detail = "") => new(name, true, detail);
-    public static Assertion Fail(string name, string detail) => new(name, false, detail);
-    public static Assertion From(string name, bool passed, string detail) => new(name, passed, detail);
+    public static Assertion Pass(string name, string detail = "", string? requirementId = null) => new(name, true, detail, requirementId);
+    public static Assertion Fail(string name, string detail, string? requirementId = null) => new(name, false, detail, requirementId);
+    public static Assertion From(string name, bool passed, string detail, string? requirementId = null) => new(name, passed, detail, requirementId);
 }
 
 /// <summary>
