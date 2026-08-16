@@ -221,9 +221,14 @@ hydrated list to `entityStruct.Fields[relation.PropertyName]`
 key**, and the colliding client cannot satisfy `IVC-REL-006`. The two requirements conflict
 directly.
 
-`crud-roundtrip` is green today only because all five drivers acquired distinct `many_to_many` names
-via the `"Ids"` strip fix. A legitimately-colliding client would pass registration and fail at
-depth, with nothing currently detecting it.
+`crud-roundtrip` is green today only because no driver happens to collide, and the five reach that
+state two different ways. Python, TypeScript and Go declare the relation on the foreign-key member
+and derive a distinct navigation-property name by stripping a trailing `Id`/`Ids`. .NET and Java
+declare the two separately — .NET pairs a `DotNetTagIds` array with a `[ManyToMany] DotNetTags` nav
+property, and `JavaArticle.java:35-38` pairs `javaTagIds` with `@ManyToMany javaTags` against a
+foreign key Java infers as `{RelatedTypeName}Ids` (`SchemaRegistrar.java:351`). Java has no strip
+rule at all. A legitimately-colliding client would pass registration and fail at depth, with nothing
+currently detecting it.
 
 **Ruling (Ben, 2026-08-15): `IVC-REL-003` extends to every relation kind, and is enforced on both
 sides.** It makes `IVC-REL-006` unconditional and removes a latent failure.
