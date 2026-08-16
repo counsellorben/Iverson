@@ -533,10 +533,10 @@ def main(argv: List[str]) -> int:
         except Exception as exc:  # noqa: BLE001
             steps.append(StepResult("get_author", False, error=describe(exc)))
 
-        # IVC-LIFE-005: a depth-1 read through this driver's OWN client library, reported as its
-        # own step — proves the CLIENT can express the request and materialize the hydrated
-        # result, distinct from the orchestrator's own depth-1 MappingGet which only proves the
-        # SERVER hydrates.
+        # IVC-LIFE-006/IVC-LIFE-007: a depth-1 read through this driver's OWN client library,
+        # reported as its own step — proves the CLIENT can express the request (LIFE-006) and
+        # materialize the hydrated result (LIFE-007), distinct from the orchestrator's own
+        # depth-1 MappingGet which only proves the SERVER hydrates.
         try:
             article_depth1 = coordinator(PyArticle).get_mapped(str(key_for("article")), depth=1)
             steps.append(StepResult("get_depth1", True, entity=entity_to_dict(article_depth1)))

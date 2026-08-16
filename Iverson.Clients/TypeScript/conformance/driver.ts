@@ -495,10 +495,10 @@ async function main(argv: string[]): Promise<number> {
             steps.push(step('get_author', false, { error: describe(err) }));
         }
 
-        // IVC-LIFE-005: a depth-1 read through this driver's OWN client library, reported as
-        // its own step — proves the CLIENT can express the request and materialize the hydrated
-        // result, distinct from the orchestrator's own depth-1 MappingGet which only proves the
-        // SERVER hydrates.
+        // IVC-LIFE-006/IVC-LIFE-007: a depth-1 read through this driver's OWN client library,
+        // reported as its own step — proves the CLIENT can express the request (LIFE-006) and
+        // materialize the hydrated result (LIFE-007), distinct from the orchestrator's own
+        // depth-1 MappingGet which only proves the SERVER hydrates.
         try {
             const articleDepth1 = await client.coordinator(TsArticle).getMapped(keyFor('article'), 1);
             steps.push(step('get_depth1', true, { entity: entityToPlain(articleDepth1) }));

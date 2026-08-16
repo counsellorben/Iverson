@@ -232,10 +232,10 @@ public final class Driver {
             r.entity = author == null ? null : GSON.toJsonTree(author);
         }));
 
-        // IVC-LIFE-005: a depth-1 read through this driver's OWN client library, reported as its
-        // own step — proves the CLIENT can express the request and materialize the hydrated
-        // result, distinct from the orchestrator's own depth-1 MappingGet which only proves the
-        // SERVER hydrates.
+        // IVC-LIFE-006/IVC-LIFE-007: a depth-1 read through this driver's OWN client library,
+        // reported as its own step — proves the CLIENT can express the request (LIFE-006) and
+        // materialize the hydrated result (LIFE-007), distinct from the orchestrator's own
+        // depth-1 MappingGet which only proves the SERVER hydrates.
         steps.add(step("get_depth1", r -> {
             JavaArticle article = new EntityCoordinator<>(client, JavaArticle.class).getMapped(articleKey.toString(), 1);
             r.entity = article == null ? null : GSON.toJsonTree(article);

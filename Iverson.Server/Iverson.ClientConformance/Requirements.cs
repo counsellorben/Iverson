@@ -17,9 +17,10 @@ public static class Requirements
 
     /// <summary>
     /// A client declares exactly one key property. Discharged by
-    /// <c>Verifier.VerifyRegistration</c>'s "declares exactly one key property" assertion —
-    /// the same assertion `REL`'s authoring notes describe as the loop backstop, now also cited
-    /// here since it is exactly the statement `IVC-DECL-001` makes.
+    /// <c>Verifier.VerifyRegistration</c>'s "declares exactly one key property" assertion. This
+    /// is a distinct assertion from the one REL's authoring notes describe as the loop backstop
+    /// — that is the uncited "declares exactly the expected relation kinds" assertion
+    /// (`Verifier.cs`, checking relation shape), not this one.
     /// </summary>
     public const string DeclExactlyOneKeyProperty = "IVC-DECL-001";
 
@@ -42,10 +43,13 @@ public static class Requirements
 
     /// <summary>
     /// A key value is a well-formed UUID on every leg — driver, the orchestrator's own gRPC
-    /// read, and Postgres. Discharged by <c>Verifier.VerifyThreeWay</c>'s "server returned a
-    /// value" assertion when <c>isKey</c> is true — the mirror of how <c>IVC-REL-010</c> cites
-    /// the same assertion when <c>isKey</c> is false, so the two requirements partition the
-    /// assertion's firings rather than double-covering either.
+    /// read, and Postgres. All three legs are judged: <c>Verifier.VerifyThreeWay</c>'s "server
+    /// returned a value" assertion judges the gRPC leg directly (the mirror of how
+    /// <c>IVC-REL-010</c> cites the same assertion when <c>isKey</c> is false, so the two
+    /// requirements partition that assertion's firings rather than double-covering either), and
+    /// when <c>isKey</c> is true this const is also cited on the two agreement assertions —
+    /// driver-vs-gRPC and gRPC-vs-Postgres — which judge the driver and Postgres legs because
+    /// <c>ObservedValue.Matches</c> fails whenever either side did not parse as a UUID.
     /// </summary>
     public const string DeclKeyWellFormedUuid = "IVC-DECL-004";
 
@@ -81,11 +85,30 @@ public static class Requirements
 
     /// <summary>
     /// A mapped create returns a key assigned by the server — encoded as a UUIDv7 — never a
-    /// client-supplied one. Discharged by <c>CrudRoundtripScenario</c>'s "create returned a
-    /// server-assigned UUIDv7 key" assertion, which inspects the version nibble of the key the
-    /// write phase reported for <c>article</c> (`ObjectPersistenceGrpcService.Post` mints a
-    /// UUIDv7 unconditionally and discards whatever key the client sent, per
-    /// <c>2026-08-10-server-generated-ids-and-mapped-crud-parity-design.md</c>).
+    /// client-supplied one. The first clause is discharged by <c>CrudRoundtripScenario</c>'s
+    /// "create returned a server-assigned UUIDv7 key" assertion, which inspects the version
+    /// nibble of the key the write phase reported for <c>article</c>
+    /// (`ObjectPersistenceGrpcService.Post` mints a UUIDv7 unconditionally and discards whatever
+    /// key the client sent, per <c>2026-08-10-server-generated-ids-and-mapped-crud-parity-design.md</c>).
+    ///
+    /// The second clause — "never a client-supplied one" — has no arbitrary driver-supplied
+    /// candidate available orchestrator-side to diff against: verified against all five drivers'
+    /// write phases, none transmits a client-chosen key on a mapped create. Python's,
+    /// TypeScript's, Go's and Java's write steps each state explicitly that a create request
+    /// "must omit id entirely" and that "there is no client-derived key to fall back to any
+    /// more" (<c>driver.py</c>, <c>driver.ts</c>, <c>main.go</c>, <c>Driver.java</c>); .NET's
+    /// write step (<c>Program.cs</c>, <c>write_article</c>) never sets <c>DotNetArticle.Id</c>
+    /// either, so <c>StructConverter.ToStruct</c> serializes it at its CLR default,
+    /// <c>Guid.Empty</c>. That default IS a real, non-fabricated candidate, though — it is the
+    /// literal wire value .NET's create payload carries, and the sentinel every other language's
+    /// typed model would carry for an unset identifier — so <c>CrudRoundtripScenario</c>'s
+    /// "create returned key is not the empty-key placeholder" assertion also cites this const,
+    /// ruling out the specific regression where a server (or driver) echoes back whatever
+    /// identity value it received instead of minting a fresh one. The deterministic
+    /// <c>Keys.Derive</c>/<c>deriveKey</c> helper each driver also carries is NOT used for this:
+    /// it exists only to re-resolve an already-known key for phases after <c>write</c> when
+    /// <c>--keys</c> is absent, and is never sent on create, so diffing against it would compare
+    /// against a value the server was never offered.
     /// </summary>
     public const string LifeCreateReturnsServerAssignedKey = "IVC-LIFE-002";
 
@@ -118,9 +141,11 @@ public static class Requirements
     /// orchestrator's own <c>MappingGet</c>, which only proves the SERVER can serve a
     /// depth-resolved read. Having each driver perform its own depth-1 read through its own client
     /// library is what proves the CLIENT can express the request and get back a result. This
-    /// requirement is satisfied by the call completing and returning an entity; it says nothing
-    /// about whether that entity is hydrated — that is <c>IVC-LIFE-007</c>, a distinct assertion,
-    /// so a client that reaches without hydrating goes green here and red there.
+    /// requirement is satisfied by the call completing (<c>step.Ok</c>); the assertion does not
+    /// inspect <c>step.Entity</c>, matching the standard's statement, which says only
+    /// "reachable" — it says nothing about whether that entity is hydrated — that is
+    /// <c>IVC-LIFE-007</c>, a distinct assertion, so a client that reaches without hydrating goes
+    /// green here and red there.
     /// </summary>
     public const string LifeDepthResolvedReadReachable = "IVC-LIFE-006";
 

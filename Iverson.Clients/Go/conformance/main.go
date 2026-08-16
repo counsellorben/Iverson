@@ -620,10 +620,10 @@ func run(argv []string) int {
 				func() (interface{}, error) { return authorCoord.Get(ctx, authorKey) }))
 		}
 
-		// IVC-LIFE-005: a depth-1 read through this driver's OWN client library, reported as
-		// its own step — proves the CLIENT can express the request and materialize the
-		// hydrated result, distinct from the orchestrator's own depth-1 MappingGet which only
-		// proves the SERVER hydrates.
+		// IVC-LIFE-006/IVC-LIFE-007: a depth-1 read through this driver's OWN client library,
+		// reported as its own step — proves the CLIENT can express the request (LIFE-006) and
+		// materialize the hydrated result (LIFE-007), distinct from the orchestrator's own
+		// depth-1 MappingGet which only proves the SERVER hydrates.
 		if articleCoordErr != nil {
 			steps = append(steps, failStep("get_depth1", articleCoordErr))
 		} else if articleTypeErr != nil {

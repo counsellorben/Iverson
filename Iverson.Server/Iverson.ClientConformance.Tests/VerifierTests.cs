@@ -616,6 +616,60 @@ public class VerifierTests
         results.Should().NotContain(a => a.RequirementId == Requirements.DeclKeyWellFormedUuid);
     }
 
+    /// <summary>
+    /// IVC-DECL-004 names all three legs — driver, gRPC, Postgres — so all three of
+    /// VerifyThreeWay's assertions must cite it when isKey is true, not just the "server returned
+    /// a value" one. Citing only that one would let the requirement report exercised-and-green
+    /// having never judged the driver or Postgres legs — the same partial-discharge failure this
+    /// fix closes.
+    /// </summary>
+    [Fact]
+    public void VerifyThreeWay_cites_DECL004_on_all_three_assertions_for_the_primary_key()
+    {
+        var id = Guid.NewGuid().ToString();
+        var results = Verifier.VerifyThreeWay("article", "Id", Legs(id, id, id), isKey: true);
+
+        results.Should().HaveCount(3);
+        results.Should().OnlyContain(a => a.RequirementId == Requirements.DeclKeyWellFormedUuid);
+    }
+
+    /// <summary>
+    /// The driver-vs-gRPC and gRPC-vs-Postgres assertions cited under IVC-DECL-004 must actually
+    /// judge those legs, not merely carry the citation while always passing. An unreadable driver
+    /// leg (fails to parse as a UUID) must fail the driver-vs-gRPC assertion specifically — proof
+    /// that DECL-004's citation on it discharges a real judgement of the driver leg.
+    /// </summary>
+    [Fact]
+    public void VerifyThreeWay_DECL004_driver_agreement_assertion_fails_when_driver_leg_is_unreadable()
+    {
+        var grpc = Guid.NewGuid().ToString();
+        var results = Verifier.VerifyThreeWay(
+            "article", "Id", Legs("not-a-uuid", grpc, grpc), isKey: true);
+
+        results.Should().Contain(a =>
+            a.Name.Contains("echoed unchanged by the orchestrator's gRPC read") &&
+            a.RequirementId == Requirements.DeclKeyWellFormedUuid &&
+            !a.Passed);
+    }
+
+    /// <summary>
+    /// Mirror of the above for the Postgres leg: an unreadable Postgres leg must fail the
+    /// gRPC-vs-Postgres assertion cited under DECL-004, proving that citation discharges a real
+    /// judgement of the Postgres leg too.
+    /// </summary>
+    [Fact]
+    public void VerifyThreeWay_DECL004_postgres_agreement_assertion_fails_when_postgres_leg_is_unreadable()
+    {
+        var driverAndGrpc = Guid.NewGuid().ToString();
+        var results = Verifier.VerifyThreeWay(
+            "article", "Id", Legs(driverAndGrpc, driverAndGrpc, "not-a-uuid"), isKey: true);
+
+        results.Should().Contain(a =>
+            a.Name.Contains("echoes the same key as the Postgres row") &&
+            a.RequirementId == Requirements.DeclKeyWellFormedUuid &&
+            !a.Passed);
+    }
+
     // ── LIFE — server-assigned UUIDv7 key ────────────────────────────────────────────────────
 
     [Fact]
@@ -629,6 +683,26 @@ public class VerifierTests
     [Fact]
     public void IsUuidV7_false_for_null_or_unparseable() =>
         (Verifier.IsUuidV7(null) || Verifier.IsUuidV7("not-a-uuid")).Should().BeFalse();
+
+    /// <summary>
+    /// IVC-LIFE-002's second clause ("never a client-supplied one") is discharged by ruling out
+    /// the all-zeros placeholder — the one candidate value actually observable orchestrator-side
+    /// (see Requirements.LifeCreateReturnsServerAssignedKey's doc comment). This pins the
+    /// predicate itself: a regression that stopped flagging the placeholder would silently widen
+    /// what IVC-LIFE-002 accepts.
+    /// </summary>
+    [Fact]
+    public void IsEmptyKeyPlaceholder_true_for_the_all_zeros_guid() =>
+        Verifier.IsEmptyKeyPlaceholder("00000000-0000-0000-0000-000000000000").Should().BeTrue();
+
+    [Fact]
+    public void IsEmptyKeyPlaceholder_false_for_a_real_key() =>
+        Verifier.IsEmptyKeyPlaceholder(Guid.NewGuid().ToString()).Should().BeFalse();
+
+    [Fact]
+    public void IsEmptyKeyPlaceholder_false_for_null_or_unparseable() =>
+        (Verifier.IsEmptyKeyPlaceholder(null) || Verifier.IsEmptyKeyPlaceholder("not-a-uuid"))
+            .Should().BeFalse();
 
     // ── LIFE — depth reachability ────────────────────────────────────────────────────────────
 

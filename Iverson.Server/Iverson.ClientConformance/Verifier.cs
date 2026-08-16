@@ -401,6 +401,18 @@ public static class Verifier
         key is not null && Guid.TryParse(key, out var parsed) && parsed.ToString("N")[12] == '7';
 
     /// <summary>
+    /// True when <paramref name="key"/> is the all-zeros UUID — the sentinel an unset identifier
+    /// property serializes or deserializes to across every driver language, and the literal wire
+    /// value .NET's mapped create sends for <c>DotNetArticle.Id</c> (never set on write, so
+    /// <c>StructConverter.ToStruct</c> emits its CLR default). Used to discharge the second half
+    /// of <c>IVC-LIFE-002</c> ("never a client-supplied one") — extracted to a pure,
+    /// unit-testable function rather than left inline in <c>CrudRoundtripScenario</c>, matching
+    /// <see cref="IsUuidV7"/>'s pattern.
+    /// </summary>
+    public static bool IsEmptyKeyPlaceholder(string? key) =>
+        Guid.TryParse(key, out var parsed) && parsed == Guid.Empty;
+
+    /// <summary>
     /// Judges IVC-LIFE-006 — the reachability half of the retired IVC-LIFE-005: whether a
     /// driver's own depth-1 read (the "get_depth1" step) is reachable through the client's
     /// public API at all, independent of whether the entity it returns is actually hydrated
@@ -641,19 +653,27 @@ public static class Verifier
                 observed,
                 isKey ? Requirements.DeclKeyWellFormedUuid : Requirements.RelForeignKeyWellFormedUuid),
 
+            // IVC-DECL-004 names all three legs — driver, gRPC, Postgres — so when isKey is true
+            // the two agreement assertions below also cite it: Matches returns false whenever
+            // either side is unreadable (Verifier.ObservedValue.Matches, above), so a driver leg
+            // that failed to parse as a UUID fails this assertion rather than passing by omission,
+            // and likewise for Postgres. Citing DECL-004 only on the "server returned a value"
+            // assertion above would discharge the requirement having judged only the gRPC leg.
             Assertion.From(
                 isKey
                     ? $"{label}.{valueName}: driver-supplied key is echoed unchanged by the orchestrator's gRPC read"
                     : $"{label}.{valueName}: driver read agrees with the orchestrator's gRPC read",
                 legs.Driver.Matches(legs.Grpc),
-                observed),
+                observed,
+                isKey ? Requirements.DeclKeyWellFormedUuid : null),
 
             Assertion.From(
                 isKey
                     ? $"{label}.{valueName}: the orchestrator's gRPC read echoes the same key as the Postgres row"
                     : $"{label}.{valueName}: the orchestrator's gRPC read agrees with the Postgres row",
                 legs.Grpc.Matches(legs.Postgres),
-                observed),
+                observed,
+                isKey ? Requirements.DeclKeyWellFormedUuid : null),
         ];
     }
 }

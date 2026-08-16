@@ -117,6 +117,26 @@ public sealed class CrudRoundtripScenario(
                 Verifier.IsUuidV7(articleKey),
                 articleKey is null ? "no key reported" : $"key={articleKey}",
                 Requirements.LifeCreateReturnsServerAssignedKey));
+
+            // IVC-LIFE-002's second clause — "never a client-supplied one" — has no driver-
+            // supplied candidate key available orchestrator-side to diff against: all five
+            // drivers' write steps never transmit a client-chosen key on a mapped create (see
+            // Requirements.LifeCreateReturnsServerAssignedKey's doc comment for the source
+            // citations). Guid.Empty ("00000000-0000-0000-0000-000000000000") is nonetheless a
+            // real, non-fabricated candidate to rule out: it is the literal wire value .NET's
+            // create payload carries for an unset Id property (StructConverter.ToStruct
+            // serializes every declared property that isn't a nav property, and write_article
+            // never sets DotNetArticle.Id), and it is the sentinel an unset/absent identifier
+            // deserializes to in every other language's typed model. A server that regressed to
+            // echoing back whatever identity value it received — rather than unconditionally
+            // minting a fresh one — would surface here as the returned key equalling this
+            // specific sentinel, independent of the UUIDv7 check above (which a coincidentally
+            // v7-shaped echoed value would still pass).
+            state.Assertions.Add(Assertion.From(
+                "write_article: create returned key is not the empty-key placeholder",
+                !Verifier.IsEmptyKeyPlaceholder(articleKey),
+                articleKey is null ? "no key reported" : $"key={articleKey}",
+                Requirements.LifeCreateReturnsServerAssignedKey));
         }
 
         // ── read (the driver's independent leg) ──────────────────────────────────────────────
