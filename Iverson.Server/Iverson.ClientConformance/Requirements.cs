@@ -13,6 +13,113 @@ namespace Iverson.ClientConformance;
 /// </summary>
 public static class Requirements
 {
+    // ── DECL — Declaration ──────────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// A client declares exactly one key property. Discharged by
+    /// <c>Verifier.VerifyRegistration</c>'s "declares exactly one key property" assertion —
+    /// the same assertion `REL`'s authoring notes describe as the loop backstop, now also cited
+    /// here since it is exactly the statement `IVC-DECL-001` makes.
+    /// </summary>
+    public const string DeclExactlyOneKeyProperty = "IVC-DECL-001";
+
+    /// <summary>
+    /// A client declares a tenant field that is itself a declared property. Discharged by
+    /// <c>Verifier.VerifyRegistration</c>'s "declares a tenant field" assertion, which requires
+    /// the descriptor's <c>TenantField</c> to be non-empty AND to resolve against the
+    /// descriptor's own <c>Properties</c> — a tenant field named but never declared is caught by
+    /// the same assertion, not waved through.
+    /// </summary>
+    public const string DeclTenantFieldDeclared = "IVC-DECL-002";
+
+    /// <summary>
+    /// The key property is typed <c>UUID</c>. Discharged by
+    /// <c>Verifier.VerifyRegistration</c>'s "key property is typed UUID" assertion, asserted
+    /// directly from the descriptor's own <c>ClrType</c> — <c>ClrGuid</c> is exactly the CLR
+    /// type the server maps to a <c>UUID</c> column.
+    /// </summary>
+    public const string DeclKeyTypedUuid = "IVC-DECL-003";
+
+    /// <summary>
+    /// A key value is a well-formed UUID on every leg — driver, the orchestrator's own gRPC
+    /// read, and Postgres. Discharged by <c>Verifier.VerifyThreeWay</c>'s "server returned a
+    /// value" assertion when <c>isKey</c> is true — the mirror of how <c>IVC-REL-010</c> cites
+    /// the same assertion when <c>isKey</c> is false, so the two requirements partition the
+    /// assertion's firings rather than double-covering either.
+    /// </summary>
+    public const string DeclKeyWellFormedUuid = "IVC-DECL-004";
+
+    /// <summary>
+    /// A client's declared tenant field is typed as a scalar string — never <c>UUID</c> and
+    /// never array-typed. Discharged by <c>Verifier.VerifyRegistration</c>'s "tenant field is
+    /// typed as a scalar string" assertion, which requires both <c>ClrType == ClrString</c> and
+    /// <c>!IsArray</c> together — a client that types its tenant field as a GUID or as an array
+    /// fails this, not merely one that omits it (that failure is <c>IVC-DECL-002</c>'s).
+    /// </summary>
+    public const string DeclTenantFieldTypedString = "IVC-DECL-005";
+
+    /// <summary>
+    /// A property declared array-typed never declares its CLR type as a delimited string.
+    /// Discharged by <c>Verifier.VerifyRegistration</c>'s "array-typed property does not declare
+    /// CLR_STRING" assertion, fired over every array-typed property on the descriptor — this is
+    /// a declaration-level check independent of <c>IVC-REL-007</c>, which checks the wire value
+    /// actually sent rather than the declared type.
+    /// </summary>
+    public const string DeclArrayNotDelimitedString = "IVC-DECL-006";
+
+    // ── LIFE — Lifecycle ────────────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// A mapped create, read, update and delete are each reachable through the client's public
+    /// API. Discharged by <c>CrudRoundtripScenario.RequireStepOk</c>'s "step succeeded" assertion
+    /// for the <c>write_author</c>/<c>write_tag</c>/<c>write_article</c>, <c>get</c>/
+    /// <c>get_author</c>, <c>update</c> and <c>delete</c> steps — each fails outright (a
+    /// Capability failure is a failure, per the design's ruling) if that operation could not be
+    /// performed through the driver's own client library.
+    /// </summary>
+    public const string LifeMappedCrudReachable = "IVC-LIFE-001";
+
+    /// <summary>
+    /// A mapped create returns a key assigned by the server — encoded as a UUIDv7 — never a
+    /// client-supplied one. Discharged by <c>CrudRoundtripScenario</c>'s "create returned a
+    /// server-assigned UUIDv7 key" assertion, which inspects the version nibble of the key the
+    /// write phase reported for <c>article</c> (`ObjectPersistenceGrpcService.Post` mints a
+    /// UUIDv7 unconditionally and discards whatever key the client sent, per
+    /// <c>2026-08-10-server-generated-ids-and-mapped-crud-parity-design.md</c>).
+    /// </summary>
+    public const string LifeCreateReturnsServerAssignedKey = "IVC-LIFE-002";
+
+    /// <summary>
+    /// An update changes the server's stored value, observable in a subsequent read. Discharged
+    /// by <c>CrudRoundtripScenario</c>'s "article.Title: the update changed the server's stored
+    /// value" assertion, which compares the server's own before/after title — never the value
+    /// the driver merely claimed to have sent.
+    /// </summary>
+    public const string LifeUpdateReflectedInRead = "IVC-LIFE-003";
+
+    /// <summary>
+    /// A delete removes the row such that neither the orchestrator's own gRPC read nor the
+    /// Postgres row finds it afterward. Both clauses are discharged: the gRPC clause by
+    /// <c>CrudRoundtripScenario</c>'s "delete: the orchestrator's gRPC read no longer finds the
+    /// row" assertion, the Postgres clause by its "delete: the Postgres row is gone" assertion —
+    /// neither alone would prove the row is actually gone rather than merely unreadable through
+    /// one path.
+    /// </summary>
+    public const string LifeDeleteRemovesRow = "IVC-LIFE-004";
+
+    /// <summary>
+    /// A depth-resolved read is reachable through the client's public API, and the entity it
+    /// returns is hydrated at that depth. Supersedes the retired <c>IVC-REL-009</c>, which named
+    /// only reachability; this statement also requires the returned entity to actually carry a
+    /// hydrated relation, not merely that the call completed. Discharged by
+    /// <c>Verifier.VerifyDepthCapability</c>, called from <c>CrudRoundtripScenario</c>'s read
+    /// phase against each driver's OWN depth-1 read (<c>get_depth1</c> step) — deliberately not
+    /// the orchestrator's own <c>MappingGet</c>, which only proves the SERVER hydrates. Having
+    /// each driver perform its own depth-1 read through its own client library is what proves the
+    /// CLIENT can express the request and materialize the result.
+    /// </summary>
+    public const string LifeDepthResolvedReadReachable = "IVC-LIFE-005";
+
     // ── REL — Relations ─────────────────────────────────────────────────────────────────────
 
     /// <summary>

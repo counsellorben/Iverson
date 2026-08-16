@@ -93,7 +93,7 @@ public class VerifierTests
             {
               "typeName": "Article", "tenantField": "tenant_id",
               "properties": [
-                { "name": "id", "isKey": true }, { "name": "tenant_id" },
+                { "name": "id", "clrType": "CLR_GUID", "isKey": true }, { "name": "tenant_id" },
                 { "name": "detail_id", "clrType": "CLR_GUID" }
               ],
               "relations": [
@@ -226,7 +226,7 @@ public class VerifierTests
         var descriptor = Verifier.ParseDescriptor(Json("""
             {
               "typeName": "JavaAuthor", "tenantField": "tenantId",
-              "properties": [ { "name": "id", "isKey": true }, { "name": "tenantId" } ],
+              "properties": [ { "name": "id", "clrType": "CLR_GUID", "isKey": true }, { "name": "tenantId" } ],
               "relations": [
                 { "propertyName": "javaArticles", "kind": "ONE_TO_MANY", "relatedType": "JavaArticle", "foreignKey": "javaAuthorId" }
               ]
@@ -452,6 +452,232 @@ public class VerifierTests
         var results = Verifier.VerifyRegistration("tag", descriptor, []);
 
         results.Should().Contain(r => !r.Passed && r.Name.Contains("exactly one key property"));
+    }
+
+    // ── DECL — declaration ───────────────────────────────────────────────────────────────────
+
+    [Fact]
+    public void VerifyRegistration_cites_DECL001_for_the_key_property_count_assertion()
+    {
+        var descriptor = Verifier.ParseDescriptor(Json("""
+            { "typeName": "Tag", "tenantField": "tenant_id",
+              "properties": [ { "name": "id", "clrType": "CLR_GUID", "isKey": true }, { "name": "tenant_id" } ],
+              "relations": [] }
+            """));
+
+        Verifier.VerifyRegistration("tag", descriptor, [])
+            .Should().Contain(r => r.Passed && r.Name.Contains("exactly one key property") &&
+                r.RequirementId == Requirements.DeclExactlyOneKeyProperty);
+    }
+
+    [Fact]
+    public void VerifyRegistration_cites_DECL002_for_the_tenant_field_assertion()
+    {
+        var descriptor = Verifier.ParseDescriptor(Json("""
+            { "typeName": "Tag", "tenantField": "tenant_id",
+              "properties": [ { "name": "id", "clrType": "CLR_GUID", "isKey": true }, { "name": "tenant_id" } ],
+              "relations": [] }
+            """));
+
+        Verifier.VerifyRegistration("tag", descriptor, [])
+            .Should().Contain(r => r.Passed && r.Name.Contains("declares a tenant field") &&
+                r.RequirementId == Requirements.DeclTenantFieldDeclared);
+    }
+
+    [Fact]
+    public void VerifyRegistration_fails_DECL003_when_the_key_property_is_not_typed_uuid()
+    {
+        var descriptor = Verifier.ParseDescriptor(Json("""
+            { "typeName": "Tag", "tenantField": "tenant_id",
+              "properties": [ { "name": "id", "clrType": "CLR_STRING", "isKey": true }, { "name": "tenant_id" } ],
+              "relations": [] }
+            """));
+
+        Verifier.VerifyRegistration("tag", descriptor, [])
+            .Should().Contain(r => !r.Passed && r.Name.Contains("key property is typed UUID") &&
+                r.RequirementId == Requirements.DeclKeyTypedUuid);
+    }
+
+    [Fact]
+    public void VerifyRegistration_passes_DECL003_when_the_key_property_is_typed_uuid()
+    {
+        var descriptor = Verifier.ParseDescriptor(Json("""
+            { "typeName": "Tag", "tenantField": "tenant_id",
+              "properties": [ { "name": "id", "clrType": "CLR_GUID", "isKey": true }, { "name": "tenant_id" } ],
+              "relations": [] }
+            """));
+
+        Verifier.VerifyRegistration("tag", descriptor, [])
+            .Should().Contain(r => r.Passed && r.Name.Contains("key property is typed UUID"));
+    }
+
+    [Fact]
+    public void VerifyRegistration_fails_DECL005_when_the_tenant_field_is_typed_uuid_not_string()
+    {
+        var descriptor = Verifier.ParseDescriptor(Json("""
+            { "typeName": "Tag", "tenantField": "tenant_id",
+              "properties": [
+                { "name": "id", "clrType": "CLR_GUID", "isKey": true },
+                { "name": "tenant_id", "clrType": "CLR_GUID" }
+              ],
+              "relations": [] }
+            """));
+
+        Verifier.VerifyRegistration("tag", descriptor, [])
+            .Should().Contain(r => !r.Passed && r.Name.Contains("tenant field is typed as a scalar string") &&
+                r.RequirementId == Requirements.DeclTenantFieldTypedString);
+    }
+
+    [Fact]
+    public void VerifyRegistration_fails_DECL005_when_the_tenant_field_is_array_typed()
+    {
+        var descriptor = Verifier.ParseDescriptor(Json("""
+            { "typeName": "Tag", "tenantField": "tenant_id",
+              "properties": [
+                { "name": "id", "clrType": "CLR_GUID", "isKey": true },
+                { "name": "tenant_id", "clrType": "CLR_STRING", "isArray": true }
+              ],
+              "relations": [] }
+            """));
+
+        Verifier.VerifyRegistration("tag", descriptor, [])
+            .Should().Contain(r => !r.Passed && r.Name.Contains("tenant field is typed as a scalar string"));
+    }
+
+    [Fact]
+    public void VerifyRegistration_passes_DECL005_when_the_tenant_field_is_a_scalar_string()
+    {
+        var descriptor = Verifier.ParseDescriptor(Json("""
+            { "typeName": "Tag", "tenantField": "tenant_id",
+              "properties": [
+                { "name": "id", "clrType": "CLR_GUID", "isKey": true },
+                { "name": "tenant_id", "clrType": "CLR_STRING" }
+              ],
+              "relations": [] }
+            """));
+
+        Verifier.VerifyRegistration("tag", descriptor, [])
+            .Should().Contain(r => r.Passed && r.Name.Contains("tenant field is typed as a scalar string"));
+    }
+
+    [Fact]
+    public void VerifyRegistration_fails_DECL006_when_an_array_typed_property_declares_CLR_STRING()
+    {
+        var descriptor = Verifier.ParseDescriptor(Json("""
+            { "typeName": "Bad", "tenantField": "tenant_id",
+              "properties": [
+                { "name": "id", "clrType": "CLR_GUID", "isKey": true }, { "name": "tenant_id" },
+                { "name": "tag_ids", "clrType": "CLR_STRING", "isArray": true }
+              ],
+              "relations": [
+                { "propertyName": "tags", "kind": "MANY_TO_MANY", "relatedType": "T", "foreignKey": "tag_ids" }
+              ] }
+            """));
+
+        Verifier.VerifyRegistration("article", descriptor)
+            .Should().Contain(r => !r.Passed && r.Name.Contains("does not declare CLR_STRING") &&
+                r.RequirementId == Requirements.DeclArrayNotDelimitedString);
+    }
+
+    [Fact]
+    public void VerifyRegistration_passes_DECL006_when_an_array_typed_property_declares_CLR_GUID()
+    {
+        var descriptor = Verifier.ParseDescriptor(Json("""
+            { "typeName": "Good", "tenantField": "tenant_id",
+              "properties": [
+                { "name": "id", "clrType": "CLR_GUID", "isKey": true }, { "name": "tenant_id" },
+                { "name": "tag_ids", "clrType": "CLR_GUID", "isArray": true }
+              ],
+              "relations": [
+                { "propertyName": "tags", "kind": "MANY_TO_MANY", "relatedType": "T", "foreignKey": "tag_ids" }
+              ] }
+            """));
+
+        Verifier.VerifyRegistration("article", descriptor)
+            .Should().Contain(r => r.Passed && r.Name.Contains("does not declare CLR_STRING"));
+    }
+
+    [Fact]
+    public void VerifyThreeWay_cites_DECL004_for_the_primary_key()
+    {
+        var id = Guid.NewGuid().ToString();
+        var results = Verifier.VerifyThreeWay("article", "Id", Legs(id, id, id), isKey: true);
+
+        results.Should().Contain(a => a.Name.Contains("server returned a value") &&
+            a.RequirementId == Requirements.DeclKeyWellFormedUuid);
+    }
+
+    [Fact]
+    public void VerifyThreeWay_does_not_cite_DECL004_for_a_foreign_key()
+    {
+        var id = Guid.NewGuid().ToString();
+        var results = Verifier.VerifyThreeWay("article", "AuthorId", Legs(id, id, id), isKey: false);
+
+        results.Should().NotContain(a => a.RequirementId == Requirements.DeclKeyWellFormedUuid);
+    }
+
+    // ── LIFE — server-assigned UUIDv7 key ────────────────────────────────────────────────────
+
+    [Fact]
+    public void IsUuidV7_true_for_a_version7_uuid() =>
+        Verifier.IsUuidV7("0198f1a2-70c1-7abc-9def-0123456789ab").Should().BeTrue();
+
+    [Fact]
+    public void IsUuidV7_false_for_a_version4_uuid() =>
+        Verifier.IsUuidV7(Guid.NewGuid().ToString()).Should().BeFalse();
+
+    [Fact]
+    public void IsUuidV7_false_for_null_or_unparseable() =>
+        (Verifier.IsUuidV7(null) || Verifier.IsUuidV7("not-a-uuid")).Should().BeFalse();
+
+    // ── LIFE — depth capability ──────────────────────────────────────────────────────────────
+
+    private static TypeDescriptor ArticleWithManyToOneAuthor => Verifier.ParseDescriptor(Json("""
+        { "typeName": "Article", "tenantField": "tenant_id",
+          "properties": [
+            { "name": "id", "clrType": "CLR_GUID", "isKey": true }, { "name": "tenant_id" },
+            { "name": "author_id", "clrType": "CLR_GUID" }
+          ],
+          "relations": [
+            { "propertyName": "author", "kind": "MANY_TO_ONE", "relatedType": "author", "foreignKey": "author_id" }
+          ] }
+        """));
+
+    [Fact]
+    public void VerifyDepthCapability_passes_when_a_relation_hydrates_in_the_drivers_own_read()
+    {
+        var authorId = Guid.NewGuid();
+        var entity = Json($$"""
+            { "id": "a1", "author_id": "{{authorId}}", "author": { "id": "{{authorId}}", "name": "N" } }
+            """);
+
+        var assertion = Verifier.VerifyDepthCapability("article", ArticleWithManyToOneAuthor, entity);
+
+        assertion.Passed.Should().BeTrue();
+        assertion.RequirementId.Should().Be(Requirements.LifeDepthResolvedReadReachable);
+    }
+
+    [Fact]
+    public void VerifyDepthCapability_fails_when_the_drivers_own_read_reports_no_hydrated_relation()
+    {
+        // The falsifiability case: a driver whose "depth-1" read is stubbed to return the
+        // depth-0 entity — the foreign key is present but no nav property carries a related
+        // object — must not be certified as having exercised the depth capability.
+        var authorId = Guid.NewGuid();
+        var entity = Json($$"""{ "id": "a1", "author_id": "{{authorId}}" }""");
+
+        var assertion = Verifier.VerifyDepthCapability("article", ArticleWithManyToOneAuthor, entity);
+
+        assertion.Passed.Should().BeFalse();
+        assertion.RequirementId.Should().Be(Requirements.LifeDepthResolvedReadReachable);
+    }
+
+    [Fact]
+    public void VerifyDepthCapability_fails_when_the_entity_is_absent()
+    {
+        var assertion = Verifier.VerifyDepthCapability("article", ArticleWithManyToOneAuthor, null);
+
+        assertion.Passed.Should().BeFalse();
     }
 
     // ── compared value set ───────────────────────────────────────────────────────────────────

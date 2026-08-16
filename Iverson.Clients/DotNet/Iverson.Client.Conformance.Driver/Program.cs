@@ -336,6 +336,16 @@ switch (phase)
             var author = await Coordinator<DotNetAuthor>().GetMappedAsync(KeyFor("author").ToString(), depth: 0);
             return result with { Entity = Json.Element(author) };
         });
+
+        // IVC-LIFE-005: a depth-1 read through this driver's OWN client library, reported as its
+        // own step — proves the CLIENT can express the request and materialize the hydrated
+        // result, distinct from the orchestrator's own depth-1 MappingGet which only proves the
+        // SERVER hydrates.
+        await Step("get_depth1", async result =>
+        {
+            var article = await Coordinator<DotNetArticle>().GetMappedAsync(KeyFor("article").ToString(), depth: 1);
+            return result with { Entity = Json.Element(article) };
+        });
         break;
     }
 

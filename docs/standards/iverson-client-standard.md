@@ -82,8 +82,18 @@ green in this state: an empty set of `Active` IDs compared against an empty set 
 
 ### DECL — Declaration
 
+Full rationale and the assertion(s) that discharge each requirement are recorded on the
+corresponding const's doc comment in `Requirements.cs`, per this document's own convention for an
+implemented requirement.
+
 | ID | Status | Kind | Statement |
 | --- | --- | --- | --- |
+| IVC-DECL-001 | Active | Behaviour | A client declares exactly one key property |
+| IVC-DECL-002 | Active | Behaviour | A client declares a tenant field that is itself a declared property |
+| IVC-DECL-003 | Active | Behaviour | The key property is typed `UUID` |
+| IVC-DECL-004 | Active | Behaviour | A key value is a well-formed UUID on every leg — driver, the orchestrator's own gRPC read, and Postgres |
+| IVC-DECL-005 | Active | Behaviour | A client's declared tenant field is typed as a scalar string, never `UUID` and never array-typed |
+| IVC-DECL-006 | Active | Behaviour | A property declared array-typed never declares its CLR type as a delimited string |
 
 ### REL — Relations
 
@@ -148,8 +158,21 @@ had to relearn the hard way are recorded here so the next axis does not repeat t
 
 ### LIFE — Lifecycle
 
+Full rationale and the assertion(s) that discharge each requirement are recorded on the
+corresponding const's doc comment in `Requirements.cs`, per this document's own convention for an
+implemented requirement.
+
 | ID | Status | Kind | Statement |
 | --- | --- | --- | --- |
+| IVC-LIFE-001 | Active | Capability | A mapped create, read, update and delete are each reachable through the client's public API |
+| IVC-LIFE-002 | Active | Behaviour | A mapped create returns a key assigned by the server — encoded as a UUIDv7 — never a client-supplied one |
+| IVC-LIFE-003 | Active | Behaviour | An update changes the server's stored value, observable in a subsequent read |
+| IVC-LIFE-004 | Active | Behaviour | A delete removes the row such that neither the orchestrator's own gRPC read nor the Postgres row finds it afterward |
+| IVC-LIFE-005 | Active | Capability | A depth-resolved read is reachable through the client's public API, and the entity it returns is hydrated at that depth |
+
+`IVC-LIFE-005` supersedes the retired `IVC-REL-009`: mapped-CRUD parity established that all five
+clients expose a depth-resolved read, so the requirement moves here and is strengthened to also
+require that the returned entity is actually hydrated, not merely that the call completes.
 
 ### QRY — Query
 

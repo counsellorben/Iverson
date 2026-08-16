@@ -124,7 +124,19 @@ public static class Verifier
         results.Add(Assertion.From(
             $"{label}: declares exactly one key property",
             descriptor.Properties.Count(p => p.IsKey) == 1,
-            $"keys=[{string.Join(", ", descriptor.Properties.Where(p => p.IsKey).Select(p => p.Name))}]"));
+            $"keys=[{string.Join(", ", descriptor.Properties.Where(p => p.IsKey).Select(p => p.Name))}]",
+            Requirements.DeclExactlyOneKeyProperty));
+
+        // IVC-DECL-003: the key property must be typed UUID. Asserted directly from the
+        // descriptor the driver reported, the same way IVC-REL-010's foreign-key typing clause
+        // is asserted below rather than deferred to server-side enforcement the harness never
+        // observes.
+        var keyProperty = descriptor.Properties.FirstOrDefault(p => p.IsKey);
+        results.Add(Assertion.From(
+            $"{label}: key property is typed UUID",
+            keyProperty is not null && keyProperty.ClrType == ClrType.ClrGuid,
+            keyProperty is not null ? $"clrType={keyProperty.ClrType}" : "no key property declared",
+            Requirements.DeclKeyTypedUuid));
 
         // Asserted unconditionally — including (and especially) when Relations is empty. Every
         // other relation assertion below lives inside `foreach (var relation in
@@ -147,11 +159,25 @@ public static class Verifier
                 $"expected=[{string.Join(", ", expectedKinds)}] actual=[{string.Join(", ", actualKinds)}]"));
         }
 
+        propertiesByName.TryGetValue(Normalize(descriptor.TenantField), out var tenantProperty);
+        var tenantDeclared = descriptor.TenantField.Length > 0 && tenantProperty is not null;
         results.Add(Assertion.From(
             $"{label}: declares a tenant field",
-            descriptor.TenantField.Length > 0 &&
-            propertiesByName.ContainsKey(Normalize(descriptor.TenantField)),
-            $"tenantField='{descriptor.TenantField}'"));
+            tenantDeclared,
+            $"tenantField='{descriptor.TenantField}'",
+            Requirements.DeclTenantFieldDeclared));
+
+        // IVC-DECL-005: the tenant field must be typed as a scalar string — never UUID, never
+        // array-typed. A tenant field that is undeclared (IVC-DECL-002's failure) also fails
+        // here, rather than this assertion being silently skipped, since `tenantProperty` is
+        // null in that case.
+        results.Add(Assertion.From(
+            $"{label}: tenant field is typed as a scalar string",
+            tenantDeclared && tenantProperty!.ClrType == ClrType.ClrString && !tenantProperty.IsArray,
+            tenantDeclared
+                ? $"clrType={tenantProperty!.ClrType} isArray={tenantProperty.IsArray}"
+                : "tenant field not declared",
+            Requirements.DeclTenantFieldTypedString));
 
         // Foreign keys of many-to-many relations — the only relations whose key is allowed (and
         // required) to be an array-typed property.
@@ -267,6 +293,15 @@ public static class Verifier
                 $"many-to-many foreign keys: [{string.Join(", ", descriptor.Relations
                     .Where(r => r.Kind == RelationKind.ManyToMany).Select(r => r.ForeignKey))}]",
                 Requirements.RelIsArraySetForManyToManyOnly));
+
+            // IVC-DECL-006: a declaration-level check, independent of IVC-REL-007's wire-level
+            // check — a property that is array-typed must never ALSO declare its CLR type as a
+            // delimited string.
+            results.Add(Assertion.From(
+                $"{label}.{property.Name}: array-typed property does not declare CLR_STRING",
+                property.ClrType != ClrType.ClrString,
+                $"clrType={property.ClrType}",
+                Requirements.DeclArrayNotDelimitedString));
         }
 
         return results;
@@ -352,6 +387,43 @@ public static class Verifier
                 hydratedCount > 0,
                 $"nav={(nav is null ? "(absent)" : nav.Value.GetRawText())}"),
         ];
+    }
+
+    /// <summary>
+    /// True when <paramref name="key"/> parses as a UUID whose version nibble reads '7' — the
+    /// shape <c>ObjectPersistenceGrpcService.Post</c> mints unconditionally for a mapped create,
+    /// discarding whatever key the client sent
+    /// (<c>2026-08-10-server-generated-ids-and-mapped-crud-parity-design.md</c>). Used to
+    /// discharge <c>IVC-LIFE-002</c> — extracted to a pure, unit-testable function rather than
+    /// left inline in <c>CrudRoundtripScenario</c>.
+    /// </summary>
+    public static bool IsUuidV7(string? key) =>
+        key is not null && Guid.TryParse(key, out var parsed) && parsed.ToString("N")[12] == '7';
+
+    /// <summary>
+    /// Judges IVC-LIFE-005 — the depth capability that superseded the retired IVC-REL-009 — from
+    /// a DRIVER's own depth-1 read, never the orchestrator's <c>MappingGet</c>. The orchestrator's
+    /// own depth-1 read (used by <see cref="VerifyRelationHydrated"/> above) proves the SERVER
+    /// hydrates; it says nothing about whether a given client's public API can express the
+    /// request and materialize the result. This method is what makes the depth-resolved read a
+    /// gradable Capability: it requires at least one of the descriptor's own relations to have
+    /// actually hydrated (a nav property carrying an object with its own key) in the JSON the
+    /// DRIVER itself reported back.
+    /// </summary>
+    public static Assertion VerifyDepthCapability(string label, TypeDescriptor descriptor, JsonElement? depth1Entity)
+    {
+        var hydratedRelations = descriptor.Relations
+            .Where(r => CountHydratedObjects(FindProperty(depth1Entity, r.PropertyName)) > 0)
+            .Select(r => r.PropertyName)
+            .ToList();
+
+        return Assertion.From(
+            $"{label}: driver's own depth-1 read reports a hydrated entity",
+            hydratedRelations.Count > 0,
+            hydratedRelations.Count > 0
+                ? $"hydrated: [{string.Join(", ", hydratedRelations)}]"
+                : $"entity={(depth1Entity is null ? "(absent)" : depth1Entity.Value.GetRawText())}",
+            Requirements.LifeDepthResolvedReadReachable);
     }
 
     /// <summary>
@@ -542,12 +614,14 @@ public static class Verifier
             // assertion fires once per name in ComparedValueNames, which always includes the
             // primary key, so citing REL-010 unconditionally let a type with zero owning
             // relations discharge "foreign-key values are well-formed UUIDs" having observed no
-            // foreign key at all.
+            // foreign key at all. The isKey branch is not left uncited, though — it discharges
+            // IVC-DECL-004's "a key value is a well-formed UUID on every leg" instead, so the
+            // two requirements partition this assertion's firings rather than one going unused.
             Assertion.From(
                 $"{label}.{valueName}: server returned a value",
                 legs.Grpc.Uuids is { Count: > 0 },
                 observed,
-                isKey ? null : Requirements.RelForeignKeyWellFormedUuid),
+                isKey ? Requirements.DeclKeyWellFormedUuid : Requirements.RelForeignKeyWellFormedUuid),
 
             Assertion.From(
                 isKey

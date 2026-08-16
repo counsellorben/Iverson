@@ -100,11 +100,23 @@ public sealed class CrudRoundtripScenario(
         {
             var state = states[language];
             foreach (var step in new[] { "write_author", "write_tag", "write_article" })
-                RequireStepOk(state, document, step);
+                RequireStepOk(state, document, step, Requirements.LifeMappedCrudReachable);
             // `entity` on a write step is deliberately never read: only the .NET driver returns
             // the server's entity there, while Python/TypeScript/Go report the locally
             // constructed pre-call object and Java reports null. Comparing it would be comparing
             // a driver's own input against the server's state.
+
+            // IVC-LIFE-002: the key reported for "article" must be a server-assigned UUIDv7, not
+            // a client-chosen one. `ObjectPersistenceGrpcService.Post` mints a UUIDv7
+            // unconditionally and discards whatever key the driver sent
+            // (2026-08-10-server-generated-ids-and-mapped-crud-parity-design.md), so the version
+            // nibble — hex digit 13 of the unformatted key — must read '7'.
+            var articleKey = KeyOf(language, "article");
+            state.Assertions.Add(Assertion.From(
+                "write_article: create returned a server-assigned UUIDv7 key",
+                Verifier.IsUuidV7(articleKey),
+                articleKey is null ? "no key reported" : $"key={articleKey}",
+                Requirements.LifeCreateReturnsServerAssignedKey));
         }
 
         // ── read (the driver's independent leg) ──────────────────────────────────────────────
@@ -114,9 +126,22 @@ public sealed class CrudRoundtripScenario(
         foreach (var (language, document) in await RunPhaseAsync(Phase.Read, states, context, ct))
         {
             var state = states[language];
-            var article = RequireStepOk(state, document, "get");
-            var author = RequireStepOk(state, document, "get_author");
+            var article = RequireStepOk(state, document, "get", Requirements.LifeMappedCrudReachable);
+            var author = RequireStepOk(state, document, "get_author", Requirements.LifeMappedCrudReachable);
             driverReads[language] = (article?.Entity, author?.Entity);
+
+            // IVC-LIFE-005 (supersedes retired IVC-REL-009): each driver performs its OWN
+            // depth-1 read through its own client library — a separate step, "get_depth1" —
+            // and the returned entity must actually carry a hydrated relation. This is what
+            // makes the depth-resolved read a Capability the harness can grade: the
+            // orchestrator's own MappingGet(depth: 1) below proves only that the SERVER
+            // hydrates.
+            var depth1 = RequireStepOk(state, document, "get_depth1", Requirements.LifeDepthResolvedReadReachable);
+            if (state.Article is not null)
+            {
+                state.Assertions.Add(Verifier.VerifyDepthCapability(
+                    "article", state.Article.Descriptor, depth1?.Entity));
+            }
         }
 
         // ── the orchestrator's own two legs, and the three-way comparison ────────────────────
@@ -139,7 +164,7 @@ public sealed class CrudRoundtripScenario(
 
         // ── update ───────────────────────────────────────────────────────────────────────────
         foreach (var (language, document) in await RunPhaseAsync(Phase.Update, states, context, ct))
-            RequireStepOk(states[language], document, "update");
+            RequireStepOk(states[language], document, "update", Requirements.LifeMappedCrudReachable);
 
         foreach (var language in Alive(states))
         {
@@ -161,7 +186,8 @@ public sealed class CrudRoundtripScenario(
             state.Assertions.Add(Assertion.From(
                 "article.Title: the update changed the server's stored value",
                 before.Value is not null && afterTitle is not null && before.Value != afterTitle,
-                $"before='{before.Value ?? "<none>"}' after='{afterTitle ?? "<none>"}'"));
+                $"before='{before.Value ?? "<none>"}' after='{afterTitle ?? "<none>"}'",
+                Requirements.LifeUpdateReflectedInRead));
 
             state.Assertions.Add(Assertion.From(
                 "article.Title: the Postgres row agrees with the gRPC read after the update",
@@ -184,7 +210,7 @@ public sealed class CrudRoundtripScenario(
         foreach (var (language, document) in await RunPhaseAsync(Phase.Delete, states, context, ct))
         {
             var state = states[language];
-            RequireStepOk(state, document, "delete");
+            RequireStepOk(state, document, "delete", Requirements.LifeMappedCrudReachable);
 
             // get_after_delete is deliberately NOT held to step.Ok. The five clients disagree on
             // how a deleted row is signalled — .NET surfaces the server's "not found" as a
@@ -224,13 +250,15 @@ public sealed class CrudRoundtripScenario(
             state.Assertions.Add(Assertion.From(
                 "delete: the orchestrator's gRPC read no longer finds the row",
                 grpc is null,
-                grpc is null ? "not found" : grpc.Value.GetRawText()));
+                grpc is null ? "not found" : grpc.Value.GetRawText(),
+                Requirements.LifeDeleteRemovesRow));
 
             var row = await FetchRowAsync(state, state.Article, key, ct);
             state.Assertions.Add(Assertion.From(
                 "delete: the Postgres row is gone",
                 row is null,
-                row is null ? "no row" : $"row still present with {row.Count} columns"));
+                row is null ? "no row" : $"row still present with {row.Count} columns",
+                Requirements.LifeDeleteRemovesRow));
         }
 
         return states.Select(kv => Cell(kv.Key, kv.Value)).ToList();
@@ -292,17 +320,19 @@ public sealed class CrudRoundtripScenario(
     private static IEnumerable<string> Alive(Dictionary<string, LanguageState> states) =>
         states.Where(kv => kv.Value.Terminal is null).Select(kv => kv.Key).ToList();
 
-    private static StepResult? RequireStepOk(LanguageState state, PhaseDocument document, string stepName)
+    private static StepResult? RequireStepOk(
+        LanguageState state, PhaseDocument document, string stepName, string? requirementId = null)
     {
         var step = document.Steps.FirstOrDefault(s => s.Name == stepName);
         if (step is null)
         {
-            state.Assertions.Add(Assertion.Fail($"step '{stepName}'", "the driver reported no such step"));
+            state.Assertions.Add(Assertion.Fail(
+                $"step '{stepName}'", "the driver reported no such step", requirementId));
             return null;
         }
 
         state.Assertions.Add(Assertion.From(
-            $"step '{stepName}' succeeded", step.Ok, step.Error ?? "ok"));
+            $"step '{stepName}' succeeded", step.Ok, step.Error ?? "ok", requirementId));
         return step.Ok ? step : null;
     }
 
