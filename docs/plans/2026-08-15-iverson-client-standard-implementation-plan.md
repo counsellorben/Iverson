@@ -81,6 +81,7 @@ A1 `docs/standards/` free · A2 no existing standard · A3 `Assertion` tolerates
 | 21 | Consumer (Cat 6) | `ERR` partly discharges against existing assertions, so T12 is the smallest scenario task | `NamingRejectedScenario.cs:120-130` and `NavPropertyRejectedScenario.cs:142-163` already assert status codes and message content |
 | 22 | Consumer (Cat 6) | A driver-registered type is `Denied` to every authorized operation until re-registered with an authorization block | `RowFieldAuthorizationEvaluator.cs:10-12` returns `Denied = true` when `schema.Authorization is null`; `ObjectMappingGrpcService.cs:78-81` skips denied schemas in `GetSchema`; `CrudRoundtripScenario.cs:63-89` re-registers for exactly this reason |
 | 23 | Consumer (Cat 6) | The depth-resolved-read Capability — authored in `LIFE`, superseding the retired `IVC-REL-009` — has no existing assertion to cite | all five drivers read at depth 0 only: `Program.cs:325-335`, `driver.py:521`, `driver.ts:481`, `main.go:597`, `Driver.java:218`; the only depth-1 read is the orchestrator's own gRPC call |
+| 24 | Command | A scenario name passed to `--scenarios` does not necessarily reach a scenario | `Program.cs:71` takes `flags.Scenarios` unvalidated; `:144-145` reduces an unknown name to an ignored stderr warning; `Report.cs:57-59` makes `AllPassed` vacuously true over zero cells, so the run exits 0 |
 
 **Sibling-set sweep** — "every identifier the plan names resolves to a definition at its point of use", run over the full set the plan references: `Assertion`, `ReportCell`, `Verifier.VerifyRegistration`, `DriverRunner`, `DriverProtocol`/`Phase`/`PhaseNames`, `Report.RenderJson`/`RenderText`, both `SchemaRegistrar`s, `SchemaRegistrationOrchestrator`, `RelationValidator`, the four scenario classes, `Iverson.slnx`, the five driver entry points. All resolve; findings are rows 5, 6, 7 and 19 above.
 
@@ -236,7 +237,8 @@ git commit -m "author the REL axis and bind it to the harness assertions"
 - [ ] **Step 2: Author `LIFE`** — mapped create/read/update/delete, server-assigned keys, and the depth-resolved read as a Capability — citing the round-trip assertions. The depth capability supersedes the retired `IVC-REL-009`; it is the axis the spec's own table assigns `depth` to.
 - [ ] **Step 3: Add a driver-side depth-resolved read** to discharge that Capability. Extend each driver's `read` phase with a second read of the article through its own client at depth 1 — `GetMappedAsync(key, depth: 1)`, `get_mapped(id, depth=1)`, `getMapped(id, 1)` (TypeScript and Java), and `GetMapped(ctx, id, 1)` (`coordinator.go:236`) — reported as its own step carrying the returned entity. This is what makes it a Capability the harness can grade: the orchestrator's own depth-1 read proves the server hydrates, not that a client can ask it to. Then assert, orchestrator-side, that every driver reported a hydrated entity, citing the `LIFE` depth const.
 - [ ] **Step 4: For any other requirement with no existing assertion, add the assertion rather than dropping the requirement.** The gate will not let the requirement land otherwise; that is the intended pressure.
-- [ ] **Step 5: Run and commit.**
+- [ ] **Step 5: Prove the new assertions can fail.** Stub one driver's depth-1 read to return the depth-0 entity and confirm that language's cell goes red; restore.
+- [ ] **Step 6: Run and commit.**
 ```bash
 dotnet test Iverson.Server/Iverson.ClientConformance.Tests/Iverson.ClientConformance.Tests.csproj
 dotnet run --project Iverson.Server/Iverson.ClientConformance -- --scenarios crud-roundtrip
@@ -256,7 +258,8 @@ git commit -m "author the DECL and LIFE axes"
 
 - [ ] **Step 1: Author `REG`** — descriptor contents, authorization rules, drift, plus the two rules T4 added: foreign keys are named `{RelatedTypeName}Id`, and a nav-property/foreign-key collision is rejected at registration.
 - [ ] **Step 2: Cite the existing registration assertions** and add orchestrator-side assertions for T4's two rejections, exercised by attempting each offending registration over gRPC.
-- [ ] **Step 3: Run and commit.**
+- [ ] **Step 3: Prove the new assertions can fail.** Revert each of T4's two server checks in turn and confirm the corresponding orchestrator assertion goes red; restore.
+- [ ] **Step 4: Run and commit.**
 ```bash
 dotnet test Iverson.Server/Iverson.ClientConformance.Tests/Iverson.ClientConformance.Tests.csproj
 dotnet run --project Iverson.Server/Iverson.ClientConformance -- --scenarios naming-rejected,nav-property-rejected
@@ -280,13 +283,15 @@ The first new scenario — it establishes the pattern T9–T12 follow, and is th
 
 - [ ] **Step 2: Re-register each reported descriptor with row permissions.** Take each driver's reported `TypeDescriptor` and re-register it through `Reregistrar.ReregisterAsync(descriptor.Json, actingToken)` with the authorization block added and nothing else changed. A schema with no authorization block is `Denied` for every action including `Read` (`RowFieldAuthorizationEvaluator.cs:10-12`), and `GetSchema` skips denied schemas outright (`ObjectMappingGrpcService.cs:78-81`) — so without this the driver's own types are invisible to the catalogue and the scenario fails for all five languages. Where a descriptor is missing, report a failed assertion naming the consequence; never skip in silence, matching `CrudRoundtripScenario.cs:70-84`. **This step is part of the pattern T9–T12 copy.**
 
-- [ ] **Step 3: Write the orchestrator scenario.** Register a type per language, then have each driver read the catalogue and report it. Assert every language sees the type it registered, with the same field set the descriptor declared.
+- [ ] **Step 3: Register the scenario.** Add the scenario's `Name` to `recognizedScenarios` (`Program.cs:66-70`) and give it its own `if (scenarios.Contains(<Scenario>.Name, StringComparer.OrdinalIgnoreCase))` dispatch block alongside the existing four. Without this, `--scenarios <name>` prints an ignored-unknown warning to stderr and exits 0 having run nothing — a green that means the opposite of what it appears to. **This step is part of the pattern T9–T12 copy.**
 
-- [ ] **Step 4: Author the `SCH` requirements and cite them.**
+- [ ] **Step 4: Write the orchestrator scenario.** Register a type per language, then have each driver read the catalogue and report it. Assert every language sees the type it registered, with the same field set the descriptor declared.
 
-- [ ] **Step 5: Prove the assertions can fail.** Break one driver's report and confirm only that language's cell goes red.
+- [ ] **Step 5: Author the `SCH` requirements and cite them.**
 
-- [ ] **Step 6: Run and commit.**
+- [ ] **Step 6: Prove the assertions can fail.** Break one driver's report and confirm only that language's cell goes red.
+
+- [ ] **Step 7: Run and commit.** The matrix must contain a row for this scenario — exit 0 alone does not prove it ran.
 ```bash
 dotnet test Iverson.Server/Iverson.ClientConformance.Tests/Iverson.ClientConformance.Tests.csproj
 dotnet run --project Iverson.Server/Iverson.ClientConformance -- --scenarios schema-catalog
@@ -300,11 +305,12 @@ Follows T8's pattern.
 
 - [ ] **Step 1: Add the scenario to all five drivers** — set constant plus a `write` branch seeding rows and a `read` branch issuing a search and an aggregate through each client's own builder API.
 - [ ] **Step 2: Re-register each reported descriptor with row permissions**, per T8 Step 2. Without it every seeded write is denied.
-- [ ] **Step 3: Handle the projection delay.** `Search` and `Aggregate` are served from StarRocks, but a mapped write commits to Postgres and enqueues an outbox row whose projection is asynchronous — so the read phase polls with a bounded retry rather than querying once. Match whatever wait convention T10 establishes; a bounded poll with an explicit timeout that reports as a failed step, never an indefinite wait, and never a fixed sleep presented as determinism.
-- [ ] **Step 4: Write the orchestrator scenario**, asserting all five clients agree on the result set and the aggregate value for the same query over the same seeded rows. Require a positive expected row count, so five empty result sets fail rather than agreeing.
-- [ ] **Step 5: Author the `QRY` requirements and cite them.**
-- [ ] **Step 6: Prove the assertions can fail** — perturb one client's filter and confirm its cell alone goes red.
-- [ ] **Step 7: Run and commit.**
+- [ ] **Step 3: Register the scenario**, per T8 Step 3.
+- [ ] **Step 4: Handle the projection delay.** `Search` and `Aggregate` are served from StarRocks, but a mapped write commits to Postgres and enqueues an outbox row whose projection is asynchronous — so the read phase polls with a bounded retry rather than querying once. Match whatever wait convention T10 establishes; a bounded poll with an explicit timeout that reports as a failed step, never an indefinite wait, and never a fixed sleep presented as determinism.
+- [ ] **Step 5: Write the orchestrator scenario**, asserting all five clients agree on the result set and the aggregate value for the same query over the same seeded rows. Require a positive expected row count, so five empty result sets fail rather than agreeing.
+- [ ] **Step 6: Author the `QRY` requirements and cite them.**
+- [ ] **Step 7: Prove the assertions can fail** — perturb one client's filter and confirm its cell alone goes red.
+- [ ] **Step 8: Run and commit.** The matrix must contain a row for this scenario — exit 0 alone does not prove it ran.
 ```bash
 dotnet test Iverson.Server/Iverson.ClientConformance.Tests/Iverson.ClientConformance.Tests.csproj
 dotnet run --project Iverson.Server/Iverson.ClientConformance -- --scenarios query
@@ -316,11 +322,12 @@ git commit -m "add the query conformance scenario and the QRY axis"
 
 - [ ] **Step 1: Add the scenario to all five drivers** — `write` seeds rows carrying an embedded field, `read` issues `SearchSimilar` and `SearchChunks`.
 - [ ] **Step 2: Re-register each reported descriptor with row permissions**, per T8 Step 2. Without it every seeded write is denied.
-- [ ] **Step 3: Handle the projection delay.** Embeddings reach Qdrant asynchronously, so the read phase polls with a bounded retry rather than reading once. Match whatever wait convention the harness already uses; if none exists, a bounded poll with an explicit timeout that reports as a failed step — never an indefinite wait, and never a fixed sleep presented as determinism.
-- [ ] **Step 4: Write the orchestrator scenario**, asserting all five clients retrieve the same object for the same query vector.
-- [ ] **Step 5: Author the `VEC` requirements and cite them.**
-- [ ] **Step 6: Prove the assertions can fail.**
-- [ ] **Step 7: Run and commit.**
+- [ ] **Step 3: Register the scenario**, per T8 Step 3.
+- [ ] **Step 4: Handle the projection delay.** Embeddings reach Qdrant asynchronously, so the read phase polls with a bounded retry rather than reading once. Match whatever wait convention the harness already uses; if none exists, a bounded poll with an explicit timeout that reports as a failed step — never an indefinite wait, and never a fixed sleep presented as determinism.
+- [ ] **Step 5: Write the orchestrator scenario**, asserting all five clients retrieve the same object for the same query vector.
+- [ ] **Step 6: Author the `VEC` requirements and cite them.**
+- [ ] **Step 7: Prove the assertions can fail.**
+- [ ] **Step 8: Run and commit.** The matrix must contain a row for this scenario — exit 0 alone does not prove it ran.
 ```bash
 dotnet test Iverson.Server/Iverson.ClientConformance.Tests/Iverson.ClientConformance.Tests.csproj
 dotnet run --project Iverson.Server/Iverson.ClientConformance -- --scenarios vector-search
@@ -332,10 +339,11 @@ git commit -m "add the vector-search conformance scenario and the VEC axis"
 
 - [ ] **Step 1: Add the scenario to all five drivers.** The orchestrator passes a deliberately wrong acting-user token for the negative leg; each driver attempts a write and reports the status code it received rather than judging it.
 - [ ] **Step 2: Re-register each reported descriptor with row permissions**, per T8 Step 2. Without it the positive leg is denied for the same reason the negative leg is, and the scenario cannot tell the two apart.
-- [ ] **Step 3: Write the orchestrator scenario** — a positive leg (the correct acting user writes and reads back) and a negative leg (the wrong acting user is denied). Assert every client surfaces the same status code on the negative leg.
-- [ ] **Step 4: Author the `IDN` requirements and cite them** — service token, acting-user propagation, tenancy enforcement.
-- [ ] **Step 5: Prove the assertions can fail.** Drop the acting-user header in one driver and confirm its cell goes red. If a denial appears, read `docker logs iverson-api | grep Audit.Denied` — the audit line names actor, tenant and reason, and is the fastest route to the cause.
-- [ ] **Step 6: Run and commit.**
+- [ ] **Step 3: Register the scenario**, per T8 Step 3.
+- [ ] **Step 4: Write the orchestrator scenario** — a positive leg (the correct acting user writes and reads back) and a negative leg (the wrong acting user is denied). Assert every client surfaces the same status code on the negative leg.
+- [ ] **Step 5: Author the `IDN` requirements and cite them** — service token, acting-user propagation, tenancy enforcement.
+- [ ] **Step 6: Prove the assertions can fail.** Drop the acting-user header in one driver and confirm its cell goes red. If a denial appears, read `docker logs iverson-api | grep Audit.Denied` — the audit line names actor, tenant and reason, and is the fastest route to the cause.
+- [ ] **Step 7: Run and commit.** The matrix must contain a row for this scenario — exit 0 alone does not prove it ran.
 ```bash
 dotnet test Iverson.Server/Iverson.ClientConformance.Tests/Iverson.ClientConformance.Tests.csproj
 dotnet run --project Iverson.Server/Iverson.ClientConformance -- --scenarios identity
@@ -348,9 +356,9 @@ git commit -m "add the identity conformance scenario and the IDN axis"
 The smallest of the five: `naming-rejected` and `nav-property-rejected` already assert status codes and message content, so several `ERR` requirements cite existing assertions.
 
 - [ ] **Step 1: Author the `ERR` requirements**, citing the existing assertions in `NamingRejectedScenario.cs:120-130` and `NavPropertyRejectedScenario.cs:142-163` wherever they already discharge a rule.
-- [ ] **Step 2: Add a scenario only for the error classes nothing covers** — a not-found read, and a write rejected for a schema-validation reason. If existing assertions cover a requirement, cite them rather than duplicating the check.
+- [ ] **Step 2: Add a scenario only for the error classes nothing covers** — a not-found read, and a write rejected for a schema-validation reason. If existing assertions cover a requirement, cite them rather than duplicating the check. **Register it** per T8 Step 3.
 - [ ] **Step 3: Prove any new assertion can fail.**
-- [ ] **Step 4: Run the full matrix.** Every scenario, every language, no `--scenarios` filter — the default run must exercise all of them.
+- [ ] **Step 4: Run the full matrix.** The matrix must contain a row for the new scenario — exit 0 alone does not prove it ran. Every scenario, every language, no `--scenarios` filter — the default run must exercise all of them.
 ```bash
 dotnet test Iverson.Server/Iverson.ClientConformance.Tests/Iverson.ClientConformance.Tests.csproj
 dotnet run --project Iverson.Server/Iverson.ClientConformance
