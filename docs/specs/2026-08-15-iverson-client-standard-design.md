@@ -66,6 +66,9 @@ superseded. `docs/standards/` does not exist today and is created for it.
 reused. A withdrawn requirement stays in the document marked `Retired` with its rationale, so a
 citation in an old commit or review always resolves. Gaps are expected.
 
+Every declaration carries a status — `Active` or `Retired` — and only `Active` requirements are
+subject to the coverage gate.
+
 ### Axes
 
 | Axis | Covers |
@@ -134,20 +137,27 @@ escape hatch.
 
 A unit test in `Iverson.ClientConformance.Tests`, offline and deterministic:
 
-1. **The registry mirrors the document.** IDs parsed from
-   `docs/standards/iverson-client-standard.md` must equal the consts reflected off `Requirements`.
-   This catches a requirement with no const and a const with no requirement. Reflection selects
-   `IsLiteral && !IsInitOnly`, which yields consts and excludes `static readonly`.
+1. **The registry mirrors the document.** A requirement is *declared* only by a row in a requirement
+   table; IDs appearing anywhere else in the document are cross-references and are not parsed. The
+   set of `Active` declared IDs in `docs/standards/iverson-client-standard.md` must equal the consts
+   reflected off `Requirements`. This catches a requirement with no const and a const with no
+   requirement. Retired declarations are parsed for well-formedness and ID-uniqueness only, and take
+   no const. Reflection selects `IsLiteral && !IsInitOnly`, which yields consts and excludes
+   `static readonly`.
 2. **Every requirement is cited.** Each const's identifier must appear at least once in
-   `Iverson.ClientConformance/` source. Zero occurrences fails, naming the uncited ID.
+   `Iverson.ClientConformance/` source, excluding `Requirements.cs` itself and excluding the test
+   project. Zero occurrences fails, naming the uncited ID. Check 2's set is scoped to `Active`
+   requirements by construction, since only those have consts.
 3. **Every ID is well-formed** — `IVC-[A-Z]+-\d{3}` with a known axis.
 
 The document is the source of truth for what exists. A requirement added to the standard fails the
 build until something tests it. That is the property being bought, and it is deliberate friction.
 
-**Check 2 scans the orchestrator project only.** Assertions are also constructed in the test project
-(`NavPropertyRejectedScenarioTests`, `InteropScenarioTests`); including those would let a
-requirement be "cited" solely by a test fixture, discharging nothing.
+**Check 2's two exclusions each close a self-match.** The test project is excluded because
+assertions are also constructed there (`NavPropertyRejectedScenarioTests`, `InteropScenarioTests`),
+and a requirement "cited" solely by a test fixture discharges nothing. `Requirements.cs` is excluded
+because it sits inside the scanned directory, so without the exclusion every const would match its
+own declaration and the check could never fail — a declaration is not a citation.
 
 **Path resolution.** The test locates the repository root by walking up from
 `AppContext.BaseDirectory` to the directory containing `Iverson.slnx`. No existing test reads a
@@ -185,7 +195,7 @@ clients. Machinery that survives `REL` will survive the easier axes.
 |---|---|---|
 | `IVC-REL-001` | Behaviour | A client synthesizes a foreign-key property for `many_to_one`, `one_to_one` and `many_to_many`, and none for `one_to_many` |
 | `IVC-REL-002` | Behaviour | A synthesized foreign-key property is named `{RelatedTypeName}Id` |
-| `IVC-REL-003` | Behaviour | A relation's navigation-property name is distinct from its foreign-key name, for every relation kind |
+| `IVC-REL-003` | Behaviour | A client derives a navigation-property name distinct from the relation's foreign-key name, for every relation kind |
 | `IVC-REL-004` | Behaviour | `isArray` is set on the foreign-key property for `many_to_many` and for no other kind |
 | `IVC-REL-005` | Behaviour | Write payloads carry foreign-key values only; navigation properties are never sent |
 | `IVC-REL-006` | Behaviour | A foreign-key value is readable at every depth, including after hydration |
@@ -215,12 +225,31 @@ directly.
 via the `"Ids"` strip fix. A legitimately-colliding client would pass registration and fail at
 depth, with nothing currently detecting it.
 
-**Ruling (Ben, 2026-08-15): `IVC-REL-003` extends to every relation kind.** It costs nothing today —
-all five clients already comply in practice — makes `IVC-REL-006` unconditional, and removes a
-latent failure. The server continues tolerating collisions for compatibility; the standard forbids
-them.
+**Ruling (Ben, 2026-08-15): `IVC-REL-003` extends to every relation kind, and is enforced on both
+sides.** It makes `IVC-REL-006` unconditional and removes a latent failure.
 
-### The `REG` requirement this design creates
+The requirement had to name *which* side enforces it, because the five clients derive the
+navigation-property name by two different mechanisms. Python, TypeScript and Go derive it — they
+PascalCase the member name and strip a trailing `Id`/`Ids` with length guards — so the client itself
+guarantees distinctness. .NET and Java pass the declared name through: `SchemaRegistrar.cs:85` sets
+`PropertyName = relation.Property.Name` verbatim, and `SchemaRegistrar.java:296` PascalCases the
+field name with no strip rule at all. For those two, collision is decided by the entity the user
+wrote, not by the client, so a requirement phrased as an observation about descriptors would have
+graded whichever model the conformance driver happened to declare — while a real .NET or Java user
+could register a colliding model and lose the foreign key at depth 1 with the client showing green.
+
+Both sides therefore act:
+
+- **Clients derive.** `IVC-REL-003` obliges the client to produce a distinct navigation-property
+  name. .NET and Java gain the strip rule that Python, TypeScript and Go already have.
+- **The server rejects.** A descriptor whose `PropertyName` equals its `ForeignKey` is refused at
+  registration, closing the hole for any client, including a sixth one that forgets.
+
+This does not contradict ruling 5. The client-side obligation is a derivation rule — behaviour the
+client alone can produce — not a duplicate of the server's validation, which remains the enforcement
+boundary.
+
+### The `REG` requirements this design creates
 
 Ruling 5 lands as a concrete server change. `SchemaRegistrationOrchestrator.cs:83-109` validates that
 a relation's foreign key is a declared property and that its SqlType is `UUID` or `UUID[]`. It never
@@ -231,6 +260,10 @@ where Go, Python and TypeScript reject it client-side.
 The plan therefore adds a foreign-key naming check to that block, authored as a `REG` requirement.
 Client-side checks become recommended diagnostics.
 
+The `IVC-REL-003` ruling adds a second `REG` requirement in the same place: a descriptor whose
+relation `PropertyName` equals its `ForeignKey` is rejected at registration, for every relation kind.
+`RelationValidator.cs:18-24` currently treats that collision as legitimate; the ruling reverses it.
+
 ## Plan scope
 
 The plan authored from this design must deliver:
@@ -238,7 +271,10 @@ The plan authored from this design must deliver:
 - The standard document, all nine axes.
 - `Requirements.cs`, the `Assertion` citation field, and the three-check gate.
 - The `ReportCell` assertion-carrying change and the runtime tally.
-- The `REG` foreign-key naming check on the server.
+- The two `REG` server checks: foreign-key naming, and rejection of a `PropertyName`/`ForeignKey`
+  collision.
+- The navigation-property derivation rule in the .NET and Java clients, matching the `Id`/`Ids`
+  strip that Python, TypeScript and Go already perform.
 - **Five new scenarios** — `QRY`, `VEC`, `SCH`, `IDN` and `ERR` — each implemented across five
   drivers. All ~37 existing assertion sites sit in the `DECL`/`REL`/`REG`/`LIFE` cluster; nothing
   today discharges the other five axes, and the gate is strict, so the requirements cannot land
@@ -256,6 +292,11 @@ flaw in the document, and the first full matrix should be read accordingly. Know
   no-argument overload.
 - .NET accepts an explicit `foreignKey` and registers a misnamed one cleanly, where three clients
   reject it and the server checks nothing.
+
+**The `IVC-REL-003` ruling changes two production clients and tightens the server.** .NET and Java
+gain a navigation-property derivation rule, so the descriptors they emit for existing models change
+— a wire-visible change, not an internal one. The server begins rejecting `PropertyName`/`ForeignKey`
+collisions it has accepted historically, which will refuse descriptors that register cleanly today.
 
 **The standard is deliberately hard to extend.** Adding a requirement means adding a test in the
 same change.
@@ -294,15 +335,11 @@ branch at `6c18080`.
 | A21 | Existing assertions can discharge each axis | ❌ **FAILED** — all ~37 sites sit in `DECL`/`REL`/`REG`/`LIFE`; nothing discharges `QRY`, `VEC`, `SCH`, `IDN` or `ERR`. Plan grows from three new scenarios to five |
 | A22 | `client-conformance-harness@6c18080` is the right base and is clean | ✅ worktree clean |
 | A23 | Nothing consumes `Assertion`'s arity or the report's JSON schema externally | ✅ only `Program.cs:157` writes the JSON; no CI or script parses it |
+| A24 | Every client derives the navigation-property name, so `IVC-REL-003` is gradable per client | ❌ **FAILED** — only Python, TypeScript and Go derive it. `SchemaRegistrar.cs:85` sets `PropertyName = relation.Property.Name` verbatim and `SchemaRegistrar.java:296` PascalCases the field name with no strip rule, so for .NET and Java the name comes from the user's model. Forced the two-sided ruling above |
+| A25 | The path-resolution marker exists at the repository root | ✅ `Iverson.slnx` present at the worktree root, so walking up from `AppContext.BaseDirectory` terminates |
+| A26 | The standard document can be committed and read from a fresh clone | ✅ `.gitignore:46-51` ignores `**/docs/specs/`, `**/docs/plans/`, `**/docs/criticalreviews/`, `**/docs/reviews/`, `**/docs/performance/` and `**/docs/superpowers/`, but `git check-ignore` reports `docs/standards/` is **not** ignored |
 
 ## Known issues / accepted as out of scope
-
-**The server keeps tolerating `many_to_many` name collisions.** The standard forbids them
-(`IVC-REL-003`), but `RelationValidator` continues to accept them and `ResolveManyToManyAsync`
-continues to overwrite the foreign key when they occur. Conformance is enforced by the harness
-rather than by the server refusing to register such a type. Accepted: tightening the server would
-reject descriptors it has accepted historically, which is a compatibility decision separate from
-writing the standard.
 
 **The gate proves citation, not falsifiability.** A cited assertion may still be incapable of
 failing. That branch's own history is the argument — a committed mutation marker made eight
