@@ -401,14 +401,16 @@ public static class Verifier
         key is not null && Guid.TryParse(key, out var parsed) && parsed.ToString("N")[12] == '7';
 
     /// <summary>
-    /// Judges IVC-LIFE-005 — the depth capability that superseded the retired IVC-REL-009 — from
-    /// a DRIVER's own depth-1 read, never the orchestrator's <c>MappingGet</c>. The orchestrator's
-    /// own depth-1 read (used by <see cref="VerifyRelationHydrated"/> above) proves the SERVER
-    /// hydrates; it says nothing about whether a given client's public API can express the
-    /// request and materialize the result. This method is what makes the depth-resolved read a
-    /// gradable Capability: it requires at least one of the descriptor's own relations to have
-    /// actually hydrated (a nav property carrying an object with its own key) in the JSON the
-    /// DRIVER itself reported back.
+    /// Judges IVC-LIFE-007 — the hydration half of the retired IVC-LIFE-005 (itself the successor
+    /// of IVC-REL-009) — from a DRIVER's own depth-1 read, never the orchestrator's
+    /// <c>MappingGet</c>. The orchestrator's own depth-1 read (used by
+    /// <see cref="VerifyRelationHydrated"/> above) proves the SERVER hydrates; it says nothing
+    /// about whether a given client's public API can express the request and materialize the
+    /// result. Reachability of the depth-1 read itself is judged separately by
+    /// <c>CrudRoundtripScenario.RequireStepOk</c> under IVC-LIFE-006; this method is what makes
+    /// hydration a distinct, separately-gradable Behaviour: it requires at least one of the
+    /// descriptor's own relations to have actually hydrated (a nav property carrying an object
+    /// with its own key) in the JSON the DRIVER itself reported back.
     /// </summary>
     public static Assertion VerifyDepthCapability(string label, TypeDescriptor descriptor, JsonElement? depth1Entity)
     {
@@ -423,7 +425,7 @@ public static class Verifier
             hydratedRelations.Count > 0
                 ? $"hydrated: [{string.Join(", ", hydratedRelations)}]"
                 : $"entity={(depth1Entity is null ? "(absent)" : depth1Entity.Value.GetRawText())}",
-            Requirements.LifeDepthResolvedReadReachable);
+            Requirements.LifeDepthResolvedReadHydrated);
     }
 
     /// <summary>

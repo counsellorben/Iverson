@@ -116,8 +116,11 @@ comment in `Requirements.cs`, per this document's own convention for an implemen
 | IVC-REL-009 | Retired | Capability | A depth-resolved read is reachable through the public API |
 | IVC-REL-010 | Active | Behaviour | Foreign-key values are well-formed UUIDs, and foreign-key columns are typed `UUID` or `UUID[]` |
 
-`IVC-REL-009` is retired — superseded by the `LIFE` depth capability, which all five clients were
-verified to satisfy once mapped-CRUD parity landed. A row's Statement cell is the statement of
+`IVC-REL-009` is retired — superseded by the `LIFE` depth capability. What mapped-CRUD parity
+actually verified for all five clients was reachability: that a depth-resolved read is reachable
+through the client's public API (`IVC-LIFE-006`). It did not verify that the returned entity is
+hydrated at that depth — that clause is `IVC-LIFE-007`, and it currently fails for four of the five
+clients (see "Known non-conformance" under `LIFE` below). A row's Statement cell is the statement of
 record and must stay immutable across retirement; retirement rationale belongs in this prose, never
 appended into the statement text.
 
@@ -168,11 +171,31 @@ implemented requirement.
 | IVC-LIFE-002 | Active | Behaviour | A mapped create returns a key assigned by the server — encoded as a UUIDv7 — never a client-supplied one |
 | IVC-LIFE-003 | Active | Behaviour | An update changes the server's stored value, observable in a subsequent read |
 | IVC-LIFE-004 | Active | Behaviour | A delete removes the row such that neither the orchestrator's own gRPC read nor the Postgres row finds it afterward |
-| IVC-LIFE-005 | Active | Capability | A depth-resolved read is reachable through the client's public API, and the entity it returns is hydrated at that depth |
+| IVC-LIFE-005 | Retired | Capability | A depth-resolved read is reachable through the client's public API, and the entity it returns is hydrated at that depth |
+| IVC-LIFE-006 | Active | Capability | A depth-resolved read is reachable through the client's public API |
+| IVC-LIFE-007 | Active | Behaviour | The entity returned by a depth-resolved read is hydrated at that depth |
 
-`IVC-LIFE-005` supersedes the retired `IVC-REL-009`: mapped-CRUD parity established that all five
-clients expose a depth-resolved read, so the requirement moves here and is strengthened to also
-require that the returned entity is actually hydrated, not merely that the call completes.
+`IVC-LIFE-005` is retired — it conflated two separate claims under one requirement. It named
+reachability (the call completes and returns an entity) and hydration (the returned entity actually
+carries the hydrated relation) as a single statement, so a client that reached the depth-resolved
+read but discarded the hydrated data had no way to go green on the half it satisfied. It is split
+into `IVC-LIFE-006` (reachability, superseding the retired `IVC-REL-009`) and `IVC-LIFE-007`
+(hydration). `IVC-LIFE-006` is what mapped-CRUD parity actually verified across all five clients.
+`IVC-LIFE-007` was never verified, and currently fails live for four of the five clients — see
+"Known non-conformance" below.
+
+#### Known non-conformance (non-normative)
+
+`IVC-LIFE-007` fails live for the **Python, TypeScript, Go and Java** drivers. Their typed model
+classes declare no field to receive a hydrated relation object, so a depth-1 read reaches the server
+correctly (satisfying `IVC-LIFE-006`) and the server returns a hydrated nav property, but the
+driver's own mapping step (`get_mapped`/`GetMapped`, e.g. Python's `core.py` `_from_struct`, and the
+equivalent driver model files in TypeScript, Go and Java) has nowhere to put the hydrated value and
+discards it. Only the .NET driver's model has a field for the hydrated nav property and passes.
+Fixing this is a separate initiative touching those four SDKs' model shape (adding a typed field per
+relation to receive the hydrated object); it is out of scope for this document, which records the
+gap as a known non-conformance rather than silently weakening `IVC-LIFE-007`'s statement to match
+current behaviour.
 
 ### QRY — Query
 

@@ -130,12 +130,13 @@ public sealed class CrudRoundtripScenario(
             var author = RequireStepOk(state, document, "get_author", Requirements.LifeMappedCrudReachable);
             driverReads[language] = (article?.Entity, author?.Entity);
 
-            // IVC-LIFE-005 (supersedes retired IVC-REL-009): each driver performs its OWN
-            // depth-1 read through its own client library — a separate step, "get_depth1" —
-            // and the returned entity must actually carry a hydrated relation. This is what
-            // makes the depth-resolved read a Capability the harness can grade: the
-            // orchestrator's own MappingGet(depth: 1) below proves only that the SERVER
-            // hydrates.
+            // IVC-LIFE-006 (reachability, supersedes retired IVC-REL-009) and IVC-LIFE-007
+            // (hydration) — split from the retired IVC-LIFE-005: each driver performs its OWN
+            // depth-1 read through its own client library — a separate step, "get_depth1" — and
+            // the step succeeding discharges IVC-LIFE-006, while the returned entity actually
+            // carrying a hydrated relation discharges IVC-LIFE-007 separately below. This is what
+            // makes reachability and hydration independently gradable: the orchestrator's own
+            // MappingGet(depth: 1) below proves only that the SERVER hydrates.
             var depth1 = RequireStepOk(state, document, "get_depth1", Requirements.LifeDepthResolvedReadReachable);
             if (state.Article is not null)
             {

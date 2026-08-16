@@ -654,7 +654,7 @@ public class VerifierTests
         var assertion = Verifier.VerifyDepthCapability("article", ArticleWithManyToOneAuthor, entity);
 
         assertion.Passed.Should().BeTrue();
-        assertion.RequirementId.Should().Be(Requirements.LifeDepthResolvedReadReachable);
+        assertion.RequirementId.Should().Be(Requirements.LifeDepthResolvedReadHydrated);
     }
 
     [Fact]
@@ -669,7 +669,7 @@ public class VerifierTests
         var assertion = Verifier.VerifyDepthCapability("article", ArticleWithManyToOneAuthor, entity);
 
         assertion.Passed.Should().BeFalse();
-        assertion.RequirementId.Should().Be(Requirements.LifeDepthResolvedReadReachable);
+        assertion.RequirementId.Should().Be(Requirements.LifeDepthResolvedReadHydrated);
     }
 
     [Fact]

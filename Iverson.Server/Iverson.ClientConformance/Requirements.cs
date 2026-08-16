@@ -107,18 +107,36 @@ public static class Requirements
     /// </summary>
     public const string LifeDeleteRemovesRow = "IVC-LIFE-004";
 
+    // IVC-LIFE-005 is Retired — it conflated reachability and hydration into one statement. Split
+    // into IVC-LIFE-006 (reachability) and IVC-LIFE-007 (hydration). It takes no const.
+
     /// <summary>
-    /// A depth-resolved read is reachable through the client's public API, and the entity it
-    /// returns is hydrated at that depth. Supersedes the retired <c>IVC-REL-009</c>, which named
-    /// only reachability; this statement also requires the returned entity to actually carry a
-    /// hydrated relation, not merely that the call completed. Discharged by
-    /// <c>Verifier.VerifyDepthCapability</c>, called from <c>CrudRoundtripScenario</c>'s read
-    /// phase against each driver's OWN depth-1 read (<c>get_depth1</c> step) — deliberately not
-    /// the orchestrator's own <c>MappingGet</c>, which only proves the SERVER hydrates. Having
-    /// each driver perform its own depth-1 read through its own client library is what proves the
-    /// CLIENT can express the request and materialize the result.
+    /// A depth-resolved read is reachable through the client's public API. Supersedes the retired
+    /// <c>IVC-REL-009</c>, and is the reachability half of the retired <c>IVC-LIFE-005</c>.
+    /// Discharged by <c>CrudRoundtripScenario.RequireStepOk</c>'s "step succeeded" assertion for
+    /// each driver's OWN depth-1 read (<c>get_depth1</c> step) — deliberately not the
+    /// orchestrator's own <c>MappingGet</c>, which only proves the SERVER can serve a
+    /// depth-resolved read. Having each driver perform its own depth-1 read through its own client
+    /// library is what proves the CLIENT can express the request and get back a result. This
+    /// requirement is satisfied by the call completing and returning an entity; it says nothing
+    /// about whether that entity is hydrated — that is <c>IVC-LIFE-007</c>, a distinct assertion,
+    /// so a client that reaches without hydrating goes green here and red there.
     /// </summary>
-    public const string LifeDepthResolvedReadReachable = "IVC-LIFE-005";
+    public const string LifeDepthResolvedReadReachable = "IVC-LIFE-006";
+
+    /// <summary>
+    /// The entity returned by a depth-resolved read is hydrated at that depth — the hydration half
+    /// of the retired <c>IVC-LIFE-005</c>. Discharged by <c>Verifier.VerifyDepthCapability</c>,
+    /// called from <c>CrudRoundtripScenario</c>'s read phase against each driver's OWN depth-1 read
+    /// (<c>get_depth1</c> step) after <c>IVC-LIFE-006</c>'s reachability assertion has already
+    /// fired separately on the same step. This requires at least one of the descriptor's own
+    /// relations to have actually hydrated (a nav property carrying an object with its own key) in
+    /// the JSON the DRIVER itself reported back — a driver that reaches the depth-1 read but
+    /// discards the hydrated payload (no field on its typed model to receive it) fails only this
+    /// requirement, not <c>IVC-LIFE-006</c>. Known to fail live for Python, TypeScript, Go and
+    /// Java; see the standard's LIFE section "Known non-conformance".
+    /// </summary>
+    public const string LifeDepthResolvedReadHydrated = "IVC-LIFE-007";
 
     // ── REL — Relations ─────────────────────────────────────────────────────────────────────
 
