@@ -80,7 +80,7 @@ A1 `docs/standards/` free · A2 no existing standard · A3 `Assertion` tolerates
 | 20 | Consumer (Cat 6) | No other test or fixture registers a colliding descriptor, so T4 breaks nothing else | `SchemaFixtures.cs:100` `("Tags", ManyToMany, "Tag", "TagIds")`; `ObjectMappingGrpcServiceTests.cs:428` `("Author", ManyToOne, "author", "AuthorId")`; `AuthorizationFieldMaskingTests.cs:162`, `StoreTargetingTests.cs:18` — all distinct |
 | 21 | Consumer (Cat 6) | `ERR` partly discharges against existing assertions, so T12 is the smallest scenario task | `NamingRejectedScenario.cs:120-130` and `NavPropertyRejectedScenario.cs:142-163` already assert status codes and message content |
 | 22 | Consumer (Cat 6) | A driver-registered type is `Denied` to every authorized operation until re-registered with an authorization block | `RowFieldAuthorizationEvaluator.cs:10-12` returns `Denied = true` when `schema.Authorization is null`; `ObjectMappingGrpcService.cs:78-81` skips denied schemas in `GetSchema`; `CrudRoundtripScenario.cs:63-89` re-registers for exactly this reason |
-| 23 | Consumer (Cat 6) | Not every REL requirement has an existing assertion to cite — `IVC-REL-009` has none | all five drivers read at depth 0 only: `Program.cs:325-335`, `driver.py:521`, `driver.ts:481`, `main.go:597`, `Driver.java:218`; the only depth-1 read is the orchestrator's own gRPC call |
+| 23 | Consumer (Cat 6) | The depth-resolved-read Capability — authored in `LIFE`, superseding the retired `IVC-REL-009` — has no existing assertion to cite | all five drivers read at depth 0 only: `Program.cs:325-335`, `driver.py:521`, `driver.ts:481`, `main.go:597`, `Driver.java:218`; the only depth-1 read is the orchestrator's own gRPC call |
 
 **Sibling-set sweep** — "every identifier the plan names resolves to a definition at its point of use", run over the full set the plan references: `Assertion`, `ReportCell`, `Verifier.VerifyRegistration`, `DriverRunner`, `DriverProtocol`/`Phase`/`PhaseNames`, `Report.RenderJson`/`RenderText`, both `SchemaRegistrar`s, `SchemaRegistrationOrchestrator`, `RelationValidator`, the four scenario classes, `Iverson.slnx`, the five driver entry points. All resolve; findings are rows 5, 6, 7 and 19 above.
 
@@ -177,9 +177,9 @@ Independent of T1 and T2 — may run in parallel.
 **Interfaces:**
 - Produces: the two rejections T7 cites.
 
-- [ ] **Step 1: Write the failing tests.** Registration must be rejected with `InvalidArgument` when (a) a relation's foreign key is not named `{RelatedTypeName}Id` / `{RelatedTypeName}Ids`, compared with `StringComparison.OrdinalIgnoreCase` to match the foreign-key membership check immediately above it (`SchemaRegistrationOrchestrator.cs:85-86`) and the registry's own keying, and (b) a relation's `PropertyName` equals its `ForeignKey`, for every relation kind. Both messages name the offending relation and what was expected.
+- [ ] **Step 1: Write the failing tests.** Registration must be rejected with `InvalidArgument` when (a) a relation's foreign key is not named `{RelatedTypeName}Id` / `{RelatedTypeName}Ids`, compared with `StringComparison.OrdinalIgnoreCase` to match the foreign-key membership check immediately above it (`SchemaRegistrationOrchestrator.cs:85-86`) and the registry's own keying, and (b) a relation's `PropertyName` equals its `ForeignKey`, for every relation kind. Both messages name the offending relation and what was expected. Add a test for the case the scope split in Step 2 protects: a one-to-many relation whose foreign key is `{ThisTypeName}Id` must register cleanly.
 
-- [ ] **Step 2: Add both checks** to the existing per-relation loop, which already excludes `OneToMany` from foreign-key membership. Apply the collision check to every kind including `OneToMany`, per the spec's ruling.
+- [ ] **Step 2: Add the two checks at their correct scopes.** The **naming** check goes inside the existing per-relation loop, which already excludes `OneToMany` — a one-to-many foreign key is named `{ThisTypeName}Id` and lives on the related type's row, so the `{RelatedTypeName}Id` rule does not apply to it. The **collision** check goes in a separate pass over `descriptor.Relations` with no kind filter, so it covers every relation kind including `OneToMany`, per the spec's ruling.
 
 - [ ] **Step 3: Invert the two regression guards.** `RelationValidatorTests.cs:124` `PropertyNameEqualsForeignKey_KeyNotStripped` and `:144` `ManyToMany_PropertyNameEqualsForeignKey_NoConflictError` currently assert a collision **is accepted** — that behaviour is what this task reverses. Rewrite both to assert rejection, keeping their descriptor fixtures. **Do not weaken the new check to keep them green**; the guards, not the check, are what changed.
 
@@ -194,30 +194,27 @@ git commit -m "reject misnamed foreign keys and nav-property/foreign-key collisi
 
 ### Task 5: The REL axis
 
-The worked exemplar — it lands before the other axes because it proves the authoring pattern the rest follow. **This task carries a five-driver change**, not only document and citation work: `IVC-REL-009` has no existing assertion to cite (Step 4).
+The worked exemplar — it lands before the other axes because it proves the authoring pattern the rest follow.
 
 **Files:**
 - Modify: `docs/standards/iverson-client-standard.md` (REL table)
 - Modify: `Iverson.Server/Iverson.ClientConformance/Requirements.cs`
 - Modify: `Iverson.Server/Iverson.ClientConformance/Verifier.cs`, `Scenarios/CrudRoundtripScenario.cs`
-- Modify: all five drivers — `DotNet/Iverson.Client.Conformance.Driver/Program.cs`, `Java/conformance/`, `Python/conformance/driver.py`, `TypeScript/conformance/driver.ts`, `Go/conformance/main.go`
 
 **Interfaces:**
 - Consumes: T1's registry and gate; T3's derivation and T4's rejection, both of which `IVC-REL-003` depends on.
 
-- [ ] **Step 1: Author the ten requirements** from the spec's table, each with status `Active`, kind, statement, a rationale naming the spec or defect behind it, and its conformance evidence.
+- [ ] **Step 1: Author the ten requirements** from the spec's table, each with kind, statement, a rationale naming the spec or defect behind it, and its conformance evidence. Nine are `Active`. `IVC-REL-009` is authored as `Retired`, rationale "superseded by the `LIFE` depth capability" — its ID is never reused, it takes no const, and it is not subject to the gate. This is the retirement path's first real exercise, so it also proves check 1 parses a `Retired` row and excludes it from the `Active` set.
 
 - [ ] **Step 2: Add the ten consts** to `Requirements.cs`, named for what each asserts.
 
 - [ ] **Step 3: Extend the distinctness assertion to `many_to_many`.** `Verifier.VerifyRegistration` currently applies it to `ManyToOne` and `OneToOne` only, exempting m2m by design. The ruling reverses that exemption; remove it and update the explanatory comment, which currently states the old rationale.
 
-- [ ] **Step 4: Add a driver-side depth-resolved read.** Extend each driver's `read` phase with a second read of the article through its own client at depth 1 — `GetMappedAsync(key, depth: 1)`, `get_mapped(id, depth=1)`, `getMapped(id, 1)` (TypeScript and Java), and `GetMapped(ctx, id, 1)` (`coordinator.go:236`) — reported as its own step carrying the returned entity. This is what makes `IVC-REL-009` a Capability requirement the harness can grade: the orchestrator's own depth-1 read proves the server hydrates, not that a client can ask it to. Then assert, orchestrator-side, that every driver reported a hydrated entity, citing `IVC-REL-009`.
+- [ ] **Step 4: Cite the consts** on the assertions that discharge each requirement, in `Verifier.cs` and `CrudRoundtripScenario.cs`.
 
-- [ ] **Step 5: Cite the consts** on the assertions that discharge each requirement, in `Verifier.cs` and `CrudRoundtripScenario.cs`.
+- [ ] **Step 5: Verify the gate now binds.** Delete one citation and confirm check 2 goes red naming that ID; restore. Add a requirement row with no const and confirm check 1 goes red; remove.
 
-- [ ] **Step 6: Verify the gate now binds.** Delete one citation and confirm check 2 goes red naming that ID; restore. Add a requirement row with no const and confirm check 1 goes red; remove.
-
-- [ ] **Step 7: Run the suite and a live matrix.**
+- [ ] **Step 6: Run the suite and a live matrix.**
 ```bash
 dotnet test Iverson.Server/Iverson.ClientConformance.Tests/Iverson.ClientConformance.Tests.csproj
 dotnet run --project Iverson.Server/Iverson.ClientConformance -- --scenarios crud-roundtrip
@@ -227,15 +224,19 @@ git commit -m "author the REL axis and bind it to the harness assertions"
 
 ### Task 6: The DECL and LIFE axes
 
+**This task carries a five-driver change**, not only document and citation work: `LIFE`'s depth-resolved-read Capability has no existing assertion to cite (Step 3).
+
 **Files:**
 - Modify: `docs/standards/iverson-client-standard.md` (DECL and LIFE tables)
 - Modify: `Iverson.Server/Iverson.ClientConformance/Requirements.cs`
 - Modify: `Iverson.Server/Iverson.ClientConformance/Verifier.cs`, `Scenarios/CrudRoundtripScenario.cs`
+- Modify: all five drivers — `DotNet/Iverson.Client.Conformance.Driver/Program.cs`, `Java/conformance/`, `Python/conformance/driver.py`, `TypeScript/conformance/driver.ts`, `Go/conformance/main.go`
 
 - [ ] **Step 1: Author `DECL`** — key field, tenant field, scalar and array type mapping, UUID key typing — citing the registration assertions that already check them.
-- [ ] **Step 2: Author `LIFE`** — mapped create/read/update/delete, server-assigned keys, depth-resolved read as a Capability — citing the round-trip assertions.
-- [ ] **Step 3: For any requirement with no existing assertion, add the assertion rather than dropping the requirement.** The gate will not let the requirement land otherwise; that is the intended pressure.
-- [ ] **Step 4: Run and commit.**
+- [ ] **Step 2: Author `LIFE`** — mapped create/read/update/delete, server-assigned keys, and the depth-resolved read as a Capability — citing the round-trip assertions. The depth capability supersedes the retired `IVC-REL-009`; it is the axis the spec's own table assigns `depth` to.
+- [ ] **Step 3: Add a driver-side depth-resolved read** to discharge that Capability. Extend each driver's `read` phase with a second read of the article through its own client at depth 1 — `GetMappedAsync(key, depth: 1)`, `get_mapped(id, depth=1)`, `getMapped(id, 1)` (TypeScript and Java), and `GetMapped(ctx, id, 1)` (`coordinator.go:236`) — reported as its own step carrying the returned entity. This is what makes it a Capability the harness can grade: the orchestrator's own depth-1 read proves the server hydrates, not that a client can ask it to. Then assert, orchestrator-side, that every driver reported a hydrated entity, citing the `LIFE` depth const.
+- [ ] **Step 4: For any other requirement with no existing assertion, add the assertion rather than dropping the requirement.** The gate will not let the requirement land otherwise; that is the intended pressure.
+- [ ] **Step 5: Run and commit.**
 ```bash
 dotnet test Iverson.Server/Iverson.ClientConformance.Tests/Iverson.ClientConformance.Tests.csproj
 dotnet run --project Iverson.Server/Iverson.ClientConformance -- --scenarios crud-roundtrip
@@ -299,10 +300,11 @@ Follows T8's pattern.
 
 - [ ] **Step 1: Add the scenario to all five drivers** — set constant plus a `write` branch seeding rows and a `read` branch issuing a search and an aggregate through each client's own builder API.
 - [ ] **Step 2: Re-register each reported descriptor with row permissions**, per T8 Step 2. Without it every seeded write is denied.
-- [ ] **Step 3: Write the orchestrator scenario**, asserting all five clients agree on the result set and the aggregate value for the same query over the same seeded rows.
-- [ ] **Step 4: Author the `QRY` requirements and cite them.**
-- [ ] **Step 5: Prove the assertions can fail** — perturb one client's filter and confirm its cell alone goes red.
-- [ ] **Step 6: Run and commit.**
+- [ ] **Step 3: Handle the projection delay.** `Search` and `Aggregate` are served from StarRocks, but a mapped write commits to Postgres and enqueues an outbox row whose projection is asynchronous — so the read phase polls with a bounded retry rather than querying once. Match whatever wait convention T10 establishes; a bounded poll with an explicit timeout that reports as a failed step, never an indefinite wait, and never a fixed sleep presented as determinism.
+- [ ] **Step 4: Write the orchestrator scenario**, asserting all five clients agree on the result set and the aggregate value for the same query over the same seeded rows. Require a positive expected row count, so five empty result sets fail rather than agreeing.
+- [ ] **Step 5: Author the `QRY` requirements and cite them.**
+- [ ] **Step 6: Prove the assertions can fail** — perturb one client's filter and confirm its cell alone goes red.
+- [ ] **Step 7: Run and commit.**
 ```bash
 dotnet test Iverson.Server/Iverson.ClientConformance.Tests/Iverson.ClientConformance.Tests.csproj
 dotnet run --project Iverson.Server/Iverson.ClientConformance -- --scenarios query
