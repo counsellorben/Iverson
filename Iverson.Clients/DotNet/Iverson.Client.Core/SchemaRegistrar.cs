@@ -82,7 +82,7 @@ public sealed class SchemaRegistrar(
             typeDesc.Relations.Add(
                 new Contracts.RelationDescriptor
                 {
-                    PropertyName = relation.Property.Name,
+                    PropertyName = DeriveRelationPropertyName(relation),
                     Kind         = ToProtoKind(relation.Kind),
                     RelatedType  = relation.RelatedType.Name,
                     ForeignKey   = fk ?? string.Empty
@@ -263,6 +263,31 @@ public sealed class SchemaRegistrar(
         if (type == typeof(DateTimeOffset))  return (ClrType.ClrDatetime, isArray, false,       true);
 
         return (default, false, false, false); // unsupported — skip
+    }
+
+    /// <summary>
+    /// Derives the navigation property name from the relation's declared member name. When a
+    /// relation is declared directly on the foreign-key member (e.g. <c>[ManyToOne] Guid AuthorId</c>
+    /// or <c>[ManyToMany] Guid[] TagIds</c>), the member name and the foreign key are identical,
+    /// which would make the server's depth-resolved read overwrite the FK value with the hydrated
+    /// related entity. Strip the trailing "Id" (many-to-one / one-to-one) or "Ids" (many-to-many)
+    /// to get a distinct navigation property name — the same rule Python, TypeScript and Go use.
+    /// Guarded by length so a member named exactly "Id"/"Ids" is not truncated to nothing.
+    /// </summary>
+    private static string DeriveRelationPropertyName(RelationDescriptor relation)
+    {
+        var name = relation.Property.Name;
+        switch (relation.Kind)
+        {
+            case RelationKind.ManyToOne or RelationKind.OneToOne
+                when name.Length > 2 && name.EndsWith("Id", StringComparison.Ordinal):
+                return name[..^2];
+            case RelationKind.ManyToMany
+                when name.Length > 3 && name.EndsWith("Ids", StringComparison.Ordinal):
+                return name[..^3] + "s";
+            default:
+                return name;
+        }
     }
 
     private static string? InferForeignKey(RelationDescriptor relation, string thisEntityName) =>

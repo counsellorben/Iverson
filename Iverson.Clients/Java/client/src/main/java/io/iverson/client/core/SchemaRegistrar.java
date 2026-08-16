@@ -293,11 +293,33 @@ public final class SchemaRegistrar {
         String fk = inferForeignKey(kind, relatedType.getSimpleName(), ownerTypeName);
 
         return RelationDescriptor.newBuilder()
-            .setPropertyName(StructConverter.toPascalCase(field.getName()))
+            .setPropertyName(deriveRelationPropertyName(kind, field.getName()))
             .setKind(kind)
             .setRelatedType(relatedType.getSimpleName())
             .setForeignKey(fk)
             .build();
+    }
+
+    /**
+     * Derives the navigation property name from the relation's declared field name. When a
+     * relation is declared directly on the foreign-key member (e.g. {@code @ManyToOne UUID
+     * authorId} or {@code @ManyToMany List<UUID> tagIds}), the field name and the foreign key
+     * are identical, which would make the server's depth-resolved read overwrite the FK value
+     * with the hydrated related entity. Strip the trailing "Id" (many-to-one / one-to-one) or
+     * "Ids" (many-to-many) to get a distinct navigation property name — the same rule Python,
+     * TypeScript and Go use. Guarded by length so a field named exactly "id"/"ids" is not
+     * truncated to nothing.
+     */
+    private static String deriveRelationPropertyName(RelationKind kind, String fieldName) {
+        String pascal = StructConverter.toPascalCase(fieldName);
+        if ((kind == RelationKind.MANY_TO_ONE || kind == RelationKind.ONE_TO_ONE)
+                && pascal.length() > 2 && pascal.endsWith("Id")) {
+            return pascal.substring(0, pascal.length() - 2);
+        }
+        if (kind == RelationKind.MANY_TO_MANY && pascal.length() > 3 && pascal.endsWith("Ids")) {
+            return pascal.substring(0, pascal.length() - 3) + "s";
+        }
+        return pascal;
     }
 
     // ── Type detection ─────────────────────────────────────────────────────────

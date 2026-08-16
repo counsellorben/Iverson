@@ -111,6 +111,23 @@ internal sealed class SchemaTestTag
     public Guid ArticleId { get; set; }
 }
 
+// Relation declared directly on the foreign-key member: today this makes
+// PropertyName == ForeignKey, which destroys the FK value on depth-resolved reads.
+[IversonEntity]
+internal sealed class SchemaTestFkNavCollisionEntity
+{
+    [IversonKey]
+    public Guid Id { get; set; }
+    [IversonTenant]
+    public string TenantId { get; set; } = string.Empty;
+
+    [ManyToOne(typeof(SchemaTestAuthor), "AuthorId")]
+    public Guid AuthorId { get; set; }
+
+    [ManyToMany(typeof(SchemaTestTag), "TagIds")]
+    public Guid[] TagIds { get; set; } = [];
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 public class SchemaRegistrarTests
@@ -315,6 +332,46 @@ public class SchemaRegistrarTests
         oneToMany.PropertyName.Should().Be("Tags");
         oneToMany.RelatedType.Should().Be("SchemaTestTag");
         oneToMany.ForeignKey.Should().Be("SchemaTestArticleId");
+    }
+
+    [Fact]
+    public async Task RegisterAllAsync_DerivesDistinctPropertyName_WhenRelationDeclaredOnForeignKeyMember()
+    {
+        SchemaRequest? req = null;
+        _mappingClient
+            .RegisterSchemaAsync(
+                Arg.Do<SchemaRequest>(r =>
+                {
+                    if (r.RootType?.TypeName == "SchemaTestFkNavCollisionEntity") req = r;
+                }),
+                Arg.Any<Metadata>(),
+                Arg.Any<DateTime?>(),
+                Arg.Any<CancellationToken>())
+            .Returns(new AsyncUnaryCall<SchemaResponse>(
+                Task.FromResult(new SchemaResponse { Success = true }),
+                Task.FromResult(new Metadata()),
+                () => Status.DefaultSuccess,
+                () => new Metadata(),
+                () => { }));
+
+        await _sut.RegisterAllAsync();
+
+        req.Should().NotBeNull();
+        var relations = req!.RootType!.Relations;
+
+        var manyToOne = relations.Single(r => r.Kind == ContractsRelKind.ManyToOne);
+        manyToOne.ForeignKey.Should().Be("AuthorId");
+        manyToOne.PropertyName.Should().NotBe(manyToOne.ForeignKey,
+            "the navigation property name must not collide with the foreign key, or a depth-resolved " +
+            "read overwrites the FK value with the hydrated related entity");
+        manyToOne.PropertyName.Should().Be("Author");
+
+        var manyToMany = relations.Single(r => r.Kind == ContractsRelKind.ManyToMany);
+        manyToMany.ForeignKey.Should().Be("TagIds");
+        manyToMany.PropertyName.Should().NotBe(manyToMany.ForeignKey,
+            "the navigation property name must not collide with the foreign key, or a depth-resolved " +
+            "read overwrites the FK value with the hydrated related entity");
+        manyToMany.PropertyName.Should().Be("Tags");
     }
 
     [Fact]

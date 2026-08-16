@@ -151,6 +151,22 @@ class SchemaRegistrarTest {
         private UUID articleId;
     }
 
+    // Relation declared directly on the foreign-key member: today this makes
+    // getPropertyName() == getForeignKey(), which destroys the FK value on depth-resolved reads.
+    @IversonEntity
+    static class SchemaTestFkNavCollisionEntity {
+        @IversonKey
+        private UUID id;
+        @IversonTenant
+        private String tenantId;
+
+        @ManyToOne(type = SchemaTestAuthor.class)
+        private UUID schemaTestAuthorId;
+
+        @ManyToMany(type = SchemaTestTag.class)
+        private List<UUID> schemaTestTagIds;
+    }
+
     @IversonEntity
     static class ArrayTestEntity {
         @IversonKey
@@ -735,6 +751,35 @@ class SchemaRegistrarTest {
         assertEquals("Tags", oneToMany.getPropertyName());
         assertEquals("SchemaTestTag", oneToMany.getRelatedType());
         assertEquals("SchemaTestArticleId", oneToMany.getForeignKey());
+    }
+
+    @Test
+    void registerAll_derivesDistinctPropertyName_whenRelationDeclaredOnForeignKeyMember() {
+        ArgumentCaptor<SchemaRequest> captor = ArgumentCaptor.forClass(SchemaRequest.class);
+
+        sut.registerAll(SchemaTestFkNavCollisionEntity.class);
+
+        verify(mockStub).registerSchema(captor.capture());
+        TypeDescriptor typeDesc = captor.getValue().getRootType();
+        List<RelationDescriptor> relations = typeDesc.getRelationsList();
+
+        RelationDescriptor manyToOne = relations.stream()
+            .filter(r -> r.getKind() == RelationKind.MANY_TO_ONE)
+            .findFirst().orElseThrow(() -> new AssertionError("No MANY_TO_ONE relation"));
+        assertEquals("SchemaTestAuthorId", manyToOne.getForeignKey());
+        assertNotEquals(manyToOne.getForeignKey(), manyToOne.getPropertyName(),
+            "the navigation property name must not collide with the foreign key, or a "
+                + "depth-resolved read overwrites the FK value with the hydrated related entity");
+        assertEquals("SchemaTestAuthor", manyToOne.getPropertyName());
+
+        RelationDescriptor manyToMany = relations.stream()
+            .filter(r -> r.getKind() == RelationKind.MANY_TO_MANY)
+            .findFirst().orElseThrow(() -> new AssertionError("No MANY_TO_MANY relation"));
+        assertEquals("SchemaTestTagIds", manyToMany.getForeignKey());
+        assertNotEquals(manyToMany.getForeignKey(), manyToMany.getPropertyName(),
+            "the navigation property name must not collide with the foreign key, or a "
+                + "depth-resolved read overwrites the FK value with the hydrated related entity");
+        assertEquals("SchemaTestTags", manyToMany.getPropertyName());
     }
 
     // ── registerAll: per-type authorization rules ──────────────────────────────
