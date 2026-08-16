@@ -79,6 +79,8 @@ A1 `docs/standards/` free · A2 no existing standard · A3 `Assertion` tolerates
 | 19 | Consumer (Cat 6) | **T4 reverses two existing regression guards that assert a collision is accepted** | `RelationValidatorTests.cs:124` `PropertyNameEqualsForeignKey_KeyNotStripped`, `:144` `ManyToMany_PropertyNameEqualsForeignKey_NoConflictError`, both building `RelationDescriptor("TagIds", ManyToMany, "Tag", "TagIds")` at `:130,150` |
 | 20 | Consumer (Cat 6) | No other test or fixture registers a colliding descriptor, so T4 breaks nothing else | `SchemaFixtures.cs:100` `("Tags", ManyToMany, "Tag", "TagIds")`; `ObjectMappingGrpcServiceTests.cs:428` `("Author", ManyToOne, "author", "AuthorId")`; `AuthorizationFieldMaskingTests.cs:162`, `StoreTargetingTests.cs:18` — all distinct |
 | 21 | Consumer (Cat 6) | `ERR` partly discharges against existing assertions, so T12 is the smallest scenario task | `NamingRejectedScenario.cs:120-130` and `NavPropertyRejectedScenario.cs:142-163` already assert status codes and message content |
+| 22 | Consumer (Cat 6) | A driver-registered type is `Denied` to every authorized operation until re-registered with an authorization block | `RowFieldAuthorizationEvaluator.cs:10-12` returns `Denied = true` when `schema.Authorization is null`; `ObjectMappingGrpcService.cs:78-81` skips denied schemas in `GetSchema`; `CrudRoundtripScenario.cs:63-89` re-registers for exactly this reason |
+| 23 | Consumer (Cat 6) | Not every REL requirement has an existing assertion to cite — `IVC-REL-009` has none | all five drivers read at depth 0 only: `Program.cs:325-335`, `driver.py:521`, `driver.ts:481`, `main.go:597`, `Driver.java:218`; the only depth-1 read is the orchestrator's own gRPC call |
 
 **Sibling-set sweep** — "every identifier the plan names resolves to a definition at its point of use", run over the full set the plan references: `Assertion`, `ReportCell`, `Verifier.VerifyRegistration`, `DriverRunner`, `DriverProtocol`/`Phase`/`PhaseNames`, `Report.RenderJson`/`RenderText`, both `SchemaRegistrar`s, `SchemaRegistrationOrchestrator`, `RelationValidator`, the four scenario classes, `Iverson.slnx`, the five driver entry points. All resolve; findings are rows 5, 6, 7 and 19 above.
 
@@ -175,7 +177,7 @@ Independent of T1 and T2 — may run in parallel.
 **Interfaces:**
 - Produces: the two rejections T7 cites.
 
-- [ ] **Step 1: Write the failing tests.** Registration must be rejected with `InvalidArgument` when (a) a relation's foreign key is not named `{RelatedTypeName}Id` / `{RelatedTypeName}Ids`, and (b) a relation's `PropertyName` equals its `ForeignKey`, for every relation kind. Both messages name the offending relation and what was expected.
+- [ ] **Step 1: Write the failing tests.** Registration must be rejected with `InvalidArgument` when (a) a relation's foreign key is not named `{RelatedTypeName}Id` / `{RelatedTypeName}Ids`, compared with `StringComparison.OrdinalIgnoreCase` to match the foreign-key membership check immediately above it (`SchemaRegistrationOrchestrator.cs:85-86`) and the registry's own keying, and (b) a relation's `PropertyName` equals its `ForeignKey`, for every relation kind. Both messages name the offending relation and what was expected.
 
 - [ ] **Step 2: Add both checks** to the existing per-relation loop, which already excludes `OneToMany` from foreign-key membership. Apply the collision check to every kind including `OneToMany`, per the spec's ruling.
 
@@ -192,12 +194,13 @@ git commit -m "reject misnamed foreign keys and nav-property/foreign-key collisi
 
 ### Task 5: The REL axis
 
-The worked exemplar — it lands before the other axes because it proves the authoring pattern the rest follow.
+The worked exemplar — it lands before the other axes because it proves the authoring pattern the rest follow. **This task carries a five-driver change**, not only document and citation work: `IVC-REL-009` has no existing assertion to cite (Step 4).
 
 **Files:**
 - Modify: `docs/standards/iverson-client-standard.md` (REL table)
 - Modify: `Iverson.Server/Iverson.ClientConformance/Requirements.cs`
 - Modify: `Iverson.Server/Iverson.ClientConformance/Verifier.cs`, `Scenarios/CrudRoundtripScenario.cs`
+- Modify: all five drivers — `DotNet/Iverson.Client.Conformance.Driver/Program.cs`, `Java/conformance/`, `Python/conformance/driver.py`, `TypeScript/conformance/driver.ts`, `Go/conformance/main.go`
 
 **Interfaces:**
 - Consumes: T1's registry and gate; T3's derivation and T4's rejection, both of which `IVC-REL-003` depends on.
@@ -208,11 +211,13 @@ The worked exemplar — it lands before the other axes because it proves the aut
 
 - [ ] **Step 3: Extend the distinctness assertion to `many_to_many`.** `Verifier.VerifyRegistration` currently applies it to `ManyToOne` and `OneToOne` only, exempting m2m by design. The ruling reverses that exemption; remove it and update the explanatory comment, which currently states the old rationale.
 
-- [ ] **Step 4: Cite the consts** on the assertions that discharge each requirement, in `Verifier.cs` and `CrudRoundtripScenario.cs`.
+- [ ] **Step 4: Add a driver-side depth-resolved read.** Extend each driver's `read` phase with a second read of the article through its own client at depth 1 — `GetMappedAsync(key, depth: 1)`, `get_mapped(id, depth=1)`, `getMapped(id, 1)` (TypeScript and Java), and `GetMapped(ctx, id, 1)` (`coordinator.go:236`) — reported as its own step carrying the returned entity. This is what makes `IVC-REL-009` a Capability requirement the harness can grade: the orchestrator's own depth-1 read proves the server hydrates, not that a client can ask it to. Then assert, orchestrator-side, that every driver reported a hydrated entity, citing `IVC-REL-009`.
 
-- [ ] **Step 5: Verify the gate now binds.** Delete one citation and confirm check 2 goes red naming that ID; restore. Add a requirement row with no const and confirm check 1 goes red; remove.
+- [ ] **Step 5: Cite the consts** on the assertions that discharge each requirement, in `Verifier.cs` and `CrudRoundtripScenario.cs`.
 
-- [ ] **Step 6: Run the suite and a live matrix.**
+- [ ] **Step 6: Verify the gate now binds.** Delete one citation and confirm check 2 goes red naming that ID; restore. Add a requirement row with no const and confirm check 1 goes red; remove.
+
+- [ ] **Step 7: Run the suite and a live matrix.**
 ```bash
 dotnet test Iverson.Server/Iverson.ClientConformance.Tests/Iverson.ClientConformance.Tests.csproj
 dotnet run --project Iverson.Server/Iverson.ClientConformance -- --scenarios crud-roundtrip
@@ -272,13 +277,15 @@ The first new scenario — it establishes the pattern T9–T12 follow, and is th
 
 - [ ] **Step 1: Add the scenario to each driver.** Two edits per driver: add the name to the validated scenario set (`driver.py:43` and its four equivalents), and add a `read`-phase branch that calls the client's `GetSchema` and reports the returned catalogue. **The `Phase` enum is not extended** — `Register, Write, Read, Update, Delete` is fixed, and drivers already branch on `(phase, scenario)` pairs.
 
-- [ ] **Step 2: Write the orchestrator scenario.** Register a type per language, then have each driver read the catalogue and report it. Assert every language sees the type it registered, with the same field set the descriptor declared.
+- [ ] **Step 2: Re-register each reported descriptor with row permissions.** Take each driver's reported `TypeDescriptor` and re-register it through `Reregistrar.ReregisterAsync(descriptor.Json, actingToken)` with the authorization block added and nothing else changed. A schema with no authorization block is `Denied` for every action including `Read` (`RowFieldAuthorizationEvaluator.cs:10-12`), and `GetSchema` skips denied schemas outright (`ObjectMappingGrpcService.cs:78-81`) — so without this the driver's own types are invisible to the catalogue and the scenario fails for all five languages. Where a descriptor is missing, report a failed assertion naming the consequence; never skip in silence, matching `CrudRoundtripScenario.cs:70-84`. **This step is part of the pattern T9–T12 copy.**
 
-- [ ] **Step 3: Author the `SCH` requirements and cite them.**
+- [ ] **Step 3: Write the orchestrator scenario.** Register a type per language, then have each driver read the catalogue and report it. Assert every language sees the type it registered, with the same field set the descriptor declared.
 
-- [ ] **Step 4: Prove the assertions can fail.** Break one driver's report and confirm only that language's cell goes red.
+- [ ] **Step 4: Author the `SCH` requirements and cite them.**
 
-- [ ] **Step 5: Run and commit.**
+- [ ] **Step 5: Prove the assertions can fail.** Break one driver's report and confirm only that language's cell goes red.
+
+- [ ] **Step 6: Run and commit.**
 ```bash
 dotnet test Iverson.Server/Iverson.ClientConformance.Tests/Iverson.ClientConformance.Tests.csproj
 dotnet run --project Iverson.Server/Iverson.ClientConformance -- --scenarios schema-catalog
@@ -291,10 +298,11 @@ git commit -m "add the schema-catalog conformance scenario and the SCH axis"
 Follows T8's pattern.
 
 - [ ] **Step 1: Add the scenario to all five drivers** — set constant plus a `write` branch seeding rows and a `read` branch issuing a search and an aggregate through each client's own builder API.
-- [ ] **Step 2: Write the orchestrator scenario**, asserting all five clients agree on the result set and the aggregate value for the same query over the same seeded rows.
-- [ ] **Step 3: Author the `QRY` requirements and cite them.**
-- [ ] **Step 4: Prove the assertions can fail** — perturb one client's filter and confirm its cell alone goes red.
-- [ ] **Step 5: Run and commit.**
+- [ ] **Step 2: Re-register each reported descriptor with row permissions**, per T8 Step 2. Without it every seeded write is denied.
+- [ ] **Step 3: Write the orchestrator scenario**, asserting all five clients agree on the result set and the aggregate value for the same query over the same seeded rows.
+- [ ] **Step 4: Author the `QRY` requirements and cite them.**
+- [ ] **Step 5: Prove the assertions can fail** — perturb one client's filter and confirm its cell alone goes red.
+- [ ] **Step 6: Run and commit.**
 ```bash
 dotnet test Iverson.Server/Iverson.ClientConformance.Tests/Iverson.ClientConformance.Tests.csproj
 dotnet run --project Iverson.Server/Iverson.ClientConformance -- --scenarios query
@@ -305,11 +313,12 @@ git commit -m "add the query conformance scenario and the QRY axis"
 ### Task 10: The VEC axis and its scenario
 
 - [ ] **Step 1: Add the scenario to all five drivers** — `write` seeds rows carrying an embedded field, `read` issues `SearchSimilar` and `SearchChunks`.
-- [ ] **Step 2: Handle the projection delay.** Embeddings reach Qdrant asynchronously, so the read phase polls with a bounded retry rather than reading once. Match whatever wait convention the harness already uses; if none exists, a bounded poll with an explicit timeout that reports as a failed step — never an indefinite wait, and never a fixed sleep presented as determinism.
-- [ ] **Step 3: Write the orchestrator scenario**, asserting all five clients retrieve the same object for the same query vector.
-- [ ] **Step 4: Author the `VEC` requirements and cite them.**
-- [ ] **Step 5: Prove the assertions can fail.**
-- [ ] **Step 6: Run and commit.**
+- [ ] **Step 2: Re-register each reported descriptor with row permissions**, per T8 Step 2. Without it every seeded write is denied.
+- [ ] **Step 3: Handle the projection delay.** Embeddings reach Qdrant asynchronously, so the read phase polls with a bounded retry rather than reading once. Match whatever wait convention the harness already uses; if none exists, a bounded poll with an explicit timeout that reports as a failed step — never an indefinite wait, and never a fixed sleep presented as determinism.
+- [ ] **Step 4: Write the orchestrator scenario**, asserting all five clients retrieve the same object for the same query vector.
+- [ ] **Step 5: Author the `VEC` requirements and cite them.**
+- [ ] **Step 6: Prove the assertions can fail.**
+- [ ] **Step 7: Run and commit.**
 ```bash
 dotnet test Iverson.Server/Iverson.ClientConformance.Tests/Iverson.ClientConformance.Tests.csproj
 dotnet run --project Iverson.Server/Iverson.ClientConformance -- --scenarios vector-search
@@ -320,10 +329,11 @@ git commit -m "add the vector-search conformance scenario and the VEC axis"
 ### Task 11: The IDN axis and its scenario
 
 - [ ] **Step 1: Add the scenario to all five drivers.** The orchestrator passes a deliberately wrong acting-user token for the negative leg; each driver attempts a write and reports the status code it received rather than judging it.
-- [ ] **Step 2: Write the orchestrator scenario** — a positive leg (the correct acting user writes and reads back) and a negative leg (the wrong acting user is denied). Assert every client surfaces the same status code on the negative leg.
-- [ ] **Step 3: Author the `IDN` requirements and cite them** — service token, acting-user propagation, tenancy enforcement.
-- [ ] **Step 4: Prove the assertions can fail.** Drop the acting-user header in one driver and confirm its cell goes red. If a denial appears, read `docker logs iverson-api | grep Audit.Denied` — the audit line names actor, tenant and reason, and is the fastest route to the cause.
-- [ ] **Step 5: Run and commit.**
+- [ ] **Step 2: Re-register each reported descriptor with row permissions**, per T8 Step 2. Without it the positive leg is denied for the same reason the negative leg is, and the scenario cannot tell the two apart.
+- [ ] **Step 3: Write the orchestrator scenario** — a positive leg (the correct acting user writes and reads back) and a negative leg (the wrong acting user is denied). Assert every client surfaces the same status code on the negative leg.
+- [ ] **Step 4: Author the `IDN` requirements and cite them** — service token, acting-user propagation, tenancy enforcement.
+- [ ] **Step 5: Prove the assertions can fail.** Drop the acting-user header in one driver and confirm its cell goes red. If a denial appears, read `docker logs iverson-api | grep Audit.Denied` — the audit line names actor, tenant and reason, and is the fastest route to the cause.
+- [ ] **Step 6: Run and commit.**
 ```bash
 dotnet test Iverson.Server/Iverson.ClientConformance.Tests/Iverson.ClientConformance.Tests.csproj
 dotnet run --project Iverson.Server/Iverson.ClientConformance -- --scenarios identity
