@@ -82,7 +82,7 @@ public sealed class SchemaRegistrar(
             typeDesc.Relations.Add(
                 new Contracts.RelationDescriptor
                 {
-                    PropertyName = DeriveRelationPropertyName(relation),
+                    PropertyName = DeriveRelationPropertyName(descriptor.EntityName, relation, fk),
                     Kind         = ToProtoKind(relation.Kind),
                     RelatedType  = relation.RelatedType.Name,
                     ForeignKey   = fk ?? string.Empty
@@ -273,21 +273,34 @@ public sealed class SchemaRegistrar(
     /// related entity. Strip the trailing "Id" (many-to-one / one-to-one) or "Ids" (many-to-many)
     /// to get a distinct navigation property name — the same rule Python, TypeScript and Go use.
     /// Guarded by length so a member named exactly "Id"/"Ids" is not truncated to nothing.
+    ///
+    /// .NET is the only client that lets a caller override the foreign key explicitly via
+    /// <c>ForeignKey</c>, so it is the only client where the strip rule above can still collide
+    /// with the resolved FK (e.g. <c>[ManyToOne(ForeignKey="Author")] Guid AuthorId</c> derives
+    /// "Author", which is also the FK). Rather than silently emit a corrupted schema, fail fast.
     /// </summary>
-    private static string DeriveRelationPropertyName(RelationDescriptor relation)
+    private static string DeriveRelationPropertyName(string entityName, RelationDescriptor relation, string? fk)
     {
         var name = relation.Property.Name;
-        switch (relation.Kind)
+        var derived = relation.Kind switch
         {
-            case RelationKind.ManyToOne or RelationKind.OneToOne
-                when name.Length > 2 && name.EndsWith("Id", StringComparison.Ordinal):
-                return name[..^2];
-            case RelationKind.ManyToMany
-                when name.Length > 3 && name.EndsWith("Ids", StringComparison.Ordinal):
-                return name[..^3] + "s";
-            default:
-                return name;
-        }
+            RelationKind.ManyToOne or RelationKind.OneToOne
+                when name.Length > 2 && name.EndsWith("Id", StringComparison.Ordinal)
+                => name[..^2],
+            RelationKind.ManyToMany
+                when name.Length > 3 && name.EndsWith("Ids", StringComparison.Ordinal)
+                => name[..^3] + "s",
+            _ => name
+        };
+
+        if (fk is not null && string.Equals(derived, fk, StringComparison.OrdinalIgnoreCase))
+            throw new InvalidOperationException(
+                $"'{entityName}.{name}' derives navigation property name '{derived}', which collides " +
+                $"with its foreign key '{fk}'. The navigation property name and the foreign key must " +
+                "differ, or the server's depth-resolved read will overwrite the foreign key value with " +
+                "the hydrated related entity.");
+
+        return derived;
     }
 
     private static string? InferForeignKey(RelationDescriptor relation, string thisEntityName) =>

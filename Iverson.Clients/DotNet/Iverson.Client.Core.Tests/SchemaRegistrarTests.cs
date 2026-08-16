@@ -128,6 +128,17 @@ internal sealed class SchemaTestFkNavCollisionEntity
     public Guid[] TagIds { get; set; } = [];
 }
 
+// Deliberately NOT [IversonEntity]: EntityRegistry scans the whole assembly, so any
+// attributed type here would be pulled into every other test's registry too. These
+// fixtures are only ever fed to SchemaRegistrar.BuildTypeDescriptor directly via
+// reflection, bypassing the scan entirely, so they stay isolated to the collision tests.
+internal sealed class UnregisteredFkCollisionEntity
+{
+    public Guid Id { get; set; }
+    [IversonTenant] public string TenantId { get; set; } = string.Empty;
+    public Guid AuthorId { get; set; }
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 public class SchemaRegistrarTests
@@ -372,6 +383,54 @@ public class SchemaRegistrarTests
             "the navigation property name must not collide with the foreign key, or a depth-resolved " +
             "read overwrites the FK value with the hydrated related entity");
         manyToMany.PropertyName.Should().Be("Tags");
+    }
+
+    private static EntityDescriptor BuildFkCollisionDescriptor(string foreignKey) =>
+        new()
+        {
+            EntityType = typeof(UnregisteredFkCollisionEntity),
+            EntityName = nameof(UnregisteredFkCollisionEntity),
+            KeyProperty = typeof(UnregisteredFkCollisionEntity).GetProperty(
+                nameof(UnregisteredFkCollisionEntity.Id))!,
+            Relations =
+            [
+                new RelationDescriptor
+                {
+                    Property = typeof(UnregisteredFkCollisionEntity).GetProperty(
+                        nameof(UnregisteredFkCollisionEntity.AuthorId))!,
+                    RelatedType = typeof(SchemaTestAuthor),
+                    Kind = RelationKind.ManyToOne,
+                    ForeignKey = foreignKey
+                }
+            ]
+        };
+
+    [Fact]
+    public void BuildTypeDescriptor_Throws_WhenExplicitForeignKeyCollidesWithDerivedName()
+    {
+        // "AuthorId" derives to "Author" by the strip rule; an explicit FK of "Author"
+        // collides with that derived name.
+        var ex = InvokeBuildTypeDescriptor(BuildFkCollisionDescriptor("Author"));
+
+        ex.Should().BeOfType<InvalidOperationException>();
+        ex!.Message.Should().Contain("UnregisteredFkCollisionEntity.AuthorId");
+        ex.Message.Should().Contain("Author");
+    }
+
+    [Fact]
+    public void BuildTypeDescriptor_Registers_WhenExplicitForeignKeyDoesNotCollide()
+    {
+        // An explicit FK of "AuthorRef" does not collide with the derived name "Author", so
+        // registration should succeed and keep the derived navigation property name.
+        var method = typeof(SchemaRegistrar).GetMethod(
+            "BuildTypeDescriptor", BindingFlags.NonPublic | BindingFlags.Static)!;
+
+        var typeDescriptor = (TypeDescriptor)method.Invoke(
+            null, [BuildFkCollisionDescriptor("AuthorRef")])!;
+
+        var relation = typeDescriptor.Relations.Single();
+        relation.PropertyName.Should().Be("Author");
+        relation.ForeignKey.Should().Be("AuthorRef");
     }
 
     [Fact]
