@@ -137,7 +137,9 @@ public sealed class CrudRoundtripScenario(
             // carrying a hydrated relation discharges IVC-LIFE-007 separately below. This is what
             // makes reachability and hydration independently gradable: the orchestrator's own
             // MappingGet(depth: 1) below proves only that the SERVER hydrates.
-            var depth1 = RequireStepOk(state, document, "get_depth1", Requirements.LifeDepthResolvedReadReachable);
+            var depth1Step = document.Steps.FirstOrDefault(s => s.Name == "get_depth1");
+            state.Assertions.Add(Verifier.VerifyDepthResolvedReadReachable(depth1Step));
+            var depth1 = depth1Step is { Ok: true } ? depth1Step : null;
             if (state.Article is not null)
             {
                 state.Assertions.Add(Verifier.VerifyDepthCapability(

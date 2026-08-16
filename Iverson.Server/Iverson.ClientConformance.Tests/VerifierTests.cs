@@ -630,6 +630,41 @@ public class VerifierTests
     public void IsUuidV7_false_for_null_or_unparseable() =>
         (Verifier.IsUuidV7(null) || Verifier.IsUuidV7("not-a-uuid")).Should().BeFalse();
 
+    // ── LIFE — depth reachability ────────────────────────────────────────────────────────────
+
+    [Fact]
+    public void VerifyDepthResolvedReadReachable_passes_when_the_drivers_depth1_step_succeeded()
+    {
+        var step = new StepResult("get_depth1", Ok: true);
+
+        var assertion = Verifier.VerifyDepthResolvedReadReachable(step);
+
+        assertion.Passed.Should().BeTrue();
+        assertion.RequirementId.Should().Be(Requirements.LifeDepthResolvedReadReachable);
+    }
+
+    [Fact]
+    public void VerifyDepthResolvedReadReachable_fails_when_the_drivers_depth1_step_did_not_succeed()
+    {
+        // The falsifiability case: a driver whose "get_depth1" step reports failure — the client
+        // could not even reach a depth-resolved read through its public API — must not be
+        // certified as having discharged reachability.
+        var step = new StepResult("get_depth1", Ok: false, Error: "not implemented");
+
+        var assertion = Verifier.VerifyDepthResolvedReadReachable(step);
+
+        assertion.Passed.Should().BeFalse();
+        assertion.RequirementId.Should().Be(Requirements.LifeDepthResolvedReadReachable);
+    }
+
+    [Fact]
+    public void VerifyDepthResolvedReadReachable_fails_when_the_step_is_absent()
+    {
+        var assertion = Verifier.VerifyDepthResolvedReadReachable(null);
+
+        assertion.Passed.Should().BeFalse();
+    }
+
     // ── LIFE — depth capability ──────────────────────────────────────────────────────────────
 
     private static TypeDescriptor ArticleWithManyToOneAuthor => Verifier.ParseDescriptor(Json("""

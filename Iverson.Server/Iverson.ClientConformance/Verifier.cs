@@ -401,6 +401,22 @@ public static class Verifier
         key is not null && Guid.TryParse(key, out var parsed) && parsed.ToString("N")[12] == '7';
 
     /// <summary>
+    /// Judges IVC-LIFE-006 — the reachability half of the retired IVC-LIFE-005: whether a
+    /// driver's own depth-1 read (the "get_depth1" step) is reachable through the client's
+    /// public API at all, independent of whether the entity it returns is actually hydrated
+    /// (that is IVC-LIFE-007, judged separately by <see cref="VerifyDepthCapability"/>).
+    /// Extracted to a pure, unit-testable function — rather than left as an anonymous
+    /// invocation of <c>CrudRoundtripScenario.RequireStepOk</c>'s generic step-success check —
+    /// so reachability's falsifiability does not rest solely on the live matrix.
+    /// </summary>
+    public static Assertion VerifyDepthResolvedReadReachable(StepResult? step) =>
+        Assertion.From(
+            "step 'get_depth1' succeeded",
+            step is { Ok: true },
+            step is null ? "the driver reported no such step" : step.Error ?? "ok",
+            Requirements.LifeDepthResolvedReadReachable);
+
+    /// <summary>
     /// Judges IVC-LIFE-007 — the hydration half of the retired IVC-LIFE-005 (itself the successor
     /// of IVC-REL-009) — from a DRIVER's own depth-1 read, never the orchestrator's
     /// <c>MappingGet</c>. The orchestrator's own depth-1 read (used by
