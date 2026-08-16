@@ -13,4 +13,93 @@ namespace Iverson.ClientConformance;
 /// </summary>
 public static class Requirements
 {
+    // ── REL — Relations ─────────────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// A client synthesizes a foreign-key property for <c>many_to_one</c>, <c>one_to_one</c> and
+    /// <c>many_to_many</c>, and none for <c>one_to_many</c> (whose key lives on the related
+    /// type's own row). Discharged by <c>Verifier.VerifyRegistration</c>'s "foreign key ... is a
+    /// declared property" assertion, which fires only for the three owning kinds — the loop
+    /// <c>continue</c>s for <c>OneToMany</c> before reaching it, so an <c>OneToMany</c> relation
+    /// contributes no foreign-key-declared assertion at all.
+    /// </summary>
+    public const string RelForeignKeySynthesizedForOwningKinds = "IVC-REL-001";
+
+    /// <summary>
+    /// A synthesized foreign-key property is named <c>{RelatedTypeName}Id</c>. Discharged by
+    /// <c>Verifier.VerifyRegistration</c>'s dedicated naming assertion, which compares the
+    /// declared foreign key's normalized name against the relation's <c>RelatedType</c> plus
+    /// "Id".
+    /// </summary>
+    public const string RelForeignKeyNamedRelatedTypeId = "IVC-REL-002";
+
+    /// <summary>
+    /// A client derives a navigation-property name distinct from the relation's foreign-key
+    /// name, for every relation kind including <c>many_to_many</c> — the ruling in
+    /// "Why <c>IVC-REL-003</c> covers <c>many_to_many</c>" (design doc). A collision lets
+    /// hydration overwrite the foreign key (<c>EntityRelationResolver</c> writes the hydrated
+    /// value to <c>entityStruct.Fields[relation.PropertyName]</c>), which is what makes
+    /// <c>IVC-REL-006</c> unconditional. Discharged by <c>Verifier.VerifyRegistration</c>'s
+    /// distinctness assertion, extended in this change to <c>ManyToMany</c> as well as
+    /// <c>ManyToOne</c>/<c>OneToOne</c>, and enforced server-side at registration
+    /// (<c>RelationValidator.cs</c>, tightened alongside T3/T4).
+    /// </summary>
+    public const string RelNavPropertyDistinctFromForeignKey = "IVC-REL-003";
+
+    /// <summary>
+    /// <c>isArray</c> is set on the foreign-key property for <c>many_to_many</c> and for no
+    /// other kind. Discharged by <c>Verifier.VerifyRegistration</c>'s "foreign key ... is
+    /// declared isArray" assertion (positive case, scoped to <c>ManyToMany</c>) and its
+    /// "isArray is set only for a many-to-many foreign key" assertion (negative case, over every
+    /// array-typed property on the descriptor).
+    /// </summary>
+    public const string RelIsArraySetForManyToManyOnly = "IVC-REL-004";
+
+    /// <summary>
+    /// Write payloads carry foreign-key values only; navigation properties are never sent.
+    /// Discharged by <c>NavPropertyRejectedScenario.Judge</c>, which posts a payload keyed by a
+    /// navigation property and asserts the server rejects it with <c>InvalidArgument</c>, naming
+    /// both the navigation property and the required foreign key
+    /// (<c>RelationValidator.ValidateAndNormalizeRelations</c>).
+    /// </summary>
+    public const string RelWritePayloadForeignKeyOnly = "IVC-REL-005";
+
+    /// <summary>
+    /// A foreign-key value is readable at every depth, including after hydration. Discharged by
+    /// <c>Verifier.VerifyRelationHydrated</c>'s "foreign key ... survives hydration" assertion,
+    /// which requires the foreign key to still be present — not overwritten by the nav property
+    /// — in a depth-1 <c>MappingGet</c> response.
+    /// </summary>
+    public const string RelForeignKeyReadableAtDepth = "IVC-REL-006";
+
+    /// <summary>
+    /// Multi-valued foreign keys are sent as a list, never a delimited string. Discharged by
+    /// <c>CrudRoundtripScenario</c>'s dedicated array-shape assertion over the driver's own
+    /// depth-0 read of a <c>many_to_many</c> foreign key, which requires the raw JSON value to be
+    /// a <see cref="System.Text.Json.JsonValueKind.Array"/> rather than a single string.
+    /// </summary>
+    public const string RelMultiValuedForeignKeyAsList = "IVC-REL-007";
+
+    /// <summary>
+    /// <c>one_to_many</c> resolves by reverse foreign-key lookup on the related type. Discharged
+    /// by <c>Verifier.VerifyRelationHydrated</c>'s "one-to-many nav hydrates at depth 1"
+    /// assertion, which requires the reverse-navigation collection to be non-empty in a depth-1
+    /// <c>MappingGet</c> response (<c>EntityRelationResolver.ResolveOneToManyAsync</c> →
+    /// <c>FetchByColumnAsync</c>).
+    /// </summary>
+    public const string RelOneToManyReverseLookup = "IVC-REL-008";
+
+    // IVC-REL-009 is Retired — superseded by the LIFE depth capability. It takes no const.
+
+    /// <summary>
+    /// Foreign-key values are well-formed UUIDs, and foreign-key columns are typed <c>UUID</c>
+    /// or <c>UUID[]</c>. Discharged by <c>Verifier.VerifyThreeWay</c>'s "server returned a
+    /// value" assertion, which requires the gRPC leg's raw value to have parsed as one or more
+    /// <see cref="System.Guid"/>s (<c>ObservedValue.Uuids</c> non-null with at least one
+    /// element) — an unreadable value or a wrongly-typed column fails it. The <c>UUID</c>/
+    /// <c>UUID[]</c> typing split itself is enforced at registration
+    /// (<c>SchemaRegistrationOrchestrator.cs</c>), which every registration assertion in this
+    /// scenario already depends on succeeding.
+    /// </summary>
+    public const string RelForeignKeyWellFormedUuid = "IVC-REL-010";
 }

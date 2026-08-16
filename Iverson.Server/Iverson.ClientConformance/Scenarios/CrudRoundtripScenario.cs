@@ -382,6 +382,21 @@ public sealed class CrudRoundtripScenario(
         foreach (var relation in captured.Descriptor.Relations)
             state.Assertions.AddRange(Verifier.VerifyRelationHydrated(label, relation, grpc));
 
+        // IVC-REL-007: a many-to-many foreign key must be sent as a JSON array, never a
+        // delimited string, in the driver's own depth-0 read — the leg the driver constructed
+        // (or received back) from its own write, before this scenario ever touches gRPC/Postgres.
+        foreach (var relation in captured.Descriptor.Relations.Where(r => r.Kind == RelationKind.ManyToMany))
+        {
+            var element = Verifier.FindProperty(driverEntity, relation.ForeignKey);
+            state.Assertions.Add(Assertion.From(
+                $"{label}.{relation.ForeignKey}: multi-valued foreign key is sent as a JSON array, not a delimited string",
+                element is { ValueKind: JsonValueKind.Array },
+                element is null
+                    ? "(absent)"
+                    : $"kind={element.Value.ValueKind} raw={element.Value.GetRawText()}",
+                Requirements.RelMultiValuedForeignKeyAsList));
+        }
+
         return new ObservedTitle(TitleOf(grpc));
     }
 

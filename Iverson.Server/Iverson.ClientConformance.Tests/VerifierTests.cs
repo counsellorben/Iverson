@@ -67,8 +67,8 @@ public class VerifierTests
             { "name": "{{prefix}}_tag_ids", "clrType": "CLR_GUID", "isArray": true }
           ],
           "relations": [
-            { "propertyName": "{{prefix}}Author", "kind": "MANY_TO_ONE", "relatedType": "A", "foreignKey": "{{prefix}}_author_id" },
-            { "propertyName": "{{prefix}}_tag_ids", "kind": "MANY_TO_MANY", "relatedType": "T", "foreignKey": "{{prefix}}_tag_ids" }
+            { "propertyName": "{{prefix}}Author", "kind": "MANY_TO_ONE", "relatedType": "{{prefix}}_author", "foreignKey": "{{prefix}}_author_id" },
+            { "propertyName": "{{prefix}}Tags", "kind": "MANY_TO_MANY", "relatedType": "T", "foreignKey": "{{prefix}}_tag_ids" }
           ]
         }
         """));
@@ -83,16 +83,36 @@ public class VerifierTests
     }
 
     [Fact]
-    public void VerifyRegistration_exempts_many_to_many_from_the_distinct_nav_property_rule()
+    public void VerifyRegistration_extends_the_distinct_nav_property_rule_to_many_to_many()
     {
-        // The m2m relation above has propertyName == foreignKey by construction. Asserting
-        // distinctness there would fail Python, TypeScript, Go and Java on a conforming stack —
-        // the server treats the collision as correct (RelationValidator.cs:20-24).
+        // 2026-08-15 ruling reversal: many_to_many is no longer exempt from the distinctness
+        // check. A conforming descriptor (the fixture above) must carry a nav property distinct
+        // from its foreign key for every relation kind, m2m included.
         var results = Verifier.VerifyRegistration("article", FkOnMemberArticle("py"));
 
-        results.Should().NotContain(r =>
-            r.Name.Contains("MANY_TO_MANY") && r.Name.Contains("distinct from the foreign key"));
+        results.Should().Contain(r =>
+            r.Name.Contains("ManyToMany") && r.Name.Contains("distinct from the foreign key") && r.Passed);
         results.Should().Contain(r => r.Name.Contains("ManyToMany") && r.Name.Contains("declared isArray"));
+    }
+
+    [Fact]
+    public void VerifyRegistration_fails_a_many_to_many_whose_nav_property_equals_its_foreign_key()
+    {
+        var descriptor = Verifier.ParseDescriptor(Json("""
+            {
+              "typeName": "Bad", "tenantField": "tenant_id",
+              "properties": [
+                { "name": "id", "isKey": true }, { "name": "tenant_id" },
+                { "name": "tag_ids", "isArray": true }
+              ],
+              "relations": [
+                { "propertyName": "tag_ids", "kind": "MANY_TO_MANY", "relatedType": "T", "foreignKey": "tag_ids" }
+              ]
+            }
+            """));
+
+        Verifier.VerifyRegistration("article", descriptor)
+            .Should().Contain(r => !r.Passed && r.Name.Contains("distinct from the foreign key"));
     }
 
     [Fact]

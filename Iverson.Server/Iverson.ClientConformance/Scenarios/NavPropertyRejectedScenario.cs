@@ -143,7 +143,8 @@ public sealed class NavPropertyRejectedScenario(
             Assertion.From(
                 "post: the server rejects a navigation-property key rather than persisting it",
                 caught is not null,
-                caught is null ? "the write succeeded" : $"{caught.StatusCode}: {caught.Status.Detail}"),
+                caught is null ? "the write succeeded" : $"{caught.StatusCode}: {caught.Status.Detail}",
+                Requirements.RelWritePayloadForeignKeyOnly),
         };
 
         if (caught is not null)

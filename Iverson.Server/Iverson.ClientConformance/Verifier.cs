@@ -99,11 +99,16 @@ public static class Verifier
     /// <summary>
     /// The kind-scoped registration assertions, against the descriptor the driver actually sent.
     ///
-    /// <c>ManyToMany</c> is exempt from the propertyName != foreignKey check BY DESIGN: in the
-    /// FK-on-the-member clients (Python, TypeScript, Go, Java) the nav-property name and the
-    /// foreign key are equal by construction, and the server treats that as correct rather than
-    /// as a defect — see <c>Iverson.Server/Iverson.Api/Grpc/RelationValidator.cs:20-24</c>.
-    /// Applying the check to m2m would fail four conforming clients.
+    /// The propertyName != foreignKey distinctness check applies to <c>ManyToMany</c> as well as
+    /// <c>ManyToOne</c>/<c>OneToOne</c> (<c>IVC-REL-003</c>). It used to be exempt for
+    /// <c>ManyToMany</c> by design, on the theory that the FK-on-the-member clients (Python,
+    /// TypeScript, Go, Java) legitimately produce a colliding name and the server treated that as
+    /// correct rather than as a defect. That reasoning did not survive contact with
+    /// <c>EntityRelationResolver</c>: a collision lets hydration overwrite the foreign key with
+    /// the nav property's resolved value at the same struct key, which makes the collision
+    /// unconditionally break <c>IVC-REL-006</c> (the foreign key must remain readable at every
+    /// depth). The 2026-08-15 ruling extends the check to every relation kind and closes the hole
+    /// server-side too — see <c>Iverson.Server/Iverson.Api/Grpc/RelationValidator.cs</c>.
     /// </summary>
     public static IReadOnlyList<Assertion> VerifyRegistration(
         string label,
@@ -159,12 +164,13 @@ public static class Verifier
         {
             var name = $"{label}.{relation.PropertyName} ({relation.Kind})";
 
-            if (relation.Kind is RelationKind.ManyToOne or RelationKind.OneToOne)
+            if (relation.Kind is RelationKind.ManyToOne or RelationKind.OneToOne or RelationKind.ManyToMany)
             {
                 results.Add(Assertion.From(
                     $"{name}: nav property is distinct from the foreign key",
                     !string.Equals(relation.PropertyName, relation.ForeignKey, StringComparison.OrdinalIgnoreCase),
-                    $"propertyName='{relation.PropertyName}' foreignKey='{relation.ForeignKey}'"));
+                    $"propertyName='{relation.PropertyName}' foreignKey='{relation.ForeignKey}'",
+                    Requirements.RelNavPropertyDistinctFromForeignKey));
             }
 
             if (relation.Kind == RelationKind.OneToMany)
@@ -181,14 +187,30 @@ public static class Verifier
                 relation.ForeignKey.Length > 0 && declared,
                 declared
                     ? $"declared as '{fkProperty!.Name}'"
-                    : $"declared properties: [{string.Join(", ", descriptor.Properties.Select(p => p.Name))}]"));
+                    : $"declared properties: [{string.Join(", ", descriptor.Properties.Select(p => p.Name))}]",
+                Requirements.RelForeignKeySynthesizedForOwningKinds));
+
+            if (relation.Kind is RelationKind.ManyToOne or RelationKind.OneToOne)
+            {
+                // Scoped to the scalar-key kinds. `many_to_many`'s array-typed foreign key is
+                // documented elsewhere in this codebase as legitimately pluralizing
+                // ("{RelatedTypeName}Ids", e.g. SchemaRegistrar.java:351) — a variance IVC-REL-002
+                // does not adjudicate, so this check does not extend to it.
+                results.Add(Assertion.From(
+                    $"{name}: foreign key '{relation.ForeignKey}' is named '{{RelatedTypeName}}Id'",
+                    relation.ForeignKey.Length > 0 &&
+                    string.Equals(Normalize(relation.ForeignKey), Normalize(relation.RelatedType) + "id", StringComparison.Ordinal),
+                    $"relatedType='{relation.RelatedType}' foreignKey='{relation.ForeignKey}'",
+                    Requirements.RelForeignKeyNamedRelatedTypeId));
+            }
 
             if (relation.Kind == RelationKind.ManyToMany)
             {
                 results.Add(Assertion.From(
                     $"{name}: foreign key '{relation.ForeignKey}' is declared isArray",
                     declared && fkProperty!.IsArray,
-                    declared ? $"isArray={fkProperty!.IsArray}" : "foreign key not declared"));
+                    declared ? $"isArray={fkProperty!.IsArray}" : "foreign key not declared",
+                    Requirements.RelIsArraySetForManyToManyOnly));
             }
         }
 
@@ -198,7 +220,8 @@ public static class Verifier
                 $"{label}.{property.Name}: isArray is set only for a many-to-many foreign key",
                 manyToManyForeignKeys.Contains(Normalize(property.Name)),
                 $"many-to-many foreign keys: [{string.Join(", ", descriptor.Relations
-                    .Where(r => r.Kind == RelationKind.ManyToMany).Select(r => r.ForeignKey))}]"));
+                    .Where(r => r.Kind == RelationKind.ManyToMany).Select(r => r.ForeignKey))}]",
+                Requirements.RelIsArraySetForManyToManyOnly));
         }
 
         return results;
@@ -263,7 +286,8 @@ public static class Verifier
                 Assertion.From(
                     $"{name}: one-to-many nav hydrates at depth 1",
                     count > 0,
-                    $"nav={(nav is null ? "(absent)" : nav.Value.GetRawText())}"),
+                    $"nav={(nav is null ? "(absent)" : nav.Value.GetRawText())}",
+                    Requirements.RelOneToManyReverseLookup),
             ];
         }
 
@@ -275,7 +299,8 @@ public static class Verifier
             Assertion.From(
                 $"{name}: foreign key '{relation.ForeignKey}' survives hydration",
                 fk.Uuids is { Count: > 0 },
-                $"foreignKey={fk}"),
+                $"foreignKey={fk}",
+                Requirements.RelForeignKeyReadableAtDepth),
 
             Assertion.From(
                 $"{name}: nav property hydrates beside the foreign key, carrying the related key",
@@ -289,7 +314,7 @@ public static class Verifier
     /// than canonicalizing it to UUIDs — used where the caller needs to inspect a nested object or
     /// array of objects (a hydrated nav property) rather than a scalar/array-of-scalars FK.
     /// </summary>
-    private static JsonElement? FindProperty(JsonElement? document, string name)
+    internal static JsonElement? FindProperty(JsonElement? document, string name)
     {
         if (document is not { ValueKind: JsonValueKind.Object } obj)
             return null;
@@ -470,7 +495,8 @@ public static class Verifier
             Assertion.From(
                 $"{label}.{valueName}: server returned a value",
                 legs.Grpc.Uuids is { Count: > 0 },
-                observed),
+                observed,
+                Requirements.RelForeignKeyWellFormedUuid),
 
             Assertion.From(
                 isKey

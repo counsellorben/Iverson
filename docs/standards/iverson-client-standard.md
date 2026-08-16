@@ -87,8 +87,24 @@ green in this state: an empty set of `Active` IDs compared against an empty set 
 
 ### REL — Relations
 
+Relations are the worked axis: the exemplar for how every other axis in this document is authored.
+Each requirement traces to a defect that shipped or a ruling recorded in
+`docs/specs/2026-08-15-iverson-client-standard-design.md` ("Worked axis: `REL`"). Full rationale and
+the assertion(s) that discharge each requirement are recorded on the corresponding const's doc
+comment in `Requirements.cs`, per this document's own convention for an implemented requirement.
+
 | ID | Status | Kind | Statement |
 | --- | --- | --- | --- |
+| IVC-REL-001 | Active | Behaviour | A client synthesizes a foreign-key property for `many_to_one`, `one_to_one` and `many_to_many`, and none for `one_to_many` |
+| IVC-REL-002 | Active | Behaviour | A synthesized foreign-key property is named `{RelatedTypeName}Id` |
+| IVC-REL-003 | Active | Behaviour | A client derives a navigation-property name distinct from the relation's foreign-key name, for every relation kind |
+| IVC-REL-004 | Active | Behaviour | `isArray` is set on the foreign-key property for `many_to_many` and for no other kind |
+| IVC-REL-005 | Active | Behaviour | Write payloads carry foreign-key values only; navigation properties are never sent |
+| IVC-REL-006 | Active | Behaviour | A foreign-key value is readable at every depth, including after hydration |
+| IVC-REL-007 | Active | Behaviour | Multi-valued foreign keys are sent as a list, never a delimited string |
+| IVC-REL-008 | Active | Behaviour | `one_to_many` resolves by reverse foreign-key lookup on the related type |
+| IVC-REL-009 | Retired | Capability | A depth-resolved read is reachable through the public API — superseded by the `LIFE` depth capability, which all five clients were verified to satisfy once mapped-CRUD parity landed |
+| IVC-REL-010 | Active | Behaviour | Foreign-key values are well-formed UUIDs, and foreign-key columns are typed `UUID` or `UUID[]` |
 
 ### REG — Registration
 
