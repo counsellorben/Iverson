@@ -47,6 +47,13 @@ public sealed class NavPropertyRejectedScenario(
     private const string ForeignKeyName = "S3NavAuthorId";
     private const string RelatedTypeName = "S3NavAuthor";
 
+    // The second, self-contained fixture for the IVC-REG-002 registration-time collision check —
+    // PropertyName equals ForeignKey (RelationCollisionCheck.IsCollision), which must never reach
+    // a stored schema at all, let alone the write path.
+    private const string CollidingTypeName = "S3NavCollide";
+    private const string CollidingForeignKeyName = "S3NavCollideAuthorId";
+    private const string CollidingRelatedTypeName = "S3NavCollideAuthor";
+
     /// <summary>
     /// Fixed priority order for picking which single requested language carries this scenario's
     /// one real outcome — independent of the order <c>--languages</c> happened to list them in,
@@ -94,6 +101,20 @@ public sealed class NavPropertyRejectedScenario(
         ReportCell canonicalCell;
         try
         {
+            // IVC-REG-002 first: attempt to REGISTER a second, self-contained fixture whose
+            // PropertyName equals its ForeignKey (RelationCollisionCheck.IsCollision), and assert
+            // the server rejects it at registration — a distinct observation from the
+            // write-payload check below, which exercises a descriptor that never collided.
+            RpcException? collisionCaught = null;
+            try
+            {
+                await RegisterCollidingFixtureAsync(headers, ct);
+            }
+            catch (RpcException ex)
+            {
+                collisionCaught = ex;
+            }
+
             await RegisterFixtureAsync(headers, ct);
 
             var payload = BuildIllegalPayload(context);
@@ -110,7 +131,7 @@ public sealed class NavPropertyRejectedScenario(
                 caught = ex;
             }
 
-            var assertions = Judge(caught);
+            var assertions = JudgeCollision(collisionCaught).Concat(Judge(caught)).ToList();
             var failures = assertions.Where(a => !a.Passed).ToList();
             canonicalCell = failures.Count == 0
                 ? ReportCell.Ok(canonical, Name, assertions)
@@ -183,6 +204,63 @@ public sealed class NavPropertyRejectedScenario(
         }
 
         return assertions;
+    }
+
+    /// <summary>
+    /// The assertion discharging <c>IVC-REG-002</c>: registration of a descriptor whose
+    /// <c>PropertyName</c> equals its <c>ForeignKey</c> must be rejected with
+    /// <c>InvalidArgument</c>, before it ever reaches a stored schema.
+    /// </summary>
+    internal static IReadOnlyList<Assertion> JudgeCollision(RpcException? caught)
+    {
+        var assertions = new List<Assertion>
+        {
+            Assertion.From(
+                "register: the server rejects a PropertyName/ForeignKey collision at registration",
+                caught is not null,
+                caught is null ? "the server registered the colliding descriptor" : $"{caught.StatusCode}: {caught.Status.Detail}",
+                Requirements.RegNavPropertyCollisionEnforced),
+        };
+
+        if (caught is not null)
+        {
+            assertions.Add(Assertion.From(
+                "register (collision): rejected with InvalidArgument",
+                caught.StatusCode == StatusCode.InvalidArgument,
+                $"actual={caught.StatusCode}"));
+        }
+
+        return assertions;
+    }
+
+    private async Task RegisterCollidingFixtureAsync(Metadata headers, CancellationToken ct)
+    {
+        var descriptor = new TypeDescriptor
+        {
+            TypeName = CollidingTypeName,
+            TenantField = "TenantId",
+            Properties =
+            {
+                new PropertyDescriptor { Name = "Id", ClrType = ClrType.ClrGuid, IsKey = true },
+                new PropertyDescriptor { Name = "TenantId", ClrType = ClrType.ClrString, IsNullable = false },
+                new PropertyDescriptor { Name = CollidingForeignKeyName, ClrType = ClrType.ClrGuid, IsNullable = true },
+            },
+            Relations =
+            {
+                new RelationDescriptor
+                {
+                    // The collision itself: PropertyName IS ForeignKey.
+                    PropertyName = CollidingForeignKeyName,
+                    Kind = RelationKind.ManyToOne,
+                    RelatedType = CollidingRelatedTypeName,
+                    ForeignKey = CollidingForeignKeyName,
+                },
+            },
+        };
+
+        await mapping.RegisterSchemaAsync(
+            new SchemaRequest { RootType = descriptor, TraceId = string.Empty },
+            headers, cancellationToken: ct);
     }
 
     private async Task RegisterFixtureAsync(Metadata headers, CancellationToken ct)

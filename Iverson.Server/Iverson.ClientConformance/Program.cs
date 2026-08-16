@@ -93,7 +93,7 @@ try
     var runner = new DriverRunner();
     var crudRoundtrip = new CrudRoundtripScenario(
         runner, mapping, new Reregistrar(mapping), new PostgresProbe(postgresCs), Console.WriteLine);
-    var namingRejected = new NamingRejectedScenario(runner);
+    var namingRejected = new NamingRejectedScenario(runner, mapping);
     var navPropertyRejected = new NavPropertyRejectedScenario(mapping);
     var interop = new InteropScenario(runner, new Reregistrar(mapping), Console.WriteLine);
 
@@ -123,7 +123,7 @@ try
     if (scenarios.Contains(NamingRejectedScenario.Name, StringComparer.OrdinalIgnoreCase))
     {
         Console.WriteLine($"Running scenario '{NamingRejectedScenario.Name}'...");
-        foreach (var cell in await namingRejected.RunAsync(languages, BuildContext(NamingRejectedScenario.Name)))
+        foreach (var cell in await namingRejected.RunAsync(languages, BuildContext(NamingRejectedScenario.Name), actingToken))
             report.Add(cell);
     }
 

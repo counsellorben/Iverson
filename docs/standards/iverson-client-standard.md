@@ -151,8 +151,23 @@ had to relearn the hard way are recorded here so the next axis does not repeat t
 
 ### REG — Registration
 
+Full rationale and the assertion(s) that discharge each requirement are recorded on the
+corresponding const's doc comment in `Requirements.cs`, per this document's own convention for an
+implemented requirement.
+
 | ID | Status | Kind | Statement |
 | --- | --- | --- | --- |
+| IVC-REG-001 | Active | Behaviour | The server rejects registration of a relation whose foreign key is not named `{RelatedTypeName}Id` (or `{RelatedTypeName}Ids` for `many_to_many`) |
+| IVC-REG-002 | Active | Behaviour | The server rejects registration of a relation whose navigation-property name equals its foreign key, for every relation kind |
+
+Both requirements are the server-side half of a pair whose client-side half is already normative
+elsewhere in this document: `IVC-REL-002` obliges a client to derive `{RelatedTypeName}Id` for a
+synthesized foreign key, and `IVC-REL-003` obliges a client to derive a navigation-property name
+distinct from it. Ruling 5 ("the server is the enforcement boundary") is why both also get a `REG`
+requirement rather than resting on the client derivation alone — a client-side rule with no
+server-side backstop is enforced only as well as the least careful of five implementations (or a
+sixth, not-yet-written one). `IVC-REG-001` and `IVC-REG-002` are what make that backstop itself
+part of the standard rather than an unstated assumption behind `IVC-REL-002`/`IVC-REL-003`.
 
 ### IDN — Identity
 

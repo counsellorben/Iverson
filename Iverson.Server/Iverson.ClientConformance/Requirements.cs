@@ -163,6 +163,43 @@ public static class Requirements
     /// </summary>
     public const string LifeDepthResolvedReadHydrated = "IVC-LIFE-007";
 
+    // ── REG — Registration ──────────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// The server rejects registration of a relation whose foreign key is not named
+    /// <c>{RelatedTypeName}Id</c> (or <c>{RelatedTypeName}Ids</c> for <c>many_to_many</c>).
+    /// Distinct from <c>IVC-REL-002</c>, which is the CLIENT-side derivation obligation — this is
+    /// the server enforcement boundary that makes the naming rule hold even for a client (or a
+    /// hand-built payload) that never derives the name correctly in the first place, per ruling 5
+    /// ("the server is the enforcement boundary"). Discharged by
+    /// <c>NamingRejectedScenario.JudgeServerSide</c>, which hand-builds a descriptor carrying a
+    /// misnamed foreign key and posts it directly to <c>RegisterSchema</c> over gRPC — the ONE
+    /// orchestrator-side observation this scenario now carries (in the <c>dotnet</c> column,
+    /// since .NET's <c>[ManyToOne(typeof(Author), "WriterId")]</c> is the one client-declaration
+    /// style that can express a misnamed foreign key at all; Go/Python/TypeScript catch it
+    /// client-side per <c>IVC-REL-002</c>'s recommended diagnostic, and Java's registrar has no
+    /// override at all, so neither reaches this check) — asserting
+    /// <c>SchemaRegistrationOrchestrator.cs</c>'s naming check (~line 110-122) rejects it with
+    /// <c>InvalidArgument</c>, naming both the actual and required foreign-key names.
+    /// </summary>
+    public const string RegForeignKeyNamingEnforced = "IVC-REG-001";
+
+    /// <summary>
+    /// The server rejects registration of a relation whose navigation-property name equals its
+    /// foreign key, for every relation kind. Distinct from <c>IVC-REL-003</c>, which is the
+    /// CLIENT-side derivation obligation — this is the server enforcement boundary
+    /// (<c>RelationCollisionCheck.IsCollision</c>, consulted by
+    /// <c>SchemaRegistrationOrchestrator.cs</c> ~line 130-139) that closes the hole for any
+    /// client, including a sixth one that forgets to derive a distinct name. Discharged by
+    /// <c>NavPropertyRejectedScenario</c>'s registration-time check: before posting the illegal
+    /// write payload that discharges <c>IVC-REL-005</c>, the scenario also attempts to REGISTER a
+    /// second, self-contained fixture whose <c>PropertyName</c> equals its <c>ForeignKey</c>, and
+    /// asserts that <c>RegisterSchema</c> itself rejects it with <c>InvalidArgument</c> — a
+    /// distinct observation from the write-payload check, which exercises a descriptor that was
+    /// never colliding in the first place.
+    /// </summary>
+    public const string RegNavPropertyCollisionEnforced = "IVC-REG-002";
+
     // ── REL — Relations ─────────────────────────────────────────────────────────────────────
 
     /// <summary>

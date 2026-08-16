@@ -40,12 +40,28 @@ public class NavPropertyRejectedScenarioTests
         public Exception? RegisterSchemaThrows;
         public Exception? PostThrows;
 
+        // Scripts the SEPARATE, self-contained "S3NavCollide" registration attempt
+        // (IVC-REG-002). Defaults to a realistic rejection so tests that only care about the
+        // write-payload check (RegisterSchemaThrows/PostThrows) don't have to also script this —
+        // the collision assertion just passes quietly for them.
+        public Exception? RegisterCollisionThrows = new RpcException(new Status(
+            StatusCode.InvalidArgument,
+            "Relation 'S3NavCollideAuthorId' (ManyToOne) on 'S3NavCollide' has a navigation-" +
+            "property name identical to its foreign key 'S3NavCollideAuthorId'."));
+
         public override AsyncUnaryCall<SchemaResponse> RegisterSchemaAsync(
             SchemaRequest request, Metadata? headers = null, DateTime? deadline = null,
-            CancellationToken cancellationToken = default) =>
-            RegisterSchemaThrows is not null
+            CancellationToken cancellationToken = default)
+        {
+            if (request.RootType.TypeName == "S3NavCollide")
+                return RegisterCollisionThrows is not null
+                    ? FaultedCall<SchemaResponse>(RegisterCollisionThrows)
+                    : CompletedCall(new SchemaResponse { Success = true });
+
+            return RegisterSchemaThrows is not null
                 ? FaultedCall<SchemaResponse>(RegisterSchemaThrows)
                 : CompletedCall(new SchemaResponse { Success = true });
+        }
 
         public override AsyncUnaryCall<MappingResponse> PostAsync(
             MappingWriteRequest request, Metadata? headers = null, DateTime? deadline = null,
@@ -296,5 +312,65 @@ public class NavPropertyRejectedScenarioTests
         var cells = await scenario.RunAsync([], Context(), actingToken: "acting-token");
 
         cells.Should().BeEmpty();
+    }
+
+    // ── JudgeCollision: IVC-REG-002, the registration-time PropertyName/ForeignKey collision
+    // rejection — a distinct observation from Judge's write-payload check above.
+
+    [Fact]
+    public void JudgeCollision_ServerRejectsWithInvalidArgument_AllPass()
+    {
+        var caught = new RpcException(new Status(
+            StatusCode.InvalidArgument,
+            "Relation 'S3NavCollideAuthorId' has a navigation-property name identical to its " +
+            "foreign key."));
+
+        var assertions = NavPropertyRejectedScenario.JudgeCollision(caught);
+
+        assertions.Should().OnlyContain(a => a.Passed);
+    }
+
+    [Fact]
+    public void JudgeCollision_RegistrationSucceeded_Fails_TheCollisionShouldHaveBeenRejected()
+    {
+        var assertions = NavPropertyRejectedScenario.JudgeCollision(caught: null);
+
+        assertions.Should().ContainSingle();
+        assertions[0].Passed.Should().BeFalse();
+        assertions[0].Name.Should().Contain("PropertyName/ForeignKey collision");
+    }
+
+    [Fact]
+    public void JudgeCollision_WrongStatusCode_FailsTheStatusCodeAssertionOnly()
+    {
+        var caught = new RpcException(new Status(StatusCode.PermissionDenied, "denied"));
+
+        var assertions = NavPropertyRejectedScenario.JudgeCollision(caught);
+
+        assertions.Single(a => a.Name.Contains("PropertyName/ForeignKey collision")).Passed.Should().BeTrue();
+        assertions.Single(a => a.Name.Contains("rejected with InvalidArgument")).Passed.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task RunAsync_ServerAcceptsTheCollidingFixture_CanonicalColumnFails_OnCollisionAssertionSpecifically()
+    {
+        // The write-payload rejection still succeeds; only the SEPARATE registration-time
+        // collision check silently fails to reject — this must surface as a real Fail, not be
+        // masked by the payload assertions that are otherwise all green.
+        var client = new FakeMappingClient
+        {
+            RegisterCollisionThrows = null,
+            PostThrows = new RpcException(new Status(
+                StatusCode.InvalidArgument,
+                "Relation 'Author' is a navigation property and cannot be written — send " +
+                "'S3NavAuthorId' instead.")),
+        };
+        var scenario = new NavPropertyRejectedScenario(client);
+
+        var cells = await scenario.RunAsync(["dotnet"], Context(), actingToken: "acting-token");
+
+        var canonical = cells.Single(c => c.Language == "dotnet");
+        canonical.Status.Should().Be(CellStatus.Fail);
+        canonical.Detail.Should().Contain("PropertyName/ForeignKey collision");
     }
 }

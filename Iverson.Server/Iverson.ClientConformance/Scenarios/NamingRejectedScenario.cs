@@ -1,3 +1,7 @@
+using Google.Protobuf.WellKnownTypes;
+using Grpc.Core;
+using Iverson.Client.Contracts;
+
 namespace Iverson.ClientConformance.Scenarios;
 
 /// <summary>
@@ -12,23 +16,35 @@ namespace Iverson.ClientConformance.Scenarios;
 ///
 /// .NET and Java declare the relation's foreign key as a separate field from the navigation
 /// property (an <c>AuthorId</c> scalar plus a <c>[ManyToOne]</c>/<c>@ManyToOne</c>-annotated
-/// <c>Author</c> property, rather than one member that IS both), so this scenario's fixtures
-/// cannot be expressed for them and they render as <c>skip</c> rather than as a driver outcome.
-/// The two languages are NOT equivalent, though: Java's registrar (<c>SchemaRegistrar.inferForeignKey</c>)
-/// always derives the FK name as <c>"{RelatedTypeName}Id"</c> with no override, so a misnamed FK is as
-/// unrepresentable for Java as the scenario's premise assumes. .NET's <c>[ManyToOne]</c> attribute
-/// takes an explicit <c>foreignKey</c> argument (propagated verbatim through
-/// <c>EntityRegistry</c>/<c>SchemaRegistrar</c>), so a misnamed FK like
-/// <c>[ManyToOne(typeof(Author), "WriterId")]</c> is expressible and registers today — nothing
-/// client-side or server-side rejects it, since the server's own registration check
-/// (<c>SchemaRegistrationOrchestrator</c>) only verifies that the declared FK exists as a property
-/// with the correct SQL type (UUID/UUID[]), never that it is spelled a particular way. That is a
-/// genuine divergence from Go/Python/TypeScript, left for a human call on whether it should fail
-/// the matrix.
+/// <c>Author</c> property, rather than one member that IS both), so this scenario's CLIENT-side
+/// fixtures cannot be expressed for them. The two languages are NOT equivalent, though. Java's
+/// registrar (<c>SchemaRegistrar.inferForeignKey</c>) always derives the FK name as
+/// <c>"{RelatedTypeName}Id"</c> with no override, so a misnamed FK is as unrepresentable for Java
+/// as the scenario's premise assumes, and it still renders as <c>skip</c>. .NET's
+/// <c>[ManyToOne]</c> attribute takes an explicit <c>foreignKey</c> argument (propagated verbatim
+/// through <c>EntityRegistry</c>/<c>SchemaRegistrar</c>), so a misnamed FK like
+/// <c>[ManyToOne(typeof(Author), "WriterId")]</c> IS expressible for .NET — and now that T4 added
+/// <c>SchemaRegistrationOrchestrator</c>'s foreign-key naming check (~line 110-122,
+/// <c>IVC-REG-001</c>), the <c>dotnet</c> column carries a real, orchestrator-side observation
+/// instead of a skip: it hand-builds the equivalent descriptor and posts it to
+/// <c>RegisterSchema</c> directly (mirroring <c>NavPropertyRejectedScenario</c>'s orchestrator-only
+/// style, since no .NET driver process is needed to prove the SERVER rejects this), asserting the
+/// server itself rejects it with <c>InvalidArgument</c>.
 /// </summary>
-public sealed class NamingRejectedScenario(DriverRunner runner)
+public sealed class NamingRejectedScenario(
+    DriverRunner runner,
+    ObjectMappingService.ObjectMappingServiceClient mapping)
 {
     public const string Name = "naming-rejected";
+
+    /// <summary>Language that now gets a real orchestrator-side (server) check instead of a skip.</summary>
+    private const string ServerSideCheckedLanguage = "dotnet";
+
+    private const string ServerSideTypeName = "S2NamingDotNet";
+    private const string ServerSideRelatedTypeName = "S2NamingAuthor";
+    // The misnamed FK a .NET user could legitimately declare via
+    // [ManyToOne(typeof(S2NamingAuthor), "WriterId")] — required name is "S2NamingAuthorId".
+    private const string ServerSideActualForeignKeyName = "WriterId";
 
     /// <summary>The actual (wrong) member name every fixture uses, in some casing — the driver's
     /// own language dictates which. Checked case-/separator-insensitively.</summary>
@@ -41,7 +57,7 @@ public sealed class NamingRejectedScenario(DriverRunner runner)
         new(StringComparer.OrdinalIgnoreCase) { "go", "python", "typescript" };
 
     public async Task<IReadOnlyList<ReportCell>> RunAsync(
-        IReadOnlyCollection<string> languages, DriverContext context, CancellationToken ct = default)
+        IReadOnlyCollection<string> languages, DriverContext context, string actingToken, CancellationToken ct = default)
     {
         var cells = new List<ReportCell>();
 
@@ -49,9 +65,16 @@ public sealed class NamingRejectedScenario(DriverRunner runner)
             .Where(l => ClientSideCheckedLanguages.Contains(l))
             .ToList();
 
-        foreach (var language in languages.Where(l => !ClientSideCheckedLanguages.Contains(l)))
+        foreach (var language in languages.Where(l =>
+                     !ClientSideCheckedLanguages.Contains(l) &&
+                     !string.Equals(l, ServerSideCheckedLanguage, StringComparison.OrdinalIgnoreCase)))
         {
             cells.Add(ReportCell.Skip(language, Name, SkipReason(language)));
+        }
+
+        if (languages.Contains(ServerSideCheckedLanguage, StringComparer.OrdinalIgnoreCase))
+        {
+            cells.Add(await RunServerSideCheckAsync(actingToken, ct));
         }
 
         if (driverLanguages.Count == 0)
@@ -89,23 +112,114 @@ public sealed class NamingRejectedScenario(DriverRunner runner)
     }
 
     /// <summary>
-    /// Per-language skip text for the two clients this scenario's fixtures cannot be expressed
-    /// for. Both declare the FK as a separate field from the navigation property, but that is
-    /// where the equivalence ends — see the class doc comment for what was verified against each
-    /// client's and the server's source.
+    /// Skip text for Java, the only client this scenario now genuinely cannot check at all — its
+    /// registrar derives the FK name with no override, so the misnaming this scenario provokes
+    /// cannot be expressed in its declaration style, client-side or server-side.
     /// </summary>
     internal static string SkipReason(string language) =>
-        string.Equals(language, "java", StringComparison.OrdinalIgnoreCase)
-            ? "this client declares a many_to_one relation's foreign key as a separate field from " +
-              "the navigation property, and its registrar (SchemaRegistrar.inferForeignKey) always " +
-              "derives the FK name as \"{RelatedTypeName}Id\" with no override, so the misnaming " +
-              "this scenario provokes cannot be expressed in this client's declaration style"
-            : "this client declares a many_to_one relation's foreign key as a separate field from " +
-              "the navigation property, so this scenario's fixtures cannot be expressed for it as " +
-              "written — but unlike Java, its [ManyToOne] attribute accepts an explicit foreignKey " +
-              "argument, so a misnamed FK (e.g. [ManyToOne(typeof(Author), \"WriterId\")]) IS " +
-              "expressible and registers today: the server's registration check only verifies the " +
-              "declared FK exists with the correct SQL type, never that it is named a particular way";
+        "this client declares a many_to_one relation's foreign key as a separate field from " +
+        "the navigation property, and its registrar (SchemaRegistrar.inferForeignKey) always " +
+        "derives the FK name as \"{RelatedTypeName}Id\" with no override, so the misnaming " +
+        "this scenario provokes cannot be expressed in this client's declaration style";
+
+    /// <summary>
+    /// The orchestrator-side, server-only check that discharges <c>IVC-REG-001</c> for the one
+    /// client declaration style (.NET's <c>[ManyToOne(type, foreignKey)]</c>) that can express a
+    /// misnamed foreign key at all. Hand-builds the equivalent descriptor and posts it directly
+    /// to <c>RegisterSchema</c> — no .NET driver process runs — asserting that
+    /// <c>SchemaRegistrationOrchestrator</c>'s naming check rejects it.
+    /// </summary>
+    private async Task<ReportCell> RunServerSideCheckAsync(string actingToken, CancellationToken ct)
+    {
+        var headers = new Metadata { { "x-acting-user-authorization", $"Bearer {actingToken}" } };
+
+        RpcException? caught = null;
+        try
+        {
+            await RegisterMisnamedFixtureAsync(headers, ct);
+        }
+        catch (RpcException ex)
+        {
+            caught = ex;
+        }
+        catch (Exception ex)
+        {
+            return ReportCell.Fail(ServerSideCheckedLanguage, Name, $"fixture registration failed: {ex.GetType().Name}: {ex.Message}", []);
+        }
+
+        var assertions = JudgeServerSide(caught);
+        var failures = assertions.Where(a => !a.Passed).ToList();
+        return failures.Count == 0
+            ? ReportCell.Ok(ServerSideCheckedLanguage, Name, assertions)
+            : ReportCell.Fail(ServerSideCheckedLanguage, Name, string.Join(
+                Environment.NewLine + "    ",
+                failures.Select(f => $"{f.Name} — {f.Detail}")), assertions);
+    }
+
+    /// <summary>
+    /// The assertions themselves, as a pure function over what <c>RegisterSchema</c> produced —
+    /// unit-testable without a live stack, mirroring <c>NavPropertyRejectedScenario.Judge</c>.
+    /// </summary>
+    internal static IReadOnlyList<Assertion> JudgeServerSide(RpcException? caught)
+    {
+        var assertions = new List<Assertion>
+        {
+            Assertion.From(
+                "register: the server rejects a misnamed foreign key at registration",
+                caught is not null,
+                caught is null ? "the server registered the descriptor" : $"{caught.StatusCode}: {caught.Status.Detail}",
+                Requirements.RegForeignKeyNamingEnforced),
+        };
+
+        if (caught is not null)
+        {
+            assertions.Add(Assertion.From(
+                "register: rejected with InvalidArgument",
+                caught.StatusCode == StatusCode.InvalidArgument,
+                $"actual={caught.StatusCode}"));
+
+            var message = caught.Status.Detail;
+            assertions.Add(Assertion.From(
+                $"register: the error names the actual, misnamed foreign key ('{ServerSideActualForeignKeyName}')",
+                Normalize(message).Contains(ActualMemberName),
+                $"error='{message}'"));
+            assertions.Add(Assertion.From(
+                $"register: the error names the required foreign-key name ('{ServerSideRelatedTypeName}Id')",
+                Normalize(message).Contains(RequiredForeignKeyName),
+                $"error='{message}'"));
+        }
+
+        return assertions;
+    }
+
+    private async Task RegisterMisnamedFixtureAsync(Metadata headers, CancellationToken ct)
+    {
+        var descriptor = new TypeDescriptor
+        {
+            TypeName = ServerSideTypeName,
+            TenantField = "TenantId",
+            Properties =
+            {
+                new PropertyDescriptor { Name = "Id", ClrType = ClrType.ClrGuid, IsKey = true },
+                new PropertyDescriptor { Name = "TenantId", ClrType = ClrType.ClrString, IsNullable = false },
+                new PropertyDescriptor { Name = ServerSideActualForeignKeyName, ClrType = ClrType.ClrGuid, IsNullable = true },
+            },
+            Relations =
+            {
+                new RelationDescriptor
+                {
+                    PropertyName = "Author",
+                    Kind = RelationKind.ManyToOne,
+                    RelatedType = ServerSideRelatedTypeName,
+                    ForeignKey = ServerSideActualForeignKeyName,
+                },
+            },
+        };
+
+        await mapping.RegisterSchemaAsync(
+            new SchemaRequest { RootType = descriptor, TraceId = string.Empty },
+            headers, cancellationToken: ct);
+    }
 
     internal static ReportCell Judge(string language, PhaseDocument document)
     {
