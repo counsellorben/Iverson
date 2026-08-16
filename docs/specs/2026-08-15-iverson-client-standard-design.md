@@ -94,8 +94,8 @@ A classification, not a tier. Every requirement is a MUST.
 
 ### Entry format
 
-ID, kind, a one-sentence normative statement, a rationale naming the spec or defect that produced
-it, and the conformance evidence — the scenario and assertion that discharge it.
+ID, status, kind, a one-sentence normative statement, a rationale naming the spec or defect that
+produced it, and the conformance evidence — the scenario and assertion that discharge it.
 
 Provenance is a discipline, not decoration: a requirement with no incident or spec behind it is
 usually someone's preference wearing normative clothes.
@@ -191,18 +191,18 @@ more cross-client defects than the rest combined: the `PropertyName`/`ForeignKey
 `"Ids"` strip gap, Go serializing slices as `null`, one-to-many reverse resolution breaking in three
 clients. Machinery that survives `REL` will survive the easier axes.
 
-| ID | Kind | Statement |
-|---|---|---|
-| `IVC-REL-001` | Behaviour | A client synthesizes a foreign-key property for `many_to_one`, `one_to_one` and `many_to_many`, and none for `one_to_many` |
-| `IVC-REL-002` | Behaviour | A synthesized foreign-key property is named `{RelatedTypeName}Id` |
-| `IVC-REL-003` | Behaviour | A client derives a navigation-property name distinct from the relation's foreign-key name, for every relation kind |
-| `IVC-REL-004` | Behaviour | `isArray` is set on the foreign-key property for `many_to_many` and for no other kind |
-| `IVC-REL-005` | Behaviour | Write payloads carry foreign-key values only; navigation properties are never sent |
-| `IVC-REL-006` | Behaviour | A foreign-key value is readable at every depth, including after hydration |
-| `IVC-REL-007` | Behaviour | Multi-valued foreign keys are sent as a list, never a delimited string |
-| `IVC-REL-008` | Behaviour | `one_to_many` resolves by reverse foreign-key lookup on the related type |
-| `IVC-REL-009` | Capability | A depth-resolved read is reachable through the public API |
-| `IVC-REL-010` | Behaviour | Foreign-key values are well-formed UUIDs, and foreign-key columns are typed `UUID` or `UUID[]` |
+| ID | Status | Kind | Statement |
+|---|---|---|---|
+| `IVC-REL-001` | Active | Behaviour | A client synthesizes a foreign-key property for `many_to_one`, `one_to_one` and `many_to_many`, and none for `one_to_many` |
+| `IVC-REL-002` | Active | Behaviour | A synthesized foreign-key property is named `{RelatedTypeName}Id` |
+| `IVC-REL-003` | Active | Behaviour | A client derives a navigation-property name distinct from the relation's foreign-key name, for every relation kind |
+| `IVC-REL-004` | Active | Behaviour | `isArray` is set on the foreign-key property for `many_to_many` and for no other kind |
+| `IVC-REL-005` | Active | Behaviour | Write payloads carry foreign-key values only; navigation properties are never sent |
+| `IVC-REL-006` | Active | Behaviour | A foreign-key value is readable at every depth, including after hydration |
+| `IVC-REL-007` | Active | Behaviour | Multi-valued foreign keys are sent as a list, never a delimited string |
+| `IVC-REL-008` | Active | Behaviour | `one_to_many` resolves by reverse foreign-key lookup on the related type |
+| `IVC-REL-009` | Active | Capability | A depth-resolved read is reachable through the public API |
+| `IVC-REL-010` | Active | Behaviour | Foreign-key values are well-formed UUIDs, and foreign-key columns are typed `UUID` or `UUID[]` |
 
 Every one traces to a defect that shipped.
 
