@@ -130,6 +130,12 @@ public sealed class NamingRejectedScenario(
                     $"fixture registration failed: {ex.GetType().Name}: {ex.Message}", []));
                 serverCheckAssertions = null;
                 mergeServerCheckIntoDriverCell = false;
+                // The harness precondition for this language already failed and its one cell is
+                // in the report above — do not also run its driver, which would otherwise add a
+                // SECOND cell for the same (language, scenario) pair. Report.RenderText grids by
+                // FirstOrDefault, so a second cell here would silently never render, breaking the
+                // one-cell-per-language-per-scenario invariant without ever failing loudly.
+                driverLanguages.RemoveAll(l => string.Equals(l, serverCheckLanguage, StringComparison.OrdinalIgnoreCase));
             }
 
             if (serverCheckAssertions is not null && !mergeServerCheckIntoDriverCell)
@@ -141,34 +147,49 @@ public sealed class NamingRejectedScenario(
         if (driverLanguages.Count == 0)
             return cells;
 
+        // Whether `language` is the one driver column IVC-REG-003's (already-computed) assertions
+        // must be attached to. Only meaningful once serverCheckAssertions is non-null, which is
+        // exactly the condition below that guards every use of this.
+        bool CarriesServerCheck(string language) =>
+            mergeServerCheckIntoDriverCell &&
+            serverCheckAssertions is not null &&
+            string.Equals(language, serverCheckLanguage, StringComparison.OrdinalIgnoreCase);
+
         var reported = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var outcome in await runner.RunPhaseAsync(Phase.Register, driverLanguages, context, ct))
         {
             reported.Add(outcome.Language);
+            var carriesServerCheck = CarriesServerCheck(outcome.Language);
+
             switch (outcome)
             {
                 case DriverPhaseOutcome.Success success:
                     var clientAssertions = JudgeClientSideAssertions(success.Document);
                     if (clientAssertions is null)
                     {
-                        cells.Add(ReportCell.Fail(outcome.Language, Name, "the driver reported no 'register' step", []));
+                        cells.Add(carriesServerCheck
+                            ? MergeServerCheckIntoDriverFailure(outcome.Language,
+                                "the driver reported no 'register' step", serverCheckAssertions!)
+                            : ReportCell.Fail(outcome.Language, Name, "the driver reported no 'register' step", []));
                         break;
                     }
 
-                    var mergedAssertions =
-                        mergeServerCheckIntoDriverCell &&
-                        string.Equals(outcome.Language, serverCheckLanguage, StringComparison.OrdinalIgnoreCase) &&
-                        serverCheckAssertions is not null
-                            ? clientAssertions.Concat(serverCheckAssertions).ToList()
-                            : clientAssertions;
+                    var mergedAssertions = carriesServerCheck
+                        ? clientAssertions.Concat(serverCheckAssertions!).ToList()
+                        : clientAssertions;
                     cells.Add(BuildCell(outcome.Language, mergedAssertions));
                     break;
                 case DriverPhaseOutcome.Skipped skipped:
-                    cells.Add(ReportCell.Skip(outcome.Language, Name, skipped.Reason));
+                    cells.Add(carriesServerCheck
+                        ? MergeServerCheckIntoDriverSkip(outcome.Language, skipped.Reason, serverCheckAssertions!)
+                        : ReportCell.Skip(outcome.Language, Name, skipped.Reason));
                     break;
                 case DriverPhaseOutcome.Broken broken:
-                    cells.Add(ReportCell.Fail(outcome.Language, Name,
-                        $"driver broke during the register phase (exit {broken.ExitCode}): {Truncate(broken.Stderr)}", []));
+                    var brokenDetail =
+                        $"driver broke during the register phase (exit {broken.ExitCode}): {Truncate(broken.Stderr)}";
+                    cells.Add(carriesServerCheck
+                        ? MergeServerCheckIntoDriverFailure(outcome.Language, brokenDetail, serverCheckAssertions!)
+                        : ReportCell.Fail(outcome.Language, Name, brokenDetail, []));
                     break;
             }
         }
@@ -178,23 +199,70 @@ public sealed class NamingRejectedScenario(
         // cell for that language at all.
         foreach (var language in driverLanguages.Where(l => !reported.Contains(l)))
         {
-            cells.Add(ReportCell.Fail(language, Name,
-                $"'{language}' is not a recognized conformance driver language", []));
+            var unrecognizedDetail = $"'{language}' is not a recognized conformance driver language";
+            cells.Add(CarriesServerCheck(language)
+                ? MergeServerCheckIntoDriverFailure(language, unrecognizedDetail, serverCheckAssertions!)
+                : ReportCell.Fail(language, Name, unrecognizedDetail, []));
         }
 
         return cells;
     }
 
     /// <summary>
-    /// Skip text for Java, the only client this scenario now genuinely cannot check at all — its
-    /// registrar derives the FK name with no override, so the misnaming this scenario provokes
-    /// cannot be expressed in its declaration style, client-side or server-side.
+    /// Merges IVC-REG-003's (already-decided) server-side outcome into a driver-side FAILURE
+    /// (missing register step / broken driver / unrecognized language). The rule: a driver
+    /// failure never gets masked by a passing server-side check — the cell stays Fail either way
+    /// — but when the server-side check ITSELF failed, that failure's own detail replaces
+    /// <paramref name="driverDetail"/> as the headline reason (via <see cref="BuildCell"/>) so a
+    /// real server-side regression is never reported as merely "the driver broke". Either way the
+    /// server-side assertions are always attached, so REG-003 is exercised on this path
+    /// regardless of which failure produced the red cell.
+    /// </summary>
+    internal static ReportCell MergeServerCheckIntoDriverFailure(
+        string language, string driverDetail, IReadOnlyList<Assertion> serverCheckAssertions)
+    {
+        if (serverCheckAssertions.Any(a => !a.Passed))
+            return BuildCell(language, serverCheckAssertions);
+
+        return ReportCell.Fail(language, Name, driverDetail, serverCheckAssertions);
+    }
+
+    /// <summary>
+    /// Merges IVC-REG-003's (already-decided) server-side outcome into a driver-side SKIP. The
+    /// rule: a driver skip must never turn a real server-side FAILURE green — if the server-side
+    /// check itself failed, this renders as Fail (via <see cref="BuildCell"/>), overriding the
+    /// skip outright, since a skipped driver carries no outcome of its own to protect. Only when
+    /// the server-side check passed does the driver's own Skip stand, with the passing assertions
+    /// attached purely so REG-003 is recorded as exercised.
+    /// </summary>
+    private static ReportCell MergeServerCheckIntoDriverSkip(
+        string language, string skipReason, IReadOnlyList<Assertion> serverCheckAssertions)
+    {
+        if (serverCheckAssertions.Any(a => !a.Passed))
+            return BuildCell(language, serverCheckAssertions);
+
+        return ReportCell.Skip(language, Name, skipReason, serverCheckAssertions);
+    }
+
+    /// <summary>
+    /// Skip text for a language reaching this scenario's "no check at all" branch — either Java
+    /// (when it was requested but dotnet already claimed the server-side check) or a language this
+    /// harness does not recognize at all (e.g. <c>--languages dotnet,rust</c>). The two have
+    /// different, non-interchangeable reasons: Java's is a real limitation of its declaration
+    /// style (checked client-side AND server-side, and it can express neither); an unrecognized
+    /// language simply is not a conformance driver this harness knows how to run. Returning Java's
+    /// explanation for both — as this once did — would render Java's registrar-specific reasoning
+    /// under a language it says nothing about.
     /// </summary>
     internal static string SkipReason(string language) =>
-        "this client declares a many_to_one relation's foreign key as a separate field from " +
-        "the navigation property, and its registrar (SchemaRegistrar.inferForeignKey) always " +
-        "derives the FK name as \"{RelatedTypeName}Id\" with no override, so the misnaming " +
-        "this scenario provokes cannot be expressed in this client's declaration style";
+        string.Equals(language, "java", StringComparison.OrdinalIgnoreCase)
+            ? "this client declares a many_to_one relation's foreign key as a separate field from " +
+              "the navigation property, and its registrar (SchemaRegistrar.inferForeignKey) always " +
+              "derives the FK name as \"{RelatedTypeName}Id\" with no override, so the misnaming " +
+              "this scenario provokes cannot be expressed in this client's declaration style"
+            : $"'{language}' is not a recognized conformance driver language for naming-rejected " +
+              "(only go, python and typescript carry the client-side check; dotnet and java are " +
+              "handled separately)";
 
     /// <summary>
     /// The orchestrator-side, server-only check that discharges <c>IVC-REG-003</c>. Hand-builds

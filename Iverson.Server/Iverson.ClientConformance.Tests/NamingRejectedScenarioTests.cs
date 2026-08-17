@@ -94,6 +94,12 @@ public class NamingRejectedScenarioTests
 
         var rustCell = cells.Single(c => c.Language == "rust");
         rustCell.Status.Should().Be(CellStatus.Skip);
+        // Minor 3: round 1's replacement of the original java-only test dropped the assertion
+        // pinning SKIP REASON TEXT, which is exactly what let SkipReason ignoring its `language`
+        // parameter (always returning Java's registrar-specific text) regress unnoticed. "rust"
+        // must get a reason about itself, not Java's separate-field-from-nav-property text.
+        rustCell.Reason.Should().NotContain("separate field from");
+        rustCell.Reason.Should().Contain("not a recognized conformance driver language");
     }
 
     [Fact]
@@ -113,6 +119,174 @@ public class NamingRejectedScenarioTests
         cells.Should().ContainSingle();
         cells[0].Language.Should().Be("rust");
         cells[0].Status.Should().Be(CellStatus.Ok);
+    }
+
+    [Fact]
+    public async Task SkipReason_Java_NamesTheRegistrarLimitation()
+    {
+        NamingRejectedScenario.SkipReason("java").Should().Contain("separate field from");
+    }
+
+    [Fact]
+    public async Task SkipReason_UnrecognizedLanguage_DoesNotNameJavasLimitation()
+    {
+        // Minor 3: SkipReason("rust") once returned Java's registrar-specific explanation
+        // regardless of the language asked about.
+        var reason = NamingRejectedScenario.SkipReason("rust");
+
+        reason.Should().Contain("rust");
+        reason.Should().NotContain("separate field from");
+        reason.Should().NotContain("SchemaRegistrar.inferForeignKey");
+    }
+
+    // ── Important (round 2): IVC-REG-003's server-side assertions must be attached — cited — on
+    // EVERY driver-outcome path for the language carrying the server-side check, not merely the
+    // Success-with-a-register-step path. Round 1 attached them only inside that one branch,
+    // silently dropping the citation on the Success-with-no-register-step, Skipped, Broken and
+    // unrecognized-language paths — the Skipped case is the dangerous one, since it lets a FULLY
+    // GREEN run leave REG-003 completely unexercised.
+
+    [Fact]
+    public async Task RunAsync_ServerCheckLanguageDriverSkipped_ServerCheckPasses_CellIsSkip_ButCitesRegForeignKeyNaming()
+    {
+        // typescript's build step (npx tsc) is asked to run in a repo root that has no
+        // Iverson.Clients/TypeScript directory at all, so ProcessStartInfo fails to start it
+        // (ENOENT on the working directory) — DriverRunner reports this the same way it reports
+        // an absent toolchain: Skipped. Deterministic, no live stack or fake driver needed. Only
+        // "typescript" is requested, so ServerCheckLanguage's fallback lands the server-side check
+        // on typescript itself (dotnet/java/go/python were not requested).
+        var client = new FakeMappingClient
+        {
+            ThrowsFor = typeName => typeName == "S2NamingDotNetTags" ? ManyToManyRejection() : ManyToOneRejection(),
+        };
+        var scenario = new NamingRejectedScenario(new DriverRunner(repoRoot: "/tmp"), client);
+
+        var cells = await scenario.RunAsync(["typescript"], Context(), actingToken: "acting-token");
+
+        cells.Should().ContainSingle();
+        var cell = cells[0];
+        cell.Language.Should().Be("typescript");
+        cell.Status.Should().Be(CellStatus.Skip);
+        cell.Assertions.Should().Contain(a => a.RequirementId == Requirements.RegForeignKeyNamingEnforced);
+        cell.Assertions.Should().OnlyContain(a => a.Passed);
+    }
+
+    [Fact]
+    public async Task RunAsync_ServerCheckLanguageDriverSkipped_ServerCheckFails_CellIsFail_NotMaskedBySkip()
+    {
+        // The decisive mutation for the Important finding: if the fix regressed back to "only
+        // attach serverCheckAssertions inside the Success branch", this test — where the server
+        // itself accepted the misnamed fixtures (a real IVC-REG-003 regression) AND the driver
+        // never ran (its toolchain directory is absent) — would still render as a fully green
+        // Skip, exactly the failure mode the review raised.
+        var client = new FakeMappingClient(); // no throws -> server wrongly ACCEPTS the misnaming
+        var scenario = new NamingRejectedScenario(new DriverRunner(repoRoot: "/tmp"), client);
+
+        var cells = await scenario.RunAsync(["typescript"], Context(), actingToken: "acting-token");
+
+        cells.Should().ContainSingle();
+        var cell = cells[0];
+        cell.Language.Should().Be("typescript");
+        cell.Status.Should().Be(CellStatus.Fail);
+        cell.Assertions.Should().Contain(a => a.RequirementId == Requirements.RegForeignKeyNamingEnforced);
+        cell.Assertions.Should().Contain(a => !a.Passed);
+    }
+
+    [Fact]
+    public async Task RunAsync_ServerCheckLanguageDriverReportedNoRegisterStep_StillCitesRegForeignKeyNaming()
+    {
+        // python's driver.py is a real (fake, fixture-authored) script that always writes a phase
+        // document with a step named something other than "register" — exercising the
+        // Success-with-no-register-step branch (JudgeClientSideAssertions returns null) end to
+        // end, exactly as a live driver's malformed/incomplete document would.
+        using var fixture = FakeDriverFixture.WithSteps("python", ("not_register", true));
+        var client = new FakeMappingClient
+        {
+            ThrowsFor = typeName => typeName == "S2NamingDotNetTags" ? ManyToManyRejection() : ManyToOneRejection(),
+        };
+        var scenario = new NamingRejectedScenario(new DriverRunner(repoRoot: fixture.RepoRoot), client);
+
+        var cells = await scenario.RunAsync(["python"], Context(), actingToken: "acting-token");
+
+        cells.Should().ContainSingle();
+        var cell = cells[0];
+        cell.Language.Should().Be("python");
+        cell.Status.Should().Be(CellStatus.Fail);
+        cell.Detail.Should().Contain("no 'register' step");
+        cell.Assertions.Should().Contain(a => a.RequirementId == Requirements.RegForeignKeyNamingEnforced);
+        cell.Assertions.Should().OnlyContain(a => a.Passed);
+    }
+
+    [Fact]
+    public async Task RunAsync_ServerCheckLanguageDriverBroke_StillCitesRegForeignKeyNaming()
+    {
+        // python's driver.py fixture exits non-zero — the driver-broke branch — while the
+        // server-side check itself passes; the cell must still be Fail (the driver's own breakage
+        // is never masked) AND must still cite IVC-REG-003.
+        using var fixture = FakeDriverFixture.ThatExits("python", exitCode: 1);
+        var client = new FakeMappingClient
+        {
+            ThrowsFor = typeName => typeName == "S2NamingDotNetTags" ? ManyToManyRejection() : ManyToOneRejection(),
+        };
+        var scenario = new NamingRejectedScenario(new DriverRunner(repoRoot: fixture.RepoRoot), client);
+
+        var cells = await scenario.RunAsync(["python"], Context(), actingToken: "acting-token");
+
+        cells.Should().ContainSingle();
+        var cell = cells[0];
+        cell.Language.Should().Be("python");
+        cell.Status.Should().Be(CellStatus.Fail);
+        cell.Detail.Should().Contain("driver broke during the register phase");
+        cell.Assertions.Should().Contain(a => a.RequirementId == Requirements.RegForeignKeyNamingEnforced);
+        cell.Assertions.Should().OnlyContain(a => a.Passed);
+    }
+
+    [Fact]
+    public async Task RunAsync_ServerSideCheckThrowsForADriverLanguage_ProducesExactlyOneCell()
+    {
+        // Minor 1: when RunServerSideCheckAsync throws while serverCheckLanguage is one of
+        // go/python/typescript, round 1 added a Fail cell for the harness-precondition failure
+        // AND then still ran that same language's own driver phase, which added a SECOND cell for
+        // the same (language, scenario) pair — Report.RenderText grids by FirstOrDefault, so the
+        // second cell would silently never render. Only "typescript" is requested, with repoRoot
+        // "/tmp" (no Iverson.Clients/TypeScript directory), so if the driver DID still run here it
+        // would report Skipped and add that extra cell.
+        var client = new FakeMappingClient { ThrowsFor = _ => new InvalidOperationException("boom") };
+        var scenario = new NamingRejectedScenario(new DriverRunner(repoRoot: "/tmp"), client);
+
+        var cells = await scenario.RunAsync(["typescript"], Context(), actingToken: "acting-token");
+
+        cells.Should().ContainSingle();
+        cells[0].Language.Should().Be("typescript");
+        cells[0].Status.Should().Be(CellStatus.Fail);
+        cells[0].Detail.Should().Contain("fixture registration failed");
+    }
+
+    [Fact]
+    public void MergeServerCheckIntoDriverFailure_UnrecognizedLanguagePath_StillCitesRegForeignKeyNaming()
+    {
+        // The fourth path the review named — RunAsync's own "driverLanguages.Where(l =>
+        // !reported.Contains(l))" guard — is, by construction, unreachable through the public
+        // RunAsync API today: driverLanguages is pre-filtered to exactly {go, python,
+        // typescript}, and DriverRunner's Drivers table always produces exactly one outcome (of
+        // any of the three shapes) for each of those three languages, so `reported` always ends
+        // up a superset of driverLanguages by the time that loop runs (mirrors
+        // CrudRoundtripScenario's identical defensive guard, which IS reachable there only
+        // because that scenario does not pre-filter). RunAsync wires that branch through the same
+        // MergeServerCheckIntoDriverFailure helper the Broken-path test above already drives
+        // end-to-end, so this test exercises that exact helper directly, standing in for the
+        // unreachable branch and pinning that the citation survives on that code path too.
+        var serverAssertions = NamingRejectedScenario.JudgeServerSide((RpcException)ManyToOneRejection())
+            .Concat(NamingRejectedScenario.JudgeServerSideManyToMany((RpcException)ManyToManyRejection()))
+            .ToList();
+
+        var cell = NamingRejectedScenario.MergeServerCheckIntoDriverFailure(
+            "go", "'go' is not a recognized conformance driver language", serverAssertions);
+
+        cell.Status.Should().Be(CellStatus.Fail);
+        cell.Detail.Should().Contain("not a recognized conformance driver language");
+        cell.Assertions.Should().Contain(a => a.RequirementId == Requirements.RegForeignKeyNamingEnforced);
+        cell.Assertions.Should().OnlyContain(a => a.Passed);
     }
 
     private static Exception ManyToOneRejection() => new RpcException(new Status(
@@ -356,5 +530,78 @@ public class NamingRejectedScenarioTests
 
         assertions.Single(a => a.Name.Contains("actual, misnamed")).Passed.Should().BeFalse();
         assertions.Single(a => a.Name.Contains("required foreign-key name")).Passed.Should().BeTrue();
+    }
+}
+
+/// <summary>
+/// A throwaway repo root containing exactly one real driver — python's, since it needs no build
+/// step (<c>DriverRunner</c>'s python <c>DriverSpec</c> has a null <c>BuildCommand</c>) — a
+/// standalone script this fixture authors, so the round-2 tests above can drive DriverRunner's
+/// real subprocess machinery (build resolution, exec, --out parsing) for the Success-with-no-
+/// register-step and Broken paths deterministically, without a live stack or the real Python
+/// client. Every other DriverSpec (dotnet/go/typescript/java) is left entirely absent from this
+/// tree on purpose: nothing in the naming-rejected scenario ever requests those languages in the
+/// same test that also uses this fixture.
+/// </summary>
+internal sealed class FakeDriverFixture : IDisposable
+{
+    public string RepoRoot { get; }
+
+    private FakeDriverFixture(string repoRoot) => RepoRoot = repoRoot;
+
+    /// <summary>A python driver that always exits 0 and writes a phase document whose steps are
+    /// exactly <paramref name="steps"/> — e.g. a document with no step named "register" at all,
+    /// to drive <c>NamingRejectedScenario</c>'s Success-with-no-register-step branch.</summary>
+    public static FakeDriverFixture WithSteps(string language, params (string Name, bool Ok)[] steps)
+    {
+        var stepsJson = string.Join(",", steps.Select(s =>
+            $$"""{"name": "{{s.Name}}", "ok": {{(s.Ok ? "True" : "False")}}}"""));
+        var script =
+            $$"""
+            import sys, json
+            args = sys.argv[1:]
+            out = args[args.index("--out") + 1]
+            doc = {"language": "{{language}}", "phase": "register", "steps": [{{stepsJson}}]}
+            with open(out, "w") as f:
+                json.dump(doc, f)
+            sys.exit(0)
+            """;
+        return Build(language, script);
+    }
+
+    /// <summary>A python driver that exits non-zero without writing an --out document at all —
+    /// DriverRunner's driver-broke path.</summary>
+    public static FakeDriverFixture ThatExits(string language, int exitCode)
+    {
+        var script =
+            $"""
+            import sys
+            sys.stderr.write("fake driver deliberately broke for the naming-rejected round-2 tests")
+            sys.exit({exitCode})
+            """;
+        return Build(language, script);
+    }
+
+    private static FakeDriverFixture Build(string language, string script)
+    {
+        var repoRoot = Path.Combine(Path.GetTempPath(), $"iverson-naming-rejected-fixture-{Guid.NewGuid():N}");
+        var driverDir = Path.Combine(repoRoot, "Iverson.Clients", "Python", "conformance");
+        Directory.CreateDirectory(driverDir);
+        File.WriteAllText(Path.Combine(driverDir, "driver.py"), script);
+        return new FakeDriverFixture(repoRoot);
+    }
+
+    public void Dispose()
+    {
+        try
+        {
+            if (Directory.Exists(RepoRoot))
+                Directory.Delete(RepoRoot, recursive: true);
+        }
+        catch (IOException)
+        {
+            // Best-effort cleanup only — leaving a stray temp directory behind is not worth
+            // failing an otherwise-passing test over.
+        }
     }
 }

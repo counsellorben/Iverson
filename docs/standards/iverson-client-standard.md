@@ -196,7 +196,7 @@ recorded rather than left as a silent gap:
   type again) on every conformance run, but no assertion cites a requirement ID against that
   behaviour. Reregistration's correctness is exercised as test-harness plumbing, not verified as a
   normative claim.
-- **Authorization rules at registration time.** `SchemaRegistrationOrchestrator.cs:140-146`
+- **Authorization rules at registration time.** `SchemaRegistrationOrchestrator.cs:54,208`
   accepts and stores `AuthorizationRules` as part of the descriptor, but no requirement in this
   document constrains what the server does with them at registration time.
 - **Schema drift.** A `SchemaDriftException` (thrown by `IRecordStoreSchemaManager.ApplySchemaAsync`
