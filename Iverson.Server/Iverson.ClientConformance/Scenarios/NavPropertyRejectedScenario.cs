@@ -47,12 +47,42 @@ public sealed class NavPropertyRejectedScenario(
     private const string ForeignKeyName = "S3NavAuthorId";
     private const string RelatedTypeName = "S3NavAuthor";
 
-    // The second, self-contained fixture for the IVC-REG-002 registration-time collision check —
-    // PropertyName equals ForeignKey (RelationCollisionCheck.IsCollision), which must never reach
-    // a stored schema at all, let alone the write path.
-    private const string CollidingTypeName = "S3NavCollide";
-    private const string CollidingForeignKeyName = "S3NavCollideAuthorId";
-    private const string CollidingRelatedTypeName = "S3NavCollideAuthor";
+    /// <summary>
+    /// A self-contained collision fixture: <c>PropertyName</c> equals <c>ForeignKey</c>
+    /// (<c>RelationCollisionCheck.IsCollision</c>), which must never reach a stored schema at all,
+    /// let alone the write path. IVC-REG-002 binds "for every relation kind", so one fixture per
+    /// <see cref="RelationKind"/> is required — a single <c>ManyToOne</c> fixture only proves the
+    /// collision check fires for one of four kinds, and <c>OneToMany</c> in particular is the kind
+    /// the IVC-REG-003 ruling reversed (exempted from the naming check), making it the kind most
+    /// likely to regress silently back into an exemption from the (unfiltered) collision loop too.
+    /// <c>RequiresForeignKeyProperty</c>/<c>ForeignKeyIsArray</c> exist because the naming/typing
+    /// checks earlier in <c>SchemaRegistrationOrchestrator.RegisterAsync</c>'s per-relation loop
+    /// are filtered to exclude <c>OneToMany</c> (its foreign key names a column on the RELATED
+    /// type's row, not a property declared here) — a <c>OneToMany</c> fixture needs no matching
+    /// property at all, where the other three kinds do, and must also be named
+    /// <c>{RelatedTypeName}Id</c>/<c>Ids</c> so that the collision loop, not the earlier naming
+    /// check, is what actually rejects it.
+    /// </summary>
+    internal sealed record CollisionFixture(
+        string Kind,
+        string TypeName,
+        string ForeignKeyName,
+        string RelatedTypeName,
+        RelationKind RelationKind,
+        bool RequiresForeignKeyProperty,
+        bool ForeignKeyIsArray);
+
+    internal static readonly IReadOnlyList<CollisionFixture> CollisionFixtures =
+    [
+        new("many_to_one", "S3NavCollide", "S3NavCollideAuthorId", "S3NavCollideAuthor",
+            RelationKind.ManyToOne, RequiresForeignKeyProperty: true, ForeignKeyIsArray: false),
+        new("one_to_one", "S3NavCollideOneToOne", "S3NavCollideOneToOneProfileId", "S3NavCollideOneToOneProfile",
+            RelationKind.OneToOne, RequiresForeignKeyProperty: true, ForeignKeyIsArray: false),
+        new("many_to_many", "S3NavCollideMany", "S3NavCollideMTagIds", "S3NavCollideMTag",
+            RelationKind.ManyToMany, RequiresForeignKeyProperty: true, ForeignKeyIsArray: true),
+        new("one_to_many", "S3NavCollideOneToMany", "S3NavCollideOneToManyParentId", "S3NavCollideOneToManyChild",
+            RelationKind.OneToMany, RequiresForeignKeyProperty: false, ForeignKeyIsArray: false),
+    ];
 
     /// <summary>
     /// Fixed priority order for picking which single requested language carries this scenario's
@@ -101,18 +131,24 @@ public sealed class NavPropertyRejectedScenario(
         ReportCell canonicalCell;
         try
         {
-            // IVC-REG-002 first: attempt to REGISTER a second, self-contained fixture whose
-            // PropertyName equals its ForeignKey (RelationCollisionCheck.IsCollision), and assert
-            // the server rejects it at registration — a distinct observation from the
+            // IVC-REG-002 first: attempt to REGISTER one self-contained fixture PER RELATION KIND,
+            // each with PropertyName equal to ForeignKey (RelationCollisionCheck.IsCollision), and
+            // assert the server rejects every one at registration — distinct observations from the
             // write-payload check below, which exercises a descriptor that never collided.
-            RpcException? collisionCaught = null;
-            try
+            var collisionResults = new List<(CollisionFixture Fixture, RpcException? Caught)>();
+            foreach (var fixture in CollisionFixtures)
             {
-                await RegisterCollidingFixtureAsync(headers, ct);
-            }
-            catch (RpcException ex)
-            {
-                collisionCaught = ex;
+                RpcException? fixtureCaught = null;
+                try
+                {
+                    await RegisterCollisionFixtureAsync(fixture, headers, ct);
+                }
+                catch (RpcException ex)
+                {
+                    fixtureCaught = ex;
+                }
+
+                collisionResults.Add((fixture, fixtureCaught));
             }
 
             await RegisterFixtureAsync(headers, ct);
@@ -131,7 +167,7 @@ public sealed class NavPropertyRejectedScenario(
                 caught = ex;
             }
 
-            var assertions = JudgeCollision(collisionCaught).Concat(Judge(caught)).ToList();
+            var assertions = JudgeCollision(collisionResults).Concat(Judge(caught)).ToList();
             var failures = assertions.Where(a => !a.Passed).ToList();
             canonicalCell = failures.Count == 0
                 ? ReportCell.Ok(canonical, Name, assertions)
@@ -207,53 +243,83 @@ public sealed class NavPropertyRejectedScenario(
     }
 
     /// <summary>
-    /// The assertion discharging <c>IVC-REG-002</c>: registration of a descriptor whose
-    /// <c>PropertyName</c> equals its <c>ForeignKey</c> must be rejected with
-    /// <c>InvalidArgument</c>, before it ever reaches a stored schema.
+    /// The assertions discharging <c>IVC-REG-002</c>, one set per <see cref="CollisionFixture"/>:
+    /// registration of a descriptor whose <c>PropertyName</c> equals its <c>ForeignKey</c> must be
+    /// rejected with <c>InvalidArgument</c>, before it ever reaches a stored schema — for every
+    /// relation kind, not merely the one this scenario originally exercised. Beyond "some
+    /// rejection happened", each result's message is asserted against the collision check's own
+    /// wording (<c>"must be distinct from the foreign key"</c>, quoting the colliding name) — a
+    /// bare <c>caught is not null</c> would equally be satisfied by the naming check, the
+    /// FK-is-declared check, or the UUID-type check, all of which run BEFORE the collision loop
+    /// and would reject this same fixture for an entirely different (wrong) reason if the
+    /// collision check itself ever regressed.
     /// </summary>
-    internal static IReadOnlyList<Assertion> JudgeCollision(RpcException? caught)
+    internal static IReadOnlyList<Assertion> JudgeCollision(
+        IReadOnlyList<(CollisionFixture Fixture, RpcException? Caught)> results)
     {
-        var assertions = new List<Assertion>
-        {
-            Assertion.From(
-                "register: the server rejects a PropertyName/ForeignKey collision at registration",
-                caught is not null,
-                caught is null ? "the server registered the colliding descriptor" : $"{caught.StatusCode}: {caught.Status.Detail}",
-                Requirements.RegNavPropertyCollisionEnforced),
-        };
+        var assertions = new List<Assertion>();
 
-        if (caught is not null)
+        foreach (var (fixture, caught) in results)
         {
             assertions.Add(Assertion.From(
-                "register (collision): rejected with InvalidArgument",
+                $"register: the server rejects a PropertyName/ForeignKey collision at registration ({fixture.Kind})",
+                caught is not null,
+                caught is null ? "the server registered the colliding descriptor" : $"{caught.StatusCode}: {caught.Status.Detail}",
+                Requirements.RegNavPropertyCollisionEnforced));
+
+            if (caught is null)
+                continue;
+
+            assertions.Add(Assertion.From(
+                $"register (collision, {fixture.Kind}): rejected with InvalidArgument",
                 caught.StatusCode == StatusCode.InvalidArgument,
                 $"actual={caught.StatusCode}"));
+
+            var message = caught.Status.Detail;
+            assertions.Add(Assertion.From(
+                $"register (collision, {fixture.Kind}): the error identifies the collision, naming " +
+                $"the relation ('{fixture.ForeignKeyName}') and stating it must be distinct from the foreign key",
+                message.Contains($"'{fixture.ForeignKeyName}'", StringComparison.Ordinal) &&
+                message.Contains("must be distinct from the foreign key", StringComparison.OrdinalIgnoreCase),
+                $"error='{message}'"));
         }
 
         return assertions;
     }
 
-    private async Task RegisterCollidingFixtureAsync(Metadata headers, CancellationToken ct)
+    private async Task RegisterCollisionFixtureAsync(CollisionFixture fixture, Metadata headers, CancellationToken ct)
     {
+        var properties = new List<PropertyDescriptor>
+        {
+            new() { Name = "Id", ClrType = ClrType.ClrGuid, IsKey = true },
+            new() { Name = "TenantId", ClrType = ClrType.ClrString, IsNullable = false },
+        };
+
+        if (fixture.RequiresForeignKeyProperty)
+        {
+            properties.Add(new PropertyDescriptor
+            {
+                Name = fixture.ForeignKeyName,
+                ClrType = ClrType.ClrGuid,
+                IsArray = fixture.ForeignKeyIsArray,
+                IsNullable = true,
+            });
+        }
+
         var descriptor = new TypeDescriptor
         {
-            TypeName = CollidingTypeName,
+            TypeName = fixture.TypeName,
             TenantField = "TenantId",
-            Properties =
-            {
-                new PropertyDescriptor { Name = "Id", ClrType = ClrType.ClrGuid, IsKey = true },
-                new PropertyDescriptor { Name = "TenantId", ClrType = ClrType.ClrString, IsNullable = false },
-                new PropertyDescriptor { Name = CollidingForeignKeyName, ClrType = ClrType.ClrGuid, IsNullable = true },
-            },
+            Properties = { properties },
             Relations =
             {
                 new RelationDescriptor
                 {
                     // The collision itself: PropertyName IS ForeignKey.
-                    PropertyName = CollidingForeignKeyName,
-                    Kind = RelationKind.ManyToOne,
-                    RelatedType = CollidingRelatedTypeName,
-                    ForeignKey = CollidingForeignKeyName,
+                    PropertyName = fixture.ForeignKeyName,
+                    Kind = fixture.RelationKind,
+                    RelatedType = fixture.RelatedTypeName,
+                    ForeignKey = fixture.ForeignKeyName,
                 },
             },
         };

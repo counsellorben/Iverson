@@ -165,24 +165,13 @@ public static class Requirements
 
     // ── REG — Registration ──────────────────────────────────────────────────────────────────
 
-    /// <summary>
-    /// The server rejects registration of a relation whose foreign key is not named
-    /// <c>{RelatedTypeName}Id</c> (or <c>{RelatedTypeName}Ids</c> for <c>many_to_many</c>).
-    /// Distinct from <c>IVC-REL-002</c>, which is the CLIENT-side derivation obligation — this is
-    /// the server enforcement boundary that makes the naming rule hold even for a client (or a
-    /// hand-built payload) that never derives the name correctly in the first place, per ruling 5
-    /// ("the server is the enforcement boundary"). Discharged by
-    /// <c>NamingRejectedScenario.JudgeServerSide</c>, which hand-builds a descriptor carrying a
-    /// misnamed foreign key and posts it directly to <c>RegisterSchema</c> over gRPC — the ONE
-    /// orchestrator-side observation this scenario now carries (in the <c>dotnet</c> column,
-    /// since .NET's <c>[ManyToOne(typeof(Author), "WriterId")]</c> is the one client-declaration
-    /// style that can express a misnamed foreign key at all; Go/Python/TypeScript catch it
-    /// client-side per <c>IVC-REL-002</c>'s recommended diagnostic, and Java's registrar has no
-    /// override at all, so neither reaches this check) — asserting
-    /// <c>SchemaRegistrationOrchestrator.cs</c>'s naming check (~line 110-122) rejects it with
-    /// <c>InvalidArgument</c>, naming both the actual and required foreign-key names.
-    /// </summary>
-    public const string RegForeignKeyNamingEnforced = "IVC-REG-001";
+    // IVC-REG-001 is Retired — read literally (unqualified over every relation kind), its
+    // statement was factually wrong: SchemaRegistrationOrchestrator.cs's naming loop deliberately
+    // excludes one_to_many, whose foreign key is named after THIS type, not the related type, and
+    // lives on the related type's own row. A conforming server that correctly accepts a
+    // one_to_many descriptor would have read as non-conformant against IVC-REG-001's literal text.
+    // Superseded by IVC-REG-003, which states the same rule scoped to the three kinds it actually
+    // governs. It takes no const.
 
     /// <summary>
     /// The server rejects registration of a relation whose navigation-property name equals its
@@ -196,9 +185,41 @@ public static class Requirements
     /// second, self-contained fixture whose <c>PropertyName</c> equals its <c>ForeignKey</c>, and
     /// asserts that <c>RegisterSchema</c> itself rejects it with <c>InvalidArgument</c> — a
     /// distinct observation from the write-payload check, which exercises a descriptor that was
-    /// never colliding in the first place.
+    /// never colliding in the first place. "For every relation kind" is exercised across all four
+    /// kinds (<c>ManyToOne</c>, <c>OneToOne</c>, <c>ManyToMany</c>, <c>OneToMany</c>) by
+    /// <c>NavPropertyRejectedScenario.CollisionFixtures</c> — <c>OneToMany</c> is the kind the
+    /// <c>IVC-REG-003</c> ruling reversed (exempted from the naming check), so it is the kind most
+    /// likely to regress silently if the collision check were ever re-narrowed to match, and a
+    /// missing fixture for it would leave this cell green through such a regression.
     /// </summary>
     public const string RegNavPropertyCollisionEnforced = "IVC-REG-002";
+
+    /// <summary>
+    /// The server rejects registration of a <c>many_to_one</c>, <c>one_to_one</c> or
+    /// <c>many_to_many</c> relation whose foreign key is not named <c>{RelatedTypeName}Id</c> (or
+    /// <c>{RelatedTypeName}Ids</c> for <c>many_to_many</c>). Supersedes the retired
+    /// <c>IVC-REG-001</c>, scoped — like its sibling <c>IVC-REL-001</c> — to the three kinds the
+    /// naming rule actually governs; <c>one_to_many</c> is excluded because its foreign key is
+    /// named after THIS type and lives on the related type's own row, and
+    /// <c>SchemaRegistrationOrchestrator.cs</c>'s naming loop (~line 83) deliberately excludes it.
+    /// Distinct from <c>IVC-REL-002</c>, which is the CLIENT-side derivation obligation — this is
+    /// the server enforcement boundary that makes the naming rule hold even for a client (or a
+    /// hand-built payload) that never derives the name correctly in the first place, per ruling 5
+    /// ("the server is the enforcement boundary"). Discharged by
+    /// <c>NamingRejectedScenario.JudgeServerSide</c>, which hand-builds descriptors carrying a
+    /// misnamed foreign key across the <c>many_to_one</c> and <c>many_to_many</c> kinds and posts
+    /// each directly to <c>RegisterSchema</c> over gRPC — the ONE orchestrator-side observation
+    /// this scenario now carries (in the <c>dotnet</c> column, since .NET's
+    /// <c>[ManyToOne(typeof(Author), "WriterId")]</c> is the one client-declaration style that can
+    /// express a misnamed foreign key at all; Go/Python/TypeScript catch it client-side per
+    /// <c>IVC-REL-002</c>'s recommended diagnostic, and Java's registrar has no override at all,
+    /// so neither reaches this check) — asserting <c>SchemaRegistrationOrchestrator.cs</c>'s
+    /// naming check (~line 110-122) rejects each with <c>InvalidArgument</c>, naming both the
+    /// actual and required foreign-key names. The <c>many_to_many</c> fixture is what gives the
+    /// statement's parenthetical <c>Ids</c> clause its own citation — previously only the
+    /// <c>many_to_one</c> half of the statement had a fixture behind it.
+    /// </summary>
+    public const string RegForeignKeyNamingEnforced = "IVC-REG-003";
 
     // ── REL — Relations ─────────────────────────────────────────────────────────────────────
 

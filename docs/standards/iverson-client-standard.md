@@ -157,17 +157,66 @@ implemented requirement.
 
 | ID | Status | Kind | Statement |
 | --- | --- | --- | --- |
-| IVC-REG-001 | Active | Behaviour | The server rejects registration of a relation whose foreign key is not named `{RelatedTypeName}Id` (or `{RelatedTypeName}Ids` for `many_to_many`) |
+| IVC-REG-001 | Retired | Behaviour | The server rejects registration of a relation whose foreign key is not named `{RelatedTypeName}Id` (or `{RelatedTypeName}Ids` for `many_to_many`) |
 | IVC-REG-002 | Active | Behaviour | The server rejects registration of a relation whose navigation-property name equals its foreign key, for every relation kind |
+| IVC-REG-003 | Active | Behaviour | The server rejects registration of a `many_to_one`, `one_to_one` or `many_to_many` relation whose foreign key is not named `{RelatedTypeName}Id` (or `{RelatedTypeName}Ids` for `many_to_many`) |
 
-Both requirements are the server-side half of a pair whose client-side half is already normative
-elsewhere in this document: `IVC-REL-002` obliges a client to derive `{RelatedTypeName}Id` for a
-synthesized foreign key, and `IVC-REL-003` obliges a client to derive a navigation-property name
-distinct from it. Ruling 5 ("the server is the enforcement boundary") is why both also get a `REG`
-requirement rather than resting on the client derivation alone — a client-side rule with no
-server-side backstop is enforced only as well as the least careful of five implementations (or a
-sixth, not-yet-written one). `IVC-REG-001` and `IVC-REG-002` are what make that backstop itself
-part of the standard rather than an unstated assumption behind `IVC-REL-002`/`IVC-REL-003`.
+Both `IVC-REG-002` and `IVC-REG-003` are the server-side half of a pair whose client-side half is
+already normative elsewhere in this document: `IVC-REL-002` obliges a client to derive
+`{RelatedTypeName}Id` for a synthesized foreign key, and `IVC-REL-003` obliges a client to derive a
+navigation-property name distinct from it. Ruling 5 ("the server is the enforcement boundary") is
+why both also get a `REG` requirement rather than resting on the client derivation alone — a
+client-side rule with no server-side backstop is enforced only as well as the least careful of five
+implementations (or a sixth, not-yet-written one). `IVC-REG-002` and `IVC-REG-003` are what make
+that backstop itself part of the standard rather than an unstated assumption behind
+`IVC-REL-002`/`IVC-REL-003`.
+
+`IVC-REG-001` is retired — its statement, read literally, is factually wrong. It bound the naming
+rule unqualified, over every relation kind, but `SchemaRegistrationOrchestrator.cs`'s naming loop
+deliberately excludes `one_to_many`, and correctly so: a `one_to_many` relation's foreign key is
+`{ThisTypeName}Id`, not `{RelatedTypeName}Id`, and it lives on the RELATED type's own row (see
+`Iverson.Clients/Python/iverson_client/core.py:128-129`), so the server does not and must not
+enforce `IVC-REG-001`'s naming rule against it. Taken literally, `IVC-REG-001` would have made a
+conforming server non-conformant — it demanded rejection of descriptors the server correctly
+accepts. Per the immutable-Statement convention above, the row's Statement cell is left
+byte-unchanged and the correction lands as a new requirement, `IVC-REG-003`, scoped the way its
+sibling `IVC-REL-001` scopes itself: it names the three relation kinds the naming rule actually
+applies to (`many_to_one`, `one_to_one`, `many_to_many`) and excludes `one_to_many` by omission,
+matching what the server has always correctly enforced.
+
+#### Deferred coverage (non-normative)
+
+`standard.md`'s own axis table defines REG as "Schema registration and reregistration behaviour."
+The rules authored above are the complete REG deliverable the design spec called for, so authoring
+only them is not a spec violation — but three things a literal reading of "registration ... and
+reregistration behaviour" could include are deliberately NOT authored as requirements here, and are
+recorded rather than left as a silent gap:
+
+- **Reregistration.** `Reregistrar.cs` exercises reregistration (registering an already-registered
+  type again) on every conformance run, but no assertion cites a requirement ID against that
+  behaviour. Reregistration's correctness is exercised as test-harness plumbing, not verified as a
+  normative claim.
+- **Authorization rules at registration time.** `SchemaRegistrationOrchestrator.cs:140-146`
+  accepts and stores `AuthorizationRules` as part of the descriptor, but no requirement in this
+  document constrains what the server does with them at registration time.
+- **Schema drift.** A `SchemaDriftException` (thrown by `IRecordStoreSchemaManager.ApplySchemaAsync`
+  when a re-registration's shape conflicts with the stored schema) surfaces as `FailedPrecondition`,
+  but no requirement asserts on that status code or the conditions that produce it.
+
+These three are deferred, not out of scope forever, and a future axis pass may author requirements
+for them. **Descriptor contents are explicitly NOT part of this deferral** — what a registered
+descriptor contains (relation shape, foreign-key typing, tenant/owner field typing, array typing,
+and so on) is already covered by the `DECL` and `REL` axes, whose assertions read the registration
+descriptor directly rather than merely exercising the registration call.
+
+#### Backstop assertion (non-normative)
+
+Unlike `REL`'s per-relation loop (see "Authoring notes" above), `REG`'s two assertions
+(`IVC-REG-002`, `IVC-REG-003`) are each single-shot: they fire once, against one hand-built
+fixture apiece, rather than iterating a `foreach` over a descriptor's relations where a
+zero-iteration loop would vacuously pass. There is no loop body whose vacuous-pass case a backstop
+assertion would need to catch, so `REG` declares no backstop assertion — the same reasoning applies
+to why `DECL` and `LIFE` also currently have none.
 
 ### IDN — Identity
 

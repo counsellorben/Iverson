@@ -40,23 +40,32 @@ public class NavPropertyRejectedScenarioTests
         public Exception? RegisterSchemaThrows;
         public Exception? PostThrows;
 
-        // Scripts the SEPARATE, self-contained "S3NavCollide" registration attempt
-        // (IVC-REG-002). Defaults to a realistic rejection so tests that only care about the
-        // write-payload check (RegisterSchemaThrows/PostThrows) don't have to also script this —
-        // the collision assertion just passes quietly for them.
-        public Exception? RegisterCollisionThrows = new RpcException(new Status(
-            StatusCode.InvalidArgument,
-            "Relation 'S3NavCollideAuthorId' (ManyToOne) on 'S3NavCollide' has a navigation-" +
-            "property name identical to its foreign key 'S3NavCollideAuthorId'."));
+        /// Governs the SEPARATE, self-contained "S3NavCollide*" registration attempts
+        /// (IVC-REG-002 — one fixture per relation kind, see
+        /// <see cref="NavPropertyRejectedScenario.CollisionFixtures"/>). True (default):
+        /// synthesize a realistic collision rejection, mirroring
+        /// SchemaRegistrationOrchestrator.cs's own message shape, for every one of them — so
+        /// tests that only care about the write-payload check (RegisterSchemaThrows/PostThrows)
+        /// don't have to also script this. False: every collision fixture registers successfully,
+        /// for tests exercising the "collision was not rejected" failure mode.
+        public bool RejectCollisionFixtures = true;
 
         public override AsyncUnaryCall<SchemaResponse> RegisterSchemaAsync(
             SchemaRequest request, Metadata? headers = null, DateTime? deadline = null,
             CancellationToken cancellationToken = default)
         {
-            if (request.RootType.TypeName == "S3NavCollide")
-                return RegisterCollisionThrows is not null
-                    ? FaultedCall<SchemaResponse>(RegisterCollisionThrows)
-                    : CompletedCall(new SchemaResponse { Success = true });
+            if (request.RootType.TypeName.StartsWith("S3NavCollide", StringComparison.Ordinal))
+            {
+                if (!RejectCollisionFixtures)
+                    return CompletedCall(new SchemaResponse { Success = true });
+
+                var relation = request.RootType.Relations[0];
+                return FaultedCall<SchemaResponse>(new RpcException(new Status(
+                    StatusCode.InvalidArgument,
+                    $"Relation '{relation.PropertyName}' ({relation.Kind}) on '{request.RootType.TypeName}' " +
+                    $"has a navigation-property name identical to its foreign key '{relation.ForeignKey}'. " +
+                    "The navigation-property name must be distinct from the foreign key.")));
+            }
 
             return RegisterSchemaThrows is not null
                 ? FaultedCall<SchemaResponse>(RegisterSchemaThrows)
@@ -315,25 +324,63 @@ public class NavPropertyRejectedScenarioTests
     }
 
     // ── JudgeCollision: IVC-REG-002, the registration-time PropertyName/ForeignKey collision
-    // rejection — a distinct observation from Judge's write-payload check above.
+    // rejection — a distinct observation from Judge's write-payload check above. Exercised once
+    // per relation kind (Important 1 of the Task 7 review) via NavPropertyRejectedScenario's own
+    // CollisionFixtures list, and now also asserts the rejection MESSAGE identifies the collision
+    // specifically (Important 2), not merely that SOME rejection happened.
+
+    private static readonly NavPropertyRejectedScenario.CollisionFixture ManyToOneFixture =
+        NavPropertyRejectedScenario.CollisionFixtures.Single(f => f.Kind == "many_to_one");
+
+    private static RpcException CollisionRejection(NavPropertyRejectedScenario.CollisionFixture fixture) =>
+        new(new Status(
+            StatusCode.InvalidArgument,
+            $"Relation '{fixture.ForeignKeyName}' ({fixture.RelationKind}) on '{fixture.TypeName}' has a " +
+            $"navigation-property name identical to its foreign key '{fixture.ForeignKeyName}'. The " +
+            "navigation-property name must be distinct from the foreign key."));
 
     [Fact]
     public void JudgeCollision_ServerRejectsWithInvalidArgument_AllPass()
     {
-        var caught = new RpcException(new Status(
-            StatusCode.InvalidArgument,
-            "Relation 'S3NavCollideAuthorId' has a navigation-property name identical to its " +
-            "foreign key."));
+        var results = new[] { (ManyToOneFixture, (RpcException?)CollisionRejection(ManyToOneFixture)) };
 
-        var assertions = NavPropertyRejectedScenario.JudgeCollision(caught);
+        var assertions = NavPropertyRejectedScenario.JudgeCollision(results);
 
         assertions.Should().OnlyContain(a => a.Passed);
     }
 
     [Fact]
+    public void JudgeCollision_EveryRelationKindFixture_AllRejected_AllPass()
+    {
+        // The expected kinds are hardcoded here — NOT derived from CollisionFixtures.Count —
+        // because a mutation that shrank CollisionFixtures back down to a single ManyToOne fixture
+        // left this test green when it derived the expectation from the same (mutated) source.
+        // Four distinct kinds is the whole point IVC-REG-002's "for every relation kind" clause
+        // demands; pinning that number independently is what makes the test able to catch a
+        // regression in the fixture list itself, not merely in JudgeCollision's loop.
+        var expectedKinds = new[] { "many_to_one", "one_to_one", "many_to_many", "one_to_many" };
+        NavPropertyRejectedScenario.CollisionFixtures.Select(f => f.Kind).Should()
+            .BeEquivalentTo(expectedKinds);
+
+        var results = NavPropertyRejectedScenario.CollisionFixtures
+            .Select(f => (f, (RpcException?)CollisionRejection(f)))
+            .ToList();
+
+        var assertions = NavPropertyRejectedScenario.JudgeCollision(results);
+
+        assertions.Should().OnlyContain(a => a.Passed);
+        // Four kinds means four "the server rejects ..." assertions, one per fixture — proves the
+        // loop actually iterated all of them rather than only the first.
+        assertions.Count(a => a.Name.Contains("PropertyName/ForeignKey collision at registration"))
+            .Should().Be(expectedKinds.Length);
+    }
+
+    [Fact]
     public void JudgeCollision_RegistrationSucceeded_Fails_TheCollisionShouldHaveBeenRejected()
     {
-        var assertions = NavPropertyRejectedScenario.JudgeCollision(caught: null);
+        var results = new[] { (ManyToOneFixture, (RpcException?)null) };
+
+        var assertions = NavPropertyRejectedScenario.JudgeCollision(results);
 
         assertions.Should().ContainSingle();
         assertions[0].Passed.Should().BeFalse();
@@ -344,22 +391,41 @@ public class NavPropertyRejectedScenarioTests
     public void JudgeCollision_WrongStatusCode_FailsTheStatusCodeAssertionOnly()
     {
         var caught = new RpcException(new Status(StatusCode.PermissionDenied, "denied"));
+        var results = new[] { (ManyToOneFixture, (RpcException?)caught) };
 
-        var assertions = NavPropertyRejectedScenario.JudgeCollision(caught);
+        var assertions = NavPropertyRejectedScenario.JudgeCollision(results);
 
         assertions.Single(a => a.Name.Contains("PropertyName/ForeignKey collision")).Passed.Should().BeTrue();
         assertions.Single(a => a.Name.Contains("rejected with InvalidArgument")).Passed.Should().BeFalse();
     }
 
+    // Important 2 of the Task 7 review: a bare `caught is not null` is satisfied by ANY
+    // InvalidArgument — including one thrown by the naming check, the FK-is-declared check, or
+    // the UUID-type check, all of which run BEFORE the collision loop. This pins that the message
+    // must actually name the collision, not merely carry the right status code.
     [Fact]
-    public async Task RunAsync_ServerAcceptsTheCollidingFixture_CanonicalColumnFails_OnCollisionAssertionSpecifically()
+    public void JudgeCollision_RejectedForAnUnrelatedReason_FailsTheMessageAssertion_EvenThoughStatusCodeMatches()
+    {
+        var caught = new RpcException(new Status(
+            StatusCode.InvalidArgument,
+            $"tenant_field is required on '{ManyToOneFixture.TypeName}'."));
+        var results = new[] { (ManyToOneFixture, (RpcException?)caught) };
+
+        var assertions = NavPropertyRejectedScenario.JudgeCollision(results);
+
+        assertions.Single(a => a.Name.Contains("rejected with InvalidArgument")).Passed.Should().BeTrue();
+        assertions.Single(a => a.Name.Contains("identifies the collision")).Passed.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task RunAsync_ServerAcceptsTheCollidingFixtures_CanonicalColumnFails_OnCollisionAssertionSpecifically()
     {
         // The write-payload rejection still succeeds; only the SEPARATE registration-time
-        // collision check silently fails to reject — this must surface as a real Fail, not be
+        // collision checks silently fail to reject — this must surface as a real Fail, not be
         // masked by the payload assertions that are otherwise all green.
         var client = new FakeMappingClient
         {
-            RegisterCollisionThrows = null,
+            RejectCollisionFixtures = false,
             PostThrows = new RpcException(new Status(
                 StatusCode.InvalidArgument,
                 "Relation 'Author' is a navigation property and cannot be written — send " +
