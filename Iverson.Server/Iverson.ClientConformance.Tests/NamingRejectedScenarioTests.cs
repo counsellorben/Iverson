@@ -20,20 +20,18 @@ public class NamingRejectedScenarioTests
     /// Same hand-rolled fake seam as <c>NavPropertyRejectedScenarioTests</c> uses. The
     /// server-side check now posts TWO fixtures (many_to_one and many_to_many, IVC-REG-003), so
     /// this fake scripts per-request-shape rather than a single blanket exception —
-    /// <see cref="RegisterSchemaThrows"/> stays as a simple "reject everything the same way"
-    /// convenience for tests that don't care about the distinction; <see cref="ThrowsFor"/>
-    /// overrides it per <c>TypeName</c> when a test needs the two fixtures judged differently.
+    /// <see cref="ThrowsFor"/> overrides per <c>TypeName</c> when a test needs the two fixtures
+    /// judged differently; when unset, no request throws.
     /// </summary>
     private sealed class FakeMappingClient : ObjectMappingService.ObjectMappingServiceClient
     {
-        public Exception? RegisterSchemaThrows;
         public Func<string, Exception?>? ThrowsFor;
 
         public override AsyncUnaryCall<SchemaResponse> RegisterSchemaAsync(
             SchemaRequest request, Metadata? headers = null, DateTime? deadline = null,
             CancellationToken cancellationToken = default)
         {
-            var ex = ThrowsFor is not null ? ThrowsFor(request.RootType.TypeName) : RegisterSchemaThrows;
+            var ex = ThrowsFor is not null ? ThrowsFor(request.RootType.TypeName) : null;
             return ex is not null
                 ? FaultedCall<SchemaResponse>(ex)
                 : CompletedCall(new SchemaResponse { Success = true });
@@ -239,6 +237,31 @@ public class NamingRejectedScenarioTests
         cell.Detail.Should().Contain("driver broke during the register phase");
         cell.Assertions.Should().Contain(a => a.RequirementId == Requirements.RegForeignKeyNamingEnforced);
         cell.Assertions.Should().OnlyContain(a => a.Passed);
+    }
+
+    [Fact]
+    public async Task RunAsync_ServerCheckLanguageDriverBroke_ServerCheckFails_DetailNamesTheServerRegression()
+    {
+        // Minor 1 (round 3): pins MergeServerCheckIntoDriverFailure's docstring claim — "a real
+        // server-side regression is never reported as merely 'the driver broke'" — the way its
+        // sibling MergeServerCheckIntoDriverSkip is already pinned above. The server-side check
+        // itself wrongly ACCEPTS the misnamed fixtures (a real IVC-REG-003 regression) AND the
+        // driver also broke (python's fixture exits non-zero); the cell's Detail must name the
+        // REG-003 server-side assertion, not the driver's own exit.
+        using var fixture = FakeDriverFixture.ThatExits("python", exitCode: 1);
+        var client = new FakeMappingClient(); // no throws -> server wrongly ACCEPTS the misnaming
+        var scenario = new NamingRejectedScenario(new DriverRunner(repoRoot: fixture.RepoRoot), client);
+
+        var cells = await scenario.RunAsync(["python"], Context(), actingToken: "acting-token");
+
+        cells.Should().ContainSingle();
+        var cell = cells[0];
+        cell.Language.Should().Be("python");
+        cell.Status.Should().Be(CellStatus.Fail);
+        cell.Detail.Should().Contain("the server registered the descriptor");
+        cell.Detail.Should().NotContain("driver broke during the register phase");
+        cell.Assertions.Should().Contain(a => a.RequirementId == Requirements.RegForeignKeyNamingEnforced);
+        cell.Assertions.Should().Contain(a => !a.Passed);
     }
 
     [Fact]
