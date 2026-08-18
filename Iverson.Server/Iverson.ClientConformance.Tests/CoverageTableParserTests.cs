@@ -184,9 +184,46 @@ public class CoverageTableParserTests
     }
 
     [Fact]
-    public void Parse_EmptyMarkdown_YieldsNoRowsAndNoMalformedLines()
+    public void Parse_PipeTableUnderNonCoverageHeading_IsIgnored()
     {
-        var result = CoverageTableParser.Parse(string.Empty, KnownAxes);
+        // A `| Area | Status | Evidence |`-headed table that is not preceded by a `#### Coverage`
+        // heading (e.g. an illustrative example under a prose subsection) must not be bound as a
+        // real ledger — otherwise a future axis's authoring-notes example could silently satisfy
+        // the axis-completeness check for real requirement IDs it happens to cite.
+        const string markdown = """
+            ### REL — Relations
+
+            #### Authoring notes (for future axes)
+
+            | Area | Status | Evidence |
+            | --- | --- | --- |
+            | Example area | Covered | IVC-REL-001 |
+            """;
+
+        var result = CoverageTableParser.Parse(markdown, KnownAxes);
+
+        result.Rows.Should().BeEmpty();
+        result.MalformedLines.Should().BeEmpty();
+    }
+
+    [Fact]
+    public void Parse_PipeTableInsideFencedCodeBlock_IsIgnored()
+    {
+        // A `#### Coverage` heading followed by a fenced code block containing a pipe table (e.g.
+        // a documentation example of the table shape) must not be bound as a real ledger.
+        const string markdown = """
+            ### REL — Relations
+
+            #### Coverage
+
+            ```
+            | Area | Status | Evidence |
+            | --- | --- | --- |
+            | Example area | Covered | IVC-REL-001 |
+            ```
+            """;
+
+        var result = CoverageTableParser.Parse(markdown, KnownAxes);
 
         result.Rows.Should().BeEmpty();
         result.MalformedLines.Should().BeEmpty();

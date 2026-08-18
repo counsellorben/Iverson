@@ -24,6 +24,8 @@ namespace Iverson.ClientConformance.Tests;
 internal static class CoverageTableParser
 {
     private const string Header = "| Area | Status | Evidence |";
+    private const string CoverageHeading = "#### Coverage";
+    private const string FenceMarker = "```";
 
     private static readonly Regex AxisHeadingPattern =
         new(@"^###\s+(\S+)\s+—", RegexOptions.Compiled);
@@ -37,22 +39,51 @@ internal static class CoverageTableParser
         var rows = new List<CoverageRow>();
         var malformed = new List<string>();
         var inCoverageTable = false;
+        var inFence = false;
+        var underCoverageHeading = false;
         string? currentAxis = null;
         string? tableAxis = null;
 
         foreach (var rawLine in markdown.Split('\n'))
         {
             var line = rawLine.TrimEnd('\r');
+            var trimmedForFence = line.TrimStart();
+
+            if (trimmedForFence.StartsWith(FenceMarker, StringComparison.Ordinal))
+            {
+                inFence = !inFence;
+                continue;
+            }
+
+            if (inFence)
+            {
+                continue;
+            }
 
             var headingMatch = AxisHeadingPattern.Match(line);
             if (headingMatch.Success)
             {
                 var token = headingMatch.Groups[1].Value;
                 currentAxis = knownAxes.Contains(token) ? token : null;
+                underCoverageHeading = false;
+            }
+
+            if (line.StartsWith(CoverageHeading, StringComparison.Ordinal))
+            {
+                underCoverageHeading = true;
+                continue;
             }
 
             if (line.StartsWith(Header, StringComparison.Ordinal))
             {
+                if (!underCoverageHeading)
+                {
+                    // A `| Area | Status | Evidence |`-headed table not preceded by a `####
+                    // Coverage` heading (e.g. an illustrative example under "Authoring notes") is
+                    // not a real ledger and must not be bound as one.
+                    continue;
+                }
+
                 inCoverageTable = true;
                 tableAxis = currentAxis;
                 continue;

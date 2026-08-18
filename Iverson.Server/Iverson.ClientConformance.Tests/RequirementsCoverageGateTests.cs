@@ -11,7 +11,7 @@ namespace Iverson.ClientConformance.Tests;
 /// to executable evidence. It fails the build whenever the document, the registry
 /// (<see cref="Requirements"/>), and the orchestrator source fall out of agreement.
 ///
-/// Three independent checks:
+/// Four independent checks:
 /// 1. The set of `Active` IDs declared by requirement-table rows in the standard must exactly
 ///    equal the set of consts reflected off <see cref="Requirements"/>.
 /// 2. Every const's C# identifier must appear at least once under
@@ -23,6 +23,12 @@ namespace Iverson.ClientConformance.Tests;
 ///    `|`-leading line inside a requirement table may be left unparsed (see
 ///    <see cref="RequirementTableParser"/> — an unparsed row must never silently drop the rows
 ///    that follow it from checks 1 and 3).
+/// 4. Every authored axis's `#### Coverage` ledger must bind its claimed areas to that axis's
+///    `Active` requirements bidirectionally: every Active requirement must be claimed by exactly
+///    one Covered area, every Covered/Deferred row must be well-formed and cite only existing,
+///    Active, same-axis IDs, and an axis with at least one Active requirement must have a
+///    `#### Coverage` table at all (see <see cref="CoverageTableParser"/> and
+///    <c>ComputeCoverageFailures</c> below for the six failure modes enforced).
 /// </summary>
 public class RequirementsCoverageGateTests
 {
@@ -413,5 +419,117 @@ public class RequirementsCoverageGateTests
         failures.Should().Contain(f =>
             f.Contains("REL") && f.Contains("IVC-DECL-001") && f.Contains("belongs to axis 'DECL'"));
         failures.Should().NotContain(f => f.Contains("does not exist in axis 'REL'"));
+    }
+
+    [Fact]
+    public void Check4_AxisWithActiveRequirementAndNoCoverageTable_FailsNamingTheAxis_ViaMode1()
+    {
+        const string markdown = """
+            ### REG — Registration
+
+            | ID | Status | Kind | Statement |
+            | --- | --- | --- | --- |
+            | IVC-REG-002 | Active | Behaviour | Some behaviour. |
+            """;
+
+        var failures = ComputeCoverageFailures(markdown);
+
+        failures.Should().ContainSingle(f =>
+            f.Contains("REG") && f.Contains("no #### Coverage table"));
+    }
+
+    [Fact]
+    public void Check4_CoverageRowWithStatusNeitherCoveredNorDeferred_FailsNamingAxisAndArea_ViaMode2()
+    {
+        const string markdown = """
+            ### REG — Registration
+
+            | ID | Status | Kind | Statement |
+            | --- | --- | --- | --- |
+            | IVC-REG-002 | Active | Behaviour | Some behaviour. |
+
+            #### Coverage
+
+            | Area | Status | Evidence |
+            | --- | --- | --- |
+            | Some area | InProgress | IVC-REG-002 |
+            """;
+
+        var failures = ComputeCoverageFailures(markdown);
+
+        failures.Should().ContainSingle(f =>
+            f.Contains("REG") && f.Contains("Some area") && f.Contains("neither Covered nor Deferred"));
+    }
+
+    [Fact]
+    public void Check4_CoveredAreaCitingNonexistentSameAxisId_FailsNamingTheAxisAndId_ViaMode3Nonexistent()
+    {
+        const string markdown = """
+            ### REG — Registration
+
+            | ID | Status | Kind | Statement |
+            | --- | --- | --- | --- |
+            | IVC-REG-002 | Active | Behaviour | Some behaviour. |
+
+            #### Coverage
+
+            | Area | Status | Evidence |
+            | --- | --- | --- |
+            | Some area | Covered | IVC-REG-002 |
+            | Another area | Covered | IVC-REG-999 |
+            """;
+
+        var failures = ComputeCoverageFailures(markdown);
+
+        failures.Should().ContainSingle(f =>
+            f.Contains("REG") && f.Contains("IVC-REG-999") && f.Contains("does not exist in axis 'REG'"));
+    }
+
+    [Fact]
+    public void Check4_ActiveRequirementClaimedByNoArea_FailsNamingTheId_ViaMode5()
+    {
+        const string markdown = """
+            ### REG — Registration
+
+            | ID | Status | Kind | Statement |
+            | --- | --- | --- | --- |
+            | IVC-REG-002 | Active | Behaviour | Some behaviour. |
+            | IVC-REG-003 | Active | Behaviour | Some other behaviour. |
+
+            #### Coverage
+
+            | Area | Status | Evidence |
+            | --- | --- | --- |
+            | Some area | Covered | IVC-REG-002 |
+            """;
+
+        var failures = ComputeCoverageFailures(markdown);
+
+        failures.Should().ContainSingle(f =>
+            f.Contains("IVC-REG-003") && f.Contains("REG") && f.Contains("claimed by no Covered area"));
+    }
+
+    [Fact]
+    public void Check4_MalformedCoverageRow_FailsNamingTheOffendingLine_ViaMode6()
+    {
+        const string markdown = """
+            ### REG — Registration
+
+            | ID | Status | Kind | Statement |
+            | --- | --- | --- | --- |
+            | IVC-REG-002 | Active | Behaviour | Some behaviour. |
+
+            #### Coverage
+
+            | Area | Status | Evidence |
+            | --- | --- | --- |
+            | Only two columns | Covered |
+            | Some area | Covered | IVC-REG-002 |
+            """;
+
+        var failures = ComputeCoverageFailures(markdown);
+
+        failures.Should().ContainSingle(f =>
+            f.Contains("malformed coverage row") && f.Contains("Only two columns"));
     }
 }
