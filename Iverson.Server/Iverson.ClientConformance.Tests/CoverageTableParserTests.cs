@@ -159,6 +159,31 @@ public class CoverageTableParserTests
     }
 
     [Fact]
+    public void Parse_DeferredRowWithEmptyEvidenceCell_ParsesAsAWellFormedRow_NotMalformed()
+    {
+        // A well-formed three-cell row with an empty third cell is a gate-level defect (mode 4 —
+        // a Deferred area with an empty reason), not a structurally malformed one (mode 6). The
+        // parser must let it through so the gate check can name the axis and area.
+        const string markdown = """
+            ### REG — Registration
+
+            #### Coverage
+
+            | Area | Status | Evidence |
+            | --- | --- | --- |
+            | Reregistration | Deferred |  |
+            """;
+
+        var result = CoverageTableParser.Parse(markdown, KnownAxes);
+
+        result.Rows.Should().BeEquivalentTo(new[]
+        {
+            new CoverageTableParser.CoverageRow("REG", "Reregistration", "Deferred", string.Empty),
+        });
+        result.MalformedLines.Should().BeEmpty();
+    }
+
+    [Fact]
     public void Parse_EmptyMarkdown_YieldsNoRowsAndNoMalformedLines()
     {
         var result = CoverageTableParser.Parse(string.Empty, KnownAxes);

@@ -116,7 +116,10 @@ internal static class CoverageTableParser
         status = parts[1].Trim();
         evidence = parts[2].Trim();
 
-        return area.Length > 0 && status.Length > 0 && evidence.Length > 0;
+        // Evidence MAY be empty here — an empty-reason `Deferred` row is a well-formed row with a
+        // gate-level defect (mode 4), not a structurally malformed one (mode 6). Only Area and
+        // Status must be non-empty for the row shape itself to be well-formed.
+        return area.Length > 0 && status.Length > 0;
     }
 
     private static bool IsSeparatorRow(string trimmedLine) =>

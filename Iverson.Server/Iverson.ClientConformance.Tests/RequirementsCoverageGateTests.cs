@@ -196,16 +196,13 @@ public class RequirementsCoverageGateTests
     }
 
     /// <summary>
-    /// The axis-completeness check: binds each authored axis's `#### Coverage` ledger to its
-    /// `Active` requirements, bidirectionally. See
-    /// <c>docs/specs/2026-08-17-axis-completeness-check-design.md</c> ("The check") for the six
-    /// failure modes this enforces.
+    /// The computation behind Check4, factored out so it can be exercised against fixture markdown
+    /// (proving individual failure modes fire, and only the expected one) as well as against the
+    /// live standard. See <c>docs/specs/2026-08-17-axis-completeness-check-design.md</c>
+    /// ("The check") for the six failure modes this enforces.
     /// </summary>
-    [Fact]
-    public void Check4_AxisCoverageLedgers_BindClaimedAreasToActiveRequirements()
+    private static List<string> ComputeCoverageFailures(string markdown)
     {
-        var markdown = File.ReadAllText(StandardPath());
-
         var declared = ParseDeclaredRequirements(markdown);
         var active = declared.Where(r => r.Status == "Active").ToList();
         var retiredIds = declared.Where(r => r.Status == "Retired").Select(r => r.Id).ToHashSet();
@@ -301,15 +298,19 @@ public class RequirementsCoverageGateTests
             {
                 var idAxis = AxisOf(id);
 
-                if (idAxis is null || !allIdsByAxis[row.Axis].Any(r => r.Id == id))
+                // Foreign-axis citation must be diagnosed before the existence check: a foreign-axis
+                // ID is by definition absent from allIdsByAxis[row.Axis], so testing existence first
+                // would swallow every foreign-axis case into the generic "does not exist" message
+                // and make this branch dead code.
+                if (idAxis is not null && idAxis != row.Axis)
                 {
-                    failures.Add($"axis '{row.Axis}' area '{row.Area}' cites '{id}', which does not exist in axis '{row.Axis}'");
+                    failures.Add($"axis '{row.Axis}' area '{row.Area}' cites '{id}', which belongs to axis '{idAxis}', not '{row.Axis}'");
                     continue;
                 }
 
-                if (idAxis != row.Axis)
+                if (!allIdsByAxis[row.Axis].Any(r => r.Id == id))
                 {
-                    failures.Add($"axis '{row.Axis}' area '{row.Area}' cites '{id}', which belongs to axis '{idAxis}', not '{row.Axis}'");
+                    failures.Add($"axis '{row.Axis}' area '{row.Area}' cites '{id}', which does not exist in axis '{row.Axis}'");
                     continue;
                 }
 
@@ -337,8 +338,80 @@ public class RequirementsCoverageGateTests
             }
         }
 
+        return failures;
+    }
+
+    /// <summary>
+    /// The axis-completeness check: binds each authored axis's `#### Coverage` ledger to its
+    /// `Active` requirements, bidirectionally, against the live standard.
+    /// </summary>
+    [Fact]
+    public void Check4_AxisCoverageLedgers_BindClaimedAreasToActiveRequirements()
+    {
+        var markdown = File.ReadAllText(StandardPath());
+        var failures = ComputeCoverageFailures(markdown);
+
         failures.Should().BeEmpty(
             "every authored axis's #### Coverage ledger must bind claimed areas to its Active requirements bidirectionally, " +
             $"but these violations were found: {string.Join(" ~~~ ", failures)}");
+    }
+
+    [Fact]
+    public void Check4_DeferredAreaWithEmptyReason_FailsNamingAxisAndArea_ViaMode4()
+    {
+        const string markdown = """
+            ### REG — Registration
+
+            | ID | Status | Kind | Statement |
+            | --- | --- | --- | --- |
+            | IVC-REG-002 | Active | Behaviour | Some behaviour. |
+
+            #### Coverage
+
+            | Area | Status | Evidence |
+            | --- | --- | --- |
+            | Some area | Covered | IVC-REG-002 |
+            | Reregistration | Deferred |  |
+            """;
+
+        var failures = ComputeCoverageFailures(markdown);
+
+        failures.Should().ContainSingle(f => f.Contains("REG") && f.Contains("Reregistration") && f.Contains("empty reason"));
+    }
+
+    [Fact]
+    public void Check4_CoveredAreaCitingForeignAxisId_FailsNamingTheForeignAxis_ViaMode3()
+    {
+        const string markdown = """
+            ### DECL — Declaration
+
+            | ID | Status | Kind | Statement |
+            | --- | --- | --- | --- |
+            | IVC-DECL-001 | Active | Behaviour | Some behaviour. |
+
+            #### Coverage
+
+            | Area | Status | Evidence |
+            | --- | --- | --- |
+            | Some area | Covered | IVC-DECL-001 |
+
+            ### REL — Relations
+
+            | ID | Status | Kind | Statement |
+            | --- | --- | --- | --- |
+            | IVC-REL-001 | Active | Behaviour | Some other behaviour. |
+
+            #### Coverage
+
+            | Area | Status | Evidence |
+            | --- | --- | --- |
+            | Some other area | Covered | IVC-DECL-001 |
+            """;
+
+        var failures = ComputeCoverageFailures(markdown);
+
+        failures.Should().Contain(f =>
+            f.Contains("REL") && f.Contains("IVC-DECL-001") && f.Contains("belongs to axis 'DECL'"));
+        failures.Should().NotContain(f => f.Contains("does not exist in axis 'REL'"));
     }
 }
