@@ -296,16 +296,22 @@ allows.
 
 #### Known non-conformance (non-normative)
 
-`IVC-LIFE-007` fails live for the **Python, TypeScript, Go and Java** drivers. Their typed model
-classes declare no field to receive a hydrated relation object, so a depth-1 read reaches the server
-correctly (satisfying `IVC-LIFE-006`) and the server returns a hydrated nav property, but the
-driver's own mapping step (`get_mapped`/`GetMapped`, e.g. Python's `core.py` `_from_struct`, and the
-equivalent driver model files in TypeScript, Go and Java) has nowhere to put the hydrated value and
-discards it. Only the .NET driver's model has a field for the hydrated nav property and passes.
-Fixing this is a separate initiative touching those four SDKs' model shape (adding a typed field per
-relation to receive the hydrated object); it is out of scope for this document, which records the
-gap as a known non-conformance rather than silently weakening `IVC-LIFE-007`'s statement to match
-current behaviour.
+Live run of `crud-roundtrip` (2026-08-18, `dotnet run --project Iverson.Server/Iverson.ClientConformance
+-- --scenarios crud-roundtrip`): `IVC-LIFE-008` passes for .NET, TypeScript, Go and Java, and fails
+live for **Python** only.
+
+The premise this section used to state — that a failing client's typed model declares no field to
+receive a hydrated relation object — is false for all four clients previously named here; Tasks 2-5
+gave each of Java, Python, TypeScript and Go a way to surface hydrated data, and three of the four
+now pass live.
+
+Python's driver does hydrate: `iverson_client/core.py`'s `_hydrate_relations` sets the derived
+navigation member (e.g. `py_author`) on the entity instance via `setattr`, even though that member is
+not a declared annotated field. The failure is in the conformance driver's own reporting, not the
+client library's hydration: `Iverson.Clients/Python/conformance/driver.py`'s `entity_to_dict` walks
+only `type(entity).__mro__`'s `__annotations__` to decide which attributes to serialize, so the
+dynamically-set `py_author`/`py_tags` attributes are invisible to it and the JSON the harness grades
+never carries them, even though `entity.py_author` exists on the object the driver returned.
 
 ### QRY — Query
 
