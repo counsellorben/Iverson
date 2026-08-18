@@ -180,13 +180,41 @@ class StructConverterTest {
     }
 
     @Test
-    void fromStruct_skipsNavigationPropertyLeavingItNull() {
+    void fromStruct_hydratesSingleNavigationPropertyFromNestedStruct() {
+        UUID authorId = UUID.randomUUID();
+        Struct struct = Struct.newBuilder()
+            .putFields("Author", Value.newBuilder()
+                .setStructValue(Struct.newBuilder()
+                    .putFields("Id", Value.newBuilder().setStringValue(authorId.toString()).build())
+                    .putFields("Name", Value.newBuilder().setStringValue("Ada").build())
+                    .build())
+                .build())
+            .build();
+
+        StructTestArticle article = StructConverter.fromStruct(struct, StructTestArticle.class);
+
+        assertNotNull(article.author, "navigation property should be hydrated from a nested struct");
+        assertEquals(authorId, article.author.id);
+        assertEquals("Ada", article.author.name);
+    }
+
+    @Test
+    void fromStruct_hydratesCollectionNavigationPropertyFromListOfStructs() {
+        UUID tagId1 = UUID.randomUUID();
+        UUID tagId2 = UUID.randomUUID();
         Struct struct = Struct.newBuilder()
             .putFields("Tags", Value.newBuilder()
                 .setListValue(com.google.protobuf.ListValue.newBuilder()
                     .addValues(Value.newBuilder()
                         .setStructValue(Struct.newBuilder()
+                            .putFields("Id", Value.newBuilder().setStringValue(tagId1.toString()).build())
                             .putFields("Label", Value.newBuilder().setStringValue("news").build())
+                            .build())
+                        .build())
+                    .addValues(Value.newBuilder()
+                        .setStructValue(Struct.newBuilder()
+                            .putFields("Id", Value.newBuilder().setStringValue(tagId2.toString()).build())
+                            .putFields("Label", Value.newBuilder().setStringValue("sports").build())
                             .build())
                         .build())
                     .build())
@@ -195,6 +223,9 @@ class StructConverterTest {
 
         StructTestArticle article = StructConverter.fromStruct(struct, StructTestArticle.class);
 
-        assertNull(article.tags);
+        assertNotNull(article.tags, "collection navigation property should be hydrated from a list of structs");
+        assertEquals(2, article.tags.size());
+        assertEquals(List.of(tagId1, tagId2), article.tags.stream().map(t -> t.id).toList());
+        assertEquals(List.of("news", "sports"), article.tags.stream().map(t -> t.label).toList());
     }
 }

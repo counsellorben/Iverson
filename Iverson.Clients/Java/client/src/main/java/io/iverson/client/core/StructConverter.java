@@ -65,7 +65,6 @@ public final class StructConverter {
             // Build a lookup: lowercase(pascalCase) -> field
             Map<String, Field> fieldMap = new HashMap<>();
             for (Field f : getAllFields(type)) {
-                if (isNavigationProperty(f)) continue;
                 fieldMap.put(toPascalCase(f.getName()).toLowerCase(), f);
             }
 
@@ -194,8 +193,9 @@ public final class StructConverter {
                 if (targetType == float.class || targetType == Float.class) yield (float) d;
                 yield d;
             }
-            case BOOL_VALUE   -> value.getBoolValue();
-            default           -> null;
+            case BOOL_VALUE     -> value.getBoolValue();
+            case STRUCT_VALUE   -> fromStruct(value.getStructValue(), targetType);
+            default             -> null;
         };
     }
 
