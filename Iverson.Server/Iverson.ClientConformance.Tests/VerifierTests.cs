@@ -789,6 +789,60 @@ public class VerifierTests
         assertion.Passed.Should().BeFalse();
     }
 
+    [Fact]
+    public void VerifyDepthCapability_passes_when_a_relation_hydrates_only_inside_the_carrier()
+    {
+        // Go's fixed struct fields cannot materialize a navigation member the model never
+        // declared, so its driver reports the hydrated child inside a well-known carrier
+        // property instead of at the entity's top level.
+        var authorId = Guid.NewGuid();
+        var entity = Json($$"""
+            { "id": "a1", "author_id": "{{authorId}}",
+              "Hydrated": { "author": { "id": "{{authorId}}", "name": "N" } } }
+            """);
+
+        var assertion = Verifier.VerifyDepthCapability("article", ArticleWithManyToOneAuthor, entity);
+
+        assertion.Passed.Should().BeTrue();
+        assertion.RequirementId.Should().Be(Requirements.LifeDepthResolvedReadHydrated);
+    }
+
+    [Fact]
+    public void VerifyDepthCapability_passes_when_the_top_level_property_is_empty_but_the_carrier_holds_the_child()
+    {
+        // The shadowing case: Go's declared one_to_many member sits at top level under exactly
+        // the registered PropertyName, left at its zero value, while the hydrated children sit
+        // in the carrier under the same name. A fallback keyed on the top-level property's
+        // absence (rather than on its hydrated-object count) would stop here, since the
+        // top-level property is PRESENT — just empty — and never reach the carrier. This case
+        // must not regress.
+        var authorId = Guid.NewGuid();
+        var entity = Json($$"""
+            { "id": "a1", "author_id": "{{authorId}}",
+              "author": null,
+              "Hydrated": { "author": { "id": "{{authorId}}", "name": "N" } } }
+            """);
+
+        var assertion = Verifier.VerifyDepthCapability("article", ArticleWithManyToOneAuthor, entity);
+
+        assertion.Passed.Should().BeTrue();
+        assertion.RequirementId.Should().Be(Requirements.LifeDepthResolvedReadHydrated);
+    }
+
+    [Fact]
+    public void VerifyDepthCapability_fails_when_the_relation_is_absent_from_both_top_level_and_carrier()
+    {
+        var authorId = Guid.NewGuid();
+        var entity = Json($$"""
+            { "id": "a1", "author_id": "{{authorId}}", "Hydrated": { } }
+            """);
+
+        var assertion = Verifier.VerifyDepthCapability("article", ArticleWithManyToOneAuthor, entity);
+
+        assertion.Passed.Should().BeFalse();
+        assertion.RequirementId.Should().Be(Requirements.LifeDepthResolvedReadHydrated);
+    }
+
     // ── compared value set ───────────────────────────────────────────────────────────────────
 
     [Fact]

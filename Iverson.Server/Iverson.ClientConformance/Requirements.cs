@@ -131,7 +131,8 @@ public static class Requirements
     public const string LifeDeleteRemovesRow = "IVC-LIFE-004";
 
     // IVC-LIFE-005 is Retired — it conflated reachability and hydration into one statement. Split
-    // into IVC-LIFE-006 (reachability) and IVC-LIFE-007 (hydration). It takes no const.
+    // into IVC-LIFE-006 (reachability) and IVC-LIFE-007 (hydration, itself retired and
+    // re-authored as IVC-LIFE-008). It takes no const.
 
     /// <summary>
     /// A depth-resolved read is reachable through the client's public API. Supersedes the retired
@@ -144,24 +145,33 @@ public static class Requirements
     /// requirement is satisfied by the call completing (<c>step.Ok</c>); the assertion does not
     /// inspect <c>step.Entity</c>, matching the standard's statement, which says only
     /// "reachable" — it says nothing about whether that entity is hydrated — that is
-    /// <c>IVC-LIFE-007</c>, a distinct assertion, so a client that reaches without hydrating goes
+    /// <c>IVC-LIFE-008</c>, a distinct assertion, so a client that reaches without hydrating goes
     /// green here and red there.
     /// </summary>
     public const string LifeDepthResolvedReadReachable = "IVC-LIFE-006";
 
     /// <summary>
-    /// The entity returned by a depth-resolved read is hydrated at that depth — the hydration half
-    /// of the retired <c>IVC-LIFE-005</c>. Discharged by <c>Verifier.VerifyDepthCapability</c>,
-    /// called from <c>CrudRoundtripScenario</c>'s read phase against each driver's OWN depth-1 read
+    /// The entity returned by a depth-resolved read carries the related object's data, including
+    /// that object's own key and not only the foreign key — the successor of the retired
+    /// <c>IVC-LIFE-007</c> (itself the hydration half of the retired <c>IVC-LIFE-005</c>).
+    /// <c>IVC-LIFE-007</c>'s statement was framed as a navigation member being "hydrated", graded
+    /// by finding a property carrying an object with its own key — a framing that encodes .NET's
+    /// object shape. This statement is framed instead as an observable property of what the
+    /// operation returns: it names no member, type or signature detail, so each client can satisfy
+    /// it in whatever shape its language allows. It stays a <c>Behaviour</c> — <c>Capability</c> is
+    /// reachability, and <c>IVC-LIFE-006</c> already holds that Kind for the depth-resolved read
+    /// itself. Discharged by <c>Verifier.VerifyDepthCapability</c>, called from
+    /// <c>CrudRoundtripScenario</c>'s read phase against each driver's OWN depth-1 read
     /// (<c>get_depth1</c> step) after <c>IVC-LIFE-006</c>'s reachability assertion has already
     /// fired separately on the same step. This requires at least one of the descriptor's own
-    /// relations to have actually hydrated (a nav property carrying an object with its own key) in
-    /// the JSON the DRIVER itself reported back — a driver that reaches the depth-1 read but
+    /// relations to have actually carried its related object's data (a nav property, or — when
+    /// that yields nothing — the hydration-carrier property — carrying an object with its own key)
+    /// in the JSON the DRIVER itself reported back — a driver that reaches the depth-1 read but
     /// discards the hydrated payload (no field on its typed model to receive it) fails only this
     /// requirement, not <c>IVC-LIFE-006</c>. Known to fail live for Python, TypeScript, Go and
     /// Java; see the standard's LIFE section "Known non-conformance".
     /// </summary>
-    public const string LifeDepthResolvedReadHydrated = "IVC-LIFE-007";
+    public const string LifeDepthResolvedReadHydrated = "IVC-LIFE-008";
 
     // ── REG — Registration ──────────────────────────────────────────────────────────────────
 

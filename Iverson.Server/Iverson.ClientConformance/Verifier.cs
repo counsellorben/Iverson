@@ -416,7 +416,7 @@ public static class Verifier
     /// Judges IVC-LIFE-006 — the reachability half of the retired IVC-LIFE-005: whether a
     /// driver's own depth-1 read (the "get_depth1" step) is reachable through the client's
     /// public API at all, independent of whether the entity it returns is actually hydrated
-    /// (that is IVC-LIFE-007, judged separately by <see cref="VerifyDepthCapability"/>).
+    /// (that is IVC-LIFE-008, judged separately by <see cref="VerifyDepthCapability"/>).
     /// Extracted to a pure, unit-testable function — rather than left as an anonymous
     /// invocation of <c>CrudRoundtripScenario.RequireStepOk</c>'s generic step-success check —
     /// so reachability's falsifiability does not rest solely on the live matrix.
@@ -429,21 +429,28 @@ public static class Verifier
             Requirements.LifeDepthResolvedReadReachable);
 
     /// <summary>
-    /// Judges IVC-LIFE-007 — the hydration half of the retired IVC-LIFE-005 (itself the successor
-    /// of IVC-REL-009) — from a DRIVER's own depth-1 read, never the orchestrator's
-    /// <c>MappingGet</c>. The orchestrator's own depth-1 read (used by
-    /// <see cref="VerifyRelationHydrated"/> above) proves the SERVER hydrates; it says nothing
-    /// about whether a given client's public API can express the request and materialize the
-    /// result. Reachability of the depth-1 read itself is judged separately by
+    /// Judges IVC-LIFE-008 — successor of the retired IVC-LIFE-007 (itself the hydration half of
+    /// the retired IVC-LIFE-005, itself the successor of IVC-REL-009) — from a DRIVER's own
+    /// depth-1 read, never the orchestrator's <c>MappingGet</c>. The orchestrator's own depth-1
+    /// read (used by <see cref="VerifyRelationHydrated"/> above) proves the SERVER hydrates; it
+    /// says nothing about whether a given client's public API can express the request and
+    /// materialize the result. Reachability of the depth-1 read itself is judged separately by
     /// <c>CrudRoundtripScenario.RequireStepOk</c> under IVC-LIFE-006; this method is what makes
     /// hydration a distinct, separately-gradable Behaviour: it requires at least one of the
-    /// descriptor's own relations to have actually hydrated (a nav property carrying an object
-    /// with its own key) in the JSON the DRIVER itself reported back.
+    /// descriptor's own relations to have actually carried its related object's data (a nav
+    /// property carrying an object with its own key) in the JSON the DRIVER itself reported back.
+    /// The lookup first tries the registered <c>PropertyName</c> at the reported entity's top
+    /// level; when that yields zero hydrated objects, it retries inside the hydration-carrier
+    /// property — the well-known member <c>Hydrated</c>, matched through <see cref="Normalize"/>.
+    /// The fallback is keyed on the hydrated-object COUNT rather than on the property's absence:
+    /// Go's <c>one_to_many</c> declared member sits at top level under exactly the registered
+    /// <c>PropertyName</c>, left empty, and would otherwise shadow the carrier entry if the
+    /// fallback fired only on absence.
     /// </summary>
     public static Assertion VerifyDepthCapability(string label, TypeDescriptor descriptor, JsonElement? depth1Entity)
     {
         var hydratedRelations = descriptor.Relations
-            .Where(r => CountHydratedObjects(FindProperty(depth1Entity, r.PropertyName)) > 0)
+            .Where(r => CountHydratedObjectsForRelation(depth1Entity, r.PropertyName) > 0)
             .Select(r => r.PropertyName)
             .ToList();
 
@@ -454,6 +461,33 @@ public static class Verifier
                 ? $"hydrated: [{string.Join(", ", hydratedRelations)}]"
                 : $"entity={(depth1Entity is null ? "(absent)" : depth1Entity.Value.GetRawText())}",
             Requirements.LifeDepthResolvedReadHydrated);
+    }
+
+    /// <summary>
+    /// The well-known name of the hydration-carrier property Go's driver reports hydrated
+    /// children under, since Go's fixed struct fields cannot materialize a navigation member the
+    /// model never declared. Matched through <see cref="Normalize"/>, like every other property
+    /// lookup in this file.
+    /// </summary>
+    private const string HydrationCarrierPropertyName = "Hydrated";
+
+    /// <summary>
+    /// Counts hydrated objects for one relation, trying the registered <c>PropertyName</c> at the
+    /// reported entity's top level first and, only when that yields zero, retrying inside the
+    /// hydration-carrier property under the same relation name. Keyed on the COUNT rather than on
+    /// the top-level property's absence: Go's <c>one_to_many</c> declared member sits at top level
+    /// under exactly <paramref name="propertyName"/>, left at its zero value, and an
+    /// absence-keyed fallback would let that empty declared member shadow the carrier entry
+    /// instead of falling through to it.
+    /// </summary>
+    private static int CountHydratedObjectsForRelation(JsonElement? depth1Entity, string propertyName)
+    {
+        var topLevelCount = CountHydratedObjects(FindProperty(depth1Entity, propertyName));
+        if (topLevelCount > 0)
+            return topLevelCount;
+
+        var carrier = FindProperty(depth1Entity, HydrationCarrierPropertyName);
+        return CountHydratedObjects(FindProperty(carrier, propertyName));
     }
 
     /// <summary>

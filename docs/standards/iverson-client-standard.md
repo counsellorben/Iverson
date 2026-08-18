@@ -256,7 +256,8 @@ implemented requirement.
 | IVC-LIFE-004 | Active | Behaviour | A delete removes the row such that neither the orchestrator's own gRPC read nor the Postgres row finds it afterward |
 | IVC-LIFE-005 | Retired | Capability | A depth-resolved read is reachable through the client's public API, and the entity it returns is hydrated at that depth |
 | IVC-LIFE-006 | Active | Capability | A depth-resolved read is reachable through the client's public API |
-| IVC-LIFE-007 | Active | Behaviour | The entity returned by a depth-resolved read is hydrated at that depth |
+| IVC-LIFE-007 | Retired | Behaviour | The entity returned by a depth-resolved read is hydrated at that depth |
+| IVC-LIFE-008 | Active | Behaviour | The entity returned by a depth-resolved read carries the related object's data, including that object's own key and not only the foreign key |
 
 `IVC-LIFE-005` is retired — it conflated two separate claims under one requirement. It named
 reachability (the call completes and returns an entity) and hydration (the returned entity actually
@@ -267,6 +268,21 @@ into `IVC-LIFE-006` (reachability, superseding the retired `IVC-REL-009`) and `I
 `IVC-LIFE-007` was never verified, and currently fails live for four of the five clients — see
 "Known non-conformance" below.
 
+`IVC-LIFE-007` is itself retired and re-authored as `IVC-LIFE-008`. Its statement — that the
+returned entity "is hydrated at that depth", graded by finding a navigation property carrying an
+object with its own key — encodes .NET's object shape: a navigation member the client materializes
+under a particular name. That is what made four clients that reach the depth-resolved read and
+actually materialize the hydrated data fail it, because their model shape differs from .NET's.
+`IVC-LIFE-008` is framed as an observable property of what the operation returns — that the entity
+carries the related object's data, including that object's own key and not only the foreign key —
+rather than as a claim about a member's reachability or name. `Behaviour` is the correct Kind for
+this framing: `Behaviour` covers other observable effects of an operation, whereas `Capability` is
+reachability, and `IVC-LIFE-006` already holds `Capability` for the depth-resolved read itself.
+Framing the successor as reachability would have made the two rows share a Kind and carry their
+whole distinction in prose, which is what `IVC-LIFE-005` was retired for. The statement names no
+member, type or signature detail, so each client satisfies it in whatever shape its language
+allows.
+
 #### Coverage
 
 | Area | Status | Evidence |
@@ -276,7 +292,7 @@ into `IVC-LIFE-006` (reachability, superseding the retired `IVC-REL-009`) and `I
 | Update observable in a subsequent read | Covered | IVC-LIFE-003 |
 | Delete removes the row on every leg | Covered | IVC-LIFE-004 |
 | Depth-resolved read reachability | Covered | IVC-LIFE-006 |
-| Depth-resolved read hydration | Covered | IVC-LIFE-007 |
+| Depth-resolved read hydration | Covered | IVC-LIFE-008 |
 
 #### Known non-conformance (non-normative)
 
