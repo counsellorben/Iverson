@@ -177,8 +177,18 @@ kinds. This is a consequence of the change, not additional scope: the same code 
 `IVC-LIFE-007` is retired and re-authored. Its current statement — that the returned entity "is
 hydrated at that depth", graded by finding a navigation property carrying an object with its own key
 — encodes .NET's object shape, which is what made four clients that reach and materialize the data
-fail it. The successor asserts that a depth-resolved read makes the related object reachable through
-the client's own object model, carrying its own key.
+fail it. The successor is authored `Active | Behaviour`, and asserts that the entity a depth-resolved
+read returns carries the related object's data, including that object's own key and not only the
+foreign key.
+
+The statement is framed as an observable property of what the operation returns rather than as a
+claim about what is reachable. That is deliberate: `Behaviour` covers "other observable effects of an
+operation" as well as the wire, whereas `Capability` is reachability — the Kind `IVC-LIFE-006`
+already holds for the depth-resolved read itself. Framing the successor as reachability would have
+made the two rows share a Kind and carry their whole distinction in prose, which is what
+`IVC-LIFE-005` was retired for. The rewording does not reopen decision 2: the statement still names
+no member, type or signature detail, so each client satisfies it in whatever shape its language
+allows, and it is still judged on what the client hands the caller.
 
 `VerifyDepthCapability` finds it by looking for the registered `PropertyName` at the reported
 entity's top level and, when that yields no hydrated objects, inside a hydration-carrier property.
