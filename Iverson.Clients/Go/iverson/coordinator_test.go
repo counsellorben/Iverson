@@ -166,6 +166,265 @@ func TestStructToEntity_OneToMany_HydratedChildStructsLeaveFieldEmpty(t *testing
 	}
 }
 
+// ── Hydrated-carrier fixtures ───────────────────────────────────────────────
+//
+// Mirrors conformance/models.go's GoAuthor/GoArticle/GoTag triple (same relation
+// shapes: many_to_one, many_to_many, one_to_one via a second singular FK to the
+// many_to_many's own related type, and the reverse one_to_many), but declares a
+// Hydrated map[string]any carrier on every type so structToEntity's population
+// path and entityToStruct's write-path exclusion can be exercised directly.
+
+type HydTag struct {
+	Id       string `iverson_key:"true"`
+	TenantId string `iverson_tenant:"true"`
+	Label    string
+	Hydrated map[string]any
+}
+
+type HydAuthor struct {
+	Id          string `iverson_key:"true"`
+	TenantId    string `iverson_tenant:"true"`
+	Name        string
+	HydArticles []string `iverson:"one_to_many:HydArticle"`
+	Hydrated    map[string]any
+}
+
+type HydArticle struct {
+	Id          string `iverson_key:"true"`
+	TenantId    string `iverson_tenant:"true"`
+	Title       string
+	HydAuthorId string   `iverson:"many_to_one:HydAuthor"`
+	HydTagIds   []string `iverson:"many_to_many:HydTag"`
+	HydTagId    string   `iverson:"one_to_one:HydTag"`
+	Hydrated    map[string]any
+}
+
+// HydUnregistered relates to a type that is never passed through buildRequest, so
+// registeredTypes never gets an entry for it — the fallback path for an unregistered
+// related type.
+type HydUnregistered struct {
+	Id                string `iverson_key:"true"`
+	TenantId          string `iverson_tenant:"true"`
+	NeverSeenAuthorId string `iverson:"many_to_one:NeverSeenAuthor"`
+}
+
+// registerHydFixtures registers HydAuthor, HydArticle, and HydTag in the package-level
+// registeredTypes registry by calling buildRequest directly (no RPC involved — the
+// registration side effect happens purely from reflecting on the type), so hydration
+// tests can resolve HydAuthor/HydTag by name via lookupRegisteredType.
+func registerHydFixtures(t *testing.T) {
+	t.Helper()
+	r := NewSchemaRegistrar(nil)
+	for _, e := range []interface{}{HydAuthor{}, HydArticle{}, HydTag{}} {
+		if _, err := r.buildRequest(e, "trace", nil); err != nil {
+			t.Fatalf("buildRequest(%T): %v", e, err)
+		}
+	}
+}
+
+func TestBuildRequest_HydratedCarrier_RegistersSuccessfully(t *testing.T) {
+	// This is what Step 1's InspectType exclusion buys. Without it, the Hydrated
+	// map[string]any field still reaches this point (goTypeToClr's default case
+	// falls back to CLR_STRING for an unrecognized kind rather than erroring), but
+	// it is wrongly registered as a bogus scalar "Hydrated" property on the
+	// server-side schema — a silent corruption, not a client-side failure. Assert
+	// its absence from the built properties, which is the part that actually
+	// reddens when the exclusion is reverted.
+	r := NewSchemaRegistrar(nil, HydArticle{})
+	req, err := r.buildRequest(HydArticle{}, "trace", nil)
+	if err != nil {
+		t.Fatalf("expected registration to succeed with a Hydrated carrier field, got: %v", err)
+	}
+	for _, p := range req.RootType.Properties {
+		if p.Name == HydratedFieldName {
+			t.Fatalf("Hydrated must not be registered as a schema property, got: %+v", req.RootType.Properties)
+		}
+	}
+}
+
+func TestStructToEntity_HydratesManyToOneManyToManyAndOneToOne(t *testing.T) {
+	registerHydFixtures(t)
+
+	authorStruct, err := structpb.NewStruct(map[string]interface{}{"Id": "auth-1", "Name": "Ben"})
+	if err != nil {
+		t.Fatalf("structpb.NewStruct: %v", err)
+	}
+	tag1Struct, err := structpb.NewStruct(map[string]interface{}{"Id": "tag-1", "Label": "go"})
+	if err != nil {
+		t.Fatalf("structpb.NewStruct: %v", err)
+	}
+	tag2Struct, err := structpb.NewStruct(map[string]interface{}{"Id": "tag-2", "Label": "grpc"})
+	if err != nil {
+		t.Fatalf("structpb.NewStruct: %v", err)
+	}
+	singleTagStruct, err := structpb.NewStruct(map[string]interface{}{"Id": "tag-3", "Label": "singular"})
+	if err != nil {
+		t.Fatalf("structpb.NewStruct: %v", err)
+	}
+
+	s := &structpb.Struct{
+		Fields: map[string]*structpb.Value{
+			"Id":          structpb.NewStringValue("art-1"),
+			"TenantId":    structpb.NewStringValue("t1"),
+			"Title":       structpb.NewStringValue("hello"),
+			"HydAuthorId": structpb.NewStringValue("auth-1"),
+			// "HydAuthor" is the wire (nav-property) name relationPropertyName derives
+			// for a many_to_one field named HydAuthorId.
+			"HydAuthor": structpb.NewStructValue(authorStruct),
+			"HydTagIds": structpb.NewListValue(&structpb.ListValue{
+				Values: []*structpb.Value{structpb.NewStringValue("tag-1"), structpb.NewStringValue("tag-2")},
+			}),
+			"HydTags": structpb.NewListValue(&structpb.ListValue{
+				Values: []*structpb.Value{structpb.NewStructValue(tag1Struct), structpb.NewStructValue(tag2Struct)},
+			}),
+			"HydTagId": structpb.NewStringValue("tag-3"),
+			"HydTag":   structpb.NewStructValue(singleTagStruct),
+		},
+	}
+
+	got, err := structToEntity[HydArticle](s)
+	if err != nil {
+		t.Fatalf("structToEntity: %v", err)
+	}
+
+	author, ok := got.Hydrated["HydAuthor"].(*HydAuthor)
+	if !ok {
+		t.Fatalf("Hydrated[HydAuthor] = %T, want *HydAuthor", got.Hydrated["HydAuthor"])
+	}
+	if author.Id != "auth-1" || author.Name != "Ben" {
+		t.Errorf("hydrated author = %+v, want Id=auth-1 Name=Ben", author)
+	}
+
+	tags, ok := got.Hydrated["HydTags"].([]*HydTag)
+	if !ok {
+		t.Fatalf("Hydrated[HydTags] = %T, want []*HydTag", got.Hydrated["HydTags"])
+	}
+	if len(tags) != 2 || tags[0].Id != "tag-1" || tags[1].Id != "tag-2" {
+		t.Errorf("hydrated tags = %+v, want [tag-1 tag-2]", tags)
+	}
+
+	singleTag, ok := got.Hydrated["HydTag"].(*HydTag)
+	if !ok {
+		t.Fatalf("Hydrated[HydTag] = %T, want *HydTag", got.Hydrated["HydTag"])
+	}
+	if singleTag.Id != "tag-3" || singleTag.Label != "singular" {
+		t.Errorf("hydrated single tag = %+v, want Id=tag-3 Label=singular", singleTag)
+	}
+}
+
+func TestStructToEntity_OneToMany_HydratesCarrierWhileDeclaredMemberStaysEmpty(t *testing.T) {
+	registerHydFixtures(t)
+
+	child1, err := structpb.NewStruct(map[string]interface{}{"Id": "art-1", "Title": "one"})
+	if err != nil {
+		t.Fatalf("structpb.NewStruct: %v", err)
+	}
+	child2, err := structpb.NewStruct(map[string]interface{}{"Id": "art-2", "Title": "two"})
+	if err != nil {
+		t.Fatalf("structpb.NewStruct: %v", err)
+	}
+
+	s := &structpb.Struct{
+		Fields: map[string]*structpb.Value{
+			"Id":       structpb.NewStringValue("auth-1"),
+			"TenantId": structpb.NewStringValue("t1"),
+			"Name":     structpb.NewStringValue("Ben"),
+			"HydArticles": structpb.NewListValue(&structpb.ListValue{
+				Values: []*structpb.Value{structpb.NewStructValue(child1), structpb.NewStructValue(child2)},
+			}),
+		},
+	}
+
+	got, err := structToEntity[HydAuthor](s)
+	if err != nil {
+		t.Fatalf("structToEntity: %v", err)
+	}
+
+	if len(got.HydArticles) != 0 {
+		t.Errorf("HydArticles = %+v, want empty: the declared []string member has no struct case in protoValueToGoValue", got.HydArticles)
+	}
+
+	articles, ok := got.Hydrated["HydArticles"].([]*HydArticle)
+	if !ok {
+		t.Fatalf("Hydrated[HydArticles] = %T, want []*HydArticle", got.Hydrated["HydArticles"])
+	}
+	if len(articles) != 2 || articles[0].Id != "art-1" || articles[1].Id != "art-2" {
+		t.Errorf("hydrated articles = %+v, want [art-1 art-2]", articles)
+	}
+}
+
+func TestEntityToStruct_HydratedCarrier_ExcludedFromWrite(t *testing.T) {
+	entity := HydArticle{
+		Id:          "art-1",
+		TenantId:    "t1",
+		Title:       "hello",
+		HydAuthorId: "auth-1",
+		Hydrated:    map[string]any{"HydAuthor": &HydAuthor{Id: "auth-1"}},
+	}
+	s, err := entityToStruct(entity)
+	if err != nil {
+		t.Fatalf("entityToStruct: %v", err)
+	}
+	if _, ok := s.Fields["Hydrated"]; ok {
+		t.Errorf("Hydrated must not appear in the write-path payload, fields: %+v", s.Fields)
+	}
+	if got := s.Fields["HydAuthorId"].GetStringValue(); got != "auth-1" {
+		t.Errorf("HydAuthorId = %q, want auth-1", got)
+	}
+}
+
+func TestStructToEntity_UnregisteredRelatedType_FallsBackToUntypedChild(t *testing.T) {
+	r := NewSchemaRegistrar(nil, HydUnregistered{})
+	if _, err := r.buildRequest(HydUnregistered{}, "trace", nil); err != nil {
+		t.Fatalf("buildRequest: %v", err)
+	}
+	// HydUnregistered itself has no Hydrated field, so structToEntity[HydUnregistered]
+	// can't demonstrate the fallback; the fallback lives in populateHydrated, keyed on
+	// whether the RELATED type ("NeverSeenAuthor") was ever registered, which it never
+	// is here. Exercise it through HydArticle's HydAuthor relation by pointing the wire
+	// payload's related-type name at one that was never registered.
+	//
+	// Simplest faithful reproduction: hydrate an HydArticle whose registered
+	// HydAuthor relation resolves fine, but assert the *unregistered* case directly by
+	// clearing the registry entry for HydAuthor first.
+	registeredTypesMu.Lock()
+	delete(registeredTypes, "HydAuthor")
+	registeredTypesMu.Unlock()
+	t.Cleanup(func() {
+		registerHydFixtures(t)
+	})
+
+	authorStruct, err := structpb.NewStruct(map[string]interface{}{"Id": "auth-1", "Name": "Ben"})
+	if err != nil {
+		t.Fatalf("structpb.NewStruct: %v", err)
+	}
+	s := &structpb.Struct{
+		Fields: map[string]*structpb.Value{
+			"Id":          structpb.NewStringValue("art-1"),
+			"TenantId":    structpb.NewStringValue("t1"),
+			"Title":       structpb.NewStringValue("hello"),
+			"HydAuthorId": structpb.NewStringValue("auth-1"),
+			"HydAuthor":   structpb.NewStructValue(authorStruct),
+		},
+	}
+
+	got, err := structToEntity[HydArticle](s)
+	if err != nil {
+		t.Fatalf("structToEntity: %v", err)
+	}
+
+	if _, ok := got.Hydrated["HydAuthor"].(*HydAuthor); ok {
+		t.Fatalf("HydAuthor should not be a typed *HydAuthor once unregistered")
+	}
+	m, ok := got.Hydrated["HydAuthor"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("Hydrated[HydAuthor] = %T, want untyped map[string]interface{} fallback", got.Hydrated["HydAuthor"])
+	}
+	if m["Id"] != "auth-1" {
+		t.Errorf("untyped fallback = %+v, want Id=auth-1", m)
+	}
+}
+
 // propsByName indexes a built request's synthesized properties for assertion.
 func propsByName(t *testing.T, e interface{}) map[string]*pb.PropertyDescriptor {
 	t.Helper()

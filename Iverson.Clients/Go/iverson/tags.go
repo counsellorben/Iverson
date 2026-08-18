@@ -117,6 +117,19 @@ const EmbeddingTagKey = "iverson_embedding"
 // window size, or "256:32" for window size and overlap.
 const ChunkTagKey = "iverson_chunk"
 
+// HydratedFieldName is the well-known name of the carrier field a struct declares to
+// receive depth-resolved related objects: `Hydrated map[string]any`, keyed by each
+// relation's wire (nav-property) name. reflect can set a struct's existing fields but
+// never add one, so Go — unlike the other four clients — cannot materialize an
+// undeclared navigation member at read time; this field is the declared landing spot
+// instead. The name must be well-known rather than tag-driven: the server-side
+// conformance verifier's fallback (Task 1) locates the carrier in a driver's JSON
+// report by this exact name, and a tag would let it be called anything, defeating
+// that lookup. It is excluded from schema-metadata extraction (InspectType, below),
+// from write-path serialization (entityToStruct), and populated only on the read path
+// (structToEntity).
+const HydratedFieldName = "Hydrated"
+
 // Kind constants for relation tag values.
 const (
 	KindManyToOne  = "many_to_one"
@@ -227,6 +240,12 @@ func InspectType(v interface{}) (EntityMeta, error) {
 
 	for i := 0; i < t.NumField(); i++ {
 		sf := t.Field(i)
+		if sf.Name == HydratedFieldName {
+			// The read-path carrier for hydrated relation children (map[string]any)
+			// isn't schema metadata at all — goTypeToClr has no mapping for a map
+			// type, so leaving it in this walk fails Register outright.
+			continue
+		}
 		tagValue := sf.Tag.Get(TagKey)
 		fm, err := ParseTag(sf.Name, tagValue)
 		if err != nil {

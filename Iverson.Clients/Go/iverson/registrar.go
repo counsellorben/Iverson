@@ -5,9 +5,31 @@ import (
 	"fmt"
 	"math"
 	"reflect"
+	"sync"
 
 	pb "github.com/iverson/clients/go/generated"
 )
+
+// registeredTypes maps a registered entity's simple type name (e.g. "GoAuthor") to its
+// reflect.Type, so structToEntity[T] can resolve a related type for hydration by name
+// alone. It must be package-level: structToEntity[T] (coordinator.go) takes only a
+// *structpb.Struct and has no SchemaRegistrar instance to reach through, and every one
+// of its seven call sites in coordinator.go would need to change to thread one through.
+var (
+	registeredTypesMu sync.RWMutex
+	registeredTypes   = make(map[string]reflect.Type)
+)
+
+// lookupRegisteredType resolves a relation's RelatedType name to the reflect.Type a
+// prior Register call recorded for it. Returns false if the type was never registered
+// (e.g. registered only by a different client, or not yet registered at all) — the
+// caller falls back to storing the untyped child rather than failing the read.
+func lookupRegisteredType(name string) (reflect.Type, bool) {
+	registeredTypesMu.RLock()
+	defer registeredTypesMu.RUnlock()
+	t, ok := registeredTypes[name]
+	return t, ok
+}
 
 // MappingClient is the interface for the ObjectMappingService stub.
 // Defined as an interface so tests can provide a mock.
@@ -66,6 +88,10 @@ func (r *SchemaRegistrar) buildRequest(e interface{}, traceID string, authByType
 	if t.Kind() == reflect.Ptr {
 		t = t.Elem()
 	}
+
+	registeredTypesMu.Lock()
+	registeredTypes[t.Name()] = t
+	registeredTypesMu.Unlock()
 
 	properties := make([]*pb.PropertyDescriptor, 0, len(meta.Fields))
 	for _, fm := range meta.Fields {

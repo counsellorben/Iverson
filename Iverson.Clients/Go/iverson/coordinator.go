@@ -497,6 +497,12 @@ func entityToStruct(entity interface{}) (*structpb.Struct, error) {
 
 	for i := 0; i < t.NumField(); i++ {
 		sf := t.Field(i)
+		if sf.Name == HydratedFieldName {
+			// The read-path carrier is never a write-side field: it holds pointers
+			// to related rows the server injected on a prior depth-resolved read,
+			// not data this write should send back under its own name.
+			continue
+		}
 		fv := v.Field(i)
 
 		var fm FieldMeta
@@ -618,21 +624,42 @@ func structToEntity[T any](s *structpb.Struct) (T, error) {
 		t = t.Elem()
 	}
 
+	v, err := fillEntityValue(s, t)
+	if err != nil {
+		return zero, err
+	}
+	return v.Interface().(T), nil
+}
+
+// fillEntityValue reflects over struct type t, filling its scalar and foreign-key
+// fields from s, then populating its Hydrated carrier (if the type declares one) with
+// any related-row children the server attached for a depth-resolved read. Factored out
+// of structToEntity so hydration can recurse into related types by reflect.Type alone —
+// structToEntity's own type parameter T can't be threaded down to a related type chosen
+// at runtime from the registeredTypes registry.
+func fillEntityValue(s *structpb.Struct, t reflect.Type) (reflect.Value, error) {
 	v := reflect.New(t).Elem()
 
 	for i := 0; i < t.NumField(); i++ {
 		sf := t.Field(i)
+		if sf.Name == HydratedFieldName {
+			continue
+		}
 
 		key := sf.Name
 		tag := sf.Tag.Get(TagKey)
 		if tag != "" {
 			fm, err := ParseTag(sf.Name, tag)
 			if err != nil {
-				return zero, fmt.Errorf("field %s: %w", sf.Name, err)
+				return reflect.Value{}, fmt.Errorf("field %s: %w", sf.Name, err)
 			}
 			// The server injects hydrated child structs under the field's own name
 			// on depth-resolved reads for the inverse (OneToMany) side; that isn't
-			// a foreign-key list and must not be parsed as one.
+			// a foreign-key list and must not be parsed as one. (Its hydrated
+			// children still land in Hydrated, below — this only guards the
+			// declared []string-of-ids member, which has no struct case in
+			// protoValueToGoValue and would otherwise silently fill with one
+			// empty string per related row.)
 			if fm.RelationKind == KindOneToMany {
 				continue
 			}
@@ -647,11 +674,97 @@ func structToEntity[T any](s *structpb.Struct) (T, error) {
 		}
 		fv := v.Field(i)
 		if err := protoValueToGoValue(pbVal, fv, sf.Type); err != nil {
-			return zero, fmt.Errorf("field %s: %w", sf.Name, err)
+			return reflect.Value{}, fmt.Errorf("field %s: %w", sf.Name, err)
 		}
 	}
 
-	return v.Interface().(T), nil
+	if err := populateHydrated(s, t, v); err != nil {
+		return reflect.Value{}, err
+	}
+
+	return v, nil
+}
+
+// populateHydrated fills t's Hydrated map[string]any carrier (if declared) with typed
+// pointers to related rows the server attached for a depth-resolved read, keyed by each
+// relation's wire (nav-property) name — the same name the schema registers and the
+// server-side conformance verifier looks under. Every relation kind lands here,
+// including one_to_many, since Go's declared []string member for that kind cannot hold
+// a struct. If the related type was never registered client-side, the raw (untyped)
+// wire value is stored instead of failing the read.
+func populateHydrated(s *structpb.Struct, t reflect.Type, v reflect.Value) error {
+	hf, ok := t.FieldByName(HydratedFieldName)
+	if !ok || hf.Type.Kind() != reflect.Map {
+		return nil
+	}
+
+	meta, err := InspectType(reflect.New(t).Interface())
+	if err != nil {
+		// Best-effort: a type whose own metadata doesn't parse can't tell us its
+		// relations' wire names, but that shouldn't fail an otherwise-successful
+		// read of its scalar fields.
+		return nil
+	}
+
+	hydrated := make(map[string]any, len(meta.Relations))
+	for _, fm := range meta.Relations {
+		wireKey := relationPropertyName(fm)
+		pbVal, ok := s.Fields[wireKey]
+		if !ok {
+			continue
+		}
+
+		relatedType, registered := lookupRegisteredType(fm.RelatedType)
+
+		switch fm.RelationKind {
+		case KindManyToMany, KindOneToMany:
+			lv := pbVal.GetListValue()
+			if lv == nil {
+				continue
+			}
+			if !registered {
+				hydrated[wireKey] = pbVal.AsInterface()
+				continue
+			}
+			items := reflect.MakeSlice(reflect.SliceOf(reflect.PointerTo(relatedType)), 0, len(lv.Values))
+			for _, elemVal := range lv.Values {
+				elemStruct := elemVal.GetStructValue()
+				if elemStruct == nil {
+					continue
+				}
+				childVal, err := fillEntityValue(elemStruct, relatedType)
+				if err != nil {
+					return fmt.Errorf("hydrating %s: %w", wireKey, err)
+				}
+				ptr := reflect.New(relatedType)
+				ptr.Elem().Set(childVal)
+				items = reflect.Append(items, ptr)
+			}
+			hydrated[wireKey] = items.Interface()
+
+		case KindManyToOne, KindOneToOne:
+			structVal := pbVal.GetStructValue()
+			if structVal == nil {
+				continue
+			}
+			if !registered {
+				hydrated[wireKey] = pbVal.AsInterface()
+				continue
+			}
+			childVal, err := fillEntityValue(structVal, relatedType)
+			if err != nil {
+				return fmt.Errorf("hydrating %s: %w", wireKey, err)
+			}
+			ptr := reflect.New(relatedType)
+			ptr.Elem().Set(childVal)
+			hydrated[wireKey] = ptr.Interface()
+		}
+	}
+
+	if len(hydrated) > 0 {
+		v.FieldByName(HydratedFieldName).Set(reflect.ValueOf(hydrated))
+	}
+	return nil
 }
 
 // protoValueToGoValue sets a struct field from a structpb.Value.

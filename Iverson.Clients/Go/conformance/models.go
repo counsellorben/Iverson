@@ -17,6 +17,12 @@ type GoAuthor struct {
 	OwnerId    string
 	Name       string
 	GoArticles []string `iverson:"one_to_many:GoArticle"`
+	// Hydrated is the read-path carrier for depth-resolved relation children (see
+	// iverson.HydratedFieldName). GoArticles can't hold them: it's declared []string
+	// (a foreign-key id list), and protoValueToGoValue has no struct case, so routing
+	// hydrated GoArticle structs there would silently fill it with one empty string
+	// per related row.
+	Hydrated map[string]any
 }
 
 // GoTag is the S1 tag entity.
@@ -41,6 +47,10 @@ type GoArticle struct {
 	// collide with the many_to_many's plural "GoTagIds" — exercising one_to_one end to end
 	// without a whole new entity type.
 	GoTagId string `iverson:"one_to_one:GoTag"`
+	// Hydrated is the read-path carrier for depth-resolved relation children (see
+	// iverson.HydratedFieldName): GoAuthor, GoTags, and GoTag land here under their
+	// wire (nav-property) names on a depth-resolved read.
+	Hydrated map[string]any
 }
 
 // SharedAuthor and SharedArticle are S4 interop's fixtures. Every one of the five drivers declares
