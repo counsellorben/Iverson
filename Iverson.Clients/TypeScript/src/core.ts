@@ -62,6 +62,7 @@ import {
     getMetadataFields,
     getPropertyDescriptions,
     getRelations,
+    getRelationsWithFactory,
     getSearchKeys,
     getSummaryFields,
     getTenantFields,
@@ -115,6 +116,25 @@ function relationPropertyName(kind: RelationKindString, field: string): string {
         }
     }
     return pascal;
+}
+
+/**
+ * Derive the JS member name a hydrated relation lands on (read path) — the same
+ * suffix-strip-plus-plural derivation as `relationPropertyName`, but applied directly to the
+ * camelCase declared field (no Pascal round trip), since this names an actual JS instance
+ * property rather than a wire column. many_to_one/one_to_one strip the trailing "Id";
+ * many_to_many strips "Ids" and appends "s" (so `tsTagIds` -> `tsTags` stays distinct from
+ * `tsTagId` -> `tsTag`, the same-related-type collision the conformance model exercises).
+ * one_to_many has no derived name: its declared member is already the navigation member.
+ */
+function relationNavMember(kind: RelationKindString, field: string): string {
+    if ((kind === 'many_to_one' || kind === 'one_to_one') && field.length > 2 && field.endsWith('Id')) {
+        return field.slice(0, -2);
+    }
+    if (kind === 'many_to_many' && field.length > 3 && field.endsWith('Ids')) {
+        return field.slice(0, -3) + 's';
+    }
+    return field;
 }
 
 /** Infer FK column name from relation metadata. */
@@ -466,9 +486,20 @@ export class SchemaRegistrar {
 function entityToPayload(entity: object, cls: Function): Record<string, unknown> {
     const payload: Record<string, unknown> = {};
     const typeName = cls.name;
-    const relationByField = new Map(getRelations(cls).map(r => [r.field, r] as const));
+    const relations = getRelations(cls);
+    const relationByField = new Map(relations.map(r => [r.field, r] as const));
+    // Members the read path may have hydrated (payloadToEntity) onto a derived navigation name
+    // must never be written back — entityToPayload walks the live instance's own property names,
+    // so a hydrated `tsAuthor` would otherwise round-trip as `TsAuthor`, violating the FK-only
+    // write contract (A23). one_to_many has no derived name; it's excluded below via its kind.
+    const excludedNavMembers = new Set(
+        relations
+            .filter(r => r.kind !== 'one_to_many')
+            .map(r => relationNavMember(r.kind, r.field)),
+    );
     const allFields = Object.getOwnPropertyNames(entity);
     for (const field of allFields) {
+        if (excludedNavMembers.has(field)) continue;
         const value = (entity as Record<string, unknown>)[field];
         if (value === undefined) continue;
         const rel = relationByField.get(field);
@@ -499,6 +530,45 @@ function payloadToEntity<T extends object>(cls: new () => T, data: Record<string
             instance[field] = data[key];
         }
     }
+
+    // Hydrate typed relation children for a depth-resolved read. Runs after the scalar pass
+    // above, which already assigned the raw FK scalar/id-list under its declared field; a
+    // hydrated relation lands on a distinct derived navigation member (many_to_one, one_to_one,
+    // many_to_many) or overwrites the declared member in place (one_to_many, which has no
+    // derived name). The wire key for the nested value is the schema's navigation property
+    // name (relationPropertyName), a separate wire column from the FK scalar/id-list.
+    for (const rel of getRelationsWithFactory(cls as unknown as Function)) {
+        if (rel.kind === 'one_to_many') {
+            const wireKey = relationPropertyName(rel.kind, rel.field);
+            const raw = data[wireKey];
+            if (!Array.isArray(raw)) continue;
+            const relatedCls = rel.typeFactory() as new () => object;
+            instance[rel.field] = raw.map(item => payloadToEntity(relatedCls, item as Record<string, unknown>));
+            continue;
+        }
+
+        const navMember = relationNavMember(rel.kind, rel.field);
+        if (navMember in template) {
+            throw new Error(
+                `${typeName}: relation '${rel.field}' would hydrate into member '${navMember}', ` +
+                `but '${navMember}' is already a declared field on ${typeName}. Rename one of them.`,
+            );
+        }
+
+        const wireKey = relationPropertyName(rel.kind, rel.field);
+        const raw = data[wireKey];
+        if (raw === undefined || raw === null) continue;
+        const relatedCls = rel.typeFactory() as new () => object;
+
+        if (rel.kind === 'many_to_many') {
+            if (!Array.isArray(raw)) continue;
+            instance[navMember] = raw.map(item => payloadToEntity(relatedCls, item as Record<string, unknown>));
+        } else {
+            if (typeof raw !== 'object' || Array.isArray(raw)) continue;
+            instance[navMember] = payloadToEntity(relatedCls, raw as Record<string, unknown>);
+        }
+    }
+
     return instance as T;
 }
 

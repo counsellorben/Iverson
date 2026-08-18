@@ -337,7 +337,7 @@ export function getPropertyDescriptions(target: Function): Record<string, string
 
 // ── Relation decorators ────────────────────────────────────────────────────────
 
-interface PendingRelationMeta {
+export interface PendingRelationMeta {
     field: string;
     kind: RelationKindString;
     typeFactory: () => Function;
@@ -391,4 +391,15 @@ export function getRelations(target: Function): RelationMeta[] {
         kind,
         relatedType: typeFactory().name,
     }));
+}
+
+/**
+ * Like `getRelations`, but returns the raw, unresolved `typeFactory` instead of collapsing it
+ * to a name. `getRelations` is public API with production and test call sites that depend on
+ * its name-only shape, so it is left untouched; the read path needs the actual related class
+ * (not just its name) to construct and recursively hydrate a typed instance, and the only place
+ * that can hand that out is here, since `IVERSON_RELATIONS` is module-private to this file.
+ */
+export function getRelationsWithFactory(target: Function): PendingRelationMeta[] {
+    return Reflect.getMetadata(IVERSON_RELATIONS, target) ?? [];
 }

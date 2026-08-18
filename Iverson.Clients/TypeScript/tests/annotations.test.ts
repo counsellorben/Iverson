@@ -23,6 +23,7 @@ import {
     getTypeDescription,
     getPropertyDescriptions,
     getRelations,
+    getRelationsWithFactory,
 } from '../src/annotations.js';
 
 // ── Test entities ─────────────────────────────────────────────────────────────
@@ -218,6 +219,22 @@ describe('Relation decorators', () => {
 
     it('returns empty array when no relations', () => {
         expect(getRelations(TestAuthor)).toHaveLength(0);
+    });
+});
+
+describe('getRelationsWithFactory', () => {
+    it('returns the unresolved typeFactory alongside field and kind', () => {
+        const relations = getRelationsWithFactory(TestArticle);
+        expect(relations).toHaveLength(1);
+        expect(relations[0].field).toBe('authorId');
+        expect(relations[0].kind).toBe('many_to_one');
+        expect(typeof relations[0].typeFactory).toBe('function');
+        // Unlike getRelations, the factory itself is handed back, not collapsed to a name.
+        expect(relations[0].typeFactory()).toBe(TestAuthor);
+    });
+
+    it('returns empty array when no relations', () => {
+        expect(getRelationsWithFactory(TestAuthor)).toHaveLength(0);
     });
 });
 

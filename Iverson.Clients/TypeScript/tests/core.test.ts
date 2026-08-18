@@ -25,6 +25,7 @@ import {
     ManyToMany,
     ManyToOne,
     OneToMany,
+    OneToOne,
 } from '../src/annotations.js';
 import { ACTING_USER_METADATA_KEY } from '../src/auth.js';
 import { describeEntity, EntityCoordinator, IversonClient } from '../src/core.js';
@@ -606,5 +607,185 @@ describe('read/write round-trip — ManyToMany FK column symmetry', () => {
         getResponse.data = payload;
         const readBack = await coordinator.get('k1');
         expect(readBack?.contributorIds).toEqual(['a1', 'a2']);
+    });
+});
+
+// ── Depth-resolved read hydration ────────────────────────────────────────────
+
+@IversonEntity()
+class HydTag {
+    @IversonKey()
+    id: string = '';
+    label: string = '';
+}
+
+@IversonEntity()
+class HydArticle {
+    @IversonKey()
+    id: string = '';
+
+    @OneToMany(() => HydArticle)
+    hydArticles: HydArticle[] = [];
+}
+
+@IversonEntity()
+class HydAuthor {
+    @IversonKey()
+    id: string = '';
+    name: string = '';
+
+    @OneToMany(() => HydArticle)
+    hydArticles: HydArticle[] = [];
+}
+
+@IversonEntity()
+class HydArticleFull {
+    @IversonKey()
+    id: string = '';
+    title: string = '';
+
+    @ManyToOne(() => HydAuthor)
+    hydAuthorId: string = '';
+
+    @ManyToMany(() => HydTag)
+    hydTagIds: string[] = [];
+
+    // Second relation to the many_to_many's own related type, through the singular FK, to
+    // prove `hydTagIds` -> `hydTags` and `hydTagId` -> `hydTag` land on distinct members.
+    @OneToOne(() => HydTag)
+    hydTagId: string = '';
+}
+
+@IversonEntity()
+class HydCollisionArticle {
+    @IversonKey()
+    id: string = '';
+
+    // Declared field collides with the member `hydAuthorId` would derive to.
+    hydAuthor: string = 'declared-value';
+
+    @ManyToOne(() => HydAuthor)
+    hydAuthorId: string = '';
+}
+
+describe('EntityCoordinator — depth-resolved relation hydration (read path)', () => {
+    it('many_to_one hydrates a typed instance on the derived singular member', async () => {
+        const { fn } = makeUnaryStub<MappingGetRequest, MappingResponse>({
+            success: true,
+            data: {
+                Id: 'a1',
+                Title: 'T',
+                HydAuthorId: 'auth-1',
+                HydAuthor: { Id: 'auth-1', Name: 'Ada' },
+            },
+            error: '',
+            traceId: '',
+        });
+        const client = makeClientLike({ _mappingClient: { get: fn } });
+        const coordinator = new EntityCoordinator(HydArticleFull, client);
+
+        const result = await coordinator.getMapped('a1', 1);
+
+        expect(result!.hydAuthorId).toBe('auth-1');
+        expect((result as unknown as Record<string, unknown>)['hydAuthor']).toBeInstanceOf(HydAuthor);
+        expect(((result as unknown as Record<string, unknown>)['hydAuthor'] as HydAuthor).name).toBe('Ada');
+    });
+
+    it('many_to_many hydrates typed instances on the plural member, distinct from one_to_one', async () => {
+        const { fn } = makeUnaryStub<MappingGetRequest, MappingResponse>({
+            success: true,
+            data: {
+                Id: 'a1',
+                Title: 'T',
+                HydTagIds: ['t1', 't2'],
+                HydTags: [{ Id: 't1', Label: 'x' }, { Id: 't2', Label: 'y' }],
+                HydTagId: 't3',
+                HydTag: { Id: 't3', Label: 'z' },
+            },
+            error: '',
+            traceId: '',
+        });
+        const client = makeClientLike({ _mappingClient: { get: fn } });
+        const coordinator = new EntityCoordinator(HydArticleFull, client);
+
+        const result = await coordinator.getMapped('a1', 1);
+        const row = result as unknown as Record<string, unknown>;
+
+        expect(row['hydTags']).toBeInstanceOf(Array);
+        expect((row['hydTags'] as HydTag[]).map(t => t.label)).toEqual(['x', 'y']);
+        expect(row['hydTag']).toBeInstanceOf(HydTag);
+        expect((row['hydTag'] as HydTag).label).toBe('z');
+        // Distinct members: the plural relation didn't overwrite the singular one, or vice versa.
+        expect(row['hydTag']).not.toBe(row['hydTags']);
+    });
+
+    it('one_to_many hydrates typed instances in place at the declared member', async () => {
+        const { fn } = makeUnaryStub<MappingGetRequest, MappingResponse>({
+            success: true,
+            data: {
+                Id: 'auth-1',
+                Name: 'Ada',
+                HydArticles: [{ Id: 'a1' }, { Id: 'a2' }],
+            },
+            error: '',
+            traceId: '',
+        });
+        const client = makeClientLike({ _mappingClient: { get: fn } });
+        const coordinator = new EntityCoordinator(HydAuthor, client);
+
+        const result = await coordinator.getMapped('auth-1', 1);
+
+        expect(result!.hydArticles).toHaveLength(2);
+        expect(result!.hydArticles[0]).toBeInstanceOf(HydArticle);
+        expect(result!.hydArticles.map(a => a.id)).toEqual(['a1', 'a2']);
+    });
+
+    it('a derived navigation member colliding with a declared field throws', async () => {
+        const { fn } = makeUnaryStub<MappingGetRequest, MappingResponse>({
+            success: true,
+            data: { Id: 'a1', HydAuthorId: 'auth-1', HydAuthor: { Id: 'auth-1', Name: 'Ada' } },
+            error: '',
+            traceId: '',
+        });
+        const client = makeClientLike({ _mappingClient: { get: fn } });
+        const coordinator = new EntityCoordinator(HydCollisionArticle, client);
+
+        await expect(coordinator.getMapped('a1', 1)).rejects.toThrow(/hydAuthor/);
+    });
+
+    it('getMapped -> updateMapped round trip sends the FK, not the hydrated navigation member', async () => {
+        const { fn: getFn } = makeUnaryStub<MappingGetRequest, MappingResponse>({
+            success: true,
+            data: {
+                Id: 'a1',
+                Title: 'T',
+                HydAuthorId: 'auth-1',
+                HydAuthor: { Id: 'auth-1', Name: 'Ada' },
+                HydTagIds: ['t1'],
+                HydTags: [{ Id: 't1', Label: 'x' }],
+            },
+            error: '',
+            traceId: '',
+        });
+        const { fn: updateFn, calls: updateCalls } = makeUnaryStub<MappingWriteRequest, MappingResponse>({
+            success: true,
+            data: { Id: 'a1', Title: 'T', HydAuthorId: 'auth-1', HydTagIds: ['t1'] },
+            error: '',
+            traceId: '',
+        });
+        const client = makeClientLike({ _mappingClient: { get: getFn, update: updateFn } });
+        const coordinator = new EntityCoordinator(HydArticleFull, client);
+
+        const article = await coordinator.getMapped('a1', 1);
+        expect((article as unknown as Record<string, unknown>)['hydAuthor']).toBeInstanceOf(HydAuthor);
+
+        await coordinator.updateMapped(article!);
+
+        const payload = updateCalls[0].req.payload as Record<string, unknown>;
+        expect(payload['HydAuthorId']).toBe('auth-1');
+        expect(payload['HydTagIds']).toEqual(['t1']);
+        expect(Object.keys(payload)).not.toContain('Author');
+        expect(Object.keys(payload)).not.toContain('HydAuthor');
+        expect(Object.keys(payload)).not.toContain('HydTags');
     });
 });
