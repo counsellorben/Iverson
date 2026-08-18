@@ -194,4 +194,151 @@ public class RequirementsCoverageGateTests
 
         duplicates.Should().BeEmpty($"every requirement ID must be unique across the document, but these repeat: {string.Join(", ", duplicates)}");
     }
+
+    /// <summary>
+    /// The axis-completeness check: binds each authored axis's `#### Coverage` ledger to its
+    /// `Active` requirements, bidirectionally. See
+    /// <c>docs/specs/2026-08-17-axis-completeness-check-design.md</c> ("The check") for the six
+    /// failure modes this enforces.
+    /// </summary>
+    [Fact]
+    public void Check4_AxisCoverageLedgers_BindClaimedAreasToActiveRequirements()
+    {
+        var markdown = File.ReadAllText(StandardPath());
+
+        var declared = ParseDeclaredRequirements(markdown);
+        var active = declared.Where(r => r.Status == "Active").ToList();
+        var retiredIds = declared.Where(r => r.Status == "Retired").Select(r => r.Id).ToHashSet();
+
+        // Every requirement's axis, derived from its ID shape (A5). IDs that don't match the shape
+        // or carry an unknown axis are already caught by Check3 and are excluded here.
+        string? AxisOf(string id)
+        {
+            var match = IdShapePattern.Match(id);
+            if (!match.Success)
+            {
+                return null;
+            }
+
+            var axis = match.Groups[1].Value;
+            return KnownAxes.Contains(axis) ? axis : null;
+        }
+
+        var activeByAxis = active
+            .Select(r => (r.Id, Axis: AxisOf(r.Id)))
+            .Where(r => r.Axis is not null)
+            .GroupBy(r => r.Axis!, r => r.Id)
+            .ToDictionary(g => g.Key, g => g.ToList());
+
+        var allIdsByAxis = declared
+            .Select(r => (r.Id, r.Status, Axis: AxisOf(r.Id)))
+            .Where(r => r.Axis is not null)
+            .ToLookup(r => r.Axis!, r => (r.Id, r.Status));
+
+        var coverage = CoverageTableParser.Parse(markdown, KnownAxes);
+        var failures = new List<string>();
+
+        // Mode 6: a malformed coverage row.
+        foreach (var line in coverage.MalformedLines)
+        {
+            failures.Add($"malformed coverage row: {line}");
+        }
+
+        // Mode 1: an axis with >=1 Active requirement and no #### Coverage table.
+        var axesWithLedger = coverage.Rows.Where(r => r.Axis is not null).Select(r => r.Axis!).ToHashSet();
+        foreach (var axis in activeByAxis.Keys)
+        {
+            if (!axesWithLedger.Contains(axis))
+            {
+                failures.Add($"axis '{axis}' has {activeByAxis[axis].Count} Active requirement(s) but no #### Coverage table");
+            }
+        }
+
+        var claimedByAxis = new Dictionary<string, HashSet<string>>();
+
+        foreach (var row in coverage.Rows)
+        {
+            if (row.Axis is null)
+            {
+                // Attributed to no axis (A15) — not part of any axis's binding.
+                continue;
+            }
+
+            // Mode 2: Status must be exactly Covered or Deferred.
+            if (row.Status != "Covered" && row.Status != "Deferred")
+            {
+                failures.Add($"axis '{row.Axis}' area '{row.Area}' has Status '{row.Status}', which is neither Covered nor Deferred");
+                continue;
+            }
+
+            if (row.Status == "Deferred")
+            {
+                // Mode 4: a Deferred area with an empty reason.
+                if (row.Evidence.Trim().Length == 0)
+                {
+                    failures.Add($"axis '{row.Axis}' area '{row.Area}' is Deferred with an empty reason");
+                }
+
+                continue;
+            }
+
+            // Status == "Covered": Mode 3 — must cite >=1 existing, Active, same-axis, non-Retired ID.
+            var ids = row.Evidence.Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
+
+            if (ids.Length == 0)
+            {
+                failures.Add($"axis '{row.Axis}' area '{row.Area}' is Covered but cites no requirement ID");
+                continue;
+            }
+
+            if (!claimedByAxis.TryGetValue(row.Axis, out var claimed))
+            {
+                claimed = new HashSet<string>();
+                claimedByAxis[row.Axis] = claimed;
+            }
+
+            foreach (var id in ids)
+            {
+                var idAxis = AxisOf(id);
+
+                if (idAxis is null || !allIdsByAxis[row.Axis].Any(r => r.Id == id))
+                {
+                    failures.Add($"axis '{row.Axis}' area '{row.Area}' cites '{id}', which does not exist in axis '{row.Axis}'");
+                    continue;
+                }
+
+                if (idAxis != row.Axis)
+                {
+                    failures.Add($"axis '{row.Axis}' area '{row.Area}' cites '{id}', which belongs to axis '{idAxis}', not '{row.Axis}'");
+                    continue;
+                }
+
+                if (retiredIds.Contains(id))
+                {
+                    failures.Add($"axis '{row.Axis}' area '{row.Area}' cites '{id}', which is Retired");
+                    continue;
+                }
+
+                claimed.Add(id);
+            }
+        }
+
+        // Mode 5: an Active requirement claimed by no area.
+        foreach (var (axis, ids) in activeByAxis)
+        {
+            var claimed = claimedByAxis.TryGetValue(axis, out var c) ? c : new HashSet<string>();
+
+            foreach (var id in ids)
+            {
+                if (!claimed.Contains(id))
+                {
+                    failures.Add($"'{id}' (axis '{axis}') is Active but claimed by no Covered area");
+                }
+            }
+        }
+
+        failures.Should().BeEmpty(
+            "every authored axis's #### Coverage ledger must bind claimed areas to its Active requirements bidirectionally, " +
+            $"but these violations were found: {string.Join(" ~~~ ", failures)}");
+    }
 }
