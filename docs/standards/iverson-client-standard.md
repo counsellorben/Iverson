@@ -95,6 +95,14 @@ implemented requirement.
 | IVC-DECL-005 | Active | Behaviour | A client's declared tenant field is typed as a scalar string, never `UUID` and never array-typed |
 | IVC-DECL-006 | Active | Behaviour | A property declared array-typed never declares its CLR type as a delimited string |
 
+#### Coverage
+
+| Area | Status | Evidence |
+| --- | --- | --- |
+| Key property declaration | Covered | IVC-DECL-001, IVC-DECL-003, IVC-DECL-004 |
+| Tenant field declaration | Covered | IVC-DECL-002, IVC-DECL-005 |
+| Array-typed property CLR typing | Covered | IVC-DECL-006 |
+
 ### REL — Relations
 
 Relations are the worked axis: the exemplar for how every other axis in this document is authored.
@@ -123,6 +131,17 @@ hydrated at that depth — that clause is `IVC-LIFE-007`, and it currently fails
 clients (see "Known non-conformance" under `LIFE` below). A row's Statement cell is the statement of
 record and must stay immutable across retirement; retirement rationale belongs in this prose, never
 appended into the statement text.
+
+#### Coverage
+
+| Area | Status | Evidence |
+| --- | --- | --- |
+| Foreign-key synthesis | Covered | IVC-REL-001, IVC-REL-002, IVC-REL-004, IVC-REL-010 |
+| Navigation-property naming | Covered | IVC-REL-003 |
+| Write-payload foreign-key-only | Covered | IVC-REL-005 |
+| Foreign-key survives hydration | Covered | IVC-REL-006 |
+| Multi-valued foreign keys as list | Covered | IVC-REL-007 |
+| One-to-many reverse lookup | Covered | IVC-REL-008 |
 
 #### Authoring notes (for future axes)
 
@@ -184,24 +203,24 @@ sibling `IVC-REL-001` scopes itself: it names the three relation kinds the namin
 applies to (`many_to_one`, `one_to_one`, `many_to_many`) and excludes `one_to_many` by omission,
 matching what the server has always correctly enforced.
 
+#### Coverage
+
+| Area | Status | Evidence |
+| --- | --- | --- |
+| Navigation-property/foreign-key collision rejected at registration | Covered | IVC-REG-002 |
+| Foreign-key naming enforced at registration | Covered | IVC-REG-003 |
+| Reregistration | Deferred | `Reregistrar.cs` exercises reregistration (registering an already-registered type again) on every conformance run, but no assertion cites a requirement ID against that behaviour. Reregistration's correctness is exercised as test-harness plumbing, not verified as a normative claim. |
+| Authorization rules at registration time | Deferred | `SchemaRegistrationOrchestrator.cs:54,208` accepts and stores `AuthorizationRules` as part of the descriptor, but no requirement in this document constrains what the server does with them at registration time. |
+| Schema drift | Deferred | A `SchemaDriftException` (thrown by `IRecordStoreSchemaManager.ApplySchemaAsync` when a re-registration's shape conflicts with the stored schema) surfaces as `FailedPrecondition`, but no requirement asserts on that status code or the conditions that produce it. |
+
 #### Deferred coverage (non-normative)
 
 `standard.md`'s own axis table defines REG as "Schema registration and reregistration behaviour."
 The rules authored above are the complete REG deliverable the design spec called for, so authoring
 only them is not a spec violation — but three things a literal reading of "registration ... and
 reregistration behaviour" could include are deliberately NOT authored as requirements here, and are
-recorded rather than left as a silent gap:
-
-- **Reregistration.** `Reregistrar.cs` exercises reregistration (registering an already-registered
-  type again) on every conformance run, but no assertion cites a requirement ID against that
-  behaviour. Reregistration's correctness is exercised as test-harness plumbing, not verified as a
-  normative claim.
-- **Authorization rules at registration time.** `SchemaRegistrationOrchestrator.cs:54,208`
-  accepts and stores `AuthorizationRules` as part of the descriptor, but no requirement in this
-  document constrains what the server does with them at registration time.
-- **Schema drift.** A `SchemaDriftException` (thrown by `IRecordStoreSchemaManager.ApplySchemaAsync`
-  when a re-registration's shape conflicts with the stored schema) surfaces as `FailedPrecondition`,
-  but no requirement asserts on that status code or the conditions that produce it.
+recorded rather than left as a silent gap — reregistration, authorization rules at registration
+time, and schema drift; see the Coverage table above for each's reason.
 
 These three are deferred, not out of scope forever, and a future axis pass may author requirements
 for them. **Descriptor contents are explicitly NOT part of this deferral** — what a registered
@@ -247,6 +266,17 @@ into `IVC-LIFE-006` (reachability, superseding the retired `IVC-REL-009`) and `I
 (hydration). `IVC-LIFE-006` is what mapped-CRUD parity actually verified across all five clients.
 `IVC-LIFE-007` was never verified, and currently fails live for four of the five clients — see
 "Known non-conformance" below.
+
+#### Coverage
+
+| Area | Status | Evidence |
+| --- | --- | --- |
+| Mapped CRUD reachability | Covered | IVC-LIFE-001 |
+| Server-assigned key on create | Covered | IVC-LIFE-002 |
+| Update observable in a subsequent read | Covered | IVC-LIFE-003 |
+| Delete removes the row on every leg | Covered | IVC-LIFE-004 |
+| Depth-resolved read reachability | Covered | IVC-LIFE-006 |
+| Depth-resolved read hydration | Covered | IVC-LIFE-007 |
 
 #### Known non-conformance (non-normative)
 
