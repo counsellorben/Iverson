@@ -9,7 +9,14 @@ from unittest.mock import MagicMock
 import grpc
 from google.protobuf import struct_pb2
 
-from iverson_client.annotations import iverson_entity, iverson_key, many_to_one, many_to_many, one_to_many
+from iverson_client.annotations import (
+    iverson_entity,
+    iverson_key,
+    many_to_one,
+    many_to_many,
+    one_to_many,
+    one_to_one,
+)
 from iverson_client.core import EntityCoordinator, _entity_to_struct
 from iverson_client.generated import (
     object_mapping_pb2 as mapping_pb,
@@ -311,3 +318,155 @@ class TestEntityCoordinatorActingUserIdentity:
 
         sent_metadata = coordinator._retrieval.Get.call_args.kwargs["metadata"]
         assert sent_metadata == (("x-acting-user-authorization", "Bearer ambient-token"),)
+
+
+# ── Related-object hydration on the read path ────────────────────────────────────
+
+@iverson_entity
+class HydTag:
+    id: str = iverson_key()
+    label: str = None
+
+
+@iverson_entity
+class HydAuthor:
+    id: str = iverson_key()
+    name: str = None
+    hyd_articles: list = one_to_many("HydArticle")
+
+
+@iverson_entity
+class HydArticle:
+    id: str = iverson_key()
+    title: str = None
+    hyd_author_id: str = many_to_one("HydAuthor")
+    # A many_to_many and a one_to_one to the SAME related type, mirroring the
+    # conformance model's py_tag_ids/py_tag_id pair: derivation must land the
+    # many_to_many on the plural "hyd_tags" and the one_to_one on the singular
+    # "hyd_tag" without one clobbering the other.
+    hyd_tag_ids: str = many_to_many("HydTag")
+    hyd_tag_id: str = one_to_one("HydTag")
+
+
+@iverson_entity
+class HydUnregisteredArticle:
+    id: str = iverson_key()
+    hyd_ghost_id: str = many_to_one("HydGhostNeverRegistered")
+
+
+@iverson_entity
+class HydCollisionArticle:
+    """``hyd_author`` is BOTH a declared annotated field and the name
+    ``hyd_author_id``'s many_to_one relation would derive — a model error."""
+
+    id: str = iverson_key()
+    hyd_author_id: str = many_to_one("HydAuthor")
+    hyd_author: str = None
+
+
+def _nested_struct(**fields) -> struct_pb2.Struct:
+    s = struct_pb2.Struct()
+    for name, value in fields.items():
+        s.fields[name].string_value = value
+    return s
+
+
+class TestRelationHydration:
+    def test_many_to_one_hydrates_a_typed_instance_on_the_derived_singular_member(self):
+        coordinator = make_coordinator_for(HydArticle)
+        s = struct_pb2.Struct()
+        s.fields["Id"].string_value = "art-1"
+        s.fields["Title"].string_value = "Hello"
+        s.fields["HydAuthorId"].string_value = "auth-1"
+        s.fields["HydAuthor"].struct_value.CopyFrom(_nested_struct(Id="auth-1", Name="Ada"))
+
+        restored = coordinator._from_struct(s)
+
+        assert isinstance(restored.hyd_author, HydAuthor)
+        assert restored.hyd_author.id == "auth-1"
+        assert restored.hyd_author.name == "Ada"
+
+    def test_many_to_many_hydrates_typed_instances_on_the_plural_member(self):
+        coordinator = make_coordinator_for(HydArticle)
+        s = struct_pb2.Struct()
+        s.fields["Id"].string_value = "art-1"
+        tags_list = s.fields["HydTags"].list_value
+        tags_list.values.add().struct_value.CopyFrom(_nested_struct(Id="tag-1", Label="a"))
+        tags_list.values.add().struct_value.CopyFrom(_nested_struct(Id="tag-2", Label="b"))
+
+        restored = coordinator._from_struct(s)
+
+        assert [t.id for t in restored.hyd_tags] == ["tag-1", "tag-2"]
+        assert all(isinstance(t, HydTag) for t in restored.hyd_tags)
+
+    def test_one_to_one_hydrates_a_typed_instance_on_the_singular_member_without_colliding(self):
+        coordinator = make_coordinator_for(HydArticle)
+        s = struct_pb2.Struct()
+        s.fields["Id"].string_value = "art-1"
+        s.fields["HydTag"].struct_value.CopyFrom(_nested_struct(Id="tag-9", Label="solo"))
+        tags_list = s.fields["HydTags"].list_value
+        tags_list.values.add().struct_value.CopyFrom(_nested_struct(Id="tag-1", Label="a"))
+
+        restored = coordinator._from_struct(s)
+
+        assert isinstance(restored.hyd_tag, HydTag)
+        assert restored.hyd_tag.id == "tag-9"
+        # the many_to_many plural member is unaffected by the one_to_one singular one
+        assert [t.id for t in restored.hyd_tags] == ["tag-1"]
+
+    def test_one_to_many_hydrates_typed_instances_in_the_declared_navigation_member(self):
+        coordinator = make_coordinator_for(HydAuthor)
+        s = struct_pb2.Struct()
+        s.fields["Id"].string_value = "auth-1"
+        s.fields["Name"].string_value = "Ada"
+        articles_list = s.fields["HydArticles"].list_value
+        articles_list.values.add().struct_value.CopyFrom(_nested_struct(Id="art-1", Title="First"))
+        articles_list.values.add().struct_value.CopyFrom(_nested_struct(Id="art-2", Title="Second"))
+
+        restored = coordinator._from_struct(s)
+
+        assert all(isinstance(a, HydArticle) for a in restored.hyd_articles)
+        assert [a.title for a in restored.hyd_articles] == ["First", "Second"]
+
+    def test_unregistered_related_type_falls_back_to_untyped_child(self):
+        coordinator = make_coordinator_for(HydUnregisteredArticle)
+        s = struct_pb2.Struct()
+        s.fields["Id"].string_value = "art-1"
+        s.fields["HydGhost"].struct_value.CopyFrom(_nested_struct(Id="ghost-1"))
+
+        restored = coordinator._from_struct(s)
+
+        assert restored.hyd_ghost == {"Id": "ghost-1"}
+
+    def test_derived_member_colliding_with_a_declared_field_raises(self):
+        coordinator = make_coordinator_for(HydCollisionArticle)
+        s = struct_pb2.Struct()
+        s.fields["Id"].string_value = "art-1"
+        s.fields["HydAuthorId"].string_value = "auth-1"
+
+        import pytest
+        with pytest.raises(ValueError, match="HydCollisionArticle.*hyd_author"):
+            coordinator._from_struct(s)
+
+    def test_write_payload_after_hydration_carries_fk_and_not_the_hydrated_member(self):
+        """The round-trip guarantee: hydrating ``hyd_author``/``hyd_tags``/``hyd_tag``
+        onto an instance dynamically (not through ``__annotations__``) must not leak
+        into a subsequent write, since ``_entity_to_struct`` iterates only
+        ``__annotations__`` and these members were never declared there."""
+        coordinator = make_coordinator_for(HydArticle)
+        s = struct_pb2.Struct()
+        s.fields["Id"].string_value = "art-1"
+        s.fields["Title"].string_value = "Hello"
+        s.fields["HydAuthorId"].string_value = "auth-1"
+        s.fields["HydAuthor"].struct_value.CopyFrom(_nested_struct(Id="auth-1", Name="Ada"))
+        tags_list = s.fields["HydTags"].list_value
+        tags_list.values.add().struct_value.CopyFrom(_nested_struct(Id="tag-1", Label="a"))
+
+        restored = coordinator._from_struct(s)
+        assert isinstance(restored.hyd_author, HydAuthor)
+
+        payload = _entity_to_struct(restored)
+
+        assert payload.fields["HydAuthorId"].string_value == "auth-1"
+        assert "HydAuthor" not in payload.fields
+        assert "HydTags" not in payload.fields

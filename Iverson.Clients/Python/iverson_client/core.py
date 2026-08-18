@@ -12,6 +12,7 @@ from typing import Generic, List, Mapping, Optional, TypeVar, get_args, get_orig
 import grpc
 from google.protobuf import struct_pb2
 
+from iverson_client.annotations import ENTITY_REGISTRY
 from iverson_client.auth import (
     ACTING_USER_METADATA_KEY,
     IversonClientCredentials,
@@ -115,6 +116,28 @@ def _relation_property_name(relation: dict) -> str:
         if len(pascal) > 3 and pascal.endswith("Ids"):
             return pascal[:-3] + "s"
     return pascal
+
+
+def _relation_nav_member_name(relation: dict) -> str:
+    """Derive the Python member name a hydrated relation lands on.
+
+    For ``many_to_one``/``one_to_one`` the declared member IS the foreign key
+    (``py_author_id``), so strip the trailing ``_id`` to get the navigation
+    member (``py_author``). For ``many_to_many`` the declared member is the FK
+    list (``py_tag_ids``); stripping only ``_ids`` without re-adding the ``s``
+    would collapse onto the same name a ``one_to_one`` FK to the same related
+    type derives (``py_tag_id`` also strips to ``py_tag``) — so the plural is
+    kept (``py_tags``). ``one_to_many`` has no derived name; its declared
+    member is already the navigation member and is hydrated in place by the
+    caller.
+    """
+    field = relation["field"]
+    kind = relation["kind"]
+    if kind in ("many_to_one", "one_to_one") and field.endswith("_id"):
+        return field[: -len("_id")]
+    if kind == "many_to_many" and field.endswith("_ids"):
+        return field[: -len("_ids")] + "s"
+    return field
 
 
 def _infer_fk(relation: dict, this_type_name: str) -> str:
@@ -455,6 +478,107 @@ def _struct_to_dict(s: struct_pb2.Struct) -> dict:
     return dict(s)
 
 
+def _hydrate_relations(
+    obj: object,
+    cls: type,
+    annotations: dict,
+    relations: list[dict],
+    s: struct_pb2.Struct,
+) -> None:
+    """Populate an entity's relation members from nested Struct data.
+
+    Runs after the scalar-annotation pass in ``_entity_from_struct``. For
+    ``many_to_one``/``one_to_one``/``many_to_many`` the navigation member is
+    derived (and does not already exist as a declared annotated field — see
+    the collision guard below); for ``one_to_many`` the declared member IS the
+    navigation member and is overwritten in place, replacing the raw dicts the
+    scalar pass leaves there. An unregistered related type falls back to the
+    untyped child (a dict, or list of dicts) rather than raising.
+    """
+    for relation in relations:
+        kind = relation["kind"]
+        if kind == "one_to_many":
+            nav_member = relation["field"]
+        else:
+            nav_member = _relation_nav_member_name(relation)
+            if nav_member in annotations:
+                raise ValueError(
+                    f"{cls.__name__}: relation '{relation['field']}' would hydrate "
+                    f"into member '{nav_member}', but '{nav_member}' is already a "
+                    "declared annotated field on this entity. Rename one of them."
+                )
+
+        wire_key = _relation_property_name(relation)
+        if wire_key not in s.fields:
+            continue
+
+        field = s.fields[wire_key]
+        related_cls = ENTITY_REGISTRY.get(relation.get("related_type") or "")
+
+        if kind in ("many_to_one", "one_to_one"):
+            if field.WhichOneof("kind") != "struct_value":
+                continue
+            if related_cls is None:
+                setattr(obj, nav_member, _struct_to_dict(field.struct_value))
+            else:
+                setattr(obj, nav_member, _entity_from_struct(related_cls, field.struct_value))
+        elif kind in ("many_to_many", "one_to_many"):
+            if field.WhichOneof("kind") != "list_value":
+                continue
+            items = []
+            for v in field.list_value.values:
+                if v.WhichOneof("kind") != "struct_value":
+                    continue
+                if related_cls is None:
+                    items.append(_struct_to_dict(v.struct_value))
+                else:
+                    items.append(_entity_from_struct(related_cls, v.struct_value))
+            setattr(obj, nav_member, items)
+
+
+def _entity_from_struct(cls: type, s: struct_pb2.Struct) -> object:
+    """Construct an instance of ``cls`` from a Struct proto, including any
+    hydrated relation members it carries. Shared by ``EntityCoordinator._from_struct``
+    and by the hydration pass itself, which recurses into related types."""
+    obj = object.__new__(cls)
+    annotations = {}
+    for base in reversed(cls.__mro__):
+        if base is object:
+            continue
+        annotations.update(getattr(base, "__annotations__", {}))
+
+    meta = getattr(cls, "_iverson_meta", None)
+    relations = (meta or {}).get("relations", [])
+    relation_by_field = {r["field"]: r for r in relations}
+    type_name = (meta or {}).get("type_name", cls.__name__)
+
+    for field_name in annotations:
+        relation = relation_by_field.get(field_name)
+        if relation is not None and relation["kind"] == "many_to_many":
+            pascal = _infer_fk(relation, type_name)
+        else:
+            pascal = _to_pascal_case(field_name)
+
+        if pascal in s.fields:
+            field = s.fields[pascal]
+            kind = field.WhichOneof("kind")
+            if kind == "string_value":
+                setattr(obj, field_name, field.string_value)
+            elif kind == "number_value":
+                setattr(obj, field_name, field.number_value)
+            elif kind == "bool_value":
+                setattr(obj, field_name, field.bool_value)
+            elif kind == "list_value":
+                setattr(obj, field_name, _list_value_to_list(field.list_value))
+            else:
+                setattr(obj, field_name, None)
+        else:
+            setattr(obj, field_name, None)
+
+    _hydrate_relations(obj, cls, annotations, relations, s)
+    return obj
+
+
 # ── SearchResult ────────────────────────────────────────────────────────────────
 
 @dataclass(frozen=True)
@@ -683,41 +807,9 @@ class EntityCoordinator(Generic[T]):
         return [_struct_to_dict(row.data) for row in self._search.Pipeline(request, metadata=self._acting_user_metadata())]
 
     def _from_struct(self, s: struct_pb2.Struct) -> T:
-        """Construct an entity instance from a Struct proto."""
-        obj = object.__new__(self._cls)
-        annotations = {}
-        for base in reversed(self._cls.__mro__):
-            if base is object:
-                continue
-            annotations.update(getattr(base, "__annotations__", {}))
-
-        meta = getattr(self._cls, "_iverson_meta", None)
-        relation_by_field = {r["field"]: r for r in (meta or {}).get("relations", [])}
-        type_name = (meta or {}).get("type_name", self._type_name)
-
-        for field_name in annotations:
-            relation = relation_by_field.get(field_name)
-            if relation is not None and relation["kind"] == "many_to_many":
-                pascal = _infer_fk(relation, type_name)
-            else:
-                pascal = _to_pascal_case(field_name)
-
-            if pascal in s.fields:
-                field = s.fields[pascal]
-                kind = field.WhichOneof("kind")
-                if kind == "string_value":
-                    setattr(obj, field_name, field.string_value)
-                elif kind == "number_value":
-                    setattr(obj, field_name, field.number_value)
-                elif kind == "bool_value":
-                    setattr(obj, field_name, field.bool_value)
-                elif kind == "list_value":
-                    setattr(obj, field_name, _list_value_to_list(field.list_value))
-                else:
-                    setattr(obj, field_name, None)
-            else:
-                setattr(obj, field_name, None)
-        return obj  # type: ignore[return-value]
+        """Construct an entity instance from a Struct proto, hydrating any
+        related-object members it carries."""
+        return _entity_from_struct(self._cls, s)  # type: ignore[return-value]
 
 
 # ── IversonClient ──────────────────────────────────────────────────────────────

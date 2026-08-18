@@ -215,6 +215,16 @@ def one_to_one(type_name: str) -> FieldMeta:
     return FieldMeta(relation_kind="one_to_one", related_type=type_name)
 
 
+# ── Entity registry ─────────────────────────────────────────────────────────────
+
+#: Maps ``cls.__name__`` (the same string ``_iverson_meta["type_name"]`` carries,
+#: and the same string a relation's ``related_type`` holds) to the decorated
+#: class itself. Populated at import time by ``iverson_entity``, before any read
+#: can occur, so the read-path hydration pass can resolve a relation's
+#: ``related_type`` back to a concrete class.
+ENTITY_REGISTRY: dict[str, type] = {}
+
+
 # ── @iverson_entity decorator ──────────────────────────────────────────────────
 
 
@@ -334,5 +344,7 @@ def iverson_entity(cls: type | None = None, *, description: str = ""):
         "extracted_fields": extracted_fields,
         "tenant_fields": tenant_fields,
     }
+
+    ENTITY_REGISTRY[cls.__name__] = cls
 
     return cls
