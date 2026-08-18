@@ -52,10 +52,11 @@ model's declaration style and does not touch the write path.
 
 4. **The member the caller touches is language-idiomatic**, derived from the foreign-key member by
    the same suffix strip each client already performs to produce the registered navigation name —
-   stopping one step earlier, before the PascalCase conversion. `py_author_id` → `py_author`,
-   `tsAuthorId` → `tsAuthor`. Go keeps a map key, since a map key is not an identifier and gains
-   nothing from idiom. The consequence is that the name the standard discusses and the name the
-   caller types are different strings in two clients, which is why decision 2's reachability framing
+   stopping one step earlier, before the PascalCase conversion. The strip is the existing rule in
+   full, plural included: `py_author_id` → `py_author`, `tsAuthorId` → `tsAuthor`, and
+   `py_tag_ids` → `py_tags`, `tsTagIds` → `tsTags`. Go keeps a map key, since a map key is not an
+   identifier and gains nothing from idiom. The consequence is that the name the standard discusses
+   and the name the caller types are different strings in two clients, which is why decision 2's reachability framing
    is load-bearing rather than cosmetic.
 
 5. **The write path is untouched.** Every client keeps excluding navigation members from what it
@@ -104,7 +105,8 @@ Java's navigation field names already PascalCase to the registered `PropertyName
 
 `_from_struct` gains a second pass over the relation set. For each relation, look for the PascalCase
 wire key; if present, resolve the related class from the registry, recurse, and `setattr` under the
-idiomatic member name (the foreign-key member minus its `_id` / `_ids` suffix).
+idiomatic member name — the foreign-key member minus `_id` for `many_to_one`/`one_to_one`, and
+minus `_ids` plus a trailing `s` for `many_to_many`.
 
 No write-path exclusion is needed, and this is a verified property rather than an assumption:
 `_entity_to_struct` iterates `__annotations__`, and a dynamically-set attribute is not in
@@ -115,8 +117,8 @@ No write-path exclusion is needed, and this is a verified property rather than a
 - A new accessor that preserves the related-type constructor. `getRelations` collapses it to
   `relatedType: typeFactory().name` — a string — so the constructor survives only in the raw
   `IVERSON_RELATIONS` metadata.
-- `payloadToEntity` hydrates into `instance[navMember]`, with `navMember` the field minus its
-  `Id` / `Ids` suffix.
+- `payloadToEntity` hydrates into `instance[navMember]`, with `navMember` the field minus `Id` for
+  `many_to_one`/`one_to_one`, and minus `Ids` plus a trailing `s` for `many_to_many`.
 - `entityToPayload` excludes hydrated navigation members (see "Write-path regressions").
 
 ### Go — three changes
@@ -174,6 +176,13 @@ hydrated at that depth", graded by finding a navigation property carrying an obj
 fail it. The successor asserts that a depth-resolved read makes the related object reachable through
 the client's own object model, carrying its own key.
 
+`VerifyDepthCapability` finds it by looking for the registered `PropertyName` at the reported
+entity's top level and, failing that, inside a hydration-carrier property. `Verifier.Normalize`
+strips non-alphanumerics and lower-cases, so the idiomatic names of decision 4 already normalize
+onto the registered name for .NET, Java, Python and TypeScript; only Go's carrier introduces a
+nesting level, and the fallback is what reaches it. Each driver's reported entity therefore stays a
+faithful serialization of what its caller actually holds.
+
 Per the standard's statement-cell immutability convention this is a retirement plus a new ID, not an
 edit — the path `IVC-REG-001` and `IVC-LIFE-005` both took.
 
@@ -222,6 +231,8 @@ a const on a retired ID fails check 1.
 | A20 | Retiring it requires removing/renumbering its const | Holds — `Requirements.cs:164`, `LifeDepthResolvedReadHydrated` |
 | A21 | Go's write path would serialize an undeclared-tag `Hydrated` field | Holds — `entityToStruct` iterates `t.NumField()`; untagged fields are serialized under their own name |
 | A22 | A dynamic Python attribute cannot leak into the write path | Holds — `_entity_to_struct` iterates `__annotations__` (`core.py:396-406`); a dynamically-set attribute is not there |
+| A24 | The derived caller-facing member is unique within a model | **FALSE as originally ruled.** `py_tag_ids` (`many_to_many`) and `py_tag_id` (`one_to_one`) both strip to `py_tag`; `tsTagIds`/`tsTagId` both strip to `tsTag` (`conformance/models.py:49-55`, `conformance/models.ts:71-81`, whose comments record that the singular FK name was chosen to avoid exactly this collision). Holds under decision 4's corrected plural-preserving strip |
+| A25 | The harness can locate the hydrated child in the driver's reported entity | Holds — `Verifier.Normalize` (`:94-95`) strips non-alphanumerics and lower-cases, so `py_author`/`tsAuthor` normalize onto the registered `PyAuthor`/`TsAuthor`; `FindProperty` (`:464-475`) does not recurse, so Go's nested carrier requires the fallback lookup recorded under "The requirement" |
 | A23 | A dynamic TypeScript property would leak into the write path | **Holds, and is a defect to prevent.** `entityToPayload` iterates `Object.getOwnPropertyNames(entity)` on the live instance (`core.ts:470`), so `getMapped` → `updateMapped` would send the hydrated child |
 
 ## Known issues
