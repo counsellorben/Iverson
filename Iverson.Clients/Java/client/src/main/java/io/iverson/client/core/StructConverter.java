@@ -194,7 +194,15 @@ public final class StructConverter {
                 yield d;
             }
             case BOOL_VALUE     -> value.getBoolValue();
-            case STRUCT_VALUE   -> fromStruct(value.getStructValue(), targetType);
+            // Only recurse into fromStruct when the target is itself a registered Iverson
+            // entity (parity with Python's relation["kind"] gate, TypeScript's rel.kind gate,
+            // and Go's fm.RelationKind gate). An unannotated scalar field whose PascalCase name
+            // happens to collide with a nav property (e.g. `javaAuthor: UUID` alongside
+            // `javaAuthorId`) would otherwise try `UUID.class.getDeclaredConstructor()` and
+            // fail the whole read where it previously just yielded null.
+            case STRUCT_VALUE   -> targetType.isAnnotationPresent(io.iverson.client.annotations.IversonEntity.class)
+                ? fromStruct(value.getStructValue(), targetType)
+                : null;
             default             -> null;
         };
     }

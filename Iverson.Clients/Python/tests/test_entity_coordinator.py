@@ -470,3 +470,40 @@ class TestRelationHydration:
         assert payload.fields["HydAuthorId"].string_value == "auth-1"
         assert "HydAuthor" not in payload.fields
         assert "HydTags" not in payload.fields
+
+
+# ── C1 regression: many_to_many member whose name doesn't end in "_ids" ─────────
+#
+# many_to_many is not subject to naming enforcement (the wire FK column comes from
+# _infer_fk(kind, related_type, ...), not from the member name), so a many_to_many member
+# named e.g. "contributors" is legal. _relation_nav_member_name's fallback then returns the
+# field unchanged, which must NOT be treated as a "suffix was stripped" derivation, or the read
+# path raises ValueError on every read of such a type.
+
+@iverson_entity
+class M2mNoSuffixAuthor:
+    id: str = iverson_key()
+
+
+@iverson_entity
+class M2mNoSuffixArticle:
+    id: str = iverson_key()
+    contributors: list = many_to_many("M2mNoSuffixAuthor")
+
+
+class TestC1ManyToManyMemberWithoutIdsSuffix:
+    def test_read_does_not_raise_and_does_not_invent_a_nav_member(self):
+        coordinator = make_coordinator_for(M2mNoSuffixArticle)
+        s = struct_pb2.Struct()
+        s.fields["Id"].string_value = "art-1"
+        contributors_list = s.fields["Contributors"].list_value
+        contributors_list.values.add().struct_value.CopyFrom(_nested_struct(Id="a1"))
+        contributors_list.values.add().struct_value.CopyFrom(_nested_struct(Id="a2"))
+
+        restored = coordinator._from_struct(s)
+
+        # The declared field is overwritten in place by the hydrated typed instances — no
+        # separate/invented nav member, and no collision ValueError.
+        assert [a.id for a in restored.contributors] == ["a1", "a2"]
+        assert all(isinstance(a, M2mNoSuffixAuthor) for a in restored.contributors)
+        assert not hasattr(restored, "contributor")

@@ -763,13 +763,15 @@ describe('EntityCoordinator — depth-resolved relation hydration (read path)', 
                 HydAuthor: { Id: 'auth-1', Name: 'Ada' },
                 HydTagIds: ['t1'],
                 HydTags: [{ Id: 't1', Label: 'x' }],
+                HydTagId: 't3',
+                HydTag: { Id: 't3', Label: 'z' },
             },
             error: '',
             traceId: '',
         });
         const { fn: updateFn, calls: updateCalls } = makeUnaryStub<MappingWriteRequest, MappingResponse>({
             success: true,
-            data: { Id: 'a1', Title: 'T', HydAuthorId: 'auth-1', HydTagIds: ['t1'] },
+            data: { Id: 'a1', Title: 'T', HydAuthorId: 'auth-1', HydTagIds: ['t1'], HydTagId: 't3' },
             error: '',
             traceId: '',
         });
@@ -778,14 +780,90 @@ describe('EntityCoordinator — depth-resolved relation hydration (read path)', 
 
         const article = await coordinator.getMapped('a1', 1);
         expect((article as unknown as Record<string, unknown>)['hydAuthor']).toBeInstanceOf(HydAuthor);
+        // one_to_one nav member is actually assigned here — proving its exclusion from the
+        // outgoing payload below is bound to real behavior, not trivially true from an unset field.
+        expect((article as unknown as Record<string, unknown>)['hydTag']).toBeInstanceOf(HydTag);
 
         await coordinator.updateMapped(article!);
 
         const payload = updateCalls[0].req.payload as Record<string, unknown>;
         expect(payload['HydAuthorId']).toBe('auth-1');
         expect(payload['HydTagIds']).toEqual(['t1']);
+        expect(payload['HydTagId']).toBe('t3');
         expect(Object.keys(payload)).not.toContain('Author');
         expect(Object.keys(payload)).not.toContain('HydAuthor');
         expect(Object.keys(payload)).not.toContain('HydTags');
+        expect(Object.keys(payload)).not.toContain('HydTag');
+    });
+});
+
+// ── C1 regression: many_to_many member whose name doesn't end in "Ids" ──────
+//
+// describeEntity only validates member naming for many_to_one/one_to_one (a many_to_many's wire
+// column comes from inferFk(kind, relatedType, ...), not from the member name), so a
+// many_to_many member named e.g. `contributors` is legal and registers without error.
+// relationNavMember's fallback then returns the field unchanged, which must NOT be treated as a
+// "suffix was stripped" derivation.
+
+@IversonEntity()
+class M2mNoSuffixAuthor {
+    @IversonKey()
+    id: string = '';
+}
+
+@IversonEntity()
+class M2mNoSuffixArticle {
+    @IversonKey()
+    id: string = '';
+    @IversonTenant()
+    tenantId: string = '';
+
+    @ManyToMany(() => M2mNoSuffixAuthor)
+    contributors: string[] = [];
+}
+
+describe('C1 — many_to_many member not ending in "Ids"', () => {
+    it('write path: the foreign key still reaches the payload (no silent data loss)', async () => {
+        const { fn, calls } = makeUnaryStub<PersistRequest, PersistResponse>({
+            success: true, key: 'a1', error: '', traceId: '',
+        });
+        const client = makeClientLike({ _persistenceClient: { post: fn } });
+        const coordinator = new EntityCoordinator(M2mNoSuffixArticle, client);
+
+        const entity = new M2mNoSuffixArticle();
+        entity.id = 'a1';
+        entity.tenantId = 't';
+        entity.contributors = ['x', 'y'];
+        await coordinator.persist(entity);
+
+        const payload = calls[0].req.payload as Record<string, unknown>;
+        expect(payload['M2mNoSuffixAuthorIds']).toEqual(['x', 'y']);
+    });
+
+    it('read path: hydration does not throw and does not invent a nav member', async () => {
+        const { fn } = makeUnaryStub<MappingGetRequest, MappingResponse>({
+            success: true,
+            data: {
+                Id: 'a1',
+                TenantId: 't',
+                M2mNoSuffixAuthorIds: ['x', 'y'],
+                Contributors: [{ Id: 'x' }, { Id: 'y' }],
+            },
+            error: '',
+            traceId: '',
+        });
+        const client = makeClientLike({ _mappingClient: { get: fn } });
+        const coordinator = new EntityCoordinator(M2mNoSuffixArticle, client);
+
+        const result = await coordinator.getMapped('a1', 1);
+
+        expect(result).not.toBeNull();
+        // The declared field is overwritten in place by the hydrated typed instances — no
+        // separate/invented nav member is created, and no collision error is thrown.
+        const contributors = (result as unknown as Record<string, unknown>)['contributors'] as unknown[];
+        expect(contributors).toHaveLength(2);
+        expect(contributors[0]).toBeInstanceOf(M2mNoSuffixAuthor);
+        expect(Object.getOwnPropertyNames(result as object)).not.toContain('contributor');
+        expect(Object.getOwnPropertyNames(result as object)).not.toContain('contributorsHydrated');
     });
 });

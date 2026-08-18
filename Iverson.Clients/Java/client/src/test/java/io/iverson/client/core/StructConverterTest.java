@@ -228,4 +228,37 @@ class StructConverterTest {
         assertEquals(List.of(tagId1, tagId2), article.tags.stream().map(t -> t.id).toList());
         assertEquals(List.of("news", "sports"), article.tags.stream().map(t -> t.label).toList());
     }
+
+    // ── I1 regression: struct recursion must not apply to a non-entity target type ──────────
+
+    @IversonEntity
+    static class StructTestNonEntityTargetArticle {
+        @IversonKey
+        private UUID id;
+
+        // Unannotated scalar field whose PascalCase name ("JavaAuthor") collides with the wire
+        // key of an unrelated struct-typed payload value. Before the fix, fromValue's
+        // STRUCT_VALUE arm called fromStruct(struct, UUID.class) unconditionally, which throws
+        // (UUID has no no-arg constructor) and fails the whole read. It must instead yield null,
+        // the same as any other struct/target-type mismatch.
+        private UUID javaAuthor;
+    }
+
+    @Test
+    void fromStruct_yieldsNullWhenStructValueTargetsANonEntityType() {
+        Struct struct = Struct.newBuilder()
+            .putFields("Id", Value.newBuilder().setStringValue(UUID.randomUUID().toString()).build())
+            .putFields("JavaAuthor", Value.newBuilder()
+                .setStructValue(Struct.newBuilder()
+                    .putFields("Id", Value.newBuilder().setStringValue(UUID.randomUUID().toString()).build())
+                    .build())
+                .build())
+            .build();
+
+        StructTestNonEntityTargetArticle result =
+            assertDoesNotThrow(() -> StructConverter.fromStruct(struct, StructTestNonEntityTargetArticle.class));
+
+        assertNull(result.javaAuthor,
+            "a struct value targeting a non-@IversonEntity field type must fall through to null, not recurse");
+    }
 }

@@ -492,11 +492,16 @@ function entityToPayload(entity: object, cls: Function): Record<string, unknown>
     // must never be written back — entityToPayload walks the live instance's own property names,
     // so a hydrated `tsAuthor` would otherwise round-trip as `TsAuthor`, violating the FK-only
     // write contract (A23). one_to_many has no derived name; it's excluded below via its kind.
-    const excludedNavMembers = new Set(
-        relations
-            .filter(r => r.kind !== 'one_to_many')
-            .map(r => relationNavMember(r.kind, r.field)),
-    );
+    // Only exclude when a suffix was actually stripped — a many_to_many member that doesn't end
+    // in "Ids" (legal: describeEntity only validates many_to_one/one_to_one naming) derives an
+    // unchanged navMember === field. Excluding that would drop the member itself from the
+    // payload, silently discarding its foreign keys.
+    const excludedNavMembers = new Set<string>();
+    for (const r of relations) {
+        if (r.kind === 'one_to_many') continue;
+        const navMember = relationNavMember(r.kind, r.field);
+        if (navMember !== r.field) excludedNavMembers.add(navMember);
+    }
     const allFields = Object.getOwnPropertyNames(entity);
     for (const field of allFields) {
         if (excludedNavMembers.has(field)) continue;
@@ -548,7 +553,10 @@ function payloadToEntity<T extends object>(cls: new () => T, data: Record<string
         }
 
         const navMember = relationNavMember(rel.kind, rel.field);
-        if (navMember in template) {
+        // Only a genuine derivation (navMember !== rel.field) can collide with a declared field
+        // by definition — when no suffix was stripped, navMember equals the relation's own
+        // declared field, which is trivially "already declared" and must not raise here.
+        if (navMember !== rel.field && navMember in template) {
             throw new Error(
                 `${typeName}: relation '${rel.field}' would hydrate into member '${navMember}', ` +
                 `but '${navMember}' is already a declared field on ${typeName}. Rename one of them.`,

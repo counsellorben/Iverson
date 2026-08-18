@@ -501,7 +501,11 @@ def _hydrate_relations(
             nav_member = relation["field"]
         else:
             nav_member = _relation_nav_member_name(relation)
-            if nav_member in annotations:
+            # Only a genuine derivation (nav_member != field) can collide with a declared
+            # annotated field by definition — when no suffix was stripped (e.g. a many_to_many
+            # member not ending in "_ids"), nav_member equals the relation's own declared field,
+            # which is trivially "already declared" and must not raise here.
+            if nav_member != relation["field"] and nav_member in annotations:
                 raise ValueError(
                     f"{cls.__name__}: relation '{relation['field']}' would hydrate "
                     f"into member '{nav_member}', but '{nav_member}' is already a "
