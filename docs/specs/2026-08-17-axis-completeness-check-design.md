@@ -33,10 +33,12 @@ requirement, and it does not change what any existing check does.
    create a second artifact with nothing binding it to the first. A table also reuses the existing
    pipe-table conventions and sits adjacent to the requirements it describes.
 
-3. **An axis is exempt only while it has zero requirement rows.** The exemption is narrow and
-   self-closing: an empty axis is already visible to any reader, and the ledger becomes mandatory
-   at the moment its first requirement lands — which is when the author has the knowledge to write
-   it truthfully. The consequence is that this check cannot fire until an axis is authored.
+3. **An axis is exempt only while it has zero `Active` requirements.** The exemption is narrow and
+   self-closing: an axis with no live requirements is already visible to any reader, and the ledger
+   becomes mandatory at the moment its first `Active` requirement lands — which is when the author
+   has the knowledge to write it truthfully. An axis whose rows are all `Retired` needs no ledger:
+   it has no live coverage to claim, and its `Retired` rows carry their supersession in prose. The
+   consequence is that this check cannot fire until an axis is authored.
 
 4. **Binding is bidirectional**, matching check 1's existing discipline. A `Covered` area must cite
    at least one existing `Active` requirement from its own axis; every `Active` requirement in the
@@ -136,7 +138,7 @@ This limit is stated here because the natural misreading — "the gate now prove
 | # | Assumption | Result |
 | --- | --- | --- |
 | A1 | `RequirementTableParser` lives in the test project and is the only parser the gate uses | Holds — `Iverson.ClientConformance.Tests/RequirementTableParser.cs:20`, `namespace Iverson.ClientConformance.Tests` |
-| A2 | A coverage row would land in `MalformedLines`, breaking check 3 | **FALSE.** The parser opens a table only on the exact header `\| ID \| Status \| Kind \| Statement \|` (`:36`) and closes it at the first non-pipe line (`:50-55`). A `#### Coverage` heading closes the requirement table; the coverage header never opens one; rows are skipped by the `if (!inRequirementTable) continue` guard (`:43-46`). The change is additive |
+| A2 | A coverage row would land in `MalformedLines`, breaking check 3 | **FALSE.** The parser opens a table only on the exact header `\| ID \| Status \| Kind \| Statement \|` (`:37`) and closes it at the first non-pipe line (`:50-55`). A `#### Coverage` heading closes the requirement table; the coverage header never opens one; rows are skipped by the `if (!inRequirementTable) continue` guard (`:43-46`). The change is additive |
 | A3 | Check 3 fails when `MalformedLines` is non-empty | Holds — `RequirementsCoverageGateTests.cs:145-153` |
 | A4 | The parser does not track axis headings | Holds — no heading logic anywhere in `Parse` |
 | A5 | IDs encode their axis and a known-axis list exists in the gate | Holds — `IdShapePattern` `^IVC-([A-Z]+)-\d{3}$` and `KnownAxes` at `RequirementsCoverageGateTests.cs:29-31` |
@@ -149,6 +151,7 @@ This limit is stated here because the natural misreading — "the gate now prove
 | A12 | Adding a check to `RequirementsCoverageGateTests.cs` is the established pattern | Holds — five checks live there |
 | A13 | `Requirements.cs` consts map 1:1 onto `Active` IDs | Holds — enforced by check 1's exact bidirectional match |
 | A14 | No existing table in the standard could be misparsed as a coverage table (whole-set check over every pipe table in the document) | Holds — headers are `\| Axis \| Name \| Covers \|` (`:52`), `\| Column \| Meaning \|` (`:68`), and nine `\| ID \| Status \| Kind \| Statement \|`. None resembles `\| Area \| Status \| Evidence \|`; the entry-format table's `\| ID \| ...` row (`:70`) does not match the requirement header either |
+| A15 | No non-axis `###` heading can be read as an axis heading, so a coverage table's axis attribution is unambiguous | Holds — two non-axis `###` headings exist (`### Scope: behaviour and capability only` at `:25`, `### The server is the enforcement boundary` at `:38`); neither carries the ` — ` separator and neither first token (`Scope:`, `The`) is in `KnownAxes` |
 
 ## Known issues
 
