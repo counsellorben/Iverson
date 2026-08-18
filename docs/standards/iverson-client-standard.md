@@ -127,8 +127,8 @@ comment in `Requirements.cs`, per this document's own convention for an implemen
 `IVC-REL-009` is retired — superseded by the `LIFE` depth capability. What mapped-CRUD parity
 actually verified for all five clients was reachability: that a depth-resolved read is reachable
 through the client's public API (`IVC-LIFE-006`). It did not verify that the returned entity is
-hydrated at that depth — that clause is `IVC-LIFE-007`, and it currently fails for four of the five
-clients (see "Known non-conformance" under `LIFE` below). A row's Statement cell is the statement of
+hydrated at that depth — that clause was `IVC-LIFE-007`, retired below and re-authored as
+`IVC-LIFE-008`, which passes live for all five clients. A row's Statement cell is the statement of
 record and must stay immutable across retirement; retirement rationale belongs in this prose, never
 appended into the statement text.
 
@@ -265,8 +265,7 @@ carries the hydrated relation) as a single statement, so a client that reached t
 read but discarded the hydrated data had no way to go green on the half it satisfied. It is split
 into `IVC-LIFE-006` (reachability, superseding the retired `IVC-REL-009`) and `IVC-LIFE-007`
 (hydration). `IVC-LIFE-006` is what mapped-CRUD parity actually verified across all five clients.
-`IVC-LIFE-007` was never verified, and currently fails live for four of the five clients — see
-"Known non-conformance" below.
+`IVC-LIFE-007` was never verified live before its own retirement, below.
 
 `IVC-LIFE-007` is itself retired and re-authored as `IVC-LIFE-008`. Its statement — that the
 returned entity "is hydrated at that depth", graded by finding a navigation property carrying an
@@ -293,25 +292,6 @@ allows.
 | Delete removes the row on every leg | Covered | IVC-LIFE-004 |
 | Depth-resolved read reachability | Covered | IVC-LIFE-006 |
 | Depth-resolved read hydration | Covered | IVC-LIFE-008 |
-
-#### Known non-conformance (non-normative)
-
-Live run of `crud-roundtrip` (2026-08-18, `dotnet run --project Iverson.Server/Iverson.ClientConformance
--- --scenarios crud-roundtrip`): `IVC-LIFE-008` passes for .NET, TypeScript, Go and Java, and fails
-live for **Python** only.
-
-The premise this section used to state — that a failing client's typed model declares no field to
-receive a hydrated relation object — is false for all four clients previously named here; Tasks 2-5
-gave each of Java, Python, TypeScript and Go a way to surface hydrated data, and three of the four
-now pass live.
-
-Python's driver does hydrate: `iverson_client/core.py`'s `_hydrate_relations` sets the derived
-navigation member (e.g. `py_author`) on the entity instance via `setattr`, even though that member is
-not a declared annotated field. The failure is in the conformance driver's own reporting, not the
-client library's hydration: `Iverson.Clients/Python/conformance/driver.py`'s `entity_to_dict` walks
-only `type(entity).__mro__`'s `__annotations__` to decide which attributes to serialize, so the
-dynamically-set `py_author`/`py_tags` attributes are invisible to it and the JSON the harness grades
-never carries them, even though `entity.py_author` exists on the object the driver returned.
 
 ### QRY — Query
 

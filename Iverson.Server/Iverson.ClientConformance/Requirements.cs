@@ -168,9 +168,9 @@ public static class Requirements
     /// that yields nothing — the hydration-carrier property — carrying an object with its own key)
     /// in the JSON the DRIVER itself reported back — a driver that reaches the depth-1 read but
     /// discards the hydrated payload (no field on its typed model to receive it) fails only this
-    /// requirement, not <c>IVC-LIFE-006</c>. Live run 2026-08-18: passes for .NET, TypeScript, Go
-    /// and Java; known to fail live for Python only — see the standard's LIFE section "Known
-    /// non-conformance".
+    /// requirement, not <c>IVC-LIFE-006</c>. Live run 2026-08-18: passes for all five clients
+    /// (.NET, Python, TypeScript, Go, Java) — the standard's LIFE section no longer carries a
+    /// "Known non-conformance" entry for this requirement.
     /// </summary>
     public const string LifeDepthResolvedReadHydrated = "IVC-LIFE-008";
 

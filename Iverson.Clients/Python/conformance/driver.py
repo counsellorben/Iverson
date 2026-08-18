@@ -31,7 +31,7 @@ import urllib.request
 import grpc
 from google.protobuf.json_format import MessageToJson
 
-from iverson_client.core import EntityCoordinator, SchemaRegistrar
+from iverson_client.core import EntityCoordinator, SchemaRegistrar, _relation_nav_member_name
 from iverson_client.generated import object_mapping_pb2_grpc as mapping_grpc
 
 from conformance.models import PyArticle, PyAuthor, PyBadArticle, PyTag, SharedArticle, SharedAuthor
@@ -104,7 +104,18 @@ class StepResult:
 
 def entity_to_dict(entity: Any) -> Optional[dict]:
     """Serializes an entity with its declared attribute names (snake_case), mirroring the .NET
-    driver's choice to report what the client library actually holds rather than re-casing it."""
+    driver's choice to report what the client library actually holds rather than re-casing it.
+
+    A hydrated relation is a special case: ``iverson_client.core._hydrate_relations`` deliberately
+    sets the navigation member (e.g. ``py_author``) via ``setattr`` rather than as a declared
+    annotated field, so the declared-fields loop above never sees it — that dynamism is what keeps
+    the relation off the write path (spec assumption A22). Without also reporting it here, this
+    driver would under-report what its own caller can already reach (``article.py_author.name``),
+    which is not a faithful serialization of what the driver holds. The member names are derived
+    the same way the library derives them (``_relation_nav_member_name``), not guessed, and only
+    hydrated relation members are added — this stays a serialization of what actually hydrated, not
+    a dump of every attribute on the instance.
+    """
     if entity is None:
         return None
     out: dict = {}
@@ -113,7 +124,30 @@ def entity_to_dict(entity: Any) -> Optional[dict]:
             continue
         for name in getattr(base, "__annotations__", {}):
             out[name] = _json_safe(getattr(entity, name, None))
+
+    meta = getattr(type(entity), "_iverson_meta", None)
+    for relation in (meta or {}).get("relations", []):
+        nav_member = relation["field"] if relation["kind"] == "one_to_many" \
+            else _relation_nav_member_name(relation)
+        if nav_member in out:
+            continue  # already reported as a declared field (e.g. one_to_many's own member)
+        if hasattr(entity, nav_member):
+            out[nav_member] = _hydrated_value_to_json(getattr(entity, nav_member))
+
     return out
+
+
+def _hydrated_value_to_json(value: Any) -> Any:
+    """Converts a hydrated relation value for JSON: a related entity instance (many_to_one/
+    one_to_one) recurses through ``entity_to_dict`` so ITS own hydrated relations, if any, are also
+    reported; a list (many_to_many/one_to_many) does the same per item; an unregistered related
+    type falls back to the untyped dict/list of dicts ``_hydrate_relations`` already produced,
+    which ``_json_safe`` handles as-is."""
+    if isinstance(value, list):
+        return [_hydrated_value_to_json(item) for item in value]
+    if hasattr(type(value), "_iverson_meta"):
+        return entity_to_dict(value)
+    return _json_safe(value)
 
 
 def _json_safe(value: Any) -> Any:
