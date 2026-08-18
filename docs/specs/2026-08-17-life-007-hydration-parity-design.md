@@ -128,9 +128,12 @@ No write-path exclusion is needed, and this is a verified property rather than a
   has no mapping for a map type — `Register` would fail outright. The field cannot simply be
   declared.
 - `structToEntity` populates `Hydrated`, keyed by the wire name, values typed pointers boxed in
-  `any`. The existing `OneToMany` skip is removed for exactly the reason it exists: the comment there
-  states the server injects hydrated child structs under the field's own name, and the code then
-  discards them.
+  `any` — for `one_to_many` as well as the other three kinds. The existing `OneToMany` skip **stays**
+  at the declared member: `GoAuthor.GoArticles` is `[]string`, and `protoValueToGoValue` has no
+  struct case, so a list of hydrated structs against that target yields one empty string per related
+  row with no error. This is decision 2 again rather than a new principle — Go cannot hold a typed
+  child at the declared site any more than it can grow a field — and nothing is lost by leaving
+  `GoArticles` untouched, since the inverse side carries no foreign key.
 - Exclude `Hydrated` from `entityToStruct` (see "Write-path regressions").
 
 ### Entity-type registry (new: Python, Go)
@@ -165,8 +168,9 @@ already.
 
 For `one_to_many` the declared member *is* the navigation member and the wire key matches it exactly.
 Python and TypeScript therefore already land those children — as raw dicts and plain objects — and Go
-drops them at its `OneToMany` skip. Under this design all three hydrate them into typed instances.
-This is a consequence of the change, not additional scope: the same code path handles them.
+drops them at its `OneToMany` skip. Under this design Python, TypeScript and Java hydrate them into
+typed instances at that declared member, and Go hydrates them into `Hydrated` like its other three
+kinds. This is a consequence of the change, not additional scope: the same code path handles them.
 
 ## The requirement
 
@@ -231,6 +235,7 @@ a const on a retired ID fails check 1.
 | A20 | Retiring it requires removing/renumbering its const | Holds — `Requirements.cs:164`, `LifeDepthResolvedReadHydrated` |
 | A21 | Go's write path would serialize an undeclared-tag `Hydrated` field | Holds — `entityToStruct` iterates `t.NumField()`; untagged fields are serialized under their own name |
 | A22 | A dynamic Python attribute cannot leak into the write path | Holds — `_entity_to_struct` iterates `__annotations__` (`core.py:396-406`); a dynamically-set attribute is not there |
+| A26 | Each client's declared `one_to_many` member can hold typed instances of the related type | **Mixed.** Holds for Python (`py_articles: list`, untyped), TypeScript (`tsArticles: TsArticle[]`) and Java (`List<JavaArticle>`, resolvable via `elementTypeOf`). **False for Go** — `GoAuthor.GoArticles` is `[]string` (`conformance/models.go:19`), and `protoValueToGoValue` (`coordinator.go:658-703`) has no `Value_StructValue` case, so struct elements fall through the switch and return `nil`, leaving zero-value strings. This is what routes Go's `one_to_many` to the carrier |
 | A24 | The derived caller-facing member is unique within a model | **FALSE as originally ruled.** `py_tag_ids` (`many_to_many`) and `py_tag_id` (`one_to_one`) both strip to `py_tag`; `tsTagIds`/`tsTagId` both strip to `tsTag` (`conformance/models.py:49-55`, `conformance/models.ts:71-81`, whose comments record that the singular FK name was chosen to avoid exactly this collision). Holds under decision 4's corrected plural-preserving strip |
 | A25 | The harness can locate the hydrated child in the driver's reported entity | Holds — `Verifier.Normalize` (`:94-95`) strips non-alphanumerics and lower-cases, so `py_author`/`tsAuthor` normalize onto the registered `PyAuthor`/`TsAuthor`; `FindProperty` (`:464-475`) does not recurse, so Go's nested carrier requires the fallback lookup recorded under "The requirement" |
 | A23 | A dynamic TypeScript property would leak into the write path | **Holds, and is a defect to prevent.** `entityToPayload` iterates `Object.getOwnPropertyNames(entity)` on the live instance (`core.ts:470`), so `getMapped` → `updateMapped` would send the hydrated child |
