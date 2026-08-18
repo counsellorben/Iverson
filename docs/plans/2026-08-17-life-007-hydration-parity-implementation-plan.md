@@ -89,6 +89,8 @@ Verified by `thorough-brainstorming` at spec-write time and by four CDR rounds; 
 | P31 | Consumer impact | Python `_from_struct` has 8 call sites, all in `core.py`; a second pass is additive | `core.py:583,599,613,627,641,651,660` |
 | P32 | Consumer impact | `VerifyDepthCapability` has one production caller and three tests; the fallback needs no signature change | `CrudRoundtripScenario.cs:165`; `VerifierTests.cs:756,770,785` |
 | P33 | Consumer impact | Renumbering the const's value breaks nothing — every consumer references the symbol | `Verifier.cs:456`, `VerifierTests.cs:766,781` |
+| P35 | Command | The compose file is at `Iverson.Server/docker-compose.yml`; the repository root has none, so `docker compose` needs `-f` when run from the root | `find . -maxdepth 3 -name "docker-compose*.y*ml"` returns that one path; bare `docker compose ps` from the root exits 1 with `no configuration file provided: not found` |
+| P36 | Command | The Python interpreter on PATH is `python3`; `python` does not exist | `which python` → not found, `which python3` → `/usr/bin/python3`; `DriverRunner.cs:100` launches the driver as `python3` |
 | P34 | Sibling sweep | Every identifier the tasks name resolves at its point of use (meta-class: every referenced name resolves) | `VerifyDepthCapability:443`, `FindProperty:464`, `CountHydratedObjects:484`, `Normalize:94`, `isNavigationProperty`/`fromValue`/`toStruct` in `StructConverter.java`, `_from_struct:685`/`_entity_to_struct:390`/`_relation_property_name:100` in `core.py`, `payloadToEntity:486`/`entityToPayload:466`/`getRelations:387` in TS, `structToEntity:614`/`entityToStruct:487`/`protoValueToGoValue:658`/`ExtractMeta`/`relationPropertyName:329`/`goTypeToClr` in Go |
 
 ## Tasks
@@ -164,7 +166,7 @@ git commit -m "hydrate navigation properties on Java's read path"
 
 - [ ] **Step 6: Run and commit.**
 ```bash
-cd Iverson.Clients/Python && python -m pytest && cd -
+cd Iverson.Clients/Python && python3 -m pytest && cd -
 git add Iverson.Clients/Python
 git commit -m "hydrate typed relation children on Python's read path"
 ```
@@ -233,7 +235,7 @@ git commit -m "hydrate typed relation children into Go's carrier"
 
 - [ ] **Step 1: Confirm the stack is up.** No image rebuild is required — this plan changes no server code (P20) — but the harness needs a live server at `IVERSON_GRPC_URL`.
 ```bash
-docker compose ps
+docker compose -f Iverson.Server/docker-compose.yml ps
 ```
 
 - [ ] **Step 2: Run the full matrix.**
@@ -243,12 +245,12 @@ dotnet run --project Iverson.Server/Iverson.ClientConformance -- --scenarios cru
 
 - [ ] **Step 3: Record what the successor requirement actually reports per client**, from the run's own output. Do not infer it from the code changes — the point of this step is that the design's prediction and the live result are separate facts.
 
-- [ ] **Step 4: Rewrite or remove `#### Known non-conformance`** (`iverson-client-standard.md:283`) according to Step 3's evidence. Its current text names four failing clients and attributes all four to a premise this spec opens by falsifying, so it cannot survive unchanged. If every client now passes, remove the section; if any still fails, restate it with the real cause and the real client list.
+- [ ] **Step 4: Rewrite or remove `#### Known non-conformance`** (`iverson-client-standard.md:283`) according to Step 3's evidence. Its current text names four failing clients and attributes all four to a premise this spec opens by falsifying, so it cannot survive unchanged. If every client now passes, remove the section; if any still fails, restate it with the real cause and the real client list. **Update the same claim in its second location**: the successor const's doc comment in `Requirements.cs` ends "Known to fail live for Python, TypeScript, Go and Java" — the standard's entry format designates that comment as where an implemented requirement's evidence lives (`iverson-client-standard.md:75-78`), so leaving it uncorrected has the repository asserting both outcomes.
 
 - [ ] **Step 5: Run the gate once more and commit.**
 ```bash
 dotnet test Iverson.Server/Iverson.ClientConformance.Tests/Iverson.ClientConformance.Tests.csproj
-git add docs/standards/iverson-client-standard.md
+git add docs/standards/iverson-client-standard.md Iverson.Server/Iverson.ClientConformance
 git commit -m "record the live hydration result in the standard"
 ```
 
