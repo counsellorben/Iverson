@@ -181,8 +181,14 @@ fail it. The successor asserts that a depth-resolved read makes the related obje
 the client's own object model, carrying its own key.
 
 `VerifyDepthCapability` finds it by looking for the registered `PropertyName` at the reported
-entity's top level and, failing that, inside a hydration-carrier property. `Verifier.Normalize`
-strips non-alphanumerics and lower-cases, so the idiomatic names of decision 4 already normalize
+entity's top level and, when that yields no hydrated objects, inside a hydration-carrier property.
+The fallback is keyed on the result rather than on the property's absence because of Go's
+`one_to_many`: `relationPropertyName` returns the field name unchanged for that kind, so the declared
+member sits at top level under exactly the name the lookup searches for — left at its zero value by
+the retained skip — while the children sit in the carrier under the same name. Keying on absence
+would let the empty declared member shadow them. The absent case is subsumed, since a missing
+property also yields no hydrated objects. `Verifier.Normalize` strips non-alphanumerics and
+lower-cases, so the idiomatic names of decision 4 already normalize
 onto the registered name for .NET, Java, Python and TypeScript; only Go's carrier introduces a
 nesting level, and the fallback is what reaches it. Each driver's reported entity therefore stays a
 faithful serialization of what its caller actually holds.
@@ -237,7 +243,7 @@ a const on a retired ID fails check 1.
 | A22 | A dynamic Python attribute cannot leak into the write path | Holds — `_entity_to_struct` iterates `__annotations__` (`core.py:396-406`); a dynamically-set attribute is not there |
 | A26 | Each client's declared `one_to_many` member can hold typed instances of the related type | **Mixed.** Holds for Python (`py_articles: list`, untyped), TypeScript (`tsArticles: TsArticle[]`) and Java (`List<JavaArticle>`, resolvable via `elementTypeOf`). **False for Go** — `GoAuthor.GoArticles` is `[]string` (`conformance/models.go:19`), and `protoValueToGoValue` (`coordinator.go:658-703`) has no `Value_StructValue` case, so struct elements fall through the switch and return `nil`, leaving zero-value strings. This is what routes Go's `one_to_many` to the carrier |
 | A24 | The derived caller-facing member is unique within a model | **FALSE as originally ruled.** `py_tag_ids` (`many_to_many`) and `py_tag_id` (`one_to_one`) both strip to `py_tag`; `tsTagIds`/`tsTagId` both strip to `tsTag` (`conformance/models.py:49-55`, `conformance/models.ts:71-81`, whose comments record that the singular FK name was chosen to avoid exactly this collision). Holds under decision 4's corrected plural-preserving strip |
-| A25 | The harness can locate the hydrated child in the driver's reported entity | Holds — `Verifier.Normalize` (`:94-95`) strips non-alphanumerics and lower-cases, so `py_author`/`tsAuthor` normalize onto the registered `PyAuthor`/`TsAuthor`; `FindProperty` (`:464-475`) does not recurse, so Go's nested carrier requires the fallback lookup recorded under "The requirement" |
+| A25 | The harness can locate the hydrated child in the driver's reported entity | **Failed as originally ruled, corrected.** `Verifier.Normalize` (`:94-95`) does absorb the decision-4 name divergence for .NET, Java, Python and TypeScript, and `FindProperty` (`:464-475`) does not recurse. But an absence-keyed fallback cannot reach Go's `one_to_many`: `relationPropertyName` returns `fm.Name` unchanged for that kind (`registrar.go:343`), so `GoAuthor.GoArticles` (`conformance/models.go:19`) is both the declared member and the registered `PropertyName`, and the empty declared member shadows the carrier entry. Holds under the result-keyed fallback recorded under "The requirement" |
 | A23 | A dynamic TypeScript property would leak into the write path | **Holds, and is a defect to prevent.** `entityToPayload` iterates `Object.getOwnPropertyNames(entity)` on the live instance (`core.ts:470`), so `getMapped` → `updateMapped` would send the hydrated child |
 
 ## Known issues
