@@ -20,7 +20,10 @@ const string CrudRoundtripScenario = "crud-roundtrip";
 // Scenarios/InteropScenario.cs for the register-once rule. The other four drivers only ever see
 // this scenario's write/read phases.
 const string InteropScenario = "interop";
-var supportedScenarios = new[] { CrudRoundtripScenario, InteropScenario };
+// schema-catalog (S5): register + read only. Registers DotNetAuthor, then fetches the catalogue
+// back through SchemaCatalogClient — the client library's own public schema-retrieval surface.
+const string SchemaCatalogScenario = "schema-catalog";
+var supportedScenarios = new[] { CrudRoundtripScenario, InteropScenario, SchemaCatalogScenario };
 
 var args_ = Args.Parse(args);
 
@@ -83,6 +86,10 @@ var steps = new List<StepResult>();
 if (scenario == InteropScenario)
 {
     await RunInteropAsync();
+}
+else if (scenario == SchemaCatalogScenario)
+{
+    await RunSchemaCatalogAsync();
 }
 else
 {
@@ -195,6 +202,70 @@ static IEnumerable<(string Language, string Key)> AllSharedArticleKeys(
         if (keys.TryGetValue("shared_article", out var key) && key.Length > 0)
             yield return (language, key);
 }
+
+// ── S5 schema-catalog ────────────────────────────────────────────────────────────────────────
+async Task RunSchemaCatalogAsync()
+{
+    switch (phase)
+    {
+        case "register":
+        {
+            // One relation-free type, registered WITHOUT an authorization block on purpose: the
+            // orchestrator re-registers it with one before the read phase, and until it does the
+            // type is Denied for Read and GetSchema omits it entirely. DotNetAuthor is this
+            // language's own type name, so all five languages registering concurrently overwrite
+            // nothing.
+            capture.OnlySendTypeName = nameof(DotNetAuthor);
+            var registerOutcome = await Run(async () =>
+            {
+                var registrar = new SchemaRegistrar(registry, mappingForRegistration, NullLogger<SchemaRegistrar>.Instance);
+                await registrar.RegisterAllAsync();
+            });
+            capture.OnlySendTypeName = null;
+
+            steps.Add(new StepResult(
+                "register_schema_type",
+                Ok: registerOutcome is null,
+                Error: registerOutcome,
+                TypeDescriptor: Json.Element(capture.Select(nameof(DotNetAuthor)))));
+            break;
+        }
+
+        case "read":
+        {
+            // SchemaCatalogClient is the client library's public schema-retrieval surface; the
+            // acting-user identity rides on the invoker this driver built (Auth.cs), which is why
+            // no token provider is passed here. The catalogue is reported verbatim and judged by
+            // nobody in this process.
+            await Step("get_schema", async result =>
+            {
+                var catalogue = await new SchemaCatalogClient(mapping).GetSchemaAsync();
+                return result with { Entity = Json.Element(CatalogueToReport(catalogue)) };
+            });
+            break;
+        }
+
+        default:
+            await Console.Error.WriteLineAsync($"unknown phase '{phase}' for scenario '{scenario}'");
+            Environment.Exit(2);
+            break;
+    }
+}
+
+/// <summary>
+/// The deliberately minimal, cross-language-identical projection of a GetSchema catalogue that all
+/// five drivers report. Copies names verbatim out of the SchemaType messages the client library
+/// returned; filters nothing and decides nothing.
+/// </summary>
+static object CatalogueToReport(IReadOnlyList<SchemaType> types) => new
+{
+    types = types.Select(t => new
+    {
+        name = t.Name,
+        fields = t.Fields.Select(f => new { name = f.Name }).ToList(),
+        relations = t.Relations.Select(r => new { propertyName = r.PropertyName }).ToList(),
+    }).ToList(),
+};
 
 // ── S1 crud-roundtrip ────────────────────────────────────────────────────────────────────────
 async Task RunCrudRoundtripAsync()

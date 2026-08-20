@@ -232,6 +232,52 @@ public static class Requirements
     /// </summary>
     public const string RegForeignKeyNamingEnforced = "IVC-REG-003";
 
+    // ── SCH — Schema ────────────────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Schema-catalogue retrieval is reachable through the client's public API. Discharged by
+    /// <c>SchemaCatalogScenario.JudgeCatalogue</c>'s "schema-catalogue retrieval is reachable
+    /// through the client's public API" assertion, over each driver's own <c>get_schema</c> step —
+    /// the driver calls <c>GetSchema</c> through its own client library's public surface
+    /// (<c>SchemaCatalogClient.GetSchemaAsync</c>, <c>IversonClient.get_schema</c>,
+    /// <c>IversonClient.getSchema</c>, <c>IversonClient.GetSchema</c>,
+    /// <c>IversonClient.getSchema</c>), never through a raw generated stub. This is a
+    /// <c>Capability</c>: it is satisfied by the call completing, and says nothing about what the
+    /// catalogue contained — that is <c>IVC-SCH-002</c>/<c>IVC-SCH-003</c>, distinct assertions, so
+    /// a client that can reach the RPC but gets back nothing useful goes green here and red there.
+    /// A driver reporting that its client cannot perform the call at all is a FAIL, not a skip.
+    /// </summary>
+    public const string SchCatalogRetrievalReachable = "IVC-SCH-001";
+
+    /// <summary>
+    /// The catalogue a client retrieves includes the type that client registered. Discharged by
+    /// <c>SchemaCatalogScenario.JudgeCatalogue</c>'s "the catalogue contains ... the type this
+    /// client registered" assertion, which looks for the register phase's own reported
+    /// <c>TypeDescriptor.TypeName</c> among the catalogue types the SAME driver reported back.
+    /// Each language registers a differently-named type (<c>DotNetAuthor</c>, <c>PyAuthor</c>,
+    /// <c>TsAuthor</c>, <c>GoAuthor</c>, <c>JavaAuthor</c>), so the subject of the claim is
+    /// per-language and five registrations overwrite nothing. The assertion is fired
+    /// unconditionally once the descriptor is known — when the register phase produced no usable
+    /// descriptor it fires as an explicit failure naming that consequence, rather than being
+    /// skipped, so this requirement can never be discharged vacuously.
+    /// </summary>
+    public const string SchCatalogIncludesRegisteredType = "IVC-SCH-002";
+
+    /// <summary>
+    /// A catalogue type carries exactly the field set its registered descriptor declared.
+    /// Discharged by <c>SchemaCatalogScenario.JudgeCatalogue</c>'s "carries exactly the field set
+    /// its descriptor declared" assertion, a two-way set comparison (declared-but-absent AND
+    /// catalogued-but-undeclared are both failures) between the driver's own reported descriptor
+    /// and the catalogue the same driver reported back, keyed by <c>Verifier.Normalize</c> so the
+    /// five languages' name casings are comparable. "Exactly" is checkable because the scenario's
+    /// subject type is relation-free and no <c>FieldPermission</c> is registered:
+    /// <c>SchemaBuilder</c> turns the key property into the key column and every other declared
+    /// property into a scalar column, and <c>ObjectMappingGrpcService.GetSchema</c> emits exactly
+    /// key + scalars when <c>AllowedFields</c> is null — so the two sets must be equal, and a
+    /// one-way subset check would let a catalogue that dropped or invented fields pass.
+    /// </summary>
+    public const string SchCatalogFieldSetMatchesDescriptor = "IVC-SCH-003";
+
     // ── REL — Relations ─────────────────────────────────────────────────────────────────────
 
     /// <summary>

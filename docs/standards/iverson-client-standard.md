@@ -305,8 +305,58 @@ allows.
 
 ### SCH — Schema
 
+Full rationale and the assertion(s) that discharge each requirement are recorded on the
+corresponding const's doc comment in `Requirements.cs`, per this document's own convention for an
+implemented requirement.
+
 | ID | Status | Kind | Statement |
 | --- | --- | --- | --- |
+| IVC-SCH-001 | Active | Capability | Schema-catalogue retrieval is reachable through the client's public API |
+| IVC-SCH-002 | Active | Behaviour | The catalogue a client retrieves includes the type that client registered |
+| IVC-SCH-003 | Active | Behaviour | A catalogue type carries exactly the field set its registered descriptor declared |
+
+`IVC-SCH-001` is the reachability half and `IVC-SCH-002`/`IVC-SCH-003` the content half of what an
+agent-facing catalogue has to deliver, split the way `LIFE` splits `IVC-LIFE-006` from
+`IVC-LIFE-008` and for the same reason: a client that can reach `GetSchema` but returns a catalogue
+missing its own type, or describing that type with the wrong fields, is non-conformant in a way a
+single conflated requirement would report only as one undifferentiated red cell.
+
+`IVC-SCH-003` says *exactly* the declared field set, not *at least* it. Both directions are
+verified — a declared property absent from the catalogue and a catalogued field the descriptor
+never declared are each a failure. The scenario's subject type is relation-free and registers no
+`FieldPermission`, which is what makes the exact form checkable: `SchemaBuilder` maps the key
+property to the key column and every other declared property to a scalar column, and
+`ObjectMappingGrpcService.GetSchema` emits precisely key + scalars when no field permission narrows
+the set. A one-way subset reading would let a catalogue that silently dropped fields — or invented
+them — satisfy the requirement.
+
+Field-permission-narrowed catalogues, relation projection in the catalogue, and the cross-type
+visibility rule (`GetSchema` drops a relation whose related type did not itself survive) are
+deliberately not authored here; see the Coverage table below.
+
+#### Coverage
+
+| Area | Status | Evidence |
+| --- | --- | --- |
+| Catalogue retrieval reachability | Covered | IVC-SCH-001 |
+| Registered types present in the catalogue | Covered | IVC-SCH-002 |
+| Catalogue field set matches the registered descriptor | Covered | IVC-SCH-003 |
+| Field-permission-narrowed catalogues | Deferred | `ObjectMappingGrpcService.GetSchema` narrows a type's fields to `AuthorizationDecision.AllowedFields` and drops a type whose authorized field set is empty, but the conformance harness registers no `FieldPermission`, so no assertion observes that narrowing and no requirement constrains it. |
+| Relation projection in the catalogue | Deferred | `SchemaType.relations` is emitted (and filtered by `ForeignKeyIsReadable` and by whether the related type itself survived), but the scenario's subject type is relation-free on purpose — which is what makes `IVC-SCH-003`'s exact field-set comparison checkable — so no assertion observes relation projection and no requirement constrains it. |
+
+#### Backstop assertion (non-normative)
+
+`SCH`'s content assertions (`IVC-SCH-002`, `IVC-SCH-003`) search a list — the catalogue types the
+driver reported — for the one type that language registered. A client that silently reported an
+empty catalogue, or none at all, would make that search find nothing; `IVC-SCH-002` catches that
+whenever a registered type name is known, but when the register phase itself produced no usable
+descriptor there is no name to search for and neither content assertion can be evaluated at all.
+`SchemaCatalogScenario.JudgeCatalogue`'s "the driver reported a non-empty schema catalogue"
+assertion is therefore `SCH`'s backstop: it fires unconditionally, outside that search, on every
+language and in every case. Like `REL`'s, it carries no requirement ID — no `IVC-SCH-*` statement
+owns "the catalogue is non-empty" as such, and it is strictly weaker than `IVC-SCH-002` wherever
+`IVC-SCH-002` can fire.
+
 
 ### ERR — Errors
 

@@ -66,7 +66,7 @@ try
     string[] recognizedScenarios =
     [
         CrudRoundtripScenario.Name, NamingRejectedScenario.Name, NavPropertyRejectedScenario.Name,
-        InteropScenario.Name,
+        InteropScenario.Name, SchemaCatalogScenario.Name,
     ];
     var scenarios = flags.Scenarios ?? recognizedScenarios;
 
@@ -96,6 +96,7 @@ try
     var namingRejected = new NamingRejectedScenario(runner, mapping);
     var navPropertyRejected = new NavPropertyRejectedScenario(mapping);
     var interop = new InteropScenario(runner, new Reregistrar(mapping), Console.WriteLine);
+    var schemaCatalog = new SchemaCatalogScenario(runner, new Reregistrar(mapping), Console.WriteLine);
 
     DriverContext BuildContext(string scenarioName) => new(
         Scenario: scenarioName,
@@ -138,6 +139,13 @@ try
     {
         Console.WriteLine($"Running scenario '{InteropScenario.Name}'...");
         foreach (var cell in await interop.RunAsync(languages, BuildContext(InteropScenario.Name), actingToken))
+            report.Add(cell);
+    }
+
+    if (scenarios.Contains(SchemaCatalogScenario.Name, StringComparer.OrdinalIgnoreCase))
+    {
+        Console.WriteLine($"Running scenario '{SchemaCatalogScenario.Name}'...");
+        foreach (var cell in await schemaCatalog.RunAsync(languages, BuildContext(SchemaCatalogScenario.Name), actingToken))
             report.Add(cell);
     }
 

@@ -23,6 +23,7 @@ import {
     ObjectMappingServiceClient,
     type SchemaRequest,
     type SchemaResponse,
+    type SchemaType,
     TypeDescriptor,
 } from '../generated/object_mapping.js';
 
@@ -32,7 +33,9 @@ const LANGUAGE = 'typescript';
 // naming-rejected (S2) is register-phase-only: the orchestrator never invokes this driver for
 // any other phase under it. interop (S4) is register-phase-NEVER for this driver: only .NET
 // registers SharedAuthor/SharedArticle (register-once rule).
-const SCENARIOS = new Set(['crud-roundtrip', 'naming-rejected', 'interop']);
+// schema-catalog (S5) uses only the register and read phases: this driver registers TsAuthor and
+// then fetches the catalogue back through IversonClient.getSchema().
+const SCENARIOS = new Set(['crud-roundtrip', 'naming-rejected', 'interop', 'schema-catalog']);
 
 // ── Argument parsing ────────────────────────────────────────────────────────────
 
@@ -85,6 +88,21 @@ interface StepResult {
     typeDescriptor: unknown | null;
     keys: Record<string, string> | null;
     entity: unknown | null;
+}
+
+/**
+ * The deliberately minimal, cross-language-identical projection of a GetSchema catalogue that all
+ * five drivers report. Copies names verbatim out of the SchemaType messages the client library
+ * returned; filters nothing and decides nothing.
+ */
+function catalogueToReport(types: SchemaType[]): unknown {
+    return {
+        types: types.map((t) => ({
+            name: t.name,
+            fields: t.fields.map((f) => ({ name: f.name })),
+            relations: t.relations.map((r) => ({ propertyName: r.propertyName })),
+        })),
+    };
 }
 
 function step(
@@ -332,6 +350,38 @@ async function main(argv: string[]): Promise<number> {
             error = describe(err);
         }
         steps.push(step('register', error === null, { error }));
+    } else if (phase === 'register' && scenario === 'schema-catalog') {
+        // S5 schema-catalog: one relation-free type, registered WITHOUT an authorization block on
+        // purpose — the orchestrator re-registers it with one before the read phase, and until it
+        // does the type is Denied for Read and GetSchema omits it entirely. TsAuthor is this
+        // language's own type name, so all five languages registering concurrently overwrite
+        // nothing.
+        let error: string | null = null;
+        try {
+            const registrar = new SchemaRegistrar(
+                capture as unknown as ObjectMappingServiceClient,
+                [TsAuthor],
+                callCredentials,
+            );
+            await registrar.registerAll();
+        } catch (err) {
+            error = describe(err);
+        }
+        steps.push(
+            step('register_schema_type', error === null, {
+                error,
+                typeDescriptor: capture.select('TsAuthor') ?? null,
+            }),
+        );
+    } else if (phase === 'read' && scenario === 'schema-catalog') {
+        // The catalogue is fetched through the client library's own public getSchema(); the driver
+        // reports what came back verbatim and judges none of it.
+        try {
+            const catalogue = await client.getSchema();
+            steps.push(step('get_schema', true, { entity: catalogueToReport(catalogue) }));
+        } catch (err) {
+            steps.push(step('get_schema', false, { error: describe(err) }));
+        }
     } else if (phase === 'register') {
         // SchemaRegistrar.registerAll() issues one RegisterSchema call per type, sequentially, and
         // throws on the first failure (an `Error` on `!response.success`, or the underlying

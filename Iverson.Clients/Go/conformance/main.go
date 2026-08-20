@@ -38,6 +38,50 @@ var supportedScenarios = map[string]bool{
 	"crud-roundtrip":  true,
 	"naming-rejected": true,
 	"interop":         true,
+	// schema-catalog (S5) uses only the register and read phases: this driver registers GoAuthor
+	// and then fetches the catalogue back through IversonClient.GetSchema.
+	"schema-catalog": true,
+}
+
+// catalogueType/catalogueField/catalogueRelation are the deliberately minimal,
+// cross-language-identical projection of a GetSchema catalogue that all five drivers report. Names
+// are copied verbatim out of the SchemaType messages the client library returned; nothing is
+// filtered and nothing is decided here.
+type catalogueField struct {
+	Name string `json:"name"`
+}
+
+type catalogueRelation struct {
+	PropertyName string `json:"propertyName"`
+}
+
+type catalogueType struct {
+	Name      string              `json:"name"`
+	Fields    []catalogueField    `json:"fields"`
+	Relations []catalogueRelation `json:"relations"`
+}
+
+type catalogueReport struct {
+	Types []catalogueType `json:"types"`
+}
+
+func catalogueToReport(types []*pb.SchemaType) catalogueReport {
+	report := catalogueReport{Types: make([]catalogueType, 0, len(types))}
+	for _, t := range types {
+		entry := catalogueType{
+			Name:      t.GetName(),
+			Fields:    make([]catalogueField, 0, len(t.GetFields())),
+			Relations: make([]catalogueRelation, 0, len(t.GetRelations())),
+		}
+		for _, f := range t.GetFields() {
+			entry.Fields = append(entry.Fields, catalogueField{Name: f.GetName()})
+		}
+		for _, r := range t.GetRelations() {
+			entry.Relations = append(entry.Relations, catalogueRelation{PropertyName: r.GetPropertyName()})
+		}
+		report.Types = append(report.Types, entry)
+	}
+	return report
 }
 
 // ── Argument parsing ──────────────────────────────────────────────────────────
@@ -489,6 +533,46 @@ func run(argv []string) int {
 					func() (interface{}, error) { return articleCoord.Get(ctx, key) }))
 			}
 		}
+
+	case phase == "register" && sc == "schema-catalog":
+		// S5 schema-catalog: one relation-free type, registered WITHOUT an authorization block on
+		// purpose — the orchestrator re-registers it with one before the read phase, and until it
+		// does the type is Denied for Read and GetSchema omits it entirely. GoAuthor is this
+		// language's own type name, so all five languages registering concurrently overwrite
+		// nothing.
+		capture := &capturingMappingClient{real: client.MappingStub}
+		registrar := iverson.NewSchemaRegistrar(capture, GoAuthor{})
+		regErr := registrar.RegisterAll(ctx, idPrefix, nil)
+		regStep := stepResult{
+			Name:           "register_schema_type",
+			Ok:             regErr == nil,
+			TypeDescriptor: capture.selectDescriptor("GoAuthor"),
+		}
+		if regErr != nil {
+			msg := regErr.Error()
+			regStep.Error = &msg
+		}
+		steps = append(steps, regStep)
+
+	case phase == "read" && sc == "schema-catalog":
+		// The catalogue is fetched through the client library's own public GetSchema; the driver
+		// reports what came back verbatim and judges none of it.
+		types, schemaErr := client.GetSchema(ctx, "")
+		readStep := stepResult{Name: "get_schema", Ok: schemaErr == nil}
+		if schemaErr != nil {
+			msg := schemaErr.Error()
+			readStep.Error = &msg
+		} else {
+			encoded, encodeErr := json.Marshal(catalogueToReport(types))
+			if encodeErr != nil {
+				msg := encodeErr.Error()
+				readStep.Ok = false
+				readStep.Error = &msg
+			} else {
+				readStep.Entity = encoded
+			}
+		}
+		steps = append(steps, readStep)
 
 	case phase == "register":
 		if sc == "naming-rejected" {

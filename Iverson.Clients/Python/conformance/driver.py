@@ -31,7 +31,7 @@ import urllib.request
 import grpc
 from google.protobuf.json_format import MessageToJson
 
-from iverson_client.core import EntityCoordinator, SchemaRegistrar, _relation_nav_member_name
+from iverson_client.core import EntityCoordinator, IversonClient, SchemaRegistrar, _relation_nav_member_name
 from iverson_client.generated import object_mapping_pb2_grpc as mapping_grpc
 
 from conformance.models import PyArticle, PyAuthor, PyBadArticle, PyTag, SharedArticle, SharedAuthor
@@ -40,7 +40,9 @@ LANGUAGE = "python"
 # naming-rejected (S2) is register-phase-only: the orchestrator never invokes this driver for
 # any other phase under it. interop (S4) is register-phase-NEVER for this driver: only .NET
 # registers SharedAuthor/SharedArticle (register-once rule).
-SCENARIOS = {"crud-roundtrip", "naming-rejected", "interop"}
+# schema-catalog (S5) uses only the register and read phases: this driver registers PyAuthor and
+# then fetches the catalogue back through the client library's own public get_schema().
+SCENARIOS = {"crud-roundtrip", "naming-rejected", "interop", "schema-catalog"}
 
 
 # ── Argument parsing ──────────────────────────────────────────────────────────
@@ -349,6 +351,45 @@ class CapturingMappingStub:
         return None
 
 
+class _DriverSchemaCatalogClient(IversonClient):
+    """Exercises ``IversonClient.get_schema`` — the public API S5 is about — over the driver's own
+    dual-identity channel.
+
+    ``IversonClient.__init__`` builds its own channel from an ``IversonClientCredentials``, which
+    can express neither the Host header Authentik stamps the token's ``iss`` from nor a scope, so a
+    token it minted for itself is rejected on issuer validation before ``GetSchema`` is ever
+    reached (the same reason ``build_driver_channel`` exists at all). This subclass therefore
+    initializes exactly the three attributes the base ``__init__`` sets and inherits ``get_schema``
+    unmodified — the method under test is the library's own, not a reimplementation of it.
+
+    ``acting_user_token`` is left ``None`` on purpose: the driver's channel already attaches
+    ``x-acting-user-authorization`` to every call via ``_DriverActingUserAuthPlugin``, and setting
+    it here as well would send the header twice.
+    """
+
+    def __init__(self, channel: grpc.Channel) -> None:  # noqa: D107 - see class docstring
+        self._channel = channel
+        self._mapping_stub = mapping_grpc.ObjectMappingServiceStub(channel)
+        self._acting_user_token = None
+
+
+def catalogue_to_json(types: List[Any]) -> dict:
+    """The deliberately minimal, cross-language-identical projection of a GetSchema catalogue that
+    every one of the five drivers reports. Reporting, not judging: names are copied verbatim out of
+    the SchemaType messages the client library returned, nothing is filtered, and the orchestrator
+    decides what any of it means."""
+    return {
+        "types": [
+            {
+                "name": t.name,
+                "fields": [{"name": f.name} for f in t.fields],
+                "relations": [{"propertyName": r.property_name} for r in t.relations],
+            }
+            for t in types
+        ]
+    }
+
+
 def main(argv: List[str]) -> int:
     args = Args(argv)
 
@@ -420,6 +461,35 @@ def main(argv: List[str]) -> int:
         except Exception as exc:  # noqa: BLE001 - reported as data, not raised
             error = describe(exc)
         steps.append(StepResult(name="register", ok=error is None, error=error))
+
+    elif phase == "register" and scenario == "schema-catalog":
+        # S5 schema-catalog: one relation-free type, registered without an authorization block —
+        # the orchestrator re-registers it with one before the read phase, or GetSchema would omit
+        # it as Denied. PyAuthor is this language's own type name, so five languages registering
+        # in parallel overwrite nothing.
+        error: Optional[str] = None
+        try:
+            registrar = SchemaRegistrar(capture, PyAuthor)
+            registrar.register_all()
+        except Exception as exc:  # noqa: BLE001 - reported as data, not raised
+            error = describe(exc)
+
+        descriptor_json = capture.select("PyAuthor")
+        steps.append(StepResult(
+            name="register_schema_type",
+            ok=error is None,
+            error=error,
+            type_descriptor=json.loads(descriptor_json) if descriptor_json else None,
+        ))
+
+    elif phase == "read" and scenario == "schema-catalog":
+        # The catalogue is fetched through the client library's own public get_schema(); the
+        # driver reports what came back verbatim and judges none of it.
+        try:
+            catalogue = _DriverSchemaCatalogClient(channel).get_schema()
+            steps.append(StepResult("get_schema", True, entity=catalogue_to_json(catalogue)))
+        except Exception as exc:  # noqa: BLE001
+            steps.append(StepResult("get_schema", False, error=describe(exc)))
 
     elif phase == "register":
         # SchemaRegistrar.register_all() issues one RegisterSchema call per type, sequentially,

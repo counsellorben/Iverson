@@ -15,6 +15,9 @@ import io.iverson.conformance.models.JavaAuthor;
 import io.iverson.conformance.models.JavaTag;
 import io.iverson.conformance.models.SharedArticle;
 import io.iverson.conformance.models.SharedAuthor;
+import iverson.ObjectMapping.SchemaField;
+import iverson.ObjectMapping.SchemaRelation;
+import iverson.ObjectMapping.SchemaType;
 
 import java.lang.reflect.Type;
 import java.net.URI;
@@ -46,8 +49,11 @@ public final class Driver {
     // interop (S4) is register-phase-NEVER for this driver: only .NET registers
     // SharedAuthor/SharedArticle (register-once rule) — see doRegister, which never handles it.
     private static final String INTEROP_SCENARIO = "interop";
+    // schema-catalog (S5) uses only the register and read phases: this driver registers JavaAuthor
+    // and then fetches the catalogue back through IversonClient.getSchema.
+    private static final String SCHEMA_CATALOG_SCENARIO = "schema-catalog";
     private static final java.util.Set<String> SUPPORTED_SCENARIOS =
-        java.util.Set.of(CRUD_ROUNDTRIP_SCENARIO, INTEROP_SCENARIO);
+        java.util.Set.of(CRUD_ROUNDTRIP_SCENARIO, INTEROP_SCENARIO, SCHEMA_CATALOG_SCENARIO);
     private static final Gson GSON = new Gson();
 
     private Driver() {}
@@ -97,6 +103,16 @@ public final class Driver {
                 switch (phase) {
                     case "write" -> doInteropWrite(client, tenant, ownerId, idPrefix, steps);
                     case "read" -> doInteropRead(client, parsedArgs.optional("--keys"), steps);
+                    default -> {
+                        System.err.println("unknown phase '" + phase + "' for scenario '" + scenario + "'");
+                        System.exit(2);
+                        return;
+                    }
+                }
+            } else if (SCHEMA_CATALOG_SCENARIO.equals(scenario)) {
+                switch (phase) {
+                    case "register" -> doSchemaCatalogRegister(client, capture, steps);
+                    case "read" -> doSchemaCatalogRead(client, steps);
                     default -> {
                         System.err.println("unknown phase '" + phase + "' for scenario '" + scenario + "'");
                         System.exit(2);
@@ -161,6 +177,64 @@ public final class Driver {
         result.error = error;
         result.typeDescriptor = descriptorJson == null ? null : JsonParser.parseString(descriptorJson);
         return result;
+    }
+
+    // ── S5 schema-catalog ────────────────────────────────────────────────────────────────────
+
+    /**
+     * S5 schema-catalog: one relation-free type, registered WITHOUT an authorization block on
+     * purpose — the orchestrator re-registers it with one before the read phase, and until it does
+     * the type is Denied for Read and GetSchema omits it entirely. JavaAuthor is this language's
+     * own type name, so all five languages registering concurrently overwrite nothing.
+     */
+    private static void doSchemaCatalogRegister(
+            IversonClient client, CaptureInterceptor capture, List<StepResult> steps) {
+        String registerError = null;
+        try {
+            SchemaRegistrar registrar = new SchemaRegistrar(client);
+            registrar.registerAll(JavaAuthor.class);
+        } catch (Exception e) {
+            registerError = describe(e);
+        }
+
+        steps.add(registerStep("register_schema_type", registerError, capture.select("JavaAuthor")));
+    }
+
+    /**
+     * Fetches the catalogue through the client library's own public {@code getSchema} and reports
+     * what came back verbatim. Nothing here judges; the orchestrator does.
+     */
+    private static void doSchemaCatalogRead(IversonClient client, List<StepResult> steps) {
+        StepResult result = new StepResult("get_schema");
+        try {
+            result.entity = GSON.toJsonTree(catalogueToReport(client.getSchema("", null)));
+        } catch (Exception e) {
+            result.ok = false;
+            result.error = describe(e);
+        }
+        steps.add(result);
+    }
+
+    /**
+     * The deliberately minimal, cross-language-identical projection of a GetSchema catalogue that
+     * all five drivers report. Copies names verbatim out of the SchemaType messages the client
+     * library returned; filters nothing and decides nothing.
+     */
+    private static Map<String, Object> catalogueToReport(List<SchemaType> types) {
+        List<Object> reported = new ArrayList<>();
+        for (SchemaType type : types) {
+            List<Object> fields = new ArrayList<>();
+            for (SchemaField field : type.getFieldsList()) {
+                fields.add(java.util.Map.of("name", field.getName()));
+            }
+            List<Object> relations = new ArrayList<>();
+            for (SchemaRelation relation : type.getRelationsList()) {
+                relations.add(java.util.Map.of("propertyName", relation.getPropertyName()));
+            }
+            reported.add(java.util.Map.of(
+                "name", type.getName(), "fields", fields, "relations", relations));
+        }
+        return java.util.Map.of("types", reported);
     }
 
     // ── write ────────────────────────────────────────────────────────────────────────────────
