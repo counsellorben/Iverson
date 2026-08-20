@@ -96,6 +96,23 @@ This is one atomic breaking change. Four dependencies fix the sequence:
 4. Tests: assert the column is injected for a descriptor that declares no tenant; assert each
    exclusion site does not see it; assert each inclusion site does.
 
+5. **Guarantee the tenant value exists, so the NOT NULL column can always be filled.**
+   `decision.TenantValue` is currently null on three paths in
+   `RowFieldAuthorizationEvaluator.Evaluate` — `rules is null` (`:11-12`), `actingUser is null`
+   (`:14-15`), and an absent or empty `tenant_id` claim (`:21-22`) — and the first is the ordinary
+   case, since `Authorization` is optional on a schema. Two changes make the value non-null by
+   construction on every write path:
+   - `ActingUserInterceptor.cs:44-45` currently validates tenant status only `if (tenantId is not
+     null)`. Reject an absent or empty `tenant_id` claim with `PermissionDenied`, so no request
+     reaches a write path without a tenant.
+   - `Evaluate`'s `rules is null` and `actingUser is null` early returns must still populate
+     `TenantColumn` and `TenantValue` from the schema and the claim, rather than returning nulls.
+     Only the authorization fields are unrestricted on those paths; the tenant boundary is not.
+
+   Tests: a write to a schema registered with **no** `AuthorizationRules` stores the correct
+   `__TenantId`; a call carrying a token with no `tenant_id` claim is rejected with
+   `PermissionDenied`.
+
 **Verify:** `dotnet test Iverson.slnx`
 
 ---
@@ -103,26 +120,31 @@ This is one atomic breaking change. Four dependencies fix the sequence:
 ## Task 2 — Write-path injection and the outbound strip
 
 **Modify:**
+- `Iverson.Server/Iverson.Sql/OutboxWriter.cs`
 - `Iverson.Server/Iverson.Api/Grpc/AuthorizationFieldMasking.cs`
-- `Iverson.Server/Iverson.Api/Grpc/ObjectMappingGrpcService.cs`
 
 ### Steps
 
-1. **Persistence clone.** In `ObjectMappingGrpcService.Post` (`:286`) the value returned to the
-   caller is `request.Payload` itself (`:319`); `Update` (`:322`) does the same at `:372`. Take a
-   clone *after* key assignment (`AssignNewKey`, `:300`) and before `SerializePayload` (`:302`),
-   inject `__TenantId` into the clone only, and serialise the clone. The caller's payload object is
-   never mutated, so decision 6 holds without a second strip on the response.
-
-   The same injection must also hold for every other writer that reaches `OutboxWriter`. There are
-   four call sites — `ObjectMappingGrpcService.cs:305`, `:351`, `ObjectPersistenceGrpcService.cs:60`,
-   `:124` — and `OutboxWriter.cs:18-28` upserts through
+1. **Inject at the one chokepoint.** All four writers reach
+   `OutboxWriter.UpsertAndEnqueueOutboxAsync` — `ObjectMappingGrpcService.cs:305`, `:351`,
+   `ObjectPersistenceGrpcService.cs:60`, `:124` — and each already passes
+   `tenantId: decision.TenantValue`. `OutboxWriter.cs:18-28` upserts through
    `json_populate_record(null::"{table}", @Json::json)` with `updateSet` covering every column, so
-   any payload reaching it without `__TenantId` writes NULL over a valid tenant id. Rather than
-   patch each caller, inject inside `OutboxWriter.UpsertAndEnqueueOutboxAsync`, which already
-   receives `tenantId` (`OutboxWriter.cs:5`, `:17`) and is the one chokepoint no future caller can
-   bypass. With the column NOT NULL, a missed injection now fails loudly. Add a test that upserts a
-   payload with the column absent and asserts the stored value is unchanged.
+   any payload arriving without `__TenantId` writes NULL over a valid tenant id. Inject there rather
+   than at each caller: it is the one chokepoint no future caller can bypass, and with the column
+   NOT NULL a missed injection fails loudly.
+
+   The method receives `payloadJson` as a `string`, not a `Struct`, so the injection is a JSON
+   round-trip: deserialise, set `__TenantId` from the `tenantId` parameter, re-serialise. Key casing
+   must survive it — `StructSerializer.SerializePayload` (`ProtoPayloadHelper.cs:8`) upper-cases the
+   first character of every key because `json_populate_record` matches column names
+   case-sensitively, and `__TenantId` must reach Postgres in exactly that form.
+
+   No clone of `request.Payload` is needed. The caller's `Struct` is never mutated on this path, so
+   decision 6 holds without a second strip on the response.
+
+   Add a test that upserts a payload with the column absent and asserts the stored value is
+   unchanged.
 
 2. **Unconditional strip.** `AuthorizationFieldMasking.MaskDisallowedFields` returns early at `:129`
    when `allowedFields is null`. The `__TenantId` strip must sit **before** that guard — a schema
@@ -397,6 +419,7 @@ Paths are relative to `/home/ben/repositories/Iverson-conformance`.
 | A24 | Client marker consumers are confined to the client libs | holds | Also in samples, driver models and tests across all five; enumerated per-client in T3. Java lives under `Java/client/src/main` and `Java/sample/`, not `Java/src/main`. |
 | A25 | `ScalarColumns` has six consumers (spec's count) | **FAILED** | Eight production sites. `RelationValidator.cs:97` and `SchemaBuilder.cs:183,192,203,222` have no position in the spec; assigned in T1. |
 | A26 | `OutboxWriter` has four call sites, all covered by T2's injection | holds | `ObjectMappingGrpcService.cs:305,:351`; `ObjectPersistenceGrpcService.cs:60,:124`; interface `OutboxWriter.cs:5` |
+| A27 | `decision.TenantValue` is non-null on every write path | **FAILED** | Null on three paths in `RowFieldAuthorizationEvaluator.Evaluate`: `rules is null` (`:11-12`), `actingUser is null` (`:14-15`), empty `tenant_id` claim (`:21-22`). `ActingUserInterceptor.cs:44-45` validates tenant status only when the claim is present. Drives T1 step 5. |
 
 **Sibling-set sweeps run:** all `ScalarColumns` consumers (A25), all five clients and every symbol each
 exports (A24), all `MaskDisallowedFields` call sites (A13), all four non-.NET test commands (A17), all
