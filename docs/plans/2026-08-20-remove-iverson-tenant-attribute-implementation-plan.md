@@ -62,9 +62,16 @@ This is one atomic breaking change. Four dependencies fix the sequence:
 
 1. In `SchemaBuilder.cs`, stop deriving the tenant column from the client. Line 172 currently reads
    `TenantColumn = string.IsNullOrEmpty(typeDesc.TenantField) ? null : typeDesc.TenantField;`.
-   Replace the derivation with the server-owned constant `__TenantId`, and append a matching
-   `ColumnDescriptor` to `scalars` (line 164's `ScalarColumns = scalars`) before the descriptor is
-   constructed, so the column physically exists in the table.
+   Replace the derivation with the server-owned constant `__TenantId`, and append exactly
+   `new ColumnDescriptor("__TenantId", "TEXT", false)` to `scalars` (line 164's
+   `ScalarColumns = scalars`) before the descriptor is constructed, so the column physically exists
+   in the table. The type is not incidental: `ValidateFieldReference` runs for the tenant field on
+   every registration (`SchemaRegistrationOrchestrator.cs:66`) and rejects any `SqlType` outside
+   `TEXT`/`UUID`/`BYTEA`/`TIMESTAMPTZ` (`:182-186`), so a wrong type breaks registration globally.
+   `TEXT` also matches the RLS predicate's text comparison at `PostgresSchemaManager.cs:139`. The
+   `false` is `IsNullable` — the column is **NOT NULL**, so the silent-overwrite path in T2 fails
+   loudly with a constraint violation rather than orphaning the row behind RLS. A test asserts both
+   the type and the nullability.
 
 2. Define the name once, as a public constant on `SchemaDescriptor` (or a sibling type in
    `Iverson.Api/Schema/`). Every consumer below references that constant — no string literals.
@@ -106,6 +113,16 @@ This is one atomic breaking change. Four dependencies fix the sequence:
    clone *after* key assignment (`AssignNewKey`, `:300`) and before `SerializePayload` (`:302`),
    inject `__TenantId` into the clone only, and serialise the clone. The caller's payload object is
    never mutated, so decision 6 holds without a second strip on the response.
+
+   The same injection must also hold for every other writer that reaches `OutboxWriter`. There are
+   four call sites — `ObjectMappingGrpcService.cs:305`, `:351`, `ObjectPersistenceGrpcService.cs:60`,
+   `:124` — and `OutboxWriter.cs:18-28` upserts through
+   `json_populate_record(null::"{table}", @Json::json)` with `updateSet` covering every column, so
+   any payload reaching it without `__TenantId` writes NULL over a valid tenant id. Rather than
+   patch each caller, inject inside `OutboxWriter.UpsertAndEnqueueOutboxAsync`, which already
+   receives `tenantId` (`OutboxWriter.cs:5`, `:17`) and is the one chokepoint no future caller can
+   bypass. With the column NOT NULL, a missed injection now fails loudly. Add a test that upserts a
+   payload with the column absent and asserts the stored value is unchanged.
 
 2. **Unconditional strip.** `AuthorizationFieldMasking.MaskDisallowedFields` returns early at `:129`
    when `allowedFields is null`. The `__TenantId` strip must sit **before** that guard — a schema
@@ -199,9 +216,13 @@ in the commit message.
    (`Iverson.Clients/Common/Proto/object_mapping.proto:100`) — update its comment to say the field
    is rejected if set.
 
-2. **Reject `__TenantId` as a declared property.** A descriptor whose `ScalarColumns` (or key, or
-   FK) declares a column named `__TenantId` is rejected with `InvalidArgument`. Case-insensitive, to
-   match the comparison style used at `:165` and `:173`.
+2. **Reject `__TenantId` as a declared property.** The check runs on the **inbound
+   `TypeDescriptor`** (`typeDesc`), before the `SchemaBuilder.BuildDescriptor` call at `:50` — never
+   on the built `SchemaDescriptor`, which after T1 always contains the server's own injected
+   `__TenantId` and would therefore self-reject every registration. A `typeDesc` declaring a
+   property named `__TenantId` (as a scalar, the key, or an FK) is rejected with `InvalidArgument`.
+   Case-insensitive, matching the comparison style at `:165` and `:173`. The fixture for this
+   rejection must send the name through the proto, not construct a `SchemaDescriptor`.
 
 3. **Reject `__TenantId` in a write payload.** In `EnforceWriteAuthorization`
    (`AuthorizationFieldMasking.cs`), reject a payload carrying `__TenantId` with `InvalidArgument`
@@ -270,7 +291,9 @@ old client-declared tenant column in place and leaves the old RLS policy pointin
    This is what removes the legacy pre-cutover schema rows that T7 depends on being gone.
 2. **Drop the RLS policies** by name, so `:126`'s existence check does not skip re-creation against
    `__TenantId`.
-3. **Re-register** from each client.
+3. **Re-register** from each client. This is when `__TenantId`'s `NOT NULL` constraint is created,
+   and it is why the constraint could not simply be added in place: Postgres rejects it while any
+   legacy NULL remains, so steps 1-2 must have run first.
 4. Run the full live conformance matrix — **all six scenarios** (`CrudRoundtrip`, `Interop`,
    `NamingRejected`, `NavPropertyRejected`, `Query`, `SchemaCatalog`), all five clients. The
    entrypoint is `Iverson.ClientConformance/Program.cs`, configured by `IVERSON_GRPC_URL` and
@@ -306,8 +329,11 @@ Scope is larger than the spec's "two dead branches" — verification found rough
    `EnrichmentConsumer.cs:122,244`; `IntelligenceStoreConsumer.cs:116,474`;
    `ObjectRetrievalGrpcService.cs:37,48,107,122`; `ObjectMappingGrpcService.cs:244,259,383,397,428`;
    `EntityRelationResolver.cs:61,84,117,158`; `RowFieldAuthorizationEvaluator.cs:18`;
-   `AuthorizationFieldMasking.cs:55,66`; `PostgresSchemaManager.cs:126`;
-   `SchemaRegistrationOrchestrator.cs:61`.
+   `AuthorizationFieldMasking.cs:55,66`; `PostgresSchemaManager.cs:126`.
+
+   **Do not touch `SchemaRegistrationOrchestrator.cs:61`.** T4 step 1 replaced the null guard there
+   with the inbound `tenant_field` rejection; by T7 it is no longer a null guard, and deleting it
+   reopens the path T4 exists to close.
 3. **Handle the StarRocks guards with care.** `StarRocksQueryBuilder.cs:73,97,237,343,784` and
    `StarRocksPipelineBuilder.cs:405,560` are **live tenant-predicate guards**, not dead branches —
    each gates an actual predicate in generated SQL. Each is a compound condition
@@ -370,6 +396,7 @@ Paths are relative to `/home/ben/repositories/Iverson-conformance`.
 | A23 | `TenantColumn` non-nullable = two dead branches | **FAILED** | ~36 sites across three declarations (`SchemaDescriptor.cs:25`, `IRowFieldAuthorizationEvaluator.cs:32`, `AuthorizationConstraint.cs:7`), incl. eight *live* tenant-predicate guards in `StarRocksQueryBuilder`/`StarRocksPipelineBuilder`. Became T7 by user decision. |
 | A24 | Client marker consumers are confined to the client libs | holds | Also in samples, driver models and tests across all five; enumerated per-client in T3. Java lives under `Java/client/src/main` and `Java/sample/`, not `Java/src/main`. |
 | A25 | `ScalarColumns` has six consumers (spec's count) | **FAILED** | Eight production sites. `RelationValidator.cs:97` and `SchemaBuilder.cs:183,192,203,222` have no position in the spec; assigned in T1. |
+| A26 | `OutboxWriter` has four call sites, all covered by T2's injection | holds | `ObjectMappingGrpcService.cs:305,:351`; `ObjectPersistenceGrpcService.cs:60,:124`; interface `OutboxWriter.cs:5` |
 
 **Sibling-set sweeps run:** all `ScalarColumns` consumers (A25), all five clients and every symbol each
 exports (A24), all `MaskDisallowedFields` call sites (A13), all four non-.NET test commands (A17), all
