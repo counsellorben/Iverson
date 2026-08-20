@@ -357,7 +357,6 @@ language and in every case. Like `REL`'s, it carries no requirement ID — no `I
 owns "the catalogue is non-empty" as such, and it is strictly weaker than `IVC-SCH-002` wherever
 `IVC-SCH-002` can fire.
 
-
 ### ERR — Errors
 
 | ID | Status | Kind | Statement |

@@ -362,6 +362,13 @@ class _DriverSchemaCatalogClient(IversonClient):
     initializes exactly the three attributes the base ``__init__`` sets and inherits ``get_schema``
     unmodified — the method under test is the library's own, not a reimplementation of it.
 
+    The attribute set this reproduces by hand has no mechanical guard of its own, so
+    ``tests/test_conformance_driver.py``'s
+    ``test_driver_schema_catalog_client_reproduces_every_attribute_the_base_constructor_sets``
+    pins it: it fails in Python's own suite the moment the base constructor sets an attribute this
+    subclass does not, rather than surfacing days later as a Python conformance cell that is red
+    (``AttributeError``) or — worse — green on a stale default.
+
     ``acting_user_token`` is left ``None`` on purpose: the driver's channel already attaches
     ``x-acting-user-authorization`` to every call via ``_DriverActingUserAuthPlugin``, and setting
     it here as well would send the header twice.

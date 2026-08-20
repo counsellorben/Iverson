@@ -208,6 +208,23 @@ public class SchemaCatalogScenarioTests
         fieldSet.Detail.Should().Contain("catalogued-but-undeclared: [SecretColumn]");
     }
 
+    [Fact]
+    public void JudgeCatalogue_PassDetail_CountsTheFieldsTheDriverReported_NotNormalizedSetMembers()
+    {
+        // A driver reporting the same name in two casings sends two fields; the pass detail must
+        // say two, not the one that survives Verifier.Normalize-keyed de-duplication. The pass/fail
+        // condition itself is the set comparison and is deliberately unaffected.
+        var descriptor = Descriptor("PyAuthor", "Id", "Name");
+        var document = ReadDocument(new StepResult(
+            "get_schema", true, Entity: Catalogue(("PyAuthor", ["Id", "Name", "name"]))));
+
+        var assertions = SchemaCatalogScenario.JudgeCatalogue("python", descriptor, document);
+
+        var fieldSet = assertions.Single(a => a.RequirementId == Requirements.SchCatalogFieldSetMatchesDescriptor);
+        fieldSet.Passed.Should().BeTrue();
+        fieldSet.Detail.Should().Contain("3 field(s)");
+    }
+
     // ── ReadTypes: malformed reports are data, never exceptions ───────────────────────────────
 
     [Theory]

@@ -219,7 +219,11 @@ public sealed class SchemaCatalogScenario(
             $"{language}: '{expectedName}' carries exactly the field set its descriptor declared",
             missing.Count == 0 && unexpected.Count == 0,
             missing.Count == 0 && unexpected.Count == 0
-                ? $"{catalogued.Count} field(s), matching the descriptor"
+                // match.FieldNames, not `catalogued`: the latter is a set of Verifier.Normalize'd
+                // names, so a driver reporting both "Name" and "name" would be described as having
+                // sent one fewer field than it did. Diagnostic text only — the pass/fail condition
+                // above is the set comparison and is deliberately unchanged.
+                ? $"{match.FieldNames.Count} field(s), matching the descriptor"
                 : $"declared-but-absent: [{string.Join(", ", missing)}]; " +
                   $"catalogued-but-undeclared: [{string.Join(", ", unexpected)}]",
             Requirements.SchCatalogFieldSetMatchesDescriptor));

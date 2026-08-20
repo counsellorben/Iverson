@@ -12,8 +12,11 @@ that gap reopens, rather than relying on the live matrix (which is not run per-c
 """
 from __future__ import annotations
 
-from conformance.driver import entity_to_dict
+import grpc
+
+from conformance.driver import _DriverSchemaCatalogClient, entity_to_dict
 from conformance.models import PyArticle, PyAuthor, PyTag
+from iverson_client.core import IversonClient
 
 
 def _make_author(name: str) -> PyAuthor:
@@ -90,3 +93,43 @@ def test_non_hydrated_entity_reports_no_nav_member():
     # the foreign keys themselves are still reported as ordinary declared fields
     assert out["py_author_id"] == "01a016fa-ed06-7cd7-ad36-63042f0f94a8"
     assert out["py_tag_ids"] == ["01a016fa-ed26-7ece-ac18-1794837d1c68"]
+
+
+# ── _DriverSchemaCatalogClient's attribute-set invariant (Task 8 fix round 1) ──────────────────
+
+
+def test_driver_schema_catalog_client_reproduces_every_attribute_the_base_constructor_sets():
+    """Pins the invariant ``_DriverSchemaCatalogClient`` reproduces by hand.
+
+    The subclass exists because ``IversonClient.__init__`` builds its own channel from an
+    ``IversonClientCredentials``, which can carry neither the Host header Authentik stamps the
+    token's ``iss`` from nor a scope — so the conformance driver has to hand it the dual-identity
+    channel the driver already built. To do that it sets, by hand, exactly the attributes the base
+    constructor sets, and inherits ``get_schema`` unmodified.
+
+    That hand-reproduction has no mechanical guard of its own. The day the base constructor gains a
+    fourth attribute that ``get_schema`` or ``_acting_user_metadata`` reads, the driver either
+    raises ``AttributeError`` — which the harness would report as a Python IVC-SCH-001 conformance
+    FAIL for what is actually a driver bug — or silently falls back to a stale default and reports a
+    GREEN cell for behaviour the real Python client would never produce. Both are failures that
+    surface in the wrong place, days later, as a client defect.
+
+    This test moves that failure into Python's own suite, where it reads as what it is. It compares
+    instance attribute sets rather than a hardcoded list, so it needs no maintenance when the
+    subclass is correctly updated — only when it is not.
+    """
+    # localhost:1 is never dialed: grpc channels connect lazily and no RPC is issued here.
+    base = IversonClient(host="localhost", port=1)
+    driver_channel = grpc.insecure_channel("localhost:1")
+    try:
+        driver_client = _DriverSchemaCatalogClient(driver_channel)
+        missing = sorted(set(vars(base)) - set(vars(driver_client)))
+        assert not missing, (
+            "IversonClient.__init__ sets attribute(s) that _DriverSchemaCatalogClient does not "
+            f"reproduce: {missing}. The conformance driver inherits get_schema from IversonClient, "
+            "so any attribute the base sets and get_schema (or _acting_user_metadata) reads must be "
+            "set by the subclass too — see conformance/driver.py."
+        )
+    finally:
+        driver_channel.close()
+        base.close()
