@@ -147,7 +147,7 @@ Constraint puts enforcement on the server. No client gains a check that the call
 |---|---|
 | .NET | `IversonTenantAttribute`; `SchemaRegistrar.ResolveTenantField` (`:130-150`); `TenantField` on the built descriptor |
 | Java | `IversonTenant` annotation; the registrar's resolution |
-| Python | `iverson_tenant()` (`annotations.py:193`); the registrar's resolution |
+| Python | `iverson_tenant()` (`annotations.py:193`); the registrar's resolution; **and the package export** — `iverson_tenant` in the `from .annotations import (...)` block at `__init__.py:12` and in `__all__` at `:40`. Deleting the function without these leaves a dangling named import, so `import iverson_client` raises `ImportError` at module load and the package does not import at all. |
 | TypeScript | `IversonTenant()` decorator, `getTenantFields` (`annotations.ts:295,304`), the `core.ts:415` call site |
 | Go | `TenantTagKey` and its two error branches (`tags.go:80,355,358`) |
 
