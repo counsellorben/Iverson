@@ -81,17 +81,27 @@ Injecting into `ScalarColumns` is not neutral. Each consumer needs a stated posi
 `SetAuthoritativeField` call remains — it is how the column gets populated — but it now populates a
 key the caller provably did not supply, rather than overwriting one they did.
 
-### The outbound strip — three chokepoints, ten paths
+`SetAuthoritativeField` currently mutates `request.Payload` **in place**, and `Post` (`:319`) and
+`Update` (`:372`) both return that same struct as `MappingResponse.Data`. The response body is
+therefore the mutated payload, and the tenant column would ride out on it. The design writes the
+authoritative fields into a **clone used for persistence**, leaving the caller's struct — and so the
+response — untouched. Stripping the key from each response separately would work too, but it fixes
+the two symptoms rather than the aliasing that causes them, and a third write path added later would
+reintroduce the leak.
 
-The client-visible read surface is ten RPCs: `Mapping.Get`, `Retrieval.Get`, `GetMany`, `Search`,
-`SearchSimilar`, `SearchChunks`, `Aggregate`, `GroupBy`, `Pipeline`, `GetSchema`. They reach the
-caller through three mechanisms, so the strip needs three interventions rather than ten:
+### The outbound strip — four chokepoints, twelve paths
+
+The client-visible surface is twelve RPCs. Ten are reads: `Mapping.Get`, `Retrieval.Get`, `GetMany`,
+`Search`, `SearchSimilar`, `SearchChunks`, `Aggregate`, `GroupBy`, `Pipeline`, `GetSchema`. Two are
+writes: `Post` and `Update`, whose responses return the caller's own payload struct — the same object
+`SetAuthoritativeField` mutates. They reach the caller through four mechanisms:
 
 | Chokepoint | Covers |
 |---|---|
 | `AuthorizationFieldMasking.MaskDisallowedFields` | `Mapping.Get`, `Retrieval.Get`, `GetMany`, hydrated children via `EntityRelationResolver`, `SearchSimilar`, `SearchChunks` — six call sites across four services |
 | `StarRocksQueryBuilder.BuildSelectColumns` (`:113`) | `Search`, `GroupBy`, `Pipeline`, `Aggregate` — the column is never selected, rather than stripped after the fact |
 | `ObjectMappingGrpcService.ProjectField` (`:83,184`) | `GetSchema` |
+| the write-response clone (see *Inbound rejection*) | `Post` (`:319`), `Update` (`:372`) |
 
 The strip inside `MaskDisallowedFields` must be **unconditional**. It cannot ride on `AllowedFields`,
 which is `null` when no `FieldPermission` is active — meaning "everything allowed".
@@ -142,7 +152,9 @@ rejects one declaring the reserved name — each cited by a new assertion, with 
 appended to REG's existing table.
 
 **IDN** gains its first requirement: the server never emits the tenant column on any client-visible
-read path. IDN is currently a bare header with an empty table, so this also requires creating its
+path, **reads and write responses alike**. The scope must be stated that way explicitly: a
+requirement graded only against reads would stay green while `Post` returned the column on every
+create. IDN is currently a bare header with an empty table, so this also requires creating its
 `#### Coverage` table and making an explicit backstop decision for the axis.
 
 `IVC-SCH-003` ("a catalogue type carries exactly the field set its registered descriptor declared")
@@ -151,6 +163,30 @@ all five languages — it contains no tenant reference, which is exactly why a g
 misses it.
 
 The prose at standard `:227` drops its "tenant/owner field typing" clause.
+
+## Mandatory teardown precondition
+
+Decision 2 says "breaking; drop and re-register". **Re-registration does not drop anything — it
+ALTERs**, so the teardown is a required, ordered precondition rather than an operational aside:
+
+1. Drop the entity tables. `PostgresSchemaManager.cs:88-90` adds `__TenantId` via `ALTER TABLE` and
+   never removes the pre-existing `TenantId`; `:76-78` raises `SchemaDriftException` only on a *type*
+   mismatch for a column present in both, so an orphaned column is silent.
+2. Delete the `_iverson_schema` registry rows for every affected type.
+3. Drop the StarRocks tenant databases and the Qdrant collections.
+
+Only then re-register. The RLS policy is the reason the order is binding:
+`PostgresSchemaManager.cs:128-131` creates the policy only `if (!policyExists)`, matched by name, so
+a surviving policy from the original registration keeps filtering on the stale `TenantId` column.
+
+**The failure mode if a step is skipped:** new rows are written with `__TenantId` set and `TenantId`
+NULL, fail the policy's `USING ("TenantId" = current_setting('app.tenant_id', true))` predicate, and
+become invisible to the caller that just created them — a successful write followed by a 404, with no
+error logged anywhere. Old rows keep working, so it presents as intermittent and type-specific rather
+than systemic.
+
+Ben chose manual teardown over server-side detection or server-side migration. The operator is
+therefore the only safeguard; nothing in the system reports a skipped step.
 
 ## Sequencing constraint
 
@@ -189,11 +225,14 @@ Verified against the codebase and the running dev stack on 2026-08-20.
 | A21 | `UpperFirst` does not mangle the reserved name | ✅ `ProtoPayloadHelper.cs:12` leaves a leading underscore untouched — which is *why* `__TenantId` was chosen over `__tenant_id`; the latter would be the only snake_case column in the system |
 | A24 | Little outside the clients depends on the marker | ❌ **FAILED** — ~60 files; `TenantSchema.cs` is a false positive |
 | A26 | `Iverson.Api/Tenancy/TenantSchema.cs` complicates the server side | ✅ resolved — false positive, it is the `IversonTenants` registry table |
+| A19 | The `Reregistrar`'s authorization block references a tenant field | ❌ **FALSE, benign** — `Reregistrar.cs:31,53-55` sets only `OwnerField` (default `"OwnerId"`); no tenant reference. The conformance harness needs no change on this account. |
+| A20 | `decision.TenantValue` is identity-derived and present on every write path | ✅ `ObjectMappingGrpcService.cs:305,319` passes `tenantId: decision.TenantValue` to the outbox. Load-bearing: were it ever absent, `SetAuthoritativeField` would write a null tenant and every later read of that row would fail the RLS predicate. |
+| A23 | All five clients share the same marker mechanism and the same "no tenant declared" validation shape | ✅ the sweep behind A24 confirms all five; the per-client deletion table rests on this. |
+| A22 | Drop-and-re-register is achievable without manual DB surgery | ❌ **FAILED** — re-registration ALTERs rather than replaces (`PostgresSchemaManager.cs:88-90`), a removed column raises no drift (`:76-78`), and an existing RLS policy is skipped (`:128-131`). Manual teardown is **required for correctness**, not a convenience, and nothing reports when it was skipped. See *Mandatory teardown precondition*. |
 
-**Not verified, carried as risk:** that drop-and-re-register is achievable on the dev stack without
-manual DB surgery (A22); that each client's deserializer ignores unknown payload keys, which is a
-safety net only now that the strip is unconditional (A10); that the Kafka/outbox event payloads
-carrying the column are server-internal and never client-visible (A13).
+**Not verified, carried as risk:** that each client's deserializer ignores unknown payload keys,
+which is a safety net only now that the strip is unconditional (A10); that the Kafka/outbox event
+payloads carrying the column are server-internal and never client-visible (A13).
 
 ## Out of scope
 
