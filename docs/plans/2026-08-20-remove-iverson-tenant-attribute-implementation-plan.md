@@ -183,6 +183,14 @@ This is one atomic breaking change. Four dependencies fix the sequence:
 - **Go** — `iverson/tags.go`: `TenantTagKey` (`:80`), the `Tenant` field-meta member (`:162`), the
   `tenantFields` collection and both errors (`:226,323-339`); `iverson/registrar.go:149-162`;
   sample models `author.go:9`, `article.go:14`, `tag.go:8`.
+- **LoadTest** (not a client library, but in `Iverson.slnx` and so inside T3's verify step) — delete
+  the `[IversonTenant]` marker from `Iverson.Server/Iverson.LoadTest/Entities/BenchmarkAuthor.cs:13`,
+  `BenchmarkTag.cs:12`, `BenchmarkArticle.cs:16`, applying the same "decide per model" rule below to
+  each `TenantId` property. Also rename the tenant column in the three hand-written `COPY` statements
+  in `Iverson.Server/Iverson.LoadTest/Seeding/DirectSeeder.cs` — `:84` (`benchmark_authors`), `:154`
+  (`benchmark_tags`), `:214` (`benchmark_articles`) — from `"TenantId"` to `"__TenantId"`. Unlike the
+  marker deletions, this one compiles cleanly and fails only when a seeding run hits the missing
+  column.
 
 **Also modify (the retirement, same commit — Global Constraint 4):**
 - `docs/standards/iverson-client-standard.md` — flip `IVC-DECL-002` (`:92`) and `IVC-DECL-005`
@@ -219,6 +227,14 @@ in the commit message.
 - `Iverson.Server/Iverson.Api/Grpc/SchemaRegistrationOrchestrator.cs`
 - `Iverson.Server/Iverson.Api/Grpc/AuthorizationFieldMasking.cs`
 - the orchestrator fixtures and `Iverson.ClientConformance.Tests/SchemaCatalogScenarioTests.cs`
+- `Iverson.Server/Iverson.Api.Tests/Grpc/SchemaRegistrationOrchestratorTests.cs` — strip
+  `TenantField` from all 16 `TypeDescriptor` constructions (`:37`, `:73`, `:127`, `:225`, `:259`,
+  `:289`, `:305`, `:320`, `:341`, `:357`, `:373`, `:463`, `:557`, and the three named next). Delete
+  `RegisterAsync_WithInvalidTenantField_ThrowsInvalidArgument` (`:71`), which tests a validation path
+  T4 removes, and `RegisterAsync_WithValidTenantField_Registers` (`:84`), which asserts exactly what
+  T4 makes illegal. Repoint `RegisterAsync_WithMissingTenantField_ThrowsInvalidArgument` (`:58`) at
+  T4's new rule — a descriptor *carrying* `tenant_field` is rejected — and rename it to match, so the
+  suite states the current contract instead of passing by coincidence.
 
 ### Steps
 
@@ -407,7 +423,7 @@ Paths are relative to `/home/ben/repositories/Iverson-conformance`.
 | A21 | Retiring DECL-002/005 in T3 does not trip check 4 | holds — only if the Coverage row is deleted outright | `:325` fails on a Retired ID in Evidence; `:280` fails on empty Evidence. Both IDs retire, so the row at standard `:103` cannot survive in any form. |
 | A22 | `SchemaBuilder`'s callers absorb the change | holds, with one contract | 18 call sites, all via `To*Schema` projections. **`PostgresProbe.cs:11,20` keeps a deliberate separate copy of the table-naming rule** (`NamingExtensions` is internal to `Iverson.Api`) — captured as a cross-task contract in T5. |
 | A23 | `TenantColumn` non-nullable = two dead branches | **FAILED** | ~36 sites across three declarations (`SchemaDescriptor.cs:25`, `IRowFieldAuthorizationEvaluator.cs:32`, `AuthorizationConstraint.cs:7`), incl. eight *live* tenant-predicate guards in `StarRocksQueryBuilder`/`StarRocksPipelineBuilder`. Became T7 by user decision. |
-| A24 | Client marker consumers are confined to the client libs | holds | Also in samples, driver models and tests across all five; enumerated per-client in T3. Java lives under `Java/client/src/main` and `Java/sample/`, not `Java/src/main`. |
+| A24 | Marker consumers span the five client libraries **and** `Iverson.Server/Iverson.LoadTest` | **FAILED as originally scoped** | Per-client: samples, driver models and tests across all five, enumerated in T3; Java lives under `Java/client/src/main` and `Java/sample/`, not `Java/src/main`. Outside the clients: `Iverson.LoadTest/Entities/BenchmarkAuthor.cs:13`, `BenchmarkTag.cs:12`, `BenchmarkArticle.cs:16`, plus the `"TenantId"` column in `DirectSeeder.cs:84,154,214`. |
 | A25 | `ScalarColumns` has six consumers (spec's count) | **FAILED** | Eight production sites. `RelationValidator.cs:97` and `SchemaBuilder.cs:183,192,203,222` have no position in the spec; assigned in T1. |
 | A26 | `OutboxWriter` has four call sites, all covered by T2's injection | holds | `ObjectMappingGrpcService.cs:305,:351`; `ObjectPersistenceGrpcService.cs:60,:124`; interface `OutboxWriter.cs:5` |
 | A27 | `decision.TenantValue` is non-null on every write path that is not already denied | holds | The four early returns in `RowFieldAuthorizationEvaluator.Evaluate` (`:11-22`) all pass `Denied = true` — the record's first positional parameter (`IRowFieldAuthorizationEvaluator.cs:17`) — and `AuthorizationFieldMasking.cs:41-46` throws `PermissionDenied` before the write. Every path that reaches `OutboxWriter` passed the non-empty `tenant_id` check at `:21-22`. |
