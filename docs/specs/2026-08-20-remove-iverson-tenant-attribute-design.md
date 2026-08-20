@@ -173,6 +173,13 @@ exist to grade. `IVC-REG-002`'s assertion requires the literal message
 `"must be distinct from the foreign key"`, so these do not pass for the wrong reason — the
 `naming-rejected` and `nav-property-rejected` scenarios go **red for every language**.
 
+Stripping them leaves nothing in the codebase that carries `TenantField`, so the REG requirement
+rejecting such descriptors would have nothing to fire against — cited in source, therefore passing
+gate check 2, but never reached at runtime and permanently in the untouched-requirement tally.
+**Two new purpose-built fixtures are added for exactly this**: one carrying `TenantField`, one
+declaring a `__TenantId` property. They are distinct from the four being stripped, whose job is to
+grade other rules and which must not carry either.
+
 ### The standard and the gate
 
 `IVC-DECL-002` and `IVC-DECL-005` become **Retired**, Statement cells byte-identical per the
@@ -197,6 +204,21 @@ path, **reads and write responses alike**. The scope must be stated that way exp
 requirement graded only against reads would stay green while `Post` returned the column on every
 create. IDN is currently a bare header with an empty table, so this also requires creating its
 `#### Coverage` table and making an explicit backstop decision for the axis.
+
+**The grading channel is the orchestrator, not the drivers, and the spec must say so.** The
+requirement is asserted against the raw `Struct` the orchestrator's own gRPC calls return — a `Post`
+response, an `Update` response, and a depth-0 and a depth-1 `Get` — **paired with a `PostgresProbe`
+read confirming the column is populated in storage while absent from every response.** The pairing is
+deliberate and both halves are load-bearing: an assertion that only checks absence would also pass if
+injection silently stopped working, which is exactly the `Update` failure described under *Inbound
+rejection*.
+
+The driver channel explicitly cannot grade this. Each driver reports what its typed entity actually
+holds (`Iverson.Clients/Python/conformance/driver.py:110-116`, and the same contract in the other
+four), so after decision 1 no client declares a tenant property and `__TenantId` can never appear in
+a driver's report — whether or not the server emitted it. An assertion over driver reports would be
+green by construction and incapable of failing. Grading against the orchestrator's own read is not a
+new mechanism: `IVC-DECL-004` and `IVC-LIFE-004` already do it.
 
 `IVC-SCH-003` ("a catalogue type carries exactly the field set its registered descriptor declared")
 is **preserved unchanged** by the `GetSchema` exclusion. Without that exclusion it would go red for
