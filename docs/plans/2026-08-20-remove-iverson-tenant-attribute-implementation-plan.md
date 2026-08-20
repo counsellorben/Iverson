@@ -237,6 +237,12 @@ assertion code under `Iverson.ClientConformance/`.
    expected value. Two-sided is what makes it fail if injection silently stops — a one-sided
    absence check passes when the column was never written at all.
 
+   **Cross-task contract:** `PostgresProbe` derives the table name from its *own copy* of
+   `SchemaBuilder`'s naming rule, kept deliberately separate because `NamingExtensions` is internal
+   to `Iverson.Api` (`PostgresProbe.cs:11,20`). If T1's edits change table naming, this copy must
+   change with it or the IDN probe reads the wrong table. Use
+   `PostgresProbe.FetchRowAsync` (`:40`), which returns `IReadOnlyDictionary<string, object?>?`.
+
 3. Add IDN's `#### Coverage` table. The axis has none today; check 4 mode 1 fails on an axis with
    Active rows and no Coverage table, so the table lands with the requirement.
 
@@ -265,7 +271,10 @@ old client-declared tenant column in place and leaves the old RLS policy pointin
 2. **Drop the RLS policies** by name, so `:126`'s existence check does not skip re-creation against
    `__TenantId`.
 3. **Re-register** from each client.
-4. Run the full live conformance matrix, all four scenarios, all five clients.
+4. Run the full live conformance matrix — **all six scenarios** (`CrudRoundtrip`, `Interop`,
+   `NamingRejected`, `NavPropertyRejected`, `Query`, `SchemaCatalog`), all five clients. The
+   entrypoint is `Iverson.ClientConformance/Program.cs`, configured by `IVERSON_GRPC_URL` and
+   `IVERSON_POSTGRES_CS`.
 
 **Known failure mode:** if step 2 is skipped, registration succeeds and reads silently return zero
 rows, because the policy still filters on a column that no longer exists.
@@ -329,14 +338,42 @@ The spec's 22-row `Verified assumptions` table is ground truth and was not re-ve
 that A3, A11, A12, A22, A24 and A27 are recorded as **FAILED** and A19 as FALSE-benign; T6's manual
 character follows directly from A22.
 
-## Plan-level verification notes
+## Verified plan-level assumptions
 
-Corrections this plan makes to paths the spec cites:
+Listed cold against the draft plan, then verified. Evidence is a path:line or command output.
+Paths are relative to `/home/ben/repositories/Iverson-conformance`.
 
-- `SchemaBuilder.cs` is at `Iverson.Api/Schema/`, not `Grpc/`; the injection point is `:164`/`:172`,
-  not `:158`.
-- `RowFieldAuthorizationEvaluator.cs` is under `Authorization/`, not `Grpc/`.
-- `BuildSelectColumns` is `Iverson.StarRocks/StarRocksQueryBuilder.cs:113`, not an `Iverson.Api`
-  path.
-- `ScalarColumns` has **eight** production consumer sites, not six.
-- `TenantColumn` nullability spans ~36 sites and three declarations, not two dead branches.
+| # | Assumption | Status | Evidence |
+|---|---|---|---|
+| A1 | `SchemaBuilder.cs` is at `Iverson.Api/Grpc/`, injection at `:158` | **FAILED** | It is at `Iverson.Api/Schema/SchemaBuilder.cs`; tenant derivation is `:172`, `ScalarColumns` `:164`. Plan corrected. |
+| A2 | `AuthorizationFieldMasking.cs` exists at `Iverson.Api/Grpc/` | holds | 153 lines; early return `:129` |
+| A3 | `ObjectMappingGrpcService.cs` exists at `Iverson.Api/Grpc/` | holds | 472 lines; `Post` `:286`, `Update` `:322` |
+| A4 | `OutboxWriter.cs` exists at `Iverson.Sql/` | holds | 105 lines |
+| A5 | The four exclusion sites are all under `Grpc/` | **FAILED** | `RowFieldAuthorizationEvaluator.cs` is under `Iverson.Api/Authorization/`. Plan corrected. |
+| A6 | `SchemaRegistrationOrchestrator.cs` exists | holds | `Iverson.Api/Grpc/`; tenant guard `:61-66` |
+| A7 | `Verifier.cs` / `Requirements.cs` / gate tests exist | holds | `Iverson.ClientConformance/{Verifier,Requirements}.cs`, `Iverson.ClientConformance.Tests/RequirementsCoverageGateTests.cs` |
+| A8 | The five client marker files exist | holds | .NET `SchemaRegistrar.cs:130`; Java `annotations/IversonTenant.java`; Python `annotations.py:193`; TS `annotations.ts:295`; Go `tags.go:80` |
+| A9 | Orchestrator fixtures, `SchemaCatalogScenarioTests`, `PostgresProbe` exist | holds | all three present under `Iverson.ClientConformance*/` |
+| A10 | The standard lives under `docs/standards/` | holds *(on this branch only)* | `docs/standards/iverson-client-standard.md`. Absent from `main` — this was the wrong-worktree error. |
+| A11 | `BuildSelectColumns` is in `Iverson.Api` | **FAILED** | It is `Iverson.StarRocks/StarRocksQueryBuilder.cs:113`, called from `:54`, `:84`. Plan corrected. |
+| A12 | `ProjectField` exists and is the catalog projection | holds | `ObjectMappingGrpcService.cs:184`, called `:88` |
+| A13 | `MaskDisallowedFields` is the outbound chokepoint | holds — **five** call sites | `ObjectRetrievalGrpcService.cs:65,:137`; `ObjectSearchGrpcService.cs:275`; `EntityRelationResolver.cs:64`; `ObjectMappingGrpcService.cs:273` |
+| A14 | `PostgresProbe` exposes a read the IDN assertion can call | holds | `FetchRowAsync` `:40` → `IReadOnlyDictionary<string, object?>?` |
+| A15 | `decision.TenantColumn` / `TenantValue` exist | holds | `IRowFieldAuthorizationEvaluator.cs:32-33` |
+| A16 | .NET tests run from a solution file | holds | `Iverson.slnx` at repo root |
+| A17 | The four non-.NET test commands are valid | holds | TS `package.json` `test` = `npm run typecheck && vitest run`; Python `pyproject.toml:25` `[tool.pytest.ini_options] testpaths=["tests"]`; Java reactor `Iverson.Clients/Java/pom.xml` modules client/sample/conformance; Go `Iverson.Clients/Go/go.mod` |
+| A18 | The live matrix runs four scenarios | **FAILED** | Six exist: `CrudRoundtrip`, `Interop`, `NamingRejected`, `NavPropertyRejected`, `Query`, `SchemaCatalog`. Entrypoint `Program.cs`, env-configured. Plan corrected. |
+| A19 | No task imports a later task's new symbols | holds | Only new symbol introduced across tasks is T1's `__TenantId` constant; T2–T7 consume it, none precede T1. |
+| A20 | The gate must pass per-commit, not just at the end | holds — and it binds | Check 1 is bidirectional (`RequirementsCoverageGateTests.cs:104-127`); check 2 requires every const cited under `Iverson.ClientConformance/` (`:129-148`) |
+| A21 | Retiring DECL-002/005 in T3 does not trip check 4 | holds — only if the Coverage row is deleted outright | `:325` fails on a Retired ID in Evidence; `:280` fails on empty Evidence. Both IDs retire, so the row at standard `:103` cannot survive in any form. |
+| A22 | `SchemaBuilder`'s callers absorb the change | holds, with one contract | 18 call sites, all via `To*Schema` projections. **`PostgresProbe.cs:11,20` keeps a deliberate separate copy of the table-naming rule** (`NamingExtensions` is internal to `Iverson.Api`) — captured as a cross-task contract in T5. |
+| A23 | `TenantColumn` non-nullable = two dead branches | **FAILED** | ~36 sites across three declarations (`SchemaDescriptor.cs:25`, `IRowFieldAuthorizationEvaluator.cs:32`, `AuthorizationConstraint.cs:7`), incl. eight *live* tenant-predicate guards in `StarRocksQueryBuilder`/`StarRocksPipelineBuilder`. Became T7 by user decision. |
+| A24 | Client marker consumers are confined to the client libs | holds | Also in samples, driver models and tests across all five; enumerated per-client in T3. Java lives under `Java/client/src/main` and `Java/sample/`, not `Java/src/main`. |
+| A25 | `ScalarColumns` has six consumers (spec's count) | **FAILED** | Eight production sites. `RelationValidator.cs:97` and `SchemaBuilder.cs:183,192,203,222` have no position in the spec; assigned in T1. |
+
+**Sibling-set sweeps run:** all `ScalarColumns` consumers (A25), all five clients and every symbol each
+exports (A24), all `MaskDisallowedFields` call sites (A13), all four non-.NET test commands (A17), all
+`TenantColumn` declarations and guards (A23).
+
+**Six of twenty-five failed.** Five were corrected in place; A23 changed the plan's shape and became
+Task 7 on the user's decision.
