@@ -66,7 +66,7 @@ try
     string[] recognizedScenarios =
     [
         CrudRoundtripScenario.Name, NamingRejectedScenario.Name, NavPropertyRejectedScenario.Name,
-        InteropScenario.Name, SchemaCatalogScenario.Name,
+        InteropScenario.Name, SchemaCatalogScenario.Name, QueryScenario.Name,
     ];
     var scenarios = flags.Scenarios ?? recognizedScenarios;
 
@@ -97,6 +97,10 @@ try
     var navPropertyRejected = new NavPropertyRejectedScenario(mapping);
     var interop = new InteropScenario(runner, new Reregistrar(mapping), Console.WriteLine);
     var schemaCatalog = new SchemaCatalogScenario(runner, new Reregistrar(mapping), Console.WriteLine);
+    var query = new QueryScenario(
+        runner, new Reregistrar(mapping),
+        new ObjectSearchService.ObjectSearchServiceClient(channel),
+        log: Console.WriteLine);
 
     DriverContext BuildContext(string scenarioName) => new(
         Scenario: scenarioName,
@@ -146,6 +150,17 @@ try
     {
         Console.WriteLine($"Running scenario '{SchemaCatalogScenario.Name}'...");
         foreach (var cell in await schemaCatalog.RunAsync(languages, BuildContext(SchemaCatalogScenario.Name), actingToken))
+            report.Add(cell);
+    }
+
+    // The dispatch, not `recognizedScenarios`, is what actually runs a scenario: line 71 reads
+    // `flags.Scenarios ?? recognizedScenarios`, so `--scenarios query` bypasses the recognized
+    // list entirely. The registration above governs the DEFAULT (unfiltered) run set and the
+    // unknown-name warning below; this block governs whether the scenario runs at all.
+    if (scenarios.Contains(QueryScenario.Name, StringComparer.OrdinalIgnoreCase))
+    {
+        Console.WriteLine($"Running scenario '{QueryScenario.Name}'...");
+        foreach (var cell in await query.RunAsync(languages, BuildContext(QueryScenario.Name), actingToken))
             report.Add(cell);
     }
 

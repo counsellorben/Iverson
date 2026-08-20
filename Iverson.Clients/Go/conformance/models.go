@@ -81,3 +81,19 @@ type GoBadArticle struct {
 	OwnerId  string
 	WriterId string `iverson:"many_to_one:GoAuthor"`
 }
+
+// QueryDoc is S6 query's subject type. Every one of the five drivers declares the same type name
+// and shape; only the .NET driver ever registers it (register-once rule), and every driver writes
+// one row into it and then queries it.
+//
+// Deliberately relation-free: the scenario's exact result-set comparison is over row keys, and a
+// relation would drag hydration into what a search returns without adding anything the QRY axis
+// asserts. Marker carries the run's --id-prefix and is the property every driver filters on —
+// unique per run, so the expected result set is exactly this run's rows.
+type QueryDoc struct {
+	Id       string `iverson_key:"true" iverson_guid:"true"`
+	TenantId string `iverson_tenant:"true"`
+	OwnerId  string
+	Marker   string
+	Label    string
+}

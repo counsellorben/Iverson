@@ -32,9 +32,13 @@ import grpc
 from google.protobuf.json_format import MessageToJson
 
 from iverson_client.core import EntityCoordinator, IversonClient, SchemaRegistrar, _relation_nav_member_name
+from iverson_client.aggregate import aggregate as aggregate_builder
 from iverson_client.generated import object_mapping_pb2_grpc as mapping_grpc
+from iverson_client.search import QueryBuilder, SearchOperator
 
-from conformance.models import PyArticle, PyAuthor, PyBadArticle, PyTag, SharedArticle, SharedAuthor
+from conformance.models import (
+    PyArticle, PyAuthor, PyBadArticle, PyTag, QueryDoc, SharedArticle, SharedAuthor,
+)
 
 LANGUAGE = "python"
 # naming-rejected (S2) is register-phase-only: the orchestrator never invokes this driver for
@@ -42,7 +46,7 @@ LANGUAGE = "python"
 # registers SharedAuthor/SharedArticle (register-once rule).
 # schema-catalog (S5) uses only the register and read phases: this driver registers PyAuthor and
 # then fetches the catalogue back through the client library's own public get_schema().
-SCENARIOS = {"crud-roundtrip", "naming-rejected", "interop", "schema-catalog"}
+SCENARIOS = {"crud-roundtrip", "naming-rejected", "interop", "schema-catalog", "query"}
 
 
 # ── Argument parsing ──────────────────────────────────────────────────────────
@@ -497,6 +501,79 @@ def main(argv: List[str]) -> int:
             steps.append(StepResult("get_schema", True, entity=catalogue_to_json(catalogue)))
         except Exception as exc:  # noqa: BLE001
             steps.append(StepResult("get_schema", False, error=describe(exc)))
+
+    elif phase == "register" and scenario == "query":
+        # S6 query: only the .NET driver ever runs this phase (register-once rule), so this branch
+        # exists for completeness and is never reached in a harness run — kept so a hand-run of
+        # this driver behaves the same as the others rather than exiting 2.
+        error: Optional[str] = None
+        try:
+            registrar = SchemaRegistrar(capture, QueryDoc)
+            registrar.register_all()
+        except Exception as exc:  # noqa: BLE001 - reported as data, not raised
+            error = describe(exc)
+
+        descriptor_json = capture.select("QueryDoc")
+        steps.append(StepResult(
+            name="register_query_doc",
+            ok=error is None,
+            error=error,
+            type_descriptor=json.loads(descriptor_json) if descriptor_json else None,
+        ))
+
+    elif phase == "write" and scenario == "query":
+        # One row, stamped with the run's marker. The key is reported whenever persist() returned
+        # one — it is the orchestrator's expected-set accounting, and a row seeded but never
+        # reported would silently shrink what every language is graded against.
+        written_key = None
+        try:
+            entity = QueryDoc()
+            entity.tenant_id = tenant
+            entity.owner_id = owner_id
+            entity.marker = id_prefix
+            entity.label = f"doc-{LANGUAGE}"
+            written_key = coordinator(QueryDoc).persist(entity)
+            result = StepResult("write_query_doc", True, entity=entity_to_dict(entity))
+        except Exception as exc:  # noqa: BLE001
+            result = StepResult("write_query_doc", False, error=describe(exc))
+        if written_key is not None:
+            result.keys = {"query_doc": str(written_key)}
+        steps.append(result)
+
+    elif phase == "read" and scenario == "query":
+        # The filter and the aggregation are both built with the client library's own builder API
+        # (QueryBuilder / AggregateBuilder) and executed through EntityCoordinator, never through
+        # the generated stub. Row keys and the metric value are reported verbatim; the orchestrator
+        # decides what they mean.
+        try:
+            request = (
+                QueryBuilder("QueryDoc")
+                .where("marker").eq(id_prefix)
+                .limit(100)
+                .build()
+            )
+            hits = coordinator(QueryDoc).search(request)
+            steps.append(StepResult(
+                "search_by_marker", True,
+                entity={"keys": [str(hit.entity.id) for hit in hits]},
+            ))
+        except Exception as exc:  # noqa: BLE001
+            steps.append(StepResult("search_by_marker", False, error=describe(exc)))
+
+        try:
+            agg_request = (
+                aggregate_builder("QueryDoc")
+                .where("marker", SearchOperator.EQUALS, id_prefix)
+                .count_all("count")
+                .build()
+            )
+            response = coordinator(QueryDoc).aggregate(agg_request)
+            value = response.results[0].metric_value if len(response.results) > 0 else None
+            steps.append(StepResult(
+                "aggregate_count", True, entity={"value": value, "total": response.total},
+            ))
+        except Exception as exc:  # noqa: BLE001
+            steps.append(StepResult("aggregate_count", False, error=describe(exc)))
 
     elif phase == "register":
         # SchemaRegistrar.register_all() issues one RegisterSchema call per type, sequentially,

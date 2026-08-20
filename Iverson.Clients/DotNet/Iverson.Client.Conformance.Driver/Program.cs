@@ -6,6 +6,7 @@ using Iverson.Client.Conformance.Driver;
 using Iverson.Client.Conformance.Driver.Models;
 using Iverson.Client.Contracts;
 using Iverson.Client.Core;
+using Iverson.Client.Search;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 
@@ -23,7 +24,12 @@ const string InteropScenario = "interop";
 // schema-catalog (S5): register + read only. Registers DotNetAuthor, then fetches the catalogue
 // back through SchemaCatalogClient — the client library's own public schema-retrieval surface.
 const string SchemaCatalogScenario = "schema-catalog";
-var supportedScenarios = new[] { CrudRoundtripScenario, InteropScenario, SchemaCatalogScenario };
+// query (S6): register (this driver only, register-once), write, read. Seeds one QueryDoc row
+// carrying the run's marker, then issues a filtered search and a count aggregate through the
+// client library's own QueryBuilder/AggregateBuilder.
+const string QueryScenario = "query";
+var supportedScenarios = new[]
+    { CrudRoundtripScenario, InteropScenario, SchemaCatalogScenario, QueryScenario };
 
 var args_ = Args.Parse(args);
 
@@ -90,6 +96,10 @@ if (scenario == InteropScenario)
 else if (scenario == SchemaCatalogScenario)
 {
     await RunSchemaCatalogAsync();
+}
+else if (scenario == QueryScenario)
+{
+    await RunQueryAsync();
 }
 else
 {
@@ -266,6 +276,96 @@ static object CatalogueToReport(IReadOnlyList<SchemaType> types) => new
         relations = t.Relations.Select(r => new { propertyName = r.PropertyName }).ToList(),
     }).ToList(),
 };
+
+// ── S6 query ─────────────────────────────────────────────────────────────────────────────────
+async Task RunQueryAsync()
+{
+    switch (phase)
+    {
+        case "register":
+        {
+            // Only the .NET driver ever runs this phase for query (register-once rule; see
+            // Scenarios/QueryScenario.cs). Registered WITHOUT an authorization block — the
+            // orchestrator re-registers it with one before any driver's write phase.
+            capture.OnlySendTypeName = nameof(QueryDoc);
+            var registerOutcome = await Run(async () =>
+            {
+                var registrar = new SchemaRegistrar(registry, mappingForRegistration, NullLogger<SchemaRegistrar>.Instance);
+                await registrar.RegisterAllAsync();
+            });
+            capture.OnlySendTypeName = null;
+
+            steps.Add(new StepResult(
+                "register_query_doc",
+                Ok: registerOutcome is null,
+                Error: registerOutcome,
+                TypeDescriptor: Json.Element(capture.Select(nameof(QueryDoc)))));
+            break;
+        }
+
+        case "write":
+        {
+            // One row, stamped with the run's marker. The key is reported unconditionally when the
+            // write returned one — it is the orchestrator's expected-set accounting, and a row
+            // seeded but never reported would silently shrink what every language is graded
+            // against.
+            Guid? key = null;
+            await Step("write_query_doc",
+                async result =>
+                {
+                    var written = await Coordinator<QueryDoc>().PostMappedAsync(new QueryDoc
+                    {
+                        TenantId = tenant,
+                        OwnerId = ownerId,
+                        Marker = idPrefix,
+                        Label = $"doc-{Language}",
+                    });
+                    key = written?.Id;
+                    return result with { Entity = Json.Element(written) };
+                },
+                result => key is { } k
+                    ? result with { Keys = new Dictionary<string, string> { ["query_doc"] = k.ToString() } }
+                    : result);
+            break;
+        }
+
+        case "read":
+        {
+            // The filter and the aggregation are both built with the client library's own builder
+            // API (Query.For<T>() / AggregateBuilder) and executed through EntityCoordinator, never
+            // through the generated stub. What is reported is the row keys and the metric value,
+            // verbatim; the orchestrator decides what they mean.
+            await Step("search_by_marker", async result =>
+            {
+                var keys = new List<string>();
+                var query = Query.For<QueryDoc>()
+                    .Where(d => d.Marker, SearchOperator.Equals, idPrefix)
+                    .Page(0, 100);
+                await foreach (var hit in Coordinator<QueryDoc>().SearchAsync(query))
+                    keys.Add(hit.Entity.Id.ToString());
+
+                return result with { Entity = Json.Element(new { keys }) };
+            });
+
+            await Step("aggregate_count", async result =>
+            {
+                var aggregate = new AggregateBuilder(nameof(QueryDoc))
+                    .Where(nameof(QueryDoc.Marker), SearchOperator.Equals, idPrefix)
+                    .CountAll("count");
+                var response = await Coordinator<QueryDoc>().AggregateAsync(aggregate);
+                var metric = response.Results.Count > 0 ? response.Results[0].MetricValue : (double?)null;
+
+                return result with { Entity = Json.Element(new { value = metric, total = response.Total }) };
+            });
+            break;
+        }
+
+        default:
+            await Console.Error.WriteLineAsync($"unknown phase '{phase}' for scenario '{scenario}'");
+            Environment.Exit(2);
+            break;
+    }
+}
 
 // ── S1 crud-roundtrip ────────────────────────────────────────────────────────────────────────
 async Task RunCrudRoundtripAsync()

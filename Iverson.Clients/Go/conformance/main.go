@@ -41,6 +41,10 @@ var supportedScenarios = map[string]bool{
 	// schema-catalog (S5) uses only the register and read phases: this driver registers GoAuthor
 	// and then fetches the catalogue back through IversonClient.GetSchema.
 	"schema-catalog": true,
+	// query (S6) is register-phase-NEVER for this driver: only .NET registers QueryDoc
+	// (register-once rule). This driver seeds one row and then issues a filtered search and a
+	// count aggregate through the client library's own QueryBuilder/AggregateBuilder.
+	"query": true,
 }
 
 // catalogueType/catalogueField/catalogueRelation are the deliberately minimal,
@@ -533,6 +537,88 @@ func run(argv []string) int {
 					func() (interface{}, error) { return articleCoord.Get(ctx, key) }))
 			}
 		}
+
+	case phase == "write" && sc == "query":
+		// S6 query: one row, stamped with the run's marker. The key is reported whenever Persist
+		// returned one — it is the orchestrator's expected-set accounting, and a row seeded but
+		// never reported would silently shrink what every language is graded against.
+		docCoord, docCoordErr := iverson.NewEntityCoordinator(client, QueryDoc{})
+		var step stepResult
+		if docCoordErr != nil {
+			step = failStep("write_query_doc", docCoordErr)
+		} else {
+			entity := QueryDoc{TenantId: tenant, OwnerId: ownerID, Marker: idPrefix, Label: "doc-" + language}
+			key, err := docCoord.Persist(ctx, entity)
+			if err != nil {
+				step = failStep("write_query_doc", err)
+			} else {
+				step = okStep("write_query_doc")
+				step.Entity = entityJSON(entity)
+			}
+			if key != "" {
+				step.Keys = map[string]string{"query_doc": key}
+			}
+		}
+		steps = append(steps, step)
+
+	case phase == "read" && sc == "query":
+		// The filter and the aggregation are both built with the client library's own builder API
+		// (iverson.NewQuery / iverson.NewAggregate) and executed through EntityCoordinator, never
+		// through the generated stub. Row keys and the metric value are reported verbatim; the
+		// orchestrator decides what they mean.
+		docCoord, docCoordErr := iverson.NewEntityCoordinator(client, QueryDoc{})
+
+		searchStep := func() stepResult {
+			if docCoordErr != nil {
+				return failStep("search_by_marker", docCoordErr)
+			}
+			req, err := iverson.NewQuery("QueryDoc").Where("Marker").Eq(idPrefix).Limit(100).Build()
+			if err != nil {
+				return failStep("search_by_marker", err)
+			}
+			hits, err := docCoord.Search(ctx, req)
+			if err != nil {
+				return failStep("search_by_marker", err)
+			}
+			keys := make([]string, 0, len(hits))
+			for _, hit := range hits {
+				keys = append(keys, hit.Entity.Id)
+			}
+			out := okStep("search_by_marker")
+			out.Entity = entityJSON(map[string]interface{}{"keys": keys})
+			return out
+		}()
+		steps = append(steps, searchStep)
+
+		aggregateStep := func() stepResult {
+			if docCoordErr != nil {
+				return failStep("aggregate_count", docCoordErr)
+			}
+			// AggregateBuilder.Where takes a *pb.SearchValue directly — unlike QueryBuilder's
+			// FieldCondition, Go's aggregate builder exposes no value-wrapping helper (the
+			// package's stringValue is unexported). This is still the builder's own public API,
+			// not a hand-rolled AggregateRequest.
+			req, err := iverson.NewAggregate("QueryDoc").
+				Where("Marker", pb.SearchOperator_EQUALS,
+					&pb.SearchValue{Kind: &pb.SearchValue_StringVal{StringVal: idPrefix}}).
+				CountAll("count").
+				Build()
+			if err != nil {
+				return failStep("aggregate_count", err)
+			}
+			resp, err := docCoord.Aggregate(ctx, req)
+			if err != nil {
+				return failStep("aggregate_count", err)
+			}
+			var value interface{}
+			if len(resp.GetResults()) > 0 {
+				value = resp.GetResults()[0].GetMetricValue()
+			}
+			out := okStep("aggregate_count")
+			out.Entity = entityJSON(map[string]interface{}{"value": value, "total": resp.GetTotal()})
+			return out
+		}()
+		steps = append(steps, aggregateStep)
 
 	case phase == "register" && sc == "schema-catalog":
 		// S5 schema-catalog: one relation-free type, registered WITHOUT an authorization block on

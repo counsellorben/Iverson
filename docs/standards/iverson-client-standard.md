@@ -295,8 +295,71 @@ allows.
 
 ### QRY — Query
 
+Full rationale and the assertion(s) that discharge each requirement are recorded on the
+corresponding const's doc comment in `Requirements.cs`, per this document's own convention for an
+implemented requirement.
+
 | ID | Status | Kind | Statement |
 | --- | --- | --- | --- |
+| IVC-QRY-001 | Active | Capability | A filtered search is reachable through the client's public API |
+| IVC-QRY-002 | Active | Behaviour | A filtered search returns exactly the rows whose stored values match the filter |
+| IVC-QRY-003 | Active | Capability | An aggregation over a filtered set is reachable through the client's public API |
+| IVC-QRY-004 | Active | Behaviour | An aggregation over a filtered set reports a value computed from exactly the rows that filter matches |
+
+`IVC-QRY-001`/`IVC-QRY-003` are the reachability half and `IVC-QRY-002`/`IVC-QRY-004` the content
+half, split the way `SCH` splits `IVC-SCH-001` from `IVC-SCH-002` and for the same reason: search
+and aggregation are two distinct RPCs (`Search` streams rows, `Aggregate` returns one unary
+response), and a client that can reach one but returns the wrong content from it is non-conformant
+in a way a single conflated requirement would report only as one undifferentiated red cell.
+
+`IVC-QRY-002` says *exactly* the matching rows, not *at least* them. Both directions are verified —
+a seeded row the search failed to return, and a returned row the run never seeded, are each a
+failure. The exact form is checkable because the `query` scenario seeds its rows under a
+run-unique marker value and filters on that marker: no row from any earlier run, and no row
+written by any other scenario, can match it. All five clients issue the same filter over the same
+seeded rows, so the requirement is simultaneously a per-client correctness claim and a
+cross-client agreement claim — a language whose filter is built wrongly disagrees with the other
+four and its cell alone goes red.
+
+`IVC-QRY-004` grades the aggregate against the harness's own count of the rows it seeded and
+observed keys for, never against what the search step of the same run reported. Grading the
+aggregate against the search would make the two requirements agree by construction whenever a
+client got both wrong in the same direction.
+
+`Search` and `Aggregate` are served from the StarRocks projection, which a mapped write reaches
+asynchronously through the outbox. The scenario therefore waits for the projection before its read
+phase — a bounded poll with an explicit timeout, reported as a failed step when it expires. It is
+never an indefinite wait and never a fixed sleep presented as determinism; see
+`ProjectionWaiter.cs`.
+
+Pagination, sort order, joins, bucketing aggregations and `HAVING` are deliberately not authored
+here; see the Coverage table below.
+
+#### Coverage
+
+| Area | Status | Evidence |
+| --- | --- | --- |
+| Filtered-search reachability | Covered | IVC-QRY-001 |
+| Filtered-search result set | Covered | IVC-QRY-002 |
+| Aggregation reachability | Covered | IVC-QRY-003 |
+| Aggregation value | Covered | IVC-QRY-004 |
+| Pagination and sort order | Deferred | Every client's query builder can express paging and sort (`page`/`limit`/`offset`, `orderBy`), but the `query` scenario seeds one row per language — far below any page boundary — so no assertion observes a page boundary or an ordering, and no requirement constrains them. Authoring them needs a seed set large enough that a wrong page size or a dropped sort is observable, which is a scenario change, not a wording change. |
+| Joins and multi-type queries | Deferred | `JoinSpec` is expressible from all five builders, but the scenario's subject type is relation-free on purpose — which is what keeps `IVC-QRY-002`'s exact result-set comparison free of hydration effects — so no assertion observes a join and no requirement constrains one. |
+| Bucketing aggregations and HAVING | Deferred | Only the scalar count metric is exercised. `TERMS`/`DATE_HISTOGRAM`/`RANGE` bucket output and `HAVING` clauses reference server-fixed output aliases (`bucket_key`, `doc_count`, `metric_val`) that no assertion currently observes, so no requirement constrains them. |
+| Vector-backed query paths | Deferred | `SearchSimilar` and `SearchChunks` are served from Qdrant rather than StarRocks and belong to the `VEC` axis, not this one. |
+
+#### Backstop assertion (non-normative)
+
+`QRY`'s content assertions (`IVC-QRY-002`, `IVC-QRY-004`) compare what a client reported against
+the set of row keys the harness itself observed the write phase produce. If that expected set were
+empty — every write denied, or every driver silently reporting no key — the set comparison would
+succeed against an empty result and the aggregate would match a count of zero: five clients
+agreeing on nothing, rendered green. `QueryScenario.Judge`'s "the run seeded at least one row for
+this query to match" assertion is therefore `QRY`'s backstop. It fires unconditionally, on every
+language, before and outside the comparisons, and is exactly the positive expected row count this
+axis's scenario requires. Like `REL`'s and `SCH`'s it carries no requirement ID: no `IVC-QRY-*`
+statement owns "the run seeded something" as such — it is a property of the harness's own fixture,
+not of a client — and it is strictly weaker than `IVC-QRY-002` wherever `IVC-QRY-002` can fail.
 
 ### VEC — Vector
 

@@ -27,7 +27,9 @@ import {
     TypeDescriptor,
 } from '../generated/object_mapping.js';
 
-import { SharedArticle, SharedAuthor, TsArticle, TsAuthor, TsBadArticle, TsTag } from './models.js';
+import { QueryDoc, SharedArticle, SharedAuthor, TsArticle, TsAuthor, TsBadArticle, TsTag } from './models.js';
+import { QueryBuilder, SearchOperator } from '../src/search.js';
+import { aggregate } from '../src/aggregate.js';
 
 const LANGUAGE = 'typescript';
 // naming-rejected (S2) is register-phase-only: the orchestrator never invokes this driver for
@@ -35,7 +37,10 @@ const LANGUAGE = 'typescript';
 // registers SharedAuthor/SharedArticle (register-once rule).
 // schema-catalog (S5) uses only the register and read phases: this driver registers TsAuthor and
 // then fetches the catalogue back through IversonClient.getSchema().
-const SCENARIOS = new Set(['crud-roundtrip', 'naming-rejected', 'interop', 'schema-catalog']);
+// query (S6): register (dotnet-only, register-once), write and read — this driver seeds one
+// QueryDoc row and then issues a filtered search and a count aggregate through the client
+// library's own QueryBuilder/AggregateBuilder.
+const SCENARIOS = new Set(['crud-roundtrip', 'naming-rejected', 'interop', 'schema-catalog', 'query']);
 
 // ── Argument parsing ────────────────────────────────────────────────────────────
 
@@ -470,6 +475,49 @@ async function main(argv: string[]): Promise<number> {
             } catch (err) {
                 steps.push(step(name, false, { error: describe(err) }));
             }
+        }
+    } else if (phase === 'write' && scenario === 'query') {
+        // One row, stamped with the run's marker. The key is reported whenever persist() resolved
+        // with one — it is the orchestrator's expected-set accounting, and a row seeded but never
+        // reported would silently shrink what every language is graded against.
+        let queryDocKey: string | undefined;
+        let result: StepResult;
+        try {
+            const entity = new QueryDoc();
+            entity.tenantId = tenant;
+            entity.ownerId = ownerId;
+            entity.marker = idPrefix;
+            entity.label = `doc-${LANGUAGE}`;
+            queryDocKey = await client.coordinator(QueryDoc).persist(entity);
+            result = step('write_query_doc', true, { entity: entityToPlain(entity) });
+        } catch (err) {
+            result = step('write_query_doc', false, { error: describe(err) });
+        }
+        if (queryDocKey !== undefined) result.keys = { query_doc: queryDocKey };
+        steps.push(result);
+    } else if (phase === 'read' && scenario === 'query') {
+        // The filter and the aggregation are both built with the client library's own builder API
+        // (QueryBuilder / AggregateBuilder) and executed through IversonClient's own search and
+        // aggregate entry points, never through a raw generated stub. Row keys and the metric
+        // value are reported verbatim; the orchestrator decides what they mean.
+        try {
+            const request = new QueryBuilder('QueryDoc').where('marker').eq(idPrefix).limit(100).build();
+            const hits = await client.search(request, QueryDoc);
+            steps.push(step('search_by_marker', true, { entity: { keys: hits.map((h) => h.entity.id) } }));
+        } catch (err) {
+            steps.push(step('search_by_marker', false, { error: describe(err) }));
+        }
+
+        try {
+            const aggregateRequest = aggregate('QueryDoc')
+                .where('marker', SearchOperator.EQUALS, idPrefix)
+                .countAll('count')
+                .build();
+            const response = await client.aggregate(aggregateRequest);
+            const value = response.results.length > 0 ? response.results[0].metricValue : null;
+            steps.push(step('aggregate_count', true, { entity: { value, total: response.total } }));
+        } catch (err) {
+            steps.push(step('aggregate_count', false, { error: describe(err) }));
         }
     } else if (phase === 'write') {
         // Keys are server-assigned: create requests must omit id entirely, and each row's key is

@@ -13,6 +13,12 @@ import io.iverson.client.core.SchemaRegistrar;
 import io.iverson.conformance.models.JavaArticle;
 import io.iverson.conformance.models.JavaAuthor;
 import io.iverson.conformance.models.JavaTag;
+import io.iverson.conformance.models.QueryDoc;
+import io.iverson.client.search.AggregateBuilder;
+import io.iverson.client.search.Query;
+import io.iverson.client.search.QueryBuilder;
+import iverson.ObjectSearch;
+import iverson.ObjectSearch.SearchOperator;
 import io.iverson.conformance.models.SharedArticle;
 import io.iverson.conformance.models.SharedAuthor;
 import iverson.ObjectMapping.SchemaField;
@@ -52,8 +58,12 @@ public final class Driver {
     // schema-catalog (S5) uses only the register and read phases: this driver registers JavaAuthor
     // and then fetches the catalogue back through IversonClient.getSchema.
     private static final String SCHEMA_CATALOG_SCENARIO = "schema-catalog";
+    // query (S6) is register-phase-NEVER for this driver: only .NET registers QueryDoc
+    // (register-once rule). This driver seeds one row and then issues a filtered search and a
+    // count aggregate through the client library's own QueryBuilder/AggregateBuilder.
+    private static final String QUERY_SCENARIO = "query";
     private static final java.util.Set<String> SUPPORTED_SCENARIOS =
-        java.util.Set.of(CRUD_ROUNDTRIP_SCENARIO, INTEROP_SCENARIO, SCHEMA_CATALOG_SCENARIO);
+        java.util.Set.of(CRUD_ROUNDTRIP_SCENARIO, INTEROP_SCENARIO, SCHEMA_CATALOG_SCENARIO, QUERY_SCENARIO);
     private static final Gson GSON = new Gson();
 
     private Driver() {}
@@ -103,6 +113,16 @@ public final class Driver {
                 switch (phase) {
                     case "write" -> doInteropWrite(client, tenant, ownerId, idPrefix, steps);
                     case "read" -> doInteropRead(client, parsedArgs.optional("--keys"), steps);
+                    default -> {
+                        System.err.println("unknown phase '" + phase + "' for scenario '" + scenario + "'");
+                        System.exit(2);
+                        return;
+                    }
+                }
+            } else if (QUERY_SCENARIO.equals(scenario)) {
+                switch (phase) {
+                    case "write" -> doQueryWrite(client, tenant, ownerId, idPrefix, steps);
+                    case "read" -> doQueryRead(client, idPrefix, steps);
                     default -> {
                         System.err.println("unknown phase '" + phase + "' for scenario '" + scenario + "'");
                         System.exit(2);
@@ -235,6 +255,63 @@ public final class Driver {
                 "name", type.getName(), "fields", fields, "relations", relations));
         }
         return java.util.Map.of("types", reported);
+    }
+
+    // ── S6 query ─────────────────────────────────────────────────────────────────────────────
+
+    /**
+     * Seeds one {@code QueryDoc} row stamped with the run's marker. The key is reported whenever
+     * {@code persist} returned one — it is the orchestrator's expected-set accounting, and a row
+     * seeded but never reported would silently shrink what every language is graded against.
+     */
+    private static void doQueryWrite(
+            IversonClient client, String tenant, String ownerId, String idPrefix, List<StepResult> steps) {
+        String[] docKey = new String[1];
+        StepResult result = step("write_query_doc", r -> {
+            QueryDoc doc = new QueryDoc();
+            doc.setTenantId(tenant);
+            doc.setOwnerId(ownerId);
+            doc.setMarker(idPrefix);
+            doc.setLabel("doc-" + LANGUAGE);
+            docKey[0] = new EntityCoordinator<>(client, QueryDoc.class).persist(doc);
+        });
+        if (docKey[0] != null) result.keys = Map.of("query_doc", docKey[0]);
+        steps.add(result);
+    }
+
+    /**
+     * Issues the filtered search and the count aggregate, both built with the client library's own
+     * builder API ({@code Query.of}/{@code Query.aggregate}) and executed through
+     * {@code EntityCoordinator}, never through a raw generated stub. Row keys and the metric value
+     * are reported verbatim; the orchestrator decides what they mean.
+     */
+    private static void doQueryRead(IversonClient client, String idPrefix, List<StepResult> steps) {
+        steps.add(step("search_by_marker", r -> {
+            QueryBuilder<QueryDoc> query = Query.of(QueryDoc.class).where("marker").eq(idPrefix).limit(100);
+            List<EntityCoordinator.SearchResult<QueryDoc>> hits =
+                new EntityCoordinator<>(client, QueryDoc.class).search(query);
+            List<String> keys = new ArrayList<>();
+            for (EntityCoordinator.SearchResult<QueryDoc> hit : hits) {
+                keys.add(hit.entity().getId() == null ? null : hit.entity().getId().toString());
+            }
+            Map<String, Object> reported = new java.util.LinkedHashMap<>();
+            reported.put("keys", keys);
+            r.entity = GSON.toJsonTree(reported);
+        }));
+
+        steps.add(step("aggregate_count", r -> {
+            AggregateBuilder aggregate = Query.aggregate("QueryDoc")
+                .where("marker", SearchOperator.EQUALS, idPrefix)
+                .countAll("count");
+            ObjectSearch.AggregateResponse response =
+                new EntityCoordinator<>(client, QueryDoc.class).aggregate(aggregate);
+            Map<String, Object> reported = new java.util.LinkedHashMap<>();
+            reported.put(
+                "value",
+                response.getResultsCount() > 0 ? response.getResults(0).getMetricValue() : null);
+            reported.put("total", response.getTotal());
+            r.entity = GSON.toJsonTree(reported);
+        }));
     }
 
     // ── write ────────────────────────────────────────────────────────────────────────────────

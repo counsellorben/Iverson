@@ -232,6 +232,62 @@ public static class Requirements
     /// </summary>
     public const string RegForeignKeyNamingEnforced = "IVC-REG-003";
 
+    // ── QRY — Query ─────────────────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// A filtered search is reachable through the client's public API. Discharged by
+    /// <c>QueryScenario.Judge</c>'s "a filtered search is reachable through the client's public
+    /// API" assertion, over each driver's own <c>search_by_marker</c> step — the driver builds the
+    /// filter with its own client library's query builder (<c>Query.For&lt;T&gt;().Where(...)</c>,
+    /// <c>QueryBuilder(...).where(...)</c>, <c>iverson.NewQuery(...).Where(...)</c>,
+    /// <c>Query.of(...).where(...)</c>) and executes it through that library's own search entry
+    /// point, never through a raw generated stub. This is a <c>Capability</c>: it is satisfied by
+    /// the call completing, and says nothing about what came back — that is <c>IVC-QRY-002</c>, a
+    /// distinct assertion, so a client that can reach <c>Search</c> but returns the wrong rows goes
+    /// green here and red there. A driver reporting that its client cannot perform the search at
+    /// all is a FAIL, not a skip.
+    /// </summary>
+    public const string QrySearchReachable = "IVC-QRY-001";
+
+    /// <summary>
+    /// A filtered search returns exactly the rows whose stored values match the filter. Discharged
+    /// by <c>QueryScenario.Judge</c>'s "the filtered search returned exactly the seeded rows"
+    /// assertion, a two-way set comparison (seeded-but-absent AND returned-but-unseeded are both
+    /// failures) between the row keys the WRITE phase reported and the keys the driver's own search
+    /// reported back. The expected side comes from <c>DriverRunner.KeysByLanguage</c> — the
+    /// harness's own accounting of what the write phase produced — never from the read phase being
+    /// judged, so the assertion cannot agree with itself. "Exactly" is checkable because every
+    /// driver stamps the same run-unique marker (<c>--id-prefix</c>) on its row and filters on
+    /// exactly that marker: no earlier run's rows and no other scenario's rows can match it. The
+    /// assertion fires unconditionally once the expected set is known, so a client reporting an
+    /// empty result set fails rather than being skipped; the empty EXPECTED set is caught by this
+    /// axis's backstop instead (see the standard's QRY backstop note).
+    /// </summary>
+    public const string QrySearchReturnsExactlyMatchingRows = "IVC-QRY-002";
+
+    /// <summary>
+    /// An aggregation over a filtered set is reachable through the client's public API. Discharged
+    /// by <c>QueryScenario.Judge</c>'s "an aggregation over a filtered set is reachable through the
+    /// client's public API" assertion, over each driver's own <c>aggregate_count</c> step, built
+    /// with the client library's own aggregate builder and executed through that library's own
+    /// aggregate entry point. Distinct from <c>IVC-QRY-001</c> rather than folded into it because
+    /// <c>Search</c> and <c>Aggregate</c> are two different RPCs with two different response shapes
+    /// (a server stream of rows versus one unary response) — a client can reach either without the
+    /// other, and the matrix must say which.
+    /// </summary>
+    public const string QryAggregateReachable = "IVC-QRY-003";
+
+    /// <summary>
+    /// An aggregation over a filtered set reports a value computed from exactly the rows that
+    /// filter matches. Discharged by <c>QueryScenario.Judge</c>'s "the aggregate counted exactly
+    /// the seeded rows" assertion, comparing the driver's reported metric value against the count
+    /// of row keys the WRITE phase reported — deliberately the same independent expectation
+    /// <c>IVC-QRY-002</c> uses, and deliberately NOT the count of rows this driver's own search
+    /// step returned: grading the aggregate against the search would let a client that got both
+    /// wrong in the same direction discharge this requirement by agreeing with itself.
+    /// </summary>
+    public const string QryAggregateCountsExactlyMatchingRows = "IVC-QRY-004";
+
     // ── SCH — Schema ────────────────────────────────────────────────────────────────────────
 
     /// <summary>
