@@ -176,7 +176,7 @@ Verified against the codebase and the running dev stack on 2026-08-20.
 | A2 | Nothing hardcodes a tenant column name server-side | ✅ only the conformance harness's own fixtures |
 | A3 | `ScalarColumns` injection needs no further change | ❌ **FAILED** — six consumers, each now given a stated position above |
 | A4 | The RLS policy quotes the column name | ✅ `PostgresSchemaManager.cs:139` |
-| A5 | StarRocks accepts `__tenant_id` | ✅ created and described on the live stack |
+| A5 | StarRocks accepts the reserved column name | ✅ **both** candidates created and described on the live stack; `__TenantId` preserves case, which is what made the PascalCase choice available |
 | A6 | Qdrant accepts the column as a payload key | ✅ moot — Qdrant isolates by collection; `Iverson.Vector` never reads `TenantColumn` |
 | A7 | `SchemaRegistrationOrchestrator` is the single registration-validation entry point | ✅ one `RegisterSchema`, `ObjectMappingGrpcService.cs:39` |
 | A8 | `TenantField` is a plain proto string | ✅ `object_mapping.proto:100`, field 5 |
