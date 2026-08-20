@@ -63,7 +63,7 @@ Injecting into `ScalarColumns` is not neutral. Each consumer needs a stated posi
 |---|---|
 | `PostgresSchemaManager` DDL + RLS policy (`:126-150`) | intended — this is why the column exists; the policy already quotes the name so the prefix is legal |
 | `ObjectMappingGrpcService.cs:83` (`GetSchema` candidates) | **excluded** — see the outbound strip |
-| `RowFieldAuthorizationEvaluator.cs:74` (allowed-field set) | excluded, so `__TenantId` can never be named in a `FieldPermission` |
+| `RowFieldAuthorizationEvaluator.cs:74` (allowed-field set) | excluded, so `__TenantId` can never be named in a `FieldPermission`. This also does inbound work for decision 5: `RejectDisallowedFields` (`AuthorizationFieldMasking.cs:105`, the last line of `EnforceWriteAuthorization`) throws `InvalidArgument` on any payload key absent from `AllowedFields`, so a **client-supplied** `__TenantId` is rejected automatically whenever a `FieldPermission` is active, with the design's explicit check covering the null-`AllowedFields` case. The server's own injected value is never caught by it, because injection happens later, at `:302`. |
 | `ObjectSearchGrpcService.cs:773` (known-filter-property check) | excluded, so a filter naming `__TenantId` is rejected as unknown rather than silently honoured |
 | `DecayFieldResolver.cs:46` | excluded — a reserved column is never a decay candidate |
 | `IntelligenceStoreConsumer.cs:268,377` | server-internal projection; the column flows through as data |
@@ -83,11 +83,26 @@ key the caller provably did not supply, rather than overwriting one they did.
 
 `SetAuthoritativeField` currently mutates `request.Payload` **in place**, and `Post` (`:319`) and
 `Update` (`:372`) both return that same struct as `MappingResponse.Data`. The response body is
-therefore the mutated payload, and the tenant column would ride out on it. The design writes the
-authoritative fields into a **clone used for persistence**, leaving the caller's struct — and so the
-response — untouched. Stripping the key from each response separately would work too, but it fixes
-the two symptoms rather than the aliasing that causes them, and a third write path added later would
-reintroduce the leak.
+therefore the mutated payload, and the tenant column would ride out on it.
+
+**The tenant column is injected into a persistence clone taken after key assignment.** In `Post` the
+order becomes: `EnforceWriteAuthorization` (`:294`) → `AssignNewKey` (`:300`) → clone
+`request.Payload`, add `__TenantId` to the clone, and serialize *the clone* (`:302`). The caller's
+struct keeps its server-assigned key and never receives the tenant, so the response at `:319` is
+clean without being stripped.
+
+Two constraints on this, both load-bearing:
+
+- **Only the tenant column moves.** `SetAuthoritativeField` has two call sites in the same block
+  (`AuthorizationFieldMasking.cs:55-58`) — tenant *and* owner. The owner assignment stays exactly
+  where it is and continues to reach the response; a caller creating an entity under an
+  ownership-required policy still reads the assigned owner back. This design does not touch owner
+  behaviour.
+- **`Update` orders differently and needs its own alignment.** It calls `ExtractKey` (`:330`)
+  *before* `EnforceWriteAuthorization` (`:336`), so its key is already in the payload and the
+  `Post` ordering hazard does not exist there. `Update`'s path must be aligned deliberately rather
+  than assumed to be a copy of `Post`'s — a mechanism verified only against `Update` would look
+  correct while `Post` persisted a keyless or tenantless row.
 
 ### The outbound strip — four chokepoints, twelve paths
 
@@ -101,7 +116,7 @@ writes: `Post` and `Update`, whose responses return the caller's own payload str
 | `AuthorizationFieldMasking.MaskDisallowedFields` | `Mapping.Get`, `Retrieval.Get`, `GetMany`, hydrated children via `EntityRelationResolver`, `SearchSimilar`, `SearchChunks` — six call sites across four services |
 | `StarRocksQueryBuilder.BuildSelectColumns` (`:113`) | `Search`, `GroupBy`, `Pipeline`, `Aggregate` — the column is never selected, rather than stripped after the fact |
 | `ObjectMappingGrpcService.ProjectField` (`:83,184`) | `GetSchema` |
-| the write-response clone (see *Inbound rejection*) | `Post` (`:319`), `Update` (`:372`) |
+| the persistence clone (see *Inbound rejection*) | `Post` (`:319`), `Update` (`:372`) |
 
 The strip inside `MaskDisallowedFields` must be **unconditional**. It cannot ride on `AllowedFields`,
 which is `null` when no `FieldPermission` is active — meaning "everything allowed".
