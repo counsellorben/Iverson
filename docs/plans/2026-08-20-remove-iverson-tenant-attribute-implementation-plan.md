@@ -343,17 +343,24 @@ Runs **after** T6. Null currently means "legacy pre-cutover schema row"
 (`SchemaDescriptor.cs:23`, `EngagementStoreConsumer.cs:56`); those rows exist until T6's teardown
 drops them.
 
-Scope is larger than the spec's "two dead branches" — verification found roughly 36 sites across
-**three** nullable declarations:
+Scope is larger than the spec's "two dead branches" — verification found roughly 30 sites across
+**two** nullable declarations:
 
 - `Iverson.Api/Schema/SchemaDescriptor.cs:25` — `public string? TenantColumn { get; init; }`
 - `Iverson.Api/Authorization/IRowFieldAuthorizationEvaluator.cs:32` — record parameter
-- `Iverson.StarRocks/AuthorizationConstraint.cs:7` — `string? TenantColumn = null`
 - (`Iverson.Sql/IRecordStoreRoles.cs:127` also carries a nullable `TenantColumn` parameter)
+
+`Iverson.StarRocks/AuthorizationConstraint.cs:7` is **deliberately out of scope.** It is a positional
+record whose `string? TenantColumn = null` default is relied on by
+`TenantIsolationIntegrationTests.cs:89`, which omits the argument on purpose — `:85-87` records the
+reason: those tests prove the SET ROLE / GRANT boundary blocks cross-tenant reads *without* the
+application-level WHERE filter. Tightening the type removes the default, breaks that call, and
+destroys what the file tests. `Iverson.StarRocks` therefore keeps a nullable `TenantColumn` while
+`Iverson.Api` does not.
 
 ### Steps
 
-1. Make all three declarations non-nullable.
+1. Make both `Iverson.Api` declarations non-nullable.
 2. Remove the now-unreachable null guards. Grouped by file: `EngagementStoreConsumer.cs:60,123`;
    `EnrichmentConsumer.cs:122,244`; `IntelligenceStoreConsumer.cs:116,474`;
    `ObjectRetrievalGrpcService.cs:37,48,107,122`; `ObjectMappingGrpcService.cs:244,259,383,397,428`;
@@ -363,17 +370,17 @@ Scope is larger than the spec's "two dead branches" — verification found rough
    **Do not touch `SchemaRegistrationOrchestrator.cs:61`.** T4 step 1 replaced the null guard there
    with the inbound `tenant_field` rejection; by T7 it is no longer a null guard, and deleting it
    reopens the path T4 exists to close.
-3. **Handle the StarRocks guards with care.** `StarRocksQueryBuilder.cs:73,97,237,343,784` and
-   `StarRocksPipelineBuilder.cs:405,560` are **live tenant-predicate guards**, not dead branches —
-   each gates an actual predicate in generated SQL. Each is a compound condition
-   (`authz is not null && authz.TryGetValue(...) && ...TenantColumn is not null`); only the final
-   conjunct becomes unreachable. The surrounding `authz`/`TryGetValue` checks must stay.
-4. Delete the comments that document the nullable contract (`SchemaDescriptor.cs:23`,
-   `AuthorizationConstraint.cs:7`, `EngagementStoreConsumer.cs:56-59`,
-   `EnrichmentConsumer.cs:116`, and the "additive and unconditional" comments in both StarRocks
-   builders).
-5. Re-run the live matrix — this task edits tenant-isolation code, and unit tests alone do not
-   cover the generated SQL's tenant predicate.
+3. **Leave the StarRocks guards untouched.** `StarRocksQueryBuilder.cs:73,97,237,343,784` and
+   `StarRocksPipelineBuilder.cs:405,560` gate on `AuthorizationConstraint.TenantColumn`, which stays
+   nullable — so their final conjunct remains reachable and none of them is a dead branch. They are
+   outside this task.
+4. Delete the comments that document the nullable contract **in `Iverson.Api` only** —
+   `SchemaDescriptor.cs:23`, `EngagementStoreConsumer.cs:56-59`, `EnrichmentConsumer.cs:116`. Leave
+   `AuthorizationConstraint.cs:7`'s comment and the "additive and unconditional" comments in both
+   StarRocks builders: they still describe a contract that holds.
+5. Re-run the live matrix — this task edits tenant-mismatch checks on the read and write paths
+   (`ObjectRetrievalGrpcService`, `ObjectMappingGrpcService`, `EntityRelationResolver`), which unit
+   tests exercise only with hand-built descriptors.
 
 **Verify:** `dotnet test Iverson.slnx`, then the live matrix.
 
@@ -426,6 +433,7 @@ Paths are relative to `/home/ben/repositories/Iverson-conformance`.
 | A24 | Marker consumers span the five client libraries **and** `Iverson.Server/Iverson.LoadTest` | **FAILED as originally scoped** | Per-client: samples, driver models and tests across all five, enumerated in T3; Java lives under `Java/client/src/main` and `Java/sample/`, not `Java/src/main`. Outside the clients: `Iverson.LoadTest/Entities/BenchmarkAuthor.cs:13`, `BenchmarkTag.cs:12`, `BenchmarkArticle.cs:16`, plus the `"TenantId"` column in `DirectSeeder.cs:84,154,214`. |
 | A25 | `ScalarColumns` has six consumers (spec's count) | **FAILED** | Eight production sites. `RelationValidator.cs:97` and `SchemaBuilder.cs:183,192,203,222` have no position in the spec; assigned in T1. |
 | A26 | `OutboxWriter` has four call sites, all covered by T2's injection | holds | `ObjectMappingGrpcService.cs:305,:351`; `ObjectPersistenceGrpcService.cs:60,:124`; interface `OutboxWriter.cs:5` |
+| A28 | `AuthorizationConstraint` has three construction sites; one relies on `TenantColumn`'s default | holds | `ObjectSearchGrpcService.cs:749`, `:763` pass it positionally; `TenantIsolationIntegrationTests.cs:89` omits it deliberately (`:85-87` states why). Record declared at `AuthorizationConstraint.cs:3-8`. Kept out of T7's scope by decision. |
 | A27 | `decision.TenantValue` is non-null on every write path that is not already denied | holds | The four early returns in `RowFieldAuthorizationEvaluator.Evaluate` (`:11-22`) all pass `Denied = true` — the record's first positional parameter (`IRowFieldAuthorizationEvaluator.cs:17`) — and `AuthorizationFieldMasking.cs:41-46` throws `PermissionDenied` before the write. Every path that reaches `OutboxWriter` passed the non-empty `tenant_id` check at `:21-22`. |
 
 **Sibling-set sweeps run:** all `ScalarColumns` consumers (A25), all five clients and every symbol each
