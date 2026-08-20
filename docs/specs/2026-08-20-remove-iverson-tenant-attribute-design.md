@@ -98,11 +98,23 @@ Two constraints on this, both load-bearing:
   where it is and continues to reach the response; a caller creating an entity under an
   ownership-required policy still reads the assigned owner back. This design does not touch owner
   behaviour.
-- **`Update` orders differently and needs its own alignment.** It calls `ExtractKey` (`:330`)
-  *before* `EnforceWriteAuthorization` (`:336`), so its key is already in the payload and the
-  `Post` ordering hazard does not exist there. `Update`'s path must be aligned deliberately rather
-  than assumed to be a copy of `Post`'s — a mechanism verified only against `Update` would look
-  correct while `Post` persisted a keyless or tenantless row.
+- **`Update` needs the same injection, not merely the same ordering.** Its ordering does differ —
+  `ExtractKey` (`:330`) runs *before* `EnforceWriteAuthorization` (`:336`), so its key is already in
+  the payload and the `Post` ordering hazard does not exist there. But the substantive point is that
+  the update branch of `EnforceWriteAuthorization` **never calls `SetAuthoritativeField` at all**:
+  that call lives only inside `if (existingRowJson is null)` (`AuthorizationFieldMasking.cs:47-59`).
+  Today `Update` is correct only because the client models the tenant as an ordinary property and
+  sends it on every update — which is precisely what decision 1 removes. `Update` must therefore
+  inject `__TenantId` from `decision.TenantValue` into the clone it serializes, exactly as `Post`
+  does. A mechanism verified against only one of the two write paths would look correct while the
+  other persisted a keyless or tenantless row.
+
+**The invariant, stated once rather than per path: whatever JSON reaches `OutboxWriter` must carry
+`__TenantId`.** `OutboxWriter.cs:18-28` builds `updateSet` over **every** column
+(`"{c}" = EXCLUDED."{c}"`) and feeds `json_populate_record` a **null base record**, so a column
+absent from the JSON is NULL in `EXCLUDED` and the `ON CONFLICT DO UPDATE` writes that NULL over the
+stored value. An update whose payload omits the tenant therefore nulls it, and the row fails the RLS
+predicate and becomes invisible to its own owner on the next read.
 
 ### The outbound strip — four chokepoints, twelve paths
 
@@ -146,6 +158,20 @@ scalar property holding the row's tenant id") is rewritten to record that the fi
 model, every conformance driver model, `Iverson.LoadTest/Entities/*` (3 files), and about twenty test
 files across the five languages. `Iverson.Api/Tenancy/TenantSchema.cs` matches a grep for the marker
 but is a false positive: it defines the `IversonTenants` registry table and is unrelated.
+
+**A second, distinct class of change site: descriptors the orchestrator builds directly.** These
+construct `TypeDescriptor` against the proto type, set `TenantField` without ever naming a marker,
+and are therefore invisible to any marker-based sweep — which is how they went unlisted through two
+review rounds. Each must drop both `TenantField` and its `TenantId` `PropertyDescriptor`:
+
+- `Iverson.ClientConformance/Scenarios/NamingRejectedScenario.cs:377,411`
+- `Iverson.ClientConformance/Scenarios/NavPropertyRejectedScenario.cs:312,337`
+- `Iverson.ClientConformance.Tests/SchemaCatalogScenarioTests.cs:40`
+
+Left unchanged, decision 3 rejects each of them on the `TenantField` rule instead of the rule they
+exist to grade. `IVC-REG-002`'s assertion requires the literal message
+`"must be distinct from the foreign key"`, so these do not pass for the wrong reason — the
+`naming-rejected` and `nav-property-rejected` scenarios go **red for every language**.
 
 ### The standard and the gate
 
@@ -238,7 +264,8 @@ Verified against the codebase and the running dev stack on 2026-08-20.
 | A16 | REG has a Coverage table; IDN has none | ✅ REG has 2 Covered + 3 Deferred rows; IDN is a bare header |
 | A18 | The conformance `Verifier` asserts on `TenantField` | ✅ `Verifier.cs:162-168` |
 | A21 | `UpperFirst` does not mangle the reserved name | ✅ `ProtoPayloadHelper.cs:12` leaves a leading underscore untouched — which is *why* `__TenantId` was chosen over `__tenant_id`; the latter would be the only snake_case column in the system |
-| A24 | Little outside the clients depends on the marker | ❌ **FAILED** — ~60 files; `TenantSchema.cs` is a false positive |
+| A24 | Little outside the clients depends on the marker | ❌ **FAILED** — ~60 files; `TenantSchema.cs` is a false positive. **Scope caveat:** this assumption's evidence is a grep for `IversonTenant`/`iverson_tenant`, so it covers *marker users only* and cannot see descriptors constructed directly against the proto type. It does not cover the ground A27 covers. |
+| A27 | Everything that populates `TypeDescriptor.TenantField` has been enumerated | ❌ **FAILED** — load-bearing, because decision 3 rejects any descriptor carrying the field. A marker grep cannot find these; a grep for `TenantField` itself finds five sites that set it with no marker present: `NamingRejectedScenario.cs:377,411`, `NavPropertyRejectedScenario.cs:312,337`, `SchemaCatalogScenarioTests.cs:40`. See *The five clients* for their disposition. |
 | A26 | `Iverson.Api/Tenancy/TenantSchema.cs` complicates the server side | ✅ resolved — false positive, it is the `IversonTenants` registry table |
 | A19 | The `Reregistrar`'s authorization block references a tenant field | ❌ **FALSE, benign** — `Reregistrar.cs:31,53-55` sets only `OwnerField` (default `"OwnerId"`); no tenant reference. The conformance harness needs no change on this account. |
 | A20 | `decision.TenantValue` is identity-derived and present on every write path | ✅ `ObjectMappingGrpcService.cs:305,319` passes `tenantId: decision.TenantValue` to the outbox. Load-bearing: were it ever absent, `SetAuthoritativeField` would write a null tenant and every later read of that row would fail the RLS predicate. |
