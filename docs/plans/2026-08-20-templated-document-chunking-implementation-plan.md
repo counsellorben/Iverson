@@ -112,6 +112,8 @@ Newly introduced by this plan and verified at plan-write time.
 | 30 | Ordering | `RegisterAsync`'s loop applies DDL and registers each descriptor inside the same iteration that validates it, so a post-loop validation pass runs after persistence | `SchemaRegistrationOrchestrator.cs:113` (`ApplySchemaAsync`), `:120` (`registry.RegisterAsync`), `:122` (loop close) |
 | 31 | Code validity | `SchemaRegistry` serializes `SchemaDescriptor` with `{ PropertyNamingPolicy = CamelCase, WriteIndented = false }` — no polymorphic resolver, no converters; no `[JsonDerivedType]`/`[JsonPolymorphic]` exists anywhere in the repo | `SchemaRegistry.cs:66-70`, `:31`, `:51`; `grep JsonDerivedType\|JsonPolymorphic` → zero hits |
 | 32 | Consumer impact | Tenant sourcing splits by event type: live events re-derive from the authoritative row, deletes read the pre-delete payload snapshot because the row is already gone. A null tenant does not throw — it becomes a NULL RLS GUC, matching zero rows | `IntelligenceStoreConsumer.cs:117` (live), `:460-462` (delete, with rationale); `PostgresRepository.cs:111-124` |
+| 33 | Code validity | C# synthesized record equality compares each field with `EqualityComparer<T>.Default`; for a collection member (`List<T>`, `T[]`) that is reference equality, since neither overrides `Equals` | Language semantics — two structurally identical `DocumentTemplate` values never compare equal, so the T9 diff must use the raw source string |
+| 34 | Consumer impact | `RegisterAsync`'s only catch blocks cover embedding initialization and `ApplySchemaAsync`; the sole registered gRPC interceptor resolves acting-user identity and does not map exceptions, so anything escaping `BuildDescriptor` surfaces as `StatusCode.Unknown` | `SchemaRegistrationOrchestrator.cs:40-47`, `:112-118`; `Program.cs:87` |
 
 ---
 
@@ -163,11 +165,11 @@ Cover: literal-only rejection (zero placeholders), `{{` escape, each placeholder
 
 - [ ] **Step 4: Implement the parser**
 
-Structural rejections only — the parser knows nothing about schemas. Semantic validation is Task 2. Throw a dedicated exception type carrying the offending placeholder text so Task 2 can surface it in an `RpcException` message.
+Structural rejections only — the parser knows nothing about schemas. Semantic validation is Task 2. Throw a dedicated exception type carrying the offending placeholder text; Task 2's phase 1 catches it at the `BuildDescriptor` call and rethrows it as `InvalidArgument`.
 
-- [ ] **Step 5: Add `DocumentTemplate` to `SchemaDescriptor`**
+- [ ] **Step 5: Add `DocumentTemplate` and `DocumentTemplateSource` to `SchemaDescriptor`**
 
-Nullable, not `required` — legacy `_iverson_schema` JSON predates it (Global Constraints). Assert the round-trip explicitly: a `SchemaDescriptor` carrying a template with all four segment kinds, serialized with `SchemaRegistry`'s options and deserialized back, is equal to the original.
+Both nullable, not `required` — legacy `_iverson_schema` JSON predates them (Global Constraints). `DocumentTemplate` is the parsed model; `DocumentTemplateSource` is the raw template string, and it is what Task 9 diffs against — record equality over the parsed model's segment list is reference-based (`EqualityComparer<T>.Default` on an `IReadOnlyList<T>` member) and would report every registration as changed. Assert the round-trip explicitly: a `SchemaDescriptor` carrying a template with all four segment kinds, serialized with `SchemaRegistry`'s options and deserialized back, is equal to the original.
 
 - [ ] **Step 6: Append the synthetic chunk field in `SchemaBuilder.BuildDescriptor`**
 
@@ -218,13 +220,13 @@ git commit -m "add document template model, parser, and synthetic chunk field"
 
 One test per rule, all asserting `RpcException` with `InvalidArgument` (or `FailedPrecondition` for the dependent-breaking case): undeclared property; undeclared relation; scalar not declared on the target type; `{Rel.Prop}` on a collection relation; `{#Rel}` on a single-valued relation; derived-vector-name collision **including a lowercase `document` property**; a template referencing a `FieldPermission`-carrying property on the declaring type; the same on a one-hop target; a `FieldPermission` naming `Document`; and re-registering a target type without a property a dependent's template references.
 
-Plus three more: a root template referencing a type that appears later in `dependents` validates successfully; `SearchChunks(property: "document")` succeeds on a type declaring an unrelated `FieldPermission` (guarding the regression the companion rule exists to prevent); and a template-validation failure leaves the type **unregistered** — `registry.Get(typeName)` returns null (or the prior descriptor) after the throw, and no DDL was applied.
+Plus three more: a root template referencing a type that appears later in `dependents` validates successfully; `SearchChunks(property: "document")` succeeds on a type declaring an unrelated `FieldPermission` (guarding the regression the companion rule exists to prevent); and a template-validation failure leaves the type **unregistered** — `registry.Get(typeName)` returns null (or the prior descriptor) after the throw, and no DDL was applied. Plus two status assertions distinct from T1 Step 3's parser-level tests: an unparseable placeholder and an unclosed block each return `InvalidArgument` from `RegisterAsync`, not `Unknown`.
 
 - [ ] **Step 2: Restructure `RegisterAsync` into three phases**
 
 The current method is a single loop that builds, validates, applies DDL, and registers each type in turn (`SchemaRegistrationOrchestrator.cs:113`, `:120`). Template validation cannot run inside it — a root's reference to a dependent resolves only once every type is built — and it must not run after it either, or an invalid template is applied and persisted before it is rejected.
 
-1. **Build + per-type validate** — loop over `RootType.Concat(Dependents)` running the existing identifier/field/relation validation and `BuildDescriptor`, collecting descriptors. No DDL, no registry writes.
+1. **Build + per-type validate** — loop over `RootType.Concat(Dependents)` running the existing identifier/field/relation validation and `BuildDescriptor`, collecting descriptors. No DDL, no registry writes. Wrap the `BuildDescriptor` call in a try/catch for the parser's exception type, rethrowing as `RpcException(new Status(StatusCode.InvalidArgument, …))` with the offending placeholder text: the parse runs inside `BuildDescriptor` (T1 Step 6), so `ValidateDocumentTemplate` in phase 2 never sees a structural error and cannot translate it. `RegisterAsync` has no catch covering `BuildDescriptor`, and the only registered interceptor does not map exceptions, so an escaping exception reaches the client as `Unknown`.
 2. **Cross-type validate** — run `ValidateDocumentTemplate` over the collected set, where every type is available.
 3. **Apply + register** — loop over the collected descriptors doing `ApplySchemaAsync` then `registry.RegisterAsync`.
 
@@ -540,7 +542,7 @@ Registering a type whose template differs from the persisted one enqueues exactl
 
 - [ ] **Step 2: Capture the diff in phase 2, enqueue in phase 3**
 
-In phase 2 of T2's restructure — after validation succeeds and before any `registry.RegisterAsync` — compare each newly parsed template against `registry.Get(typeName)`, which still holds the **prior** descriptor at that point. Record which types differ, including a template newly added. After phase 3's registration loop completes, call `EnqueueTypeAsync` for each recorded type. A changed template invalidates every document of that type, because the rendered text is derived data with no stored copy.
+In phase 2 of T2's restructure — after validation succeeds and before any `registry.RegisterAsync` — compare `typeDesc.DocumentTemplate` (the incoming raw string) against the prior descriptor's `DocumentTemplateSource` with `StringComparison.Ordinal` — `registry.Get(typeName)` still holds the **prior** descriptor at that point. Record which types differ, including a template newly added. After phase 3's registration loop completes, call `EnqueueTypeAsync` for each recorded type. A changed template invalidates every document of that type, because the rendered text is derived data with no stored copy.
 
 The phase matters: run the comparison any later and `registry.Get` returns the descriptor just written, so new-vs-new never differs and no backfill is ever enqueued.
 
