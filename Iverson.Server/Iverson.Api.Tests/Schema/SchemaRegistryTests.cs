@@ -151,4 +151,68 @@ public class SchemaRegistryTests
         descriptor.FieldDescriptions.Should().BeEmpty();
         descriptor.Description.Should().BeNull();
     }
+
+    [Fact]
+    public async Task LoadAsync_LegacyJsonWithoutDocumentTemplateMembers_DeserializesToDefaults()
+    {
+        // Rows written before the document-template feature existed have no documentTemplate/
+        // documentTemplateSource keys — deserialization must not throw and must yield null.
+        const string legacyJson = """
+            {
+              "typeName": "Author",
+              "tableName": "authors",
+              "collectionName": null,
+              "keyColumn": { "name": "Id", "sqlType": "UUID", "isNullable": false },
+              "scalarColumns": [],
+              "fkColumns": [],
+              "vectorFields": [],
+              "chunkFields": [],
+              "relations": [],
+              "searchKeyColumns": [],
+              "largeFieldColumns": [],
+              "authorization": null,
+              "tenantColumn": "TenantId"
+            }
+            """;
+
+        _repository.LoadAllAsync()
+            .Returns(new List<(string TypeName, string SchemaJson)> { ("Author", legacyJson) });
+
+        await _sut.LoadAsync();
+
+        var descriptor = _sut.Get("Author");
+        descriptor.Should().NotBeNull();
+        descriptor!.DocumentTemplate.Should().BeNull();
+        descriptor.DocumentTemplateSource.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task RegisterAsync_ThenLoadAsync_RoundTripsDocumentTemplateWithAllSegmentKinds()
+    {
+        // A block's Inner list is the same DocumentSegment record type reused, so this exercises
+        // Literal, Scalar, OneHop, and Block (with nested Literal/Scalar inner segments) in one
+        // pass through SchemaRegistry's JsonSerializerOptions (no polymorphic resolver, no
+        // converters configured).
+        const string source = "{Title} by {Author.Name}{#Tags}- {Name}\n{/Tags}";
+        var parsed = DocumentTemplateParser.Parse(source);
+        var schema = SchemaFixtures.AuthorSchema() with
+        {
+            DocumentTemplate       = parsed,
+            DocumentTemplateSource = source
+        };
+
+        string? upsertedJson = null;
+        _ = _repository.UpsertAsync(Arg.Any<string>(), Arg.Do<string>(json => upsertedJson = json));
+        await _sut.RegisterAsync(schema);
+
+        _repository.LoadAllAsync()
+            .Returns(new List<(string TypeName, string SchemaJson)> { ("Author", upsertedJson!) });
+
+        await _sut.LoadAsync();
+
+        var loaded = _sut.Get("Author");
+        loaded.Should().NotBeNull();
+        loaded!.DocumentTemplateSource.Should().Be(source);
+        loaded.DocumentTemplate.Should().BeEquivalentTo(parsed);
+    }
 }

@@ -437,4 +437,72 @@ public class SchemaBuilderTests
                 $"array SQL type for {clrType} should map back to ({clrType}, true)");
         }
     }
+
+    [Fact]
+    public void BuildDescriptor_WithDocumentTemplate_AppendsDocumentChunkField()
+    {
+        var embedding = Substitute.For<IEmbeddingService>();
+        embedding.Dimension.Returns(768);
+        embedding.ModelId.Returns("nomic-embed-text");
+
+        var typeDesc = new TypeDescriptor
+        {
+            TypeName         = "Article",
+            Properties       = { new PropertyDescriptor { Name = "Id", ClrType = ClrType.ClrGuid, IsKey = true } },
+            DocumentTemplate = "{Title}"
+        };
+
+        var descriptor = SchemaBuilder.BuildDescriptor(typeDesc, embedding);
+
+        descriptor.ChunkFields.Should().ContainSingle(c => c.PropertyName == "Document");
+        var chunk = descriptor.ChunkFields.Single(c => c.PropertyName == "Document");
+        chunk.ModelId.Should().Be("nomic-embed-text");
+        chunk.Dimension.Should().Be(768);
+        descriptor.CollectionName.Should().NotBeNull();
+        descriptor.LargeFieldColumns.Should().NotContain("Document");
+    }
+
+    [Fact]
+    public void BuildDescriptor_WithDocumentTemplate_UnsetTokenFields_DefaultToFallbackValues()
+    {
+        var embedding = Substitute.For<IEmbeddingService>();
+        embedding.Dimension.Returns(768);
+        embedding.ModelId.Returns("nomic-embed-text");
+
+        var typeDesc = new TypeDescriptor
+        {
+            TypeName         = "Article",
+            Properties       = { new PropertyDescriptor { Name = "Id", ClrType = ClrType.ClrGuid, IsKey = true } },
+            DocumentTemplate = "{Title}"
+            // DocumentMaxTokens / DocumentOverlap left unset (proto3 default 0).
+        };
+
+        var descriptor = SchemaBuilder.BuildDescriptor(typeDesc, embedding);
+
+        var chunk = descriptor.ChunkFields.Single(c => c.PropertyName == "Document");
+        chunk.MaxTokens.Should().Be(512);
+        chunk.Overlap.Should().Be(64);
+    }
+
+    [Fact]
+    public void BuildDescriptor_WithoutDocumentTemplate_IsByteIdenticalToPreExistingBehavior()
+    {
+        var embedding = Substitute.For<IEmbeddingService>();
+        embedding.Dimension.Returns(768);
+        embedding.ModelId.Returns("nomic-embed-text");
+
+        var typeDesc = new TypeDescriptor
+        {
+            TypeName   = "Article",
+            Properties = { new PropertyDescriptor { Name = "Id", ClrType = ClrType.ClrGuid, IsKey = true } }
+        };
+
+        var descriptor = SchemaBuilder.BuildDescriptor(typeDesc, embedding);
+
+        descriptor.ChunkFields.Should().BeEmpty();
+        descriptor.VectorFields.Should().BeEmpty();
+        descriptor.CollectionName.Should().BeNull();
+        descriptor.DocumentTemplate.Should().BeNull();
+        descriptor.DocumentTemplateSource.Should().BeNull();
+    }
 }
