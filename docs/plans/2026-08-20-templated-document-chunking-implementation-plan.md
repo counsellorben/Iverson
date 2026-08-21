@@ -110,6 +110,8 @@ Newly introduced by this plan and verified at plan-write time.
 | 28 | Code validity | `SplitIntoChunks` computes `step = Math.Max(maxChars - overlapChars, maxChars / 2)`; a zero `MaxTokens` yields `step = 0` and never advances `start` | `IntelligenceStoreConsumer.cs:589-613` — the synthetic field must carry non-zero values |
 | 29 | Consumer impact | Dapper maps columns to properties by exact name; underscore-aware mapping is not enabled anywhere in the repo, so a row-mapped table needs quoted PascalCase columns | `grep MatchNamesWithUnderscores\|DefaultTypeMap` → zero hits; `ReconciliationQueueRepository.cs:7-17` selects quoted PascalCase into `ReconciliationQueueRow` |
 | 30 | Ordering | `RegisterAsync`'s loop applies DDL and registers each descriptor inside the same iteration that validates it, so a post-loop validation pass runs after persistence | `SchemaRegistrationOrchestrator.cs:113` (`ApplySchemaAsync`), `:120` (`registry.RegisterAsync`), `:122` (loop close) |
+| 31 | Code validity | `SchemaRegistry` serializes `SchemaDescriptor` with `{ PropertyNamingPolicy = CamelCase, WriteIndented = false }` — no polymorphic resolver, no converters; no `[JsonDerivedType]`/`[JsonPolymorphic]` exists anywhere in the repo | `SchemaRegistry.cs:66-70`, `:31`, `:51`; `grep JsonDerivedType\|JsonPolymorphic` → zero hits |
+| 32 | Consumer impact | Tenant sourcing splits by event type: live events re-derive from the authoritative row, deletes read the pre-delete payload snapshot because the row is already gone. A null tenant does not throw — it becomes a NULL RLS GUC, matching zero rows | `IntelligenceStoreConsumer.cs:117` (live), `:460-462` (delete, with rationale); `PostgresRepository.cs:111-124` |
 
 ---
 
@@ -140,7 +142,20 @@ bool   document_contextual = 10;
 
 - [ ] **Step 2: Define the parsed model**
 
-`DocumentTemplate` holds an ordered list of segments. Segment kinds: literal text, scalar placeholder (`{Prop}`), one-hop placeholder (`{Rel.Prop}`), and block (`{#Rel}` … `{/Rel}`) carrying its own inner segment list. Blocks cannot nest, so the inner list admits only literal and scalar segments. Records, not classes — this is serialized onto `SchemaDescriptor`.
+`DocumentTemplate` holds an ordered list of segments. A segment is a **single flat record with a kind discriminator** — not a polymorphic hierarchy:
+
+```csharp
+public enum DocumentSegmentKind { Literal, Scalar, OneHop, Block }
+
+public sealed record DocumentSegment(
+    DocumentSegmentKind Kind,
+    string? Text            = null,   // Literal
+    string? PropertyName    = null,   // Scalar, OneHop
+    string? RelationName    = null,   // OneHop, Block
+    IReadOnlyList<DocumentSegment>? Inner = null);  // Block
+```
+
+This is serialized onto `SchemaDescriptor` and through `_iverson_schema`, and `SchemaRegistry`'s options configure no polymorphic resolver and no converters — a derived-record hierarchy would serialize lossily and throw `NotSupportedException` on read, in `LoadAsync` at startup. `Inner` is the same record type, so a block's nested list round-trips without one. Blocks cannot nest, so `Inner` admits only `Literal` and `Scalar` segments.
 
 - [ ] **Step 3: Write parser tests first**
 
@@ -152,7 +167,7 @@ Structural rejections only — the parser knows nothing about schemas. Semantic 
 
 - [ ] **Step 5: Add `DocumentTemplate` to `SchemaDescriptor`**
 
-Nullable, not `required` — legacy `_iverson_schema` JSON predates it (Global Constraints). Confirm it round-trips through `System.Text.Json` with the options `SchemaRegistry` uses.
+Nullable, not `required` — legacy `_iverson_schema` JSON predates it (Global Constraints). Assert the round-trip explicitly: a `SchemaDescriptor` carrying a template with all four segment kinds, serialized with `SchemaRegistry`'s options and deserialized back, is equal to the original.
 
 - [ ] **Step 6: Append the synthetic chunk field in `SchemaBuilder.BuildDescriptor`**
 
@@ -444,7 +459,7 @@ git commit -m "add document rerender queue table and repository"
 
 - [ ] **Step 1: Write consumer tests first**
 
-One per relation direction proving the correct owning keys are found; `Created`/`Updated`/`Deleted` all trigger; FK reassignment enqueues **both** parents; `SuppressRerenderCascade` breaks the loop; reverse lookups are tenant-scoped; a relation declaring an explicit non-conventional `foreignKey`.
+One per relation direction proving the correct owning keys are found; `Created`/`Updated`/`Deleted` all trigger; FK reassignment enqueues **both** parents; `SuppressRerenderCascade` breaks the loop; a `Deleted` event for a related entity finds its dependents (proving the payload-snapshot path); a reverse lookup does not return a dependent belonging to another tenant; a relation declaring an explicit non-conventional `foreignKey`.
 
 - [ ] **Step 2: Build the reverse-dependency index on `SchemaRegistry`**
 
@@ -457,6 +472,8 @@ For the `ManyToMany` reverse lookup, using `@>` against the FK array column. Pas
 - [ ] **Step 4: Implement the consumer**
 
 `ConsumerResilience.RunWithRestartAsync` over `EntityTopics.Events` with its own `GroupId`. Ignore any event with `SuppressRerenderCascade`. For each dependent relation: `ManyToOne`/`OneToOne` → `FetchByColumnAsync(declaringSchema, relation.ForeignKey, changedKey)`; `OneToMany` → read the owning key from the payload under `relation.ForeignKey`, and when `PriorPayloadJson` shows a different FK, enqueue both parents; `ManyToMany` → array containment. Enqueue per-entity rows.
+
+The tenant id for every reverse lookup comes from the changed entity's tenant column: for `Created`/`Updated`, re-derived from the authoritative Postgres row (the event payload is unsigned); for `Deleted`, read from the pre-delete snapshot in `ev.PayloadJson`, since the row no longer exists — the same split `IntelligenceStoreConsumer` makes between `HandleAsync` and `HandleDeleteAsync` (`:117`, `:460-462`). A null tenant does not throw: `RunTenantScopedAsync` sets the RLS GUC to NULL and the lookup silently returns zero rows.
 
 - [ ] **Step 5: Run tests and commit**
 
