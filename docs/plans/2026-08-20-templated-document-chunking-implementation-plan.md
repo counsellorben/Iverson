@@ -107,6 +107,9 @@ Newly introduced by this plan and verified at plan-write time.
 | 25 | Consumer impact | `ExtractString(JsonElement, string)` is already duplicated as a private static in two consumers; `DocumentRenderer` adds a third private copy rather than refactoring two files the spec did not authorize | `EnrichmentConsumer.cs:330`, `IntelligenceStoreConsumer.cs:655` |
 | 26 | Sibling sweep | Every type/method named across all nine tasks resolves at its point of use | Swept `ChunkDescriptor`, `SchemaDescriptor`, `SchemaBuilder`, `TypeDescriptor`, `RelationDescriptor`, `RelationKind`, `SchemaRegistry`, `IEntityRepository`, `IRecordStoreQueryExecutor`, `IEventProducer`, `IEventConsumer`, `ConsumerResilience`, `IntelligenceFilterBuilder`, `IVectorWriteService`, `IntelligenceTenantScope`, `IEmbeddingService`, `ReconciliationTelemetry`, `StoreTargeting`, `EntityEvent`, `EntityTopics`, `IOutboxPublisher`, `TableSchema`, `ColumnSchema` — all resolve to existing definitions |
 | 27 | Sibling sweep | Every new repository method matches the executor signature shape `(sql, param, tenantScoped, tenantId)` | `IRecordStoreRoles.cs:5-7`; existing methods in `EntityRepository.cs:7-30` all follow it |
+| 28 | Code validity | `SplitIntoChunks` computes `step = Math.Max(maxChars - overlapChars, maxChars / 2)`; a zero `MaxTokens` yields `step = 0` and never advances `start` | `IntelligenceStoreConsumer.cs:589-613` — the synthetic field must carry non-zero values |
+| 29 | Consumer impact | Dapper maps columns to properties by exact name; underscore-aware mapping is not enabled anywhere in the repo, so a row-mapped table needs quoted PascalCase columns | `grep MatchNamesWithUnderscores\|DefaultTypeMap` → zero hits; `ReconciliationQueueRepository.cs:7-17` selects quoted PascalCase into `ReconciliationQueueRow` |
+| 30 | Ordering | `RegisterAsync`'s loop applies DDL and registers each descriptor inside the same iteration that validates it, so a post-loop validation pass runs after persistence | `SchemaRegistrationOrchestrator.cs:113` (`ApplySchemaAsync`), `:120` (`registry.RegisterAsync`), `:122` (loop close) |
 
 ---
 
@@ -156,10 +159,16 @@ Nullable, not `required` — legacy `_iverson_schema` JSON predates it (Global C
 When `typeDesc.DocumentTemplate` is non-empty, parse it, store the result, and append to the local `chunks` list before it is assigned at `SchemaBuilder.cs:167`:
 
 ```csharp
+// proto3 scalars default to 0 when unset, and no client emits these fields yet.
+// SplitIntoChunks computes step = max(maxChars - overlapChars, maxChars / 2), which is 0
+// when maxTokens is 0 — an infinite loop awaiting one embedding call per iteration.
+var maxTokens = typeDesc.DocumentMaxTokens > 0 ? typeDesc.DocumentMaxTokens : 512;
+var overlap   = typeDesc.DocumentOverlap  > 0 ? typeDesc.DocumentOverlap  : 64;
+
 chunks.Add(new ChunkDescriptor(
     "Document",
-    typeDesc.DocumentMaxTokens,
-    typeDesc.DocumentOverlap,
+    maxTokens,
+    overlap,
     embedding.ModelId,
     embedding.Dimension,
     typeDesc.DocumentContextual));
@@ -169,7 +178,7 @@ Do **not** add `"Document"` to `largeFields` — it is not a column.
 
 - [ ] **Step 7: Test the builder**
 
-A descriptor built from a `TypeDescriptor` with a template has a `Document` chunk field with the model/dimension from `IEmbeddingService` and a non-null `CollectionName` even when the type declares no other vector or chunk field. A descriptor built without a template is byte-identical to today's.
+A descriptor built from a `TypeDescriptor` with a template has a `Document` chunk field with the model/dimension from `IEmbeddingService` and a non-null `CollectionName` even when the type declares no other vector or chunk field. A `TypeDescriptor` with a template and unset token fields yields `MaxTokens = 512`, `Overlap = 64`. A descriptor built without a template is byte-identical to today's.
 
 - [ ] **Step 8: Run tests and commit**
 
@@ -194,11 +203,15 @@ git commit -m "add document template model, parser, and synthetic chunk field"
 
 One test per rule, all asserting `RpcException` with `InvalidArgument` (or `FailedPrecondition` for the dependent-breaking case): undeclared property; undeclared relation; scalar not declared on the target type; `{Rel.Prop}` on a collection relation; `{#Rel}` on a single-valued relation; derived-vector-name collision **including a lowercase `document` property**; a template referencing a `FieldPermission`-carrying property on the declaring type; the same on a one-hop target; a `FieldPermission` naming `Document`; and re-registering a target type without a property a dependent's template references.
 
-Plus two positive tests: a root template referencing a type that appears later in `dependents` validates successfully; and — guarding the regression the companion rule exists to prevent — `SearchChunks(property: "document")` succeeds on a type declaring an unrelated `FieldPermission`.
+Plus three more: a root template referencing a type that appears later in `dependents` validates successfully; `SearchChunks(property: "document")` succeeds on a type declaring an unrelated `FieldPermission` (guarding the regression the companion rule exists to prevent); and a template-validation failure leaves the type **unregistered** — `registry.Get(typeName)` returns null (or the prior descriptor) after the throw, and no DDL was applied.
 
-- [ ] **Step 2: Move template validation into a second pass**
+- [ ] **Step 2: Restructure `RegisterAsync` into three phases**
 
-`RegisterAsync` iterates `RootType.Concat(Dependents)` (`SchemaRegistrationOrchestrator.cs:33`). Collect the registered descriptors during the loop, then run `ValidateDocumentTemplate` over all of them after the loop closes, so a root's reference to a dependent resolves.
+The current method is a single loop that builds, validates, applies DDL, and registers each type in turn (`SchemaRegistrationOrchestrator.cs:113`, `:120`). Template validation cannot run inside it — a root's reference to a dependent resolves only once every type is built — and it must not run after it either, or an invalid template is applied and persisted before it is rejected.
+
+1. **Build + per-type validate** — loop over `RootType.Concat(Dependents)` running the existing identifier/field/relation validation and `BuildDescriptor`, collecting descriptors. No DDL, no registry writes.
+2. **Cross-type validate** — run `ValidateDocumentTemplate` over the collected set, where every type is available.
+3. **Apply + register** — loop over the collected descriptors doing `ApplySchemaAsync` then `registry.RegisterAsync`.
 
 - [ ] **Step 3: Implement `ValidateDocumentTemplate`**
 
@@ -282,15 +295,17 @@ git commit -m "add DocumentRenderer for templated document text"
 
 - [ ] **Step 1: Write tests first**
 
-A type with a template lands `document_vector` chunks in `{collection}_chunks` and is retrievable via `SearchChunks(property: "document")`. A template-only type routes to `Intelligence`. **Orphan fix:** a chunk field whose text shrinks from many chunks to few leaves no orphaned points, and the delete does not disturb another chunk field's points on the same parent.
+A type with a template lands `document_vector` chunks in `{collection}_chunks` and is retrievable via `SearchChunks(property: "document")`. A template-only type routes to `Intelligence`. **Orphan fix:** a chunk field whose text shrinks from many chunks to few leaves no orphaned points; a chunk field whose text becomes **empty** leaves zero points for that field; and neither case disturbs another chunk field's points on the same parent.
 
 - [ ] **Step 2: Add the parent+field predicate**
 
 Beside `MatchParentId` (`IntelligenceFilterBuilder.cs:57`), using the same `Conditions.MatchKeyword` primitive against `parent_id` and `field`.
 
-- [ ] **Step 3: Delete stale chunk points before the upsert loop**
+- [ ] **Step 3: Delete stale chunk points before the empty-text guard**
 
-Inside the `foreach (var cf in schema.ChunkFields)` loop, before writing that field's points, `DeleteByFilterAsync` with the parent+field predicate. Field scoping is required — a parent-only delete would destroy other chunk fields' points on every write.
+Inside the `foreach (var cf in schema.ChunkFields)` loop, `DeleteByFilterAsync` with the parent+field predicate goes **immediately after `var text = …` and before the `if (string.IsNullOrWhiteSpace(text)) continue;` guard** (`IntelligenceStoreConsumer.cs:183-184`). Placing it after the guard would skip the delete for a field whose text has become empty, leaving every prior point for that field in the collection — the same defect the fix exists to close, at its most extreme value. Empty is an ordinary render result for a document whose only content is a block over a now-empty relation.
+
+Field scoping is required — a parent-only delete would destroy other chunk fields' points on every write.
 
 - [ ] **Step 4: Add the render hook**
 
@@ -323,11 +338,21 @@ git commit -m "render templated documents at ingest and delete stale chunk point
 
 - [ ] **Step 2: Thread the prior payload through `PublishAsync`**
 
-Add `string? priorPayloadJson = null` before the trailing `CancellationToken ct = default` on both the interface and implementation (`OutboxPublisher.cs:9-18`).
+Append `string? priorPayloadJson = null` **after** the trailing `CancellationToken ct = default` on both the interface and implementation (`OutboxPublisher.cs:9-18`):
+
+```csharp
+Task PublishAsync(
+    EntityEventType eventType, string typeName, string key, string payloadJson,
+    string? requestTraceId, StoreTarget targetStores, Guid outboxRowId, string opLabel,
+    CancellationToken ct = default,
+    string? priorPayloadJson = null);
+```
+
+Not before `ct`: `EnrichmentConsumer.cs:202` passes `ct` positionally as the 9th argument, so an inserted parameter there binds `CancellationToken` to `string?` and fails to compile. Appending leaves all four existing call sites unchanged.
 
 - [ ] **Step 3: Pass the already-fetched prior row from both update paths**
 
-`ObjectMappingGrpcService.cs:335` and `ObjectPersistenceGrpcService.cs:102` already fetch `existingRowJson` for write authorization — pass it. No new query.
+`ObjectMappingGrpcService.cs:335` and `ObjectPersistenceGrpcService.cs:102` already fetch `existingRowJson` for write authorization — pass it as `priorPayloadJson:`. No new query.
 
 - [ ] **Step 4: Test and commit**
 
@@ -354,33 +379,35 @@ git commit -m "carry prior payload and rerender-cascade flag on entity events"
 
 - [ ] **Step 1: Write the Postgres integration tests first**
 
-Follow `ReconciliationQueuePostgresIntegrationTests.cs`. **Assert on row count, not behavior** — a behavioral assertion passes trivially against a table with no constraints: a second insert of the same `(tenant, type, key)` leaves exactly one row; a second type-level enqueue for the same type leaves exactly one row.
+Follow `ReconciliationQueuePostgresIntegrationTests.cs`. **Assert on row count, not behavior** — a behavioral assertion passes trivially against a table with no constraints: a second insert of the same `(tenant, type, key)` leaves exactly one row; a second type-level enqueue for the same type leaves exactly one row. Also assert a polled row's `TypeName` and `EntityKey` are **non-null** — a row-count assertion passes even when every column maps to a default.
 
 - [ ] **Step 2: Bootstrap the table with raw DDL**
 
 `EnsureTableAsync` following `EnrichmentStateRepository.cs:5-16`. **Not** `ApplySchemaAsync` — it cannot create constraints or indexes (Global Constraints).
 
 ```sql
-CREATE TABLE IF NOT EXISTS document_rerender_queue (
-    id              uuid PRIMARY KEY,
-    tenant_id       TEXT,
-    type_name       TEXT NOT NULL,
-    entity_key      TEXT,
-    cursor          TEXT,
-    enqueued_at     TIMESTAMPTZ NOT NULL,
-    attempts        INTEGER NOT NULL,
-    last_error      TEXT,
-    last_attempt_at TIMESTAMPTZ
+CREATE TABLE IF NOT EXISTS "DocumentRerenderQueue" (
+    "Id"            uuid PRIMARY KEY,
+    "TenantId"      TEXT,
+    "TypeName"      TEXT NOT NULL,
+    "EntityKey"     TEXT,
+    "Cursor"        TEXT,
+    "EnqueuedAt"    TIMESTAMPTZ NOT NULL,
+    "Attempts"      INTEGER NOT NULL,
+    "LastError"     TEXT,
+    "LastAttemptAt" TIMESTAMPTZ
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS ux_document_rerender_queue_entity
-    ON document_rerender_queue (tenant_id, type_name, entity_key)
-    WHERE entity_key IS NOT NULL;
+    ON "DocumentRerenderQueue" ("TenantId", "TypeName", "EntityKey")
+    WHERE "EntityKey" IS NOT NULL;
 
 CREATE UNIQUE INDEX IF NOT EXISTS ux_document_rerender_queue_type
-    ON document_rerender_queue (type_name)
-    WHERE entity_key IS NULL;
+    ON "DocumentRerenderQueue" ("TypeName")
+    WHERE "EntityKey" IS NULL;
 ```
+
+Column names are quoted PascalCase so Dapper maps them onto `DocumentRerenderQueueRow` — matching `ReconciliationQueueRepository`, the precedent for a row-mapped queue table. Underscore-aware mapping is not enabled in this repo.
 
 - [ ] **Step 3: Implement the repository**
 
@@ -494,9 +521,11 @@ git commit -m "drain document rerender queue on a throttled worker"
 
 Registering a type whose template differs from the persisted one enqueues exactly one type-level row; re-registering with an identical template enqueues none; registering a type with no template enqueues none.
 
-- [ ] **Step 2: Compare and enqueue**
+- [ ] **Step 2: Capture the diff in phase 2, enqueue in phase 3**
 
-After validation succeeds and before `registry.RegisterAsync`, compare the newly parsed template against the currently registered descriptor's (`registry.Get(typeName)`). On any difference — including a template newly added — call `EnqueueTypeAsync`. A changed template invalidates every document of that type, because the rendered text is derived data with no stored copy.
+In phase 2 of T2's restructure — after validation succeeds and before any `registry.RegisterAsync` — compare each newly parsed template against `registry.Get(typeName)`, which still holds the **prior** descriptor at that point. Record which types differ, including a template newly added. After phase 3's registration loop completes, call `EnqueueTypeAsync` for each recorded type. A changed template invalidates every document of that type, because the rendered text is derived data with no stored copy.
+
+The phase matters: run the comparison any later and `registry.Get` returns the descriptor just written, so new-vs-new never differs and no backfill is ever enqueued.
 
 - [ ] **Step 3: Run tests and commit**
 
