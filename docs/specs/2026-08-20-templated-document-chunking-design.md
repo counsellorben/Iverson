@@ -329,8 +329,17 @@ other forever, and even the single-type case amplifies once per hop.
 
 ### Queue
 
-New table `document_rerender_queue`, modeled on `ReconciliationSchema` and bootstrapped the
-same way (`ApplySchemaAsync` at startup, not through the proto pipeline):
+New table `document_rerender_queue`, modeled on `ReconciliationSchema` but **bootstrapped by
+raw DDL in its own repository's `EnsureTableAsync`, not by `ApplySchemaAsync`.**
+`TableSchema` has no representation for a unique constraint or an index, and
+`ApplySchemaAsync` emits only a single-column primary key plus columns — so the collapse
+constraint below could not exist if the table were bootstrapped that way, and
+`ON CONFLICT DO NOTHING` would silently never collapse anything.
+`EnrichmentStateRepository.EnsureTableAsync` is the precedent: its
+`ON CONFLICT (tenant_id, type_name, entity_key)` works because the same raw DDL declares
+that composite key.
+
+Columns:
 
 `Id`, `TenantId`, `TypeName`, `EntityKey`, `Cursor`, `EnqueuedAt`, `Attempts`, `LastError`,
 `LastAttemptAt`.
@@ -339,10 +348,25 @@ A row takes one of two forms. A **per-entity row** carries `TenantId` and `Entit
 names one document to re-render; it is constrained by **`UNIQUE (TenantId, TypeName,
 EntityKey)` with `ON CONFLICT DO NOTHING`**. A **type-level row** carries `TypeName` with
 `TenantId`, `EntityKey`, and `Cursor` null, and means "every row of this type, all tenants";
-it is constrained by a partial unique index on `(TypeName) WHERE EntityKey IS NULL`. The
-partial index is required rather than incidental: Postgres treats NULLs as distinct in a
-plain unique constraint, so `UNIQUE (TenantId, TypeName, EntityKey)` alone would admit
-unlimited duplicate type-level rows.
+it is constrained by a partial unique index on `(TypeName) WHERE EntityKey IS NULL`.
+
+A composite primary key cannot express this, since both `TenantId` and `EntityKey` are null
+on a type-level row. The same raw DDL therefore declares two partial unique indexes:
+
+```sql
+CREATE UNIQUE INDEX IF NOT EXISTS ux_document_rerender_queue_entity
+    ON document_rerender_queue (tenant_id, type_name, entity_key)
+    WHERE entity_key IS NOT NULL;
+
+CREATE UNIQUE INDEX IF NOT EXISTS ux_document_rerender_queue_type
+    ON document_rerender_queue (type_name)
+    WHERE entity_key IS NULL;
+```
+
+A target-less `ON CONFLICT DO NOTHING` covers both forms, since it considers every unique
+index on the table including partial ones. Postgres treats NULLs as distinct in a plain
+unique constraint, which is why the type-level form needs its own predicate-scoped index
+rather than riding the three-column one.
 
 The per-entity constraint is the primary throttle. An author who edits their bio five times in a
 minute collapses to one pending row per article, and a burst that outruns the worker
@@ -422,7 +446,10 @@ keys are found; `Created`/`Updated`/`Deleted` all trigger; FK reassignment enque
 parents; `SuppressRerenderCascade` breaks the loop; reverse lookups are tenant-scoped; a
 relation declaring an explicit non-conventional `foreignKey`.
 
-**`DocumentRerenderQueueWorker`** — collapse under the unique constraint; batch bounding;
+**`DocumentRerenderQueueWorker`** — collapse under the unique constraint, **asserted on row
+count**: a second insert of the same `(tenant, type, key)` leaves exactly one row, and a
+second type-level enqueue for the same type leaves exactly one row (a behavioral assertion
+would pass trivially against a table with no constraints); batch bounding;
 vanished-row drop; re-fetch produces current state; failure recording; type-level expansion
 pages in key order, carries each row's own tenant, and deletes the type-level row on a short
 page.
@@ -487,6 +514,11 @@ Changed the design:
   scope.
 - **Neither relation fetch specifies an order** — `EntityRepository.cs:18-27`. Block
   iteration must impose its own total order; see "Placeholder grammar".
+- **`ApplySchemaAsync` cannot create constraints or indexes** — `IRecordStoreRoles.cs:123-129`
+  (no representation on `TableSchema`), `PostgresSchemaManager.cs:44-52` (CREATE TABLE:
+  single-column PK plus columns), `PostgresSchemaManager.cs:113-124` (the sole CREATE INDEX is
+  hardcoded and non-unique). Tables needing composite or partial uniqueness use raw DDL in
+  their repository — `EnrichmentStateRepository.cs:5-16`.
 - **Relation foreign keys are overridable** — `ManyToOneAttribute.cs:10`,
   `OneToManyAttribute.cs:11`, `object_mapping.proto:73` ("resolved FK column (convention or
   explicit)"). All FK access goes through `RelationDescriptor.ForeignKey`.
