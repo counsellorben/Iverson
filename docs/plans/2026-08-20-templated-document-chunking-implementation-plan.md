@@ -31,7 +31,7 @@ Copied from the spec; every task must hold to these.
 - `Iverson.Server/Iverson.Api/Consumers/DocumentRenderer.cs` — renders a parsed template against a payload plus one-hop relations.
 - `Iverson.Server/Iverson.Api/Consumers/DocumentRerenderConsumer.cs` — reverse-lookup consumer that enqueues re-renders.
 - `Iverson.Server/Iverson.Api/Reconciliation/DocumentRerenderQueueWorker.cs` — throttled drain + type-level expansion.
-- `Iverson.Server/Iverson.Api/Reconciliation/DocumentRerenderOptions.cs` — poll interval, batch size, page size, max attempts.
+- `Iverson.Server/Iverson.Api/Reconciliation/DocumentRerenderOptions.cs` — poll interval, batch size, page size, max attempts; every property carries a default (`PollInterval` 30s, `BatchSize` 100, `PageSize` 500, `MaxAttempts` 10) and a `public const string Section = "DocumentRerender"`, matching `EnrichmentServiceOptions.cs:5-11`.
 - `Iverson.Server/Iverson.Sql/DocumentRerenderQueueRepository.cs` — raw-DDL bootstrap, insert, poll, delete, count, page.
 - `Iverson.Server/Iverson.Sql/DocumentRerenderQueueRow.cs` — row record.
 
@@ -499,7 +499,7 @@ git commit -m "detect related-entity changes and enqueue document re-renders"
 
 - [ ] **Step 1: Write worker tests first**
 
-Batch bounding; vanished-row drop; re-fetch produces current state; failure recording; a row whose `Attempts` has reached `MaxAttempts` is not returned by a subsequent poll, and a tick with at least one exhausted row logs a warning naming the count; republished events carry `SuppressRerenderCascade = true` and `StoreTarget.Intelligence` only; type-level expansion pages in key order, carries each row's own tenant, and deletes the type-level row on a short page.
+Batch bounding; vanished-row drop; re-fetch produces current state; failure recording; a row whose `Attempts` has reached `MaxAttempts` is not returned by a subsequent poll, and a tick with at least one exhausted row logs a warning naming the count; republished events carry `SuppressRerenderCascade = true` and `StoreTarget.Intelligence` only; type-level expansion pages in key order, carries each row's own tenant, and deletes the type-level row on a short page; an expansion whose paged read throws records a failure against the type-level row and leaves the tick's per-entity rows drained rather than propagating.
 
 - [ ] **Step 2: Implement the worker**
 
@@ -511,6 +511,8 @@ Per tick, before draining, call `CountExhaustedAsync(options.MaxAttempts)` and l
 
 Read the next page of `(key, tenant)` pairs after `Cursor` ordered by key, insert one per-entity row for each, advance `Cursor` to the page's last key, and delete the type-level row when a page comes back short. Each per-entity row's tenant comes from the scanned row's own tenant column.
 
+Wrap the page read and its inserts in the same try/catch the drain uses: on error, `RecordFailureAsync` against the type-level row and continue the tick rather than letting the exception escape. Without it the exception reaches `ConsumerResilience` (`ConsumerResilience.cs:21-45`), which restarts the whole loop every 10 seconds against a row that sorts to the head of every batch — one bad type-level row stalls all per-entity re-renders indefinitely, and because `Attempts` is never incremented the `MaxAttempts` filter never retires it and the exhaustion warning never fires.
+
 - [ ] **Step 4: Add the queue-depth gauge**
 
 Beside `ReconciliationQueueDepth` in `ReconciliationTelemetry.cs:12-36`, refreshed on the worker's poll cadence. No OTel wiring change — the meter is already registered (`Program.cs:68`).
@@ -518,6 +520,19 @@ Beside `ReconciliationQueueDepth` in `ReconciliationTelemetry.cs:12-36`, refresh
 - [ ] **Step 5: Register both hosted services**
 
 Inside the `workloadRole == "worker"` block (`Program.cs:250-255`) — the worker and Task 7's consumer.
+
+```csharp
+public sealed class DocumentRerenderOptions
+{
+    public const string Section = "DocumentRerender";
+    public TimeSpan PollInterval { get; set; } = TimeSpan.FromSeconds(30);
+    public int BatchSize        { get; set; } = 100;
+    public int PageSize         { get; set; } = 500;
+    public int MaxAttempts      { get; set; } = 10;
+}
+```
+
+Register the options beside them: `builder.Services.Configure<DocumentRerenderOptions>(cfg.GetSection(DocumentRerenderOptions.Section))` (as `ServiceCollectionExtensions.cs:27` does). The defaults must be on the properties regardless — an unbound `IOptions<T>` resolves to a default-constructed instance, and a zero `MaxAttempts` or `BatchSize` makes the poll match nothing. The poll interval, batch size, and max attempts carry the reconciliation worker's values (`ReconciliationQueueWorker.cs:9`, `ReconciliationService.cs:23-24`) so the two queues behave alike; page size is the one genuinely new knob.
 
 - [ ] **Step 6: Run tests and commit**
 
