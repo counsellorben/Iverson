@@ -91,6 +91,44 @@ public class SchemaRegistryTests
     }
 
     [Fact]
+    public async Task LoadAsync_RebuildsReverseIndex_SoStartupRehydratedTemplateDependentsAreFound()
+    {
+        // A templated schema rehydrated from Postgres at process startup (LoadAsync), not via
+        // a live RegisterAsync call — proves the reverse index is rebuilt at BOTH mutation
+        // points, not just RegisterAsync's. Without the LoadAsync-side rebuild, a fresh
+        // process would silently miss every dependent for every templated type until
+        // something re-registers.
+        var widget = new SchemaDescriptor
+        {
+            TypeName      = "Widget",
+            TableName     = "widgets",
+            KeyColumn     = new ColumnDescriptor("Id", "UUID", false),
+            ScalarColumns = [new ColumnDescriptor("AuthorId", "UUID", true)],
+            FkColumns     = [],
+            VectorFields  = [],
+            ChunkFields   = [],
+            Relations     = [new RelationDescriptor("Author", RelationKind.ManyToOne, "Author", "AuthorId")],
+            TenantColumn  = "TenantId",
+            DocumentTemplate       = DocumentTemplateParser.Parse("{Author.Name}"),
+            DocumentTemplateSource = "{Author.Name}",
+        };
+
+        _repository.LoadAllAsync()
+            .Returns(new List<(string TypeName, string SchemaJson)>
+            {
+                ("Widget", System.Text.Json.JsonSerializer.Serialize(
+                    widget,
+                    new System.Text.Json.JsonSerializerOptions
+                        { PropertyNamingPolicy = System.Text.Json.JsonNamingPolicy.CamelCase }))
+            });
+
+        await _sut.LoadAsync();
+
+        var dependents = _sut.GetDependents("Author");
+        dependents.Should().ContainSingle(d => d.DeclaringType == "Widget" && d.Relation.PropertyName == "Author");
+    }
+
+    [Fact]
     public async Task LoadAsync_MetadataColumns_StayCaseInsensitive_AfterRoundTrip()
     {
         // System.Text.Json rebuilds HashSet<string> with the default case-SENSITIVE comparer,
