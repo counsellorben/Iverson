@@ -29,6 +29,39 @@ public sealed class EntityRepository(IRecordStoreQueryExecutor sql) : IEntityRep
     public Task<IEnumerable<string>> FetchAllAsync(TableSchema schema, bool tenantScoped = false, string? tenantId = null) =>
         sql.QueryAsync<string>($"""SELECT row_to_json(t)::text FROM "{schema.TableName}" t""", null, tenantScoped, tenantId);
 
+    // Unscoped (like FetchAllAsync) — a type-level re-render row means "every entity of this
+    // type, across every tenant", so scoping this to one tenant would silently backfill only
+    // that tenant. Keyset pagination ordered by the key column, not OFFSET, so this stays stable
+    // and cheap as the table grows.
+    public Task<IEnumerable<KeyedTenantRow>> FetchKeysAndTenantsPagedAsync(TableSchema schema, string? afterKey, int pageSize)
+    {
+        var tenantSelect = schema.TenantColumn is not null
+            ? $"\"{schema.TenantColumn}\"::text AS \"TenantId\""
+            : "NULL AS \"TenantId\"";
+
+        if (afterKey is null)
+        {
+            return sql.QueryAsync<KeyedTenantRow>(
+                $"""
+                SELECT "{schema.KeyColumn.Name}"::text AS "Key", {tenantSelect}
+                FROM "{schema.TableName}"
+                ORDER BY "{schema.KeyColumn.Name}"
+                LIMIT @PageSize
+                """,
+                new { PageSize = pageSize });
+        }
+
+        return sql.QueryAsync<KeyedTenantRow>(
+            $"""
+            SELECT "{schema.KeyColumn.Name}"::text AS "Key", {tenantSelect}
+            FROM "{schema.TableName}"
+            WHERE "{schema.KeyColumn.Name}" > @AfterKey::uuid
+            ORDER BY "{schema.KeyColumn.Name}"
+            LIMIT @PageSize
+            """,
+            new { AfterKey = afterKey, PageSize = pageSize });
+    }
+
     public async Task DeleteAsync(IDbTransactionContext tx, TableSchema schema, string key, bool tenantScoped = false, string? tenantId = null)
     {
         if (tenantScoped)

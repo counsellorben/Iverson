@@ -205,6 +205,8 @@ builder.Services.AddSingleton<ISchemaRegistrationOrchestrator, SchemaRegistratio
 builder.Services.AddSingleton<IReconciliationQueueRepository>(sp => new ReconciliationQueueRepository(
     Iverson.Api.Reconciliation.ReconciliationSchema.TableName,
     sp.GetRequiredService<IRecordStoreQueryExecutor>()));
+builder.Services.AddSingleton<IDocumentRerenderQueueRepository>(sp =>
+    new DocumentRerenderQueueRepository(sp.GetRequiredService<IRecordStoreQueryExecutor>()));
 builder.Services.AddSingleton<IDlqRepository>(sp => new DlqRepository(
     Iverson.Api.Reconciliation.DlqSchema.TableName,
     sp.GetRequiredService<IRecordStoreQueryExecutor>()));
@@ -403,6 +405,11 @@ await schemaRegistry.LoadAsync();
 // Plumbing table for the enrichment loop breaker — created the same way SchemaRegistry creates
 // its own backing table (SchemaRegistry.LoadAsync → repository.EnsureTableAsync).
 await app.Services.GetRequiredService<IEnrichmentStateRepository>().EnsureTableAsync();
+
+// Plumbing table for the document re-render queue — same bootstrap shape as the enrichment
+// loop breaker above; raw DDL because it needs the two partial unique indexes ApplySchemaAsync
+// cannot express.
+await app.Services.GetRequiredService<IDocumentRerenderQueueRepository>().EnsureTableAsync();
 
 // EnsureRuntimeRoleAsync must run before any ApplySchemaAsync call for a tenant-scoped table,
 // since that DDL GRANTs to iverson_runtime — the role has to exist first.
