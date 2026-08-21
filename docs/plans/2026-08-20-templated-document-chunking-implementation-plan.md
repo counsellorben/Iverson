@@ -428,7 +428,7 @@ Column names are quoted PascalCase so Dapper maps them onto `DocumentRerenderQue
 
 - [ ] **Step 3: Implement the repository**
 
-Interface in `IRecordStoreRoles.cs` beside `IReconciliationQueueRepository`; implementation in `Iverson.Sql/`. Methods: `EnsureTableAsync`, `EnqueueEntityAsync`, `EnqueueTypeAsync`, `PollAsync(maxAttempts, batchSize)`, `AdvanceCursorAsync`, `RecordFailureAsync`, `DeleteRowAsync`, `CountPendingAsync`. `PollAsync` filters on `WHERE "Attempts" < @MaxAttempts` and orders by `"EnqueuedAt"`, matching `ReconciliationQueueRepository.PollQueuedFailuresAsync` — without it a permanently failing row is retried on every tick forever. Inserts use a target-less `ON CONFLICT DO NOTHING`, which considers every unique index on the table including partial ones.
+Interface in `IRecordStoreRoles.cs` beside `IReconciliationQueueRepository`; implementation in `Iverson.Sql/`. Methods: `EnsureTableAsync`, `EnqueueEntityAsync`, `EnqueueTypeAsync`, `PollAsync(maxAttempts, batchSize)`, `AdvanceCursorAsync`, `RecordFailureAsync`, `DeleteRowAsync`, `CountPendingAsync`, `CountExhaustedAsync(maxAttempts)`. `PollAsync` filters on `WHERE "Attempts" < @MaxAttempts` and orders by `"EnqueuedAt"`, matching `ReconciliationQueueRepository.PollQueuedFailuresAsync` — without it a permanently failing row is retried on every tick forever. `CountExhaustedAsync` is its counterpart (`WHERE "Attempts" >= @MaxAttempts`): a filtered-out row is a re-render that has silently stopped being attempted, and nothing else would report it. Inserts use a target-less `ON CONFLICT DO NOTHING`, which considers every unique index on the table including partial ones.
 
 - [ ] **Step 4: Add `FetchKeysAndTenantsPagedAsync` to `EntityRepository`**
 
@@ -499,11 +499,13 @@ git commit -m "detect related-entity changes and enqueue document re-renders"
 
 - [ ] **Step 1: Write worker tests first**
 
-Batch bounding; vanished-row drop; re-fetch produces current state; failure recording; a row whose `Attempts` has reached `MaxAttempts` is not returned by a subsequent poll; republished events carry `SuppressRerenderCascade = true` and `StoreTarget.Intelligence` only; type-level expansion pages in key order, carries each row's own tenant, and deletes the type-level row on a short page.
+Batch bounding; vanished-row drop; re-fetch produces current state; failure recording; a row whose `Attempts` has reached `MaxAttempts` is not returned by a subsequent poll, and a tick with at least one exhausted row logs a warning naming the count; republished events carry `SuppressRerenderCascade = true` and `StoreTarget.Intelligence` only; type-level expansion pages in key order, carries each row's own tenant, and deletes the type-level row on a short page.
 
 - [ ] **Step 2: Implement the worker**
 
 Mirrors `ReconciliationQueueWorker.cs:5-27`. Per tick: drain a bounded batch of per-entity rows via `PollAsync(options.MaxAttempts, options.BatchSize)`, re-fetching each row before publishing (as `ReconciliationService.cs:100` does) so the event carries current state and a vanished row is dropped rather than resurrected; publish via `IEventProducer.ProduceAsync`; delete on success, `RecordFailureAsync` on error. A row that reaches `MaxAttempts` stops being polled and stays in the table — it is not deleted, so it remains inspectable and still counts toward the queue-depth gauge.
+
+Per tick, before draining, call `CountExhaustedAsync(options.MaxAttempts)` and log a warning when it is non-zero, naming the count and `MaxAttempts` — mirroring `ReconciliationService.cs:64-71`. Without it an exhausted row is invisible: it no longer retries, is never deleted, and keeps inflating the queue-depth gauge, so a stalled re-render reads as ordinary backlog.
 
 - [ ] **Step 3: Implement type-level expansion**
 
