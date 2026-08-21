@@ -32,6 +32,7 @@ public sealed class IntelligenceStoreConsumer(
     IEmbeddingService embedding,
     SchemaRegistry registry,
     IEntityRepository entities,
+    DocumentRenderer documentRenderer,
     IntelligenceTenantScope tenantScope,
     IEnrichmentService enrichment,
     IOptions<EnrichmentServiceOptions> enrichmentOptions,
@@ -180,7 +181,18 @@ public sealed class IntelligenceStoreConsumer(
             {
                 foreach (var cf in schema.ChunkFields)
                 {
-                    var text = ExtractString(payload, cf.PropertyName);
+                    var text = cf.PropertyName == "Document"
+                        ? await documentRenderer.RenderAsync(schema, payload, authoritativeTenantValue!, ct)
+                        : ExtractString(payload, cf.PropertyName);
+
+                    // Delete this field's stale chunk points before the empty-text guard below —
+                    // not after. A field whose text has shrunk or become empty must not leave
+                    // orphaned points from the previous write; scoping by parent_id AND field
+                    // (rather than parent_id alone) keeps this from touching other chunk fields'
+                    // points on the same parent.
+                    var chunkFieldFilter = IntelligenceFilterBuilder.MatchParentIdAndField(ev.Key, cf.PropertyName);
+                    await vectorWrite.DeleteByFilterAsync(chunksCollectionName, chunkFieldFilter);
+
                     if (string.IsNullOrWhiteSpace(text)) continue;
 
                     var vectorName = $"{cf.PropertyName.ToSnakeCase()}_vector";

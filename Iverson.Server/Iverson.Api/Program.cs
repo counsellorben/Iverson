@@ -188,6 +188,7 @@ builder.Services.AddQdrant(
 builder.Services.AddKafka(cfg);
 
 builder.Services.AddSingleton<SchemaRegistry>();
+builder.Services.AddSingleton<DocumentRenderer>();
 builder.Services.AddSingleton<IRelationValidator, RelationValidator>();
 builder.Services.AddSingleton<IRowFieldAuthorizationEvaluator, RowFieldAuthorizationEvaluator>();
 builder.Services.AddSingleton<IEntityKeyAccessor, EntityKeyAccessor>();
