@@ -288,6 +288,8 @@ public class DocumentRendererTests
         // CommentA < CommentB, so this ordering is also confirming the sort (see the dedicated
         // determinism test below for the mutation-testable guard).
         result.Should().Be("Comments:[first][second]");
+        await _entities.Received(1).FetchByColumnAsync(
+            Arg.Any<TableSchema>(), Arg.Any<string>(), Arg.Any<string>(), tenantScoped: true, tenantId: Tenant);
     }
 
     [Fact]
@@ -330,6 +332,8 @@ public class DocumentRendererTests
             Tenant, Ct);
 
         result.Should().Be("Cats:[red][blue]");
+        await _entities.Received(1).FetchManyByKeysAsync(
+            Arg.Any<TableSchema>(), Arg.Any<IReadOnlyList<string>>(), tenantScoped: true, tenantId: Tenant);
     }
 
     // ── Sort determinism (block rows must render identically regardless of fetch order) ────────
@@ -360,6 +364,38 @@ public class DocumentRendererTests
 
         firstOrderResult.Should().Be("firstsecond");
         secondOrderResult.Should().Be("firstsecond");
+        firstOrderResult.Should().Be(secondOrderResult);
+    }
+
+    [Fact]
+    public async Task RenderAsync_ManyToManyBlockRows_SortedByKeyRegardlessOfFetchOrder()
+    {
+        await _registry.RegisterAsync(WidgetSchema("{#Categories}{Label}{/Categories}"));
+        await _registry.RegisterAsync(CategorySchema());
+
+        var payload = Payload(
+            $$"""{"Id":"{{WidgetId}}","CategoryIds":["{{CategoryA}}","{{CategoryB}}"],"TenantId":"{{Tenant}}"}""");
+
+        _entities.FetchManyByKeysAsync(
+                Arg.Is<TableSchema>(s => s.TableName == "categories"),
+                Arg.Any<IReadOnlyList<string>>(), true, Tenant)
+            .Returns([
+                new KeyedRow(CategoryB, $$"""{"Id":"{{CategoryB}}","Label":"blue","TenantId":"{{Tenant}}"}"""),
+                new KeyedRow(CategoryA, $$"""{"Id":"{{CategoryA}}","Label":"red","TenantId":"{{Tenant}}"}""")
+            ]);
+        var firstOrderResult = await _sut.RenderAsync(_registry.Get("Widget")!, payload, Tenant, Ct);
+
+        _entities.FetchManyByKeysAsync(
+                Arg.Is<TableSchema>(s => s.TableName == "categories"),
+                Arg.Any<IReadOnlyList<string>>(), true, Tenant)
+            .Returns([
+                new KeyedRow(CategoryA, $$"""{"Id":"{{CategoryA}}","Label":"red","TenantId":"{{Tenant}}"}"""),
+                new KeyedRow(CategoryB, $$"""{"Id":"{{CategoryB}}","Label":"blue","TenantId":"{{Tenant}}"}""")
+            ]);
+        var secondOrderResult = await _sut.RenderAsync(_registry.Get("Widget")!, payload, Tenant, Ct);
+
+        firstOrderResult.Should().Be("redblue");
+        secondOrderResult.Should().Be("redblue");
         firstOrderResult.Should().Be(secondOrderResult);
     }
 
