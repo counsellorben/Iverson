@@ -25,7 +25,9 @@ public sealed record EntityEvent(
     string          TraceId,
     string          SchemaVersion,
     DateTimeOffset  OccurredAt,
-    StoreTarget     TargetStores = StoreTarget.All);
+    StoreTarget     TargetStores = StoreTarget.All,
+    string?         PriorPayloadJson = null,
+    bool            SuppressRerenderCascade = false);
 
 public static class EntityTopics
 {

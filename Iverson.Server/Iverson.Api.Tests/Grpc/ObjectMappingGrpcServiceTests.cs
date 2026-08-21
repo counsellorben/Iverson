@@ -685,6 +685,29 @@ public class ObjectMappingGrpcServiceTests
     }
 
     [Fact]
+    public async Task Post_EmitsCreatedEvent_WithNullPriorPayloadJson()
+    {
+        await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
+        _sql.QuerySingleOrDefaultAsync<string>(Arg.Any<string>(), Arg.Any<object?>())
+            .Returns(AuthorJson);
+
+        EntityEvent? evt = null;
+        _events.When(e => e.ProduceAsync(EntityTopics.Events, Arg.Any<string>(), Arg.Any<EntityEvent>()))
+               .Do(call => evt = call.ArgAt<EntityEvent>(2));
+
+        var payload = MakePayload(new()
+        {
+            ["Name"] = Value.ForString("Alice")
+        });
+        await _sut.Post(
+            new MappingWriteRequest { TypeName = "Author", Payload = payload },
+            TestServerCallContext.Create());
+
+        evt.Should().NotBeNull();
+        evt!.PriorPayloadJson.Should().BeNull();
+    }
+
+    [Fact]
     public async Task Post_WhenSchemaNotRegistered_ThrowsFailedPrecondition()
     {
         var payload = MakePayload(new() { ["Name"] = Value.ForString("Alice") });
@@ -1486,6 +1509,39 @@ public class ObjectMappingGrpcServiceTests
         response.Success.Should().BeTrue();
         evt!.Key.Should().Be(AuthorId);
         evt.EventType.Should().Be(EntityEventType.Updated);
+    }
+
+    [Fact]
+    public async Task Update_WithPriorRow_EmitsEventCarryingPriorPayloadJson()
+    {
+        await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
+        _entities
+            .FetchByKeyAsync(
+                Arg.Any<TableSchema>(),
+                Arg.Any<string>(),
+                Arg.Any<bool>(),
+                Arg.Any<string?>())
+            .Returns(AuthorJson);
+
+        EntityEvent? evt = null;
+        _events
+            .When(e => e.ProduceAsync(
+                EntityTopics.Events,
+                Arg.Any<string>(),
+                Arg.Any<EntityEvent>()))
+            .Do(call => evt = call.ArgAt<EntityEvent>(2));
+
+        var payload = MakePayload(new()
+        {
+            ["Id"]   = Value.ForString(AuthorId),
+            ["Name"] = Value.ForString("Alice Updated")
+        });
+        await _sut.Update(
+            new MappingWriteRequest { TypeName = "Author", Payload = payload },
+            TestServerCallContext.Create());
+
+        evt.Should().NotBeNull();
+        evt!.PriorPayloadJson.Should().Be(AuthorJson);
     }
 
     [Fact]
