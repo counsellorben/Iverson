@@ -78,6 +78,15 @@ Blocks do not nest, and the one-hop rule holds inside a block: `{Name}` yes, `{O
 no. Two hops would mean an N×M fetch per entity and a substantially larger invalidation
 graph.
 
+**Block iteration order is by the target type's key column, ascending**, sorted in the
+renderer after the fetch. Neither `FetchByColumnAsync` nor `FetchManyByKeysAsync` carries an
+`ORDER BY`, so the order Postgres returns is unspecified and can change after a plan flip or
+a vacuum. Without a total order the same unchanged data re-renders as different text,
+producing different chunk boundaries and different vectors on every re-render — which the
+re-render path triggers on every related-entity change. The key is UUID and unique, so it is
+a total order with no ties, and sorting in `DocumentRenderer` needs no new repository
+surface.
+
 Separators are literal, so the last row of a block keeps its trailing text:
 `{#Tags}{Name}, {/Tags}` yields `a, b, c, `. This is accepted rather than solved with
 join/last-item machinery — a prose block naturally ends in a newline, where it does not
@@ -141,8 +150,12 @@ before `Author` is registered, since dependents are processed after the root.
   target type.
 - `{Rel.Prop}` on a collection relation, or `{#Rel}` on a single-valued relation.
 - A template with zero placeholders.
-- A template on a type that also declares an `[IversonChunk]` property named `Document`
-  — both would produce a `document_vector` named vector. (Note: this is a *named vector*
+- A template on a type where any other chunk field derives the same named vector — that is,
+  where `PropertyName.ToSnakeCase()` collides. `ToSnakeCase` lowercases every character, so
+  `Document`, `document`, and `DOCUMENT` all derive `document_vector`; comparing property
+  spellings rather than derived names would let the lowercase form through and produce
+  duplicate `document_vector` entries in the chunks collection and duplicate
+  `document_centroid` entries in the object collection. (Note: this is a *named vector*
   collision, not a collision with the reserved chunk payload keys `text`, `parent_id`,
   `field`, `chunk_index`, which are a separate concern.)
 - A template referencing any property that carries a `FieldPermission`, on the declaring
@@ -225,9 +238,9 @@ Resolution per placeholder kind:
 | Kind | Resolution |
 |---|---|
 | `{Prop}` | Read from the already-deserialized event payload. No I/O. |
-| `{Rel.Prop}` (`ManyToOne`/`OneToOne`) | Read the FK from the payload, one `FetchManyByKeysAsync` on the target schema. |
-| `{#Rel}` over `ManyToMany` | Read the FK array, one `FetchManyByKeysAsync`. |
-| `{#Rel}` over `OneToMany` | FK lives on the related row: one `FetchByColumnAsync(targetSchema, "{DeclaringType}Id", key)`. |
+| `{Rel.Prop}` (`ManyToOne`/`OneToOne`) | Read the payload key named by `relation.ForeignKey`, one `FetchManyByKeysAsync` on the target schema. |
+| `{#Rel}` over `ManyToMany` | Read the FK array named by `relation.ForeignKey`, one `FetchManyByKeysAsync`. |
+| `{#Rel}` over `OneToMany` | FK lives on the related row: one `FetchByColumnAsync(targetSchema, relation.ForeignKey, key)`. |
 
 Fetches for the same target type are batched into a single call, so three placeholders on
 `Author` cost one query.
@@ -291,9 +304,16 @@ Owning keys, per relation kind:
 
 | Relation on the declaring type | Lookup |
 |---|---|
-| `ManyToOne` / `OneToOne` | `FetchByColumnAsync(declaringSchema, "{T}Id", changedKey)` |
-| `OneToMany` | FK is on the changed row itself — read the owning key from the event payload. No query. |
+| `ManyToOne` / `OneToOne` | `FetchByColumnAsync(declaringSchema, relation.ForeignKey, changedKey)` |
+| `OneToMany` | FK is on the changed row itself — read the owning key from the event payload under `relation.ForeignKey`. No query. |
 | `ManyToMany` | Array containment (`WHERE tag_ids @> ARRAY[…]`). **New repository surface** — `FetchByColumnAsync` does not do containment, and nothing in `Iverson.Sql` does today. |
+
+**Every FK reference above is `RelationDescriptor.ForeignKey`, never a `{TypeName}Id` string
+built from the convention.** The convention is only a default: `ManyToOne`/`OneToMany` both
+accept an explicit override, and the descriptor carries the resolved name. A
+convention-derived lookup queries a non-existent column on any type that overrides its FK —
+and on the `OneToMany` payload read it fails silently, leaving the parent's document
+permanently un-re-rendered.
 
 **FK reassignment.** `EntityEvent` gains a nullable `PriorPayloadJson`, populated on
 `Updated`. When a `OneToMany` child's FK differs between prior and current, *both* parents
@@ -312,11 +332,19 @@ other forever, and even the single-type case amplifies once per hop.
 New table `document_rerender_queue`, modeled on `ReconciliationSchema` and bootstrapped the
 same way (`ApplySchemaAsync` at startup, not through the proto pipeline):
 
-`Id`, `TenantId`, `TypeName`, `EntityKey`, `EnqueuedAt`, `Attempts`, `LastError`,
-`LastAttemptAt`, plus **`UNIQUE (TenantId, TypeName, EntityKey)` with
-`ON CONFLICT DO NOTHING`.**
+`Id`, `TenantId`, `TypeName`, `EntityKey`, `Cursor`, `EnqueuedAt`, `Attempts`, `LastError`,
+`LastAttemptAt`.
 
-That constraint is the primary throttle. An author who edits their bio five times in a
+A row takes one of two forms. A **per-entity row** carries `TenantId` and `EntityKey` and
+names one document to re-render; it is constrained by **`UNIQUE (TenantId, TypeName,
+EntityKey)` with `ON CONFLICT DO NOTHING`**. A **type-level row** carries `TypeName` with
+`TenantId`, `EntityKey`, and `Cursor` null, and means "every row of this type, all tenants";
+it is constrained by a partial unique index on `(TypeName) WHERE EntityKey IS NULL`. The
+partial index is required rather than incidental: Postgres treats NULLs as distinct in a
+plain unique constraint, so `UNIQUE (TenantId, TypeName, EntityKey)` alone would admit
+unlimited duplicate type-level rows.
+
+The per-entity constraint is the primary throttle. An author who edits their bio five times in a
 minute collapses to one pending row per article, and a burst that outruns the worker
 coalesces in the table rather than piling up as duplicate Kafka messages and duplicate
 embeddings.
@@ -327,6 +355,15 @@ Mirrors `ReconciliationQueueWorker`: `ConsumerResilience.RunWithRestartAsync`, p
 and batch size from a small options class, drain a bounded batch per tick, republish an
 `Intelligence`-only `Updated` event per row with `SuppressRerenderCascade = true`, delete
 the row on success, record failure on error.
+
+A tick drains a bounded batch of per-entity rows as above. A type-level row is instead
+*expanded*: the worker reads the next page of `(key, tenant)` pairs after `Cursor`, ordered
+by key, inserts one per-entity row for each (`ON CONFLICT DO NOTHING`), and advances
+`Cursor` to the page's last key — deleting the type-level row when a page comes back short.
+Each per-entity row's `TenantId` comes from the scanned row's own tenant column, so the
+expansion needs no tenant list. Backfill therefore enters the queue at the same bounded rate
+as everything else, and registration stays O(1). The paged read is new repository surface,
+alongside the `ManyToMany` array-containment method above.
 
 **Re-fetch the row before republishing**, as `ReconciliationService.ProcessOneAsync` does: a
 vanished row is dropped rather than resurrected, and the republished event always carries
@@ -352,7 +389,9 @@ rows written after registration, which reads as the feature doing nothing.
 Schema registration compares the parsed template against the persisted schema and enqueues
 the whole type for re-render on any difference. A *changed* template matters as much as a
 new one: the rendered text is derived data with no stored copy, so a template edit
-invalidates every document of that type. The existing queue and throttle absorb this.
+invalidates every document of that type. Registration inserts a single type-level queue row;
+the worker expands it a page at a time, so the throttle governs the backfill exactly as it
+governs ordinary re-renders.
 
 ## Storage
 
@@ -367,20 +406,26 @@ Per project convention these must be mutation-tested, not merely green.
 **`DocumentRenderer`** — each placeholder kind; block over each collection relation kind;
 empty collection; null FK; deleted target; escaped braces; each scalar type's invariant
 rendering; array joining; batching (one fetch for three placeholders on one relation);
-tenant scoping (a related row in another tenant must not render).
+tenant scoping (a related row in another tenant must not render); identical output across
+two fetches returning the same rows in different orders; a relation declaring an explicit
+non-conventional `foreignKey`.
 
 **`ValidateDocumentTemplate`** — one test per rejection: undeclared property, undeclared
 relation, wrong relation kind for the form used, two-hop, nested block, unclosed block, zero
-placeholders, `Document` named-vector collision, `FieldPermission`-carrying source property,
+placeholders, `Document` named-vector collision (including a lowercase `document` property),
+`FieldPermission`-carrying source property,
 and a dependent-breaking re-registration of a target type. Plus the ordering test: a
 template referencing a type that appears later in `dependents` must validate successfully.
 
 **`DocumentRerenderConsumer`** — one test per relation direction proving the correct owning
 keys are found; `Created`/`Updated`/`Deleted` all trigger; FK reassignment enqueues both
-parents; `SuppressRerenderCascade` breaks the loop; reverse lookups are tenant-scoped.
+parents; `SuppressRerenderCascade` breaks the loop; reverse lookups are tenant-scoped; a
+relation declaring an explicit non-conventional `foreignKey`.
 
 **`DocumentRerenderQueueWorker`** — collapse under the unique constraint; batch bounding;
-vanished-row drop; re-fetch produces current state; failure recording.
+vanished-row drop; re-fetch produces current state; failure recording; type-level expansion
+pages in key order, carries each row's own tenant, and deletes the type-level row on a short
+page.
 
 **Orphan fix** — a chunk field whose text shrinks from many chunks to few leaves no
 orphaned points, and the delete does not disturb other chunk fields' points on the same
@@ -440,6 +485,11 @@ Changed the design:
 - **Chunk points are deleted by filter only in `HandleDeleteAsync`**
   (`IntelligenceStoreConsumer.cs:488`), confirming the orphaned-point bug now folded into
   scope.
+- **Neither relation fetch specifies an order** — `EntityRepository.cs:18-27`. Block
+  iteration must impose its own total order; see "Placeholder grammar".
+- **Relation foreign keys are overridable** — `ManyToOneAttribute.cs:10`,
+  `OneToManyAttribute.cs:11`, `object_mapping.proto:73` ("resolved FK column (convention or
+  explicit)"). All FK access goes through `RelationDescriptor.ForeignKey`.
 
 ## Known limitations
 
