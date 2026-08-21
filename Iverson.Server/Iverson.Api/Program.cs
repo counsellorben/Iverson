@@ -253,6 +253,7 @@ builder.Services.AddEngagementStoreConsumer(cfg, workloadRole == "worker");
 if (workloadRole == "worker")
 {
     builder.Services.AddHostedService<IntelligenceStoreConsumer>();
+    builder.Services.AddHostedService<Iverson.Api.Consumers.DocumentRerenderConsumer>();
     builder.Services.AddHostedService<Iverson.Api.Reconciliation.DlqMonitorConsumer>();
     builder.Services.AddHostedService<Iverson.Api.Reconciliation.ReconciliationQueueWorker>();
     builder.Services.AddHostedService<Iverson.Api.Reconciliation.DlqBacklogGaugeWorker>();

@@ -26,6 +26,17 @@ public sealed class EntityRepository(IRecordStoreQueryExecutor sql) : IEntityRep
             $"SELECT row_to_json(t)::text FROM \"{schema.TableName}\" t WHERE \"{columnName}\" = @Key::uuid",
             new { Key = value }, tenantScoped, tenantId);
 
+    // ManyToMany reverse lookup: the FK column is a uuid[] living on the DECLARING row (the
+    // opposite direction from FetchByColumnAsync's OneToMany usage), so finding declaring rows
+    // whose array contains a given target key needs Postgres array containment (@>), not
+    // equality. Guid[], not string[] — Npgsql sends string[] as text[], which blocks Postgres
+    // from using the uuid[] GIN/index for @> — see this plan's Global Constraints and
+    // FetchManyByKeysAsync above.
+    public Task<IEnumerable<string>> FetchByArrayContainsAsync(TableSchema schema, string columnName, string value, bool tenantScoped = false, string? tenantId = null) =>
+        sql.QueryAsync<string>(
+            $"SELECT row_to_json(t)::text FROM \"{schema.TableName}\" t WHERE \"{columnName}\" @> @Keys",
+            new { Keys = new[] { Guid.Parse(value) } }, tenantScoped, tenantId);
+
     public Task<IEnumerable<string>> FetchAllAsync(TableSchema schema, bool tenantScoped = false, string? tenantId = null) =>
         sql.QueryAsync<string>($"""SELECT row_to_json(t)::text FROM "{schema.TableName}" t""", null, tenantScoped, tenantId);
 
