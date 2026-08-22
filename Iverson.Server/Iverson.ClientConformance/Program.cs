@@ -67,6 +67,7 @@ try
     [
         CrudRoundtripScenario.Name, NamingRejectedScenario.Name, NavPropertyRejectedScenario.Name,
         InteropScenario.Name, SchemaCatalogScenario.Name, QueryScenario.Name,
+        VectorSearchScenario.Name,
     ];
     var scenarios = flags.Scenarios ?? recognizedScenarios;
 
@@ -98,6 +99,10 @@ try
     var interop = new InteropScenario(runner, new Reregistrar(mapping), Console.WriteLine);
     var schemaCatalog = new SchemaCatalogScenario(runner, new Reregistrar(mapping), Console.WriteLine);
     var query = new QueryScenario(
+        runner, new Reregistrar(mapping),
+        new ObjectSearchService.ObjectSearchServiceClient(channel),
+        log: Console.WriteLine);
+    var vectorSearch = new VectorSearchScenario(
         runner, new Reregistrar(mapping),
         new ObjectSearchService.ObjectSearchServiceClient(channel),
         log: Console.WriteLine);
@@ -161,6 +166,15 @@ try
     {
         Console.WriteLine($"Running scenario '{QueryScenario.Name}'...");
         foreach (var cell in await query.RunAsync(languages, BuildContext(QueryScenario.Name), actingToken))
+            report.Add(cell);
+    }
+
+    // As with `query` above, this dispatch block — not `recognizedScenarios` — is what actually
+    // runs the scenario.
+    if (scenarios.Contains(VectorSearchScenario.Name, StringComparer.OrdinalIgnoreCase))
+    {
+        Console.WriteLine($"Running scenario '{VectorSearchScenario.Name}'...");
+        foreach (var cell in await vectorSearch.RunAsync(languages, BuildContext(VectorSearchScenario.Name), actingToken))
             report.Add(cell);
     }
 

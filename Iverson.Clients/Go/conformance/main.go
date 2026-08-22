@@ -45,7 +45,24 @@ var supportedScenarios = map[string]bool{
 	// (register-once rule). This driver seeds one row and then issues a filtered search and a
 	// count aggregate through the client library's own QueryBuilder/AggregateBuilder.
 	"query": true,
+	// vector-search (S7) is register-phase-NEVER for this driver: only .NET registers VectorDoc
+	// (register-once rule). This driver seeds one row and then issues a SearchSimilar and a
+	// SearchChunks through the client library's own vector-search builders.
+	"vector-search": true,
 }
+
+const (
+	// vectorDocLabel is the Label every VectorDoc row this driver writes carries, and the value
+	// the orchestrator's similarity comparison grades on. Must stay in step with
+	// VectorSearchScenario.LabelFor.
+	vectorDocLabel = "vec-" + language
+	// vectorQueryText and vectorTopK are shared verbatim by all five drivers: a per-language query
+	// text would make a disagreement between two cells un-attributable to the client libraries,
+	// and a top-k below the seeded row count would turn the orchestrator's exact set comparisons
+	// into prefix comparisons.
+	vectorQueryText = "a short note about vector search conformance"
+	vectorTopK      = uint32(50)
+)
 
 // catalogueType/catalogueField/catalogueRelation are the deliberately minimal,
 // cross-language-identical projection of a GetSchema catalogue that all five drivers report. Names
@@ -537,6 +554,95 @@ func run(argv []string) int {
 					func() (interface{}, error) { return articleCoord.Get(ctx, key) }))
 			}
 		}
+
+	case phase == "write" && sc == "vector-search":
+		// S7 vector-search: one row, stamped with the run's marker and this language's label. The
+		// key is reported whenever Persist returned one — it is the orchestrator's expected-set
+		// accounting for BOTH vector requirements.
+		vecCoord, vecCoordErr := iverson.NewEntityCoordinator(client, VectorDoc{})
+		var vecStep stepResult
+		if vecCoordErr != nil {
+			vecStep = failStep("write_vector_doc", vecCoordErr)
+		} else {
+			entity := VectorDoc{
+				TenantId: tenant,
+				OwnerId:  ownerID,
+				Marker:   idPrefix,
+				Title:    "vector search conformance note from " + language,
+				Body: "This passage exists so the " + language + " conformance driver has a " +
+					"chunked body to retrieve. It is short on purpose: one window per row keeps " +
+					"the orchestrator's parent-key comparison exact.",
+				Label: vectorDocLabel,
+			}
+			key, err := vecCoord.Persist(ctx, entity)
+			if err != nil {
+				vecStep = failStep("write_vector_doc", err)
+			} else {
+				vecStep = okStep("write_vector_doc")
+				vecStep.Entity = entityJSON(entity)
+			}
+			if key != "" {
+				vecStep.Keys = map[string]string{"vector_doc": key}
+			}
+		}
+		steps = append(steps, vecStep)
+
+	case phase == "read" && sc == "vector-search":
+		// Both requests are built with the client library's own vector-search builders
+		// (iverson.NewSimilar / iverson.NewChunks) and executed through EntityCoordinator, never
+		// through the generated stub. Row labels and chunk parent keys are reported verbatim; the
+		// orchestrator decides what they mean.
+		vecCoord, vecCoordErr := iverson.NewEntityCoordinator(client, VectorDoc{})
+
+		steps = append(steps, func() stepResult {
+			if vecCoordErr != nil {
+				return failStep("search_similar_by_title", vecCoordErr)
+			}
+			req, err := iverson.NewSimilar("VectorDoc", "Title").
+				Text(vectorQueryText).
+				TopK(vectorTopK).
+				Where("Marker", pb.SearchOperator_EQUALS, idPrefix).
+				Build()
+			if err != nil {
+				return failStep("search_similar_by_title", err)
+			}
+			hits, err := vecCoord.SearchSimilar(ctx, req)
+			if err != nil {
+				return failStep("search_similar_by_title", err)
+			}
+			labels := make([]string, 0, len(hits))
+			for _, hit := range hits {
+				labels = append(labels, hit.Entity.Label)
+			}
+			out := okStep("search_similar_by_title")
+			out.Entity = entityJSON(map[string]interface{}{"labels": labels})
+			return out
+		}())
+
+		steps = append(steps, func() stepResult {
+			if vecCoordErr != nil {
+				return failStep("search_chunks_by_marker", vecCoordErr)
+			}
+			req, err := iverson.NewChunks("VectorDoc", "Body").
+				Text(vectorQueryText).
+				TopK(vectorTopK).
+				Where("Marker", pb.SearchOperator_EQUALS, idPrefix).
+				Build()
+			if err != nil {
+				return failStep("search_chunks_by_marker", err)
+			}
+			found, err := vecCoord.SearchChunks(ctx, req)
+			if err != nil {
+				return failStep("search_chunks_by_marker", err)
+			}
+			parentKeys := make([]string, 0, len(found))
+			for _, chunk := range found {
+				parentKeys = append(parentKeys, chunk.GetParentKey())
+			}
+			out := okStep("search_chunks_by_marker")
+			out.Entity = entityJSON(map[string]interface{}{"parentKeys": parentKeys})
+			return out
+		}())
 
 	case phase == "write" && sc == "query":
 		// S6 query: one row, stamped with the run's marker. The key is reported whenever Persist

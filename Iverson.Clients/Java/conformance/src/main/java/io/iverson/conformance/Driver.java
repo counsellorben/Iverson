@@ -21,6 +21,9 @@ import iverson.ObjectSearch;
 import iverson.ObjectSearch.SearchOperator;
 import io.iverson.conformance.models.SharedArticle;
 import io.iverson.conformance.models.SharedAuthor;
+import io.iverson.conformance.models.VectorDoc;
+import io.iverson.client.search.ChunksBuilder;
+import io.iverson.client.search.SimilarBuilder;
 import iverson.ObjectMapping.SchemaField;
 import iverson.ObjectMapping.SchemaRelation;
 import iverson.ObjectMapping.SchemaType;
@@ -62,8 +65,26 @@ public final class Driver {
     // (register-once rule). This driver seeds one row and then issues a filtered search and a
     // count aggregate through the client library's own QueryBuilder/AggregateBuilder.
     private static final String QUERY_SCENARIO = "query";
+    // vector-search (S7) is register-phase-NEVER for this driver: only .NET registers VectorDoc
+    // (register-once rule). This driver seeds one row and then issues a SearchSimilar and a
+    // SearchChunks through the client library's own vector-search builders.
+    private static final String VECTOR_SEARCH_SCENARIO = "vector-search";
     private static final java.util.Set<String> SUPPORTED_SCENARIOS =
-        java.util.Set.of(CRUD_ROUNDTRIP_SCENARIO, INTEROP_SCENARIO, SCHEMA_CATALOG_SCENARIO, QUERY_SCENARIO);
+        java.util.Set.of(CRUD_ROUNDTRIP_SCENARIO, INTEROP_SCENARIO, SCHEMA_CATALOG_SCENARIO,
+            QUERY_SCENARIO, VECTOR_SEARCH_SCENARIO);
+
+    /**
+     * The Label every VectorDoc row this driver writes carries, and the value the orchestrator's
+     * similarity comparison grades on. Must stay in step with {@code VectorSearchScenario.LabelFor}.
+     */
+    private static final String VECTOR_DOC_LABEL = "vec-" + LANGUAGE;
+    /**
+     * Shared verbatim by all five drivers: a per-language query text would make a disagreement
+     * between two cells un-attributable to the client libraries, and a top-k below the seeded row
+     * count would turn the orchestrator's exact set comparisons into prefix comparisons.
+     */
+    private static final String VECTOR_QUERY_TEXT = "a short note about vector search conformance";
+    private static final int VECTOR_TOP_K = 50;
     private static final Gson GSON = new Gson();
 
     private Driver() {}
@@ -123,6 +144,16 @@ public final class Driver {
                 switch (phase) {
                     case "write" -> doQueryWrite(client, tenant, ownerId, idPrefix, steps);
                     case "read" -> doQueryRead(client, idPrefix, steps);
+                    default -> {
+                        System.err.println("unknown phase '" + phase + "' for scenario '" + scenario + "'");
+                        System.exit(2);
+                        return;
+                    }
+                }
+            } else if (VECTOR_SEARCH_SCENARIO.equals(scenario)) {
+                switch (phase) {
+                    case "write" -> doVectorSearchWrite(client, tenant, ownerId, idPrefix, steps);
+                    case "read" -> doVectorSearchRead(client, idPrefix, steps);
                     default -> {
                         System.err.println("unknown phase '" + phase + "' for scenario '" + scenario + "'");
                         System.exit(2);
@@ -310,6 +341,72 @@ public final class Driver {
                 "value",
                 response.getResultsCount() > 0 ? response.getResults(0).getMetricValue() : null);
             reported.put("total", response.getTotal());
+            r.entity = GSON.toJsonTree(reported);
+        }));
+    }
+
+    // ── S7 vector-search ─────────────────────────────────────────────────────────────────────
+
+    /**
+     * Seeds one {@code VectorDoc} row stamped with the run's marker and this language's label. The
+     * key is reported whenever {@code persist} returned one — it is the orchestrator's expected-set
+     * accounting for BOTH vector requirements.
+     */
+    private static void doVectorSearchWrite(
+            IversonClient client, String tenant, String ownerId, String idPrefix, List<StepResult> steps) {
+        String[] docKey = new String[1];
+        StepResult result = step("write_vector_doc", r -> {
+            VectorDoc doc = new VectorDoc();
+            doc.setTenantId(tenant);
+            doc.setOwnerId(ownerId);
+            doc.setMarker(idPrefix);
+            doc.setTitle("vector search conformance note from " + LANGUAGE);
+            doc.setBody("This passage exists so the " + LANGUAGE + " conformance driver has a chunked "
+                + "body to retrieve. It is short on purpose: one window per row keeps the "
+                + "orchestrator's parent-key comparison exact.");
+            doc.setLabel(VECTOR_DOC_LABEL);
+            docKey[0] = new EntityCoordinator<>(client, VectorDoc.class).persist(doc);
+        });
+        if (docKey[0] != null) result.keys = Map.of("vector_doc", docKey[0]);
+        steps.add(result);
+    }
+
+    /**
+     * Issues the similarity search and the chunk search, both built with the client library's own
+     * vector-search builders ({@code Query.similar}/{@code Query.chunks}) and executed through
+     * {@code EntityCoordinator}, never through a raw generated stub. Row labels and chunk parent
+     * keys are reported verbatim; the orchestrator decides what they mean.
+     */
+    private static void doVectorSearchRead(IversonClient client, String idPrefix, List<StepResult> steps) {
+        steps.add(step("search_similar_by_title", r -> {
+            SimilarBuilder query = Query.similar("VectorDoc", "Title")
+                .text(VECTOR_QUERY_TEXT)
+                .topK(VECTOR_TOP_K)
+                .where("Marker", SearchOperator.EQUALS, idPrefix);
+            List<EntityCoordinator.SearchResult<VectorDoc>> hits =
+                new EntityCoordinator<>(client, VectorDoc.class).searchSimilar(query);
+            List<String> labels = new ArrayList<>();
+            for (EntityCoordinator.SearchResult<VectorDoc> hit : hits) {
+                labels.add(hit.entity().getLabel());
+            }
+            Map<String, Object> reported = new java.util.LinkedHashMap<>();
+            reported.put("labels", labels);
+            r.entity = GSON.toJsonTree(reported);
+        }));
+
+        steps.add(step("search_chunks_by_marker", r -> {
+            ChunksBuilder query = Query.chunks("VectorDoc", "Body")
+                .text(VECTOR_QUERY_TEXT)
+                .topK(VECTOR_TOP_K)
+                .where("Marker", SearchOperator.EQUALS, idPrefix);
+            List<EntityCoordinator.ChunkSearchResult> found =
+                new EntityCoordinator<>(client, VectorDoc.class).searchChunks(query);
+            List<String> parentKeys = new ArrayList<>();
+            for (EntityCoordinator.ChunkSearchResult chunk : found) {
+                parentKeys.add(chunk.parentKey());
+            }
+            Map<String, Object> reported = new java.util.LinkedHashMap<>();
+            reported.put("parentKeys", parentKeys);
             r.entity = GSON.toJsonTree(reported);
         }));
     }

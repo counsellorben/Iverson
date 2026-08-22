@@ -22,7 +22,8 @@ namespace Iverson.ClientConformance;
 /// reported as the harness's own precondition failing, worded so it can never be misread as a
 /// client defect.
 /// </summary>
-public sealed class ProjectionWaiter(TimeSpan? timeout = null, TimeSpan? interval = null)
+public sealed class ProjectionWaiter(
+    TimeSpan? timeout = null, TimeSpan? interval = null, string? storeExplanation = null)
 {
     /// <summary>
     /// How long to keep polling before giving up. Generous relative to the observed projection
@@ -38,6 +39,17 @@ public sealed class ProjectionWaiter(TimeSpan? timeout = null, TimeSpan? interva
     /// constructed with a zero interval AND a zero timeout gives its one attempt no budget at all.
     /// </summary>
     public TimeSpan Interval { get; } = interval ?? TimeSpan.FromSeconds(2);
+
+    /// <summary>
+    /// The one sentence in <see cref="ProjectionWaitResult.TimeoutDetail"/> that names WHICH
+    /// asynchronous store the harness was waiting on and why it lags the write. It is the only
+    /// part of that text that varies between scenarios: the surrounding wording — that this is
+    /// the harness's own precondition failing and not evidence about a client library — is fixed
+    /// here so a new scenario cannot accidentally word its own timeout as a client defect, and no
+    /// requirement ID ever appears in it. Defaults to the StarRocks projection the `query`
+    /// scenario reads from.
+    /// </summary>
+    public string StoreExplanation { get; } = storeExplanation ?? ProjectionWaitResult.StarRocksExplanation;
 
     /// <summary>
     /// Polls <paramref name="probe"/> until it reports satisfied, the timeout expires, or
@@ -94,7 +106,8 @@ public sealed class ProjectionWaiter(TimeSpan? timeout = null, TimeSpan? interva
                 var outcome = await probe(attemptCts.Token);
                 lastDetail = outcome.Detail;
                 if (outcome.Satisfied)
-                    return new ProjectionWaitResult(true, subject, attempts, stopwatch.Elapsed, outcome.Detail);
+                    return new ProjectionWaitResult(
+                        true, subject, attempts, stopwatch.Elapsed, outcome.Detail, StoreExplanation);
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested)
             {
@@ -117,7 +130,8 @@ public sealed class ProjectionWaiter(TimeSpan? timeout = null, TimeSpan? interva
             // timeout — a waiter configured down to nothing still observes the store rather than
             // reporting a timeout it never tested.
             if (stopwatch.Elapsed >= Timeout)
-                return new ProjectionWaitResult(false, subject, attempts, stopwatch.Elapsed, lastDetail);
+                return new ProjectionWaitResult(
+                    false, subject, attempts, stopwatch.Elapsed, lastDetail, StoreExplanation);
 
             await Task.Delay(Interval, ct);
         }
@@ -140,13 +154,35 @@ public sealed record ProbeOutcome(bool Satisfied, string Detail)
 /// <see cref="Attempts"/>, <see cref="Elapsed"/> and <see cref="LastDetail"/>.
 /// </summary>
 public sealed record ProjectionWaitResult(
-    bool Satisfied, string Subject, int Attempts, TimeSpan Elapsed, string LastDetail)
+    bool Satisfied,
+    string Subject,
+    int Attempts,
+    TimeSpan Elapsed,
+    string LastDetail,
+    string? StoreExplanation = null)
 {
+    /// <summary>
+    /// Why the StarRocks projection lags a write — the default <see cref="StoreExplanation"/>,
+    /// used by the <c>query</c> scenario.
+    /// </summary>
+    public const string StarRocksExplanation =
+        "Search and Aggregate are served from the StarRocks projection, which a mapped write " +
+        "reaches asynchronously through the outbox";
+
+    /// <summary>
+    /// Why the Qdrant collections lag a write — used by the <c>vector-search</c> scenario. Qdrant
+    /// trails further behind than StarRocks does because the outbox consumer must additionally
+    /// embed every annotated field through the embedding model before any point exists to search.
+    /// </summary>
+    public const string QdrantExplanation =
+        "SearchSimilar and SearchChunks are served from Qdrant, which a mapped write reaches " +
+        "asynchronously through the outbox and only after the embedding model has vectorized " +
+        "every embedded and chunked field";
+
     /// <summary>The text a scenario reports when the wait expired, worded as a harness precondition.</summary>
     public string TimeoutDetail =>
         $"the harness waited for {Subject} to reach the projection and gave up after " +
         $"{Elapsed.TotalSeconds:0.0}s over {Attempts} attempt(s); last observation: {LastDetail}. " +
-        "Search and Aggregate are served from the StarRocks projection, which a mapped write " +
-        "reaches asynchronously through the outbox — this is the harness's own precondition " +
+        $"{StoreExplanation ?? StarRocksExplanation} — this is the harness's own precondition " +
         "failing, not evidence about any client library.";
 }

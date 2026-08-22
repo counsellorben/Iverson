@@ -363,8 +363,80 @@ not of a client — and it is strictly weaker than `IVC-QRY-002` wherever `IVC-Q
 
 ### VEC — Vector
 
+Full rationale and the assertion(s) that discharge each requirement are recorded on the
+corresponding const's doc comment in `Requirements.cs`, per this document's own convention for an
+implemented requirement.
+
 | ID | Status | Kind | Statement |
 | --- | --- | --- | --- |
+| IVC-VEC-001 | Active | Capability | A vector similarity search is reachable through the client's public API |
+| IVC-VEC-002 | Active | Behaviour | A vector similarity search returns exactly the rows its accompanying scalar filter matches |
+| IVC-VEC-003 | Active | Capability | A chunk search is reachable through the client's public API |
+| IVC-VEC-004 | Active | Behaviour | A chunk search returns chunks belonging to exactly the parent rows its accompanying filter matches |
+
+`IVC-VEC-001`/`IVC-VEC-003` are the reachability half and `IVC-VEC-002`/`IVC-VEC-004` the content
+half, split the way `QRY` splits `IVC-QRY-001` from `IVC-QRY-002` and for the same reason:
+`SearchSimilar` and `SearchChunks` are two distinct RPCs against two distinct Qdrant collections
+(the object collection's named vectors, and the `_chunks` collection's passage vectors), returning
+two different response shapes — a client that can reach one but gets the wrong content back from it
+is non-conformant in a way a single conflated requirement would report only as one undifferentiated
+red cell.
+
+Both content requirements say *exactly*, not *at least*. Both directions are verified — a seeded row
+the search failed to return, and a returned row the run never seeded, are each a failure. The exact
+form is checkable because the `vector-search` scenario stamps a run-unique marker on every row it
+seeds and every driver sends that marker as the filter accompanying its query: `SearchSimilar`
+filters on it as a scalar payload clause, and `SearchChunks` filters on it as a metadata column
+denormalized onto every chunk point (`IntelligenceStoreConsumer`). No row from any earlier run, and
+no row written by any other scenario, can match. All five clients issue the same query text with the
+same filter over the same seeded rows, so each requirement is simultaneously a per-client
+correctness claim and a cross-client agreement claim — a language whose request is built wrongly
+disagrees with the other four and its cell alone goes red.
+
+Neither content requirement grades a client against its own other report. `IVC-VEC-002` compares the
+row labels a driver's similarity search returned against the labels the harness itself expects for
+the languages whose write phase reported a key, and `IVC-VEC-004` compares the parent keys a
+driver's chunk search returned against those write-phase keys directly. Both expectations come from
+`DriverRunner.KeysByLanguage` — the harness's own accounting of what the write phase produced —
+never from the read phase being judged.
+
+`SearchSimilar` and `SearchChunks` are served from Qdrant, which a mapped write reaches
+asynchronously through the outbox — and, unlike the StarRocks projection, only after the embedding
+model has vectorized every embedded and chunked field. The scenario therefore waits for both
+collections before its read phase — a bounded poll with an explicit timeout, reported as a failed
+step when it expires. It is never an indefinite wait and never a fixed sleep presented as
+determinism; see `ProjectionWaiter.cs`.
+
+Ranking, fused scores, result order, `topK` truncation, chunk windowing and contextual chunk
+prefixes are deliberately not authored here; see the Coverage table below.
+
+#### Coverage
+
+| Area | Status | Evidence |
+| --- | --- | --- |
+| Similarity-search reachability | Covered | IVC-VEC-001 |
+| Similarity-search result set | Covered | IVC-VEC-002 |
+| Chunk-search reachability | Covered | IVC-VEC-003 |
+| Chunk-search parent rows | Covered | IVC-VEC-004 |
+| Ranking, fused scores and result order | Deferred | `SearchResponse.score` is a FUSED re-ranking score (raw cosine blended with a document-centroid similarity and a recency decay) and results are then diversified by maximal marginal relevance, so the returned order is deliberately not fused-score-descending. Both content assertions are therefore set comparisons, no assertion observes a score or a position, and no requirement constrains them. Authoring one needs a seed set whose relative similarity to a query is known independently of the server's own scoring, which is a scenario change, not a wording change. |
+| `topK` truncation | Deferred | Every client's builder can express `topK`, and the scenario sends one large enough that the run's whole seeded set fits below it — which is what keeps `IVC-VEC-002`/`IVC-VEC-004` exact set comparisons rather than prefix comparisons. No assertion observes a truncation boundary and no requirement constrains one. |
+| Chunk text, windowing and overlap | Deferred | `ChunkSearchResponse.chunk_text` and the `maxTokens`/`overlap` windowing are server-side properties of `IntelligenceStoreConsumer.SplitIntoChunks`, not of a client library. The scenario seeds a body short enough to produce a single window per row on purpose, so no assertion observes a window boundary and no requirement constrains one. |
+| Contextual chunk prefixes and ingest enrichment | Deferred | `[IversonChunk(Contextual = true)]`, `[IversonSummary]` and `[IversonKeywords]` route through the generative enrichment path, whose output is model-dependent and not reproducible across runs. The scenario's subject type declares none of them, so no assertion observes them and no requirement constrains them. |
+| Templated document chunk fields | Deferred | A chunk field named `Document` is rendered server-side from a stored document template rather than from a payload scalar. The scenario's chunk field is an ordinary payload string on purpose — which is what makes `IVC-VEC-004`'s parent set exactly the seeded rows — so no assertion observes template rendering and no requirement constrains it. |
+| Vector-backed filters beyond the run marker | Deferred | `SearchSimilar` accepts the full scalar/FK filter grammar (`NOT_EQUALS`, ranges, `IN`, `OR` logic) and `SearchChunks` additionally accepts an EQUALS clause on the primary key, but the scenario sends exactly one EQUALS clause on the run marker, so no assertion observes any other operator and no requirement constrains one. |
+
+#### Backstop assertion (non-normative)
+
+`VEC`'s content assertions (`IVC-VEC-002`, `IVC-VEC-004`) compare what a client reported against
+sets the harness itself derived from the write phase. If those sets were empty — every write denied,
+or every driver silently reporting no key — an empty similarity result and an empty chunk result
+would both compare equal: five clients agreeing on nothing, rendered green.
+`VectorSearchScenario.Judge`'s "the run seeded at least one row for these vector queries to match"
+assertion is therefore `VEC`'s backstop. It fires unconditionally, on every language, before and
+outside both comparisons. Like `REL`'s, `QRY`'s and `SCH`'s it carries no requirement ID: no
+`IVC-VEC-*` statement owns "the run seeded something" as such — it is a property of the harness's
+own fixture, not of a client — and it is strictly weaker than `IVC-VEC-002` and `IVC-VEC-004`
+wherever either can fail.
 
 ### SCH — Schema
 

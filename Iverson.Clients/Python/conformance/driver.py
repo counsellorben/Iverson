@@ -36,8 +36,10 @@ from iverson_client.aggregate import aggregate as aggregate_builder
 from iverson_client.generated import object_mapping_pb2_grpc as mapping_grpc
 from iverson_client.search import QueryBuilder, SearchOperator
 
+from iverson_client.vector_search import chunks as chunks_builder, similar as similar_builder
+
 from conformance.models import (
-    PyArticle, PyAuthor, PyBadArticle, PyTag, QueryDoc, SharedArticle, SharedAuthor,
+    PyArticle, PyAuthor, PyBadArticle, PyTag, QueryDoc, SharedArticle, SharedAuthor, VectorDoc,
 )
 
 LANGUAGE = "python"
@@ -46,7 +48,21 @@ LANGUAGE = "python"
 # registers SharedAuthor/SharedArticle (register-once rule).
 # schema-catalog (S5) uses only the register and read phases: this driver registers PyAuthor and
 # then fetches the catalogue back through the client library's own public get_schema().
-SCENARIOS = {"crud-roundtrip", "naming-rejected", "interop", "schema-catalog", "query"}
+# vector-search (S7) is register-phase-NEVER for this driver: only .NET registers VectorDoc
+# (register-once rule). This driver seeds one row and then issues a SearchSimilar and a
+# SearchChunks through the client library's own vector-search builders.
+SCENARIOS = {
+    "crud-roundtrip", "naming-rejected", "interop", "schema-catalog", "query", "vector-search",
+}
+
+# The Label every VectorDoc row this driver writes carries, and the value the orchestrator's
+# similarity comparison grades on. Must stay in step with VectorSearchScenario.LabelFor.
+VECTOR_DOC_LABEL = f"vec-{LANGUAGE}"
+# Shared verbatim by all five drivers: a per-language query text would make a disagreement between
+# two cells un-attributable to the client libraries, and a top-k below the seeded row count would
+# turn the orchestrator's exact set comparisons into prefix comparisons.
+VECTOR_QUERY_TEXT = "a short note about vector search conformance"
+VECTOR_TOP_K = 50
 
 
 # ── Argument parsing ──────────────────────────────────────────────────────────
@@ -574,6 +590,86 @@ def main(argv: List[str]) -> int:
             ))
         except Exception as exc:  # noqa: BLE001
             steps.append(StepResult("aggregate_count", False, error=describe(exc)))
+
+    elif phase == "register" and scenario == "vector-search":
+        # S7 vector-search: only the .NET driver ever runs this phase (register-once rule), so this
+        # branch exists for completeness and is never reached in a harness run — kept so a hand-run
+        # of this driver behaves the same as the others rather than exiting 2.
+        error: Optional[str] = None
+        try:
+            registrar = SchemaRegistrar(capture, VectorDoc)
+            registrar.register_all()
+        except Exception as exc:  # noqa: BLE001 - reported as data, not raised
+            error = describe(exc)
+
+        descriptor_json = capture.select("VectorDoc")
+        steps.append(StepResult(
+            name="register_vector_doc",
+            ok=error is None,
+            error=error,
+            type_descriptor=json.loads(descriptor_json) if descriptor_json else None,
+        ))
+
+    elif phase == "write" and scenario == "vector-search":
+        # One row, stamped with the run's marker and this language's label. The key is reported
+        # whenever persist() returned one — it is the orchestrator's expected-set accounting for
+        # BOTH vector requirements.
+        written_key = None
+        try:
+            entity = VectorDoc()
+            entity.tenant_id = tenant
+            entity.owner_id = owner_id
+            entity.marker = id_prefix
+            entity.title = f"vector search conformance note from {LANGUAGE}"
+            entity.body = (
+                f"This passage exists so the {LANGUAGE} conformance driver has a chunked body to "
+                "retrieve. It is short on purpose: one window per row keeps the orchestrator's "
+                "parent-key comparison exact."
+            )
+            entity.label = VECTOR_DOC_LABEL
+            written_key = coordinator(VectorDoc).persist(entity)
+            result = StepResult("write_vector_doc", True, entity=entity_to_dict(entity))
+        except Exception as exc:  # noqa: BLE001
+            result = StepResult("write_vector_doc", False, error=describe(exc))
+        if written_key is not None:
+            result.keys = {"vector_doc": str(written_key)}
+        steps.append(result)
+
+    elif phase == "read" and scenario == "vector-search":
+        # Both requests are built with the client library's own vector-search builders and executed
+        # through EntityCoordinator, never through the generated stub. Row labels and chunk parent
+        # keys are reported verbatim; the orchestrator decides what they mean.
+        try:
+            request = (
+                similar_builder("VectorDoc", "Title")
+                .text(VECTOR_QUERY_TEXT)
+                .top_k(VECTOR_TOP_K)
+                .where("Marker", SearchOperator.EQUALS, id_prefix)
+                .build()
+            )
+            hits = coordinator(VectorDoc).search_similar(request)
+            steps.append(StepResult(
+                "search_similar_by_title", True,
+                entity={"labels": [hit.entity.label for hit in hits]},
+            ))
+        except Exception as exc:  # noqa: BLE001
+            steps.append(StepResult("search_similar_by_title", False, error=describe(exc)))
+
+        try:
+            chunks_request = (
+                chunks_builder("VectorDoc", "Body")
+                .text(VECTOR_QUERY_TEXT)
+                .top_k(VECTOR_TOP_K)
+                .where("Marker", SearchOperator.EQUALS, id_prefix)
+                .build()
+            )
+            found = coordinator(VectorDoc).search_chunks(chunks_request)
+            steps.append(StepResult(
+                "search_chunks_by_marker", True,
+                entity={"parentKeys": [chunk.parent_key for chunk in found]},
+            ))
+        except Exception as exc:  # noqa: BLE001
+            steps.append(StepResult("search_chunks_by_marker", False, error=describe(exc)))
 
     elif phase == "register":
         # SchemaRegistrar.register_all() issues one RegisterSchema call per type, sequentially,

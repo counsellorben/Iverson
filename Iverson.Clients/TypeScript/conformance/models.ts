@@ -9,9 +9,12 @@
  */
 import 'reflect-metadata';
 import {
+    IversonChunk,
+    IversonEmbedding,
     IversonEntity,
     IversonGuid,
     IversonKey,
+    IversonMetadata,
     IversonTenant,
     ManyToMany,
     ManyToOne,
@@ -161,6 +164,47 @@ export class QueryDoc {
     ownerId: string = '';
 
     marker: string = '';
+
+    label: string = '';
+}
+
+/**
+ * S7 `vector-search`'s subject type. Every one of the five drivers declares the same type name and
+ * shape; only the .NET driver ever registers it (register-once rule), and every driver writes one
+ * row into it and then searches it.
+ *
+ * Deliberately relation-free, and deliberately without any enrichment annotation (summary,
+ * keywords, contextual chunking): the scenario's exact set comparisons must not depend on
+ * generative output that differs run to run.
+ *
+ * `marker` carries the run's `--id-prefix` and is the property both queries filter on. It is
+ * `@IversonMetadata()` so that one value scopes BOTH stores: the object collection filters it as an
+ * ordinary scalar payload clause, and the chunks collection can filter it only because metadata
+ * columns are denormalized onto every chunk point. `title` is the embedding source `SearchSimilar`
+ * searches; `body` is the chunk source `SearchChunks` searches, short enough to produce a single
+ * window per row. `label` is the row's per-language identity — `SearchSimilar` streams the Qdrant
+ * payload, whose row key lives under a reserved `key` entry no typed projection binds to `id` — and
+ * its spelling must match `VectorSearchScenario.LabelFor`.
+ */
+@IversonEntity()
+export class VectorDoc {
+    @IversonKey()
+    @IversonGuid()
+    id: string = '';
+
+    @IversonTenant()
+    tenantId: string = '';
+
+    ownerId: string = '';
+
+    @IversonMetadata()
+    marker: string = '';
+
+    @IversonEmbedding()
+    title: string = '';
+
+    @IversonChunk(256, 32)
+    body: string = '';
 
     label: string = '';
 }

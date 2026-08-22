@@ -27,9 +27,10 @@ import {
     TypeDescriptor,
 } from '../generated/object_mapping.js';
 
-import { QueryDoc, SharedArticle, SharedAuthor, TsArticle, TsAuthor, TsBadArticle, TsTag } from './models.js';
+import { QueryDoc, SharedArticle, SharedAuthor, TsArticle, TsAuthor, TsBadArticle, TsTag, VectorDoc } from './models.js';
 import { QueryBuilder, SearchOperator } from '../src/search.js';
 import { aggregate } from '../src/aggregate.js';
+import { chunks as chunksBuilder, similar as similarBuilder } from '../src/vector-search.js';
 
 const LANGUAGE = 'typescript';
 // naming-rejected (S2) is register-phase-only: the orchestrator never invokes this driver for
@@ -40,7 +41,21 @@ const LANGUAGE = 'typescript';
 // query (S6): register (dotnet-only, register-once), write and read — this driver seeds one
 // QueryDoc row and then issues a filtered search and a count aggregate through the client
 // library's own QueryBuilder/AggregateBuilder.
-const SCENARIOS = new Set(['crud-roundtrip', 'naming-rejected', 'interop', 'schema-catalog', 'query']);
+// vector-search (S7): register (dotnet-only, register-once), write and read — this driver seeds
+// one VectorDoc row and then issues a SearchSimilar and a SearchChunks through the client library's
+// own vector-search builders.
+const SCENARIOS = new Set([
+    'crud-roundtrip', 'naming-rejected', 'interop', 'schema-catalog', 'query', 'vector-search',
+]);
+
+/** The Label every VectorDoc row this driver writes carries, and the value the orchestrator's
+ *  similarity comparison grades on. Must stay in step with `VectorSearchScenario.LabelFor`. */
+const VECTOR_DOC_LABEL = `vec-${LANGUAGE}`;
+/** Shared verbatim by all five drivers: a per-language query text would make a disagreement between
+ *  two cells un-attributable to the client libraries, and a top-k below the seeded row count would
+ *  turn the orchestrator's exact set comparisons into prefix comparisons. */
+const VECTOR_QUERY_TEXT = 'a short note about vector search conformance';
+const VECTOR_TOP_K = 50;
 
 // ── Argument parsing ────────────────────────────────────────────────────────────
 
@@ -518,6 +533,57 @@ async function main(argv: string[]): Promise<number> {
             steps.push(step('aggregate_count', true, { entity: { value, total: response.total } }));
         } catch (err) {
             steps.push(step('aggregate_count', false, { error: describe(err) }));
+        }
+    } else if (phase === 'write' && scenario === 'vector-search') {
+        // One row, stamped with the run's marker and this language's label. The key is reported
+        // whenever persist() resolved with one — it is the orchestrator's expected-set accounting
+        // for BOTH vector requirements.
+        let vectorDocKey: string | undefined;
+        let result: StepResult;
+        try {
+            const entity = new VectorDoc();
+            entity.tenantId = tenant;
+            entity.ownerId = ownerId;
+            entity.marker = idPrefix;
+            entity.title = `vector search conformance note from ${LANGUAGE}`;
+            entity.body = `This passage exists so the ${LANGUAGE} conformance driver has a chunked `
+                + 'body to retrieve. It is short on purpose: one window per row keeps the '
+                + "orchestrator's parent-key comparison exact.";
+            entity.label = VECTOR_DOC_LABEL;
+            vectorDocKey = await client.coordinator(VectorDoc).persist(entity);
+            result = step('write_vector_doc', true, { entity: entityToPlain(entity) });
+        } catch (err) {
+            result = step('write_vector_doc', false, { error: describe(err) });
+        }
+        if (vectorDocKey !== undefined) result.keys = { vector_doc: vectorDocKey };
+        steps.push(result);
+    } else if (phase === 'read' && scenario === 'vector-search') {
+        // Both requests are built with the client library's own vector-search builders and executed
+        // through IversonClient's own searchSimilar/searchChunks entry points, never through a raw
+        // generated stub. Row labels and chunk parent keys are reported verbatim; the orchestrator
+        // decides what they mean.
+        try {
+            const request = similarBuilder('VectorDoc', 'Title')
+                .text(VECTOR_QUERY_TEXT)
+                .topK(VECTOR_TOP_K)
+                .where('Marker', SearchOperator.EQUALS, idPrefix)
+                .build();
+            const hits = await client.searchSimilar(request, VectorDoc);
+            steps.push(step('search_similar_by_title', true, { entity: { labels: hits.map((h) => h.entity.label) } }));
+        } catch (err) {
+            steps.push(step('search_similar_by_title', false, { error: describe(err) }));
+        }
+
+        try {
+            const request = chunksBuilder('VectorDoc', 'Body')
+                .text(VECTOR_QUERY_TEXT)
+                .topK(VECTOR_TOP_K)
+                .where('Marker', SearchOperator.EQUALS, idPrefix)
+                .build();
+            const found = await client.searchChunks(request);
+            steps.push(step('search_chunks_by_marker', true, { entity: { parentKeys: found.map((c) => c.parentKey) } }));
+        } catch (err) {
+            steps.push(step('search_chunks_by_marker', false, { error: describe(err) }));
         }
     } else if (phase === 'write') {
         // Keys are server-assigned: create requests must omit id entirely, and each row's key is

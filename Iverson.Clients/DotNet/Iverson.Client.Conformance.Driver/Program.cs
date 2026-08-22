@@ -28,8 +28,24 @@ const string SchemaCatalogScenario = "schema-catalog";
 // carrying the run's marker, then issues a filtered search and a count aggregate through the
 // client library's own QueryBuilder/AggregateBuilder.
 const string QueryScenario = "query";
+// vector-search (S7): register (this driver only, register-once), write, read. Seeds one VectorDoc
+// row carrying the run's marker in an [IversonMetadata] property, then issues a SearchSimilar over
+// the [IversonEmbedding] Title and a SearchChunks over the [IversonChunk] Body through the client
+// library's own QuerySimilarBuilder/QueryChunksBuilder.
+const string VectorSearchScenario = "vector-search";
+// The Label every VectorDoc row this driver writes carries, and the value the orchestrator's
+// similarity comparison grades on — SearchSimilar streams the Qdrant payload, whose row key lives
+// under a reserved "key" entry the typed projection does not bind to Id. Must stay in step with
+// Iverson.ClientConformance/Scenarios/VectorSearchScenario.cs's LabelFor.
+const string VectorDocLabel = $"vec-{Language}";
+// The query text all five drivers send verbatim to both vector RPCs, and the top-k they request.
+// Both are shared literals: a per-language query would make a disagreement between two cells
+// un-attributable to the client libraries, and a top-k below the seeded row count would turn the
+// orchestrator's exact set comparisons into prefix comparisons.
+const string VectorQueryText = "a short note about vector search conformance";
+const uint VectorTopK = 50;
 var supportedScenarios = new[]
-    { CrudRoundtripScenario, InteropScenario, SchemaCatalogScenario, QueryScenario };
+    { CrudRoundtripScenario, InteropScenario, SchemaCatalogScenario, QueryScenario, VectorSearchScenario };
 
 var args_ = Args.Parse(args);
 
@@ -100,6 +116,10 @@ else if (scenario == SchemaCatalogScenario)
 else if (scenario == QueryScenario)
 {
     await RunQueryAsync();
+}
+else if (scenario == VectorSearchScenario)
+{
+    await RunVectorSearchAsync();
 }
 else
 {
@@ -356,6 +376,103 @@ async Task RunQueryAsync()
                 var metric = response.Results.Count > 0 ? response.Results[0].MetricValue : (double?)null;
 
                 return result with { Entity = Json.Element(new { value = metric, total = response.Total }) };
+            });
+            break;
+        }
+
+        default:
+            await Console.Error.WriteLineAsync($"unknown phase '{phase}' for scenario '{scenario}'");
+            Environment.Exit(2);
+            break;
+    }
+}
+
+// ── S7 vector-search ─────────────────────────────────────────────────────────────────────────
+async Task RunVectorSearchAsync()
+{
+    switch (phase)
+    {
+        case "register":
+        {
+            // Only the .NET driver ever runs this phase for vector-search (register-once rule; see
+            // Scenarios/VectorSearchScenario.cs). Registered WITHOUT an authorization block — the
+            // orchestrator re-registers it with one before any driver's write phase.
+            capture.OnlySendTypeName = nameof(VectorDoc);
+            var registerOutcome = await Run(async () =>
+            {
+                var registrar = new SchemaRegistrar(registry, mappingForRegistration, NullLogger<SchemaRegistrar>.Instance);
+                await registrar.RegisterAllAsync();
+            });
+            capture.OnlySendTypeName = null;
+
+            steps.Add(new StepResult(
+                "register_vector_doc",
+                Ok: registerOutcome is null,
+                Error: registerOutcome,
+                TypeDescriptor: Json.Element(capture.Select(nameof(VectorDoc)))));
+            break;
+        }
+
+        case "write":
+        {
+            // One row, stamped with the run's marker and this language's label. The key is reported
+            // unconditionally when the write returned one — it is the orchestrator's expected-set
+            // accounting for BOTH vector requirements, and a row seeded but never reported would
+            // silently shrink what every language is graded against.
+            Guid? key = null;
+            await Step("write_vector_doc",
+                async result =>
+                {
+                    var written = await Coordinator<VectorDoc>().PostMappedAsync(new VectorDoc
+                    {
+                        TenantId = tenant,
+                        OwnerId = ownerId,
+                        Marker = idPrefix,
+                        Title = $"vector search conformance note from {Language}",
+                        Body = $"This passage exists so the {Language} conformance driver has a chunked " +
+                               "body to retrieve. It is short on purpose: one window per row keeps the " +
+                               "orchestrator's parent-key comparison exact.",
+                        Label = VectorDocLabel,
+                    });
+                    key = written?.Id;
+                    return result with { Entity = Json.Element(written) };
+                },
+                result => key is { } k
+                    ? result with { Keys = new Dictionary<string, string> { ["vector_doc"] = k.ToString() } }
+                    : result);
+            break;
+        }
+
+        case "read":
+        {
+            // Both requests are built with the client library's own builder API (Query.Similar /
+            // Query.Chunks) and executed through EntityCoordinator, never through the generated
+            // stub. What is reported is the row labels and the chunk parent keys, verbatim; the
+            // orchestrator decides what they mean.
+            await Step("search_similar_by_title", async result =>
+            {
+                var labels = new List<string>();
+                var query = Query.Similar<VectorDoc>(d => d.Title)
+                    .Text(VectorQueryText)
+                    .TopK(VectorTopK)
+                    .Where(d => d.Marker, SearchOperator.Equals, idPrefix);
+                await foreach (var hit in Coordinator<VectorDoc>().SearchSimilarAsync(query))
+                    labels.Add(hit.Entity.Label);
+
+                return result with { Entity = Json.Element(new { labels }) };
+            });
+
+            await Step("search_chunks_by_marker", async result =>
+            {
+                var parentKeys = new List<string>();
+                var query = Query.Chunks<VectorDoc>(d => d.Body)
+                    .Text(VectorQueryText)
+                    .TopK(VectorTopK)
+                    .Where(d => d.Marker, SearchOperator.Equals, idPrefix);
+                await foreach (var chunk in Coordinator<VectorDoc>().SearchChunksAsync(query))
+                    parentKeys.Add(chunk.ParentKey);
+
+                return result with { Entity = Json.Element(new { parentKeys }) };
             });
             break;
         }

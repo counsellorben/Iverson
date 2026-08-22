@@ -288,6 +288,71 @@ public static class Requirements
     /// </summary>
     public const string QryAggregateCountsExactlyMatchingRows = "IVC-QRY-004";
 
+    // ── VEC — Vector ────────────────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// A vector similarity search is reachable through the client's public API. Discharged by
+    /// <c>VectorSearchScenario.Judge</c>'s "a vector similarity search is reachable through the
+    /// client's public API" assertion, over each driver's own <c>search_similar_by_title</c> step —
+    /// the driver builds the request with its own client library's vector-search builder
+    /// (<c>Query.Similar&lt;T&gt;(...)</c>, <c>vector_search.similar(...)</c>,
+    /// <c>similar(...)</c>, <c>iverson.NewSimilar(...)</c>, <c>Query.similar(...)</c>) and executes
+    /// it through that library's own <c>SearchSimilar</c> entry point, never through a raw
+    /// generated stub. This is a <c>Capability</c>: it is satisfied by the call completing, and
+    /// says nothing about what came back — that is <c>IVC-VEC-002</c>, a distinct assertion, so a
+    /// client that can reach <c>SearchSimilar</c> but returns the wrong rows goes green here and
+    /// red there. A driver reporting that its client cannot perform the search at all is a FAIL,
+    /// not a skip.
+    /// </summary>
+    public const string VecSimilaritySearchReachable = "IVC-VEC-001";
+
+    /// <summary>
+    /// A vector similarity search returns exactly the rows its accompanying scalar filter matches.
+    /// Discharged by <c>VectorSearchScenario.Judge</c>'s "the similarity search returned exactly
+    /// the seeded rows" assertion, a two-way set comparison (seeded-but-absent AND
+    /// returned-but-unseeded are both failures) between the row labels the harness expects for the
+    /// languages whose WRITE phase reported a key
+    /// (<c>VectorSearchScenario.ExpectedLabels</c> over <c>DriverRunner.KeysByLanguage</c>) and the
+    /// labels the driver's own similarity search reported back. Labels rather than keys because
+    /// <c>SearchSimilar</c> streams the Qdrant point payload, whose row key lives under the
+    /// reserved <c>key</c> entry that no client library's typed projection binds to the entity's
+    /// own key property — the label is the one per-language-unique value all five typed
+    /// projections do carry. "Exactly" is checkable because every driver stamps the same
+    /// run-unique marker (<c>--id-prefix</c>) on its row and sends that marker as the request's
+    /// filter: no earlier run's rows and no other scenario's rows can match it. The assertion
+    /// fires unconditionally once the expected set is known, so a client reporting an empty result
+    /// set fails rather than being skipped; the empty EXPECTED set is caught by this axis's
+    /// backstop instead (see the standard's VEC backstop note).
+    /// </summary>
+    public const string VecSimilarityReturnsExactlyFilteredRows = "IVC-VEC-002";
+
+    /// <summary>
+    /// A chunk search is reachable through the client's public API. Discharged by
+    /// <c>VectorSearchScenario.Judge</c>'s "a chunk search is reachable through the client's public
+    /// API" assertion, over each driver's own <c>search_chunks_by_marker</c> step, built with the
+    /// client library's own chunk-search builder and executed through that library's own
+    /// <c>SearchChunks</c> entry point. Distinct from <c>IVC-VEC-001</c> rather than folded into it
+    /// because <c>SearchSimilar</c> and <c>SearchChunks</c> are two different RPCs against two
+    /// different Qdrant collections with two different response shapes (an entity payload versus a
+    /// parent key plus passage text) — a client can reach either without the other, and the matrix
+    /// must say which.
+    /// </summary>
+    public const string VecChunkSearchReachable = "IVC-VEC-003";
+
+    /// <summary>
+    /// A chunk search returns chunks belonging to exactly the parent rows its accompanying filter
+    /// matches. Discharged by <c>VectorSearchScenario.Judge</c>'s "the chunk search returned chunks
+    /// for exactly the seeded rows" assertion, a two-way set comparison between the row keys the
+    /// WRITE phase reported and the DISTINCT parent keys the driver's own chunk search reported
+    /// back. <c>ChunkSearchResponse.parent_key</c> is returned unconditionally by the server, so
+    /// this requirement — unlike <c>IVC-VEC-002</c> — grades at row-key granularity against exactly
+    /// the same expectation <c>IVC-QRY-002</c> uses. Distinct-ness is deliberate: one parent row may
+    /// own several chunks, and the requirement constrains which PARENTS the filter admits, not how
+    /// many windows the server split their text into (chunk windowing is Deferred in the VEC
+    /// coverage ledger).
+    /// </summary>
+    public const string VecChunkSearchReturnsExactlyFilteredParents = "IVC-VEC-004";
+
     // ── SCH — Schema ────────────────────────────────────────────────────────────────────────
 
     /// <summary>
