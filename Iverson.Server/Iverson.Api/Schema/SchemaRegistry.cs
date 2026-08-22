@@ -103,7 +103,8 @@ public sealed class SchemaRegistry(
 
             foreach (var relationName in relationNames)
             {
-                var relation = schema.Relations.FirstOrDefault(r => r.PropertyName == relationName);
+                var relation = schema.Relations.FirstOrDefault(
+                    r => string.Equals(r.PropertyName, relationName, StringComparison.OrdinalIgnoreCase));
                 if (relation is null) continue;
 
                 if (!index.TryGetValue(relation.RelatedTypeName, out var deps))

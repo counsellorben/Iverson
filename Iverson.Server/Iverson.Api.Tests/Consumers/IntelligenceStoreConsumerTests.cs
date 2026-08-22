@@ -9,6 +9,7 @@ using Iverson.Embeddings;
 using Iverson.Events;
 using Iverson.Sql;
 using Iverson.Vector;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using NSubstitute;
@@ -2118,5 +2119,77 @@ public class IntelligenceStoreConsumerTests
             Arg.Any<ulong>(),
             Arg.Is<IReadOnlyDictionary<string, float[]>>(d => d.ContainsKey("body_vector")),
             Arg.Any<IReadOnlyDictionary<string, object>?>());
+    }
+
+    [Fact]
+    public async Task HandleCreated_AuthoritativeTenantValueMissing_RendersDocumentWithoutThrowingAndLogsWarning()
+    {
+        // final-review Finding 5: authoritativeTenantValue can be null independent of whether
+        // TenantColumn is configured — FetchAuthoritativeOwnerValueAsync also returns null when
+        // the authoritative Postgres row is simply gone (e.g. a delete-then-recreate race). The
+        // previous `authoritativeTenantValue!` asserted that away; this proves the render still
+        // completes safely (from payload scalars only) and the degradation is now logged rather
+        // than silent.
+        await _registry.RegisterAsync(TemplatedDocSchema());
+        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>())
+                 .Returns((string?)null);
+
+        var recordingLogger = new RecordingLogger<IntelligenceStoreConsumer>();
+        var sut = new IntelligenceStoreConsumer(
+            _consumer,
+            _vectorSchema,
+            _vectorWrite,
+            _embedding,
+            _registry,
+            _entities,
+            new DocumentRenderer(_registry, _entities),
+            new IntelligenceTenantScope("test-signing-key-0123456789abcdef"),
+            _enrichment,
+            Options.Create(_enrichmentOptions),
+            recordingLogger);
+
+        var key = Guid.NewGuid().ToString();
+        var ev = TemplatedDocEvent(
+            key,
+            """{"Body":"some body text","Tagline":"a tagline","TenantId":"test-tenant"}""",
+            "trace-null-tenant");
+
+        var act = () => sut.HandleAsync(ev.Key, Serialize(ev), CancellationToken.None);
+        await act.Should().NotThrowAsync();
+
+        // Distinct from FetchAuthoritativeOwnerValueAsync's own "no authoritative row" warning
+        // (also logged here, on the tenant re-derivation call, since the row is null) — assert
+        // on wording unique to the document-render degradation warning itself, so this doesn't
+        // pass merely because the pre-existing re-derivation log fired.
+        recordingLogger.Entries.Should().Contain(e =>
+            e.Level == LogLevel.Warning &&
+            e.Message.Contains("Rendering document") &&
+            e.Message.Contains("TemplatedDoc") &&
+            e.Message.Contains(key));
+
+        // The document still rendered from payload scalars alone and was chunked/upserted, just
+        // routed to the no-tenant-claim collection rather than dropped.
+        await _vectorWrite.Received().UpsertNamedAsync(
+            Arg.Is<string>(c => c.StartsWith("templated_docs_chunks_")),
+            Arg.Any<ulong>(),
+            Arg.Is<IReadOnlyDictionary<string, float[]>>(d => d.ContainsKey("document_vector")),
+            Arg.Any<IReadOnlyDictionary<string, object>?>());
+    }
+
+    // A test logger that records level + formatted message, mirroring
+    // DocumentRerenderQueueWorkerTests.RecordingLogger, so a specific warning's content (not
+    // merely its presence) can be asserted.
+    private sealed class RecordingLogger<T> : ILogger<T>
+    {
+        public List<(LogLevel Level, string Message)> Entries { get; } = [];
+
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+
+        public bool IsEnabled(LogLevel logLevel) => true;
+
+        public void Log<TState>(
+            LogLevel logLevel, EventId eventId, TState state, Exception? exception,
+            Func<TState, Exception?, string> formatter) =>
+            Entries.Add((logLevel, formatter(state, exception)));
     }
 }

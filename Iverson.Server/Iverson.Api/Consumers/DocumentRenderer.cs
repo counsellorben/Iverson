@@ -100,7 +100,9 @@ public sealed class DocumentRenderer(SchemaRegistry registry, IEntityRepository 
     private async Task<JsonElement?> FetchOneHopAsync(
         SchemaDescriptor schema, JsonElement payload, string relationName, string tenantId, CancellationToken ct)
     {
-        var relation = schema.Relations.First(r => r.PropertyName == relationName);
+        var relation = schema.Relations.FirstOrDefault(
+            r => string.Equals(r.PropertyName, relationName, StringComparison.OrdinalIgnoreCase));
+        if (relation is null) return null;
         var targetSchema = registry.Get(relation.RelatedTypeName);
         if (targetSchema is null) return null;
 
@@ -127,7 +129,9 @@ public sealed class DocumentRenderer(SchemaRegistry registry, IEntityRepository 
     private async Task<List<JsonElement>> FetchBlockAsync(
         SchemaDescriptor schema, JsonElement payload, string relationName, string tenantId, CancellationToken ct)
     {
-        var relation = schema.Relations.First(r => r.PropertyName == relationName);
+        var relation = schema.Relations.FirstOrDefault(
+            r => string.Equals(r.PropertyName, relationName, StringComparison.OrdinalIgnoreCase));
+        if (relation is null) return [];
         var targetSchema = registry.Get(relation.RelatedTypeName);
         if (targetSchema is null) return [];
 
@@ -187,7 +191,15 @@ public sealed class DocumentRenderer(SchemaRegistry registry, IEntityRepository 
         if (payload.TryGetProperty(propertyName, out var v)) return v;
 
         var camel = char.ToLowerInvariant(propertyName[0]) + propertyName[1..];
-        return payload.TryGetProperty(camel, out var vc) ? vc : null;
+        if (payload.TryGetProperty(camel, out var vc)) return vc;
+
+        foreach (var prop in payload.EnumerateObject())
+        {
+            if (string.Equals(prop.Name, propertyName, StringComparison.OrdinalIgnoreCase))
+                return prop.Value;
+        }
+
+        return null;
     }
 
     private static List<string> ExtractKeys(JsonElement payload, string propertyName)

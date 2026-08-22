@@ -218,7 +218,8 @@ public sealed class RegisterSchemaAuthorizationIntegrationTests(AllStoresContain
             fixture.PostgresSchemaManager,
             Substitute.For<IEmbeddingService>(),
             registry,
-            Substitute.For<IDocumentRerenderQueueRepository>());
+            Substitute.For<IDocumentRerenderQueueRepository>(),
+            NullLogger<SchemaRegistrationOrchestrator>.Instance);
 
         var sut = new ObjectMappingGrpcService(
             Substitute.For<IEntityRepository>(),

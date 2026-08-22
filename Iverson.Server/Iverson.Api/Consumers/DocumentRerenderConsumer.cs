@@ -68,36 +68,51 @@ public sealed class DocumentRerenderConsumer(
 
         foreach (var (declaringTypeName, relation) in dependents)
         {
-            var declaringSchema = registry.Get(declaringTypeName);
-            if (declaringSchema is null) continue;
-
-            switch (relation.Kind)
+            // This consumer has its own Kafka group, so an unhandled throw here would stall its
+            // offset commit for the WHOLE topic — one persistently failing dependent (a dropped
+            // schema, a malformed FK column) would starve re-render detection for every type on
+            // the topic, not just this one. Isolate per-dependent and keep going.
+            try
             {
-                case RelationKind.ManyToOne:
-                case RelationKind.OneToOne:
-                    // The FK lives on the DECLARING row, pointing at the changed entity — find
-                    // declaring rows whose FK column equals the changed entity's key.
-                    await EnqueueByColumnAsync(declaringSchema, relation.ForeignKey, ev.Key, tenantId);
-                    break;
+                var declaringSchema = registry.Get(declaringTypeName);
+                if (declaringSchema is null) continue;
 
-                case RelationKind.OneToMany:
-                    // The FK lives on the CHANGED row (the child), pointing back at its parent
-                    // (the declaring entity) — read it straight out of the payload. FK
-                    // reassignment (the parent value moved) must enqueue BOTH the old and the
-                    // new parent: the new parent comes from the current payload, the old parent
-                    // only from PriorPayloadJson (null on Created).
-                    await EnqueueOneToManyParentsAsync(declaringTypeName, relation, payload, priorPayload, tenantId);
-                    break;
+                switch (relation.Kind)
+                {
+                    case RelationKind.ManyToOne:
+                    case RelationKind.OneToOne:
+                        // The FK lives on the DECLARING row, pointing at the changed entity — find
+                        // declaring rows whose FK column equals the changed entity's key.
+                        await EnqueueByColumnAsync(declaringSchema, relation.ForeignKey, ev.Key, tenantId);
+                        break;
 
-                case RelationKind.ManyToMany:
-                    // The FK is a uuid[] on the DECLARING row — find declaring rows whose array
-                    // contains the changed entity's key.
-                    await EnqueueByArrayContainsAsync(declaringSchema, relation.ForeignKey, ev.Key, tenantId);
-                    break;
+                    case RelationKind.OneToMany:
+                        // The FK lives on the CHANGED row (the child), pointing back at its parent
+                        // (the declaring entity) — read it straight out of the payload. FK
+                        // reassignment (the parent value moved) must enqueue BOTH the old and the
+                        // new parent: the new parent comes from the current payload, the old parent
+                        // only from PriorPayloadJson (null on Created).
+                        await EnqueueOneToManyParentsAsync(declaringTypeName, relation, payload, priorPayload, tenantId);
+                        break;
 
-                default:
-                    throw new ArgumentOutOfRangeException(nameof(relation.Kind), relation.Kind,
-                        $"Unhandled {nameof(RelationKind)} value — add a case above.");
+                    case RelationKind.ManyToMany:
+                        // The FK is a uuid[] on the DECLARING row — find declaring rows whose array
+                        // contains the changed entity's key.
+                        await EnqueueByArrayContainsAsync(declaringSchema, relation.ForeignKey, ev.Key, tenantId);
+                        break;
+
+                    default:
+                        throw new ArgumentOutOfRangeException(nameof(relation.Kind), relation.Kind,
+                            $"Unhandled {nameof(RelationKind)} value — add a case above.");
+                }
+            }
+            catch (Exception ex)
+            {
+                logger.LogError(ex,
+                    "[DocumentRerender] Failed to enqueue re-render for dependent type={DeclaringType} " +
+                    "relation={Relation} of changed type={ChangedType} key={Key} — skipping this dependent.",
+                    declaringTypeName.SanitizeForLog(), relation.PropertyName.SanitizeForLog(),
+                    ev.TypeName.SanitizeForLog(), ev.Key.SanitizeForLog());
             }
         }
     }

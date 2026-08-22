@@ -226,7 +226,11 @@ internal static class SchemaBuilder
 
     internal static CollectionSchema ToChunkCollectionSchema(SchemaDescriptor d)
     {
-        var indexes = new List<PayloadIndex> { new("parent_id", PayloadIndexKind.Keyword) };
+        var indexes = new List<PayloadIndex>
+        {
+            new("parent_id", PayloadIndexKind.Keyword),
+            new("field", PayloadIndexKind.Keyword)
+        };
         if (d.Authorization?.OwnerField is { } ownerField)
             indexes.Add(new PayloadIndex(ownerField.ToCamelCase(), PayloadIndexKind.Keyword));
 

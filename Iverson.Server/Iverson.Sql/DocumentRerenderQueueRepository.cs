@@ -53,12 +53,17 @@ public sealed class DocumentRerenderQueueRepository(IRecordStoreQueryExecutor sq
                 EnqueuedAt = DateTimeOffset.UtcNow
             });
 
+    // A new template invalidation must restart the scan from the beginning, even if a prior
+    // backfill for this type is already mid-expansion (Cursor advanced): otherwise every entity
+    // before the old cursor is skipped and re-rendered against the STALE template forever, since
+    // the rendered document has no stored copy to later correct it against.
     public Task EnqueueTypeAsync(string typeName) =>
         sql.ExecuteAsync(
             $"""
             INSERT INTO "{TableName}" ("Id", "TypeName", "EntityKey", "Cursor", "EnqueuedAt", "Attempts")
             VALUES (@Id, @TypeName, null, null, @EnqueuedAt, 0)
-            ON CONFLICT DO NOTHING
+            ON CONFLICT ("TypeName") WHERE "EntityKey" IS NULL
+            DO UPDATE SET "Cursor" = NULL, "EnqueuedAt" = @EnqueuedAt, "Attempts" = 0, "LastError" = NULL
             """,
             new
             {

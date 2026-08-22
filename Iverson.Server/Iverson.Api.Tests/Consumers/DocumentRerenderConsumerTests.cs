@@ -416,4 +416,44 @@ public class DocumentRerenderConsumerTests
 
         await _queue.DidNotReceiveWithAnyArgs().EnqueueEntityAsync(default, default!, default!);
     }
+
+    // ── Per-dependent error isolation (final-review Finding 6) ─────────────
+
+    [Fact]
+    public async Task Dispatch_OneDependentThrows_OtherDependentsAreStillEnqueued()
+    {
+        // This consumer has its own Kafka group, so an unhandled throw here would stall its
+        // offset commit for the whole topic — one persistently failing dependent (a dropped
+        // schema, a malformed FK column) must not starve re-render detection for every other
+        // dependent of the same changed entity, let alone every other type on the topic.
+        await _registry.RegisterAsync(WidgetSchema());
+        await _registry.RegisterAsync(BadgeSchema());
+        await _registry.RegisterAsync(AuthorSchema());
+
+        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), AuthorId)
+            .Returns($$"""{"Id":"{{AuthorId}}","Name":"Ada","TenantId":"{{TenantA}}"}""");
+
+        // Widget's "Author" relation (FK "AuthorId" on widgets) throws — simulates a malformed
+        // FK column or dropped schema for that one dependent.
+        _entities.FetchByColumnAsync(
+                Arg.Is<TableSchema>(s => s.TableName == "widgets"), "AuthorId", AuthorId, true, TenantA)
+            .Returns<IEnumerable<string>>(_ => throw new InvalidOperationException("boom"));
+        // Widget's "Editor" relation (FK "EditorRef") is unaffected.
+        _entities.FetchByColumnAsync(
+                Arg.Is<TableSchema>(s => s.TableName == "widgets"), "EditorRef", AuthorId, true, TenantA)
+            .Returns([]);
+        // Badge's "Owner" relation (FK "AuthorId" on badges) is unaffected.
+        _entities.FetchByColumnAsync(
+                Arg.Is<TableSchema>(s => s.TableName == "badges"), "AuthorId", AuthorId, true, TenantA)
+            .Returns([$$"""{"Id":"{{BadgeId}}","TenantId":"{{TenantA}}"}"""]);
+
+        var ev = MakeEvent(EntityEventType.Updated, "Author", AuthorId,
+            $$"""{"Id":"{{AuthorId}}","Name":"Ada","TenantId":"{{TenantA}}"}""");
+
+        var act = () => BuildSut().DispatchAsync(ev.Key, Serialize(ev), CancellationToken.None);
+        await act.Should().NotThrowAsync();
+
+        await _queue.Received(1).EnqueueEntityAsync(TenantA, "Badge", BadgeId);
+        await _queue.DidNotReceive().EnqueueEntityAsync(TenantA, "Widget", WidgetId);
+    }
 }

@@ -328,6 +328,20 @@ public class SchemaBuilderTests
     }
 
     [Fact]
+    public void ToChunkCollectionSchema_IncludesPayloadIndex_ForField()
+    {
+        // final-review Finding 4: IntelligenceStoreConsumer's orphan-delete pass filters
+        // DeleteByFilterAsync on parent_id AND field on every chunk write. Without a payload
+        // index for "field", Qdrant intersects an indexed parent_id match against an unindexed
+        // field scan on the hot path for every pre-existing chunked type.
+        var descriptor = SchemaFixtures.ArticleSchema();
+
+        var schema = SchemaBuilder.ToChunkCollectionSchema(descriptor);
+
+        schema.PayloadIndexes.Should().ContainSingle(p => p.FieldName == "field" && p.Kind == PayloadIndexKind.Keyword);
+    }
+
+    [Fact]
     public void BuildDescriptor_ManyToManyRelation_MapsToInternalManyToMany()
     {
         var td = new TypeDescriptor { TypeName = "Article" };

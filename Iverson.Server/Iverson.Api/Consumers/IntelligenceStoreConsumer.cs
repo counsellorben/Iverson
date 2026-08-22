@@ -181,9 +181,31 @@ public sealed class IntelligenceStoreConsumer(
             {
                 foreach (var cf in schema.ChunkFields)
                 {
-                    var text = cf.PropertyName == "Document"
-                        ? await documentRenderer.RenderAsync(schema, payload, authoritativeTenantValue!, ct)
-                        : ExtractString(payload, cf.PropertyName);
+                    string? text;
+                    if (cf.PropertyName == "Document")
+                    {
+                        // authoritativeTenantValue can be null independent of whether the type
+                        // even declares a TenantColumn — FetchAuthoritativeOwnerValueAsync also
+                        // returns null when the authoritative Postgres row is gone by the time
+                        // this event is processed. That is still safe to render through: a null
+                        // tenant becomes a SQL NULL RLS GUC, so relation fetches return zero rows
+                        // and the document renders from payload scalars only — but it is a
+                        // silently degraded document, so log it rather than assert it away.
+                        if (authoritativeTenantValue is null)
+                        {
+                            logger.LogWarning(
+                                "[Intelligence] Rendering document for type={Type} key={Key} with no " +
+                                "authoritative tenant value — relation-backed placeholders will render empty.",
+                                schema.TypeName.SanitizeForLog(), ev.Key.SanitizeForLog());
+                        }
+
+                        text = await documentRenderer.RenderAsync(
+                            schema, payload, authoritativeTenantValue ?? string.Empty, ct);
+                    }
+                    else
+                    {
+                        text = ExtractString(payload, cf.PropertyName);
+                    }
 
                     // Delete this field's stale chunk points before the empty-text guard below —
                     // not after. A field whose text has shrunk or become empty must not leave

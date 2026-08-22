@@ -95,6 +95,32 @@ public sealed class DocumentRerenderQueuePostgresIntegrationTests(DocumentRerend
     }
 
     [Fact]
+    public async Task EnqueueTypeAsync_SecondEnqueueWhileCursorAdvanced_ResetsCursorToNullAndLeavesOneRow()
+    {
+        // Simulates a template change landing mid-backfill: the worker has already advanced
+        // Cursor past some entities. A second EnqueueTypeAsync (a NEW template invalidation)
+        // must restart the scan from the beginning — otherwise every entity before the old
+        // cursor is skipped and rendered against the stale template forever (final-review
+        // Finding 2).
+        var queue = await FreshQueueAsync();
+
+        await queue.EnqueueTypeAsync("Article");
+        var rows = (await queue.PollAsync(maxAttempts: 5, batchSize: 10)).ToList();
+        await queue.AdvanceCursorAsync(rows[0].Id, "cursor-40000");
+
+        await queue.EnqueueTypeAsync("Article");
+
+        var count = await _repo.QuerySingleOrDefaultAsync<int>(
+            $"""SELECT COUNT(*) FROM "{DocumentRerenderQueueRepository.TableName}" """);
+        count.Should().Be(1);
+
+        var cursorAfter = await _repo.QuerySingleOrDefaultAsync<string?>(
+            $"""SELECT "Cursor" FROM "{DocumentRerenderQueueRepository.TableName}" WHERE "TypeName" = @TypeName""",
+            new { TypeName = "Article" });
+        cursorAfter.Should().BeNull();
+    }
+
+    [Fact]
     public async Task EnqueueEntityAsync_AndEnqueueTypeAsync_ForSameType_CoexistAsTwoRows()
     {
         // The two partial unique indexes' predicates are disjoint: an entity row (EntityKey

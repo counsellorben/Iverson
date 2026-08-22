@@ -30,7 +30,8 @@ public class SchemaRegistrationOrchestratorTests
             _schemaManager,
             _embedding,
             _registry,
-            Substitute.For<IDocumentRerenderQueueRepository>());
+            Substitute.For<IDocumentRerenderQueueRepository>(),
+            NullLogger<SchemaRegistrationOrchestrator>.Instance);
     }
 
     private static TypeDescriptor SimpleType(string name, params string[] extraScalars)

@@ -468,4 +468,63 @@ public class DocumentRendererTests
 
         result.Should().Be("By ");
     }
+
+    // ── Case-insensitive resolution (final-review Finding 1) ────────────────
+    // Registration validation matches relation/property names case-insensitively; the renderer
+    // must resolve the same way or a legacy/bypassed schema throws out of ingest instead of
+    // rendering the way it validated.
+
+    [Fact]
+    public async Task RenderAsync_OneHop_RelationNameCaseMismatch_ResolvesRelationCaseInsensitively()
+    {
+        // Template spells the relation "author" (lowercase); the declared relation is "Author".
+        await _registry.RegisterAsync(WidgetSchema("By {author.Name}"));
+        await _registry.RegisterAsync(AuthorSchema());
+
+        _entities.FetchManyByKeysAsync(
+                Arg.Is<TableSchema>(s => s.TableName == "authors"),
+                Arg.Any<IReadOnlyList<string>>(), true, Tenant)
+            .Returns([new KeyedRow(AuthorId, $$"""{"Id":"{{AuthorId}}","Name":"Alice","TenantId":"{{Tenant}}"}""")]);
+
+        var result = await _sut.RenderAsync(
+            _registry.Get("Widget")!,
+            Payload($$"""{"Id":"{{WidgetId}}","AuthorId":"{{AuthorId}}","TenantId":"{{Tenant}}"}"""),
+            Tenant, Ct);
+
+        result.Should().Be("By Alice");
+    }
+
+    [Fact]
+    public async Task RenderAsync_Block_RelationNameCaseMismatch_ResolvesRelationCaseInsensitively()
+    {
+        // Template spells the relation "comments" (lowercase); the declared relation is "Comments".
+        await _registry.RegisterAsync(WidgetSchema("{#comments}{Body}{/comments}"));
+        await _registry.RegisterAsync(CommentSchema());
+
+        _entities.FetchByColumnAsync(
+                Arg.Is<TableSchema>(s => s.TableName == "comments"), "WidgetId", WidgetId, true, Tenant)
+            .Returns([$$"""{"Id":"{{CommentA}}","Body":"first","WidgetId":"{{WidgetId}}","TenantId":"{{Tenant}}"}"""]);
+
+        var result = await _sut.RenderAsync(
+            _registry.Get("Widget")!,
+            Payload($$"""{"Id":"{{WidgetId}}","TenantId":"{{Tenant}}"}"""),
+            Tenant, Ct);
+
+        result.Should().Be("first");
+    }
+
+    [Fact]
+    public async Task RenderAsync_Scalar_PropertyNameCaseMismatch_ResolvesCaseInsensitively()
+    {
+        // Template spells the scalar "{NAME}" in a case matching neither the declared column
+        // ("Name") nor its camelCase form ("name").
+        await _registry.RegisterAsync(WidgetSchema("Value: {NAME}"));
+
+        var result = await _sut.RenderAsync(
+            _registry.Get("Widget")!,
+            Payload($$"""{"Id":"{{WidgetId}}","Name":"Widget One","TenantId":"{{Tenant}}"}"""),
+            Tenant, Ct);
+
+        result.Should().Be("Value: Widget One");
+    }
 }

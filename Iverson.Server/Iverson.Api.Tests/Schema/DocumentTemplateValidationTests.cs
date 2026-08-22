@@ -35,7 +35,8 @@ public class DocumentTemplateValidationTests
             _schemaManager,
             _embedding,
             _registry,
-            _rerenderQueue);
+            _rerenderQueue,
+            NullLogger<SchemaRegistrationOrchestrator>.Instance);
     }
 
     // Widget: Id, TenantId, Name (string), and a document template referencing {Name}.
@@ -443,5 +444,22 @@ public class DocumentTemplateValidationTests
         await _sut.RegisterAsync(new SchemaRequest { RootType = widget }, CancellationToken.None);
 
         await _rerenderQueue.Received(1).EnqueueTypeAsync("Widget");
+    }
+
+    [Fact]
+    public async Task RegisterAsync_TemplateRemoved_EnqueuesNoBackfill()
+    {
+        // final-review Finding 3: with the template gone, SchemaBuilder no longer emits the
+        // synthetic "Document" chunk field, so nothing in ChunkFields can ever be used to clean
+        // up the old chunk points — a type-level backfill here would just re-ingest the whole
+        // type for nothing.
+        await _sut.RegisterAsync(new SchemaRequest { RootType = WidgetType("{Name}") }, CancellationToken.None);
+        _rerenderQueue.ClearReceivedCalls();
+
+        var widget = SimpleType("Widget", "Name"); // DocumentTemplate unset -> null source
+
+        await _sut.RegisterAsync(new SchemaRequest { RootType = widget }, CancellationToken.None);
+
+        await _rerenderQueue.DidNotReceive().EnqueueTypeAsync(Arg.Any<string>());
     }
 }

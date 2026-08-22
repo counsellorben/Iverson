@@ -16,7 +16,8 @@ public sealed class SchemaRegistrationOrchestrator(
     IRecordStoreSchemaManager schemaManager,
     IEmbeddingService embedding,
     SchemaRegistry registry,
-    IDocumentRerenderQueueRepository rerenderQueue)
+    IDocumentRerenderQueueRepository rerenderQueue,
+    ILogger<SchemaRegistrationOrchestrator> logger)
     : ISchemaRegistrationOrchestrator
 {
     // TypeName/property names are string-interpolated unescaped into CREATE TABLE/ALTER TABLE
@@ -174,8 +175,32 @@ public sealed class SchemaRegistrationOrchestrator(
         foreach (var descriptor in descriptors)
         {
             var priorSource = registry.Get(descriptor.TypeName)?.DocumentTemplateSource;
-            if (!string.Equals(priorSource, descriptor.DocumentTemplateSource, StringComparison.Ordinal))
-                changedTemplateTypes.Add(descriptor.TypeName);
+            if (string.Equals(priorSource, descriptor.DocumentTemplateSource, StringComparison.Ordinal))
+                continue;
+
+            // A template REMOVAL (prior non-null, new null) must not enqueue a type-level
+            // backfill: with the template gone, SchemaBuilder no longer emits the synthetic
+            // "Document" chunk field, so ChunkFields has no Document entry and the orphan-delete
+            // pass in IntelligenceStoreConsumer (which iterates ChunkFields) can never clean up
+            // the old document_vector chunk points — the backfill would just re-ingest every
+            // entity of the type for nothing. Deleting those points here would require iterating
+            // every tenant's per-tenant chunk collection (tenant is baked into the collection
+            // name, not a payload filter — see IntelligenceTenantScope.ResolveCollectionName),
+            // which needs a tenant-listing collaborator this orchestrator does not have and
+            // isn't reachable without pulling in vector-store + tenant-repository dependencies
+            // well beyond this fix's scope. Log a clear warning instead so the gap is visible,
+            // and skip the pointless enqueue either way.
+            if (priorSource is not null && descriptor.DocumentTemplateSource is null)
+            {
+                logger.LogWarning(
+                    "Document template removed for type '{TypeName}'; stale 'Document' chunk " +
+                    "points in every tenant's {{collection}}_chunks collection are NOT " +
+                    "automatically deleted and must be cleaned up manually.",
+                    descriptor.TypeName);
+                continue;
+            }
+
+            changedTemplateTypes.Add(descriptor.TypeName);
         }
 
         // Phase 3: apply + register. Only reached once every type in the request has passed
