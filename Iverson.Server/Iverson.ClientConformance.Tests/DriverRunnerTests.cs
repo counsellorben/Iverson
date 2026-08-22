@@ -16,7 +16,8 @@ public class DriverRunnerTests
         TokenEndpoint: "http://localhost:9000/application/o/token/",
         ActingToken: "acting-token",
         OwnerId: "owner-id",
-        IdPrefix: "s1-");
+        IdPrefix: "s1-",
+        WrongActingToken: "wrong-acting-token");
 
     [Fact]
     public void MergeKeys_QualifiesKeysByLanguage_SoSameLogicalNameFromTwoLanguagesDoNotCollide()
@@ -98,6 +99,36 @@ public class DriverRunnerTests
             "--tenant", "iverson-loadtest-dynamic", "--grpc", "http://localhost:5000",
             "--acting-token", "acting-token", "--owner-id", "owner-id", "--id-prefix", "s1-",
             "--out", "/tmp/out.json"]);
+    }
+
+    /// <summary>
+    /// S8 identity's negative leg is the only thing that reads this flag, but every driver
+    /// invocation carries it: the flag set is built once for all phases and all scenarios, and a
+    /// driver that never needs it ignores it. It must be emitted even when empty (the harness
+    /// always emits `--flag value` pairs) so a driver's positional parser never mis-pairs the
+    /// flags that follow.
+    /// </summary>
+    [Fact]
+    public void BuildFlags_CarriesTheWrongActingTokenForTheIdentityScenariosNegativeLeg()
+    {
+        var runner = new DriverRunner(repoRoot: "/tmp");
+
+        var flags = runner.BuildFlags(Phase.Read, "go", Context(), "/tmp/out.json");
+
+        flags.Should().Contain(["--wrong-acting-token", "wrong-acting-token"]);
+    }
+
+    [Fact]
+    public void BuildFlags_WithNoWrongActingTokenConfigured_StillEmitsTheFlagWithAnEmptyValue()
+    {
+        var runner = new DriverRunner(repoRoot: "/tmp");
+
+        var flags = runner.BuildFlags(
+            Phase.Read, "go", Context() with { WrongActingToken = string.Empty }, "/tmp/out.json");
+
+        var index = flags.IndexOf("--wrong-acting-token");
+        index.Should().BeGreaterThanOrEqualTo(0);
+        flags[index + 1].Should().BeEmpty();
     }
 
     // The five client libraries disagree on endpoint syntax (.NET/Java need the scheme, Go/

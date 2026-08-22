@@ -19,7 +19,12 @@ public sealed record DriverContext(
     string ActingToken,
     string OwnerId,
     string IdPrefix,
-    string ServiceToken = "");
+    string ServiceToken = "",
+    // S8 identity's negative leg: an acting-user token for a DIFFERENT, active tenant, which the
+    // driver sends in place of its own to prove the server denies that write. Empty for every
+    // other scenario — and emitted as an empty value rather than omitted, so a driver's
+    // positional `--flag value` parser never mis-pairs the flags that follow it.
+    string WrongActingToken = "");
 
 /// <summary>
 /// The outcome of running one language's driver for one phase. Exactly one of the three shapes
@@ -295,6 +300,8 @@ public sealed class DriverRunner
             // five languages each re-derive Authentik's issuer semantics.
             "--service-token", context.ServiceToken,
             "--acting-token", context.ActingToken,
+            // Always emitted, empty included — see DriverContext.WrongActingToken.
+            "--wrong-acting-token", context.WrongActingToken,
             "--owner-id", context.OwnerId,
             "--id-prefix", context.IdPrefix,
             "--out", outPath,

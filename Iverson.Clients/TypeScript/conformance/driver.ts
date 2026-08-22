@@ -27,7 +27,7 @@ import {
     TypeDescriptor,
 } from '../generated/object_mapping.js';
 
-import { QueryDoc, SharedArticle, SharedAuthor, TsArticle, TsAuthor, TsBadArticle, TsTag, VectorDoc } from './models.js';
+import { IdentityDoc, QueryDoc, SharedArticle, SharedAuthor, TsArticle, TsAuthor, TsBadArticle, TsTag, VectorDoc } from './models.js';
 import { QueryBuilder, SearchOperator } from '../src/search.js';
 import { aggregate } from '../src/aggregate.js';
 import { chunks as chunksBuilder, similar as similarBuilder } from '../src/vector-search.js';
@@ -46,7 +46,15 @@ const LANGUAGE = 'typescript';
 // own vector-search builders.
 const SCENARIOS = new Set([
     'crud-roundtrip', 'naming-rejected', 'interop', 'schema-catalog', 'query', 'vector-search',
+    'identity',
 ]);
+
+/** S8 identity: the tenant value every driver stamps on the IdentityDoc row it creates —
+ *  deliberately NOT the acting user's tenant. The server force-sets the tenant column from the
+ *  acting-user token, so the read-back must show the acting tenant instead; an assertion that would
+ *  agree by construction if the driver sent the right value here. Must stay in step with
+ *  `IdentityScenario.WrongTenantValue`. */
+const IDENTITY_WRONG_TENANT = 'tenant_not_the_acting_user';
 
 /** The Label every VectorDoc row this driver writes carries, and the value the orchestrator's
  *  similarity comparison grades on. Must stay in step with `VectorSearchScenario.LabelFor`. */
@@ -490,6 +498,94 @@ async function main(argv: string[]): Promise<number> {
             } catch (err) {
                 steps.push(step(name, false, { error: describe(err) }));
             }
+        }
+    } else if (phase === 'register' && scenario === 'identity') {
+        // Only the .NET driver ever runs this phase for identity (register-once rule); this branch
+        // exists so a hand-run of this driver behaves the same way, and reports the descriptor the
+        // orchestrator would re-register with row permissions.
+        let error: string | null = null;
+        try {
+            const registrar = new SchemaRegistrar(
+                capture as unknown as ObjectMappingServiceClient, [IdentityDoc], callCredentials);
+            await registrar.registerAll();
+        } catch (err) {
+            error = describe(err);
+        }
+        steps.push(step('register_identity_doc', error === null, {
+            error,
+            typeDescriptor: capture.select('IdentityDoc') ?? null,
+        }));
+    } else if (phase === 'write' && scenario === 'identity') {
+        // One row, created under this driver's OWN acting user and carrying a deliberately wrong
+        // tenant value (see IDENTITY_WRONG_TENANT). The key is reported whenever persist() resolved
+        // with one: the orchestrator's backstop is exactly "this language reported a key", and the
+        // negative leg below is only a denial while the row exists.
+        let identityKey: string | undefined;
+        let result: StepResult;
+        try {
+            const entity = new IdentityDoc();
+            entity.tenantId = IDENTITY_WRONG_TENANT;
+            entity.ownerId = ownerId;
+            entity.label = `identity-${LANGUAGE}-${idPrefix}`;
+            identityKey = await client.coordinator(IdentityDoc).persist(entity);
+            result = step('write_identity_doc', true, { entity: entityToPlain(entity) });
+        } catch (err) {
+            result = step('write_identity_doc', false, { error: describe(err) });
+        }
+        if (identityKey !== undefined) result.keys = { identity_doc: identityKey };
+        steps.push(result);
+    } else if (phase === 'read' && scenario === 'identity') {
+        const rowKey = keyFor('identity_doc');
+
+        // The positive leg, reported as the deliberately minimal, cross-language-identical
+        // projection all five drivers emit — a driver-native serialization would differ per
+        // language and make a naming difference render as a conformance failure.
+        try {
+            const readBack = await client.coordinator(IdentityDoc).getMapped(rowKey, 0);
+            steps.push(step('read_identity_doc', true, {
+                entity: {
+                    key: readBack?.id ?? null,
+                    tenant: readBack?.tenantId ?? null,
+                    owner: readBack?.ownerId ?? null,
+                },
+            }));
+        } catch (err) {
+            steps.push(step('read_identity_doc', false, { error: describe(err) }));
+        }
+
+        // The negative leg: a SECOND client carrying --wrong-acting-token in place of this driver's
+        // own acting-user token. The service identity is unchanged, so the only thing that differs
+        // between this call and an allowed one is which end user it acts as. The status code is
+        // DATA to report, never an error to judge — that is the orchestrator's job.
+        const wrongClient = new IversonClient(
+            host, port, false, callCredentials, args.optional('--wrong-acting-token'));
+        try {
+            // The update payload carries the ACTING user's real tenant, not IDENTITY_WRONG_TENANT:
+            // on an EXISTING row the server rejects a payload tenant that differs from the caller's
+            // claim as "Tenant field is immutable" — also PermissionDenied (7). That denial would
+            // fire for ANY caller, including the right one, and would make this step green while
+            // proving nothing about which end user is calling.
+            const entity = new IdentityDoc();
+            entity.id = rowKey;
+            entity.tenantId = tenant;
+            entity.ownerId = ownerId;
+            entity.label = `identity-${LANGUAGE}-${idPrefix}-updated-by-the-wrong-user`;
+            await wrongClient.coordinator(IdentityDoc).updateMapped(entity);
+            // No error: the server accepted the wrong acting user's write. Reported as a missing
+            // status code rather than judged here.
+            steps.push(step('denied_update_wrong_acting_user', true, {
+                entity: { statusCode: null, status: 'succeeded' },
+            }));
+        } catch (err) {
+            const code = (err as { code?: unknown }).code;
+            steps.push(typeof code === 'number'
+                ? step('denied_update_wrong_acting_user', true, {
+                    entity: { statusCode: code, status: grpc.status[code] ?? String(code), detail: describe(err) },
+                })
+                // Not a gRPC status at all — the attempt never produced an observation.
+                : step('denied_update_wrong_acting_user', false, { error: describe(err) }));
+        } finally {
+            wrongClient.close();
         }
     } else if (phase === 'write' && scenario === 'query') {
         // One row, stamped with the run's marker. The key is reported whenever persist() resolved

@@ -13,6 +13,7 @@ import io.iverson.client.core.SchemaRegistrar;
 import io.iverson.conformance.models.JavaArticle;
 import io.iverson.conformance.models.JavaAuthor;
 import io.iverson.conformance.models.JavaTag;
+import io.iverson.conformance.models.IdentityDoc;
 import io.iverson.conformance.models.QueryDoc;
 import io.iverson.client.search.AggregateBuilder;
 import io.iverson.client.search.Query;
@@ -69,9 +70,23 @@ public final class Driver {
     // (register-once rule). This driver seeds one row and then issues a SearchSimilar and a
     // SearchChunks through the client library's own vector-search builders.
     private static final String VECTOR_SEARCH_SCENARIO = "vector-search";
+    // identity (S8) is register-phase-NEVER for this driver: only .NET registers IdentityDoc
+    // (register-once rule). This driver creates one row under its own acting user, reads it back,
+    // and then attempts ONE update carrying --wrong-acting-token — an acting user belonging to a
+    // different tenant — reporting the gRPC status code that attempt received.
+    private static final String IDENTITY_SCENARIO = "identity";
     private static final java.util.Set<String> SUPPORTED_SCENARIOS =
         java.util.Set.of(CRUD_ROUNDTRIP_SCENARIO, INTEROP_SCENARIO, SCHEMA_CATALOG_SCENARIO,
-            QUERY_SCENARIO, VECTOR_SEARCH_SCENARIO);
+            QUERY_SCENARIO, VECTOR_SEARCH_SCENARIO, IDENTITY_SCENARIO);
+
+    /**
+     * The tenant value every driver stamps on the IdentityDoc row it creates: deliberately NOT the
+     * acting user's tenant. The server force-sets the tenant column from the acting-user token, so
+     * the read-back must show the acting tenant instead — an assertion that would agree by
+     * construction if the driver sent the right value here. Must stay in step with
+     * {@code IdentityScenario.WrongTenantValue}.
+     */
+    private static final String IDENTITY_WRONG_TENANT = "tenant_not_the_acting_user";
 
     /**
      * The Label every VectorDoc row this driver writes carries, and the value the orchestrator's
@@ -154,6 +169,17 @@ public final class Driver {
                 switch (phase) {
                     case "write" -> doVectorSearchWrite(client, tenant, ownerId, idPrefix, steps);
                     case "read" -> doVectorSearchRead(client, idPrefix, steps);
+                    default -> {
+                        System.err.println("unknown phase '" + phase + "' for scenario '" + scenario + "'");
+                        System.exit(2);
+                        return;
+                    }
+                }
+            } else if (IDENTITY_SCENARIO.equals(scenario)) {
+                switch (phase) {
+                    case "write" -> doIdentityWrite(client, ownerId, idPrefix, steps);
+                    case "read" -> doIdentityRead(
+                        client, channel, parsedArgs, tenant, ownerId, idPrefix, priorKeys, steps);
                     default -> {
                         System.err.println("unknown phase '" + phase + "' for scenario '" + scenario + "'");
                         System.exit(2);
@@ -343,6 +369,105 @@ public final class Driver {
             reported.put("total", response.getTotal());
             r.entity = GSON.toJsonTree(reported);
         }));
+    }
+
+    // ── S8 identity ──────────────────────────────────────────────────────────────────────────
+
+    /**
+     * Creates one {@code IdentityDoc} row under this driver's OWN acting user, carrying a
+     * deliberately wrong tenant value ({@link #IDENTITY_WRONG_TENANT}). The key is reported
+     * whenever {@code persist} returned one: the orchestrator's backstop is exactly "this language
+     * reported a key", and the negative leg is only a denial while the row exists.
+     */
+    private static void doIdentityWrite(
+            IversonClient client, String ownerId, String idPrefix, List<StepResult> steps) {
+        String[] docKey = new String[1];
+        StepResult result = step("write_identity_doc", r -> {
+            IdentityDoc doc = new IdentityDoc();
+            doc.setTenantId(IDENTITY_WRONG_TENANT);
+            doc.setOwnerId(ownerId);
+            doc.setLabel("identity-" + LANGUAGE + "-" + idPrefix);
+            docKey[0] = new EntityCoordinator<>(client, IdentityDoc.class).persist(doc);
+        });
+        if (docKey[0] != null) result.keys = Map.of("identity_doc", docKey[0]);
+        steps.add(result);
+    }
+
+    /**
+     * The positive leg (read the row back under this driver's own acting user) and the negative leg
+     * (attempt one update under {@code --wrong-acting-token}, an acting user of another tenant, and
+     * report the gRPC status code that attempt received).
+     *
+     * <p>The wrong identity is a second {@link IversonClient} over the SAME channel carrying a
+     * second {@link DualHeaderCredentials}: the acting-user header is a per-client credential here,
+     * so no second channel is needed. The service identity is unchanged, so the only thing that
+     * differs between this call and an allowed one is which end user it acts as. The status code is
+     * DATA to report, never an error to judge — that is the orchestrator's job.
+     */
+    private static void doIdentityRead(
+            IversonClient client,
+            ManagedChannel channel,
+            Args parsedArgs,
+            String tenant,
+            String ownerId,
+            String idPrefix,
+            Map<String, String> priorKeys,
+            List<StepResult> steps) {
+        UUID rowKey = keyFor(priorKeys, idPrefix, "identity_doc");
+
+        // Reported as the deliberately minimal, cross-language-identical projection all five
+        // drivers emit — a driver-native serialization would differ per language (this one omits
+        // nulls) and make a naming difference render as a conformance failure.
+        steps.add(step("read_identity_doc", r -> {
+            IdentityDoc readBack =
+                new EntityCoordinator<>(client, IdentityDoc.class).getMapped(rowKey.toString(), 0);
+            Map<String, Object> reported = new java.util.LinkedHashMap<>();
+            reported.put("key", readBack == null || readBack.getId() == null ? null : readBack.getId().toString());
+            reported.put("tenant", readBack == null ? null : readBack.getTenantId());
+            reported.put("owner", readBack == null ? null : readBack.getOwnerId());
+            r.entity = GSON.toJsonTree(reported);
+        }));
+
+        StepResult denied = new StepResult("denied_update_wrong_acting_user");
+        try {
+            DualHeaderCredentials wrongCredentials = new DualHeaderCredentials(
+                parsedArgs.optional("--client-id"),
+                parsedArgs.optional("--client-secret"),
+                parsedArgs.optional("--token-endpoint"),
+                parsedArgs.optional("--wrong-acting-token"),
+                parsedArgs.optional("--service-token"));
+            IversonClient wrongClient = new IversonClient(channel, wrongCredentials);
+
+            // The update payload carries the ACTING user's real tenant, not IDENTITY_WRONG_TENANT:
+            // on an EXISTING row the server rejects a payload tenant that differs from the caller's
+            // claim as "Tenant field is immutable" — also PermissionDenied (7). That denial would
+            // fire for ANY caller, including the right one, and would make this step green while
+            // proving nothing about which end user is calling.
+            IdentityDoc doc = new IdentityDoc();
+            doc.setId(rowKey);
+            doc.setTenantId(tenant);
+            doc.setOwnerId(ownerId);
+            doc.setLabel("identity-" + LANGUAGE + "-" + idPrefix + "-updated-by-the-wrong-user");
+            new EntityCoordinator<>(wrongClient, IdentityDoc.class).updateMapped(doc);
+
+            // The server accepted the wrong acting user's write. Reported as a missing status code
+            // rather than judged here.
+            Map<String, Object> reported = new java.util.LinkedHashMap<>();
+            reported.put("statusCode", null);
+            reported.put("status", "succeeded");
+            denied.entity = GSON.toJsonTree(reported);
+        } catch (StatusRuntimeException rpc) {
+            Map<String, Object> reported = new java.util.LinkedHashMap<>();
+            reported.put("statusCode", rpc.getStatus().getCode().value());
+            reported.put("status", rpc.getStatus().getCode().name());
+            reported.put("detail", rpc.getStatus().getDescription());
+            denied.entity = GSON.toJsonTree(reported);
+        } catch (Exception e) {
+            // Not a gRPC status at all — the attempt never produced an observation.
+            denied.ok = false;
+            denied.error = describe(e);
+        }
+        steps.add(denied);
     }
 
     // ── S7 vector-search ─────────────────────────────────────────────────────────────────────

@@ -67,11 +67,22 @@ try
     [
         CrudRoundtripScenario.Name, NamingRejectedScenario.Name, NavPropertyRejectedScenario.Name,
         InteropScenario.Name, SchemaCatalogScenario.Name, QueryScenario.Name,
-        VectorSearchScenario.Name,
+        VectorSearchScenario.Name, IdentityScenario.Name,
     ];
     var scenarios = flags.Scenarios ?? recognizedScenarios;
 
     var actingToken = await tokenBroker.GetActingTokenAsync();
+
+    // S8 identity is the only scenario that needs a SECOND acting-user identity, and minting one
+    // runs a full interactive Authentik flow — so it is minted only when that scenario is actually
+    // in the run set, rather than on every `--scenarios query` invocation. An empty pair here is
+    // not silently tolerated by the scenario: IdentityScenario.PreconditionFailure refuses to grade
+    // a negative leg that has no wrong identity to send.
+    var runsIdentity = scenarios.Contains(IdentityScenario.Name, StringComparer.OrdinalIgnoreCase);
+    var wrongActingToken = runsIdentity ? await tokenBroker.GetOtherTenantActingTokenAsync() : string.Empty;
+    var otherTenant = runsIdentity ? await tokenBroker.GetOtherTenantAsync() : string.Empty;
+    if (runsIdentity)
+        Console.WriteLine($"Wrong acting user's tenant: '{otherTenant}'.\n");
     var ownerId = await tokenBroker.GetOwnerIdAsync();
     var serviceToken = await tokenBroker.GetServiceTokenAsync();
 
@@ -102,6 +113,7 @@ try
         runner, new Reregistrar(mapping),
         new ObjectSearchService.ObjectSearchServiceClient(channel),
         log: Console.WriteLine);
+    var identity = new IdentityScenario(runner, new Reregistrar(mapping), log: Console.WriteLine);
     var vectorSearch = new VectorSearchScenario(
         runner, new Reregistrar(mapping),
         new ObjectSearchService.ObjectSearchServiceClient(channel),
@@ -121,7 +133,8 @@ try
         ActingToken: actingToken,
         OwnerId: ownerId,
         IdPrefix: $"c{DateTime.UtcNow:yyyyMMddHHmmss}",
-        ServiceToken: serviceToken);
+        ServiceToken: serviceToken,
+        WrongActingToken: wrongActingToken);
 
     if (scenarios.Contains(CrudRoundtripScenario.Name, StringComparer.OrdinalIgnoreCase))
     {
@@ -176,6 +189,18 @@ try
         Console.WriteLine($"Running scenario '{VectorSearchScenario.Name}'...");
         foreach (var cell in await vectorSearch.RunAsync(languages, BuildContext(VectorSearchScenario.Name), actingToken))
             report.Add(cell);
+    }
+
+    // As with `query` and `vector-search` above, this dispatch block — not `recognizedScenarios` —
+    // is what actually runs the scenario.
+    if (scenarios.Contains(IdentityScenario.Name, StringComparer.OrdinalIgnoreCase))
+    {
+        Console.WriteLine($"Running scenario '{IdentityScenario.Name}'...");
+        foreach (var cell in await identity.RunAsync(
+                     languages, BuildContext(IdentityScenario.Name), actingToken, otherTenant))
+        {
+            report.Add(cell);
+        }
     }
 
     foreach (var unknown in scenarios.Where(s => !recognizedScenarios.Contains(s, StringComparer.OrdinalIgnoreCase)))

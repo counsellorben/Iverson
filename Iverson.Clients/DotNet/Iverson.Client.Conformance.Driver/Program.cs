@@ -33,6 +33,17 @@ const string QueryScenario = "query";
 // the [IversonEmbedding] Title and a SearchChunks over the [IversonChunk] Body through the client
 // library's own QuerySimilarBuilder/QueryChunksBuilder.
 const string VectorSearchScenario = "vector-search";
+// identity (S8): register (this driver only, register-once), write, read. Creates one IdentityDoc
+// row under this driver's own acting user, reads it back, and then attempts ONE update carrying
+// --wrong-acting-token — an acting user belonging to a different tenant — reporting the gRPC
+// status code that attempt received. The driver judges none of it.
+const string IdentityScenario = "identity";
+// The tenant value every driver stamps on the IdentityDoc row it creates: deliberately NOT the
+// acting user's tenant. The server force-sets the tenant column from the acting-user token, so the
+// read-back must show the acting tenant instead — an assertion that would agree by construction if
+// the driver sent the right value here. Must stay in step with
+// Iverson.ClientConformance/Scenarios/IdentityScenario.cs's WrongTenantValue.
+const string IdentityWrongTenant = "tenant_not_the_acting_user";
 // The Label every VectorDoc row this driver writes carries, and the value the orchestrator's
 // similarity comparison grades on — SearchSimilar streams the Qdrant payload, whose row key lives
 // under a reserved "key" entry the typed projection does not bind to Id. Must stay in step with
@@ -45,7 +56,8 @@ const string VectorDocLabel = $"vec-{Language}";
 const string VectorQueryText = "a short note about vector search conformance";
 const uint VectorTopK = 50;
 var supportedScenarios = new[]
-    { CrudRoundtripScenario, InteropScenario, SchemaCatalogScenario, QueryScenario, VectorSearchScenario };
+    { CrudRoundtripScenario, InteropScenario, SchemaCatalogScenario, QueryScenario, VectorSearchScenario,
+      IdentityScenario };
 
 var args_ = Args.Parse(args);
 
@@ -120,6 +132,10 @@ else if (scenario == QueryScenario)
 else if (scenario == VectorSearchScenario)
 {
     await RunVectorSearchAsync();
+}
+else if (scenario == IdentityScenario)
+{
+    await RunIdentityAsync();
 }
 else
 {
@@ -474,6 +490,157 @@ async Task RunVectorSearchAsync()
 
                 return result with { Entity = Json.Element(new { parentKeys }) };
             });
+            break;
+        }
+
+        default:
+            await Console.Error.WriteLineAsync($"unknown phase '{phase}' for scenario '{scenario}'");
+            Environment.Exit(2);
+            break;
+    }
+}
+
+// ── S8 identity ──────────────────────────────────────────────────────────────────────────────
+async Task RunIdentityAsync()
+{
+    switch (phase)
+    {
+        case "register":
+        {
+            // Only the .NET driver ever runs this phase for identity (register-once rule; see
+            // Scenarios/IdentityScenario.cs). Registered WITHOUT an authorization block — the
+            // orchestrator re-registers it with one before any driver's write phase, without which
+            // the positive leg would be denied for the same reason the negative leg is.
+            capture.OnlySendTypeName = nameof(IdentityDoc);
+            var registerOutcome = await Run(async () =>
+            {
+                var registrar = new SchemaRegistrar(registry, mappingForRegistration, NullLogger<SchemaRegistrar>.Instance);
+                await registrar.RegisterAllAsync();
+            });
+            capture.OnlySendTypeName = null;
+
+            steps.Add(new StepResult(
+                "register_identity_doc",
+                Ok: registerOutcome is null,
+                Error: registerOutcome,
+                TypeDescriptor: Json.Element(capture.Select(nameof(IdentityDoc)))));
+            break;
+        }
+
+        case "write":
+        {
+            // One row, created under this driver's OWN acting user and carrying a deliberately
+            // wrong tenant value (see IdentityWrongTenant). The key is reported unconditionally
+            // when the write returned one: the orchestrator's backstop is exactly "this language
+            // reported a key", and the negative leg is only a denial while the row exists.
+            Guid? key = null;
+            await Step("write_identity_doc",
+                async result =>
+                {
+                    var written = await Coordinator<IdentityDoc>().PostMappedAsync(new IdentityDoc
+                    {
+                        TenantId = IdentityWrongTenant,
+                        OwnerId = ownerId,
+                        Label = $"identity-{Language}-{idPrefix}",
+                    });
+                    key = written?.Id;
+                    return result with { Entity = Json.Element(written) };
+                },
+                result => key is { } k
+                    ? result with { Keys = new Dictionary<string, string> { ["identity_doc"] = k.ToString() } }
+                    : result);
+            break;
+        }
+
+        case "read":
+        {
+            var rowKey = KeyFor("identity_doc");
+
+            // The positive leg. Reported as the deliberately minimal, cross-language-identical
+            // projection all five drivers emit — a driver-native serialization would differ per
+            // language and make a naming difference render as a conformance failure.
+            await Step("read_identity_doc", async result =>
+            {
+                var read = await Coordinator<IdentityDoc>().GetMappedAsync(rowKey.ToString(), depth: 0);
+                return result with
+                {
+                    Entity = Json.Element(new
+                    {
+                        key = read?.Id.ToString(),
+                        tenant = read?.TenantId,
+                        owner = read?.OwnerId,
+                    }),
+                };
+            });
+
+            // The negative leg. A SECOND invoker carrying --wrong-acting-token in place of this
+            // driver's own acting-user token; the service identity is unchanged, so the only thing
+            // that differs between this call and an allowed one is which end user it acts as.
+            // Built outside Step() on purpose: the status code is DATA to report, not an error to
+            // convert into ok:false, and the orchestrator is the only thing that judges it.
+            var deniedResult = new StepResult("denied_update_wrong_acting_user", true);
+            try
+            {
+                var wrongInvoker = Auth.BuildInvoker(
+                    args_.Require("--grpc"),
+                    args_.Optional("--client-id"),
+                    args_.Optional("--client-secret"),
+                    args_.Optional("--token-endpoint"),
+                    args_.Optional("--wrong-acting-token") ?? string.Empty,
+                    args_.Optional("--service-token"));
+
+                var wrongCoordinator = new EntityCoordinator<IdentityDoc>(
+                    registry,
+                    new GraphAssembler(
+                        new ObjectRetrievalService.ObjectRetrievalServiceClient(wrongInvoker),
+                        registry, NullLogger<GraphAssembler>.Instance),
+                    new ObjectMappingService.ObjectMappingServiceClient(wrongInvoker),
+                    new ObjectPersistenceService.ObjectPersistenceServiceClient(wrongInvoker),
+                    new ObjectRetrievalService.ObjectRetrievalServiceClient(wrongInvoker),
+                    new ObjectSearchService.ObjectSearchServiceClient(wrongInvoker),
+                    NullLogger<EntityCoordinator<IdentityDoc>>.Instance);
+
+                // The update payload carries the ACTING user's real tenant, not IdentityWrongTenant:
+                // on an EXISTING row the server rejects a payload tenant that differs from the
+                // caller's claim as "Tenant field is immutable" — also PermissionDenied (7). That
+                // denial would fire for ANY caller, including the right one, and would make this
+                // step green while proving nothing about which end user is calling. With the
+                // correct tenant here, the only thing left that can deny this write is the
+                // acting-user identity, which is exactly what the requirement claims.
+                await wrongCoordinator.UpdateMappedAsync(new IdentityDoc
+                {
+                    Id = rowKey,
+                    TenantId = tenant,
+                    OwnerId = ownerId,
+                    Label = $"identity-{Language}-{idPrefix}-updated-by-the-wrong-user",
+                });
+
+                // No exception: the server accepted the wrong acting user's write. Reported as a
+                // missing status code rather than judged here.
+                deniedResult = deniedResult with
+                {
+                    Entity = Json.Element(new { statusCode = (int?)null, status = "succeeded" }),
+                };
+            }
+            catch (RpcException rpc)
+            {
+                deniedResult = deniedResult with
+                {
+                    Entity = Json.Element(new
+                    {
+                        statusCode = (int?)rpc.StatusCode,
+                        status = rpc.StatusCode.ToString(),
+                        detail = rpc.Status.Detail,
+                    }),
+                };
+            }
+            catch (Exception ex)
+            {
+                // Not a gRPC status at all — the attempt never produced an observation.
+                deniedResult = deniedResult with { Ok = false, Error = Describe(ex) };
+            }
+
+            steps.Add(deniedResult);
             break;
         }
 

@@ -239,8 +239,96 @@ to why `DECL` and `LIFE` also currently have none.
 
 ### IDN — Identity
 
+Full rationale and the assertion(s) that discharge each requirement are recorded on the
+corresponding const's doc comment in `Requirements.cs`, per this document's own convention for an
+implemented requirement.
+
 | ID | Status | Kind | Statement |
 | --- | --- | --- | --- |
+| IVC-IDN-001 | Active | Behaviour | A client carries the service identity and the acting-user identity as two distinct credentials on one call, and a mapped write carrying both is accepted |
+| IVC-IDN-002 | Active | Behaviour | A row written under an acting user is readable back by that same acting user through the mapped read path, carrying the owner identity that acting user propagated |
+| IVC-IDN-003 | Active | Behaviour | The server derives a row's tenant from the acting-user identity rather than from the write payload, and denies an acting user of another tenant who attempts to write that row |
+
+`IVC-IDN-001` is the two-credential claim every other axis silently rests on. The service identity
+rides in `authorization` and carries the scopes (`admin`, `schema_admin`) the server evaluates
+service-side; the acting-user identity rides in `x-acting-user-authorization` and is the end-user
+principal row and field authorization is evaluated against (`ActingUserInterceptor.cs`). They are
+two tokens for two different subjects on the same call, and a client that collapses them into one
+header — or sends only the service half — registers schemas successfully and is then denied every
+write with `actor=unknown`, a failure that surfaces phases away from its cause. The requirement is
+graded on the write actually being accepted, which is the only observation that requires both
+halves to have arrived and been read as different identities.
+
+`IVC-IDN-002` and `IVC-IDN-003` are the propagation half and the enforcement half of what the
+acting-user identity is FOR, split the way `QRY` splits `IVC-QRY-001` from `IVC-QRY-002`: a client
+that propagates an acting user the server can read, but under which the server's tenancy scoping
+does not actually hold, is non-conformant in a way a single conflated requirement would report only
+as one undifferentiated red cell.
+
+`IVC-IDN-003` is verified in both directions, and neither direction is gradeable from a payload the
+client controls:
+
+- **Derivation.** Every driver stamps a deliberately wrong tenant value on the row it creates —
+  not the acting user's tenant, and shared verbatim across all five drivers. The server force-sets
+  the tenant column from the acting-user token's `tenant_id` claim on a create
+  (`AuthorizationFieldMasking.EnforceWriteAuthorization`'s no-existing-row branch), so the read-back
+  observes the acting user's own tenant. A server that took the client's word for it, or a client
+  that propagated no acting user at all, fails here rather than agreeing by construction with what
+  the driver sent.
+- **Enforcement.** The orchestrator mints a SECOND acting-user token, for a different, active
+  tenant (`TokenBroker.GetOtherTenantActingTokenAsync`), and passes it to every driver as
+  `--wrong-acting-token`. Each driver attempts a mapped update of the row it just created while
+  carrying that token in place of its own, and reports the gRPC status code it received as data —
+  it judges nothing. The orchestrator asserts the code is `PermissionDenied` (7). All five drivers
+  attempt the same operation against the same server and are graded against the same numeric
+  constant, so the requirement is simultaneously a per-client correctness claim and a cross-client
+  agreement claim: a language that propagates the wrong-user token incorrectly (or not at all)
+  disagrees with the other four and its cell alone goes red.
+
+The update the negative leg sends carries the ACTING user's own tenant, even though the create
+carries a deliberately wrong one. This is load-bearing rather than incidental: on an EXISTING row
+the server rejects a payload tenant that differs from the caller's claim as "Tenant field is
+immutable", which is also `PermissionDenied` (7) and fires for ANY caller — including the right one.
+A negative leg that sent the wrong tenant here would go green for a client that propagated its own
+acting-user token instead of the wrong one, proving nothing about identity. It was verified live
+that it did: with the wrong tenant in the update payload, a driver sending its own token was denied
+with `reason=TenantImmutable` and the cell stayed green; with the acting tenant in the payload, the
+same driver's write is ACCEPTED and the cell goes red. With the correct tenant sent, the only thing
+left that can deny that write is which end user is calling.
+
+The status code is reported and compared as the numeric gRPC code, never as a name: the five
+languages spell the same code five ways (`PermissionDenied`, `PERMISSION_DENIED`, `7`), so a
+name-based comparison would report a cross-language spelling difference as a conformance failure.
+
+Token acquisition, suspended and deleted tenants, and field-permission narrowing by acting-user
+role are deliberately not authored here; see the Coverage table below.
+
+#### Coverage
+
+| Area | Status | Evidence |
+| --- | --- | --- |
+| Service and acting-user identities carried as two credentials on one call | Covered | IVC-IDN-001 |
+| Acting-user propagation observable in the stored row | Covered | IVC-IDN-002 |
+| Tenancy derived from the acting user and enforced against another tenant's acting user | Covered | IVC-IDN-003 |
+| Token acquisition | Deferred | Every client can mint a service token from a client-credentials trio, but the harness passes a pre-minted `--service-token` to all five drivers on purpose (Authentik stamps the JWT's `iss` from the request's Host header and grants scopes only when asked, neither of which a driver's own minting expresses), so no assertion observes a client's token acquisition and no requirement constrains it. |
+| Suspended and deleted tenants | Deferred | `ActingUserInterceptor` rejects an acting user whose tenant is absent, `suspended` or `deleted` with `PermissionDenied`, but the harness runs entirely inside two active tenants and provisions none, so no assertion observes a suspended or deleted tenant and no requirement constrains that path. |
+| Field-permission narrowing by acting-user role | Deferred | `RowFieldAuthorizationEvaluator` narrows writable and readable fields by the acting user's `groups` claim, but the harness registers no `FieldPermission` (the `Reregistrar` sets row permissions only), so no assertion observes field narrowing and no requirement constrains it. |
+| Ownership enforcement between two acting users of the SAME tenant | Deferred | `AuthorizationFieldMasking` denies an owner mismatch on an existing row exactly as it denies a tenant mismatch, but the only second acting-user identity the dev stack provisions belongs to a different tenant, so the tenant check fires first and no assertion can observe the owner check in isolation. Authoring it needs a second identity inside the acting user's own tenant, which is a stack-provisioning change, not a wording change. |
+
+#### Backstop assertion (non-normative)
+
+`IDN`'s negative leg is only a negative leg while the row it targets exists. The wrong-tenant
+acting user's update is denied because `ObjectMappingGrpcService.Update` finds an existing row
+whose tenant is not that user's; if the write phase had produced no row, the very same call would
+take `EnforceWriteAuthorization`'s no-existing-row branch, be treated as a create, and **succeed** —
+turning a denial assertion into a green cell that proves nothing about tenancy.
+`IdentityScenario.Judge`'s "the write phase reported a row key for this language" assertion is
+therefore `IDN`'s backstop. It fires unconditionally, on every language, before and outside both
+the read-back and the denial assertions. Like `REL`'s, `QRY`'s, `SCH`'s and `VEC`'s it carries no
+requirement ID: no `IVC-IDN-*` statement owns "this language seeded a row" as such — it is a
+property of the harness's own fixture, not of a client — and it is strictly weaker than
+`IVC-IDN-002` and `IVC-IDN-003` wherever either can fail.
+
 
 ### LIFE — Lifecycle
 

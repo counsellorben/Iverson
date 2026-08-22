@@ -39,7 +39,8 @@ from iverson_client.search import QueryBuilder, SearchOperator
 from iverson_client.vector_search import chunks as chunks_builder, similar as similar_builder
 
 from conformance.models import (
-    PyArticle, PyAuthor, PyBadArticle, PyTag, QueryDoc, SharedArticle, SharedAuthor, VectorDoc,
+    IdentityDoc, PyArticle, PyAuthor, PyBadArticle, PyTag, QueryDoc, SharedArticle, SharedAuthor,
+    VectorDoc,
 )
 
 LANGUAGE = "python"
@@ -53,7 +54,15 @@ LANGUAGE = "python"
 # SearchChunks through the client library's own vector-search builders.
 SCENARIOS = {
     "crud-roundtrip", "naming-rejected", "interop", "schema-catalog", "query", "vector-search",
+    "identity",
 }
+
+# S8 identity: the tenant value every driver stamps on the IdentityDoc row it creates —
+# deliberately NOT the acting user's tenant. The server force-sets the tenant column from the
+# acting-user token, so the read-back must show the acting tenant instead; an assertion that would
+# agree by construction if the driver sent the right value here. Must stay in step with
+# IdentityScenario.WrongTenantValue.
+IDENTITY_WRONG_TENANT = "tenant_not_the_acting_user"
 
 # The Label every VectorDoc row this driver writes carries, and the value the orchestrator's
 # similarity comparison grades on. Must stay in step with VectorSearchScenario.LabelFor.
@@ -670,6 +679,97 @@ def main(argv: List[str]) -> int:
             ))
         except Exception as exc:  # noqa: BLE001
             steps.append(StepResult("search_chunks_by_marker", False, error=describe(exc)))
+
+    elif phase == "register" and scenario == "identity":
+        # Only the .NET driver ever runs this phase for identity (register-once rule); this branch
+        # exists so a hand-run of this driver behaves the same way, and reports the descriptor the
+        # orchestrator would re-register with row permissions.
+        error: Optional[str] = None
+        try:
+            registrar = SchemaRegistrar(capture, IdentityDoc)
+            registrar.register_all()
+        except Exception as exc:  # noqa: BLE001 - reported as data, not raised
+            error = describe(exc)
+
+        descriptor_json = capture.select("IdentityDoc")
+        steps.append(StepResult(
+            name="register_identity_doc",
+            ok=error is None,
+            error=error,
+            type_descriptor=json.loads(descriptor_json) if descriptor_json else None,
+        ))
+
+    elif phase == "write" and scenario == "identity":
+        # One row, created under this driver's OWN acting user and carrying a deliberately wrong
+        # tenant value (see IDENTITY_WRONG_TENANT). The key is reported whenever persist() returned
+        # one: the orchestrator's backstop is exactly "this language reported a key", and the
+        # negative leg below is only a denial while the row exists.
+        identity_key = None
+        try:
+            entity = IdentityDoc()
+            entity.tenant_id = IDENTITY_WRONG_TENANT
+            entity.owner_id = owner_id
+            entity.label = f"identity-{LANGUAGE}-{id_prefix}"
+            identity_key = coordinator(IdentityDoc).persist(entity)
+            result = StepResult("write_identity_doc", True, entity=entity_to_dict(entity))
+        except Exception as exc:  # noqa: BLE001
+            result = StepResult("write_identity_doc", False, error=describe(exc))
+        if identity_key is not None:
+            result.keys = {"identity_doc": str(identity_key)}
+        steps.append(result)
+
+    elif phase == "read" and scenario == "identity":
+        row_key = str(key_for("identity_doc"))
+
+        # The positive leg, reported as the deliberately minimal, cross-language-identical
+        # projection all five drivers emit — a driver-native serialization would differ per language
+        # (this one reports snake_case members) and make a naming difference render as a
+        # conformance failure.
+        try:
+            read_back = coordinator(IdentityDoc).get_mapped(row_key, depth=0)
+            steps.append(StepResult("read_identity_doc", True, entity={
+                "key": str(read_back.id) if read_back is not None and read_back.id else None,
+                "tenant": read_back.tenant_id if read_back is not None else None,
+                "owner": read_back.owner_id if read_back is not None else None,
+            }))
+        except Exception as exc:  # noqa: BLE001
+            steps.append(StepResult("read_identity_doc", False, error=describe(exc)))
+
+        # The negative leg: a SECOND channel carrying --wrong-acting-token in place of this
+        # driver's own acting-user token. The service identity is unchanged, so the only thing that
+        # differs between this call and an allowed one is which end user it acts as. The status code
+        # is DATA to report, never an error to judge — that is the orchestrator's job.
+        wrong_acting_token = args.optional("--wrong-acting-token")
+        wrong_channel = build_driver_channel(
+            host, port, client_id, client_secret, token_endpoint, wrong_acting_token, service_token,
+        )
+        try:
+            # The update payload carries the ACTING user's real tenant, not IDENTITY_WRONG_TENANT:
+            # on an EXISTING row the server rejects a payload tenant that differs from the caller's
+            # claim as "Tenant field is immutable" — also PermissionDenied (7). That denial would
+            # fire for ANY caller, including the right one, and would make this step green while
+            # proving nothing about which end user is calling.
+            entity = IdentityDoc()
+            entity.id = uuid.UUID(row_key)
+            entity.tenant_id = tenant
+            entity.owner_id = owner_id
+            entity.label = f"identity-{LANGUAGE}-{id_prefix}-updated-by-the-wrong-user"
+            EntityCoordinator(IdentityDoc, wrong_channel).update_mapped(entity)
+            # No error: the server accepted the wrong acting user's write. Reported as a missing
+            # status code rather than judged here.
+            steps.append(StepResult("denied_update_wrong_acting_user", True, entity={
+                "statusCode": None, "status": "succeeded",
+            }))
+        except grpc.RpcError as rpc:
+            steps.append(StepResult("denied_update_wrong_acting_user", True, entity={
+                "statusCode": rpc.code().value[0],
+                "status": rpc.code().name,
+                "detail": rpc.details(),
+            }))
+        except Exception as exc:  # noqa: BLE001 - not a gRPC status at all: no observation was made
+            steps.append(StepResult("denied_update_wrong_acting_user", False, error=describe(exc)))
+        finally:
+            wrong_channel.close()
 
     elif phase == "register":
         # SchemaRegistrar.register_all() issues one RegisterSchema call per type, sequentially,

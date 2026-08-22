@@ -20,6 +20,7 @@ public sealed class TokenBroker : IDisposable
     private readonly string _tenantId;
     private readonly IversonClientCredentials? _clientCredentials;
     private readonly ActingUserTokenProvider _actingUserTokenProvider;
+    private readonly ActingUserTokenProvider _otherTenantActingUserTokenProvider;
 
     public TokenBroker(string grpcUrl, ILoggerFactory loggerFactory)
     {
@@ -52,6 +53,22 @@ public sealed class TokenBroker : IDisposable
                 actingUserBypassUsername, actingUserBypassPassword, actingUserClientId, actingUserRedirectUri,
                 actingUserBaseUrl, actingUserHostHeader, actingUserCacheTarget),
             loggerFactory.CreateLogger<AuthentikFlowExecutorClient>()));
+
+        // The SECOND acting-user identity: a different human, in a different — but equally active
+        // — tenant, minted through the same public OAuth client. S8 identity's negative leg needs
+        // an acting user the server will accept as a valid principal and then DENY on tenancy
+        // grounds; an invalid or expired token would be rejected by ActingUserInterceptor as
+        // Unauthenticated instead, which proves nothing about tenant scoping. The two providers
+        // never share a TOTP-secret cache file — AuthentikFlowExecutorClient keys it by username.
+        var otherTenantUsername = Env("IVERSON_OTHER_TENANT_USERNAME", "iverson-acting-user-smoke-test");
+        var otherTenantPassword = Env(
+            "IVERSON_OTHER_TENANT_PASSWORD", "dev-only-not-for-production-smoke-test-password-0123456789");
+
+        _otherTenantActingUserTokenProvider = new ActingUserTokenProvider(new AuthentikFlowExecutorClient(
+            new AuthentikIdentityConfig(
+                otherTenantUsername, otherTenantPassword, actingUserClientId, actingUserRedirectUri,
+                actingUserBaseUrl, actingUserHostHeader, actingUserCacheTarget),
+            loggerFactory.CreateLogger<AuthentikFlowExecutorClient>()));
     }
 
     /// <summary>
@@ -82,6 +99,29 @@ public sealed class TokenBroker : IDisposable
 
     public Task<string> GetOwnerIdAsync(CancellationToken ct = default) =>
         _actingUserTokenProvider.GetSubAsync(ct);
+
+    /// <summary>
+    /// An acting-user token for a DIFFERENT tenant than <see cref="GetActingTokenAsync"/>'s, and
+    /// the only deliberately "wrong" identity the harness mints. S8 identity hands it to every
+    /// driver as <c>--wrong-acting-token</c>; the driver sends it in place of its own on one
+    /// update and reports the status code the server answered with.
+    /// </summary>
+    public Task<string> GetOtherTenantActingTokenAsync(CancellationToken ct = default) =>
+        _otherTenantActingUserTokenProvider.GetTokenAsync(ct);
+
+    /// <summary>
+    /// The <c>tenant_id</c> claim on <see cref="GetOtherTenantActingTokenAsync"/>'s token. Read
+    /// (rather than assumed) so the orchestrator can refuse to run S8's negative leg at all if the
+    /// two identities turn out to share a tenant — in which case the "denial" would be a pass for
+    /// the wrong reason, and no assertion downstream could tell.
+    /// </summary>
+    public async Task<string> GetOtherTenantAsync(CancellationToken ct = default)
+    {
+        var claim = ReadClaim(await GetOtherTenantActingTokenAsync(ct), "tenant_id");
+        return claim ?? throw new InvalidOperationException(
+            "The other-tenant acting-user token carries no 'tenant_id' claim, so it cannot serve as " +
+            "the wrong-tenant identity S8 identity's negative leg needs.");
+    }
 
     public string TenantId => _tenantId;
 
@@ -138,5 +178,9 @@ public sealed class TokenBroker : IDisposable
     private static string Env(string key, string def) =>
         Environment.GetEnvironmentVariable(key) ?? def;
 
-    public void Dispose() => _actingUserTokenProvider.Dispose();
+    public void Dispose()
+    {
+        _actingUserTokenProvider.Dispose();
+        _otherTenantActingUserTokenProvider.Dispose();
+    }
 }

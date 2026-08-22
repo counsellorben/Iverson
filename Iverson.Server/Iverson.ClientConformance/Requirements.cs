@@ -353,6 +353,52 @@ public static class Requirements
     /// </summary>
     public const string VecChunkSearchReturnsExactlyFilteredParents = "IVC-VEC-004";
 
+    // ── IDN — Identity ──────────────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// A client carries the service identity and the acting-user identity as two distinct
+    /// credentials on one call, and a mapped write carrying both is accepted. Discharged by
+    /// <c>IdentityScenario.Judge</c>'s "a mapped write carrying both the service identity and the
+    /// acting-user identity is accepted" assertion, over the driver's own
+    /// <c>write_identity_doc</c> step.
+    ///
+    /// The write is the observation because it is the only one that requires BOTH halves to have
+    /// arrived AND to have been read as different subjects: <c>RegisterSchema</c> needs only the
+    /// service token's <c>schema_admin</c> scope, and a client that sent the service token in both
+    /// headers would register fine and then be denied here — the server evaluates row
+    /// authorization against the acting-user principal alone
+    /// (<c>ActingUserInterceptor</c> → <c>RowFieldAuthorizationEvaluator</c>).
+    /// </summary>
+    public const string IdnDualIdentityAcceptedOnWrite = "IVC-IDN-001";
+
+    /// <summary>
+    /// A row written under an acting user is readable back by that same acting user through the
+    /// mapped read path, carrying the owner identity that acting user propagated. Discharged by
+    /// two assertions in <c>IdentityScenario.Judge</c>: "the row is readable back by the acting
+    /// user that wrote it" (the <c>read_identity_doc</c> step succeeded and reported an entity)
+    /// and "the row carries the owner identity the acting user propagated" (the entity's owner
+    /// field equals the acting user's subject, which the orchestrator took from the acting-user
+    /// token — <c>TokenBroker.GetOwnerIdAsync</c> — not from anything the driver reported).
+    /// </summary>
+    public const string IdnActingUserPropagatedToRow = "IVC-IDN-002";
+
+    /// <summary>
+    /// The server derives a row's tenant from the acting-user identity rather than from the write
+    /// payload, and denies an acting user of another tenant who attempts to write that row. Both
+    /// halves are discharged, and neither is gradeable from a value the client controls:
+    /// <list type="bullet">
+    /// <item><description>Derivation: <c>IdentityScenario.Judge</c>'s "the stored row carries the
+    /// acting user's own tenant, not the tenant the client sent" assertion. Every driver stamps
+    /// <see cref="Scenarios.IdentityScenario.WrongTenantValue"/> — deliberately not the acting
+    /// user's tenant — and the read-back must show the acting tenant instead.</description></item>
+    /// <item><description>Enforcement: <c>IdentityScenario.Judge</c>'s "an acting user of another
+    /// tenant is denied a write to this row" assertion, over the numeric gRPC status code the
+    /// driver reported from its <c>denied_update_wrong_acting_user</c> step. Numeric, because the
+    /// five languages spell the same code five ways.</description></item>
+    /// </list>
+    /// </summary>
+    public const string IdnTenancyDerivedAndEnforced = "IVC-IDN-003";
+
     // ── SCH — Schema ────────────────────────────────────────────────────────────────────────
 
     /// <summary>

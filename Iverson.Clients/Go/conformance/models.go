@@ -123,3 +123,18 @@ type VectorDoc struct {
 	Body     string `iverson_chunk:"256:32"`
 	Label    string
 }
+
+// IdentityDoc is S8 identity's subject type. Every one of the five drivers declares the same type
+// name and shape; only the .NET driver ever registers it (register-once rule), and every driver
+// writes one row into it, reads that row back, and then attempts one update under a deliberately
+// wrong acting user.
+//
+// Deliberately relation-free and search-free: the axis is about WHOSE identity the server resolves
+// a row's tenant and owner from, and a relation or a vector field would only add ways for the
+// scenario to go red for reasons that are not about identity.
+type IdentityDoc struct {
+	Id       string `iverson_key:"true" iverson_guid:"true"`
+	TenantId string `iverson_tenant:"true"`
+	OwnerId  string
+	Label    string
+}

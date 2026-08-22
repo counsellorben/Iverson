@@ -21,6 +21,7 @@ import (
 	"strings"
 
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/encoding/protojson"
 
 	"github.com/iverson/clients/go/iverson"
@@ -49,7 +50,19 @@ var supportedScenarios = map[string]bool{
 	// (register-once rule). This driver seeds one row and then issues a SearchSimilar and a
 	// SearchChunks through the client library's own vector-search builders.
 	"vector-search": true,
+	// identity (S8) is register-phase-NEVER for this driver in a harness run: only .NET registers
+	// IdentityDoc (register-once rule). This driver creates one row under its own acting user,
+	// reads it back, and then attempts ONE update carrying --wrong-acting-token — an acting user
+	// belonging to a different tenant — reporting the gRPC status code that attempt received.
+	"identity": true,
 }
+
+// identityWrongTenant is the tenant value every driver stamps on the IdentityDoc row it creates:
+// deliberately NOT the acting user's tenant. The server force-sets the tenant column from the
+// acting-user token, so the read-back must show the acting tenant instead — an assertion that would
+// agree by construction if the driver sent the right value here. Must stay in step with
+// IdentityScenario.WrongTenantValue.
+const identityWrongTenant = "tenant_not_the_acting_user"
 
 const (
 	// vectorDocLabel is the Label every VectorDoc row this driver writes carries, and the value
@@ -643,6 +656,119 @@ func run(argv []string) int {
 			out.Entity = entityJSON(map[string]interface{}{"parentKeys": parentKeys})
 			return out
 		}())
+
+	case phase == "write" && sc == "identity":
+		// S8 identity: one row, created under this driver's OWN acting user and carrying a
+		// deliberately wrong tenant value (see identityWrongTenant). The key is reported whenever
+		// Persist returned one: the orchestrator's backstop is exactly "this language reported a
+		// key", and the negative leg below is only a denial while the row exists.
+		idCoord, idCoordErr := iverson.NewEntityCoordinator(client, IdentityDoc{})
+		var step stepResult
+		if idCoordErr != nil {
+			step = failStep("write_identity_doc", idCoordErr)
+		} else {
+			entity := IdentityDoc{
+				TenantId: identityWrongTenant,
+				OwnerId:  ownerID,
+				Label:    "identity-" + language + "-" + idPrefix,
+			}
+			key, err := idCoord.Persist(ctx, entity)
+			if err != nil {
+				step = failStep("write_identity_doc", err)
+			} else {
+				step = okStep("write_identity_doc")
+				step.Entity = entityJSON(entity)
+			}
+			if key != "" {
+				step.Keys = map[string]string{"identity_doc": key}
+			}
+		}
+		steps = append(steps, step)
+
+	case phase == "read" && sc == "identity":
+		rowKey := keyFor("identity_doc")
+
+		// The positive leg, reported as the deliberately minimal, cross-language-identical
+		// projection all five drivers emit — a driver-native serialization would differ per
+		// language and make a naming difference render as a conformance failure.
+		readStep := func() stepResult {
+			idCoord, err := iverson.NewEntityCoordinator(client, IdentityDoc{})
+			if err != nil {
+				return failStep("read_identity_doc", err)
+			}
+			readBack, err := idCoord.GetMapped(ctx, rowKey, 0)
+			if err != nil {
+				return failStep("read_identity_doc", err)
+			}
+			step := okStep("read_identity_doc")
+			step.Entity = entityJSON(map[string]interface{}{
+				"key":    readBack.Id,
+				"tenant": readBack.TenantId,
+				"owner":  readBack.OwnerId,
+			})
+			return step
+		}()
+		steps = append(steps, readStep)
+
+		// The negative leg: a SECOND connection whose per-RPC credentials carry
+		// --wrong-acting-token in place of this driver's own acting-user token. It must be a second
+		// dial, not a second context: staticServiceToken emits the acting-user header from a field
+		// fixed at dial time and ignores the context the client library writes its own token into.
+		// The service identity is unchanged, so the only thing that differs between this call and
+		// an allowed one is which end user it acts as. The status code is DATA to report, never an
+		// error to judge — that is the orchestrator's job.
+		deniedStep := func() stepResult {
+			wrongActingToken := a.optional("--wrong-acting-token")
+			wrongOpts := []grpc.DialOption{
+				grpc.WithInsecure(), //nolint:staticcheck
+				grpc.WithPerRPCCredentials(staticServiceToken{token: serviceToken, actingToken: wrongActingToken}),
+			}
+			wrongClient, err := iverson.NewIversonClient(dialTarget, wrongOpts...)
+			if err != nil {
+				return failStep("denied_update_wrong_acting_user", err)
+			}
+			defer wrongClient.Close()
+
+			wrongCoord, err := iverson.NewEntityCoordinator(wrongClient, IdentityDoc{})
+			if err != nil {
+				return failStep("denied_update_wrong_acting_user", err)
+			}
+
+			// The update payload carries the ACTING user's real tenant, not identityWrongTenant: on
+			// an EXISTING row the server rejects a payload tenant that differs from the caller's
+			// claim as "Tenant field is immutable" — also PermissionDenied (7). That denial would
+			// fire for ANY caller, including the right one, and would make this step green while
+			// proving nothing about which end user is calling.
+			_, err = wrongCoord.UpdateMapped(context.Background(), IdentityDoc{
+				Id:       rowKey,
+				TenantId: tenant,
+				OwnerId:  ownerID,
+				Label:    "identity-" + language + "-" + idPrefix + "-updated-by-the-wrong-user",
+			})
+
+			step := okStep("denied_update_wrong_acting_user")
+			if err == nil {
+				// The server accepted the wrong acting user's write. Reported as a missing status
+				// code rather than judged here.
+				step.Entity = entityJSON(map[string]interface{}{"statusCode": nil, "status": "succeeded"})
+				return step
+			}
+
+			// status.FromError unwraps a wrapped error (EntityCoordinator wraps with %w), so a
+			// genuine server status is recovered rather than reported as Unknown.
+			if grpcStatus, ok := status.FromError(err); ok {
+				step.Entity = entityJSON(map[string]interface{}{
+					"statusCode": uint32(grpcStatus.Code()),
+					"status":     grpcStatus.Code().String(),
+					"detail":     grpcStatus.Message(),
+				})
+				return step
+			}
+
+			// Not a gRPC status at all — the attempt never produced an observation.
+			return failStep("denied_update_wrong_acting_user", err)
+		}()
+		steps = append(steps, deniedStep)
 
 	case phase == "write" && sc == "query":
 		// S6 query: one row, stamped with the run's marker. The key is reported whenever Persist
