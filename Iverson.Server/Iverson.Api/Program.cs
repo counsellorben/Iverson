@@ -257,6 +257,10 @@ if (workloadRole == "worker")
     builder.Services.AddHostedService<Iverson.Api.Reconciliation.DlqMonitorConsumer>();
     builder.Services.AddHostedService<Iverson.Api.Reconciliation.ReconciliationQueueWorker>();
     builder.Services.AddHostedService<Iverson.Api.Reconciliation.DlqBacklogGaugeWorker>();
+
+    builder.Services.Configure<Iverson.Api.Reconciliation.DocumentRerenderOptions>(
+        cfg.GetSection(Iverson.Api.Reconciliation.DocumentRerenderOptions.Section));
+    builder.Services.AddHostedService<Iverson.Api.Reconciliation.DocumentRerenderQueueWorker>();
 }
 
 // Registered for both roles (not gated on workloadRole): api itself runs multiple replicas
