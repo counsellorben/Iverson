@@ -99,6 +99,10 @@ message TypeDescriptor {
     AuthorizationRules         authorization = 4;
     string                     tenant_field = 5;  // REQUIRED; names a declared scalar property holding the row's tenant id
     string                     description  = 6;  // type-level [IversonDescription] text; empty = none
+    string document_template   = 7;   // [IversonDocument] template; empty = none
+    int32  document_max_tokens = 8;
+    int32  document_overlap    = 9;
+    bool   document_contextual = 10;
 }
 
 message SchemaRequest {

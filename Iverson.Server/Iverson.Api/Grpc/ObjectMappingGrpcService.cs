@@ -367,7 +367,8 @@ public sealed class ObjectMappingGrpcService(
             request.TraceId,
             targetStores,
             outboxRowId,
-            "Mapping.Update");
+            "Mapping.Update",
+            priorPayloadJson: existingRowJson);
 
         return new MappingResponse { Success = true, Data = request.Payload, TraceId = request.TraceId };
     }

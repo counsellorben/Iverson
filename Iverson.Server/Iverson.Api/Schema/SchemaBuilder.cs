@@ -145,6 +145,26 @@ internal static class SchemaBuilder
             r.ForeignKey
         )).ToList();
 
+        DocumentTemplate? documentTemplate = null;
+        if (!string.IsNullOrEmpty(typeDesc.DocumentTemplate))
+        {
+            documentTemplate = DocumentTemplateParser.Parse(typeDesc.DocumentTemplate);
+
+            // proto3 scalars default to 0 when unset, and no client emits these fields yet.
+            // SplitIntoChunks computes step = max(maxChars - overlapChars, maxChars / 2), which is 0
+            // when maxTokens is 0 — an infinite loop awaiting one embedding call per iteration.
+            var maxTokens = typeDesc.DocumentMaxTokens > 0 ? typeDesc.DocumentMaxTokens : 512;
+            var overlap   = typeDesc.DocumentOverlap  > 0 ? typeDesc.DocumentOverlap  : 64;
+
+            chunks.Add(new ChunkDescriptor(
+                "Document",
+                maxTokens,
+                overlap,
+                embedding.ModelId,
+                embedding.Dimension,
+                typeDesc.DocumentContextual));
+        }
+
         ContractsAuthorizationRules? contractsAuthorization = typeDesc.Authorization;
         var authorization = contractsAuthorization is null
             ? null
@@ -173,7 +193,9 @@ internal static class SchemaBuilder
             MetadataColumns   = metadataColumns,
             Description       = string.IsNullOrEmpty(typeDesc.Description) ? null : typeDesc.Description,
             FieldDescriptions = fieldDescriptions,
-            EnrichmentTargets = enrichmentTargets
+            EnrichmentTargets = enrichmentTargets,
+            DocumentTemplate       = documentTemplate,
+            DocumentTemplateSource = string.IsNullOrEmpty(typeDesc.DocumentTemplate) ? null : typeDesc.DocumentTemplate
         };
     }
 
@@ -204,7 +226,11 @@ internal static class SchemaBuilder
 
     internal static CollectionSchema ToChunkCollectionSchema(SchemaDescriptor d)
     {
-        var indexes = new List<PayloadIndex> { new("parent_id", PayloadIndexKind.Keyword) };
+        var indexes = new List<PayloadIndex>
+        {
+            new("parent_id", PayloadIndexKind.Keyword),
+            new("field", PayloadIndexKind.Keyword)
+        };
         if (d.Authorization?.OwnerField is { } ownerField)
             indexes.Add(new PayloadIndex(ownerField.ToCamelCase(), PayloadIndexKind.Keyword));
 
