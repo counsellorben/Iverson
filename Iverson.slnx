@@ -20,6 +20,7 @@
     <Project Path="Iverson.Server/Iverson.Events.Tests/Iverson.Events.Tests.csproj" />
     <Project Path="Iverson.Server/Iverson.Events/Iverson.Events.csproj" />
     <Project Path="Iverson.Server/Iverson.Launcher/Iverson.Launcher.csproj" />
+    <Project Path="Iverson.Server/Iverson.LoadTest/Iverson.LoadTest.csproj" />
     <Project Path="Iverson.Server/Iverson.Sql.Tests/Iverson.Sql.Tests.csproj" />
     <Project Path="Iverson.Server/Iverson.Sql/Iverson.Sql.csproj" />
     <Project Path="Iverson.Server/Iverson.StarRocks.Tests/Iverson.StarRocks.Tests.csproj" />
