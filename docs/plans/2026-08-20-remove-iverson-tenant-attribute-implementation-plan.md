@@ -60,14 +60,14 @@ This is one atomic breaking change. Four dependencies fix the sequence:
 
 ### Steps
 
-1. In `SchemaBuilder.cs`, stop deriving the tenant column from the client. Line 172 currently reads
+1. In `SchemaBuilder.cs`, stop deriving the tenant column from the client. Line 192 currently reads
    `TenantColumn = string.IsNullOrEmpty(typeDesc.TenantField) ? null : typeDesc.TenantField;`.
    Replace the derivation with the server-owned constant `__TenantId`, and append exactly
-   `new ColumnDescriptor("__TenantId", "TEXT", false)` to `scalars` (line 164's
+   `new ColumnDescriptor("__TenantId", "TEXT", false)` to `scalars` (line 184's
    `ScalarColumns = scalars`) before the descriptor is constructed, so the column physically exists
    in the table. The type is not incidental: `ValidateFieldReference` runs for the tenant field on
-   every registration (`SchemaRegistrationOrchestrator.cs:66`) and rejects any `SqlType` outside
-   `TEXT`/`UUID`/`BYTEA`/`TIMESTAMPTZ` (`:182-186`), so a wrong type breaks registration globally.
+   every registration (`SchemaRegistrationOrchestrator.cs:87`) and rejects any `SqlType` outside
+   `TEXT`/`UUID`/`BYTEA`/`TIMESTAMPTZ` (`:435-439`), so a wrong type breaks registration globally.
    `TEXT` also matches the RLS predicate's text comparison at `PostgresSchemaManager.cs:139`. The
    `false` is `IsNullable` — the column is **NOT NULL**, so the silent-overwrite path in T2 fails
    loudly with a constraint violation rather than orphaning the row behind RLS. A test asserts both
@@ -76,8 +76,8 @@ This is one atomic breaking change. Four dependencies fix the sequence:
 2. Define the name once, as a public constant on `SchemaDescriptor` (or a sibling type in
    `Iverson.Api/Schema/`). Every consumer below references that constant — no string literals.
 
-3. Give each of the **eight** `ScalarColumns` consumer sites an explicit, commented position on
-   whether `__TenantId` is in or out. The spec names six; verification found eight:
+3. Give each of the **nine** `ScalarColumns` consumer sites an explicit, commented position on
+   whether `__TenantId` is in or out. The spec names six; verification found nine:
 
    | Site | Position |
    |---|---|
@@ -87,14 +87,17 @@ This is one atomic breaking change. Four dependencies fix the sequence:
    | `DecayFieldResolver.cs:46` | **Exclude** — never a decay field |
    | `RowFieldAuthorizationEvaluator.cs:74` | **Exclude** — not a permissionable field |
    | `RelationValidator.cs:97` (FK column lookup) | **Exclude** — never an FK |
-   | `IntelligenceStoreConsumer.cs:268`, `:377` | **Include** — passes through to projection |
-   | `SchemaBuilder.cs:183/192/203/222` (four downstream projections) | **Include** — the column must reach Postgres, StarRocks, and the engagement schemas |
+   | `SchemaRegistrationOrchestrator.cs:362` (`RequireScalarProperty`, document-template `{Prop}` gate) | **Exclude** — a template referencing `{__TenantId}` renders the server-owned value into chunk text that `SearchChunks` returns verbatim, defeating decision 6 |
+   | `IntelligenceStoreConsumer.cs:302`, `:411` | **Include** — passes through to projection |
+   | `SchemaBuilder.cs:205/214/225/248` (four downstream projections) | **Include** — the column must reach Postgres, StarRocks, and the engagement schemas |
 
    `SchemaBuilder`'s four projections and `RelationValidator` have no stated position in the spec;
    the positions above are this plan's, and each needs its comment in code.
 
 4. Tests: assert the column is injected for a descriptor that declares no tenant; assert each
-   exclusion site does not see it; assert each inclusion site does.
+   exclusion site does not see it; assert each inclusion site does. Include one registering a
+   document template that references `{__TenantId}` and asserting it is rejected with the same
+   "not a declared scalar property" error any unknown name gets.
 
 **Verify:** `dotnet test Iverson.slnx`
 
@@ -228,17 +231,24 @@ in the commit message.
 - `Iverson.Server/Iverson.Api/Grpc/AuthorizationFieldMasking.cs`
 - the orchestrator fixtures and `Iverson.ClientConformance.Tests/SchemaCatalogScenarioTests.cs`
 - `Iverson.Server/Iverson.Api.Tests/Grpc/SchemaRegistrationOrchestratorTests.cs` — strip
-  `TenantField` from all 16 `TypeDescriptor` constructions (`:37`, `:73`, `:127`, `:225`, `:259`,
-  `:289`, `:305`, `:320`, `:341`, `:357`, `:373`, `:463`, `:557`, and the three named next). Delete
-  `RegisterAsync_WithInvalidTenantField_ThrowsInvalidArgument` (`:71`), which tests a validation path
-  T4 removes, and `RegisterAsync_WithValidTenantField_Registers` (`:84`), which asserts exactly what
-  T4 makes illegal. Repoint `RegisterAsync_WithMissingTenantField_ThrowsInvalidArgument` (`:58`) at
-  T4's new rule — a descriptor *carrying* `tenant_field` is rejected — and rename it to match, so the
-  suite states the current contract instead of passing by coincidence.
+  `TenantField` from the 13 `TypeDescriptor` constructions that carry it: `:39`, `:75`, `:129`,
+  `:227`, `:261`, `:291`, `:307`, `:322`, `:343`, `:359`, `:375`, `:465`, `:559`. `:39` is the shared
+  `SimpleType` helper, so that one edit covers every test built through it. `:75` sits inside a test
+  deleted below, so it needs no separate edit.
+
+  Delete two tests outright. `RegisterAsync_WithInvalidTenantField_ThrowsInvalidArgument` (`:73`)
+  exercises the `ValidateFieldReference` path T4 removes for the tenant field.
+  `RegisterAsync_WithValidTenantField_Registers` (`:86`) asserts a descriptor carrying `tenant_field`
+  registers *and* that `TenantColumn` equals `"TenantId"` — both of which T4 and T1 make false.
+
+  Repoint `RegisterAsync_WithMissingTenantField_ThrowsInvalidArgument` (`:60`) at T4's new rule and
+  rename it to match. Note the inversion: it currently builds a descriptor with **no** `TenantField`
+  and asserts `InvalidArgument`, which after T4 is the *legal* case — so left alone it fails. It must
+  be rebuilt around a descriptor that *carries* `tenant_field`.
 
 ### Steps
 
-1. **Invert the registration guard.** `SchemaRegistrationOrchestrator.cs:61-66` currently *requires*
+1. **Invert the registration guard.** `SchemaRegistrationOrchestrator.cs:82-87` currently *requires*
    `tenant_field` and throws `InvalidArgument` when it is empty, then calls
    `ValidateFieldReference`. Replace both with the opposite rule: a descriptor carrying a non-empty
    `tenant_field` is rejected with `InvalidArgument`. Proto field 5 stays declared
@@ -246,11 +256,11 @@ in the commit message.
    is rejected if set.
 
 2. **Reject `__TenantId` as a declared property.** The check runs on the **inbound
-   `TypeDescriptor`** (`typeDesc`), before the `SchemaBuilder.BuildDescriptor` call at `:50` — never
+   `TypeDescriptor`** (`typeDesc`), before the `SchemaBuilder.BuildDescriptor` call at `:60` — never
    on the built `SchemaDescriptor`, which after T1 always contains the server's own injected
    `__TenantId` and would therefore self-reject every registration. A `typeDesc` declaring a
    property named `__TenantId` (as a scalar, the key, or an FK) is rejected with `InvalidArgument`.
-   Case-insensitive, matching the comparison style at `:165` and `:173`. The fixture for this
+   Case-insensitive, matching the comparison style at `:418` and `:426`. The fixture for this
    rejection must send the name through the proto, not construct a `SchemaDescriptor`.
 
 3. **Reject `__TenantId` in a write payload.** In `EnforceWriteAuthorization`
@@ -407,12 +417,12 @@ Paths are relative to `/home/ben/repositories/Iverson-conformance`.
 
 | # | Assumption | Status | Evidence |
 |---|---|---|---|
-| A1 | `SchemaBuilder.cs` is at `Iverson.Api/Grpc/`, injection at `:158` | **FAILED** | It is at `Iverson.Api/Schema/SchemaBuilder.cs`; tenant derivation is `:172`, `ScalarColumns` `:164`. Plan corrected. |
+| A1 | `SchemaBuilder.cs` is at `Iverson.Api/Grpc/`, injection at `:158` | **FAILED** | It is at `Iverson.Api/Schema/SchemaBuilder.cs`. Post-merge: tenant derivation `:192`, `ScalarColumns = scalars` `:184`. Plan corrected. |
 | A2 | `AuthorizationFieldMasking.cs` exists at `Iverson.Api/Grpc/` | holds | 153 lines; early return `:129` |
 | A3 | `ObjectMappingGrpcService.cs` exists at `Iverson.Api/Grpc/` | holds | 472 lines; `Post` `:286`, `Update` `:322` |
 | A4 | `OutboxWriter.cs` exists at `Iverson.Sql/` | holds | 105 lines |
 | A5 | The four exclusion sites are all under `Grpc/` | **FAILED** | `RowFieldAuthorizationEvaluator.cs` is under `Iverson.Api/Authorization/`. Plan corrected. |
-| A6 | `SchemaRegistrationOrchestrator.cs` exists | holds | `Iverson.Api/Grpc/`; tenant guard `:61-66` |
+| A6 | `SchemaRegistrationOrchestrator.cs` exists | holds | `Iverson.Api/Grpc/`; post-merge the tenant guard is `:82-87` (was `:61-66` pre-merge — the file grew 256 lines in `502e680`) |
 | A7 | `Verifier.cs` / `Requirements.cs` / gate tests exist | holds | `Iverson.ClientConformance/{Verifier,Requirements}.cs`, `Iverson.ClientConformance.Tests/RequirementsCoverageGateTests.cs` |
 | A8 | The five client marker files exist | holds | .NET `SchemaRegistrar.cs:130`; Java `annotations/IversonTenant.java`; Python `annotations.py:193`; TS `annotations.ts:295`; Go `tags.go:80` |
 | A9 | Orchestrator fixtures, `SchemaCatalogScenarioTests`, `PostgresProbe` exist | holds | all three present under `Iverson.ClientConformance*/` |
@@ -431,7 +441,7 @@ Paths are relative to `/home/ben/repositories/Iverson-conformance`.
 | A22 | `SchemaBuilder`'s callers absorb the change | holds, with one contract | 18 call sites, all via `To*Schema` projections. **`PostgresProbe.cs:11,20` keeps a deliberate separate copy of the table-naming rule** (`NamingExtensions` is internal to `Iverson.Api`) — captured as a cross-task contract in T5. |
 | A23 | `TenantColumn` non-nullable = two dead branches | **FAILED** | ~36 sites across three declarations (`SchemaDescriptor.cs:25`, `IRowFieldAuthorizationEvaluator.cs:32`, `AuthorizationConstraint.cs:7`), incl. eight *live* tenant-predicate guards in `StarRocksQueryBuilder`/`StarRocksPipelineBuilder`. Became T7 by user decision. |
 | A24 | Marker consumers span the five client libraries **and** `Iverson.Server/Iverson.LoadTest` | **FAILED as originally scoped** | Per-client: samples, driver models and tests across all five, enumerated in T3; Java lives under `Java/client/src/main` and `Java/sample/`, not `Java/src/main`. Outside the clients: `Iverson.LoadTest/Entities/BenchmarkAuthor.cs:13`, `BenchmarkTag.cs:12`, `BenchmarkArticle.cs:16`, plus the `"TenantId"` column in `DirectSeeder.cs:84,154,214`. |
-| A25 | `ScalarColumns` has six consumers (spec's count) | **FAILED** | Eight production sites. `RelationValidator.cs:97` and `SchemaBuilder.cs:183,192,203,222` have no position in the spec; assigned in T1. |
+| A25 | `ScalarColumns` has six consumers (spec's count) | **FAILED** | **Nine** production sites post-merge. Beyond the spec's six: `RelationValidator.cs:97`, `SchemaBuilder.cs:205,214,225,248`, and `SchemaRegistrationOrchestrator.cs:362` (`RequireScalarProperty`, added by the merge). All assigned positions in T1. |
 | A26 | `OutboxWriter` has four call sites, all covered by T2's injection | holds | `ObjectMappingGrpcService.cs:305,:351`; `ObjectPersistenceGrpcService.cs:60,:124`; interface `OutboxWriter.cs:5` |
 | A27 | `decision.TenantValue` is non-null on every write path that is not already denied | holds | The four early returns in `RowFieldAuthorizationEvaluator.Evaluate` (`:11-22`) all pass `Denied = true` — the record's first positional parameter (`IRowFieldAuthorizationEvaluator.cs:17`) — and `AuthorizationFieldMasking.cs:41-46` throws `PermissionDenied` before the write. Every path that reaches `OutboxWriter` passed the non-empty `tenant_id` check at `:21-22`. |
 | A28 | `AuthorizationConstraint` has three construction sites; one relies on `TenantColumn`'s default | holds | `ObjectSearchGrpcService.cs:749`, `:763` pass it positionally; `TenantIsolationIntegrationTests.cs:89` omits it deliberately (`:85-87` states why). Record declared at `AuthorizationConstraint.cs:3-8`. Kept out of T7's scope by decision. |
