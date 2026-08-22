@@ -54,11 +54,14 @@ public class DocumentRerenderQueueWorkerTests
 
     private void RegisterArticle() => _registry.RegisterAsync(ArticleSchema()).GetAwaiter().GetResult();
 
+    private static readonly DateTime ObservedAt =
+        new(2026, 8, 21, 12, 0, 0, DateTimeKind.Utc);
+
     private static DocumentRerenderQueueRow EntityRow(int attempts = 0, string? tenantId = TenantA) =>
-        new(Guid.NewGuid(), tenantId, TypeName, EntityKey, null, attempts);
+        new(Guid.NewGuid(), tenantId, TypeName, EntityKey, null, attempts, ObservedAt);
 
     private static DocumentRerenderQueueRow TypeRow(string? cursor = null, int attempts = 0) =>
-        new(Guid.NewGuid(), null, TypeName, null, cursor, attempts);
+        new(Guid.NewGuid(), null, TypeName, null, cursor, attempts, ObservedAt);
 
     // ── Batch bounding ───────────────────────────────────────────────────────
 
@@ -241,8 +244,8 @@ public class DocumentRerenderQueueWorkerTests
 
         await BuildSut(opts).TickAsync(CancellationToken.None);
 
-        await _queue.Received(1).DeleteRowAsync(typeRow.Id);
-        await _queue.DidNotReceiveWithAnyArgs().AdvanceCursorAsync(default, default!);
+        await _queue.Received(1).DeleteTypeRowAsync(typeRow.Id, ObservedAt);
+        await _queue.DidNotReceiveWithAnyArgs().AdvanceCursorAsync(default, default!, default);
     }
 
     [Fact]
@@ -260,8 +263,8 @@ public class DocumentRerenderQueueWorkerTests
 
         await BuildSut(opts).TickAsync(CancellationToken.None);
 
-        await _queue.Received(1).AdvanceCursorAsync(typeRow.Id, "key-2");
-        await _queue.DidNotReceive().DeleteRowAsync(typeRow.Id);
+        await _queue.Received(1).AdvanceCursorAsync(typeRow.Id, "key-2", ObservedAt);
+        await _queue.DidNotReceive().DeleteTypeRowAsync(typeRow.Id, Arg.Any<DateTime>());
     }
 
     // ── Expansion failure: records against the type-level row, does not propagate,

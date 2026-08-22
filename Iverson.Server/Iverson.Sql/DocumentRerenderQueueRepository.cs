@@ -75,7 +75,7 @@ public sealed class DocumentRerenderQueueRepository(IRecordStoreQueryExecutor sq
     public Task<IEnumerable<DocumentRerenderQueueRow>> PollAsync(int maxAttempts, int batchSize) =>
         sql.QueryAsync<DocumentRerenderQueueRow>(
             $"""
-            SELECT "Id", "TenantId", "TypeName", "EntityKey", "Cursor", "Attempts"
+            SELECT "Id", "TenantId", "TypeName", "EntityKey", "Cursor", "Attempts", "EnqueuedAt"
             FROM "{TableName}"
             WHERE "Attempts" < @MaxAttempts
             ORDER BY "EnqueuedAt"
@@ -83,10 +83,19 @@ public sealed class DocumentRerenderQueueRepository(IRecordStoreQueryExecutor sq
             """,
             new { MaxAttempts = maxAttempts, BatchSize = batchSize });
 
-    public Task AdvanceCursorAsync(Guid id, string cursor) =>
+    // Both type-level writes are guarded on the EnqueuedAt this worker observed at poll time.
+    // EnqueueTypeAsync's ON CONFLICT DO UPDATE resets Cursor to NULL and stamps a fresh
+    // EnqueuedAt on the SAME row Id, so an unguarded write here would either reinstate a stale
+    // cursor over that reset or delete the re-enqueued row outright — dropping a template
+    // invalidation that arrived mid-expansion. A zero-row update means exactly that happened;
+    // the next tick re-reads the row and restarts the scan from the beginning, which is correct.
+    public Task AdvanceCursorAsync(Guid id, string cursor, DateTime observedEnqueuedAt) =>
         sql.ExecuteAsync(
-            $"""UPDATE "{TableName}" SET "Cursor" = @Cursor WHERE "Id" = @Id""",
-            new { Cursor = cursor, Id = id });
+            $"""
+            UPDATE "{TableName}" SET "Cursor" = @Cursor
+            WHERE "Id" = @Id AND "EnqueuedAt" = @ObservedEnqueuedAt
+            """,
+            new { Cursor = cursor, Id = id, ObservedEnqueuedAt = observedEnqueuedAt });
 
     public Task RecordFailureAsync(Guid id, int attempts, string lastError) =>
         sql.ExecuteAsync(
@@ -99,6 +108,11 @@ public sealed class DocumentRerenderQueueRepository(IRecordStoreQueryExecutor sq
 
     public Task DeleteRowAsync(Guid id) =>
         sql.ExecuteAsync($"""DELETE FROM "{TableName}" WHERE "Id" = @Id""", new { Id = id });
+
+    public Task DeleteTypeRowAsync(Guid id, DateTime observedEnqueuedAt) =>
+        sql.ExecuteAsync(
+            $"""DELETE FROM "{TableName}" WHERE "Id" = @Id AND "EnqueuedAt" = @ObservedEnqueuedAt""",
+            new { Id = id, ObservedEnqueuedAt = observedEnqueuedAt });
 
     public Task<int> CountPendingAsync() =>
         sql.QuerySingleOrDefaultAsync<int>($"""SELECT COUNT(*) FROM "{TableName}" """);

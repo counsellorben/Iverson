@@ -51,9 +51,10 @@ internal sealed class NoOpDocumentRerenderQueueRepository : IDocumentRerenderQue
     public Task EnqueueTypeAsync(string typeName) => Task.CompletedTask;
     public Task<IEnumerable<DocumentRerenderQueueRow>> PollAsync(int maxAttempts, int batchSize) =>
         Task.FromResult(Enumerable.Empty<DocumentRerenderQueueRow>());
-    public Task AdvanceCursorAsync(Guid id, string cursor) => Task.CompletedTask;
+    public Task AdvanceCursorAsync(Guid id, string cursor, DateTime observedEnqueuedAt) => Task.CompletedTask;
     public Task RecordFailureAsync(Guid id, int attempts, string lastError) => Task.CompletedTask;
     public Task DeleteRowAsync(Guid id) => Task.CompletedTask;
+    public Task DeleteTypeRowAsync(Guid id, DateTime observedEnqueuedAt) => Task.CompletedTask;
     public Task<int> CountPendingAsync() => Task.FromResult(0);
     public Task<int> CountExhaustedAsync(int maxAttempts) => Task.FromResult(0);
 }
