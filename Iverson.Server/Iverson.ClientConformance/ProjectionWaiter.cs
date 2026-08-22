@@ -32,7 +32,11 @@ public sealed class ProjectionWaiter(TimeSpan? timeout = null, TimeSpan? interva
     /// </summary>
     public TimeSpan Timeout { get; } = timeout ?? TimeSpan.FromSeconds(90);
 
-    /// <summary>Delay between probe attempts. The probe is always attempted once before any delay.</summary>
+    /// <summary>
+    /// Delay between probe attempts. The probe is always attempted once before any delay. Doubles
+    /// as the floor on a single attempt's budget (see <see cref="WaitAsync"/>), so a waiter
+    /// constructed with a zero interval AND a zero timeout gives its one attempt no budget at all.
+    /// </summary>
     public TimeSpan Interval { get; } = interval ?? TimeSpan.FromSeconds(2);
 
     /// <summary>
@@ -44,6 +48,16 @@ public sealed class ProjectionWaiter(TimeSpan? timeout = null, TimeSpan? interva
     ///
     /// The clock is <see cref="Stopwatch"/>, not attempt counting: the interval is a floor on how
     /// often the store is asked, not a promise about how many times it will be.
+    ///
+    /// The bound is per ATTEMPT, not merely between attempts: each attempt runs under a token
+    /// linked to <paramref name="ct"/> and cancelled after the remaining budget
+    /// (<see cref="Timeout"/> minus elapsed), FLOORED at <see cref="Interval"/>. A probe that
+    /// outlives its attempt budget is therefore just a failed attempt — its expiry is carried into
+    /// the detail like any other — and never a hang. Cancellation of <paramref name="ct"/> itself
+    /// still throws; only budget expiry is data. Because of the floor, a waiter configured with a
+    /// zero timeout still grants its one attempt a full interval, so it genuinely observes the
+    /// store rather than reporting a timeout it never tested; total elapsed time is then at most
+    /// one interval.
     /// </summary>
     public async Task<ProjectionWaitResult> WaitAsync(
         string subject,
@@ -61,13 +75,17 @@ public sealed class ProjectionWaiter(TimeSpan? timeout = null, TimeSpan? interva
             // Each attempt is bounded by what is LEFT of the budget, not merely checked against it
             // afterwards. A probe that stalls inside an accepted call (a gRPC stream that never
             // completes) would otherwise block attempt 1 forever and the timeout would never fire —
-            // the hung harness this class exists to prevent. When the budget is already spent the
-            // attempt still runs, with a token that is already cancelled: the at-least-one-probe
-            // guarantee is about invoking the store, not about granting it unbounded time.
+            // the hung harness this class exists to prevent.
+            //
+            // Floored at Interval so an exhausted (or zero) budget still buys the probe a genuinely
+            // usable window: handing it an already-dead token would make it hand back without
+            // touching the store, and the wait would then report on a store it never asked. The
+            // floor stays bounded — worst case one attempt costs one interval.
             using var attemptCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
             var remaining = Timeout - stopwatch.Elapsed;
-            if (remaining > TimeSpan.Zero)
-                attemptCts.CancelAfter(remaining);
+            var budget = remaining > Interval ? remaining : Interval;
+            if (budget > TimeSpan.Zero)
+                attemptCts.CancelAfter(budget);
             else
                 await attemptCts.CancelAsync();
 
@@ -87,8 +105,8 @@ public sealed class ProjectionWaiter(TimeSpan? timeout = null, TimeSpan? interva
             }
             catch (OperationCanceledException) when (attemptCts.IsCancellationRequested)
             {
-                lastDetail = $"the probe did not return within the remaining " +
-                             $"{Math.Max(remaining.TotalSeconds, 0):0.0}s of the wait budget";
+                lastDetail = $"the probe did not return within its " +
+                             $"{budget.TotalSeconds:0.0}s attempt budget";
             }
             catch (Exception ex)
             {

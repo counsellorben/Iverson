@@ -158,4 +158,28 @@ public class ProjectionWaiterTests
 
         await act.Should().NotThrowAsync("budget expiry is data, caller cancellation is the exception");
     }
+
+    [Fact]
+    public async Task WaitAsync_ZeroTimeout_GivesTheProbeAUsableBudgetToActuallyObserveTheStore()
+    {
+        // The companion to WaitAsync_ZeroTimeout_StillProbesOnce, whose probe IGNORES its token and
+        // so cannot tell "the store was asked" from "the probe was handed an already-dead token and
+        // returned instantly". A token-HONOURING probe can, and the class doc's claim that a waiter
+        // configured down to nothing still observes the store is only true if this passes.
+        var observedTheStore = false;
+        var waiter = new ProjectionWaiter(TimeSpan.Zero, TimeSpan.FromSeconds(2));
+
+        var result = await waiter.WaitAsync("rows", async token =>
+        {
+            token.ThrowIfCancellationRequested();
+            await Task.Delay(TimeSpan.FromMilliseconds(20), token);
+            observedTheStore = true;
+            return ProbeOutcome.NotYet("nothing");
+        });
+
+        observedTheStore.Should().BeTrue(
+            "each attempt's budget is floored at Interval, so even a zero timeout buys one real read");
+        result.Satisfied.Should().BeFalse();
+        result.Attempts.Should().Be(1);
+    }
 }
