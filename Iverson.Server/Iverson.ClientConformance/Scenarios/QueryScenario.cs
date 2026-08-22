@@ -317,11 +317,6 @@ public sealed class QueryScenario(
     // ── the orchestrator's own probe of the projection ───────────────────────────────────────
 
     /// <summary>
-    /// Counts the rows the marker matches through the orchestrator's OWN <c>Search</c> call. This
-    /// is the projection probe, not a conformance observation: nothing it returns is ever compared
-    /// against a client's report, so a driver cannot manufacture readiness.
-    /// </summary>
-    /// <summary>
     /// The projection-wait predicate, extracted so it is testable without a live stack: the wait is
     /// satisfied only when Search can already see at least as many marked rows as the write phase
     /// produced. <paramref name="expected"/> of zero is deliberately NOT ready — no language seeded
@@ -331,6 +326,11 @@ public sealed class QueryScenario(
     internal static bool ProjectionReady(int visible, int expected) =>
         expected > 0 && visible >= expected;
 
+    /// <summary>
+    /// Counts the rows the marker matches through the orchestrator's OWN <c>Search</c> call. This
+    /// is the projection probe, not a conformance observation: nothing it returns is ever compared
+    /// against a client's report, so a driver cannot manufacture readiness.
+    /// </summary>
     private async Task<int> CountVisibleAsync(string marker, string actingToken, CancellationToken ct)
     {
         var request = new SearchRequest

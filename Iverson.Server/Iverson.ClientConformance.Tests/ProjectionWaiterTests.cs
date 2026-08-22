@@ -129,6 +129,30 @@ public class ProjectionWaiterTests
     }
 
     [Fact]
+    public async Task WaitAsync_CallerCancelsMidProbeAfterTheTimeoutElapsed_ThrowsRatherThanReportingUnsatisfied()
+    {
+        // The one case that separates caller cancellation from budget expiry: the cancellation
+        // arrives INSIDE a probe at a moment when the timeout has already elapsed. Without the
+        // `when (ct.IsCancellationRequested)` filter the throw is swallowed as an attempt-budget
+        // expiry and the wait returns an unsatisfied result — an operator-visible report blaming
+        // the outbox for what was really a shutdown. A shutdown must surface as a cancellation.
+        using var cts = new CancellationTokenSource();
+
+        var act = async () => await Fast(0).WaitAsync(
+            "rows",
+            async attemptToken =>
+            {
+                await cts.CancelAsync();
+                attemptToken.ThrowIfCancellationRequested();
+                return ProbeOutcome.NotYet("unreachable");
+            },
+            cts.Token);
+
+        await act.Should().ThrowAsync<OperationCanceledException>(
+            "a caller cancellation must never be reported as the projection failing to arrive");
+    }
+
+    [Fact]
     public async Task WaitAsync_ProbeOutlivesTheTimeout_ReturnsUnsatisfiedRatherThanHanging()
     {
         // The bound must apply INSIDE an attempt, not only between attempts: a probe that stalls
