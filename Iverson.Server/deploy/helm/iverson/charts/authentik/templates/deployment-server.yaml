@@ -28,6 +28,52 @@ spec:
         runAsGroup: 1000
         fsGroup: 1000
         seccompProfile: { type: RuntimeDefault }
+      # The ONE process that migrates the authentik database on this release. The server and worker
+      # containers both run with AUTHENTIK_SKIP_MIGRATIONS=true so neither migrates concurrently.
+      #
+      # Why: `ak server` and `ak worker` BOTH run lifecycle/migrate.py on startup. That module opens
+      # its own psycopg connection, takes pg_advisory_lock(1000) on it, then hands the actual
+      # migrating to Django on a SEPARATE connection — while its own connection sits holding an
+      # uncommitted implicit transaction from the `SET search_path` and version-history reads it
+      # performs between the lock and the Django call. A second migrator's Django connection blocks
+      # on a table lock that idle transaction holds, and Postgres cannot report it as a deadlock
+      # because the idle backend is not itself waiting on anything. Observed on the compose stack
+      # 2026-08-22: the wedge left a PARTIALLY MIGRATED schema that no retry repaired — an index
+      # existed with no Django ledger row, every blueprint apply then failed, zero OAuth2 providers
+      # were created, and only DROP DATABASE recovered it. In Kubernetes the liveness probes turn
+      # that into restart churn, and a restart landing mid-ALTER TABLE is one way the corruption is
+      # produced.
+      #
+      # `python -m lifecycle.migrate` is the full sequence: lifecycle/system_migrations/*,
+      # `migrate_schemas`, the tenant-template pass, and Django's deploy checks. `ak migrate` is NOT
+      # equivalent — the image entrypoint routes it to `manage migrate`, skipping the system
+      # migrations and schema passes. The entrypoint is overridden because that routing swallows any
+      # bare command. Idempotent: a re-run exits 0 with "No migrations to apply."
+      initContainers:
+        - name: migrate
+          image: "ghcr.io/goauthentik/server:{{ .Values.imageTag }}"
+          command: ["python", "-m", "lifecycle.migrate"]
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: false
+            capabilities: { drop: ["ALL"] }
+          envFrom:
+            - configMapRef:
+                name: {{ .Release.Name }}-authentik-config
+          env:
+            - name: AUTHENTIK_SECRET_KEY
+              valueFrom:
+                secretKeyRef: { name: {{ .Release.Name }}-authentik-app, key: secret-key }
+            - name: AUTHENTIK_POSTGRESQL__PASSWORD
+              valueFrom:
+                secretKeyRef: { name: {{ .Release.Name }}-authentik-postgres, key: password }
+          resources:
+            requests:
+              cpu: {{ .Values.resources.server.requests.cpu | quote }}
+              memory: {{ .Values.resources.server.requests.memory | quote }}
+            limits:
+              cpu: {{ .Values.resources.server.limits.cpu | quote }}
+              memory: {{ .Values.resources.server.limits.memory | quote }}
       containers:
         - name: server
           image: "ghcr.io/goauthentik/server:{{ .Values.imageTag }}"
@@ -47,6 +93,8 @@ spec:
             - configMapRef:
                 name: {{ .Release.Name }}-authentik-config
           env:
+            - name: AUTHENTIK_SKIP_MIGRATIONS
+              value: "true"
             - name: AUTHENTIK_SECRET_KEY
               valueFrom:
                 secretKeyRef: { name: {{ .Release.Name }}-authentik-app, key: secret-key }

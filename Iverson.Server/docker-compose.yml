@@ -232,6 +232,45 @@ services:
       timeout: 5s
       retries: 5
 
+  # The ONE process that migrates the authentik database. Everything else runs with
+  # AUTHENTIK_SKIP_MIGRATIONS=true and waits for this to exit 0.
+  #
+  # Why this exists: `ak server` and `ak worker` BOTH run lifecycle/migrate.py on startup. That
+  # module opens its own psycopg connection, takes pg_advisory_lock(1000) on it, and then hands the
+  # actual migrating to Django on a SEPARATE connection — while its own connection sits holding an
+  # uncommitted implicit transaction from the `SET search_path` and version-history reads it does
+  # between the lock and the Django call. A second container's Django connection then blocks on a
+  # table lock that idle transaction holds, and Postgres cannot break it as a deadlock because the
+  # idle backend is not itself waiting on anything. Observed 2026-08-22: a fresh `docker compose up`
+  # wedged indefinitely mid-migration and left a PARTIALLY MIGRATED schema — an index existed that
+  # the Django ledger had no record of, so every subsequent blueprint apply failed with
+  # `relation "authentik_t_queue_n_7b09fb_idx" already exists`, zero OAuth2 providers were created,
+  # and token issuance returned invalid_client. No retry repaired it; only DROP DATABASE did.
+  #
+  # `python -m lifecycle.migrate` is the full sequence the server would otherwise run inline:
+  # lifecycle/system_migrations/*, `migrate_schemas`, the tenant-template schema pass, and Django's
+  # deploy checks. `ak migrate` is NOT equivalent — the image's entrypoint routes it to
+  # `manage migrate`, which skips the system migrations and the schema passes entirely. The
+  # entrypoint is overridden here because that same routing swallows any bare command.
+  # Idempotent: a re-run on a migrated database exits 0 with "No migrations to apply."
+  authentik-migrate:
+    image: ghcr.io/goauthentik/server:2026.5.3
+    container_name: iverson-authentik-migrate
+    entrypoint: ["python", "-m", "lifecycle.migrate"]
+    restart: "no"
+    environment:
+      AUTHENTIK_SECRET_KEY: "dev-only-not-for-production-use-0123456789abcdef"
+      AUTHENTIK_REDIS__HOST: redis
+      AUTHENTIK_POSTGRESQL__HOST: postgres
+      AUTHENTIK_POSTGRESQL__NAME: authentik
+      AUTHENTIK_POSTGRESQL__USER: authentik
+      AUTHENTIK_POSTGRESQL__PASSWORD: authentik
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
   authentik-server:
     image: ghcr.io/goauthentik/server:2026.5.3
     container_name: iverson-authentik-server
@@ -247,12 +286,16 @@ services:
       AUTHENTIK_BOOTSTRAP_EMAIL: admin@iverson.local
       AUTHENTIK_BOOTSTRAP_PASSWORD: dev-admin-password
       AUTHENTIK_BOOTSTRAP_TOKEN: dev-bootstrap-token-0123456789
+      # authentik-migrate owns migrations; this role must never run them concurrently.
+      AUTHENTIK_SKIP_MIGRATIONS: "true"
     ports:
       - "9000:9000"
     volumes:
       - ./deploy/helm/iverson/charts/authentik/blueprints:/blueprints/custom:ro
       - ./deploy/helm/iverson/charts/authentik/assets/fonts/fraunces-900.woff2:/web/dist/assets/fonts/Fraunces/fraunces-900.woff2:ro
     depends_on:
+      authentik-migrate:
+        condition: service_completed_successfully
       postgres:
         condition: service_healthy
       redis:
@@ -279,9 +322,13 @@ services:
       AUTHENTIK_BOOTSTRAP_EMAIL: admin@iverson.local
       AUTHENTIK_BOOTSTRAP_PASSWORD: dev-admin-password
       AUTHENTIK_BOOTSTRAP_TOKEN: dev-bootstrap-token-0123456789
+      # authentik-migrate owns migrations; this role must never run them concurrently.
+      AUTHENTIK_SKIP_MIGRATIONS: "true"
     volumes:
       - ./deploy/helm/iverson/charts/authentik/blueprints:/blueprints/custom:ro
     depends_on:
+      authentik-migrate:
+        condition: service_completed_successfully
       postgres:
         condition: service_healthy
       redis:
