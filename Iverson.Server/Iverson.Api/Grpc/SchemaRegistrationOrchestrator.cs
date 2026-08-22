@@ -183,13 +183,14 @@ public sealed class SchemaRegistrationOrchestrator(
             // "Document" chunk field, so ChunkFields has no Document entry and the orphan-delete
             // pass in IntelligenceStoreConsumer (which iterates ChunkFields) can never clean up
             // the old document_vector chunk points — the backfill would just re-ingest every
-            // entity of the type for nothing. Deleting those points here would require iterating
-            // every tenant's per-tenant chunk collection (tenant is baked into the collection
-            // name, not a payload filter — see IntelligenceTenantScope.ResolveCollectionName),
-            // which needs a tenant-listing collaborator this orchestrator does not have and
-            // isn't reachable without pulling in vector-store + tenant-repository dependencies
-            // well beyond this fix's scope. Log a clear warning instead so the gap is visible,
-            // and skip the pointless enqueue either way.
+            // entity of the type for nothing. Deleting those points here is DELIBERATELY
+            // DEFERRED, not impossible: it would iterate every tenant's per-tenant chunk
+            // collection (tenant is baked into the collection name, not a payload filter — see
+            // IntelligenceTenantScope.ResolveCollectionName), which needs two collaborators this
+            // orchestrator does not yet take — ITenantRepository.ListAsync for the tenant list
+            // and IVectorWriteService for the delete. Both exist and are already DI-registered;
+            // adding them here is a scope decision, not a blocked one. Log a clear warning
+            // instead so the gap is visible, and skip the pointless enqueue either way.
             if (priorSource is not null && descriptor.DocumentTemplateSource is null)
             {
                 logger.LogWarning(

@@ -132,7 +132,7 @@ internal sealed class DocumentRerenderQueueWorker(
             var schema = registry.Get(row.TypeName);
             if (schema is null)
             {
-                await queue.DeleteRowAsync(row.Id);
+                await queue.DeleteTypeRowAsync(row.Id, row.EnqueuedAt);
                 return;
             }
 
@@ -142,10 +142,16 @@ internal sealed class DocumentRerenderQueueWorker(
             foreach (var keyed in page)
                 await queue.EnqueueEntityAsync(keyed.TenantId, row.TypeName, keyed.Key);
 
+            // Both writes are guarded on the EnqueuedAt observed at poll time. A template
+            // change arriving mid-expansion re-enqueues this same row Id with Cursor reset to
+            // NULL and a fresh EnqueuedAt; an unguarded delete would drop that invalidation and
+            // an unguarded advance would reinstate a stale cursor, leaving every entity before
+            // it rendered against the old template forever. A no-op here is the correct
+            // outcome — the next tick picks up the reset row and rescans from the start.
             if (page.Count < opts.PageSize)
-                await queue.DeleteRowAsync(row.Id);
+                await queue.DeleteTypeRowAsync(row.Id, row.EnqueuedAt);
             else
-                await queue.AdvanceCursorAsync(row.Id, page[^1].Key);
+                await queue.AdvanceCursorAsync(row.Id, page[^1].Key, row.EnqueuedAt);
         }
         catch (Exception ex)
         {

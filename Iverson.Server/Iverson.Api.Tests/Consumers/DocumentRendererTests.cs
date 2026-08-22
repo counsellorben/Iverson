@@ -527,4 +527,42 @@ public class DocumentRendererTests
 
         result.Should().Be("Value: Widget One");
     }
+
+    // The defence-in-depth half of the case-sensitivity fix. Registration validation guarantees
+    // every placeholder resolves, so these two cases are unreachable through RegisterAsync — but
+    // a descriptor rehydrated from a legacy _iverson_schema row bypasses that validation, and
+    // before the fix the renderer used .First(...), which throws out of the chunk loop and kills
+    // ALL vector and chunk ingest for the type, not just the document.
+
+    [Fact]
+    public async Task RenderAsync_OneHop_RelationMissingEntirely_RendersEmpty_DoesNotThrow()
+    {
+        var schema = WidgetSchema("By {Ghost.Name}") with { Relations = [] };
+        await _registry.RegisterAsync(schema);
+
+        var act = async () => await _sut.RenderAsync(
+            schema,
+            Payload($$"""{"Id":"{{WidgetId}}","TenantId":"{{Tenant}}"}"""),
+            Tenant, Ct);
+
+        (await act.Should().NotThrowAsync()).Which.Should().Be("By ");
+        await _entities.DidNotReceiveWithAnyArgs()
+            .FetchManyByKeysAsync(default!, default!, default, default);
+    }
+
+    [Fact]
+    public async Task RenderAsync_Block_RelationMissingEntirely_RendersNothing_DoesNotThrow()
+    {
+        var schema = WidgetSchema("[{#Ghosts}{Body}{/Ghosts}]") with { Relations = [] };
+        await _registry.RegisterAsync(schema);
+
+        var act = async () => await _sut.RenderAsync(
+            schema,
+            Payload($$"""{"Id":"{{WidgetId}}","TenantId":"{{Tenant}}"}"""),
+            Tenant, Ct);
+
+        (await act.Should().NotThrowAsync()).Which.Should().Be("[]");
+        await _entities.DidNotReceiveWithAnyArgs()
+            .FetchByColumnAsync(default!, default!, default!, default, default);
+    }
 }

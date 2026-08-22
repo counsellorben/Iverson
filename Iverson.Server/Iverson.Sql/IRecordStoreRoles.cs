@@ -100,9 +100,10 @@ public interface IDocumentRerenderQueueRepository
     Task EnqueueEntityAsync(string? tenantId, string typeName, string entityKey);
     Task EnqueueTypeAsync(string typeName);
     Task<IEnumerable<DocumentRerenderQueueRow>> PollAsync(int maxAttempts, int batchSize);
-    Task AdvanceCursorAsync(Guid id, string cursor);
+    Task AdvanceCursorAsync(Guid id, string cursor, DateTime observedEnqueuedAt);
     Task RecordFailureAsync(Guid id, int attempts, string lastError);
     Task DeleteRowAsync(Guid id);
+    Task DeleteTypeRowAsync(Guid id, DateTime observedEnqueuedAt);
     Task<int> CountPendingAsync();
     Task<int> CountExhaustedAsync(int maxAttempts);
 }

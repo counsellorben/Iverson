@@ -106,7 +106,7 @@ public sealed class DocumentRerenderQueuePostgresIntegrationTests(DocumentRerend
 
         await queue.EnqueueTypeAsync("Article");
         var rows = (await queue.PollAsync(maxAttempts: 5, batchSize: 10)).ToList();
-        await queue.AdvanceCursorAsync(rows[0].Id, "cursor-40000");
+        await queue.AdvanceCursorAsync(rows[0].Id, "cursor-40000", rows[0].EnqueuedAt);
 
         await queue.EnqueueTypeAsync("Article");
 
@@ -118,6 +118,68 @@ public sealed class DocumentRerenderQueuePostgresIntegrationTests(DocumentRerend
             $"""SELECT "Cursor" FROM "{DocumentRerenderQueueRepository.TableName}" WHERE "TypeName" = @TypeName""",
             new { TypeName = "Article" });
         cursorAfter.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task AdvanceCursorAsync_AfterRowWasReEnqueued_IsANoOp_AndLeavesTheResetCursor()
+    {
+        // The other half of Finding 2. EnqueueTypeAsync's ON CONFLICT DO UPDATE reuses the SAME
+        // row Id, so a worker that polled BEFORE the re-enqueue would otherwise reinstate its
+        // stale cursor over the reset — reintroducing the exact skip the reset exists to prevent.
+        var queue = await FreshQueueAsync();
+
+        await queue.EnqueueTypeAsync("Article");
+        var polled = (await queue.PollAsync(maxAttempts: 5, batchSize: 10)).ToList()[0];
+
+        // A template change lands while the worker is mid-page: same Id, new EnqueuedAt.
+        await Task.Delay(10);
+        await queue.EnqueueTypeAsync("Article");
+
+        // The in-flight worker finishes its page and tries to advance using what it observed.
+        await queue.AdvanceCursorAsync(polled.Id, "cursor-40000", polled.EnqueuedAt);
+
+        var cursorAfter = await _repo.QuerySingleOrDefaultAsync<string?>(
+            $"""SELECT "Cursor" FROM "{DocumentRerenderQueueRepository.TableName}" WHERE "TypeName" = @TypeName""",
+            new { TypeName = "Article" });
+        cursorAfter.Should().BeNull("the stale advance must not overwrite the re-enqueue's reset");
+    }
+
+    [Fact]
+    public async Task DeleteTypeRowAsync_AfterRowWasReEnqueued_IsANoOp_AndKeepsTheRow()
+    {
+        // The more destructive half: on a short page the worker deletes the type-level row. If a
+        // template change re-enqueued that same Id first, an unguarded delete drops the new
+        // invalidation entirely and nothing ever re-renders the type.
+        var queue = await FreshQueueAsync();
+
+        await queue.EnqueueTypeAsync("Article");
+        var polled = (await queue.PollAsync(maxAttempts: 5, batchSize: 10)).ToList()[0];
+
+        await Task.Delay(10);
+        await queue.EnqueueTypeAsync("Article");
+
+        await queue.DeleteTypeRowAsync(polled.Id, polled.EnqueuedAt);
+
+        var count = await _repo.QuerySingleOrDefaultAsync<int>(
+            $"""SELECT COUNT(*) FROM "{DocumentRerenderQueueRepository.TableName}" """);
+        count.Should().Be(1, "the re-enqueued row must survive a stale delete");
+    }
+
+    [Fact]
+    public async Task DeleteTypeRowAsync_WithTheObservedEnqueuedAt_DeletesTheRow()
+    {
+        // Guard against the opposite failure: an over-strict predicate that never matches would
+        // leave every completed backfill row in the table forever, inflating the depth gauge.
+        var queue = await FreshQueueAsync();
+
+        await queue.EnqueueTypeAsync("Article");
+        var polled = (await queue.PollAsync(maxAttempts: 5, batchSize: 10)).ToList()[0];
+
+        await queue.DeleteTypeRowAsync(polled.Id, polled.EnqueuedAt);
+
+        var count = await _repo.QuerySingleOrDefaultAsync<int>(
+            $"""SELECT COUNT(*) FROM "{DocumentRerenderQueueRepository.TableName}" """);
+        count.Should().Be(0);
     }
 
     [Fact]
@@ -190,7 +252,7 @@ public sealed class DocumentRerenderQueuePostgresIntegrationTests(DocumentRerend
         var rows = (await queue.PollAsync(maxAttempts: 5, batchSize: 10)).ToList();
         var id = rows[0].Id;
 
-        await queue.AdvanceCursorAsync(id, "cursor-42");
+        await queue.AdvanceCursorAsync(id, "cursor-42", rows[0].EnqueuedAt);
 
         var cursor = await _repo.QuerySingleOrDefaultAsync<string>(
             $"""SELECT "Cursor" FROM "{DocumentRerenderQueueRepository.TableName}" WHERE "Id" = @Id""",
