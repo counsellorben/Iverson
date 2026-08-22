@@ -22,7 +22,7 @@ from iverson_client.core import IversonClient
 def _make_author(name: str) -> PyAuthor:
     author = PyAuthor()
     author.id = "01a016fa-ed06-7cd7-ad36-63042f0f94a8"
-    author.tenant_id = "tenant-bypass"
+    author.tenant_id = "tenant_bypass"
     author.owner_id = "owner-1"
     author.name = name
     return author
@@ -31,7 +31,7 @@ def _make_author(name: str) -> PyAuthor:
 def _make_tag(label: str) -> PyTag:
     tag = PyTag()
     tag.id = "01a016fa-ed26-7ece-ac18-1794837d1c68"
-    tag.tenant_id = "tenant-bypass"
+    tag.tenant_id = "tenant_bypass"
     tag.owner_id = "owner-1"
     tag.label = label
     return tag
@@ -40,7 +40,7 @@ def _make_tag(label: str) -> PyTag:
 def _make_article() -> PyArticle:
     article = PyArticle()
     article.id = "01a016fa-ed3d-72b3-b527-f1cfc1122a9c"
-    article.tenant_id = "tenant-bypass"
+    article.tenant_id = "tenant_bypass"
     article.owner_id = "owner-1"
     article.title = "title"
     article.py_author_id = "01a016fa-ed06-7cd7-ad36-63042f0f94a8"

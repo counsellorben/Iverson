@@ -88,7 +88,7 @@ public sealed class DirectSeeder(
         {
             ids[i] = Guid.NewGuid();
             var ownerId  = i % 100 == 0 ? ownerSub : Guid.NewGuid().ToString();
-            var tenantId = i % 2 == 0 ? "tenant-smoke-test" : "tenant-bypass";
+            var tenantId = i % 2 == 0 ? "tenant_smoke_test" : "tenant_bypass";
             await writer.StartRowAsync(ct);
             await writer.WriteAsync(ids[i],                      NpgsqlDbType.Uuid, ct);
             await writer.WriteAsync($"Author {i}",               NpgsqlDbType.Text, ct);
@@ -158,7 +158,7 @@ public sealed class DirectSeeder(
         {
             ids[i] = Guid.NewGuid();
             var ownerId  = i % 100 == 0 ? ownerSub : Guid.NewGuid().ToString();
-            var tenantId = i % 2 == 0 ? "tenant-smoke-test" : "tenant-bypass";
+            var tenantId = i % 2 == 0 ? "tenant_smoke_test" : "tenant_bypass";
             await writer.StartRowAsync(ct);
             await writer.WriteAsync(ids[i],                       NpgsqlDbType.Uuid, ct);
             await writer.WriteAsync($"tag-{i}",                   NpgsqlDbType.Text, ct);
@@ -221,7 +221,7 @@ public sealed class DirectSeeder(
             var cat  = Categories[i % Categories.Length];
             var body = GenerateBody(i);
             var ownerId  = i % 100 == 0 ? ownerSub : Guid.NewGuid().ToString();
-            var tenantId = i % 2 == 0 ? "tenant-smoke-test" : "tenant-bypass";
+            var tenantId = i % 2 == 0 ? "tenant_smoke_test" : "tenant_bypass";
 
             await writer.StartRowAsync(ct);
             await writer.WriteAsync(ids[i],                           NpgsqlDbType.Uuid,        ct);

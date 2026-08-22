@@ -54,14 +54,14 @@ data:
         attrs:
           name: "Iverson: loadtest tenant id"
           description: Fixed tenant identifier issued to the loadtest service client
-          expression: 'return {"tenant_id": "tenant-loadtest"}'
+          expression: 'return {"tenant_id": "tenant_loadtest"}'
       - model: authentik_providers_oauth2.scopemapping
         identifiers:
           scope_name: tenant_id_webtest
         attrs:
           name: "Iverson: webtest tenant id"
           description: Fixed tenant identifier issued to the webtest service client
-          expression: 'return {"tenant_id": "tenant-webtest"}'
+          expression: 'return {"tenant_id": "tenant_webtest"}'
       - model: authentik_providers_oauth2.scopemapping
         identifiers:
           scope_name: tenant_id_admin
@@ -234,7 +234,7 @@ data:
           password: {{ if $smokeTestUser }}{{ index $smokeTestUser.data "password" | b64dec }}{{ else }}{{ randAlphaNum 32 }}{{ end }}
           is_active: true
           attributes:
-            tenant_id: "tenant-smoke-test"
+            tenant_id: "tenant_smoke_test"
       - model: authentik_core.group
         identifiers:
           name: iverson-loadtest-bypass
@@ -249,7 +249,7 @@ data:
           password: {{ if $bypassUser }}{{ index $bypassUser.data "password" | b64dec }}{{ else }}{{ randAlphaNum 32 }}{{ end }}
           is_active: true
           attributes:
-            tenant_id: "tenant-bypass"
+            tenant_id: "tenant_bypass"
           groups:
             - !Find [authentik_core.group, [name, iverson-loadtest-bypass]]
       - model: authentik_core.group

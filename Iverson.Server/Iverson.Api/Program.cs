@@ -425,7 +425,7 @@ await schemaManager.ApplySchemaAsync(Iverson.Api.Reconciliation.DlqSchema.Table)
 await schemaManager.ApplySchemaAsync(Iverson.Api.Tenancy.TenantSchema.Table);
 
 var tenantRepository = app.Services.GetRequiredService<ITenantRepository>();
-foreach (var legacyTenantId in new[] { "tenant-loadtest", "tenant-webtest", "tenant_admin", "tenant-smoke-test", "tenant-bypass" })
+foreach (var legacyTenantId in new[] { "tenant_loadtest", "tenant_webtest", "tenant_admin", "tenant_smoke_test", "tenant_bypass" })
     await tenantRepository.SeedIfMissingAsync(legacyTenantId, legacyTenantId, "active");
 
 // Self-heal RLS state for tables whose descriptor was registered before this change shipped —
