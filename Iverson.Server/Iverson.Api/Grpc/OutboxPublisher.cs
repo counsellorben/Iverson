@@ -15,7 +15,8 @@ public interface IOutboxPublisher
         StoreTarget targetStores,
         Guid outboxRowId,
         string opLabel,
-        CancellationToken ct = default);
+        CancellationToken ct = default,
+        string? priorPayloadJson = null);
 }
 
 public sealed class OutboxPublisher(
@@ -33,7 +34,8 @@ public sealed class OutboxPublisher(
         StoreTarget targetStores,
         Guid outboxRowId,
         string opLabel,
-        CancellationToken ct = default)
+        CancellationToken ct = default,
+        string? priorPayloadJson = null)
     {
         var traceId = requestTraceId.NullIfEmpty() ?? Activity.Current?.TraceId.ToString() ?? string.Empty;
         var published = false;
@@ -50,7 +52,8 @@ public sealed class OutboxPublisher(
                     traceId,
                     SchemaVersion,
                     DateTimeOffset.UtcNow,
-                    targetStores));
+                    targetStores,
+                    priorPayloadJson));
             published = true;
             await outboxWriter.DeleteOutboxRowIfPresentAsync(outboxRowId);
         }

@@ -62,7 +62,9 @@ public interface IEntityRepository
     Task<string?> FetchByKeyAsync(TableSchema schema, string key, bool tenantScoped = false, string? tenantId = null);
     Task<IEnumerable<KeyedRow>> FetchManyByKeysAsync(TableSchema schema, IReadOnlyList<string> keys, bool tenantScoped = false, string? tenantId = null);
     Task<IEnumerable<string>> FetchByColumnAsync(TableSchema schema, string columnName, string value, bool tenantScoped = false, string? tenantId = null);
+    Task<IEnumerable<string>> FetchByArrayContainsAsync(TableSchema schema, string columnName, string value, bool tenantScoped = false, string? tenantId = null);
     Task<IEnumerable<string>> FetchAllAsync(TableSchema schema, bool tenantScoped = false, string? tenantId = null);
+    Task<IEnumerable<KeyedTenantRow>> FetchKeysAndTenantsPagedAsync(TableSchema schema, string? afterKey, int pageSize);
     Task DeleteAsync(IDbTransactionContext tx, TableSchema schema, string key, bool tenantScoped = false, string? tenantId = null);
     Task UpdateColumnsAsync(IDbTransactionContext tx, TableSchema schema, string key, IReadOnlyDictionary<string, object?> columns);
 }
@@ -90,6 +92,20 @@ public interface IReconciliationQueueRepository
     Task<int> CountPendingAsync();
     Task RecordFailureAsync(Guid id, int attempts, string lastError);
     Task DeleteRowAsync(Guid id);
+}
+
+public interface IDocumentRerenderQueueRepository
+{
+    Task EnsureTableAsync();
+    Task EnqueueEntityAsync(string? tenantId, string typeName, string entityKey);
+    Task EnqueueTypeAsync(string typeName);
+    Task<IEnumerable<DocumentRerenderQueueRow>> PollAsync(int maxAttempts, int batchSize);
+    Task AdvanceCursorAsync(Guid id, string cursor, DateTime observedEnqueuedAt);
+    Task RecordFailureAsync(Guid id, int attempts, string lastError);
+    Task DeleteRowAsync(Guid id);
+    Task DeleteTypeRowAsync(Guid id, DateTime observedEnqueuedAt);
+    Task<int> CountPendingAsync();
+    Task<int> CountExhaustedAsync(int maxAttempts);
 }
 
 public interface IDlqRepository

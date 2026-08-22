@@ -43,6 +43,22 @@ internal sealed class NoOpEnrichmentStateRepository : IEnrichmentStateRepository
     public Task DeleteAsync(string tenantId, string typeName, string entityKey) => Task.CompletedTask;
 }
 
+// Program.cs also calls IDocumentRerenderQueueRepository.EnsureTableAsync() during hydration.
+internal sealed class NoOpDocumentRerenderQueueRepository : IDocumentRerenderQueueRepository
+{
+    public Task EnsureTableAsync() => Task.CompletedTask;
+    public Task EnqueueEntityAsync(string? tenantId, string typeName, string entityKey) => Task.CompletedTask;
+    public Task EnqueueTypeAsync(string typeName) => Task.CompletedTask;
+    public Task<IEnumerable<DocumentRerenderQueueRow>> PollAsync(int maxAttempts, int batchSize) =>
+        Task.FromResult(Enumerable.Empty<DocumentRerenderQueueRow>());
+    public Task AdvanceCursorAsync(Guid id, string cursor, DateTime observedEnqueuedAt) => Task.CompletedTask;
+    public Task RecordFailureAsync(Guid id, int attempts, string lastError) => Task.CompletedTask;
+    public Task DeleteRowAsync(Guid id) => Task.CompletedTask;
+    public Task DeleteTypeRowAsync(Guid id, DateTime observedEnqueuedAt) => Task.CompletedTask;
+    public Task<int> CountPendingAsync() => Task.FromResult(0);
+    public Task<int> CountExhaustedAsync(int maxAttempts) => Task.FromResult(0);
+}
+
 internal sealed class NoOpRecordStoreSchemaManager : IRecordStoreSchemaManager
 {
     public Task ApplySchemaAsync(

@@ -142,7 +142,8 @@ public sealed class ObjectPersistenceGrpcService(
             request.TraceId,
             targetStores,
             outboxRowId,
-            "Persistence.Update");
+            "Persistence.Update",
+            priorPayloadJson: existingRowJson);
 
         return new PersistResponse
         {

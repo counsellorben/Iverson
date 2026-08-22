@@ -42,6 +42,17 @@ public sealed record SchemaDescriptor
     public Dictionary<string, string> FieldDescriptions { get; init; } = [];
 
     public IReadOnlyList<EnrichmentTarget> EnrichmentTargets { get; init; } = [];
+
+    // Nullable, not required — same rationale as TenantColumn above: legacy _iverson_schema
+    // JSON rows predate the document-template feature and carry neither key.
+    //
+    // DocumentTemplateSource is the raw template string and is what schema-drift detection
+    // diffs against: record equality over DocumentTemplate's parsed segment list is
+    // reference-based (EqualityComparer<T>.Default on an IReadOnlyList<T> member), so comparing
+    // parsed models would report every registration as changed even when the source text is
+    // identical.
+    public DocumentTemplate? DocumentTemplate       { get; init; }
+    public string?           DocumentTemplateSource { get; init; }
 }
 
 public enum EnrichmentKind { Summary, Keywords, Extracted }
