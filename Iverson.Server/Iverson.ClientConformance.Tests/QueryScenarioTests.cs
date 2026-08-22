@@ -282,4 +282,36 @@ public class QueryScenarioTests
                 [new StepResult(QueryScenario.RegisterStepName, true)]))
             .Failure.Should().Contain("typeDescriptor");
     }
+
+    // ── the projection-wait predicate ────────────────────────────────────────────────────────
+
+    [Theory]
+    [InlineData(0, 2)]
+    [InlineData(1, 2)]
+    public void ProjectionReady_FewerRowsVisibleThanWritten_IsNotReady(int visible, int expected)
+    {
+        // Catches the mutation that makes the probe predicate constantly true: the read phase would
+        // then fire against a projection that has not caught up, reddening QRY-002/QRY-004 for
+        // every language and blaming five client libraries for the outbox.
+        QueryScenario.ProjectionReady(visible, expected).Should().BeFalse();
+    }
+
+    [Theory]
+    [InlineData(2, 2)]
+    [InlineData(3, 2)]
+    public void ProjectionReady_AtLeastAsManyRowsVisibleAsWritten_IsReady(int visible, int expected)
+    {
+        QueryScenario.ProjectionReady(visible, expected).Should().BeTrue();
+    }
+
+    [Theory]
+    [InlineData(0, 0)]
+    [InlineData(5, 0)]
+    public void ProjectionReady_NothingWasWritten_IsDeliberatelyNotReady(int visible, int expected)
+    {
+        // expected == 0 means the write phase produced no keys at all: "0 >= 0" would satisfy the
+        // wait instantly and let the read phase grade against nothing. The wait must expire so the
+        // harness reports its own precondition failing.
+        QueryScenario.ProjectionReady(visible, expected).Should().BeFalse();
+    }
 }

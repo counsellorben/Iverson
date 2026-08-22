@@ -145,7 +145,7 @@ public sealed class QueryScenario(
             async token =>
             {
                 var visible = await CountVisibleAsync(marker, actingToken, token);
-                return visible >= expectedKeys.Count && expectedKeys.Count > 0
+                return ProjectionReady(visible, expectedKeys.Count)
                     ? ProbeOutcome.Ready($"{visible} row(s) visible to Search")
                     : ProbeOutcome.NotYet($"{visible} of {expectedKeys.Count} row(s) visible to Search");
             },
@@ -321,6 +321,16 @@ public sealed class QueryScenario(
     /// is the projection probe, not a conformance observation: nothing it returns is ever compared
     /// against a client's report, so a driver cannot manufacture readiness.
     /// </summary>
+    /// <summary>
+    /// The projection-wait predicate, extracted so it is testable without a live stack: the wait is
+    /// satisfied only when Search can already see at least as many marked rows as the write phase
+    /// produced. <paramref name="expected"/> of zero is deliberately NOT ready — no language seeded
+    /// anything, so satisfying the wait would let the read phase grade against nothing and the
+    /// harness must instead report its own precondition failing.
+    /// </summary>
+    internal static bool ProjectionReady(int visible, int expected) =>
+        expected > 0 && visible >= expected;
+
     private async Task<int> CountVisibleAsync(string marker, string actingToken, CancellationToken ct)
     {
         var request = new SearchRequest

@@ -57,16 +57,38 @@ public sealed class ProjectionWaiter(TimeSpan? timeout = null, TimeSpan? interva
         while (true)
         {
             attempts++;
+
+            // Each attempt is bounded by what is LEFT of the budget, not merely checked against it
+            // afterwards. A probe that stalls inside an accepted call (a gRPC stream that never
+            // completes) would otherwise block attempt 1 forever and the timeout would never fire —
+            // the hung harness this class exists to prevent. When the budget is already spent the
+            // attempt still runs, with a token that is already cancelled: the at-least-one-probe
+            // guarantee is about invoking the store, not about granting it unbounded time.
+            using var attemptCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            var remaining = Timeout - stopwatch.Elapsed;
+            if (remaining > TimeSpan.Zero)
+                attemptCts.CancelAfter(remaining);
+            else
+                await attemptCts.CancelAsync();
+
             try
             {
-                var outcome = await probe(ct);
+                var outcome = await probe(attemptCts.Token);
                 lastDetail = outcome.Detail;
                 if (outcome.Satisfied)
                     return new ProjectionWaitResult(true, subject, attempts, stopwatch.Elapsed, outcome.Detail);
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested)
             {
+                // The CALLER cancelled. Distinguished from budget expiry by asking ct, not the
+                // linked token, so the two never blur: caller cancellation throws, budget expiry
+                // is data.
                 throw;
+            }
+            catch (OperationCanceledException) when (attemptCts.IsCancellationRequested)
+            {
+                lastDetail = $"the probe did not return within the remaining " +
+                             $"{Math.Max(remaining.TotalSeconds, 0):0.0}s of the wait budget";
             }
             catch (Exception ex)
             {

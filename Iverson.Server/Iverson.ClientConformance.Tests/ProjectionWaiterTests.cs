@@ -127,4 +127,35 @@ public class ProjectionWaiterTests
 
         await act.Should().ThrowAsync<OperationCanceledException>();
     }
+
+    [Fact]
+    public async Task WaitAsync_ProbeOutlivesTheTimeout_ReturnsUnsatisfiedRatherThanHanging()
+    {
+        // The bound must apply INSIDE an attempt, not only between attempts: a probe that stalls
+        // mid-call (an accepted gRPC call whose stream never completes) would otherwise block
+        // attempt 1 forever and the timeout would never fire.
+        using var safety = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+
+        var result = await Fast(0.2).WaitAsync(
+            "rows",
+            async token => { await Task.Delay(Timeout.Infinite, token); return ProbeOutcome.NotYet("unreachable"); },
+            safety.Token);
+
+        result.Satisfied.Should().BeFalse();
+        result.Attempts.Should().BeGreaterThan(0);
+        safety.IsCancellationRequested.Should().BeFalse("the wait must return well inside its own bound");
+    }
+
+    [Fact]
+    public async Task WaitAsync_ProbeOutlivesTheTimeout_DoesNotReportItAsCallerCancellation()
+    {
+        using var safety = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+
+        var act = async () => await Fast(0.2).WaitAsync(
+            "rows",
+            async token => { await Task.Delay(Timeout.Infinite, token); return ProbeOutcome.NotYet("x"); },
+            safety.Token);
+
+        await act.Should().NotThrowAsync("budget expiry is data, caller cancellation is the exception");
+    }
 }
