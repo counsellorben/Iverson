@@ -15,7 +15,8 @@ public interface ISchemaRegistrationOrchestrator
 public sealed class SchemaRegistrationOrchestrator(
     IRecordStoreSchemaManager schemaManager,
     IEmbeddingService embedding,
-    SchemaRegistry registry)
+    SchemaRegistry registry,
+    IDocumentRerenderQueueRepository rerenderQueue)
     : ISchemaRegistrationOrchestrator
 {
     // TypeName/property names are string-interpolated unescaped into CREATE TABLE/ALTER TABLE
@@ -158,6 +159,25 @@ public sealed class SchemaRegistrationOrchestrator(
             ValidateDocumentTemplate(descriptor, effectiveDescriptors, StatusCode.FailedPrecondition);
         }
 
+        // Capture which of this request's types have a changed document template, while
+        // registry.Get still returns the PRIOR descriptor (registry.RegisterAsync in phase 3
+        // below overwrites it). Compared on DocumentTemplateSource — the raw template string —
+        // not the parsed DocumentTemplate: record equality on the parsed model's segment list
+        // uses EqualityComparer<T>.Default, which for a collection is reference equality, so two
+        // structurally identical templates would never compare equal and every registration
+        // would look changed. A null prior source (no template previously) counts as changed
+        // when the new source is non-null — a newly added template needs the same backfill as
+        // an edited one. An unchanged template must NOT be recorded: re-registering an unchanged
+        // schema is routine (every service restart re-runs registration), and enqueuing on every
+        // such call would put a type-level row in the queue perpetually.
+        var changedTemplateTypes = new List<string>();
+        foreach (var descriptor in descriptors)
+        {
+            var priorSource = registry.Get(descriptor.TypeName)?.DocumentTemplateSource;
+            if (!string.Equals(priorSource, descriptor.DocumentTemplateSource, StringComparison.Ordinal))
+                changedTemplateTypes.Add(descriptor.TypeName);
+        }
+
         // Phase 3: apply + register. Only reached once every type in the request has passed
         // every validation above — an invalid template never applies DDL or persists.
         var registered = new List<string>();
@@ -175,6 +195,13 @@ public sealed class SchemaRegistrationOrchestrator(
             await registry.RegisterAsync(descriptor);
             registered.Add(descriptor.TypeName);
         }
+
+        // A changed template invalidates every document of that type, because the rendered
+        // text is derived data with no stored copy — a type-level row is how "re-render
+        // everything of this type" is represented before the key set is known (T8 expands it
+        // by paging every entity of the type).
+        foreach (var typeName in changedTemplateTypes)
+            await rerenderQueue.EnqueueTypeAsync(typeName);
 
         return registered;
     }

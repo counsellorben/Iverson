@@ -29,7 +29,8 @@ public class SchemaRegistrationOrchestratorTests
         _sut = new SchemaRegistrationOrchestrator(
             _schemaManager,
             _embedding,
-            _registry);
+            _registry,
+            Substitute.For<IDocumentRerenderQueueRepository>());
     }
 
     private static TypeDescriptor SimpleType(string name, params string[] extraScalars)

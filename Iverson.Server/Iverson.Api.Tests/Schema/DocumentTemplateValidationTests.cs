@@ -20,6 +20,7 @@ public class DocumentTemplateValidationTests
     private readonly IRecordStoreQueryExecutor _sql = Substitute.For<IRecordStoreQueryExecutor>();
     private readonly IRecordStoreSchemaManager _schemaManager = Substitute.For<IRecordStoreSchemaManager>();
     private readonly IEmbeddingService _embedding = Substitute.For<IEmbeddingService>();
+    private readonly IDocumentRerenderQueueRepository _rerenderQueue = Substitute.For<IDocumentRerenderQueueRepository>();
     private readonly SchemaRegistry _registry;
     private readonly SchemaRegistrationOrchestrator _sut;
 
@@ -33,7 +34,8 @@ public class DocumentTemplateValidationTests
         _sut = new SchemaRegistrationOrchestrator(
             _schemaManager,
             _embedding,
-            _registry);
+            _registry,
+            _rerenderQueue);
     }
 
     // Widget: Id, TenantId, Name (string), and a document template referencing {Name}.
@@ -396,5 +398,50 @@ public class DocumentTemplateValidationTests
 
         var ex = await act.Should().ThrowAsync<RpcException>();
         ex.Which.StatusCode.Should().Be(StatusCode.InvalidArgument);
+    }
+
+    // ── T9: backfill enqueue on template add/change ─────────────────────────────
+
+    [Fact]
+    public async Task RegisterAsync_UnchangedTemplate_EnqueuesNoBackfill()
+    {
+        await _sut.RegisterAsync(new SchemaRequest { RootType = WidgetType("{Name}") }, CancellationToken.None);
+        _rerenderQueue.ClearReceivedCalls();
+
+        // Re-registering with the exact same template text is routine (e.g. every service
+        // restart re-running registration) and must not enqueue a type-level backfill row.
+        await _sut.RegisterAsync(new SchemaRequest { RootType = WidgetType("{Name}") }, CancellationToken.None);
+
+        await _rerenderQueue.DidNotReceive().EnqueueTypeAsync(Arg.Any<string>());
+    }
+
+    [Fact]
+    public async Task RegisterAsync_NewlyAddedTemplate_EnqueuesTypeLevelBackfill()
+    {
+        // First register Widget with no template at all (SimpleType leaves DocumentTemplate
+        // unset, which protobuf defaults to "" — SchemaBuilder maps that to a null
+        // DocumentTemplateSource)...
+        var td = SimpleType("Widget", "Name");
+        await _sut.RegisterAsync(new SchemaRequest { RootType = td }, CancellationToken.None);
+        _rerenderQueue.ClearReceivedCalls();
+
+        // ...then re-register it with a template for the first time.
+        await _sut.RegisterAsync(new SchemaRequest { RootType = WidgetType("{Name}") }, CancellationToken.None);
+
+        await _rerenderQueue.Received(1).EnqueueTypeAsync("Widget");
+    }
+
+    [Fact]
+    public async Task RegisterAsync_EditedTemplate_EnqueuesTypeLevelBackfill()
+    {
+        await _sut.RegisterAsync(new SchemaRequest { RootType = WidgetType("{Name}") }, CancellationToken.None);
+        _rerenderQueue.ClearReceivedCalls();
+
+        var widget = SimpleType("Widget", "Name");
+        widget.DocumentTemplate = "{Name} updated";
+
+        await _sut.RegisterAsync(new SchemaRequest { RootType = widget }, CancellationToken.None);
+
+        await _rerenderQueue.Received(1).EnqueueTypeAsync("Widget");
     }
 }
