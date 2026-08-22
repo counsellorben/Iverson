@@ -175,6 +175,18 @@ internal static class SchemaBuilder
                 contractsAuthorization.FieldPermissions.Select((ContractsFieldPermission fp) => new SchemaFieldPermission(
                     fp.FieldName, fp.ReadableRoles.ToList(), fp.WritableRoles.ToList())).ToList());
 
+        // The tenant column is owned by the SERVER, not declared by the client: it is appended here
+        // so it physically exists in every downstream schema (Postgres table, StarRocks table,
+        // engagement query schema, Qdrant payload index) and so TenantColumn always names a real
+        // column. TEXT and NOT NULL are both load-bearing:
+        //  * TEXT — SchemaRegistrationOrchestrator.ValidateFieldReference runs for the tenant field
+        //    on EVERY registration and rejects any SqlType outside TEXT/UUID/BYTEA/TIMESTAMPTZ, so
+        //    a wrong type would break registration globally; and PostgresSchemaManager's RLS policy
+        //    compares this column to current_setting('app.tenant_id'), a text comparison.
+        //  * NOT NULL — the write path's silent-overwrite case must fail loudly with a constraint
+        //    violation rather than orphan a row behind RLS with no tenant.
+        scalars.Add(new ColumnDescriptor(SchemaDescriptor.TenantColumnName, "TEXT", false));
+
         return new SchemaDescriptor
         {
             TypeName          = typeDesc.TypeName,
@@ -189,7 +201,9 @@ internal static class SchemaBuilder
             SearchKeyColumns  = searchKeysSorted.ConvertAll(sk => sk.Name),
             LargeFieldColumns = largeFields,
             Authorization     = authorization,
-            TenantColumn      = string.IsNullOrEmpty(typeDesc.TenantField) ? null : typeDesc.TenantField,
+            // Server-owned, never derived from typeDesc.TenantField: the client no longer has any
+            // say in which column carries the tenant boundary, and the name never goes on the wire.
+            TenantColumn      = SchemaDescriptor.TenantColumnName,
             MetadataColumns   = metadataColumns,
             Description       = string.IsNullOrEmpty(typeDesc.Description) ? null : typeDesc.Description,
             FieldDescriptions = fieldDescriptions,
@@ -199,6 +213,8 @@ internal static class SchemaBuilder
         };
     }
 
+    // ScalarColumns position: INCLUDE __TenantId. The Postgres table must physically carry the
+    // column — the RLS policy created by PostgresSchemaManager predicates on it.
     internal static TableSchema ToTableSchema(SchemaDescriptor d) => new(
         d.TableName,
         ToColumnSchema(d.KeyColumn),
@@ -208,6 +224,8 @@ internal static class SchemaBuilder
     internal static ColumnSchema ToColumnSchema(ColumnDescriptor c) =>
         new(c.Name, c.SqlType, c.IsNullable);
 
+    // ScalarColumns position: INCLUDE __TenantId. The StarRocks table must carry the column so
+    // engagement rows are tenant-discriminated in the analytics store too.
     internal static EngagementTableSchema ToEngagementTableSchema(SchemaDescriptor d) => new(
         d.TableName,
         new EngagementColumnSchema(d.KeyColumn.Name, ClrTypeToEngagementType(d.KeyColumn.SqlType), false),
@@ -218,6 +236,8 @@ internal static class SchemaBuilder
         SortKey = d.SearchKeyColumns
     };
 
+    // ScalarColumns position: INCLUDE __TenantId. StarRocksQueryBuilder resolves every column it
+    // emits against this list, and the authorization constraint's tenant predicate is one of them.
     internal static EngagementQuerySchema ToEngagementQuerySchema(SchemaDescriptor d) => new(
         d.TypeName,
         d.TableName,
@@ -240,6 +260,9 @@ internal static class SchemaBuilder
             indexes);
     }
 
+    // ScalarColumns position: INCLUDE __TenantId. The Qdrant payload index on the tenant key is
+    // what makes the read-time tenant filter selective; omitting it would leave the field
+    // unindexed while IntelligenceStoreConsumer still writes it onto every point.
     internal static CollectionSchema ToCollectionSchema(SchemaDescriptor d) => new(
         d.CollectionName!,
         d.VectorFields.Select(v => new NamedVector($"{v.PropertyName.ToSnakeCase()}_vector", v.Dimension))

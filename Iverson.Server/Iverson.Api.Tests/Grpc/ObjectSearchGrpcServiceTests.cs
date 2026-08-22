@@ -1139,6 +1139,39 @@ public class ObjectSearchGrpcServiceTests
     }
 
     [Fact]
+    public async Task SearchSimilar_FilterOnTheServerOwnedTenantColumn_ThrowsInvalidArgument()
+    {
+        // Task 1: __TenantId is a real ScalarColumns member, but it is not addressable by clients.
+        // A filter naming it must be rejected exactly like any unknown property — otherwise a
+        // caller could probe or override the tenant boundary through the search filter.
+        var schema = SchemaFixtures.ArticleSchema() with
+        {
+            ScalarColumns =
+            [
+                new ColumnDescriptor("Title", "text", false),
+                new ColumnDescriptor(SchemaDescriptor.TenantColumnName, "TEXT", false)
+            ],
+            TenantColumn = SchemaDescriptor.TenantColumnName
+        };
+        await _registry.RegisterAsync(schema);
+        _embedding.EmbedAsync("q", Arg.Any<CancellationToken>()).Returns(new float[768]);
+
+        var request = new SearchSimilarRequest { TypeName = "Article", Property = "Title", Query = "q", TopK = 5 };
+        request.Filter.Add(new SearchClause
+        {
+            Property = SchemaDescriptor.TenantColumnName, Operator = SearchOperator.Equals,
+            Value = new SearchValue { StringVal = "other-tenant" }, ClauseType = SearchClauseType.Filter
+        });
+
+        var (writer, _) = MakeStream<SearchResponse>();
+        var act = async () => await _sut.SearchSimilar(request, writer, TestServerCallContext.Create());
+
+        (await act.Should().ThrowAsync<RpcException>())
+            .Where(e => e.Status.StatusCode == StatusCode.InvalidArgument
+                     && e.Status.Detail.Contains("is not a scalar or foreign-key column"));
+    }
+
+    [Fact]
     public async Task SearchSimilar_NoAuthorizationRules_ReturnsEmptyStream_WithoutQueryingQdrant()
     {
         var schema = SchemaFixtures.ArticleSchema() with { Authorization = null };

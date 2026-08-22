@@ -94,7 +94,11 @@ public sealed class RelationValidator : IRelationValidator
         SchemaDescriptor schema,
         List<string> errors)
     {
+        // ScalarColumns position: EXCLUDE __TenantId. The tenant column is never a foreign key, so a
+        // relation naming it must not resolve to it — the relation is then treated as having no
+        // declared FK column and rejected, exactly as it would be for any undeclared name.
         var fkCol = schema.ScalarColumns.FirstOrDefault(c =>
+            !SchemaDescriptor.IsTenantColumn(c.Name) &&
             string.Equals(c.Name, relation.ForeignKey, StringComparison.OrdinalIgnoreCase));
 
         var fkValue = StructFieldAccess.GetFieldValue(payload, relation.ForeignKey);

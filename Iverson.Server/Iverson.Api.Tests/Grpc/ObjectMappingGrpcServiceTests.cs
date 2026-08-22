@@ -459,6 +459,29 @@ public class ObjectMappingGrpcServiceTests
     }
 
     [Fact]
+    public async Task GetSchema_OmitsTheServerOwnedTenantColumn_FromTheClientFacingCatalog()
+    {
+        // Task 1: __TenantId is a real ScalarColumns member on every registered schema, but the
+        // GetSchema catalog is client-facing and the column is never addressable by a client —
+        // publishing it would put the server-owned name back on the wire.
+        var schema = SchemaFixtures.AuthorSchema() with
+        {
+            ScalarColumns =
+            [
+                new ColumnDescriptor("Name", "text", false),
+                new ColumnDescriptor(SchemaDescriptor.TenantColumnName, "TEXT", false)
+            ],
+            TenantColumn = SchemaDescriptor.TenantColumnName
+        };
+        await _registry.RegisterAsync(schema);
+
+        var response = await _sut.GetSchema(new GetSchemaRequest(), MakeContext());
+
+        var author = response.Types_.Single(t => t.Name == "Author");
+        author.Fields.Select(f => f.Name).Should().BeEquivalentTo(new[] { "Id", "Name" });
+    }
+
+    [Fact]
     public async Task GetSchema_WhenEveryFieldIsFilteredOut_OmitsTheTypeEntirely()
     {
         // Spec §4 server test 4. The production RowFieldAuthorizationEvaluator unconditionally

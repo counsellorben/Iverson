@@ -2,6 +2,24 @@ namespace Iverson.Api.Schema;
 
 public sealed record SchemaDescriptor
 {
+    /// <summary>
+    /// The one and only spelling of the server-owned tenant column. Defined here so no consumer
+    /// carries a string literal: the name is never derived from, nor exposed to, a client — it is
+    /// injected into <see cref="ScalarColumns"/> by <c>SchemaBuilder.BuildDescriptor</c> and is the
+    /// value of <see cref="TenantColumn"/> for every schema this build registers.
+    /// The leading double underscore is deliberate: it marks the column as server-reserved and
+    /// keeps it visually distinct from any client-declared property in DDL and payload dumps.
+    /// </summary>
+    public const string TenantColumnName = "__TenantId";
+
+    /// <summary>
+    /// True when <paramref name="name"/> is the server-owned tenant column. Case-insensitive to
+    /// match every other column-name comparison in the codebase, so a caller cannot smuggle the
+    /// name past an exclusion site by re-casing it.
+    /// </summary>
+    public static bool IsTenantColumn(string name) =>
+        string.Equals(name, TenantColumnName, StringComparison.OrdinalIgnoreCase);
+
     public required string TypeName       { get; init; }
     public required string TableName      { get; init; }
     public string?         CollectionName { get; init; }

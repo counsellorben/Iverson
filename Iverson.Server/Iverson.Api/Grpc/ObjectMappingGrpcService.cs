@@ -80,7 +80,11 @@ public sealed class ObjectMappingGrpcService(
             if (decision.Denied)
                 continue;
 
-            IEnumerable<ColumnDescriptor> candidates = new[] { schema.KeyColumn }.Concat(schema.ScalarColumns);
+            // ScalarColumns position: EXCLUDE __TenantId. This catalog is client-facing — it is the
+            // one RPC whose whole job is telling a client what it may address. The tenant column is
+            // server-owned and never appears on the wire, so publishing it here would undo that.
+            IEnumerable<ColumnDescriptor> candidates = new[] { schema.KeyColumn }
+                .Concat(schema.ScalarColumns.Where(c => !SchemaDescriptor.IsTenantColumn(c.Name)));
             if (decision.AllowedFields is not null)
                 candidates = candidates.Where(c => decision.AllowedFields.Contains(c.Name));
 

@@ -359,7 +359,14 @@ public sealed class SchemaRegistrationOrchestrator(
     // (context = the relation's target type).
     private static void RequireScalarProperty(SchemaDescriptor context, string propertyName, StatusCode statusCode)
     {
+        // ScalarColumns position: EXCLUDE __TenantId. A template referencing {__TenantId} would
+        // render the server-owned tenant value into the chunk text that SearchChunks returns
+        // verbatim, putting the value back on the wire and defeating the whole "server owns the
+        // tenant column, it never appears on the wire" decision. Excluded at the lookup rather than
+        // special-cased below so the rejection is the SAME "not a declared scalar property" error
+        // any unknown name gets — the reserved name is not even distinguishable from a typo.
         var column = context.ScalarColumns.FirstOrDefault(c =>
+            !SchemaDescriptor.IsTenantColumn(c.Name) &&
             string.Equals(c.Name, propertyName, StringComparison.OrdinalIgnoreCase));
         if (column is null)
         {

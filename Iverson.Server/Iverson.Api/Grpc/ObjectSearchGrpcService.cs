@@ -770,7 +770,12 @@ public sealed class ObjectSearchGrpcService(
 
     private static void ValidateFilterProperty(SchemaDescriptor schema, string property, string rpcName)
     {
-        var known = schema.ScalarColumns.Any(c => string.Equals(c.Name, property, StringComparison.OrdinalIgnoreCase))
+        // ScalarColumns position: EXCLUDE __TenantId. It is a real column, but it is not addressable
+        // by clients: a filter naming it must be rejected with the same "unknown property" error any
+        // typo gets, so a caller can neither probe nor override the tenant boundary through a filter.
+        var known = schema.ScalarColumns.Any(c =>
+                        !SchemaDescriptor.IsTenantColumn(c.Name) &&
+                        string.Equals(c.Name, property, StringComparison.OrdinalIgnoreCase))
                  || schema.FkColumns.Any(fk => string.Equals(fk.ColumnName, property, StringComparison.OrdinalIgnoreCase));
         if (!known)
             throw new RpcException(new Status(StatusCode.InvalidArgument,
@@ -783,8 +788,13 @@ public sealed class ObjectSearchGrpcService(
     /// IntelligenceStoreConsumer stores these values in canonical round-trip ("o") form, so the
     /// filter builder must re-emit operands on them the same way or equality never matches.
     /// </summary>
-    private static IReadOnlySet<string> TimestampColumns(SchemaDescriptor schema) =>
+    internal static IReadOnlySet<string> TimestampColumns(SchemaDescriptor schema) =>
         schema.ScalarColumns
+            // ScalarColumns position: EXCLUDE __TenantId. This set names the properties a caller may
+            // write a timestamp operand against; the tenant column is not addressable by clients, so
+            // it must never enter it. (SchemaBuilder types it TEXT, so today it cannot — this keeps
+            // the exclusion true independently of that.)
+            .Where(c => !SchemaDescriptor.IsTenantColumn(c.Name))
             .Where(c => c.SqlType.ToUpperInvariant() is "TIMESTAMPTZ" or "DATETIME")
             .Select(c => c.Name.ToCamelCase())
             .ToHashSet(StringComparer.Ordinal);

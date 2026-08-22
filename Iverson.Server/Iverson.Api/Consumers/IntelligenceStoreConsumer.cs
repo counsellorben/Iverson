@@ -299,6 +299,11 @@ public sealed class IntelligenceStoreConsumer(
                             // column whose camelCase name collides with a reserved chunk payload key
                             // at registration, so one cannot reach this loop.
                             var camelKey = name.ToCamelCase();
+                            // ScalarColumns position: INCLUDE __TenantId. This lookup only resolves
+                            // the SqlType of a column already named by MetadataColumns, so filtering
+                            // it out here would change nothing that MetadataColumns does not already
+                            // decide — and if the tenant column ever does need denormalizing onto a
+                            // chunk point, it must find its real TEXT type rather than fall back.
                             var sqlType = schema.ScalarColumns.FirstOrDefault(c =>
                                 string.Equals(c.Name, name, StringComparison.OrdinalIgnoreCase))?.SqlType ?? "TEXT";
                             var val = ExtractTypedValue(payload, name, sqlType);
@@ -408,6 +413,10 @@ public sealed class IntelligenceStoreConsumer(
             if (!string.IsNullOrWhiteSpace(fieldText))
                 pointPayload[vf.PropertyName.ToCamelCase()] = fieldText;
         }
+        // ScalarColumns position: INCLUDE __TenantId. This builds the Qdrant point payload, which
+        // is a projection of the stored row, not a client-facing surface — the tenant value must
+        // reach the vector store so points carry a tenant discriminator alongside the collection
+        // routing. Read-side exposure is governed at the search RPCs, not here.
         foreach (var col in schema.ScalarColumns)
         {
             var isOwnerColumn = ownerField is not null &&

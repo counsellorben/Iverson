@@ -565,6 +565,60 @@ public class IntelligenceStoreConsumerTests
     }
 
     [Fact]
+    public async Task HandleCreated_PointPayload_IncludesTheServerOwnedTenantColumn()
+    {
+        // Task 1 position for IntelligenceStoreConsumer's ScalarColumns loop: INCLUDE. The tenant
+        // column has to reach the Qdrant projection like any other scalar — excluding it here would
+        // leave the vector store with no tenant discriminator on the point payload.
+        var schema = SchemaFixtures.ArticleSchema() with
+        {
+            ScalarColumns =
+            [
+                new ColumnDescriptor("Title", "text", false),
+                new ColumnDescriptor(SchemaDescriptor.TenantColumnName, "TEXT", false)
+            ],
+            FkColumns    = [],
+            Relations    = [],
+            ChunkFields  = [],
+            TenantColumn = SchemaDescriptor.TenantColumnName
+        };
+        await _registry.RegisterAsync(schema);
+
+        // The consumer re-derives the tenant value from the authoritative Postgres row, keyed by
+        // schema.TenantColumn — which is now the server-owned name, not "TenantId".
+        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>())
+                 .Returns($$"""{"{{SchemaDescriptor.TenantColumnName}}":"test-tenant"}""");
+
+        var entityKey = Guid.NewGuid().ToString();
+        var payload   = $$"""{"Title":"T","{{SchemaDescriptor.TenantColumnName}}":"test-tenant"}""";
+        var ev = new EntityEvent(
+            EventType:     EntityEventType.Created,
+            TypeName:      "Article",
+            Key:           entityKey,
+            PayloadJson:   payload,
+            TraceId:       "trace-tenant-payload",
+            SchemaVersion: "1",
+            OccurredAt:    DateTimeOffset.UtcNow,
+            TargetStores:  StoreTarget.Intelligence);
+
+        IReadOnlyDictionary<string, object>? capturedPayload = null;
+        _vectorWrite
+            .UpsertNamedAsync(
+                "articles_test-tenant",
+                Arg.Any<ulong>(),
+                Arg.Any<IReadOnlyDictionary<string, float[]>>(),
+                Arg.Do<IReadOnlyDictionary<string, object>?>(p => capturedPayload = p))
+            .Returns(Task.CompletedTask);
+
+        var sut = BuildSut();
+        await sut.HandleAsync(ev.Key, Serialize(ev), CancellationToken.None);
+
+        capturedPayload.Should().NotBeNull();
+        capturedPayload!.Should().ContainKey(SchemaDescriptor.TenantColumnName);
+        capturedPayload[SchemaDescriptor.TenantColumnName].Should().Be("test-tenant");
+    }
+
+    [Fact]
     public async Task HandleCreated_WithMultipleVectorFields_EmbedsAllFields()
     {
         // Schema with two vector fields — verifies both EmbedAsync calls fire

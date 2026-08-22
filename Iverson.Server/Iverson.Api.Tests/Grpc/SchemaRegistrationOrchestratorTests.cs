@@ -56,41 +56,60 @@ public class SchemaRegistrationOrchestratorTests
         ex.Which.StatusCode.Should().Be(StatusCode.InvalidArgument);
     }
 
+    // Task 1 of the remove-IversonTenant plan changed all three of the tests below. Before Task 1
+    // the server DERIVED the tenant column from the client's tenant_field, so:
+    //   * RegisterAsync_WithMissingTenantField_ThrowsInvalidArgument asserted that a type with no
+    //     tenant_field was rejected with InvalidArgument;
+    //   * RegisterAsync_WithInvalidTenantField_ThrowsInvalidArgument asserted that a tenant_field
+    //     naming an undeclared property was rejected with InvalidArgument;
+    //   * RegisterAsync_WithValidTenantField_Registers asserted TenantColumn == "TenantId".
+    // The server now owns the column outright, so none of those three derivations exists any more.
+    // They are re-pointed at the replacement behaviour rather than deleted. Task 4 turns the
+    // (now-dead) "tenant_field is required" guard into an outright REJECTION of any client that
+    // declares one; these tests move again then.
+
     [Fact]
-    public async Task RegisterAsync_WithMissingTenantField_ThrowsInvalidArgument()
+    public async Task RegisterAsync_WithNoTenantFieldDeclared_Registers_WithTheServerOwnedTenantColumn()
     {
         var td = new TypeDescriptor { TypeName = "Widget" };
         td.Properties.Add(new PropertyDescriptor { Name = "Id", ClrType = ClrType.ClrGuid, IsKey = true });
         td.Properties.Add(new PropertyDescriptor { Name = "Name", ClrType = ClrType.ClrString });
 
-        var act = () => _sut.RegisterAsync(new SchemaRequest { RootType = td }, CancellationToken.None);
+        var registered = await _sut.RegisterAsync(new SchemaRequest { RootType = td }, CancellationToken.None);
 
-        var ex = await act.Should().ThrowAsync<RpcException>();
-        ex.Which.StatusCode.Should().Be(StatusCode.InvalidArgument);
+        registered.Should().Contain("Widget");
+        _registry.Get("Widget")!.TenantColumn.Should().Be(SchemaDescriptor.TenantColumnName);
     }
 
     [Fact]
-    public async Task RegisterAsync_WithInvalidTenantField_ThrowsInvalidArgument()
+    public async Task RegisterAsync_WithATenantFieldNamingNothing_Registers_AndTheDeclarationIsIgnored()
     {
+        // "DoesNotExist" used to fail ValidateFieldReference. The client's tenant_field no longer
+        // feeds that validation at all, so it can name anything (or nothing) without effect.
         var td = new TypeDescriptor { TypeName = "Widget", TenantField = "DoesNotExist" };
         td.Properties.Add(new PropertyDescriptor { Name = "Id", ClrType = ClrType.ClrGuid, IsKey = true });
         td.Properties.Add(new PropertyDescriptor { Name = "Name", ClrType = ClrType.ClrString });
 
-        var act = () => _sut.RegisterAsync(new SchemaRequest { RootType = td }, CancellationToken.None);
+        await _sut.RegisterAsync(new SchemaRequest { RootType = td }, CancellationToken.None);
 
-        var ex = await act.Should().ThrowAsync<RpcException>();
-        ex.Which.StatusCode.Should().Be(StatusCode.InvalidArgument);
+        var descriptor = _registry.Get("Widget")!;
+        descriptor.TenantColumn.Should().Be(SchemaDescriptor.TenantColumnName);
+        descriptor.ScalarColumns.Select(c => c.Name).Should().NotContain("DoesNotExist");
     }
 
     [Fact]
-    public async Task RegisterAsync_WithValidTenantField_Registers()
+    public async Task RegisterAsync_WithValidTenantField_Registers_ButTheServerOwnedColumnStillWins()
     {
         var td = SimpleType("Widget", "Name");
 
         var registered = await _sut.RegisterAsync(new SchemaRequest { RootType = td }, CancellationToken.None);
 
         registered.Should().Contain("Widget");
-        _registry.Get("Widget")!.TenantColumn.Should().Be("TenantId");
+        var descriptor = _registry.Get("Widget")!;
+        descriptor.TenantColumn.Should().Be(SchemaDescriptor.TenantColumnName);
+        // The client's own "TenantId" property survives as an ordinary scalar — it is simply no
+        // longer the tenant boundary. (Task 4 rejects the declaration outright.)
+        descriptor.ScalarColumns.Select(c => c.Name).Should().Contain("TenantId");
     }
 
     [Fact]

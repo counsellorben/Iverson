@@ -71,7 +71,13 @@ public sealed class RowFieldAuthorizationEvaluator : IRowFieldAuthorizationEvalu
             if (excluded.Count > 0)
             {
                 var allFields = new[] { schema.KeyColumn.Name }
-                    .Concat(schema.ScalarColumns.Select(c => c.Name))
+                    // ScalarColumns position: EXCLUDE __TenantId. AllowedFields is the set of fields
+                    // a caller may read or write; the tenant column is neither permissionable nor
+                    // client-addressable, and the tenant boundary is enforced separately (and
+                    // unconditionally) by TenantColumn/TenantValue on the decision.
+                    .Concat(schema.ScalarColumns
+                        .Where(c => !SchemaDescriptor.IsTenantColumn(c.Name))
+                        .Select(c => c.Name))
                     .Concat(schema.FkColumns.Select(fk => fk.ColumnName))
                     .Concat(schema.VectorFields.Select(v => v.PropertyName))
                     .Concat(schema.ChunkFields.Select(c => c.PropertyName));

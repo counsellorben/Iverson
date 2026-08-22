@@ -462,4 +462,23 @@ public class DocumentTemplateValidationTests
 
         await _rerenderQueue.DidNotReceive().EnqueueTypeAsync(Arg.Any<string>());
     }
+
+    [Fact]
+    public async Task RegisterAsync_TemplateReferencesTheServerOwnedTenantColumn_IsRejectedLikeAnyUnknownProperty()
+    {
+        // Task 1, decision 6: __TenantId IS a real ScalarColumns member after registration, so
+        // without an explicit exclusion in RequireScalarProperty a template could reference it —
+        // and DocumentRenderer would render the server-owned tenant value straight into chunk text
+        // that SearchChunks returns verbatim, putting the value back on the wire. The rejection
+        // must be the SAME error any unknown property name gets, so the reserved name is not even
+        // distinguishable from a typo.
+        var td = WidgetType("{" + SchemaDescriptor.TenantColumnName + "}");
+
+        var act = () => _sut.RegisterAsync(new SchemaRequest { RootType = td }, CancellationToken.None);
+
+        var ex = await act.Should().ThrowAsync<RpcException>();
+        ex.Which.StatusCode.Should().Be(StatusCode.InvalidArgument);
+        ex.Which.Status.Detail.Should().Contain("is not a declared scalar property");
+        ex.Which.Status.Detail.Should().Contain(SchemaDescriptor.TenantColumnName);
+    }
 }
