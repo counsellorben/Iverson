@@ -26,6 +26,21 @@ namespace Iverson.ClientConformance.Scenarios;
 /// A driver-native serialization would differ per language (Python reports snake_case members,
 /// Java omits nulls), which would make a naming difference render as a conformance failure.</para>
 ///
+/// <para><b>The owner assertion grades an echo, not a derivation.</b> Unlike the tenant column,
+/// the owner column is NOT force-set by the server for this run's acting user: it holds
+/// <c>iverson-loadtest-bypass</c>, <see cref="Reregistrar"/> grants that role <c>CanWriteAll</c>,
+/// and <c>RowFieldAuthorizationEvaluator</c> therefore reports <c>ownershipRequired: false</c>, so
+/// <c>EnforceWriteAuthorization</c> leaves whatever owner the payload carried. The driver stamps
+/// that owner from <c>--owner-id</c>, which is <c>TokenBroker.GetOwnerIdAsync()</c> — the same
+/// value the assertion compares against. Verified live: a driver stamping a made-up owner reads
+/// that made-up owner back, while the tenant column in the same run is force-set correctly. The
+/// assertion is therefore a round-trip claim (the row this acting user wrote comes back carrying
+/// the owner it propagated), NOT a claim that the server derived the owner from the token. It is
+/// kept because a client that mangles or drops the owner on the write path still fails it, and the
+/// tenant assertion beside it is what defends the derivation claim. Observing owner DERIVATION
+/// would need an acting user without a bypass role, which is a stack-provisioning change; it is
+/// recorded as a Deferred area in the IDN coverage ledger.</para>
+///
 /// <para><b>The tenant every driver sends is deliberately wrong.</b> Every driver stamps
 /// <see cref="WrongTenantValue"/> — never the acting user's tenant — on the row it creates. The
 /// server force-sets the tenant column from the acting-user token's <c>tenant_id</c> claim on a
@@ -51,6 +66,30 @@ namespace Iverson.ClientConformance.Scenarios;
 /// sending its OWN acting token was still denied (audit reason <c>TenantImmutable</c>) and the
 /// cell stayed green. With the acting tenant there, that same driver's write is accepted and the
 /// cell goes red, so the only thing left that can deny the write is which end user is calling.</para>
+///
+/// <para><b>What the status code cannot distinguish.</b> <c>PermissionDenied</c> (7) is the
+/// server's answer to several distinct refusals on this path, and it carries the SAME message for
+/// all of them — <c>"Not authorized to update this entity."</c>, the one <c>deniedMessage</c>
+/// <c>ObjectMappingGrpcService.Update</c> passes into
+/// <c>AuthorizationFieldMasking.EnforceWriteAuthorization</c> for every branch — and no trailers.
+/// Two consequences, both verified live and neither of them fixable from the client side:
+/// <list type="bullet">
+/// <item><description><b>A driver that attaches NO acting user at all still goes green.</b>
+/// <c>ActingUserInterceptor.ValidateActingUserAsync</c> returns early on an empty header, the
+/// acting-user principal is null, <c>RowFieldAuthorizationEvaluator.Evaluate</c> returns
+/// <c>Denied</c>, and the same status 7 with the same message comes back. The server's audit log
+/// tells the two apart (<c>reason=TenantMismatch</c> versus <c>reason=AccessDenied</c>, with
+/// <c>actor=unknown tenant=unknown</c>), but nothing a client can read does — so no assertion here
+/// can. This is recorded as a Deferred area in the IDN coverage ledger rather than papered over: a
+/// driver self-report ("I attached the header") would be worthless in exactly the case it exists
+/// for, since a library that silently DROPPED the header would still have its driver report
+/// success.</description></item>
+/// <item><description><b>Which tenancy check ran is not isolated either.</b> With the payload
+/// tenant set to the caller's own claim, the wrong caller trips the existing row's tenant check;
+/// were it set to anything else it would additionally trip the immutability check. Both compare
+/// against the CALLER's own <c>tenant_id</c> claim, so the denial stays identity-derived whichever
+/// fires — which is why the assertion does not try to tell them apart.</description></item>
+/// </list></para>
 ///
 /// <para><b>Why an update, and not a create.</b> A create by the wrong acting user is NOT denied:
 /// with no existing row, <c>EnforceWriteAuthorization</c> force-sets tenant and owner from the
@@ -296,6 +335,14 @@ public sealed class IdentityScenario(
         var deniedStep = document.Steps.FirstOrDefault(s => s.Name == DeniedStepName);
         var code = deniedStep is { Ok: true } ? ReadStatusCode(deniedStep.Entity) : null;
 
+        // The status NAME and MESSAGE are reported alongside the code purely as diagnostics — no
+        // assertion grades them, because the server's message is byte-identical across the
+        // refusals this axis can provoke (see the class doc comment's "What the status code cannot
+        // distinguish"). Carrying them in the detail is what let that be established empirically
+        // rather than only read off the server source.
+        var reportedStatus = ReadString(deniedStep?.Entity, "status");
+        var reportedDetail = ReadString(deniedStep?.Entity, "detail");
+
         assertions.Add(Assertion.From(
             $"{language}: an acting user of another tenant is denied a write to this row",
             code == DeniedStatusCode,
@@ -309,6 +356,12 @@ public sealed class IdentityScenario(
                         : $"the driver reported gRPC status {code}, expected {DeniedStatusCode} " +
                           "(PERMISSION_DENIED)",
             Requirements.IdnTenancyDerivedAndEnforced));
+
+        assertions[^1] = assertions[^1] with
+        {
+            Detail = assertions[^1].Detail +
+                     $" [reported status '{reportedStatus ?? "<none>"}', message '{reportedDetail ?? "<none>"}']",
+        };
 
         return assertions;
     }

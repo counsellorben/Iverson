@@ -265,6 +265,37 @@ that propagates an acting user the server can read, but under which the server's
 does not actually hold, is non-conformant in a way a single conflated requirement would report only
 as one undifferentiated red cell.
 
+**`IVC-IDN-002`'s owner clause is a round-trip claim, not a server-derivation claim**, and its
+Statement is worded that way — "the owner identity that acting user PROPAGATED". The distinction
+matters because the tenant clause of `IVC-IDN-003` beside it IS a derivation claim, and the two are
+observed very differently. The harness's acting user holds `iverson-loadtest-bypass`, which the
+orchestrator's re-registration grants `CanWriteAll`; `RowFieldAuthorizationEvaluator` therefore
+reports `ownershipRequired: false` and `AuthorizationFieldMasking.EnforceWriteAuthorization` never
+force-sets the owner column, so the value read back is the one the driver sent, compared against the
+same `--owner-id` the driver was given. Verified live: a driver stamping a made-up owner reads that
+made-up owner back, while the tenant column in the same run is force-set correctly. The clause is
+still worth asserting — a client that mangles, drops or re-cases the owner on its own write or read
+path fails it — but it is not evidence that the server derived the owner from the token, and the
+requirement must not be read as though it were. Observing owner derivation needs an acting user
+without a bypass role; see the Coverage table below. The row's Statement is left byte-unchanged, per
+this document's immutable-Statement convention (see `REL`'s authoring notes): the statement as
+written is true of what is observed, and the correction belongs in this prose rather than in the
+Statement cell.
+
+**`IVC-IDN-003`'s enforcement clause cannot tell "denied because of WHO is calling" from "denied
+because NOBODY is calling".** `PermissionDenied` (7) is the server's answer to several distinct
+refusals on this path, and it carries the same message for all of them — `"Not authorized to update
+this entity."`, the single `deniedMessage` `ObjectMappingGrpcService.Update` passes into every branch
+of `AuthorizationFieldMasking.EnforceWriteAuthorization` — and no trailers. A driver that attaches no
+acting-user header at all is therefore graded green by this assertion: `ActingUserInterceptor`
+returns early on an empty header, the acting-user principal is null, and the evaluator denies. The
+difference exists only in the server's own audit log (`reason=TenantMismatch` versus
+`reason=AccessDenied`, with `actor=unknown tenant=unknown`), which no client can read. Both halves of
+that were verified live, byte for byte, from what the driver itself received. See the Coverage table
+below; the gap is not closed by having drivers self-report that they attached the header, since a
+library that silently DROPPED the header would still have its driver report success — the assertion
+would be worthless in exactly the case it exists for.
+
 `IVC-IDN-003` is verified in both directions, and neither direction is gradeable from a payload the
 client controls:
 
@@ -313,6 +344,8 @@ role are deliberately not authored here; see the Coverage table below.
 | Token acquisition | Deferred | Every client can mint a service token from a client-credentials trio, but the harness passes a pre-minted `--service-token` to all five drivers on purpose (Authentik stamps the JWT's `iss` from the request's Host header and grants scopes only when asked, neither of which a driver's own minting expresses), so no assertion observes a client's token acquisition and no requirement constrains it. |
 | Suspended and deleted tenants | Deferred | `ActingUserInterceptor` rejects an acting user whose tenant is absent, `suspended` or `deleted` with `PermissionDenied`, but the harness runs entirely inside two active tenants and provisions none, so no assertion observes a suspended or deleted tenant and no requirement constrains that path. |
 | Field-permission narrowing by acting-user role | Deferred | `RowFieldAuthorizationEvaluator` narrows writable and readable fields by the acting user's `groups` claim, but the harness registers no `FieldPermission` (the `Reregistrar` sets row permissions only), so no assertion observes field narrowing and no requirement constrains it. |
+| Owner column derived from the acting user | Deferred | `IVC-IDN-002`'s owner clause observes a round trip, not a derivation: the harness's acting user holds `iverson-loadtest-bypass` (granted `CanWriteAll` by the orchestrator's re-registration), so `RowFieldAuthorizationEvaluator` reports `ownershipRequired: false` and the server never force-sets the owner column — a driver stamping a made-up owner reads it straight back. No assertion observes owner derivation and no requirement constrains it. Closing it needs an acting user without a bypass role on this type, which is a stack-provisioning change, not a wording change. |
+| Distinguishing "denied for WHO is calling" from "denied because NO acting user was attached" | Deferred | `IVC-IDN-003`'s enforcement clause grades the numeric status code, and the server answers both refusals with `PermissionDenied` (7), the identical message (`"Not authorized to update this entity."`) and no trailers — so a driver that attaches no acting-user header is graded green by it. Verified live from what the driver received. The distinction exists only in the server's audit log (`reason=TenantMismatch` versus `reason=AccessDenied`), which no client can read, so no assertion can observe it. Closing it needs the server to distinguish the two refusals on the wire; a driver self-report would be worthless, since a library that silently dropped the header would still report success. |
 | Ownership enforcement between two acting users of the SAME tenant | Deferred | `AuthorizationFieldMasking` denies an owner mismatch on an existing row exactly as it denies a tenant mismatch, but the only second acting-user identity the dev stack provisions belongs to a different tenant, so the tenant check fires first and no assertion can observe the owner check in isolation. Authoring it needs a second identity inside the acting user's own tenant, which is a stack-provisioning change, not a wording change. |
 
 #### Backstop assertion (non-normative)

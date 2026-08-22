@@ -200,6 +200,38 @@ public class IdentityScenarioTests
             "a driver whose attempt never reached the server observed no denial");
     }
 
+    /// <summary>
+    /// The status NAME and MESSAGE ride in the assertion's detail as diagnostics, and nothing
+    /// grades them — the server answers several distinct refusals on this path with the identical
+    /// code AND message, which is exactly why they are reported rather than asserted on. This test
+    /// exists so that carrying them cannot be dropped silently: they are the evidence that
+    /// established the indistinguishability empirically, from what the driver itself received.
+    /// </summary>
+    [Fact]
+    public void Judge_Idn003EnforcementDetail_CarriesTheReportedStatusNameAndMessage()
+    {
+        var denied = new StepResult(IdentityScenario.DeniedStepName, true,
+            Entity: JsonSerializer.SerializeToElement(new
+            {
+                statusCode = IdentityScenario.DeniedStatusCode,
+                status = "PermissionDenied",
+                detail = "Not authorized to update this entity.",
+            }));
+
+        var detail = Named(JudgeHappy(denied: denied), "denied a write").Detail;
+
+        detail.Should().Contain("PermissionDenied");
+        detail.Should().Contain("Not authorized to update this entity.");
+    }
+
+    [Fact]
+    public void Judge_DriverReportedNoStatusNameOrMessage_DetailSaysSoRatherThanThrowing()
+    {
+        var detail = Named(JudgeHappy(denied: DeniedStep(null)), "denied a write").Detail;
+
+        detail.Should().Contain("<none>");
+    }
+
     // ── every assertion fires on every language, whatever the driver reported ─────────────────
 
     [Fact]

@@ -375,10 +375,25 @@ public static class Requirements
     /// A row written under an acting user is readable back by that same acting user through the
     /// mapped read path, carrying the owner identity that acting user propagated. Discharged by
     /// two assertions in <c>IdentityScenario.Judge</c>: "the row is readable back by the acting
-    /// user that wrote it" (the <c>read_identity_doc</c> step succeeded and reported an entity)
-    /// and "the row carries the owner identity the acting user propagated" (the entity's owner
-    /// field equals the acting user's subject, which the orchestrator took from the acting-user
-    /// token — <c>TokenBroker.GetOwnerIdAsync</c> — not from anything the driver reported).
+    /// user that wrote it" (the <c>read_identity_doc</c> step succeeded and reported the key the
+    /// write phase seeded) and "the row carries the owner identity the acting user propagated"
+    /// (the entity's owner field equals the acting user's subject).
+    ///
+    /// <para><b>What the owner half does and does not observe.</b> It is a ROUND-TRIP claim, not a
+    /// server-derivation claim, and the requirement's statement is worded that way on purpose
+    /// ("the owner identity that acting user PROPAGATED"). The expected value is the acting user's
+    /// subject as the orchestrator resolved it (<c>TokenBroker.GetOwnerIdAsync</c>), but the actual
+    /// value is echoed by the server rather than derived by it: this run's acting user holds
+    /// <c>iverson-loadtest-bypass</c>, which <see cref="Reregistrar"/> grants <c>CanWriteAll</c>,
+    /// so <c>RowFieldAuthorizationEvaluator</c> reports <c>ownershipRequired: false</c> and
+    /// <c>AuthorizationFieldMasking.EnforceWriteAuthorization</c> never force-sets the owner
+    /// column. Both sides therefore originate from the same <c>--owner-id</c> flag. What the
+    /// assertion still catches is a client that mangles, drops or re-cases the owner on its own
+    /// write or read path. What defends the DERIVATION claim is
+    /// <see cref="IdnTenancyDerivedAndEnforced"/>'s tenant assertion beside it, whose expected
+    /// value the driver deliberately does not send. Observing owner derivation would need an
+    /// acting user without a bypass role — a stack-provisioning change, recorded as a Deferred
+    /// area in the standard's IDN coverage ledger.</para>
     /// </summary>
     public const string IdnActingUserPropagatedToRow = "IVC-IDN-002";
 
@@ -396,6 +411,14 @@ public static class Requirements
     /// driver reported from its <c>denied_update_wrong_acting_user</c> step. Numeric, because the
     /// five languages spell the same code five ways.</description></item>
     /// </list>
+    ///
+    /// <para><b>What the enforcement half cannot distinguish.</b> The server answers several
+    /// distinct refusals on this path with the SAME status (7) and the SAME message, and sets no
+    /// trailers — so a driver that attaches no acting user at all is denied identically to one that
+    /// attaches the wrong-tenant user, and this assertion passes for both. Verified live; the
+    /// difference exists only in the server's own audit log, which no client can read. See
+    /// <c>IdentityScenario</c>'s "What the status code cannot distinguish" doc section and the
+    /// Deferred row in the standard's IDN coverage ledger.</para>
     /// </summary>
     public const string IdnTenancyDerivedAndEnforced = "IVC-IDN-003";
 
