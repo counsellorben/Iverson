@@ -73,7 +73,7 @@ entries:
     attrs:
       name: "Iverson: admin automation tenant id"
       description: Fixed tenant identifier issued to the admin-automation service client
-      expression: 'return {"tenant_id": "tenant-admin"}'
+      expression: 'return {"tenant_id": "tenant_admin"}'
   - model: authentik_providers_oauth2.oauth2provider
     identifiers:
       name: iverson-loadtest
