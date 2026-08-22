@@ -30,7 +30,8 @@ PostgreSQL's deadlock detector cannot break this. 306 was not *waiting* on anyth
 so there is no cycle to detect, and no `deadlock_timeout` applies. Nothing in the stack times out an
 idle transaction either. The wedge is permanent until something kills a connection.
 
-**Workaround (verified):** terminate the stale backend and migrations resume immediately.
+**Unblocking it is not the same as recovering from it.** Terminating the stale backend does resume
+migrations immediately:
 
 ```sql
 -- find it
@@ -38,6 +39,51 @@ SELECT pid, pg_blocking_pids(pid), state FROM pg_stat_activity WHERE datname = '
 -- clear it
 SELECT pg_terminate_backend(<the idle-in-transaction pid>);
 ```
+
+...but in the observed case the schema was already **corrupt**, and that only surfaced later.
+
+## The wedge corrupts the schema (observed, not theoretical)
+
+After unblocking, the server reached healthy — but every custom blueprint failed, no OAuth2 provider
+was ever created, and token issuance returned `invalid_client`. The worker log carried the reason:
+
+```
+django.db.utils.ProgrammingError: relation "authentik_t_queue_n_7b09fb_idx" already exists
+```
+
+A migration step had physically created the index, but Django's migration ledger never recorded the
+step as applied. Every subsequent apply re-runs it and re-fails identically. **This does not
+self-heal.** Restarting the worker did not fix it; the blueprints stayed in `error` and the provider
+table stayed empty.
+
+Recovery required rebuilding the database:
+
+```sh
+docker compose stop authentik-server authentik-worker
+docker exec iverson-postgres psql -U iverson -d postgres -c "DROP DATABASE authentik;"
+docker exec iverson-postgres psql -U iverson -d postgres -c "CREATE DATABASE authentik OWNER authentik;"
+```
+
+**This materially worsens the kind/cloud assessment below.** Liveness-driven restarts do not merely
+cost churn — a restart landing mid-migration is one of the ways this corruption is produced. A
+cluster can therefore converge into a *permanently* broken authentik whose pods all report healthy,
+because the server serves fine on a schema whose blueprints can never apply. The visible symptom is
+not a crash loop; it is `invalid_client` on every service-client token request, which looks like a
+credentials problem and not a migration problem.
+
+## Serial startup verified clean
+
+Rebuilding the database and starting the two components **serially** produced a clean result on the
+first attempt, which is the empirical case for the fixes below:
+
+| step | outcome |
+|---|---|
+| `up -d authentik-server` alone | healthy after ~210s, migrations applied once, no contention |
+| then `up -d authentik-worker` | healthy after ~30s |
+| custom blueprints | all 3 `successful` after ~195s |
+| OAuth2 providers | all 5 created; `client_credentials` token issued successfully |
+
+Compare with the concurrent start: wedged indefinitely, then corrupt.
 
 ## Why the Helm chart has the same exposure
 
@@ -53,12 +99,13 @@ narrower.**
 
 ### The failure signature does differ
 
-- **kind / cloud: noisy self-heal.** The server's `livenessProbe` is `httpGet /-/health/live/` with
+- **kind / cloud: restart churn, and restarts are themselves a corruption vector** (see above).** The server's `livenessProbe` is `httpGet /-/health/live/` with
   `initialDelaySeconds: 60`, `periodSeconds: 30`, `failureThreshold: 5`. A wedged server never binds
   9000, so kubelet restarts it after roughly 3.5 minutes, killing its connections and releasing the
   locks. The worker's `ak healthcheck` exec probe behaves the same way. Expect several minutes of
-  restart churn on a fresh install that looks like a broken deploy, plus a residual risk of a restart
-  landing mid-`ALTER TABLE` on a partially migrated schema.
+  restart churn on a fresh install that looks like a broken deploy. The "self-heal" is not reliable:
+  a restart landing mid-`ALTER TABLE` produces the partially-migrated schema documented above, which
+  no further restart repairs.
 - **compose: permanent hang.** `restart: unless-stopped` does not act on an unhealthy container, only
   an exited one, and there is no autoheal sidecar. Nothing consumes the healthcheck result. This is
   the observed case.
