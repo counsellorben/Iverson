@@ -1,10 +1,18 @@
 # Remove the IversonTenant attribute — implementation plan
 
 **Source spec:** `docs/specs/2026-08-20-remove-iverson-tenant-attribute-design.md` (commit `c4ceb6c99d5edb36c48a9334aa0c7906401ede73`)
-**Worktree:** `/home/ben/repositories/Iverson-conformance`, branch `client-conformance-harness`.
+**Worktree:** `/home/ben/repositories/Iverson-tenant`, branch `remove-iverson-tenant`.
 
 > All seven tasks execute in that worktree. The conformance harness, `docs/standards/`, and the
-> `IVC-*` requirement IDs exist only on this branch — they are absent from `main`.
+> `IVC-*` requirement IDs exist only on this lineage — they are absent from `main`.
+>
+> **Retargeted 2026-08-22.** The plan was written against `/home/ben/repositories/Iverson-conformance`
+> (branch `client-conformance-harness`). That branch's own initiative has since completed and is
+> awaiting an integration decision, so this work runs on `remove-iverson-tenant`, branched from its
+> head at `0ca8093` — which carries the standard, the coverage gate and the `IVC-*` IDs, so the
+> original reason for the constraint still holds. The path is corrected here because task briefs are
+> extracted from this file verbatim, and a stale absolute path in a brief has previously overridden a
+> dispatch and produced a wrong-branch commit.
 
 ## Global Constraints
 
@@ -413,7 +421,7 @@ character follows directly from A22.
 ## Verified plan-level assumptions
 
 Listed cold against the draft plan, then verified. Evidence is a path:line or command output.
-Paths are relative to `/home/ben/repositories/Iverson-conformance`.
+Paths are relative to `/home/ben/repositories/Iverson-tenant` (see the retargeting note in the header).
 
 | # | Assumption | Status | Evidence |
 |---|---|---|---|
