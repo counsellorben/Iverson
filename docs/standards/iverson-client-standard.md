@@ -75,8 +75,11 @@ Each requirement is one row in an axis's table:
 A requirement's rationale and evidence pointer (which orchestrator assertion(s) cite it) are not
 columns in the summary table; they are recorded as prose immediately below the table, or deferred
 to the `Requirements.cs` const's doc comment once the requirement is implemented. This document
-currently declares no requirements — every axis table below is empty. The coverage gate must be
-green in this state: an empty set of `Active` IDs compared against an empty set of consts.
+declares 42 `Active` requirements across nine axes; each takes a const in `Requirements.cs` and is
+cited by at least one orchestrator assertion. An axis whose table is still empty remains legal, and
+the coverage gate must stay green in that state: an empty set of that axis's `Active` IDs compared
+against an empty set of its consts is a match, not a gap. What the gate rejects is a MISMATCH —
+an ID with no const, a const with no ID, or an `Active` ID no assertion cites.
 
 ## Requirement tables
 
@@ -203,12 +206,24 @@ sibling `IVC-REL-001` scopes itself: it names the three relation kinds the namin
 applies to (`many_to_one`, `one_to_one`, `many_to_many`) and excludes `one_to_many` by omission,
 matching what the server has always correctly enforced.
 
+Two limits of that naming rule are recorded here rather than asserted on. First, it is enforced on
+every registration but got no load-path treatment, unlike the navigation-property/foreign-key
+collision predicate, which `SchemaRegistry.LoadAsync` was deliberately made to log rather than
+reject: a deployment that registered, say, `[ManyToOne(typeof(User))] public Guid EditorId` before
+this branch rehydrates and keeps working, but its first RE-registration fails with
+`must be named 'UserId'` and has no migration path. Second, the rule makes two same-kind relations
+to one related type inexpressible — both would have to be named `UserId`, aliasing one column and
+silently hydrating `Editor` and `Author` from the same row. No model in this repository trips
+either today, and neither is a client-conformance claim, so `IVC-REG-003` states the rule as the
+server enforces it and this paragraph is the disclosure.
+
 #### Coverage
 
 | Area | Status | Evidence |
 | --- | --- | --- |
 | Navigation-property/foreign-key collision rejected at registration | Covered | IVC-REG-002 |
 | Foreign-key naming enforced at registration | Covered | IVC-REG-003 |
+| `one_to_many` foreign keys validated at registration | Deferred | `SchemaRegistrationOrchestrator.cs:103` filters the relation loop with `.Where(r => r.Kind != RelationKind.OneToMany)`, which excludes `one_to_many` from ALL THREE checks in that loop — not only the naming rule `IVC-REG-003` correctly exempts it from, but also foreign-key-is-a-declared-property and foreign-key SQL typing. So a `one_to_many`'s declared foreign key is validated by nothing: `Author` may declare `[OneToMany(typeof(Article), ForeignKey = "WriterId")]` while `Article` declares `AuthorId`, registration succeeds, and every depth-resolved read then queries a column that does not exist. This carve-out is one this axis itself created when it scoped `IVC-REG-003` to the three kinds the server enforces, so it is disclosed here rather than left silent. Closing it is a SERVER change, not a client one, and not a trivial one: the property and typing checks would have to run against the RELATED type's descriptor, which is not in hand when the declaring type registers — it needs either a deferred cross-type validation pass or a registration-order constraint. Its own initiative; no requirement here asserts against it. |
 | Reregistration | Deferred | `Reregistrar.cs` exercises reregistration (registering an already-registered type again) on every conformance run, but no assertion cites a requirement ID against that behaviour. Reregistration's correctness is exercised as test-harness plumbing, not verified as a normative claim. |
 | Authorization rules at registration time | Deferred | `SchemaRegistrationOrchestrator.cs:54,208` accepts and stores `AuthorizationRules` as part of the descriptor, but no requirement in this document constrains what the server does with them at registration time. |
 | Schema drift | Deferred | A `SchemaDriftException` (thrown by `IRecordStoreSchemaManager.ApplySchemaAsync` when a re-registration's shape conflicts with the stored schema) surfaces as `FailedPrecondition`, but no requirement asserts on that status code or the conditions that produce it. |
@@ -233,9 +248,24 @@ descriptor directly rather than merely exercising the registration call.
 Unlike `REL`'s per-relation loop (see "Authoring notes" above), `REG`'s two assertions
 (`IVC-REG-002`, `IVC-REG-003`) are each single-shot: they fire once, against one hand-built
 fixture apiece, rather than iterating a `foreach` over a descriptor's relations where a
-zero-iteration loop would vacuously pass. There is no loop body whose vacuous-pass case a backstop
-assertion would need to catch, so `REG` declares no backstop assertion — the same reasoning applies
-to why `DECL` and `LIFE` also currently have none.
+zero-iteration loop would vacuously pass. That — and only that — is why `REG` declares no backstop
+assertion: its own assertions cannot go vacuous, because they are not inside a loop.
+
+That reasoning is specific to `REG` and must not be generalised to the other backstop-less axes.
+`DECL` in particular does have a loop-bodied citation: `IVC-DECL-006`'s only citation
+(`Verifier.cs:300-304`) sits inside `foreach (var property in descriptor.Properties.Where(p => p.IsArray))`
+(`Verifier.cs:288`), which runs zero times for a descriptor declaring no array property. What keeps
+that from being a live hole is not the absence of a loop but a neighbouring assertion:
+`IVC-REL-004`'s `isArray` check (`Verifier.cs:279-283`) fires unconditionally per many-to-many
+relation and goes red on the only way that loop can empty out for the current fixtures — a
+many-to-many foreign key that lost its `isArray` flag. `DECL-006` is therefore protected by
+`REL-004`, not by being structurally unfalsifiable, and a fixture set without a many-to-many
+relation would remove that protection.
+
+The coverage gate's Check4 does not verify any of this: it checks the Coverage ledgers, not
+backstop declarations, so a future axis can restate the sentence above without anything catching it
+if it is false there. Extending Check4 to bind backstop claims is a follow-up, not a claim this
+axis makes.
 
 ### IDN — Identity
 

@@ -97,13 +97,13 @@ public sealed class QueryScenario(
             DriverPhaseOutcome.Success success => TryCaptureDescriptor(success.Document),
             DriverPhaseOutcome.Skipped skipped => (null, $"'{RegisterLanguage}' driver skipped: {skipped.Reason}"),
             DriverPhaseOutcome.Broken broken => (null,
-                $"'{RegisterLanguage}' driver broke during the register phase (exit {broken.ExitCode}): {Truncate(broken.Stderr)}"),
+                $"'{RegisterLanguage}' driver broke during the register phase (exit {broken.ExitCode}): {ScenarioCells.Truncate(broken.Stderr)}"),
             _ => (null, $"'{RegisterLanguage}' produced no register-phase outcome"),
         };
 
         if (registerFailure is not null)
         {
-            return FailEveryLanguage(languages,
+            return ScenarioCells.FailEveryLanguage(languages, Name,
                 $"S6 query's register phase (run once, by '{RegisterLanguage}') failed: {registerFailure}");
         }
 
@@ -113,7 +113,7 @@ public sealed class QueryScenario(
         }
         catch (Exception ex)
         {
-            return FailEveryLanguage(languages,
+            return ScenarioCells.FailEveryLanguage(languages, Name,
                 $"S6 query's one-time re-registration of '{TypeName}' with row permissions failed: {Describe(ex)}");
         }
 
@@ -166,17 +166,29 @@ public sealed class QueryScenario(
                     wait.TimeoutDetail));
             }
 
-            return states.Select(kv => Cell(kv.Key, kv.Value)).ToList();
+            return states.Select(kv => ScenarioCells.Cell(kv.Key, Name, kv.Value)).ToList();
         }
 
         // ── read: every alive language issues the same search and the same aggregate ───────────
-        foreach (var (language, document) in await RunPhaseAsync(Phase.Read, states, context, ct))
-        {
-            foreach (var assertion in Judge(language, expectedKeys, document))
-                states[language].Assertions.Add(assertion);
-        }
+        return GradeReads(states, await RunPhaseAsync(Phase.Read, states, context, ct), expectedKeys);
+    }
 
-        return states.Select(kv => Cell(kv.Key, kv.Value)).ToList();
+    /// <summary>
+    /// Wires the read phase's documents through <see cref="Judge"/> and into cells. Extracted from
+    /// <see cref="RunAsync"/> — and internal — because the wiring is exactly as safety-critical as
+    /// the judgement and used to be reachable only from a live stack: drop the <see cref="Judge"/>
+    /// call below and every QRY assertion silently stops reaching a cell, leaving a fully green
+    /// query row that verified nothing. That mutation must redden a named test.
+    /// </summary>
+    internal static IReadOnlyList<ReportCell> GradeReads(
+        Dictionary<string, LanguageState> states,
+        IReadOnlyList<(string Language, PhaseDocument Document)> reads,
+        IReadOnlySet<Guid> expectedKeys)
+    {
+        foreach (var (language, document) in reads)
+            states[language].Assertions.AddRange(Judge(language, expectedKeys, document));
+
+        return states.Select(kv => ScenarioCells.Cell(kv.Key, Name, kv.Value)).ToList();
     }
 
     // ── the judgement (pure, so it is unit-testable without a live stack) ────────────────────
@@ -395,7 +407,7 @@ public sealed class QueryScenario(
     private async Task<IReadOnlyList<(string Language, PhaseDocument Document)>> RunPhaseAsync(
         Phase phase, Dictionary<string, LanguageState> states, DriverContext context, CancellationToken ct)
     {
-        var alive = Alive(states).ToList();
+        var alive = ScenarioCells.Alive(states).ToList();
         if (alive.Count == 0)
             return [];
 
@@ -418,7 +430,7 @@ public sealed class QueryScenario(
                 case DriverPhaseOutcome.Broken broken:
                     state.Terminal = ReportCell.Fail(outcome.Language, Name,
                         $"driver broke during the {PhaseNames.ToToken(phase)} phase " +
-                        $"(exit {broken.ExitCode}): {Truncate(broken.Stderr)}", state.Assertions);
+                        $"(exit {broken.ExitCode}): {ScenarioCells.Truncate(broken.Stderr)}", state.Assertions);
                     break;
             }
         }
@@ -432,33 +444,11 @@ public sealed class QueryScenario(
         return documents;
     }
 
-    private static IReadOnlyList<ReportCell> FailEveryLanguage(IReadOnlyCollection<string> languages, string detail) =>
-        languages.Select(l => ReportCell.Fail(l, Name, detail, [])).ToList();
-
-    private static IEnumerable<string> Alive(Dictionary<string, LanguageState> states) =>
-        states.Where(kv => kv.Value.Terminal is null).Select(kv => kv.Key).ToList();
-
-    private static ReportCell Cell(string language, LanguageState state)
-    {
-        if (state.Terminal is not null)
-            return state.Terminal;
-
-        var failures = state.Assertions.Where(a => !a.Passed).ToList();
-        return failures.Count == 0
-            ? ReportCell.Ok(language, Name, state.Assertions)
-            : ReportCell.Fail(language, Name, string.Join(
-                Environment.NewLine + "    ",
-                failures.Select(f => $"{f.Name} — {f.Detail}")), state.Assertions);
-    }
-
     private static string Join(IEnumerable<Guid> keys) => string.Join(", ", keys.Select(k => k.ToString()));
 
     private static string Describe(Exception ex) => $"{ex.GetType().Name}: {ex.Message}";
 
-    private static string Truncate(string text) =>
-        text.Length <= 2000 ? text.Trim() : text[^2000..].Trim();
-
-    private sealed class LanguageState
+    internal sealed class LanguageState : ILanguageState
     {
         public List<Assertion> Assertions { get; } = [];
 

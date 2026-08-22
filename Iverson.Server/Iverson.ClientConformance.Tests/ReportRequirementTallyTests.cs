@@ -7,8 +7,8 @@ namespace Iverson.ClientConformance.Tests;
 /// <summary>
 /// The runtime requirement tally: which requirement IDs a report's cells actually exercised (an
 /// assertion for that ID ran, pass or fail), and which registry IDs no cell touched at all. Tests
-/// against a fake registry ID set rather than the real (currently empty) <see cref="Requirements"/>
-/// class — see <see cref="Report.ComputeUntouched"/>'s doc comment for why.
+/// against a fabricated registry ID set rather than the real <see cref="Requirements"/> class —
+/// see <see cref="Report.ComputeUntouched"/>'s doc comment for why.
 /// </summary>
 public class ReportRequirementTallyTests
 {
@@ -94,4 +94,60 @@ public class ReportRequirementTallyTests
         json.Should().Contain("IVC-REG-001");
         json.Should().Contain("requirementsUntouched");
     }
+
+    // ── the tally is a GATE, not a printout ───────────────────────────────────────────────────
+    //
+    // Until Report.RunSucceeded existed, `requirementsUntouched` was rendered, serialised, and
+    // affected nothing: the exit code read cell statuses alone. The plan's closing check ("the
+    // untouched set must be empty") therefore held only for as long as a human read the number.
+    // These four tests are the gate; each names the mutation it kills.
+
+    /// <summary>
+    /// The mutation: making the coverage arm unconditional (`allPassed` alone, or dropping the
+    /// `untouched.Count == 0` term). A full-matrix run that left a requirement unexercised must
+    /// not exit 0, however green the grid looks.
+    /// </summary>
+    [Fact]
+    public void RunSucceeded_FullMatrixRunWithAnUntouchedRequirement_Fails() =>
+        Report.RunSucceeded(allPassed: true, fullMatrix: true, untouched: ["IVC-REG-002"])
+            .Should().BeFalse();
+
+    /// <summary>
+    /// The mutation in the other direction: gating unconditionally rather than on the full matrix.
+    /// `--scenarios query` correctly leaves 38 of 42 untouched, and failing that would make every
+    /// targeted run exit non-zero for no defect at all.
+    /// </summary>
+    [Fact]
+    public void RunSucceeded_NarrowedRunWithUntouchedRequirements_StillSucceeds() =>
+        Report.RunSucceeded(allPassed: true, fullMatrix: false, untouched: ["IVC-REG-002", "IVC-QRY-001"])
+            .Should().BeTrue();
+
+    [Fact]
+    public void RunSucceeded_FullMatrixRunWithNothingUntouched_Succeeds() =>
+        Report.RunSucceeded(allPassed: true, fullMatrix: true, untouched: []).Should().BeTrue();
+
+    [Fact]
+    public void RunSucceeded_AFailedCell_FailsRegardlessOfCoverage()
+    {
+        Report.RunSucceeded(allPassed: false, fullMatrix: true, untouched: []).Should().BeFalse();
+        Report.RunSucceeded(allPassed: false, fullMatrix: false, untouched: []).Should().BeFalse();
+    }
+
+    // ── what makes a run "full" ───────────────────────────────────────────────────────────────
+
+    [Fact]
+    public void CliFlags_NeitherAxisNarrowed_IsAFullMatrixRun() =>
+        CliFlags.Parse([]).IsFullMatrix.Should().BeTrue();
+
+    [Fact]
+    public void CliFlags_ScenariosNarrowed_IsNotAFullMatrixRun() =>
+        CliFlags.Parse(["--scenarios", "query"]).IsFullMatrix.Should().BeFalse();
+
+    [Fact]
+    public void CliFlags_LanguagesNarrowed_IsNotAFullMatrixRun() =>
+        CliFlags.Parse(["--languages", "dotnet"]).IsFullMatrix.Should().BeFalse();
+
+    [Fact]
+    public void CliFlags_UnrelatedFlags_LeaveTheRunFull() =>
+        CliFlags.Parse(["--json", "/tmp/x.json", "--keep"]).IsFullMatrix.Should().BeTrue();
 }

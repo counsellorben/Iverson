@@ -131,7 +131,7 @@ public sealed class SchemaCatalogScenario(
                 state.Assertions.Add(assertion);
         }
 
-        return states.Select(kv => Cell(kv.Key, kv.Value)).ToList();
+        return states.Select(kv => ScenarioCells.Cell(kv.Key, Name, kv.Value)).ToList();
     }
 
     // ── the judgement (pure, so it is unit-testable without a live stack) ────────────────────
@@ -288,7 +288,7 @@ public sealed class SchemaCatalogScenario(
     private async Task<IReadOnlyList<(string Language, PhaseDocument Document)>> RunPhaseAsync(
         Phase phase, Dictionary<string, LanguageState> states, DriverContext context, CancellationToken ct)
     {
-        var alive = Alive(states).ToList();
+        var alive = ScenarioCells.Alive(states).ToList();
         if (alive.Count == 0)
             return [];
 
@@ -311,7 +311,7 @@ public sealed class SchemaCatalogScenario(
                 case DriverPhaseOutcome.Broken broken:
                     state.Terminal = ReportCell.Fail(outcome.Language, Name,
                         $"driver broke during the {PhaseNames.ToToken(phase)} phase " +
-                        $"(exit {broken.ExitCode}): {Truncate(broken.Stderr)}", state.Assertions);
+                        $"(exit {broken.ExitCode}): {ScenarioCells.Truncate(broken.Stderr)}", state.Assertions);
                     break;
             }
         }
@@ -325,28 +325,9 @@ public sealed class SchemaCatalogScenario(
         return documents;
     }
 
-    private static IEnumerable<string> Alive(Dictionary<string, LanguageState> states) =>
-        states.Where(kv => kv.Value.Terminal is null).Select(kv => kv.Key).ToList();
-
-    private static ReportCell Cell(string language, LanguageState state)
-    {
-        if (state.Terminal is not null)
-            return state.Terminal;
-
-        var failures = state.Assertions.Where(a => !a.Passed).ToList();
-        return failures.Count == 0
-            ? ReportCell.Ok(language, Name, state.Assertions)
-            : ReportCell.Fail(language, Name, string.Join(
-                Environment.NewLine + "    ",
-                failures.Select(f => $"{f.Name} — {f.Detail}")), state.Assertions);
-    }
-
     private static string Describe(Exception ex) => $"{ex.GetType().Name}: {ex.Message}";
 
-    private static string Truncate(string text) =>
-        text.Length <= 2000 ? text.Trim() : text[^2000..].Trim();
-
-    private sealed class LanguageState
+    private sealed class LanguageState : ILanguageState
     {
         public List<Assertion> Assertions { get; } = [];
 

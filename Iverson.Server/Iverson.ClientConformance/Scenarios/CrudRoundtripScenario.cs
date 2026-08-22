@@ -170,7 +170,7 @@ public sealed class CrudRoundtripScenario(
         // ── the orchestrator's own two legs, and the three-way comparison ────────────────────
         var preUpdateTitles = new Dictionary<string, ObservedTitle>(StringComparer.OrdinalIgnoreCase);
 
-        foreach (var language in Alive(states))
+        foreach (var language in ScenarioCells.Alive(states))
         {
             var state = states[language];
             if (state.Article is null || state.Author is null)
@@ -189,7 +189,7 @@ public sealed class CrudRoundtripScenario(
         foreach (var (language, document) in await RunPhaseAsync(Phase.Update, states, context, ct))
             RequireStepOk(states[language], document, "update", Requirements.LifeMappedCrudReachable);
 
-        foreach (var language in Alive(states))
+        foreach (var language in ScenarioCells.Alive(states))
         {
             var state = states[language];
             if (state.Article is null || !preUpdateTitles.TryGetValue(language, out var before))
@@ -262,7 +262,7 @@ public sealed class CrudRoundtripScenario(
             }
         }
 
-        foreach (var language in Alive(states))
+        foreach (var language in ScenarioCells.Alive(states))
         {
             var state = states[language];
             if (state.Article is null) continue;
@@ -284,7 +284,7 @@ public sealed class CrudRoundtripScenario(
                 Requirements.LifeDeleteRemovesRow));
         }
 
-        return states.Select(kv => Cell(kv.Key, kv.Value)).ToList();
+        return states.Select(kv => ScenarioCells.Cell(kv.Key, Name, kv.Value)).ToList();
     }
 
     // ── phase plumbing ───────────────────────────────────────────────────────────────────────
@@ -298,7 +298,7 @@ public sealed class CrudRoundtripScenario(
     private async Task<IReadOnlyList<(string Language, PhaseDocument Document)>> RunPhaseAsync(
         Phase phase, Dictionary<string, LanguageState> states, DriverContext context, CancellationToken ct)
     {
-        var alive = Alive(states).ToList();
+        var alive = ScenarioCells.Alive(states).ToList();
         if (alive.Count == 0)
             return [];
 
@@ -321,7 +321,7 @@ public sealed class CrudRoundtripScenario(
                 case DriverPhaseOutcome.Broken broken:
                     state.Terminal = ReportCell.Fail(outcome.Language, Name,
                         $"driver broke during the {PhaseNames.ToToken(phase)} phase " +
-                        $"(exit {broken.ExitCode}): {Truncate(broken.Stderr)}", state.Assertions);
+                        $"(exit {broken.ExitCode}): {ScenarioCells.Truncate(broken.Stderr)}", state.Assertions);
                     break;
             }
         }
@@ -339,9 +339,6 @@ public sealed class CrudRoundtripScenario(
 
         return documents;
     }
-
-    private static IEnumerable<string> Alive(Dictionary<string, LanguageState> states) =>
-        states.Where(kv => kv.Value.Terminal is null).Select(kv => kv.Key).ToList();
 
     private static StepResult? RequireStepOk(
         LanguageState state, PhaseDocument document, string stepName, string? requirementId = null)
@@ -521,29 +518,13 @@ public sealed class CrudRoundtripScenario(
         return null;
     }
 
-    private static ReportCell Cell(string language, LanguageState state)
-    {
-        if (state.Terminal is not null)
-            return state.Terminal;
-
-        var failures = state.Assertions.Where(a => !a.Passed).ToList();
-        return failures.Count == 0
-            ? ReportCell.Ok(language, Name, state.Assertions)
-            : ReportCell.Fail(language, Name, string.Join(
-                Environment.NewLine + "    ",
-                failures.Select(f => $"{f.Name} — {f.Detail}")), state.Assertions);
-    }
-
     private static string Describe(Exception ex) => $"{ex.GetType().Name}: {ex.Message}";
-
-    private static string Truncate(string text) =>
-        text.Length <= 2000 ? text.Trim() : text[^2000..].Trim();
 
     private sealed record CapturedDescriptor(TypeDescriptor Descriptor, JsonElement Json);
 
     private readonly record struct ObservedTitle(string? Value);
 
-    private sealed class LanguageState
+    private sealed class LanguageState : ILanguageState
     {
         public List<Assertion> Assertions { get; } = [];
         public CapturedDescriptor? Article { get; set; }

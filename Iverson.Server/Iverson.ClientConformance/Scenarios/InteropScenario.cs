@@ -60,7 +60,7 @@ public sealed class InteropScenario(
             DriverPhaseOutcome.Success success => TryCaptureDescriptors(success.Document),
             DriverPhaseOutcome.Skipped skipped => (null, null, $"'{RegisterLanguage}' driver skipped: {skipped.Reason}"),
             DriverPhaseOutcome.Broken broken => (null, null,
-                $"'{RegisterLanguage}' driver broke during the register phase (exit {broken.ExitCode}): {Truncate(broken.Stderr)}"),
+                $"'{RegisterLanguage}' driver broke during the register phase (exit {broken.ExitCode}): {ScenarioCells.Truncate(broken.Stderr)}"),
             _ => (null, null, $"'{RegisterLanguage}' produced no register-phase outcome"),
         };
 
@@ -108,7 +108,7 @@ public sealed class InteropScenario(
             .Where(l => languages.Contains(l, StringComparer.OrdinalIgnoreCase))
             .ToList();
 
-        var aliveLanguages = new HashSet<string>(Alive(states), StringComparer.OrdinalIgnoreCase);
+        var aliveLanguages = new HashSet<string>(ScenarioCells.Alive(states), StringComparer.OrdinalIgnoreCase);
         var readerLanguages = new HashSet<string>(readDocuments.Keys, StringComparer.OrdinalIgnoreCase);
 
         var (writers, readers, pairs) = SelectWriterReaderPairs(
@@ -128,7 +128,7 @@ public sealed class InteropScenario(
         foreach (var (reader, assertion) in ApplyFanOut(pairs, readDocuments))
             states[reader].Assertions.Add(assertion);
 
-        return states.Select(kv => Cell(kv.Key, kv.Value)).ToList();
+        return states.Select(kv => ScenarioCells.Cell(kv.Key, Name, kv.Value)).ToList();
     }
 
     // ── writer/reader selection (the RunAsync wiring, pulled out so it is unit-testable) ────────
@@ -323,7 +323,7 @@ public sealed class InteropScenario(
     private async Task<IReadOnlyList<(string Language, PhaseDocument Document)>> RunPhaseAsync(
         Phase phase, Dictionary<string, LanguageState> states, DriverContext context, CancellationToken ct)
     {
-        var alive = Alive(states).ToList();
+        var alive = ScenarioCells.Alive(states).ToList();
         if (alive.Count == 0)
             return [];
 
@@ -346,7 +346,7 @@ public sealed class InteropScenario(
                 case DriverPhaseOutcome.Broken broken:
                     state.Terminal = ReportCell.Fail(outcome.Language, Name,
                         $"driver broke during the {PhaseNames.ToToken(phase)} phase " +
-                        $"(exit {broken.ExitCode}): {Truncate(broken.Stderr)}", state.Assertions);
+                        $"(exit {broken.ExitCode}): {ScenarioCells.Truncate(broken.Stderr)}", state.Assertions);
                     break;
             }
         }
@@ -359,9 +359,6 @@ public sealed class InteropScenario(
 
         return documents;
     }
-
-    private static IEnumerable<string> Alive(Dictionary<string, LanguageState> states) =>
-        states.Where(kv => kv.Value.Terminal is null).Select(kv => kv.Key).ToList();
 
     private static StepResult? RequireStepOk(LanguageState state, PhaseDocument document, string stepName)
     {
@@ -377,27 +374,11 @@ public sealed class InteropScenario(
         return step.Ok ? step : null;
     }
 
-    private static ReportCell Cell(string language, LanguageState state)
-    {
-        if (state.Terminal is not null)
-            return state.Terminal;
-
-        var failures = state.Assertions.Where(a => !a.Passed).ToList();
-        return failures.Count == 0
-            ? ReportCell.Ok(language, Name, state.Assertions)
-            : ReportCell.Fail(language, Name, string.Join(
-                Environment.NewLine + "    ",
-                failures.Select(f => $"{f.Name} — {f.Detail}")), state.Assertions);
-    }
-
     private static string Describe(Exception ex) => $"{ex.GetType().Name}: {ex.Message}";
-
-    private static string Truncate(string text) =>
-        text.Length <= 2000 ? text.Trim() : text[^2000..].Trim();
 
     internal sealed record CapturedDescriptor(TypeDescriptor Descriptor, JsonElement Json);
 
-    private sealed class LanguageState
+    private sealed class LanguageState : ILanguageState
     {
         public List<Assertion> Assertions { get; } = [];
 

@@ -314,4 +314,89 @@ public class QueryScenarioTests
         // harness reports its own precondition failing.
         QueryScenario.ProjectionReady(visible, expected).Should().BeFalse();
     }
+
+    // ── RunAsync plumbing and the read-phase grading seam ─────────────────────────────────────
+    //
+    // Everything above judges. NOTHING above proved the judgement ever REACHES a cell — this file
+    // had zero RunAsync coverage, and deleting the Judge wiring in RunAsync left the whole suite
+    // green while the scenario verified nothing. GradeReads is that wiring, extracted so it is
+    // callable without a live stack; the tests below are what redden when it is dropped.
+    // RunAsync's own phase plumbing is exercised the way SchemaCatalogScenarioTests exercises its
+    // own: repoRoot "/tmp" has no driver project, so every driver breaks loudly and predictably.
+
+    private static DriverContext Context() => new(
+        Scenario: QueryScenario.Name,
+        Type: string.Empty,
+        Tenant: "iverson-loadtest-dynamic",
+        GrpcUrl: "http://localhost:5000",
+        ClientId: "client-id",
+        ClientSecret: "client-secret",
+        TokenEndpoint: "http://localhost:9000/application/o/token/",
+        ActingToken: "acting-token",
+        OwnerId: "owner-id",
+        IdPrefix: "s6-");
+
+    private static QueryScenario BuildScenario(string repoRoot = "/tmp")
+    {
+        var channel = Grpc.Net.Client.GrpcChannel.ForAddress("http://localhost:1");
+        return new QueryScenario(
+            new DriverRunner(repoRoot: repoRoot),
+            new Reregistrar(new Iverson.Client.Contracts.ObjectMappingService.ObjectMappingServiceClient(channel)),
+            new Iverson.Client.Contracts.ObjectSearchService.ObjectSearchServiceClient(channel));
+    }
+
+    private static Dictionary<string, QueryScenario.LanguageState> States(params string[] languages) =>
+        languages.ToDictionary(l => l, _ => new QueryScenario.LanguageState(), StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// THE mutation this test exists for: deleting the <c>Judge</c> call inside
+    /// <c>GradeReads</c>. That used to leave every suite green while no QRY assertion reached a
+    /// cell at all.
+    /// </summary>
+    [Fact]
+    public void GradeReads_EachLanguagesJudgement_ReachesItsOwnCell()
+    {
+        var expected = new HashSet<Guid> { KeyA };
+
+        var cells = QueryScenario.GradeReads(States("dotnet", "python"),
+            [
+                ("dotnet", ReadDocument(SearchStep(KeyA), AggregateStep(1))),
+                ("python", ReadDocument(SearchStep(KeyA, KeyB), AggregateStep(1))),
+            ],
+            expected);
+
+        cells.Should().HaveCount(2);
+
+        var dotnet = cells.Single(c => c.Language == "dotnet");
+        dotnet.Status.Should().Be(CellStatus.Ok);
+        dotnet.Assertions.Should().Contain(a => a.RequirementId == Requirements.QrySearchReturnsExactlyMatchingRows);
+
+        var python = cells.Single(c => c.Language == "python");
+        python.Status.Should().Be(CellStatus.Fail);
+        python.Assertions.Should().Contain(a => a.RequirementId == Requirements.QrySearchReturnsExactlyMatchingRows);
+    }
+
+    [Fact]
+    public void GradeReads_ALanguageWhoseDriverReportedNoReadDocument_IsNotGreen()
+    {
+        var cells = QueryScenario.GradeReads(States("dotnet", "go"),
+            [("dotnet", ReadDocument(SearchStep(KeyA), AggregateStep(1)))],
+            new HashSet<Guid> { KeyA });
+
+        cells.Single(c => c.Language == "go").Status.Should().NotBe(CellStatus.Ok);
+    }
+
+    [Fact]
+    public async Task RunAsync_NoLanguagesRequested_ReturnsNoCells() =>
+        (await BuildScenario().RunAsync([], Context(), "acting-token")).Should().BeEmpty();
+
+    [Fact]
+    public async Task RunAsync_TheRegisterDriverBreaks_FailsEveryRequestedLanguage()
+    {
+        var cells = await BuildScenario().RunAsync(["dotnet", "python"], Context(), "acting-token");
+
+        cells.Should().HaveCount(2);
+        cells.Should().NotContain(c => c.Status == CellStatus.Ok);
+        cells.Should().OnlyContain(c => c.Scenario == QueryScenario.Name);
+    }
 }

@@ -412,7 +412,7 @@ public class NamingRejectedScenarioTests
         var assertions = NamingRejectedScenario.JudgeClientSideAssertions(document);
 
         assertions.Should().NotBeNull();
-        var cell = NamingRejectedScenario.BuildCell("go", assertions!);
+        var cell = ScenarioCells.Cell("go", NamingRejectedScenario.Name, assertions!);
         cell.Status.Should().Be(CellStatus.Fail);
         cell.Detail.Should().Contain("failed client-side, before any RPC");
     }
@@ -431,7 +431,7 @@ public class NamingRejectedScenarioTests
         var assertions = NamingRejectedScenario.JudgeClientSideAssertions(document);
 
         assertions.Should().NotBeNull();
-        NamingRejectedScenario.BuildCell("python", assertions!).Status.Should().Be(CellStatus.Ok);
+        ScenarioCells.Cell("python", NamingRejectedScenario.Name, assertions!).Status.Should().Be(CellStatus.Ok);
     }
 
     [Fact]
@@ -445,7 +445,7 @@ public class NamingRejectedScenarioTests
         var assertions = NamingRejectedScenario.JudgeClientSideAssertions(document);
 
         assertions.Should().NotBeNull();
-        var cell = NamingRejectedScenario.BuildCell("typescript", assertions!);
+        var cell = ScenarioCells.Cell("typescript", NamingRejectedScenario.Name, assertions!);
         cell.Status.Should().Be(CellStatus.Fail);
         cell.Detail.Should().Contain("required foreign-key name");
     }
@@ -467,7 +467,7 @@ public class NamingRejectedScenarioTests
         var assertions = NamingRejectedScenario.JudgeClientSideAssertions(document);
 
         assertions.Should().NotBeNull();
-        var cell = NamingRejectedScenario.BuildCell("go", assertions!);
+        var cell = ScenarioCells.Cell("go", NamingRejectedScenario.Name, assertions!);
         cell.Status.Should().Be(CellStatus.Fail);
         cell.Detail.Should().Contain("actual, misnamed member");
     }

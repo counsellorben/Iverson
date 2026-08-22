@@ -322,4 +322,91 @@ public class ErrorContractScenarioTests
         descriptor.Should().BeNull();
         failure.Should().Be("boom");
     }
+
+    // ── RunAsync plumbing and the read-phase grading seam ─────────────────────────────────────
+    //
+    // Everything above judges. NOTHING above proved the judgement ever REACHES a cell — this file
+    // had zero RunAsync coverage, and deleting the Judge wiring in RunAsync left the whole suite
+    // green while the scenario verified nothing. GradeReads is that wiring, extracted so it is
+    // callable without a live stack; the tests below are what redden when it is dropped.
+    // RunAsync's own phase plumbing is exercised the way SchemaCatalogScenarioTests exercises its
+    // own: repoRoot "/tmp" has no driver project, so every driver breaks loudly and predictably.
+
+    private static DriverContext Context() => new(
+        Scenario: ErrorContractScenario.Name,
+        Type: string.Empty,
+        Tenant: "iverson-loadtest-dynamic",
+        GrpcUrl: "http://localhost:5000",
+        ClientId: "client-id",
+        ClientSecret: "client-secret",
+        TokenEndpoint: "http://localhost:9000/application/o/token/",
+        ActingToken: "acting-token",
+        OwnerId: "owner-id",
+        IdPrefix: "s9-");
+
+    private static ErrorContractScenario BuildScenario(string repoRoot = "/tmp")
+    {
+        var channel = Grpc.Net.Client.GrpcChannel.ForAddress("http://localhost:1");
+        return new ErrorContractScenario(
+            new DriverRunner(repoRoot: repoRoot),
+            new Reregistrar(new Iverson.Client.Contracts.ObjectMappingService.ObjectMappingServiceClient(channel)));
+    }
+
+    private static Dictionary<string, ErrorContractScenario.LanguageState> States(params string[] languages) =>
+        languages.ToDictionary(l => l, _ => new ErrorContractScenario.LanguageState(), StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// THE mutation this test exists for: deleting the <c>Judge</c> call inside
+    /// <c>GradeReads</c>. That used to leave every suite green while no ERR assertion reached a
+    /// cell at all — the coverage gate stayed green too, because its Check2 is a source substring
+    /// match and <c>Judge</c> still textually held the citations.
+    /// </summary>
+    [Fact]
+    public void GradeReads_TheReadPhaseJudgement_ReachesTheCellCarryingItsErrCitations()
+    {
+        var states = States("dotnet");
+
+        var cells = BuildScenario().GradeReads(states,
+            [("dotnet", ReadDocument(PresentStep(), MissingStep(found: true), UnregisteredStep()))]);
+
+        var cell = cells.Should().ContainSingle().Subject;
+        cell.Scenario.Should().Be(ErrorContractScenario.Name);
+        cell.Assertions.Should().Contain(a => a.RequirementId == Requirements.ErrAbsentRowReadReportsAbsence);
+        cell.Assertions.Should().Contain(a => a.RequirementId == Requirements.ErrUnregisteredTypeWriteIsFailedPrecondition);
+    }
+
+    [Fact]
+    public void GradeReads_AFailingErrAssertion_TurnsThatLanguagesCellRedWithItsDetail()
+    {
+        var cells = BuildScenario().GradeReads(States("dotnet"),
+            [("dotnet", ReadDocument(PresentStep(), MissingStep(found: true), UnregisteredStep()))]);
+
+        var cell = cells.Should().ContainSingle().Subject;
+        cell.Status.Should().Be(CellStatus.Fail);
+        cell.Detail.Should().Contain("returned an entity for a key no row exists under");
+    }
+
+    [Fact]
+    public void GradeReads_ALanguageWhoseDriverReportedNoReadDocument_IsNotGreen()
+    {
+        // The shape that used to render green having graded nothing.
+        var cells = BuildScenario().GradeReads(States("dotnet", "go"),
+            [("dotnet", ReadDocument(PresentStep(), MissingStep(), UnregisteredStep()))]);
+
+        cells.Single(c => c.Language == "go").Status.Should().NotBe(CellStatus.Ok);
+    }
+
+    [Fact]
+    public async Task RunAsync_NoLanguagesRequested_ReturnsNoCells() =>
+        (await BuildScenario().RunAsync([], Context(), "acting-token")).Should().BeEmpty();
+
+    [Fact]
+    public async Task RunAsync_TheRegisterDriverBreaks_FailsEveryRequestedLanguage()
+    {
+        var cells = await BuildScenario().RunAsync(["dotnet", "python"], Context(), "acting-token");
+
+        cells.Should().HaveCount(2);
+        cells.Should().NotContain(c => c.Status == CellStatus.Ok);
+        cells.Should().OnlyContain(c => c.Scenario == ErrorContractScenario.Name);
+    }
 }

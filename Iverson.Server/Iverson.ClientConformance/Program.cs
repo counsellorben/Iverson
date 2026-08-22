@@ -231,7 +231,18 @@ Console.WriteLine(report.RenderText());
 if (flags.JsonPath is not null)
     report.WriteJson(flags.JsonPath);
 
-return report.AllPassed ? 0 : 1;
+// The plan's closing check, enforced rather than merely printed: on an un-narrowed run every
+// registered requirement must have been exercised by some cell. See Report.RunSucceeded for why
+// this is gated on the full matrix and not applied to a narrowed run.
+var untouched = report.UntouchedRequirementIds();
+if (flags.IsFullMatrix && untouched.Count > 0)
+{
+    Console.Error.WriteLine(
+        $"  FAIL: this was a full-matrix run, so every registered requirement should have been " +
+        $"exercised, but {untouched.Count} was/were not: {string.Join(", ", untouched)}");
+}
+
+return Report.RunSucceeded(report.AllPassed, flags.IsFullMatrix, untouched) ? 0 : 1;
 
 static string Env(string key, string def) =>
     Environment.GetEnvironmentVariable(key) ?? def;
@@ -241,6 +252,9 @@ static void PrintUsage() => Console.WriteLine("""
 
     Options:
       --languages <csv>   Restrict the run to these languages (e.g. dotnet,python). Default: all.
+                          Narrowing either axis makes the run a partial one, which turns off the
+                          untouched-requirement gate (a partial run leaves requirements untouched
+                          by construction).
       --scenarios <csv>   Restrict the run to these scenarios. Default: all.
       --json <path>       Also write the report as JSON to this path.
       --keep              Keep driver-created data instead of tearing it down.
@@ -261,6 +275,14 @@ namespace Iverson.ClientConformance
         bool Keep,
         bool ShowHelp)
     {
+        /// <summary>
+        /// True when neither axis was narrowed, so the run covered every scenario against every
+        /// driver and its untouched-requirement set is therefore evidence of a real coverage gap
+        /// rather than of the caller's own filter. This is what gates
+        /// <see cref="Report.RunSucceeded"/>'s coverage arm.
+        /// </summary>
+        public bool IsFullMatrix => Languages is null && Scenarios is null;
+
         public static CliFlags Parse(string[] args) => new(
             Languages: CsvFlag(args, "--languages"),
             Scenarios: CsvFlag(args, "--scenarios"),

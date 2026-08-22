@@ -154,7 +154,7 @@ public sealed class IdentityScenario(
             return [];
 
         if (PreconditionFailure(context.Tenant, otherTenant, context.WrongActingToken) is { } precondition)
-            return FailEveryLanguage(languages, precondition);
+            return ScenarioCells.FailEveryLanguage(languages, Name, precondition);
 
         var states = languages.ToDictionary(
             l => l, _ => new LanguageState(), StringComparer.OrdinalIgnoreCase);
@@ -168,13 +168,13 @@ public sealed class IdentityScenario(
             DriverPhaseOutcome.Success success => TryCaptureDescriptor(success.Document),
             DriverPhaseOutcome.Skipped skipped => (null, $"'{RegisterLanguage}' driver skipped: {skipped.Reason}"),
             DriverPhaseOutcome.Broken broken => (null,
-                $"'{RegisterLanguage}' driver broke during the register phase (exit {broken.ExitCode}): {Truncate(broken.Stderr)}"),
+                $"'{RegisterLanguage}' driver broke during the register phase (exit {broken.ExitCode}): {ScenarioCells.Truncate(broken.Stderr)}"),
             _ => (null, $"'{RegisterLanguage}' produced no register-phase outcome"),
         };
 
         if (registerFailure is not null)
         {
-            return FailEveryLanguage(languages,
+            return ScenarioCells.FailEveryLanguage(languages, Name,
                 $"S8 identity's register phase (run once, by '{RegisterLanguage}') failed: {registerFailure}");
         }
 
@@ -184,28 +184,52 @@ public sealed class IdentityScenario(
         }
         catch (Exception ex)
         {
-            return FailEveryLanguage(languages,
+            return ScenarioCells.FailEveryLanguage(languages, Name,
                 $"S8 identity's one-time re-registration of '{TypeName}' with row permissions failed: {Describe(ex)}");
         }
 
         // ── write: every requested language creates one row under its own acting user ──────────
-        foreach (var (language, document) in await RunPhaseAsync(Phase.Write, states, context, ct))
-        {
-            foreach (var assertion in JudgeWrite(language, document))
-                states[language].Assertions.Add(assertion);
-        }
+        GradeWrites(states, await RunPhaseAsync(Phase.Write, states, context, ct));
 
         // ── read: read-back under the right acting user, denied update under the wrong one ─────
-        foreach (var (language, document) in await RunPhaseAsync(Phase.Read, states, context, ct))
+        return GradeReads(
+            states, await RunPhaseAsync(Phase.Read, states, context, ct), context.Tenant, context.OwnerId);
+    }
+
+    /// <summary>
+    /// Wires the write phase's documents through <see cref="JudgeWrite"/> into each language's
+    /// state. Extracted from <see cref="RunAsync"/> — and internal — for the same reason as
+    /// <see cref="GradeReads"/>: dropping the call silently removes assertions from a cell without
+    /// reddening anything, so the wiring has to be reachable from a unit test.
+    /// </summary>
+    internal static void GradeWrites(
+        Dictionary<string, LanguageState> states,
+        IReadOnlyList<(string Language, PhaseDocument Document)> writes)
+    {
+        foreach (var (language, document) in writes)
+            states[language].Assertions.AddRange(JudgeWrite(language, document));
+    }
+
+    /// <summary>
+    /// Wires the read phase's documents through <see cref="Judge"/> and into cells. Extracted from
+    /// <see cref="RunAsync"/> — and internal — because the wiring is exactly as safety-critical as
+    /// the judgement and used to be reachable only from a live stack: drop the <see cref="Judge"/>
+    /// call below and every IDN assertion silently stops reaching a cell, leaving a fully green
+    /// identity row that verified nothing. That mutation must redden a named test.
+    /// </summary>
+    internal IReadOnlyList<ReportCell> GradeReads(
+        Dictionary<string, LanguageState> states,
+        IReadOnlyList<(string Language, PhaseDocument Document)> reads,
+        string tenant,
+        string ownerId)
+    {
+        foreach (var (language, document) in reads)
         {
-            foreach (var assertion in Judge(
-                         language, context.Tenant, context.OwnerId, SeededKey(runner.KeysByLanguage, language), document))
-            {
-                states[language].Assertions.Add(assertion);
-            }
+            states[language].Assertions.AddRange(Judge(
+                language, tenant, ownerId, SeededKey(runner.KeysByLanguage, language), document));
         }
 
-        return states.Select(kv => Cell(kv.Key, kv.Value)).ToList();
+        return states.Select(kv => ScenarioCells.Cell(kv.Key, Name, kv.Value)).ToList();
     }
 
     /// <summary>
@@ -438,7 +462,7 @@ public sealed class IdentityScenario(
     private async Task<IReadOnlyList<(string Language, PhaseDocument Document)>> RunPhaseAsync(
         Phase phase, Dictionary<string, LanguageState> states, DriverContext context, CancellationToken ct)
     {
-        var alive = Alive(states).ToList();
+        var alive = ScenarioCells.Alive(states).ToList();
         if (alive.Count == 0)
             return [];
 
@@ -461,7 +485,7 @@ public sealed class IdentityScenario(
                 case DriverPhaseOutcome.Broken broken:
                     state.Terminal = ReportCell.Fail(outcome.Language, Name,
                         $"driver broke during the {PhaseNames.ToToken(phase)} phase " +
-                        $"(exit {broken.ExitCode}): {Truncate(broken.Stderr)}", state.Assertions);
+                        $"(exit {broken.ExitCode}): {ScenarioCells.Truncate(broken.Stderr)}", state.Assertions);
                     break;
             }
         }
@@ -475,31 +499,9 @@ public sealed class IdentityScenario(
         return documents;
     }
 
-    private static IReadOnlyList<ReportCell> FailEveryLanguage(IReadOnlyCollection<string> languages, string detail) =>
-        languages.Select(l => ReportCell.Fail(l, Name, detail, [])).ToList();
-
-    private static IEnumerable<string> Alive(Dictionary<string, LanguageState> states) =>
-        states.Where(kv => kv.Value.Terminal is null).Select(kv => kv.Key).ToList();
-
-    private static ReportCell Cell(string language, LanguageState state)
-    {
-        if (state.Terminal is not null)
-            return state.Terminal;
-
-        var failures = state.Assertions.Where(a => !a.Passed).ToList();
-        return failures.Count == 0
-            ? ReportCell.Ok(language, Name, state.Assertions)
-            : ReportCell.Fail(language, Name, string.Join(
-                Environment.NewLine + "    ",
-                failures.Select(f => $"{f.Name} — {f.Detail}")), state.Assertions);
-    }
-
     private static string Describe(Exception ex) => $"{ex.GetType().Name}: {ex.Message}";
 
-    private static string Truncate(string text) =>
-        text.Length <= 2000 ? text.Trim() : text[^2000..].Trim();
-
-    private sealed class LanguageState
+    internal sealed class LanguageState : ILanguageState
     {
         public List<Assertion> Assertions { get; } = [];
 

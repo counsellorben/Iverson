@@ -70,6 +70,33 @@ public sealed class Report
         .Where(c => c.Status is not (CellStatus.Skip or CellStatus.Xfail))
         .All(c => c.Status == CellStatus.Ok);
 
+    /// <summary>
+    /// Whether the run as a whole succeeded — the orchestrator's exit code, as a pure function of
+    /// the three things that decide it.
+    ///
+    /// <para><paramref name="allPassed"/> alone is not enough. The plan's closing check is that a
+    /// complete run leaves NO requirement untouched, and until this existed that check held only
+    /// for as long as a human read the tally line: <c>requirementsUntouched</c> was printed,
+    /// serialised, and affected nothing. A requirement whose only assertion silently stopped
+    /// running would leave a fully green matrix and a zero exit code.</para>
+    ///
+    /// <para><paramref name="fullMatrix"/> is what keeps that from being wrong in the other
+    /// direction. A narrowed run (<c>--scenarios query</c>, <c>--languages dotnet</c>) leaves most
+    /// of the registry untouched BY CONSTRUCTION — 38 of 42 for <c>--scenarios query</c> — and
+    /// failing it would make every targeted debugging run exit non-zero for no defect. The
+    /// untouched set is only evidence of a gap when the run could legitimately have covered
+    /// everything, which is exactly the un-narrowed run.</para>
+    ///
+    /// <para>Gated on the un-narrowed run rather than behind an opt-in
+    /// <c>--require-full-coverage</c> flag deliberately: an opt-in flag leaves the DEFAULT
+    /// invocation — the one CI and every hand-run of the harness use — advisory, which is the
+    /// defect itself. Requiring a flag to get the check means the check is off wherever nobody
+    /// remembered it.</para>
+    /// </summary>
+    internal static bool RunSucceeded(
+        bool allPassed, bool fullMatrix, IReadOnlyCollection<string> untouched) =>
+        allPassed && (!fullMatrix || untouched.Count == 0);
+
     public string RenderText()
     {
         var sb = new StringBuilder();
@@ -138,8 +165,8 @@ public sealed class Report
     /// passing and failing alike, since a requirement is "exercised" by having its assertion run
     /// at all, not by that assertion having passed. Internal (not private) so
     /// <see cref="ComputeUntouched"/>'s unit tests can exercise the same logic the JSON render
-    /// path uses, without needing entries in the (currently empty) <see cref="Requirements"/>
-    /// registry.
+    /// path uses, against a fabricated registry rather than the real <see cref="Requirements"/>
+    /// one.
     /// </summary>
     internal static IReadOnlyList<string> ExercisedRequirementIds(ReportCell cell) =>
         cell.Assertions
@@ -174,9 +201,9 @@ public sealed class Report
     /// The pure computation behind <see cref="UntouchedRequirementIds"/>: every
     /// <paramref name="registryIds"/> entry that no cell's assertions cited. Taken as an explicit
     /// parameter — rather than always reflecting off <see cref="Requirements"/> — so this can be
-    /// unit-tested against a fake registry; the real registry is empty until later tasks add
-    /// citations (T1 landed it with zero consts), so a test pinned to reflection alone could never
-    /// observe a non-empty untouched set today.
+    /// unit-tested against a fake registry. The real registry now holds 42 <c>Active</c> IDs and a
+    /// full-matrix run leaves none of them untouched, so a test pinned to reflection alone could
+    /// never observe a NON-empty untouched set, which is the case this computation exists for.
     /// </summary>
     internal static IReadOnlyList<string> ComputeUntouched(
         IEnumerable<ReportCell> cells, IEnumerable<string> registryIds)

@@ -339,4 +339,102 @@ public class IdentityScenarioTests
         descriptor.Should().BeNull();
         failure.Should().Be("boom");
     }
+
+    // ── RunAsync plumbing and the read-phase grading seam ─────────────────────────────────────
+    //
+    // Everything above judges. NOTHING above proved the judgement ever REACHES a cell — this file
+    // had zero RunAsync coverage, and deleting the Judge wiring in RunAsync left the whole suite
+    // green while the scenario verified nothing. GradeReads is that wiring, extracted so it is
+    // callable without a live stack; the tests below are what redden when it is dropped.
+    // RunAsync's own phase plumbing is exercised the way SchemaCatalogScenarioTests exercises its
+    // own: repoRoot "/tmp" has no driver project, so every driver breaks loudly and predictably.
+
+    private static DriverContext Context(string wrongActingToken = "wrong-acting-token") => new(
+        Scenario: IdentityScenario.Name,
+        Type: string.Empty,
+        Tenant: "iverson-loadtest-dynamic",
+        GrpcUrl: "http://localhost:5000",
+        ClientId: "client-id",
+        ClientSecret: "client-secret",
+        TokenEndpoint: "http://localhost:9000/application/o/token/",
+        ActingToken: "acting-token",
+        OwnerId: "owner-id",
+        IdPrefix: "s8-",
+        WrongActingToken: wrongActingToken);
+
+    private static IdentityScenario BuildScenario(string repoRoot = "/tmp")
+    {
+        var channel = Grpc.Net.Client.GrpcChannel.ForAddress("http://localhost:1");
+        return new IdentityScenario(
+            new DriverRunner(repoRoot: repoRoot),
+            new Reregistrar(new Iverson.Client.Contracts.ObjectMappingService.ObjectMappingServiceClient(channel)));
+    }
+
+    private static Dictionary<string, IdentityScenario.LanguageState> States(params string[] languages) =>
+        languages.ToDictionary(l => l, _ => new IdentityScenario.LanguageState(), StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// THE mutation this test exists for: deleting the <c>Judge</c> call inside
+    /// <c>GradeReads</c>. That used to leave every suite green while no IDN assertion reached a
+    /// cell at all.
+    /// </summary>
+    [Fact]
+    public void GradeReads_TheReadPhaseJudgement_ReachesTheCellCarryingItsIdnCitations()
+    {
+        var cells = BuildScenario().GradeReads(States("dotnet"),
+            [("dotnet", ReadDocument(ReadStep(Key, Tenant, Owner), DeniedStep(IdentityScenario.DeniedStatusCode)))],
+            Tenant, Owner);
+
+        var cell = cells.Should().ContainSingle().Subject;
+        cell.Scenario.Should().Be(IdentityScenario.Name);
+        cell.Assertions.Should().Contain(a => a.RequirementId == Requirements.IdnTenancyDerivedAndEnforced);
+    }
+
+    /// <summary>The same mutation, one phase earlier: dropping the <c>JudgeWrite</c> wiring.</summary>
+    [Fact]
+    public void GradeWrites_TheWritePhaseJudgement_ReachesTheLanguagesState()
+    {
+        var states = States("dotnet");
+
+        IdentityScenario.GradeWrites(states,
+            [("dotnet", new PhaseDocument("dotnet", "write", [new StepResult(IdentityScenario.WriteStepName, true)]))]);
+
+        states["dotnet"].Assertions.Should().Contain(a => a.RequirementId == Requirements.IdnDualIdentityAcceptedOnWrite);
+    }
+
+    [Fact]
+    public void GradeReads_ALanguageWhoseDriverReportedNoReadDocument_IsNotGreen()
+    {
+        var cells = BuildScenario().GradeReads(States("dotnet", "go"),
+            [("dotnet", ReadDocument(ReadStep(Key, Tenant, Owner), DeniedStep(IdentityScenario.DeniedStatusCode)))],
+            Tenant, Owner);
+
+        cells.Single(c => c.Language == "go").Status.Should().NotBe(CellStatus.Ok);
+    }
+
+    [Fact]
+    public async Task RunAsync_NoLanguagesRequested_ReturnsNoCells() =>
+        (await BuildScenario().RunAsync([], Context(), "acting-token", "other-tenant")).Should().BeEmpty();
+
+    [Fact]
+    public async Task RunAsync_NoWrongActingUserToken_FailsEveryRowWithThePreconditionReason()
+    {
+        var cells = await BuildScenario().RunAsync(
+            ["dotnet", "python"], Context(wrongActingToken: string.Empty), "acting-token", "other-tenant");
+
+        cells.Should().HaveCount(2);
+        cells.Should().OnlyContain(c => c.Status == CellStatus.Fail);
+        cells.Should().OnlyContain(c => c.Detail!.Contains("no wrong-acting-user token"));
+    }
+
+    [Fact]
+    public async Task RunAsync_TheRegisterDriverBreaks_FailsEveryRequestedLanguage()
+    {
+        var cells = await BuildScenario().RunAsync(
+            ["dotnet", "python"], Context(), "acting-token", "other-tenant");
+
+        cells.Should().HaveCount(2);
+        cells.Should().NotContain(c => c.Status == CellStatus.Ok);
+        cells.Should().OnlyContain(c => c.Scenario == IdentityScenario.Name);
+    }
 }

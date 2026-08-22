@@ -140,7 +140,7 @@ public sealed class NamingRejectedScenario(
 
             if (serverCheckAssertions is not null && !mergeServerCheckIntoDriverCell)
             {
-                cells.Add(BuildCell(serverCheckLanguage, serverCheckAssertions));
+                cells.Add(ScenarioCells.Cell(serverCheckLanguage, Name, serverCheckAssertions));
             }
         }
 
@@ -177,7 +177,7 @@ public sealed class NamingRejectedScenario(
                     var mergedAssertions = carriesServerCheck
                         ? clientAssertions.Concat(serverCheckAssertions!).ToList()
                         : clientAssertions;
-                    cells.Add(BuildCell(outcome.Language, mergedAssertions));
+                    cells.Add(ScenarioCells.Cell(outcome.Language, Name, mergedAssertions));
                     break;
                 case DriverPhaseOutcome.Skipped skipped:
                     cells.Add(carriesServerCheck
@@ -186,7 +186,7 @@ public sealed class NamingRejectedScenario(
                     break;
                 case DriverPhaseOutcome.Broken broken:
                     var brokenDetail =
-                        $"driver broke during the register phase (exit {broken.ExitCode}): {Truncate(broken.Stderr)}";
+                        $"driver broke during the register phase (exit {broken.ExitCode}): {ScenarioCells.Truncate(broken.Stderr)}";
                     cells.Add(carriesServerCheck
                         ? MergeServerCheckIntoDriverFailure(outcome.Language, brokenDetail, serverCheckAssertions!)
                         : ReportCell.Fail(outcome.Language, Name, brokenDetail, []));
@@ -222,7 +222,7 @@ public sealed class NamingRejectedScenario(
         string language, string driverDetail, IReadOnlyList<Assertion> serverCheckAssertions)
     {
         if (serverCheckAssertions.Any(a => !a.Passed))
-            return BuildCell(language, serverCheckAssertions);
+            return ScenarioCells.Cell(language, Name, serverCheckAssertions);
 
         return ReportCell.Fail(language, Name, driverDetail, serverCheckAssertions);
     }
@@ -239,7 +239,7 @@ public sealed class NamingRejectedScenario(
         string language, string skipReason, IReadOnlyList<Assertion> serverCheckAssertions)
     {
         if (serverCheckAssertions.Any(a => !a.Passed))
-            return BuildCell(language, serverCheckAssertions);
+            return ScenarioCells.Cell(language, Name, serverCheckAssertions);
 
         return ReportCell.Skip(language, Name, skipReason, serverCheckAssertions);
     }
@@ -479,21 +479,9 @@ public sealed class NamingRejectedScenario(
 
     /// <summary>Builds the report cell for a language from its full assertion list — shared by the
     /// pure server-side path and the merged server+client path.</summary>
-    internal static ReportCell BuildCell(string language, IReadOnlyList<Assertion> assertions)
-    {
-        var failures = assertions.Where(a => !a.Passed).ToList();
-        return failures.Count == 0
-            ? ReportCell.Ok(language, Name, assertions)
-            : ReportCell.Fail(language, Name, string.Join(
-                Environment.NewLine + "    ",
-                failures.Select(f => $"{f.Name} — {f.Detail}")), assertions);
-    }
-
     /// <summary>Lower-cased, separator-stripped — mirrors <c>Verifier.Normalize</c> so the three
     /// languages' differently-cased/spelled error text compares alike.</summary>
     private static string Normalize(string text) =>
         string.Concat(text.Where(char.IsLetterOrDigit)).ToLowerInvariant();
 
-    private static string Truncate(string text) =>
-        text.Length <= 2000 ? text.Trim() : text[^2000..].Trim();
 }

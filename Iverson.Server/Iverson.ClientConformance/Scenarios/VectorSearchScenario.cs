@@ -153,13 +153,13 @@ public sealed class VectorSearchScenario(
             DriverPhaseOutcome.Success success => TryCaptureDescriptor(success.Document),
             DriverPhaseOutcome.Skipped skipped => (null, $"'{RegisterLanguage}' driver skipped: {skipped.Reason}"),
             DriverPhaseOutcome.Broken broken => (null,
-                $"'{RegisterLanguage}' driver broke during the register phase (exit {broken.ExitCode}): {Truncate(broken.Stderr)}"),
+                $"'{RegisterLanguage}' driver broke during the register phase (exit {broken.ExitCode}): {ScenarioCells.Truncate(broken.Stderr)}"),
             _ => (null, $"'{RegisterLanguage}' produced no register-phase outcome"),
         };
 
         if (registerFailure is not null)
         {
-            return FailEveryLanguage(languages,
+            return ScenarioCells.FailEveryLanguage(languages, Name,
                 $"S7 vector-search's register phase (run once, by '{RegisterLanguage}') failed: {registerFailure}");
         }
 
@@ -169,7 +169,7 @@ public sealed class VectorSearchScenario(
         }
         catch (Exception ex)
         {
-            return FailEveryLanguage(languages,
+            return ScenarioCells.FailEveryLanguage(languages, Name,
                 $"S7 vector-search's one-time re-registration of '{TypeName}' with row permissions failed: {Describe(ex)}");
         }
 
@@ -227,17 +227,31 @@ public sealed class VectorSearchScenario(
                     wait.TimeoutDetail));
             }
 
-            return states.Select(kv => Cell(kv.Key, kv.Value)).ToList();
+            return states.Select(kv => ScenarioCells.Cell(kv.Key, Name, kv.Value)).ToList();
         }
 
         // ── read: every alive language issues the same two queries ─────────────────────────────
-        foreach (var (language, document) in await RunPhaseAsync(Phase.Read, states, context, ct))
-        {
-            foreach (var assertion in Judge(language, expectedKeys, expectedLabels, document))
-                states[language].Assertions.Add(assertion);
-        }
+        return GradeReads(
+            states, await RunPhaseAsync(Phase.Read, states, context, ct), expectedKeys, expectedLabels);
+    }
 
-        return states.Select(kv => Cell(kv.Key, kv.Value)).ToList();
+    /// <summary>
+    /// Wires the read phase's documents through <see cref="Judge"/> and into cells. Extracted from
+    /// <see cref="RunAsync"/> — and internal — because the wiring is exactly as safety-critical as
+    /// the judgement and used to be reachable only from a live stack: drop the <see cref="Judge"/>
+    /// call below and every VEC assertion silently stops reaching a cell, leaving a fully green
+    /// vector-search row that verified nothing. That mutation must redden a named test.
+    /// </summary>
+    internal static IReadOnlyList<ReportCell> GradeReads(
+        Dictionary<string, LanguageState> states,
+        IReadOnlyList<(string Language, PhaseDocument Document)> reads,
+        IReadOnlySet<Guid> expectedKeys,
+        IReadOnlySet<string> expectedLabels)
+    {
+        foreach (var (language, document) in reads)
+            states[language].Assertions.AddRange(Judge(language, expectedKeys, expectedLabels, document));
+
+        return states.Select(kv => ScenarioCells.Cell(kv.Key, Name, kv.Value)).ToList();
     }
 
     // ── the judgement (pure, so it is unit-testable without a live stack) ────────────────────
@@ -529,7 +543,7 @@ public sealed class VectorSearchScenario(
     private async Task<IReadOnlyList<(string Language, PhaseDocument Document)>> RunPhaseAsync(
         Phase phase, Dictionary<string, LanguageState> states, DriverContext context, CancellationToken ct)
     {
-        var alive = Alive(states).ToList();
+        var alive = ScenarioCells.Alive(states).ToList();
         if (alive.Count == 0)
             return [];
 
@@ -552,7 +566,7 @@ public sealed class VectorSearchScenario(
                 case DriverPhaseOutcome.Broken broken:
                     state.Terminal = ReportCell.Fail(outcome.Language, Name,
                         $"driver broke during the {PhaseNames.ToToken(phase)} phase " +
-                        $"(exit {broken.ExitCode}): {Truncate(broken.Stderr)}", state.Assertions);
+                        $"(exit {broken.ExitCode}): {ScenarioCells.Truncate(broken.Stderr)}", state.Assertions);
                     break;
             }
         }
@@ -566,33 +580,11 @@ public sealed class VectorSearchScenario(
         return documents;
     }
 
-    private static IReadOnlyList<ReportCell> FailEveryLanguage(IReadOnlyCollection<string> languages, string detail) =>
-        languages.Select(l => ReportCell.Fail(l, Name, detail, [])).ToList();
-
-    private static IEnumerable<string> Alive(Dictionary<string, LanguageState> states) =>
-        states.Where(kv => kv.Value.Terminal is null).Select(kv => kv.Key).ToList();
-
-    private static ReportCell Cell(string language, LanguageState state)
-    {
-        if (state.Terminal is not null)
-            return state.Terminal;
-
-        var failures = state.Assertions.Where(a => !a.Passed).ToList();
-        return failures.Count == 0
-            ? ReportCell.Ok(language, Name, state.Assertions)
-            : ReportCell.Fail(language, Name, string.Join(
-                Environment.NewLine + "    ",
-                failures.Select(f => $"{f.Name} — {f.Detail}")), state.Assertions);
-    }
-
     private static string Join(IEnumerable<Guid> keys) => string.Join(", ", keys.Select(k => k.ToString()));
 
     private static string Describe(Exception ex) => $"{ex.GetType().Name}: {ex.Message}";
 
-    private static string Truncate(string text) =>
-        text.Length <= 2000 ? text.Trim() : text[^2000..].Trim();
-
-    private sealed class LanguageState
+    internal sealed class LanguageState : ILanguageState
     {
         public List<Assertion> Assertions { get; } = [];
 

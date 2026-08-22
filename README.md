@@ -105,7 +105,7 @@ docker compose build iverson-api
 docker compose up -d
 ```
 
-Then watch a write travel through the whole system: open Jaeger at `http://localhost:16686`, select `Iverson.Api`, and follow one trace ID from the gRPC call through Kafka into all three stores. Every response also carries an `X-Trace-Id` header for client-side correlation. Prometheus is at `http://localhost:9090`, scraping `/metrics` from the API. (Consumer retry/DLQ counters and reconciliation/DLQ backlog gauges only populate once a `worker`-role instance is running — docker-compose runs `api` only; see `deploy/kind/` or `deploy/helm/` for the split deployment.)
+Then watch a write travel through the whole system: open Jaeger at `http://localhost:16686`, select `Iverson.Api`, and follow one trace ID from the gRPC call through Kafka into all three stores. Every response also carries an `X-Trace-Id` header for client-side correlation. Prometheus is at `http://localhost:9090`, scraping `/metrics` from the API. (Consumer retry/DLQ counters and reconciliation/DLQ backlog gauges only populate once a `worker`-role instance is running; docker-compose runs both roles — `iverson-api` and `iverson-worker` — from the same image tag, so rebuild and recreate BOTH after a server-side change or the worker keeps projecting with the old binary. See `deploy/kind/` or `deploy/helm/` for the split deployment.)
 
 ---
 

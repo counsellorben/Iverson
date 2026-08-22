@@ -294,6 +294,18 @@ services:
       start_period: 30s
 
   # ── Application ─────────────────────────────────────────────────────────────
+  #
+  # STALE-IMAGE HAZARD — read before rebuilding after a server-side change.
+  # iverson-api and iverson-worker share ONE image tag (`image: iverson-api`) but are two
+  # containers. The habitual
+  #     docker compose build iverson-api && docker compose up -d iverson-api
+  # rebuilds the tag and recreates ONLY the api container; iverson-worker keeps running the
+  # image it started with. Since the worker is what projects into StarRocks and Qdrant, the
+  # conformance harness's `query` and `vector-search` scenarios would then be graded against a
+  # stale projector while the api is current — a silent wrong-answer, not a failure.
+  # Always recreate both:
+  #     docker compose build iverson-api && docker compose up -d iverson-api iverson-worker
+  # (or plain `docker compose up -d`, which recreates every service whose image changed).
 
   iverson-api:
     build:
