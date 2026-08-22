@@ -243,10 +243,14 @@ public class ServerOwnedTenantColumnTests
         // exclusion the lookup finds a nullable column and the required relation is silently
         // accepted; WITH it the column is invisible and the relation is rejected.
         //
-        // And this shape is reachable, not hypothetical: SchemaRegistry.LoadAsync rehydrates
-        // descriptors straight from _iverson_schema JSON without re-running BuildDescriptor or the
-        // orchestrator (the same reason RelationValidator already handles rehydrated collisions),
-        // so a descriptor whose __TenantId is nullable CAN reach this validator in production.
+        // The rehydration path that makes this shape reachable is real and unvalidated:
+        // SchemaRegistry.LoadAsync deserializes _iverson_schema JSON straight into its cache with no
+        // BuildDescriptor and no orchestrator (the same fact RelationValidator already relies on for
+        // rehydrated collisions). To be precise about WHAT can arrive that way: no *legacy*
+        // descriptor can carry a nullable __TenantId, because the column did not exist before this
+        // change. The reachable sources are a hand-edited or corrupted _iverson_schema row, or a
+        // future build that changes the column's nullability. The validator has no way to tell any
+        // of those from a well-formed descriptor, so the exclusion is what keeps its answer right.
         var schema = new SchemaDescriptor
         {
             TypeName      = "Article",

@@ -241,6 +241,33 @@ public class SchemaRegistrationOrchestratorTests
     }
 
     [Fact]
+    public async Task RegisterAsync_RelationForeignKeyNamingTheServerOwnedTenantColumn_IsRejectedAsUndeclared()
+    {
+        // The registration-time twin of RelationValidator's FK lookup. __TenantId is a real
+        // ScalarColumns member, so without an exclusion the lookup RESOLVES it and the relation
+        // falls through to the UUID/UUID[] SqlType check, which rejects TEXT with a message telling
+        // the caller to retype the column. That message is wrong: the caller may not address the
+        // server-owned column at all. With the exclusion the column is invisible and the relation
+        // is rejected as undeclared — the same answer its runtime twin gives.
+        var td = SimpleType("Comment", "Body");
+        td.Relations.Add(new Client.Contracts.RelationDescriptor
+        {
+            PropertyName = "Tenant",
+            Kind         = Client.Contracts.RelationKind.ManyToOne,
+            RelatedType  = "Tenant",
+            ForeignKey   = SchemaDescriptor.TenantColumnName
+        });
+
+        var act = () => _sut.RegisterAsync(new SchemaRequest { RootType = td }, CancellationToken.None);
+
+        var ex = await act.Should().ThrowAsync<RpcException>();
+        ex.Which.StatusCode.Should().Be(StatusCode.InvalidArgument);
+        ex.Which.Status.Detail.Should().Contain("which is not a declared property");
+        // Pins WHICH rejection fires: without the exclusion this is the SqlType error instead.
+        ex.Which.Status.Detail.Should().NotContain("must be UUID");
+    }
+
+    [Fact]
     public async Task RegisterAsync_WithManyToManyRelation_DoesNotThrow()
     {
         var td = new TypeDescriptor { TypeName = "Post", TenantField = "TenantId" };

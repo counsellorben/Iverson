@@ -103,7 +103,16 @@ public sealed class SchemaRegistrationOrchestrator(
             // OneToMany is exempt: its foreign key is a column on the RELATED type's row.
             foreach (var relation in descriptor.Relations.Where(r => r.Kind != Schema.RelationKind.OneToMany))
             {
+                // ScalarColumns position: EXCLUDE __TenantId — the registration-time twin of the
+                // same lookup in RelationValidator.ValidateSingleRelation, and it must give the same
+                // answer. Not merely cosmetic: WITHOUT the exclusion this lookup does resolve the
+                // server-owned column, and the relation then falls through to the requiredSqlType
+                // check below, which rejects TEXT with a message telling the caller to redeclare the
+                // property as a GUID. That message is wrong — the caller may not address this column
+                // at all, so no redeclaration would help. Excluding it here makes the relation fail
+                // as "not a declared property", which is the accurate answer.
                 var column = descriptor.ScalarColumns.FirstOrDefault(c =>
+                    !SchemaDescriptor.IsTenantColumn(c.Name) &&
                     string.Equals(c.Name, relation.ForeignKey, StringComparison.OrdinalIgnoreCase));
 
                 if (column is null)
