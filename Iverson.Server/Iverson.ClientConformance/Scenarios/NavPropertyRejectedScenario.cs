@@ -217,7 +217,8 @@ public sealed class NavPropertyRejectedScenario(
             assertions.Add(Assertion.From(
                 "post: rejected with InvalidArgument",
                 caught.StatusCode == StatusCode.InvalidArgument,
-                $"actual={caught.StatusCode}"));
+                $"actual={caught.StatusCode}",
+                Requirements.ErrWriteRejectionIsInvalidArgument));
 
             var message = caught.Status.Detail;
             // NavPropertyName ("Author") is a substring of ForeignKeyName ("S3NavAuthorId"), so a
@@ -232,11 +233,13 @@ public sealed class NavPropertyRejectedScenario(
             assertions.Add(Assertion.From(
                 $"post: the error names the navigation property ('{NavPropertyName}')",
                 message.Contains($"'{NavPropertyName}'", StringComparison.Ordinal),
-                $"error='{message}'"));
+                $"error='{message}'",
+                Requirements.ErrMessageNamesOffendingElement));
             assertions.Add(Assertion.From(
                 $"post: the error names the required foreign key ('{ForeignKeyName}')",
                 message.Contains(ForeignKeyName, StringComparison.OrdinalIgnoreCase),
-                $"error='{message}'"));
+                $"error='{message}'",
+                Requirements.ErrMessageNamesOffendingElement));
         }
 
         return assertions;
@@ -273,7 +276,8 @@ public sealed class NavPropertyRejectedScenario(
             assertions.Add(Assertion.From(
                 $"register (collision, {fixture.Kind}): rejected with InvalidArgument",
                 caught.StatusCode == StatusCode.InvalidArgument,
-                $"actual={caught.StatusCode}"));
+                $"actual={caught.StatusCode}",
+                Requirements.ErrRegistrationRejectionIsInvalidArgument));
 
             var message = caught.Status.Detail;
             assertions.Add(Assertion.From(
@@ -281,7 +285,8 @@ public sealed class NavPropertyRejectedScenario(
                 $"the relation ('{fixture.ForeignKeyName}') and stating it must be distinct from the foreign key",
                 message.Contains($"'{fixture.ForeignKeyName}'", StringComparison.Ordinal) &&
                 message.Contains("must be distinct from the foreign key", StringComparison.OrdinalIgnoreCase),
-                $"error='{message}'"));
+                $"error='{message}'",
+                Requirements.ErrMessageNamesOffendingElement));
         }
 
         return assertions;

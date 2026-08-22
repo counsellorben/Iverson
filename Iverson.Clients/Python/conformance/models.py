@@ -155,3 +155,37 @@ class IdentityDoc:
     tenant_id: str = iverson_tenant()
     owner_id: str = None
     label: str = None
+
+
+@iverson_entity
+class ErrorDoc:
+    """S9 ``error-contract``'s subject type. Every one of the five drivers declares the same type
+    name and shape; only the .NET driver ever registers it (register-once rule), and every driver
+    seeds one row into it, reads that row back as a positive control, and then reads a key no row
+    exists under.
+
+    Deliberately relation-free and search-free: the axis is about what the server's two error shapes
+    look like when they reach a caller, and a relation or a vector field would only add ways for the
+    scenario to go red for reasons that are not about the error contract."""
+
+    id: uuid.UUID = iverson_key()
+    tenant_id: str = iverson_tenant()
+    owner_id: str = None
+    label: str = None
+
+
+@iverson_entity
+class ErrorUnregisteredDoc:
+    """S9 ``error-contract``'s unregistered fixture: declared by all five drivers and registered by
+    NOTHING — no driver, no scenario, no orchestrator, in this run or any other. A mapped write
+    against it must be refused with ``FAILED_PRECONDITION``
+    (``ObjectMappingGrpcService.RequireSchema``), which is the whole observation.
+
+    Do not add this class to any ``SchemaRegistrar(...)`` call. This driver's registrar is always
+    handed an explicit type list, so it is never registered by accident; registering it would
+    destroy the fixture."""
+
+    id: uuid.UUID = iverson_key()
+    tenant_id: str = iverson_tenant()
+    owner_id: str = None
+    label: str = None

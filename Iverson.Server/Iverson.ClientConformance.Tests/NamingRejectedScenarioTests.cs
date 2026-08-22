@@ -324,6 +324,35 @@ public class NamingRejectedScenarioTests
         "'TagRefs', but a ManyToMany foreign key referencing 'S2NamingTag' must be " +
         "named 'S2NamingTagIds'."));
 
+    /// <summary>
+    /// Pins the ERR citations T12 added to the assertions this scenario already made. The status
+    /// half discharges IVC-ERR-001 and the two message halves discharge IVC-ERR-002; those
+    /// requirements are cited here rather than re-observed in the error-contract scenario, so a
+    /// silently dropped citation would leave them exercised by nothing at runtime while the
+    /// coverage gate still saw the identifier elsewhere in the source.
+    /// </summary>
+    [Fact]
+    public void JudgeServerSide_CitesTheErrStatusAndMessageRequirements()
+    {
+        var assertions = NamingRejectedScenario.JudgeServerSide((RpcException)ManyToOneRejection());
+
+        assertions.Should().ContainSingle(a =>
+            a.Name.Contains("rejected with InvalidArgument", StringComparison.Ordinal)
+            && a.RequirementId == Requirements.ErrRegistrationRejectionIsInvalidArgument);
+        assertions.Count(a => a.RequirementId == Requirements.ErrMessageNamesOffendingElement).Should().Be(2);
+    }
+
+    [Fact]
+    public void JudgeServerSideManyToMany_CitesTheErrStatusAndMessageRequirements()
+    {
+        var assertions = NamingRejectedScenario.JudgeServerSideManyToMany((RpcException)ManyToManyRejection());
+
+        assertions.Should().ContainSingle(a =>
+            a.Name.Contains("rejected with InvalidArgument", StringComparison.Ordinal)
+            && a.RequirementId == Requirements.ErrRegistrationRejectionIsInvalidArgument);
+        assertions.Count(a => a.RequirementId == Requirements.ErrMessageNamesOffendingElement).Should().Be(2);
+    }
+
     // ── dotnet: a real orchestrator-side (server) check, IVC-REG-003 — RunAsync end to end,
     // exercised through FakeMappingClient rather than a live gRPC channel. Posts TWO fixtures
     // (many_to_one, many_to_many); both must be rejected for the cell to go Ok.

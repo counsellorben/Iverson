@@ -67,7 +67,7 @@ try
     [
         CrudRoundtripScenario.Name, NamingRejectedScenario.Name, NavPropertyRejectedScenario.Name,
         InteropScenario.Name, SchemaCatalogScenario.Name, QueryScenario.Name,
-        VectorSearchScenario.Name, IdentityScenario.Name,
+        VectorSearchScenario.Name, IdentityScenario.Name, ErrorContractScenario.Name,
     ];
     var scenarios = flags.Scenarios ?? recognizedScenarios;
 
@@ -114,6 +114,7 @@ try
         new ObjectSearchService.ObjectSearchServiceClient(channel),
         log: Console.WriteLine);
     var identity = new IdentityScenario(runner, new Reregistrar(mapping), log: Console.WriteLine);
+    var errorContract = new ErrorContractScenario(runner, new Reregistrar(mapping), log: Console.WriteLine);
     var vectorSearch = new VectorSearchScenario(
         runner, new Reregistrar(mapping),
         new ObjectSearchService.ObjectSearchServiceClient(channel),
@@ -198,6 +199,18 @@ try
         Console.WriteLine($"Running scenario '{IdentityScenario.Name}'...");
         foreach (var cell in await identity.RunAsync(
                      languages, BuildContext(IdentityScenario.Name), actingToken, otherTenant))
+        {
+            report.Add(cell);
+        }
+    }
+
+    // As with `query`, `vector-search` and `identity` above, this dispatch block — not
+    // `recognizedScenarios` — is what actually runs the scenario.
+    if (scenarios.Contains(ErrorContractScenario.Name, StringComparer.OrdinalIgnoreCase))
+    {
+        Console.WriteLine($"Running scenario '{ErrorContractScenario.Name}'...");
+        foreach (var cell in await errorContract.RunAsync(
+                     languages, BuildContext(ErrorContractScenario.Name), actingToken))
         {
             report.Add(cell);
         }

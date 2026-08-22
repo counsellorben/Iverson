@@ -573,4 +573,106 @@ public static class Requirements
     /// </list>
     /// </summary>
     public const string RelForeignKeyWellFormedUuid = "IVC-REL-010";
+
+    // ── ERR — Errors ────────────────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// A schema registration the server rejects is reported to the client as gRPC
+    /// <c>InvalidArgument</c>. Discharged by three orchestrator-side assertions, each over a
+    /// different registration-time rule so the requirement is not pinned to one validator:
+    /// <c>NamingRejectedScenario.JudgeServerSide</c>'s and
+    /// <c>NamingRejectedScenario.JudgeServerSideManyToMany</c>'s "rejected with InvalidArgument"
+    /// assertions (the foreign-key naming check), and
+    /// <c>NavPropertyRejectedScenario.JudgeCollision</c>'s "rejected with InvalidArgument"
+    /// assertion, fired once per <c>RelationKind</c> (the PropertyName/ForeignKey collision check).
+    ///
+    /// <para>These are cited rather than duplicated. Each already existed as the status half of a
+    /// rejection whose message half is now <see cref="ErrMessageNamesOffendingElement"/>; adding a
+    /// parallel check in the <c>error-contract</c> scenario would observe the same server call
+    /// twice and report one regression as two red cells.</para>
+    /// </summary>
+    public const string ErrRegistrationRejectionIsInvalidArgument = "IVC-ERR-001";
+
+    /// <summary>
+    /// A server-side rejection's message names the element that caused it. Discharged by every
+    /// message-content assertion the harness makes over a server rejection: the misnamed foreign
+    /// key and its required name (<c>NamingRejectedScenario.JudgeServerSide</c> /
+    /// <c>JudgeServerSideManyToMany</c>), the quoted navigation property and the required foreign
+    /// key (<c>NavPropertyRejectedScenario.Judge</c>), the colliding relation name
+    /// (<c>NavPropertyRejectedScenario.JudgeCollision</c>), and the unregistered type name
+    /// (<c>Scenarios.ErrorContractScenario.Judge</c>).
+    ///
+    /// <para>Only the last of those runs through a client library. The first four are made on the
+    /// orchestrator's own channel, so they establish what the SERVER says; the
+    /// <c>error-contract</c> citation is what establishes that all five CLIENT libraries hand the
+    /// server's status detail to the caller intact rather than replacing it with their own
+    /// wording. Both halves are needed — a message-preservation claim graded only on the
+    /// orchestrator's channel would be a claim about .NET's generated stub, not about the five
+    /// clients.</para>
+    ///
+    /// <para>The requirement exists separately from the status-code requirements beside it because
+    /// <c>InvalidArgument</c> is the server's answer to a misnamed foreign key, a
+    /// navigation-property write and a relation-name collision alike: the code alone does not say
+    /// which rule was broken, and only the detail text does. Every citing assertion matches the
+    /// specific element its fixture made wrong, never merely that some text came back.</para>
+    /// </summary>
+    public const string ErrMessageNamesOffendingElement = "IVC-ERR-002";
+
+    /// <summary>
+    /// A mapped write the server rejects for an invalid payload is reported to the client as gRPC
+    /// <c>InvalidArgument</c>. Discharged by <c>NavPropertyRejectedScenario.Judge</c>'s "post:
+    /// rejected with InvalidArgument" assertion, over a <c>MappingWriteRequest</c> whose payload is
+    /// keyed by a navigation property rather than the foreign key
+    /// (<c>RelationValidator.ValidateAndNormalizeRelations</c>).
+    ///
+    /// <para>Split from <see cref="ErrRegistrationRejectionIsInvalidArgument"/> even though both
+    /// name the same code, for the reason <c>QRY</c> splits its two reachability requirements:
+    /// registration and the mapped write path are distinct RPCs validated by distinct server code,
+    /// and a client that surfaces one correctly and the other not is non-conformant in a way one
+    /// conflated requirement could not localize.</para>
+    /// </summary>
+    public const string ErrWriteRejectionIsInvalidArgument = "IVC-ERR-003";
+
+    /// <summary>
+    /// A mapped read of a key with no matching row reports absence to the caller, as a completed
+    /// call rather than an error status. Discharged by two assertions in
+    /// <c>Scenarios.ErrorContractScenario.Judge</c>, over each driver's own
+    /// <c>read_missing_row</c> step: "a mapped read of a key with no row reports absence" (the
+    /// driver's client library returned nothing, rather than an entity) and "the absent-row read
+    /// completed rather than failing with a status" (no gRPC status code was raised).
+    ///
+    /// <para>Both halves are needed because the server's answer here is NOT a status at all:
+    /// <c>ObjectMappingGrpcService.Get</c> returns a successful RPC carrying
+    /// <c>MappingResponse { Success = false, Error = "'{type}:{key}' not found." }</c>. A client
+    /// that turned that envelope into a thrown transport error, and a client that turned it into a
+    /// blank entity, are non-conformant in two different ways, and one assertion could report only
+    /// one of them.</para>
+    ///
+    /// <para>The absent key is freshly generated per run and never written, so no row can exist
+    /// under it. What keeps this from being satisfiable by a read path that finds nothing ever is
+    /// the scenario's uncited backstop — a positive control through the same client method, type
+    /// and acting user, differing only in which key is asked for.</para>
+    ///
+    /// <para>This requirement does not claim a client can tell an absent row from a DENIED one: the
+    /// server answers both with the identical envelope, deliberately. Recorded as a Deferred area
+    /// in the standard's ERR coverage ledger.</para>
+    /// </summary>
+    public const string ErrAbsentRowReadReportsAbsence = "IVC-ERR-004";
+
+    /// <summary>
+    /// A mapped write against a type the server holds no schema for is refused with gRPC
+    /// <c>FailedPrecondition</c>. Discharged by <c>Scenarios.ErrorContractScenario.Judge</c>'s "a
+    /// mapped write against an unregistered type is refused with FailedPrecondition" assertion,
+    /// over the numeric status code each driver reports from its <c>write_unregistered_type</c>
+    /// step. Numeric, because the five languages spell the same code five ways.
+    ///
+    /// <para>The fixture type (<c>ErrorContractScenario.UnregisteredTypeName</c>) is declared by
+    /// every driver through its own client library and registered by nothing — no driver, no
+    /// scenario, no orchestrator. <c>ObjectMappingGrpcService.Post</c> calls <c>RequireSchema</c>
+    /// before authorization and before relation validation, so the refusal is attributable to the
+    /// missing schema and to no other rule; a fixture that was merely unauthorized would be
+    /// refused with <c>PermissionDenied</c> instead and this assertion would go red rather than
+    /// green for the wrong reason.</para>
+    /// </summary>
+    public const string ErrUnregisteredTypeWriteIsFailedPrecondition = "IVC-ERR-005";
 }

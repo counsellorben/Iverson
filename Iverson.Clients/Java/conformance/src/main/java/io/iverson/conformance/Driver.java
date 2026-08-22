@@ -13,6 +13,8 @@ import io.iverson.client.core.SchemaRegistrar;
 import io.iverson.conformance.models.JavaArticle;
 import io.iverson.conformance.models.JavaAuthor;
 import io.iverson.conformance.models.JavaTag;
+import io.iverson.conformance.models.ErrorDoc;
+import io.iverson.conformance.models.ErrorUnregisteredDoc;
 import io.iverson.conformance.models.IdentityDoc;
 import io.iverson.conformance.models.QueryDoc;
 import io.iverson.client.search.AggregateBuilder;
@@ -75,9 +77,14 @@ public final class Driver {
     // and then attempts ONE update carrying --wrong-acting-token — an acting user belonging to a
     // different tenant — reporting the gRPC status code that attempt received.
     private static final String IDENTITY_SCENARIO = "identity";
+    // error-contract (S9) is register-phase-NEVER for this driver: only .NET registers ErrorDoc
+    // (register-once rule). This driver seeds one row, reads it back as a positive control, reads a
+    // key no row exists under, and attempts one mapped write against ErrorUnregisteredDoc — a type
+    // nothing ever registers — reporting the gRPC status code and detail each received.
+    private static final String ERROR_CONTRACT_SCENARIO = "error-contract";
     private static final java.util.Set<String> SUPPORTED_SCENARIOS =
         java.util.Set.of(CRUD_ROUNDTRIP_SCENARIO, INTEROP_SCENARIO, SCHEMA_CATALOG_SCENARIO,
-            QUERY_SCENARIO, VECTOR_SEARCH_SCENARIO, IDENTITY_SCENARIO);
+            QUERY_SCENARIO, VECTOR_SEARCH_SCENARIO, IDENTITY_SCENARIO, ERROR_CONTRACT_SCENARIO);
 
     /**
      * The tenant value every driver stamps on the IdentityDoc row it creates: deliberately NOT the
@@ -180,6 +187,16 @@ public final class Driver {
                     case "write" -> doIdentityWrite(client, ownerId, idPrefix, steps);
                     case "read" -> doIdentityRead(
                         client, channel, parsedArgs, tenant, ownerId, idPrefix, priorKeys, steps);
+                    default -> {
+                        System.err.println("unknown phase '" + phase + "' for scenario '" + scenario + "'");
+                        System.exit(2);
+                        return;
+                    }
+                }
+            } else if (ERROR_CONTRACT_SCENARIO.equals(scenario)) {
+                switch (phase) {
+                    case "write" -> doErrorContractWrite(client, tenant, ownerId, idPrefix, steps);
+                    case "read" -> doErrorContractRead(client, tenant, ownerId, idPrefix, priorKeys, steps);
                     default -> {
                         System.err.println("unknown phase '" + phase + "' for scenario '" + scenario + "'");
                         System.exit(2);
@@ -369,6 +386,111 @@ public final class Driver {
             reported.put("total", response.getTotal());
             r.entity = GSON.toJsonTree(reported);
         }));
+    }
+
+    // ── S9 error-contract ────────────────────────────────────────────────────────────────────
+
+    /**
+     * Seeds one {@code ErrorDoc} row so the read phase's positive control has something real to
+     * find. The key is reported whenever {@code persist} returned one.
+     */
+    private static void doErrorContractWrite(
+            IversonClient client, String tenant, String ownerId, String idPrefix, List<StepResult> steps) {
+        String[] docKey = new String[1];
+        StepResult result = step("write_error_doc", r -> {
+            ErrorDoc doc = new ErrorDoc();
+            doc.setTenantId(tenant);
+            doc.setOwnerId(ownerId);
+            doc.setLabel("error-" + LANGUAGE + "-" + idPrefix);
+            docKey[0] = new EntityCoordinator<>(client, ErrorDoc.class).persist(doc);
+        });
+        if (docKey[0] != null) result.keys = Map.of("error_doc", docKey[0]);
+        steps.add(result);
+    }
+
+    /**
+     * The three observations S9 grades: a positive control through the same read method (the ERR
+     * backstop), a read of a key no row exists under, and a mapped write against a type the server
+     * holds no schema for. Every status code and found/not-found flag is DATA to report — the
+     * orchestrator is the only thing that judges any of it.
+     */
+    private static void doErrorContractRead(
+            IversonClient client,
+            String tenant,
+            String ownerId,
+            String idPrefix,
+            Map<String, String> priorKeys,
+            List<StepResult> steps) {
+        UUID rowKey = keyFor(priorKeys, idPrefix, "error_doc");
+
+        // The positive control (the ERR backstop). Same client method, same type and same acting
+        // user as the absent-key read below — only the key differs, which is what makes "reports
+        // absence" evidence rather than a property of a read path that finds nothing ever.
+        steps.add(step("read_present_row", r -> {
+            ErrorDoc present = new EntityCoordinator<>(client, ErrorDoc.class).getMapped(rowKey.toString(), 0);
+            Map<String, Object> reported = new java.util.LinkedHashMap<>();
+            reported.put("found", present != null);
+            reported.put("key", present == null || present.getId() == null ? null : present.getId().toString());
+            r.entity = GSON.toJsonTree(reported);
+        }));
+
+        // The absent-key read. The key is freshly generated and never written, so no row can exist
+        // under it. The server answers with a SUCCESSFUL RPC carrying success=false, and this client
+        // library renders that as null — reported as found:false with no status code. A library that
+        // threw instead would land in the StatusRuntimeException branch and report a code, which is
+        // exactly what IVC-ERR-004's second assertion grades.
+        StepResult missing = new StepResult("read_missing_row");
+        try {
+            ErrorDoc absent = new EntityCoordinator<>(client, ErrorDoc.class)
+                .getMapped(UUID.randomUUID().toString(), 0);
+            Map<String, Object> reported = new java.util.LinkedHashMap<>();
+            reported.put("found", absent != null);
+            reported.put("statusCode", null);
+            missing.entity = GSON.toJsonTree(reported);
+        } catch (StatusRuntimeException rpc) {
+            Map<String, Object> reported = new java.util.LinkedHashMap<>();
+            reported.put("found", null);
+            reported.put("statusCode", rpc.getStatus().getCode().value());
+            reported.put("status", rpc.getStatus().getCode().name());
+            reported.put("detail", rpc.getStatus().getDescription());
+            missing.entity = GSON.toJsonTree(reported);
+        } catch (Exception e) {
+            // Not a gRPC status at all — the attempt never produced an observation.
+            missing.ok = false;
+            missing.error = describe(e);
+        }
+        steps.add(missing);
+
+        // The unregistered-type write. RequireSchema runs before authorization and before relation
+        // validation in ObjectMappingGrpcService.Post, so the refusal is attributable to the missing
+        // schema and to nothing else. Status code AND detail are reported: the detail is what proves
+        // this client library hands the server's message to the caller rather than substituting
+        // wording of its own.
+        StepResult unregistered = new StepResult("write_unregistered_type");
+        try {
+            ErrorUnregisteredDoc doc = new ErrorUnregisteredDoc();
+            doc.setTenantId(tenant);
+            doc.setOwnerId(ownerId);
+            doc.setLabel("error-unregistered-" + LANGUAGE + "-" + idPrefix);
+            new EntityCoordinator<>(client, ErrorUnregisteredDoc.class).postMapped(doc);
+
+            // The server accepted a write against a type it has no schema for. Reported as a
+            // missing status code rather than judged here.
+            Map<String, Object> reported = new java.util.LinkedHashMap<>();
+            reported.put("statusCode", null);
+            reported.put("status", "succeeded");
+            unregistered.entity = GSON.toJsonTree(reported);
+        } catch (StatusRuntimeException rpc) {
+            Map<String, Object> reported = new java.util.LinkedHashMap<>();
+            reported.put("statusCode", rpc.getStatus().getCode().value());
+            reported.put("status", rpc.getStatus().getCode().name());
+            reported.put("detail", rpc.getStatus().getDescription());
+            unregistered.entity = GSON.toJsonTree(reported);
+        } catch (Exception e) {
+            unregistered.ok = false;
+            unregistered.error = describe(e);
+        }
+        steps.add(unregistered);
     }
 
     // ── S8 identity ──────────────────────────────────────────────────────────────────────────

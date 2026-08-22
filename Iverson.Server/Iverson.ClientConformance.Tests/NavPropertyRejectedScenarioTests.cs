@@ -339,6 +339,41 @@ public class NavPropertyRejectedScenarioTests
             $"navigation-property name identical to its foreign key '{fixture.ForeignKeyName}'. The " +
             "navigation-property name must be distinct from the foreign key."));
 
+    /// <summary>
+    /// Pins the ERR citations T12 added to the assertions this scenario already made: the write
+    /// path's status half discharges IVC-ERR-003, the registration path's discharges IVC-ERR-001,
+    /// and the message halves of both discharge IVC-ERR-002. Those requirements are cited here
+    /// rather than re-observed in the error-contract scenario, so a silently dropped citation would
+    /// leave them exercised by nothing at runtime.
+    /// </summary>
+    [Fact]
+    public void Judge_CitesTheErrWriteStatusAndMessageRequirements()
+    {
+        var assertions = NavPropertyRejectedScenario.Judge(new RpcException(new Status(
+            StatusCode.InvalidArgument,
+            "Relation 'Author' is a navigation property and cannot be written; " +
+            "send the foreign key 'S3NavAuthorId' instead.")));
+
+        assertions.Should().ContainSingle(a =>
+            a.Name.Contains("rejected with InvalidArgument", StringComparison.Ordinal)
+            && a.RequirementId == Requirements.ErrWriteRejectionIsInvalidArgument);
+        assertions.Count(a => a.RequirementId == Requirements.ErrMessageNamesOffendingElement).Should().Be(2);
+    }
+
+    [Fact]
+    public void JudgeCollision_CitesTheErrRegistrationStatusAndMessageRequirements()
+    {
+        var results = new[] { (ManyToOneFixture, (RpcException?)CollisionRejection(ManyToOneFixture)) };
+
+        var assertions = NavPropertyRejectedScenario.JudgeCollision(results);
+
+        assertions.Should().ContainSingle(a =>
+            a.Name.Contains("rejected with InvalidArgument", StringComparison.Ordinal)
+            && a.RequirementId == Requirements.ErrRegistrationRejectionIsInvalidArgument);
+        assertions.Should().ContainSingle(a =>
+            a.RequirementId == Requirements.ErrMessageNamesOffendingElement);
+    }
+
     [Fact]
     public void JudgeCollision_ServerRejectsWithInvalidArgument_AllPass()
     {

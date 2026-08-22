@@ -664,8 +664,97 @@ owns "the catalogue is non-empty" as such, and it is strictly weaker than `IVC-S
 
 ### ERR — Errors
 
+Full rationale and the assertion(s) that discharge each requirement are recorded on the
+corresponding const's doc comment in `Requirements.cs`, per this document's own convention for an
+implemented requirement.
+
 | ID | Status | Kind | Statement |
 | --- | --- | --- | --- |
+| IVC-ERR-001 | Active | Behaviour | A schema registration the server rejects is reported to the client as gRPC `InvalidArgument` |
+| IVC-ERR-002 | Active | Behaviour | A server-side rejection's message names the element that caused it |
+| IVC-ERR-003 | Active | Behaviour | A mapped write the server rejects for an invalid payload is reported to the client as gRPC `InvalidArgument` |
+| IVC-ERR-004 | Active | Behaviour | A mapped read of a key with no matching row reports absence to the caller, as a completed call rather than an error status |
+| IVC-ERR-005 | Active | Behaviour | A mapped write against a type the server holds no schema for is refused with gRPC `FailedPrecondition` |
+
+**The server's error contract has two shapes, and this axis constrains both.** A schema-rule
+violation is a gRPC status — the call fails, and the status code and its detail are what the caller
+sees (`IVC-ERR-001`, `IVC-ERR-003`, `IVC-ERR-005`). An absent row is not: `ObjectMappingGrpcService.Get`
+returns a *successful* RPC carrying `MappingResponse { Success = false, Error = "'{type}:{key}' not
+found." }` (`Iverson.Server/Iverson.Api/Grpc/ObjectMappingGrpcService.cs`), so a client must render
+that as absence through its own read API rather than as a thrown error or a blank entity
+(`IVC-ERR-004`). The two shapes are authored as separate requirements because a client can get
+either one right while getting the other wrong, and a single conflated requirement would report that
+only as one undifferentiated red cell.
+
+`IVC-ERR-001` and `IVC-ERR-003` are both `InvalidArgument`, and are split for the reason `QRY`
+splits `IVC-QRY-001` from `IVC-QRY-003`: registration and the mapped write path are two distinct
+RPCs validated by two distinct pieces of server code (`SchemaRegistrationOrchestrator.RegisterAsync`
+and `RelationValidator.ValidateAndNormalizeRelations`), and a client that surfaces one correctly and
+the other not is non-conformant in a way one requirement could not localize.
+
+`IVC-ERR-002` is the message half of the same rejections whose status code `IVC-ERR-001`,
+`IVC-ERR-003` and `IVC-ERR-005` grade. It is authored separately because a status code alone is not
+actionable: `InvalidArgument` is the server's answer to a misnamed foreign key, a
+navigation-property write, and a `PropertyName`/`ForeignKey` collision alike, and only the detail
+text tells them apart. Every assertion citing it matches the specific element the fixture made
+wrong — the misnamed member, the quoted navigation property, the required foreign key, the
+unregistered type name — never merely that some text came back. Its `IVC-ERR-005` citation is the
+one carried through all five client libraries rather than the orchestrator's own channel, which is
+what makes it evidence that each library preserves the server's status detail on the way to the
+caller instead of discarding it.
+
+Status codes are reported and compared as the numeric gRPC code, never as a name — the five
+languages spell the same code five ways (`FailedPrecondition`, `FAILED_PRECONDITION`, `9`), so a
+name-based comparison would report a cross-language spelling difference as a conformance failure.
+This is the same rule `IDN` applies to `PermissionDenied`.
+
+**`IVC-ERR-004` is framed as an observable property of the operation, not as a return shape**, and
+the five clients genuinely differ here. .NET, Python, TypeScript and Java render the server's
+`Success = false` envelope as a null/`None`/`undefined` result from their mapped read; Go's
+`EntityCoordinator.GetMapped` turns it into a plain (non-status) Go error and returns the zero
+value, which is the idiomatic Go shape for "not found". Both satisfy the requirement, because what
+it constrains is that the caller learns the row is absent and that the client does not manufacture
+an error *status* out of a successful RPC — not which of a language's two idioms carries that news.
+Wording it as "returns null" would have failed Go for its language's conventions, which is exactly
+what `IVC-LIFE-007` was retired for. What the requirement still catches, in every language, is a
+client that hands back an entity for a key no row exists under, and one that raises a gRPC status
+where the server sent none; both directions were verified falsifiable live.
+
+`IVC-ERR-005`'s fixture is a type every driver declares through its own client library and no
+driver, scenario or orchestrator ever registers (`ErrorUnregisteredDoc`). `RequireSchema` is the
+first thing `ObjectMappingGrpcService.Post` does, before authorization or relation validation, so
+the refusal is attributable to the missing schema and to nothing else.
+
+Refusal-reason disclosure, structured error details, streaming-RPC errors and transport statuses are
+deliberately not authored here; see the Coverage table below.
+
+#### Coverage
+
+| Area | Status | Evidence |
+| --- | --- | --- |
+| Registration rejection status code | Covered | IVC-ERR-001 |
+| A rejection's message names the offending element | Covered | IVC-ERR-002 |
+| Mapped-write payload rejection status code | Covered | IVC-ERR-003 |
+| Absent-row read reported as absence | Covered | IVC-ERR-004 |
+| Write against a type with no registered schema | Covered | IVC-ERR-005 |
+| Telling an absent row from a denied one | Deferred | `ObjectMappingGrpcService.Get` answers a row that does not exist and a row the caller is denied with the byte-identical envelope — `Success = false`, `Error = "'{type}:{key}' not found."` — and audits the denial only in the server's own log. A client therefore cannot distinguish the two, and `IVC-ERR-004` does not claim it can. This is a deliberate server-side non-enumeration (a distinguishable answer would confirm the row's existence to a caller not allowed to read it), so closing it is not a client change and may not be desirable at all. |
+| The refusal reason behind `PermissionDenied` | Deferred | `PermissionDenied` (7) is the server's answer to several distinct refusals on the mapped write path, carrying one literal `deniedMessage` (`"Not authorized to update this entity."`) into every branch of `AuthorizationFieldMasking.EnforceWriteAuthorization` and setting no trailers, so an access denial and a tenant mismatch are indistinguishable on the wire. Verified live and disclosed by the `IDN` axis, whose `IVC-IDN-003` grades that code; no `ERR` assertion observes the distinction either, and closing it needs the server to distinguish the two refusals on the wire. |
+| Structured error details and trailers | Deferred | No server path on the mapped CRUD or registration RPCs attaches `google.rpc.Status` details or response trailers — every rejection carries a status code and a human-readable detail string and nothing else — so no assertion observes a structured error payload and no requirement constrains one. Authoring one is a server change, not a wording change. |
+| Streaming-RPC error propagation | Deferred | `Search` and `SearchSimilar` are server-streaming RPCs, whose failures can arrive mid-stream rather than on the initial call, and the five languages surface a mid-stream status very differently. The `error-contract` scenario exercises only unary RPCs, so no assertion observes a mid-stream failure and no requirement constrains one. Authoring one needs a fixture that fails after the first message, which is a scenario change. |
+| Transport-level and retryable statuses | Deferred | `Unavailable`, `DeadlineExceeded` and `Unauthenticated` are produced by the transport, the interceptors and the identity provider rather than by Iverson's own request handling, and the harness's preflight refuses to run at all unless every one of them is healthy. No assertion observes them and no requirement constrains how a client classifies a status as retryable. |
+
+#### Backstop assertion (non-normative)
+
+`IVC-ERR-004` grades a client for reporting absence. A client whose mapped read reported absence for
+*every* key — a broken read path, a dropped acting-user header, a type never registered — would
+satisfy it while proving nothing. `ErrorContractScenario.Judge`'s "the same mapped read path finds
+the row this run seeded" assertion is therefore `ERR`'s backstop: a positive control over the SAME
+client method, the SAME registered type and the SAME acting user as the absent-key read beside it,
+differing only in which key is asked for. It fires unconditionally, on every language, before and
+outside the absence assertions. Like `REL`'s, `QRY`'s, `SCH`'s, `VEC`'s and `IDN`'s it carries no
+requirement ID: no `IVC-ERR-*` statement owns "a row that exists is found" as such — that is
+`LIFE`'s claim, and it is a property of the harness's own fixture here — and it is strictly weaker
+than `IVC-ERR-004` wherever `IVC-ERR-004` can fail.
 
 ## Recommended diagnostics (non-normative)
 

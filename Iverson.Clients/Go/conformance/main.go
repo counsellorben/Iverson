@@ -55,6 +55,11 @@ var supportedScenarios = map[string]bool{
 	// reads it back, and then attempts ONE update carrying --wrong-acting-token — an acting user
 	// belonging to a different tenant — reporting the gRPC status code that attempt received.
 	"identity": true,
+	// error-contract (S9) is register-phase-NEVER for this driver: only .NET registers ErrorDoc
+	// (register-once rule). This driver seeds one row, reads it back as a positive control, reads
+	// a key no row exists under, and attempts one mapped write against ErrorUnregisteredDoc — a
+	// type nothing ever registers — reporting the gRPC status code and detail each received.
+	"error-contract": true,
 }
 
 // identityWrongTenant is the tenant value every driver stamps on the IdentityDoc row it creates:
@@ -769,6 +774,130 @@ func run(argv []string) int {
 			return failStep("denied_update_wrong_acting_user", err)
 		}()
 		steps = append(steps, deniedStep)
+
+	case phase == "write" && sc == "error-contract":
+		// S9 error-contract: one row, seeded so the read phase's positive control has something
+		// real to find.
+		errCoord, errCoordErr := iverson.NewEntityCoordinator(client, ErrorDoc{})
+		var step stepResult
+		if errCoordErr != nil {
+			step = failStep("write_error_doc", errCoordErr)
+		} else {
+			entity := ErrorDoc{
+				TenantId: tenant,
+				OwnerId:  ownerID,
+				Label:    "error-" + language + "-" + idPrefix,
+			}
+			key, err := errCoord.Persist(ctx, entity)
+			if err != nil {
+				step = failStep("write_error_doc", err)
+			} else {
+				step = okStep("write_error_doc")
+				step.Entity = entityJSON(entity)
+			}
+			if key != "" {
+				step.Keys = map[string]string{"error_doc": key}
+			}
+		}
+		steps = append(steps, step)
+
+	case phase == "read" && sc == "error-contract":
+		rowKey := keyFor("error_doc")
+
+		// The positive control (the ERR backstop). Same client method, same type and same acting
+		// user as the absent-key read below — only the key differs, which is what makes "reports
+		// absence" evidence rather than a property of a read path that finds nothing ever.
+		steps = append(steps, func() stepResult {
+			errCoord, err := iverson.NewEntityCoordinator(client, ErrorDoc{})
+			if err != nil {
+				return failStep("read_present_row", err)
+			}
+			present, err := errCoord.GetMapped(ctx, rowKey, 0)
+			if err != nil {
+				return failStep("read_present_row", err)
+			}
+			step := okStep("read_present_row")
+			step.Entity = entityJSON(map[string]interface{}{"found": true, "key": present.Id})
+			return step
+		}())
+
+		// The absent-key read. The key is freshly generated and never written, so no row can exist
+		// under it.
+		//
+		// This client library signals absence differently from .NET's, Python's and TypeScript's:
+		// GetMapped turns the server's success=false envelope into a plain (non-status) Go error
+		// rather than a zero value, which is the idiomatic Go shape. That is reported here as it is
+		// — no entity handed back (found:false) and no gRPC status raised (statusCode:null) — and
+		// IVC-ERR-004 is framed as an observable property of the operation rather than as a claim
+		// about a return shape, so both idioms satisfy it. What would NOT satisfy it, and is still
+		// falsifiable here, is a library that surfaced a gRPC status code (the status branch below)
+		// or one that handed back an entity for a key no row exists under.
+		steps = append(steps, func() stepResult {
+			errCoord, err := iverson.NewEntityCoordinator(client, ErrorDoc{})
+			if err != nil {
+				return failStep("read_missing_row", err)
+			}
+			// Derived from this run's --id-prefix under a logical name no driver ever writes a
+			// row for, so no row can exist under it — and no new module dependency is needed to
+			// get a UUID here.
+			missingKey := deriveKey(idPrefix, "error_doc_never_written")
+			_, err = errCoord.GetMapped(ctx, missingKey, 0)
+			step := okStep("read_missing_row")
+			if err == nil {
+				step.Entity = entityJSON(map[string]interface{}{"found": true, "statusCode": nil})
+				return step
+			}
+			// status.FromError unwraps a wrapped error (EntityCoordinator wraps with %w), so a
+			// genuine server status is recovered rather than reported as Unknown; ok is false for
+			// the plain error this library raises for an absent row.
+			if grpcStatus, ok := status.FromError(err); ok {
+				step.Entity = entityJSON(map[string]interface{}{
+					"found":      nil,
+					"statusCode": uint32(grpcStatus.Code()),
+					"status":     grpcStatus.Code().String(),
+					"detail":     grpcStatus.Message(),
+				})
+				return step
+			}
+			step.Entity = entityJSON(map[string]interface{}{
+				"found": false, "statusCode": nil, "detail": err.Error(),
+			})
+			return step
+		}())
+
+		// The unregistered-type write. RequireSchema runs before authorization and before relation
+		// validation in ObjectMappingGrpcService.Post, so the refusal is attributable to the missing
+		// schema and to nothing else. Status code AND detail are reported: the detail is what proves
+		// this client library hands the server's message to the caller rather than substituting
+		// wording of its own.
+		steps = append(steps, func() stepResult {
+			unregCoord, err := iverson.NewEntityCoordinator(client, ErrorUnregisteredDoc{})
+			if err != nil {
+				return failStep("write_unregistered_type", err)
+			}
+			_, err = unregCoord.PostMapped(ctx, ErrorUnregisteredDoc{
+				TenantId: tenant,
+				OwnerId:  ownerID,
+				Label:    "error-unregistered-" + language + "-" + idPrefix,
+			})
+			step := okStep("write_unregistered_type")
+			if err == nil {
+				// The server accepted a write against a type it has no schema for. Reported as a
+				// missing status code rather than judged here.
+				step.Entity = entityJSON(map[string]interface{}{"statusCode": nil, "status": "succeeded"})
+				return step
+			}
+			if grpcStatus, ok := status.FromError(err); ok {
+				step.Entity = entityJSON(map[string]interface{}{
+					"statusCode": uint32(grpcStatus.Code()),
+					"status":     grpcStatus.Code().String(),
+					"detail":     grpcStatus.Message(),
+				})
+				return step
+			}
+			// Not a gRPC status at all — the attempt never produced an observation.
+			return failStep("write_unregistered_type", err)
+		}())
 
 	case phase == "write" && sc == "query":
 		// S6 query: one row, stamped with the run's marker. The key is reported whenever Persist

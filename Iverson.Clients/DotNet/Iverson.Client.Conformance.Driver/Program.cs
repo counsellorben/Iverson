@@ -44,6 +44,11 @@ const string IdentityScenario = "identity";
 // the driver sent the right value here. Must stay in step with
 // Iverson.ClientConformance/Scenarios/IdentityScenario.cs's WrongTenantValue.
 const string IdentityWrongTenant = "tenant_not_the_acting_user";
+// error-contract (S9): register (this driver only, register-once), write, read. Seeds one ErrorDoc
+// row, reads it back as a positive control, reads a key no row exists under, and attempts one
+// mapped write against ErrorUnregisteredDoc — a type nothing ever registers — reporting the gRPC
+// status code and detail that attempt received. The driver judges none of it.
+const string ErrorContractScenario = "error-contract";
 // The Label every VectorDoc row this driver writes carries, and the value the orchestrator's
 // similarity comparison grades on — SearchSimilar streams the Qdrant payload, whose row key lives
 // under a reserved "key" entry the typed projection does not bind to Id. Must stay in step with
@@ -57,7 +62,7 @@ const string VectorQueryText = "a short note about vector search conformance";
 const uint VectorTopK = 50;
 var supportedScenarios = new[]
     { CrudRoundtripScenario, InteropScenario, SchemaCatalogScenario, QueryScenario, VectorSearchScenario,
-      IdentityScenario };
+      IdentityScenario, ErrorContractScenario };
 
 var args_ = Args.Parse(args);
 
@@ -132,6 +137,10 @@ else if (scenario == QueryScenario)
 else if (scenario == VectorSearchScenario)
 {
     await RunVectorSearchAsync();
+}
+else if (scenario == ErrorContractScenario)
+{
+    await RunErrorContractAsync();
 }
 else if (scenario == IdentityScenario)
 {
@@ -490,6 +499,172 @@ async Task RunVectorSearchAsync()
 
                 return result with { Entity = Json.Element(new { parentKeys }) };
             });
+            break;
+        }
+
+        default:
+            await Console.Error.WriteLineAsync($"unknown phase '{phase}' for scenario '{scenario}'");
+            Environment.Exit(2);
+            break;
+    }
+}
+
+// ── S9 error-contract ────────────────────────────────────────────────────────────────────────
+async Task RunErrorContractAsync()
+{
+    switch (phase)
+    {
+        case "register":
+        {
+            // Only the .NET driver ever runs this phase for error-contract (register-once rule;
+            // see Scenarios/ErrorContractScenario.cs). Registered WITHOUT an authorization block —
+            // the orchestrator re-registers it with one before any driver's write phase, without
+            // which every seeded row would be denied and the positive control could never pass.
+            //
+            // OnlySendTypeName is load-bearing beyond the register-once rule here: RegisterAllAsync
+            // walks every [IversonEntity] type in the assembly, which now includes
+            // ErrorUnregisteredDoc. Suppressing everything but ErrorDoc is what keeps that fixture
+            // unregistered.
+            capture.OnlySendTypeName = nameof(ErrorDoc);
+            var registerOutcome = await Run(async () =>
+            {
+                var registrar = new SchemaRegistrar(registry, mappingForRegistration, NullLogger<SchemaRegistrar>.Instance);
+                await registrar.RegisterAllAsync();
+            });
+            capture.OnlySendTypeName = null;
+
+            steps.Add(new StepResult(
+                "register_error_doc",
+                Ok: registerOutcome is null,
+                Error: registerOutcome,
+                TypeDescriptor: Json.Element(capture.Select(nameof(ErrorDoc)))));
+            break;
+        }
+
+        case "write":
+        {
+            // One row, seeded so the read phase's positive control has something real to find.
+            Guid? key = null;
+            await Step("write_error_doc",
+                async result =>
+                {
+                    var written = await Coordinator<ErrorDoc>().PostMappedAsync(new ErrorDoc
+                    {
+                        TenantId = tenant,
+                        OwnerId = ownerId,
+                        Label = $"error-{Language}-{idPrefix}",
+                    });
+                    key = written?.Id;
+                    return result with { Entity = Json.Element(written) };
+                },
+                result => key is { } k
+                    ? result with { Keys = new Dictionary<string, string> { ["error_doc"] = k.ToString() } }
+                    : result);
+            break;
+        }
+
+        case "read":
+        {
+            var rowKey = KeyFor("error_doc");
+
+            // The positive control (the ERR backstop). Same client method, same type and same
+            // acting user as the absent-key read below — only the key differs, which is what makes
+            // "reports absence" evidence rather than a property of a read path that finds nothing.
+            //
+            // Built outside Step() for the same reason the absent-key read below is: Step() turns a
+            // client-logged error into ok:false, and this scenario needs the found/not-found flag
+            // to be the observation rather than the step's own success.
+            var presentResult = new StepResult("read_present_row", true);
+            try
+            {
+                var present = await Coordinator<ErrorDoc>().GetMappedAsync(rowKey.ToString(), depth: 0);
+                presentResult = presentResult with
+                {
+                    Entity = Json.Element(new { found = present is not null, key = present?.Id.ToString() }),
+                };
+            }
+            catch (Exception ex)
+            {
+                presentResult = presentResult with { Ok = false, Error = Describe(ex) };
+            }
+
+            steps.Add(presentResult);
+
+            // The absent-key read. The key is freshly generated and never written, so no row can
+            // exist under it. The server answers with a SUCCESSFUL RPC carrying Success=false, and
+            // this client library renders that as null — reported as found:false with no status
+            // code. A library that threw instead would land in the RpcException branch and report a
+            // code, which is exactly what IVC-ERR-004's second assertion grades.
+            var missingResult = new StepResult("read_missing_row", true);
+            try
+            {
+                var missing = await Coordinator<ErrorDoc>().GetMappedAsync(Guid.NewGuid().ToString(), depth: 0);
+                missingResult = missingResult with
+                {
+                    Entity = Json.Element(new { found = (bool?)(missing is not null), statusCode = (int?)null }),
+                };
+            }
+            catch (RpcException rpc)
+            {
+                missingResult = missingResult with
+                {
+                    Entity = Json.Element(new
+                    {
+                        found = (bool?)null,
+                        statusCode = (int?)rpc.StatusCode,
+                        status = rpc.StatusCode.ToString(),
+                        detail = rpc.Status.Detail,
+                    }),
+                };
+            }
+            catch (Exception ex)
+            {
+                // Not a gRPC status at all — the attempt never produced an observation.
+                missingResult = missingResult with { Ok = false, Error = Describe(ex) };
+            }
+
+            steps.Add(missingResult);
+
+            // The unregistered-type write. RequireSchema runs before authorization and before
+            // relation validation in ObjectMappingGrpcService.Post, so the refusal is attributable
+            // to the missing schema and to nothing else. Status code AND detail are reported: the
+            // detail is what proves this client library hands the server's message to the caller
+            // rather than substituting wording of its own.
+            var unregisteredResult = new StepResult("write_unregistered_type", true);
+            try
+            {
+                await Coordinator<ErrorUnregisteredDoc>().PostMappedAsync(new ErrorUnregisteredDoc
+                {
+                    TenantId = tenant,
+                    OwnerId = ownerId,
+                    Label = $"error-unregistered-{Language}-{idPrefix}",
+                });
+
+                // No exception: the server accepted a write against a type it has no schema for.
+                // Reported as a missing status code rather than judged here.
+                unregisteredResult = unregisteredResult with
+                {
+                    Entity = Json.Element(new { statusCode = (int?)null, status = "succeeded" }),
+                };
+            }
+            catch (RpcException rpc)
+            {
+                unregisteredResult = unregisteredResult with
+                {
+                    Entity = Json.Element(new
+                    {
+                        statusCode = (int?)rpc.StatusCode,
+                        status = rpc.StatusCode.ToString(),
+                        detail = rpc.Status.Detail,
+                    }),
+                };
+            }
+            catch (Exception ex)
+            {
+                unregisteredResult = unregisteredResult with { Ok = false, Error = Describe(ex) };
+            }
+
+            steps.Add(unregisteredResult);
             break;
         }
 

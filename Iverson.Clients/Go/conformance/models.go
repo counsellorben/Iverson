@@ -138,3 +138,32 @@ type IdentityDoc struct {
 	OwnerId  string
 	Label    string
 }
+
+// ErrorDoc is S9 error-contract's subject type. Every one of the five drivers declares the same
+// type name and shape; only the .NET driver ever registers it (register-once rule), and every
+// driver seeds one row into it, reads that row back as a positive control, and then reads a key no
+// row exists under.
+//
+// Deliberately relation-free and search-free: the axis is about what the server's two error shapes
+// look like when they reach a caller, and a relation or a vector field would only add ways for the
+// scenario to go red for reasons that are not about the error contract.
+type ErrorDoc struct {
+	Id       string `iverson_key:"true" iverson_guid:"true"`
+	TenantId string `iverson_tenant:"true"`
+	OwnerId  string
+	Label    string
+}
+
+// ErrorUnregisteredDoc is S9 error-contract's unregistered fixture: declared by all five drivers
+// and registered by NOTHING — no driver, no scenario, no orchestrator, in this run or any other. A
+// mapped write against it must be refused with FAILED_PRECONDITION
+// (ObjectMappingGrpcService.RequireSchema), which is the whole observation.
+//
+// Do not hand this type to any SchemaRegistrar call. Registering it would destroy the fixture
+// IVC-ERR-005 depends on.
+type ErrorUnregisteredDoc struct {
+	Id       string `iverson_key:"true" iverson_guid:"true"`
+	TenantId string `iverson_tenant:"true"`
+	OwnerId  string
+	Label    string
+}

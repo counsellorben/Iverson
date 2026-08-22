@@ -316,17 +316,20 @@ public sealed class NamingRejectedScenario(
             assertions.Add(Assertion.From(
                 "register (many_to_one): rejected with InvalidArgument",
                 caught.StatusCode == StatusCode.InvalidArgument,
-                $"actual={caught.StatusCode}"));
+                $"actual={caught.StatusCode}",
+                Requirements.ErrRegistrationRejectionIsInvalidArgument));
 
             var message = caught.Status.Detail;
             assertions.Add(Assertion.From(
                 $"register (many_to_one): the error names the actual, misnamed foreign key ('{ServerSideActualForeignKeyName}')",
                 Normalize(message).Contains(ActualMemberName),
-                $"error='{message}'"));
+                $"error='{message}'",
+                Requirements.ErrMessageNamesOffendingElement));
             assertions.Add(Assertion.From(
                 $"register (many_to_one): the error names the required foreign-key name ('{ServerSideRelatedTypeName}Id')",
                 Normalize(message).Contains(RequiredForeignKeyName),
-                $"error='{message}'"));
+                $"error='{message}'",
+                Requirements.ErrMessageNamesOffendingElement));
         }
 
         return assertions;
@@ -353,17 +356,20 @@ public sealed class NamingRejectedScenario(
             assertions.Add(Assertion.From(
                 "register (many_to_many): rejected with InvalidArgument",
                 caught.StatusCode == StatusCode.InvalidArgument,
-                $"actual={caught.StatusCode}"));
+                $"actual={caught.StatusCode}",
+                Requirements.ErrRegistrationRejectionIsInvalidArgument));
 
             var message = caught.Status.Detail;
             assertions.Add(Assertion.From(
                 $"register (many_to_many): the error names the actual, misnamed foreign key ('{ServerSideManyToManyActualForeignKeyName}')",
                 Normalize(message).Contains(Normalize(ServerSideManyToManyActualForeignKeyName)),
-                $"error='{message}'"));
+                $"error='{message}'",
+                Requirements.ErrMessageNamesOffendingElement));
             assertions.Add(Assertion.From(
                 $"register (many_to_many): the error names the required foreign-key name ('{ServerSideManyToManyRequiredForeignKeyName}')",
                 Normalize(message).Contains(Normalize(ServerSideManyToManyRequiredForeignKeyName)),
-                $"error='{message}'"));
+                $"error='{message}'",
+                Requirements.ErrMessageNamesOffendingElement));
         }
 
         return assertions;

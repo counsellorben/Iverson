@@ -27,7 +27,7 @@ import {
     TypeDescriptor,
 } from '../generated/object_mapping.js';
 
-import { IdentityDoc, QueryDoc, SharedArticle, SharedAuthor, TsArticle, TsAuthor, TsBadArticle, TsTag, VectorDoc } from './models.js';
+import { ErrorDoc, ErrorUnregisteredDoc, IdentityDoc, QueryDoc, SharedArticle, SharedAuthor, TsArticle, TsAuthor, TsBadArticle, TsTag, VectorDoc } from './models.js';
 import { QueryBuilder, SearchOperator } from '../src/search.js';
 import { aggregate } from '../src/aggregate.js';
 import { chunks as chunksBuilder, similar as similarBuilder } from '../src/vector-search.js';
@@ -46,7 +46,7 @@ const LANGUAGE = 'typescript';
 // own vector-search builders.
 const SCENARIOS = new Set([
     'crud-roundtrip', 'naming-rejected', 'interop', 'schema-catalog', 'query', 'vector-search',
-    'identity',
+    'identity', 'error-contract',
 ]);
 
 /** S8 identity: the tenant value every driver stamps on the IdentityDoc row it creates —
@@ -498,6 +498,99 @@ async function main(argv: string[]): Promise<number> {
             } catch (err) {
                 steps.push(step(name, false, { error: describe(err) }));
             }
+        }
+    } else if (phase === 'register' && scenario === 'error-contract') {
+        // Only the .NET driver ever runs this phase for error-contract (register-once rule); this
+        // branch exists so a hand-run of this driver behaves the same way, and reports the
+        // descriptor the orchestrator would re-register with row permissions. ErrorUnregisteredDoc
+        // is deliberately absent from the registrar's type list — registering it would destroy the
+        // fixture IVC-ERR-005 depends on.
+        let error: string | null = null;
+        try {
+            const registrar = new SchemaRegistrar(
+                capture as unknown as ObjectMappingServiceClient, [ErrorDoc], callCredentials);
+            await registrar.registerAll();
+        } catch (err) {
+            error = describe(err);
+        }
+        steps.push(step('register_error_doc', error === null, {
+            error,
+            typeDescriptor: capture.select('ErrorDoc') ?? null,
+        }));
+    } else if (phase === 'write' && scenario === 'error-contract') {
+        // One row, seeded so the read phase's positive control has something real to find.
+        let errorDocKey: string | undefined;
+        let result: StepResult;
+        try {
+            const entity = new ErrorDoc();
+            entity.tenantId = tenant;
+            entity.ownerId = ownerId;
+            entity.label = `error-${LANGUAGE}-${idPrefix}`;
+            errorDocKey = await client.coordinator(ErrorDoc).persist(entity);
+            result = step('write_error_doc', true, { entity: entityToPlain(entity) });
+        } catch (err) {
+            result = step('write_error_doc', false, { error: describe(err) });
+        }
+        if (errorDocKey !== undefined) result.keys = { error_doc: errorDocKey };
+        steps.push(result);
+    } else if (phase === 'read' && scenario === 'error-contract') {
+        const rowKey = keyFor('error_doc');
+
+        // The positive control (the ERR backstop). Same client method, same type and same acting
+        // user as the absent-key read below — only the key differs, which is what makes "reports
+        // absence" evidence rather than a property of a read path that finds nothing ever.
+        try {
+            const present = await client.coordinator(ErrorDoc).getMapped(rowKey, 0);
+            steps.push(step('read_present_row', true, {
+                entity: { found: present !== null && present !== undefined, key: present?.id ?? null },
+            }));
+        } catch (err) {
+            steps.push(step('read_present_row', false, { error: describe(err) }));
+        }
+
+        // The absent-key read. The key is freshly generated and never written, so no row can exist
+        // under it. The server answers with a SUCCESSFUL RPC carrying success=false, and this client
+        // library renders that as null/undefined — reported as found:false with no status code. A
+        // library that threw instead would land in the status branch and report a code, which is
+        // exactly what IVC-ERR-004's second assertion grades.
+        try {
+            const missing = await client.coordinator(ErrorDoc).getMapped(crypto.randomUUID(), 0);
+            steps.push(step('read_missing_row', true, {
+                entity: { found: missing !== null && missing !== undefined, statusCode: null },
+            }));
+        } catch (err) {
+            const code = (err as { code?: unknown }).code;
+            steps.push(typeof code === 'number'
+                ? step('read_missing_row', true, {
+                    entity: { found: null, statusCode: code, status: grpc.status[code] ?? String(code), detail: describe(err) },
+                })
+                // Not a gRPC status at all — the attempt never produced an observation.
+                : step('read_missing_row', false, { error: describe(err) }));
+        }
+
+        // The unregistered-type write. RequireSchema runs before authorization and before relation
+        // validation in ObjectMappingGrpcService.Post, so the refusal is attributable to the missing
+        // schema and to nothing else. Status code AND detail are reported: the detail is what proves
+        // this client library hands the server's message to the caller rather than substituting
+        // wording of its own.
+        try {
+            const entity = new ErrorUnregisteredDoc();
+            entity.tenantId = tenant;
+            entity.ownerId = ownerId;
+            entity.label = `error-unregistered-${LANGUAGE}-${idPrefix}`;
+            await client.coordinator(ErrorUnregisteredDoc).postMapped(entity);
+            // No error: the server accepted a write against a type it has no schema for. Reported as
+            // a missing status code rather than judged here.
+            steps.push(step('write_unregistered_type', true, {
+                entity: { statusCode: null, status: 'succeeded' },
+            }));
+        } catch (err) {
+            const code = (err as { code?: unknown }).code;
+            steps.push(typeof code === 'number'
+                ? step('write_unregistered_type', true, {
+                    entity: { statusCode: code, status: grpc.status[code] ?? String(code), detail: describe(err) },
+                })
+                : step('write_unregistered_type', false, { error: describe(err) }));
         }
     } else if (phase === 'register' && scenario === 'identity') {
         // Only the .NET driver ever runs this phase for identity (register-once rule); this branch

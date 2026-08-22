@@ -39,8 +39,8 @@ from iverson_client.search import QueryBuilder, SearchOperator
 from iverson_client.vector_search import chunks as chunks_builder, similar as similar_builder
 
 from conformance.models import (
-    IdentityDoc, PyArticle, PyAuthor, PyBadArticle, PyTag, QueryDoc, SharedArticle, SharedAuthor,
-    VectorDoc,
+    ErrorDoc, ErrorUnregisteredDoc, IdentityDoc, PyArticle, PyAuthor, PyBadArticle, PyTag,
+    QueryDoc, SharedArticle, SharedAuthor, VectorDoc,
 )
 
 LANGUAGE = "python"
@@ -54,7 +54,7 @@ LANGUAGE = "python"
 # SearchChunks through the client library's own vector-search builders.
 SCENARIOS = {
     "crud-roundtrip", "naming-rejected", "interop", "schema-catalog", "query", "vector-search",
-    "identity",
+    "identity", "error-contract",
 }
 
 # S8 identity: the tenant value every driver stamps on the IdentityDoc row it creates —
@@ -679,6 +679,103 @@ def main(argv: List[str]) -> int:
             ))
         except Exception as exc:  # noqa: BLE001
             steps.append(StepResult("search_chunks_by_marker", False, error=describe(exc)))
+
+    elif phase == "register" and scenario == "error-contract":
+        # Only the .NET driver ever runs this phase for error-contract (register-once rule); this
+        # branch exists so a hand-run of this driver behaves the same way, and reports the
+        # descriptor the orchestrator would re-register with row permissions. ErrorUnregisteredDoc
+        # is deliberately absent from the registrar's type list — registering it would destroy the
+        # fixture IVC-ERR-005 depends on.
+        error: Optional[str] = None
+        try:
+            registrar = SchemaRegistrar(capture, ErrorDoc)
+            registrar.register_all()
+        except Exception as exc:  # noqa: BLE001 - reported as data, not raised
+            error = describe(exc)
+
+        descriptor_json = capture.select("ErrorDoc")
+        steps.append(StepResult(
+            name="register_error_doc",
+            ok=error is None,
+            error=error,
+            type_descriptor=json.loads(descriptor_json) if descriptor_json else None,
+        ))
+
+    elif phase == "write" and scenario == "error-contract":
+        # One row, seeded so the read phase's positive control has something real to find.
+        error_key = None
+        try:
+            entity = ErrorDoc()
+            entity.tenant_id = tenant
+            entity.owner_id = owner_id
+            entity.label = f"error-{LANGUAGE}-{id_prefix}"
+            error_key = coordinator(ErrorDoc).persist(entity)
+            result = StepResult("write_error_doc", True, entity=entity_to_dict(entity))
+        except Exception as exc:  # noqa: BLE001
+            result = StepResult("write_error_doc", False, error=describe(exc))
+        if error_key is not None:
+            result.keys = {"error_doc": str(error_key)}
+        steps.append(result)
+
+    elif phase == "read" and scenario == "error-contract":
+        row_key = str(key_for("error_doc"))
+
+        # The positive control (the ERR backstop). Same client method, same type and same acting
+        # user as the absent-key read below — only the key differs, which is what makes "reports
+        # absence" evidence rather than a property of a read path that finds nothing ever.
+        try:
+            present = coordinator(ErrorDoc).get_mapped(row_key, depth=0)
+            steps.append(StepResult("read_present_row", True, entity={
+                "found": present is not None,
+                "key": str(present.id) if present is not None and present.id else None,
+            }))
+        except Exception as exc:  # noqa: BLE001
+            steps.append(StepResult("read_present_row", False, error=describe(exc)))
+
+        # The absent-key read. The key is freshly generated and never written, so no row can exist
+        # under it. The server answers with a SUCCESSFUL RPC carrying success=false, and this client
+        # library renders that as None — reported as found:false with no status code. A library that
+        # raised instead would land in the RpcError branch and report a code, which is exactly what
+        # IVC-ERR-004's second assertion grades.
+        try:
+            missing = coordinator(ErrorDoc).get_mapped(str(uuid.uuid4()), depth=0)
+            steps.append(StepResult("read_missing_row", True, entity={
+                "found": missing is not None, "statusCode": None,
+            }))
+        except grpc.RpcError as rpc:
+            steps.append(StepResult("read_missing_row", True, entity={
+                "found": None,
+                "statusCode": rpc.code().value[0],
+                "status": rpc.code().name,
+                "detail": rpc.details(),
+            }))
+        except Exception as exc:  # noqa: BLE001 - not a gRPC status at all: no observation was made
+            steps.append(StepResult("read_missing_row", False, error=describe(exc)))
+
+        # The unregistered-type write. RequireSchema runs before authorization and before relation
+        # validation in ObjectMappingGrpcService.Post, so the refusal is attributable to the missing
+        # schema and to nothing else. Status code AND detail are reported: the detail is what proves
+        # this client library hands the server's message to the caller rather than substituting
+        # wording of its own.
+        try:
+            entity = ErrorUnregisteredDoc()
+            entity.tenant_id = tenant
+            entity.owner_id = owner_id
+            entity.label = f"error-unregistered-{LANGUAGE}-{id_prefix}"
+            coordinator(ErrorUnregisteredDoc).post_mapped(entity)
+            # No error: the server accepted a write against a type it has no schema for. Reported as
+            # a missing status code rather than judged here.
+            steps.append(StepResult("write_unregistered_type", True, entity={
+                "statusCode": None, "status": "succeeded",
+            }))
+        except grpc.RpcError as rpc:
+            steps.append(StepResult("write_unregistered_type", True, entity={
+                "statusCode": rpc.code().value[0],
+                "status": rpc.code().name,
+                "detail": rpc.details(),
+            }))
+        except Exception as exc:  # noqa: BLE001 - not a gRPC status at all: no observation was made
+            steps.append(StepResult("write_unregistered_type", False, error=describe(exc)))
 
     elif phase == "register" and scenario == "identity":
         # Only the .NET driver ever runs this phase for identity (register-once rule); this branch
