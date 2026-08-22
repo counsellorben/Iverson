@@ -290,6 +290,20 @@ services:
       - Authentik__BaseUrl=http://authentik-server:9000
       - Authentik__AdminToken=dev-only-not-for-production-admin-orchestrator-token
       - Jaeger__OtlpHttpUrl=http://jaeger:4318
+    # Kestrel does not begin listening until Program.cs's startup block has finished — the
+    # bootstrap DDL (EnsureRuntimeRoleAsync, the plumbing-table EnsureTableAsync calls, and every
+    # ApplySchemaAsync) is awaited BEFORE app.Run(). A successful TCP connect to 8080 is therefore
+    # a precise "this replica's bootstrap DDL is complete" signal, which is exactly what
+    # iverson-worker's depends_on needs. A bash /dev/tcp redirect rather than curl/wget: the
+    # aspnet:10.0 runtime image ships neither (verified), but does ship bash.
+    healthcheck:
+      # `bash -c`, not CMD-SHELL: CMD-SHELL runs /bin/sh, which on this image is dash, and dash
+      # has no /dev/tcp support at all ("cannot create /dev/tcp/...: Directory nonexistent").
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/8080"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 20s
     depends_on:
       postgres:
         condition: service_healthy
@@ -305,6 +319,82 @@ services:
         condition: service_healthy
       ollama-init:
         condition: service_completed_successfully
+
+  # The worker role. Every Kafka consumer and background reconciliation worker in Iverson.Api is
+  # gated on `workloadRole == "worker"` (Iverson.Api/Program.cs) — IntelligenceStoreConsumer,
+  # DocumentRerenderConsumer, the DLQ/reconciliation workers, and AddEngagementStoreConsumer's
+  # hosted consumer. Without this service NO asynchronous projection is ever populated: Qdrant
+  # stays empty, StarRocks stays empty, and every read served from a projection returns nothing
+  # while the write path looks perfectly healthy. The Helm chart has always deployed a worker
+  # (deploy/helm/iverson/charts/worker); compose was the outlier.
+  iverson-worker:
+    build:
+      context: ..
+      dockerfile: Iverson.Server/Iverson.Api/Dockerfile
+    image: iverson-api
+    container_name: iverson-worker
+    restart: unless-stopped
+    user: "1000:1000"
+    # No `ports:` on purpose, mirroring the chart's worker Deployment, which publishes no gRPC
+    # port either: this role serves no client traffic. Nothing is published to the host, so the
+    # container's own 8080/8081 cannot collide with iverson-api's published bindings.
+    environment:
+      - ASPNETCORE_ENVIRONMENT=Production
+      # The one line that distinguishes this service from iverson-api. The env-var configuration
+      # provider folds "__" into ":" but leaves a single underscore alone, so this lands in
+      # IConfiguration under the literal key "WORKLOAD_ROLE" — the first key Program.cs checks.
+      - WORKLOAD_ROLE=worker
+      - Otel__Endpoint=http://jaeger:4317
+      - Embeddings__BaseUrl=http://ollama:11434
+      - Embeddings__ModelId=nomic-embed-text
+      - Enrichment__BaseUrl=http://ollama:11434
+      - Enrichment__ModelId=qwen2.5:3b
+      - Kafka__BootstrapServers=kafka:29092
+      - Qdrant__ApiKey=dev-only-not-for-production-qdrant-key-0123456789
+      - Authentication__Authority=http://authentik-server:9000/application/o/iverson-api/
+      - Authentication__ExternalIssuer=http://authentik.iverson.local/application/o/iverson-api/
+      - Authentication__ValidAudiences__0=dev-iverson-human-oidc-client-id
+      - Authentication__ValidAudiences__1=dev-iverson-loadtest-client-id
+      - Authentication__ValidAudiences__2=dev-iverson-webtest-client-id
+      - Authentication__ValidAudiences__3=dev-iverson-admin-automation-client-id
+      - Authentication__ValidAudiences__4=dev-iverson-loadtest-human-client-id
+      - Authentication__ActingUser__Authority=http://authentik-server:9000/application/o/iverson-api/
+      - Authentication__ActingUser__ValidAudiences__0=dev-iverson-loadtest-human-client-id
+      - Authentik__BaseUrl=http://authentik-server:9000
+      - Authentik__AdminToken=dev-only-not-for-production-admin-orchestrator-token
+      - Jaeger__OtlpHttpUrl=http://jaeger:4318
+    depends_on:
+      # The same backing-service conditions iverson-api uses...
+      postgres:
+        condition: service_healthy
+      starrocks:
+        condition: service_healthy
+      qdrant:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      jaeger:
+        condition: service_healthy
+      authentik-server:
+        condition: service_healthy
+      ollama-init:
+        condition: service_completed_successfully
+      # ...plus one more: wait for iverson-api to finish its OWN bootstrap before starting this
+      # one. Both roles run the identical startup block (it sits outside Program.cs's
+      # `workloadRole == "api"` guard), and that block is genuinely concurrency-safe by design —
+      # every statement is CREATE/ALTER ... IF [NOT] EXISTS or ON CONFLICT DO NOTHING, and the two
+      # CREATE-then-catch paths (EnsureRuntimeRoleAsync, the RLS policy) both swallow SQLSTATE
+      # 42710 with an explicit "another replica created it concurrently" comment. Helm already
+      # runs api x2 plus a worker against one database on that basis.
+      #
+      # It is sequenced anyway because "safe by design" is not the same as "raced on every single
+      # `docker compose up -d`". Bare CREATE TABLE/INDEX IF NOT EXISTS is still not atomic against
+      # an identical concurrent statement in Postgres — it can surface as 23505 on a pg_catalog
+      # unique index, and that SQLSTATE is not caught anywhere. Starting second closes the window
+      # completely rather than relying on losing a race that is cheap to avoid: by the time this
+      # container starts, every IF NOT EXISTS check it runs is a no-op.
+      iverson-api:
+        condition: service_healthy
 
 volumes:
   postgres_data:

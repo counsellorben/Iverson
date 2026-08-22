@@ -438,6 +438,55 @@ outside both comparisons. Like `REL`'s, `QRY`'s and `SCH`'s it carries no requir
 own fixture, not of a client — and it is strictly weaker than `IVC-VEC-002` and `IVC-VEC-004`
 wherever either can fail.
 
+#### Known non-conformance (non-normative)
+
+`IVC-VEC-002` fails live for the **Python, TypeScript and Go** drivers. `IVC-VEC-001`,
+`IVC-VEC-003` and `IVC-VEC-004` pass for all five languages, and .NET and Java pass all four.
+
+The cause is a client-side one, and it is the same one in all three: **they bind a result payload's
+fields by PascalCase key, but `SearchSimilar` streams the raw Qdrant point payload, whose keys are
+camelCase.** The lookup is an exact string match in each, so every field misses and the typed
+projection comes back with nothing in it.
+
+| Client | Read path | Key it looks for |
+| --- | --- | --- |
+| Python | `iverson_client/core.py:564-566` (`_entity_from_struct`) | `pascal = _to_pascal_case(field_name)`, then `if pascal in s.fields` |
+| TypeScript | `src/core.ts:533-534` (`payloadToEntity`) | `toPascalCase(field)`, then `if (key in data)` |
+| Go | `iverson/coordinator.go:649,671` (`fillEntityValue`) | `key := sf.Name` — a Go struct field name, so PascalCase — then `s.Fields[key]` |
+
+The server side of the mismatch is `IntelligenceStoreConsumer.BuildObjectPointPayload`
+(`Iverson.Server/Iverson.Api/Consumers/IntelligenceStoreConsumer.cs:404-424`), which writes the row
+key under the reserved literal `"key"` and every other column under
+`col.Name.ToCamelCase()`; `ObjectSearchGrpcService.SearchSimilar` then streams that payload verbatim
+(`Iverson.Server/Iverson.Api/Grpc/ObjectSearchGrpcService.cs:272`) rather than re-projecting it.
+
+**Why the `QRY` axis never exposed this.** `Search` is served from StarRocks, not Qdrant, and returns
+SQL columns spelled PascalCase — exactly what these three clients look for. `SearchSimilar` is the
+first read path in the harness whose result keys are camelCase, so `IVC-QRY-002` passes for all five
+languages while `IVC-VEC-002` fails for three.
+
+.NET passes because `StructConverter`'s deserializer options set
+`PropertyNameCaseInsensitive = true` (`Iverson.Clients/DotNet/Iverson.Client.Core/StructConverter.cs:15`).
+Java passes because its `StructConverter` builds its field map under
+`toPascalCase(f.getName()).toLowerCase()`
+(`Iverson.Clients/Java/client/src/main/java/io/iverson/client/core/StructConverter.java:68`), which
+is a case-insensitive match. Both are case-insensitive by construction; the other three are not.
+
+The three failures render differently in the matrix purely because of each language's zero value,
+which is what the assertion's label count distinguishes: Go reports **1** distinct label (five
+Go-zero `""` strings), Python and TypeScript report **0** (five `None`/`undefined`, serialized to
+JSON `null` and skipped). All three are the same defect.
+
+The same run is its own control: .NET and Java retrieved all five seeded rows through the identical
+request, so the server demonstrably returned them and the fault is entirely on the client side of
+the wire.
+
+Fixing this is a separate cross-client initiative touching three shipped SDKs' struct-binding code —
+the same way `IVC-LIFE-007`'s gap was handled, recorded first and fixed later. It is out of scope for
+this document, which records the gap as a known non-conformance rather than weakening
+`IVC-VEC-002`'s statement, retiring it, or letting the harness report the affected cells as anything
+other than red.
+
 ### SCH — Schema
 
 Full rationale and the assertion(s) that discharge each requirement are recorded on the
