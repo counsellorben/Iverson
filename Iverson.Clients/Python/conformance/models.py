@@ -15,7 +15,6 @@ from iverson_client.annotations import (
     iverson_entity,
     iverson_key,
     iverson_metadata,
-    iverson_tenant,
     many_to_many,
     many_to_one,
     one_to_many,
@@ -29,7 +28,7 @@ class PyAuthor:
     write contract work broke, so the harness observes it end to end."""
 
     id: uuid.UUID = iverson_key()
-    tenant_id: str = iverson_tenant()
+    tenant_id: str = None
     owner_id: str = None
     name: str = None
     py_articles: list = one_to_many("PyArticle")
@@ -38,7 +37,7 @@ class PyAuthor:
 @iverson_entity
 class PyTag:
     id: uuid.UUID = iverson_key()
-    tenant_id: str = iverson_tenant()
+    tenant_id: str = None
     owner_id: str = None
     label: str = None
 
@@ -46,7 +45,7 @@ class PyTag:
 @iverson_entity
 class PyArticle:
     id: uuid.UUID = iverson_key()
-    tenant_id: str = iverson_tenant()
+    tenant_id: str = None
     owner_id: str = None
     title: str = None
     py_author_id: str = many_to_one("PyAuthor")
@@ -65,7 +64,7 @@ class SharedAuthor:
     ``SchemaRegistrar`` is never invoked for it."""
 
     id: uuid.UUID = iverson_key()
-    tenant_id: str = iverson_tenant()
+    tenant_id: str = None
     owner_id: str = None
     name: str = None
 
@@ -75,7 +74,7 @@ class SharedArticle:
     """S4 ``interop``'s root type."""
 
     id: uuid.UUID = iverson_key()
-    tenant_id: str = iverson_tenant()
+    tenant_id: str = None
     owner_id: str = None
     title: str = None
     shared_author_id: str = many_to_one("SharedAuthor")
@@ -90,7 +89,7 @@ class PyBadArticle:
     check)."""
 
     id: uuid.UUID = iverson_key()
-    tenant_id: str = iverson_tenant()
+    tenant_id: str = None
     owner_id: str = None
     writer_id: str = many_to_one("PyAuthor")
 
@@ -106,7 +105,7 @@ class QueryDoc:
     on — unique per run, so the expected result set is exactly this run's rows."""
 
     id: uuid.UUID = iverson_key()
-    tenant_id: str = iverson_tenant()
+    tenant_id: str = None
     owner_id: str = None
     marker: str = None
     label: str = None
@@ -132,7 +131,7 @@ class VectorDoc:
     to ``id`` — and its spelling must match ``VectorSearchScenario.LabelFor``."""
 
     id: uuid.UUID = iverson_key()
-    tenant_id: str = iverson_tenant()
+    tenant_id: str = None
     owner_id: str = None
     marker: str = iverson_metadata()
     title: str = iverson_embedding()
@@ -152,7 +151,7 @@ class IdentityDoc:
     scenario to go red for reasons that are not about identity."""
 
     id: uuid.UUID = iverson_key()
-    tenant_id: str = iverson_tenant()
+    tenant_id: str = None
     owner_id: str = None
     label: str = None
 
@@ -169,7 +168,7 @@ class ErrorDoc:
     scenario to go red for reasons that are not about the error contract."""
 
     id: uuid.UUID = iverson_key()
-    tenant_id: str = iverson_tenant()
+    tenant_id: str = None
     owner_id: str = None
     label: str = None
 
@@ -186,6 +185,6 @@ class ErrorUnregisteredDoc:
     destroy the fixture."""
 
     id: uuid.UUID = iverson_key()
-    tenant_id: str = iverson_tenant()
+    tenant_id: str = None
     owner_id: str = None
     label: str = None

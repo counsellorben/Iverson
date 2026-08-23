@@ -13,8 +13,6 @@ public class User
     public string Username  { get; set; } = string.Empty;
     public DateTime CreatedAt { get; set; }
 
-    [IversonTenant] public string TenantId { get; set; } = string.Empty;
-
     [OneToMany(typeof(UserArticle))]  // convention: FK on UserArticle = "UserId"
     public List<UserArticle> UserArticles { get; set; } = [];
 }

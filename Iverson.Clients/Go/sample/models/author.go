@@ -6,5 +6,4 @@ type Author struct {
 	Name     string
 	Email    string
 	Articles []string `iverson:"one_to_many:Article"`
-	TenantId string   `iverson_tenant:"true"`
 }

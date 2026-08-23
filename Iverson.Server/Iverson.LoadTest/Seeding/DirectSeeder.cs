@@ -81,7 +81,7 @@ public sealed class DirectSeeder(
 
         // ── Postgres COPY ──
         await using var writer = await pg.BeginBinaryImportAsync(
-            "COPY benchmark_authors (\"Id\", \"Name\", \"Email\", \"Bio\", \"OwnerId\", \"TenantId\") FROM STDIN (FORMAT BINARY)",
+            "COPY benchmark_authors (\"Id\", \"Name\", \"Email\", \"Bio\", \"OwnerId\", \"__TenantId\") FROM STDIN (FORMAT BINARY)",
             ct);
 
         for (var i = 0; i < AuthorTarget; i++)
@@ -151,7 +151,7 @@ public sealed class DirectSeeder(
         var sw  = Stopwatch.StartNew();
 
         await using var writer = await pg.BeginBinaryImportAsync(
-            "COPY benchmark_tags (\"Id\", \"Name\", \"Category\", \"OwnerId\", \"TenantId\") FROM STDIN (FORMAT BINARY)",
+            "COPY benchmark_tags (\"Id\", \"Name\", \"Category\", \"OwnerId\", \"__TenantId\") FROM STDIN (FORMAT BINARY)",
             ct);
 
         for (var i = 0; i < TagTarget; i++)
@@ -211,7 +211,7 @@ public sealed class DirectSeeder(
 
         await using var writer = await pg.BeginBinaryImportAsync(
             "COPY benchmark_articles " +
-            "(\"Id\", \"Title\", \"Body\", \"BenchmarkAuthorId\", \"Category\", \"WordCount\", \"PublishedAt\", \"OwnerId\", \"TenantId\") " +
+            "(\"Id\", \"Title\", \"Body\", \"BenchmarkAuthorId\", \"Category\", \"WordCount\", \"PublishedAt\", \"OwnerId\", \"__TenantId\") " +
             "FROM STDIN (FORMAT BINARY)",
             ct);
 

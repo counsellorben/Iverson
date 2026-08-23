@@ -21,7 +21,6 @@ import {
     IversonMetadata,
     IversonSearchKey,
     IversonSummary,
-    IversonTenant,
     ManyToMany,
     ManyToOne,
     OneToMany,
@@ -414,7 +413,6 @@ describe('describeEntity key-field validation', () => {
         class MetadataOnKeyEntity {
             @IversonKey() @IversonMetadata()
             id: string = '';
-            @IversonTenant()
             tenantId: string = '';
         }
 
@@ -430,7 +428,6 @@ describe('describeEntity key-field validation', () => {
         class SummaryOnKeyEntity {
             @IversonKey() @IversonSummary()
             id: string = '';
-            @IversonTenant()
             tenantId: string = '';
         }
 
@@ -448,7 +445,6 @@ describe('describeEntity key-field validation', () => {
             @IversonChunk() @IversonMetadata() @IversonSummary() @IversonKeywords()
             @IversonExtracted('hint')
             id: string = '';
-            @IversonTenant()
             tenantId: string = '';
         }
 
@@ -473,7 +469,6 @@ describe('describeEntity key-field validation', () => {
         class DescribedKeyEntity {
             @IversonKey() @IversonDescription('Stable identifier.')
             id: string = '';
-            @IversonTenant()
             tenantId: string = '';
         }
 
@@ -490,7 +485,6 @@ describe('describeEntity key-field validation', () => {
 class FkAuthor {
     @IversonKey()
     id: string = '';
-    @IversonTenant()
     name: string = '';
 }
 
@@ -498,7 +492,6 @@ class FkAuthor {
 class FkArticle {
     @IversonKey()
     id: string = '';
-    @IversonTenant()
     tenantId: string = '';
 
     @ManyToOne(() => FkAuthor)
@@ -548,7 +541,6 @@ describe('describeEntity — many-to-one/one-to-one FK naming enforcement', () =
         @IversonEntity()
         class GoodArticle {
             @IversonKey()
-            @IversonTenant()
             id: string = '';
             @ManyToOne(() => FkAuthor)
             fkAuthorId: string = '';
@@ -561,7 +553,6 @@ describe('describeEntity — many-to-one/one-to-one FK naming enforcement', () =
         @IversonEntity()
         class BadArticle {
             @IversonKey()
-            @IversonTenant()
             id: string = '';
             @ManyToOne(() => FkAuthor)
             writerId: string = '';
@@ -815,7 +806,6 @@ class M2mNoSuffixAuthor {
 class M2mNoSuffixArticle {
     @IversonKey()
     id: string = '';
-    @IversonTenant()
     tenantId: string = '';
 
     @ManyToMany(() => M2mNoSuffixAuthor)

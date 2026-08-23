@@ -2,7 +2,6 @@ package io.iverson.conformance.models;
 
 import io.iverson.client.annotations.IversonEntity;
 import io.iverson.client.annotations.IversonKey;
-import io.iverson.client.annotations.IversonTenant;
 import io.iverson.client.annotations.ManyToMany;
 import io.iverson.client.annotations.ManyToOne;
 import io.iverson.client.annotations.OneToOne;
@@ -21,7 +20,6 @@ public class JavaArticle {
     @IversonKey
     private UUID id;
 
-    @IversonTenant
     private String tenantId;
 
     private String ownerId;

@@ -5,7 +5,6 @@ import io.iverson.client.annotations.IversonEmbedding;
 import io.iverson.client.annotations.IversonEntity;
 import io.iverson.client.annotations.IversonKey;
 import io.iverson.client.annotations.IversonMetadata;
-import io.iverson.client.annotations.IversonTenant;
 
 import java.util.UUID;
 
@@ -34,7 +33,6 @@ public class VectorDoc {
     @IversonKey
     private UUID id;
 
-    @IversonTenant
     private String tenantId;
 
     private String ownerId;

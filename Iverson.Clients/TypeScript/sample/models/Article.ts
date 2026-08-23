@@ -5,7 +5,6 @@ import {
     IversonKey,
     IversonLargeField,
     IversonSearchKey,
-    IversonTenant,
     ManyToOne,
 } from '../../src/annotations.js';
 import { Author } from './Author.js';
@@ -16,8 +15,6 @@ export class Article {
     @IversonGuid()
     id: string = '';
 
-    @IversonTenant()
-    tenantId: string = '';
 
     title: string = '';
 

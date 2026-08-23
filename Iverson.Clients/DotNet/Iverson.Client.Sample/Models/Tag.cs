@@ -11,8 +11,6 @@ public class Tag
     public string Label { get; set; } = string.Empty;
     public string Slug  { get; set; } = string.Empty;
 
-    [IversonTenant] public string TenantId { get; set; } = string.Empty;
-
     public Guid[] ArticleIds { get; set; } = [];  // convention: {RelatedTypeName}Ids → "ArticleIds"
 
     [ManyToMany(typeof(Article))]

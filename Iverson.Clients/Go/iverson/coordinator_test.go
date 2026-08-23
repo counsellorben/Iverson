@@ -26,7 +26,7 @@ import (
 
 type coordinatorArticle struct {
 	Id       string `iverson_key:"true"`
-	TenantId string `iverson_tenant:"true"`
+	TenantId string
 	Category string
 }
 
@@ -34,14 +34,14 @@ type coordinatorArticle struct {
 
 type Article struct {
 	Id       string `iverson_key:"true"`
-	TenantId string `iverson_tenant:"true"`
+	TenantId string
 	Title    string
 	AuthorId string `iverson:"many_to_one:Author"`
 }
 
 type Author struct {
 	Id       string `iverson_key:"true"`
-	TenantId string `iverson_tenant:"true"`
+	TenantId string
 	Name     string
 	// []string mirrors sample/models/author.go:8, the real production one_to_many
 	// declaration — a Go relation field holding structs is omitted as a nav
@@ -52,19 +52,19 @@ type Author struct {
 
 type WriterAuthor struct {
 	Id       string `iverson_key:"true"`
-	TenantId string `iverson_tenant:"true"`
+	TenantId string
 	WriterId string `iverson:"many_to_one:Author"`
 }
 
 type Profile struct {
 	Id       string `iverson_key:"true"`
-	TenantId string `iverson_tenant:"true"`
+	TenantId string
 	UserId   string `iverson:"one_to_one:User"`
 }
 
 type Tag struct {
 	Id       string `iverson_key:"true"`
-	TenantId string `iverson_tenant:"true"`
+	TenantId string
 	Name     string
 	Articles []string `iverson:"many_to_many:Article"`
 }
@@ -176,14 +176,14 @@ func TestStructToEntity_OneToMany_HydratedChildStructsLeaveFieldEmpty(t *testing
 
 type HydTag struct {
 	Id       string `iverson_key:"true"`
-	TenantId string `iverson_tenant:"true"`
+	TenantId string
 	Label    string
 	Hydrated map[string]any
 }
 
 type HydAuthor struct {
 	Id          string `iverson_key:"true"`
-	TenantId    string `iverson_tenant:"true"`
+	TenantId    string
 	Name        string
 	HydArticles []string `iverson:"one_to_many:HydArticle"`
 	Hydrated    map[string]any
@@ -191,7 +191,7 @@ type HydAuthor struct {
 
 type HydArticle struct {
 	Id          string `iverson_key:"true"`
-	TenantId    string `iverson_tenant:"true"`
+	TenantId    string
 	Title       string
 	HydAuthorId string   `iverson:"many_to_one:HydAuthor"`
 	HydTagIds   []string `iverson:"many_to_many:HydTag"`
@@ -204,7 +204,7 @@ type HydArticle struct {
 // related type.
 type HydUnregistered struct {
 	Id                string `iverson_key:"true"`
-	TenantId          string `iverson_tenant:"true"`
+	TenantId          string
 	NeverSeenAuthorId string `iverson:"many_to_one:NeverSeenAuthor"`
 }
 
@@ -473,8 +473,8 @@ func TestBuildRequest_ManyToMany_DeclaresArrayForeignKeyProperty(t *testing.T) {
 }
 
 type NavTagArticle struct {
-	Id        string   `iverson_key:"true"`
-	TenantId  string   `iverson_tenant:"true"`
+	Id        string `iverson_key:"true"`
+	TenantId  string
 	RegTagIds []string `iverson:"many_to_many:RegTag"`
 }
 
@@ -522,7 +522,7 @@ func TestGuidTagYieldsClrGuid(t *testing.T) {
 	type GuidTagEntity struct {
 		Id       string `iverson_key:"true" iverson_guid:"true"`
 		Name     string
-		TenantId string `iverson_tenant:"true"`
+		TenantId string
 	}
 
 	props := propsByName(t, &GuidTagEntity{})
@@ -539,7 +539,7 @@ func TestGuidTagOnStringSliceYieldsClrGuidArray(t *testing.T) {
 	type GuidSliceEntity struct {
 		Id       string   `iverson_key:"true"`
 		TagIds   []string `iverson_guid:"true"`
-		TenantId string   `iverson_tenant:"true"`
+		TenantId string
 	}
 
 	props := propsByName(t, &GuidSliceEntity{})
@@ -560,7 +560,7 @@ func TestGuidTagOnNonStringFieldRejected(t *testing.T) {
 	type GuidOnIntEntity struct {
 		Id        string `iverson_key:"true"`
 		WordCount int    `iverson_guid:"true"`
-		TenantId  string `iverson_tenant:"true"`
+		TenantId  string
 	}
 
 	r := NewSchemaRegistrar(nil, GuidOnIntEntity{})
@@ -581,7 +581,7 @@ func TestGuidTagOnNonStringSliceRejected(t *testing.T) {
 	type GuidOnIntSliceEntity struct {
 		Id       string `iverson_key:"true"`
 		Counts   []int  `iverson_guid:"true"`
-		TenantId string `iverson_tenant:"true"`
+		TenantId string
 	}
 
 	r := NewSchemaRegistrar(nil, GuidOnIntSliceEntity{})

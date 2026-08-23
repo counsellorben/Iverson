@@ -11,7 +11,7 @@ namespace Iverson.Client.Conformance.Driver.Models;
 public class SharedAuthor
 {
     [IversonKey] public Guid Id { get; set; }
-    [IversonTenant] public string TenantId { get; set; } = string.Empty;
+    public string TenantId { get; set; } = string.Empty;
     public string OwnerId { get; set; } = string.Empty;
     public string Name { get; set; } = string.Empty;
 }

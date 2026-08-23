@@ -23,8 +23,6 @@ class StructConverterTest {
     static class StructTestAuthor {
         @IversonKey
         private UUID id;
-        @IversonTenant
-        private String tenantId;
         private String name;
     }
 
@@ -32,8 +30,6 @@ class StructConverterTest {
     static class StructTestTag {
         @IversonKey
         private UUID id;
-        @IversonTenant
-        private String tenantId;
         private String label;
     }
 
@@ -41,8 +37,6 @@ class StructConverterTest {
     static class StructTestArticle {
         @IversonKey
         private UUID id;
-        @IversonTenant
-        private String tenantId;
         private String title;
 
         private UUID authorId;
@@ -63,7 +57,6 @@ class StructConverterTest {
     void toStruct_includesForeignKeyFields() {
         StructTestArticle article = new StructTestArticle();
         article.id = UUID.randomUUID();
-        article.tenantId = "tenant-1";
         article.title = "Hello";
         article.authorId = UUID.randomUUID();
         UUID tagId1 = UUID.randomUUID();
@@ -82,7 +75,6 @@ class StructConverterTest {
     void toStruct_omitsNavigationProperties() {
         StructTestArticle article = new StructTestArticle();
         article.id = UUID.randomUUID();
-        article.tenantId = "tenant-1";
         article.title = "Hello";
         article.authorId = UUID.randomUUID();
         StructTestAuthor author = new StructTestAuthor();
@@ -106,7 +98,6 @@ class StructConverterTest {
     void toStruct_serializesForeignKeyCollectionAsListValue_notString() {
         StructTestArticle article = new StructTestArticle();
         article.id = UUID.randomUUID();
-        article.tenantId = "tenant-1";
         article.title = "Hello";
         UUID tagId1 = UUID.randomUUID();
         UUID tagId2 = UUID.randomUUID();

@@ -27,9 +27,6 @@ import java.util.Map;
  */
 public class Main {
 
-    /** Every row must carry the tenant it belongs to. */
-    private static final String TENANT_ID = "sample-tenant";
-
     public static void main(String[] args) throws Exception {
         String actingUserToken = System.getenv("IVERSON_ACTING_USER_TOKEN");
         String clientId        = System.getenv("IVERSON_CLIENT_ID");
@@ -78,7 +75,6 @@ public class Main {
             // The server assigns the key and returns the stored entity. Write order is
             // load-bearing: the author must exist before an article can reference it.
             Author author = new Author(null, "Jane Smith", "jane@example.com");
-            author.setTenantId(TENANT_ID);
             Author persistedAuthor = authorCoordinator.postMapped(author);
             System.out.println("Persisted author: " + persistedAuthor.getId());
 
@@ -95,7 +91,6 @@ public class Main {
                 OffsetDateTime.now(),
                 persistedAuthor.getId()
             );
-            article.setTenantId(TENANT_ID);
 
             Article persistedArticle = articleCoordinator.postMapped(article);
             System.out.println("Persisted article: " + persistedArticle.getId());

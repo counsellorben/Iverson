@@ -92,18 +92,28 @@ implemented requirement.
 | ID | Status | Kind | Statement |
 | --- | --- | --- | --- |
 | IVC-DECL-001 | Active | Behaviour | A client declares exactly one key property |
-| IVC-DECL-002 | Active | Behaviour | A client declares a tenant field that is itself a declared property |
+| IVC-DECL-002 | Retired | Behaviour | A client declares a tenant field that is itself a declared property |
 | IVC-DECL-003 | Active | Behaviour | The key property is typed `UUID` |
 | IVC-DECL-004 | Active | Behaviour | A key value is a well-formed UUID on every leg — driver, the orchestrator's own gRPC read, and Postgres |
-| IVC-DECL-005 | Active | Behaviour | A client's declared tenant field is typed as a scalar string, never `UUID` and never array-typed |
+| IVC-DECL-005 | Retired | Behaviour | A client's declared tenant field is typed as a scalar string, never `UUID` and never array-typed |
 | IVC-DECL-006 | Active | Behaviour | A property declared array-typed never declares its CLR type as a delimited string |
+
+`IVC-DECL-002` and `IVC-DECL-005` are retired — the declaration they graded no longer exists. A
+row's tenant is server-owned: the server stamps the `__TenantId` column from the acting user's
+`tenant_id` claim at the write chokepoint and strips it from every outbound path, so no client
+declares a tenant field at all and no tenant field reaches the wire. A requirement obliging a
+client to declare one, and a requirement constraining the type of that declaration, are therefore
+both unfalsifiable — there is nothing left for either to grade. Their `Statement` cells are
+unchanged: a row's Statement is the statement of record and must stay immutable across retirement;
+this prose is where the rationale belongs. What replaced them as the live defence of tenancy is
+`IVC-IDN-003`, which grades the server's DERIVATION of the tenant from identity rather than any
+client's declaration of it.
 
 #### Coverage
 
 | Area | Status | Evidence |
 | --- | --- | --- |
 | Key property declaration | Covered | IVC-DECL-001, IVC-DECL-003, IVC-DECL-004 |
-| Tenant field declaration | Covered | IVC-DECL-002, IVC-DECL-005 |
 | Array-typed property CLR typing | Covered | IVC-DECL-006 |
 
 ### REL — Relations

@@ -16,9 +16,6 @@ public class Article {
     @IversonKey
     private UUID id;
 
-    @IversonTenant
-    private String tenantId;
-
     private String title;
 
     @IversonLargeField
@@ -63,9 +60,6 @@ public class Article {
 
     public UUID getId()                         { return id; }
     public void setId(UUID id)                  { this.id = id; }
-
-    public String getTenantId()                 { return tenantId; }
-    public void   setTenantId(String tenantId)  { this.tenantId = tenantId; }
 
     public String getTitle()                    { return title; }
     public void   setTitle(String title)        { this.title = title; }

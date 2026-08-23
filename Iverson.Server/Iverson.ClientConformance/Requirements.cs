@@ -25,15 +25,6 @@ public static class Requirements
     public const string DeclExactlyOneKeyProperty = "IVC-DECL-001";
 
     /// <summary>
-    /// A client declares a tenant field that is itself a declared property. Discharged by
-    /// <c>Verifier.VerifyRegistration</c>'s "declares a tenant field" assertion, which requires
-    /// the descriptor's <c>TenantField</c> to be non-empty AND to resolve against the
-    /// descriptor's own <c>Properties</c> — a tenant field named but never declared is caught by
-    /// the same assertion, not waved through.
-    /// </summary>
-    public const string DeclTenantFieldDeclared = "IVC-DECL-002";
-
-    /// <summary>
     /// The key property is typed <c>UUID</c>. Discharged by
     /// <c>Verifier.VerifyRegistration</c>'s "key property is typed UUID" assertion, asserted
     /// directly from the descriptor's own <c>ClrType</c> — <c>ClrGuid</c> is exactly the CLR
@@ -52,15 +43,6 @@ public static class Requirements
     /// <c>ObservedValue.Matches</c> fails whenever either side did not parse as a UUID.
     /// </summary>
     public const string DeclKeyWellFormedUuid = "IVC-DECL-004";
-
-    /// <summary>
-    /// A client's declared tenant field is typed as a scalar string — never <c>UUID</c> and
-    /// never array-typed. Discharged by <c>Verifier.VerifyRegistration</c>'s "tenant field is
-    /// typed as a scalar string" assertion, which requires both <c>ClrType == ClrString</c> and
-    /// <c>!IsArray</c> together — a client that types its tenant field as a GUID or as an array
-    /// fails this, not merely one that omits it (that failure is <c>IVC-DECL-002</c>'s).
-    /// </summary>
-    public const string DeclTenantFieldTypedString = "IVC-DECL-005";
 
     /// <summary>
     /// A property declared array-typed never declares its CLR type as a delimited string.

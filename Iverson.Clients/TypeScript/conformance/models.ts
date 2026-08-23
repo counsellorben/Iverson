@@ -15,7 +15,6 @@ import {
     IversonGuid,
     IversonKey,
     IversonMetadata,
-    IversonTenant,
     ManyToMany,
     ManyToOne,
     OneToMany,
@@ -32,7 +31,6 @@ export class TsAuthor {
     @IversonGuid()
     id: string = '';
 
-    @IversonTenant()
     tenantId: string = '';
 
     ownerId: string = '';
@@ -49,7 +47,6 @@ export class TsTag {
     @IversonGuid()
     id: string = '';
 
-    @IversonTenant()
     tenantId: string = '';
 
     ownerId: string = '';
@@ -63,7 +60,6 @@ export class TsArticle {
     @IversonGuid()
     id: string = '';
 
-    @IversonTenant()
     tenantId: string = '';
 
     ownerId: string = '';
@@ -95,7 +91,6 @@ export class SharedAuthor {
     @IversonGuid()
     id: string = '';
 
-    @IversonTenant()
     tenantId: string = '';
 
     ownerId: string = '';
@@ -110,7 +105,6 @@ export class SharedArticle {
     @IversonGuid()
     id: string = '';
 
-    @IversonTenant()
     tenantId: string = '';
 
     ownerId: string = '';
@@ -133,7 +127,6 @@ export class TsBadArticle {
     @IversonGuid()
     id: string = '';
 
-    @IversonTenant()
     tenantId: string = '';
 
     ownerId: string = '';
@@ -158,7 +151,6 @@ export class QueryDoc {
     @IversonGuid()
     id: string = '';
 
-    @IversonTenant()
     tenantId: string = '';
 
     ownerId: string = '';
@@ -192,7 +184,6 @@ export class VectorDoc {
     @IversonGuid()
     id: string = '';
 
-    @IversonTenant()
     tenantId: string = '';
 
     ownerId: string = '';
@@ -225,7 +216,6 @@ export class IdentityDoc {
     @IversonGuid()
     id: string = '';
 
-    @IversonTenant()
     tenantId: string = '';
 
     ownerId: string = '';
@@ -248,7 +238,6 @@ export class ErrorDoc {
     @IversonGuid()
     id: string = '';
 
-    @IversonTenant()
     tenantId: string = '';
 
     ownerId: string = '';
@@ -272,7 +261,6 @@ export class ErrorUnregisteredDoc {
     @IversonGuid()
     id: string = '';
 
-    @IversonTenant()
     tenantId: string = '';
 
     ownerId: string = '';

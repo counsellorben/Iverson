@@ -34,7 +34,7 @@ namespace Iverson.Client.Conformance.Driver.Models;
 public class VectorDoc
 {
     [IversonKey] public Guid Id { get; set; }
-    [IversonTenant] public string TenantId { get; set; } = string.Empty;
+    public string TenantId { get; set; } = string.Empty;
     public string OwnerId { get; set; } = string.Empty;
     [IversonMetadata] public string Marker { get; set; } = string.Empty;
     [IversonEmbedding] public string Title { get; set; } = string.Empty;

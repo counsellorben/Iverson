@@ -13,7 +13,7 @@ package main
 // it end to end.
 type GoAuthor struct {
 	Id         string `iverson_key:"true" iverson_guid:"true"`
-	TenantId   string `iverson_tenant:"true"`
+	TenantId   string
 	OwnerId    string
 	Name       string
 	GoArticles []string `iverson:"one_to_many:GoArticle"`
@@ -28,7 +28,7 @@ type GoAuthor struct {
 // GoTag is the S1 tag entity.
 type GoTag struct {
 	Id       string `iverson_key:"true" iverson_guid:"true"`
-	TenantId string `iverson_tenant:"true"`
+	TenantId string
 	OwnerId  string
 	Label    string
 }
@@ -37,7 +37,7 @@ type GoTag struct {
 // (many-to-many).
 type GoArticle struct {
 	Id         string `iverson_key:"true" iverson_guid:"true"`
-	TenantId   string `iverson_tenant:"true"`
+	TenantId   string
 	OwnerId    string
 	Title      string
 	GoAuthorId string   `iverson:"many_to_one:GoAuthor"`
@@ -58,14 +58,14 @@ type GoArticle struct {
 // so Go's own SchemaRegistrar is never invoked for these two types.
 type SharedAuthor struct {
 	Id       string `iverson_key:"true" iverson_guid:"true"`
-	TenantId string `iverson_tenant:"true"`
+	TenantId string
 	OwnerId  string
 	Name     string
 }
 
 type SharedArticle struct {
 	Id             string `iverson_key:"true" iverson_guid:"true"`
-	TenantId       string `iverson_tenant:"true"`
+	TenantId       string
 	OwnerId        string
 	Title          string
 	SharedAuthorId string `iverson:"many_to_one:SharedAuthor"`
@@ -77,7 +77,7 @@ type SharedArticle struct {
 // Registering this type must fail client-side, before any RPC.
 type GoBadArticle struct {
 	Id       string `iverson_key:"true" iverson_guid:"true"`
-	TenantId string `iverson_tenant:"true"`
+	TenantId string
 	OwnerId  string
 	WriterId string `iverson:"many_to_one:GoAuthor"`
 }
@@ -92,7 +92,7 @@ type GoBadArticle struct {
 // unique per run, so the expected result set is exactly this run's rows.
 type QueryDoc struct {
 	Id       string `iverson_key:"true" iverson_guid:"true"`
-	TenantId string `iverson_tenant:"true"`
+	TenantId string
 	OwnerId  string
 	Marker   string
 	Label    string
@@ -116,7 +116,7 @@ type QueryDoc struct {
 // spelling must match VectorSearchScenario.LabelFor.
 type VectorDoc struct {
 	Id       string `iverson_key:"true" iverson_guid:"true"`
-	TenantId string `iverson_tenant:"true"`
+	TenantId string
 	OwnerId  string
 	Marker   string `iverson_meta:"true"`
 	Title    string `iverson_embedding:"true"`
@@ -134,7 +134,7 @@ type VectorDoc struct {
 // scenario to go red for reasons that are not about identity.
 type IdentityDoc struct {
 	Id       string `iverson_key:"true" iverson_guid:"true"`
-	TenantId string `iverson_tenant:"true"`
+	TenantId string
 	OwnerId  string
 	Label    string
 }
@@ -149,7 +149,7 @@ type IdentityDoc struct {
 // scenario to go red for reasons that are not about the error contract.
 type ErrorDoc struct {
 	Id       string `iverson_key:"true" iverson_guid:"true"`
-	TenantId string `iverson_tenant:"true"`
+	TenantId string
 	OwnerId  string
 	Label    string
 }
@@ -163,7 +163,7 @@ type ErrorDoc struct {
 // IVC-ERR-005 depends on.
 type ErrorUnregisteredDoc struct {
 	Id       string `iverson_key:"true" iverson_guid:"true"`
-	TenantId string `iverson_tenant:"true"`
+	TenantId string
 	OwnerId  string
 	Label    string
 }

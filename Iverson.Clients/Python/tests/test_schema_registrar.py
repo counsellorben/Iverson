@@ -19,7 +19,6 @@ from iverson_client.annotations import (
     iverson_summary,
     iverson_keywords,
     iverson_extracted,
-    iverson_tenant,
     many_to_one,
     many_to_many,
     one_to_many,
@@ -44,7 +43,6 @@ class RegArticle:
     published_at: datetime = iverson_search_key(order=1)
     reg_author_id: str = many_to_one("RegAuthor")
     summary: str = iverson_chunk(max_tokens=256, overlap=32)
-    tenant_id: str = iverson_tenant()
 
 
 @iverson_entity(description="An article with metadata signals.")
@@ -56,14 +54,12 @@ class RegDescribedArticle:
                                 description="Publication region.")
     title: str = iverson_description("Headline text.")
     word_count: int = None
-    tenant_id: str = iverson_tenant()
 
 
 @iverson_entity
 class RegAuthor:
     id: str = iverson_key()
     name: str = None
-    tenant_id: str = iverson_tenant()
 
 
 @iverson_entity
@@ -74,27 +70,6 @@ class RegEnrichedArticle:
     tags: str = iverson_keywords()
     entities: str = iverson_extracted("Extract named entities as a JSON array.")
     body: str = iverson_chunk(max_tokens=256, overlap=32, contextual=True)
-    tenant_id: str = iverson_tenant()
-
-
-@iverson_entity
-class RegNoTenantArticle:
-    id: str = iverson_key()
-    title: str = None
-
-
-@iverson_entity
-class RegComposedTenantArticle:
-    id: str = iverson_key()
-    title: str = None
-    tenant_id: str = iverson_field(search_key=True, search_key_order=0, tenant=True)
-
-
-@iverson_entity
-class RegMultiTenantArticle:
-    id: str = iverson_key()
-    tenant_id: str = iverson_tenant()
-    org_id: str = iverson_tenant()
 
 
 @iverson_entity
@@ -105,7 +80,6 @@ class RegComposedEnrichmentArticle:
     keywords_meta: str = iverson_field(metadata=True, keywords=True)
     hint_field: str = iverson_field(large_field=True, extract_hint="Extract the price.")
     described_summary: str = iverson_field(description="A summary field.", summary=True)
-    tenant_id: str = iverson_tenant()
 
 
 @iverson_entity
@@ -114,19 +88,17 @@ class RegComposedDeclarationArticle:
     title: str = None
     body: str = iverson_field(large_field=True, chunk=True,
                               chunk_max_tokens=256, chunk_overlap=32)
-    tenant_id: str = iverson_field(metadata=True, tenant=True)
+    tenant_id: str = iverson_field(metadata=True)
 
 
 @iverson_entity
 class RegMetadataOnKeyArticle:
     id: str = iverson_field(key=True, metadata=True)
-    tenant_id: str = iverson_tenant()
 
 
 @iverson_entity
 class RegSummaryOnKeyArticle:
     id: str = iverson_field(key=True, summary=True)
-    tenant_id: str = iverson_tenant()
 
 
 @iverson_entity
@@ -135,13 +107,11 @@ class RegMultiDeclarationKeyArticle:
                             large_field=True, embedding=True, chunk=True,
                             metadata=True, summary=True, keywords=True,
                             extract_hint="hint")
-    tenant_id: str = iverson_tenant()
 
 
 @iverson_entity
 class RegDescribedKeyArticle:
     id: str = iverson_key(description="Stable identifier.")
-    tenant_id: str = iverson_tenant()
 
 
 @iverson_entity
@@ -150,7 +120,6 @@ class RegArrayArticle:
     tags: list[str] = None
     counts: list[int] = None
     blob: bytes = None
-    tenant_id: str = iverson_tenant()
 
 
 class _CustomElement:
@@ -161,14 +130,12 @@ class _CustomElement:
 class RegNestedArrayArticle:
     id: str = iverson_key()
     matrix: list[list[str]] = None
-    tenant_id: str = iverson_tenant()
 
 
 @iverson_entity
 class RegUnsupportedElementArticle:
     id: str = iverson_key()
     widgets: list[_CustomElement] = None
-    tenant_id: str = iverson_tenant()
 
 
 # ── Fixtures ───────────────────────────────────────────────────────────────────
@@ -294,13 +261,11 @@ class TestSchemaRegistrar:
             reg_author_id: str = many_to_one("RegAuthor")
             reg_tag_ids: list[str] = many_to_many("RegTag")
             reg_comments: list = one_to_many("RegComment")
-            tenant_id: str = iverson_tenant()
 
         @iverson_entity
         class RegRelKindsNote:
             id: str = iverson_key()
             reg_author_id: str = one_to_one("RegAuthor")
-            tenant_id: str = iverson_tenant()
 
         stub = make_stub()
         stub.RegisterSchema.return_value = mapping_pb.SchemaResponse(success=True)
@@ -343,7 +308,6 @@ class TestSchemaRegistrar:
         class RegNavArticle:
             id: str = iverson_key()
             author_id: str = many_to_one("Author")
-            tenant_id: str = iverson_tenant()
 
         stub = make_stub()
         stub.RegisterSchema.return_value = mapping_pb.SchemaResponse(success=True)
@@ -363,7 +327,6 @@ class TestSchemaRegistrar:
         class RegGoodArticle:
             id: str = iverson_key()
             reg_author_id: str = many_to_one("RegAuthor")
-            tenant_id: str = iverson_tenant()
 
         stub = make_stub()
         stub.RegisterSchema.return_value = mapping_pb.SchemaResponse(success=True)
@@ -378,7 +341,6 @@ class TestSchemaRegistrar:
         class RegNavTagArticle:
             id: str = iverson_key()
             reg_tag_ids: list[str] = many_to_many("RegTag")
-            tenant_id: str = iverson_tenant()
 
         stub = make_stub()
         stub.RegisterSchema.return_value = mapping_pb.SchemaResponse(success=True)
@@ -401,7 +363,6 @@ class TestSchemaRegistrar:
         class RegBadArticle:
             id: str = iverson_key()
             writer_id: str = many_to_one("RegAuthor")
-            tenant_id: str = iverson_tenant()
 
         stub = make_stub()
         registrar = SchemaRegistrar(stub, RegBadArticle)
@@ -567,40 +528,6 @@ class TestEnrichmentTargets:
             iverson_field(extract_hint=None)
 
 
-class TestTenantField:
-    def test_tenant_field_name_on_descriptor(self):
-        stub = make_stub()
-        stub.RegisterSchema.return_value = mapping_pb.SchemaResponse(success=True)
-        registrar = SchemaRegistrar(stub, RegArticle)
-        registrar.register_all()
-
-        request: mapping_pb.SchemaRequest = stub.RegisterSchema.call_args[0][0]
-        assert request.root_type.tenant_field == "TenantId"
-
-    def test_zero_tenant_markers_raises(self):
-        stub = make_stub()
-        registrar = SchemaRegistrar(stub, RegNoTenantArticle)
-        with pytest.raises(ValueError, match="RegNoTenantArticle"):
-            registrar.register_all()
-
-    def test_tenant_composes_with_search_key(self):
-        stub = make_stub()
-        stub.RegisterSchema.return_value = mapping_pb.SchemaResponse(success=True)
-        SchemaRegistrar(stub, RegComposedTenantArticle).register_all()
-
-        request: mapping_pb.SchemaRequest = stub.RegisterSchema.call_args[0][0]
-        assert request.root_type.tenant_field == "TenantId"
-        props = {p.name: p for p in request.root_type.properties}
-        assert props["TenantId"].is_search_key is True
-        assert props["TenantId"].search_key_order == 0
-
-    def test_multiple_tenant_markers_raises(self):
-        stub = make_stub()
-        registrar = SchemaRegistrar(stub, RegMultiTenantArticle)
-        with pytest.raises(ValueError, match="tenant_id.*org_id|org_id.*tenant_id"):
-            registrar.register_all()
-
-
 class TestDeclarationComposition:
     def test_large_field_composes_with_chunk(self):
         props = {p.name: p for p in
@@ -609,12 +536,6 @@ class TestDeclarationComposition:
         assert props["Body"].is_chunk is True
         assert props["Body"].chunk_max_tokens == 256
         assert props["Body"].chunk_overlap == 32
-
-    def test_metadata_composes_with_tenant(self):
-        request = register_request(RegComposedDeclarationArticle)
-        props = {p.name: p for p in request.root_type.properties}
-        assert props["TenantId"].is_metadata is True
-        assert request.root_type.tenant_field == "TenantId"
 
     def test_multi_flag_field_emits_exactly_one_property(self):
         request = register_request(RegComposedDeclarationArticle)

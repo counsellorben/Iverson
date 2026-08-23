@@ -48,7 +48,7 @@ var services = new ServiceCollection()
 // matched against that token's `groups` claim, AND must carry a `tenant_id` claim —
 // the evaluator denies on a missing tenant claim before it consults roles
 // (RowFieldAuthorizationEvaluator.cs:18-23). The server stamps each row's tenant from
-// that claim, which is why the sampleTenant literal below is not what determines tenancy.
+// that claim; no sample model declares a tenant field, because tenancy is never client-supplied.
 var sampleRules = new AuthorizationRules
 {
     RowPermissions =
@@ -81,9 +81,6 @@ var userArticles = services.GetRequiredService<EntityCoordinator<UserArticle>>()
 // separate RPCs not yet surfaced on EntityCoordinator).
 var searchClient = services.GetRequiredService<ObjectSearchService.ObjectSearchServiceClient>();
 
-// Every row must declare the tenant it belongs to; reads are filtered by it.
-const string sampleTenant = "sample-tenant";
-
 // ── Seed Data ─────────────────────────────────────────────────────────────────
 
 Console.WriteLine("\n=== Seed Data ===");
@@ -92,7 +89,6 @@ Console.WriteLine("\n=== Seed Data ===");
 // Authors and tags before articles; articles before user-articles.
 var authorAiId   = await authors.PersistAsync(new Author
 {
-    TenantId = sampleTenant,
     Name  = "Allen Iverson",
     Email = "ai@iverson.dev",
     Bio   = "The original AI. Point guard. Hall of Famer."
@@ -108,7 +104,6 @@ if (authorAiId is null)
 }
 var authorKobeId = await authors.PersistAsync(new Author
 {
-    TenantId = sampleTenant,
     Name  = "Kobe Bryant",
     Email = "kb@iverson.dev",
     Bio   = "The Black Mamba. Five-time NBA champion."
@@ -116,16 +111,15 @@ var authorKobeId = await authors.PersistAsync(new Author
 Console.WriteLine($"Created authors: {authorAiId}, {authorKobeId}");
 
 // Tags
-var tagBballId   = await tags.PersistAsync(new Tag { Label = "Basketball", Slug = "basketball", TenantId = sampleTenant });
-var tagCultureId = await tags.PersistAsync(new Tag { Label = "Culture",    Slug = "culture",    TenantId = sampleTenant });
-var tagLegacyId  = await tags.PersistAsync(new Tag { Label = "Legacy",     Slug = "legacy",     TenantId = sampleTenant });
+var tagBballId   = await tags.PersistAsync(new Tag { Label = "Basketball", Slug = "basketball"});
+var tagCultureId = await tags.PersistAsync(new Tag { Label = "Culture",    Slug = "culture"});
+var tagLegacyId  = await tags.PersistAsync(new Tag { Label = "Legacy",     Slug = "legacy"});
 Console.WriteLine($"Created tags: basketball, culture, legacy");
 
 // Articles (PostMappedAsync so the server resolves Author and Tags and the full
 // hydrated document is emitted to Kafka for StarRocks/Qdrant indexing).
 var article1 = await articles.PostMappedAsync(new Article
 {
-    TenantId    = sampleTenant,
     AuthorId    = Guid.Parse(authorAiId!),
     TagIds      = [Guid.Parse(tagBballId!), Guid.Parse(tagCultureId!)],
     Title       = "The Original AI: Allen Iverson's Legacy",
@@ -135,7 +129,6 @@ var article1 = await articles.PostMappedAsync(new Article
 });
 var article2 = await articles.PostMappedAsync(new Article
 {
-    TenantId    = sampleTenant,
     AuthorId    = Guid.Parse(authorKobeId!),
     TagIds      = [Guid.Parse(tagBballId!), Guid.Parse(tagLegacyId!)],
     Title       = "The Black Mamba Mentality",
@@ -148,7 +141,6 @@ Console.WriteLine($"Created articles: '{article1?.Title}', '{article2?.Title}'")
 // User
 var userId = await users.PersistAsync(new User
 {
-    TenantId  = sampleTenant,
     Name      = "Test User",
     Email     = "test@example.com",
     Username  = "testuser",
@@ -161,14 +153,12 @@ Console.WriteLine($"Created user: {userId}");
 // primary entity to search because it carries a rich, denormalized view.
 var ua1 = await userArticles.PostMappedAsync(new UserArticle
 {
-    TenantId  = sampleTenant,
     UserId    = Guid.Parse(userId!),
     ArticleId = article1!.Id,   // read off the entity PostMappedAsync returned
     CreatedAt = DateTime.UtcNow
 });
 var ua2 = await userArticles.PostMappedAsync(new UserArticle
 {
-    TenantId  = sampleTenant,
     UserId    = Guid.Parse(userId!),
     ArticleId = article2!.Id,
     CreatedAt = DateTime.UtcNow

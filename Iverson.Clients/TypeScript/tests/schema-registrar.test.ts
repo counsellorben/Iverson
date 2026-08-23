@@ -16,7 +16,6 @@ import {
     IversonSummary,
     IversonKeywords,
     IversonExtracted,
-    IversonTenant,
     IversonArray,
     IversonGuid,
     ManyToOne,
@@ -45,7 +44,6 @@ class RegAuthor {
 // Apply decorators manually (so the class definition above has the real properties)
 IversonEntity()(RegAuthor);
 IversonKey()(RegAuthor.prototype, 'id');
-IversonTenant()(RegAuthor.prototype, 'name');
 
 @IversonEntity()
 class RegArticle {
@@ -62,7 +60,6 @@ class RegArticle {
     body: string = '';
 
     @IversonSearchKey(0)
-    @IversonTenant()
     category: string = '';
 
     wordCount: number = 0;
@@ -298,14 +295,12 @@ describe('SchemaRegistrar', () => {
             @IversonEntity()
             class Author {
                 @IversonKey()
-                @IversonTenant()
                 id: string = '';
             }
 
             @IversonEntity()
             class NavArticle {
                 @IversonKey()
-                @IversonTenant()
                 id: string = '';
 
                 @ManyToOne(() => Author)
@@ -327,14 +322,12 @@ describe('SchemaRegistrar', () => {
             @IversonEntity()
             class RegTag {
                 @IversonKey()
-                @IversonTenant()
                 id: string = '';
             }
 
             @IversonEntity()
             class NavTagArticle {
                 @IversonKey()
-                @IversonTenant()
                 id: string = '';
 
                 @ManyToMany(() => RegTag)
@@ -359,7 +352,6 @@ describe('SchemaRegistrar', () => {
             @IversonEntity()
             class Post {
                 @IversonKey()
-                @IversonTenant()
                 id: string = '';
 
                 @OneToMany(() => RegAuthor)
@@ -380,7 +372,6 @@ describe('SchemaRegistrar', () => {
                 @IversonKey() @IversonGuid()
                 id: string = '';
                 name: string = '';
-                @IversonTenant()
                 tenantId: string = '';
             }
 
@@ -400,7 +391,6 @@ describe('SchemaRegistrar', () => {
                 id: string = '';
                 @IversonGuid()
                 wordCount: number = 0;
-                @IversonTenant()
                 tenantId: string = '';
             }
 
@@ -418,7 +408,6 @@ describe('SchemaRegistrar', () => {
                 @IversonArray(ClrType.CLR_STRING)
                 @IversonGuid()
                 tagIds: string[] = [];
-                @IversonTenant()
                 tenantId: string = '';
             }
 
@@ -433,7 +422,6 @@ describe('SchemaRegistrar', () => {
             class GuidMetadataStringEntity {
                 @IversonKey() @IversonGuid()
                 id: string = '';
-                @IversonTenant()
                 tenantId: string = '';
             }
 
@@ -453,7 +441,6 @@ describe('SchemaRegistrar', () => {
                 id: string = '';
                 @IversonGuid()
                 wordCount: number = 0;
-                @IversonTenant()
                 tenantId: string = '';
             }
 
@@ -470,7 +457,6 @@ describe('SchemaRegistrar', () => {
             class GuidNoInitializerEntity {
                 @IversonKey() @IversonGuid()
                 id!: string;
-                @IversonTenant()
                 tenantId: string = '';
             }
 
@@ -492,7 +478,7 @@ describe('SchemaRegistrar', () => {
             @IversonEntity()
             class TaggedPost {
                 @IversonKey() id: string = '';
-                @IversonTenant() tenantId: string = '';
+                tenantId: string = '';
                 @ManyToMany(() => RegAuthor)
                 regAuthorIds: string[] = [];
             }
@@ -521,7 +507,6 @@ class RegDoc {
     @IversonMetadata()
     region: string = '';
 
-    @IversonTenant()
     title: string = '';
 }
 
@@ -596,7 +581,6 @@ class RegEnriched {
     @IversonChunk(256, 32, { contextual: true })
     body: string = '';
 
-    @IversonTenant()
     plainField: string = '';
 }
 
@@ -685,60 +669,6 @@ describe('_buildRequest — ingest enrichment targets', () => {
     });
 });
 
-// ── Tenant field ────────────────────────────────────────────────────────────
-
-describe('_buildRequest — tenant field', () => {
-    it('sets tenantField to the PascalCased decorated property name', () => {
-        const stub = makeStub();
-        const registrar = new SchemaRegistrar(stub, [RegArticle]);
-        const req = registrar._buildRequest(RegArticle);
-        expect(req.rootType!.tenantField).toBe('Category');
-    });
-
-    it('composes the tenant marker with other declarations on the same property (search key)', () => {
-        const stub = makeStub();
-        const registrar = new SchemaRegistrar(stub, [RegArticle]);
-        const req = registrar._buildRequest(RegArticle);
-        const props = Object.fromEntries(req.rootType!.properties.map(p => [p.name, p]));
-
-        expect(req.rootType!.tenantField).toBe('Category');
-        expect(props['Category'].isSearchKey).toBe(true);
-        expect(props['Category'].searchKeyOrder).toBe(0);
-    });
-
-    it('throws naming the type when no property is decorated with @IversonTenant()', () => {
-        @IversonEntity()
-        class NoTenant {
-            @IversonKey()
-            id: string = '';
-        }
-
-        const stub = makeStub();
-        const registrar = new SchemaRegistrar(stub, [NoTenant]);
-        expect(() => registrar._buildRequest(NoTenant)).toThrow(/NoTenant/);
-        expect(() => registrar._buildRequest(NoTenant)).toThrow(/@IversonTenant/);
-    });
-
-    it('throws naming both properties when two are decorated with @IversonTenant()', () => {
-        @IversonEntity()
-        class TwoTenants {
-            @IversonKey()
-            id: string = '';
-
-            @IversonTenant()
-            orgId: string = '';
-
-            @IversonTenant()
-            accountId: string = '';
-        }
-
-        const stub = makeStub();
-        const registrar = new SchemaRegistrar(stub, [TwoTenants]);
-        expect(() => registrar._buildRequest(TwoTenants)).toThrow(/orgId/);
-        expect(() => registrar._buildRequest(TwoTenants)).toThrow(/accountId/);
-    });
-});
-
 // ── Array fields ────────────────────────────────────────────────────────────
 
 describe('_buildRequest — array fields', () => {
@@ -748,7 +678,6 @@ describe('_buildRequest — array fields', () => {
             @IversonKey()
             id: string = '';
 
-            @IversonTenant()
             orgId: string = '';
 
             @IversonArray(ClrType.CLR_STRING)

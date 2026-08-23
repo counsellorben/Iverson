@@ -159,26 +159,6 @@ public static class Verifier
                 $"expected=[{string.Join(", ", expectedKinds)}] actual=[{string.Join(", ", actualKinds)}]"));
         }
 
-        propertiesByName.TryGetValue(Normalize(descriptor.TenantField), out var tenantProperty);
-        var tenantDeclared = descriptor.TenantField.Length > 0 && tenantProperty is not null;
-        results.Add(Assertion.From(
-            $"{label}: declares a tenant field",
-            tenantDeclared,
-            $"tenantField='{descriptor.TenantField}'",
-            Requirements.DeclTenantFieldDeclared));
-
-        // IVC-DECL-005: the tenant field must be typed as a scalar string — never UUID, never
-        // array-typed. A tenant field that is undeclared (IVC-DECL-002's failure) also fails
-        // here, rather than this assertion being silently skipped, since `tenantProperty` is
-        // null in that case.
-        results.Add(Assertion.From(
-            $"{label}: tenant field is typed as a scalar string",
-            tenantDeclared && tenantProperty!.ClrType == ClrType.ClrString && !tenantProperty.IsArray,
-            tenantDeclared
-                ? $"clrType={tenantProperty!.ClrType} isArray={tenantProperty.IsArray}"
-                : "tenant field not declared",
-            Requirements.DeclTenantFieldTypedString));
-
         // Foreign keys of many-to-many relations — the only relations whose key is allowed (and
         // required) to be an array-typed property.
         var manyToManyForeignKeys = descriptor.Relations

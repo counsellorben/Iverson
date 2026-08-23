@@ -17,8 +17,6 @@ public class EntityCoordinatorPipelineTests
     {
         [IversonKey]
         public string Id { get; set; } = "";
-        [IversonTenant]
-        public string TenantId { get; set; } = "";
         public string AuthorId { get; set; } = "";
     }
 

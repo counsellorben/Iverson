@@ -12,7 +12,6 @@ namespace Iverson.Client.Core.Tests;
 internal sealed class MappedWriteTestEntity
 {
     [IversonKey] public Guid Id { get; set; }
-    [IversonTenant] public string TenantId { get; set; } = "";
     public string Name { get; set; } = "";
 }
 

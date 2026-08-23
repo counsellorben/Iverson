@@ -471,20 +471,6 @@ public class VerifierTests
     }
 
     [Fact]
-    public void VerifyRegistration_cites_DECL002_for_the_tenant_field_assertion()
-    {
-        var descriptor = Verifier.ParseDescriptor(Json("""
-            { "typeName": "Tag", "tenantField": "tenant_id",
-              "properties": [ { "name": "id", "clrType": "CLR_GUID", "isKey": true }, { "name": "tenant_id" } ],
-              "relations": [] }
-            """));
-
-        Verifier.VerifyRegistration("tag", descriptor, [])
-            .Should().Contain(r => r.Passed && r.Name.Contains("declares a tenant field") &&
-                r.RequirementId == Requirements.DeclTenantFieldDeclared);
-    }
-
-    [Fact]
     public void VerifyRegistration_fails_DECL003_when_the_key_property_is_not_typed_uuid()
     {
         var descriptor = Verifier.ParseDescriptor(Json("""
@@ -509,55 +495,6 @@ public class VerifierTests
 
         Verifier.VerifyRegistration("tag", descriptor, [])
             .Should().Contain(r => r.Passed && r.Name.Contains("key property is typed UUID"));
-    }
-
-    [Fact]
-    public void VerifyRegistration_fails_DECL005_when_the_tenant_field_is_typed_uuid_not_string()
-    {
-        var descriptor = Verifier.ParseDescriptor(Json("""
-            { "typeName": "Tag", "tenantField": "tenant_id",
-              "properties": [
-                { "name": "id", "clrType": "CLR_GUID", "isKey": true },
-                { "name": "tenant_id", "clrType": "CLR_GUID" }
-              ],
-              "relations": [] }
-            """));
-
-        Verifier.VerifyRegistration("tag", descriptor, [])
-            .Should().Contain(r => !r.Passed && r.Name.Contains("tenant field is typed as a scalar string") &&
-                r.RequirementId == Requirements.DeclTenantFieldTypedString);
-    }
-
-    [Fact]
-    public void VerifyRegistration_fails_DECL005_when_the_tenant_field_is_array_typed()
-    {
-        var descriptor = Verifier.ParseDescriptor(Json("""
-            { "typeName": "Tag", "tenantField": "tenant_id",
-              "properties": [
-                { "name": "id", "clrType": "CLR_GUID", "isKey": true },
-                { "name": "tenant_id", "clrType": "CLR_STRING", "isArray": true }
-              ],
-              "relations": [] }
-            """));
-
-        Verifier.VerifyRegistration("tag", descriptor, [])
-            .Should().Contain(r => !r.Passed && r.Name.Contains("tenant field is typed as a scalar string"));
-    }
-
-    [Fact]
-    public void VerifyRegistration_passes_DECL005_when_the_tenant_field_is_a_scalar_string()
-    {
-        var descriptor = Verifier.ParseDescriptor(Json("""
-            { "typeName": "Tag", "tenantField": "tenant_id",
-              "properties": [
-                { "name": "id", "clrType": "CLR_GUID", "isKey": true },
-                { "name": "tenant_id", "clrType": "CLR_STRING" }
-              ],
-              "relations": [] }
-            """));
-
-        Verifier.VerifyRegistration("tag", descriptor, [])
-            .Should().Contain(r => r.Passed && r.Name.Contains("tenant field is typed as a scalar string"));
     }
 
     [Fact]

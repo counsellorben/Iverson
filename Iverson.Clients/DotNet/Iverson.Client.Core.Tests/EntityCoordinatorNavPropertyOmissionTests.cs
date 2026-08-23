@@ -11,28 +11,24 @@ namespace Iverson.Client.Core.Tests;
 internal sealed class NavOmissionAuthor
 {
     [IversonKey] public Guid Id { get; set; }
-    [IversonTenant] public string TenantId { get; set; } = "";
 }
 
 [IversonEntity]
 internal sealed class NavOmissionTag
 {
     [IversonKey] public Guid Id { get; set; }
-    [IversonTenant] public string TenantId { get; set; } = "";
 }
 
 [IversonEntity]
 internal sealed class NavOmissionUserArticle
 {
     [IversonKey] public Guid Id { get; set; }
-    [IversonTenant] public string TenantId { get; set; } = "";
 }
 
 [IversonEntity]
 internal sealed class NavOmissionArticle
 {
     [IversonKey] public Guid Id { get; set; }
-    [IversonTenant] public string TenantId { get; set; } = "";
 
     public Guid   AuthorId { get; set; }
     public Guid[] TagIds   { get; set; } = [];
@@ -78,7 +74,6 @@ public class EntityCoordinatorNavPropertyOmissionTests
         var article = new NavOmissionArticle
         {
             Id           = Guid.NewGuid(),
-            TenantId     = "tenant",
             AuthorId     = Guid.NewGuid(),
             TagIds       = [Guid.NewGuid()],
             Author       = new NavOmissionAuthor { Id = Guid.NewGuid() },

@@ -72,7 +72,7 @@ func (m *mockObjectMappingServiceClient) GetSchema(_ context.Context, req *pb.Ge
 
 type registrarArticle struct {
 	Id          string `iverson_key:"true"`
-	TenantId    string `iverson_search_key:"2" iverson_tenant:"true"`
+	TenantId    string `iverson_search_key:"2"`
 	Title       string `iverson_embedding:"true"`
 	Body        string `iverson_large_field:"true"`
 	Category    string `iverson_search_key:"0"`
@@ -286,7 +286,7 @@ func TestSchemaRegistrar_RegisterAll_ServerError(t *testing.T) {
 func TestSchemaRegistrar_RegisterAll_MultipleEntities(t *testing.T) {
 	type secondEntity struct {
 		Id       string `iverson_key:"true"`
-		TenantId string `iverson_tenant:"true"`
+		TenantId string
 		Name     string
 	}
 
@@ -329,7 +329,7 @@ func (c *countingMappingClient) RegisterSchema(ctx context.Context, req *pb.Sche
 
 type describedArticle struct {
 	Id       string `iverson_key:"true" iverson_desc:"Primary identifier"`
-	TenantId string `iverson_tenant:"true"`
+	TenantId string
 	Status   string `iverson_meta:"true" iverson_desc:"Publication status"`
 	Title    string `iverson_desc:"Headline"`
 	Body     string
@@ -339,7 +339,7 @@ func (describedArticle) IversonDescription() string { return "An article with me
 
 type undescribedArticle struct {
 	Id       string `iverson_key:"true"`
-	TenantId string `iverson_tenant:"true"`
+	TenantId string
 }
 
 func propByName(t *testing.T, req *pb.SchemaRequest, name string) *pb.PropertyDescriptor {
@@ -425,7 +425,7 @@ func TestSchemaRegistrar_TypeDescriptionFromPointerEntity(t *testing.T) {
 
 type enrichedArticle struct {
 	Id       string `iverson_key:"true"`
-	TenantId string `iverson_tenant:"true"`
+	TenantId string
 	Summary  string `iverson_summary:"true"`
 	Keywords string `iverson_keywords:"true"`
 	Topic    string `iverson_extract:"the article's primary topic"`
@@ -499,70 +499,11 @@ func TestSchemaRegistrar_ContextualWithoutChunk_Rejected(t *testing.T) {
 	}
 }
 
-// ── tenant field registrar tests ────────────────────────────────────────────────
-
-func TestSchemaRegistrar_TenantField_Set(t *testing.T) {
-	mock := &mockMappingClient{response: &pb.SchemaResponse{Success: true}}
-	registrar := iverson.NewSchemaRegistrar(mock, registrarArticle{})
-	if err := registrar.RegisterAll(context.Background(), "", nil); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if got := mock.capturedReq.RootType.TenantField; got != "TenantId" {
-		t.Errorf("expected TenantField=TenantId, got %q", got)
-	}
-}
-
-// TestSchemaRegistrar_TenantField_ComposesWithSearchKey guards against the
-// e4a77ff regression class: iverson_tenant is an independent tag key, not a
-// mutually-exclusive kind, so a field must be able to carry both
-// iverson_tenant:"true" and iverson_search_key:"N" at once. registrarArticle's
-// TenantId field carries `iverson_search_key:"2" iverson_tenant:"true"`; this
-// test asserts BOTH halves survive together — that TenantField is set to the
-// field, AND that its search-key metadata (IsSearchKey/SearchKeyOrder) is not
-// dropped by the tenant tag.
-func TestSchemaRegistrar_TenantField_ComposesWithSearchKey(t *testing.T) {
-	mock := &mockMappingClient{response: &pb.SchemaResponse{Success: true}}
-	registrar := iverson.NewSchemaRegistrar(mock, registrarArticle{})
-	if err := registrar.RegisterAll(context.Background(), "", nil); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	req := mock.capturedReq
-
-	if got := req.RootType.TenantField; got != "TenantId" {
-		t.Errorf("expected TenantField=TenantId, got %q", got)
-	}
-
-	tenantProp := propByName(t, req, "TenantId")
-	if !tenantProp.IsSearchKey {
-		t.Error("expected TenantId.IsSearchKey=true; iverson_tenant must not suppress the search_key kind")
-	}
-	if tenantProp.SearchKeyOrder != 2 {
-		t.Errorf("expected TenantId.SearchKeyOrder=2, got %d", tenantProp.SearchKeyOrder)
-	}
-}
-
-type noTenantArticle struct {
-	Id    string `iverson_key:"true"`
-	Title string
-}
-
-func TestSchemaRegistrar_NoTenantField_Rejected(t *testing.T) {
-	mock := &mockMappingClient{response: &pb.SchemaResponse{Success: true}}
-	registrar := iverson.NewSchemaRegistrar(mock, noTenantArticle{})
-	err := registrar.RegisterAll(context.Background(), "", nil)
-	if err == nil {
-		t.Fatal("expected error for missing tenant field, got nil")
-	}
-	if !strings.Contains(err.Error(), "noTenantArticle") {
-		t.Errorf("expected error to name the type noTenantArticle, got %q", err.Error())
-	}
-}
-
 // ── declaration composability registrar tests ───────────────────────────────────
 
 type ComposedDeclArticle struct {
 	Id       string `iverson_key:"true"`
-	TenantId string `iverson_tenant:"true"`
+	TenantId string
 	Body     string `iverson_large_field:"true" iverson_chunk:"256:32"`
 }
 
@@ -595,27 +536,9 @@ func TestSchemaRegistrar_ComposedDeclarations_LargeFieldAndChunk(t *testing.T) {
 	}
 }
 
-type doubleTenantArticle struct {
-	Id       string `iverson_key:"true"`
-	TenantId string `iverson_tenant:"true"`
-	OrgId    string `iverson_tenant:"true"`
-}
-
-func TestSchemaRegistrar_MultipleTenantFields_Rejected(t *testing.T) {
-	mock := &mockMappingClient{response: &pb.SchemaResponse{Success: true}}
-	registrar := iverson.NewSchemaRegistrar(mock, doubleTenantArticle{})
-	err := registrar.RegisterAll(context.Background(), "", nil)
-	if err == nil {
-		t.Fatal("expected error for multiple tenant fields, got nil")
-	}
-	if !strings.Contains(err.Error(), "TenantId") || !strings.Contains(err.Error(), "OrgId") {
-		t.Errorf("expected error to name both fields TenantId and OrgId, got %q", err.Error())
-	}
-}
-
 type arrayFieldsArticle struct {
 	Id       string `iverson_key:"true"`
-	TenantId string `iverson_tenant:"true"`
+	TenantId string
 	Tags     []string
 	Counts   []int
 	Blob     []byte
@@ -669,7 +592,7 @@ func TestSchemaRegistrar_RegisterAll_ArrayFields(t *testing.T) {
 
 type nestedArrayArticle struct {
 	Id       string `iverson_key:"true"`
-	TenantId string `iverson_tenant:"true"`
+	TenantId string
 	Matrix   [][]string
 }
 
@@ -679,7 +602,7 @@ type customElement struct {
 
 type unsupportedElementArticle struct {
 	Id       string `iverson_key:"true"`
-	TenantId string `iverson_tenant:"true"`
+	TenantId string
 	Widgets  []customElement
 }
 
@@ -699,7 +622,7 @@ func TestSchemaRegistrar_RegisterAll_NestedArrayRejected(t *testing.T) {
 
 type byteArrayArticle struct {
 	Id       string `iverson_key:"true"`
-	TenantId string `iverson_tenant:"true"`
+	TenantId string
 	Blobs    [][]byte
 }
 
@@ -850,17 +773,17 @@ func (m *recordingMappingClient) RegisterSchema(_ context.Context, req *pb.Schem
 
 type ruleArticle struct {
 	Id       string `iverson_key:"true"`
-	TenantId string `iverson_tenant:"true"`
+	TenantId string
 }
 
 type ruleAuthor struct {
 	Id       string `iverson_key:"true"`
-	TenantId string `iverson_tenant:"true"`
+	TenantId string
 }
 
 type ruleUnrestricted struct {
 	Id       string `iverson_key:"true"`
-	TenantId string `iverson_tenant:"true"`
+	TenantId string
 }
 
 func TestSchemaRegistrar_RegisterAll_PerTypeRules(t *testing.T) {

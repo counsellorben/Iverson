@@ -43,7 +43,6 @@ class FieldMeta:
     chunk_overlap: int = 64
     chunk_contextual: bool = False
     metadata: bool = False
-    tenant: bool = False
     summary: bool = False
     keywords: bool = False
     extract_hint: str | None = ""
@@ -66,7 +65,6 @@ def iverson_field(
     chunk_overlap: int = 64,
     chunk_contextual: bool = False,
     metadata: bool = False,
-    tenant: bool = False,
     summary: bool = False,
     keywords: bool = False,
     extract_hint: str | None = "",
@@ -88,7 +86,6 @@ def iverson_field(
             for chunk-level vector embeddings and its windowing.
         metadata: a property that describes or qualifies the entity rather
             than carrying its primary content.
-        tenant: the field holding the row's tenant id. Exactly one per entity.
         summary / keywords: Ollama enrichment targets.
         extract_hint: Ollama extraction target, guided by this hint. ``""``
             means "not an extraction target"; a blank-but-non-empty hint is
@@ -116,7 +113,6 @@ def iverson_field(
         chunk_overlap=chunk_overlap,
         chunk_contextual=chunk_contextual,
         metadata=metadata,
-        tenant=tenant,
         summary=summary,
         keywords=keywords,
         extract_hint=extract_hint,
@@ -188,11 +184,6 @@ def iverson_extracted(hint: str, description: str = "") -> FieldMeta:
     ``None`` routes an empty hint into the shared guard's rejection path.
     """
     return iverson_field(extract_hint=hint or None, description=description)
-
-
-def iverson_tenant(description: str = "") -> FieldMeta:
-    """Mark the field holding the row's tenant id. Exactly one per entity."""
-    return iverson_field(tenant=True, description=description)
 
 
 def many_to_one(type_name: str) -> FieldMeta:
@@ -272,7 +263,6 @@ def iverson_entity(cls: type | None = None, *, description: str = ""):
     summary_fields: list[str] = []
     keywords_fields: list[str] = []
     extracted_fields: dict[str, str] = {}
-    tenant_fields: list[str] = []
 
     for field_name, _type_hint in annotations.items():
         default = getattr(cls, field_name, None)
@@ -305,8 +295,6 @@ def iverson_entity(cls: type | None = None, *, description: str = ""):
                     (field_name, meta.chunk_max_tokens, meta.chunk_overlap, meta.chunk_contextual))
             if meta.metadata:
                 metadata_fields.append(field_name)
-            if meta.tenant:
-                tenant_fields.append(field_name)
             if meta.summary:
                 summary_fields.append(field_name)
             if meta.keywords:
@@ -342,7 +330,6 @@ def iverson_entity(cls: type | None = None, *, description: str = ""):
         "summary_fields": summary_fields,
         "keywords_fields": keywords_fields,
         "extracted_fields": extracted_fields,
-        "tenant_fields": tenant_fields,
     }
 
     ENTITY_REGISTRY[cls.__name__] = cls

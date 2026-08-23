@@ -10,5 +10,4 @@ public sealed class BenchmarkAuthor
     public string              Email { get; set; } = "";
     public string              Bio   { get; set; } = "";
     public string OwnerId { get; set; } = "";
-    [IversonTenant] public string TenantId { get; set; } = "";
 }

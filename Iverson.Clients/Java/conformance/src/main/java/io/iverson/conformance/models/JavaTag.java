@@ -2,7 +2,6 @@ package io.iverson.conformance.models;
 
 import io.iverson.client.annotations.IversonEntity;
 import io.iverson.client.annotations.IversonKey;
-import io.iverson.client.annotations.IversonTenant;
 
 import java.util.UUID;
 
@@ -13,7 +12,6 @@ public class JavaTag {
     @IversonKey
     private UUID id;
 
-    @IversonTenant
     private String tenantId;
 
     private String ownerId;

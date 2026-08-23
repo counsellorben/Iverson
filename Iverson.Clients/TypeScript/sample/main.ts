@@ -56,7 +56,6 @@ async function main() {
     const articles = client.coordinator(Article);
 
     const article = new Article();
-    article.tenantId = 'sample-tenant';
     article.title = 'Hello Iverson';
     article.category = 'tech';
     article.wordCount = 500;

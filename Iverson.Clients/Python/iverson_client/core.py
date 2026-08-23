@@ -249,8 +249,6 @@ class SchemaRegistrar:
                         f"a {rel['kind']} foreign-key field must be named {expected!r} "
                         f"(rename the member to match)."
                     )
-        tenant_field = self._resolve_tenant_field(type_name, meta.get("tenant_fields", []))
-
         properties: list[mapping_pb.PropertyDescriptor] = []
         for field_name in meta["fields"]:
             if field_name in relation_fields:
@@ -319,7 +317,6 @@ class SchemaRegistrar:
             properties=properties,
             relations=relations,
             description=meta.get("description", ""),
-            tenant_field=_to_pascal_case(tenant_field),
             **({"authorization": rules} if rules is not None else {}),
         )
         return mapping_pb.SchemaRequest(root_type=type_descriptor, trace_id=trace_id)
@@ -373,22 +370,6 @@ class SchemaRegistrar:
             "discarded. Remove it from the key field. (Only a description is valid "
             "on a key.)"
         )
-
-    @staticmethod
-    def _resolve_tenant_field(type_name: str, tenant_fields: list[str]) -> str:
-        if len(tenant_fields) == 0:
-            raise ValueError(
-                f"{type_name} has no field marked with iverson_tenant(); the server "
-                "requires every schema to declare a tenant boundary and will reject "
-                "registration without one."
-            )
-        if len(tenant_fields) > 1:
-            raise ValueError(
-                f"{type_name} has multiple fields marked with iverson_tenant() "
-                f"({', '.join(tenant_fields)}); exactly one field must carry the "
-                "tenant marker."
-            )
-        return tenant_fields[0]
 
 
 # ── StructConverter ────────────────────────────────────────────────────────────

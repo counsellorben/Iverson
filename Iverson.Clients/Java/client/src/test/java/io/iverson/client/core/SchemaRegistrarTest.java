@@ -50,9 +50,6 @@ class SchemaRegistrarTest {
         @IversonKey
         private UUID id;
 
-        @IversonTenant
-        private String tenantId;
-
         @IversonSearchKey(order = 0)
         private String category;
 
@@ -73,9 +70,6 @@ class SchemaRegistrarTest {
     static class EnrichmentAnnotationTestEntity {
         @IversonKey
         private UUID id;
-
-        @IversonTenant
-        private String tenantId;
 
         @IversonSummary
         private String summaryField;
@@ -99,9 +93,6 @@ class SchemaRegistrarTest {
         @IversonDescription("The primary key")
         private UUID id;
 
-        @IversonTenant
-        private String tenantId;
-
         @IversonMetadata
         private String source;
 
@@ -119,8 +110,6 @@ class SchemaRegistrarTest {
     static class SchemaTestAuthor {
         @IversonKey
         private UUID id;
-        @IversonTenant
-        private String tenantId;
         private String name;
         private String bio;   // nullable (String is a reference type)
     }
@@ -129,8 +118,6 @@ class SchemaRegistrarTest {
     static class SchemaTestArticle {
         @IversonKey
         private UUID id;
-        @IversonTenant
-        private String tenantId;
         private String title;
         private UUID authorId;
 
@@ -145,8 +132,6 @@ class SchemaRegistrarTest {
     static class SchemaTestTag {
         @IversonKey
         private UUID id;
-        @IversonTenant
-        private String tenantId;
         private String label;
         private UUID articleId;
     }
@@ -157,8 +142,6 @@ class SchemaRegistrarTest {
     static class SchemaTestFkNavCollisionEntity {
         @IversonKey
         private UUID id;
-        @IversonTenant
-        private String tenantId;
 
         @ManyToOne(type = SchemaTestAuthor.class)
         private UUID schemaTestAuthorId;
@@ -171,8 +154,6 @@ class SchemaRegistrarTest {
     static class ArrayTestEntity {
         @IversonKey
         private UUID id;
-        @IversonTenant
-        private String tenantId;
         private List<String> tags;
         private String[] labels;
         private byte[] payload;
@@ -589,68 +570,6 @@ class SchemaRegistrarTest {
         assertEquals("The primary key", key.getDescription());
     }
 
-    // ── registerAll: @IversonTenant ────────────────────────────────────────────
-
-    @Test
-    void registerAll_setsTenantField_toMarkedFieldName() {
-        ArgumentCaptor<SchemaRequest> captor = ArgumentCaptor.forClass(SchemaRequest.class);
-
-        sut.registerAll(SchemaTestAuthor.class);
-
-        verify(mockStub).registerSchema(captor.capture());
-        TypeDescriptor typeDesc = captor.getValue().getRootType();
-        assertEquals("TenantId", typeDesc.getTenantField());
-    }
-
-    @Test
-    void registerAll_tenantMarkerComposesWithSearchKey() {
-        @IversonEntity
-        class ComposedTenantEntity {
-            @IversonKey private UUID id;
-            @IversonTenant @IversonSearchKey(order = 0) private String tenantId;
-        }
-
-        ArgumentCaptor<SchemaRequest> captor = ArgumentCaptor.forClass(SchemaRequest.class);
-
-        sut.registerAll(ComposedTenantEntity.class);
-
-        verify(mockStub).registerSchema(captor.capture());
-        TypeDescriptor typeDesc = captor.getValue().getRootType();
-        assertEquals("TenantId", typeDesc.getTenantField());
-        PropertyDescriptor tenant = prop(typeDesc, "TenantId");
-        assertTrue(tenant.getIsSearchKey(),
-            "@IversonTenant must not suppress @IversonSearchKey");
-        assertEquals(0, tenant.getSearchKeyOrder());
-    }
-
-    @Test
-    void registerAll_throwsForZeroTenantMarkers() {
-        @IversonEntity
-        class NoTenantEntity {
-            @IversonKey private UUID id;
-            private String name;
-        }
-
-        IllegalArgumentException ex = assertThrows(IllegalArgumentException.class,
-            () -> sut.registerAll(NoTenantEntity.class));
-        assertTrue(ex.getMessage().contains("NoTenantEntity"));
-    }
-
-    @Test
-    void registerAll_throwsForMultipleTenantMarkers() {
-        @IversonEntity
-        class MultiTenantEntity {
-            @IversonKey private UUID id;
-            @IversonTenant private String tenantA;
-            @IversonTenant private String tenantB;
-        }
-
-        IllegalArgumentException ex = assertThrows(IllegalArgumentException.class,
-            () -> sut.registerAll(MultiTenantEntity.class));
-        assertTrue(ex.getMessage().contains("tenantA"));
-        assertTrue(ex.getMessage().contains("tenantB"));
-    }
-
     // ── registerAll: declarations the server discards on the key field ────────
 
     @Test
@@ -658,7 +577,6 @@ class SchemaRegistrarTest {
         @IversonEntity
         class MetadataOnKeyEntity {
             @IversonKey @IversonMetadata private UUID id;
-            @IversonTenant private String tenantId;
         }
 
         IllegalArgumentException ex = assertThrows(IllegalArgumentException.class,
@@ -674,7 +592,6 @@ class SchemaRegistrarTest {
         @IversonEntity
         class SummaryOnKeyEntity {
             @IversonKey @IversonSummary private UUID id;
-            @IversonTenant private String tenantId;
         }
 
         IllegalArgumentException ex = assertThrows(IllegalArgumentException.class,
@@ -693,7 +610,6 @@ class SchemaRegistrarTest {
             @IversonChunk @IversonMetadata @IversonSummary @IversonKeywords
             @IversonExtracted("hint")
             private UUID id;
-            @IversonTenant private String tenantId;
         }
 
         IllegalArgumentException ex = assertThrows(IllegalArgumentException.class,
@@ -713,7 +629,6 @@ class SchemaRegistrarTest {
         @IversonEntity
         class DescribedKeyEntity {
             @IversonKey @IversonDescription("Stable identifier.") private UUID id;
-            @IversonTenant private String tenantId;
         }
 
         ArgumentCaptor<SchemaRequest> captor = ArgumentCaptor.forClass(SchemaRequest.class);
@@ -938,7 +853,6 @@ class SchemaRegistrarTest {
         @IversonEntity
         class Widget {
             @IversonKey     private String widgetId;
-            @IversonTenant  private String tenantId;
             private String  widgetName;
         }
 

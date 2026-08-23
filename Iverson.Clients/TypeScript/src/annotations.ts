@@ -36,7 +36,6 @@ const IVERSON_KEYWORDS_FIELDS  = Symbol('iverson:keywords_fields');
 const IVERSON_EXTRACTED_FIELDS = Symbol('iverson:extracted_fields');
 const IVERSON_PROPERTY_DESCRIPTIONS = Symbol('iverson:property_descriptions');
 const IVERSON_TYPE_DESCRIPTION      = Symbol('iverson:type_description');
-const IVERSON_TENANT_FIELDS    = Symbol('iverson:tenant_fields');
 
 // ── Public relation kind constants ─────────────────────────────────────────────
 
@@ -280,29 +279,6 @@ export function IversonGuid(): PropertyDecorator {
 
 export function getGuidFields(target: Function): Set<string> {
     return Reflect.getMetadata(IVERSON_GUID_KEY, target) ?? new Set();
-}
-
-// ── @IversonTenant() ────────────────────────────────────────────────────────
-
-/**
- * Marks the scalar property that carries the tenant identifier. Exactly one
- * property per entity must carry this decorator: the server rejects schema
- * registration when `tenant_field` is missing, and this decorator's own
- * marked-property count is validated in `describeEntity` (zero or more than
- * one is a client-side error, since the server only ever sees a single name
- * on the wire and cannot detect that duplication itself).
- */
-export function IversonTenant(): PropertyDecorator {
-    return (target, propertyKey) => {
-        const existing: string[] =
-            Reflect.getMetadata(IVERSON_TENANT_FIELDS, target.constructor) ?? [];
-        existing.push(String(propertyKey));
-        Reflect.defineMetadata(IVERSON_TENANT_FIELDS, existing, target.constructor);
-    };
-}
-
-export function getTenantFields(target: Function): string[] {
-    return Reflect.getMetadata(IVERSON_TENANT_FIELDS, target) ?? [];
 }
 
 // ── @IversonDescription(text) ────────────────────────────────────────────────

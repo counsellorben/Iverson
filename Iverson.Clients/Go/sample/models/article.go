@@ -11,5 +11,4 @@ type Article struct {
 	WordCount   int
 	PublishedAt time.Time `iverson_search_key:"1"`
 	AuthorId    string    `iverson:"many_to_one:Author"`
-	TenantId    string    `iverson_tenant:"true"`
 }
