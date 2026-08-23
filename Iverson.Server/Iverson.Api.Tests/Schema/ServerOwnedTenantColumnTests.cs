@@ -62,9 +62,11 @@ public class ServerOwnedTenantColumnTests
     {
         // Both halves are load-bearing, hence one assertion each rather than a shape check:
         //  * TEXT — PostgresSchemaManager's RLS policy (PostgresSchemaManager.cs:139) compares this
-        //    column to current_setting('app.tenant_id', true), a text comparison; a non-text column
-        //    would make the policy fail closed. (The ValidateFieldReference reason this comment used
-        //    to give is gone: Task 4 deleted the tenant_field call, so that check now runs for
+        //    column to current_setting('app.tenant_id', true), which returns text. A non-text column
+        //    does not fail CLOSED, it fails LOUDLY: there is no `uuid = text` operator, so CREATE
+        //    POLICY errors with 42883 and registration fails with it — no policy is created, so
+        //    nothing silently denies rows. (The ValidateFieldReference reason this comment used to
+        //    give is gone: Task 4 deleted the tenant_field call, so that check now runs for
         //    owner_field only and never sees this column.)
         //  * NOT NULL — so the silent-overwrite path introduced in Task 2 fails loudly with a
         //    constraint violation instead of orphaning a row behind RLS.

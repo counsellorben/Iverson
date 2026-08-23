@@ -444,8 +444,9 @@ public sealed class SchemaRegistrationOrchestrator(
     }
 
     /// <summary>
-    /// Rejects a client that declares a property, key, relation foreign key or
-    /// <c>authorization.owner_field</c> named <see cref="SchemaDescriptor.TenantColumnName"/>.
+    /// Rejects a client that declares a property, key, relation foreign key, relation navigation
+    /// property, <c>authorization.owner_field</c> or <c>authorization.field_permissions[].field_name</c>
+    /// named <see cref="SchemaDescriptor.TenantColumnName"/>.
     /// Without this the name collides with the server's injected column: on a table that does not
     /// yet exist that is a loud duplicate-column DDL failure, but on an ALREADY-CREATED table
     /// PostgresSchemaManager skips the ADD, so registration SUCCEEDS carrying two identically-named
@@ -475,16 +476,68 @@ public sealed class SchemaRegistrationOrchestrator(
     /// </summary>
     private static void RejectReservedTenantName(TypeDescriptor typeDesc)
     {
+        // CLOSED ENUMERATION. Every string on TypeDescriptor (and everything it transitively
+        // contains) that can name a column or become a payload key is either checked here or
+        // recorded below with the construction that makes it unable to reach the reserved name.
+        // Add a name-bearing field to the proto and it belongs in one list or the other.
+        //   CHECKED HERE: Properties[].Name (scalar and key), Relations[].ForeignKey,
+        //     Relations[].PropertyName, Authorization.OwnerField,
+        //     Authorization.FieldPermissions[].FieldName.
+        //   CHECKED ELSEWHERE: TenantField (RejectDeclaredTenantField, run immediately before
+        //     this); DocumentTemplate placeholders ({Prop}, {Rel.Prop}, {#Rel}) —
+        //     RequireScalarProperty resolves scalar names against ScalarColumns with __TenantId
+        //     EXCLUDED, and the relation half resolves against Relations[].PropertyName, which
+        //     this method now covers.
+        //   CANNOT REACH THE NAME BY CONSTRUCTION: TypeName and Relations[].RelatedType are TYPE
+        //     names, never column names — a type named __TenantId cannot register at all
+        //     (ValidateIdentifier forbids a leading underscore), the FK-naming rule derives
+        //     '{RelatedType}Id', never '{RelatedType}', and hydration keys a nav object by
+        //     PropertyName, never by RelatedType. RowPermissions[].Role and FieldPermissions[]
+        //     .Readable/WritableRoles are Authentik group names matched against the caller's
+        //     `groups` claim and are never resolved against a column. Properties[].ModelId /
+        //     ChunkModelId / ExtractHint / Description and TypeDescriptor.Description are free
+        //     text that never becomes an identifier. EnrichmentTargets carry a PROPERTY name
+        //     (SchemaBuilder copies prop.Name), so they are covered by the Properties arm.
+        //     Everything else on the descriptor is a bool or an int32.
         foreach (var property in typeDesc.Properties)
             RejectReservedTenantName(typeDesc.TypeName, property.Name, property.IsKey ? "Key property" : "Property",
                 "Rename the property");
 
         foreach (var relation in typeDesc.Relations)
+        {
             RejectReservedTenantName(typeDesc.TypeName, relation.ForeignKey, "Relation foreign key",
                 "Rename the property");
 
-        RejectReservedTenantName(typeDesc.TypeName, typeDesc.Authorization?.OwnerField, "Owner field",
+            // Ruling 24. NOTHING else covers the navigation-property name: ValidateIdentifier runs
+            // on TypeName and Properties[].Name only, the FK-naming rule constrains ForeignKey
+            // only, and RelationCollisionCheck merely compares the two names to each other — so a
+            // ManyToOne with PropertyName '__TenantId' and a well-formed ForeignKey registers
+            // cleanly. The nav property is not a column, which is exactly why it is dangerous: on a
+            // read at depth > 0, MaskDisallowedFields strips the tenant column and
+            // ResolveRelationsAsync then re-INJECTS the related object under the key '__TenantId',
+            // putting the reserved name back on the wire and defeating the outbound strip. The
+            // client echoes it on the next write and EnforceWriteAuthorization rejects the payload
+            // naming a column the caller never declared.
+            RejectReservedTenantName(typeDesc.TypeName, relation.PropertyName, "Relation navigation property",
+                "Rename the navigation property");
+        }
+
+        if (typeDesc.Authorization is not { } authorization) return;
+
+        RejectReservedTenantName(typeDesc.TypeName, authorization.OwnerField, "Owner field",
             "Point owner_field at a property you declared");
+
+        // Same class as the 'Document' FieldPermission rejection in ValidateDocumentTemplate, and
+        // rejected for the identical reason: the tenant column is deliberately absent from the
+        // allFields set RowFieldAuthorizationEvaluator builds, so a FieldPermission naming it can
+        // never exclude anything. Accepting it silently drops a restriction the caller believes it
+        // declared AND — because `excluded` becomes non-empty — flips the whole type into
+        // field-masking mode as a side effect. Unlike a typo'd field name, this one names a column
+        // that genuinely exists on the descriptor, so the caller has every reason to expect it to
+        // work.
+        foreach (var fieldPermission in authorization.FieldPermissions)
+            RejectReservedTenantName(typeDesc.TypeName, fieldPermission.FieldName, "Field permission",
+                "Point field_name at a property you declared");
     }
 
     private static void RejectReservedTenantName(string typeName, string? name, string label, string remedy)

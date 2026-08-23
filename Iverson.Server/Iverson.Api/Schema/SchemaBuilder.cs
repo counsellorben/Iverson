@@ -180,8 +180,10 @@ internal static class SchemaBuilder
         // engagement query schema, Qdrant payload index) and so TenantColumn always names a real
         // column. TEXT and NOT NULL are both load-bearing:
         //  * TEXT — PostgresSchemaManager's RLS policy compares this column to
-        //    current_setting('app.tenant_id', true), a text comparison, so a non-text column would
-        //    make the policy fail closed. (Until Task 4 this comment also cited
+        //    current_setting('app.tenant_id', true), which returns text. The failure of a non-text
+        //    column is LOUD, not silent: Postgres has no `uuid = text` (or `int = text`) operator,
+        //    so CREATE POLICY itself fails with 42883 and registration fails with it, rather than
+        //    a policy being created that quietly denies every row. (Until Task 4 this comment also cited
         //    SchemaRegistrationOrchestrator.ValidateFieldReference's string-valued allow-list; that
         //    call ran on tenant_field and was deleted, so it no longer applies here.)
         //  * NOT NULL — the write path's silent-overwrite case must fail loudly with a constraint

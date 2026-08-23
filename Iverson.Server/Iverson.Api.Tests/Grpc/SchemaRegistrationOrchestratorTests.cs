@@ -154,6 +154,11 @@ public class SchemaRegistrationOrchestratorTests
         ex.Which.StatusCode.Should().Be(StatusCode.InvalidArgument);
         ex.Which.Status.Detail.Should().Contain("reserved server-owned column name");
         ex.Which.Status.Detail.Should().StartWith("Property '__TenantId' on 'Widget'");
+        // The REMEDY clause, pinned separately from the diagnosis: the actionable half of the
+        // message is the only half a caller can do anything with, and every arm shares the same
+        // "... reserved server-owned column name." prefix, so an arm wearing another arm's remedy
+        // passes every other assertion here.
+        ex.Which.Status.Detail.Should().Contain("Rename the property; the server maintains");
         // Without the guard this falls through to ValidateIdentifier, which rejects the leading
         // underscore with a generic message that never names the reservation.
         ex.Which.Status.Detail.Should().NotContain("must start with a letter");
@@ -185,6 +190,7 @@ public class SchemaRegistrationOrchestratorTests
         ex.Which.StatusCode.Should().Be(StatusCode.InvalidArgument);
         ex.Which.Status.Detail.Should().StartWith("Key property '__TenantId' on 'Widget'");
         ex.Which.Status.Detail.Should().Contain("reserved server-owned column name");
+        ex.Which.Status.Detail.Should().Contain("Rename the property; the server maintains");
     }
 
     [Fact]
@@ -209,6 +215,7 @@ public class SchemaRegistrationOrchestratorTests
         ex.Which.StatusCode.Should().Be(StatusCode.InvalidArgument);
         ex.Which.Status.Detail.Should().StartWith("Relation foreign key '__TenantId' on 'Widget'");
         ex.Which.Status.Detail.Should().Contain("reserved server-owned column name");
+        ex.Which.Status.Detail.Should().Contain("Rename the property; the server maintains");
         ex.Which.Status.Detail.Should().NotContain("which is not a declared property");
     }
 
@@ -234,9 +241,82 @@ public class SchemaRegistrationOrchestratorTests
         ex.Which.StatusCode.Should().Be(StatusCode.InvalidArgument);
         ex.Which.Status.Detail.Should().StartWith("Owner field '__TenantId' on 'Widget'");
         ex.Which.Status.Detail.Should().Contain("reserved server-owned column name");
+        // The REMEDY, pinned: "Rename the property" — the property arm's text — is actively
+        // misleading for an owner_field collision, because there is no property of that name to
+        // rename; the caller has to re-point owner_field instead. Swapping the two texts passed
+        // the entire suite before this assertion existed.
+        ex.Which.Status.Detail.Should().Contain("Point owner_field at a property you declared");
         // Pins that the REGISTRATION-TIME guard rejected it, not some downstream field-reference
         // check — ValidateFieldReference would have RESOLVED this name, not rejected it.
         ex.Which.Status.Detail.Should().NotContain("does not match any declared scalar property");
+        _registry.Get("Widget").Should().BeNull();
+    }
+
+    [Fact]
+    public async Task RegisterAsync_WithARelationNavigationPropertyNamedLikeTheServerOwnedTenantColumn_ThrowsInvalidArgument()
+    {
+        // Ruling 24. The navigation-property name is the FIFTH way to address the reserved name and
+        // is covered by nothing else: ValidateIdentifier runs on TypeName and Properties[].Name
+        // only, the FK-naming rule constrains ForeignKey only, and RelationCollisionCheck merely
+        // compares PropertyName to ForeignKey — so this fixture, whose ForeignKey is the perfectly
+        // legal "AuthorId", registered CLEANLY before this guard existed. The nav property is not a
+        // column, which is the point: at depth > 0 MaskDisallowedFields strips the tenant column and
+        // ResolveRelationsAsync then re-injects the related object under the key __TenantId, putting
+        // the reserved name straight back on the wire.
+        var td = new TypeDescriptor { TypeName = "Widget" };
+        td.Properties.Add(new PropertyDescriptor { Name = "Id", ClrType = ClrType.ClrGuid, IsKey = true });
+        td.Properties.Add(new PropertyDescriptor { Name = "AuthorId", ClrType = ClrType.ClrGuid });
+        td.Relations.Add(new Client.Contracts.RelationDescriptor
+        {
+            PropertyName = SchemaDescriptor.TenantColumnName,
+            Kind = Client.Contracts.RelationKind.ManyToOne,
+            RelatedType = "Author",
+            ForeignKey = "AuthorId",
+        });
+
+        var act = () => _sut.RegisterAsync(new SchemaRequest { RootType = td }, CancellationToken.None);
+
+        var ex = await act.Should().ThrowAsync<RpcException>();
+        ex.Which.StatusCode.Should().Be(StatusCode.InvalidArgument);
+        ex.Which.Status.Detail.Should().StartWith("Relation navigation property '__TenantId' on 'Widget'");
+        ex.Which.Status.Detail.Should().Contain("reserved server-owned column name");
+        ex.Which.Status.Detail.Should().Contain("Rename the navigation property");
+        // Pins that it was the NAV-PROPERTY arm, not the foreign-key arm, that fired — the two now
+        // sit in the same loop, and this fixture's foreign key is legal.
+        ex.Which.Status.Detail.Should().NotStartWith("Relation foreign key");
+        _registry.Get("Widget").Should().BeNull();
+    }
+
+    [Fact]
+    public async Task RegisterAsync_WithAFieldPermissionNamingTheServerOwnedTenantColumn_ThrowsInvalidArgument()
+    {
+        // The sixth and last name-bearing field on TypeDescriptor, found by the closed enumeration
+        // rather than by another review round. Exactly the class ValidateDocumentTemplate already
+        // rejects for a FieldPermission naming 'Document': RowFieldAuthorizationEvaluator builds
+        // allFields with the tenant column deliberately EXCLUDED, so this permission can never
+        // exclude anything — yet it makes `excluded` non-empty, which flips the whole type into
+        // field-masking mode. Accepted, it is a restriction the caller declared and the server
+        // silently did not apply.
+        var td = SimpleType("Widget", "Name");
+        td.Authorization = new Client.Contracts.AuthorizationRules
+        {
+            FieldPermissions =
+            {
+                new Client.Contracts.FieldPermission
+                {
+                    FieldName = SchemaDescriptor.TenantColumnName,
+                    ReadableRoles = { "admin" },
+                },
+            },
+        };
+
+        var act = () => _sut.RegisterAsync(new SchemaRequest { RootType = td }, CancellationToken.None);
+
+        var ex = await act.Should().ThrowAsync<RpcException>();
+        ex.Which.StatusCode.Should().Be(StatusCode.InvalidArgument);
+        ex.Which.Status.Detail.Should().StartWith("Field permission '__TenantId' on 'Widget'");
+        ex.Which.Status.Detail.Should().Contain("reserved server-owned column name");
+        ex.Which.Status.Detail.Should().Contain("Point field_name at a property you declared");
         _registry.Get("Widget").Should().BeNull();
     }
 
@@ -285,6 +365,7 @@ public class SchemaRegistrationOrchestratorTests
         ex.Which.StatusCode.Should().Be(StatusCode.InvalidArgument);
         ex.Which.Status.Detail.Should().StartWith("Property '__TenantId' on 'Author'");
         ex.Which.Status.Detail.Should().Contain("reserved server-owned column name");
+        ex.Which.Status.Detail.Should().Contain("Rename the property; the server maintains");
         _registry.Get("Article").Should().BeNull();
     }
 

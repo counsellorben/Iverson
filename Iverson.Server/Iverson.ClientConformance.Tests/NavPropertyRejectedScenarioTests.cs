@@ -441,12 +441,19 @@ public class NavPropertyRejectedScenarioTests
     [Fact]
     public void JudgeCollision_RejectedForAnUnrelatedReason_FailsTheMessageAssertion_EvenThoughStatusCodeMatches()
     {
-        // The message must be one the SERVER CAN ACTUALLY PRODUCE for this fixture, or the
-        // premise "rejected for an unrelated reason" is fictional and the test grades nothing real.
-        // This is SchemaRegistrationOrchestrator's key-must-be-UUID rejection verbatim — a check
-        // that runs BEFORE the collision loop, so it genuinely can pre-empt it. (It replaces an
-        // invented "'Id' is not a valid identifier" message: that is not the orchestrator's
-        // ValidateIdentifier format, and 'Id' is a VALID identifier, so no server could emit it.)
+        // The message must be one the SERVER ACTUALLY PRODUCES, in its real format, from a check
+        // that genuinely runs BEFORE the collision loop — otherwise the premise "rejected for an
+        // unrelated reason" is fictional and the test grades nothing real. This is
+        // SchemaRegistrationOrchestrator's key-must-be-UUID rejection verbatim, and that check does
+        // precede the collision loop. What it is NOT is a message THIS fixture could elicit:
+        // RegisterCollisionFixtureAsync declares Id as ClrGuid, so the fixture's key is UUID and the
+        // real server would never take that branch for it. That is deliberate and harmless —
+        // JudgeCollision is a pure function of (fixture, exception), so the fixture here only
+        // supplies the type/FK names the message assertion looks for, and pairing it with a
+        // different check's real message is precisely how an unrelated rejection is simulated.
+        // (It replaces an invented "'Id' is not a valid identifier" message, which was not the
+        // orchestrator's ValidateIdentifier format at all and named a VALID identifier, so no
+        // server could emit it in any form.)
         var caught = new RpcException(new Status(
             StatusCode.InvalidArgument,
             $"Key property 'Id' on '{ManyToOneFixture.TypeName}' has SQL type 'TEXT', but a key column " +
