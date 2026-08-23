@@ -14,7 +14,18 @@ public sealed class RowFieldAuthorizationEvaluator : IRowFieldAuthorizationEvalu
         if (actingUser is null)
             return new AuthorizationDecision(true, false, null, null, null, null, null);
 
-        // Tenant is strictly additive: all non-denied paths must have a tenant_id claim and the schema must have a tenant column
+        // Tenant is strictly additive: all non-denied paths must have a tenant_id claim and the
+        // schema must have a tenant column.
+        //
+        // KEPT DELIBERATELY even though SchemaDescriptor.TenantColumn is now non-nullable and
+        // `required`. What SchemaRegistry.LoadAsync does with a legacy row (Ruling 34): it refuses
+        // to admit any descriptor whose TenantColumn is null or empty, so no schema reaching this
+        // evaluator through the registry can trip this check. That makes this the FAIL-CLOSED
+        // BACKSTOP for the one property whose absence opens a boundary rather than throwing —
+        // every other guard this task deleted degraded to an exception when it was wrong, but
+        // deleting THIS one would let a tenant-less descriptor (a hand-constructed one, a future
+        // second rehydration path) produce Denied = false with no tenant scoping at all, silently.
+        // Two lines, no runtime cost, and RowFieldAuthorizationEvaluatorTests pins it.
         if (string.IsNullOrEmpty(schema.TenantColumn))
             return new AuthorizationDecision(true, false, null, null, null, null, null);
         var tenantId = actingUser.FindFirst("tenant_id")?.Value;

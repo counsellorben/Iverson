@@ -99,7 +99,9 @@ public class SchemaBuilderTests
             ChunkFields       = [],
             Relations         = [],
             SearchKeyColumns  = ["Category", "PublishedAt"],
-            LargeFieldColumns = ["Body"]
+            LargeFieldColumns = ["Body"],
+            // Required since Task 7 made SchemaDescriptor.TenantColumn non-nullable.
+            TenantColumn      = SchemaDescriptor.TenantColumnName
         };
 
         var schema = SchemaBuilder.ToEngagementTableSchema(descriptor);

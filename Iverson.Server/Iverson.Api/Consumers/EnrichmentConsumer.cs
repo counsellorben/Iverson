@@ -113,15 +113,12 @@ public sealed class EnrichmentConsumer(
             return;
         }
 
-        // Fail closed, matching EngagementStoreConsumer.cs:55-60. TenantColumn is nullable by
-        // design and a legacy pre-cutover schema still reaches this consumer via
-        // ReconciliationService.ReconcileTypeAsync. Deliberately writes NO state row: with a
-        // null tenant EnterTenantScopeAsync sets app.tenant_id to NULL, the RLS predicate fails
-        // closed and the targeted UPDATE would match zero rows — recording a hash anyway would
-        // mark the object enriched forever while it carried none of the enriched values.
-        var tenantValue = schema.TenantColumn is not null
-            ? ExtractString(row, schema.TenantColumn)
-            : null;
+        // Fail closed when the authoritative row carries no tenant value, and deliberately write
+        // NO state row: with a null tenant EnterTenantScopeAsync sets app.tenant_id to NULL, the
+        // RLS predicate fails closed and the targeted UPDATE would match zero rows — recording a
+        // hash anyway would mark the object enriched forever while it carried none of the
+        // enriched values.
+        var tenantValue = ExtractString(row, schema.TenantColumn);
         if (tenantValue is null)
         {
             logger.LogWarning(
@@ -241,9 +238,7 @@ public sealed class EnrichmentConsumer(
             return;
         }
 
-        var tenantValue = schema.TenantColumn is not null
-            ? ExtractString(payload, schema.TenantColumn)
-            : null;
+        var tenantValue = ExtractString(payload, schema.TenantColumn);
         if (tenantValue is null)
         {
             logger.LogWarning(

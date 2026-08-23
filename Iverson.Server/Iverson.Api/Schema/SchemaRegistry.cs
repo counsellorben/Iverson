@@ -44,9 +44,48 @@ public sealed class SchemaRegistry(
         foreach (var (typeName, json) in rows)
         {
             loadedTypeNames.Add(typeName);
-            var descriptor = JsonSerializer.Deserialize<SchemaDescriptor>(json, s_jsonOptions);
+
+            // THE deserialization boundary. Everything downstream treats SchemaDescriptor's
+            // non-nullable members as real values; this is the only place that can make that true,
+            // because System.Text.Json erases nullable reference-type annotations and a row written
+            // before the tenant column existed (63a577a, 2026-07-17) carries no `tenantColumn` key.
+            // A malformed or legacy row is SKIPPED, not fatal: refusing to boot — or, on the
+            // SchemaRefreshWorker's 30 s poll, throwing out of the whole loop and freezing every
+            // OTHER schema's refresh — would take down a running deployment over one bad row, which
+            // is worse than the writes it enables. A skipped type is simply not registered, and
+            // every RPC and consumer already fails closed on an unregistered type.
+            SchemaDescriptor? descriptor;
+            try
+            {
+                descriptor = JsonSerializer.Deserialize<SchemaDescriptor>(json, s_jsonOptions);
+            }
+            catch (JsonException ex)
+            {
+                logger.LogError(ex,
+                    "Schema '{TypeName}' could not be deserialized from storage and was NOT loaded. " +
+                    "A row missing the server-owned tenant column reads as \"missing required " +
+                    "properties including: 'tenantColumn'\" and predates the tenant boundary; " +
+                    "re-register the type to repair it.",
+                    typeName);
+                continue;
+            }
+
             if (descriptor is not null)
             {
+                // `required` only guarantees the KEY was present — an explicit
+                // "tenantColumn": null still deserializes to null. This is the check that makes
+                // SchemaDescriptor.TenantColumn's non-nullable annotation a runtime fact.
+                if (string.IsNullOrEmpty(descriptor.TenantColumn))
+                {
+                    logger.LogError(
+                        "Schema '{TypeName}' loaded from storage carries no server-owned tenant " +
+                        "column and was NOT registered. It predates the tenant boundary; every " +
+                        "read, write and projection for this type fails closed until it is " +
+                        "re-registered.",
+                        typeName);
+                    continue;
+                }
+
                 // Rehydration bypasses SchemaRegistrationOrchestrator, so a descriptor persisted
                 // before the collision check existed (or otherwise corrupted) can still be sitting
                 // in Postgres. We do NOT refuse to boot on it — failing startup on a legacy schema

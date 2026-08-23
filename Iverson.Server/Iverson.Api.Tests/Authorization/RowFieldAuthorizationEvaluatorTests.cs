@@ -27,6 +27,11 @@ public class RowFieldAuthorizationEvaluatorTests
         return new ClaimsPrincipal(new ClaimsIdentity(claims, "test"));
     }
 
+    // tenantColumn is declared nullable even though SchemaDescriptor.TenantColumn is not, and
+    // assigned through `!` below, deliberately: the evaluator's own IsNullOrEmpty guard exists
+    // precisely BECAUSE a non-nullable annotation is erased at runtime, and the only way to test
+    // that guard is to hand it the runtime null the annotation claims cannot happen. See
+    // Evaluate_SchemaTenantColumnNullAtRuntime_ReturnsDenied.
     private static SchemaDescriptor SchemaWithAuthorization(
         AuthorizationRules? authorization = null,
         string? tenantColumn = "tenant_id",  // Default tenantColumn
@@ -48,7 +53,7 @@ public class RowFieldAuthorizationEvaluatorTests
             ChunkFields = [],
             Relations = relations ?? [],
             Authorization = authorization,
-            TenantColumn = tenantColumn
+            TenantColumn = tenantColumn!
         };
     }
 
@@ -524,8 +529,16 @@ public class RowFieldAuthorizationEvaluatorTests
         result.TenantValue.Should().BeNull();
     }
 
+    /// <summary>
+    /// SchemaDescriptor.TenantColumn is non-nullable and `required` as of Task 7, and roughly a
+    /// dozen downstream null guards were deleted on that basis — but a nullable annotation is a
+    /// COMPILE-TIME contract that System.Text.Json erases, so this evaluator's IsNullOrEmpty
+    /// guard is kept as the fail-closed backstop. It is the one deleted-guard candidate whose
+    /// removal OPENS a boundary (Denied = false with no tenant scoping) rather than throwing.
+    /// The `null!` below is the point of the test, not an oversight.
+    /// </summary>
     [Fact]
-    public void Evaluate_SchemaTenantColumnNull_ReturnsDenied()
+    public void Evaluate_SchemaTenantColumnNullAtRuntime_ReturnsDenied()
     {
         var rules = new AuthorizationRules(
             "OwnerId",

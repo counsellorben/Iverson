@@ -401,21 +401,52 @@ public class DocumentRerenderConsumerTests
 
     // ── Null tenant never reaches EnqueueEntityAsync ────────────────────────
 
+    // RE-POINTED by Task 7, not weakened. It previously registered `CommentSchema() with
+    // { TenantColumn = null }` and asserted DocumentRerenderConsumer's own
+    // `changedSchema.TenantColumn is null` early return enqueued nothing. That branch is gone —
+    // SchemaDescriptor.TenantColumn is non-nullable now — so the test drives the only path that
+    // could ever have produced such a descriptor: SchemaRegistry.LoadAsync rehydrating a
+    // pre-2026-07-17 _iverson_schema row written before the tenant column existed. Same asserted
+    // contract (a tenant-less changed entity enqueues nothing), now with the mechanism that makes
+    // it true asserted alongside it.
     [Fact]
-    public async Task Dispatch_ChangedEntityHasNoTenantColumn_EnqueuesNothing()
+    public async Task Dispatch_ChangedEntityRehydratedWithNoTenantColumn_IsNotRegistered_AndEnqueuesNothing()
     {
-        await _registry.RegisterAsync(WidgetSchema());
-        await _registry.RegisterAsync(CommentSchema() with { TenantColumn = null });
+        var repository = Substitute.For<ISchemaRegistryRepository>();
+        var legacyCommentJson = SerializeSchema(CommentSchema())
+            .Replace(",\"tenantColumn\":\"TenantId\"", "", StringComparison.Ordinal);
+        legacyCommentJson.Should().NotContain("tenantColumn");
+
+        repository.LoadAllAsync().Returns(new List<(string TypeName, string SchemaJson)>
+        {
+            ("Widget",  SerializeSchema(WidgetSchema())),
+            ("Comment", legacyCommentJson)
+        });
+        var registry = new SchemaRegistry(repository, NullLogger<SchemaRegistry>.Instance);
+        await registry.LoadAsync();
+
+        registry.IsRegistered("Widget").Should().BeTrue("one bad row must not drop the good ones");
+        registry.IsRegistered("Comment").Should()
+            .BeFalse("a rehydrated row with no server-owned tenant column must not be admitted");
 
         var payload = $$"""{"Id":"{{CommentId}}","Body":"hi","WidgetId":"{{WidgetId}}"}""";
         _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), CommentId).Returns(payload);
 
         var ev = MakeEvent(EntityEventType.Created, "Comment", CommentId, payload);
 
-        await BuildSut().DispatchAsync(ev.Key, Serialize(ev), CancellationToken.None);
+        var sut = new DocumentRerenderConsumer(
+            _consumer, registry, _entities, _queue, NullLogger<DocumentRerenderConsumer>.Instance);
+        await sut.DispatchAsync(ev.Key, Serialize(ev), CancellationToken.None);
 
         await _queue.DidNotReceiveWithAnyArgs().EnqueueEntityAsync(default, default!, default!);
     }
+
+    // Serializes exactly as SchemaRegistry.RegisterAsync does, so the legacy fixture above is a
+    // real _iverson_schema row minus one key rather than hand-written JSON that could drift.
+    private static string SerializeSchema(SchemaDescriptor descriptor) =>
+        JsonSerializer.Serialize(
+            descriptor,
+            new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase });
 
     // ── Per-dependent error isolation (final-review Finding 6) ─────────────
 

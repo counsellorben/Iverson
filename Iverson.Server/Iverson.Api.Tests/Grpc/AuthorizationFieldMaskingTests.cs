@@ -45,6 +45,10 @@ public sealed class AuthorizationFieldMaskingTests
         VectorFields = [],
         ChunkFields  = [],
         Relations    = [],
+        // "TenantId", not the reserved name: this fixture's tenant boundary sits on the
+        // client-declared column, matching the stubbed decision's TenantColumn below and the
+        // legacy shape these tests exist to cover.
+        TenantColumn = "TenantId",
     };
 
     private static IRowFieldAuthorizationEvaluator EvaluatorReturning(AuthorizationDecision decision)

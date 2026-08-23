@@ -21,6 +21,7 @@ public class DecayFieldResolverTests
         ChunkFields   = [],
         Relations     = [],
         MetadataColumns = metadataColumns,
+        TenantColumn  = SchemaDescriptor.TenantColumnName,
     };
 
     [Fact]

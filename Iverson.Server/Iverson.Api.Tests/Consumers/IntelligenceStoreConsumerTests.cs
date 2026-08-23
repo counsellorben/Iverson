@@ -636,7 +636,11 @@ public class IntelligenceStoreConsumerTests
                 new VectorDescriptor("Summary", 768, "nomic-embed-text")
             ],
             ChunkFields    = [],
-            Relations      = []
+            Relations      = [],
+            // Required since Task 7 made SchemaDescriptor.TenantColumn non-nullable. This fixture
+            // previously omitted it and so exercised the null-TenantColumn branch that no longer
+            // exists; the assertions below are about vector-field fan-out and are unaffected.
+            TenantColumn   = SchemaDescriptor.TenantColumnName
         };
         await _registry.RegisterAsync(twoVectorSchema);
 

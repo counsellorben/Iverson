@@ -245,7 +245,7 @@ public sealed class ObjectMappingGrpcService(
         var schema = RequireSchema(request.TypeName);
 
         var rowJson = await FetchByKeyAsync(schema, request.Key,
-            tenantScoped: schema.TenantColumn is not null,
+            tenantScoped: true,
             tenantId: _actingUserAccessor.ActingUser?.FindFirst("tenant_id")?.Value);
         if (rowJson is null)
             return new MappingResponse
@@ -415,7 +415,7 @@ public sealed class ObjectMappingGrpcService(
         var schema = RequireSchema(request.TypeName);
 
         var rowJson = await FetchByKeyAsync(schema, request.Key,
-            tenantScoped: schema.TenantColumn is not null,
+            tenantScoped: true,
             tenantId: _actingUserAccessor.ActingUser?.FindFirst("tenant_id")?.Value);
         if (rowJson is null)
             return new MappingDeleteResponse

@@ -295,4 +295,90 @@ public class SchemaRegistryTests
         loaded!.DocumentTemplateSource.Should().Be(source);
         loaded.DocumentTemplate.Should().BeEquivalentTo(parsed);
     }
+
+    // ── The deserialization boundary (Task 7) ────────────────────────────────
+    //
+    // SchemaDescriptor.TenantColumn is non-nullable and `required`, and roughly a dozen runtime
+    // null guards were deleted downstream on the strength of that. Neither annotation is a
+    // runtime guarantee across System.Text.Json — these three facts are what make it one, and
+    // they are the only thing standing between an upgraded deployment carrying a pre-2026-07-17
+    // _iverson_schema row (written before 63a577a, when the column did not exist) and a
+    // NullReferenceException on its first read, write or projection.
+
+    /// <summary>
+    /// A legacy row whose JSON has no <c>tenantColumn</c> key at all. `required` makes
+    /// System.Text.Json throw ("missing required properties including: 'tenantColumn'"); LoadAsync
+    /// must contain that to the one row rather than letting it abort the whole load, because the
+    /// same method runs on SchemaRefreshWorker's 30 s poll and a throw there freezes every other
+    /// schema's refresh too.
+    /// </summary>
+    [Fact]
+    public async Task LoadAsync_LegacyRowWithNoTenantColumnKey_IsSkipped_AndDoesNotAbortTheLoad()
+    {
+        var goodJson = SerializeAsRegistryWould(SchemaFixtures.AuthorSchema());
+        var legacyJson = SerializeAsRegistryWould(SchemaFixtures.ArticleSchema())
+            .Replace(",\"tenantColumn\":\"TenantId\"", "", StringComparison.Ordinal);
+        legacyJson.Should().NotContain("tenantColumn", "the fixture must actually reproduce a pre-cutover row");
+
+        _repository.LoadAllAsync().Returns(new List<(string TypeName, string SchemaJson)>
+        {
+            ("Article", legacyJson),
+            ("Author",  goodJson)
+        });
+
+        await _sut.LoadAsync();
+
+        _sut.IsRegistered("Article").Should().BeFalse("a row with no tenant column must never be admitted");
+        _sut.IsRegistered("Author").Should().BeTrue("one bad row must not take the rest of the registry down");
+    }
+
+    /// <summary>
+    /// The half `required` does NOT cover: a row that HAS the key with an explicit null. Measured
+    /// behaviour of System.Text.Json is that this deserializes to null on a `required`
+    /// non-nullable member — `required` checks presence, never non-nullness — so an explicit
+    /// runtime check is mandatory and this test is what pins it.
+    /// </summary>
+    [Fact]
+    public async Task LoadAsync_RowWithExplicitlyNullTenantColumn_IsSkipped()
+    {
+        var nulledJson = SerializeAsRegistryWould(SchemaFixtures.ArticleSchema())
+            .Replace("\"tenantColumn\":\"TenantId\"", "\"tenantColumn\":null", StringComparison.Ordinal);
+        nulledJson.Should().Contain("\"tenantColumn\":null");
+
+        _repository.LoadAllAsync().Returns(new List<(string TypeName, string SchemaJson)>
+        {
+            ("Article", nulledJson)
+        });
+
+        await _sut.LoadAsync();
+
+        _sut.IsRegistered("Article").Should().BeFalse();
+    }
+
+    /// <summary>
+    /// The positive control for both tests above: without it, a LoadAsync that admitted NOTHING
+    /// would satisfy them.
+    /// </summary>
+    [Fact]
+    public async Task LoadAsync_RowCarryingATenantColumn_IsAdmitted()
+    {
+        _repository.LoadAllAsync().Returns(new List<(string TypeName, string SchemaJson)>
+        {
+            ("Article", SerializeAsRegistryWould(SchemaFixtures.ArticleSchema()))
+        });
+
+        await _sut.LoadAsync();
+
+        _sut.IsRegistered("Article").Should().BeTrue();
+        _sut.Get("Article")!.TenantColumn.Should().Be("TenantId");
+    }
+
+    // Serializes exactly as SchemaRegistry.RegisterAsync does, so the fixtures above are real
+    // _iverson_schema rows minus/with the one key under test rather than hand-written JSON that
+    // could drift from the shape LoadAsync actually meets.
+    private static string SerializeAsRegistryWould(SchemaDescriptor descriptor) =>
+        System.Text.Json.JsonSerializer.Serialize(
+            descriptor,
+            new System.Text.Json.JsonSerializerOptions
+                { PropertyNamingPolicy = System.Text.Json.JsonNamingPolicy.CamelCase });
 }

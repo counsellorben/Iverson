@@ -114,9 +114,8 @@ public sealed class IntelligenceStoreConsumer(
         // so it must come from the authoritative Postgres row, not the unsigned event payload.
         // Computed unconditionally (not gated on VectorFields.Count > 0) because a chunks-only
         // schema needs it too — both the vector- and chunk-upsert blocks below reuse this value.
-        var authoritativeTenantValue = schema.TenantColumn is not null
-            ? await FetchAuthoritativeOwnerValueAsync(schema, schema.TenantColumn, ev.Key, ct)
-            : null;
+        var authoritativeTenantValue =
+            await FetchAuthoritativeOwnerValueAsync(schema, schema.TenantColumn, ev.Key, ct);
 
         // ── Named vector upsert (entity-level embeddings) ──────────────────────
         var objectPointWritten = false;
@@ -184,8 +183,8 @@ public sealed class IntelligenceStoreConsumer(
                     string? text;
                     if (cf.PropertyName == "Document")
                     {
-                        // authoritativeTenantValue can be null independent of whether the type
-                        // even declares a TenantColumn — FetchAuthoritativeOwnerValueAsync also
+                        // authoritativeTenantValue can still be null even though every registered
+                        // type carries a tenant column — FetchAuthoritativeOwnerValueAsync
                         // returns null when the authoritative Postgres row is gone by the time
                         // this event is processed. That is still safe to render through: a null
                         // tenant becomes a SQL NULL RLS GUC, so relation fetches return zero rows
@@ -514,7 +513,7 @@ public sealed class IntelligenceStoreConsumer(
             throw new PoisonMessageException($"[Intelligence] Malformed payload JSON type={ev.TypeName} key={key}", ex);
         }
 
-        var tenantValue = schema.TenantColumn is not null ? ExtractString(payload, schema.TenantColumn) : null;
+        var tenantValue = ExtractString(payload, schema.TenantColumn);
 
         var pointId = KeyToUlong(ev.Key);
 

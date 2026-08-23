@@ -34,7 +34,7 @@ public sealed class ObjectRetrievalGrpcService(
         var rowJson = await _entities.FetchByKeyAsync(
             SchemaBuilder.ToTableSchema(schema),
             request.Key,
-            tenantScoped: schema.TenantColumn is not null,
+            tenantScoped: true,
             tenantId: actingUserAccessor.ActingUser?.FindFirst("tenant_id")?.Value);
 
         if (rowJson is null)

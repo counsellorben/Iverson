@@ -119,8 +119,6 @@ public sealed class DocumentRerenderConsumer(
 
     private async Task<string?> ResolveTenantIdAsync(EntityEvent ev, SchemaDescriptor changedSchema, CancellationToken ct)
     {
-        if (changedSchema.TenantColumn is null) return null;
-
         if (ev.EventType == EntityEventType.Deleted)
         {
             // The row is already gone from Postgres by the time a delete event is consumed —

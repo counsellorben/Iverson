@@ -25,7 +25,8 @@ public class RelationValidatorTests
         FkColumns     = [],
         VectorFields  = [],
         ChunkFields   = [],
-        Relations     = [new RelationDescriptor("Author", kind, "Author", "AuthorId")]
+        Relations     = [new RelationDescriptor("Author", kind, "Author", "AuthorId")],
+        TenantColumn  = SchemaDescriptor.TenantColumnName
     };
 
     [Fact]
