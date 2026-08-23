@@ -1,5 +1,6 @@
 using System.Security.Claims;
 using FluentAssertions;
+using Grpc.Core;
 using Google.Protobuf.WellKnownTypes;
 using Iverson.Api.Authorization;
 using Iverson.Api.Grpc;
@@ -314,5 +315,159 @@ public sealed class AuthorizationFieldMaskingTests
             new AuditLog(NullLogger<AuditLog>.Instance));
 
         payload.Fields["TenantId"].StringValue.Should().Be("tenant-from-token");
+    }
+
+    // ── Task 4 rejection 3 of 3: the server-owned tenant column in a write payload ────────────
+
+    private static SchemaDescriptor ServerOwnedTenantSchema() => new()
+    {
+        TypeName      = "BenchmarkTag",
+        TableName     = "benchmark_tags",
+        KeyColumn     = new ColumnDescriptor("Id", "UUID", false),
+        ScalarColumns =
+        [
+            new ColumnDescriptor("Name", "VARCHAR(255)", false),
+            new ColumnDescriptor(SchemaDescriptor.TenantColumnName, "TEXT", false),
+        ],
+        FkColumns    = [],
+        VectorFields = [],
+        ChunkFields  = [],
+        Relations    = [],
+        TenantColumn = SchemaDescriptor.TenantColumnName,
+    };
+
+    private static RpcException EnforceAndCatch(Struct payload, AuthorizationDecision decision, string? existingRowJson)
+    {
+        var act = () => AuthorizationFieldMasking.EnforceWriteAuthorization(
+            EvaluatorReturning(decision),
+            new ClaimsPrincipal(new ClaimsIdentity([new Claim("sub", "user-1")], "test")),
+            ServerOwnedTenantSchema(),
+            payload,
+            AuthorizationAction.Write,
+            "Not authorized to create this entity.",
+            existingRowJson,
+            new AuditLog(NullLogger<AuditLog>.Instance));
+
+        return act.Should().Throw<RpcException>().Which;
+    }
+
+    private static AuthorizationDecision Allowed() => new(
+        Denied: false, OwnershipRequired: false, OwnerFieldName: null, OwnerValue: null,
+        AllowedFields: null, TenantColumn: SchemaDescriptor.TenantColumnName, TenantValue: "tenant-from-token");
+
+    [Fact]
+    public void EnforceWriteAuthorization_PayloadCarryingTheServerOwnedTenantColumn_ThrowsInvalidArgument()
+    {
+        var payload = new Struct
+        {
+            Fields =
+            {
+                ["Id"] = Value.ForString("tag-1"),
+                [SchemaDescriptor.TenantColumnName] = Value.ForString("attacker-supplied-tenant"),
+            }
+        };
+
+        var ex = EnforceAndCatch(payload, Allowed(), existingRowJson: null);
+
+        ex.StatusCode.Should().Be(StatusCode.InvalidArgument);
+        // The MESSAGE, not just the status: RejectDisallowedFields also throws InvalidArgument
+        // from this same method, so a status-only assertion would not distinguish them.
+        ex.Status.Detail.Should().Contain("__TenantId");
+        ex.Status.Detail.Should().Contain("reserved server-owned column");
+    }
+
+    [Fact]
+    public void EnforceWriteAuthorization_UpdatePayloadCarryingTheServerOwnedTenantColumn_ThrowsInvalidArgument()
+    {
+        // Unconditional and independent of the update-branch immutability check below it, which
+        // only fires when the smuggled value DIFFERS from the caller's own tenant. Here the value
+        // matches exactly, so the immutability check would wave it through.
+        var payload = new Struct
+        {
+            Fields =
+            {
+                ["Id"] = Value.ForString("tag-1"),
+                [SchemaDescriptor.TenantColumnName] = Value.ForString("tenant-from-token"),
+            }
+        };
+
+        var ex = EnforceAndCatch(
+            payload, Allowed(),
+            existingRowJson: """{"Id":"tag-1","Name":"old","__TenantId":"tenant-from-token"}""");
+
+        ex.StatusCode.Should().Be(StatusCode.InvalidArgument);
+        ex.Status.Detail.Should().Contain("reserved server-owned column");
+    }
+
+    [Fact]
+    public void EnforceWriteAuthorization_RecasedTenantColumnInPayload_ThrowsInvalidArgument()
+    {
+        // Case-insensitive, so the reservation cannot be smuggled past by re-casing — which
+        // SetAuthoritativeField's canonical-casing fixup would otherwise absorb silently.
+        var payload = new Struct
+        {
+            Fields =
+            {
+                ["Id"] = Value.ForString("tag-1"),
+                ["__tenantid"] = Value.ForString("attacker-supplied-tenant"),
+            }
+        };
+
+        var ex = EnforceAndCatch(payload, Allowed(), existingRowJson: null);
+
+        ex.StatusCode.Should().Be(StatusCode.InvalidArgument);
+        ex.Status.Detail.Should().Contain("__tenantid");
+    }
+
+    [Fact]
+    public void EnforceWriteAuthorization_DeniedCallerSmugglingTheTenantColumn_StillGetsInvalidArgument()
+    {
+        // Ruling 17: the check is a malformed-request check independent of identity, so it runs
+        // BEFORE authEvaluator.Evaluate. Placed after it, this caller would get PermissionDenied
+        // and the malformed field would be masked entirely — making the InvalidArgument contract
+        // conditional on authorization.
+        var payload = new Struct
+        {
+            Fields =
+            {
+                ["Id"] = Value.ForString("tag-1"),
+                [SchemaDescriptor.TenantColumnName] = Value.ForString("attacker-supplied-tenant"),
+            }
+        };
+
+        var ex = EnforceAndCatch(
+            payload,
+            new AuthorizationDecision(
+                Denied: true, OwnershipRequired: false, OwnerFieldName: null, OwnerValue: null,
+                AllowedFields: null, TenantColumn: null, TenantValue: null),
+            existingRowJson: null);
+
+        ex.StatusCode.Should().Be(StatusCode.InvalidArgument);
+        ex.StatusCode.Should().NotBe(StatusCode.PermissionDenied);
+        ex.Status.Detail.Should().Contain("reserved server-owned column");
+    }
+
+    [Fact]
+    public void EnforceWriteAuthorization_PayloadWithoutTheTenantColumn_IsUnaffected()
+    {
+        // The negative control: the guard must not reject an ordinary payload, and the tenant
+        // column the server force-sets afterwards must survive its own check.
+        var payload = new Struct
+        {
+            Fields = { ["Id"] = Value.ForString("tag-1"), ["Name"] = Value.ForString("wptag-1") }
+        };
+
+        var act = () => AuthorizationFieldMasking.EnforceWriteAuthorization(
+            EvaluatorReturning(Allowed()),
+            new ClaimsPrincipal(new ClaimsIdentity([new Claim("sub", "user-1")], "test")),
+            ServerOwnedTenantSchema(),
+            payload,
+            AuthorizationAction.Write,
+            "Not authorized to create this entity.",
+            existingRowJson: null,
+            new AuditLog(NullLogger<AuditLog>.Instance));
+
+        act.Should().NotThrow();
+        payload.Fields[SchemaDescriptor.TenantColumnName].StringValue.Should().Be("tenant-from-token");
     }
 }

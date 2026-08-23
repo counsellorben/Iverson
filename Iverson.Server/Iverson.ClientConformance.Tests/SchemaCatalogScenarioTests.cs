@@ -37,7 +37,7 @@ public class SchemaCatalogScenarioTests
 
     private static TypeDescriptor Descriptor(string typeName, params string[] propertyNames)
     {
-        var descriptor = new TypeDescriptor { TypeName = typeName, TenantField = "TenantId" };
+        var descriptor = new TypeDescriptor { TypeName = typeName };
         foreach (var name in propertyNames)
         {
             descriptor.Properties.Add(new PropertyDescriptor

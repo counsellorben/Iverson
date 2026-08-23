@@ -52,7 +52,7 @@ public sealed class EngagementStoreConsumer(
             return;
         }
 
-        // tenant_field is mandatory on every newly-registered schema (Part A), but
+        // Every newly-registered schema carries the server-owned tenant column, but
         // schema.TenantColumn can still be null for a legacy pre-cutover schema — e.g. when
         // ReconciliationService.ReconcileTypeAsync republishes events for such a schema,
         // bypassing the normal authorization evaluator that would otherwise deny them. Treat a

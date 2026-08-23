@@ -416,8 +416,10 @@ export function describeEntity(cls: Function): TypeDescriptor {
         properties,
         relations: relationDescriptors,
         authorization: undefined,
-        // The tenant column is server-owned: no client declares a tenant field, and the field is
-        // still required by the generated type, so it is sent empty.
+        // The tenant column is server-owned: no client declares a tenant field. The server
+        // REJECTS a non-empty tenant_field with InvalidArgument, and ts-proto types the field as
+        // required (proto field 5 stays declared for wire compatibility), so it is sent empty —
+        // which is exactly what the other four clients send by omitting it.
         tenantField: '',
         description: getTypeDescription(cls),
     };

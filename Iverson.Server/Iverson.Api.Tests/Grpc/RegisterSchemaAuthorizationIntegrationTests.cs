@@ -74,7 +74,8 @@ public sealed class AllStoresContainerFixture : IAsyncLifetime
 
         // Mirrors Program.cs startup ordering: the iverson_runtime role must exist before any
         // ApplySchemaAsync call that GRANTs to it for a tenant-scoped table (this fixture's tests
-        // register schemas with a TenantField set).
+        // register tenant-scoped schemas — every schema is tenant-scoped now that the server
+        // owns the column).
         await PostgresSchemaManager.EnsureRuntimeRoleAsync();
 
         var qdrantClient = new QdrantClient(
@@ -242,7 +243,6 @@ public sealed class RegisterSchemaAuthorizationIntegrationTests(AllStoresContain
             OwnerField = "OwnerId",
             RowPermissions = { new Client.Contracts.RowPermission { Role = "admin", CanReadAll = true } }
         };
-        typeDesc.TenantField = "TenantId";
 
         var response = await sut.RegisterSchema(
             new SchemaRequest { RootType = typeDesc },

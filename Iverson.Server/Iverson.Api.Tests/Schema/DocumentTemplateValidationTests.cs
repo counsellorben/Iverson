@@ -44,7 +44,7 @@ public class DocumentTemplateValidationTests
     {
         var td = new TypeDescriptor
         {
-            TypeName = "Widget", TenantField = "TenantId", DocumentTemplate = documentTemplate
+            TypeName = "Widget", DocumentTemplate = documentTemplate
         };
         td.Properties.Add(new PropertyDescriptor { Name = "Id", ClrType = ClrType.ClrGuid, IsKey = true });
         td.Properties.Add(new PropertyDescriptor { Name = "TenantId", ClrType = ClrType.ClrString });
@@ -54,7 +54,7 @@ public class DocumentTemplateValidationTests
 
     private static TypeDescriptor SimpleType(string name, params string[] extraScalars)
     {
-        var td = new TypeDescriptor { TypeName = name, TenantField = "TenantId" };
+        var td = new TypeDescriptor { TypeName = name };
         td.Properties.Add(new PropertyDescriptor { Name = "Id", ClrType = ClrType.ClrGuid, IsKey = true });
         td.Properties.Add(new PropertyDescriptor { Name = "TenantId", ClrType = ClrType.ClrString });
         foreach (var s in extraScalars)

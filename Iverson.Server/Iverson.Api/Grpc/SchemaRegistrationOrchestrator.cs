@@ -39,6 +39,13 @@ public sealed class SchemaRegistrationOrchestrator(
 
         foreach (var typeDesc in new[] { request.RootType }.Concat(request.Dependents))
         {
+            // Both checks below run on the INBOUND typeDesc, never on the built SchemaDescriptor:
+            // SchemaBuilder.BuildDescriptor injects the server-owned tenant column into every
+            // descriptor it produces, so the same checks applied afterwards would reject every
+            // registration on the server's own column.
+            RejectDeclaredTenantField(typeDesc);
+            RejectReservedTenantName(typeDesc);
+
             ValidateIdentifier(typeDesc.TypeName, "type_name");
             foreach (var property in typeDesc.Properties)
                 ValidateIdentifier(property.Name, $"property name on type '{typeDesc.TypeName}'");
@@ -75,16 +82,6 @@ public sealed class SchemaRegistrationOrchestrator(
             var ownerField = descriptor.Authorization?.OwnerField;
             if (!string.IsNullOrEmpty(ownerField))
                 ValidateFieldReference(descriptor, ownerField, "owner_field");
-
-            // tenant_field is MANDATORY (unlike owner_field): every schema must declare a
-            // platform-enforced tenant boundary, independent of whatever AuthorizationRules
-            // it configures.
-            if (string.IsNullOrEmpty(descriptor.TenantColumn))
-            {
-                throw new RpcException(new Status(StatusCode.InvalidArgument,
-                    $"tenant_field is required on '{descriptor.TypeName}'."));
-            }
-            ValidateFieldReference(descriptor, descriptor.TenantColumn, "tenant_field");
 
             // The key column is compared against a uuid parameter in every EntityRepository
             // predicate (FetchByKey/FetchMany/FetchByColumn/Delete/Update). A non-UUID key
@@ -423,9 +420,65 @@ public sealed class SchemaRegistrationOrchestrator(
         return target;
     }
 
-    // Shared by owner_field (optional) and tenant_field (mandatory) — both name a scalar
-    // property that must resolve to a real column, be string-valued (Qdrant filtering requires
-    // it), and not collide with a reserved chunk-payload key.
+    // Used by owner_field (optional) only — tenant_field is no longer a field reference at all,
+    // it is rejected outright by RejectDeclaredTenantField. owner_field must name a scalar
+    // property that resolves to a real column, is string-valued (Qdrant filtering requires
+    // it), and does not collide with a reserved chunk-payload key.
+    /// <summary>
+    /// The server owns the tenant boundary outright: SchemaBuilder injects
+    /// <see cref="SchemaDescriptor.TenantColumnName"/> into every descriptor and the acting
+    /// user's identity supplies the value. A client-declared <c>tenant_field</c> therefore has
+    /// no meaning, and silently ignoring one would leave the caller believing its declaration
+    /// is enforcing a boundary the server derives for itself. Proto field 5 stays declared for
+    /// wire compatibility; setting it is an error.
+    /// </summary>
+    private static void RejectDeclaredTenantField(TypeDescriptor typeDesc)
+    {
+        if (string.IsNullOrEmpty(typeDesc.TenantField)) return;
+
+        throw new RpcException(new Status(StatusCode.InvalidArgument,
+            $"tenant_field is no longer accepted, but '{typeDesc.TypeName}' declares "
+            + $"'{typeDesc.TenantField}'. The server owns the tenant boundary and derives a row's "
+            + "tenant from the acting user's identity. Remove the declaration from your client model."));
+    }
+
+    /// <summary>
+    /// Rejects a client that declares a property, key or relation foreign key named
+    /// <see cref="SchemaDescriptor.TenantColumnName"/>. Without this the name collides with the
+    /// server's injected column: on a table that does not yet exist that is a loud duplicate-column
+    /// DDL failure, but on an ALREADY-CREATED table PostgresSchemaManager skips the ADD, so
+    /// registration SUCCEEDS carrying two identically-named ColumnDescriptors and the client's own
+    /// property silently never round-trips and is invisible in GetSchema.
+    /// <para>
+    /// Deliberately placed BEFORE <c>ValidateIdentifier</c>. A property named "__TenantId" would
+    /// otherwise be rejected by the identifier pattern (which forbids a leading underscore) with a
+    /// generic "not a valid identifier" message that never tells the caller the name is reserved.
+    /// The foreign-key arm is not covered by ValidateIdentifier at all — relation names are never
+    /// identifier-checked — and would otherwise surface at the FK lookup as a misleading
+    /// "which is not a declared property".
+    /// </para>
+    /// </summary>
+    private static void RejectReservedTenantName(TypeDescriptor typeDesc)
+    {
+        foreach (var property in typeDesc.Properties)
+            RejectReservedTenantName(typeDesc.TypeName, property.Name, property.IsKey ? "Key property" : "Property");
+
+        foreach (var relation in typeDesc.Relations)
+            RejectReservedTenantName(typeDesc.TypeName, relation.ForeignKey, "Relation foreign key");
+    }
+
+    private static void RejectReservedTenantName(string typeName, string name, string label)
+    {
+        // Case-insensitive via SchemaDescriptor.IsTenantColumn — the single production definition
+        // of the name — so the reservation cannot be smuggled past by re-casing.
+        if (string.IsNullOrEmpty(name) || !SchemaDescriptor.IsTenantColumn(name)) return;
+
+        throw new RpcException(new Status(StatusCode.InvalidArgument,
+            $"{label} '{name}' on '{typeName}' uses '{SchemaDescriptor.TenantColumnName}', which is a "
+            + "reserved server-owned column name. Rename the property; the server maintains the tenant "
+            + "column itself."));
+    }
+
     private static void ValidateFieldReference(
         SchemaDescriptor descriptor,
         string fieldName,

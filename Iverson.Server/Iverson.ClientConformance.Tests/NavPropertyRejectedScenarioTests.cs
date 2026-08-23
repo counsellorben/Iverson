@@ -443,7 +443,7 @@ public class NavPropertyRejectedScenarioTests
     {
         var caught = new RpcException(new Status(
             StatusCode.InvalidArgument,
-            $"tenant_field is required on '{ManyToOneFixture.TypeName}'."));
+            $"Key property 'Id' on '{ManyToOneFixture.TypeName}' is not a valid identifier."));
         var results = new[] { (ManyToOneFixture, (RpcException?)caught) };
 
         var assertions = NavPropertyRejectedScenario.JudgeCollision(results);

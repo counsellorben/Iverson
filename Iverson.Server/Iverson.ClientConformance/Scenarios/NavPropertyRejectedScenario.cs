@@ -314,7 +314,6 @@ public sealed class NavPropertyRejectedScenario(
         var descriptor = new TypeDescriptor
         {
             TypeName = fixture.TypeName,
-            TenantField = "TenantId",
             Properties = { properties },
             Relations =
             {
@@ -339,7 +338,6 @@ public sealed class NavPropertyRejectedScenario(
         var descriptor = new TypeDescriptor
         {
             TypeName = TypeName,
-            TenantField = "TenantId",
             Authorization = new AuthorizationRules
             {
                 OwnerField = "OwnerId",

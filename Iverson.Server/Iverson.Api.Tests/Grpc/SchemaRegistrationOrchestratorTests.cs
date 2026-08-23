@@ -36,7 +36,7 @@ public class SchemaRegistrationOrchestratorTests
 
     private static TypeDescriptor SimpleType(string name, params string[] extraScalars)
     {
-        var td = new TypeDescriptor { TypeName = name, TenantField = "TenantId" };
+        var td = new TypeDescriptor { TypeName = name };
         td.Properties.Add(new PropertyDescriptor { Name = "Id", ClrType = ClrType.ClrGuid, IsKey = true });
         td.Properties.Add(new PropertyDescriptor { Name = "TenantId", ClrType = ClrType.ClrString });
         foreach (var s in extraScalars)
@@ -56,17 +56,18 @@ public class SchemaRegistrationOrchestratorTests
         ex.Which.StatusCode.Should().Be(StatusCode.InvalidArgument);
     }
 
-    // Task 1 of the remove-IversonTenant plan changed all three of the tests below. Before Task 1
-    // the server DERIVED the tenant column from the client's tenant_field, so:
+    // Task 1 of the remove-IversonTenant plan changed all three of the tests below; Task 4 moved
+    // them again, as that comment predicted. Before Task 1 the server DERIVED the tenant column
+    // from the client's tenant_field, so:
     //   * RegisterAsync_WithMissingTenantField_ThrowsInvalidArgument asserted that a type with no
     //     tenant_field was rejected with InvalidArgument;
     //   * RegisterAsync_WithInvalidTenantField_ThrowsInvalidArgument asserted that a tenant_field
     //     naming an undeclared property was rejected with InvalidArgument;
     //   * RegisterAsync_WithValidTenantField_Registers asserted TenantColumn == "TenantId".
-    // The server now owns the column outright, so none of those three derivations exists any more.
-    // They are re-pointed at the replacement behaviour rather than deleted. Task 4 turns the
-    // (now-dead) "tenant_field is required" guard into an outright REJECTION of any client that
-    // declares one; these tests move again then.
+    // Task 1 re-pointed all three at "the declaration is ignored". Task 4 stops ignoring it and
+    // REJECTS it, so the two that asserted a successful registration of a tenant_field-carrying
+    // descriptor now assert the rejection instead; the third keeps its surviving claim (a client
+    // property that happens to be named TenantId is an ordinary scalar) with the declaration gone.
 
     [Fact]
     public async Task RegisterAsync_WithNoTenantFieldDeclared_Registers_WithTheServerOwnedTenantColumn()
@@ -81,25 +82,51 @@ public class SchemaRegistrationOrchestratorTests
         _registry.Get("Widget")!.TenantColumn.Should().Be(SchemaDescriptor.TenantColumnName);
     }
 
+    // Task 4 rejection 1 of 3: a non-empty tenant_field on the INBOUND TypeDescriptor.
     [Fact]
-    public async Task RegisterAsync_WithATenantFieldNamingNothing_Registers_AndTheDeclarationIsIgnored()
+    public async Task RegisterAsync_WithADeclaredTenantField_ThrowsInvalidArgument()
     {
-        // "DoesNotExist" used to fail ValidateFieldReference. The client's tenant_field no longer
-        // feeds that validation at all, so it can name anything (or nothing) without effect.
+        var td = new TypeDescriptor { TypeName = "Widget", TenantField = "TenantId" };
+        td.Properties.Add(new PropertyDescriptor { Name = "Id", ClrType = ClrType.ClrGuid, IsKey = true });
+        td.Properties.Add(new PropertyDescriptor { Name = "TenantId", ClrType = ClrType.ClrString });
+
+        var act = () => _sut.RegisterAsync(new SchemaRequest { RootType = td }, CancellationToken.None);
+
+        var ex = await act.Should().ThrowAsync<RpcException>();
+        ex.Which.StatusCode.Should().Be(StatusCode.InvalidArgument);
+        // The MESSAGE, not just the status: every other guard in RegisterAsync also throws
+        // InvalidArgument, so a status-only assertion would pass under any of them.
+        ex.Which.Status.Detail.Should().Contain("tenant_field is no longer accepted");
+        ex.Which.Status.Detail.Should().Contain("'TenantId'");
+        // Nothing was registered — the rejection runs before BuildDescriptor.
+        _registry.Get("Widget").Should().BeNull();
+    }
+
+    [Fact]
+    public async Task RegisterAsync_WithATenantFieldNamingNothing_ThrowsInvalidArgument()
+    {
+        // "DoesNotExist" used to fail ValidateFieldReference, then (Task 1) registered silently.
+        // It is now rejected for the same reason any other tenant_field is: the field is set at
+        // all. Pinning the message proves it is the new rule doing the rejecting and not a
+        // resurrected field-reference validation.
         var td = new TypeDescriptor { TypeName = "Widget", TenantField = "DoesNotExist" };
         td.Properties.Add(new PropertyDescriptor { Name = "Id", ClrType = ClrType.ClrGuid, IsKey = true });
         td.Properties.Add(new PropertyDescriptor { Name = "Name", ClrType = ClrType.ClrString });
 
-        await _sut.RegisterAsync(new SchemaRequest { RootType = td }, CancellationToken.None);
+        var act = () => _sut.RegisterAsync(new SchemaRequest { RootType = td }, CancellationToken.None);
 
-        var descriptor = _registry.Get("Widget")!;
-        descriptor.TenantColumn.Should().Be(SchemaDescriptor.TenantColumnName);
-        descriptor.ScalarColumns.Select(c => c.Name).Should().NotContain("DoesNotExist");
+        var ex = await act.Should().ThrowAsync<RpcException>();
+        ex.Which.StatusCode.Should().Be(StatusCode.InvalidArgument);
+        ex.Which.Status.Detail.Should().Contain("tenant_field is no longer accepted");
+        ex.Which.Status.Detail.Should().NotContain("does not match any declared scalar property");
     }
 
     [Fact]
-    public async Task RegisterAsync_WithValidTenantField_Registers_ButTheServerOwnedColumnStillWins()
+    public async Task RegisterAsync_WithAPropertyNamedTenantId_Registers_AsAnOrdinaryScalar()
     {
+        // A client property that merely happens to be called "TenantId" is legal and unremarkable:
+        // the reserved name is "__TenantId", not this. It survives as an ordinary scalar and is
+        // simply not the tenant boundary.
         var td = SimpleType("Widget", "Name");
 
         var registered = await _sut.RegisterAsync(new SchemaRequest { RootType = td }, CancellationToken.None);
@@ -107,9 +134,82 @@ public class SchemaRegistrationOrchestratorTests
         registered.Should().Contain("Widget");
         var descriptor = _registry.Get("Widget")!;
         descriptor.TenantColumn.Should().Be(SchemaDescriptor.TenantColumnName);
-        // The client's own "TenantId" property survives as an ordinary scalar — it is simply no
-        // longer the tenant boundary. (Task 4 rejects the declaration outright.)
         descriptor.ScalarColumns.Select(c => c.Name).Should().Contain("TenantId");
+    }
+
+    // Task 4 rejection 2 of 3: a declared property/key/foreign key named __TenantId. Ruling 9 —
+    // this is a DIFFERENT condition from a populated tenant_field and a guard for one does not
+    // imply the other, so each has its own test. Every fixture here sends the name through the
+    // proto TypeDescriptor, never by constructing a SchemaDescriptor directly.
+    [Fact]
+    public async Task RegisterAsync_WithAScalarPropertyNamedLikeTheServerOwnedTenantColumn_ThrowsInvalidArgument()
+    {
+        var td = new TypeDescriptor { TypeName = "Widget" };
+        td.Properties.Add(new PropertyDescriptor { Name = "Id", ClrType = ClrType.ClrGuid, IsKey = true });
+        td.Properties.Add(new PropertyDescriptor { Name = SchemaDescriptor.TenantColumnName, ClrType = ClrType.ClrString });
+
+        var act = () => _sut.RegisterAsync(new SchemaRequest { RootType = td }, CancellationToken.None);
+
+        var ex = await act.Should().ThrowAsync<RpcException>();
+        ex.Which.StatusCode.Should().Be(StatusCode.InvalidArgument);
+        ex.Which.Status.Detail.Should().Contain("reserved server-owned column name");
+        ex.Which.Status.Detail.Should().StartWith("Property '__TenantId' on 'Widget'");
+        // Without the guard this falls through to ValidateIdentifier, which rejects the leading
+        // underscore with a generic message that never names the reservation.
+        ex.Which.Status.Detail.Should().NotContain("must start with a letter");
+    }
+
+    [Fact]
+    public async Task RegisterAsync_WithADifferentlyCasedTenantColumnProperty_ThrowsInvalidArgument()
+    {
+        var td = new TypeDescriptor { TypeName = "Widget" };
+        td.Properties.Add(new PropertyDescriptor { Name = "Id", ClrType = ClrType.ClrGuid, IsKey = true });
+        td.Properties.Add(new PropertyDescriptor { Name = "__tenantid", ClrType = ClrType.ClrString });
+
+        var act = () => _sut.RegisterAsync(new SchemaRequest { RootType = td }, CancellationToken.None);
+
+        var ex = await act.Should().ThrowAsync<RpcException>();
+        ex.Which.Status.Detail.Should().Contain("reserved server-owned column name");
+    }
+
+    [Fact]
+    public async Task RegisterAsync_WithAKeyPropertyNamedLikeTheServerOwnedTenantColumn_ThrowsInvalidArgument()
+    {
+        var td = new TypeDescriptor { TypeName = "Widget" };
+        td.Properties.Add(new PropertyDescriptor
+            { Name = SchemaDescriptor.TenantColumnName, ClrType = ClrType.ClrGuid, IsKey = true });
+
+        var act = () => _sut.RegisterAsync(new SchemaRequest { RootType = td }, CancellationToken.None);
+
+        var ex = await act.Should().ThrowAsync<RpcException>();
+        ex.Which.StatusCode.Should().Be(StatusCode.InvalidArgument);
+        ex.Which.Status.Detail.Should().StartWith("Key property '__TenantId' on 'Widget'");
+        ex.Which.Status.Detail.Should().Contain("reserved server-owned column name");
+    }
+
+    [Fact]
+    public async Task RegisterAsync_WithARelationForeignKeyNamedLikeTheServerOwnedTenantColumn_ThrowsInvalidArgument()
+    {
+        // The foreign-key arm is the one ValidateIdentifier does NOT cover — relation names are
+        // never identifier-checked — so without this guard it reaches the FK lookup and is
+        // rejected as "not a declared property", which is a misleading answer.
+        var td = new TypeDescriptor { TypeName = "Widget" };
+        td.Properties.Add(new PropertyDescriptor { Name = "Id", ClrType = ClrType.ClrGuid, IsKey = true });
+        td.Relations.Add(new Client.Contracts.RelationDescriptor
+        {
+            PropertyName = "Author",
+            Kind = Client.Contracts.RelationKind.ManyToOne,
+            RelatedType = "Author",
+            ForeignKey = SchemaDescriptor.TenantColumnName,
+        });
+
+        var act = () => _sut.RegisterAsync(new SchemaRequest { RootType = td }, CancellationToken.None);
+
+        var ex = await act.Should().ThrowAsync<RpcException>();
+        ex.Which.StatusCode.Should().Be(StatusCode.InvalidArgument);
+        ex.Which.Status.Detail.Should().StartWith("Relation foreign key '__TenantId' on 'Widget'");
+        ex.Which.Status.Detail.Should().Contain("reserved server-owned column name");
+        ex.Which.Status.Detail.Should().NotContain("which is not a declared property");
     }
 
     [Fact]
@@ -145,7 +245,7 @@ public class SchemaRegistrationOrchestratorTests
     [Fact]
     public async Task RegisterAsync_WithGuidTypedOwnerField_DoesNotThrow()
     {
-        var td = new TypeDescriptor { TypeName = "Widget", TenantField = "TenantId" };
+        var td = new TypeDescriptor { TypeName = "Widget" };
         td.Properties.Add(new PropertyDescriptor { Name = "Id", ClrType = ClrType.ClrGuid, IsKey = true });
         td.Properties.Add(new PropertyDescriptor { Name = "OwnerId", ClrType = ClrType.ClrGuid });
         td.Properties.Add(new PropertyDescriptor { Name = "TenantId", ClrType = ClrType.ClrString });
@@ -241,14 +341,18 @@ public class SchemaRegistrationOrchestratorTests
     }
 
     [Fact]
-    public async Task RegisterAsync_RelationForeignKeyNamingTheServerOwnedTenantColumn_IsRejectedAsUndeclared()
+    public async Task RegisterAsync_RelationForeignKeyNamingTheServerOwnedTenantColumn_IsRejectedAsReserved()
     {
-        // The registration-time twin of RelationValidator's FK lookup. __TenantId is a real
-        // ScalarColumns member, so without an exclusion the lookup RESOLVES it and the relation
-        // falls through to the UUID/UUID[] SqlType check, which rejects TEXT with a message telling
-        // the caller to retype the column. That message is wrong: the caller may not address the
-        // server-owned column at all. With the exclusion the column is invisible and the relation
-        // is rejected as undeclared — the same answer its runtime twin gives.
+        // RE-POINTED BY TASK 4. Before Task 4 this asserted the message "which is not a declared
+        // property", produced by the __TenantId exclusion on the FK lookup (Ruling 8's tenth
+        // ScalarColumns site) — whose whole purpose was to stop the caller getting the misleading
+        // UUID-retyping message from the SqlType check. Task 4's reserved-name guard runs on the
+        // inbound typeDesc, BEFORE BuildDescriptor, so it now answers first and names the
+        // reservation outright. The original claim is preserved in the NotContain below: whatever
+        // rejects this, it must not be the SqlType error.
+        // NOTE: that FK-lookup exclusion is consequently no longer reachable from the registration
+        // path — it stays as the twin of RelationValidator's, which IS still reachable via
+        // SchemaRegistry.LoadAsync's rehydrated descriptors.
         var td = SimpleType("Comment", "Body");
         td.Relations.Add(new Client.Contracts.RelationDescriptor
         {
@@ -262,15 +366,15 @@ public class SchemaRegistrationOrchestratorTests
 
         var ex = await act.Should().ThrowAsync<RpcException>();
         ex.Which.StatusCode.Should().Be(StatusCode.InvalidArgument);
-        ex.Which.Status.Detail.Should().Contain("which is not a declared property");
-        // Pins WHICH rejection fires: without the exclusion this is the SqlType error instead.
+        ex.Which.Status.Detail.Should().Contain("reserved server-owned column name");
+        // Pins WHICH rejection fires: without a guard this is the SqlType error instead.
         ex.Which.Status.Detail.Should().NotContain("must be UUID");
     }
 
     [Fact]
     public async Task RegisterAsync_WithManyToManyRelation_DoesNotThrow()
     {
-        var td = new TypeDescriptor { TypeName = "Post", TenantField = "TenantId" };
+        var td = new TypeDescriptor { TypeName = "Post" };
         td.Properties.Add(new PropertyDescriptor { Name = "Id",       ClrType = ClrType.ClrGuid,   IsKey = true });
         td.Properties.Add(new PropertyDescriptor { Name = "TenantId", ClrType = ClrType.ClrString });
         td.Properties.Add(new PropertyDescriptor { Name = "TagIds",   ClrType = ClrType.ClrGuid,   IsArray = true });
@@ -304,7 +408,7 @@ public class SchemaRegistrationOrchestratorTests
     [Fact]
     public async Task RegisterAsync_SetsVectorDimAndModelId_FromEmbeddingService()
     {
-        var typeDesc = new TypeDescriptor { TypeName = "EmbeddableDoc", TenantField = "TenantId" };
+        var typeDesc = new TypeDescriptor { TypeName = "EmbeddableDoc" };
         typeDesc.Properties.Add(new PropertyDescriptor
         {
             Name = "Id", ClrType = ClrType.ClrGuid, IsKey = true
@@ -334,7 +438,7 @@ public class SchemaRegistrationOrchestratorTests
     [Fact]
     public async Task RegisterAsync_WithNonStringEnrichmentTarget_ThrowsInvalidArgument()
     {
-        var td = new TypeDescriptor { TypeName = "Widget", TenantField = "TenantId" };
+        var td = new TypeDescriptor { TypeName = "Widget" };
         td.Properties.Add(new PropertyDescriptor { Name = "Id", ClrType = ClrType.ClrGuid, IsKey = true });
         td.Properties.Add(new PropertyDescriptor { Name = "TenantId", ClrType = ClrType.ClrString });
         td.Properties.Add(new PropertyDescriptor { Name = "Body", ClrType = ClrType.ClrString });
@@ -350,7 +454,7 @@ public class SchemaRegistrationOrchestratorTests
     [Fact]
     public async Task RegisterAsync_WithKeyTenantOrOwnerAsEnrichmentTarget_ThrowsInvalidArgument()
     {
-        var td = new TypeDescriptor { TypeName = "Widget", TenantField = "TenantId" };
+        var td = new TypeDescriptor { TypeName = "Widget" };
         td.Properties.Add(new PropertyDescriptor { Name = "Id", ClrType = ClrType.ClrGuid, IsKey = true });
         td.Properties.Add(new PropertyDescriptor
             { Name = "TenantId", ClrType = ClrType.ClrString, IsSummaryTarget = true });
@@ -365,7 +469,7 @@ public class SchemaRegistrationOrchestratorTests
     [Fact]
     public async Task RegisterAsync_WithEnrichmentTargetThatIsAlsoEmbeddingOrChunk_ThrowsInvalidArgument()
     {
-        var td = new TypeDescriptor { TypeName = "Widget", TenantField = "TenantId" };
+        var td = new TypeDescriptor { TypeName = "Widget" };
         td.Properties.Add(new PropertyDescriptor { Name = "Id", ClrType = ClrType.ClrGuid, IsKey = true });
         td.Properties.Add(new PropertyDescriptor { Name = "TenantId", ClrType = ClrType.ClrString });
         td.Properties.Add(new PropertyDescriptor { Name = "Body", ClrType = ClrType.ClrString });
@@ -386,7 +490,7 @@ public class SchemaRegistrationOrchestratorTests
     {
         // Source text is the concatenation of [IversonEmbedding]/[IversonChunk] properties only —
         // an ordinary string property does NOT count as a source, even though it's plain text.
-        var td = new TypeDescriptor { TypeName = "Widget", TenantField = "TenantId" };
+        var td = new TypeDescriptor { TypeName = "Widget" };
         td.Properties.Add(new PropertyDescriptor { Name = "Id", ClrType = ClrType.ClrGuid, IsKey = true });
         td.Properties.Add(new PropertyDescriptor { Name = "TenantId", ClrType = ClrType.ClrString });
         td.Properties.Add(new PropertyDescriptor { Name = "Body", ClrType = ClrType.ClrString });
@@ -402,7 +506,7 @@ public class SchemaRegistrationOrchestratorTests
     [Fact]
     public async Task RegisterAsync_WithEnrichmentTargetAndChunkSourceProperty_DoesNotThrow()
     {
-        var td = new TypeDescriptor { TypeName = "Widget", TenantField = "TenantId" };
+        var td = new TypeDescriptor { TypeName = "Widget" };
         td.Properties.Add(new PropertyDescriptor { Name = "Id", ClrType = ClrType.ClrGuid, IsKey = true });
         td.Properties.Add(new PropertyDescriptor { Name = "TenantId", ClrType = ClrType.ClrString });
         td.Properties.Add(new PropertyDescriptor
@@ -418,7 +522,7 @@ public class SchemaRegistrationOrchestratorTests
     [Fact]
     public async Task RegisterAsync_WithEmptyExtractHint_ThrowsInvalidArgument()
     {
-        var td = new TypeDescriptor { TypeName = "Widget", TenantField = "TenantId" };
+        var td = new TypeDescriptor { TypeName = "Widget" };
         td.Properties.Add(new PropertyDescriptor { Name = "Id", ClrType = ClrType.ClrGuid, IsKey = true });
         td.Properties.Add(new PropertyDescriptor { Name = "TenantId", ClrType = ClrType.ClrString });
         td.Properties.Add(new PropertyDescriptor { Name = "Body", ClrType = ClrType.ClrString });
@@ -508,7 +612,7 @@ public class SchemaRegistrationOrchestratorTests
     [Fact]
     public async Task RegisterAsync_WithNonUuidKeyColumn_ThrowsInvalidArgument()
     {
-        var td = new TypeDescriptor { TypeName = "Widget", TenantField = "TenantId" };
+        var td = new TypeDescriptor { TypeName = "Widget" };
         td.Properties.Add(new PropertyDescriptor { Name = "Id", ClrType = ClrType.ClrString, IsKey = true });
         td.Properties.Add(new PropertyDescriptor { Name = "TenantId", ClrType = ClrType.ClrString });
 
@@ -602,7 +706,7 @@ public class SchemaRegistrationOrchestratorTests
     [Fact]
     public async Task RegisterAsync_WithManyToManyForeignKeyNotNamedAfterRelatedType_ThrowsInvalidArgument()
     {
-        var td = new TypeDescriptor { TypeName = "Post", TenantField = "TenantId" };
+        var td = new TypeDescriptor { TypeName = "Post" };
         td.Properties.Add(new PropertyDescriptor { Name = "Id",       ClrType = ClrType.ClrGuid,   IsKey = true });
         td.Properties.Add(new PropertyDescriptor { Name = "TenantId", ClrType = ClrType.ClrString });
         td.Properties.Add(new PropertyDescriptor { Name = "LabelIds", ClrType = ClrType.ClrGuid,   IsArray = true });

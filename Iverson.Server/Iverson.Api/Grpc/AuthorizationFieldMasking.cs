@@ -38,6 +38,26 @@ internal static class AuthorizationFieldMasking
         var auditAction = existingRowJson is null ? "Create" : "Update";
         var resourceKey = StructFieldAccess.GetFieldString(payload, schema.KeyColumn.Name);
 
+        // FIRST, before Evaluate. Decision 5: the server-owned tenant column is rejected on the
+        // way in, never silently overwritten. This is a MALFORMED-REQUEST check and is independent
+        // of identity, so it must not be reachable only for authorized callers — placed after
+        // Evaluate, an unauthorized caller smuggling the column would get PermissionDenied, which
+        // masks the malformed field entirely and makes the InvalidArgument contract conditional on
+        // authorization.
+        // Distinct from the tenant-immutability check further down, which compares a DECLARED
+        // tenant field's value and runs on the update branch only; this one is unconditional and
+        // covers create and update alike. Case-insensitive via SchemaDescriptor.IsTenantColumn, so
+        // a re-cased "__tenantid" cannot slip through (SetAuthoritativeField's canonical-casing
+        // fixup would otherwise absorb it silently).
+        var smuggled = payload.Fields.Keys.FirstOrDefault(SchemaDescriptor.IsTenantColumn);
+        if (smuggled is not null)
+        {
+            throw new RpcException(new Status(StatusCode.InvalidArgument,
+                $"Payload for '{schema.TypeName}' carries '{smuggled}', which is a reserved "
+                + "server-owned column. The server derives a row's tenant from the acting user's "
+                + "identity; remove the field from the payload."));
+        }
+
         var decision = authEvaluator.Evaluate(schema, actingUser, action);
         if (decision.Denied)
         {

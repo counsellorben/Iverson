@@ -380,7 +380,6 @@ public sealed class NamingRejectedScenario(
         var descriptor = new TypeDescriptor
         {
             TypeName = ServerSideTypeName,
-            TenantField = "TenantId",
             Properties =
             {
                 new PropertyDescriptor { Name = "Id", ClrType = ClrType.ClrGuid, IsKey = true },
@@ -414,7 +413,6 @@ public sealed class NamingRejectedScenario(
         var descriptor = new TypeDescriptor
         {
             TypeName = ServerSideManyToManyTypeName,
-            TenantField = "TenantId",
             Properties =
             {
                 new PropertyDescriptor { Name = "Id", ClrType = ClrType.ClrGuid, IsKey = true },
