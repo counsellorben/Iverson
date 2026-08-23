@@ -126,6 +126,37 @@ public class RequirementsCoverageGateTests
             $"but these consts have no matching Active row: {string.Join(", ", missingFromStandard)}");
     }
 
+    /// <summary>
+    /// Drops whole-line comments — <c>///</c> XML docs and <c>//</c> lines alike — before Check2
+    /// looks for a const's identifier.
+    ///
+    /// <para>Without this, a <c>&lt;see cref="Requirements.Xxx"/&gt;</c> in a doc comment COUNTS AS
+    /// A CITATION and Check2 passes for a const no assertion constructs. That is not hypothetical:
+    /// de-citing <c>IVC-IDN-004</c>'s assertion (replacing the const with the string literal it
+    /// evaluates to) survived the gate at 13/13 solely because the method's own doc comment named
+    /// the const. The cref is worth keeping — it is the doc link a reader follows — so the check
+    /// gets stricter instead.</para>
+    ///
+    /// <para>Only lines whose trimmed form STARTS with a comment marker are dropped, never a
+    /// trailing <c>//</c>. That is deliberate: a <c>//</c> appearing mid-line may be inside a string
+    /// literal (a URL, say), and truncating there could hide a real citation and report a false
+    /// gap. Under-stripping can only ever make this check more permissive, which is the safe
+    /// direction for a heuristic; over-stripping could red the gate for a citation that exists.</para>
+    ///
+    /// <para>This does NOT close Check2's deeper limitation, recorded in Ruling 32 and pinned next
+    /// door by the reaches-the-cell tests: a citation in live code that never EXECUTES is still
+    /// counted. Only a scenario-level wiring test can see that.</para>
+    /// </summary>
+    private static string StripCommentLines(string source) =>
+        string.Join('\n', source
+            .Split('\n')
+            .Where(line =>
+            {
+                var trimmed = line.TrimStart();
+                return !trimmed.StartsWith("//", StringComparison.Ordinal)
+                       && !trimmed.StartsWith("*", StringComparison.Ordinal);
+            }));
+
     [Fact]
     public void Check2_EveryRegistryConst_IsCitedByAssertionCodeOutsideRequirementsAndTests()
     {
@@ -134,9 +165,11 @@ public class RequirementsCoverageGateTests
 
         var uncited = new List<string>();
 
+        var sourceCode = sourceFiles.Select(f => StripCommentLines(File.ReadAllText(f))).ToList();
+
         foreach (var (identifier, _) in constsByIdentifier)
         {
-            var cited = sourceFiles.Any(f => File.ReadAllText(f).Contains(identifier, StringComparison.Ordinal));
+            var cited = sourceCode.Any(text => text.Contains(identifier, StringComparison.Ordinal));
             if (!cited)
             {
                 uncited.Add(identifier);
