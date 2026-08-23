@@ -2555,4 +2555,164 @@ public class ObjectMappingGrpcServiceTests
 
         AssertAuditLogged("TenantMismatch");
     }
+
+    // ── Server-owned tenant column: off the wire, but still in the projection ──
+    //
+    // EnforceWriteAuthorization mutates the caller's Struct IN PLACE (SetAuthoritativeField ->
+    // StructFieldAccess.SetField), and Post/Update return that same object as MappingResponse.Data
+    // — so without an explicit strip, every write hands the server-owned column straight back.
+    //
+    // The strip is placed AFTER StructSerializer.SerializePayload deliberately. The serialized
+    // payloadJson is what OutboxPublisher puts on Kafka, and it is the ONLY source of the tenant
+    // value for EngagementRepository.UpsertAsync (StarRocks) and
+    // IntelligenceStoreConsumer.BuildObjectPointPayload (Qdrant). Stripping before serialization —
+    // which the task brief's wording suggested — would empty the tenant column in the StarRocks
+    // projection and make every subsequent StarRocks read for that tenant return zero rows. The
+    // *_PublishedPayloadStillCarries_* tests below are the guard against that.
+
+    private static SchemaDescriptor TenantMappingSchema() => new()
+    {
+        TypeName      = "Widget",
+        TableName     = "widgets",
+        KeyColumn     = new ColumnDescriptor("Id", "uuid", false),
+        ScalarColumns =
+        [
+            new ColumnDescriptor("Name", "text", true),
+            new ColumnDescriptor(SchemaDescriptor.TenantColumnName, "TEXT", false)
+        ],
+        FkColumns     = [],
+        VectorFields  = [],
+        ChunkFields   = [],
+        Relations     = [],
+        TenantColumn  = SchemaDescriptor.TenantColumnName,
+        Authorization = new Iverson.Api.Schema.AuthorizationRules(
+            null,
+            new List<Iverson.Api.Schema.RowPermission> { new("test-bypass", true, true, true) },
+            new List<Iverson.Api.Schema.FieldPermission>())
+    };
+
+    /// <summary>Captures the EntityEvent handed to Kafka — i.e. what the projections will see.</summary>
+    private List<EntityEvent> CaptureEvents()
+    {
+        var captured = new List<EntityEvent>();
+        _events
+            .When(e => e.ProduceAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<EntityEvent>()))
+            .Do(call => captured.Add(call.ArgAt<EntityEvent>(2)));
+        return captured;
+    }
+
+    [Fact]
+    public async Task Post_ResponseDataOmitsTheServerOwnedTenantColumn()
+    {
+        await _registry.RegisterAsync(TenantMappingSchema());
+
+        var response = await _sut.Post(
+            new MappingWriteRequest
+            {
+                TypeName = "Widget",
+                Payload  = MakePayload(new Dictionary<string, Value> { ["Name"] = Value.ForString("w") })
+            },
+            MakeContext());
+
+        response.Success.Should().BeTrue();
+        response.Data.Fields.Should().NotContainKey(SchemaDescriptor.TenantColumnName);
+        response.Data.Fields.Should().ContainKey("Name");
+    }
+
+    [Fact]
+    public async Task Post_PublishedPayloadStillCarriesTheTenantColumn()
+    {
+        await _registry.RegisterAsync(TenantMappingSchema());
+        var events = CaptureEvents();
+
+        await _sut.Post(
+            new MappingWriteRequest
+            {
+                TypeName = "Widget",
+                Payload  = MakePayload(new Dictionary<string, Value> { ["Name"] = Value.ForString("w") })
+            },
+            MakeContext());
+
+        events.Should().HaveCount(1);
+        events[0].PayloadJson.Should()
+            .Contain($"\"{SchemaDescriptor.TenantColumnName}\":\"test-tenant\"");
+    }
+
+    [Fact]
+    public async Task Update_ResponseDataOmitsTheServerOwnedTenantColumn()
+    {
+        var schema = TenantMappingSchema();
+        await _registry.RegisterAsync(schema);
+        var key = Guid.CreateVersion7().ToString();
+        _entities
+            .FetchByKeyAsync(Arg.Any<TableSchema>(), key, Arg.Any<bool>(), Arg.Any<string?>())
+            .Returns($$"""{"Id":"{{key}}","Name":"old","{{SchemaDescriptor.TenantColumnName}}":"test-tenant"}""");
+
+        var response = await _sut.Update(
+            new MappingWriteRequest
+            {
+                TypeName = "Widget",
+                Payload  = MakePayload(new Dictionary<string, Value>
+                {
+                    ["Id"]   = Value.ForString(key),
+                    ["Name"] = Value.ForString("new")
+                })
+            },
+            MakeContext());
+
+        response.Success.Should().BeTrue();
+        response.Data.Fields.Should().NotContainKey(SchemaDescriptor.TenantColumnName);
+        response.Data.Fields["Name"].StringValue.Should().Be("new");
+    }
+
+    [Fact]
+    public async Task Update_PublishedPayloadStillCarriesTheTenantColumn()
+    {
+        // The update path is the sharper case: the pre-existing-row branch of
+        // EnforceWriteAuthorization only VALIDATES the tenant column, so a client payload (which
+        // can never carry the server-owned column) would reach StarRocks with no tenant value at
+        // all — and StarRocks' Primary Key model treats a partial INSERT as a full-row replace.
+        var schema = TenantMappingSchema();
+        await _registry.RegisterAsync(schema);
+        var key = Guid.CreateVersion7().ToString();
+        _entities
+            .FetchByKeyAsync(Arg.Any<TableSchema>(), key, Arg.Any<bool>(), Arg.Any<string?>())
+            .Returns($$"""{"Id":"{{key}}","Name":"old","{{SchemaDescriptor.TenantColumnName}}":"test-tenant"}""");
+        var events = CaptureEvents();
+
+        await _sut.Update(
+            new MappingWriteRequest
+            {
+                TypeName = "Widget",
+                Payload  = MakePayload(new Dictionary<string, Value>
+                {
+                    ["Id"]   = Value.ForString(key),
+                    ["Name"] = Value.ForString("new")
+                })
+            },
+            MakeContext());
+
+        events.Should().HaveCount(1);
+        events[0].PayloadJson.Should()
+            .Contain($"\"{SchemaDescriptor.TenantColumnName}\":\"test-tenant\"");
+    }
+
+    [Fact]
+    public async Task Get_OmitsTheServerOwnedTenantColumnFromTheResponse()
+    {
+        var schema = TenantMappingSchema();
+        await _registry.RegisterAsync(schema);
+        var key = Guid.CreateVersion7().ToString();
+        _entities
+            .FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>(), Arg.Any<bool>(), Arg.Any<string?>())
+            .Returns($$"""{"Id":"{{key}}","Name":"w","{{SchemaDescriptor.TenantColumnName}}":"test-tenant"}""");
+
+        var response = await _sut.Get(
+            new MappingGetRequest { TypeName = "Widget", Key = key },
+            MakeContext());
+
+        response.Success.Should().BeTrue();
+        response.Data.Fields.Should().NotContainKey(SchemaDescriptor.TenantColumnName);
+        response.Data.Fields["Name"].StringValue.Should().Be("w");
+    }
 }

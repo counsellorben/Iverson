@@ -310,8 +310,12 @@ public class StarRocksPipelineBuilderTests
         var (sql, _, _) = StarRocksPipelineBuilder.Build(
             ArticleSchema(), Request(), EmptyRegistry());
 
+        // The base CTE projects its tracked column set explicitly rather than `SELECT *` — see
+        // Build's remarks: a `SELECT *` base is what would carry the server-owned tenant column
+        // into every downstream step and out through the final projection.
         NormalizeWs(sql).Should().Be(
-            "WITH `base` AS (SELECT * FROM `articles`) SELECT * FROM `base` LIMIT 10000");
+            "WITH `base` AS (SELECT `Id`, `Title`, `Category`, `WordCount`, `IsPublished`, " +
+            "`PublishedAt`, `AuthorId` FROM `articles`) SELECT * FROM `base` LIMIT 10000");
     }
 
     [Fact]
@@ -1249,5 +1253,131 @@ public class StarRocksPipelineBuilderTests
             ArticleSchema(), Request(), EmptyRegistry());
 
         lastCols.Keys.Should().Contain(["Id", "Title", "Category", "WordCount", "IsPublished", "PublishedAt", "AuthorId"]);
+    }
+
+    // ── Server-owned tenant column: never in the CTE chain ────────────────────
+    //
+    // Pipeline is the wire path the plan's chokepoint table misses: the base CTE is
+    // `SELECT * FROM <physical table>` and the final projection is `SELECT * FROM <last step>`,
+    // neither of which goes through StarRocksQueryBuilder.BuildSelectColumns. With __TenantId a
+    // physical column, a zero-step Pipeline would otherwise return it verbatim on every row.
+
+    private const string TenantCol = "__TenantId";
+
+    private static EngagementQuerySchema TenantArticleSchema() => new(
+        "Article", "articles", "Id",
+        ["Title", "Category", "WordCount", "IsPublished", "PublishedAt", "AuthorId", TenantCol],
+        TenantCol);
+
+    /// <summary>
+    /// The base CTE's SELECT list: everything between <c>AS (SELECT </c> and the following
+    /// <c> FROM </c>. Isolating it matters because the server's own tenant PREDICATE legitimately
+    /// names the column later in the same CTE — a whole-SQL "does not contain" assertion would be
+    /// satisfiable by breaking the tenant boundary instead of by excluding the projection.
+    /// </summary>
+    private static string BaseProjection(string sql)
+    {
+        var start = sql.IndexOf("AS (SELECT ", StringComparison.Ordinal) + "AS (SELECT ".Length;
+        var end   = sql.IndexOf(" FROM ", start, StringComparison.Ordinal);
+        return sql[start..end];
+    }
+
+    private static Dictionary<string, AuthorizationConstraint> TenantAuthz() =>
+        new(StringComparer.OrdinalIgnoreCase)
+        {
+            ["Article"] = new AuthorizationConstraint(null, null, null, TenantCol, "tenant-a")
+        };
+
+    [Fact]
+    public void Build_EmptyPipeline_DoesNotProjectTheTenantColumn()
+    {
+        var (sql, _, _) = StarRocksPipelineBuilder.Build(
+            TenantArticleSchema(), Request(), EmptyRegistry(), TenantAuthz());
+
+        BaseProjection(sql).Should().NotContain(TenantCol);
+        BaseProjection(sql).Should().Contain("`Title`");
+    }
+
+    [Fact]
+    public void Build_EmptyPipeline_StillFiltersOnTheTenantColumn()
+    {
+        var (sql, param, _) = StarRocksPipelineBuilder.Build(
+            TenantArticleSchema(), Request(), EmptyRegistry(), TenantAuthz());
+
+        sql.Should().Contain($"WHERE `{TenantCol}` = @__tenantVal");
+        param.Get<string>("__tenantVal").Should().Be("tenant-a");
+    }
+
+    [Fact]
+    public void Build_LastColsExcludesTheTenantColumn()
+    {
+        var (_, _, lastCols) = StarRocksPipelineBuilder.Build(
+            TenantArticleSchema(), Request(), EmptyRegistry(), TenantAuthz());
+
+        lastCols.Keys.Should().NotContain(TenantCol);
+    }
+
+    [Fact]
+    public void Build_StepSelectingTheTenantColumn_IsRejected()
+    {
+        var step = new PipelineStep { Name = "picked" };
+        step.Select.Add(new SelectItem { Column = TenantCol });
+
+        var act = () => StarRocksPipelineBuilder.Build(
+            TenantArticleSchema(), Request(step), EmptyRegistry(), TenantAuthz());
+
+        act.Should().Throw<EngagementQueryTranslationException>();
+    }
+
+    [Fact]
+    public void Build_StepGroupingByTheTenantColumn_IsRejected()
+    {
+        var step = new PipelineStep { Name = "agg" };
+        step.GroupBy.Add(new GroupKey { Field = TenantCol });
+        step.Metrics.Add(new MetricSpec { Name = "n", Type = AggregationType.Count });
+
+        var act = () => StarRocksPipelineBuilder.Build(
+            TenantArticleSchema(), Request(step), EmptyRegistry(), TenantAuthz());
+
+        act.Should().Throw<EngagementQueryTranslationException>();
+    }
+
+    [Fact]
+    public void Build_BaseWhereOnTheTenantColumn_IsRejected()
+    {
+        var request = Request();
+        request.BaseWhere.Add(new SearchClause
+        {
+            Property = TenantCol, Operator = SearchOperator.Equals,
+            Value = new SearchValue { StringVal = "tenant-b" }, ClauseType = SearchClauseType.Filter
+        });
+
+        var act = () => StarRocksPipelineBuilder.Build(
+            TenantArticleSchema(), request, EmptyRegistry(), TenantAuthz());
+
+        act.Should().Throw<EngagementQueryTranslationException>();
+    }
+
+    [Fact]
+    public void Build_MultiStepPipeline_NeverCarriesTheTenantColumnDownstream()
+    {
+        // A `SELECT *` step inherits its input CTE's columns, so excluding the column at the base
+        // is what keeps it out of every downstream step too.
+        var step = new PipelineStep { Name = "filtered" };
+        step.Where.Add(new SearchClause
+        {
+            Property = "IsPublished", Operator = SearchOperator.Equals,
+            Value = new SearchValue { BoolVal = true }, ClauseType = SearchClauseType.Filter
+        });
+
+        var (sql, _, lastCols) = StarRocksPipelineBuilder.Build(
+            TenantArticleSchema(), Request(step), EmptyRegistry(), TenantAuthz());
+
+        BaseProjection(sql).Should().NotContain(TenantCol);
+        // Everything after the base CTE's WHERE clause — the whole downstream chain and the final
+        // projection — must be free of the column too. Only the base CTE's tenant predicate may
+        // name it, and that lives inside the base CTE.
+        sql[(sql.IndexOf("), `", StringComparison.Ordinal) + 1)..].Should().NotContain(TenantCol);
+        lastCols.Keys.Should().NotContain(TenantCol);
     }
 }

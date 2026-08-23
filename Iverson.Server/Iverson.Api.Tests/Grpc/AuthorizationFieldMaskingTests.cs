@@ -198,4 +198,121 @@ public sealed class AuthorizationFieldMaskingTests
 
         act.Should().NotThrow();
     }
+
+    // ── Server-owned tenant column strip ──────────────────────────────────────
+    //
+    // Decision 6 of the remove-IversonTenant plan: __TenantId never appears on the wire.
+    // MaskDisallowedFields is the shared cover for all five outbound read paths
+    // (ObjectRetrievalGrpcService.Get/GetMany, ObjectSearchGrpcService.SearchSimilar,
+    // EntityRelationResolver, ObjectMappingGrpcService.Get), so the strip lives here — and it
+    // must sit BEFORE the `allowedFields is null` early return, because a schema with no field
+    // permissions is precisely the case where that return would let the column through.
+
+    private static Struct PayloadWithTenant(string tenantKey = SchemaDescriptor.TenantColumnName) =>
+        new()
+        {
+            Fields =
+            {
+                ["Id"]      = Value.ForString("tag-1"),
+                ["Name"]    = Value.ForString("wptag-1"),
+                [tenantKey] = Value.ForString("tenant-from-token"),
+            }
+        };
+
+    [Fact]
+    public void MaskDisallowedFields_NullAllowedFields_StillRemovesTheTenantColumn()
+    {
+        // The unrestricted caller — the early-return path. This is the case the strip's placement
+        // exists for; if the strip moved below the guard, this is the test that reddens.
+        var payload = PayloadWithTenant();
+
+        AuthorizationFieldMasking.MaskDisallowedFields(payload, allowedFields: null);
+
+        payload.Fields.Should().NotContainKey(SchemaDescriptor.TenantColumnName);
+        payload.Fields.Should().ContainKey("Name"); // nothing else was touched
+        payload.Fields.Should().ContainKey("Id");
+    }
+
+    [Fact]
+    public void MaskDisallowedFields_WithAllowedFields_RemovesTheTenantColumn()
+    {
+        // The field-restricted caller. Note the tenant column is listed as ALLOWED here — a
+        // hand-built AllowedFields that happens to contain it must still not put it on the wire,
+        // so the strip cannot be implemented by relying on the allow-list to omit it.
+        var payload = PayloadWithTenant();
+
+        AuthorizationFieldMasking.MaskDisallowedFields(
+            payload,
+            new HashSet<string> { "Id", "Name", SchemaDescriptor.TenantColumnName });
+
+        payload.Fields.Should().NotContainKey(SchemaDescriptor.TenantColumnName);
+        payload.Fields.Should().ContainKey("Name");
+    }
+
+    [Theory]
+    [InlineData("__TenantId")]
+    [InlineData("__tenantId")]
+    [InlineData("__TENANTID")]
+    public void MaskDisallowedFields_RemovesTheTenantColumnInAnyCasing(string tenantKey)
+    {
+        var payload = PayloadWithTenant(tenantKey);
+
+        AuthorizationFieldMasking.MaskDisallowedFields(payload, allowedFields: null);
+
+        payload.Fields.Should().NotContainKey(tenantKey);
+        payload.Fields.Keys.Should().NotContain(k => k.ToUpperInvariant().Contains("TENANTID"));
+    }
+
+    [Fact]
+    public void MaskDisallowedFields_LeavesAClientDeclaredTenantIdColumnAlone()
+    {
+        // A legacy schema whose tenant boundary sits on a CLIENT-declared "TenantId" column is a
+        // different thing: that name is part of the client's own contract and has always been on
+        // the wire. Only the reserved __TenantId spelling is server-owned.
+        var payload = new Struct
+        {
+            Fields =
+            {
+                ["Id"]       = Value.ForString("tag-1"),
+                ["TenantId"] = Value.ForString("tenant-from-token"),
+            }
+        };
+
+        AuthorizationFieldMasking.MaskDisallowedFields(payload, allowedFields: null);
+
+        payload.Fields.Should().ContainKey("TenantId");
+    }
+
+    [Fact]
+    public void EnforceWriteAuthorization_ExistingRow_ForceSetsTheTenantColumnIntoThePayload()
+    {
+        // The update branch previously only VALIDATED the tenant column and left the payload
+        // alone. With the column server-owned, a client payload never carries it — so the
+        // serialized payload published to Kafka would carry no tenant value, and
+        // EngagementRepository.UpsertAsync (StarRocks Primary Key model = full-row replace) would
+        // reset the projected row's tenant column to NULL, making every subsequent StarRocks read
+        // for that tenant return nothing. Force-setting it keeps the projection payload complete.
+        var payload = new Struct
+        {
+            Fields =
+            {
+                ["Id"]   = Value.ForString("tag-1"),
+                ["Name"] = Value.ForString("wptag-1"),
+            }
+        };
+
+        AuthorizationFieldMasking.EnforceWriteAuthorization(
+            EvaluatorReturning(new AuthorizationDecision(
+                Denied: false, OwnershipRequired: false, OwnerFieldName: null, OwnerValue: null,
+                AllowedFields: null, TenantColumn: "TenantId", TenantValue: "tenant-from-token")),
+            new ClaimsPrincipal(new ClaimsIdentity([new Claim("sub", "user-1")], "test")),
+            Schema(),
+            payload,
+            AuthorizationAction.Write,
+            "Not authorized to update this entity.",
+            existingRowJson: """{"Id":"tag-1","Name":"old","TenantId":"tenant-from-token"}""",
+            new AuditLog(NullLogger<AuditLog>.Instance));
+
+        payload.Fields["TenantId"].StringValue.Should().Be("tenant-from-token");
+    }
 }

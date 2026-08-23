@@ -320,6 +320,21 @@ public sealed class ObjectMappingGrpcService(
         await _outboxPublisher.PublishAsync(EntityEventType.Created, request.TypeName, key, payloadJson,
             request.TraceId, targetStores, outboxRowId, "Mapping.Post");
 
+        // Strip the server-owned tenant column from the Struct that becomes MappingResponse.Data.
+        // EnforceWriteAuthorization force-set it INTO this very object (SetAuthoritativeField ->
+        // StructFieldAccess.SetField mutates in place), and `Data = request.Payload` below returns
+        // that same object — so without this the column goes back to the caller on every write.
+        //
+        // AFTER SerializePayload, deliberately. payloadJson is what OutboxPublisher puts on Kafka,
+        // and it is the only source of the tenant value for the StarRocks projection
+        // (EngagementRepository.UpsertAsync) and the Qdrant point payload
+        // (IntelligenceStoreConsumer.BuildObjectPointPayload). Stripping before serialization
+        // would leave the StarRocks row's tenant column NULL — StarRocks' Primary Key model
+        // treats a partial INSERT as a full-row replace — and every subsequent StarRocks read for
+        // that tenant would return nothing. OutboxWriter remains the sole *injector* for the
+        // Postgres write; this is only a response-shaping strip.
+        AuthorizationFieldMasking.RemoveTenantColumn(request.Payload);
+
         return new MappingResponse { Success = true, Data = request.Payload, TraceId = request.TraceId };
     }
 
@@ -373,6 +388,21 @@ public sealed class ObjectMappingGrpcService(
             outboxRowId,
             "Mapping.Update",
             priorPayloadJson: existingRowJson);
+
+        // Strip the server-owned tenant column from the Struct that becomes MappingResponse.Data.
+        // EnforceWriteAuthorization force-set it INTO this very object (SetAuthoritativeField ->
+        // StructFieldAccess.SetField mutates in place), and `Data = request.Payload` below returns
+        // that same object — so without this the column goes back to the caller on every write.
+        //
+        // AFTER SerializePayload, deliberately. payloadJson is what OutboxPublisher puts on Kafka,
+        // and it is the only source of the tenant value for the StarRocks projection
+        // (EngagementRepository.UpsertAsync) and the Qdrant point payload
+        // (IntelligenceStoreConsumer.BuildObjectPointPayload). Stripping before serialization
+        // would leave the StarRocks row's tenant column NULL — StarRocks' Primary Key model
+        // treats a partial INSERT as a full-row replace — and every subsequent StarRocks read for
+        // that tenant would return nothing. OutboxWriter remains the sole *injector* for the
+        // Postgres write; this is only a response-shaping strip.
+        AuthorizationFieldMasking.RemoveTenantColumn(request.Payload);
 
         return new MappingResponse { Success = true, Data = request.Payload, TraceId = request.TraceId };
     }

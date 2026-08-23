@@ -278,6 +278,45 @@ public class SchemaBuilderTests
     }
 
     [Fact]
+    public void ToEngagementQuerySchema_CarriesTheTenantColumnNameThrough()
+    {
+        // Iverson.StarRocks cannot see SchemaDescriptor.TenantColumnName (no project reference),
+        // so the name travels as DATA on EngagementQuerySchema. Every tenant-column exclusion in
+        // StarRocksQueryBuilder/StarRocksPipelineBuilder is gated on this field being populated:
+        // if this adapter stopped passing it, all of them would silently go inert in production
+        // while their own unit tests — which construct EngagementQuerySchema directly — stayed
+        // green. This is the test that catches that.
+        var schema = SchemaFixtures.ArticleSchema() with
+        {
+            ScalarColumns =
+            [
+                new ColumnDescriptor("Title", "text", false),
+                new ColumnDescriptor(SchemaDescriptor.TenantColumnName, "TEXT", false)
+            ],
+            TenantColumn = SchemaDescriptor.TenantColumnName
+        };
+
+        var result = SchemaBuilder.ToEngagementQuerySchema(schema);
+
+        result.TenantColumnName.Should().Be(SchemaDescriptor.TenantColumnName);
+        result.IsTenantColumn(SchemaDescriptor.TenantColumnName).Should().BeTrue();
+        // Still a real physical column in the list — the read-time tenant predicate needs it.
+        result.ColumnNames.Should().Contain(SchemaDescriptor.TenantColumnName);
+    }
+
+    [Fact]
+    public void ToTableSchema_CarriesTheTenantColumnNameThrough()
+    {
+        // The OutboxWriter injection is gated on TableSchema.TenantColumn for the same reason.
+        var schema = SchemaFixtures.ArticleSchema() with
+        {
+            TenantColumn = SchemaDescriptor.TenantColumnName
+        };
+
+        SchemaBuilder.ToTableSchema(schema).TenantColumn.Should().Be(SchemaDescriptor.TenantColumnName);
+    }
+
+    [Fact]
     public void ToCollectionSchema_PayloadIndexNames_AreCamelCase()
     {
         var descriptor = SchemaFixtures.ArticleSchema();

@@ -141,4 +141,125 @@ public class OutboxWriterTests
         paramType.GetProperty("EntityKey")!.GetValue(capturedParams).Should().Be("author-1");
         paramType.GetProperty("Payload")!.GetValue(capturedParams).Should().Be(payload);
     }
+
+    // ── Server-owned tenant column injection ──────────────────────────────────
+    //
+    // UpsertAndEnqueueOutboxAsync is the ONE chokepoint all four writers reach
+    // (ObjectMappingGrpcService.Post/Update, ObjectPersistenceGrpcService.Post/Update). The
+    // upsert runs `json_populate_record(null::"table", @Json::json)` with an ON CONFLICT update
+    // set covering every column, so a payload arriving without the tenant column writes NULL over
+    // a valid tenant id. Injecting here rather than at each caller is what no future caller can
+    // bypass.
+
+    private const string TenantCol = "__TenantId";
+
+    private static readonly TableSchema TenantArticleSchema = new(
+        "articles",
+        new ColumnSchema("Id", "uuid", false),
+        new List<ColumnSchema> { new("Title", "text", false), new(TenantCol, "text", false) },
+        TenantCol);
+
+    /// <summary>
+    /// Runs an upsert against a recording transaction and returns the JSON actually handed to
+    /// <c>json_populate_record</c> — i.e. exactly what Postgres will write.
+    /// </summary>
+    private async Task<string> CaptureUpsertJsonAsync(
+        TableSchema schema, string payloadJson, string? tenantId)
+    {
+        var tx = Substitute.For<IDbTransactionContext>();
+        string? captured = null;
+        tx.WhenForAnyArgs(t => t.ExecuteAsync(Arg.Any<string>(), Arg.Any<object?>()))
+          .Do(call =>
+          {
+              if (!call.ArgAt<string>(0).Contains("json_populate_record")) return;
+              var param = call.ArgAt<object?>(1);
+              captured = (string?)param!.GetType().GetProperty("Json")!.GetValue(param);
+          });
+        _txRunner.ExecuteInTransactionAsync(Arg.Any<Func<IDbTransactionContext, Task>>())
+            .Returns(ci => ci.Arg<Func<IDbTransactionContext, Task>>()(tx));
+
+        await _sut.UpsertAndEnqueueOutboxAsync(
+            schema, "Article", Guid.NewGuid().ToString(), payloadJson, tenantId);
+
+        captured.Should().NotBeNull("the upsert statement must have been executed");
+        return captured!;
+    }
+
+    [Fact]
+    public async Task UpsertAndEnqueueOutboxAsync_PayloadMissingTheTenantColumn_InjectsIt()
+    {
+        var json = await CaptureUpsertJsonAsync(
+            TenantArticleSchema, """{"Id":"a","Title":"Hello"}""", "tenant-a");
+
+        json.Should().Contain($"\"{TenantCol}\":\"tenant-a\"");
+    }
+
+    [Fact]
+    public async Task UpsertAndEnqueueOutboxAsync_InjectsTheTenantColumnInExactCanonicalCasing()
+    {
+        // json_populate_record matches column names CASE-SENSITIVELY. A key that survives the
+        // round-trip as "__tenantId" or "__TENANTID" is silently discarded by Postgres and the
+        // column is written NULL — which is exactly the failure this injection exists to prevent.
+        var json = await CaptureUpsertJsonAsync(
+            TenantArticleSchema, """{"Id":"a","Title":"Hello"}""", "tenant-a");
+
+        json.Should().Contain($"\"{TenantCol}\":");
+    }
+
+    [Fact]
+    public async Task UpsertAndEnqueueOutboxAsync_PreservesTheCasingOfEveryOtherKey()
+    {
+        // The injection is a JSON round-trip; if it lower-cased or otherwise renamed keys,
+        // json_populate_record would drop every column, not just the tenant one.
+        var json = await CaptureUpsertJsonAsync(
+            TenantArticleSchema, """{"Id":"a","Title":"Hello"}""", "tenant-a");
+
+        json.Should().Contain("\"Id\":\"a\"");
+        json.Should().Contain("\"Title\":\"Hello\"");
+    }
+
+    [Fact]
+    public async Task UpsertAndEnqueueOutboxAsync_ClientSuppliedTenantValue_IsOverwritten()
+    {
+        var json = await CaptureUpsertJsonAsync(
+            TenantArticleSchema,
+            $$"""{"Id":"a","{{TenantCol}}":"attacker-tenant"}""",
+            "tenant-a");
+
+        json.Should().NotContain("attacker-tenant");
+        json.Should().Contain($"\"{TenantCol}\":\"tenant-a\"");
+    }
+
+    [Fact]
+    public async Task UpsertAndEnqueueOutboxAsync_CaseVariantTenantKey_IsRemovedNotDuplicated()
+    {
+        // Two keys differing only by case both survive a naive Set: Postgres would then see a
+        // duplicate-ish object and the canonical one is not guaranteed to win.
+        var json = await CaptureUpsertJsonAsync(
+            TenantArticleSchema,
+            """{"Id":"a","__tenantid":"attacker-tenant"}""",
+            "tenant-a");
+
+        json.Should().NotContain("attacker-tenant");
+        json.Should().NotContain("__tenantid");
+        json.Should().Contain($"\"{TenantCol}\":\"tenant-a\"");
+    }
+
+    [Fact]
+    public async Task UpsertAndEnqueueOutboxAsync_NullTenantId_LeavesThePayloadUntouched()
+    {
+        var json = await CaptureUpsertJsonAsync(
+            TenantArticleSchema, """{"Id":"a","Title":"Hello"}""", tenantId: null);
+
+        json.Should().Be("""{"Id":"a","Title":"Hello"}""");
+    }
+
+    [Fact]
+    public async Task UpsertAndEnqueueOutboxAsync_SchemaWithoutATenantColumn_LeavesThePayloadUntouched()
+    {
+        var json = await CaptureUpsertJsonAsync(
+            ArticleSchema, """{"Id":"a","Title":"Hello"}""", "tenant-a");
+
+        json.Should().Be("""{"Id":"a","Title":"Hello"}""");
+    }
 }

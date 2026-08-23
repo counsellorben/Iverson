@@ -76,6 +76,16 @@ internal static class AuthorizationFieldMasking
                     auditLog.Denied(actingUser, auditAction, schema.TypeName, resourceKey, "TenantImmutable");
                     throw new RpcException(new Status(StatusCode.PermissionDenied, "Tenant field is immutable."));
                 }
+
+                // Force-set AFTER the two checks above have passed, so this can only ever write
+                // back the value the row already carries. It is not redundant: the tenant column
+                // is server-owned, so a client payload never carries it — without this the
+                // serialized payload published to Kafka would have no tenant value at all, and
+                // EngagementRepository.UpsertAsync (StarRocks Primary Key model: an INSERT of an
+                // existing key is a FULL-ROW REPLACE) would reset the projected row's tenant
+                // column to NULL, silently emptying every subsequent StarRocks read for that
+                // tenant. The create branch above already force-sets it for the same reason.
+                SetAuthoritativeField(payload, decision.TenantColumn, decision.TenantValue!);
             }
 
             if (decision.OwnershipRequired &&
@@ -121,11 +131,36 @@ internal static class AuthorizationFieldMasking
     private static void SetAuthoritativeField(Struct payload, string canonicalName, string value) =>
         StructFieldAccess.SetField(payload, canonicalName, Value.ForString(value));
 
+    /// <summary>
+    /// Removes every key naming the server-owned tenant column, in any casing. Unconditional and
+    /// independent of any allow-list: the column is never client-addressable, so it is never
+    /// something a caller can be granted.
+    /// <para>
+    /// Keyed on <see cref="SchemaDescriptor.TenantColumnName"/> — the reserved spelling — NOT on
+    /// a schema's <c>TenantColumn</c>. A legacy schema whose boundary sits on a client-declared
+    /// column (e.g. <c>TenantId</c>) has always exposed that name as part of the client's own
+    /// contract, and stripping it would silently drop a field the client declared.
+    /// </para>
+    /// </summary>
+    public static void RemoveTenantColumn(Struct payload)
+    {
+        var toRemove = payload.Fields.Keys
+            .Where(SchemaDescriptor.IsTenantColumn)
+            .ToList();
+        foreach (var key in toRemove)
+            payload.Fields.Remove(key);
+    }
+
     public static void MaskDisallowedFields(
         Struct payload,
         IReadOnlySet<string>? allowedFields,
         string? exemptField = null)
     {
+        // BEFORE the early return, deliberately. A schema with no field permissions produces a
+        // null allowedFields, and that is exactly the case in which the guard below would let the
+        // server-owned tenant column straight through to the caller.
+        RemoveTenantColumn(payload);
+
         if (allowedFields is null) return;
 
         var toRemove = payload.Fields.Keys

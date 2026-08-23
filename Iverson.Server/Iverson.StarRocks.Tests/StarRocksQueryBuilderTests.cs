@@ -2667,4 +2667,241 @@ public class StarRocksQueryBuilderTests
             .Where(e => e.Message.Contains("VECTOR_SIMILAR")
                      && e.Message.Contains("SearchSimilar"));
     }
+
+    // ── Server-owned tenant column: never projected, never caller-addressable ──
+    //
+    // Decision 6 of the remove-IversonTenant plan: __TenantId is a real physical column (the
+    // read-time tenant predicate is generated against it) but it must never reach the wire and
+    // must never be nameable by a caller. Every assertion below is a NEGATIVE one — it fails if
+    // the column leaks — plus one positive assertion that the tenant PREDICATE still fires, so
+    // the exclusion cannot be "fixed" by dropping the column from the schema entirely.
+
+    private const string TenantCol = "__TenantId";
+
+    private static EngagementQuerySchema TenantAuthorSchema() => new(
+        "Author", "authors", "Id", ["Name", "Bio", "Rating", "PublishedAt", TenantCol], TenantCol);
+
+    private static EngagementQuerySchema TenantArticleSchema() => new(
+        "Article", "articles", "Id", ["Title", "Body", TenantCol], TenantCol);
+
+    private static Dictionary<string, AuthorizationConstraint> TenantAuthz(params string[] typeNames)
+    {
+        var d = new Dictionary<string, AuthorizationConstraint>(StringComparer.OrdinalIgnoreCase);
+        foreach (var t in typeNames)
+            d[t] = new AuthorizationConstraint(null, null, null, TenantCol, "tenant-a");
+        return d;
+    }
+
+    [Fact]
+    public void BuildSearch_NoJoins_OmitsTheTenantColumnFromTheProjection()
+    {
+        var (sql, _) = StarRocksQueryBuilder.BuildSearch(
+            "authors", TenantAuthorSchema(), null, 0, 10, authz: TenantAuthz("Author"));
+
+        var select = sql[..sql.IndexOf(" FROM ", StringComparison.Ordinal)];
+        select.Should().NotContain(TenantCol);
+        select.Should().Contain("`Name`"); // the other columns are still projected
+    }
+
+    [Fact]
+    public void BuildSearch_NoJoins_StillFiltersOnTheTenantColumn()
+    {
+        // The exclusion must be a PROJECTION exclusion only. If it were achieved by removing the
+        // column from the schema, this predicate would vanish and every tenant would see every row.
+        var (sql, param) = StarRocksQueryBuilder.BuildSearch(
+            "authors", TenantAuthorSchema(), null, 0, 10, authz: TenantAuthz("Author"));
+
+        sql.Should().Contain($"WHERE `{TenantCol}` = @__tenantVal");
+        param.Get<string>("__tenantVal").Should().Be("tenant-a");
+    }
+
+    [Fact]
+    public void BuildSearch_WithJoins_OmitsTheTenantColumnFromTheProjection()
+    {
+        var joins = new List<JoinSpec>
+        {
+            new() { LeftType = "Article", LeftField = "Id", RightType = "Author", RightField = "Id" }
+        };
+        var registry = (string t) => t == "Author" ? TenantAuthorSchema() : TenantArticleSchema();
+
+        var (sql, _) = StarRocksQueryBuilder.BuildSearch(
+            "articles", TenantArticleSchema(), null, 0, 10,
+            joins: joins, registry: registry, authz: TenantAuthz("Article", "Author"));
+
+        var select = sql[..sql.IndexOf(" FROM ", StringComparison.Ordinal)];
+        select.Should().NotContain(TenantCol);
+        select.Should().Contain("`Title`");
+    }
+
+    [Fact]
+    public void BuildSearch_ExplicitFieldsNamingTheTenantColumn_DoesNotProjectIt()
+    {
+        var (sql, _) = StarRocksQueryBuilder.BuildSearch(
+            "authors", TenantAuthorSchema(), null, 0, 10,
+            fields: [TenantCol, "Name"], authz: TenantAuthz("Author"));
+
+        var select = sql[..sql.IndexOf(" FROM ", StringComparison.Ordinal)];
+        select.Should().NotContain(TenantCol);
+        select.Should().Contain("`Name`");
+    }
+
+    [Fact]
+    public void BuildSearch_FieldsNamingTheTenantColumnInAnotherCasing_DoesNotProjectIt()
+    {
+        var (sql, _) = StarRocksQueryBuilder.BuildSearch(
+            "authors", TenantAuthorSchema(), null, 0, 10,
+            fields: ["__TENANTID"], authz: TenantAuthz("Author"));
+
+        var select = sql[..sql.IndexOf(" FROM ", StringComparison.Ordinal)];
+        select.ToUpperInvariant().Should().NotContain("TENANTID");
+    }
+
+    [Fact]
+    public void BuildSearch_FilterOnTheTenantColumn_IsNotEmittedAsACallerPredicate()
+    {
+        // A caller-supplied filter on __TenantId would be a value oracle: it lets a caller probe
+        // the server-owned tenant id by guessing. Unresolvable == silently dropped, the same
+        // treatment any unknown property gets.
+        var query = new SearchQuery();
+        query.Clauses.Add(new SearchClause
+        {
+            Property = TenantCol,
+            Operator = SearchOperator.Equals,
+            Value = new SearchValue { StringVal = "tenant-b" },
+            ClauseType = SearchClauseType.Filter
+        });
+
+        var (sql, param) = StarRocksQueryBuilder.BuildSearch(
+            "authors", TenantAuthorSchema(), query, 0, 10, authz: TenantAuthz("Author"));
+
+        param.ParameterNames.Should().NotContain("p0");
+        sql.Should().NotContain("tenant-b");
+        // Only the server's own predicate survives.
+        sql.Should().Contain($"WHERE `{TenantCol}` = @__tenantVal");
+    }
+
+    [Fact]
+    public void BuildSearch_SortOnTheTenantColumn_IsNotEmitted()
+    {
+        var query = new SearchQuery();
+        query.Sort.Add(new SearchSort { Property = TenantCol, Descending = true });
+
+        var (sql, _) = StarRocksQueryBuilder.BuildSearch(
+            "authors", TenantAuthorSchema(), query, 0, 10, authz: TenantAuthz("Author"));
+
+        sql.Should().NotContain("ORDER BY");
+    }
+
+    [Fact]
+    public void BuildAggregate_TermsOnTheTenantColumn_IsRejected()
+    {
+        // A GROUP BY key surfaces as a RESULT column (bucket_key), not a projection column, so
+        // BuildSelectColumns cannot cover it — this is its own leak path.
+        var spec = new AggregationDescriptor("by_tenant", AggregationKind.Terms, TenantCol, Size: 5);
+
+        var act = () => StarRocksQueryBuilder.BuildAggregate(
+            "authors", TenantAuthorSchema(), null, spec, authz: TenantAuthz("Author"));
+
+        act.Should().Throw<EngagementQueryTranslationException>()
+            .Where(e => e.Message.Contains("Unknown aggregation field"));
+    }
+
+    [Fact]
+    public void BuildAggregate_GroupByFieldsNamingTheTenantColumn_IsRejected()
+    {
+        var spec = new AggregationDescriptor(
+            "by_tenant", AggregationKind.Terms, "Name",
+            GroupByFields: [TenantCol, "Name"]);
+
+        var act = () => StarRocksQueryBuilder.BuildAggregate(
+            "authors", TenantAuthorSchema(), null, spec, authz: TenantAuthz("Author"));
+
+        act.Should().Throw<EngagementQueryTranslationException>()
+            .Where(e => e.Message.Contains("Unknown aggregation field"));
+    }
+
+    [Fact]
+    public void BuildAggregate_ExpressionReferencingTheTenantColumn_IsRejected()
+    {
+        var spec = new AggregationDescriptor(
+            "smuggled", AggregationKind.Count, "Name", Expression: $"COUNT({TenantCol})");
+
+        var act = () => StarRocksQueryBuilder.BuildAggregate(
+            "authors", TenantAuthorSchema(), null, spec, authz: TenantAuthz("Author"));
+
+        act.Should().Throw<EngagementQueryTranslationException>()
+            .Where(e => e.Message.Contains("Unknown aggregation field"));
+    }
+
+    [Fact]
+    public void BuildGroupBy_KeyNamingTheTenantColumn_IsRejected()
+    {
+        var request = new GroupByRequest { TypeName = "Author" };
+        request.Keys.Add(TenantCol);
+        request.Metrics.Add(new MetricSpec { Name = "n", Type = AggregationType.Count });
+
+        var act = () => StarRocksQueryBuilder.BuildGroupBy(
+            "authors", TenantAuthorSchema(), request,
+            _ => null, TenantAuthz("Author"));
+
+        act.Should().Throw<EngagementQueryTranslationException>()
+            .Where(e => e.Message.Contains("Unknown or ambiguous GROUP BY key"));
+    }
+
+    [Fact]
+    public void BuildGroupBy_OrderByNamingTheTenantColumn_IsRejected()
+    {
+        var request = new GroupByRequest { TypeName = "Author" };
+        request.Keys.Add("Name");
+        request.Metrics.Add(new MetricSpec { Name = "n", Type = AggregationType.Count });
+        request.OrderBy.Add(new SearchSort { Property = TenantCol });
+
+        var act = () => StarRocksQueryBuilder.BuildGroupBy(
+            "authors", TenantAuthorSchema(), request,
+            _ => null, TenantAuthz("Author"));
+
+        act.Should().Throw<EngagementQueryTranslationException>()
+            .Where(e => e.Message.Contains("Unknown or ambiguous ORDER BY property"));
+    }
+
+    [Fact]
+    public void BuildGroupBy_MetricFieldNamingTheTenantColumn_IsRejected()
+    {
+        var request = new GroupByRequest { TypeName = "Author" };
+        request.Keys.Add("Name");
+        request.Metrics.Add(new MetricSpec { Name = "n", Type = AggregationType.Count, Field = TenantCol });
+
+        var act = () => StarRocksQueryBuilder.BuildGroupBy(
+            "authors", TenantAuthorSchema(), request,
+            _ => null, TenantAuthz("Author"));
+
+        act.Should().Throw<EngagementQueryTranslationException>();
+    }
+
+    [Fact]
+    public void BuildGroupBy_StillEmitsTheTenantPredicate()
+    {
+        var request = new GroupByRequest { TypeName = "Author" };
+        request.Keys.Add("Name");
+        request.Metrics.Add(new MetricSpec { Name = "n", Type = AggregationType.Count });
+
+        var (sql, param) = StarRocksQueryBuilder.BuildGroupBy(
+            "authors", TenantAuthorSchema(), request,
+            _ => null, TenantAuthz("Author"));
+
+        sql.Should().Contain($"`{TenantCol}` = @__tenantVal");
+        param.Get<string>("__tenantVal").Should().Be("tenant-a");
+    }
+
+    [Fact]
+    public void BuildAggregate_StillEmitsTheTenantPredicate()
+    {
+        var spec = new AggregationDescriptor("by_name", AggregationKind.Terms, "Name", Size: 5);
+
+        var (sql, param) = StarRocksQueryBuilder.BuildAggregate(
+            "authors", TenantAuthorSchema(), null, spec, authz: TenantAuthz("Author"));
+
+        sql.Should().Contain($"WHERE `{TenantCol}` = @__tenantVal");
+        param.Get<string>("__tenantVal").Should().Be("tenant-a");
+    }
 }

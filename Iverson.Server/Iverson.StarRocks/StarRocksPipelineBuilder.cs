@@ -45,6 +45,12 @@ internal static class StarRocksPipelineBuilder
         };
         foreach (var c in schema.ColumnNames)
         {
+            // EXCLUDE the server-owned tenant column. This dictionary is the pipeline's whole
+            // notion of "columns a step may reference or emit", so dropping it here makes the
+            // column unreferenceable in every step's select/where/derive/group-by/join AND —
+            // because Build projects the base CTE from exactly this set — keeps it out of the
+            // `SELECT *` that every downstream step inherits.
+            if (schema.IsTenantColumn(c)) continue;
             if (constraint?.AllowedFields is not null && !constraint.AllowedFields.Contains(c)) continue;
             cols[c] = c;
         }
@@ -382,6 +388,7 @@ internal static class StarRocksPipelineBuilder
     {
         var tracked = TrackAndValidate(schema, request, registry, authz);
         var byName  = tracked.ToDictionary(s => s.Name, StringComparer.OrdinalIgnoreCase);
+        var baseColumns = byName[BaseStepName].Columns;
 
         var param = new DynamicParameters();
         var sb = new StringBuilder();
@@ -409,7 +416,20 @@ internal static class StarRocksPipelineBuilder
             baseWhere = baseWhere.Length > 0 ? $"({baseWhere}) AND {tenantPredicate}" : tenantPredicate;
         }
 
-        sb.Append($"WITH `{BaseStepName}` AS (SELECT * FROM {TenantIdentifier.Qualify(tenantDatabase, schema.TableName)}");
+        // Explicit projection, NOT `SELECT *`. Pipeline is the one query path that does not go
+        // through StarRocksQueryBuilder.BuildSelectColumns, so with the tenant column physically
+        // present a `SELECT *` base CTE would hand it to every downstream `SELECT *` step and out
+        // through the final `SELECT * FROM <last step>` — even for a zero-step pipeline. Projecting
+        // exactly the base step's tracked column set keeps "what a step may reference" and "what
+        // the CTE actually contains" the same set, which is what makes that impossible.
+        var baseProjection = string.Join(", ",
+            new[] { schema.KeyColumnName }
+                .Concat(schema.ColumnNames)
+                .Where(baseColumns.ContainsKey)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .Select(c => $"`{baseColumns[c]}`"));
+
+        sb.Append($"WITH `{BaseStepName}` AS (SELECT {baseProjection} FROM {TenantIdentifier.Qualify(tenantDatabase, schema.TableName)}");
         if (baseWhere.Length > 0) sb.Append($" WHERE {baseWhere}");
         sb.Append(')');
 

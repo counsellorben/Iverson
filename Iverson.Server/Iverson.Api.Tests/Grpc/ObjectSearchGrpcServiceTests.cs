@@ -2956,4 +2956,38 @@ public class ObjectSearchGrpcServiceTests
     // parent_id → ulong mapping the service applies so it can key the centroid map.
     private static ulong InvokeKeyToUlong(string key) =>
         Iverson.Api.Consumers.IntelligenceStoreConsumer.KeyToUlong(key);
+
+    [Fact]
+    public async Task SearchSimilar_NeverStreamsTheServerOwnedTenantColumn()
+    {
+        // Qdrant point payloads DO carry the tenant column by design (IntelligenceStoreConsumer
+        // writes it as a discriminator alongside the collection routing), so this is a real leak
+        // path: the payload is turned into the response Struct verbatim. The MaskDisallowedFields
+        // call in the streaming loop is what closes it — and this schema has no FieldPermissions,
+        // so AllowedFields is null and the strip must fire on the early-return path.
+        await _registry.RegisterAsync(SchemaFixtures.ArticleSchema());
+
+        var fakeVector = new float[768];
+        _embedding.EmbedAsync("test query", Arg.Any<CancellationToken>()).Returns(fakeVector);
+
+        var vectorResult = new VectorSearchResult(
+            Id: 1, Score: 0.95,
+            Payload: new Dictionary<string, string>
+            {
+                ["title"] = "Great Article",
+                [SchemaDescriptor.TenantColumnName] = "test-tenant"
+            });
+
+        _vector.SearchNamedAsync("articles_test-tenant", "title_vector", fakeVector, Arg.Any<ulong>(), Arg.Any<Filter>())
+               .Returns(new List<VectorSearchResult> { vectorResult }.AsReadOnly());
+
+        var (writer, written) = MakeStream<SearchResponse>();
+        await _sut.SearchSimilar(
+            new SearchSimilarRequest { TypeName = "Article", Property = "Title", Query = "test query", TopK = 5 },
+            writer, TestServerCallContext.Create());
+
+        written.Should().HaveCount(1);
+        written[0].Data.Fields.Should().NotContainKey(SchemaDescriptor.TenantColumnName);
+        written[0].Data.Fields.Should().ContainKey("title"); // the rest of the payload survives
+    }
 }

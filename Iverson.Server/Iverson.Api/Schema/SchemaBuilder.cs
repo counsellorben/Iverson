@@ -242,7 +242,12 @@ internal static class SchemaBuilder
         d.TypeName,
         d.TableName,
         d.KeyColumn.Name,
-        d.ScalarColumns.Select(c => c.Name).ToList());
+        d.ScalarColumns.Select(c => c.Name).ToList(),
+        // Carried as data, not re-spelled as a literal: Iverson.StarRocks cannot see
+        // SchemaDescriptor.TenantColumnName (no project reference), and the name is defined
+        // exactly once. The query builders use it to exclude the column from every projection
+        // and from caller-facing column resolution.
+        d.TenantColumn);
 
     internal static CollectionSchema ToChunkCollectionSchema(SchemaDescriptor d)
     {
