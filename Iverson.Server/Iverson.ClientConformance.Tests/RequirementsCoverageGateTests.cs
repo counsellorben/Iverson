@@ -19,9 +19,13 @@ namespace Iverson.ClientConformance.Tests;
 ///    <c>Requirements.cs</c> itself, build output and the test project — i.e. it must be cited by
 ///    an assertion the orchestrator actually constructs, not merely declared. All FOUR moving
 ///    parts (the strip, the search root and file selection, the SEARCH PATTERN, and the identifier
-///    feed) are graded: see <see cref="UncitedIdentifiers"/>, <see cref="IsGradableSourceFile"/>
-///    and <see cref="Check2Inputs"/>. This comment said THREE for one round while the glob went
-///    ungraded, which is how the ninth hole was born (Ruling 44).
+///    feed) are graded: see <see cref="UncitedIdentifiers"/>, <see cref="IsGradableSourceFile"/>,
+///    <see cref="Check2Inputs"/> and
+///    <see cref="Check2_FileSelection_ExcludesRequirementsItselfTheTestProjectAndBuildOutput"/>,
+///    which is where BOTH the search root and the glob are actually asserted. This comment said
+///    THREE for one round while the glob went ungraded, which is how the ninth hole was born
+///    (Ruling 44) — and then said FOUR for a round while this cref list still named only three, so
+///    a reader following the links never reached the assertion that closed it.
 /// 3. Every ID (Active or Retired) parsed from the standard must match
 ///    <c>IVC-[A-Z]+-\d{3}</c> with an axis drawn from the standard's known nine-axis set, and no
 ///    `|`-leading line inside a requirement table may be left unparsed (see
@@ -59,6 +63,24 @@ namespace Iverson.ClientConformance.Tests;
 /// </summary>
 public class RequirementsCoverageGateTests
 {
+    /// <summary>
+    /// The shape half of Check3's ID rule, and an INPUT to it exactly as <see cref="KnownAxes"/> is
+    /// the axis half — the class doc above states the two as ONE rule. Consumed by
+    /// <see cref="Check3_EveryDeclaredId_MatchesShapeWithKnownAxis"/> and by <c>AxisOf</c> inside
+    /// <c>ComputeCoverageFailures</c>, where a null match silently drops the requirement from every
+    /// Check4 mode.
+    ///
+    /// <para>THE TENTH HOLE (Ruling 50). Round 4 closed the axis half and left this one: nothing
+    /// named this field in any test, and <c>\d{3}</c> -&gt; <c>\d+</c> passed 442/442, admitting a
+    /// malformed <c>IVC-SCH-3</c> end to end. Graded by
+    /// <see cref="IdShapePattern_MatchesEveryDeclaredIdInTheStandard_AndRejectsEachShapeItBounds"/>.
+    /// Note WHY that fixture needs a negative half: a live-standard sweep asserting every declared
+    /// ID MATCHES is a positive assertion over conforming data, and RELAXING a pattern can never
+    /// falsify one — every live ID is three-digit, so <c>\d+</c> survives it. Only an assertion
+    /// that a malformed ID is REJECTED can die. Residual, unchanged: RequirementTableParser's own
+    /// <c>IdCellPattern</c> still bounds a declared ID to <c>IVC-[A-Za-z]+-\d+</c> and KnownAxes
+    /// still rejects a lowercase axis, so what this field uniquely decides is the DIGIT COUNT.</para>
+    /// </summary>
     private static readonly Regex IdShapePattern = new(@"^IVC-([A-Z]+)-\d{3}$", RegexOptions.Compiled);
 
     /// <summary>
@@ -369,19 +391,140 @@ public class RequirementsCoverageGateTests
             $"every requirement ID must match IVC-<AXIS>-NNN with an axis from the known set, but these are malformed: {string.Join(", ", malformed)}");
     }
 
-    [Fact]
-    public void Check3_DeclaredIds_AreUniqueAcrossTheDocument()
-    {
-        var markdown = File.ReadAllText(StandardPath());
-        var declared = ParseDeclaredRequirements(markdown);
-
-        var duplicates = declared
+    /// <summary>
+    /// The duplicate computation behind <see cref="Check3_DeclaredIds_AreUniqueAcrossTheDocument"/>,
+    /// factored out for the same reason <c>ComputeCoverageFailures</c> is: so its THRESHOLD can be
+    /// driven by fixture markdown. Ruling 51(a) — none of Check3's three facts used fixture
+    /// markdown at all, and <c>g.Count() &gt; 1</c> -&gt; <c>&gt; 2</c> passed 442/442, so a
+    /// document declaring one ID exactly twice was invisible. Two rows for one ID means one
+    /// requirement's Statement is authored twice and one const's evidence stands for both;
+    /// duplicating a row today does redden this, but only because the LIVE document happens to be
+    /// the only input, which is exactly the shape of every hole this gate has grown.
+    /// </summary>
+    internal static List<string> DuplicateDeclaredIds(string markdown) =>
+        ParseDeclaredRequirements(markdown)
             .GroupBy(r => r.Id)
             .Where(g => g.Count() > 1)
             .Select(g => g.Key)
             .ToList();
 
+    [Fact]
+    public void Check3_DeclaredIds_AreUniqueAcrossTheDocument()
+    {
+        var duplicates = DuplicateDeclaredIds(File.ReadAllText(StandardPath()));
+
         duplicates.Should().BeEmpty($"every requirement ID must be unique across the document, but these repeat: {string.Join(", ", duplicates)}");
+    }
+
+    /// <summary>
+    /// Ruling 51(a): the threshold itself. An ID declared EXACTLY TWICE — the cheapest and by far
+    /// the likeliest duplication — must be reported, which is what <c>&gt; 2</c> stops being true
+    /// of (mutant C2). The unique-document half is the positive control: without it the fixture
+    /// above would also pass against a rule that reports every ID it ever sees.
+    /// </summary>
+    [Fact]
+    public void Check3_AnIdDeclaredExactlyTwice_IsReportedDuplicate_AndAUniqueDocumentIsNot()
+    {
+        const string twice = """
+            ### REG — Registration
+
+            | ID | Status | Kind | Statement |
+            | --- | --- | --- | --- |
+            | IVC-REG-002 | Active | Behaviour | Some behaviour. |
+            | IVC-REG-002 | Retired | Behaviour | The very same ID, declared a second time. |
+            """;
+
+        DuplicateDeclaredIds(twice).Should().ContainSingle(
+            "an ID declared exactly twice is a duplicate — the threshold is `> 1`, and `> 2` "
+            + "(mutant C2) reports nothing here while still reddening on a THREE-row document")
+            .Which.Should().Be("IVC-REG-002");
+
+        const string once = """
+            ### REG — Registration
+
+            | ID | Status | Kind | Statement |
+            | --- | --- | --- | --- |
+            | IVC-REG-002 | Active | Behaviour | Some behaviour. |
+            | IVC-REG-003 | Active | Behaviour | Some other behaviour. |
+            """;
+
+        DuplicateDeclaredIds(once).Should().BeEmpty(
+            "the positive control: distinct IDs must not be reported, or the assertion above is "
+            + "satisfied by a rule that flags everything");
+    }
+
+    /// <summary>
+    /// Ruling 50, THE TENTH HOLE: <see cref="IdShapePattern"/> is an ungraded input to Check3 and
+    /// to <c>AxisOf</c>. Symmetric with
+    /// <see cref="KnownAxes_ExactlyMatchTheAxisHeadingsInTheStandard"/>, which closed the OTHER
+    /// half of the same conjunction a round earlier.
+    ///
+    /// <para>The live sweep and its <c>NotBeEmpty</c> control catch the pattern being TIGHTENED or
+    /// broken outright. They cannot catch it being RELAXED — every ID the standard declares is
+    /// three-digit, so <c>\d{3}</c> -&gt; <c>\d+</c> passes a positive sweep unchanged (that is
+    /// mutant C1R, which survived 442/442). The rejection half below is the half that dies, and it
+    /// pins each bound the field decides on its own.</para>
+    /// </summary>
+    [Fact]
+    public void IdShapePattern_MatchesEveryDeclaredIdInTheStandard_AndRejectsEachShapeItBounds()
+    {
+        var markdown = File.ReadAllText(StandardPath());
+
+        var idCells = Regex.Matches(
+                markdown,
+                @"^\|\s*(IVC-\S+)\s*\|\s*(?:Active|Retired)\s*\|",
+                RegexOptions.Multiline)
+            .Select(m => m.Groups[1].Value)
+            .ToList();
+
+        idCells.Should().NotBeEmpty(
+            "the parse itself must find requirement rows in the standard, or every assertion "
+            + "below degrades into a sweep over an empty list");
+
+        idCells.Should().OnlyContain(id => IdShapePattern.IsMatch(id),
+            "IdShapePattern is Check3's shape rule read directly off the field, so it must accept "
+            + "every ID the standard actually declares — tightening it (an axis-length bound, a "
+            + "dropped anchor) reddens here rather than in a message about the document");
+
+        IdShapePattern.IsMatch("IVC-SCH-3").Should().BeFalse(
+            "EXACTLY three digits. Relaxing to `\\d+` (mutant C1R) admits IVC-SCH-3 through "
+            + "Check3 and through AxisOf end to end, and no positive sweep over the live standard "
+            + "can see it because every live ID already has three");
+        IdShapePattern.IsMatch("IVC-SCH-0003").Should().BeFalse(
+            "and the same bound on the other side — `\\d{3,}` is as wrong as `\\d+`");
+        IdShapePattern.IsMatch("IVC-sch-003").Should().BeFalse(
+            "the axis is upper-case: a lower-case axis would be attributed to no known axis, "
+            + "which AxisOf turns into a SILENT DROP from every Check4 mode rather than a failure");
+        IdShapePattern.IsMatch("IVC-SCH-003 and trailing prose").Should().BeFalse(
+            "anchored at the end, or an ID cell carrying commentary parses as a requirement ID");
+        IdShapePattern.IsMatch("XIVC-SCH-003").Should().BeFalse(
+            "and anchored at the start");
+    }
+
+    /// <summary>
+    /// Ruling 47 as corrected by Ruling 49: TWO CONSTS HOLDING THE SAME STRING VALUE.
+    ///
+    /// <para>Reach, verified rather than argued. REPOINTING an existing const at another's value
+    /// does NOT survive: <c>ToHashSet()</c> collapses the duplicate on the REGISTRY side only,
+    /// while the standard still declares the now-orphaned ID, so Check1's comparison does not
+    /// balance — mutant DUP1 (IdnServerTenantColumnAbsentFromReadBack -&gt; "IVC-IDN-003") fails
+    /// FOUR tests with Check1 among them. What survives is an ADDITIONAL const with no standard row
+    /// of its own: mutant DUP2 (a new <c>IdnAliasOfIdn003 = "IVC-IDN-003"</c>, cited from
+    /// Verifier.cs) passed 442/442. Check1 balances because the extra value is already in the set,
+    /// Check2 works on IDENTIFIERS, which stay distinct, and Check3's uniqueness is over the
+    /// DOCUMENT's declared IDs. Two assertions' evidence then silently merges under one
+    /// requirement and ComputeUntouched reports it touched.</para>
+    ///
+    /// <para>This is falsifiable where the assertion fix round 4 DELETED was not: that one ran over
+    /// <c>Dictionary.Keys</c>, unique by construction. This runs over the reflected VALUES, which
+    /// nothing makes unique.</para>
+    /// </summary>
+    [Fact]
+    public void RegistryConstValues_AreUniqueAcrossTheRegistry()
+    {
+        ReflectRegistryConsts().Should().OnlyHaveUniqueItems(
+            "two consts holding one requirement ID merge two assertions' evidence under a single "
+            + "requirement, and no other check in this gate can see it (Rulings 47 and 49)");
     }
 
     /// <summary>
@@ -707,6 +850,114 @@ public class RequirementsCoverageGateTests
 
         failures.Should().ContainSingle(f =>
             f.Contains("REG") && f.Contains("IVC-REG-999") && f.Contains("does not exist in axis 'REG'"));
+    }
+
+    /// <summary>
+    /// Mode 3's EMPTY-EVIDENCE arm, found by re-running the fix-round-4 review's per-input
+    /// enumeration against the branches this round touched rather than only its named items.
+    /// Nothing constrained it either: replacing <c>ids.Length == 0</c> with <c>false</c> (mutant
+    /// C5) passed 447/447 with Ruling 51(b)'s new fixtures already in place.
+    ///
+    /// <para>Reach, stated precisely rather than inflated. A <c>Covered</c> row with empty Evidence
+    /// contributes no claimant, so if its axis's Active requirements are claimed by NO other area,
+    /// Mode 5 reddens anyway and the only loss is a message that blames the requirement instead of
+    /// the row. The false green is the case below: another area already claims the requirement, so
+    /// Mode 5 is silent, and a row reading <c>Covered</c> with nothing behind it survives the gate
+    /// — a ledger asserting coverage it does not have, which is the document-side form of exactly
+    /// the failure this gate exists to prevent.</para>
+    /// </summary>
+    [Fact]
+    public void Check4_CoveredAreaCitingNothing_FailsNamingTheArea_ViaMode3Empty()
+    {
+        const string markdown = """
+            ### REG — Registration
+
+            | ID | Status | Kind | Statement |
+            | --- | --- | --- | --- |
+            | IVC-REG-002 | Active | Behaviour | Some behaviour. |
+
+            #### Coverage
+
+            | Area | Status | Evidence |
+            | --- | --- | --- |
+            | The authored area | Covered | IVC-REG-002 |
+            | An area covered by nothing at all | Covered |  |
+            """;
+
+        var failures = ComputeCoverageFailures(markdown);
+
+        failures.Should().ContainSingle(f =>
+            f.Contains("REG") && f.Contains("An area covered by nothing at all")
+            && f.Contains("cites no requirement ID"),
+            "the ledger's other area already claims IVC-REG-002, so Mode 5 is silent and this row "
+            + "is the only thing that can redden — with the branch disabled (mutant C5) the gate "
+            + "passes over an area that declares itself Covered with no evidence whatsoever");
+    }
+
+    /// <summary>
+    /// Ruling 51(b): Mode 3's RETIRED arm. Every other one of Check4's eight modes had a named
+    /// fixture and this one did not, though the class doc claims it — disabling the arm passed
+    /// 442/442 (mutant C4). A Retired requirement is kept for history and ID-uniqueness only and
+    /// takes no const, so a ledger area citing one claims evidence that cannot exist; with the arm
+    /// off the citation is accepted and the area reads as Covered by nothing.
+    ///
+    /// <para>Note the arm is invisible to the LIVE standard for the same reason it needed a
+    /// fixture: no live Coverage row cites a Retired ID, and if one ever did the failure would be
+    /// a document defect rather than evidence the arm works.</para>
+    /// </summary>
+    [Fact]
+    public void Check4_CoveredAreaCitingARetiredId_FailsNamingTheId_ViaMode3Retired()
+    {
+        const string markdown = """
+            ### REL — Relations
+
+            | ID | Status | Kind | Statement |
+            | --- | --- | --- | --- |
+            | IVC-REL-001 | Active | Behaviour | Some behaviour. |
+            | IVC-REL-009 | Retired | Capability | A superseded capability, kept for history. |
+
+            #### Coverage
+
+            | Area | Status | Evidence |
+            | --- | --- | --- |
+            | The authored area | Covered | IVC-REL-001 |
+            | A legacy area | Covered | IVC-REL-009 |
+            """;
+
+        var failures = ComputeCoverageFailures(markdown);
+
+        failures.Should().ContainSingle(f =>
+            f.Contains("REL") && f.Contains("A legacy area") && f.Contains("IVC-REL-009")
+            && f.Contains("is Retired"));
+    }
+
+    /// <summary>
+    /// The control for the fixture above: the SAME ledger with the Retired row's citation swapped
+    /// for the Active one produces no failure. Without it, the Retired assertion would also pass
+    /// against a Mode 3 that rejected every Covered citation outright, and "cites a Retired ID" and
+    /// "cites anything at all" would be indistinguishable.
+    /// </summary>
+    [Fact]
+    public void Check4_CoveredAreaCitingOnlyActiveIds_Passes_TheMode3RetiredControl()
+    {
+        const string markdown = """
+            ### REL — Relations
+
+            | ID | Status | Kind | Statement |
+            | --- | --- | --- | --- |
+            | IVC-REL-001 | Active | Behaviour | Some behaviour. |
+            | IVC-REL-009 | Retired | Capability | A superseded capability, kept for history. |
+
+            #### Coverage
+
+            | Area | Status | Evidence |
+            | --- | --- | --- |
+            | The authored area | Covered | IVC-REL-001 |
+            """;
+
+        ComputeCoverageFailures(markdown).Should().BeEmpty(
+            "a Retired requirement takes no const and is not subject to coverage, so simply "
+            + "DECLARING one must not redden the ledger — only CITING one may");
     }
 
     [Fact]
@@ -1066,6 +1317,11 @@ public class RequirementsCoverageGateTests
     {
         var markdown = File.ReadAllText(StandardPath());
 
+        // This pattern is deliberately STRICTER than CoverageTableParser.AxisHeadingPattern
+        // (`^###\s+(\S+)\s+—`): it requires single spaces and an upper-case-only leading token.
+        // Divergence between the two can therefore only ever cost this fixture a heading the
+        // parser would have accepted — a FALSE RED, never a false green — so the narrowing is safe
+        // in the one direction that matters (Ruling 44 review, Minor 4).
         var headingAxes = Regex.Matches(markdown, @"^### ([A-Z]+) \u2014 ", RegexOptions.Multiline)
             .Select(m => m.Groups[1].Value)
             .ToList();

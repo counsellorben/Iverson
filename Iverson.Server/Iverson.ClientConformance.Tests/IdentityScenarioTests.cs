@@ -232,11 +232,23 @@ public class IdentityScenarioTests
         // The negative half, stated so that it can actually FAIL ON ITS OWN. The `NotBe(IDN-003)`
         // this replaces could not: the `Be(...)` two lines above already implies it for as long as
         // the two consts hold different values — so it was true by construction and pinned
-        // nothing. NOTE that nothing GUARANTEES they hold different values: Check3's uniqueness is
-        // over the IDs the STANDARD declares, not over the registry's const values, and Check1
-        // compares `ToHashSet()`s, so two consts sharing one value survives every check in the
-        // gate. An earlier version of this comment claimed Check3 guaranteed it; it does not. That
-        // gap is a live residual, recorded here and not closed in this round. Counting IDN-003's citations across the
+        // nothing. WHAT GUARANTEES THEY HOLD DIFFERENT VALUES, stated correctly at the third
+        // attempt and verified by running both mutants:
+        //   - REPOINTING this const at IVC-IDN-003 is caught, and caught FIRST by Check1.
+        //     `ToHashSet()` collapses the duplicate on the REGISTRY side only; the standard still
+        //     declares the orphaned IVC-IDN-004 row, so `registryIds` loses a member the standard
+        //     keeps and Check1's `missingFromRegistry` is non-empty. Mutant DUP1 fails FOUR tests
+        //     — Check1_ActiveIdsInStandard_ExactlyMatchConstsInRegistry, this test, Judge...
+        //     _Idn004_IsCitedByExactlyOneAssertion, and Judge..._ProbeThrew_BothCitedAssertions
+        //     FailNamingTheProbe. An earlier version of this comment said this case "survives
+        //     every check in the gate"; that was FALSE (Ruling 49).
+        //   - What genuinely survived was narrower: an ADDITIONAL const carrying the same value and
+        //     no standard row of its own. Check1 balances (the value is already in both sets),
+        //     Check2 matches IDENTIFIERS, which stay distinct, and Check3's uniqueness is over the
+        //     DOCUMENT. Mutant DUP2 passed 442/442. That gap is now closed by
+        //     RequirementsCoverageGateTests.RegistryConstValues_AreUniqueAcrossTheRegistry, which
+        //     runs OnlyHaveUniqueItems over the reflected VALUES.
+        // Counting IDN-003's citations across the
         // whole judgement is independently falsifiable in exactly the direction Ruling 14's caveat
         // cares about: re-point the strip control at IDN-003 and the count goes to FOUR; author a
         // fourth assertion that quietly takes IDN-003 and it goes to four as well. The baseline is

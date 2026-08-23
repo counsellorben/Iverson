@@ -124,8 +124,14 @@ public sealed class SchemaCatalogScenario(
         }
 
         // ── read: each driver fetches the catalogue through its own client library ─────────────
+        // Braced deliberately (Ruling 48). Unbraced, deleting the call line promotes the `return`
+        // below into the loop body and the file fails to compile with CS0161 — so the mutant
+        // "delete the JudgeReadPhase call", which three fix rounds described running against this
+        // site, cannot actually run, and a future reviewer could mis-read a BUILD ERROR as a kill.
         foreach (var (language, document) in await RunPhaseAsync(Phase.Read, states, context, ct))
+        {
             JudgeReadPhase(language, states[language], document);
+        }
 
         return states.Select(kv => ScenarioCells.Cell(kv.Key, Name, kv.Value)).ToList();
     }
