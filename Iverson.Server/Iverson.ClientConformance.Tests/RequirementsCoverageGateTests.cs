@@ -210,9 +210,51 @@ public class RequirementsCoverageGateTests
         var sourceCode = rawSources.Select(StripCommentLines).ToList();
 
         return identifiers
-            .Where(identifier => !sourceCode.Any(text => text.Contains(identifier, StringComparison.Ordinal)))
+            .Where(identifier => !sourceCode.Any(text => ContainsIdentifier(text, identifier)))
             .ToList();
     }
+
+    /// <summary>
+    /// Whole-identifier match, not a bare <c>Contains</c>. A substring search reports
+    /// <c>RegForeignKeyNaming</c> as cited by a file that only ever names
+    /// <c>RegForeignKeyNamingEnforced</c> — so a const whose identifier is a PREFIX (or any
+    /// substring) of another const's would pass Check2 having been cited nowhere, and the gate
+    /// would be green over an entirely ungraded requirement. No such pair exists in
+    /// <c>Requirements.cs</c> today, which is exactly why the hazard is worth closing now: it is
+    /// created by an innocuous future rename, not by anything visible at the point of the mistake,
+    /// and the gate would go on passing.
+    ///
+    /// <para>Bounded on both sides by "not a C# identifier character" — letters, digits, and
+    /// underscore — so <c>Requirements.Xxx</c>, <c>(Xxx)</c> and <c>Xxx,</c> all still match,
+    /// while <c>XxxSomething</c> and <c>PrefixXxx</c> do not. This can only ever make the check
+    /// STRICTER, never more permissive, so it cannot introduce the false-green direction it
+    /// exists to remove.</para>
+    /// </summary>
+    private static bool ContainsIdentifier(string text, string identifier)
+    {
+        var from = 0;
+        while (true)
+        {
+            var at = text.IndexOf(identifier, from, StringComparison.Ordinal);
+            if (at < 0)
+            {
+                return false;
+            }
+
+            var beforeOk = at == 0 || !IsIdentifierChar(text[at - 1]);
+            var end = at + identifier.Length;
+            var afterOk = end >= text.Length || !IsIdentifierChar(text[end]);
+
+            if (beforeOk && afterOk)
+            {
+                return true;
+            }
+
+            from = at + 1;
+        }
+    }
+
+    private static bool IsIdentifierChar(char c) => char.IsLetterOrDigit(c) || c == '_';
 
     [Fact]
     public void Check2_EveryRegistryConst_IsCitedByAssertionCodeOutsideRequirementsAndTests()
@@ -803,6 +845,30 @@ public class RequirementsCoverageGateTests
 
         UncitedIdentifiers([source], ["CitedOnlyFromProse"])
             .Should().ContainSingle().Which.Should().Be("CitedOnlyFromProse");
+    }
+
+    /// <summary>
+    /// The FIFTH gate hole, found this round and closed with the rule that closes it: Check2 used
+    /// a bare <c>Contains</c>, so an identifier that is a SUBSTRING of another const's identifier
+    /// was reported cited by a file naming only the longer one. Reverting
+    /// <see cref="ContainsIdentifier"/> to <c>text.Contains(identifier)</c> is what this fails on.
+    /// </summary>
+    [Fact]
+    public void Check2_IdentifierThatIsOnlyASubstringOfALongerCitedIdentifier_IsReportedUncited()
+    {
+        const string source = """
+            internal static Assertion Judge() =>
+                Assertion.From("something", true, "ok", Requirements.RegForeignKeyNamingEnforced);
+            """;
+
+        UncitedIdentifiers([source], ["RegForeignKeyNaming"])
+            .Should().ContainSingle().Which.Should().Be("RegForeignKeyNaming",
+                "a const cited nowhere must not be reported cited merely because a LONGER const's "
+                + "identifier happens to contain it — an innocuous future rename would otherwise "
+                + "leave a requirement ungraded with the gate green");
+
+        UncitedIdentifiers([source], ["RegForeignKeyNamingEnforced"]).Should().BeEmpty(
+            "the longer identifier is genuinely cited and must still be reported so");
     }
 
     /// <summary>
