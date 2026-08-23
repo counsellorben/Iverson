@@ -150,21 +150,7 @@ public sealed class CrudRoundtripScenario(
             var author = RequireStepOk(state, document, "get_author", Requirements.LifeMappedCrudReachable);
             driverReads[language] = (article?.Entity, author?.Entity);
 
-            // IVC-LIFE-006 (reachability, supersedes retired IVC-REL-009) and IVC-LIFE-008
-            // (hydration) — split from the retired IVC-LIFE-005: each driver performs its OWN
-            // depth-1 read through its own client library — a separate step, "get_depth1" — and
-            // the step succeeding discharges IVC-LIFE-006, while the returned entity actually
-            // carrying a hydrated relation discharges IVC-LIFE-008 separately below. This is what
-            // makes reachability and hydration independently gradable: the orchestrator's own
-            // MappingGet(depth: 1) below proves only that the SERVER hydrates.
-            var depth1Step = document.Steps.FirstOrDefault(s => s.Name == "get_depth1");
-            state.Assertions.Add(Verifier.VerifyDepthResolvedReadReachable(depth1Step));
-            var depth1 = depth1Step is { Ok: true } ? depth1Step : null;
-            if (state.Article is not null)
-            {
-                state.Assertions.Add(Verifier.VerifyDepthCapability(
-                    "article", state.Article.Descriptor, depth1?.Entity));
-            }
+            JudgeDriverDepthRead(state, document);
         }
 
         // ── the orchestrator's own two legs, and the three-way comparison ────────────────────
@@ -357,6 +343,34 @@ public sealed class CrudRoundtripScenario(
     }
 
     /// <summary>
+    /// IVC-LIFE-006 (reachability, supersedes retired IVC-REL-009) and IVC-LIFE-008 (hydration) —
+    /// split from the retired IVC-LIFE-005: each driver performs its OWN depth-1 read through its
+    /// own client library — a separate step, <c>get_depth1</c> — and the step succeeding discharges
+    /// IVC-LIFE-006, while the returned entity actually carrying a hydrated relation discharges
+    /// IVC-LIFE-008. This is what makes reachability and hydration independently gradable: the
+    /// orchestrator's own <c>MappingGet(depth: 1)</c> proves only that the SERVER hydrates.
+    ///
+    /// <para>Internal and extracted from <c>RunAsync</c>'s read loop for the same reason as
+    /// <see cref="TakeDescriptor"/>: these two calls are the SOLE citation sites for
+    /// <see cref="Requirements.LifeDepthResolvedReadReachable"/> and
+    /// <see cref="Requirements.LifeDepthResolvedReadHydrated"/> anywhere in the orchestrator.
+    /// Delete either and its const stays cited inside <c>Verifier.cs</c>, so the coverage gate's
+    /// Check2 — which reads SOURCE TEXT, not the call graph — stays green while the requirement
+    /// grades nothing. <c>CrudRoundtripScenarioTests</c> is what fails instead.</para>
+    /// </summary>
+    internal static void JudgeDriverDepthRead(LanguageState state, PhaseDocument document)
+    {
+        var depth1Step = document.Steps.FirstOrDefault(s => s.Name == "get_depth1");
+        state.Assertions.Add(Verifier.VerifyDepthResolvedReadReachable(depth1Step));
+        var depth1 = depth1Step is { Ok: true } ? depth1Step : null;
+        if (state.Article is not null)
+        {
+            state.Assertions.Add(Verifier.VerifyDepthCapability(
+                "article", state.Article.Descriptor, depth1?.Entity));
+        }
+    }
+
+    /// <summary>
     /// Internal, not private, so <c>CrudRoundtripScenarioTests</c> can prove the
     /// <c>Verifier.VerifyRegistration</c> call BELOW actually reaches a cell. That call is the sole
     /// citation site for IVC-DECL-001/003/006 and IVC-REL-001/002/003/004/010: deleting it leaves
@@ -395,10 +409,15 @@ public sealed class CrudRoundtripScenario(
     // ── the three-way comparison ─────────────────────────────────────────────────────────────
 
     /// <summary>
-    /// Internal for the same reason as <see cref="TakeDescriptor"/>: the
-    /// <c>Verifier.VerifyRelationHydrated</c> loop inside is the ONLY citation site for
-    /// IVC-REL-006 and IVC-REL-008 anywhere in the orchestrator, so dropping it removes both
-    /// requirements from every cell without reddening the gate.
+    /// Internal for the same reason as <see cref="TakeDescriptor"/>, and for TWO seams inside, not
+    /// one. The <c>Verifier.VerifyRelationHydrated</c> loop is the ONLY citation site for
+    /// IVC-REL-006 and IVC-REL-008 anywhere in the orchestrator. The
+    /// <c>Verifier.VerifyThreeWay</c> loop above it is the only citation site for IVC-DECL-004 —
+    /// all three of that requirement's citations sit inside that one helper — and one of
+    /// IVC-REL-010's two. Dropping either loop removes those requirements from every cell without
+    /// reddening the gate, because Check2 reads source text and the consts stay cited in
+    /// <c>Verifier.cs</c>. Each is pinned by its own named test in
+    /// <c>CrudRoundtripScenarioTests</c>.
     /// </summary>
     internal async Task<ObservedTitle> CompareAsync(
         LanguageState state,

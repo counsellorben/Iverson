@@ -229,8 +229,22 @@ public class IdentityScenarioTests
                 "is IVC-IDN-004 — and NOT IVC-IDN-003's DERIVATION statement; citing IVC-IDN-003 " +
                 "here would silently widen that requirement to own a rule it does not make");
 
-        Named(JudgeHappy(), "does not carry the server-owned tenant column").RequirementId.Should()
-            .NotBe(Requirements.IdnTenancyDerivedAndEnforced);
+        // The negative half, stated so that it can actually FAIL ON ITS OWN. The `NotBe(IDN-003)`
+        // this replaces could not: the `Be(...)` two lines above already implies it for as long as
+        // the two consts hold different values, which Check3's uniqueness check guarantees — so it
+        // was true by construction and pinned nothing. Counting IDN-003's citations across the
+        // whole judgement is independently falsifiable in exactly the direction Ruling 14's caveat
+        // cares about: re-point the strip control at IDN-003 and the count goes to three; author a
+        // fourth assertion that quietly takes IDN-003 and it goes to three as well. Neither is
+        // visible to the assertion above, and neither is visible to the coverage gate, whose
+        // exactly-one rule counts LEDGER areas rather than code citations (Ruling 35).
+        JudgeHappy().Count(a => a.RequirementId == Requirements.IdnTenancyDerivedAndEnforced)
+            .Should().Be(3,
+                "IVC-IDN-003's Statement has a DERIVATION half and an ENFORCEMENT half, and it is "
+                + "graded by exactly three assertions and no others: the stored tenant being the "
+                + "acting user's own, the client's value not having become it, and the wrong "
+                + "acting user's update being denied. A FOURTH means some further claim has been "
+                + "folded into that Statement");
     }
 
     /// <summary>

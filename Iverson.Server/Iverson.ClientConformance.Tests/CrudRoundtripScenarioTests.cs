@@ -216,4 +216,110 @@ public class CrudRoundtripScenarioTests
         cited.Should().Contain(Requirements.RelOneToManyReverseLookup,
             "IVC-REL-008 is cited nowhere but the hydration loop's one-to-many branch");
     }
+
+    // ── Important 2: the three seams Ruling 31's first pass left open ────────────────────────
+    //
+    // Ruling 31 was closed for TWO of FIVE citation seams in this scenario, not two of two. The
+    // three below are the rest. Each pins the same WIRING claim as the two above: that the
+    // judgement a call site constructs actually reaches a report cell, which the coverage gate's
+    // source-text Check2 structurally cannot see.
+
+    /// <summary>
+    /// <see cref="CrudRoundtripScenario.JudgeDriverDepthRead"/>'s
+    /// <c>Verifier.VerifyDepthResolvedReadReachable</c> call is the SOLE citation site for
+    /// <see cref="Requirements.LifeDepthResolvedReadReachable"/> (IVC-LIFE-006), and the
+    /// <c>Verifier.VerifyDepthCapability</c> call beside it the SOLE site for
+    /// <see cref="Requirements.LifeDepthResolvedReadHydrated"/> (IVC-LIFE-008). Delete either and
+    /// its const is still cited inside <c>Verifier.cs</c>, so the gate stays green while the
+    /// requirement grades nothing anywhere in the matrix.
+    ///
+    /// <para>A descriptor must be captured first or the LIFE-008 arm is skipped by its
+    /// <c>state.Article is not null</c> guard — which would make deleting that arm
+    /// indistinguishable from the truth, exactly the vacuity this test exists to rule out.</para>
+    /// </summary>
+    [Fact]
+    public void JudgeDriverDepthRead_BothDepthJudgements_ReachTheCellCarryingTheirLifeCitations()
+    {
+        var state = new CrudRoundtripScenario.LanguageState();
+        state.Article = CrudRoundtripScenario.TakeDescriptor(
+            state, RegisterDocument(ArticleDescriptorJson()), "register", "article",
+            [RelationKind.ManyToOne, RelationKind.ManyToMany]);
+        state.Article.Should().NotBeNull("the LIFE-008 arm is guarded on a captured descriptor");
+
+        var readDocument = new PhaseDocument("dotnet", "read",
+        [
+            new StepResult("get_depth1", true, Entity: Json(
+                """
+                {
+                  "id": "00000000-0000-0000-0000-000000000001",
+                  "Author": { "id": "00000000-0000-0000-0000-000000000002" }
+                }
+                """)),
+        ]);
+
+        CrudRoundtripScenario.JudgeDriverDepthRead(state, readDocument);
+
+        var cited = ScenarioCells.Cell("dotnet", CrudRoundtripScenario.Name, state)
+            .Assertions.Select(a => a.RequirementId).ToList();
+
+        cited.Should().Contain(Requirements.LifeDepthResolvedReadReachable,
+            "IVC-LIFE-006 is cited nowhere but this call — if it stops reaching the cell, nothing "
+            + "in the matrix grades the driver's own depth-1 read being reachable at all");
+        cited.Should().Contain(Requirements.LifeDepthResolvedReadHydrated,
+            "IVC-LIFE-008 is cited nowhere but the VerifyDepthCapability call beside it");
+    }
+
+    /// <summary>
+    /// <see cref="CrudRoundtripScenario.CompareAsync"/>'s <c>Verifier.VerifyThreeWay</c> loop is
+    /// the scenario's core driver/gRPC/Postgres comparison, and it is the only citation site for
+    /// <see cref="Requirements.DeclKeyWellFormedUuid"/> (IVC-DECL-004 — ALL THREE of its citations
+    /// sit inside that one helper) and one of <see cref="Requirements.RelForeignKeyWellFormedUuid"/>
+    /// (IVC-REL-010)'s two. Deleting the loop leaves both consts cited in <c>Verifier.cs</c>, so
+    /// the coverage gate stays green while the scenario's central comparison grades nothing.
+    ///
+    /// <para>BOTH citations are pinned from one call because
+    /// <c>Verifier.ComparedValueNames</c> yields the key and every owning relation's foreign key,
+    /// and <c>VerifyThreeWay</c> partitions the two requirements across exactly that split —
+    /// DECL-004 on the key firing, REL-010 on a foreign key. A key-only fixture would pin half the
+    /// loop, so the article descriptor's two owning relations are load-bearing here.</para>
+    ///
+    /// <para>The collaborators are deliberately dead, as in the hydration test above: the
+    /// assertions are then built from a null gRPC entity and FAIL, which is correct and still
+    /// carries their citations. What this pins is that they are built at all.</para>
+    /// </summary>
+    [Fact]
+    public async Task CompareAsync_TheThreeWayComparison_ReachesTheCellCarryingItsDeclAndRelCitations()
+    {
+        var runner = new DriverRunner(repoRoot: "/tmp");
+        runner.MergeKeys("dotnet", new PhaseDocument("dotnet", "write",
+        [
+            new StepResult("write", true, Keys: new Dictionary<string, string>
+            {
+                ["article"] = Guid.NewGuid().ToString(),
+            }),
+        ]));
+
+        var scenario = BuildScenario(runner);
+        var state = new CrudRoundtripScenario.LanguageState();
+
+        var article = CrudRoundtripScenario.TakeDescriptor(
+            state, RegisterDocument(ArticleDescriptorJson()), "register", "article",
+            [RelationKind.ManyToOne, RelationKind.ManyToMany]);
+        article.Should().NotBeNull();
+
+        Verifier.ComparedValueNames(article!.Descriptor).Should().HaveCountGreaterThan(1,
+            "the fixture must yield a key AND at least one foreign key, or this test pins only "
+            + "half of the requirement partition it claims to cover");
+
+        await scenario.CompareAsync(
+            state, "dotnet", article!, "article", driverEntity: null, "acting-token", default);
+
+        var cited = ScenarioCells.Cell("dotnet", CrudRoundtripScenario.Name, state)
+            .Assertions.Select(a => a.RequirementId).ToList();
+
+        cited.Should().Contain(Requirements.DeclKeyWellFormedUuid,
+            "IVC-DECL-004 is cited nowhere but VerifyThreeWay's isKey branch");
+        cited.Should().Contain(Requirements.RelForeignKeyWellFormedUuid,
+            "IVC-REL-010 loses one of its two citation sites if this loop stops reaching the cell");
+    }
 }

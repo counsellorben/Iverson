@@ -27,9 +27,26 @@ namespace Iverson.ClientConformance.Tests;
 ///    `Active` requirements bidirectionally: every Active requirement must be claimed by exactly
 ///    one Covered area — NOT merely at least one; two areas claiming the same ID is Mode 7 —
 ///    every Covered/Deferred row must be well-formed and cite only existing, Active, same-axis
-///    IDs, and an axis with at least one Active requirement must have a `#### Coverage` table at
-///    all (see <see cref="CoverageTableParser"/> and <c>ComputeCoverageFailures</c> below for the
-///    seven failure modes enforced).
+///    IDs, an axis with at least one Active requirement must have a `#### Coverage` table at
+///    all, and a `#### Coverage` table must sit under a known axis heading (Mode 8) rather than
+///    float unattributed (see <see cref="CoverageTableParser"/> and
+///    <c>ComputeCoverageFailures</c> below for the eight failure modes enforced).
+///
+/// <para><b>What Check4 does and does not guard.</b> Check4 enforces exactly-one CLAIMANT AREA IN
+/// THE LEDGER; the code side rests on per-site named tests. An assertion that CITES a requirement
+/// whose Statement it does not grade satisfies every check here — Check1 sees the const, Check2
+/// sees the identifier in source, Check3 sees a well-formed ID and Check4 sees one ledger row —
+/// so re-pointing a citation from one const to a semantically unrelated one passes this gate
+/// entirely. What catches that is a hand-written per-site test naming the requirement the site
+/// must cite (e.g.
+/// <c>IdentityScenarioTests.JudgeTenantDerivation_TheGrpcControl_CitesIdn004AndNotIdn003</c>).
+/// Do not read Check4 as protection against a mis-aimed citation in code.</para>
+///
+/// <para><b>Every rule in this file grades itself.</b> Both of the gate's own rules added in
+/// August 2026 — Mode 7's exactly-one and Check2's comment strip — shipped UNFALSIFIABLE: each
+/// could be reverted with the whole suite green, observable only through the live standard.
+/// STANDING RULE: any change to this gate lands with a test that fails if the change is
+/// reverted.</para>
 /// </summary>
 public class RequirementsCoverageGateTests
 {
@@ -143,9 +160,28 @@ public class RequirementsCoverageGateTests
     /// gap. Under-stripping can only ever make this check more permissive, which is the safe
     /// direction for a heuristic; over-stripping could red the gate for a citation that exists.</para>
     ///
-    /// <para>This does NOT close Check2's deeper limitation, recorded in Ruling 32 and pinned next
-    /// door by the reaches-the-cell tests: a citation in live code that never EXECUTES is still
-    /// counted. Only a scenario-level wiring test can see that.</para>
+    /// <para><b>The residual, MEASURED rather than estimated.</b> Ruling 33's permissive trade-off
+    /// stands; what follows is what it costs, each item confirmed by a surviving mutant or by
+    /// reading this method. Still counted as a citation:
+    /// <list type="a">
+    /// <item><description>Any TRAILING <c>//</c> comment — de-citing an assertion to a string
+    /// literal and appending <c>// cites Requirements.Xxx</c> to the SAME line passes. This is
+    /// exactly as wide as the doc-comment hole above, one character to the left, and closing it is
+    /// the thing the paragraph above deliberately refuses to do.</description></item>
+    /// <item><description>A <c>/* */</c> block whose interior lines start with anything other than
+    /// <c>*</c> — only <c>//</c> and <c>*</c> openers are recognised.</description></item>
+    /// <item><description>The identifier inside a STRING LITERAL, which is live code to this check
+    /// and prose to a reader.</description></item>
+    /// <item><description><c>nameof(Requirements.Xxx)</c>, which names the const without
+    /// constructing an assertion from it.</description></item>
+    /// <item><description>Live code that never EXECUTES — the deepest limitation, recorded in
+    /// Ruling 32. A citation can sit in a method nothing calls, or in a call site deleted from the
+    /// scenario that still leaves the const cited inside <c>Verifier.cs</c>. No text search can see
+    /// that; the per-scenario reaches-the-cell tests are the only instrument that
+    /// can.</description></item>
+    /// </list>
+    /// Closing (a)–(d) mechanically needs a Roslyn syntax walk, which is larger than this gate
+    /// should carry for the residual risk.</para>
     /// </summary>
     private static string StripCommentLines(string source) =>
         string.Join('\n', source
@@ -157,24 +193,35 @@ public class RequirementsCoverageGateTests
                        && !trimmed.StartsWith("*", StringComparison.Ordinal);
             }));
 
+    /// <summary>
+    /// The computation behind Check2, factored out so the comment strip can be exercised against
+    /// FIXTURE sources as well as against the live tree. Without this seam the strip is
+    /// unfalsifiable from the suite: removing <see cref="StripCommentLines"/> from the pipeline
+    /// leaves every real const cited by real code, so the gate stays green and nothing names the
+    /// regression (the reviewer's mutant R6, which survived 426/426).
+    ///
+    /// <paramref name="rawSources"/> are RAW file contents — stripping happens here, inside the
+    /// unit under test, deliberately: a helper that took already-stripped text would move the very
+    /// wiring this exists to grade back out of reach.
+    /// </summary>
+    internal static List<string> UncitedIdentifiers(
+        IEnumerable<string> rawSources, IEnumerable<string> identifiers)
+    {
+        var sourceCode = rawSources.Select(StripCommentLines).ToList();
+
+        return identifiers
+            .Where(identifier => !sourceCode.Any(text => text.Contains(identifier, StringComparison.Ordinal)))
+            .ToList();
+    }
+
     [Fact]
     public void Check2_EveryRegistryConst_IsCitedByAssertionCodeOutsideRequirementsAndTests()
     {
         var constsByIdentifier = ReflectRegistryConstsByIdentifier();
         var sourceFiles = ConformanceSourceFiles().ToList();
 
-        var uncited = new List<string>();
-
-        var sourceCode = sourceFiles.Select(f => StripCommentLines(File.ReadAllText(f))).ToList();
-
-        foreach (var (identifier, _) in constsByIdentifier)
-        {
-            var cited = sourceCode.Any(text => text.Contains(identifier, StringComparison.Ordinal));
-            if (!cited)
-            {
-                uncited.Add(identifier);
-            }
-        }
+        var uncited = UncitedIdentifiers(
+            sourceFiles.Select(File.ReadAllText), constsByIdentifier.Keys);
 
         uncited.Should().BeEmpty(
             "every const in Requirements.cs must be cited by an assertion the orchestrator constructs " +
@@ -293,17 +340,33 @@ public class RequirementsCoverageGateTests
 
         // axis -> requirement ID -> the Covered areas that claimed it. A LIST, not a set of IDs:
         // Check4's contract is EXACTLY ONE Covered area per Active requirement (Mode 7 below), and a
-        // HashSet<string> of IDs could only ever enforce AT LEAST ONE. That distinction is
-        // load-bearing, not pedantic — it is the only MECHANICAL thing stopping a second area from
-        // being labelled `Covered | <some existing ID>` and quietly widening that requirement to
-        // cover a rule its Statement does not make (Ruling 14's caveat, Ruling 32).
+        // HashSet<string> of IDs could only ever enforce AT LEAST ONE. Scope that precisely: Check4
+        // enforces exactly-one CLAIMANT AREA IN THE LEDGER; the CODE side rests on per-site named
+        // tests. It stops a second markdown area being labelled `Covered | <some existing ID>`; it
+        // does NOT stop an ASSERTION citing a const whose Statement it does not grade — re-pointing
+        // a citation to a foreign-axis const passes all four checks (Ruling 35, mutant R2). Mode 7
+        // is graded by Check4_ActiveRequirementClaimedByTwoAreas_..._ViaMode7 below.
         var claimedByAxis = new Dictionary<string, Dictionary<string, List<string>>>();
 
         foreach (var row in coverage.Rows)
         {
             if (row.Axis is null)
             {
-                // Attributed to no axis (A15) — not part of any axis's binding.
+                // Mode 8: a `#### Coverage` table under a heading whose leading token is not a
+                // known axis (or before any axis heading at all). Design assumption A15 held that
+                // no non-axis `###` heading could be read as an axis heading, and it still does —
+                // but the CONVERSE was never checked, and it is the dangerous direction. A heading
+                // such as `### Tenancy — notes` carries the ` — ` separator, so
+                // CoverageTableParser matches it, finds `Tenancy` is not a known axis and sets the
+                // current axis to null; every row of a coverage table beneath it was then SKIPPED
+                // here. A ledger claiming `Covered | IVC-IDN-003` from such a table was invisible
+                // to Mode 7, so the second claimant that Mode 7 exists to catch could be hidden by
+                // putting it under the wrong heading. A coverage ledger that binds to no axis
+                // binds nothing; it is a defect in the document, not a row to ignore.
+                failures.Add(
+                    $"coverage area '{row.Area}' sits in a #### Coverage table attributed to no axis — "
+                    + "a coverage ledger must appear under a '### <AXIS> — <Name>' heading whose axis "
+                    + "is one of the known axes, or its claims bind to nothing and Mode 7 never sees them");
                 continue;
             }
 
@@ -590,5 +653,172 @@ public class RequirementsCoverageGateTests
 
         failures.Should().ContainSingle(f =>
             f.Contains("malformed coverage row") && f.Contains("Only two columns"));
+    }
+
+    // ── the gate's own two August-2026 rules, each graded by a test that fails if it is reverted ──
+
+    /// <summary>
+    /// Mode 7 (exactly-one, not at-least-one) modelled on
+    /// <see cref="Check4_ActiveRequirementClaimedByNoArea_FailsNamingTheId_ViaMode5"/>. Reverting
+    /// <c>claimed</c> to a <c>HashSet&lt;string&gt;</c> of IDs — or weakening the
+    /// <c>claimants.Count &gt; 1</c> branch — cannot express exactly-one, and this fixture is what
+    /// goes red. Without it the rule was observable only by mutating the live standard.
+    /// </summary>
+    [Fact]
+    public void Check4_ActiveRequirementClaimedByTwoAreas_FailsNamingTheIdAndBothAreas_ViaMode7()
+    {
+        const string markdown = """
+            ### REG — Registration
+
+            | ID | Status | Kind | Statement |
+            | --- | --- | --- | --- |
+            | IVC-REG-002 | Active | Behaviour | Some behaviour. |
+
+            #### Coverage
+
+            | Area | Status | Evidence |
+            | --- | --- | --- |
+            | The authored area | Covered | IVC-REG-002 |
+            | A second area riding along | Covered | IVC-REG-002 |
+            """;
+
+        var failures = ComputeCoverageFailures(markdown);
+
+        failures.Should().ContainSingle(f =>
+            f.Contains("IVC-REG-002")
+            && f.Contains("claimed by 2 Covered areas")
+            && f.Contains("'The authored area'")
+            && f.Contains("'A second area riding along'")
+            && f.Contains("exactly one"));
+    }
+
+    /// <summary>
+    /// The same ledger with only ONE claimant must produce NO failure — otherwise the test above
+    /// would pass against a gate that simply rejects every Covered row, and "exactly one" would be
+    /// indistinguishable from "none".
+    /// </summary>
+    [Fact]
+    public void Check4_ActiveRequirementClaimedByExactlyOneArea_Passes_TheMode7Control()
+    {
+        const string markdown = """
+            ### REG — Registration
+
+            | ID | Status | Kind | Statement |
+            | --- | --- | --- | --- |
+            | IVC-REG-002 | Active | Behaviour | Some behaviour. |
+
+            #### Coverage
+
+            | Area | Status | Evidence |
+            | --- | --- | --- |
+            | The authored area | Covered | IVC-REG-002 |
+            """;
+
+        ComputeCoverageFailures(markdown).Should().BeEmpty();
+    }
+
+    /// <summary>
+    /// Mode 8: a `#### Coverage` table under a heading that carries the ` — ` separator but whose
+    /// leading token is not a known axis. Before this, CoverageTableParser attributed such a table
+    /// to no axis and <c>ComputeCoverageFailures</c> skipped its rows outright — so the SECOND
+    /// claimant Mode 7 exists to catch could be hidden simply by writing it under the wrong
+    /// heading, and the gate stayed green.
+    /// </summary>
+    [Fact]
+    public void Check4_CoverageTableUnderANonAxisHeading_FailsNamingTheArea_ViaMode8()
+    {
+        const string markdown = """
+            ### REG — Registration
+
+            | ID | Status | Kind | Statement |
+            | --- | --- | --- | --- |
+            | IVC-REG-002 | Active | Behaviour | Some behaviour. |
+
+            #### Coverage
+
+            | Area | Status | Evidence |
+            | --- | --- | --- |
+            | The authored area | Covered | IVC-REG-002 |
+
+            ### Tenancy — a heading that is not an axis
+
+            #### Coverage
+
+            | Area | Status | Evidence |
+            | --- | --- | --- |
+            | A second claimant hiding under a non-axis heading | Covered | IVC-REG-002 |
+            """;
+
+        var failures = ComputeCoverageFailures(markdown);
+
+        failures.Should().ContainSingle(f =>
+            f.Contains("A second claimant hiding under a non-axis heading")
+            && f.Contains("attributed to no axis"));
+    }
+
+    /// <summary>
+    /// The direct unit test of <see cref="StripCommentLines"/> Ruling 36 requires: an identifier
+    /// carried ONLY by a `///` doc line and nowhere else must not survive the strip. Reverting the
+    /// strip to the identity function is what this fails on.
+    /// </summary>
+    [Fact]
+    public void StripCommentLines_DropsDocAndSlashSlashLines_AndKeepsEveryCodeLine()
+    {
+        const string source = """
+            /// <see cref="Requirements.OnlyNamedInADocComment"/>
+            // Requirements.OnlyNamedInASlashSlashComment
+            /*
+             * Requirements.OnlyNamedInAStarredBlockComment
+             */
+                /// Requirements.OnlyNamedInAnIndentedDocComment
+            var x = Requirements.NamedByRealCode;
+            """;
+
+        var stripped = StripCommentLines(source);
+
+        stripped.Should().NotContain("OnlyNamedInADocComment");
+        stripped.Should().NotContain("OnlyNamedInASlashSlashComment");
+        stripped.Should().NotContain("OnlyNamedInAStarredBlockComment");
+        stripped.Should().NotContain("OnlyNamedInAnIndentedDocComment");
+        stripped.Should().Contain("Requirements.NamedByRealCode",
+            "over-stripping would red the gate for a citation that really exists, which is the "
+            + "failure direction the strip is explicitly built to avoid");
+    }
+
+    /// <summary>
+    /// The strip WIRED INTO Check2's computation, not merely the strip in isolation: an identifier
+    /// named only by a doc comment must come back UNCITED. Dropping
+    /// <see cref="StripCommentLines"/> from <see cref="UncitedIdentifiers"/> — the reviewer's
+    /// mutant R6, which survived the whole suite at 426/426 — is what this fails on.
+    /// </summary>
+    [Fact]
+    public void Check2_IdentifierNamedOnlyByADocComment_IsReportedUncited()
+    {
+        const string source = """
+            /// <summary>
+            /// Discharged by <see cref="Requirements.CitedOnlyFromProse"/>.
+            /// </summary>
+            internal static Assertion Judge() => Assertion.From("something", true, "ok");
+            """;
+
+        UncitedIdentifiers([source], ["CitedOnlyFromProse"])
+            .Should().ContainSingle().Which.Should().Be("CitedOnlyFromProse");
+    }
+
+    /// <summary>
+    /// The control for the test above: an identifier a real code line names must be reported
+    /// CITED. Without this, a strip that returned the empty string would satisfy the uncited test
+    /// and Check2 would report every const as a gap.
+    /// </summary>
+    [Fact]
+    public void Check2_IdentifierNamedByRealCode_IsReportedCited()
+    {
+        const string source = """
+            /// <summary>Nothing in this comment names it.</summary>
+            internal static Assertion Judge() =>
+                Assertion.From("something", true, "ok", Requirements.CitedByRealCode);
+            """;
+
+        UncitedIdentifiers([source], ["CitedByRealCode"]).Should().BeEmpty();
     }
 }

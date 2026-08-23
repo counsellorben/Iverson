@@ -583,6 +583,86 @@ public class NamingRejectedScenarioTests
         assertions.Single(a => a.Name.Contains("actual, misnamed")).Passed.Should().BeFalse();
         assertions.Single(a => a.Name.Contains("required foreign-key name")).Passed.Should().BeTrue();
     }
+
+    // ── Minor 2: the driver-side half of the naming check reaches a cell ──────────────────────
+
+    /// <summary>
+    /// <see cref="NamingRejectedScenario.BuildDriverCell"/> is the ONLY place the client-side
+    /// judgement is filed into a cell. Replacing its <c>JudgeClientSideAssertions</c> call with
+    /// <c>null</c> passed the entire suite and would pass the live untouched-requirement gate too:
+    /// those three assertions carry NO requirement ID, so nothing that counts requirement IDs can
+    /// see them go missing. The consequence is not a de-graded requirement — it is that the
+    /// driver-side half of the naming check, which grades whether a client library rejects a
+    /// misnamed relation BEFORE any RPC, silently vanishes from the matrix while every cell stays
+    /// green. This test is what fails instead.
+    ///
+    /// <para>The mutant is distinguishable from the truth only because the count and the cell
+    /// STATUS are both pinned: nulling the call yields a Fail cell with zero assertions, so
+    /// asserting merely "a cell came back" would not see it.</para>
+    /// </summary>
+    [Fact]
+    public void BuildDriverCell_TheClientSideJudgement_ReachesTheCell()
+    {
+        var document = new PhaseDocument("python", "register",
+        [
+            new StepResult("register", false,
+                Error: "PyBadArticle.writer_id declares a many_to_one relation to PyAuthor but " +
+                       "is named 'WriterId' on the wire; a many_to_one foreign-key field must " +
+                       "be named 'AuthorId' (rename the member to match)."),
+        ]);
+
+        var expected = NamingRejectedScenario.JudgeClientSideAssertions(document);
+        expected.Should().NotBeNull().And.HaveCount(3,
+            "the fixture must actually produce the driver-side judgement this test claims to pin");
+
+        var cell = NamingRejectedScenario.BuildDriverCell(
+            "python", document, serverCheckAssertions: null, carriesServerCheck: false);
+
+        cell.Status.Should().Be(CellStatus.Ok);
+        cell.Assertions.Select(a => a.Name).Should().BeEquivalentTo(expected!.Select(a => a.Name),
+            "every client-side assertion the judgement constructs must reach the cell");
+    }
+
+    /// <summary>
+    /// The merge arm of the same seam: when this language is the one column carrying IVC-REG-003's
+    /// server-side outcome, BOTH halves must reach the cell. Losing either half here would leave
+    /// the other still present and the cell still rendered, which is what makes the count claim
+    /// load-bearing rather than decorative.
+    /// </summary>
+    [Fact]
+    public void BuildDriverCell_CarryingTheServerCheck_ReachesTheCellWithBothHalves()
+    {
+        var document = new PhaseDocument("dotnet", "register",
+        [
+            new StepResult("register", false,
+                Error: "S2NamingArticle.WriterId declares a many_to_one relation to " +
+                       "S2NamingAuthor but a many_to_one foreign-key field must be named " +
+                       "'S2NamingAuthorId'."),
+        ]);
+
+        var serverSide = NamingRejectedScenario.JudgeServerSide(
+            new RpcException(new Status(StatusCode.InvalidArgument,
+                "S2NamingArticle.WriterId: a many_to_one foreign key must be named 'S2NamingAuthorId'.")));
+
+        var cell = NamingRejectedScenario.BuildDriverCell(
+            "dotnet", document, serverSide, carriesServerCheck: true);
+
+        cell.Assertions.Should().HaveCount(3 + serverSide.Count);
+        cell.Assertions.Select(a => a.RequirementId).Should().Contain(
+            Requirements.RegForeignKeyNamingEnforced,
+            "the server-side half must still be merged in");
+    }
+
+    [Fact]
+    public void BuildDriverCell_DocumentWithNoRegisterStep_FailsTheCellNamingTheMissingStep()
+    {
+        var cell = NamingRejectedScenario.BuildDriverCell(
+            "go", new PhaseDocument("go", "register", []),
+            serverCheckAssertions: null, carriesServerCheck: false);
+
+        cell.Status.Should().Be(CellStatus.Fail);
+        cell.Detail.Should().Contain("the driver reported no 'register' step");
+    }
 }
 
 /// <summary>

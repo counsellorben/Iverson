@@ -164,20 +164,8 @@ public sealed class NamingRejectedScenario(
             switch (outcome)
             {
                 case DriverPhaseOutcome.Success success:
-                    var clientAssertions = JudgeClientSideAssertions(success.Document);
-                    if (clientAssertions is null)
-                    {
-                        cells.Add(carriesServerCheck
-                            ? MergeServerCheckIntoDriverFailure(outcome.Language,
-                                "the driver reported no 'register' step", serverCheckAssertions!)
-                            : ReportCell.Fail(outcome.Language, Name, "the driver reported no 'register' step", []));
-                        break;
-                    }
-
-                    var mergedAssertions = carriesServerCheck
-                        ? clientAssertions.Concat(serverCheckAssertions!).ToList()
-                        : clientAssertions;
-                    cells.Add(ScenarioCells.Cell(outcome.Language, Name, mergedAssertions));
+                    cells.Add(BuildDriverCell(
+                        outcome.Language, success.Document, serverCheckAssertions, carriesServerCheck));
                     break;
                 case DriverPhaseOutcome.Skipped skipped:
                     cells.Add(carriesServerCheck
@@ -206,6 +194,41 @@ public sealed class NamingRejectedScenario(
         }
 
         return cells;
+    }
+
+    /// <summary>
+    /// Builds one language's cell from a driver register phase that SUCCEEDED, merging in
+    /// IVC-REG-003's already-decided server-side outcome when this is the column carrying it.
+    ///
+    /// <para>Internal and extracted from <c>RunAsync</c> so <c>NamingRejectedScenarioTests</c> can
+    /// prove the <see cref="JudgeClientSideAssertions"/> call inside actually reaches a report
+    /// cell. Replacing that call with <c>null</c> passed the entire suite: the three client-side
+    /// assertions carry no requirement ID, so neither the coverage gate nor the live
+    /// <c>UntouchedRequirementIds</c> tally notices, and the driver-side half of the naming check
+    /// — the half that grades whether a client library rejects a misnamed relation BEFORE any RPC
+    /// — simply vanishes from the matrix while every cell stays green. An uncited assertion is
+    /// still evidence; nothing else in the harness was watching this one.</para>
+    /// </summary>
+    internal static ReportCell BuildDriverCell(
+        string language,
+        PhaseDocument document,
+        IReadOnlyList<Assertion>? serverCheckAssertions,
+        bool carriesServerCheck)
+    {
+        var clientAssertions = JudgeClientSideAssertions(document);
+        if (clientAssertions is null)
+        {
+            return carriesServerCheck
+                ? MergeServerCheckIntoDriverFailure(language,
+                    "the driver reported no 'register' step", serverCheckAssertions!)
+                : ReportCell.Fail(language, Name, "the driver reported no 'register' step", []);
+        }
+
+        var mergedAssertions = carriesServerCheck
+            ? clientAssertions.Concat(serverCheckAssertions!).ToList()
+            : clientAssertions;
+
+        return ScenarioCells.Cell(language, Name, mergedAssertions);
     }
 
     /// <summary>

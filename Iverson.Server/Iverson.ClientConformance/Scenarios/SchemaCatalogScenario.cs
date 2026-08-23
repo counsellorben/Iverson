@@ -125,13 +125,29 @@ public sealed class SchemaCatalogScenario(
 
         // ── read: each driver fetches the catalogue through its own client library ─────────────
         foreach (var (language, document) in await RunPhaseAsync(Phase.Read, states, context, ct))
-        {
-            var state = states[language];
-            foreach (var assertion in JudgeCatalogue(language, state.Descriptor, document))
-                state.Assertions.Add(assertion);
-        }
+            JudgeReadPhase(language, states[language], document);
 
         return states.Select(kv => ScenarioCells.Cell(kv.Key, Name, kv.Value)).ToList();
+    }
+
+    /// <summary>
+    /// Files one language's read-phase judgement into its state. Internal, not inlined into
+    /// <c>RunAsync</c>, so <c>SchemaCatalogScenarioTests</c> can prove the judgement actually
+    /// REACHES a report cell.
+    ///
+    /// <para>ALL FIVE citations of <see cref="Requirements.SchCatalogRetrievalReachable"/>,
+    /// <see cref="Requirements.SchCatalogIncludesRegisteredType"/> and
+    /// <see cref="Requirements.SchCatalogFieldSetMatchesDescriptor"/> — the WHOLE SCH axis — live
+    /// inside <see cref="JudgeCatalogue"/>. Drop this call and every one of them is still cited in
+    /// source, so the coverage gate's Check2, which reads SOURCE TEXT rather than the call graph,
+    /// stays green while the entire axis grades nothing. That is the hole MU-R4 found next door in
+    /// <c>TenantRejectedScenario</c> and Ruling 31 found in <c>CrudRoundtripScenario</c>; SCH was
+    /// the last scenario without an instrument for it.</para>
+    /// </summary>
+    internal static void JudgeReadPhase(string language, LanguageState state, PhaseDocument document)
+    {
+        foreach (var assertion in JudgeCatalogue(language, state.Descriptor, document))
+            state.Assertions.Add(assertion);
     }
 
     // ── the judgement (pure, so it is unit-testable without a live stack) ────────────────────
@@ -327,7 +343,15 @@ public sealed class SchemaCatalogScenario(
 
     private static string Describe(Exception ex) => $"{ex.GetType().Name}: {ex.Message}";
 
-    private sealed class LanguageState : ILanguageState
+    /// <summary>
+    /// Internal, not private, for the same reason as <see cref="JudgeReadPhase"/>: a
+    /// reaches-the-cell test has to be able to construct one, populate it through the real
+    /// judgement path and hand it to <c>ScenarioCells.Cell</c>. Four other scenarios already
+    /// declare their state this way and <c>InternalsVisibleTo</c> already names the test project;
+    /// SchemaCatalog was the last outlier, which is precisely why the whole SCH axis had no
+    /// instrument against a deleted call site.
+    /// </summary>
+    internal sealed class LanguageState : ILanguageState
     {
         public List<Assertion> Assertions { get; } = [];
 

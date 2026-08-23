@@ -285,4 +285,40 @@ public class SchemaCatalogScenarioTests
         cells.Should().ContainSingle()
             .Which.Detail.Should().Contain("not a recognized conformance driver language");
     }
+
+    // ── Ruling 31 / Important 1: the whole SCH axis reaches a cell ─────────────────────────────
+
+    /// <summary>
+    /// The SCH axis has exactly three requirements and ALL FIVE of their citations live inside
+    /// <see cref="SchemaCatalogScenario.JudgeCatalogue"/>, reached from exactly one place — the
+    /// read-phase loop, now <see cref="SchemaCatalogScenario.JudgeReadPhase"/>. Delete that call
+    /// and every SCH const is still cited in source, so the coverage gate's Check2 stays green
+    /// while the entire axis grades nothing anywhere in the matrix. This test is what fails
+    /// instead.
+    ///
+    /// <para>This pins a WIRING claim, not a grading claim: that the judgement reaches a report
+    /// CELL. What the assertions decide is judged by the JudgeCatalogue tests above.</para>
+    /// </summary>
+    [Fact]
+    public void JudgeReadPhase_TheCatalogueJudgement_ReachesTheCellCarryingEverySchCitation()
+    {
+        var state = new SchemaCatalogScenario.LanguageState
+        {
+            Descriptor = Descriptor("DotNetAuthor", "Id", "Name"),
+        };
+        var document = ReadDocument(new StepResult(
+            "get_schema", true, Entity: Catalogue(("DotNetAuthor", ["Id", "Name"]))));
+
+        SchemaCatalogScenario.JudgeReadPhase("dotnet", state, document);
+
+        var cell = ScenarioCells.Cell("dotnet", SchemaCatalogScenario.Name, state);
+
+        cell.Assertions.Select(a => a.RequirementId).Should().Contain(
+        [
+            Requirements.SchCatalogRetrievalReachable,
+            Requirements.SchCatalogIncludesRegisteredType,
+            Requirements.SchCatalogFieldSetMatchesDescriptor,
+        ], "a citation that exists in source but never executes grades nothing — every SCH "
+         + "requirement JudgeCatalogue constructs must reach the cell");
+    }
 }
