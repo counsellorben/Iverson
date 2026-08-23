@@ -357,6 +357,16 @@ public sealed class CrudRoundtripScenario(
     /// Delete either and its const stays cited inside <c>Verifier.cs</c>, so the coverage gate's
     /// Check2 — which reads SOURCE TEXT, not the call graph — stays green while the requirement
     /// grades nothing. <c>CrudRoundtripScenarioTests</c> is what fails instead.</para>
+    ///
+    /// <para><b>The residual this does NOT close (Ruling 38).</b> What the test grades is THIS
+    /// METHOD; the line in <c>RunAsync</c> that calls it is not graded. Deleting
+    /// <c>JudgeDriverDepthRead(...)</c> from <c>RunAsync</c> still passes <c>dotnet test</c>
+    /// (mutant N5, survived 439/439). Bounding it: both assertions here carry requirement IDs
+    /// (IVC-LIFE-006 and IVC-LIFE-008), so a full-matrix live run's <c>UntouchedRequirementIds</c>
+    /// exit code catches the deletion — the cost is a CI-to-live delay, not a silent hole. The
+    /// proper fix is making <c>DriverRunner</c> substitutable so a test can drive <c>RunAsync</c>
+    /// and pin every call site at once; that is a design change across ten scenarios and is a
+    /// DEFERRED follow-up, not this plan's work.</para>
     /// </summary>
     internal static void JudgeDriverDepthRead(LanguageState state, PhaseDocument document)
     {

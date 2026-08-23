@@ -234,8 +234,9 @@ public class IdentityScenarioTests
         // the two consts hold different values, which Check3's uniqueness check guarantees — so it
         // was true by construction and pinned nothing. Counting IDN-003's citations across the
         // whole judgement is independently falsifiable in exactly the direction Ruling 14's caveat
-        // cares about: re-point the strip control at IDN-003 and the count goes to three; author a
-        // fourth assertion that quietly takes IDN-003 and it goes to three as well. Neither is
+        // cares about: re-point the strip control at IDN-003 and the count goes to FOUR; author a
+        // fourth assertion that quietly takes IDN-003 and it goes to four as well. The baseline is
+        // three, which is what the assertion below pins. Neither widening is
         // visible to the assertion above, and neither is visible to the coverage gate, whose
         // exactly-one rule counts LEDGER areas rather than code citations (Ruling 35).
         JudgeHappy().Count(a => a.RequirementId == Requirements.IdnTenancyDerivedAndEnforced)

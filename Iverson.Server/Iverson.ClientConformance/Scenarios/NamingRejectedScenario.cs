@@ -208,6 +208,17 @@ public sealed class NamingRejectedScenario(
     /// — the half that grades whether a client library rejects a misnamed relation BEFORE any RPC
     /// — simply vanishes from the matrix while every cell stays green. An uncited assertion is
     /// still evidence; nothing else in the harness was watching this one.</para>
+    ///
+    /// <para><b>The residual this does NOT close (Ruling 38).</b> What the test grades is THIS
+    /// METHOD; the line in <c>RunAsync</c> that calls it is not graded, and that is true of every
+    /// site using this pattern (<c>CrudRoundtripScenario.JudgeDriverDepthRead</c>,
+    /// <c>SchemaCatalogScenario.JudgeReadPhase</c>). Elsewhere the residual is bounded by a live
+    /// full-matrix run's <c>UntouchedRequirementIds</c> exit code, which reddens when a deleted
+    /// call site leaves a requirement untouched. THAT BOUND DOES NOT APPLY HERE: these three
+    /// assertions carry NO requirement ID, so the tally has nothing to miss and the hand-written
+    /// test above is the only instrument. The proper fix is making <c>DriverRunner</c>
+    /// substitutable so a test can drive <c>RunAsync</c> and pin every call site at once; that is a
+    /// design change across ten scenarios and is a DEFERRED follow-up, not this plan's work.</para>
     /// </summary>
     internal static ReportCell BuildDriverCell(
         string language,

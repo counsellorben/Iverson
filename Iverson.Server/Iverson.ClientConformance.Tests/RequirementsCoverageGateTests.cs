@@ -14,10 +14,13 @@ namespace Iverson.ClientConformance.Tests;
 /// Four independent checks:
 /// 1. The set of `Active` IDs declared by requirement-table rows in the standard must exactly
 ///    equal the set of consts reflected off <see cref="Requirements"/>.
-/// 2. Every const's C# identifier must appear at least once under
-///    <c>Iverson.Server/Iverson.ClientConformance/</c>, excluding <c>Requirements.cs</c> itself
-///    and the test project — i.e. it must be cited by an assertion the orchestrator actually
-///    constructs, not merely declared.
+/// 2. Every const's C# identifier must appear at least once, as a WHOLE identifier and outside
+///    a whole-line comment, under <c>Iverson.Server/Iverson.ClientConformance/</c>, excluding
+///    <c>Requirements.cs</c> itself, build output and the test project — i.e. it must be cited by
+///    an assertion the orchestrator actually constructs, not merely declared. All three moving
+///    parts (the strip, the file selection, the identifier feed) are graded: see
+///    <see cref="UncitedIdentifiers"/>, <see cref="IsGradableSourceFile"/> and
+///    <see cref="Check2Inputs"/>.
 /// 3. Every ID (Active or Retired) parsed from the standard must match
 ///    <c>IVC-[A-Z]+-\d{3}</c> with an axis drawn from the standard's known nine-axis set, and no
 ///    `|`-leading line inside a requirement table may be left unparsed (see
@@ -42,11 +45,16 @@ namespace Iverson.ClientConformance.Tests;
 /// <c>IdentityScenarioTests.JudgeTenantDerivation_TheGrpcControl_CitesIdn004AndNotIdn003</c>).
 /// Do not read Check4 as protection against a mis-aimed citation in code.</para>
 ///
-/// <para><b>Every rule in this file grades itself.</b> Both of the gate's own rules added in
-/// August 2026 — Mode 7's exactly-one and Check2's comment strip — shipped UNFALSIFIABLE: each
-/// could be reverted with the whole suite green, observable only through the live standard.
+/// <para><b>Every rule in this file grades itself.</b> The gate's own rules added in August
+/// 2026 shipped UNFALSIFIABLE, four times running and each time in a new place: Mode 7's
+/// exactly-one, Check2's comment strip, then the whole-identifier match (graded on a PREFIX pair
+/// only, so the left-hand bound and the underscore were still revertible with the suite green),
+/// then Check2's INPUT SELECTION — which files and which identifiers it is fed, the widest of
+/// them, since one deleted line made the check assert nothing at all. Each could be reverted with
+/// the whole suite green, observable only through the live standard, if at all.
 /// STANDING RULE: any change to this gate lands with a test that fails if the change is
-/// reverted.</para>
+/// reverted — and "the change" means EVERY clause of it, including the input wiring and every
+/// bound of a boundary rule, not the one clause a single fixture happens to exercise.</para>
 /// </summary>
 public class RequirementsCoverageGateTests
 {
@@ -107,17 +115,59 @@ public class RequirementsCoverageGateTests
             .ToDictionary(f => f.Name, f => (string)f.GetRawConstantValue()!);
     }
 
-    private static IEnumerable<string> ConformanceSourceFiles()
+    /// <summary>
+    /// Whether one candidate path is a file Check2 may read a citation out of. Extracted from
+    /// <see cref="ConformanceSourceFiles"/> for exactly the reason <see cref="UncitedIdentifiers"/>
+    /// takes RAW sources: the selection rule is part of what Check2 ASSERTS, so it has to sit
+    /// inside a unit a fixture can drive.
+    ///
+    /// <para><b>THE SEVENTH GATE HOLE (Ruling 39).</b> It did not, and Check2's live INPUT
+    /// SELECTION was graded by nothing. Deleting the <c>Requirements.cs</c> clause passed the whole
+    /// suite at 439/439: every const is then trivially "cited" by its own declaration line, which
+    /// is real code and survives the strip. ONE deleted line made an entire check vacuously green
+    /// — proved end to end, not by argument: a clean de-citation of IVC-IDN-004 dies by name on
+    /// Check2, and that same de-citation PLUS the deleted clause passed 439/439.</para>
+    ///
+    /// <para>The test-project clause is DEFENSIVE and, as the tree stands, unreachable: the
+    /// enumeration roots at <c>Iverson.ClientConformance/</c> and never descends into its sibling
+    /// <c>Iverson.ClientConformance.Tests/</c>, so no real path can exercise it. That is precisely
+    /// why it is graded by a FIXTURE path rather than by an outcome over the live tree — a rule no
+    /// live input reaches is a rule no live-input assertion can falsify. It stays because Check2's
+    /// subject is a citation the ORCHESTRATOR constructs; a const cited only by a test assertion is
+    /// not that, and a future test project nested under the conformance directory would otherwise
+    /// silently start satisfying the gate.</para>
+    /// </summary>
+    internal static bool IsGradableSourceFile(string path)
     {
         var root = ConformanceSourceDir();
         var testProjectDir = Path.Combine(RepositoryRoot(), "Iverson.Server", "Iverson.ClientConformance.Tests");
 
-        return Directory.EnumerateFiles(root, "*.cs", SearchOption.AllDirectories)
-            .Where(f => !f.StartsWith(Path.Combine(root, "bin"), StringComparison.Ordinal))
-            .Where(f => !f.StartsWith(Path.Combine(root, "obj"), StringComparison.Ordinal))
-            .Where(f => !f.StartsWith(testProjectDir, StringComparison.Ordinal))
-            .Where(f => Path.GetFileName(f) != "Requirements.cs");
+        return !path.StartsWith(Path.Combine(root, "bin"), StringComparison.Ordinal)
+               && !path.StartsWith(Path.Combine(root, "obj"), StringComparison.Ordinal)
+               && !path.StartsWith(testProjectDir, StringComparison.Ordinal)
+               && Path.GetFileName(path) != "Requirements.cs";
     }
+
+    private static IEnumerable<string> ConformanceSourceFiles() =>
+        Directory.EnumerateFiles(ConformanceSourceDir(), "*.cs", SearchOption.AllDirectories)
+            .Where(IsGradableSourceFile);
+
+    /// <summary>
+    /// Check2's LIVE INPUTS, both of them, in one expression that Check2 and its fixtures share:
+    /// which files are read, and which identifiers are looked for. Ruling 39's second and third
+    /// elements. Narrowing either — an axis filter, a <c>Take</c>, a hand-written list that goes
+    /// stale on the next authored requirement, a widened search root — shrinks what Check2 grades
+    /// without touching a single assertion in it.
+    ///
+    /// <para>Returned as ONE tuple deliberately: the fixtures below assert against the very value
+    /// Check2 consumes, so a narrowing applied HERE is caught there. The residual, in the same
+    /// family as Ruling 38's: a mutation that abandons this method and inlines a narrowed feed into
+    /// Check2's own body still passes (mutant E2). That is a rewrite of the assertion rather than a
+    /// one-line deletion, and closing it would need the check to publish what it actually consumed
+    /// — recorded, not fixed.</para>
+    /// </summary>
+    internal static (IReadOnlyList<string> Files, IReadOnlyList<string> Identifiers) Check2Inputs() =>
+        (ConformanceSourceFiles().ToList(), ReflectRegistryConstsByIdentifier().Keys.ToList());
 
     [Fact]
     public void Check1_ActiveIdsInStandard_ExactlyMatchConstsInRegistry()
@@ -259,11 +309,9 @@ public class RequirementsCoverageGateTests
     [Fact]
     public void Check2_EveryRegistryConst_IsCitedByAssertionCodeOutsideRequirementsAndTests()
     {
-        var constsByIdentifier = ReflectRegistryConstsByIdentifier();
-        var sourceFiles = ConformanceSourceFiles().ToList();
+        var (sourceFiles, identifiers) = Check2Inputs();
 
-        var uncited = UncitedIdentifiers(
-            sourceFiles.Select(File.ReadAllText), constsByIdentifier.Keys);
+        var uncited = UncitedIdentifiers(sourceFiles.Select(File.ReadAllText), identifiers);
 
         uncited.Should().BeEmpty(
             "every const in Requirements.cs must be cited by an assertion the orchestrator constructs " +
@@ -869,6 +917,31 @@ public class RequirementsCoverageGateTests
 
         UncitedIdentifiers([source], ["RegForeignKeyNamingEnforced"]).Should().BeEmpty(
             "the longer identifier is genuinely cited and must still be reported so");
+
+        // The pair above is a PREFIX pair, and it grades only the RIGHT-hand bound. The left-hand
+        // bound and the underscore are SEPARATE rules and were each revertible with the whole suite
+        // green (mutants B3 and B4), which is the fifth hole reappearing inside its own fix.
+        const string citesTheShorterConst = """
+            internal static Assertion Judge() =>
+                Assertion.From("something", true, "ok", Requirements.RegForeignKeyNaming);
+            """;
+
+        UncitedIdentifiers([citesTheShorterConst], ["ForeignKeyNaming"])
+            .Should().ContainSingle().Which.Should().Be("ForeignKeyNaming",
+                "a SUFFIX pair is the mirror image of the prefix pair above, and it is graded by "
+                + "the LEFT-hand bound alone: hard-coding `beforeOk` to true (mutant B3) reverts "
+                + "every suffix pair to bare-substring matching while the test above still passes");
+
+        const string citesAnUnderscoreSuffixedConst = """
+            internal static Assertion Judge() =>
+                Assertion.From("something", true, "ok", Requirements.RegFoo_Legacy);
+            """;
+
+        UncitedIdentifiers([citesAnUnderscoreSuffixedConst], ["RegFoo"])
+            .Should().ContainSingle().Which.Should().Be("RegFoo",
+                "underscore is a C# identifier character, so `RegFoo_Legacy` does not cite "
+                + "`RegFoo`; dropping `|| c == '_'` from IsIdentifierChar (mutant B4) makes it "
+                + "read as one, and neither bound test above notices");
     }
 
     /// <summary>
@@ -886,5 +959,90 @@ public class RequirementsCoverageGateTests
             """;
 
         UncitedIdentifiers([source], ["CitedByRealCode"]).Should().BeEmpty();
+    }
+
+    /// <summary>
+    /// THE SEVENTH GATE HOLE (Ruling 39), first half: WHICH FILES Check2 reads. The
+    /// <see cref="UncitedIdentifiers"/> refactor moved one of THREE live-wiring elements inside the
+    /// graded unit — the comment strip — and left the other two ungraded. Deleting the
+    /// <c>Requirements.cs</c> exclusion (mutant B1) passed 439/439 while making Check2 assert
+    /// nothing at all, because every const is cited by its own declaration line.
+    ///
+    /// <para>Graded at two levels deliberately: <see cref="IsGradableSourceFile"/> by FIXTURE paths
+    /// (the only way to reach the test-project clause, which no real path exercises — mutant B2),
+    /// and <see cref="ConformanceSourceFiles"/> over the LIVE tree (so that dropping the
+    /// <c>.Where</c> altogether, rather than a clause inside it, fails here too).</para>
+    /// </summary>
+    [Fact]
+    public void Check2_FileSelection_ExcludesRequirementsItselfTheTestProjectAndBuildOutput()
+    {
+        var root = ConformanceSourceDir();
+        var testProjectDir = Path.Combine(RepositoryRoot(), "Iverson.Server", "Iverson.ClientConformance.Tests");
+
+        IsGradableSourceFile(Path.Combine(root, "Requirements.cs")).Should().BeFalse(
+            "Requirements.cs DECLARES every const, so reading it back reports all 43 cited by "
+            + "their own declaration lines and Check2 grades nothing whatsoever (mutant B1)");
+        IsGradableSourceFile(Path.Combine(root, "Scenarios", "Requirements.cs")).Should().BeFalse(
+            "the exclusion is by file NAME at any depth, not by one hard-coded path");
+        IsGradableSourceFile(Path.Combine(testProjectDir, "RequirementsCoverageGateTests.cs"))
+            .Should().BeFalse(
+                "Check2's subject is a citation the ORCHESTRATOR constructs; a const named only by "
+                + "a test assertion is not one, and would read as graded when it is not (mutant B2)");
+        IsGradableSourceFile(Path.Combine(root, "bin", "Debug", "net10.0", "Copied.cs")).Should().BeFalse(
+            "build output is a copy of sources, so counting it would let a DELETED citation go on "
+            + "satisfying the gate out of a stale bin/");
+        IsGradableSourceFile(Path.Combine(root, "obj", "Debug", "Generated.cs")).Should().BeFalse();
+
+        IsGradableSourceFile(Path.Combine(root, "Scenarios", "IdentityScenario.cs")).Should().BeTrue(
+            "a real orchestrator source must still be READ — without this control every assertion "
+            + "above is satisfied by a selection that excludes everything and reports all 43 uncited");
+        IsGradableSourceFile(Path.Combine(root, "Verifier.cs")).Should().BeTrue();
+
+        var live = Check2Inputs().Files;
+
+        live.Should().NotBeEmpty("the live enumeration must find the orchestrator's sources at all");
+        live.Should().NotContain(f => Path.GetFileName(f) == "Requirements.cs",
+            "the live enumeration must APPLY the rule above, not merely have it available");
+        live.Should().Contain(f => Path.GetFileName(f) == "Verifier.cs",
+            "and must still reach the file that carries most of the citations");
+
+        // THE EIGHTH HOLE, found by mutating this round's own fix: the search ROOT is the third
+        // live-wiring element, and nothing above pins it. Widening ConformanceSourceDir() to
+        // RepositoryRoot() (mutant E1) passed 441/441 — every exclusion above still holds, and
+        // Check2 silently degrades from "cited by an assertion the ORCHESTRATOR constructs" to
+        // "this identifier appears SOMEWHERE IN THE REPOSITORY". The path segment is spelled out
+        // as a LITERAL rather than taken from ConformanceSourceDir(), or the assertion would be
+        // satisfied by whatever that method happened to return.
+        var conformanceProject =
+            Path.Combine("Iverson.Server", "Iverson.ClientConformance") + Path.DirectorySeparatorChar;
+
+        live.Should().OnlyContain(f => f.Contains(conformanceProject, StringComparison.Ordinal),
+            "Check2 grades the ORCHESTRATOR's citations, so its inputs must all live inside "
+            + $"{conformanceProject} — widening the search root makes the check pass on an "
+            + "identifier that appears anywhere in the tree at all (mutant E1)");
+        live.Should().NotContain(f => f.Contains(
+                Path.Combine("Iverson.Server", "Iverson.Api") + Path.DirectorySeparatorChar,
+                StringComparison.Ordinal),
+            "named concretely as well as by the rule above: server sources are the first thing a "
+            + "widened root sweeps in, and they are not orchestrator assertions");
+    }
+
+    /// <summary>
+    /// THE SEVENTH GATE HOLE (Ruling 39), second half: WHICH IDENTIFIERS Check2 is fed. A feed
+    /// narrowed to a subset grades a subset, with every assertion in Check2 unchanged and the gate
+    /// green over whatever fell out.
+    /// </summary>
+    [Fact]
+    public void Check2_IdentifierFeed_IsEveryConstInTheRegistry()
+    {
+        var fed = Check2Inputs().Identifiers;
+
+        fed.Should().HaveCount(ReflectRegistryConsts().Count,
+            "Check2 must grade EVERY const in the registry — the count is taken from the values "
+            + "side of the reflection so that a filter applied to the identifier side is visible");
+        fed.Should().OnlyHaveUniqueItems();
+        fed.Should().Contain("IdnServerTenantColumnAbsentFromReadBack",
+            "the const this plan authored must be inside the feed, not merely inside the registry");
+        fed.Should().Contain("RegForeignKeyNamingEnforced");
     }
 }

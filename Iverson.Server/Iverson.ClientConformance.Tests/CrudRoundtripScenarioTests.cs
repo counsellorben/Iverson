@@ -65,6 +65,28 @@ public class CrudRoundtripScenarioTests
     // Check2 greps SOURCE TEXT for each const, so a call site can be deleted while every const it
     // reached is still "cited" inside Verifier.cs, leaving the gate green and the requirements
     // grading nothing at all.
+    //
+    // ── WHAT THIS PATTERN DOES NOT CLOSE (Ruling 38, an ACCEPTED and BOUNDED residual) ──────────
+    //
+    // What is graded is the EXTRACTED JUDGE. The line in RunAsync that CALLS it is not: delete
+    // `JudgeDriverDepthRead(...)` or `TakeDescriptor(...)` from RunAsync and `dotnet test` still
+    // passes — mutants N3 and N5 both survived at 439/439. This is a property of the pattern
+    // itself, shared by every site that uses it (TakeDescriptor and JudgeDriverDepthRead here,
+    // SchemaCatalogScenario.JudgeReadPhase, NamingRejectedScenario.BuildDriverCell), not of any
+    // one application of it.
+    //
+    // What BOUNDS it: a full-matrix live run's `UntouchedRequirementIds` exit code catches every
+    // ID-CARRYING instance — a deleted call site means the requirement is never touched and the
+    // run exits 1. So the residual costs a CI-to-live delay, not a silent hole, wherever the
+    // vanished assertions carry a requirement ID. The one place that argument does not reach is
+    // NamingRejectedScenario.BuildDriverCell, whose three client-side assertions carry NO ID and
+    // are therefore invisible to the tally — which is exactly why that site has a hand-written
+    // test of its own rather than relying on this bound.
+    //
+    // The PROPER fix is to make DriverRunner substitutable (it is sealed with a non-virtual
+    // RunPhaseAsync today), so one test per scenario could drive RunAsync end to end and pin every
+    // call site at once — strictly better than N extracted helpers. That is a design change across
+    // ten scenarios and is DEFERRED as a follow-up, deliberately out of scope here.
 
     private static JsonElement Json(string raw) => JsonDocument.Parse(raw).RootElement.Clone();
 

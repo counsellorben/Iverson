@@ -143,6 +143,15 @@ public sealed class SchemaCatalogScenario(
     /// stays green while the entire axis grades nothing. That is the hole MU-R4 found next door in
     /// <c>TenantRejectedScenario</c> and Ruling 31 found in <c>CrudRoundtripScenario</c>; SCH was
     /// the last scenario without an instrument for it.</para>
+    ///
+    /// <para><b>The residual this does NOT close (Ruling 38).</b> What the test grades is THIS
+    /// METHOD; the line in <c>RunAsync</c> that calls it is not graded. Deleting
+    /// <c>JudgeReadPhase(...)</c> from the read-phase loop still passes <c>dotnet test</c> (mutant
+    /// N3, survived 439/439). Bounding it: all three SCH requirements are ID-carrying, so a
+    /// full-matrix live run's <c>UntouchedRequirementIds</c> exit code catches the deletion — the
+    /// cost is a CI-to-live delay, not a silent hole. The proper fix is making <c>DriverRunner</c>
+    /// substitutable so a test can drive <c>RunAsync</c> and pin every call site at once; that is a
+    /// design change across ten scenarios and is a DEFERRED follow-up, not this plan's work.</para>
     /// </summary>
     internal static void JudgeReadPhase(string language, LanguageState state, PhaseDocument document)
     {
