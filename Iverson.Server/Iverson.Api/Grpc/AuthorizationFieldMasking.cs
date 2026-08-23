@@ -151,6 +151,21 @@ internal static class AuthorizationFieldMasking
             payload.Fields.Remove(key);
     }
 
+    /// <summary>
+    /// Row-dictionary counterpart of <see cref="RemoveTenantColumn(Struct)"/>, for the three
+    /// streaming SQL RPCs (Search, GroupBy, Pipeline) that build a response from the StarRocks row
+    /// dictionary and never reach <see cref="MaskDisallowedFields"/>. Same reserved-name rule, so
+    /// the decision of WHICH name is server-owned stays defined in exactly one place.
+    /// </summary>
+    public static void RemoveTenantColumn(IDictionary<string, object?> row)
+    {
+        var toRemove = row.Keys
+            .Where(SchemaDescriptor.IsTenantColumn)
+            .ToList();
+        foreach (var key in toRemove)
+            row.Remove(key);
+    }
+
     public static void MaskDisallowedFields(
         Struct payload,
         IReadOnlySet<string>? allowedFields,

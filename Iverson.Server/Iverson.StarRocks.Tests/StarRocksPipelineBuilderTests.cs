@@ -1380,4 +1380,115 @@ public class StarRocksPipelineBuilderTests
         sql[(sql.IndexOf("), `", StringComparison.Ordinal) + 1)..].Should().NotContain(TenantCol);
         lastCols.Keys.Should().NotContain(TenantCol);
     }
+
+    // ── Joined-type wildcard: `Type`.* is a raw wildcard over a PHYSICAL table ─
+    //
+    // Base-CTE and step-to-step wildcards expand a CTE, so excluding the tenant column from
+    // ColumnsFor keeps it out of them. A join against a FRESH REGISTERED TYPE is different:
+    // EmitStep joins that type's physical table, so `Type`.* expands to the table's real columns
+    // — __TenantId included — no matter what ColumnsFor says, because ColumnsFor shapes the
+    // TRACKED name set, not the emitted SQL. SelectItem.all is a wire field
+    // (object_search.proto:296), so this is caller-reachable, and ObjectSearchGrpcService.Pipeline
+    // streams rows verbatim with no masking, so there is no second line of defence downstream.
+
+    private static EngagementQuerySchema TenantAuthorSchema() => new(
+        "Author", "authors", "Id", ["Name", TenantCol], TenantCol);
+
+    private static Func<string, EngagementQuerySchema?> RegistryWithTenantAuthor() =>
+        BuildRegistry(TenantAuthorSchema());
+
+    private static Dictionary<string, AuthorizationConstraint> TenantAuthzWithAuthor() =>
+        new(StringComparer.OrdinalIgnoreCase)
+        {
+            ["Article"] = new AuthorizationConstraint(null, null, null, TenantCol, "tenant-a"),
+            // AllowedFields deliberately NULL — the ordinary case for a schema with no
+            // FieldPermissions, and the exact case the isFreshRestrictedType guard does NOT cover.
+            ["Author"]  = new AuthorizationConstraint(null, null, null, TenantCol, "tenant-a")
+        };
+
+    private static PipelineStep JoinedTypeWildcardStep()
+    {
+        var step = new PipelineStep { Name = "named" };
+        var join = new PipelineJoin { Source = "Author", Kind = JoinKind.Inner };
+        join.On.Add(new JoinCondition { Left = "AuthorId", Right = "Id" });
+        step.Joins.Add(join);
+        step.Select.Add(new SelectItem { Column = "Title" });
+        step.Select.Add(new SelectItem { Source = "Author", All = true });
+        return step;
+    }
+
+    [Fact]
+    public void Build_JoinedTypeWildcard_DoesNotEmitARawStarOverThePhysicalTable()
+    {
+        var (sql, _, _) = StarRocksPipelineBuilder.Build(
+            TenantArticleSchema(), Request(JoinedTypeWildcardStep()),
+            RegistryWithTenantAuthor(), TenantAuthzWithAuthor());
+
+        sql.Should().NotContain("`Author`.*");
+        sql.Should().Contain("`Author`.`Name`");
+    }
+
+    [Fact]
+    public void Build_JoinedTypeWildcard_WithNullAllowedFields_ExpandsToExactlyTheNonTenantColumns()
+    {
+        // A textual "select list does not contain __TenantId" assertion is VACUOUS here: the bug
+        // emits `Author`.*, which never spells the column out yet expands to it at execution.
+        // The assertion has to pin the expansion itself — the joined type contributes exactly its
+        // key plus its non-tenant scalars, and nothing wildcard-shaped.
+        var (sql, _, _) = StarRocksPipelineBuilder.Build(
+            TenantArticleSchema(), Request(JoinedTypeWildcardStep()),
+            RegistryWithTenantAuthor(), TenantAuthzWithAuthor());
+
+        var stepSelect = SelectLists(sql).Single(l => l.Contains("`Author`"));
+        stepSelect.Should().Contain("`Author`.`Id`");
+        stepSelect.Should().Contain("`Author`.`Name`");
+        stepSelect.Should().NotContain("`Author`.*");
+        stepSelect.Should().NotContain(TenantCol);
+    }
+
+    [Fact]
+    public void Build_JoinedTypeWildcard_StillEmitsTheJoinedTenantPredicate()
+    {
+        // The exclusion must not be achievable by dropping the joined type's tenant boundary.
+        var (sql, param) = (default(string), default(Dapper.DynamicParameters));
+        (sql, param, _) = StarRocksPipelineBuilder.Build(
+            TenantArticleSchema(), Request(JoinedTypeWildcardStep()),
+            RegistryWithTenantAuthor(), TenantAuthzWithAuthor());
+
+        sql.Should().Contain($"`Author`.`{TenantCol}` = @s1_j0_tenant");
+        param!.Get<string>("s1_j0_tenant").Should().Be("tenant-a");
+    }
+
+    [Fact]
+    public void Build_JoinedTypeWildcard_LastColsMatchesTheEmittedProjection()
+    {
+        // The whole invariant: what a step is TRACKED as exposing and what its SQL actually
+        // selects must be the same set. A `Type`.* that outruns lastCols is exactly the bug.
+        var (sql, _, lastCols) = StarRocksPipelineBuilder.Build(
+            TenantArticleSchema(), Request(JoinedTypeWildcardStep()),
+            RegistryWithTenantAuthor(), TenantAuthzWithAuthor());
+
+        lastCols.Keys.Should().NotContain(TenantCol);
+        lastCols.Keys.Should().Contain(["Title", "Id", "Name"]);
+        sql.Should().NotContain(".*");
+    }
+
+    /// <summary>
+    /// Every SELECT list in the generated SQL — the text between each <c>SELECT </c> and the
+    /// <c> FROM </c> that follows it. The joined type's tenant column legitimately appears in the
+    /// JOIN's ON clause, so a whole-SQL "does not contain" assertion could be satisfied by
+    /// breaking the tenant boundary instead of by fixing the projection.
+    /// </summary>
+    private static IEnumerable<string> SelectLists(string sql)
+    {
+        var i = 0;
+        while ((i = sql.IndexOf("SELECT ", i, StringComparison.Ordinal)) >= 0)
+        {
+            i += "SELECT ".Length;
+            var end = sql.IndexOf(" FROM ", i, StringComparison.Ordinal);
+            if (end < 0) yield break;
+            yield return sql[i..end];
+            i = end;
+        }
+    }
 }

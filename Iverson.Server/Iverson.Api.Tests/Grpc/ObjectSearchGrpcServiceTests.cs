@@ -2990,4 +2990,89 @@ public class ObjectSearchGrpcServiceTests
         written[0].Data.Fields.Should().NotContainKey(SchemaDescriptor.TenantColumnName);
         written[0].Data.Fields.Should().ContainKey("title"); // the rest of the payload survives
     }
+
+    // ── Result-side strip for the three streaming SQL RPCs ────────────────────
+    //
+    // Search, GroupBy and Pipeline never reach MaskDisallowedFields — they stream the row
+    // dictionary StarRocks returned, essentially verbatim (Search additionally drops non-allowed
+    // keys, but only when AllowedFields is non-null). Their entire protection against the
+    // server-owned tenant column was therefore SQL-side, in the query builders.
+    //
+    // The joined-type wildcard bug (`Type`.* over a physical table, which ColumnsFor could not
+    // reach) is empirical proof that a single-point SQL defence on this path is bypassable, so
+    // these three tests pin a second, result-side line of defence. Each supplies a row that
+    // ALREADY carries the column — i.e. it assumes the SQL-side exclusion has failed — and
+    // asserts the RPC still does not put it on the wire.
+    //
+    // Keyed on the reserved __TenantId spelling, not schema.TenantColumn: a legacy schema whose
+    // boundary sits on a client-declared column has always exposed that name as part of the
+    // client's own contract.
+
+    private static Dictionary<string, object> RowWithTenantColumn() => new()
+    {
+        ["Name"] = "Alice",
+        [SchemaDescriptor.TenantColumnName] = "test-tenant"
+    };
+
+    [Fact]
+    public async Task Search_StripsTheServerOwnedTenantColumnFromStreamedRows()
+    {
+        await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
+
+        _search.SearchAsync(
+                Arg.Any<EngagementQuerySchema>(), Arg.Any<SearchQuery?>(), Arg.Any<int>(), Arg.Any<int>(),
+                Arg.Any<IReadOnlyList<string>?>(), Arg.Any<IReadOnlyList<JoinSpec>?>(),
+                Arg.Any<Func<string, EngagementQuerySchema?>?>(),
+                Arg.Any<IReadOnlyDictionary<string, AuthorizationConstraint>?>())
+            .Returns(new[] { (dynamic)RowWithTenantColumn() }.AsEnumerable());
+
+        var (writer, written) = MakeStream<SearchResponse>();
+        await _sut.Search(new SearchRequest { TypeName = "Author" }, writer, TestServerCallContext.Create());
+
+        written.Should().HaveCount(1);
+        written[0].Data.Fields.Should().NotContainKey(SchemaDescriptor.TenantColumnName);
+        written[0].Data.Fields.Should().ContainKey("Name");
+    }
+
+    [Fact]
+    public async Task GroupBy_StripsTheServerOwnedTenantColumnFromStreamedRows()
+    {
+        await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
+
+        _search.GroupByAsync(
+                Arg.Any<EngagementQuerySchema>(), Arg.Any<GroupByRequest>(),
+                Arg.Any<Func<string, EngagementQuerySchema?>>(),
+                Arg.Any<IReadOnlyDictionary<string, AuthorizationConstraint>?>())
+            .Returns(new[] { (dynamic)RowWithTenantColumn() }.AsEnumerable());
+
+        var request = new GroupByRequest { TypeName = "Author", Keys = { "Name" } };
+        request.Metrics.Add(new MetricSpec { Name = "cnt", Type = AggregationType.Count });
+
+        var (writer, written) = MakeStream<SearchResponse>();
+        await _sut.GroupBy(request, writer, TestServerCallContext.Create());
+
+        written.Should().HaveCount(1);
+        written[0].Data.Fields.Should().NotContainKey(SchemaDescriptor.TenantColumnName);
+        written[0].Data.Fields.Should().ContainKey("Name");
+    }
+
+    [Fact]
+    public async Task Pipeline_StripsTheServerOwnedTenantColumnFromStreamedRows()
+    {
+        await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
+
+        _search.PipelineAsync(
+                Arg.Any<EngagementQuerySchema>(), Arg.Any<PipelineRequest>(),
+                Arg.Any<Func<string, EngagementQuerySchema?>>(),
+                Arg.Any<IReadOnlyDictionary<string, AuthorizationConstraint>?>())
+            .Returns(new[] { (dynamic)RowWithTenantColumn() }.AsEnumerable());
+
+        var (writer, written) = MakeStream<SearchResponse>();
+        await _sut.Pipeline(
+            new PipelineRequest { TypeName = "Author" }, writer, TestServerCallContext.Create());
+
+        written.Should().HaveCount(1);
+        written[0].Data.Fields.Should().NotContainKey(SchemaDescriptor.TenantColumnName);
+        written[0].Data.Fields.Should().ContainKey("Name");
+    }
 }

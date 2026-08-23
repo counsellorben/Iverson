@@ -222,6 +222,15 @@ internal static class StarRocksPipelineBuilder
                     // emission) leak the source's raw physical columns past the restriction.
                     // Fail loudly instead of guessing. A prior-step source needs no such check:
                     // its Columns dictionary already only contains allowed names.
+                    //
+                    // KEPT even though EmitSelectItem now expands a fresh type's wildcard
+                    // explicitly (so the leak horn of the two described above is closed on its
+                    // own). The other horn still stands: under a restricted field set, expanding
+                    // would silently hand back fewer columns than `all: true` asked for, and a
+                    // caller cannot tell that from a complete result. A loud rejection naming the
+                    // remedy ("select individual columns instead") is the better answer, and an
+                    // existing test pins that message. The expansion and this guard now cover
+                    // different failures rather than the same one.
                     var isFreshRestrictedType =
                         registry(source.Name) is not null &&
                         earlier.All(s => !s.Name.Equals(source.Name, StringComparison.OrdinalIgnoreCase)) &&
@@ -522,10 +531,18 @@ internal static class StarRocksPipelineBuilder
                 : null,
             step.Where, step.WhereLogic, param, $"s{stepIdx}_p", out _);
 
+        // Which join sources are FRESH REGISTERED TYPES (a physical table) rather than a prior
+        // step (a CTE). Only the former needs its `all: true` expanded explicitly — see
+        // EmitSelectItem. Mirrors the isFreshType computation in the join loop below.
+        var freshTypeSources = joinSources.Keys
+            .Where(n => registry(n) is not null &&
+                        emitted.All(s => !s.Name.Equals(n, StringComparison.OrdinalIgnoreCase)))
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
         var selectParts = new List<string>();
         if (step.Select.Count > 0)
             foreach (var item in step.Select)
-                selectParts.Add(EmitSelectItem(step, item, input, joinSources));
+                selectParts.Add(EmitSelectItem(step, item, input, joinSources, freshTypeSources));
         else
             selectParts.Add("*");
 
@@ -645,7 +662,8 @@ internal static class StarRocksPipelineBuilder
 
     private static string EmitSelectItem(
         PipelineStep step, SelectItem item, StepColumns input,
-        Dictionary<string, StepColumns> joinSources)
+        Dictionary<string, StepColumns> joinSources,
+        IReadOnlySet<string> freshTypeSources)
     {
         var hasJoins = step.Joins.Count > 0;
 
@@ -664,7 +682,22 @@ internal static class StarRocksPipelineBuilder
         }
 
         if (item.All)
+        {
+            // A fresh registered type is joined as its PHYSICAL TABLE, so `alias`.* expands to
+            // that table's real columns — the server-owned tenant column included — regardless of
+            // what ColumnsFor tracked, because ColumnsFor shapes the tracked NAME SET, not the
+            // emitted SQL. Expand the tracked set explicitly instead, which restores the same
+            // "emitted SQL == tracked columns" invariant the base CTE relies on.
+            //
+            // Every other source is a CTE — the step's own input, or a prior step — whose columns
+            // were already filtered upstream (ultimately by the base CTE's explicit projection),
+            // so a wildcard over one cannot reintroduce anything. Left as `*` there so a step's
+            // output is not pinned to a Dictionary enumeration order.
+            if (freshTypeSources.Contains(sqlAlias))
+                return string.Join(", ", source.Columns.Values.Select(c => $"`{sqlAlias}`.`{c}`"));
+
             return hasJoins ? $"`{sqlAlias}`.*" : "*";
+        }
 
         var col = source.Columns[item.Column];
         var qualified = hasJoins ? $"`{sqlAlias}`.`{col}`" : $"`{col}`";

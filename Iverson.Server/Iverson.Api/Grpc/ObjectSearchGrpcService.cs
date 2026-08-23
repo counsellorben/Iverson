@@ -98,6 +98,13 @@ public sealed class ObjectSearchGrpcService(
             var dict = ((IDictionary<string, object>)row)
                 .ToDictionary(kv => kv.Key, kv => (object?)kv.Value);
 
+            // Result-side strip for the server-owned tenant column. This path never reaches
+            // MaskDisallowedFields, so without it the SQL-side exclusion in the query builders is
+            // the ONLY defence — and a joined-type `Type`.* wildcard over a physical table proved
+            // that single point is bypassable. Unconditional, and independent of the AllowedFields
+            // filtering below, which does nothing at all when AllowedFields is null.
+            AuthorizationFieldMasking.RemoveTenantColumn(dict);
+
             if (primaryConstraint?.AllowedFields is not null)
                 foreach (var key in dict.Keys.Where(k => !primaryConstraint.AllowedFields.Contains(k)).ToList())
                     dict.Remove(key);
@@ -591,6 +598,13 @@ public sealed class ObjectSearchGrpcService(
         {
             var dict = ((IDictionary<string, object>)row)
                 .ToDictionary(kv => kv.Key, kv => (object?)kv.Value);
+
+            // Result-side strip for the server-owned tenant column. This path never reaches
+            // MaskDisallowedFields, so without it the SQL-side exclusion in the query builders is
+            // the ONLY defence — and a joined-type `Type`.* wildcard over a physical table proved
+            // that single point is bypassable. Unconditional, and independent of the AllowedFields
+            // filtering below, which does nothing at all when AllowedFields is null.
+            AuthorizationFieldMasking.RemoveTenantColumn(dict);
             await responseStream.WriteAsync(
                 new SearchResponse
                 {
@@ -662,6 +676,13 @@ public sealed class ObjectSearchGrpcService(
         {
             var dict = ((IDictionary<string, object>)row)
                 .ToDictionary(kv => kv.Key, kv => (object?)kv.Value);
+
+            // Result-side strip for the server-owned tenant column. This path never reaches
+            // MaskDisallowedFields, so without it the SQL-side exclusion in the query builders is
+            // the ONLY defence — and a joined-type `Type`.* wildcard over a physical table proved
+            // that single point is bypassable. Unconditional, and independent of the AllowedFields
+            // filtering below, which does nothing at all when AllowedFields is null.
+            AuthorizationFieldMasking.RemoveTenantColumn(dict);
             await responseStream.WriteAsync(
                 new SearchResponse
                 {
