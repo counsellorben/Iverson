@@ -201,7 +201,7 @@ public sealed class Report
     /// The pure computation behind <see cref="UntouchedRequirementIds"/>: every
     /// <paramref name="registryIds"/> entry that no cell's assertions cited. Taken as an explicit
     /// parameter — rather than always reflecting off <see cref="Requirements"/> — so this can be
-    /// unit-tested against a fake registry. The real registry now holds 42 <c>Active</c> IDs and a
+    /// unit-tested against a fake registry. The real registry now holds 43 <c>Active</c> IDs and a
     /// full-matrix run leaves none of them untouched, so a test pinned to reflection alone could
     /// never observe a NON-empty untouched set, which is the case this computation exists for.
     /// </summary>

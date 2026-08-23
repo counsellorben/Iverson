@@ -17,10 +17,11 @@ namespace Iverson.ClientConformance.Tests;
 /// 2. Every const's C# identifier must appear at least once, as a WHOLE identifier and outside
 ///    a whole-line comment, under <c>Iverson.Server/Iverson.ClientConformance/</c>, excluding
 ///    <c>Requirements.cs</c> itself, build output and the test project — i.e. it must be cited by
-///    an assertion the orchestrator actually constructs, not merely declared. All three moving
-///    parts (the strip, the file selection, the identifier feed) are graded: see
-///    <see cref="UncitedIdentifiers"/>, <see cref="IsGradableSourceFile"/> and
-///    <see cref="Check2Inputs"/>.
+///    an assertion the orchestrator actually constructs, not merely declared. All FOUR moving
+///    parts (the strip, the search root and file selection, the SEARCH PATTERN, and the identifier
+///    feed) are graded: see <see cref="UncitedIdentifiers"/>, <see cref="IsGradableSourceFile"/>
+///    and <see cref="Check2Inputs"/>. This comment said THREE for one round while the glob went
+///    ungraded, which is how the ninth hole was born (Ruling 44).
 /// 3. Every ID (Active or Retired) parsed from the standard must match
 ///    <c>IVC-[A-Z]+-\d{3}</c> with an axis drawn from the standard's known nine-axis set, and no
 ///    `|`-leading line inside a requirement table may be left unparsed (see
@@ -60,6 +61,12 @@ public class RequirementsCoverageGateTests
 {
     private static readonly Regex IdShapePattern = new(@"^IVC-([A-Z]+)-\d{3}$", RegexOptions.Compiled);
 
+    /// <summary>
+    /// The axes the standard declares. Graded against the document's own
+    /// <c>### &lt;AXIS&gt; — &lt;Name&gt;</c> headings by
+    /// <see cref="KnownAxes_ExactlyMatchTheAxisHeadingsInTheStandard"/> — this is an INPUT to
+    /// Check3 and to Mode 8's attribution, not a constant of nature (Ruling 44, Minor 1).
+    /// </summary>
     private static readonly string[] KnownAxes =
     {
         "DECL", "REL", "REG", "IDN", "LIFE", "QRY", "VEC", "SCH", "ERR",
@@ -161,10 +168,15 @@ public class RequirementsCoverageGateTests
     ///
     /// <para>Returned as ONE tuple deliberately: the fixtures below assert against the very value
     /// Check2 consumes, so a narrowing applied HERE is caught there. The residual, in the same
-    /// family as Ruling 38's: a mutation that abandons this method and inlines a narrowed feed into
-    /// Check2's own body still passes (mutant E2). That is a rewrite of the assertion rather than a
-    /// one-line deletion, and closing it would need the check to publish what it actually consumed
-    /// — recorded, not fixed.</para>
+    /// family as Ruling 38's: ANY NARROWING APPLIED BETWEEN THIS CALL AND THE CHECK'S OWN
+    /// ASSERTION still passes (mutant E2 / N9-C). It costs ONE LINE, not a rewrite — leave
+    /// <c>var (sourceFiles, identifiers0) = Check2Inputs();</c> fully intact, add
+    /// <c>var identifiers = identifiers0.Take(1);</c>, and Check2 grades one const out of 43 while
+    /// this method is still called and both fixtures below still pass. Ruling 42 originally
+    /// recorded the reach as "abandoning this method and inlining a narrowed feed"; Ruling 45
+    /// corrects that — a stray <c>.Where(...)</c> or <c>.Except(knownStale)</c> at the consumption
+    /// point is the realistic shape. Closing it would need the check to publish what it actually
+    /// consumed — recorded, not fixed; the structural remedy is on the follow-up list.</para>
     /// </summary>
     internal static (IReadOnlyList<string> Files, IReadOnlyList<string> Identifiers) Check2Inputs() =>
         (ConformanceSourceFiles().ToList(), ReflectRegistryConstsByIdentifier().Keys.ToList());
@@ -1025,6 +1037,48 @@ public class RequirementsCoverageGateTests
                 StringComparison.Ordinal),
             "named concretely as well as by the rule above: server sources are the first thing a "
             + "widened root sweeps in, and they are not orchestrator assertions");
+
+        // THE NINTH HOLE (Ruling 44): the SEARCH PATTERN is the fourth widening-capable input to
+        // the same enumeration, and for one round nothing constrained it while this file's own
+        // class doc claimed there were only three. Mutant N9-A ("*.cs" -> "*") survived 441/441
+        // with every assertion above still holding. Check2's subject is a citation in CODE, so a
+        // .md, a JSON fixture or a generated .g.txt under the conformance project naming a
+        // requirement identifier must never count — a de-cited assertion would then read as cited
+        // and Check2 would grade nothing for that const.
+        live.Should().OnlyContain(f => f.EndsWith(".cs", StringComparison.Ordinal),
+            "Check2 grades citations in C# SOURCE, so the search pattern is part of what it "
+            + "asserts: relaxing the glob lets any non-code file under the conformance project "
+            + "satisfy a citation (mutant N9-A)");
+    }
+
+    /// <summary>
+    /// <see cref="KnownAxes"/> is an INPUT, not a constant of nature: Check3 rejects any ID whose
+    /// axis is outside it, and <c>ComputeCoverageFailures</c> uses it both to attribute
+    /// requirements to axes and (via <see cref="CoverageTableParser"/>) to decide which headings a
+    /// <c>#### Coverage</c> table may sit under — Mode 8. Nothing tied it to the document for one
+    /// round: mutant N9-B (adding <c>"TENANCY"</c>) survived 441/441, admitting IVC-TENANCY-001 to
+    /// Check3 and admitting a <c>### TENANCY — ...</c> heading as a legitimate Mode 8 attribution
+    /// point. Narrower in reach than the input holes above — hence a Minor and not a tenth hole —
+    /// but the same named shape: an input to a check that the check's own test did not constrain.
+    /// </summary>
+    [Fact]
+    public void KnownAxes_ExactlyMatchTheAxisHeadingsInTheStandard()
+    {
+        var markdown = File.ReadAllText(StandardPath());
+
+        var headingAxes = Regex.Matches(markdown, @"^### ([A-Z]+) \u2014 ", RegexOptions.Multiline)
+            .Select(m => m.Groups[1].Value)
+            .ToList();
+
+        headingAxes.Should().NotBeEmpty(
+            "the parse itself must find something, or this fixture degrades into comparing an "
+            + "empty list against a KnownAxes that has also been emptied");
+
+        headingAxes.Should().BeEquivalentTo(KnownAxes,
+            "KnownAxes is the gate's notion of which axes EXIST, and the standard's `### <AXIS> "
+            + "— <Name>` headings are the document's — an axis in one and not the other means "
+            + "either an authored axis whose IDs Check3 rejects, or a phantom axis that admits IDs "
+            + "and Coverage tables the standard never declared (mutant N9-B)");
     }
 
     /// <summary>
@@ -1040,7 +1094,10 @@ public class RequirementsCoverageGateTests
         fed.Should().HaveCount(ReflectRegistryConsts().Count,
             "Check2 must grade EVERY const in the registry — the count is taken from the values "
             + "side of the reflection so that a filter applied to the identifier side is visible");
-        fed.Should().OnlyHaveUniqueItems();
+        // No uniqueness assertion here. `fed` is Dictionary.Keys.ToList(), so it is unique BY
+        // CONSTRUCTION and no mutation of Check2Inputs can falsify it — the same vacuity fix
+        // round 2 removed from IdentityScenarioTests, shipped again in this fixture (Ruling 44's
+        // Minor 2). An assertion nothing can break is not coverage.
         fed.Should().Contain("IdnServerTenantColumnAbsentFromReadBack",
             "the const this plan authored must be inside the feed, not merely inside the registry");
         fed.Should().Contain("RegForeignKeyNamingEnforced");
