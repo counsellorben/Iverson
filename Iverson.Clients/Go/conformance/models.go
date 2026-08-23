@@ -134,6 +134,16 @@ type VectorDoc struct {
 // scenario to go red for reasons that are not about identity.
 type IdentityDoc struct {
 	Id       string `iverson_key:"true" iverson_guid:"true"`
+
+	// This property is NOT the row's tenant and has not been since the server took ownership of the
+	// boundary: the real tenant lives in the server-owned __TenantId column, which is injected
+	// server-side, never declared by a client and stripped from every outbound path. It survives here
+	// as a NEGATIVE CONTROL, and it is the write phase's deliberately wrong tenant value that makes it
+	// one: IVC-IDN-003's orchestrator-side probe asserts that a user column literally named TenantId,
+	// carrying a tenant-shaped value the client chose, is still holding that value in Postgres and did
+	// NOT leak into __TenantId. Delete this property and that assertion goes red - which is the point.
+	// (Before Task 5 the stated reason was 'IVC-IDN-003 grades the read-back'; that assertion no
+	// longer exists, because reading this column back only ever graded an echo.)
 	TenantId string
 	OwnerId  string
 	Label    string

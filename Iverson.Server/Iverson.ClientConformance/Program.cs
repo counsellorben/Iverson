@@ -68,6 +68,7 @@ try
         CrudRoundtripScenario.Name, NamingRejectedScenario.Name, NavPropertyRejectedScenario.Name,
         InteropScenario.Name, SchemaCatalogScenario.Name, QueryScenario.Name,
         VectorSearchScenario.Name, IdentityScenario.Name, ErrorContractScenario.Name,
+        TenantRejectedScenario.Name,
     ];
     var scenarios = flags.Scenarios ?? recognizedScenarios;
 
@@ -107,13 +108,15 @@ try
         runner, mapping, new Reregistrar(mapping), new PostgresProbe(postgresCs), Console.WriteLine);
     var namingRejected = new NamingRejectedScenario(runner, mapping);
     var navPropertyRejected = new NavPropertyRejectedScenario(mapping);
+    var tenantRejected = new TenantRejectedScenario(mapping);
     var interop = new InteropScenario(runner, new Reregistrar(mapping), Console.WriteLine);
     var schemaCatalog = new SchemaCatalogScenario(runner, new Reregistrar(mapping), Console.WriteLine);
     var query = new QueryScenario(
         runner, new Reregistrar(mapping),
         new ObjectSearchService.ObjectSearchServiceClient(channel),
         log: Console.WriteLine);
-    var identity = new IdentityScenario(runner, new Reregistrar(mapping), log: Console.WriteLine);
+    var identity = new IdentityScenario(
+        runner, new Reregistrar(mapping), mapping, new PostgresProbe(postgresCs), log: Console.WriteLine);
     var errorContract = new ErrorContractScenario(runner, new Reregistrar(mapping), log: Console.WriteLine);
     var vectorSearch = new VectorSearchScenario(
         runner, new Reregistrar(mapping),
@@ -211,6 +214,17 @@ try
         Console.WriteLine($"Running scenario '{ErrorContractScenario.Name}'...");
         foreach (var cell in await errorContract.RunAsync(
                      languages, BuildContext(ErrorContractScenario.Name), actingToken))
+        {
+            report.Add(cell);
+        }
+    }
+
+    // As with the blocks above, this dispatch — not `recognizedScenarios` — is what actually runs
+    // the scenario. Orchestrator-only: it takes no DriverContext because no driver process runs.
+    if (scenarios.Contains(TenantRejectedScenario.Name, StringComparer.OrdinalIgnoreCase))
+    {
+        Console.WriteLine($"Running scenario '{TenantRejectedScenario.Name}'...");
+        foreach (var cell in await tenantRejected.RunAsync(languages, actingToken))
         {
             report.Add(cell);
         }

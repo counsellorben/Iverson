@@ -17,6 +17,20 @@ namespace Iverson.ClientConformance;
 public sealed class PostgresProbe(string connectionString)
 {
     /// <summary>
+    /// The server-owned tenant column, as this project's OWN copy of
+    /// <c>Iverson.Api.Schema.SchemaDescriptor.TenantColumnName</c>. Kept separate for exactly the
+    /// reason <see cref="TableName"/> is: <c>Iverson.ClientConformance</c> has no project reference
+    /// to <c>Iverson.Api</c>, and a harness sharing the server's own constant could not catch the
+    /// server using a different name from the one the standard publishes.
+    ///
+    /// <para>CROSS-TASK CONTRACT: if the server's reserved name changes, this copy must change with
+    /// it or every assertion that reads the column silently starts reading nothing. It is the
+    /// single copy for the whole harness — <c>IdentityScenario</c> reads the column through it and
+    /// <c>TenantRejectedScenario</c> builds its rejection fixtures from it.</para>
+    /// </summary>
+    public const string ServerOwnedTenantColumn = "__TenantId";
+
+    /// <summary>
     /// Mirrors <c>SchemaBuilder.BuildDescriptor</c>'s table naming. Kept as a separate copy on
     /// purpose: <c>NamingExtensions</c> is internal to Iverson.Api, and a probe that shared the
     /// server's helper could not catch the server naming a table differently from what it

@@ -841,11 +841,16 @@ def main(argv: List[str]) -> int:
             host, port, client_id, client_secret, token_endpoint, wrong_acting_token, service_token,
         )
         try:
-            # The update payload carries the ACTING user's real tenant, not IDENTITY_WRONG_TENANT:
-            # on an EXISTING row the server rejects a payload tenant that differs from the caller's
-            # claim as "Tenant field is immutable" — also PermissionDenied (7). That denial would
-            # fire for ANY caller, including the right one, and would make this step green while
-            # proving nothing about which end user is calling.
+            # The update payload's tenant value no longer affects the outcome either way. It USED to: the
+            # server once rejected an existing row's payload tenant that differed from the caller's claim as
+            # "Tenant field is immutable" — also PermissionDenied (7), fired for ANY caller including the
+            # right one — so a wrong tenant here would have made this step green while proving nothing about
+            # which end user is calling. That branch now compares the SERVER-OWNED __TenantId column, which a
+            # payload may never carry (it is rejected with InvalidArgument several branches earlier), so it is
+            # unreachable. The only refusal left on this leg is the tenant MISMATCH between the existing row's
+            # __TenantId and this wrong acting user's own claim — which is the denial this step exists to
+            # observe. The acting user's real tenant is still sent here so this leg keeps sending a payload a
+            # conforming client would send.
             entity = IdentityDoc()
             entity.id = uuid.UUID(row_key)
             entity.tenant_id = tenant

@@ -214,6 +214,57 @@ public static class Requirements
     /// </summary>
     public const string RegForeignKeyNamingEnforced = "IVC-REG-003";
 
+    /// <summary>
+    /// The server rejects registration of a descriptor that declares a tenant field. Proto field 5
+    /// (<c>tenant_field</c>) is still declared for wire compatibility, but the server now owns the
+    /// tenant boundary outright — <c>SchemaBuilder</c> injects <c>__TenantId</c> into every
+    /// descriptor and the acting user's <c>tenant_id</c> claim supplies the value — so a
+    /// client-declared tenant field has no meaning. Rejecting it rather than ignoring it is the
+    /// point of the requirement: a silently ignored declaration leaves the caller believing it is
+    /// enforcing a boundary the server derives for itself.
+    /// <c>SchemaRegistrationOrchestrator.RejectDeclaredTenantField</c> is the guard.
+    ///
+    /// <para>Discharged by <c>TenantRejectedScenario.JudgeDeclaredTenantField</c>, which hand-builds
+    /// a <c>TypeDescriptor</c> with <c>TenantField</c> populated and posts it to
+    /// <c>RegisterSchema</c> over gRPC. Deliberately NOT graded through the driver channel and not
+    /// a defect that it is not: no conformance driver can produce this request (four clients omit
+    /// the field entirely; TypeScript sends the proto default <c>""</c>, which the guard treats as
+    /// absent), so a driver-graded requirement here would be unfalsifiable by construction. The
+    /// rule exists to defend against STALE CLIENT BUILDS and hand-rolled callers, which is exactly
+    /// what a raw orchestrator-side descriptor is. Distinct from
+    /// <see cref="RegReservedTenantColumnNameRejected"/>: that one is about a NAME a client may not
+    /// use, this one about a FIELD a client may not populate, and a client can trip either without
+    /// the other.</para>
+    /// </summary>
+    public const string RegDeclaredTenantFieldRejected = "IVC-REG-004";
+
+    /// <summary>
+    /// The server rejects registration of a descriptor that names the reserved server-owned tenant
+    /// column (<c>__TenantId</c>) in any name-bearing position. Without this the client's member
+    /// collides with the server's injected column: on a table that does not yet exist that is a
+    /// loud duplicate-column DDL failure, but on an ALREADY-CREATED table the schema manager skips
+    /// the ADD, so registration SUCCEEDS carrying two identically-named columns and the client's
+    /// own member silently never round-trips and is invisible in <c>GetSchema</c>.
+    /// <c>SchemaRegistrationOrchestrator.RejectReservedTenantName</c> is the guard.
+    ///
+    /// <para><b>One requirement, six sites.</b> The sites are a scalar property, the key property,
+    /// a relation's foreign key, a relation's navigation property, <c>authorization.owner_field</c>
+    /// and an <c>authorization.field_permissions[].field_name</c> — the closed enumeration of every
+    /// string on <c>TypeDescriptor</c> (and everything it transitively contains) that can name a
+    /// column or become a payload key, recorded as such in the guard's own doc comment. One rule,
+    /// one message shape, one remedy shape, six places it is applied, so one requirement — but
+    /// <c>TenantRejectedScenario.ReservedNameFixtures</c> carries one fixture and one assertion PER
+    /// SITE, and each asserts the message's own site label, so a site losing its guard reddens on
+    /// its own rather than hiding behind the other five. Four of the six arms were found one at a
+    /// time during Task 4's reviews; the per-site assertions are what make a seventh site's absence
+    /// visible rather than assumed.</para>
+    ///
+    /// <para>Orchestrator-side for the same reason as
+    /// <see cref="RegDeclaredTenantFieldRejected"/>: no client declaration style can name a member
+    /// <c>__TenantId</c>, so the driver channel could not falsify this requirement.</para>
+    /// </summary>
+    public const string RegReservedTenantColumnNameRejected = "IVC-REG-005";
+
     // ── QRY — Query ─────────────────────────────────────────────────────────────────────────
 
     /// <summary>
@@ -384,15 +435,36 @@ public static class Requirements
     /// payload, and denies an acting user of another tenant who attempts to write that row. Both
     /// halves are discharged, and neither is gradeable from a value the client controls:
     /// <list type="bullet">
-    /// <item><description>Derivation: <c>IdentityScenario.Judge</c>'s "the stored row carries the
-    /// acting user's own tenant, not the tenant the client sent" assertion. Every driver stamps
-    /// <see cref="Scenarios.IdentityScenario.WrongTenantValue"/> — deliberately not the acting
-    /// user's tenant — and the read-back must show the acting tenant instead.</description></item>
+    /// <item><description>Derivation: <c>IdentityScenario.JudgeTenantDerivation</c>'s two
+    /// assertions, graded ORCHESTRATOR-side because the row's real tenant lives in the server-owned
+    /// <c>__TenantId</c> column, which is stripped from every outbound path and is therefore
+    /// unreachable from any client library by design. A <c>PostgresProbe</c> read of the row each
+    /// driver seeded must show <c>__TenantId</c> carrying the acting user's own tenant; and the
+    /// deliberately wrong value the driver stamped
+    /// (<see cref="Scenarios.IdentityScenario.WrongTenantValue"/>) must still be sitting in the
+    /// ORDINARY user column the driver declared for it, having not become the row's tenant — a
+    /// negative control against the server taking a client's word for it from a column that merely
+    /// looks like a tenant field. This REPLACED a driver-side read-back assertion that became
+    /// unfalsifiable once the server took ownership of the column: it compared the driver's own
+    /// echoed <c>TenantId</c> against the acting tenant, which live FAILS, and which even forced to
+    /// pass would grade an echo rather than a derivation.</description></item>
     /// <item><description>Enforcement: <c>IdentityScenario.Judge</c>'s "an acting user of another
     /// tenant is denied a write to this row" assertion, over the numeric gRPC status code the
     /// driver reported from its <c>denied_update_wrong_acting_user</c> step. Numeric, because the
     /// five languages spell the same code five ways.</description></item>
     /// </list>
+    ///
+    /// <para><b>The conjoined control, and what it deliberately does NOT cite.</b> Beside the two
+    /// derivation assertions, <c>JudgeTenantDerivation</c> also asserts that the orchestrator's own
+    /// gRPC read of the SAME row does not carry <c>__TenantId</c> at all. That is what proves the
+    /// Postgres probe is reading something gRPC genuinely cannot see — a Postgres-only assertion
+    /// could not otherwise distinguish "the server derived it" from "the client sent it". It is
+    /// UNCITED on purpose: it grades the server's outbound strip, which is a different claim from
+    /// this Statement, and citing it here would quietly widen this requirement to cover a rule it
+    /// does not state. No requirement in the standard owns the outbound strip today; the gap is
+    /// recorded as a Deferred area in the IDN coverage ledger rather than absorbed here. The
+    /// control still binds — it lives in the same cell, so the cell goes red if the strip
+    /// regresses.</para>
     ///
     /// <para><b>What the enforcement half cannot distinguish.</b> The server answers several
     /// distinct refusals on this path with the SAME status (7) and the SAME message, and sets no

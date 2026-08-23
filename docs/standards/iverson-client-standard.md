@@ -192,6 +192,8 @@ implemented requirement.
 | IVC-REG-001 | Retired | Behaviour | The server rejects registration of a relation whose foreign key is not named `{RelatedTypeName}Id` (or `{RelatedTypeName}Ids` for `many_to_many`) |
 | IVC-REG-002 | Active | Behaviour | The server rejects registration of a relation whose navigation-property name equals its foreign key, for every relation kind |
 | IVC-REG-003 | Active | Behaviour | The server rejects registration of a `many_to_one`, `one_to_one` or `many_to_many` relation whose foreign key is not named `{RelatedTypeName}Id` (or `{RelatedTypeName}Ids` for `many_to_many`) |
+| IVC-REG-004 | Active | Behaviour | The server rejects registration of a descriptor that declares a tenant field |
+| IVC-REG-005 | Active | Behaviour | The server rejects registration of a descriptor that names the reserved server-owned tenant column in any name-bearing position |
 
 Both `IVC-REG-002` and `IVC-REG-003` are the server-side half of a pair whose client-side half is
 already normative elsewhere in this document: `IVC-REL-002` obliges a client to derive
@@ -227,12 +229,64 @@ silently hydrating `Editor` and `Author` from the same row. No model in this rep
 either today, and neither is a client-conformance claim, so `IVC-REG-003` states the rule as the
 server enforces it and this paragraph is the disclosure.
 
+`IVC-REG-004` and `IVC-REG-005` are the registration-time half of the server owning the tenant
+boundary outright (the client-side half, `IVC-DECL-002`/`IVC-DECL-005`, is retired — see the `DECL`
+axis). They are TWO requirements rather than one because they are two different server rules with
+two different remedies, not one rule seen twice. `IVC-REG-004` is about a field the client MAY NOT
+DECLARE: `tenant_field` (proto field 5) is still on the wire for compatibility, and populating it is
+now an error, because silently ignoring it would leave the caller believing its declaration enforces
+a boundary the server derives for itself; the remedy is to delete the declaration.
+`IVC-REG-005` is about a NAME the client may not use: `__TenantId` is the server's own injected
+column, and a descriptor addressing it collides with that column — loudly as a duplicate-column DDL
+failure on a new table, but SILENTLY on an already-created one, where the ADD is skipped and the
+client's own member never round-trips and is invisible in `GetSchema`; the remedy is to rename the
+member. A client can trip either without the other.
+
+`IVC-REG-005` is ONE requirement over SIX addressing sites, not six requirements. The sites —
+a scalar property, the key property, a relation's foreign key, a relation's navigation property,
+`authorization.owner_field`, and an `authorization.field_permissions[].field_name` — are the closed
+enumeration of every string on `TypeDescriptor` (and everything it transitively contains) that can
+name a column or become a payload key; the enumeration itself is recorded in
+`SchemaRegistrationOrchestrator.RejectReservedTenantName`'s doc comment, which also records, for
+every remaining name-bearing field, the construction that makes it unable to reach the reserved
+name. One rule ("this name is reserved"), one message shape, one remedy shape, six places it is
+applied — so one requirement, with one assertion per site so that a site losing its guard reddens on
+its own rather than hiding behind the other five.
+
+**Both are graded orchestrator-side, and deliberately not through the driver channel.** The
+`tenant-rejected` scenario hand-builds raw `TypeDescriptor`s in orchestrator-side C# and posts them
+to `RegisterSchema` directly — the mechanism `NamingRejectedScenario` and
+`NavPropertyRejectedScenario` already use — which grades the SERVER's rule without requiring any
+client to express the violation. The two rules reach that channel for different reasons, and the
+difference is worth stating rather than blurring.
+
+`IVC-REG-004` **cannot** be graded through the driver channel. No conformance driver can produce a
+request that trips it: four clients omit `tenant_field` entirely and TypeScript sends the proto
+default `''` (ts-proto types the field as required, so it cannot be omitted the way the other four
+omit it), which the guard treats as absent. A requirement graded through that channel would be
+unfalsifiable by construction — the same defect the `IDN` axis's own notes describe. The rule's live
+value is against STALE CLIENT BUILDS and hand-rolled callers, and a raw orchestrator-side descriptor
+is exactly one of those.
+
+`IVC-REG-005` **could** be tripped by a client and is graded orchestrator-side by CHOICE. `__TenantId`
+is a legal member name in more than one of the five host languages, which is precisely why the server
+guard has to exist at all — this is not a violation nobody can express. What makes the driver channel
+the wrong place for it is that the harness's five driver model sets are SHARED across every scenario:
+poisoning one to trip a registration guard would break every other scenario that registers the same
+type, so grading it there would mean six new fixture types in five languages — thirty models — to
+observe one server rule that is identical for every caller. One orchestrator-side descriptor per site
+grades exactly the same rule, and the six sites stay in one place where the enumeration behind them
+is legible. If a future client is found to DERIVE the reserved name (rather than have a user type it
+literally), that is a client-side claim and belongs on `DECL`, not here.
+
 #### Coverage
 
 | Area | Status | Evidence |
 | --- | --- | --- |
 | Navigation-property/foreign-key collision rejected at registration | Covered | IVC-REG-002 |
 | Foreign-key naming enforced at registration | Covered | IVC-REG-003 |
+| Client-declared tenant field rejected at registration | Covered | IVC-REG-004 |
+| Reserved server-owned tenant column name rejected at registration | Covered | IVC-REG-005 |
 | `one_to_many` foreign keys validated at registration | Deferred | `SchemaRegistrationOrchestrator.cs:103` filters the relation loop with `.Where(r => r.Kind != RelationKind.OneToMany)`, which excludes `one_to_many` from ALL THREE checks in that loop — not only the naming rule `IVC-REG-003` correctly exempts it from, but also foreign-key-is-a-declared-property and foreign-key SQL typing. So a `one_to_many`'s declared foreign key is validated by nothing: `Author` may declare `[OneToMany(typeof(Article), ForeignKey = "WriterId")]` while `Article` declares `AuthorId`, registration succeeds, and every depth-resolved read then queries a column that does not exist. This carve-out is one this axis itself created when it scoped `IVC-REG-003` to the three kinds the server enforces, so it is disclosed here rather than left silent. Closing it is a SERVER change, not a client one, and not a trivial one: the property and typing checks would have to run against the RELATED type's descriptor, which is not in hand when the declaring type registers — it needs either a deferred cross-type validation pass or a registration-order constraint. Its own initiative; no requirement here asserts against it. |
 | Reregistration | Deferred | `Reregistrar.cs` exercises reregistration (registering an already-registered type again) on every conformance run, but no assertion cites a requirement ID against that behaviour. Reregistration's correctness is exercised as test-harness plumbing, not verified as a normative claim. |
 | Authorization rules at registration time | Deferred | `SchemaRegistrationOrchestrator.cs:54,208` accepts and stores `AuthorizationRules` as part of the descriptor, but no requirement in this document constrains what the server does with them at registration time. |
@@ -249,17 +303,26 @@ time, and schema drift; see the Coverage table above for each's reason.
 
 These three are deferred, not out of scope forever, and a future axis pass may author requirements
 for them. **Descriptor contents are explicitly NOT part of this deferral** — what a registered
-descriptor contains (relation shape, foreign-key typing, tenant/owner field typing, array typing,
-and so on) is already covered by the `DECL` and `REL` axes, whose assertions read the registration
-descriptor directly rather than merely exercising the registration call.
+descriptor contains (relation shape, foreign-key typing, owner field typing, array typing, and so
+on) is already covered by the `DECL` and `REL` axes, whose assertions read the registration
+descriptor directly rather than merely exercising the registration call. Tenant field typing was
+in that list until `IVC-DECL-002`/`IVC-DECL-005` were retired; there is no client-declared tenant
+field left to type, and what replaced it is `IVC-REG-004`'s outright rejection above.
 
 #### Backstop assertion (non-normative)
 
-Unlike `REL`'s per-relation loop (see "Authoring notes" above), `REG`'s two assertions
-(`IVC-REG-002`, `IVC-REG-003`) are each single-shot: they fire once, against one hand-built
-fixture apiece, rather than iterating a `foreach` over a descriptor's relations where a
-zero-iteration loop would vacuously pass. That — and only that — is why `REG` declares no backstop
-assertion: its own assertions cannot go vacuous, because they are not inside a loop.
+Unlike `REL`'s per-relation loop (see "Authoring notes" above), none of `REG`'s assertions can go
+vacuous, and that — and only that — is why `REG` declares no backstop assertion. The reason is not
+that they are outside a `foreach`: `IVC-REG-002`'s citations iterate
+`NavPropertyRejectedScenario.CollisionFixtures` and `IVC-REG-005`'s iterate
+`TenantRejectedScenario.ReservedNameFixtures`, so two of the four DO sit in a loop. (An earlier
+version of this paragraph asserted otherwise; it was already wrong about `IVC-REG-002` when it was
+written.) The reason is what those loops iterate. `REL`'s loop walks a DESCRIPTOR's relations — a
+runtime-supplied collection that a fixture change can empty without touching the assertion, which is
+exactly the vacuity `REL`'s backstop exists to catch. `REG`'s loops walk `static readonly` fixture
+lists authored in the assertion's own file, so emptying one is a source edit to the list three lines
+above the `foreach`, not a data condition arising elsewhere. `IVC-REG-003`'s and `IVC-REG-004`'s
+assertions are single-shot against one hand-built fixture apiece and are not in a loop at all.
 
 That reasoning is specific to `REG` and must not be generalised to the other backstop-less axes.
 `DECL` in particular does have a loop-bodied citation: `IVC-DECL-006`'s only citation
@@ -339,13 +402,26 @@ would be worthless in exactly the case it exists for.
 `IVC-IDN-003` is verified in both directions, and neither direction is gradeable from a payload the
 client controls:
 
-- **Derivation.** Every driver stamps a deliberately wrong tenant value on the row it creates —
-  not the acting user's tenant, and shared verbatim across all five drivers. The server force-sets
-  the tenant column from the acting-user token's `tenant_id` claim on a create
-  (`AuthorizationFieldMasking.EnforceWriteAuthorization`'s no-existing-row branch), so the read-back
-  observes the acting user's own tenant. A server that took the client's word for it, or a client
-  that propagated no acting user at all, fails here rather than agreeing by construction with what
-  the driver sent.
+- **Derivation, observed where no client can see it.** The row's real tenant lives in the
+  server-owned `__TenantId` column, which the server injects into every schema and strips from every
+  outbound path — so it is not on the wire, not in `GetSchema`, and unreachable from any client
+  library by design. The derivation is therefore graded by the ORCHESTRATOR, not by a driver's
+  read-back: `IdentityScenario` probes Postgres directly (`PostgresProbe.FetchRowAsync`) for the row
+  each driver seeded and asserts `__TenantId` carries the acting user's own tenant, force-set from
+  the token's `tenant_id` claim on a create (`AuthorizationFieldMasking.EnforceWriteAuthorization`'s
+  no-existing-row branch). Two things make that more than a bare presence check. Every driver stamps
+  a deliberately wrong tenant value — shared verbatim across all five — into an ORDINARY user column
+  it declares called `TenantId`, and the probe asserts that value is still sitting in that user
+  column and did NOT become the row's tenant: a NEGATIVE CONTROL against the server taking the
+  client's word for it from a column that merely looks like a tenant field. And the probe is
+  conjoined with the orchestrator's own gRPC read of the same row, which must show `__TenantId`
+  ABSENT — proof that the probe is reading something gRPC genuinely cannot see, without which a
+  Postgres-only assertion could not distinguish "the server derived it" from "the client sent it".
+  That gRPC-absent half is deliberately left UNCITED: it grades the outbound strip, which is a
+  separate claim from this Statement, and letting `IVC-IDN-003` cite it would quietly widen the
+  requirement to cover a rule it does not state. A server that took the client's word for it, a
+  server that stopped injecting the column, or a client that propagated no acting user at all each
+  fail here rather than agreeing by construction with what the driver sent.
 - **Enforcement.** The orchestrator mints a SECOND acting-user token, for a different, active
   tenant (`TokenBroker.GetOtherTenantActingTokenAsync`), and passes it to every driver as
   `--wrong-acting-token`. Each driver attempts a mapped update of the row it just created while
@@ -356,16 +432,21 @@ client controls:
   agreement claim: a language that propagates the wrong-user token incorrectly (or not at all)
   disagrees with the other four and its cell alone goes red.
 
-The update the negative leg sends carries the ACTING user's own tenant, even though the create
-carries a deliberately wrong one. This is load-bearing rather than incidental: on an EXISTING row
-the server rejects a payload tenant that differs from the caller's claim as "Tenant field is
-immutable", which is also `PermissionDenied` (7) and fires for ANY caller — including the right one.
-A negative leg that sent the wrong tenant here would go green for a client that propagated its own
-acting-user token instead of the wrong one, proving nothing about identity. It was verified live
-that it did: with the wrong tenant in the update payload, a driver sending its own token was denied
-with `reason=TenantImmutable` and the cell stayed green; with the acting tenant in the payload, the
-same driver's write is ACCEPTED and the cell goes red. With the correct tenant sent, the only thing
-left that can deny that write is which end user is calling.
+The update the negative leg sends still carries the ACTING user's own tenant in its ordinary
+`TenantId` user column, even though the create carries a deliberately wrong one. That WAS
+load-bearing and is now merely harmless, and the change is worth recording because the old reason is
+still quoted in the drivers' own comments. It used to be that on an EXISTING row the server rejected
+a payload tenant differing from the caller's claim as "Tenant field is immutable" — also
+`PermissionDenied` (7), fired for ANY caller including the right one — so a negative leg sending the
+wrong tenant would have gone green for a client that propagated its own token instead of the wrong
+one, proving nothing about identity. That check compares
+`AuthorizationDecision.TenantColumn`, which is now unconditionally `__TenantId`, against the value
+the payload carries under that name; and a payload carrying `__TenantId` is rejected outright with
+`InvalidArgument` at the top of the same method, several branches earlier. The immutability branch is
+therefore now UNREACHABLE, and the only refusal left on this leg is the tenant MISMATCH between the
+existing row's `__TenantId` and the wrong acting user's own claim — which is the refusal this
+requirement wants. What the payload's `TenantId` user column says no longer affects the outcome
+either way.
 
 The status code is reported and compared as the numeric gRPC code, never as a name: the five
 languages spell the same code five ways (`PermissionDenied`, `PERMISSION_DENIED`, `7`), so a
@@ -381,6 +462,7 @@ role are deliberately not authored here; see the Coverage table below.
 | Service and acting-user identities carried as two credentials on one call | Covered | IVC-IDN-001 |
 | Acting-user propagation observable in the stored row | Covered | IVC-IDN-002 |
 | Tenancy derived from the acting user and enforced against another tenant's acting user | Covered | IVC-IDN-003 |
+| The server-owned tenant column never appearing on the wire | Deferred | `IVC-IDN-003`'s derivation assertion is CONJOINED with an orchestrator-side gRPC read that must show `__TenantId` absent from the same row the Postgres probe finds it in — without that control, a Postgres-only assertion could not prove it is reading something gRPC cannot see. That assertion is deliberately UNCITED: it grades the server's outbound strip, not `IVC-IDN-003`'s Statement, and citing it would widen the requirement to cover a rule it does not state. So the strip IS exercised on every run (the cell goes red if it regresses) but no requirement in this document constrains it, and no client-side claim is made about it. Closing this needs a requirement of its own, on whichever axis owns "what the server may put on the wire" — which today is none of the nine. |
 | Token acquisition | Deferred | Every client can mint a service token from a client-credentials trio, but the harness passes a pre-minted `--service-token` to all five drivers on purpose (Authentik stamps the JWT's `iss` from the request's Host header and grants scopes only when asked, neither of which a driver's own minting expresses), so no assertion observes a client's token acquisition and no requirement constrains it. |
 | Suspended and deleted tenants | Deferred | `ActingUserInterceptor` rejects an acting user whose tenant is absent, `suspended` or `deleted` with `PermissionDenied`, but the harness runs entirely inside two active tenants and provisions none, so no assertion observes a suspended or deleted tenant and no requirement constrains that path. |
 | Field-permission narrowing by acting-user role | Deferred | `RowFieldAuthorizationEvaluator` narrows writable and readable fields by the acting user's `groups` claim, but the harness registers no `FieldPermission` (the `Reregistrar` sets row permissions only), so no assertion observes field narrowing and no requirement constrains it. |
