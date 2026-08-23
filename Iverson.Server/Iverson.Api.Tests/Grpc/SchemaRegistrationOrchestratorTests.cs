@@ -213,6 +213,82 @@ public class SchemaRegistrationOrchestratorTests
     }
 
     [Fact]
+    public async Task RegisterAsync_WithAnOwnerFieldNamingTheServerOwnedTenantColumn_ThrowsInvalidArgument()
+    {
+        // Ruling 22. owner_field is the fourth way to address the reserved name and the ONLY one
+        // ValidateFieldReference cannot catch: that check runs on the BUILT descriptor, where
+        // SchemaBuilder has just injected __TenantId as a TEXT scalar, so the name RESOLVES and
+        // passes the string-valued allow-list. Without the guard this type registers cleanly with
+        // OwnerField == "__TenantId" — and then RowFieldAuthorizationEvaluator copies that name
+        // into the decision, so EnforceWriteAuthorization's create branch force-sets the tenant
+        // column and immediately overwrites it with the acting user's owner value.
+        var td = SimpleType("Widget", "Name");
+        td.Authorization = new Client.Contracts.AuthorizationRules
+        {
+            OwnerField = SchemaDescriptor.TenantColumnName
+        };
+
+        var act = () => _sut.RegisterAsync(new SchemaRequest { RootType = td }, CancellationToken.None);
+
+        var ex = await act.Should().ThrowAsync<RpcException>();
+        ex.Which.StatusCode.Should().Be(StatusCode.InvalidArgument);
+        ex.Which.Status.Detail.Should().StartWith("Owner field '__TenantId' on 'Widget'");
+        ex.Which.Status.Detail.Should().Contain("reserved server-owned column name");
+        // Pins that the REGISTRATION-TIME guard rejected it, not some downstream field-reference
+        // check — ValidateFieldReference would have RESOLVED this name, not rejected it.
+        ex.Which.Status.Detail.Should().NotContain("does not match any declared scalar property");
+        _registry.Get("Widget").Should().BeNull();
+    }
+
+    // Both registration guards run over request.RootType AND request.Dependents — the loop at
+    // RegisterAsync's head covers both. The two tests below are the DEPENDENT arm: restricting
+    // either guard to request.RootType alone passes every other test in this suite.
+    [Fact]
+    public async Task RegisterAsync_WithADependentDeclaringATenantField_ThrowsInvalidArgument()
+    {
+        var dependent = SimpleType("Author", "Name");
+        dependent.TenantField = "TenantId";
+
+        var request = new SchemaRequest
+        {
+            RootType = SimpleType("Article", "Title"),
+            Dependents = { dependent }
+        };
+
+        var act = () => _sut.RegisterAsync(request, CancellationToken.None);
+
+        var ex = await act.Should().ThrowAsync<RpcException>();
+        ex.Which.StatusCode.Should().Be(StatusCode.InvalidArgument);
+        ex.Which.Status.Detail.Should().Contain("tenant_field is no longer accepted");
+        ex.Which.Status.Detail.Should().Contain("'Author'");
+        // Phase 1 validates every type before any registry write, so a bad dependent registers
+        // nothing at all — not even the legal root that precedes it.
+        _registry.Get("Article").Should().BeNull();
+    }
+
+    [Fact]
+    public async Task RegisterAsync_WithADependentPropertyNamedLikeTheServerOwnedTenantColumn_ThrowsInvalidArgument()
+    {
+        var dependent = SimpleType("Author", "Name");
+        dependent.Properties.Add(new PropertyDescriptor
+            { Name = SchemaDescriptor.TenantColumnName, ClrType = ClrType.ClrString });
+
+        var request = new SchemaRequest
+        {
+            RootType = SimpleType("Article", "Title"),
+            Dependents = { dependent }
+        };
+
+        var act = () => _sut.RegisterAsync(request, CancellationToken.None);
+
+        var ex = await act.Should().ThrowAsync<RpcException>();
+        ex.Which.StatusCode.Should().Be(StatusCode.InvalidArgument);
+        ex.Which.Status.Detail.Should().StartWith("Property '__TenantId' on 'Author'");
+        ex.Which.Status.Detail.Should().Contain("reserved server-owned column name");
+        _registry.Get("Article").Should().BeNull();
+    }
+
+    [Fact]
     public async Task RegisterAsync_WithNonStringOwnerFieldSqlType_ThrowsInvalidArgument()
     {
         var td = new TypeDescriptor { TypeName = "Widget" };

@@ -441,9 +441,18 @@ public class NavPropertyRejectedScenarioTests
     [Fact]
     public void JudgeCollision_RejectedForAnUnrelatedReason_FailsTheMessageAssertion_EvenThoughStatusCodeMatches()
     {
+        // The message must be one the SERVER CAN ACTUALLY PRODUCE for this fixture, or the
+        // premise "rejected for an unrelated reason" is fictional and the test grades nothing real.
+        // This is SchemaRegistrationOrchestrator's key-must-be-UUID rejection verbatim — a check
+        // that runs BEFORE the collision loop, so it genuinely can pre-empt it. (It replaces an
+        // invented "'Id' is not a valid identifier" message: that is not the orchestrator's
+        // ValidateIdentifier format, and 'Id' is a VALID identifier, so no server could emit it.)
         var caught = new RpcException(new Status(
             StatusCode.InvalidArgument,
-            $"Key property 'Id' on '{ManyToOneFixture.TypeName}' is not a valid identifier."));
+            $"Key property 'Id' on '{ManyToOneFixture.TypeName}' has SQL type 'TEXT', but a key column " +
+            "must be UUID. Declare the key as a GUID/UUID-typed property in your client model " +
+            "(.NET: Guid; Java: UUID; Python: uuid.UUID; Go: add the `iverson_guid:\"true\"` struct " +
+            "tag; TypeScript: add the @IversonGuid() decorator)."));
         var results = new[] { (ManyToOneFixture, (RpcException?)caught) };
 
         var assertions = NavPropertyRejectedScenario.JudgeCollision(results);

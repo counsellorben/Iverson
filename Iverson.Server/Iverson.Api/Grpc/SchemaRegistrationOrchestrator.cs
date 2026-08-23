@@ -100,14 +100,19 @@ public sealed class SchemaRegistrationOrchestrator(
             // OneToMany is exempt: its foreign key is a column on the RELATED type's row.
             foreach (var relation in descriptor.Relations.Where(r => r.Kind != Schema.RelationKind.OneToMany))
             {
-                // ScalarColumns position: EXCLUDE __TenantId — the registration-time twin of the
-                // same lookup in RelationValidator.ValidateSingleRelation, and it must give the same
-                // answer. Not merely cosmetic: WITHOUT the exclusion this lookup does resolve the
-                // server-owned column, and the relation then falls through to the requiredSqlType
-                // check below, which rejects TEXT with a message telling the caller to redeclare the
-                // property as a GUID. That message is wrong — the caller may not address this column
-                // at all, so no redeclaration would help. Excluding it here makes the relation fail
-                // as "not a declared property", which is the accurate answer.
+                // ScalarColumns position: EXCLUDE __TenantId. UNREACHABLE BY CONSTRUCTION from this
+                // path — RejectReservedTenantName, run above on the inbound typeDesc before
+                // BuildDescriptor, already rejects any relation whose ForeignKey is __TenantId, so
+                // no registration can reach this lookup with that name and no test can discriminate
+                // the clause. It is kept deliberately, NOT dead code to delete: this lookup must
+                // answer IDENTICALLY to its live twin in RelationValidator.ValidateSingleRelation,
+                // which IS still reachable (SchemaRegistry.LoadAsync rehydrates descriptors without
+                // re-running BuildDescriptor or the guard above) and IS still covered by a test.
+                // Delete it here and the twins diverge; then any future change that reorders or
+                // removes the upfront guard silently restores the original defect — the lookup
+                // resolves the server-owned column, the relation falls through to the requiredSqlType
+                // check below, and the caller is told to redeclare as a GUID a column it never
+                // declared and cannot address.
                 var column = descriptor.ScalarColumns.FirstOrDefault(c =>
                     !SchemaDescriptor.IsTenantColumn(c.Name) &&
                     string.Equals(c.Name, relation.ForeignKey, StringComparison.OrdinalIgnoreCase));
@@ -420,10 +425,6 @@ public sealed class SchemaRegistrationOrchestrator(
         return target;
     }
 
-    // Used by owner_field (optional) only — tenant_field is no longer a field reference at all,
-    // it is rejected outright by RejectDeclaredTenantField. owner_field must name a scalar
-    // property that resolves to a real column, is string-valued (Qdrant filtering requires
-    // it), and does not collide with a reserved chunk-payload key.
     /// <summary>
     /// The server owns the tenant boundary outright: SchemaBuilder injects
     /// <see cref="SchemaDescriptor.TenantColumnName"/> into every descriptor and the acting
@@ -443,12 +444,26 @@ public sealed class SchemaRegistrationOrchestrator(
     }
 
     /// <summary>
-    /// Rejects a client that declares a property, key or relation foreign key named
-    /// <see cref="SchemaDescriptor.TenantColumnName"/>. Without this the name collides with the
-    /// server's injected column: on a table that does not yet exist that is a loud duplicate-column
-    /// DDL failure, but on an ALREADY-CREATED table PostgresSchemaManager skips the ADD, so
-    /// registration SUCCEEDS carrying two identically-named ColumnDescriptors and the client's own
-    /// property silently never round-trips and is invisible in GetSchema.
+    /// Rejects a client that declares a property, key, relation foreign key or
+    /// <c>authorization.owner_field</c> named <see cref="SchemaDescriptor.TenantColumnName"/>.
+    /// Without this the name collides with the server's injected column: on a table that does not
+    /// yet exist that is a loud duplicate-column DDL failure, but on an ALREADY-CREATED table
+    /// PostgresSchemaManager skips the ADD, so registration SUCCEEDS carrying two identically-named
+    /// ColumnDescriptors and the client's own property silently never round-trips and is invisible
+    /// in GetSchema.
+    /// <para>
+    /// The owner_field arm is NOT covered by <see cref="ValidateFieldReference"/>: that check runs
+    /// on the BUILT descriptor, where SchemaBuilder has just injected __TenantId as a TEXT scalar,
+    /// so the name resolves to a real column and passes the string-valued allow-list. Reading the
+    /// code downstream, the consequence is a schema whose ownership dimension is aimed at the
+    /// tenant column: RowFieldAuthorizationEvaluator copies owner_field into
+    /// AuthorizationDecision.OwnerFieldName verbatim, and EnforceWriteAuthorization's create branch
+    /// then force-sets the tenant column and immediately overwrites it via
+    /// SetAuthoritativeField(payload, "__TenantId", decision.OwnerValue!) — the acting user's
+    /// subject claim lands in the tenant column, which PostgresSchemaManager's RLS policy compares
+    /// to current_setting('app.tenant_id'). (That last step is derived from the code, not observed
+    /// against a live database.) Rejecting at registration is the accurate, actionable answer.
+    /// </para>
     /// <para>
     /// Deliberately placed BEFORE <c>ValidateIdentifier</c>. A property named "__TenantId" would
     /// otherwise be rejected by the identifier pattern (which forbids a leading underscore) with a
@@ -461,13 +476,18 @@ public sealed class SchemaRegistrationOrchestrator(
     private static void RejectReservedTenantName(TypeDescriptor typeDesc)
     {
         foreach (var property in typeDesc.Properties)
-            RejectReservedTenantName(typeDesc.TypeName, property.Name, property.IsKey ? "Key property" : "Property");
+            RejectReservedTenantName(typeDesc.TypeName, property.Name, property.IsKey ? "Key property" : "Property",
+                "Rename the property");
 
         foreach (var relation in typeDesc.Relations)
-            RejectReservedTenantName(typeDesc.TypeName, relation.ForeignKey, "Relation foreign key");
+            RejectReservedTenantName(typeDesc.TypeName, relation.ForeignKey, "Relation foreign key",
+                "Rename the property");
+
+        RejectReservedTenantName(typeDesc.TypeName, typeDesc.Authorization?.OwnerField, "Owner field",
+            "Point owner_field at a property you declared");
     }
 
-    private static void RejectReservedTenantName(string typeName, string name, string label)
+    private static void RejectReservedTenantName(string typeName, string? name, string label, string remedy)
     {
         // Case-insensitive via SchemaDescriptor.IsTenantColumn — the single production definition
         // of the name — so the reservation cannot be smuggled past by re-casing.
@@ -475,10 +495,14 @@ public sealed class SchemaRegistrationOrchestrator(
 
         throw new RpcException(new Status(StatusCode.InvalidArgument,
             $"{label} '{name}' on '{typeName}' uses '{SchemaDescriptor.TenantColumnName}', which is a "
-            + "reserved server-owned column name. Rename the property; the server maintains the tenant "
+            + $"reserved server-owned column name. {remedy}; the server maintains the tenant "
             + "column itself."));
     }
 
+    // Used by owner_field (optional) only — tenant_field is no longer a field reference at all,
+    // it is rejected outright by RejectDeclaredTenantField. owner_field must name a scalar
+    // property that resolves to a real column, is string-valued (Qdrant filtering requires
+    // it), and does not collide with a reserved chunk-payload key.
     private static void ValidateFieldReference(
         SchemaDescriptor descriptor,
         string fieldName,
@@ -541,14 +565,25 @@ public sealed class SchemaRegistrationOrchestrator(
                     $"property; it is '{property.ClrType}'."));
             }
 
+            // The TenantColumn clause is UNREACHABLE BY CONSTRUCTION, and is kept for the same
+            // reason as the __TenantId exclusion on the FK lookup above rather than deleted:
+            // target.ColumnName is always a DECLARED property name (the First() lookup directly
+            // above would throw otherwise), and RejectReservedTenantName rejects a declared
+            // property named __TenantId before BuildDescriptor ever runs. It is the standing
+            // statement that an enrichment target may never be the tenant column — the property
+            // that keeps this check correct if the reserved-name guard is ever reordered or the
+            // tenant column ever becomes client-addressable again. The user-facing message names
+            // only the two things a caller can still actually collide with: tenant_field is no
+            // longer accepted at all (RejectDeclaredTenantField), so naming it in the remedy would
+            // point the caller at a field that no longer exists.
             if (property.IsKey ||
                 string.Equals(target.ColumnName, descriptor.TenantColumn, StringComparison.OrdinalIgnoreCase) ||
                 (!string.IsNullOrEmpty(ownerField) &&
                  string.Equals(target.ColumnName, ownerField, StringComparison.OrdinalIgnoreCase)))
             {
                 throw new RpcException(new Status(StatusCode.InvalidArgument,
-                    $"Enrichment target '{target.ColumnName}' on '{descriptor.TypeName}' cannot be the key, " +
-                    "tenant_field, or owner_field."));
+                    $"Enrichment target '{target.ColumnName}' on '{descriptor.TypeName}' cannot be the key " +
+                    "or owner_field."));
             }
 
             if (property.IsEmbedding || property.IsChunk)

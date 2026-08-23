@@ -179,10 +179,11 @@ internal static class SchemaBuilder
         // so it physically exists in every downstream schema (Postgres table, StarRocks table,
         // engagement query schema, Qdrant payload index) and so TenantColumn always names a real
         // column. TEXT and NOT NULL are both load-bearing:
-        //  * TEXT — SchemaRegistrationOrchestrator.ValidateFieldReference runs for the tenant field
-        //    on EVERY registration and rejects any SqlType outside TEXT/UUID/BYTEA/TIMESTAMPTZ, so
-        //    a wrong type would break registration globally; and PostgresSchemaManager's RLS policy
-        //    compares this column to current_setting('app.tenant_id'), a text comparison.
+        //  * TEXT — PostgresSchemaManager's RLS policy compares this column to
+        //    current_setting('app.tenant_id', true), a text comparison, so a non-text column would
+        //    make the policy fail closed. (Until Task 4 this comment also cited
+        //    SchemaRegistrationOrchestrator.ValidateFieldReference's string-valued allow-list; that
+        //    call ran on tenant_field and was deleted, so it no longer applies here.)
         //  * NOT NULL — the write path's silent-overwrite case must fail loudly with a constraint
         //    violation rather than orphan a row behind RLS with no tenant.
         scalars.Add(new ColumnDescriptor(SchemaDescriptor.TenantColumnName, "TEXT", false));

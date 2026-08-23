@@ -422,10 +422,13 @@ public sealed class AuthorizationFieldMaskingTests
     [Fact]
     public void EnforceWriteAuthorization_DeniedCallerSmugglingTheTenantColumn_StillGetsInvalidArgument()
     {
-        // Ruling 17: the check is a malformed-request check independent of identity, so it runs
-        // BEFORE authEvaluator.Evaluate. Placed after it, this caller would get PermissionDenied
-        // and the malformed field would be masked entirely — making the InvalidArgument contract
-        // conditional on authorization.
+        // Ruling 17 (as corrected by Ruling 21): the check is a malformed-request check independent
+        // of identity, so it runs BEFORE THE PermissionDenied THROW — not merely "before
+        // authEvaluator.Evaluate", which does not throw and therefore pins nothing: a mutation
+        // moving the check to sit between Evaluate and the throw survives the entire suite. THIS
+        // test is falsified only by sinking the check below the throw, after which this caller
+        // gets PermissionDenied and the malformed field is masked entirely — making the
+        // InvalidArgument contract conditional on authorization.
         var payload = new Struct
         {
             Fields =

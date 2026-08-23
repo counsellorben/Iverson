@@ -61,9 +61,11 @@ public class ServerOwnedTenantColumnTests
     public void BuildDescriptor_TenantColumn_IsTextAndNotNull()
     {
         // Both halves are load-bearing, hence one assertion each rather than a shape check:
-        //  * TEXT — SchemaRegistrationOrchestrator.ValidateFieldReference runs for the tenant field
-        //    on EVERY registration and rejects any SqlType outside TEXT/UUID/BYTEA/TIMESTAMPTZ, and
-        //    PostgresSchemaManager's RLS predicate compares the column to a text current_setting.
+        //  * TEXT — PostgresSchemaManager's RLS policy (PostgresSchemaManager.cs:139) compares this
+        //    column to current_setting('app.tenant_id', true), a text comparison; a non-text column
+        //    would make the policy fail closed. (The ValidateFieldReference reason this comment used
+        //    to give is gone: Task 4 deleted the tenant_field call, so that check now runs for
+        //    owner_field only and never sees this column.)
         //  * NOT NULL — so the silent-overwrite path introduced in Task 2 fails loudly with a
         //    constraint violation instead of orphaning a row behind RLS.
         var descriptor = SchemaBuilder.BuildDescriptor(ArticleType(), Embedding());

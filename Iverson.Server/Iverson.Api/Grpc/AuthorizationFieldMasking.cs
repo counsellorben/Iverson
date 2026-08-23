@@ -38,11 +38,17 @@ internal static class AuthorizationFieldMasking
         var auditAction = existingRowJson is null ? "Create" : "Update";
         var resourceKey = StructFieldAccess.GetFieldString(payload, schema.KeyColumn.Name);
 
-        // FIRST, before Evaluate. Decision 5: the server-owned tenant column is rejected on the
-        // way in, never silently overwritten. This is a MALFORMED-REQUEST check and is independent
-        // of identity, so it must not be reachable only for authorized callers — placed after
-        // Evaluate, an unauthorized caller smuggling the column would get PermissionDenied, which
-        // masks the malformed field entirely and makes the InvalidArgument contract conditional on
+        // FIRST — and the required position is BEFORE THE PermissionDenied THROW below, not
+        // merely "before Evaluate": authEvaluator.Evaluate does not throw, so moving this check to
+        // sit between Evaluate and the `if (decision.Denied)` block is behaviourally identical and
+        // no test can tell the difference (a mutation doing exactly that survives the whole suite).
+        // Only sinking it BELOW the throw changes behaviour, and that is what
+        // EnforceWriteAuthorization_DeniedCallerSmugglingTheTenantColumn_StillGetsInvalidArgument
+        // pins. Decision 5: the server-owned tenant column is rejected on the way in, never
+        // silently overwritten. This is a MALFORMED-REQUEST check and is independent of identity,
+        // so it must not be reachable only for authorized callers — placed after the throw, an
+        // unauthorized caller smuggling the column would get PermissionDenied, which masks the
+        // malformed field entirely and makes the InvalidArgument contract conditional on
         // authorization.
         // Distinct from the tenant-immutability check further down, which compares a DECLARED
         // tenant field's value and runs on the update branch only; this one is unconditional and

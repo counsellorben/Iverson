@@ -668,8 +668,12 @@ type TypeDescriptor struct {
 	Properties    []*PropertyDescriptor  `protobuf:"bytes,2,rep,name=properties,proto3" json:"properties,omitempty"`
 	Relations     []*RelationDescriptor  `protobuf:"bytes,3,rep,name=relations,proto3" json:"relations,omitempty"`
 	Authorization *AuthorizationRules    `protobuf:"bytes,4,opt,name=authorization,proto3" json:"authorization,omitempty"`
-	TenantField   string                 `protobuf:"bytes,5,opt,name=tenant_field,json=tenantField,proto3" json:"tenant_field,omitempty"` // REQUIRED; names a declared scalar property holding the row's tenant id
-	Description   string                 `protobuf:"bytes,6,opt,name=description,proto3" json:"description,omitempty"`                    // type-level [IversonDescription] text; empty = none
+	// RESERVED — do NOT set. The server owns the tenant column outright and derives a row's
+	// tenant from the acting user's identity; a registration carrying a non-empty tenant_field
+	// is rejected with InvalidArgument. The field number stays declared for wire compatibility
+	// with clients built before the cutover.
+	TenantField   string `protobuf:"bytes,5,opt,name=tenant_field,json=tenantField,proto3" json:"tenant_field,omitempty"`
+	Description   string `protobuf:"bytes,6,opt,name=description,proto3" json:"description,omitempty"` // type-level [IversonDescription] text; empty = none
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
