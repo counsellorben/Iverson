@@ -221,11 +221,29 @@ public class IdentityScenarioTests
     }
 
     [Fact]
-    public void JudgeTenantDerivation_TheGrpcControl_CarriesNoRequirementId()
+    public void JudgeTenantDerivation_TheGrpcControl_CitesIdn004AndNotIdn003()
     {
-        Named(JudgeHappy(), "does not carry the server-owned tenant column").RequirementId.Should().BeNull(
-            "the gRPC-absent half grades the server's OUTBOUND STRIP, not IVC-IDN-003's statement; " +
-            "citing it here would silently widen the requirement to own a rule it does not state");
+        Named(JudgeHappy(), "does not carry the server-owned tenant column").RequirementId.Should()
+            .Be(Requirements.IdnServerTenantColumnAbsentFromReadBack,
+                "the gRPC-absent half grades the server's OUTBOUND STRIP — an EMISSION claim, which " +
+                "is IVC-IDN-004 — and NOT IVC-IDN-003's DERIVATION statement; citing IVC-IDN-003 " +
+                "here would silently widen that requirement to own a rule it does not make");
+
+        Named(JudgeHappy(), "does not carry the server-owned tenant column").RequirementId.Should()
+            .NotBe(Requirements.IdnTenancyDerivedAndEnforced);
+    }
+
+    /// <summary>
+    /// IVC-IDN-004 must reach the cell, not merely exist as a const. Ruling 28 authored it because
+    /// an assertion already observed the strip on every run while the standard recorded the area as
+    /// Deferred — "no assertion observes it" — which was factually false. If this citation ever
+    /// stops reaching a cell, the standard goes back to describing coverage it does not have.
+    /// </summary>
+    [Fact]
+    public void JudgeTenantDerivation_Idn004_IsCitedByExactlyOneAssertion()
+    {
+        JudgeHappy().Count(a => a.RequirementId == Requirements.IdnServerTenantColumnAbsentFromReadBack)
+            .Should().Be(1, "one observation, one emission claim graded from it");
     }
 
     [Fact]
@@ -246,6 +264,29 @@ public class IdentityScenarioTests
             "the driver's TenantId property exists to prove a user column with that name does NOT feed " +
             "the tenant boundary; a server that overwrote it is exactly the leak it guards");
         Named(assertions, "stayed in the client's own column").RequirementId.Should().Be("IVC-IDN-003");
+    }
+
+    /// <summary>
+    /// RULING 16's control, stated at its sharpest: the leak clause
+    /// (<c>storedTenant != WrongTenantValue</c>) is what makes this assertion say "the client's
+    /// value became the row's tenant" rather than merely "the client's column still holds it".
+    /// Deleting that clause survives every other test in this file, because no other fixture ever
+    /// puts the wrong value in BOTH columns at once — a COPY rather than a move, which is exactly
+    /// what a server that took the client's word for it would produce. The cell reddens either way
+    /// (the derivation assertion beside it fails too), so this is cell-equivalent — but the mutant
+    /// loses the DIAGNOSIS, and the diagnosis is the whole reason this control exists.
+    /// </summary>
+    [Fact]
+    public void JudgeTenantDerivation_TheClientsValueBecameTheRowsTenantToo_TheNegativeControlFails()
+    {
+        var assertions = JudgeHappy(observation: Derived(
+            storedTenant: IdentityScenario.WrongTenantValue,
+            storedUserColumn: IdentityScenario.WrongTenantValue));
+
+        Named(assertions, "stayed in the client's own column").Passed.Should().BeFalse(
+            "the client's value sitting in BOTH columns is the server having COPIED it into the " +
+            "tenant boundary — the precise leak this negative control exists to name, and it is " +
+            "invisible to a check that only looks at the client's own column");
     }
 
     [Fact]

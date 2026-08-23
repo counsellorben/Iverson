@@ -259,9 +259,16 @@ public static class Requirements
     /// time during Task 4's reviews; the per-site assertions are what make a seventh site's absence
     /// visible rather than assumed.</para>
     ///
-    /// <para>Orchestrator-side for the same reason as
-    /// <see cref="RegDeclaredTenantFieldRejected"/>: no client declaration style can name a member
-    /// <c>__TenantId</c>, so the driver channel could not falsify this requirement.</para>
+    /// <para><b>Orchestrator-side BY CHOICE — NOT for the same reason as
+    /// <see cref="RegDeclaredTenantFieldRejected"/>.</b> That one is orchestrator-side by
+    /// NECESSITY: no driver can emit a populated <c>tenant_field</c>. This one could be tripped by
+    /// a client — <c>__TenantId</c> is a legal member name in C#, Java and TypeScript, a user can
+    /// literally type it, and that is precisely why the server guard exists. The driver channel is
+    /// the wrong place for it on cost and blast radius: the harness's five driver model sets are
+    /// SHARED across every scenario, so poisoning one to trip a registration guard would break
+    /// every other scenario registering that type — six sites x five languages = thirty new models
+    /// to observe one server rule identical for every caller. An earlier draft of this paragraph
+    /// asserted necessity; that was false and is corrected here.</para>
     /// </summary>
     public const string RegReservedTenantColumnNameRejected = "IVC-REG-005";
 
@@ -454,17 +461,16 @@ public static class Requirements
     /// five languages spell the same code five ways.</description></item>
     /// </list>
     ///
-    /// <para><b>The conjoined control, and what it deliberately does NOT cite.</b> Beside the two
+    /// <para><b>The conjoined control, and why it cites a DIFFERENT requirement.</b> Beside the two
     /// derivation assertions, <c>JudgeTenantDerivation</c> also asserts that the orchestrator's own
     /// gRPC read of the SAME row does not carry <c>__TenantId</c> at all. That is what proves the
     /// Postgres probe is reading something gRPC genuinely cannot see — a Postgres-only assertion
-    /// could not otherwise distinguish "the server derived it" from "the client sent it". It is
-    /// UNCITED on purpose: it grades the server's outbound strip, which is a different claim from
-    /// this Statement, and citing it here would quietly widen this requirement to cover a rule it
-    /// does not state. No requirement in the standard owns the outbound strip today; the gap is
-    /// recorded as a Deferred area in the IDN coverage ledger rather than absorbed here. The
-    /// control still binds — it lives in the same cell, so the cell goes red if the strip
-    /// regresses.</para>
+    /// could not otherwise distinguish "the server derived it" from "the client sent it". It does
+    /// NOT cite this requirement: it grades the server's outbound strip, which is a different claim
+    /// from this Statement, and citing it here would quietly widen this requirement to cover a rule
+    /// it does not state. It cites <see cref="IdnServerTenantColumnAbsentFromReadBack"/> instead.
+    /// One observation, two claims graded from it, in one cell — which is why the cell goes red if
+    /// either the derivation or the strip regresses.</para>
     ///
     /// <para><b>What the enforcement half cannot distinguish.</b> The server answers several
     /// distinct refusals on this path with the SAME status (7) and the SAME message, and sets no
@@ -475,6 +481,38 @@ public static class Requirements
     /// Deferred row in the standard's IDN coverage ledger.</para>
     /// </summary>
     public const string IdnTenancyDerivedAndEnforced = "IVC-IDN-003";
+
+    /// <summary>
+    /// A row read back through any mapped path carries no server-owned tenant column. Discharged by
+    /// the THIRD assertion in <c>IdentityScenario.JudgeTenantDerivation</c>: the orchestrator's own
+    /// gRPC read of the very row the Postgres probe found <c>__TenantId</c> in must come back with
+    /// no field matching that name, compared case-INSENSITIVELY so a re-cased <c>__tenantid</c>
+    /// cannot satisfy it.
+    ///
+    /// <para><b>Why this is its own ID and not a clause of
+    /// <see cref="IdnTenancyDerivedAndEnforced"/>.</b> That requirement states a DERIVATION —
+    /// where a row's tenant comes from. This one states an EMISSION — what the server may put on
+    /// the wire. They are graded from one observation and share a cell, but they fail for different
+    /// reasons and have different remedies: a server that derived the tenant correctly and then
+    /// leaked the column satisfies IVC-IDN-003 and violates this. Citing the strip assertion from
+    /// IVC-IDN-003 would have widened that requirement to own a rule its Statement does not make;
+    /// the alternative actually taken before this ID existed — leaving the assertion UNCITED and
+    /// the area <c>Deferred</c> — was worse still, because <c>Deferred</c> in this standard means
+    /// "no assertion observes it", and one does, on every run.</para>
+    ///
+    /// <para><b>Scope is the wire, and nothing wider.</b> The Statement says a MAPPED READ-BACK,
+    /// because that is exactly what the assertion observes. It makes no claim about
+    /// <c>GetSchema</c>, about search projections, or about any other outbound surface. A Statement
+    /// worded "every outbound path" would be a claim no assertion in this harness discharges, which
+    /// is the precise defect the coverage ledger exists to surface.</para>
+    ///
+    /// <para><b>No client can affect this one.</b> It is a server-emission claim on an axis whose
+    /// other server-side claim (IVC-IDN-003's derivation half) set the precedent. It is authored
+    /// anyway because every client-facing tenancy claim rests on the strip holding: were it to
+    /// regress, every driver in every language would start receiving a column it must never
+    /// see.</para>
+    /// </summary>
+    public const string IdnServerTenantColumnAbsentFromReadBack = "IVC-IDN-004";
 
     // ── SCH — Schema ────────────────────────────────────────────────────────────────────────
 

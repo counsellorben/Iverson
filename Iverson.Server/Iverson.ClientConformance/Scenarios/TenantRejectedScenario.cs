@@ -15,18 +15,30 @@ namespace Iverson.ClientConformance.Scenarios;
 /// six name-bearing positions on <c>TypeDescriptor</c> is rejected.</description></item>
 /// </list>
 ///
-/// <para><b>Why no driver runs here, and why that is not a hole.</b> No conformance driver can
-/// produce either request. Four clients omit <c>tenant_field</c> entirely and TypeScript sends the
-/// proto default <c>""</c> (ts-proto types it as required), which the guard treats as absent; and
-/// no client declaration style can name a member <c>__TenantId</c> — .NET and Java derive names
-/// from CLR members, and Go/Python/TypeScript would fail their own identifier checks first. A
-/// requirement graded through the driver channel would therefore be unfalsifiable BY CONSTRUCTION,
-/// which is the precise defect the coverage gate exists to prevent. So this scenario hand-builds
-/// raw <c>TypeDescriptor</c>s in orchestrator-side C# and posts them to <c>RegisterSchema</c>
-/// directly — the mechanism <see cref="NamingRejectedScenario"/> and
+/// <para><b>Why no driver runs here — and the two rules get there by DIFFERENT routes.</b></para>
+///
+/// <para><c>IVC-REG-004</c> is orchestrator-side BY NECESSITY. No conformance driver can produce a
+/// request that declares a tenant field: four clients omit <c>tenant_field</c> entirely and
+/// TypeScript sends the proto default <c>""</c> (ts-proto types it as required), which the guard
+/// treats as absent. A requirement graded through the driver channel would be unfalsifiable BY
+/// CONSTRUCTION, which is the precise defect the coverage gate exists to prevent.</para>
+///
+/// <para><c>IVC-REG-005</c> is orchestrator-side BY CHOICE, and the distinction matters — an
+/// earlier draft of this comment claimed necessity and was FALSE. <c>__TenantId</c> IS a legal
+/// member name in C#, Java and TypeScript: a user can literally type it, which is exactly why the
+/// server guard has to exist. What makes the driver channel the wrong place for it is cost and
+/// blast radius, not impossibility: the harness's five driver model sets are SHARED across every
+/// scenario, so poisoning one to trip a registration guard would break every other scenario that
+/// registers that type — grading the six sites through the driver channel would mean six new
+/// fixture types in five languages, thirty models, to observe one server rule that is identical for
+/// every caller. See <c>docs/standards/iverson-client-standard.md</c>, which states this
+/// correctly.</para>
+///
+/// <para>So this scenario hand-builds raw <c>TypeDescriptor</c>s in orchestrator-side C# and posts
+/// them to <c>RegisterSchema</c> directly — the mechanism <see cref="NamingRejectedScenario"/> and
 /// <see cref="NavPropertyRejectedScenario"/> already use — grading the SERVER's rule without
-/// needing any client to be able to express the violation. That is the right channel rather than a
-/// compromise: both rules exist to defend against STALE CLIENT BUILDS and hand-rolled callers.
+/// needing any client to express the violation. For both rules that is the right channel rather
+/// than a compromise: they exist to defend against STALE CLIENT BUILDS and hand-rolled callers.
 ///
 /// <para><b>One real observation, rendered once.</b> As in
 /// <see cref="NavPropertyRejectedScenario"/>, no client library is involved at all, so only one

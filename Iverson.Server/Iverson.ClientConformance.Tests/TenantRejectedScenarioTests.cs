@@ -202,6 +202,19 @@ public class TenantRejectedScenarioTests
         // stays cited (Check2 reads source text, not the call graph) and the matrix goes green.
         cell.Assertions.Should().Contain(a => a.RequirementId == Requirements.RegDeclaredTenantFieldRejected,
             "IVC-REG-004's judgement must actually reach the cell, not merely exist as a method");
+
+        // THE ONLY SURVIVOR BOTH GATES MISS. Deleting the six per-site
+        // ErrRegistrationRejectionIsInvalidArgument assertions from JudgeReservedNames passes the
+        // whole suite AND would pass the live untouched-requirement gate, because that const is
+        // still cited by JudgeDeclaredTenantField above and by three other scenarios — so neither
+        // Check2 (source text) nor Program.cs's UntouchedRequirementIds (per-ID touch tracking) can
+        // see six of its seven citations here vanish. A COUNT is the only thing that can: one per
+        // reserved-name site, plus exactly one from the tenant_field arm.
+        cell.Assertions.Count(a => a.RequirementId == Requirements.ErrRegistrationRejectionIsInvalidArgument)
+            .Should().Be(TenantRejectedScenario.ReservedNameFixtures.Count + 1,
+                "each of the six reserved-name arms must grade the status code on its own — if the "
+                + "server ever answered a reserved-name rejection with something other than "
+                + "InvalidArgument, six arms would otherwise stop observing it silently");
     }
 
     /// <summary>

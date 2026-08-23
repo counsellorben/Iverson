@@ -25,10 +25,11 @@ namespace Iverson.ClientConformance.Tests;
 ///    that follow it from checks 1 and 3).
 /// 4. Every authored axis's `#### Coverage` ledger must bind its claimed areas to that axis's
 ///    `Active` requirements bidirectionally: every Active requirement must be claimed by exactly
-///    one Covered area, every Covered/Deferred row must be well-formed and cite only existing,
-///    Active, same-axis IDs, and an axis with at least one Active requirement must have a
-///    `#### Coverage` table at all (see <see cref="CoverageTableParser"/> and
-///    <c>ComputeCoverageFailures</c> below for the six failure modes enforced).
+///    one Covered area — NOT merely at least one; two areas claiming the same ID is Mode 7 —
+///    every Covered/Deferred row must be well-formed and cite only existing, Active, same-axis
+///    IDs, and an axis with at least one Active requirement must have a `#### Coverage` table at
+///    all (see <see cref="CoverageTableParser"/> and <c>ComputeCoverageFailures</c> below for the
+///    seven failure modes enforced).
 /// </summary>
 public class RequirementsCoverageGateTests
 {
@@ -257,7 +258,13 @@ public class RequirementsCoverageGateTests
             }
         }
 
-        var claimedByAxis = new Dictionary<string, HashSet<string>>();
+        // axis -> requirement ID -> the Covered areas that claimed it. A LIST, not a set of IDs:
+        // Check4's contract is EXACTLY ONE Covered area per Active requirement (Mode 7 below), and a
+        // HashSet<string> of IDs could only ever enforce AT LEAST ONE. That distinction is
+        // load-bearing, not pedantic — it is the only MECHANICAL thing stopping a second area from
+        // being labelled `Covered | <some existing ID>` and quietly widening that requirement to
+        // cover a rule its Statement does not make (Ruling 14's caveat, Ruling 32).
+        var claimedByAxis = new Dictionary<string, Dictionary<string, List<string>>>();
 
         foreach (var row in coverage.Rows)
         {
@@ -296,7 +303,7 @@ public class RequirementsCoverageGateTests
 
             if (!claimedByAxis.TryGetValue(row.Axis, out var claimed))
             {
-                claimed = new HashSet<string>();
+                claimed = new Dictionary<string, List<string>>();
                 claimedByAxis[row.Axis] = claimed;
             }
 
@@ -326,20 +333,39 @@ public class RequirementsCoverageGateTests
                     continue;
                 }
 
-                claimed.Add(id);
+                if (!claimed.TryGetValue(id, out var claimants))
+                {
+                    claimants = new List<string>();
+                    claimed[id] = claimants;
+                }
+
+                claimants.Add(row.Area);
             }
         }
 
-        // Mode 5: an Active requirement claimed by no area.
+        // Modes 5 and 7: every Active requirement is claimed by EXACTLY ONE Covered area — Mode 5
+        // catches zero, Mode 7 catches two or more.
         foreach (var (axis, ids) in activeByAxis)
         {
-            var claimed = claimedByAxis.TryGetValue(axis, out var c) ? c : new HashSet<string>();
+            var claimed = claimedByAxis.TryGetValue(axis, out var c)
+                ? c
+                : new Dictionary<string, List<string>>();
 
             foreach (var id in ids)
             {
-                if (!claimed.Contains(id))
+                if (!claimed.TryGetValue(id, out var claimants) || claimants.Count == 0)
                 {
                     failures.Add($"'{id}' (axis '{axis}') is Active but claimed by no Covered area");
+                    continue;
+                }
+
+                if (claimants.Count > 1)
+                {
+                    failures.Add(
+                        $"'{id}' (axis '{axis}') is claimed by {claimants.Count} Covered areas "
+                        + $"({string.Join("; ", claimants.Select(a => $"'{a}'"))}), but a requirement must be "
+                        + "claimed by exactly one — a second area claiming it widens the requirement to cover "
+                        + "a rule its Statement does not make. Author a requirement of its own for the second area.");
                 }
             }
         }

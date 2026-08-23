@@ -356,7 +356,16 @@ public sealed class CrudRoundtripScenario(
         return step.Ok ? step : null;
     }
 
-    private static CapturedDescriptor? TakeDescriptor(
+    /// <summary>
+    /// Internal, not private, so <c>CrudRoundtripScenarioTests</c> can prove the
+    /// <c>Verifier.VerifyRegistration</c> call BELOW actually reaches a cell. That call is the sole
+    /// citation site for IVC-DECL-001/003/006 and IVC-REL-001/002/003/004/010: deleting it leaves
+    /// every one of those consts still cited in <c>Verifier.cs</c> source, so the coverage gate's
+    /// Check2 — which reads SOURCE TEXT, not the call graph — stays green while seven requirements
+    /// silently stop grading anything. That is exactly the hole MU-R4 found next door in
+    /// <c>TenantRejectedScenario</c>.
+    /// </summary>
+    internal static CapturedDescriptor? TakeDescriptor(
         LanguageState state, PhaseDocument document, string stepName, string label,
         IReadOnlyCollection<RelationKind> expectedRelationKinds)
     {
@@ -385,7 +394,13 @@ public sealed class CrudRoundtripScenario(
 
     // ── the three-way comparison ─────────────────────────────────────────────────────────────
 
-    private async Task<ObservedTitle> CompareAsync(
+    /// <summary>
+    /// Internal for the same reason as <see cref="TakeDescriptor"/>: the
+    /// <c>Verifier.VerifyRelationHydrated</c> loop inside is the ONLY citation site for
+    /// IVC-REL-006 and IVC-REL-008 anywhere in the orchestrator, so dropping it removes both
+    /// requirements from every cell without reddening the gate.
+    /// </summary>
+    internal async Task<ObservedTitle> CompareAsync(
         LanguageState state,
         string language,
         CapturedDescriptor captured,
@@ -520,11 +535,11 @@ public sealed class CrudRoundtripScenario(
 
     private static string Describe(Exception ex) => $"{ex.GetType().Name}: {ex.Message}";
 
-    private sealed record CapturedDescriptor(TypeDescriptor Descriptor, JsonElement Json);
+    internal sealed record CapturedDescriptor(TypeDescriptor Descriptor, JsonElement Json);
 
-    private readonly record struct ObservedTitle(string? Value);
+    internal readonly record struct ObservedTitle(string? Value);
 
-    private sealed class LanguageState : ILanguageState
+    internal sealed class LanguageState : ILanguageState
     {
         public List<Assertion> Assertions { get; } = [];
         public CapturedDescriptor? Article { get; set; }

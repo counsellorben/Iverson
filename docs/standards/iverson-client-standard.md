@@ -351,6 +351,7 @@ implemented requirement.
 | IVC-IDN-001 | Active | Behaviour | A client carries the service identity and the acting-user identity as two distinct credentials on one call, and a mapped write carrying both is accepted |
 | IVC-IDN-002 | Active | Behaviour | A row written under an acting user is readable back by that same acting user through the mapped read path, carrying the owner identity that acting user propagated |
 | IVC-IDN-003 | Active | Behaviour | The server derives a row's tenant from the acting-user identity rather than from the write payload, and denies an acting user of another tenant who attempts to write that row |
+| IVC-IDN-004 | Active | Behaviour | A row read back through any mapped path carries no server-owned tenant column |
 
 `IVC-IDN-001` is the two-credential claim every other axis silently rests on. The service identity
 rides in `authorization` and carries the scopes (`admin`, `schema_admin`) the server evaluates
@@ -417,11 +418,11 @@ client controls:
   conjoined with the orchestrator's own gRPC read of the same row, which must show `__TenantId`
   ABSENT — proof that the probe is reading something gRPC genuinely cannot see, without which a
   Postgres-only assertion could not distinguish "the server derived it" from "the client sent it".
-  That gRPC-absent half is deliberately left UNCITED: it grades the outbound strip, which is a
-  separate claim from this Statement, and letting `IVC-IDN-003` cite it would quietly widen the
-  requirement to cover a rule it does not state. A server that took the client's word for it, a
-  server that stopped injecting the column, or a client that propagated no acting user at all each
-  fail here rather than agreeing by construction with what the driver sent.
+  That gRPC-absent half does NOT grade this Statement — it grades the outbound strip, a separate
+  claim — so it cites `IVC-IDN-004` and not `IVC-IDN-003`. Letting `IVC-IDN-003` cite it would
+  quietly widen this requirement to cover a rule it does not state. A server that took the client's
+  word for it, a server that stopped injecting the column, or a client that propagated no acting
+  user at all each fail here rather than agreeing by construction with what the driver sent.
 - **Enforcement.** The orchestrator mints a SECOND acting-user token, for a different, active
   tenant (`TokenBroker.GetOtherTenantActingTokenAsync`), and passes it to every driver as
   `--wrong-acting-token`. Each driver attempts a mapped update of the row it just created while
@@ -440,17 +441,50 @@ a payload tenant differing from the caller's claim as "Tenant field is immutable
 `PermissionDenied` (7), fired for ANY caller including the right one — so a negative leg sending the
 wrong tenant would have gone green for a client that propagated its own token instead of the wrong
 one, proving nothing about identity. That check compares
-`AuthorizationDecision.TenantColumn`, which is now unconditionally `__TenantId`, against the value
-the payload carries under that name; and a payload carrying `__TenantId` is rejected outright with
-`InvalidArgument` at the top of the same method, several branches earlier. The immutability branch is
-therefore now UNREACHABLE, and the only refusal left on this leg is the tenant MISMATCH between the
-existing row's `__TenantId` and the wrong acting user's own claim — which is the refusal this
-requirement wants. What the payload's `TenantId` user column says no longer affects the outcome
-either way.
+`AuthorizationDecision.TenantColumn` against the value the payload carries under that name. For any
+type registered by a current server build that column is `__TenantId`, and a payload carrying
+`__TenantId` is rejected outright with `InvalidArgument` at the top of the same method, several
+branches earlier — so against a freshly registered type the immutability branch cannot fire.
+
+**The branch is NOT dead code.** `SchemaRegistry.LoadAsync` rehydrates pre-cutover `_iverson_schema`
+rows verbatim, with no normalisation, and those rows persisted `TenantColumn` as the CLIENT-DECLARED
+`tenant_field` name — typically `TenantId`. `SchemaDescriptor.TenantColumn` is nullable for exactly
+that reason, and only a NULL value short-circuits the evaluator. On a deployment upgraded with such
+rows still present and a type not yet re-registered, a payload carrying `TenantId` passes the
+`InvalidArgument` guard (which matches only `__TenantId`), reaches the immutability check with a
+non-null attempted tenant, and is denied with `TenantImmutable` — today. Deleting the branch would
+silently convert that denial and its audit record into a successful update.
+
+What is true HERE is narrower: the conformance harness registers its types fresh against the build
+under test, so its `TenantColumn` is always `__TenantId` and this leg is insensitive to what the
+payload's `TenantId` user column says. The only refusal left on this leg is therefore the tenant
+MISMATCH between the existing row's `__TenantId` and the wrong acting user's own claim — which is
+the refusal this requirement wants.
 
 The status code is reported and compared as the numeric gRPC code, never as a name: the five
 languages spell the same code five ways (`PermissionDenied`, `PERMISSION_DENIED`, `7`), so a
 name-based comparison would report a cross-language spelling difference as a conformance failure.
+
+`IVC-IDN-004` is a WIRE claim, and it is the only requirement in this document that constrains what
+the server may EMIT rather than what a client must do. It is at home on `IDN` by the axis's own
+precedent — `IVC-IDN-003` already grades a SERVER derivation, not a client capability — and it needs
+no tenth axis: the column it is about exists only because of the identity model this axis owns.
+
+It is graded by the third assertion in `IdentityScenario.JudgeTenantDerivation`: the orchestrator's
+own gRPC read of the same row the Postgres probe found `__TenantId` in must come back with no field
+matching that name, compared case-INSENSITIVELY so a re-cased `__tenantid` cannot satisfy it. That
+assertion is the same one that conjoins `IVC-IDN-003`'s Postgres probe — one observation, two claims
+graded from it, which is why the two requirements live in one cell — but it cites `IVC-IDN-004`
+ALONE. The scope is deliberately the wire and nothing more: it says the column is absent from a
+mapped read-back, not that it is absent from `GetSchema`, from a search projection, or from any
+other outbound surface. Widening it to "every outbound path" would make it a claim no single
+assertion observes, which is the exact defect this document's coverage ledger exists to surface.
+
+A client cannot make this requirement fail or pass — it has no lever on it. It is authored anyway
+because the strip is the guarantee every client-facing tenancy claim rests on: were it to regress,
+every driver in every language would start receiving a column it must never see, and without a
+requirement owning it the harness would observe the regression while the standard reported full
+coverage.
 
 Token acquisition, suspended and deleted tenants, and field-permission narrowing by acting-user
 role are deliberately not authored here; see the Coverage table below.
@@ -462,7 +496,7 @@ role are deliberately not authored here; see the Coverage table below.
 | Service and acting-user identities carried as two credentials on one call | Covered | IVC-IDN-001 |
 | Acting-user propagation observable in the stored row | Covered | IVC-IDN-002 |
 | Tenancy derived from the acting user and enforced against another tenant's acting user | Covered | IVC-IDN-003 |
-| The server-owned tenant column never appearing on the wire | Deferred | `IVC-IDN-003`'s derivation assertion is CONJOINED with an orchestrator-side gRPC read that must show `__TenantId` absent from the same row the Postgres probe finds it in — without that control, a Postgres-only assertion could not prove it is reading something gRPC cannot see. That assertion is deliberately UNCITED: it grades the server's outbound strip, not `IVC-IDN-003`'s Statement, and citing it would widen the requirement to cover a rule it does not state. So the strip IS exercised on every run (the cell goes red if it regresses) but no requirement in this document constrains it, and no client-side claim is made about it. Closing this needs a requirement of its own, on whichever axis owns "what the server may put on the wire" — which today is none of the nine. |
+| A mapped read-back never carrying the server-owned tenant column | Covered | IVC-IDN-004 |
 | Token acquisition | Deferred | Every client can mint a service token from a client-credentials trio, but the harness passes a pre-minted `--service-token` to all five drivers on purpose (Authentik stamps the JWT's `iss` from the request's Host header and grants scopes only when asked, neither of which a driver's own minting expresses), so no assertion observes a client's token acquisition and no requirement constrains it. |
 | Suspended and deleted tenants | Deferred | `ActingUserInterceptor` rejects an acting user whose tenant is absent, `suspended` or `deleted` with `PermissionDenied`, but the harness runs entirely inside two active tenants and provisions none, so no assertion observes a suspended or deleted tenant and no requirement constrains that path. |
 | Field-permission narrowing by acting-user role | Deferred | `RowFieldAuthorizationEvaluator` narrows writable and readable fields by the acting user's `groups` claim, but the harness registers no `FieldPermission` (the `Reregistrar` sets row permissions only), so no assertion observes field narrowing and no requirement constrains it. |

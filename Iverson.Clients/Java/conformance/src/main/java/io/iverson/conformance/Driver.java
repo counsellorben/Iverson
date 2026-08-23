@@ -560,16 +560,21 @@ public final class Driver {
                 parsedArgs.optional("--service-token"));
             IversonClient wrongClient = new IversonClient(channel, wrongCredentials);
 
-            // The update payload's tenant value no longer affects the outcome either way. It USED to: the
+            // The update payload's tenant value no longer affects the outcome on THIS leg. It USED to: the
             // server once rejected an existing row's payload tenant that differed from the caller's claim as
             // "Tenant field is immutable" — also PermissionDenied (7), fired for ANY caller including the
             // right one — so a wrong tenant here would have made this step green while proving nothing about
-            // which end user is calling. That branch now compares the SERVER-OWNED __TenantId column, which a
-            // payload may never carry (it is rejected with InvalidArgument several branches earlier), so it is
-            // unreachable. The only refusal left on this leg is the tenant MISMATCH between the existing row's
-            // __TenantId and this wrong acting user's own claim — which is the denial this step exists to
-            // observe. The acting user's real tenant is still sent here so this leg keeps sending a payload a
-            // conforming client would send.
+            // which end user is calling. That branch compares AuthorizationDecision.TenantColumn, which for
+            // any type registered by a current server build is the SERVER-OWNED __TenantId column — and a
+            // payload may never carry that name (it is rejected with InvalidArgument several branches
+            // earlier), so against a freshly registered type the branch cannot fire. It is NOT dead code:
+            // SchemaRegistry.LoadAsync rehydrates pre-cutover _iverson_schema rows verbatim, so on an upgraded
+            // deployment TenantColumn can still be a client-declared name such as "TenantId" — which the
+            // InvalidArgument guard does not match — and the immutability branch fires there today. The
+            // conformance harness registers its types fresh, which is the ONLY reason this leg is insensitive
+            // to the payload tenant. The refusal this step observes is the tenant MISMATCH between the
+            // existing row's __TenantId and this wrong acting user's own claim. The acting user's real tenant
+            // is still sent here so this leg keeps sending a payload a conforming client would send.
             IdentityDoc doc = new IdentityDoc();
             doc.setId(rowKey);
             doc.setTenantId(tenant);

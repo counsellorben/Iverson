@@ -69,15 +69,25 @@ namespace Iverson.ClientConformance.Scenarios;
 /// used to: the server once rejected an existing row's payload tenant that differed from the
 /// caller's claim as "Tenant field is immutable" — also <c>PermissionDenied</c>, fired for ANY
 /// caller including the right one — so a negative leg sending the WRONG tenant would have gone
-/// green for a client that propagated its own token instead of the wrong one. That branch now
-/// compares <c>AuthorizationDecision.TenantColumn</c>, which is unconditionally the server-owned
-/// column, against what the payload carries under that name; and a payload carrying that name is
-/// rejected with <c>InvalidArgument</c> at the top of the same method, several branches earlier.
-/// The immutability branch is therefore UNREACHABLE, and the only refusal left on this leg is the
-/// tenant MISMATCH between the existing row's tenant and the wrong acting user's own claim — which
-/// is precisely the identity-derived denial this requirement wants. The drivers still send the
-/// acting user's own tenant in their user column, so this leg keeps sending a payload a conforming
-/// client would send.</para>
+/// green for a client that propagated its own token instead of the wrong one. That branch compares
+/// <c>AuthorizationDecision.TenantColumn</c> against what the payload carries under that name. For
+/// any type registered by a current server build that column is the server-owned one, and a payload
+/// carrying that name is rejected with <c>InvalidArgument</c> at the top of the same method, several
+/// branches earlier — so against a freshly registered type the branch cannot fire.</para>
+///
+/// <para><b>The immutability branch is NOT dead code, and must not be deleted.</b>
+/// <c>SchemaRegistry.LoadAsync</c> rehydrates pre-cutover <c>_iverson_schema</c> rows VERBATIM, and
+/// those rows persisted <c>TenantColumn</c> as the CLIENT-DECLARED <c>tenant_field</c> name such as
+/// <c>TenantId</c> (which is why <c>SchemaDescriptor.TenantColumn</c> is nullable: only a NULL
+/// short-circuits the evaluator). On an upgraded deployment carrying such a row for a type not yet
+/// re-registered, a payload carrying <c>TenantId</c> passes the <c>InvalidArgument</c> guard — which
+/// matches only the server-owned name — reaches the immutability check with a non-null attempted
+/// tenant, and is denied with <c>TenantImmutable</c> TODAY. What is true here is narrower: THIS
+/// harness registers its types fresh against the build under test, so this leg alone is insensitive
+/// to the payload tenant. The only refusal left on it is the tenant MISMATCH between the existing
+/// row's tenant and the wrong acting user's own claim — precisely the identity-derived denial this
+/// requirement wants. The drivers still send the acting user's own tenant in their user column, so
+/// this leg keeps sending a payload a conforming client would send.</para>
 ///
 /// <para><b>What the status code cannot distinguish.</b> <c>PermissionDenied</c> (7) is the
 /// server's answer to several distinct refusals on this path, and it carries the SAME message for
@@ -519,13 +529,14 @@ public sealed class IdentityScenario(
     /// that property and this assertion is what goes red — which is the point: without it the
     /// control is a comment, and the next cleanup takes it.</description></item>
     /// <item><description>ABSENT from the wire — the orchestrator's own gRPC read of the SAME row
-    /// does not carry the column at all. UNCITED BY DESIGN. It grades the server's outbound STRIP,
-    /// which is a different claim from this requirement's Statement, and citing it here would
-    /// silently widen <c>IVC-IDN-003</c> to own a rule it does not state. No requirement in the
-    /// standard owns the strip today; that gap is recorded as a Deferred area in the IDN coverage
-    /// ledger rather than absorbed here. It still binds — it lives in this cell, so the cell goes
-    /// red if the strip regresses — and it is what proves the probe above is reading something gRPC
-    /// genuinely cannot see.</description></item>
+    /// does not carry the column at all. Cited, but to
+    /// <see cref="Requirements.IdnServerTenantColumnAbsentFromReadBack"/> (<c>IVC-IDN-004</c>) and
+    /// NOT to <c>IVC-IDN-003</c>. It grades the server's outbound STRIP — an EMISSION claim — which
+    /// is a different rule from IVC-IDN-003's DERIVATION Statement; citing it there would silently
+    /// widen that requirement to own a rule it does not make. Two requirements graded from one
+    /// observation, in one cell, so the cell goes red if either regresses — and this leg is also
+    /// what proves the probe above is reading something gRPC genuinely cannot
+    /// see.</description></item>
     /// </list>
     /// </summary>
     internal static IReadOnlyList<Assertion> JudgeTenantDerivation(
@@ -565,8 +576,8 @@ public sealed class IdentityScenario(
                       $"'{storedTenant ?? "<absent>"}'",
                 Requirements.IdnTenancyDerivedAndEnforced),
 
-            // UNCITED — see this method's doc comment. Grades Task 2's outbound strip, not
-            // IVC-IDN-003's Statement.
+            // Cites IVC-IDN-004, NOT IVC-IDN-003 — see this method's doc comment. It grades the
+            // server's outbound STRIP (an emission claim), not IVC-IDN-003's DERIVATION Statement.
             Assertion.From(
                 $"{language}: the orchestrator's own gRPC read of the same row does not carry the " +
                 "server-owned tenant column",
@@ -577,7 +588,8 @@ public sealed class IdentityScenario(
                         ? "the orchestrator's gRPC read returned no entity for this row, so the strip was " +
                           "never observed and the Postgres probe beside it is unconjoined"
                         : "the write phase reported no row key for this language, so no gRPC read was made"
-                    : $"gRPC returned fields [{string.Join(", ", observation.GrpcFieldNames)}]"),
+                    : $"gRPC returned fields [{string.Join(", ", observation.GrpcFieldNames)}]",
+                Requirements.IdnServerTenantColumnAbsentFromReadBack),
         ];
     }
 
