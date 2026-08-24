@@ -1303,9 +1303,9 @@ public class ObjectSearchGrpcServiceTests
             writer, TestServerCallContext.Create());
 
         written.Should().HaveCount(1);
-        written[0].Data.Fields.Should().ContainKey("key");   // schema's real key column is "Id", not "Key" — survives via the fixed exemptField constant
-        written[0].Data.Fields.Should().ContainKey("name");
-        written[0].Data.Fields.Should().NotContainKey("secret");
+        written[0].Data.Fields.Should().ContainKey("Id");   // identity field survives because "Id" is in AllowedFields — the key column is seeded into allFields at RowFieldAuthorizationEvaluator.cs:84 and filtered out of the exclusion set at :76, so it can never be excluded
+        written[0].Data.Fields.Should().ContainKey("Name");
+        written[0].Data.Fields.Should().NotContainKey("Secret");
     }
 
     [Fact]
@@ -2499,9 +2499,9 @@ public class ObjectSearchGrpcServiceTests
             writer, TestServerCallContext.Create());
 
         written.Should().HaveCount(2);
-        written[0].Data.Fields["body"].StringValue.Should().Be("A");
+        written[0].Data.Fields["Body"].StringValue.Should().Be("A");
         written[0].Score.Should().BeApproximately(1.0f, 0.001f);
-        written[1].Data.Fields["body"].StringValue.Should().Be("C-dissimilar");
+        written[1].Data.Fields["Body"].StringValue.Should().Be("C-dissimilar");
         written[1].Score.Should().BeApproximately(0.6667f, 0.001f);
     }
 
@@ -2988,7 +2988,7 @@ public class ObjectSearchGrpcServiceTests
 
         written.Should().HaveCount(1);
         written[0].Data.Fields.Should().NotContainKey(SchemaDescriptor.TenantColumnName);
-        written[0].Data.Fields.Should().ContainKey("title"); // the rest of the payload survives
+        written[0].Data.Fields.Should().ContainKey("Title"); // the rest of the payload survives
     }
 
     // ── Result-side strip for the three streaming SQL RPCs ────────────────────
