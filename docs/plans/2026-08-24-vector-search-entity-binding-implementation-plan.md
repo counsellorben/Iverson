@@ -104,17 +104,22 @@ stay case-insensitive.
 
 ### Steps
 
+0. **Before Task 1's change is deployed**, run the matrix against the current stack and record the
+   set of failing cells. This is the baseline the step-3 criterion is measured against.
 1. Rebuild the API image and redeploy the dev stack.
 2. Run the client conformance matrix (`docs/runbooks/client-conformance-matrix.md`).
 3. Confirm `vector-search` is `ok` for all five languages, and that the full-matrix run exits 0
    with no `FAIL: this was a full-matrix run...` line on stderr — the harness prints an untouched
    line only when `untouched.Count > 0` (`Program.cs:252-257`) and expresses success through
-   `Report.RunSucceeded`'s exit code (`:260`).
+   `Report.RunSucceeded`'s exit code (`:260`). If the step-0 baseline showed failing cells outside
+   `vector-search`, exit 0 is not reachable by Task 1 alone — stop and report rather than repairing
+   unrelated scenarios.
 4. Report the actual cell states read off the run. Do not report a cell not personally read to
    completion.
 
-**Ordering:** Task 2 strictly follows Task 1 — it verifies Task 1's change against a live stack.
-Task 1 introduces no symbol Task 2 defines.
+**Ordering:** Task 2 strictly follows Task 1 — it verifies Task 1's change against a live stack —
+with the single exception of step 0, which must run before Task 1's change is deployed or it cannot
+observe the pre-change state. Task 1 introduces no symbol Task 2 defines.
 
 ---
 
@@ -147,6 +152,7 @@ Task 1 introduces no symbol Task 2 defines.
 | A24 | The flattened payload string parses back to the value the mapping needs | `IntelligenceVectorService.ToCanonicalString:202-207` — `IntegerValue`/`DoubleValue` via `CultureInfo.InvariantCulture`, `BoolValue` as lowercase `"true"`/`"false"`; accepted by `double.TryParse(..., InvariantCulture)` and `bool.TryParse` | holds |
 | A25 | Renaming payload keys to descriptor names cannot leak the tenant column | `RemoveTenantColumn` (`AuthorizationFieldMasking.cs:171-178`) filters on `IsTenantColumn`, which compares `OrdinalIgnoreCase` against `"__TenantId"` (`SchemaDescriptor.cs:13,20-21`); it runs before the `allowedFields is null` early return, and matches the renamed form equally | holds |
 | A26 | The live matrix verifies the naming half only | `VectorDoc` is `id: uuid.UUID` plus six `str` fields (`Iverson.Clients/Python/conformance/models.py:133-139`) — no numeric, boolean, or timestamp property, so Task 2 cannot detect a broken typed-value mapping; typed values rest on Task 1's unit test | holds |
+| A27 | All five toolchains are installed, so every language's cell can reach `ok` | A language whose toolchain is absent is reported as `skip`, never `ok` (`docs/runbooks/client-conformance-matrix.md:57`); dotnet 10.0.111, python 3.14.4, node v22.16.0, go 1.22.12, java 21.0.5 all present | holds |
 
 **Sibling sweep.** Every payload-emitting site in the target file: `Value.ForString(kvp.Value)`
 appears once (`:280`) and `MaskDisallowedFields` once (`:282`) — the other three hits are comments
