@@ -23,8 +23,8 @@ namespace Iverson.ClientConformance.Scenarios;
 /// which no single-client scenario (S1-S3) can ever observe.
 /// </summary>
 public sealed class InteropScenario(
-    DriverRunner runner,
-    Reregistrar reregistrar,
+    IDriverRunner runner,
+    IReregistrar reregistrar,
     Action<string>? log = null)
 {
     public const string Name = "interop";

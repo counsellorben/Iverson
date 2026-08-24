@@ -28,7 +28,7 @@ public class CrudRoundtripScenarioTests
     /// so nothing downstream of <c>DriverRunner</c> is touched. The channel/connection string are
     /// throwaway values that only need to construct, not connect.
     /// </summary>
-    private static CrudRoundtripScenario BuildScenario(DriverRunner? runner = null)
+    private static CrudRoundtripScenario BuildScenario(IDriverRunner? runner = null)
     {
         var channel = GrpcChannel.ForAddress("http://localhost:1");
         var mapping = new ObjectMappingService.ObjectMappingServiceClient(channel);
@@ -36,6 +36,80 @@ public class CrudRoundtripScenarioTests
         var probe = new PostgresProbe("Host=localhost;Database=nonexistent");
         return new CrudRoundtripScenario(
             runner ?? new DriverRunner(repoRoot: "/tmp"), mapping, reregistrar, probe);
+    }
+
+
+    // ── RunAsync driven end to end (closes Ruling 38's N5 residual) ────────────────────────────
+    //
+    // The tests below grade JudgeDriverDepthRead directly. That is exactly what left mutant N5 —
+    // deleting `JudgeDriverDepthRead(...)` from RunAsync's read loop — surviving the whole suite:
+    // the helper stayed graded, the line that CALLS it did not, and IVC-LIFE-006/008 stayed cited
+    // in source while grading nothing. The IDriverRunner seam is what makes the test below reach
+    // that line; it asserts on the REPORT CELL, the only place the call site is observable.
+    //
+    // The scripting is shaped to avoid every live collaborator, deliberately and not incidentally:
+    //   * `register_author` fails, so state.Author stays null and the three-way CompareAsync loop
+    //     `continue`s before touching gRPC or Postgres — while `register` SUCCEEDS, so
+    //     state.Article IS set and JudgeDriverDepthRead's SECOND assertion (IVC-LIFE-008, which is
+    //     guarded on state.Article) is reached rather than silently skipped.
+    //   * no write-phase keys are reported, so KeyOf returns null and the update and delete tails
+    //     `continue` before their MappingGetAsync/FetchRowAsync calls.
+    // Change either and this test starts dialing localhost:1.
+
+    private static ScriptedDriverRunner DepthReadScript(StepResult depth1Step)
+    {
+        var registerDoc = new PhaseDocument("dotnet", "register",
+        [
+            new StepResult("register", true, TypeDescriptor: ArticleDescriptorJson()),
+            new StepResult("register_author", false, Error: "deliberately failed — see the comment above"),
+            new StepResult("register_tag", false, Error: "deliberately failed — see the comment above"),
+        ]);
+
+        return new ScriptedDriverRunner()
+            .Script(Phase.Register, new DriverPhaseOutcome.Success("dotnet", registerDoc))
+            .Script(Phase.Write, new DriverPhaseOutcome.Success("dotnet",
+                new PhaseDocument("dotnet", "write", [new StepResult("write_article", true)])))
+            .Script(Phase.Read, new DriverPhaseOutcome.Success("dotnet",
+                new PhaseDocument("dotnet", "read",
+                [
+                    new StepResult("get", true),
+                    new StepResult("get_author", true),
+                    depth1Step,
+                ])))
+            .Script(Phase.Update, new DriverPhaseOutcome.Success("dotnet",
+                new PhaseDocument("dotnet", "update", [new StepResult("update", true)])))
+            .Script(Phase.Delete, new DriverPhaseOutcome.Success("dotnet",
+                new PhaseDocument("dotnet", "delete", [new StepResult("delete", true)])));
+    }
+
+    [Fact]
+    public async Task RunAsync_DriverReportedItsDepth1Read_TheDepthJudgementReachesTheCell()
+    {
+        var runner = DepthReadScript(new StepResult("get_depth1", true));
+
+        var cells = await BuildScenario(runner).RunAsync(["dotnet"], Context(), "acting-token");
+
+        var cell = cells.Should().ContainSingle().Subject;
+        var ids = cell.Assertions.Select(a => a.RequirementId).ToList();
+
+        // Both of JudgeDriverDepthRead's assertions. Neither can be in the cell unless RunAsync
+        // actually called it — deleting that one line empties both and this fails.
+        ids.Should().Contain(Requirements.LifeDepthResolvedReadReachable);
+        ids.Should().Contain(Requirements.LifeDepthResolvedReadHydrated);
+    }
+
+    [Fact]
+    public async Task RunAsync_DriverReportedNoDepth1Step_TheReachabilityFailureReachesTheCell()
+    {
+        // The negative direction of the same call site: a test asserting only that the ids are
+        // PRESENT would also pass against a judge that always emits passing assertions.
+        var runner = DepthReadScript(new StepResult("unrelated_step", true));
+
+        var cells = await BuildScenario(runner).RunAsync(["dotnet"], Context(), "acting-token");
+
+        var cell = cells.Should().ContainSingle().Subject;
+        cell.Assertions.Should().Contain(a =>
+            a.RequirementId == Requirements.LifeDepthResolvedReadReachable && !a.Passed);
     }
 
     [Fact]

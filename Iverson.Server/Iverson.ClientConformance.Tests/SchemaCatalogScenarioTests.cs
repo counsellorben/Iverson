@@ -68,8 +68,94 @@ public class SchemaCatalogScenarioTests
     private static PhaseDocument ReadDocument(params StepResult[] steps) =>
         new("dotnet", "read", steps);
 
+    /// <summary>
+    /// A descriptor as a driver reports it: protobuf JSON, which is what
+    /// <c>Verifier.ParseDescriptor</c> reads back. Serializing with System.Text.Json instead would
+    /// produce a shape the parser rejects, and the test would fail for the wrong reason.
+    /// </summary>
+    private static JsonElement DescriptorJson(TypeDescriptor descriptor) =>
+        JsonDocument.Parse(Google.Protobuf.JsonFormatter.Default.Format(descriptor)).RootElement.Clone();
+
     private static Assertion Named(IReadOnlyList<Assertion> assertions, string fragment) =>
         assertions.Single(a => a.Name.Contains(fragment, StringComparison.Ordinal));
+
+
+    // ── RunAsync driven end to end (closes Ruling 38's N3 residual) ────────────────────────────
+    //
+    // Everything above grades JudgeCatalogue / JudgeReadPhase directly. That is what left mutant N3
+    // — deleting `JudgeReadPhase(...)` from RunAsync's read loop — surviving the whole suite: the
+    // helpers stayed graded, the line that CALLS them did not, and Check2 reads source text rather
+    // than the call graph, so all three IVC-SCH ids stayed "cited" while the axis graded nothing.
+    // The IDriverRunner seam is what makes the test below possible; it asserts on the REPORT CELLS,
+    // which is the only place the call site is observable.
+
+    private static SchemaCatalogScenario DrivenScenario(
+        ScriptedDriverRunner runner, RecordingReregistrar reregistrar) =>
+        new(runner, reregistrar);
+
+    [Fact]
+    public async Task RunAsync_RegisterThenReadBothSucceed_TheCatalogueJudgementReachesTheCell()
+    {
+        var descriptor = Descriptor("DotNetAuthor", "Id", "TenantId", "OwnerId", "Name");
+        var runner = new ScriptedDriverRunner()
+            .Script(Phase.Register, new DriverPhaseOutcome.Success("dotnet",
+                new PhaseDocument("dotnet", "register",
+                [
+                    new StepResult(
+                        SchemaCatalogScenario.RegisterStepName, true,
+                        TypeDescriptor: DescriptorJson(descriptor))
+                ])))
+            .Script(Phase.Read, new DriverPhaseOutcome.Success("dotnet",
+                new PhaseDocument("dotnet", "read",
+                [
+                    new StepResult(
+                        SchemaCatalogScenario.ReadStepName, true,
+                        Entity: Catalogue(("DotNetAuthor", ["Id", "TenantId", "OwnerId", "Name"])))
+                ])));
+
+        var reregistrar = new RecordingReregistrar();
+        var cells = await DrivenScenario(runner, reregistrar).RunAsync(["dotnet"], Context(), "acting-token");
+
+        var cell = cells.Should().ContainSingle().Subject;
+        cell.Status.Should().Be(CellStatus.Ok);
+        reregistrar.Calls.Should().ContainSingle("the register phase's descriptor must be re-registered with row permissions");
+
+        // The whole point: these three ids can only be in the cell if RunAsync actually called the
+        // read-phase judge. Deleting that call empties them and this fails.
+        cell.Assertions.Should().Contain(a => a.RequirementId == Requirements.SchCatalogRetrievalReachable);
+        cell.Assertions.Should().Contain(a => a.RequirementId == Requirements.SchCatalogIncludesRegisteredType);
+        cell.Assertions.Should().Contain(a => a.RequirementId == Requirements.SchCatalogFieldSetMatchesDescriptor);
+    }
+
+    [Fact]
+    public async Task RunAsync_ReadPhaseReportsAFailedCatalogue_TheFailureReachesTheCell()
+    {
+        // The negative direction of the same call site. A test that only asserts the ids are
+        // PRESENT would pass against a judge that always emits passing assertions; this one pins
+        // that the read phase's actual outcome is what the cell carries.
+        var descriptor = Descriptor("GoAuthor", "Id", "Name");
+        var runner = new ScriptedDriverRunner()
+            .Script(Phase.Register, new DriverPhaseOutcome.Success("go",
+                new PhaseDocument("go", "register",
+                [
+                    new StepResult(
+                        SchemaCatalogScenario.RegisterStepName, true,
+                        TypeDescriptor: DescriptorJson(descriptor))
+                ])))
+            .Script(Phase.Read, new DriverPhaseOutcome.Success("go",
+                new PhaseDocument("go", "read",
+                [
+                    new StepResult(SchemaCatalogScenario.ReadStepName, false, Error: "Unavailable")
+                ])));
+
+        var cells = await DrivenScenario(runner, new RecordingReregistrar())
+            .RunAsync(["go"], Context(), "acting-token");
+
+        var cell = cells.Should().ContainSingle().Subject;
+        cell.Status.Should().Be(CellStatus.Fail);
+        cell.Assertions.Should().Contain(a =>
+            a.RequirementId == Requirements.SchCatalogRetrievalReachable && !a.Passed);
+    }
 
     // ── the happy path ────────────────────────────────────────────────────────────────────────
 

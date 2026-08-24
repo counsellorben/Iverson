@@ -49,8 +49,8 @@ namespace Iverson.ClientConformance.Scenarios;
 /// that can fail.</para>
 /// </summary>
 public sealed class QueryScenario(
-    DriverRunner runner,
-    Reregistrar reregistrar,
+    IDriverRunner runner,
+    IReregistrar reregistrar,
     ObjectSearchService.ObjectSearchServiceClient search,
     ProjectionWaiter? waiter = null,
     Action<string>? log = null)

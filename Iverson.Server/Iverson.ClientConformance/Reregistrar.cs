@@ -7,6 +7,22 @@ using Iverson.Client.Contracts;
 namespace Iverson.ClientConformance;
 
 /// <summary>
+/// The seam scenarios re-register through. Extracted for the same reason as
+/// <see cref="IDriverRunner"/>: a scenario's <c>RunAsync</c> cannot be driven end to end while it
+/// depends on a sealed type that opens a live gRPC channel, and an un-driven <c>RunAsync</c> is
+/// exactly the ungraded call site Ruling 38 recorded.
+/// </summary>
+public interface IReregistrar
+{
+    /// <inheritdoc cref="Reregistrar.ReregisterAsync"/>
+    Task ReregisterAsync(
+        JsonElement typeDescriptorJson,
+        string actingToken,
+        string ownerField = "OwnerId",
+        CancellationToken ct = default);
+}
+
+/// <summary>
 /// S1 registers a schema through a driver with no authorization block, then this class
 /// re-registers it with one added, so scenarios can exercise the same type both unauthorized and
 /// authorized. It takes the driver's reported <see cref="TypeDescriptor"/> verbatim and changes
@@ -15,7 +31,7 @@ namespace Iverson.ClientConformance;
 /// descriptor from scratch here — rather than round-tripping the driver's own JSON — would
 /// overwrite the very relation shape S1's depth-1 check exists to inspect.
 /// </summary>
-public sealed class Reregistrar(ObjectMappingService.ObjectMappingServiceClient client)
+public sealed class Reregistrar(ObjectMappingService.ObjectMappingServiceClient client) : IReregistrar
 {
     private static readonly JsonParser Parser =
         new(JsonParser.Settings.Default.WithIgnoreUnknownFields(true));

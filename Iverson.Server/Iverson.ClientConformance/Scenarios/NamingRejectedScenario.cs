@@ -37,7 +37,7 @@ namespace Iverson.ClientConformance.Scenarios;
 /// <see cref="ServerCheckPriority"/>.
 /// </summary>
 public sealed class NamingRejectedScenario(
-    DriverRunner runner,
+    IDriverRunner runner,
     ObjectMappingService.ObjectMappingServiceClient mapping)
 {
     public const string Name = "naming-rejected";
@@ -209,16 +209,21 @@ public sealed class NamingRejectedScenario(
     /// — simply vanishes from the matrix while every cell stays green. An uncited assertion is
     /// still evidence; nothing else in the harness was watching this one.</para>
     ///
-    /// <para><b>The residual this does NOT close (Ruling 38).</b> What the test grades is THIS
-    /// METHOD; the line in <c>RunAsync</c> that calls it is not graded, and that is true of every
-    /// site using this pattern (<c>CrudRoundtripScenario.JudgeDriverDepthRead</c>,
-    /// <c>SchemaCatalogScenario.JudgeReadPhase</c>). Elsewhere the residual is bounded by a live
-    /// full-matrix run's <c>UntouchedRequirementIds</c> exit code, which reddens when a deleted
-    /// call site leaves a requirement untouched. THAT BOUND DOES NOT APPLY HERE: these three
-    /// assertions carry NO requirement ID, so the tally has nothing to miss and the hand-written
-    /// test above is the only instrument. The proper fix is making <c>DriverRunner</c>
-    /// substitutable so a test can drive <c>RunAsync</c> and pin every call site at once; that is a
-    /// design change across ten scenarios and is a DEFERRED follow-up, not this plan's work.</para>
+    /// <para><b>The residual this used to leave open, now CLOSED — and it was the worst of the
+    /// three.</b> The sibling sites (<c>CrudRoundtripScenario.JudgeDriverDepthRead</c>,
+    /// <c>SchemaCatalogScenario.JudgeReadPhase</c>) carry requirement IDs, so a live full-matrix
+    /// run's <c>UntouchedRequirementIds</c> exit code reddened when their call site was deleted —
+    /// a CI-to-live delay. THAT BOUND NEVER APPLIED HERE: these three assertions carry NO
+    /// requirement ID, so the tally had nothing to miss and a deleted call site would have removed
+    /// the driver-side half of the naming check from the matrix with every cell still green.
+    /// <c>RunAsync_DriverRejectedTheMisnamedRelation_TheClientSideJudgementReachesTheCell</c> is
+    /// now the instrument, via the <see cref="IDriverRunner"/> seam.</para>
+    ///
+    /// <para>Measured, not assumed: a mutant that leaves this call site and this method intact but
+    /// empties the document they CONSUME survives the rest of the suite at 452/452 and is caught
+    /// only by that test. The nearby <c>FakeDriverFixture</c> tests pin the no-register-step branch
+    /// and would catch a plain deletion of the call — they do NOT cover the branch where a register
+    /// step exists, which is the branch the client-side judgement grades.</para>
     /// </summary>
     internal static ReportCell BuildDriverCell(
         string language,

@@ -50,6 +50,81 @@ public class NamingRejectedScenarioTests
         OwnerId: "owner-id",
         IdPrefix: "s2-");
 
+
+    // ── RunAsync driven end to end (closes the LAST and worst of Ruling 38's residuals) ────────
+    //
+    // The `cells.Add(BuildDriverCell(...))` line in RunAsync was the least-defended of the three
+    // ungraded call sites, and the reason is worth keeping: the other two carry requirement IDs,
+    // so a live full-matrix run's UntouchedRequirementIds exit code reddens when their call site
+    // is deleted — a CI-to-live delay, not a silent hole. These three client-side assertions carry
+    // NO requirement ID, so that tally has nothing to miss. Delete the call and the driver-side
+    // half of the naming check simply vanishes from the matrix with every cell still green, and
+    // NOTHING anywhere would have noticed. This test is now the instrument.
+
+    [Fact]
+    public async Task RunAsync_DriverRejectedTheMisnamedRelation_TheClientSideJudgementReachesTheCell()
+    {
+        // python, alone: ServerCheckPriority picks it as the server-check carrier (dotnet/java/go
+        // are not requested) AND it is a client-side-checked language, so the server assertions
+        // merge into the very cell the driver phase builds — one cell, both halves.
+        // The message names every identifier the server-side half of this scenario asserts on, so
+        // the merged cell is green for the right reason. A bare "rejected" fails four of the
+        // server's own IVC-ERR-002 assertions and would redden the cell for a reason that has
+        // nothing to do with the call site under test.
+        var client = new FakeMappingClient
+        {
+            ThrowsFor = _ => new RpcException(new Status(StatusCode.InvalidArgument,
+                "WriterId must be named S2NamingAuthorId; TagRefs must be named S2NamingTagIds")),
+        };
+
+        var runner = new ScriptedDriverRunner().Script(Phase.Register,
+            new DriverPhaseOutcome.Success("python",
+                new PhaseDocument("python", "register",
+                [
+                    new StepResult("register", false,
+                        Error: "relation 'writer' must declare foreign key AuthorId"),
+                ])));
+
+        var cells = await new NamingRejectedScenario(runner, client)
+            .RunAsync(["python"], Context(), actingToken: "acting-token");
+
+        var cell = cells.Should().ContainSingle().Subject;
+        cell.Language.Should().Be("python");
+
+        // All three client-side assertions, and all three passing — the driver rejected the
+        // misnamed relation client-side and its message named both members. None of them can be
+        // in this cell unless RunAsync actually called BuildDriverCell.
+        var names = cell.Assertions.Select(a => a.Name).ToList();
+        names.Should().Contain(n => n.Contains("failed client-side, before any RPC", StringComparison.Ordinal));
+        names.Should().Contain(n => n.Contains("names the actual, misnamed member", StringComparison.Ordinal));
+        names.Should().Contain(n => n.Contains("names the required foreign-key name", StringComparison.Ordinal));
+        cell.Status.Should().Be(CellStatus.Ok);
+    }
+
+    [Fact]
+    public async Task RunAsync_DriverAcceptedTheMisnamedRelation_TheClientSideFailureReachesTheCell()
+    {
+        // The negative direction: a driver whose library did NOT reject the misnamed relation must
+        // redden the cell through the same call site. Without this, a judge that always emitted
+        // passing assertions would satisfy the test above.
+        var client = new FakeMappingClient
+        {
+            ThrowsFor = _ => new RpcException(new Status(StatusCode.InvalidArgument, "rejected")),
+        };
+
+        var runner = new ScriptedDriverRunner().Script(Phase.Register,
+            new DriverPhaseOutcome.Success("python",
+                new PhaseDocument("python", "register", [new StepResult("register", true)])));
+
+        var cells = await new NamingRejectedScenario(runner, client)
+            .RunAsync(["python"], Context(), actingToken: "acting-token");
+
+        var cell = cells.Should().ContainSingle().Subject;
+        cell.Status.Should().Be(CellStatus.Fail);
+        cell.Assertions.Should().Contain(a =>
+            a.Name.Contains("failed client-side, before any RPC", StringComparison.Ordinal) && !a.Passed);
+    }
+
     [Fact]
     public async Task RunAsync_JavaOnly_CarriesTheServerSideCheck_WithoutInvokingAnyDriver()
     {

@@ -189,16 +189,20 @@ public class RequirementsCoverageGateTests
     /// without touching a single assertion in it.
     ///
     /// <para>Returned as ONE tuple deliberately: the fixtures below assert against the very value
-    /// Check2 consumes, so a narrowing applied HERE is caught there. The residual, in the same
-    /// family as Ruling 38's: ANY NARROWING APPLIED BETWEEN THIS CALL AND THE CHECK'S OWN
-    /// ASSERTION still passes (mutant E2 / N9-C). It costs ONE LINE, not a rewrite — leave
+    /// Check2 consumes, so a narrowing applied HERE is caught there.</para>
+    ///
+    /// <para><b>The residual this left open, now CLOSED.</b> Asserting against this method's
+    /// RETURN VALUE can never see a narrowing applied AFTER it returns — leave
     /// <c>var (sourceFiles, identifiers0) = Check2Inputs();</c> fully intact, add
-    /// <c>var identifiers = identifiers0.Take(1);</c>, and Check2 grades one const out of 43 while
-    /// this method is still called and both fixtures below still pass. Ruling 42 originally
-    /// recorded the reach as "abandoning this method and inlining a narrowed feed"; Ruling 45
-    /// corrects that — a stray <c>.Where(...)</c> or <c>.Except(knownStale)</c> at the consumption
-    /// point is the realistic shape. Closing it would need the check to publish what it actually
-    /// consumed — recorded, not fixed; the structural remedy is on the follow-up list.</para>
+    /// <c>var identifiers = identifiers0.Take(1);</c>, and Check2 graded one const out of 43 while
+    /// this method was still called and both fixtures still passed (mutant E2 / N9-C; Ruling 42
+    /// first recorded the reach as "abandoning this method and inlining a narrowed feed", which
+    /// Ruling 45 corrected to a token). The remedy Ruling 42 named — have the check publish what
+    /// it actually consumed — is now implemented: <see cref="UncitedIdentifiers"/> records its
+    /// materialized inputs into <see cref="LastGraded"/>, and
+    /// <see cref="Check2_GradedTheFullInputSet_NotANarrowedSubset"/> drives Check2 and asserts on
+    /// that record. E2 now fails. Do not "simplify" that observation into an assertion over this
+    /// method's return value — that is precisely the version that could not see the defect.</para>
     /// </summary>
     internal static (IReadOnlyList<string> Files, IReadOnlyList<string> Identifiers) Check2Inputs() =>
         (ConformanceSourceFiles().ToList(), ReflectRegistryConstsByIdentifier().Keys.ToList());
@@ -288,12 +292,32 @@ public class RequirementsCoverageGateTests
     /// unit under test, deliberately: a helper that took already-stripped text would move the very
     /// wiring this exists to grade back out of reach.
     /// </summary>
+    /// <summary>
+    /// What the LAST call to <see cref="UncitedIdentifiers"/> actually received, recorded by that
+    /// method itself. Ruling 42's remedy for the E2 residual, in the form it named: let a test
+    /// observe WHAT THE LIVE CODE ACTUALLY CONSUMED.
+    ///
+    /// <para>Written at the consumption point, PAST any narrowing. A <c>.Take(1)</c> or a stray
+    /// <c>.Where(...)</c> inserted between <see cref="Check2Inputs"/> and the assertion — the
+    /// one-token mutant E2/N9-C, which used to survive the whole suite — changes what arrives
+    /// here, so <see cref="Check2_GradedTheFullInputSet_NotANarrowedSubset"/> fails. Asserting
+    /// against <see cref="Check2Inputs"/>'s RETURN VALUE could never catch that: the narrowing
+    /// happens after it returns.</para>
+    /// </summary>
+    internal static (int SourceCount, IReadOnlyList<string> Identifiers)? LastGraded;
+
     internal static List<string> UncitedIdentifiers(
         IEnumerable<string> rawSources, IEnumerable<string> identifiers)
     {
         var sourceCode = rawSources.Select(StripCommentLines).ToList();
+        var graded = identifiers.ToList();
 
-        return identifiers
+        // Recorded from the materialized lists, not from the parameters: an IEnumerable narrowed
+        // by a lazy operator would otherwise be recorded un-narrowed and the observation would
+        // certify the wrong thing.
+        LastGraded = (sourceCode.Count, graded);
+
+        return graded
             .Where(identifier => !sourceCode.Any(text => ContainsIdentifier(text, identifier)))
             .ToList();
     }
@@ -350,6 +374,38 @@ public class RequirementsCoverageGateTests
         uncited.Should().BeEmpty(
             "every const in Requirements.cs must be cited by an assertion the orchestrator constructs " +
             $"under Iverson.ClientConformance/ (excluding Requirements.cs and the test project), but these are uncited: {string.Join(", ", uncited)}");
+    }
+
+    /// <summary>
+    /// CLOSES THE E2 RESIDUAL (Rulings 42 and 45). Check2 above asserts that nothing is uncited;
+    /// it says nothing about HOW MUCH it looked at. A one-token narrowing at its consumption point
+    /// — <c>var identifiers = identifiers0.Take(1);</c>, or a debugging <c>.Where(i =&gt; ...)</c>,
+    /// or an <c>.Except(knownStale)</c> added to unblock a rename — left <see cref="Check2Inputs"/>
+    /// fully intact, kept both of its fixtures passing, and graded ONE const out of 43. Ruling 42
+    /// first recorded that as costing a rewrite; Ruling 45 corrected it to a token.
+    ///
+    /// <para>This test drives Check2 itself and then reads what the GRADER received, so the
+    /// observation sits past any narrowing. It calls the check rather than depending on it having
+    /// run: xunit orders tests within a class arbitrarily, and reading a static left by a test
+    /// that may not have run yet is an unfalsifiable pass waiting to happen.</para>
+    /// </summary>
+    [Fact]
+    public void Check2_GradedTheFullInputSet_NotANarrowedSubset()
+    {
+        LastGraded = null;
+
+        Check2_EveryRegistryConst_IsCitedByAssertionCodeOutsideRequirementsAndTests();
+
+        var expected = Check2Inputs();
+        LastGraded.Should().NotBeNull("Check2 must grade through UncitedIdentifiers, which is what records this");
+
+        var (sourceCount, identifiers) = LastGraded!.Value;
+        identifiers.Should().BeEquivalentTo(expected.Identifiers,
+            "Check2 must grade EVERY const in Requirements.cs — a narrowing applied between " +
+            "Check2Inputs() and the assertion shrinks what the gate covers without touching a " +
+            "single assertion in it");
+        sourceCount.Should().Be(expected.Files.Count,
+            "Check2 must read EVERY gradable source file, for the same reason");
     }
 
     [Fact]

@@ -40,8 +40,8 @@ namespace Iverson.ClientConformance.Scenarios;
 /// the SCH-002 assertion cannot be evaluated at all and only the backstop still fires.</para>
 /// </summary>
 public sealed class SchemaCatalogScenario(
-    DriverRunner runner,
-    Reregistrar reregistrar,
+    IDriverRunner runner,
+    IReregistrar reregistrar,
     Action<string>? log = null)
 {
     public const string Name = "schema-catalog";
@@ -150,16 +150,15 @@ public sealed class SchemaCatalogScenario(
     /// <c>TenantRejectedScenario</c> and Ruling 31 found in <c>CrudRoundtripScenario</c>; SCH was
     /// the last scenario without an instrument for it.</para>
     ///
-    /// <para><b>The residual this does NOT close (Ruling 38).</b> What the test grades is THIS
-    /// METHOD; the line in <c>RunAsync</c> that calls it is not graded. Deleting
-    /// <c>JudgeReadPhase(...)</c> from the read-phase loop still passes <c>dotnet test</c> (mutant
-    /// N3; survived 439/439 when first measured and RE-MEASURED at 448/448, exit 0, in the final
-    /// fix wave — the figure is dated because the suite grows, but the SURVIVAL is the claim).
-    /// Bounding it: all three SCH requirements are ID-carrying, so a
-    /// full-matrix live run's <c>UntouchedRequirementIds</c> exit code catches the deletion — the
-    /// cost is a CI-to-live delay, not a silent hole. The proper fix is making <c>DriverRunner</c>
-    /// substitutable so a test can drive <c>RunAsync</c> and pin every call site at once; that is a
-    /// design change across ten scenarios and is a DEFERRED follow-up, not this plan's work.</para>
+    /// <para><b>The residual this used to leave open, now CLOSED.</b> What a test of this method
+    /// grades is THIS METHOD; the line in <c>RunAsync</c> that calls it is a separate thing, and
+    /// for the length of the tenant plan it was ungraded — deleting <c>JudgeReadPhase(...)</c> from
+    /// the read-phase loop passed the entire suite (mutant N3, survived 439/439 and re-measured at
+    /// 448/448). The <see cref="IDriverRunner"/> seam closed it:
+    /// <c>SchemaCatalogScenarioTests.RunAsync_RegisterThenReadBothSucceed_TheCatalogueJudgementReachesTheCell</c>
+    /// drives <c>RunAsync</c> with a scripted runner and asserts on the REPORT CELL, so N3 now
+    /// fails. Keep a driven test alive here: an assertion on this method alone cannot see the call
+    /// site stop calling it.</para>
     /// </summary>
     internal static void JudgeReadPhase(string language, LanguageState state, PhaseDocument document)
     {

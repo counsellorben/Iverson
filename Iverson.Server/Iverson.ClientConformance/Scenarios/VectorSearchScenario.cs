@@ -65,8 +65,8 @@ namespace Iverson.ClientConformance.Scenarios;
 /// fail.</para>
 /// </summary>
 public sealed class VectorSearchScenario(
-    DriverRunner runner,
-    Reregistrar reregistrar,
+    IDriverRunner runner,
+    IReregistrar reregistrar,
     ObjectSearchService.ObjectSearchServiceClient search,
     ProjectionWaiter? waiter = null,
     Action<string>? log = null)

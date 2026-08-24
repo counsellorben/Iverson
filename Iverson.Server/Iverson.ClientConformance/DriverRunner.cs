@@ -43,12 +43,42 @@ public abstract record DriverPhaseOutcome(string Language)
 }
 
 /// <summary>
+/// The seam every scenario reaches the drivers through. Extracted so a test can substitute a
+/// scripted runner and drive a scenario's <c>RunAsync</c> END TO END, rather than only grading the
+/// judgement helpers <c>RunAsync</c> happens to call.
+///
+/// <para><b>Why this exists.</b> Ruling 38's residual: the reaches-the-cell pattern grades the
+/// EXTRACTED JUDGE, not the line in <c>RunAsync</c> that calls it — so deleting
+/// <c>JudgeReadPhase(...)</c> or <c>JudgeDriverDepthRead(...)</c> from a scenario left the whole
+/// suite green while the axis graded nothing. Ruling 42 named the general shape: a test that does
+/// not constrain WHAT THE LIVE CODE ACTUALLY CONSUMED is a test that cannot see the live code stop
+/// consuming it. This interface is the remedy for the scenario half of that.</para>
+///
+/// <para>Deliberately only the two members the scenarios use. Everything else on
+/// <see cref="DriverRunner"/> — process spawning, repo-root location, flag construction — is an
+/// implementation detail no scenario should be able to reach, and widening this interface to make
+/// a test convenient re-opens the coupling it exists to break.</para>
+/// </summary>
+public interface IDriverRunner
+{
+    /// <inheritdoc cref="DriverRunner.RunPhaseAsync"/>
+    Task<IReadOnlyList<DriverPhaseOutcome>> RunPhaseAsync(
+        Phase phase,
+        IReadOnlyCollection<string> languages,
+        DriverContext context,
+        CancellationToken ct = default);
+
+    /// <inheritdoc cref="DriverRunner.KeysByLanguage"/>
+    IReadOnlyDictionary<string, IReadOnlyDictionary<string, string>> KeysByLanguage { get; }
+}
+
+/// <summary>
 /// Builds each of the five drivers once per run and execs the appropriate one once per phase,
 /// per the table in the Task 2 brief. Owns no assertions — it hands the orchestrator's Verifier
 /// (Task 8) a <see cref="PhaseDocument"/> per successful call and reports build/exec failures as
 /// data (<see cref="DriverPhaseOutcome"/>), never throwing them past a single language's row.
 /// </summary>
-public sealed class DriverRunner
+public sealed class DriverRunner : IDriverRunner
 {
     private readonly string _repoRoot;
     private readonly Dictionary<string, string> _skippedLanguages = new(StringComparer.OrdinalIgnoreCase);

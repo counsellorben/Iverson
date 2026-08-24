@@ -22,9 +22,9 @@ namespace Iverson.ClientConformance.Scenarios;
 /// </code>
 /// </summary>
 public sealed class CrudRoundtripScenario(
-    DriverRunner runner,
+    IDriverRunner runner,
     ObjectMappingService.ObjectMappingServiceClient mapping,
-    Reregistrar reregistrar,
+    IReregistrar reregistrar,
     PostgresProbe probe,
     Action<string>? log = null)
 {
@@ -358,17 +358,16 @@ public sealed class CrudRoundtripScenario(
     /// Check2 — which reads SOURCE TEXT, not the call graph — stays green while the requirement
     /// grades nothing. <c>CrudRoundtripScenarioTests</c> is what fails instead.</para>
     ///
-    /// <para><b>The residual this does NOT close (Ruling 38).</b> What the test grades is THIS
-    /// METHOD; the line in <c>RunAsync</c> that calls it is not graded. Deleting
-    /// <c>JudgeDriverDepthRead(...)</c> from <c>RunAsync</c> still passes <c>dotnet test</c>
-    /// (mutant N5; survived 439/439 when first measured and RE-MEASURED at 448/448, exit 0, in the
-    /// final fix wave — the figure is dated because the suite grows, but the SURVIVAL is the
-    /// claim). Bounding it: both assertions here carry requirement IDs
-    /// (IVC-LIFE-006 and IVC-LIFE-008), so a full-matrix live run's <c>UntouchedRequirementIds</c>
-    /// exit code catches the deletion — the cost is a CI-to-live delay, not a silent hole. The
-    /// proper fix is making <c>DriverRunner</c> substitutable so a test can drive <c>RunAsync</c>
-    /// and pin every call site at once; that is a design change across ten scenarios and is a
-    /// DEFERRED follow-up, not this plan's work.</para>
+    /// <para><b>The residual this used to leave open, now CLOSED.</b> What a test of this method
+    /// grades is THIS METHOD; the line in <c>RunAsync</c> that calls it is a separate thing, and
+    /// for the length of the tenant plan it was ungraded — deleting <c>JudgeDriverDepthRead(...)</c>
+    /// from <c>RunAsync</c> passed the entire suite (mutant N5, survived 439/439 and re-measured at
+    /// 448/448). The <see cref="IDriverRunner"/> seam closed it:
+    /// <c>CrudRoundtripScenarioTests.RunAsync_DriverReportedItsDepth1Read_TheDepthJudgementReachesTheCell</c>
+    /// drives <c>RunAsync</c> with a scripted runner and asserts on the REPORT CELL, so N5 now
+    /// fails. That test's scripting is shaped to reach BOTH assertions below — including the one
+    /// guarded on <c>state.Article</c> — without dialing a live collaborator; read its comment
+    /// before changing it.</para>
     /// </summary>
     internal static void JudgeDriverDepthRead(LanguageState state, PhaseDocument document)
     {

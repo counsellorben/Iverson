@@ -57,8 +57,8 @@ namespace Iverson.ClientConformance.Scenarios;
 /// <see cref="Requirements.ErrAbsentRowReadReportsAbsence"/> wherever that can fail.</para>
 /// </summary>
 public sealed class ErrorContractScenario(
-    DriverRunner runner,
-    Reregistrar reregistrar,
+    IDriverRunner runner,
+    IReregistrar reregistrar,
     Action<string>? log = null)
 {
     public const string Name = "error-contract";

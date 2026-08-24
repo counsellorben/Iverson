@@ -134,8 +134,8 @@ namespace Iverson.ClientConformance.Scenarios;
 /// <see cref="Requirements.IdnTenancyDerivedAndEnforced"/> wherever either can fail.</para>
 /// </summary>
 public sealed class IdentityScenario(
-    DriverRunner runner,
-    Reregistrar reregistrar,
+    IDriverRunner runner,
+    IReregistrar reregistrar,
     ObjectMappingService.ObjectMappingServiceClient mapping,
     PostgresProbe probe,
     Action<string>? log = null)
