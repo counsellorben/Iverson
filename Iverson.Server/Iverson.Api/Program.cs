@@ -190,6 +190,7 @@ builder.Services.AddKafka(cfg);
 builder.Services.AddSingleton<SchemaRegistry>();
 builder.Services.AddSingleton<DocumentRenderer>();
 builder.Services.AddSingleton<IRelationValidator, RelationValidator>();
+builder.Services.AddSingleton<IPayloadSizeValidator, PayloadSizeValidator>();
 builder.Services.AddSingleton<IRowFieldAuthorizationEvaluator, RowFieldAuthorizationEvaluator>();
 builder.Services.AddSingleton<IEntityKeyAccessor, EntityKeyAccessor>();
 builder.Services.AddSingleton<AuditLog>();
