@@ -56,9 +56,11 @@ One site changes: the response loop in `ObjectSearchGrpcService.SearchSimilar`
 
 **1. Canonical key names.** Build a lookup from camelCased descriptor name to descriptor name, over
 the schema's scalar columns and its key column, and resolve each payload key through it. The payload
-key `key` maps to the key column's own name. A key not in the descriptor falls back to
-`StructSerializer.UpperFirst` — never dropped, because an unmapped field is a diagnosis the caller
-should still be able to make.
+key `key` maps to the key column's own name. A key not in the lookup falls back to
+`StructSerializer.UpperFirst`. That fallback is load-bearing, not a diagnostic edge case: vector
+fields (`:422`) and FK columns (`:440`) are written as `ToCamelCase(name)` but live outside
+`ScalarColumns`, so they always take it — and it is correct for them because `UpperFirst` is the
+exact inverse of `ToCamelCase`.
 
 **2. Typed values.** Convert the payload string to a proto `Value` whose kind follows the descriptor
 column's `SqlType`. The vocabulary is bounded and known, so the mapping is stated exhaustively rather
@@ -67,7 +69,12 @@ to `Value.ForNumber`; `BOOLEAN` to `Value.ForBool`; `TEXT`, `STRING`, `UUID`, `T
 `DATETIME`, `BYTEA`, `VARBINARY` to `Value.ForString`. Array types keep the string form — the payload
 flattening upstream gives no list back to reconstruct, and inventing one would be a guess. Timestamps stay strings, matching both `ToProtoValue`'s `DateTime` case and the
 ISO-canonical form the write path already stores (`IntelligenceStoreConsumer.cs:772`). A value that
-does not parse falls back to the string form rather than failing the row.
+does not parse falls back to the string form rather than failing the row. A payload key with no
+descriptor column emits `Value.ForString` — correct for all three producers outside `ScalarColumns`,
+since FK columns are written as `TEXT` (`:439`), vector fields as extracted text (`:422`), and `key`
+is a string (`:417`). Stating this matters: without it, "convert using the descriptor column's
+`SqlType`" reads as licence to skip keys that have none, which would silently drop every foreign key
+from vector results.
 
 **3. Masking.** `MaskDisallowedFields`'s `exemptField: "Key"` becomes the key column's name. Without
 this the masking strips the identifier as soon as the keys become canonical.
@@ -116,7 +123,7 @@ casing, so neither can detect a future regression of this defect. The unit test 
 |---|---|
 | Only one site turns a Qdrant payload into a response Struct | `ObjectSearchGrpcService.cs:278`; the only other `new Struct()` is `DictToProtoStruct` at `:926`, fed by SQL result rows |
 | StarRocks-backed paths already emit descriptor names and typed values | `Search`/`GroupBy`/`Pipeline` route through `DictToProtoStruct` + `ToProtoValue` (`:926-944`) |
-| Payload keys are the camelCase of descriptor names | `IntelligenceStoreConsumer.cs:435` `pointPayload[col.Name.ToCamelCase()]`, `:422` for vector fields |
+| The Qdrant payload has exactly four key producers | `IntelligenceStoreConsumer.cs:417` literal `key`; `:422` vector fields; `:435` scalar columns incl. `__TenantId`; `:440` FK columns — all but `:417` keyed as `ToCamelCase(name)` |
 | The payload's key field is literally `key` | Wire dump from a live python run: `fields { key: "key" ... }` |
 | The mapped read path emits descriptor property names | python's `crud-roundtrip` passes while `vector-search` fails, and its binder matches PascalCase only |
 | `schema` is in scope at the change site | used at `ObjectSearchGrpcService.cs:136` in the same method |
