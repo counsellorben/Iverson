@@ -76,8 +76,14 @@ is a string (`:417`). Stating this matters: without it, "convert using the descr
 `SqlType`" reads as licence to skip keys that have none, which would silently drop every foreign key
 from vector results.
 
-**3. Masking.** `MaskDisallowedFields`'s `exemptField: "Key"` becomes the key column's name. Without
-this the masking strips the identifier as soon as the keys become canonical.
+**3. Masking.** `MaskDisallowedFields`'s `exemptField: "Key"` stays as it is. The dependency runs the
+opposite way from what it first appears: *before* the rename the identifier is `"Key"`, which is absent
+from `AllowedFields`, and the exemption is the only thing protecting it. *After* the rename it is named
+for the key column, and the key column is admitted to `AllowedFields` unconditionally — seeded into
+`allFields` at `RowFieldAuthorizationEvaluator.cs:84` and filtered out of the exclusion set at `:76`,
+so it survives `:116`'s `Where(f => !excluded.Contains(f))` in every case. The exemption therefore does
+no work for the identifier at any value once §1 lands, and changing it would be inert rather than
+corrective.
 
 The result is that the Qdrant path emits what the StarRocks-backed paths already emit via
 `DictToProtoStruct` + `ToProtoValue`: descriptor property names, typed values.
@@ -128,7 +134,7 @@ casing, so neither can detect a future regression of this defect. The unit test 
 | The mapped read path emits descriptor property names | python's `crud-roundtrip` passes while `vector-search` fails, and its binder matches PascalCase only |
 | `schema` is in scope at the change site | used at `ObjectSearchGrpcService.cs:136` in the same method |
 | PascalCase does not break the passing clients | `StructConverter.cs:15` `PropertyNameCaseInsensitive = true`; `StructConverter.java:68` lowercases both sides |
-| Masking still works, but `exemptField` must change | `AuthorizationFieldMasking.cs:208` compares `UpperFirst(key)`; `"Key"` would no longer be the identifier's name |
+| Masking still works, and `exemptField` need not change | `AuthorizationFieldMasking.cs:208` compares `UpperFirst(key)`, but the key column is admitted to `AllowedFields` unconditionally (`RowFieldAuthorizationEvaluator.cs:84`, `:76`, `:116`), so the renamed identifier survives at any `exemptField` value |
 | Payload values reach C# as strings | `IVectorRoles.cs:52` `IReadOnlyDictionary<string, string>`; flattened at `IntelligenceVectorService.cs:107` |
 | `.Payload` has many consumers, so widening the DTO is not contained | 47 usages across `Iverson.Api` and `Iverson.Vector` |
 | The SqlType vocabulary is bounded and known | 15 values in `SchemaBuilder.ScalarTypeMap` / `ArrayTypeOverrides` |
