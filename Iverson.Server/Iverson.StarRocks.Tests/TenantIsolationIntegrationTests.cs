@@ -14,7 +14,8 @@ namespace Iverson.StarRocks.Tests;
 // AuthorizationConstraint below leaves TenantColumn null) — these tests must fail if the
 // database/role/grant boundary itself regresses, even if a WHERE clause would have masked it.
 [Trait("Category", "Integration")]
-public sealed class TenantIsolationIntegrationTests : IClassFixture<StarRocksContainerFixture>
+[Collection(StarRocksCollection.Name)]
+public sealed class TenantIsolationIntegrationTests
 {
     private readonly EngagementRepository _appRepo;
     private readonly EngagementRepository _rootRepo;

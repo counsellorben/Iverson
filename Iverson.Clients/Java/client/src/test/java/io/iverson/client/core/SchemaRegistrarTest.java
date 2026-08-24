@@ -28,6 +28,7 @@ import org.mockito.junit.jupiter.MockitoExtension;
 
 import java.time.OffsetDateTime;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -49,9 +50,6 @@ class SchemaRegistrarTest {
         @IversonKey
         private UUID id;
 
-        @IversonTenant
-        private String tenantId;
-
         @IversonSearchKey(order = 0)
         private String category;
 
@@ -72,9 +70,6 @@ class SchemaRegistrarTest {
     static class EnrichmentAnnotationTestEntity {
         @IversonKey
         private UUID id;
-
-        @IversonTenant
-        private String tenantId;
 
         @IversonSummary
         private String summaryField;
@@ -98,9 +93,6 @@ class SchemaRegistrarTest {
         @IversonDescription("The primary key")
         private UUID id;
 
-        @IversonTenant
-        private String tenantId;
-
         @IversonMetadata
         private String source;
 
@@ -118,8 +110,6 @@ class SchemaRegistrarTest {
     static class SchemaTestAuthor {
         @IversonKey
         private UUID id;
-        @IversonTenant
-        private String tenantId;
         private String name;
         private String bio;   // nullable (String is a reference type)
     }
@@ -128,8 +118,6 @@ class SchemaRegistrarTest {
     static class SchemaTestArticle {
         @IversonKey
         private UUID id;
-        @IversonTenant
-        private String tenantId;
         private String title;
         private UUID authorId;
 
@@ -144,18 +132,28 @@ class SchemaRegistrarTest {
     static class SchemaTestTag {
         @IversonKey
         private UUID id;
-        @IversonTenant
-        private String tenantId;
         private String label;
         private UUID articleId;
+    }
+
+    // Relation declared directly on the foreign-key member: today this makes
+    // getPropertyName() == getForeignKey(), which destroys the FK value on depth-resolved reads.
+    @IversonEntity
+    static class SchemaTestFkNavCollisionEntity {
+        @IversonKey
+        private UUID id;
+
+        @ManyToOne(type = SchemaTestAuthor.class)
+        private UUID schemaTestAuthorId;
+
+        @ManyToMany(type = SchemaTestTag.class)
+        private List<UUID> schemaTestTagIds;
     }
 
     @IversonEntity
     static class ArrayTestEntity {
         @IversonKey
         private UUID id;
-        @IversonTenant
-        private String tenantId;
         private List<String> tags;
         private String[] labels;
         private byte[] payload;
@@ -218,6 +216,25 @@ class SchemaRegistrarTest {
         assertEquals("Id", keyProp.getName());
         assertEquals(ClrType.CLR_GUID, keyProp.getClrType());
         assertTrue(keyProp.getIsKey());
+    }
+
+    @Test
+    void registerAll_keyField_appearsExactlyOnce_inPropertiesList() {
+        ArgumentCaptor<SchemaRequest> captor = ArgumentCaptor.forClass(SchemaRequest.class);
+
+        sut.registerAll(SchemaTestAuthor.class);
+
+        verify(mockStub).registerSchema(captor.capture());
+        TypeDescriptor typeDesc = captor.getValue().getRootType();
+
+        List<PropertyDescriptor> idProps = typeDesc.getPropertiesList().stream()
+            .filter(p -> p.getName().equals("Id"))
+            .toList();
+
+        assertEquals(1, idProps.size(),
+            "key field must appear exactly once in the properties list, not once as key and "
+                + "once again as a non-key duplicate");
+        assertTrue(idProps.get(0).getIsKey());
     }
 
     // ── registerAll: navigation properties skipped ────────────────────────────
@@ -553,68 +570,6 @@ class SchemaRegistrarTest {
         assertEquals("The primary key", key.getDescription());
     }
 
-    // ── registerAll: @IversonTenant ────────────────────────────────────────────
-
-    @Test
-    void registerAll_setsTenantField_toMarkedFieldName() {
-        ArgumentCaptor<SchemaRequest> captor = ArgumentCaptor.forClass(SchemaRequest.class);
-
-        sut.registerAll(SchemaTestAuthor.class);
-
-        verify(mockStub).registerSchema(captor.capture());
-        TypeDescriptor typeDesc = captor.getValue().getRootType();
-        assertEquals("TenantId", typeDesc.getTenantField());
-    }
-
-    @Test
-    void registerAll_tenantMarkerComposesWithSearchKey() {
-        @IversonEntity
-        class ComposedTenantEntity {
-            @IversonKey private UUID id;
-            @IversonTenant @IversonSearchKey(order = 0) private String tenantId;
-        }
-
-        ArgumentCaptor<SchemaRequest> captor = ArgumentCaptor.forClass(SchemaRequest.class);
-
-        sut.registerAll(ComposedTenantEntity.class);
-
-        verify(mockStub).registerSchema(captor.capture());
-        TypeDescriptor typeDesc = captor.getValue().getRootType();
-        assertEquals("TenantId", typeDesc.getTenantField());
-        PropertyDescriptor tenant = prop(typeDesc, "TenantId");
-        assertTrue(tenant.getIsSearchKey(),
-            "@IversonTenant must not suppress @IversonSearchKey");
-        assertEquals(0, tenant.getSearchKeyOrder());
-    }
-
-    @Test
-    void registerAll_throwsForZeroTenantMarkers() {
-        @IversonEntity
-        class NoTenantEntity {
-            @IversonKey private UUID id;
-            private String name;
-        }
-
-        IllegalArgumentException ex = assertThrows(IllegalArgumentException.class,
-            () -> sut.registerAll(NoTenantEntity.class));
-        assertTrue(ex.getMessage().contains("NoTenantEntity"));
-    }
-
-    @Test
-    void registerAll_throwsForMultipleTenantMarkers() {
-        @IversonEntity
-        class MultiTenantEntity {
-            @IversonKey private UUID id;
-            @IversonTenant private String tenantA;
-            @IversonTenant private String tenantB;
-        }
-
-        IllegalArgumentException ex = assertThrows(IllegalArgumentException.class,
-            () -> sut.registerAll(MultiTenantEntity.class));
-        assertTrue(ex.getMessage().contains("tenantA"));
-        assertTrue(ex.getMessage().contains("tenantB"));
-    }
-
     // ── registerAll: declarations the server discards on the key field ────────
 
     @Test
@@ -622,7 +577,6 @@ class SchemaRegistrarTest {
         @IversonEntity
         class MetadataOnKeyEntity {
             @IversonKey @IversonMetadata private UUID id;
-            @IversonTenant private String tenantId;
         }
 
         IllegalArgumentException ex = assertThrows(IllegalArgumentException.class,
@@ -638,7 +592,6 @@ class SchemaRegistrarTest {
         @IversonEntity
         class SummaryOnKeyEntity {
             @IversonKey @IversonSummary private UUID id;
-            @IversonTenant private String tenantId;
         }
 
         IllegalArgumentException ex = assertThrows(IllegalArgumentException.class,
@@ -657,7 +610,6 @@ class SchemaRegistrarTest {
             @IversonChunk @IversonMetadata @IversonSummary @IversonKeywords
             @IversonExtracted("hint")
             private UUID id;
-            @IversonTenant private String tenantId;
         }
 
         IllegalArgumentException ex = assertThrows(IllegalArgumentException.class,
@@ -677,7 +629,6 @@ class SchemaRegistrarTest {
         @IversonEntity
         class DescribedKeyEntity {
             @IversonKey @IversonDescription("Stable identifier.") private UUID id;
-            @IversonTenant private String tenantId;
         }
 
         ArgumentCaptor<SchemaRequest> captor = ArgumentCaptor.forClass(SchemaRequest.class);
@@ -715,6 +666,76 @@ class SchemaRegistrarTest {
         assertEquals("Tags", oneToMany.getPropertyName());
         assertEquals("SchemaTestTag", oneToMany.getRelatedType());
         assertEquals("SchemaTestArticleId", oneToMany.getForeignKey());
+    }
+
+    @Test
+    void registerAll_derivesDistinctPropertyName_whenRelationDeclaredOnForeignKeyMember() {
+        ArgumentCaptor<SchemaRequest> captor = ArgumentCaptor.forClass(SchemaRequest.class);
+
+        sut.registerAll(SchemaTestFkNavCollisionEntity.class);
+
+        verify(mockStub).registerSchema(captor.capture());
+        TypeDescriptor typeDesc = captor.getValue().getRootType();
+        List<RelationDescriptor> relations = typeDesc.getRelationsList();
+
+        RelationDescriptor manyToOne = relations.stream()
+            .filter(r -> r.getKind() == RelationKind.MANY_TO_ONE)
+            .findFirst().orElseThrow(() -> new AssertionError("No MANY_TO_ONE relation"));
+        assertEquals("SchemaTestAuthorId", manyToOne.getForeignKey());
+        assertNotEquals(manyToOne.getForeignKey(), manyToOne.getPropertyName(),
+            "the navigation property name must not collide with the foreign key, or a "
+                + "depth-resolved read overwrites the FK value with the hydrated related entity");
+        assertEquals("SchemaTestAuthor", manyToOne.getPropertyName());
+
+        RelationDescriptor manyToMany = relations.stream()
+            .filter(r -> r.getKind() == RelationKind.MANY_TO_MANY)
+            .findFirst().orElseThrow(() -> new AssertionError("No MANY_TO_MANY relation"));
+        assertEquals("SchemaTestTagIds", manyToMany.getForeignKey());
+        assertNotEquals(manyToMany.getForeignKey(), manyToMany.getPropertyName(),
+            "the navigation property name must not collide with the foreign key, or a "
+                + "depth-resolved read overwrites the FK value with the hydrated related entity");
+        assertEquals("SchemaTestTags", manyToMany.getPropertyName());
+    }
+
+    // ── registerAll: per-type authorization rules ──────────────────────────────
+
+    @Test
+    void registerAll_attachesPerTypeAuthorizationRules_andLeavesUnlistedTypesUnset() {
+        ObjectMapping.AuthorizationRules authorRules = ObjectMapping.AuthorizationRules.newBuilder()
+            .setOwnerField("OwnerId")
+            .build();
+        ObjectMapping.AuthorizationRules tagRules = ObjectMapping.AuthorizationRules.newBuilder()
+            .setOwnerField("CreatedBy")
+            .build();
+
+        ArgumentCaptor<SchemaRequest> captor = ArgumentCaptor.forClass(SchemaRequest.class);
+
+        sut.registerAll(
+            Map.of("SchemaTestAuthor", authorRules, "SchemaTestTag", tagRules),
+            SchemaTestAuthor.class, SchemaTestTag.class, SchemaTestArticle.class);
+
+        verify(mockStub, times(3)).registerSchema(captor.capture());
+
+        TypeDescriptor authorDesc = captor.getAllValues().stream()
+            .map(SchemaRequest::getRootType)
+            .filter(td -> td.getTypeName().equals("SchemaTestAuthor"))
+            .findFirst().orElseThrow();
+        assertTrue(authorDesc.hasAuthorization());
+        assertEquals("OwnerId", authorDesc.getAuthorization().getOwnerField());
+
+        TypeDescriptor tagDesc = captor.getAllValues().stream()
+            .map(SchemaRequest::getRootType)
+            .filter(td -> td.getTypeName().equals("SchemaTestTag"))
+            .findFirst().orElseThrow();
+        assertTrue(tagDesc.hasAuthorization());
+        assertEquals("CreatedBy", tagDesc.getAuthorization().getOwnerField());
+
+        TypeDescriptor articleDesc = captor.getAllValues().stream()
+            .map(SchemaRequest::getRootType)
+            .filter(td -> td.getTypeName().equals("SchemaTestArticle"))
+            .findFirst().orElseThrow();
+        assertFalse(articleDesc.hasAuthorization(),
+            "a type absent from the map must register with no authorization rules");
     }
 
     // ── registerAll: error handling ────────────────────────────────────────────
@@ -832,7 +853,6 @@ class SchemaRegistrarTest {
         @IversonEntity
         class Widget {
             @IversonKey     private String widgetId;
-            @IversonTenant  private String tenantId;
             private String  widgetName;
         }
 

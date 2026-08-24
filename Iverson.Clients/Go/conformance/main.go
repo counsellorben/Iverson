@@ -1,0 +1,1244 @@
+// The Go conformance driver.
+//
+// Mirrors the Python driver's shape (Iverson.Clients/Python/conformance/driver.py): reports,
+// never asserts. Every step's failure is data — ok:false with an error message — and the process
+// still exits 0. A non-zero exit means the driver itself broke (bad flags, unsupported scenario,
+// unwritable --out).
+//
+// Invoked as `bin/conformance <flags>` with cwd Iverson.Clients/Go, after
+// `go build -o bin/conformance ./conformance` (DriverRunner.cs:105-107).
+package main
+
+import (
+	"context"
+	"crypto/md5"
+	"encoding/json"
+	"fmt"
+	"net"
+	"net/url"
+	"os"
+	"sort"
+	"strings"
+
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/encoding/protojson"
+
+	"github.com/iverson/clients/go/iverson"
+
+	pb "github.com/iverson/clients/go/generated"
+)
+
+const (
+	language = "go"
+)
+
+// supportedScenarios lists every scenario this driver implements. naming-rejected (S2) is
+// register-phase-only: the orchestrator never invokes this driver for any other phase under it.
+var supportedScenarios = map[string]bool{
+	"crud-roundtrip":  true,
+	"naming-rejected": true,
+	"interop":         true,
+	// schema-catalog (S5) uses only the register and read phases: this driver registers GoAuthor
+	// and then fetches the catalogue back through IversonClient.GetSchema.
+	"schema-catalog": true,
+	// query (S6) is register-phase-NEVER for this driver: only .NET registers QueryDoc
+	// (register-once rule). This driver seeds one row and then issues a filtered search and a
+	// count aggregate through the client library's own QueryBuilder/AggregateBuilder.
+	"query": true,
+	// vector-search (S7) is register-phase-NEVER for this driver: only .NET registers VectorDoc
+	// (register-once rule). This driver seeds one row and then issues a SearchSimilar and a
+	// SearchChunks through the client library's own vector-search builders.
+	"vector-search": true,
+	// identity (S8) is register-phase-NEVER for this driver in a harness run: only .NET registers
+	// IdentityDoc (register-once rule). This driver creates one row under its own acting user,
+	// reads it back, and then attempts ONE update carrying --wrong-acting-token — an acting user
+	// belonging to a different tenant — reporting the gRPC status code that attempt received.
+	"identity": true,
+	// error-contract (S9) is register-phase-NEVER for this driver: only .NET registers ErrorDoc
+	// (register-once rule). This driver seeds one row, reads it back as a positive control, reads
+	// a key no row exists under, and attempts one mapped write against ErrorUnregisteredDoc — a
+	// type nothing ever registers — reporting the gRPC status code and detail each received.
+	"error-contract": true,
+}
+
+// identityWrongTenant is the tenant value every driver stamps on the IdentityDoc row it creates:
+// deliberately NOT the acting user's tenant. The server force-sets the tenant column from the
+// acting-user token, so the read-back must show the acting tenant instead — an assertion that would
+// agree by construction if the driver sent the right value here. Must stay in step with
+// IdentityScenario.WrongTenantValue.
+const identityWrongTenant = "tenant_not_the_acting_user"
+
+const (
+	// vectorDocLabel is the Label every VectorDoc row this driver writes carries, and the value
+	// the orchestrator's similarity comparison grades on. Must stay in step with
+	// VectorSearchScenario.LabelFor.
+	vectorDocLabel = "vec-" + language
+	// vectorQueryText and vectorTopK are shared verbatim by all five drivers: a per-language query
+	// text would make a disagreement between two cells un-attributable to the client libraries,
+	// and a top-k below the seeded row count would turn the orchestrator's exact set comparisons
+	// into prefix comparisons.
+	vectorQueryText = "a short note about vector search conformance"
+	vectorTopK      = uint32(50)
+)
+
+// catalogueType/catalogueField/catalogueRelation are the deliberately minimal,
+// cross-language-identical projection of a GetSchema catalogue that all five drivers report. Names
+// are copied verbatim out of the SchemaType messages the client library returned; nothing is
+// filtered and nothing is decided here.
+type catalogueField struct {
+	Name string `json:"name"`
+}
+
+type catalogueRelation struct {
+	PropertyName string `json:"propertyName"`
+}
+
+type catalogueType struct {
+	Name      string              `json:"name"`
+	Fields    []catalogueField    `json:"fields"`
+	Relations []catalogueRelation `json:"relations"`
+}
+
+type catalogueReport struct {
+	Types []catalogueType `json:"types"`
+}
+
+func catalogueToReport(types []*pb.SchemaType) catalogueReport {
+	report := catalogueReport{Types: make([]catalogueType, 0, len(types))}
+	for _, t := range types {
+		entry := catalogueType{
+			Name:      t.GetName(),
+			Fields:    make([]catalogueField, 0, len(t.GetFields())),
+			Relations: make([]catalogueRelation, 0, len(t.GetRelations())),
+		}
+		for _, f := range t.GetFields() {
+			entry.Fields = append(entry.Fields, catalogueField{Name: f.GetName()})
+		}
+		for _, r := range t.GetRelations() {
+			entry.Relations = append(entry.Relations, catalogueRelation{PropertyName: r.GetPropertyName()})
+		}
+		report.Types = append(report.Types, entry)
+	}
+	return report
+}
+
+// ── Argument parsing ──────────────────────────────────────────────────────────
+
+// args is a minimal `--flag value` parser, mirroring the Python driver's Args.
+type args struct {
+	values map[string]string
+}
+
+func parseArgs(argv []string) args {
+	values := make(map[string]string)
+	i := 0
+	for i < len(argv) {
+		flag := argv[i]
+		if !strings.HasPrefix(flag, "--") {
+			i++
+			continue
+		}
+		// The next argument is the value whatever it looks like: the harness always emits
+		// `--flag <value>` pairs (empty string included), and legitimate values — a base64
+		// token, a JSON blob — can begin with "--". Treating a leading "--" as "no value"
+		// would silently drop them.
+		if i+1 < len(argv) {
+			values[flag] = argv[i+1]
+			i += 2
+		} else {
+			values[flag] = ""
+			i++
+		}
+	}
+	return args{values: values}
+}
+
+func (a args) require(flag string) (string, error) {
+	v, ok := a.values[flag]
+	if !ok || v == "" {
+		return "", fmt.Errorf("missing required flag %s", flag)
+	}
+	return v, nil
+}
+
+func (a args) optional(flag string) string {
+	return a.values[flag]
+}
+
+// grpcDialTarget reduces a gRPC endpoint to the bare `host:port` target grpc.Dial accepts,
+// tolerating both the scheme-qualified form the harness sends and an already-bare one. Returns an
+// error rather than a best guess so the driver fails as a driver (non-zero exit) instead of
+// reporting an unresolvable target as a client-library conformance failure.
+func grpcDialTarget(addr string) (string, error) {
+	withScheme := addr
+	if !strings.Contains(addr, "://") {
+		withScheme = "http://" + addr
+	}
+	u, err := url.Parse(withScheme)
+	if err != nil || u.Host == "" {
+		return "", fmt.Errorf("unusable --grpc value %q", addr)
+	}
+	if u.Port() == "" {
+		if u.Scheme == "https" {
+			return net.JoinHostPort(u.Hostname(), "443"), nil
+		}
+		return net.JoinHostPort(u.Hostname(), "80"), nil
+	}
+	return u.Host, nil
+}
+
+// ── Step result / phase document ─────────────────────────────────────────────
+
+// stepResult is one step's outcome within a phase document. All fields are always present (null
+// where absent) via explicit json tags, matching the .NET driver's JsonSerializerDefaults.Web
+// output, which does not omit nulls.
+type stepResult struct {
+	Name           string            `json:"name"`
+	Ok             bool              `json:"ok"`
+	Error          *string           `json:"error"`
+	TypeDescriptor json.RawMessage   `json:"typeDescriptor"`
+	Keys           map[string]string `json:"keys"`
+	Entity         json.RawMessage   `json:"entity"`
+}
+
+type phaseDocument struct {
+	Language string       `json:"language"`
+	Phase    string       `json:"phase"`
+	Steps    []stepResult `json:"steps"`
+}
+
+func failStep(name string, err error) stepResult {
+	msg := err.Error()
+	return stepResult{Name: name, Ok: false, Error: &msg}
+}
+
+func okStep(name string) stepResult {
+	return stepResult{Name: name, Ok: true}
+}
+
+func entityJSON(entity interface{}) json.RawMessage {
+	b, err := json.Marshal(entity)
+	if err != nil {
+		return nil
+	}
+	return json.RawMessage(b)
+}
+
+// deriveKey returns a deterministic per-run key: distinct across runs because --id-prefix is.
+// Only needs to be consistent within this driver's own fallback path — cross-language key
+// equality is not required, since --keys is language-qualified (each language reads only its own
+// slice).
+func deriveKey(idPrefix, logicalName string) string {
+	sum := md5.Sum([]byte(idPrefix + ":" + logicalName))
+	return formatUUID(sum)
+}
+
+func formatUUID(b [16]byte) string {
+	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
+}
+
+func parseKeys(keysJSON, lang string) map[string]string {
+	out := map[string]string{}
+	if keysJSON == "" {
+		return out
+	}
+	var byLanguage map[string]map[string]string
+	if err := json.Unmarshal([]byte(keysJSON), &byLanguage); err != nil {
+		return out
+	}
+	if m, ok := byLanguage[lang]; ok {
+		return m
+	}
+	return out
+}
+
+// parseKeysAll returns the full language-qualified --keys map, unlike parseKeys which slices out
+// one language. S4 interop's read phase needs every language's reported "shared_article" key, not
+// just this driver's own.
+func parseKeysAll(keysJSON string) map[string]map[string]string {
+	out := map[string]map[string]string{}
+	if keysJSON == "" {
+		return out
+	}
+	if err := json.Unmarshal([]byte(keysJSON), &out); err != nil {
+		return map[string]map[string]string{}
+	}
+	return out
+}
+
+// ── Read reporting ────────────────────────────────────────────────────────────
+
+// reportGet runs one Get and reports it in the same shape the other four drivers report.
+//
+// Go's EntityCoordinator.Get is the only one of the five that turns a not-found response into an
+// error (iverson/coordinator.go returns "entity not found" when !resp.Found); .NET, Python,
+// TypeScript and Java all hand back a null entity on an otherwise successful call. That is a
+// client-API difference, not a conformance signal, and left alone it would make get_after_delete
+// — the step whose whole purpose is separating gone from denied from broken — structurally
+// different in Go. So the shape is flattened here, in the driver, never in the client.
+//
+// Nothing is judged: this does not decide that not-found is correct, only that "the server said
+// Found=false" is reported the way the other four report it (ok:true, entity null). A denial or a
+// transport failure still reports ok:false with the client's own error text. The two are told
+// apart by asking the server itself through the public retrieval stub rather than by matching on
+// an error string.
+func reportGet(
+	ctx context.Context,
+	client *iverson.IversonClient,
+	name, typeName, key string,
+	do func() (interface{}, error),
+) stepResult {
+	entity, err := do()
+	if err == nil {
+		step := okStep(name)
+		step.Entity = entityJSON(entity)
+		return step
+	}
+
+	resp, probeErr := client.RetrievalStub.Get(ctx, &pb.RetrievalRequest{TypeName: typeName, Key: key})
+	if probeErr == nil && !resp.Found {
+		return okStep(name)
+	}
+
+	return failStep(name, err)
+}
+
+// staticServiceToken attaches an already-minted service token to every call, the identity the
+// server reads out of the `authorization` header, plus the acting-user identity the server reads
+// out of `x-acting-user-authorization`.
+//
+// Both are required, and they authorize different things: the service token carries the
+// schema_admin scope RegisterSchema needs, while every row read and write is authorized against
+// the acting user. Emitting only the service half lets registration succeed and then denies every
+// write with `actor=unknown` — a PermissionDenied that names nothing about identity, surfacing
+// phases away from its cause. This mirrors the Java driver's DualHeaderCredentials.
+//
+// It carries the acting token as a field rather than reading it back out of the context, because
+// the context key iverson.WithActingUserToken writes under is unexported; replacing the client's
+// own OAuth2ClientCredentials (which does read it) means taking over both headers here.
+type staticServiceToken struct {
+	token       string
+	actingToken string
+}
+
+func (s staticServiceToken) GetRequestMetadata(_ context.Context, _ ...string) (map[string]string, error) {
+	md := map[string]string{"authorization": "Bearer " + s.token}
+	if s.actingToken != "" {
+		md[iverson.ActingUserMetadataKey] = "Bearer " + s.actingToken
+	}
+	return md, nil
+}
+
+func (s staticServiceToken) RequireTransportSecurity() bool { return false }
+
+// typeNameOf reports the type name the client itself derives for an entity, so the raw retrieval
+// probe above addresses exactly the type EntityCoordinator addresses.
+func typeNameOf(entity interface{}) (string, error) {
+	meta, err := iverson.InspectType(entity)
+	if err != nil {
+		return "", err
+	}
+	return meta.TypeName, nil
+}
+
+// ── Descriptor capture ────────────────────────────────────────────────────────
+
+type capturedType struct {
+	name string
+	json string
+}
+
+// capturingMappingClient wraps the real ObjectMappingService stub — the sanctioned capture seam
+// per the plan: NewSchemaRegistrar(client MappingClient, ...) takes the client as a public
+// constructor parameter, and MappingClient is a one-method interface (iverson/registrar.go:12-16)
+// that the generated stub's variadic-opts method does not itself satisfy. Records the outgoing
+// SchemaRequest.RootType of every registration call (before forwarding, so it is captured even if
+// the RPC itself fails) and forwards unchanged. Nothing is judged here — the JSON is reported
+// verbatim.
+type capturingMappingClient struct {
+	real     pb.ObjectMappingServiceClient
+	captured []capturedType
+}
+
+func (c *capturingMappingClient) RegisterSchema(ctx context.Context, req *pb.SchemaRequest) (*pb.SchemaResponse, error) {
+	if req.RootType != nil {
+		js, err := protojson.Marshal(req.RootType)
+		if err == nil {
+			c.captured = append(c.captured, capturedType{name: req.RootType.TypeName, json: string(js)})
+		}
+	}
+	return c.real.RegisterSchema(ctx, req)
+}
+
+// selectDescriptor returns the descriptor for the first of preferredTypeNames actually sent
+// under that exact name, or nil if none of them was. Never substitutes a different type's
+// descriptor.
+func (c *capturingMappingClient) selectDescriptor(preferredTypeNames ...string) json.RawMessage {
+	for _, preferred := range preferredTypeNames {
+		if preferred == "" {
+			continue
+		}
+		for _, ct := range c.captured {
+			if strings.EqualFold(ct.name, preferred) {
+				return json.RawMessage(ct.json)
+			}
+		}
+	}
+	return nil
+}
+
+// ── Main ───────────────────────────────────────────────────────────────────────
+
+func main() {
+	os.Exit(run(os.Args[1:]))
+}
+
+func run(argv []string) int {
+	a := parseArgs(argv)
+
+	sc, err := a.require("--scenario")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 2
+	}
+	if !supportedScenarios[sc] {
+		fmt.Fprintf(os.Stderr, "unsupported scenario %q; this driver implements %v\n", sc, supportedScenarios)
+		return 2
+	}
+
+	phase, err := a.require("--phase")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 2
+	}
+	tenant, err := a.require("--tenant")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 2
+	}
+	ownerID, err := a.require("--owner-id")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 2
+	}
+	idPrefix, err := a.require("--id-prefix")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 2
+	}
+	outPath, err := a.require("--out")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 2
+	}
+	grpcAddr, err := a.require("--grpc")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 2
+	}
+	typeHint := a.optional("--type")
+
+	clientID := a.optional("--client-id")
+	clientSecret := a.optional("--client-secret")
+	tokenEndpoint := a.optional("--token-endpoint")
+	actingToken := a.optional("--acting-token")
+
+	serviceToken := a.optional("--service-token")
+
+	dialOpts := []grpc.DialOption{grpc.WithInsecure()} //nolint:staticcheck
+	// A pre-minted service token wins over the client-credentials trio. Authentik stamps the
+	// JWT's `iss` from the request's Host header and grants scopes only when the token request
+	// asks for them, so a token this driver minted for itself would be rejected by the API on
+	// issuer validation (401) and would carry no schema_admin scope (403 on RegisterSchema) —
+	// OAuth2ClientCredentials can set neither. The orchestrator mints one correctly and passes
+	// it via --service-token.
+	if serviceToken != "" {
+		dialOpts = append(dialOpts, grpc.WithPerRPCCredentials(
+			staticServiceToken{token: serviceToken, actingToken: actingToken}))
+	} else if clientID != "" && clientSecret != "" && tokenEndpoint != "" {
+		dialOpts = append(dialOpts, grpc.WithPerRPCCredentials(&iverson.OAuth2ClientCredentials{
+			ClientID:      clientID,
+			ClientSecret:  clientSecret,
+			TokenEndpoint: tokenEndpoint,
+		}))
+	}
+
+	// The harness normalizes --grpc to `scheme://host:port` (DriverRunner.NormalizeGrpcUrl),
+	// because .NET and Java cannot dial without the scheme. grpc.Dial takes a bare `host:port`
+	// target and cannot resolve an `http://…` one, so the scheme is stripped back off here.
+	dialTarget, err := grpcDialTarget(grpcAddr)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 2
+	}
+
+	client, err := iverson.NewIversonClient(dialTarget, dialOpts...)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "connecting to %s: %v\n", dialTarget, err)
+		return 2
+	}
+	defer client.Close()
+
+	ctx := context.Background()
+	if actingToken != "" {
+		ctx = iverson.WithActingUserToken(ctx, actingToken)
+	}
+
+	priorKeys := parseKeys(a.optional("--keys"), language)
+	keyFor := func(logicalName string) string {
+		if existing, ok := priorKeys[logicalName]; ok && existing != "" {
+			return existing
+		}
+		return deriveKey(idPrefix, logicalName)
+	}
+
+	var steps []stepResult
+
+	switch {
+	case phase == "write" && sc == "interop":
+		// S4 interop: writes SharedAuthor then SharedArticle, reporting keys "shared_author" and
+		// "shared_article" — no tag, no naming-rejected branch, since this scenario has neither.
+		var authorKey string
+
+		authorCoord, authorCoordErr := iverson.NewEntityCoordinator(client, SharedAuthor{})
+		articleCoord, articleCoordErr := iverson.NewEntityCoordinator(client, SharedArticle{})
+
+		writeStep := func(name, keyName string, do func() (interface{}, string, error)) stepResult {
+			var step stepResult
+			entity, key, err := do()
+			if err != nil {
+				step = failStep(name, err)
+			} else {
+				step = okStep(name)
+				step.Entity = entityJSON(entity)
+			}
+			if key != "" {
+				step.Keys = map[string]string{keyName: key}
+			}
+			return step
+		}
+
+		steps = append(steps, writeStep("write_shared_author", "shared_author", func() (interface{}, string, error) {
+			if authorCoordErr != nil {
+				return nil, "", authorCoordErr
+			}
+			entity := SharedAuthor{TenantId: tenant, OwnerId: ownerID, Name: "shared-author-" + idPrefix}
+			key, err := authorCoord.Persist(ctx, entity)
+			if err == nil {
+				authorKey = key
+			}
+			return entity, key, err
+		}))
+
+		steps = append(steps, writeStep("write_shared_article", "shared_article", func() (interface{}, string, error) {
+			if articleCoordErr != nil {
+				return nil, "", articleCoordErr
+			}
+			entity := SharedArticle{
+				TenantId: tenant, OwnerId: ownerID, Title: "shared-title-" + idPrefix,
+				SharedAuthorId: authorKey,
+			}
+			key, err := articleCoord.Persist(ctx, entity)
+			return entity, key, err
+		}))
+
+	case phase == "read" && sc == "interop":
+		// Iterates every language's reported "shared_article" key from the full --keys map (not
+		// just Go's own slice), so this one driver invocation reads all five languages' rows —
+		// the fan-out that produces 25 reads across the five drivers.
+		articleCoord, articleCoordErr := iverson.NewEntityCoordinator(client, SharedArticle{})
+		articleTypeName, articleTypeErr := typeNameOf(SharedArticle{})
+
+		allKeys := parseKeysAll(a.optional("--keys"))
+		languages := make([]string, 0, len(allKeys))
+		for lang := range allKeys {
+			languages = append(languages, lang)
+		}
+		sort.Strings(languages)
+
+		for _, writerLanguage := range languages {
+			key, ok := allKeys[writerLanguage]["shared_article"]
+			if !ok || key == "" {
+				continue
+			}
+			name := "read_shared_article_" + writerLanguage
+			if articleCoordErr != nil {
+				steps = append(steps, failStep(name, articleCoordErr))
+			} else if articleTypeErr != nil {
+				steps = append(steps, failStep(name, articleTypeErr))
+			} else {
+				steps = append(steps, reportGet(ctx, client, name, articleTypeName, key,
+					func() (interface{}, error) { return articleCoord.Get(ctx, key) }))
+			}
+		}
+
+	case phase == "write" && sc == "vector-search":
+		// S7 vector-search: one row, stamped with the run's marker and this language's label. The
+		// key is reported whenever Persist returned one — it is the orchestrator's expected-set
+		// accounting for BOTH vector requirements.
+		vecCoord, vecCoordErr := iverson.NewEntityCoordinator(client, VectorDoc{})
+		var vecStep stepResult
+		if vecCoordErr != nil {
+			vecStep = failStep("write_vector_doc", vecCoordErr)
+		} else {
+			entity := VectorDoc{
+				TenantId: tenant,
+				OwnerId:  ownerID,
+				Marker:   idPrefix,
+				Title:    "vector search conformance note from " + language,
+				Body: "This passage exists so the " + language + " conformance driver has a " +
+					"chunked body to retrieve. It is short on purpose: one window per row keeps " +
+					"the orchestrator's parent-key comparison exact.",
+				Label: vectorDocLabel,
+			}
+			key, err := vecCoord.Persist(ctx, entity)
+			if err != nil {
+				vecStep = failStep("write_vector_doc", err)
+			} else {
+				vecStep = okStep("write_vector_doc")
+				vecStep.Entity = entityJSON(entity)
+			}
+			if key != "" {
+				vecStep.Keys = map[string]string{"vector_doc": key}
+			}
+		}
+		steps = append(steps, vecStep)
+
+	case phase == "read" && sc == "vector-search":
+		// Both requests are built with the client library's own vector-search builders
+		// (iverson.NewSimilar / iverson.NewChunks) and executed through EntityCoordinator, never
+		// through the generated stub. Row labels and chunk parent keys are reported verbatim; the
+		// orchestrator decides what they mean.
+		vecCoord, vecCoordErr := iverson.NewEntityCoordinator(client, VectorDoc{})
+
+		steps = append(steps, func() stepResult {
+			if vecCoordErr != nil {
+				return failStep("search_similar_by_title", vecCoordErr)
+			}
+			req, err := iverson.NewSimilar("VectorDoc", "Title").
+				Text(vectorQueryText).
+				TopK(vectorTopK).
+				Where("Marker", pb.SearchOperator_EQUALS, idPrefix).
+				Build()
+			if err != nil {
+				return failStep("search_similar_by_title", err)
+			}
+			hits, err := vecCoord.SearchSimilar(ctx, req)
+			if err != nil {
+				return failStep("search_similar_by_title", err)
+			}
+			labels := make([]string, 0, len(hits))
+			for _, hit := range hits {
+				labels = append(labels, hit.Entity.Label)
+			}
+			out := okStep("search_similar_by_title")
+			out.Entity = entityJSON(map[string]interface{}{"labels": labels})
+			return out
+		}())
+
+		steps = append(steps, func() stepResult {
+			if vecCoordErr != nil {
+				return failStep("search_chunks_by_marker", vecCoordErr)
+			}
+			req, err := iverson.NewChunks("VectorDoc", "Body").
+				Text(vectorQueryText).
+				TopK(vectorTopK).
+				Where("Marker", pb.SearchOperator_EQUALS, idPrefix).
+				Build()
+			if err != nil {
+				return failStep("search_chunks_by_marker", err)
+			}
+			found, err := vecCoord.SearchChunks(ctx, req)
+			if err != nil {
+				return failStep("search_chunks_by_marker", err)
+			}
+			parentKeys := make([]string, 0, len(found))
+			for _, chunk := range found {
+				parentKeys = append(parentKeys, chunk.GetParentKey())
+			}
+			out := okStep("search_chunks_by_marker")
+			out.Entity = entityJSON(map[string]interface{}{"parentKeys": parentKeys})
+			return out
+		}())
+
+	case phase == "write" && sc == "identity":
+		// S8 identity: one row, created under this driver's OWN acting user and carrying a
+		// deliberately wrong tenant value (see identityWrongTenant). The key is reported whenever
+		// Persist returned one: the orchestrator's backstop is exactly "this language reported a
+		// key", and the negative leg below is only a denial while the row exists.
+		idCoord, idCoordErr := iverson.NewEntityCoordinator(client, IdentityDoc{})
+		var step stepResult
+		if idCoordErr != nil {
+			step = failStep("write_identity_doc", idCoordErr)
+		} else {
+			entity := IdentityDoc{
+				TenantId: identityWrongTenant,
+				OwnerId:  ownerID,
+				Label:    "identity-" + language + "-" + idPrefix,
+			}
+			key, err := idCoord.Persist(ctx, entity)
+			if err != nil {
+				step = failStep("write_identity_doc", err)
+			} else {
+				step = okStep("write_identity_doc")
+				step.Entity = entityJSON(entity)
+			}
+			if key != "" {
+				step.Keys = map[string]string{"identity_doc": key}
+			}
+		}
+		steps = append(steps, step)
+
+	case phase == "read" && sc == "identity":
+		rowKey := keyFor("identity_doc")
+
+		// The positive leg, reported as the deliberately minimal, cross-language-identical
+		// projection all five drivers emit — a driver-native serialization would differ per
+		// language and make a naming difference render as a conformance failure.
+		readStep := func() stepResult {
+			idCoord, err := iverson.NewEntityCoordinator(client, IdentityDoc{})
+			if err != nil {
+				return failStep("read_identity_doc", err)
+			}
+			readBack, err := idCoord.GetMapped(ctx, rowKey, 0)
+			if err != nil {
+				return failStep("read_identity_doc", err)
+			}
+			step := okStep("read_identity_doc")
+			step.Entity = entityJSON(map[string]interface{}{
+				"key":    readBack.Id,
+				"tenant": readBack.TenantId,
+				"owner":  readBack.OwnerId,
+			})
+			return step
+		}()
+		steps = append(steps, readStep)
+
+		// The negative leg: a SECOND connection whose per-RPC credentials carry
+		// --wrong-acting-token in place of this driver's own acting-user token. It must be a second
+		// dial, not a second context: staticServiceToken emits the acting-user header from a field
+		// fixed at dial time and ignores the context the client library writes its own token into.
+		// The service identity is unchanged, so the only thing that differs between this call and
+		// an allowed one is which end user it acts as. The status code is DATA to report, never an
+		// error to judge — that is the orchestrator's job.
+		deniedStep := func() stepResult {
+			wrongActingToken := a.optional("--wrong-acting-token")
+			wrongOpts := []grpc.DialOption{
+				grpc.WithInsecure(), //nolint:staticcheck
+				grpc.WithPerRPCCredentials(staticServiceToken{token: serviceToken, actingToken: wrongActingToken}),
+			}
+			wrongClient, err := iverson.NewIversonClient(dialTarget, wrongOpts...)
+			if err != nil {
+				return failStep("denied_update_wrong_acting_user", err)
+			}
+			defer wrongClient.Close()
+
+			wrongCoord, err := iverson.NewEntityCoordinator(wrongClient, IdentityDoc{})
+			if err != nil {
+				return failStep("denied_update_wrong_acting_user", err)
+			}
+
+			// The update payload's tenant value no longer affects the outcome on THIS leg. It USED to: the
+			// server once rejected an existing row's payload tenant that differed from the caller's claim as
+			// "Tenant field is immutable" — also PermissionDenied (7), fired for ANY caller including the
+			// right one — so a wrong tenant here would have made this step green while proving nothing about
+			// which end user is calling. That branch compares AuthorizationDecision.TenantColumn, which for
+			// any type registered by a current server build is the SERVER-OWNED __TenantId column — and a
+			// payload may never carry that name (it is rejected with InvalidArgument several branches
+			// earlier), so against a freshly registered type the branch cannot fire. It is NOT dead code:
+			// SchemaRegistry.LoadAsync rehydrates pre-cutover _iverson_schema rows verbatim, so on an upgraded
+			// deployment TenantColumn can still be a client-declared name such as "TenantId" — which the
+			// InvalidArgument guard does not match — and the immutability branch fires there today. The
+			// conformance harness registers its types fresh, which is the ONLY reason this leg is insensitive
+			// to the payload tenant. The refusal this step observes is the tenant MISMATCH between the
+			// existing row's __TenantId and this wrong acting user's own claim. The acting user's real tenant
+			// is still sent here so this leg keeps sending a payload a conforming client would send.
+			_, err = wrongCoord.UpdateMapped(context.Background(), IdentityDoc{
+				Id:       rowKey,
+				TenantId: tenant,
+				OwnerId:  ownerID,
+				Label:    "identity-" + language + "-" + idPrefix + "-updated-by-the-wrong-user",
+			})
+
+			step := okStep("denied_update_wrong_acting_user")
+			if err == nil {
+				// The server accepted the wrong acting user's write. Reported as a missing status
+				// code rather than judged here.
+				step.Entity = entityJSON(map[string]interface{}{"statusCode": nil, "status": "succeeded"})
+				return step
+			}
+
+			// status.FromError unwraps a wrapped error (EntityCoordinator wraps with %w), so a
+			// genuine server status is recovered rather than reported as Unknown.
+			if grpcStatus, ok := status.FromError(err); ok {
+				step.Entity = entityJSON(map[string]interface{}{
+					"statusCode": uint32(grpcStatus.Code()),
+					"status":     grpcStatus.Code().String(),
+					"detail":     grpcStatus.Message(),
+				})
+				return step
+			}
+
+			// Not a gRPC status at all — the attempt never produced an observation.
+			return failStep("denied_update_wrong_acting_user", err)
+		}()
+		steps = append(steps, deniedStep)
+
+	case phase == "write" && sc == "error-contract":
+		// S9 error-contract: one row, seeded so the read phase's positive control has something
+		// real to find.
+		errCoord, errCoordErr := iverson.NewEntityCoordinator(client, ErrorDoc{})
+		var step stepResult
+		if errCoordErr != nil {
+			step = failStep("write_error_doc", errCoordErr)
+		} else {
+			entity := ErrorDoc{
+				TenantId: tenant,
+				OwnerId:  ownerID,
+				Label:    "error-" + language + "-" + idPrefix,
+			}
+			key, err := errCoord.Persist(ctx, entity)
+			if err != nil {
+				step = failStep("write_error_doc", err)
+			} else {
+				step = okStep("write_error_doc")
+				step.Entity = entityJSON(entity)
+			}
+			if key != "" {
+				step.Keys = map[string]string{"error_doc": key}
+			}
+		}
+		steps = append(steps, step)
+
+	case phase == "read" && sc == "error-contract":
+		rowKey := keyFor("error_doc")
+
+		// The positive control (the ERR backstop). Same client method, same type and same acting
+		// user as the absent-key read below — only the key differs, which is what makes "reports
+		// absence" evidence rather than a property of a read path that finds nothing ever.
+		steps = append(steps, func() stepResult {
+			errCoord, err := iverson.NewEntityCoordinator(client, ErrorDoc{})
+			if err != nil {
+				return failStep("read_present_row", err)
+			}
+			present, err := errCoord.GetMapped(ctx, rowKey, 0)
+			if err != nil {
+				return failStep("read_present_row", err)
+			}
+			step := okStep("read_present_row")
+			step.Entity = entityJSON(map[string]interface{}{"found": true, "key": present.Id})
+			return step
+		}())
+
+		// The absent-key read. The key is freshly generated and never written, so no row can exist
+		// under it.
+		//
+		// This client library signals absence differently from .NET's, Python's and TypeScript's:
+		// GetMapped turns the server's success=false envelope into a plain (non-status) Go error
+		// rather than a zero value, which is the idiomatic Go shape. That is reported here as it is
+		// — no entity handed back (found:false) and no gRPC status raised (statusCode:null) — and
+		// IVC-ERR-004 is framed as an observable property of the operation rather than as a claim
+		// about a return shape, so both idioms satisfy it. What would NOT satisfy it, and is still
+		// falsifiable here, is a library that surfaced a gRPC status code (the status branch below)
+		// or one that handed back an entity for a key no row exists under.
+		steps = append(steps, func() stepResult {
+			errCoord, err := iverson.NewEntityCoordinator(client, ErrorDoc{})
+			if err != nil {
+				return failStep("read_missing_row", err)
+			}
+			// Derived from this run's --id-prefix under a logical name no driver ever writes a
+			// row for, so no row can exist under it — and no new module dependency is needed to
+			// get a UUID here.
+			missingKey := deriveKey(idPrefix, "error_doc_never_written")
+			_, err = errCoord.GetMapped(ctx, missingKey, 0)
+			step := okStep("read_missing_row")
+			if err == nil {
+				step.Entity = entityJSON(map[string]interface{}{"found": true, "statusCode": nil})
+				return step
+			}
+			// status.FromError unwraps a wrapped error (EntityCoordinator wraps with %w), so a
+			// genuine server status is recovered rather than reported as Unknown; ok is false for
+			// the plain error this library raises for an absent row.
+			if grpcStatus, ok := status.FromError(err); ok {
+				step.Entity = entityJSON(map[string]interface{}{
+					"found":      nil,
+					"statusCode": uint32(grpcStatus.Code()),
+					"status":     grpcStatus.Code().String(),
+					"detail":     grpcStatus.Message(),
+				})
+				return step
+			}
+			step.Entity = entityJSON(map[string]interface{}{
+				"found": false, "statusCode": nil, "detail": err.Error(),
+			})
+			return step
+		}())
+
+		// The unregistered-type write. RequireSchema runs before authorization and before relation
+		// validation in ObjectMappingGrpcService.Post, so the refusal is attributable to the missing
+		// schema and to nothing else. Status code AND detail are reported: the detail is what proves
+		// this client library hands the server's message to the caller rather than substituting
+		// wording of its own.
+		steps = append(steps, func() stepResult {
+			unregCoord, err := iverson.NewEntityCoordinator(client, ErrorUnregisteredDoc{})
+			if err != nil {
+				return failStep("write_unregistered_type", err)
+			}
+			_, err = unregCoord.PostMapped(ctx, ErrorUnregisteredDoc{
+				TenantId: tenant,
+				OwnerId:  ownerID,
+				Label:    "error-unregistered-" + language + "-" + idPrefix,
+			})
+			step := okStep("write_unregistered_type")
+			if err == nil {
+				// The server accepted a write against a type it has no schema for. Reported as a
+				// missing status code rather than judged here.
+				step.Entity = entityJSON(map[string]interface{}{"statusCode": nil, "status": "succeeded"})
+				return step
+			}
+			if grpcStatus, ok := status.FromError(err); ok {
+				step.Entity = entityJSON(map[string]interface{}{
+					"statusCode": uint32(grpcStatus.Code()),
+					"status":     grpcStatus.Code().String(),
+					"detail":     grpcStatus.Message(),
+				})
+				return step
+			}
+			// Not a gRPC status at all — the attempt never produced an observation.
+			return failStep("write_unregistered_type", err)
+		}())
+
+	case phase == "write" && sc == "query":
+		// S6 query: one row, stamped with the run's marker. The key is reported whenever Persist
+		// returned one — it is the orchestrator's expected-set accounting, and a row seeded but
+		// never reported would silently shrink what every language is graded against.
+		docCoord, docCoordErr := iverson.NewEntityCoordinator(client, QueryDoc{})
+		var step stepResult
+		if docCoordErr != nil {
+			step = failStep("write_query_doc", docCoordErr)
+		} else {
+			entity := QueryDoc{TenantId: tenant, OwnerId: ownerID, Marker: idPrefix, Label: "doc-" + language}
+			key, err := docCoord.Persist(ctx, entity)
+			if err != nil {
+				step = failStep("write_query_doc", err)
+			} else {
+				step = okStep("write_query_doc")
+				step.Entity = entityJSON(entity)
+			}
+			if key != "" {
+				step.Keys = map[string]string{"query_doc": key}
+			}
+		}
+		steps = append(steps, step)
+
+	case phase == "read" && sc == "query":
+		// The filter and the aggregation are both built with the client library's own builder API
+		// (iverson.NewQuery / iverson.NewAggregate) and executed through EntityCoordinator, never
+		// through the generated stub. Row keys and the metric value are reported verbatim; the
+		// orchestrator decides what they mean.
+		docCoord, docCoordErr := iverson.NewEntityCoordinator(client, QueryDoc{})
+
+		searchStep := func() stepResult {
+			if docCoordErr != nil {
+				return failStep("search_by_marker", docCoordErr)
+			}
+			req, err := iverson.NewQuery("QueryDoc").Where("Marker").Eq(idPrefix).Limit(100).Build()
+			if err != nil {
+				return failStep("search_by_marker", err)
+			}
+			hits, err := docCoord.Search(ctx, req)
+			if err != nil {
+				return failStep("search_by_marker", err)
+			}
+			keys := make([]string, 0, len(hits))
+			for _, hit := range hits {
+				keys = append(keys, hit.Entity.Id)
+			}
+			out := okStep("search_by_marker")
+			out.Entity = entityJSON(map[string]interface{}{"keys": keys})
+			return out
+		}()
+		steps = append(steps, searchStep)
+
+		aggregateStep := func() stepResult {
+			if docCoordErr != nil {
+				return failStep("aggregate_count", docCoordErr)
+			}
+			// AggregateBuilder.Where takes a *pb.SearchValue directly — unlike QueryBuilder's
+			// FieldCondition, Go's aggregate builder exposes no value-wrapping helper (the
+			// package's stringValue is unexported). This is still the builder's own public API,
+			// not a hand-rolled AggregateRequest.
+			req, err := iverson.NewAggregate("QueryDoc").
+				Where("Marker", pb.SearchOperator_EQUALS,
+					&pb.SearchValue{Kind: &pb.SearchValue_StringVal{StringVal: idPrefix}}).
+				CountAll("count").
+				Build()
+			if err != nil {
+				return failStep("aggregate_count", err)
+			}
+			resp, err := docCoord.Aggregate(ctx, req)
+			if err != nil {
+				return failStep("aggregate_count", err)
+			}
+			var value interface{}
+			if len(resp.GetResults()) > 0 {
+				value = resp.GetResults()[0].GetMetricValue()
+			}
+			out := okStep("aggregate_count")
+			out.Entity = entityJSON(map[string]interface{}{"value": value, "total": resp.GetTotal()})
+			return out
+		}()
+		steps = append(steps, aggregateStep)
+
+	case phase == "register" && sc == "schema-catalog":
+		// S5 schema-catalog: one relation-free type, registered WITHOUT an authorization block on
+		// purpose — the orchestrator re-registers it with one before the read phase, and until it
+		// does the type is Denied for Read and GetSchema omits it entirely. GoAuthor is this
+		// language's own type name, so all five languages registering concurrently overwrite
+		// nothing.
+		capture := &capturingMappingClient{real: client.MappingStub}
+		registrar := iverson.NewSchemaRegistrar(capture, GoAuthor{})
+		regErr := registrar.RegisterAll(ctx, idPrefix, nil)
+		regStep := stepResult{
+			Name:           "register_schema_type",
+			Ok:             regErr == nil,
+			TypeDescriptor: capture.selectDescriptor("GoAuthor"),
+		}
+		if regErr != nil {
+			msg := regErr.Error()
+			regStep.Error = &msg
+		}
+		steps = append(steps, regStep)
+
+	case phase == "read" && sc == "schema-catalog":
+		// The catalogue is fetched through the client library's own public GetSchema; the driver
+		// reports what came back verbatim and judges none of it.
+		types, schemaErr := client.GetSchema(ctx, "")
+		readStep := stepResult{Name: "get_schema", Ok: schemaErr == nil}
+		if schemaErr != nil {
+			msg := schemaErr.Error()
+			readStep.Error = &msg
+		} else {
+			encoded, encodeErr := json.Marshal(catalogueToReport(types))
+			if encodeErr != nil {
+				msg := encodeErr.Error()
+				readStep.Ok = false
+				readStep.Error = &msg
+			} else {
+				readStep.Entity = encoded
+			}
+		}
+		steps = append(steps, readStep)
+
+	case phase == "register":
+		if sc == "naming-rejected" {
+			// GoBadArticle's WriterId member fails registrar.buildRequest's naming check before
+			// any RegisterSchema call is issued — the capture wrapper never sees a request to
+			// record, so there is no typeDescriptor to report either.
+			capture := &capturingMappingClient{real: client.MappingStub}
+			registrar := iverson.NewSchemaRegistrar(capture, GoBadArticle{})
+			regErr := registrar.RegisterAll(ctx, idPrefix, nil)
+			step := stepResult{Name: "register", Ok: regErr == nil}
+			if regErr != nil {
+				msg := regErr.Error()
+				step.Error = &msg
+			}
+			steps = append(steps, step)
+			break
+		}
+
+		capture := &capturingMappingClient{real: client.MappingStub}
+		// Author, then tag, then article — the same order in all five drivers, so the types the
+		// article's relations reference already exist when the article is sent. Registration
+		// aborts at the first failure, so the order is observable.
+		registrar := iverson.NewSchemaRegistrar(capture, GoAuthor{}, GoTag{}, GoArticle{})
+		// nil authorization: S1 registers every type WITHOUT an authorization block on purpose,
+		// so the orchestrator can re-register it with one and exercise the type both ways.
+		regErr := registrar.RegisterAll(ctx, idPrefix, nil)
+
+		addRegisterStep := func(name string, descriptor json.RawMessage) {
+			step := stepResult{Name: name, Ok: regErr == nil, TypeDescriptor: descriptor}
+			if regErr != nil {
+				msg := regErr.Error()
+				step.Error = &msg
+			}
+			steps = append(steps, step)
+		}
+
+		addRegisterStep("register", capture.selectDescriptor(typeHint, "GoArticle"))
+		addRegisterStep("register_author", capture.selectDescriptor("GoAuthor"))
+		addRegisterStep("register_tag", capture.selectDescriptor("GoTag"))
+
+	case phase == "write":
+		// Keys are server-assigned: create requests must omit Id entirely, and each row's key is
+		// only known — and only reported — once Persist returns it. authorKey/tagKey are filled
+		// in by the write_author/write_tag closures below and read by write_article, which runs
+		// after them.
+		var authorKey, tagKey string
+
+		authorCoord, authorCoordErr := iverson.NewEntityCoordinator(client, GoAuthor{})
+		tagCoord, tagCoordErr := iverson.NewEntityCoordinator(client, GoTag{})
+		articleCoord, articleCoordErr := iverson.NewEntityCoordinator(client, GoArticle{})
+
+		// One step per row: a denied or failed write must not abort the others. A row's key is
+		// reported only when its write actually returned one.
+		writeStep := func(name, keyName string, do func() (interface{}, string, error)) stepResult {
+			var step stepResult
+			entity, key, err := do()
+			if err != nil {
+				step = failStep(name, err)
+			} else {
+				step = okStep(name)
+				step.Entity = entityJSON(entity)
+			}
+			if key != "" {
+				step.Keys = map[string]string{keyName: key}
+			}
+			return step
+		}
+
+		steps = append(steps, writeStep("write_author", "author", func() (interface{}, string, error) {
+			if authorCoordErr != nil {
+				return nil, "", authorCoordErr
+			}
+			entity := GoAuthor{TenantId: tenant, OwnerId: ownerID, Name: "author-" + idPrefix}
+			key, err := authorCoord.Persist(ctx, entity)
+			if err == nil {
+				authorKey = key
+			}
+			return entity, key, err
+		}))
+
+		steps = append(steps, writeStep("write_tag", "tag", func() (interface{}, string, error) {
+			if tagCoordErr != nil {
+				return nil, "", tagCoordErr
+			}
+			entity := GoTag{TenantId: tenant, OwnerId: ownerID, Label: "tag-" + idPrefix}
+			key, err := tagCoord.Persist(ctx, entity)
+			if err == nil {
+				tagKey = key
+			}
+			return entity, key, err
+		}))
+
+		steps = append(steps, writeStep("write_article", "article", func() (interface{}, string, error) {
+			if articleCoordErr != nil {
+				return nil, "", articleCoordErr
+			}
+			entity := GoArticle{
+				TenantId: tenant, OwnerId: ownerID, Title: "title-" + idPrefix,
+				GoAuthorId: authorKey, GoTagIds: []string{tagKey}, GoTagId: tagKey,
+			}
+			key, err := articleCoord.Persist(ctx, entity)
+			return entity, key, err
+		}))
+
+	case phase == "read":
+		// Two gets at depth 0 (EntityCoordinator.Get performs no relation traversal), reported
+		// separately so a failure on one is not conflated with the other.
+		articleCoord, articleCoordErr := iverson.NewEntityCoordinator(client, GoArticle{})
+		articleTypeName, articleTypeErr := typeNameOf(GoArticle{})
+		if articleCoordErr != nil {
+			steps = append(steps, failStep("get", articleCoordErr))
+		} else if articleTypeErr != nil {
+			steps = append(steps, failStep("get", articleTypeErr))
+		} else {
+			articleKey := keyFor("article")
+			steps = append(steps, reportGet(ctx, client, "get", articleTypeName, articleKey,
+				func() (interface{}, error) { return articleCoord.Get(ctx, articleKey) }))
+		}
+
+		authorCoord, authorCoordErr := iverson.NewEntityCoordinator(client, GoAuthor{})
+		authorTypeName, authorTypeErr := typeNameOf(GoAuthor{})
+		if authorCoordErr != nil {
+			steps = append(steps, failStep("get_author", authorCoordErr))
+		} else if authorTypeErr != nil {
+			steps = append(steps, failStep("get_author", authorTypeErr))
+		} else {
+			authorKey := keyFor("author")
+			steps = append(steps, reportGet(ctx, client, "get_author", authorTypeName, authorKey,
+				func() (interface{}, error) { return authorCoord.Get(ctx, authorKey) }))
+		}
+
+		// IVC-LIFE-006/IVC-LIFE-008: a depth-1 read through this driver's OWN client library,
+		// reported as its own step — proves the CLIENT can express the request (LIFE-006) and
+		// materialize the hydrated result (LIFE-007), distinct from the orchestrator's own
+		// depth-1 MappingGet which only proves the SERVER hydrates.
+		if articleCoordErr != nil {
+			steps = append(steps, failStep("get_depth1", articleCoordErr))
+		} else if articleTypeErr != nil {
+			steps = append(steps, failStep("get_depth1", articleTypeErr))
+		} else {
+			articleKey := keyFor("article")
+			steps = append(steps, reportGet(ctx, client, "get_depth1", articleTypeName, articleKey,
+				func() (interface{}, error) { return articleCoord.GetMapped(ctx, articleKey, 1) }))
+		}
+
+	case phase == "update":
+		articleCoord, articleCoordErr := iverson.NewEntityCoordinator(client, GoArticle{})
+		if articleCoordErr != nil {
+			steps = append(steps, failStep("update", articleCoordErr))
+			break
+		}
+		entity := GoArticle{
+			Id: keyFor("article"), TenantId: tenant, OwnerId: ownerID, Title: "title-" + idPrefix + "-updated",
+			GoAuthorId: keyFor("author"), GoTagIds: []string{keyFor("tag")}, GoTagId: keyFor("tag"),
+		}
+		// EntityCoordinator.Update returns no entity (unlike .NET's UpdateMappedAsync, which
+		// returns the server's response entity) — the entity reported here is what the driver
+		// sent, which is the only observable this API surface offers.
+		if err := articleCoord.Update(ctx, entity); err != nil {
+			steps = append(steps, failStep("update", err))
+		} else {
+			step := okStep("update")
+			step.Entity = entityJSON(entity)
+			steps = append(steps, step)
+		}
+
+	case phase == "delete":
+		articleCoord, articleCoordErr := iverson.NewEntityCoordinator(client, GoArticle{})
+		deleteKey := keyFor("article")
+
+		if articleCoordErr != nil {
+			steps = append(steps, failStep("delete", articleCoordErr))
+			steps = append(steps, failStep("get_after_delete", articleCoordErr))
+			break
+		}
+
+		if err := articleCoord.Delete(ctx, deleteKey); err != nil {
+			steps = append(steps, failStep("delete", err))
+		} else {
+			steps = append(steps, okStep("delete"))
+		}
+
+		// The read-back is its own step, carrying entity (null when nothing came back) and the
+		// client's own error text when the read itself fails — a null entity alone cannot
+		// distinguish "gone" from "read denied" from a transport error. reportGet keeps that
+		// distinction while reporting the not-found case in the same shape as the other four
+		// drivers (ok:true, entity null).
+		if articleTypeName, articleTypeErr := typeNameOf(GoArticle{}); articleTypeErr != nil {
+			steps = append(steps, failStep("get_after_delete", articleTypeErr))
+		} else {
+			steps = append(steps, reportGet(ctx, client, "get_after_delete", articleTypeName, deleteKey,
+				func() (interface{}, error) { return articleCoord.Get(ctx, deleteKey) }))
+		}
+
+	default:
+		fmt.Fprintf(os.Stderr, "unknown phase %q\n", phase)
+		return 2
+	}
+
+	document := phaseDocument{Language: language, Phase: phase, Steps: steps}
+	out, err := json.Marshal(document)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "marshaling phase document: %v\n", err)
+		return 2
+	}
+	if err := os.WriteFile(outPath, out, 0o644); err != nil {
+		fmt.Fprintf(os.Stderr, "writing %s: %v\n", outPath, err)
+		return 2
+	}
+
+	return 0
+}

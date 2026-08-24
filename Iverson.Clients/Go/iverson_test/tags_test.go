@@ -83,7 +83,7 @@ func TestParseTag_RelationMissingType(t *testing.T) {
 
 type keyFixture struct {
 	Id       string `iverson_key:"true"`
-	TenantId string `iverson_tenant:"true"`
+	TenantId string
 }
 
 func TestInspectType_Key(t *testing.T) {
@@ -103,8 +103,8 @@ func TestInspectType_Key(t *testing.T) {
 }
 
 type searchKeyFixture struct {
-	Id          string    `iverson_key:"true"`
-	TenantId    string    `iverson_tenant:"true"`
+	Id          string `iverson_key:"true"`
+	TenantId    string
 	Category    string    `iverson_search_key:"0"`
 	PublishedAt time.Time `iverson_search_key:"1"`
 }
@@ -137,7 +137,7 @@ func TestInspectType_SearchKey(t *testing.T) {
 
 type largeFieldFixture struct {
 	Id       string `iverson_key:"true"`
-	TenantId string `iverson_tenant:"true"`
+	TenantId string
 	Body     string `iverson_large_field:"true"`
 }
 
@@ -159,7 +159,7 @@ func TestInspectType_LargeFieldKey(t *testing.T) {
 
 type embeddingFixture struct {
 	Id       string `iverson_key:"true"`
-	TenantId string `iverson_tenant:"true"`
+	TenantId string
 	Title    string `iverson_embedding:"true"`
 }
 
@@ -181,7 +181,7 @@ func TestInspectType_Embedding(t *testing.T) {
 
 type chunkDefaultsFixture struct {
 	Id       string `iverson_key:"true"`
-	TenantId string `iverson_tenant:"true"`
+	TenantId string
 	Summary  string `iverson_chunk:"true"`
 }
 
@@ -209,7 +209,7 @@ func TestInspectType_Chunk_Defaults(t *testing.T) {
 
 type chunkCustomFixture struct {
 	Id       string `iverson_key:"true"`
-	TenantId string `iverson_tenant:"true"`
+	TenantId string
 	Summary  string `iverson_chunk:"256:32"`
 }
 
@@ -234,7 +234,7 @@ func TestInspectType_Chunk_CustomParams(t *testing.T) {
 
 type searchKeyBadOrderFixture struct {
 	Id       string `iverson_key:"true"`
-	TenantId string `iverson_tenant:"true"`
+	TenantId string
 	Field    string `iverson_search_key:"abc"`
 }
 
@@ -252,7 +252,7 @@ func TestInspectType_SearchKeyBadOrder(t *testing.T) {
 
 type articleFixture struct {
 	Id          string `iverson_key:"true"`
-	TenantId    string `iverson_tenant:"true"`
+	TenantId    string
 	Title       string
 	Body        string `iverson_large_field:"true"`
 	Category    string `iverson_search_key:"0"`
@@ -390,7 +390,7 @@ func TestInspectType_NonStruct(t *testing.T) {
 
 type descFixture struct {
 	Id       string `iverson_key:"true" iverson_desc:"The unique identifier"`
-	TenantId string `iverson_tenant:"true"`
+	TenantId string
 	Status   string `iverson_meta:"true" iverson_desc:"Publication status"`
 	Region   string `iverson_search_key:"0" iverson_meta:"true" iverson_desc:"Publication region."`
 	Plain    string `iverson_desc:"A plain field"`
@@ -464,44 +464,26 @@ func TestInspectType_DescriptionsAndMetadata(t *testing.T) {
 	}
 }
 
-// A tenant marker on a relation field is not a tenant declaration: relations
-// never reach meta.Fields, which is where the registrar looks the tenant field
-// up, so accepting it would put an empty TenantField on the wire.
-type relationTenantFixture struct {
-	Id       string `iverson_key:"true"`
-	AuthorId string `iverson:"many_to_one:Author" iverson_tenant:"true"`
-}
-
-func TestInspectType_TenantOnRelationRejected(t *testing.T) {
-	_, err := iverson.InspectType(relationTenantFixture{})
-	if err == nil {
-		t.Fatal("expected the zero-marker error for a tenant tag on a relation field")
-	}
-	if !strings.Contains(err.Error(), "relationTenantFixture") {
-		t.Errorf("expected error to name the type, got %q", err.Error())
-	}
-}
-
 // ── Declarations the server silently discards on the key field ───────────────
 
 type metadataOnKeyFixture struct {
 	Id       string `iverson_key:"true" iverson_meta:"true"`
-	TenantId string `iverson_tenant:"true"`
+	TenantId string
 }
 
 type summaryOnKeyFixture struct {
 	Id       string `iverson_key:"true" iverson_summary:"true"`
-	TenantId string `iverson_tenant:"true"`
+	TenantId string
 }
 
 type multiDeclarationKeyFixture struct {
 	Id       string `iverson_key:"true" iverson_search_key:"0" iverson_large_field:"true" iverson_embedding:"true" iverson_chunk:"true" iverson_meta:"true" iverson_summary:"true" iverson_keywords:"true" iverson_extract:"hint"`
-	TenantId string `iverson_tenant:"true"`
+	TenantId string
 }
 
 type describedKeyFixture struct {
 	Id       string `iverson_key:"true" iverson_desc:"Stable identifier."`
-	TenantId string `iverson_tenant:"true"`
+	TenantId string
 }
 
 func TestInspectType_MetadataOnKeyRejected(t *testing.T) {

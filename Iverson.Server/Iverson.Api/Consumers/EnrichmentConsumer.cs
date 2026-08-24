@@ -68,17 +68,15 @@ public sealed class EnrichmentConsumer(
     {
         var ev = Deserialize(key, value);
 
-        var schema = registry.Get(ev.TypeName);
+        var schema = await registry.GetOrReloadAsync(ev.TypeName, ct);
         if (schema is null)
         {
-            logger.LogError(
-                "[Enrichment] Dropped event — no schema registered for type={Type} key={Key}.",
-                ev.TypeName.SanitizeForLog(), key);
             Activity.Current?
                 .SetTag("dropped_event", true)
                 .SetTag("dropped_event.reason", "schema_not_found")
                 .SetTag("dropped_event.type", ev.TypeName);
-            return;
+            throw new InvalidOperationException(
+                $"[Enrichment] No schema registered for type '{ev.TypeName}' (key '{key}') after a forced registry reload.");
         }
 
         if (schema.EnrichmentTargets.Count == 0) return;
@@ -113,15 +111,12 @@ public sealed class EnrichmentConsumer(
             return;
         }
 
-        // Fail closed, matching EngagementStoreConsumer.cs:55-60. TenantColumn is nullable by
-        // design and a legacy pre-cutover schema still reaches this consumer via
-        // ReconciliationService.ReconcileTypeAsync. Deliberately writes NO state row: with a
-        // null tenant EnterTenantScopeAsync sets app.tenant_id to NULL, the RLS predicate fails
-        // closed and the targeted UPDATE would match zero rows — recording a hash anyway would
-        // mark the object enriched forever while it carried none of the enriched values.
-        var tenantValue = schema.TenantColumn is not null
-            ? ExtractString(row, schema.TenantColumn)
-            : null;
+        // Fail closed when the authoritative row carries no tenant value, and deliberately write
+        // NO state row: with a null tenant EnterTenantScopeAsync sets app.tenant_id to NULL, the
+        // RLS predicate fails closed and the targeted UPDATE would match zero rows — recording a
+        // hash anyway would mark the object enriched forever while it carried none of the
+        // enriched values.
+        var tenantValue = ExtractString(row, schema.TenantColumn);
         if (tenantValue is null)
         {
             logger.LogWarning(
@@ -218,6 +213,8 @@ public sealed class EnrichmentConsumer(
     {
         var ev = Deserialize(key, value);
 
+        // Unlike the site above this one is a best-effort cleanup path, so an unknown type here is
+        // not a lost write — the row it would have cleaned is already gone. Left as a return.
         var schema = registry.Get(ev.TypeName);
         if (schema is null || schema.EnrichmentTargets.Count == 0) return;
 
@@ -241,9 +238,7 @@ public sealed class EnrichmentConsumer(
             return;
         }
 
-        var tenantValue = schema.TenantColumn is not null
-            ? ExtractString(payload, schema.TenantColumn)
-            : null;
+        var tenantValue = ExtractString(payload, schema.TenantColumn);
         if (tenantValue is null)
         {
             logger.LogWarning(

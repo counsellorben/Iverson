@@ -80,7 +80,11 @@ public sealed class ObjectMappingGrpcService(
             if (decision.Denied)
                 continue;
 
-            IEnumerable<ColumnDescriptor> candidates = new[] { schema.KeyColumn }.Concat(schema.ScalarColumns);
+            // ScalarColumns position: EXCLUDE __TenantId. This catalog is client-facing — it is the
+            // one RPC whose whole job is telling a client what it may address. The tenant column is
+            // server-owned and never appears on the wire, so publishing it here would undo that.
+            IEnumerable<ColumnDescriptor> candidates = new[] { schema.KeyColumn }
+                .Concat(schema.ScalarColumns.Where(c => !SchemaDescriptor.IsTenantColumn(c.Name)));
             if (decision.AllowedFields is not null)
                 candidates = candidates.Where(c => decision.AllowedFields.Contains(c.Name));
 
@@ -241,7 +245,7 @@ public sealed class ObjectMappingGrpcService(
         var schema = RequireSchema(request.TypeName);
 
         var rowJson = await FetchByKeyAsync(schema, request.Key,
-            tenantScoped: schema.TenantColumn is not null,
+            tenantScoped: true,
             tenantId: _actingUserAccessor.ActingUser?.FindFirst("tenant_id")?.Value);
         if (rowJson is null)
             return new MappingResponse
@@ -295,14 +299,9 @@ public sealed class ObjectMappingGrpcService(
             _authEvaluator, _actingUserAccessor.ActingUser, schema, request.Payload,
             AuthorizationAction.Write, "Not authorized to create this entity.", existingRowJson: null, _auditLog);
 
-        _relationValidator.ValidateRelations(request.Payload, schema);
+        _relationValidator.ValidateAndNormalizeRelations(request.Payload, schema);
 
-        var key = _keyAccessor.ExtractKey(request.Payload, schema.KeyColumn.Name);
-        if (string.IsNullOrWhiteSpace(key) || key == Guid.Empty.ToString())
-        {
-            key = Guid.CreateVersion7().ToString();
-            _keyAccessor.SetKey(request.Payload, schema.KeyColumn.Name, key);
-        }
+        var key = _keyAccessor.AssignNewKey(request.Payload, schema.KeyColumn.Name);
 
         var payloadJson = StructSerializer.SerializePayload(request.Payload);
 
@@ -320,6 +319,21 @@ public sealed class ObjectMappingGrpcService(
         // next poll. This just keeps the common case's projection latency low.
         await _outboxPublisher.PublishAsync(EntityEventType.Created, request.TypeName, key, payloadJson,
             request.TraceId, targetStores, outboxRowId, "Mapping.Post");
+
+        // Strip the server-owned tenant column from the Struct that becomes MappingResponse.Data.
+        // EnforceWriteAuthorization force-set it INTO this very object (SetAuthoritativeField ->
+        // StructFieldAccess.SetField mutates in place), and `Data = request.Payload` below returns
+        // that same object — so without this the column goes back to the caller on every write.
+        //
+        // AFTER SerializePayload, deliberately. payloadJson is what OutboxPublisher puts on Kafka,
+        // and it is the only source of the tenant value for the StarRocks projection
+        // (EngagementRepository.UpsertAsync) and the Qdrant point payload
+        // (IntelligenceStoreConsumer.BuildObjectPointPayload). Stripping before serialization
+        // would leave the StarRocks row's tenant column NULL — StarRocks' Primary Key model
+        // treats a partial INSERT as a full-row replace — and every subsequent StarRocks read for
+        // that tenant would return nothing. OutboxWriter remains the sole *injector* for the
+        // Postgres write; this is only a response-shaping strip.
+        AuthorizationFieldMasking.RemoveTenantColumn(request.Payload);
 
         return new MappingResponse { Success = true, Data = request.Payload, TraceId = request.TraceId };
     }
@@ -348,7 +362,7 @@ public sealed class ObjectMappingGrpcService(
             existingRowJson,
             _auditLog);
 
-        _relationValidator.ValidateRelations(request.Payload, schema);
+        _relationValidator.ValidateAndNormalizeRelations(request.Payload, schema);
 
         var payloadJson = StructSerializer.SerializePayload(request.Payload);
 
@@ -372,7 +386,23 @@ public sealed class ObjectMappingGrpcService(
             request.TraceId,
             targetStores,
             outboxRowId,
-            "Mapping.Update");
+            "Mapping.Update",
+            priorPayloadJson: existingRowJson);
+
+        // Strip the server-owned tenant column from the Struct that becomes MappingResponse.Data.
+        // EnforceWriteAuthorization force-set it INTO this very object (SetAuthoritativeField ->
+        // StructFieldAccess.SetField mutates in place), and `Data = request.Payload` below returns
+        // that same object — so without this the column goes back to the caller on every write.
+        //
+        // AFTER SerializePayload, deliberately. payloadJson is what OutboxPublisher puts on Kafka,
+        // and it is the only source of the tenant value for the StarRocks projection
+        // (EngagementRepository.UpsertAsync) and the Qdrant point payload
+        // (IntelligenceStoreConsumer.BuildObjectPointPayload). Stripping before serialization
+        // would leave the StarRocks row's tenant column NULL — StarRocks' Primary Key model
+        // treats a partial INSERT as a full-row replace — and every subsequent StarRocks read for
+        // that tenant would return nothing. OutboxWriter remains the sole *injector* for the
+        // Postgres write; this is only a response-shaping strip.
+        AuthorizationFieldMasking.RemoveTenantColumn(request.Payload);
 
         return new MappingResponse { Success = true, Data = request.Payload, TraceId = request.TraceId };
     }
@@ -385,7 +415,7 @@ public sealed class ObjectMappingGrpcService(
         var schema = RequireSchema(request.TypeName);
 
         var rowJson = await FetchByKeyAsync(schema, request.Key,
-            tenantScoped: schema.TenantColumn is not null,
+            tenantScoped: true,
             tenantId: _actingUserAccessor.ActingUser?.FindFirst("tenant_id")?.Value);
         if (rowJson is null)
             return new MappingDeleteResponse

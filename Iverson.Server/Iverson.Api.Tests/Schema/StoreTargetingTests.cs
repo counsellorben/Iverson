@@ -15,7 +15,8 @@ public class StoreTargetingTests
         FkColumns     = [new ForeignKeyDescriptor("AuthorId", "Author")],
         VectorFields  = [],
         ChunkFields   = [],
-        Relations     = [new RelationDescriptor("Author", kind, "Author", "AuthorId")]
+        Relations     = [new RelationDescriptor("Author", kind, "Author", "AuthorId")],
+        TenantColumn  = SchemaDescriptor.TenantColumnName
     };
 
     [Theory]

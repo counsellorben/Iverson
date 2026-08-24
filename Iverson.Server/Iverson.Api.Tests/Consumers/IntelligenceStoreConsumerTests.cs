@@ -9,6 +9,7 @@ using Iverson.Embeddings;
 using Iverson.Events;
 using Iverson.Sql;
 using Iverson.Vector;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using NSubstitute;
@@ -101,6 +102,7 @@ public class IntelligenceStoreConsumerTests
             _embedding,
             _registry,
             _entities,
+            new DocumentRenderer(_registry, _entities),
             new IntelligenceTenantScope("test-signing-key-0123456789abcdef"),
             _enrichment,
             Options.Create(_enrichmentOptions),
@@ -563,6 +565,60 @@ public class IntelligenceStoreConsumerTests
     }
 
     [Fact]
+    public async Task HandleCreated_PointPayload_IncludesTheServerOwnedTenantColumn()
+    {
+        // Task 1 position for IntelligenceStoreConsumer's ScalarColumns loop: INCLUDE. The tenant
+        // column has to reach the Qdrant projection like any other scalar — excluding it here would
+        // leave the vector store with no tenant discriminator on the point payload.
+        var schema = SchemaFixtures.ArticleSchema() with
+        {
+            ScalarColumns =
+            [
+                new ColumnDescriptor("Title", "text", false),
+                new ColumnDescriptor(SchemaDescriptor.TenantColumnName, "TEXT", false)
+            ],
+            FkColumns    = [],
+            Relations    = [],
+            ChunkFields  = [],
+            TenantColumn = SchemaDescriptor.TenantColumnName
+        };
+        await _registry.RegisterAsync(schema);
+
+        // The consumer re-derives the tenant value from the authoritative Postgres row, keyed by
+        // schema.TenantColumn — which is now the server-owned name, not "TenantId".
+        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>())
+                 .Returns($$"""{"{{SchemaDescriptor.TenantColumnName}}":"test-tenant"}""");
+
+        var entityKey = Guid.NewGuid().ToString();
+        var payload   = $$"""{"Title":"T","{{SchemaDescriptor.TenantColumnName}}":"test-tenant"}""";
+        var ev = new EntityEvent(
+            EventType:     EntityEventType.Created,
+            TypeName:      "Article",
+            Key:           entityKey,
+            PayloadJson:   payload,
+            TraceId:       "trace-tenant-payload",
+            SchemaVersion: "1",
+            OccurredAt:    DateTimeOffset.UtcNow,
+            TargetStores:  StoreTarget.Intelligence);
+
+        IReadOnlyDictionary<string, object>? capturedPayload = null;
+        _vectorWrite
+            .UpsertNamedAsync(
+                "articles_test-tenant",
+                Arg.Any<ulong>(),
+                Arg.Any<IReadOnlyDictionary<string, float[]>>(),
+                Arg.Do<IReadOnlyDictionary<string, object>?>(p => capturedPayload = p))
+            .Returns(Task.CompletedTask);
+
+        var sut = BuildSut();
+        await sut.HandleAsync(ev.Key, Serialize(ev), CancellationToken.None);
+
+        capturedPayload.Should().NotBeNull();
+        capturedPayload!.Should().ContainKey(SchemaDescriptor.TenantColumnName);
+        capturedPayload[SchemaDescriptor.TenantColumnName].Should().Be("test-tenant");
+    }
+
+    [Fact]
     public async Task HandleCreated_WithMultipleVectorFields_EmbedsAllFields()
     {
         // Schema with two vector fields — verifies both EmbedAsync calls fire
@@ -580,7 +636,11 @@ public class IntelligenceStoreConsumerTests
                 new VectorDescriptor("Summary", 768, "nomic-embed-text")
             ],
             ChunkFields    = [],
-            Relations      = []
+            Relations      = [],
+            // Required since Task 7 made SchemaDescriptor.TenantColumn non-nullable. This fixture
+            // previously omitted it and so exercised the null-TenantColumn branch that no longer
+            // exists; the assertions below are about vector-field fan-out and are unaffected.
+            TenantColumn   = SchemaDescriptor.TenantColumnName
         };
         await _registry.RegisterAsync(twoVectorSchema);
 
@@ -1925,5 +1985,269 @@ public class IntelligenceStoreConsumerTests
         capturedPayload.Should().NotBeNull();
         // Degrade, never throw — the bad element is skipped exactly as a failing scalar yields null.
         ((IEnumerable<object>)capturedPayload!["scores"]).Should().Equal(1L, 3L);
+    }
+
+    // ── Templated document rendering + orphaned-chunk-point fix ────────────────
+
+    // Two chunk fields: Body (a plain chunk field, exercised as today) and the synthetic
+    // "Document" field the schema builder appends whenever a type declares a template (T1).
+    // Tagline is nullable and deliberately absent from ScalarColumns' non-null set so a test
+    // can drive DocumentRenderer to render "" without needing any relation fetch — the
+    // template is a bare scalar placeholder over a property that can simply be missing/null
+    // on a given payload.
+    private static SchemaDescriptor TemplatedDocSchema() => new()
+    {
+        TypeName       = "TemplatedDoc",
+        TableName      = "templated_docs",
+        CollectionName = "templated_docs",
+        KeyColumn      = new ColumnDescriptor("Id", "uuid", false),
+        ScalarColumns  = [
+            new ColumnDescriptor("Body", "text", false),
+            new ColumnDescriptor("Tagline", "text", true)],
+        FkColumns      = [],
+        VectorFields   = [],
+        ChunkFields    =
+        [
+            new ChunkDescriptor("Body", 10, 0, "nomic-embed-text", 768),
+            new ChunkDescriptor("Document", 10, 0, "nomic-embed-text", 768)
+        ],
+        Relations      = [],
+        DocumentTemplate = DocumentTemplateParser.Parse("{Tagline}"),
+        TenantColumn   = "TenantId"
+    };
+
+    // Template-only: no VectorFields, and the only ChunkField is the synthetic "Document" one.
+    // Nothing routes this type to Intelligence except the template.
+    private static SchemaDescriptor TemplateOnlyDocSchema() => new()
+    {
+        TypeName       = "TemplatedDoc",
+        TableName      = "templated_docs",
+        CollectionName = "templated_docs",
+        KeyColumn      = new ColumnDescriptor("Id", "uuid", false),
+        ScalarColumns  = [new ColumnDescriptor("Tagline", "text", true)],
+        FkColumns      = [],
+        VectorFields   = [],
+        ChunkFields    = [new ChunkDescriptor("Document", 10, 0, "nomic-embed-text", 768)],
+        Relations      = [],
+        DocumentTemplate = DocumentTemplateParser.Parse("{Tagline}"),
+        TenantColumn   = "TenantId"
+    };
+
+    private static EntityEvent TemplatedDocEvent(string key, string payloadJson, string traceId) => new(
+        EventType:     EntityEventType.Created,
+        TypeName:      "TemplatedDoc",
+        Key:           key,
+        PayloadJson:   payloadJson,
+        TraceId:       traceId,
+        SchemaVersion: "1",
+        OccurredAt:    DateTimeOffset.UtcNow,
+        TargetStores:  StoreTarget.Intelligence);
+
+    // 40-char windows (maxTokens=10, overlap=0, same arithmetic as MultiChunkBody above).
+    // 5 distinguishable 40-char blocks => exactly 5 chunks.
+    private static readonly string LongTagline =
+        string.Concat(Enumerable.Range(0, 5).Select(i => $"T{i:00}" + new string('y', 37)));
+
+    [Fact]
+    public async Task HandleCreated_WithDocumentTemplate_UpsertsDocumentVectorChunksIntoChunksCollection()
+    {
+        await _registry.RegisterAsync(TemplatedDocSchema());
+
+        var ev = TemplatedDocEvent(
+            Guid.NewGuid().ToString(),
+            $$"""{"Body":"some body text","Tagline":"{{LongTagline}}","TenantId":"test-tenant"}""",
+            "trace-doc-template");
+
+        await BuildSut().HandleAsync(ev.Key, Serialize(ev), CancellationToken.None);
+
+        await _vectorWrite.Received().UpsertNamedAsync(
+            "templated_docs_chunks_test-tenant",
+            Arg.Any<ulong>(),
+            Arg.Is<IReadOnlyDictionary<string, float[]>>(d => d.ContainsKey("document_vector")),
+            Arg.Any<IReadOnlyDictionary<string, object>?>());
+    }
+
+    [Fact]
+    public async Task HandleCreated_TemplateOnlyType_RoutesToIntelligenceAndUpsertsDocumentChunks()
+    {
+        await _registry.RegisterAsync(TemplateOnlyDocSchema());
+
+        var ev = TemplatedDocEvent(
+            Guid.NewGuid().ToString(),
+            $$"""{"Tagline":"{{LongTagline}}","TenantId":"test-tenant"}""",
+            "trace-doc-template-only");
+
+        await BuildSut().HandleAsync(ev.Key, Serialize(ev), CancellationToken.None);
+
+        await _vectorWrite.Received().UpsertNamedAsync(
+            "templated_docs_chunks_test-tenant",
+            Arg.Any<ulong>(),
+            Arg.Is<IReadOnlyDictionary<string, float[]>>(d => d.ContainsKey("document_vector")),
+            Arg.Any<IReadOnlyDictionary<string, object>?>());
+    }
+
+    [Fact]
+    public async Task HandleCreated_DocumentFieldShrinksFromManyChunksToFew_DeletesStalePointsThenWritesOnlyTheNewCount()
+    {
+        await _registry.RegisterAsync(TemplatedDocSchema());
+        var key = Guid.NewGuid().ToString();
+
+        // First event: LongTagline renders 5 Document chunks.
+        var first = TemplatedDocEvent(
+            key,
+            $$"""{"Body":"some body text","Tagline":"{{LongTagline}}","TenantId":"test-tenant"}""",
+            "trace-shrink-1");
+        await BuildSut().HandleAsync(first.Key, Serialize(first), CancellationToken.None);
+
+        await _vectorWrite.Received(5).UpsertNamedAsync(
+            "templated_docs_chunks_test-tenant",
+            Arg.Any<ulong>(),
+            Arg.Is<IReadOnlyDictionary<string, float[]>>(d => d.ContainsKey("document_vector")),
+            Arg.Any<IReadOnlyDictionary<string, object>?>());
+
+        _vectorWrite.ClearReceivedCalls();
+
+        // Second event, same key: a short Tagline renders to a single Document chunk. The stale
+        // 4 points from the first event must not survive — the delete (Step 3) runs before the
+        // chunk rewrite, scoped to this parent+field, so only the new (fewer) chunks land.
+        var second = TemplatedDocEvent(
+            key,
+            $$"""{"Body":"some body text","Tagline":"short","TenantId":"test-tenant"}""",
+            "trace-shrink-2");
+        await BuildSut().HandleAsync(second.Key, Serialize(second), CancellationToken.None);
+
+        await _vectorWrite.Received(1).DeleteByFilterAsync(
+            "templated_docs_chunks_test-tenant",
+            Arg.Is<Filter>(f => f.Must.Count == 2
+                              && f.Must.Any(c => c.Field.Key == "parent_id" && c.Field.Match.Keyword == key)
+                              && f.Must.Any(c => c.Field.Key == "field" && c.Field.Match.Keyword == "Document")));
+
+        await _vectorWrite.Received(1).UpsertNamedAsync(
+            "templated_docs_chunks_test-tenant",
+            Arg.Any<ulong>(),
+            Arg.Is<IReadOnlyDictionary<string, float[]>>(d => d.ContainsKey("document_vector")),
+            Arg.Any<IReadOnlyDictionary<string, object>?>());
+    }
+
+    [Fact]
+    public async Task HandleCreated_DocumentFieldBecomesEmpty_DeletesFieldScopedPointsButLeavesOtherFieldUntouched()
+    {
+        await _registry.RegisterAsync(TemplatedDocSchema());
+        var key = Guid.NewGuid().ToString();
+
+        // Tagline is null (missing entirely) => DocumentRenderer renders "" for the Document
+        // field. Body stays populated throughout, on the same parent, so the test can prove the
+        // Document delete does not disturb Body's points.
+        var ev = TemplatedDocEvent(
+            key,
+            """{"Body":"some body text","TenantId":"test-tenant"}""",
+            "trace-empty-doc");
+
+        var deleteFilters = new List<Filter>();
+        _vectorWrite
+            .DeleteByFilterAsync(Arg.Any<string>(), Arg.Do<Filter>(f => deleteFilters.Add(f)))
+            .Returns(Task.CompletedTask);
+
+        await BuildSut().HandleAsync(ev.Key, Serialize(ev), CancellationToken.None);
+
+        // The empty-text guard must not skip the delete (Step 3): a field-scoped delete for
+        // "Document" still happened, even though its rendered text is "".
+        deleteFilters.Should().ContainSingle(f =>
+            f.Must.Count == 2
+            && f.Must.Any(c => c.Field.Key == "parent_id" && c.Field.Match.Keyword == key)
+            && f.Must.Any(c => c.Field.Key == "field" && c.Field.Match.Keyword == "Document"));
+
+        // No chunk points are (re)written for the now-empty Document field.
+        await _vectorWrite.DidNotReceive().UpsertNamedAsync(
+            "templated_docs_chunks_test-tenant",
+            Arg.Any<ulong>(),
+            Arg.Is<IReadOnlyDictionary<string, float[]>>(d => d.ContainsKey("document_vector")),
+            Arg.Any<IReadOnlyDictionary<string, object>?>());
+
+        // Body's own delete is separately field-scoped to "Body" — never merged with Document's.
+        deleteFilters.Should().ContainSingle(f =>
+            f.Must.Count == 2
+            && f.Must.Any(c => c.Field.Key == "parent_id" && c.Field.Match.Keyword == key)
+            && f.Must.Any(c => c.Field.Key == "field" && c.Field.Match.Keyword == "Body"));
+
+        // Body is still populated on this event, so its chunk points are still (re)written —
+        // proof the Document field's delete/guard handling did not disturb it.
+        await _vectorWrite.Received().UpsertNamedAsync(
+            "templated_docs_chunks_test-tenant",
+            Arg.Any<ulong>(),
+            Arg.Is<IReadOnlyDictionary<string, float[]>>(d => d.ContainsKey("body_vector")),
+            Arg.Any<IReadOnlyDictionary<string, object>?>());
+    }
+
+    [Fact]
+    public async Task HandleCreated_AuthoritativeTenantValueMissing_RendersDocumentWithoutThrowingAndLogsWarning()
+    {
+        // final-review Finding 5: authoritativeTenantValue can be null independent of whether
+        // TenantColumn is configured — FetchAuthoritativeOwnerValueAsync also returns null when
+        // the authoritative Postgres row is simply gone (e.g. a delete-then-recreate race). The
+        // previous `authoritativeTenantValue!` asserted that away; this proves the render still
+        // completes safely (from payload scalars only) and the degradation is now logged rather
+        // than silent.
+        await _registry.RegisterAsync(TemplatedDocSchema());
+        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>())
+                 .Returns((string?)null);
+
+        var recordingLogger = new RecordingLogger<IntelligenceStoreConsumer>();
+        var sut = new IntelligenceStoreConsumer(
+            _consumer,
+            _vectorSchema,
+            _vectorWrite,
+            _embedding,
+            _registry,
+            _entities,
+            new DocumentRenderer(_registry, _entities),
+            new IntelligenceTenantScope("test-signing-key-0123456789abcdef"),
+            _enrichment,
+            Options.Create(_enrichmentOptions),
+            recordingLogger);
+
+        var key = Guid.NewGuid().ToString();
+        var ev = TemplatedDocEvent(
+            key,
+            """{"Body":"some body text","Tagline":"a tagline","TenantId":"test-tenant"}""",
+            "trace-null-tenant");
+
+        var act = () => sut.HandleAsync(ev.Key, Serialize(ev), CancellationToken.None);
+        await act.Should().NotThrowAsync();
+
+        // Distinct from FetchAuthoritativeOwnerValueAsync's own "no authoritative row" warning
+        // (also logged here, on the tenant re-derivation call, since the row is null) — assert
+        // on wording unique to the document-render degradation warning itself, so this doesn't
+        // pass merely because the pre-existing re-derivation log fired.
+        recordingLogger.Entries.Should().Contain(e =>
+            e.Level == LogLevel.Warning &&
+            e.Message.Contains("Rendering document") &&
+            e.Message.Contains("TemplatedDoc") &&
+            e.Message.Contains(key));
+
+        // The document still rendered from payload scalars alone and was chunked/upserted, just
+        // routed to the no-tenant-claim collection rather than dropped.
+        await _vectorWrite.Received().UpsertNamedAsync(
+            Arg.Is<string>(c => c.StartsWith("templated_docs_chunks_")),
+            Arg.Any<ulong>(),
+            Arg.Is<IReadOnlyDictionary<string, float[]>>(d => d.ContainsKey("document_vector")),
+            Arg.Any<IReadOnlyDictionary<string, object>?>());
+    }
+
+    // A test logger that records level + formatted message, mirroring
+    // DocumentRerenderQueueWorkerTests.RecordingLogger, so a specific warning's content (not
+    // merely its presence) can be asserted.
+    private sealed class RecordingLogger<T> : ILogger<T>
+    {
+        public List<(LogLevel Level, string Message)> Entries { get; } = [];
+
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+
+        public bool IsEnabled(LogLevel logLevel) => true;
+
+        public void Log<TState>(
+            LogLevel logLevel, EventId eventId, TState state, Exception? exception,
+            Func<TState, Exception?, string> formatter) =>
+            Entries.Add((logLevel, formatter(state, exception)));
     }
 }

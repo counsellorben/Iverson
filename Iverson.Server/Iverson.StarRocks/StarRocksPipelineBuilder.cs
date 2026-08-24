@@ -45,6 +45,12 @@ internal static class StarRocksPipelineBuilder
         };
         foreach (var c in schema.ColumnNames)
         {
+            // EXCLUDE the server-owned tenant column. This dictionary is the pipeline's whole
+            // notion of "columns a step may reference or emit", so dropping it here makes the
+            // column unreferenceable in every step's select/where/derive/group-by/join AND —
+            // because Build projects the base CTE from exactly this set — keeps it out of the
+            // `SELECT *` that every downstream step inherits.
+            if (schema.IsTenantColumn(c)) continue;
             if (constraint?.AllowedFields is not null && !constraint.AllowedFields.Contains(c)) continue;
             cols[c] = c;
         }
@@ -216,6 +222,15 @@ internal static class StarRocksPipelineBuilder
                     // emission) leak the source's raw physical columns past the restriction.
                     // Fail loudly instead of guessing. A prior-step source needs no such check:
                     // its Columns dictionary already only contains allowed names.
+                    //
+                    // KEPT even though EmitSelectItem now expands a fresh type's wildcard
+                    // explicitly (so the leak horn of the two described above is closed on its
+                    // own). The other horn still stands: under a restricted field set, expanding
+                    // would silently hand back fewer columns than `all: true` asked for, and a
+                    // caller cannot tell that from a complete result. A loud rejection naming the
+                    // remedy ("select individual columns instead") is the better answer, and an
+                    // existing test pins that message. The expansion and this guard now cover
+                    // different failures rather than the same one.
                     var isFreshRestrictedType =
                         registry(source.Name) is not null &&
                         earlier.All(s => !s.Name.Equals(source.Name, StringComparison.OrdinalIgnoreCase)) &&
@@ -382,6 +397,7 @@ internal static class StarRocksPipelineBuilder
     {
         var tracked = TrackAndValidate(schema, request, registry, authz);
         var byName  = tracked.ToDictionary(s => s.Name, StringComparer.OrdinalIgnoreCase);
+        var baseColumns = byName[BaseStepName].Columns;
 
         var param = new DynamicParameters();
         var sb = new StringBuilder();
@@ -409,7 +425,20 @@ internal static class StarRocksPipelineBuilder
             baseWhere = baseWhere.Length > 0 ? $"({baseWhere}) AND {tenantPredicate}" : tenantPredicate;
         }
 
-        sb.Append($"WITH `{BaseStepName}` AS (SELECT * FROM {TenantIdentifier.Qualify(tenantDatabase, schema.TableName)}");
+        // Explicit projection, NOT `SELECT *`. Pipeline is the one query path that does not go
+        // through StarRocksQueryBuilder.BuildSelectColumns, so with the tenant column physically
+        // present a `SELECT *` base CTE would hand it to every downstream `SELECT *` step and out
+        // through the final `SELECT * FROM <last step>` — even for a zero-step pipeline. Projecting
+        // exactly the base step's tracked column set keeps "what a step may reference" and "what
+        // the CTE actually contains" the same set, which is what makes that impossible.
+        var baseProjection = string.Join(", ",
+            new[] { schema.KeyColumnName }
+                .Concat(schema.ColumnNames)
+                .Where(baseColumns.ContainsKey)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .Select(c => $"`{baseColumns[c]}`"));
+
+        sb.Append($"WITH `{BaseStepName}` AS (SELECT {baseProjection} FROM {TenantIdentifier.Qualify(tenantDatabase, schema.TableName)}");
         if (baseWhere.Length > 0) sb.Append($" WHERE {baseWhere}");
         sb.Append(')');
 
@@ -502,10 +531,18 @@ internal static class StarRocksPipelineBuilder
                 : null,
             step.Where, step.WhereLogic, param, $"s{stepIdx}_p", out _);
 
+        // Which join sources are FRESH REGISTERED TYPES (a physical table) rather than a prior
+        // step (a CTE). Only the former needs its `all: true` expanded explicitly — see
+        // EmitSelectItem. Mirrors the isFreshType computation in the join loop below.
+        var freshTypeSources = joinSources.Keys
+            .Where(n => registry(n) is not null &&
+                        emitted.All(s => !s.Name.Equals(n, StringComparison.OrdinalIgnoreCase)))
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
         var selectParts = new List<string>();
         if (step.Select.Count > 0)
             foreach (var item in step.Select)
-                selectParts.Add(EmitSelectItem(step, item, input, joinSources));
+                selectParts.Add(EmitSelectItem(step, item, input, joinSources, freshTypeSources));
         else
             selectParts.Add("*");
 
@@ -625,7 +662,8 @@ internal static class StarRocksPipelineBuilder
 
     private static string EmitSelectItem(
         PipelineStep step, SelectItem item, StepColumns input,
-        Dictionary<string, StepColumns> joinSources)
+        Dictionary<string, StepColumns> joinSources,
+        IReadOnlySet<string> freshTypeSources)
     {
         var hasJoins = step.Joins.Count > 0;
 
@@ -644,7 +682,22 @@ internal static class StarRocksPipelineBuilder
         }
 
         if (item.All)
+        {
+            // A fresh registered type is joined as its PHYSICAL TABLE, so `alias`.* expands to
+            // that table's real columns — the server-owned tenant column included — regardless of
+            // what ColumnsFor tracked, because ColumnsFor shapes the tracked NAME SET, not the
+            // emitted SQL. Expand the tracked set explicitly instead, which restores the same
+            // "emitted SQL == tracked columns" invariant the base CTE relies on.
+            //
+            // Every other source is a CTE — the step's own input, or a prior step — whose columns
+            // were already filtered upstream (ultimately by the base CTE's explicit projection),
+            // so a wildcard over one cannot reintroduce anything. Left as `*` there so a step's
+            // output is not pinned to a Dictionary enumeration order.
+            if (freshTypeSources.Contains(sqlAlias))
+                return string.Join(", ", source.Columns.Values.Select(c => $"`{sqlAlias}`.`{c}`"));
+
             return hasJoins ? $"`{sqlAlias}`.*" : "*";
+        }
 
         var col = source.Columns[item.Column];
         var qualified = hasJoins ? $"`{sqlAlias}`.`{col}`" : $"`{col}`";

@@ -6,10 +6,14 @@ import 'reflect-metadata';
 import * as grpc from '@grpc/grpc-js';
 
 import {
+    AuthorizationRules,
     ClrType,
     GetSchemaRequest,
     GetSchemaResponse,
     MappingDeleteRequest,
+    MappingGetRequest,
+    MappingResponse,
+    MappingWriteRequest,
     ObjectMappingServiceClient,
     PropertyDescriptor,
     RelationDescriptor,
@@ -48,6 +52,7 @@ import {
 
 import {
     getArrayFields,
+    getGuidFields,
     getChunkFields,
     getEmbeddingFields,
     getExtractedFields,
@@ -57,9 +62,9 @@ import {
     getMetadataFields,
     getPropertyDescriptions,
     getRelations,
+    getRelationsWithFactory,
     getSearchKeys,
     getSummaryFields,
-    getTenantFields,
     getTypeDescription,
     isIversonEntity,
     RelationKindString,
@@ -86,6 +91,49 @@ function jsTypeToClr(typeName: string): ClrType {
 function toPascalCase(field: string): string {
     if (!field) return field;
     return field.charAt(0).toUpperCase() + field.slice(1);
+}
+
+/**
+ * Derive the navigation property name from the relation's member name.
+ * For many_to_one / one_to_one the member itself is the foreign key
+ * (authorId → AuthorId), so strip the trailing "Id" to get the navigation
+ * property name (Author). For many_to_many the member itself is the foreign
+ * key (regTagIds → RegTagIds), so strip the trailing "Ids" to get the
+ * navigation property name (RegTags). Other kinds use the PascalCase member
+ * name as-is.
+ */
+function relationPropertyName(kind: RelationKindString, field: string): string {
+    const pascal = toPascalCase(field);
+    if (kind === 'many_to_one' || kind === 'one_to_one') {
+        if (pascal.length > 2 && pascal.endsWith('Id')) {
+            return pascal.slice(0, -2);
+        }
+    }
+    if (kind === 'many_to_many') {
+        if (pascal.length > 3 && pascal.endsWith('Ids')) {
+            return pascal.slice(0, -3) + 's';
+        }
+    }
+    return pascal;
+}
+
+/**
+ * Derive the JS member name a hydrated relation lands on (read path) — the same
+ * suffix-strip-plus-plural derivation as `relationPropertyName`, but applied directly to the
+ * camelCase declared field (no Pascal round trip), since this names an actual JS instance
+ * property rather than a wire column. many_to_one/one_to_one strip the trailing "Id";
+ * many_to_many strips "Ids" and appends "s" (so `tsTagIds` -> `tsTags` stays distinct from
+ * `tsTagId` -> `tsTag`, the same-related-type collision the conformance model exercises).
+ * one_to_many has no derived name: its declared member is already the navigation member.
+ */
+function relationNavMember(kind: RelationKindString, field: string): string {
+    if ((kind === 'many_to_one' || kind === 'one_to_one') && field.length > 2 && field.endsWith('Id')) {
+        return field.slice(0, -2);
+    }
+    if (kind === 'many_to_many' && field.length > 3 && field.endsWith('Ids')) {
+        return field.slice(0, -3) + 's';
+    }
+    return field;
 }
 
 /** Infer FK column name from relation metadata. */
@@ -198,6 +246,7 @@ export function describeEntity(cls: Function): TypeDescriptor {
     const keywordsFields = new Set(getKeywordsFields(cls));
     const extractedByField = new Map(getExtractedFields(cls).map(e => [e.field, e]));
     const arrayFields = getArrayFields(cls);
+    const guidFields = getGuidFields(cls);
     if (keyField !== undefined) {
         // The server builds every per-property declaration from non-key properties only, so
         // anything but a description on the key is accepted and silently dropped.
@@ -225,6 +274,18 @@ export function describeEntity(cls: Function): TypeDescriptor {
     const relations = getRelations(cls);
     const relationFields = new Set(relations.map(r => r.field));
 
+    for (const rel of relations) {
+        if (rel.kind !== 'many_to_one' && rel.kind !== 'one_to_one') continue;
+        const required = `${rel.relatedType}Id`;
+        if (toPascalCase(rel.field) !== required) {
+            throw new Error(
+                `${typeName}.${rel.field} is a ${rel.kind} relation to ${rel.relatedType}; ` +
+                `its member name PascalCases to '${toPascalCase(rel.field)}' but must PascalCase to ` +
+                `'${required}'. Rename ${rel.field} to '${required.charAt(0).toLowerCase()}${required.slice(1)}'.`,
+            );
+        }
+    }
+
     // Reflect on instance property types via design:type metadata
     // We use a temporary instance approach: instantiate to get prototype
     // then reflect on each property. design:type is set by TypeScript
@@ -248,8 +309,40 @@ export function describeEntity(cls: Function): TypeDescriptor {
                 'Add @IversonArray(ClrType.CLR_…) naming the element type.',
             );
         }
+        if (guidFields.has(fieldName)) {
+            if (looksArray) {
+                throw new Error(
+                    `${typeName}.${fieldName} is decorated with @IversonGuid() but is an array property; ` +
+                    '@IversonGuid() is scalar-only. Use @IversonArray(ClrType.CLR_GUID) to declare a UUID array column.',
+                );
+            }
+            // design:type is only populated when the consumer's build emits decorator metadata
+            // (tsc with emitDecoratorMetadata); under esbuild-based test tooling it is undefined,
+            // so fall back to the runtime type of the field's own initializer, mirroring the
+            // Array.isArray(...) fallback `looksArray` already uses above for the same reason.
+            const runtimeType = typeof instance[fieldName];
+            // When design:type is unavailable and the field has no initializer (runtimeType
+            // 'undefined'), the underlying type is genuinely unknown at this point — accept
+            // rather than false-reject. Every case this check needs to catch (a number
+            // initializer, an array, etc.) has an observable non-string runtime value.
+            const isStringType = designType !== undefined
+                ? designType === String
+                : (runtimeType === 'string' || runtimeType === 'undefined');
+            if (!isStringType) {
+                const observed = designType?.name ?? runtimeType;
+                throw new Error(
+                    `${typeName}.${fieldName} is decorated with @IversonGuid() but its type is ` +
+                    `${observed}, not string; @IversonGuid() only applies to string-typed properties, ` +
+                    'since a GUID is carried as a string. Remove @IversonGuid() or change the property to a string.',
+                );
+            }
+        }
+
         const isArray = arrayElement !== undefined;
-        const clrType = arrayElement ?? (designType ? jsTypeToClr(designType.name) : ClrType.CLR_STRING);
+        const clrType = arrayElement
+            ?? (guidFields.has(fieldName)
+                ? ClrType.CLR_GUID
+                : (designType ? jsTypeToClr(designType.name) : ClrType.CLR_STRING));
 
         const isKey = fieldName === keyField;
         const isSearchKey = searchKeysByField.has(fieldName);
@@ -283,33 +376,51 @@ export function describeEntity(cls: Function): TypeDescriptor {
         });
     }
 
+    for (const rel of relations) {
+        if (rel.kind === 'one_to_many') continue;
+        properties.push({
+            name: inferFk(rel.kind, rel.relatedType, typeName),
+            clrType: ClrType.CLR_GUID,
+            isKey: false,
+            isNullable: true,
+            isArray: rel.kind === 'many_to_many',
+            isEmbedding: false,
+            vectorDim: 0,
+            modelId: '',
+            isChunk: false,
+            chunkMaxTokens: 0,
+            chunkOverlap: 0,
+            chunkModelId: '',
+            chunkVectorDim: 0,
+            isSearchKey: false,
+            searchKeyOrder: 0,
+            isLargeField: false,
+            isMetadata: false,
+            description: '',
+            isSummaryTarget: false,
+            isKeywordsTarget: false,
+            extractHint: '',
+            chunkContextual: false,
+        });
+    }
+
     const relationDescriptors: RelationDescriptor[] = relations.map(rel => ({
-        propertyName: toPascalCase(rel.field),
+        propertyName: relationPropertyName(rel.kind, rel.field),
         kind: RELATION_KIND_MAP[rel.kind] ?? RelationKind.MANY_TO_ONE,
         relatedType: rel.relatedType,
         foreignKey: inferFk(rel.kind, rel.relatedType, typeName),
     }));
-
-    const tenantFields = getTenantFields(cls);
-    if (tenantFields.length === 0) {
-        throw new Error(
-            `${typeName} has no property decorated with @IversonTenant(); schema registration ` +
-            'requires exactly one tenant field and the server rejects a request missing it.',
-        );
-    }
-    if (tenantFields.length > 1) {
-        throw new Error(
-            `${typeName} has multiple properties decorated with @IversonTenant() ` +
-            `(${tenantFields.join(', ')}); schema registration requires exactly one tenant field.`,
-        );
-    }
 
     return {
         typeName,
         properties,
         relations: relationDescriptors,
         authorization: undefined,
-        tenantField: toPascalCase(tenantFields[0]),
+        // The tenant column is server-owned: no client declares a tenant field. The server
+        // REJECTS a non-empty tenant_field with InvalidArgument, and ts-proto types the field as
+        // required (proto field 5 stays declared for wire compatibility), so it is sent empty —
+        // which is exactly what the other four clients send by omitting it.
+        tenantField: '',
         description: getTypeDescription(cls),
     };
 }
@@ -327,10 +438,13 @@ export class SchemaRegistrar {
         private readonly _callCredentials?: grpc.CallCredentials,
     ) {}
 
-    /** Register all entity schemas. */
-    async registerAll(traceId: string = ''): Promise<void> {
+    /** Register all entity schemas, optionally attaching per-type authorization rules. */
+    async registerAll(
+        traceId: string = '',
+        authorizationByTypeName?: Record<string, AuthorizationRules>,
+    ): Promise<void> {
         for (const cls of this._entityClasses) {
-            const request = this._buildRequest(cls, traceId);
+            const request = this._buildRequest(cls, traceId, authorizationByTypeName);
             const response = await callUnary<SchemaRequest, SchemaResponse>(
                 (req, metadata, options, cb) => this._mappingClient.registerSchema(req, metadata, options, cb),
                 request,
@@ -344,24 +458,47 @@ export class SchemaRegistrar {
         }
     }
 
-    _buildRequest(cls: Function, traceId: string = ''): SchemaRequest {
-        return {
-            rootType: describeEntity(cls),
-            dependents: [],
-            traceId,
-        };
+    _buildRequest(
+        cls: Function,
+        traceId: string = '',
+        authorizationByTypeName?: Record<string, AuthorizationRules>,
+    ): SchemaRequest {
+        const rootType = describeEntity(cls);
+        const rules = authorizationByTypeName?.[rootType.typeName];
+        if (rules !== undefined) rootType.authorization = rules;
+        return { rootType, dependents: [], traceId };
     }
 }
 
 // ── Struct conversion helpers ─────────────────────────────────────────────────
 
-function entityToPayload(entity: object): Record<string, unknown> {
+function entityToPayload(entity: object, cls: Function): Record<string, unknown> {
     const payload: Record<string, unknown> = {};
+    const typeName = cls.name;
+    const relations = getRelations(cls);
+    const relationByField = new Map(relations.map(r => [r.field, r] as const));
+    // Members the read path may have hydrated (payloadToEntity) onto a derived navigation name
+    // must never be written back — entityToPayload walks the live instance's own property names,
+    // so a hydrated `tsAuthor` would otherwise round-trip as `TsAuthor`, violating the FK-only
+    // write contract (A23). one_to_many has no derived name; it's excluded below via its kind.
+    // Only exclude when a suffix was actually stripped — a many_to_many member that doesn't end
+    // in "Ids" (legal: describeEntity only validates many_to_one/one_to_one naming) derives an
+    // unchanged navMember === field. Excluding that would drop the member itself from the
+    // payload, silently discarding its foreign keys.
+    const excludedNavMembers = new Set<string>();
+    for (const r of relations) {
+        if (r.kind === 'one_to_many') continue;
+        const navMember = relationNavMember(r.kind, r.field);
+        if (navMember !== r.field) excludedNavMembers.add(navMember);
+    }
     const allFields = Object.getOwnPropertyNames(entity);
     for (const field of allFields) {
+        if (excludedNavMembers.has(field)) continue;
         const value = (entity as Record<string, unknown>)[field];
         if (value === undefined) continue;
-        const key = toPascalCase(field);
+        const rel = relationByField.get(field);
+        if (rel?.kind === 'one_to_many') continue;
+        const key = rel !== undefined ? inferFk(rel.kind, rel.relatedType, typeName) : toPascalCase(field);
         if (value instanceof Date) {
             payload[key] = value.toISOString();
         } else {
@@ -374,13 +511,61 @@ function entityToPayload(entity: object): Record<string, unknown> {
 function payloadToEntity<T extends object>(cls: new () => T, data: Record<string, unknown>): T {
     const instance = Object.create(cls.prototype) as Record<string, unknown>;
     const template = new cls();
+    const typeName = (cls as unknown as Function).name;
+    const relations = getRelations(cls as unknown as Function);
+    const relationByField = new Map(relations.map(r => [r.field, r] as const));
     const allFields = Object.getOwnPropertyNames(template);
     for (const field of allFields) {
-        const key = toPascalCase(field);
+        const rel = relationByField.get(field);
+        const key = rel?.kind === 'many_to_many'
+            ? inferFk(rel.kind, rel.relatedType, typeName)
+            : toPascalCase(field);
         if (key in data) {
             instance[field] = data[key];
         }
     }
+
+    // Hydrate typed relation children for a depth-resolved read. Runs after the scalar pass
+    // above, which already assigned the raw FK scalar/id-list under its declared field; a
+    // hydrated relation lands on a distinct derived navigation member (many_to_one, one_to_one,
+    // many_to_many) or overwrites the declared member in place (one_to_many, which has no
+    // derived name). The wire key for the nested value is the schema's navigation property
+    // name (relationPropertyName), a separate wire column from the FK scalar/id-list.
+    for (const rel of getRelationsWithFactory(cls as unknown as Function)) {
+        if (rel.kind === 'one_to_many') {
+            const wireKey = relationPropertyName(rel.kind, rel.field);
+            const raw = data[wireKey];
+            if (!Array.isArray(raw)) continue;
+            const relatedCls = rel.typeFactory() as new () => object;
+            instance[rel.field] = raw.map(item => payloadToEntity(relatedCls, item as Record<string, unknown>));
+            continue;
+        }
+
+        const navMember = relationNavMember(rel.kind, rel.field);
+        // Only a genuine derivation (navMember !== rel.field) can collide with a declared field
+        // by definition — when no suffix was stripped, navMember equals the relation's own
+        // declared field, which is trivially "already declared" and must not raise here.
+        if (navMember !== rel.field && navMember in template) {
+            throw new Error(
+                `${typeName}: relation '${rel.field}' would hydrate into member '${navMember}', ` +
+                `but '${navMember}' is already a declared field on ${typeName}. Rename one of them.`,
+            );
+        }
+
+        const wireKey = relationPropertyName(rel.kind, rel.field);
+        const raw = data[wireKey];
+        if (raw === undefined || raw === null) continue;
+        const relatedCls = rel.typeFactory() as new () => object;
+
+        if (rel.kind === 'many_to_many') {
+            if (!Array.isArray(raw)) continue;
+            instance[navMember] = raw.map(item => payloadToEntity(relatedCls, item as Record<string, unknown>));
+        } else {
+            if (typeof raw !== 'object' || Array.isArray(raw)) continue;
+            instance[navMember] = payloadToEntity(relatedCls, raw as Record<string, unknown>);
+        }
+    }
+
     return instance as T;
 }
 
@@ -396,6 +581,7 @@ export class EntityCoordinator<T extends object> {
     private readonly _mapping: ObjectMappingServiceClient;
     private readonly _persistence: ObjectPersistenceServiceClient;
     private readonly _retrieval: ObjectRetrievalServiceClient;
+    private _boundActingUser?: ActingUserToken;
 
     constructor(
         private readonly _cls: new () => T,
@@ -409,6 +595,20 @@ export class EntityCoordinator<T extends object> {
         this._mapping = _client._mappingClient;
         this._persistence = _client._persistenceClient;
         this._retrieval = _client._retrievalClient;
+    }
+
+    /**
+     * Returns a coordinator bound to `token`, leaving this one untouched. The bound identity
+     * outranks the client's ambient one; an explicit per-call token still outranks both.
+     */
+    withActingUser(token: ActingUserToken): EntityCoordinator<T> {
+        const bound = new EntityCoordinator(this._cls, this._client);
+        bound._boundActingUser = token;
+        return bound;
+    }
+
+    private _identity(): ActingUserToken | undefined {
+        return this._boundActingUser ?? this._client._actingUserToken;
     }
 
     private _getKey(entity: T): string {
@@ -426,14 +626,14 @@ export class EntityCoordinator<T extends object> {
     async persist(entity: T, traceId: string = ''): Promise<string> {
         const request: PersistRequest = {
             typeName: this._typeName,
-            payload: entityToPayload(entity),
+            payload: entityToPayload(entity, this._cls),
             traceId,
         };
         const response = await callUnary<PersistRequest, PersistResponse>(
             (req, metadata, options, cb) => this._persistence.post(req, metadata, options, cb),
             request,
             this._client._callCredentials,
-            this._client._actingUserToken,
+            this._identity(),
         );
         if (!response.success) {
             throw new Error(`persist failed: ${response.error}`);
@@ -445,14 +645,14 @@ export class EntityCoordinator<T extends object> {
     async update(entity: T, traceId: string = ''): Promise<void> {
         const request: PersistRequest = {
             typeName: this._typeName,
-            payload: entityToPayload(entity),
+            payload: entityToPayload(entity, this._cls),
             traceId,
         };
         const response = await callUnary<PersistRequest, PersistResponse>(
             (req, metadata, options, cb) => this._persistence.update(req, metadata, options, cb),
             request,
             this._client._callCredentials,
-            this._client._actingUserToken,
+            this._identity(),
         );
         if (!response.success) {
             throw new Error(`update failed: ${response.error}`);
@@ -475,11 +675,71 @@ export class EntityCoordinator<T extends object> {
             ) => this._mapping.delete(req, metadata, options, cb),
             request,
             this._client._callCredentials,
-            this._client._actingUserToken,
+            this._identity(),
         );
         if (!response.success) {
             throw new Error(`delete failed: ${response.error}`);
         }
+    }
+
+    /** Retrieve an entity by key with server-side relation resolution to `depth`. */
+    async getMapped(id: string, depth: number = 1, traceId: string = ''): Promise<T | null> {
+        const request: MappingGetRequest = {
+            typeName: this._typeName,
+            key: id,
+            depth,
+            traceId,
+        };
+        const response = await callUnary<MappingGetRequest, MappingResponse>(
+            (req, metadata, options, cb) => this._mapping.get(req, metadata, options, cb),
+            request,
+            this._client._callCredentials,
+            this._identity(),
+        );
+        if (!response.success) return null;
+        return payloadToEntity(this._cls, (response.data ?? {}) as Record<string, unknown>);
+    }
+
+    /**
+     * Create an entity through the mapping path, which resolves its relations server-side.
+     * Resolves to the entity hydrated from the response, carrying the server-assigned key —
+     * the caller never assigns one.
+     */
+    async postMapped(entity: T, traceId: string = ''): Promise<T> {
+        const request: MappingWriteRequest = {
+            typeName: this._typeName,
+            payload: entityToPayload(entity, this._cls),
+            traceId,
+        };
+        const response = await callUnary<MappingWriteRequest, MappingResponse>(
+            (req, metadata, options, cb) => this._mapping.post(req, metadata, options, cb),
+            request,
+            this._client._callCredentials,
+            this._identity(),
+        );
+        if (!response.success) {
+            throw new Error(`postMapped failed: ${response.error}`);
+        }
+        return payloadToEntity(this._cls, (response.data ?? {}) as Record<string, unknown>);
+    }
+
+    /** Update an existing entity through the mapping path. */
+    async updateMapped(entity: T, traceId: string = ''): Promise<T> {
+        const request: MappingWriteRequest = {
+            typeName: this._typeName,
+            payload: entityToPayload(entity, this._cls),
+            traceId,
+        };
+        const response = await callUnary<MappingWriteRequest, MappingResponse>(
+            (req, metadata, options, cb) => this._mapping.update(req, metadata, options, cb),
+            request,
+            this._client._callCredentials,
+            this._identity(),
+        );
+        if (!response.success) {
+            throw new Error(`updateMapped failed: ${response.error}`);
+        }
+        return payloadToEntity(this._cls, (response.data ?? {}) as Record<string, unknown>);
     }
 
     /** Retrieve an entity by key. Returns null if not found. */
@@ -493,7 +753,7 @@ export class EntityCoordinator<T extends object> {
             (req, metadata, options, cb) => this._retrieval.get(req, metadata, options, cb),
             request,
             this._client._callCredentials,
-            this._client._actingUserToken,
+            this._identity(),
         );
         if (!response.found) return null;
         return payloadToEntity(this._cls, (response.data ?? {}) as Record<string, unknown>);
@@ -510,7 +770,7 @@ export class EntityCoordinator<T extends object> {
             (req, metadata, options) => this._retrieval.getMany(req, metadata, options),
             request,
             this._client._callCredentials,
-            this._client._actingUserToken,
+            this._identity(),
         );
         return new Promise((resolve, reject) => {
             const results: T[] = [];

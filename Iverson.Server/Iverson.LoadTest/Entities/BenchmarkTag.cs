@@ -9,5 +9,4 @@ public sealed class BenchmarkTag
     public string              Name     { get; set; } = "";
     public string              Category { get; set; } = "";
     public string OwnerId { get; set; } = "";
-    [IversonTenant] public string TenantId { get; set; } = "";
 }

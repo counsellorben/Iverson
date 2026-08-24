@@ -1,5 +1,6 @@
 using DotNet.Testcontainers.Builders;
 using FluentAssertions;
+using Google.Protobuf.WellKnownTypes;
 using Grpc.Core;
 using Iverson.Api.Authorization;
 using Iverson.Api.Grpc;
@@ -131,6 +132,68 @@ public sealed class ObjectSearchVectorIntegrationTests : IClassFixture<QdrantGrp
         await sut.SearchSimilar(request, writer, TestServerCallContext.Create());
 
         written.Should().ContainSingle();
+    }
+
+    [Fact]
+    public async Task SearchSimilar_ReturnsCanonicalDescriptorNamesAndTypedValues()
+    {
+        var collection = UniqueName();
+        var baseSchema = SchemaFixtures.ArticleSchema();
+        var schema = baseSchema with
+        {
+            CollectionName = collection,
+            // WordCount carries the lowercase SqlType convention SchemaFixtures.cs:57-64 uses
+            // everywhere else; ViewCount carries the uppercase convention SchemaBuilder.cs:351-359
+            // actually emits in production. The type-mapping switch must handle both — a test that
+            // exercised only one casing could not falsify a comparison that only handles the other.
+            ScalarColumns = [
+                .. baseSchema.ScalarColumns,
+                new ColumnDescriptor("WordCount", "integer", false),
+                new ColumnDescriptor("ViewCount", "BIGINT", false)]
+        };
+        await _registry.RegisterAsync(schema);
+        var physicalCollection = _tenantScope.ResolveCollectionName(collection, TestTenant, isChunks: false);
+        await _mgr.ApplyCollectionAsync(new CollectionSchema(
+            physicalCollection, [new NamedVector("title_vector", 4)], []));
+
+        var vec = new float[] { 0.1f, 0.2f, 0.3f, 0.4f };
+        _embedding.EmbedAsync(Arg.Any<string>(), Arg.Any<CancellationToken>()).Returns(vec);
+
+        // "key" is the literal payload key IntelligenceStoreConsumer.cs:417 writes the identity
+        // value under — it must be seeded explicitly here, or the Id-vs-Key assertion below has no
+        // subject to assert against.
+        await _vector.UpsertNamedAsync(physicalCollection, 1,
+            new Dictionary<string, float[]> { ["title_vector"] = vec },
+            new Dictionary<string, object>
+            {
+                ["key"]       = "article-1",
+                ["wordCount"] = 100L,
+                ["viewCount"] = 250L,
+                ["tenantId"]  = "test-tenant"
+            });
+
+        var sut = BuildSut();
+        var request = new SearchSimilarRequest { TypeName = "Article", Property = "Title", Query = "q", TopK = 10 };
+
+        var (writer, written) = MakeStream<SearchResponse>();
+        await sut.SearchSimilar(request, writer, TestServerCallContext.Create());
+
+        written.Should().ContainSingle();
+        var fields = written[0].Data.Fields;
+
+        // Canonical descriptor name, not the camelCase wire key `wordCount`.
+        fields.Should().ContainKey("WordCount");
+        fields["WordCount"].KindCase.Should().Be(Value.KindOneofCase.NumberValue);
+        fields["WordCount"].NumberValue.Should().Be(100);
+
+        // Same type resolution, exercised through the uppercase-declared SqlType this time.
+        fields.Should().ContainKey("ViewCount");
+        fields["ViewCount"].KindCase.Should().Be(Value.KindOneofCase.NumberValue);
+        fields["ViewCount"].NumberValue.Should().Be(250);
+
+        // Identity field is emitted under the key column's own name ("Id"), not the literal wire
+        // key "key" it was seeded under.
+        fields.Should().ContainKey("Id");
     }
 
     [Fact]

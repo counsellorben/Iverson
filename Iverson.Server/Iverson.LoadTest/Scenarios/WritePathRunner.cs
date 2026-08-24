@@ -57,6 +57,11 @@ internal static class WritePathRunner
         var report     = new BenchmarkReport();
         var postedKeys = new System.Collections.Concurrent.ConcurrentBag<string>();
         long fieldRejections = 0;
+        // Which fields were actually refused, deduplicated. Counting rejections alone cannot
+        // distinguish the one expected rejection (the owner-restricted identity writing the
+        // bypass-only field) from a misconfiguration that refuses every identity — both show up
+        // only as a number, and a run where 100% of writes were rejected looked normal.
+        var rejectionReasons = new System.Collections.Concurrent.ConcurrentDictionary<string, byte>();
 
         // ── Post wave ──────────────────────────────────────────────────────────
         var sw      = Stopwatch.StartNew();
@@ -72,44 +77,45 @@ internal static class WritePathRunner
                 var identity = identities.PickRandom();
                 try
                 {
-                    var headers = new Grpc.Core.Metadata().WithActingUser(await identity.GetTokenAsync(ct));
                     // The server force-sets OwnerId for the owner-restricted identity on create; the
                     // bypass identity's writes are never ownership-checked, so it must set its own OwnerId.
                     var ownerId = identity == identities.Bypass ? await identity.GetSubAsync(ct) : "";
                     var t0 = BenchmarkReport.NowMicros();
-                    string key;
+                    // ObjectPersistenceGrpcService.Post assigns the server-generated UUIDv7
+                    // key and rejects any client-supplied Id with InvalidArgument, so these
+                    // entities deliberately leave Id unset. The key that lands in Postgres is
+                    // PersistAsync's return value (response.Key). A null return means an
+                    // application-level failure (response.Success == false), a different failure
+                    // mode than a thrown RpcException, so it must be recorded as an error too
+                    // rather than silently treated as a success.
+                    string? key;
 
                     switch (flags.Type)
                     {
                         case "Author":
                             var u = new BenchmarkAuthor
                             {
-                                Id      = Guid.NewGuid(),
                                 Name    = $"WPAuthor {seed}",
                                 Email   = $"wpauthor{seed}@benchmark.dev",
                                 Bio     = new string('x', 200),
                                 OwnerId = ownerId,
                             };
-                            await authors.PersistAsync(u, headers, ct);
-                            key = u.Id.ToString();
+                            key = await authors.WithActingUser(() => identity.GetTokenAsync(ct)).PersistAsync(u, ct: ct);
                             break;
 
                         case "Tag":
                             var tg = new BenchmarkTag
                             {
-                                Id       = Guid.NewGuid(),
                                 Name     = $"wptag-{seed}",
                                 Category = Categories[seed % Categories.Length],
                                 OwnerId  = ownerId,
                             };
-                            await tags.PersistAsync(tg, headers, ct);
-                            key = tg.Id.ToString();
+                            key = await tags.WithActingUser(() => identity.GetTokenAsync(ct)).PersistAsync(tg, ct: ct);
                             break;
 
                         default: // Article
                             var a = new BenchmarkArticle
                             {
-                                Id                = Guid.NewGuid(),
                                 Title             = $"WP Article {seed}",
                                 Body              = GenerateBody(seed),
                                 BenchmarkAuthorId = authorIds.Length > 0
@@ -120,9 +126,14 @@ internal static class WritePathRunner
                                 PublishedAt       = DateTimeOffset.UtcNow,
                                 OwnerId           = ownerId,
                             };
-                            await articles.PersistAsync(a, headers, ct);
-                            key = a.Id.ToString();
+                            key = await articles.WithActingUser(() => identity.GetTokenAsync(ct)).PersistAsync(a, ct: ct);
                             break;
+                    }
+
+                    if (key is null)
+                    {
+                        report.RecordError();
+                        continue;
                     }
 
                     report.Record(BenchmarkReport.NowMicros() - t0);
@@ -134,11 +145,15 @@ internal static class WritePathRunner
                     // restricted to the bypass role, which the server rejects — tracked separately
                     // from genuine failures, not mixed into `report`'s error count.
                     Interlocked.Increment(ref fieldRejections);
+                    rejectionReasons.TryAdd(ex.Status.Detail, 0);
                 }
                 catch (RpcException ex)
                 {
                     report.RecordError();
-                    logger.LogDebug(ex, "Post failed at seed={Seed}", seed);
+                    // Warning, not Debug: the console logger's minimum level is Warning, so at
+                    // Debug a run where every single Post failed printed nothing but a bare error
+                    // count — indistinguishable from a healthy run without a database query.
+                    logger.LogWarning(ex, "Post failed at seed={Seed}", seed);
                 }
             }
         }, ct)).ToArray();
@@ -148,6 +163,8 @@ internal static class WritePathRunner
 
         Console.WriteLine($"[write-path] Post wave complete — {flags.Count:N0} records in {sw.Elapsed.TotalSeconds:F1}s");
         Console.WriteLine($"[write-path] Expected field-rejections (owner-restricted identity writing a bypass-only field): {Interlocked.Read(ref fieldRejections):N0}");
+        foreach (var reason in rejectionReasons.Keys)
+            Console.WriteLine($"[write-path]   rejected: {reason}");
 
         // ── Print gRPC Post report ─────────────────────────────────────────────
         var path = BenchmarkReport.ResultsPath($"write-path-{flags.Type.ToLower()}");

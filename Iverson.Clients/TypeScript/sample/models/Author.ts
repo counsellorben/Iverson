@@ -1,13 +1,11 @@
 import 'reflect-metadata';
-import { IversonEntity, IversonKey, IversonTenant } from '../../src/annotations.js';
+import { IversonEntity, IversonGuid, IversonKey } from '../../src/annotations.js';
 
 @IversonEntity()
 export class Author {
     @IversonKey()
+    @IversonGuid()
     id: string = '';
-
-    @IversonTenant()
-    tenantId: string = '';
 
     name: string = '';
 }

@@ -33,7 +33,19 @@ spec:
           envFrom:
             - configMapRef:
                 name: {{ .Release.Name }}-authentik-config
+          # Migrations are owned by the server Deployment's `migrate` initContainer. This role must
+          # never migrate: two concurrent migrators wedge on an idle-in-transaction backend holding
+          # pg_advisory_lock(1000), which Postgres cannot break as a deadlock, and the observed
+          # outcome was a partially migrated schema no retry repaired. See deployment-server.yaml.
+          #
+          # Known trade-off: on a FRESH install this pod may start before migrations finish and
+          # crash-loop briefly against an incomplete schema. That is noisy but safe — it never
+          # migrates, so it cannot corrupt — and it resolves as soon as the initContainer completes.
+          # Gating it on the server's readiness would remove the churn at the cost of coupling the
+          # worker's pod start to the server being up.
           env:
+            - name: AUTHENTIK_SKIP_MIGRATIONS
+              value: "true"
             - name: AUTHENTIK_SECRET_KEY
               valueFrom:
                 secretKeyRef: { name: {{ .Release.Name }}-authentik-app, key: secret-key }

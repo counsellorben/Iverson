@@ -1139,6 +1139,39 @@ public class ObjectSearchGrpcServiceTests
     }
 
     [Fact]
+    public async Task SearchSimilar_FilterOnTheServerOwnedTenantColumn_ThrowsInvalidArgument()
+    {
+        // Task 1: __TenantId is a real ScalarColumns member, but it is not addressable by clients.
+        // A filter naming it must be rejected exactly like any unknown property — otherwise a
+        // caller could probe or override the tenant boundary through the search filter.
+        var schema = SchemaFixtures.ArticleSchema() with
+        {
+            ScalarColumns =
+            [
+                new ColumnDescriptor("Title", "text", false),
+                new ColumnDescriptor(SchemaDescriptor.TenantColumnName, "TEXT", false)
+            ],
+            TenantColumn = SchemaDescriptor.TenantColumnName
+        };
+        await _registry.RegisterAsync(schema);
+        _embedding.EmbedAsync("q", Arg.Any<CancellationToken>()).Returns(new float[768]);
+
+        var request = new SearchSimilarRequest { TypeName = "Article", Property = "Title", Query = "q", TopK = 5 };
+        request.Filter.Add(new SearchClause
+        {
+            Property = SchemaDescriptor.TenantColumnName, Operator = SearchOperator.Equals,
+            Value = new SearchValue { StringVal = "other-tenant" }, ClauseType = SearchClauseType.Filter
+        });
+
+        var (writer, _) = MakeStream<SearchResponse>();
+        var act = async () => await _sut.SearchSimilar(request, writer, TestServerCallContext.Create());
+
+        (await act.Should().ThrowAsync<RpcException>())
+            .Where(e => e.Status.StatusCode == StatusCode.InvalidArgument
+                     && e.Status.Detail.Contains("is not a scalar or foreign-key column"));
+    }
+
+    [Fact]
     public async Task SearchSimilar_NoAuthorizationRules_ReturnsEmptyStream_WithoutQueryingQdrant()
     {
         var schema = SchemaFixtures.ArticleSchema() with { Authorization = null };
@@ -1270,9 +1303,9 @@ public class ObjectSearchGrpcServiceTests
             writer, TestServerCallContext.Create());
 
         written.Should().HaveCount(1);
-        written[0].Data.Fields.Should().ContainKey("key");   // schema's real key column is "Id", not "Key" — survives via the fixed exemptField constant
-        written[0].Data.Fields.Should().ContainKey("name");
-        written[0].Data.Fields.Should().NotContainKey("secret");
+        written[0].Data.Fields.Should().ContainKey("Id");   // identity field survives because "Id" is in AllowedFields — the key column is seeded into allFields at RowFieldAuthorizationEvaluator.cs:84 and filtered out of the exclusion set at :76, so it can never be excluded
+        written[0].Data.Fields.Should().ContainKey("Name");
+        written[0].Data.Fields.Should().NotContainKey("Secret");
     }
 
     [Fact]
@@ -2466,9 +2499,9 @@ public class ObjectSearchGrpcServiceTests
             writer, TestServerCallContext.Create());
 
         written.Should().HaveCount(2);
-        written[0].Data.Fields["body"].StringValue.Should().Be("A");
+        written[0].Data.Fields["Body"].StringValue.Should().Be("A");
         written[0].Score.Should().BeApproximately(1.0f, 0.001f);
-        written[1].Data.Fields["body"].StringValue.Should().Be("C-dissimilar");
+        written[1].Data.Fields["Body"].StringValue.Should().Be("C-dissimilar");
         written[1].Score.Should().BeApproximately(0.6667f, 0.001f);
     }
 
@@ -2923,4 +2956,123 @@ public class ObjectSearchGrpcServiceTests
     // parent_id → ulong mapping the service applies so it can key the centroid map.
     private static ulong InvokeKeyToUlong(string key) =>
         Iverson.Api.Consumers.IntelligenceStoreConsumer.KeyToUlong(key);
+
+    [Fact]
+    public async Task SearchSimilar_NeverStreamsTheServerOwnedTenantColumn()
+    {
+        // Qdrant point payloads DO carry the tenant column by design (IntelligenceStoreConsumer
+        // writes it as a discriminator alongside the collection routing), so this is a real leak
+        // path: the payload is turned into the response Struct verbatim. The MaskDisallowedFields
+        // call in the streaming loop is what closes it — and this schema has no FieldPermissions,
+        // so AllowedFields is null and the strip must fire on the early-return path.
+        await _registry.RegisterAsync(SchemaFixtures.ArticleSchema());
+
+        var fakeVector = new float[768];
+        _embedding.EmbedAsync("test query", Arg.Any<CancellationToken>()).Returns(fakeVector);
+
+        var vectorResult = new VectorSearchResult(
+            Id: 1, Score: 0.95,
+            Payload: new Dictionary<string, string>
+            {
+                ["title"] = "Great Article",
+                [SchemaDescriptor.TenantColumnName] = "test-tenant"
+            });
+
+        _vector.SearchNamedAsync("articles_test-tenant", "title_vector", fakeVector, Arg.Any<ulong>(), Arg.Any<Filter>())
+               .Returns(new List<VectorSearchResult> { vectorResult }.AsReadOnly());
+
+        var (writer, written) = MakeStream<SearchResponse>();
+        await _sut.SearchSimilar(
+            new SearchSimilarRequest { TypeName = "Article", Property = "Title", Query = "test query", TopK = 5 },
+            writer, TestServerCallContext.Create());
+
+        written.Should().HaveCount(1);
+        written[0].Data.Fields.Should().NotContainKey(SchemaDescriptor.TenantColumnName);
+        written[0].Data.Fields.Should().ContainKey("Title"); // the rest of the payload survives
+    }
+
+    // ── Result-side strip for the three streaming SQL RPCs ────────────────────
+    //
+    // Search, GroupBy and Pipeline never reach MaskDisallowedFields — they stream the row
+    // dictionary StarRocks returned, essentially verbatim (Search additionally drops non-allowed
+    // keys, but only when AllowedFields is non-null). Their entire protection against the
+    // server-owned tenant column was therefore SQL-side, in the query builders.
+    //
+    // The joined-type wildcard bug (`Type`.* over a physical table, which ColumnsFor could not
+    // reach) is empirical proof that a single-point SQL defence on this path is bypassable, so
+    // these three tests pin a second, result-side line of defence. Each supplies a row that
+    // ALREADY carries the column — i.e. it assumes the SQL-side exclusion has failed — and
+    // asserts the RPC still does not put it on the wire.
+    //
+    // Keyed on the reserved __TenantId spelling, not schema.TenantColumn: a legacy schema whose
+    // boundary sits on a client-declared column has always exposed that name as part of the
+    // client's own contract.
+
+    private static Dictionary<string, object> RowWithTenantColumn() => new()
+    {
+        ["Name"] = "Alice",
+        [SchemaDescriptor.TenantColumnName] = "test-tenant"
+    };
+
+    [Fact]
+    public async Task Search_StripsTheServerOwnedTenantColumnFromStreamedRows()
+    {
+        await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
+
+        _search.SearchAsync(
+                Arg.Any<EngagementQuerySchema>(), Arg.Any<SearchQuery?>(), Arg.Any<int>(), Arg.Any<int>(),
+                Arg.Any<IReadOnlyList<string>?>(), Arg.Any<IReadOnlyList<JoinSpec>?>(),
+                Arg.Any<Func<string, EngagementQuerySchema?>?>(),
+                Arg.Any<IReadOnlyDictionary<string, AuthorizationConstraint>?>())
+            .Returns(new[] { (dynamic)RowWithTenantColumn() }.AsEnumerable());
+
+        var (writer, written) = MakeStream<SearchResponse>();
+        await _sut.Search(new SearchRequest { TypeName = "Author" }, writer, TestServerCallContext.Create());
+
+        written.Should().HaveCount(1);
+        written[0].Data.Fields.Should().NotContainKey(SchemaDescriptor.TenantColumnName);
+        written[0].Data.Fields.Should().ContainKey("Name");
+    }
+
+    [Fact]
+    public async Task GroupBy_StripsTheServerOwnedTenantColumnFromStreamedRows()
+    {
+        await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
+
+        _search.GroupByAsync(
+                Arg.Any<EngagementQuerySchema>(), Arg.Any<GroupByRequest>(),
+                Arg.Any<Func<string, EngagementQuerySchema?>>(),
+                Arg.Any<IReadOnlyDictionary<string, AuthorizationConstraint>?>())
+            .Returns(new[] { (dynamic)RowWithTenantColumn() }.AsEnumerable());
+
+        var request = new GroupByRequest { TypeName = "Author", Keys = { "Name" } };
+        request.Metrics.Add(new MetricSpec { Name = "cnt", Type = AggregationType.Count });
+
+        var (writer, written) = MakeStream<SearchResponse>();
+        await _sut.GroupBy(request, writer, TestServerCallContext.Create());
+
+        written.Should().HaveCount(1);
+        written[0].Data.Fields.Should().NotContainKey(SchemaDescriptor.TenantColumnName);
+        written[0].Data.Fields.Should().ContainKey("Name");
+    }
+
+    [Fact]
+    public async Task Pipeline_StripsTheServerOwnedTenantColumnFromStreamedRows()
+    {
+        await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
+
+        _search.PipelineAsync(
+                Arg.Any<EngagementQuerySchema>(), Arg.Any<PipelineRequest>(),
+                Arg.Any<Func<string, EngagementQuerySchema?>>(),
+                Arg.Any<IReadOnlyDictionary<string, AuthorizationConstraint>?>())
+            .Returns(new[] { (dynamic)RowWithTenantColumn() }.AsEnumerable());
+
+        var (writer, written) = MakeStream<SearchResponse>();
+        await _sut.Pipeline(
+            new PipelineRequest { TypeName = "Author" }, writer, TestServerCallContext.Create());
+
+        written.Should().HaveCount(1);
+        written[0].Data.Fields.Should().NotContainKey(SchemaDescriptor.TenantColumnName);
+        written[0].Data.Fields.Should().ContainKey("Name");
+    }
 }

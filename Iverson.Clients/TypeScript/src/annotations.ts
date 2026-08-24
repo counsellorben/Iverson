@@ -36,7 +36,6 @@ const IVERSON_KEYWORDS_FIELDS  = Symbol('iverson:keywords_fields');
 const IVERSON_EXTRACTED_FIELDS = Symbol('iverson:extracted_fields');
 const IVERSON_PROPERTY_DESCRIPTIONS = Symbol('iverson:property_descriptions');
 const IVERSON_TYPE_DESCRIPTION      = Symbol('iverson:type_description');
-const IVERSON_TENANT_FIELDS    = Symbol('iverson:tenant_fields');
 
 // ── Public relation kind constants ─────────────────────────────────────────────
 
@@ -260,27 +259,26 @@ export function getArrayFields(target: Function): Map<string, ClrType> {
     return Reflect.getMetadata(IVERSON_ARRAY_KEY, target) ?? new Map();
 }
 
-// ── @IversonTenant() ────────────────────────────────────────────────────────
+// ── @IversonGuid() ──────────────────────────────────────────────────────────
+
+const IVERSON_GUID_KEY = Symbol('iverson:guid');
 
 /**
- * Marks the scalar property that carries the tenant identifier. Exactly one
- * property per entity must carry this decorator: the server rejects schema
- * registration when `tenant_field` is missing, and this decorator's own
- * marked-property count is validated in `describeEntity` (zero or more than
- * one is a client-side error, since the server only ever sees a single name
- * on the wire and cannot detect that duplication itself).
+ * Declares a property as a UUID column. TypeScript has no UUID type — a GUID is
+ * carried as a `string` — so the runtime cannot distinguish it from any other
+ * string. The server requires key and foreign-key columns to be UUID.
  */
-export function IversonTenant(): PropertyDecorator {
+export function IversonGuid(): PropertyDecorator {
     return (target, propertyKey) => {
-        const existing: string[] =
-            Reflect.getMetadata(IVERSON_TENANT_FIELDS, target.constructor) ?? [];
-        existing.push(String(propertyKey));
-        Reflect.defineMetadata(IVERSON_TENANT_FIELDS, existing, target.constructor);
+        const existing: Set<string> =
+            Reflect.getMetadata(IVERSON_GUID_KEY, target.constructor) ?? new Set();
+        existing.add(String(propertyKey));
+        Reflect.defineMetadata(IVERSON_GUID_KEY, existing, target.constructor);
     };
 }
 
-export function getTenantFields(target: Function): string[] {
-    return Reflect.getMetadata(IVERSON_TENANT_FIELDS, target) ?? [];
+export function getGuidFields(target: Function): Set<string> {
+    return Reflect.getMetadata(IVERSON_GUID_KEY, target) ?? new Set();
 }
 
 // ── @IversonDescription(text) ────────────────────────────────────────────────
@@ -315,42 +313,69 @@ export function getPropertyDescriptions(target: Function): Record<string, string
 
 // ── Relation decorators ────────────────────────────────────────────────────────
 
-function addRelation(target: object, propertyKey: string | symbol, kind: RelationKindString, relatedType: string): void {
+export interface PendingRelationMeta {
+    field: string;
+    kind: RelationKindString;
+    typeFactory: () => Function;
+}
+
+function addRelation(target: object, propertyKey: string | symbol, kind: RelationKindString, typeFactory: () => Function): void {
     const ctor = (target as any).constructor;
-    const existing: RelationMeta[] =
+    const existing: PendingRelationMeta[] =
         Reflect.getMetadata(IVERSON_RELATIONS, ctor) ?? [];
-    existing.push({ field: String(propertyKey), kind, relatedType });
+    existing.push({ field: String(propertyKey), kind, typeFactory });
     Reflect.defineMetadata(IVERSON_RELATIONS, existing, ctor);
 }
 
+/**
+ * Each of these decorators stores the raw `typeFactory` rather than calling it
+ * immediately. Property decorators run at class-definition time, and calling
+ * the factory eagerly would dereference the related class before it exists
+ * for any forward reference (including the two halves of a genuine mutual
+ * reference, where reordering the classes cannot help either direction).
+ * Resolution is deferred to `getRelations`, which runs at schema-registration
+ * time after every class in the module has finished initializing.
+ */
 export function ManyToOne(typeFactory: () => Function): PropertyDecorator {
     return (target, propertyKey) => {
-        const related = typeFactory();
-        addRelation(target, propertyKey, 'many_to_one', related.name);
+        addRelation(target, propertyKey, 'many_to_one', typeFactory);
     };
 }
 
 export function ManyToMany(typeFactory: () => Function): PropertyDecorator {
     return (target, propertyKey) => {
-        const related = typeFactory();
-        addRelation(target, propertyKey, 'many_to_many', related.name);
+        addRelation(target, propertyKey, 'many_to_many', typeFactory);
     };
 }
 
 export function OneToMany(typeFactory: () => Function): PropertyDecorator {
     return (target, propertyKey) => {
-        const related = typeFactory();
-        addRelation(target, propertyKey, 'one_to_many', related.name);
+        addRelation(target, propertyKey, 'one_to_many', typeFactory);
     };
 }
 
 export function OneToOne(typeFactory: () => Function): PropertyDecorator {
     return (target, propertyKey) => {
-        const related = typeFactory();
-        addRelation(target, propertyKey, 'one_to_one', related.name);
+        addRelation(target, propertyKey, 'one_to_one', typeFactory);
     };
 }
 
 export function getRelations(target: Function): RelationMeta[] {
+    const pending: PendingRelationMeta[] = Reflect.getMetadata(IVERSON_RELATIONS, target) ?? [];
+    return pending.map(({ field, kind, typeFactory }) => ({
+        field,
+        kind,
+        relatedType: typeFactory().name,
+    }));
+}
+
+/**
+ * Like `getRelations`, but returns the raw, unresolved `typeFactory` instead of collapsing it
+ * to a name. `getRelations` is public API with production and test call sites that depend on
+ * its name-only shape, so it is left untouched; the read path needs the actual related class
+ * (not just its name) to construct and recursively hydrate a typed instance, and the only place
+ * that can hand that out is here, since `IVERSON_RELATIONS` is module-private to this file.
+ */
+export function getRelationsWithFactory(target: Function): PendingRelationMeta[] {
     return Reflect.getMetadata(IVERSON_RELATIONS, target) ?? [];
 }

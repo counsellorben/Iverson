@@ -299,6 +299,7 @@ public sealed class EngagementRepository(
                 // multi-role reactivation fixes it.
                 await conn.ExecuteAsync($"SET ROLE user_admin, `{roleName}`");
                 await conn.ExecuteAsync(createTableDdl);
+                await WidenLargeTextColumnsAsync(conn, dbName, schema);
                 return true;
             }
             finally
@@ -515,7 +516,7 @@ public sealed class EngagementRepository(
         var probeConnectionString = new MySqlConnectionStringBuilder(connectionString) { Database = "" }.ToString();
         await using var conn = new MySqlConnection(probeConnectionString);
         await conn.OpenAsync(ct);
-        return await EngagementHealthChecker.AnyBackendAliveAsync(conn, ct);
+        return await EngagementHealthChecker.AnyBackendReadyAsync(conn, ct);
     }
 
     private static object? JsonElementToObject(JsonElement el) => el.ValueKind switch
@@ -528,4 +529,54 @@ public sealed class EngagementRepository(
         JsonValueKind.Array  => el.GetRawText(),
         _                    => el.GetRawText()
     };
+
+    /// <summary>
+    /// Widens any large-text column that is still narrower than the schema now asks for.
+    ///
+    /// <para><b>Why this is not optional.</b> The table above is created with
+    /// <c>CREATE TABLE IF NOT EXISTS</c>, which never touches a table that already exists. A
+    /// deployment provisioned before large text fields were widened therefore keeps its
+    /// <c>varchar(65533)</c> columns forever — while the write path, reading the CURRENT schema,
+    /// now accepts values up to a megabyte for exactly those fields. Without this the guard would
+    /// wave through values the table cannot hold, which is the original defect back again and worse,
+    /// because the write path would be asserting the value fits.</para>
+    ///
+    /// <para>Safe to run on every provisioning call, all three properties verified against a live
+    /// 4.1.1: re-issuing <c>MODIFY COLUMN</c> for the type a column already has is accepted rather
+    /// than an error; <c>information_schema</c> reports the current width, so the ALTER is only
+    /// issued when it would actually change something; and StarRocks refuses to shorten a string
+    /// column at all ("Cannot shorten string length"), so this can only ever widen.</para>
+    /// </summary>
+    private static async Task WidenLargeTextColumnsAsync(
+        MySqlConnection conn, string dbName, EngagementTableSchema schema)
+    {
+        var wide = schema.Columns
+            .Where(c => string.Equals(c.SrType, StarRocksLimits.WideTextColumnType, StringComparison.OrdinalIgnoreCase))
+            .Select(c => c.Name)
+            .ToList();
+
+        if (wide.Count == 0) return;
+
+        var current = (await conn.QueryAsync<(string Name, long? MaxLength)>(
+            """
+            SELECT COLUMN_NAME AS Name, CHARACTER_MAXIMUM_LENGTH AS MaxLength
+            FROM information_schema.columns
+            WHERE TABLE_SCHEMA = @Db AND TABLE_NAME = @Table
+            """,
+            new { Db = dbName, Table = schema.TableName }))
+            .ToDictionary(r => r.Name, r => r.MaxLength, StringComparer.OrdinalIgnoreCase);
+
+        foreach (var column in wide)
+        {
+            // Absent from information_schema means the column is not there at all — a different
+            // problem, and not one a widening ALTER would fix. Leave it alone rather than guessing.
+            if (!current.TryGetValue(column, out var maxLength) || maxLength is null) continue;
+            if (maxLength >= StarRocksLimits.MaxVarcharBytes) continue;
+
+            await conn.ExecuteAsync(
+                $"ALTER TABLE `{dbName}`.`{schema.TableName}` " +
+                $"MODIFY COLUMN `{column}` {StarRocksLimits.WideTextColumnType}");
+        }
+    }
+
 }

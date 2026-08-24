@@ -19,9 +19,10 @@ from iverson_client.annotations import (
     iverson_summary,
     iverson_keywords,
     iverson_extracted,
-    iverson_tenant,
     many_to_one,
+    many_to_many,
     one_to_many,
+    one_to_one,
 )
 from iverson_client.core import SchemaRegistrar
 from iverson_client.generated import (
@@ -40,9 +41,8 @@ class RegArticle:
     category: str = iverson_search_key(order=0)
     word_count: int = None
     published_at: datetime = iverson_search_key(order=1)
-    author_id: str = many_to_one("RegAuthor")
+    reg_author_id: str = many_to_one("RegAuthor")
     summary: str = iverson_chunk(max_tokens=256, overlap=32)
-    tenant_id: str = iverson_tenant()
 
 
 @iverson_entity(description="An article with metadata signals.")
@@ -54,14 +54,12 @@ class RegDescribedArticle:
                                 description="Publication region.")
     title: str = iverson_description("Headline text.")
     word_count: int = None
-    tenant_id: str = iverson_tenant()
 
 
 @iverson_entity
 class RegAuthor:
     id: str = iverson_key()
     name: str = None
-    tenant_id: str = iverson_tenant()
 
 
 @iverson_entity
@@ -72,27 +70,6 @@ class RegEnrichedArticle:
     tags: str = iverson_keywords()
     entities: str = iverson_extracted("Extract named entities as a JSON array.")
     body: str = iverson_chunk(max_tokens=256, overlap=32, contextual=True)
-    tenant_id: str = iverson_tenant()
-
-
-@iverson_entity
-class RegNoTenantArticle:
-    id: str = iverson_key()
-    title: str = None
-
-
-@iverson_entity
-class RegComposedTenantArticle:
-    id: str = iverson_key()
-    title: str = None
-    tenant_id: str = iverson_field(search_key=True, search_key_order=0, tenant=True)
-
-
-@iverson_entity
-class RegMultiTenantArticle:
-    id: str = iverson_key()
-    tenant_id: str = iverson_tenant()
-    org_id: str = iverson_tenant()
 
 
 @iverson_entity
@@ -103,7 +80,6 @@ class RegComposedEnrichmentArticle:
     keywords_meta: str = iverson_field(metadata=True, keywords=True)
     hint_field: str = iverson_field(large_field=True, extract_hint="Extract the price.")
     described_summary: str = iverson_field(description="A summary field.", summary=True)
-    tenant_id: str = iverson_tenant()
 
 
 @iverson_entity
@@ -112,19 +88,17 @@ class RegComposedDeclarationArticle:
     title: str = None
     body: str = iverson_field(large_field=True, chunk=True,
                               chunk_max_tokens=256, chunk_overlap=32)
-    tenant_id: str = iverson_field(metadata=True, tenant=True)
+    tenant_id: str = iverson_field(metadata=True)
 
 
 @iverson_entity
 class RegMetadataOnKeyArticle:
     id: str = iverson_field(key=True, metadata=True)
-    tenant_id: str = iverson_tenant()
 
 
 @iverson_entity
 class RegSummaryOnKeyArticle:
     id: str = iverson_field(key=True, summary=True)
-    tenant_id: str = iverson_tenant()
 
 
 @iverson_entity
@@ -133,13 +107,11 @@ class RegMultiDeclarationKeyArticle:
                             large_field=True, embedding=True, chunk=True,
                             metadata=True, summary=True, keywords=True,
                             extract_hint="hint")
-    tenant_id: str = iverson_tenant()
 
 
 @iverson_entity
 class RegDescribedKeyArticle:
     id: str = iverson_key(description="Stable identifier.")
-    tenant_id: str = iverson_tenant()
 
 
 @iverson_entity
@@ -148,7 +120,6 @@ class RegArrayArticle:
     tags: list[str] = None
     counts: list[int] = None
     blob: bytes = None
-    tenant_id: str = iverson_tenant()
 
 
 class _CustomElement:
@@ -159,14 +130,12 @@ class _CustomElement:
 class RegNestedArrayArticle:
     id: str = iverson_key()
     matrix: list[list[str]] = None
-    tenant_id: str = iverson_tenant()
 
 
 @iverson_entity
 class RegUnsupportedElementArticle:
     id: str = iverson_key()
     widgets: list[_CustomElement] = None
-    tenant_id: str = iverson_tenant()
 
 
 # ── Fixtures ───────────────────────────────────────────────────────────────────
@@ -284,6 +253,122 @@ class TestSchemaRegistrar:
         assert rel.kind == mapping_pb.MANY_TO_ONE
         # FK inferred as {RelatedType}Id
         assert rel.foreign_key == "RegAuthorId"
+
+    def test_fk_column_declared_for_non_one_to_many_kinds(self):
+        @iverson_entity
+        class RegRelKindsArticle:
+            id: str = iverson_key()
+            reg_author_id: str = many_to_one("RegAuthor")
+            reg_tag_ids: list[str] = many_to_many("RegTag")
+            reg_comments: list = one_to_many("RegComment")
+
+        @iverson_entity
+        class RegRelKindsNote:
+            id: str = iverson_key()
+            reg_author_id: str = one_to_one("RegAuthor")
+
+        stub = make_stub()
+        stub.RegisterSchema.return_value = mapping_pb.SchemaResponse(success=True)
+        registrar = SchemaRegistrar(stub, RegRelKindsArticle)
+        registrar.register_all()
+
+        request: mapping_pb.SchemaRequest = stub.RegisterSchema.call_args[0][0]
+        props = {p.name: p for p in request.root_type.properties}
+
+        assert "RegAuthorId" in props  # many_to_one
+        fk_prop = props["RegAuthorId"]
+        assert fk_prop.clr_type == mapping_pb.CLR_GUID
+        assert fk_prop.is_array is False
+        assert fk_prop.is_nullable is True
+        assert fk_prop.is_key is False
+
+        assert "RegTagIds" in props  # many_to_many
+        mtm_prop = props["RegTagIds"]
+        assert mtm_prop.clr_type == mapping_pb.CLR_GUID
+        assert mtm_prop.is_array is True
+        assert mtm_prop.is_nullable is True
+        assert mtm_prop.is_key is False
+
+        # one_to_many declares no FK column at all
+        assert "RegCommentId" not in props
+        assert "RegRelKindsArticleId" not in props
+
+        stub2 = make_stub()
+        stub2.RegisterSchema.return_value = mapping_pb.SchemaResponse(success=True)
+        registrar2 = SchemaRegistrar(stub2, RegRelKindsNote)
+        registrar2.register_all()
+
+        request2: mapping_pb.SchemaRequest = stub2.RegisterSchema.call_args[0][0]
+        props2 = {p.name: p for p in request2.root_type.properties}
+        assert "RegAuthorId" in props2  # one_to_one
+        assert props2["RegAuthorId"].is_array is False
+
+    def test_many_to_one_property_name_differs_from_foreign_key(self):
+        @iverson_entity
+        class RegNavArticle:
+            id: str = iverson_key()
+            author_id: str = many_to_one("Author")
+
+        stub = make_stub()
+        stub.RegisterSchema.return_value = mapping_pb.SchemaResponse(success=True)
+        registrar = SchemaRegistrar(stub, RegNavArticle)
+        registrar.register_all()
+
+        request: mapping_pb.SchemaRequest = stub.RegisterSchema.call_args[0][0]
+        rel = request.root_type.relations[0]
+        # The navigation property name must NOT collide with the FK column, or a
+        # depth-resolved read overwrites the FK value with the hydrated entity.
+        assert rel.property_name != rel.foreign_key
+        assert rel.property_name == "Author"
+        assert rel.foreign_key == "AuthorId"
+
+    def test_correctly_named_many_to_one_registers(self):
+        @iverson_entity
+        class RegGoodArticle:
+            id: str = iverson_key()
+            reg_author_id: str = many_to_one("RegAuthor")
+
+        stub = make_stub()
+        stub.RegisterSchema.return_value = mapping_pb.SchemaResponse(success=True)
+        registrar = SchemaRegistrar(stub, RegGoodArticle)
+        registrar.register_all()  # should not raise
+
+        request: mapping_pb.SchemaRequest = stub.RegisterSchema.call_args[0][0]
+        assert request.root_type.relations[0].foreign_key == "RegAuthorId"
+
+    def test_many_to_many_property_name_differs_from_foreign_key(self):
+        @iverson_entity
+        class RegNavTagArticle:
+            id: str = iverson_key()
+            reg_tag_ids: list[str] = many_to_many("RegTag")
+
+        stub = make_stub()
+        stub.RegisterSchema.return_value = mapping_pb.SchemaResponse(success=True)
+        registrar = SchemaRegistrar(stub, RegNavTagArticle)
+        registrar.register_all()
+
+        request: mapping_pb.SchemaRequest = stub.RegisterSchema.call_args[0][0]
+        rel = request.root_type.relations[0]
+        # The navigation property name must NOT collide with the FK column, or a
+        # depth-resolved read overwrites the FK value with the hydrated entity.
+        assert rel.property_name != rel.foreign_key
+        assert rel.property_name == "RegTags"
+        assert rel.foreign_key == "RegTagIds"
+
+        props = {p.name: p for p in request.root_type.properties}
+        assert "RegTagIds" in props
+
+    def test_misnamed_many_to_one_is_rejected(self):
+        @iverson_entity
+        class RegBadArticle:
+            id: str = iverson_key()
+            writer_id: str = many_to_one("RegAuthor")
+
+        stub = make_stub()
+        registrar = SchemaRegistrar(stub, RegBadArticle)
+        with pytest.raises(ValueError, match="WriterId") as exc_info:
+            registrar.register_all()
+        assert "RegAuthorId" in str(exc_info.value)
 
     def test_field_names_pascal_case(self):
         stub = make_stub()
@@ -443,40 +528,6 @@ class TestEnrichmentTargets:
             iverson_field(extract_hint=None)
 
 
-class TestTenantField:
-    def test_tenant_field_name_on_descriptor(self):
-        stub = make_stub()
-        stub.RegisterSchema.return_value = mapping_pb.SchemaResponse(success=True)
-        registrar = SchemaRegistrar(stub, RegArticle)
-        registrar.register_all()
-
-        request: mapping_pb.SchemaRequest = stub.RegisterSchema.call_args[0][0]
-        assert request.root_type.tenant_field == "TenantId"
-
-    def test_zero_tenant_markers_raises(self):
-        stub = make_stub()
-        registrar = SchemaRegistrar(stub, RegNoTenantArticle)
-        with pytest.raises(ValueError, match="RegNoTenantArticle"):
-            registrar.register_all()
-
-    def test_tenant_composes_with_search_key(self):
-        stub = make_stub()
-        stub.RegisterSchema.return_value = mapping_pb.SchemaResponse(success=True)
-        SchemaRegistrar(stub, RegComposedTenantArticle).register_all()
-
-        request: mapping_pb.SchemaRequest = stub.RegisterSchema.call_args[0][0]
-        assert request.root_type.tenant_field == "TenantId"
-        props = {p.name: p for p in request.root_type.properties}
-        assert props["TenantId"].is_search_key is True
-        assert props["TenantId"].search_key_order == 0
-
-    def test_multiple_tenant_markers_raises(self):
-        stub = make_stub()
-        registrar = SchemaRegistrar(stub, RegMultiTenantArticle)
-        with pytest.raises(ValueError, match="tenant_id.*org_id|org_id.*tenant_id"):
-            registrar.register_all()
-
-
 class TestDeclarationComposition:
     def test_large_field_composes_with_chunk(self):
         props = {p.name: p for p in
@@ -485,12 +536,6 @@ class TestDeclarationComposition:
         assert props["Body"].is_chunk is True
         assert props["Body"].chunk_max_tokens == 256
         assert props["Body"].chunk_overlap == 32
-
-    def test_metadata_composes_with_tenant(self):
-        request = register_request(RegComposedDeclarationArticle)
-        props = {p.name: p for p in request.root_type.properties}
-        assert props["TenantId"].is_metadata is True
-        assert request.root_type.tenant_field == "TenantId"
 
     def test_multi_flag_field_emits_exactly_one_property(self):
         request = register_request(RegComposedDeclarationArticle)
@@ -574,3 +619,26 @@ class TestArrayProperties:
         message = str(exc.value)
         assert "widgets" in message
         assert "_CustomElement" in message
+
+
+class TestAuthorizationRules:
+    def test_each_type_gets_its_own_rules_and_unlisted_type_gets_none(self):
+        stub = make_stub()
+        registrar = SchemaRegistrar(stub, RegArticle, RegAuthor, RegDescribedKeyArticle)
+        article_rules = mapping_pb.AuthorizationRules(owner_field="OwnerOne")
+        author_rules = mapping_pb.AuthorizationRules(owner_field="OwnerTwo")
+
+        registrar.register_all(
+            authorization_by_type_name={
+                "RegArticle": article_rules,
+                "RegAuthor": author_rules,
+            }
+        )
+
+        requests = {
+            c.args[0].root_type.type_name: c.args[0]
+            for c in stub.RegisterSchema.call_args_list
+        }
+        assert requests["RegArticle"].root_type.authorization.owner_field == "OwnerOne"
+        assert requests["RegAuthor"].root_type.authorization.owner_field == "OwnerTwo"
+        assert requests["RegDescribedKeyArticle"].root_type.HasField("authorization") is False

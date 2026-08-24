@@ -385,6 +385,10 @@ exactly as before (this is optional, backward-compatible plumbing).
 **Per-call header helpers**, one per SDK, all keyed on the same metadata
 constant `x-acting-user-authorization`:
 
+These helpers apply to calls made against the **raw generated gRPC stubs**. Calls
+made through a coordinator resolve identity themselves — see the note below the
+table.
+
 | SDK | Helper |
 |---|---|
 | .NET | `new Metadata().WithActingUser(token)` (extension method, `Iverson.Client.Core/ActingUserMetadata.cs`) |
@@ -392,6 +396,22 @@ constant `x-acting-user-authorization`:
 | Java | `stub.withOption(OAuth2ClientCredentials.ACTING_USER_TOKEN, token)` |
 | Python | `stub.Search(request, metadata=acting_user_metadata(token))` |
 | TypeScript | `createActingUserMetadata(token)` passed as the call's metadata |
+
+**Through a coordinator, do not build the header yourself.** All five coordinators
+resolve identity as: coordinator-bound token → ambient client default → none (no
+header emitted). The per-call override is the bound view — `WithActingUser(...)` in
+.NET, `withActingUser(...)` in Java and TypeScript, `with_acting_user(...)` in
+Python, and `WithActingUserToken(ctx, token)` in Go.
+
+.NET is the one to watch: a per-call `Metadata` bag is no longer an identity
+channel there, and any `x-acting-user-authorization` entry in it is **stripped**,
+not honored. Passing one to a coordinator call does not fail — the call proceeds
+under whatever the coordinator resolves, or under no identity at all, so a
+wrong-scope or empty result is the only symptom. Use `WithActingUser` instead.
+
+An empty-string token is a caller error in every SDK: it is forwarded as `Bearer `
+and rejected by the server, deliberately, rather than being silently downgraded to
+an unauthenticated call.
 
 **Provisioning:** a dedicated public/PKCE OAuth2 client `iverson-loadtest-human`
 (no client secret — PKCE only) plus a dedicated test human user

@@ -3,11 +3,12 @@ using System.Diagnostics.Metrics;
 namespace Iverson.Api.Reconciliation;
 
 /// <summary>
-/// Backlog-depth gauges for the two "is fan-out silently falling behind?" signals this project
-/// otherwise has no visibility into: the reconciliation outbox queue and the DLQ table. Both
-/// fields are refreshed on a 30s poll cadence by <see cref="ReconciliationQueueWorker"/> and
-/// <see cref="DlqBacklogGaugeWorker"/> respectively — ObservableGauge reads whatever value is
-/// currently here whenever the OTel SDK collects, so no locking is needed beyond `volatile`.
+/// Backlog-depth gauges for the "is fan-out silently falling behind?" signals this project
+/// otherwise has no visibility into: the reconciliation outbox queue, the DLQ table, and the
+/// document re-render queue. Each field is refreshed on its worker's own poll cadence by
+/// <see cref="ReconciliationQueueWorker"/>, <see cref="DlqBacklogGaugeWorker"/>, and
+/// <see cref="DocumentRerenderQueueWorker"/> respectively — ObservableGauge reads whatever value
+/// is currently here whenever the OTel SDK collects, so no locking is needed beyond `volatile`.
 /// </summary>
 internal static class ReconciliationTelemetry
 {
@@ -17,6 +18,7 @@ internal static class ReconciliationTelemetry
 
     internal static volatile int ReconciliationQueueDepth;
     internal static volatile int DlqUnreplayedCount;
+    internal static volatile int DocumentRerenderQueueDepth;
 
     static ReconciliationTelemetry()
     {
@@ -31,5 +33,11 @@ internal static class ReconciliationTelemetry
             () =>
                 DlqUnreplayedCount,
                 description: "Unreplayed rows in the dead-letter queue table");
+
+        Meter.CreateObservableGauge(
+            "document_rerender.queue_depth",
+            () =>
+                DocumentRerenderQueueDepth,
+                description: "Pending rows in the document re-render queue");
     }
 }

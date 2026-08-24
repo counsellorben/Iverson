@@ -23,11 +23,28 @@ public sealed class AuthentikAdminClientTests
         public List<HttpRequestMessage> Requests     { get; } = [];
         public List<string?>            RequestBodies { get; } = [];
 
+        /// <summary>
+        /// Content-Length per request that had a body, captured AT SEND TIME. HttpClient disposes
+        /// the request content once the call completes, so reading Headers afterwards throws
+        /// ObjectDisposedException — a test asserting on it later fails for the wrong reason.
+        /// </summary>
+        public List<(string Uri, long? ContentLength, bool? Chunked)> BodyFraming { get; } = [];
+
         protected override async Task<HttpResponseMessage> SendAsync(
             HttpRequestMessage request,
             CancellationToken ct)
         {
             Requests.Add(request);
+
+            // Framing MUST be captured before the body is read: ReadAsStringAsync buffers the
+            // content, which populates Content-Length after the fact. Reading first made a
+            // chunked, length-less JsonContent look length-delimited and the test pass vacuously.
+            if (request.Content is not null)
+                BodyFraming.Add((
+                    request.RequestUri!.AbsolutePath,
+                    request.Content.Headers.ContentLength,
+                    request.Headers.TransferEncodingChunked));
+
             RequestBodies.Add(request.Content is not null
                 ? await request.Content.ReadAsStringAsync(ct)
                 : null);
@@ -264,5 +281,46 @@ public sealed class AuthentikAdminClientTests
 
         await sut.Invoking(s => s.DeactivateUserAsync("missing"))
                  .Should().ThrowAsync<HttpRequestException>();
+    }
+
+    /// <summary>
+    /// Every request body must carry a Content-Length. PostAsJsonAsync/JsonContent serialize
+    /// lazily and leave it unset, which makes HttpClient fall back to
+    /// <c>Transfer-Encoding: chunked</c> — and Authentik's ASGI server silently DISCARDS a chunked
+    /// request body. DRF then rejects the call with "This field is required." for every required
+    /// field while the fields were in fact sent, so the failure names the wrong cause entirely.
+    /// Verified against a live instance: byte-identical JSON succeeds with Content-Length and
+    /// fails chunked.
+    /// </summary>
+    [Fact]
+    public async Task CreateUserAsync_SendsBodiesWithContentLength_NotChunked()
+    {
+        var groupLookup = JsonResponse(HttpStatusCode.OK,
+            """{"pagination":{"next":0},"results":[{"pk":"11111111-1111-1111-1111-111111111111","name":"tenant-admins"}]}""");
+        var createUser = JsonResponse(HttpStatusCode.Created, """{"pk":42,"username":"new-user"}""");
+        var setPassword = new HttpResponseMessage(HttpStatusCode.NoContent);
+        var sut = CreateClient(new FakeHttpMessageHandler(groupLookup, createUser, setPassword), out var handler);
+
+        await sut.CreateUserAsync("new-user", "new-user@example.invalid", "pw", "tenant-1", ["tenant-admins"]);
+
+        handler.BodyFraming.Should().HaveCount(2); // create user + set password
+        foreach (var (uri, contentLength, chunked) in handler.BodyFraming)
+        {
+            contentLength.Should().NotBeNull($"{uri} must carry Content-Length, not be sent chunked");
+            chunked.Should().NotBe(true, $"{uri} must not be sent chunked");
+        }
+    }
+
+    [Fact]
+    public async Task SetActiveAsync_SendsBodyWithContentLength_NotChunked()
+    {
+        var sut = CreateClient(
+            new FakeHttpMessageHandler(new HttpResponseMessage(HttpStatusCode.OK)), out var handler);
+
+        await sut.DeactivateUserAsync("42");
+
+        var patch = handler.BodyFraming.Should().ContainSingle().Subject;
+        patch.ContentLength.Should().NotBeNull("the PATCH body must carry Content-Length");
+        patch.Chunked.Should().NotBe(true);
     }
 }

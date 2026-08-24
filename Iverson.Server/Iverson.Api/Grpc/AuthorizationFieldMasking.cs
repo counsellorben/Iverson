@@ -38,6 +38,32 @@ internal static class AuthorizationFieldMasking
         var auditAction = existingRowJson is null ? "Create" : "Update";
         var resourceKey = StructFieldAccess.GetFieldString(payload, schema.KeyColumn.Name);
 
+        // FIRST — and the required position is BEFORE THE PermissionDenied THROW below, not
+        // merely "before Evaluate": authEvaluator.Evaluate does not throw, so moving this check to
+        // sit between Evaluate and the `if (decision.Denied)` block is behaviourally identical and
+        // no test can tell the difference (a mutation doing exactly that survives the whole suite).
+        // Only sinking it BELOW the throw changes behaviour, and that is what
+        // EnforceWriteAuthorization_DeniedCallerSmugglingTheTenantColumn_StillGetsInvalidArgument
+        // pins. Decision 5: the server-owned tenant column is rejected on the way in, never
+        // silently overwritten. This is a MALFORMED-REQUEST check and is independent of identity,
+        // so it must not be reachable only for authorized callers — placed after the throw, an
+        // unauthorized caller smuggling the column would get PermissionDenied, which masks the
+        // malformed field entirely and makes the InvalidArgument contract conditional on
+        // authorization.
+        // Distinct from the tenant-immutability check further down, which compares a DECLARED
+        // tenant field's value and runs on the update branch only; this one is unconditional and
+        // covers create and update alike. Case-insensitive via SchemaDescriptor.IsTenantColumn, so
+        // a re-cased "__tenantid" cannot slip through (SetAuthoritativeField's canonical-casing
+        // fixup would otherwise absorb it silently).
+        var smuggled = payload.Fields.Keys.FirstOrDefault(SchemaDescriptor.IsTenantColumn);
+        if (smuggled is not null)
+        {
+            throw new RpcException(new Status(StatusCode.InvalidArgument,
+                $"Payload for '{schema.TypeName}' carries '{smuggled}', which is a reserved "
+                + "server-owned column. The server derives a row's tenant from the acting user's "
+                + "identity; remove the field from the payload."));
+        }
+
         var decision = authEvaluator.Evaluate(schema, actingUser, action);
         if (decision.Denied)
         {
@@ -53,9 +79,9 @@ internal static class AuthorizationFieldMasking
             // callers too, unlike ownership below). Force-set the owner field for
             // ownership-required callers; leave it untouched for bypass callers.
             if (decision.TenantColumn is not null)
-                payload.Fields[decision.TenantColumn] = Value.ForString(decision.TenantValue!);
+                SetAuthoritativeField(payload, decision.TenantColumn, decision.TenantValue!);
             if (decision.OwnershipRequired)
-                payload.Fields[decision.OwnerFieldName!] = Value.ForString(decision.OwnerValue!);
+                SetAuthoritativeField(payload, decision.OwnerFieldName!, decision.OwnerValue!);
         }
         else
         {
@@ -76,6 +102,16 @@ internal static class AuthorizationFieldMasking
                     auditLog.Denied(actingUser, auditAction, schema.TypeName, resourceKey, "TenantImmutable");
                     throw new RpcException(new Status(StatusCode.PermissionDenied, "Tenant field is immutable."));
                 }
+
+                // Force-set AFTER the two checks above have passed, so this can only ever write
+                // back the value the row already carries. It is not redundant: the tenant column
+                // is server-owned, so a client payload never carries it — without this the
+                // serialized payload published to Kafka would have no tenant value at all, and
+                // EngagementRepository.UpsertAsync (StarRocks Primary Key model: an INSERT of an
+                // existing key is a FULL-ROW REPLACE) would reset the projected row's tenant
+                // column to NULL, silently emptying every subsequent StarRocks read for that
+                // tenant. The create branch above already force-sets it for the same reason.
+                SetAuthoritativeField(payload, decision.TenantColumn, decision.TenantValue!);
             }
 
             if (decision.OwnershipRequired &&
@@ -105,11 +141,67 @@ internal static class AuthorizationFieldMasking
         RejectDisallowedFields(payload, decision.AllowedFields, exemptField: decision.OwnerFieldName);
     }
 
+    /// <summary>
+    /// Writes a server-computed, authoritative column (tenant or owner) into the payload under the
+    /// schema's canonical casing, first dropping any client-supplied key that differs only by case.
+    /// <para>
+    /// The .NET client serializes with a camelCase naming policy, so a payload arrives with
+    /// <c>tenantId</c>/<c>ownerId</c> while the schema column is <c>TenantId</c>/<c>OwnerId</c>.
+    /// Setting the canonical key without removing the camelCase one leaves BOTH in the Struct, and
+    /// <see cref="StructSerializer.SerializePayload"/> then UpperFirst()es every key into a
+    /// Dictionary — throwing "An item with the same key has already been added. Key: TenantId" and
+    /// failing the write with a bare Unknown status. The server-computed value must win: it is
+    /// derived from the caller's token, not from client-supplied data.
+    /// </para>
+    /// </summary>
+    private static void SetAuthoritativeField(Struct payload, string canonicalName, string value) =>
+        StructFieldAccess.SetField(payload, canonicalName, Value.ForString(value));
+
+    /// <summary>
+    /// Removes every key naming the server-owned tenant column, in any casing. Unconditional and
+    /// independent of any allow-list: the column is never client-addressable, so it is never
+    /// something a caller can be granted.
+    /// <para>
+    /// Keyed on <see cref="SchemaDescriptor.TenantColumnName"/> — the reserved spelling — NOT on
+    /// a schema's <c>TenantColumn</c>. A legacy schema whose boundary sits on a client-declared
+    /// column (e.g. <c>TenantId</c>) has always exposed that name as part of the client's own
+    /// contract, and stripping it would silently drop a field the client declared.
+    /// </para>
+    /// </summary>
+    public static void RemoveTenantColumn(Struct payload)
+    {
+        var toRemove = payload.Fields.Keys
+            .Where(SchemaDescriptor.IsTenantColumn)
+            .ToList();
+        foreach (var key in toRemove)
+            payload.Fields.Remove(key);
+    }
+
+    /// <summary>
+    /// Row-dictionary counterpart of <see cref="RemoveTenantColumn(Struct)"/>, for the three
+    /// streaming SQL RPCs (Search, GroupBy, Pipeline) that build a response from the StarRocks row
+    /// dictionary and never reach <see cref="MaskDisallowedFields"/>. Same reserved-name rule, so
+    /// the decision of WHICH name is server-owned stays defined in exactly one place.
+    /// </summary>
+    public static void RemoveTenantColumn(IDictionary<string, object?> row)
+    {
+        var toRemove = row.Keys
+            .Where(SchemaDescriptor.IsTenantColumn)
+            .ToList();
+        foreach (var key in toRemove)
+            row.Remove(key);
+    }
+
     public static void MaskDisallowedFields(
         Struct payload,
         IReadOnlySet<string>? allowedFields,
         string? exemptField = null)
     {
+        // BEFORE the early return, deliberately. A schema with no field permissions produces a
+        // null allowedFields, and that is exactly the case in which the guard below would let the
+        // server-owned tenant column straight through to the caller.
+        RemoveTenantColumn(payload);
+
         if (allowedFields is null) return;
 
         var toRemove = payload.Fields.Keys

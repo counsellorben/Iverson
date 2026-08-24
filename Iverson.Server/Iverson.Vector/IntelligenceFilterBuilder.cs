@@ -62,6 +62,20 @@ public static class IntelligenceFilterBuilder
     }
 
     /// <summary>
+    /// Builds a Filter matching points whose "parent_id" AND "field" payload fields equal the
+    /// given values. Used to delete a single chunk field's stale points before re-writing it,
+    /// without touching other chunk fields' points on the same parent (see
+    /// IntelligenceStoreConsumer).
+    /// </summary>
+    public static Filter MatchParentIdAndField(string parentKey, string field)
+    {
+        var filter = new Filter();
+        filter.Must.Add(Conditions.MatchKeyword("parent_id", parentKey));
+        filter.Must.Add(Conditions.MatchKeyword("field", field));
+        return filter;
+    }
+
+    /// <summary>
     /// Builds an EQUALS payload condition for a single property/value pair. Exposed for callers
     /// outside this assembly (SearchChunks metadata filtering) that translate individual clauses
     /// themselves rather than going through <see cref="Build"/>.

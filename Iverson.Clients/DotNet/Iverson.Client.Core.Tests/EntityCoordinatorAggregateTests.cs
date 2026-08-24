@@ -15,8 +15,6 @@ public class EntityCoordinatorAggregateTests
     {
         [IversonKey]
         public string Id { get; set; } = "";
-        [IversonTenant]
-        public string TenantId { get; set; } = "";
         public string Category { get; set; } = "";
     }
 
@@ -39,7 +37,7 @@ public class EntityCoordinatorAggregateTests
             Type        = AggregationType.Count,
             MetricValue = 4
         });
-        search.AggregateAsync(Arg.Any<AggregateRequest>(), cancellationToken: Arg.Any<CancellationToken>())
+        search.AggregateAsync(Arg.Any<AggregateRequest>(), Arg.Any<Metadata>(), cancellationToken: Arg.Any<CancellationToken>())
               .Returns(MakeUnaryCall(response));
 
         var coordinator = TestCoordinatorFactory.Create<TestArticle>(search);
@@ -65,16 +63,16 @@ public class EntityCoordinatorAggregateTests
               .Returns(MakeUnaryCall(new AggregateResponse()));
 
         var coordinator = TestCoordinatorFactory.Create<TestArticle>(search);
-        var headers = new Metadata { { "x-acting-user-authorization", "Bearer test-token" } };
+        var headers = new Metadata { { "x-trace-id", "Bearer test-token" } };
 
         await coordinator.AggregateAsync(new AggregateBuilder("TestArticle").CountAll("n"), headers);
 
         capturedHeaders.Should().NotBeNull();
-        capturedHeaders!.Get("x-acting-user-authorization")!.Value.Should().Be("Bearer test-token");
+        capturedHeaders!.Get("x-trace-id")!.Value.Should().Be("Bearer test-token");
     }
 
     [Fact]
-    public async Task AggregateAsync_WithNoHeaders_PassesNull()
+    public async Task AggregateAsync_WithNoHeaders_EmitsNoActingUser()
     {
         var search = Substitute.For<ObjectSearchService.ObjectSearchServiceClient>();
         Metadata? capturedHeaders = null;
@@ -89,6 +87,7 @@ public class EntityCoordinatorAggregateTests
 
         await coordinator.AggregateAsync(new AggregateBuilder("TestArticle").CountAll("n"));
 
-        capturedHeaders.Should().BeNull();
+        capturedHeaders.Should().NotBeNull();
+        capturedHeaders!.Get(ActingUserMetadata.MetadataKey).Should().BeNull();
     }
 }

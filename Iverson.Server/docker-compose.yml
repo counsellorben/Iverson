@@ -61,6 +61,48 @@ services:
       retries: 15
       start_period: 60s
 
+  # One-shot bootstrap, mirroring deploy/helm/iverson/charts/starrocks/templates/job-create-user.yaml
+  # (the authoritative shape for this grant set). The allin1 image bundles FE+BE in one process,
+  # so unlike the chart's job there is no separate BE-registration wait — a healthy FE (the
+  # `starrocks` healthcheck) is sufficient. Follows the `ollama-init` idiom already in this file:
+  # a run-once service other services gate on via `condition: service_completed_successfully`,
+  # rather than the `init-authentik-db.sql` idiom, because these statements must run against
+  # StarRocks's own SQL dialect (CREATE ROLE/GRANT ON DATABASE/ON CATALOG) and StarRocks has no
+  # docker-entrypoint-initdb.d equivalent to hook a script into at container start.
+  #
+  # `CREATE USER IF NOT EXISTS` / `CREATE DATABASE IF NOT EXISTS` / `GRANT` are all naturally
+  # idempotent in StarRocks, so re-running this on an already-bootstrapped stack succeeds as a
+  # no-op rather than erroring — required for `docker compose up -d` to stay safe to re-run.
+  #
+  # Every grant here is carried over unweakened from the chart job, including
+  # `GRANT CREATE DATABASE ON CATALOG default_catalog`, which the chart's own comment explains is
+  # required because EngagementRepository.EnsureTenantProvisionedAsync issues
+  # `CREATE DATABASE IF NOT EXISTS` as iverson_app on every tenant's first provisioning, and
+  # StarRocks checks the catalog-level privilege before checking whether the database already
+  # exists. `GRANT user_admin TO 'iverson_app'@'%'` is likewise required: that same method runs
+  # `SET ROLE user_admin` on its connection, and the app's StarRocks connection string below
+  # authenticates as iverson_app (matching the chart's api/worker deployments), not root.
+  starrocks-init:
+    image: mysql:8.0
+    container_name: iverson-starrocks-init
+    depends_on:
+      starrocks:
+        condition: service_healthy
+    entrypoint: ["sh", "-c"]
+    command:
+      - |
+        set -e
+        mysql -h starrocks -P 9030 -u root -e "
+          CREATE USER IF NOT EXISTS 'iverson_app'@'%' IDENTIFIED BY 'dev-only-not-for-production-starrocks-app-pw-0123456789';
+          CREATE DATABASE IF NOT EXISTS iverson;
+          GRANT SELECT, INSERT, UPDATE, DELETE ON iverson.* TO 'iverson_app'@'%';
+          GRANT CREATE TABLE, DROP, ALTER ON DATABASE iverson TO 'iverson_app'@'%';
+          GRANT OPERATE ON SYSTEM TO 'iverson_app'@'%';
+          GRANT CREATE DATABASE ON CATALOG default_catalog TO 'iverson_app'@'%';
+          GRANT user_admin TO 'iverson_app'@'%';
+        "
+    restart: "no"
+
   qdrant:
     image: qdrant/qdrant:v1.18.2
     container_name: iverson-qdrant
@@ -190,6 +232,45 @@ services:
       timeout: 5s
       retries: 5
 
+  # The ONE process that migrates the authentik database. Everything else runs with
+  # AUTHENTIK_SKIP_MIGRATIONS=true and waits for this to exit 0.
+  #
+  # Why this exists: `ak server` and `ak worker` BOTH run lifecycle/migrate.py on startup. That
+  # module opens its own psycopg connection, takes pg_advisory_lock(1000) on it, and then hands the
+  # actual migrating to Django on a SEPARATE connection — while its own connection sits holding an
+  # uncommitted implicit transaction from the `SET search_path` and version-history reads it does
+  # between the lock and the Django call. A second container's Django connection then blocks on a
+  # table lock that idle transaction holds, and Postgres cannot break it as a deadlock because the
+  # idle backend is not itself waiting on anything. Observed 2026-08-22: a fresh `docker compose up`
+  # wedged indefinitely mid-migration and left a PARTIALLY MIGRATED schema — an index existed that
+  # the Django ledger had no record of, so every subsequent blueprint apply failed with
+  # `relation "authentik_t_queue_n_7b09fb_idx" already exists`, zero OAuth2 providers were created,
+  # and token issuance returned invalid_client. No retry repaired it; only DROP DATABASE did.
+  #
+  # `python -m lifecycle.migrate` is the full sequence the server would otherwise run inline:
+  # lifecycle/system_migrations/*, `migrate_schemas`, the tenant-template schema pass, and Django's
+  # deploy checks. `ak migrate` is NOT equivalent — the image's entrypoint routes it to
+  # `manage migrate`, which skips the system migrations and the schema passes entirely. The
+  # entrypoint is overridden here because that same routing swallows any bare command.
+  # Idempotent: a re-run on a migrated database exits 0 with "No migrations to apply."
+  authentik-migrate:
+    image: ghcr.io/goauthentik/server:2026.5.3
+    container_name: iverson-authentik-migrate
+    entrypoint: ["python", "-m", "lifecycle.migrate"]
+    restart: "no"
+    environment:
+      AUTHENTIK_SECRET_KEY: "dev-only-not-for-production-use-0123456789abcdef"
+      AUTHENTIK_REDIS__HOST: redis
+      AUTHENTIK_POSTGRESQL__HOST: postgres
+      AUTHENTIK_POSTGRESQL__NAME: authentik
+      AUTHENTIK_POSTGRESQL__USER: authentik
+      AUTHENTIK_POSTGRESQL__PASSWORD: authentik
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
   authentik-server:
     image: ghcr.io/goauthentik/server:2026.5.3
     container_name: iverson-authentik-server
@@ -205,12 +286,16 @@ services:
       AUTHENTIK_BOOTSTRAP_EMAIL: admin@iverson.local
       AUTHENTIK_BOOTSTRAP_PASSWORD: dev-admin-password
       AUTHENTIK_BOOTSTRAP_TOKEN: dev-bootstrap-token-0123456789
+      # authentik-migrate owns migrations; this role must never run them concurrently.
+      AUTHENTIK_SKIP_MIGRATIONS: "true"
     ports:
       - "9000:9000"
     volumes:
       - ./deploy/helm/iverson/charts/authentik/blueprints:/blueprints/custom:ro
       - ./deploy/helm/iverson/charts/authentik/assets/fonts/fraunces-900.woff2:/web/dist/assets/fonts/Fraunces/fraunces-900.woff2:ro
     depends_on:
+      authentik-migrate:
+        condition: service_completed_successfully
       postgres:
         condition: service_healthy
       redis:
@@ -237,9 +322,13 @@ services:
       AUTHENTIK_BOOTSTRAP_EMAIL: admin@iverson.local
       AUTHENTIK_BOOTSTRAP_PASSWORD: dev-admin-password
       AUTHENTIK_BOOTSTRAP_TOKEN: dev-bootstrap-token-0123456789
+      # authentik-migrate owns migrations; this role must never run them concurrently.
+      AUTHENTIK_SKIP_MIGRATIONS: "true"
     volumes:
       - ./deploy/helm/iverson/charts/authentik/blueprints:/blueprints/custom:ro
     depends_on:
+      authentik-migrate:
+        condition: service_completed_successfully
       postgres:
         condition: service_healthy
       redis:
@@ -252,6 +341,18 @@ services:
       start_period: 30s
 
   # ── Application ─────────────────────────────────────────────────────────────
+  #
+  # STALE-IMAGE HAZARD — read before rebuilding after a server-side change.
+  # iverson-api and iverson-worker share ONE image tag (`image: iverson-api`) but are two
+  # containers. The habitual
+  #     docker compose build iverson-api && docker compose up -d iverson-api
+  # rebuilds the tag and recreates ONLY the api container; iverson-worker keeps running the
+  # image it started with. Since the worker is what projects into StarRocks and Qdrant, the
+  # conformance harness's `query` and `vector-search` scenarios would then be graded against a
+  # stale projector while the api is current — a silent wrong-answer, not a failure.
+  # Always recreate both:
+  #     docker compose build iverson-api && docker compose up -d iverson-api iverson-worker
+  # (or plain `docker compose up -d`, which recreates every service whose image changed).
 
   iverson-api:
     build:
@@ -272,6 +373,11 @@ services:
       - Enrichment__BaseUrl=http://ollama:11434
       - Enrichment__ModelId=qwen2.5:3b
       - Kafka__BootstrapServers=kafka:29092
+      # Matches the chart's api/worker deployments (deploy/helm/iverson/charts/api/templates/
+      # deployment.yaml): connect as iverson_app, the user starrocks-init provisions, not root —
+      # EngagementRepository.EnsureTenantProvisionedAsync's `SET ROLE user_admin` depends on
+      # authenticating as the user that role was granted to.
+      - ConnectionStrings__StarRocks=Server=starrocks;Port=9030;Database=iverson;Uid=iverson_app;Pwd=dev-only-not-for-production-starrocks-app-pw-0123456789;AllowPublicKeyRetrieval=true;
       - Qdrant__ApiKey=dev-only-not-for-production-qdrant-key-0123456789
       - Authentication__Authority=http://authentik-server:9000/application/o/iverson-api/
       - Authentication__ExternalIssuer=http://authentik.iverson.local/application/o/iverson-api/
@@ -279,16 +385,38 @@ services:
       - Authentication__ValidAudiences__1=dev-iverson-loadtest-client-id
       - Authentication__ValidAudiences__2=dev-iverson-webtest-client-id
       - Authentication__ValidAudiences__3=dev-iverson-admin-automation-client-id
+      # The LoadTest's data-plane calls (Post/Get/Search) carry the tenant-admin *user* token as
+      # their service credential — AddIversonClient routes the persistence/retrieval/search stubs
+      # through dataPlaneTokenProvider, leaving only the mapping stub on client credentials. That
+      # token is minted via the human OIDC client below, so without this audience every Post fails
+      # the default scheme with a bare HTTP 401 while RegisterSchema still succeeds.
+      - Authentication__ValidAudiences__4=dev-iverson-loadtest-human-client-id
       - Authentication__ActingUser__Authority=http://authentik-server:9000/application/o/iverson-api/
       - Authentication__ActingUser__ValidAudiences__0=dev-iverson-loadtest-human-client-id
       - Authentik__BaseUrl=http://authentik-server:9000
       - Authentik__AdminToken=dev-only-not-for-production-admin-orchestrator-token
       - Jaeger__OtlpHttpUrl=http://jaeger:4318
+    # Kestrel does not begin listening until Program.cs's startup block has finished — the
+    # bootstrap DDL (EnsureRuntimeRoleAsync, the plumbing-table EnsureTableAsync calls, and every
+    # ApplySchemaAsync) is awaited BEFORE app.Run(). A successful TCP connect to 8080 is therefore
+    # a precise "this replica's bootstrap DDL is complete" signal, which is exactly what
+    # iverson-worker's depends_on needs. A bash /dev/tcp redirect rather than curl/wget: the
+    # aspnet:10.0 runtime image ships neither (verified), but does ship bash.
+    healthcheck:
+      # `bash -c`, not CMD-SHELL: CMD-SHELL runs /bin/sh, which on this image is dash, and dash
+      # has no /dev/tcp support at all ("cannot create /dev/tcp/...: Directory nonexistent").
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/8080"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 20s
     depends_on:
       postgres:
         condition: service_healthy
       starrocks:
         condition: service_healthy
+      starrocks-init:
+        condition: service_completed_successfully
       qdrant:
         condition: service_healthy
       kafka:
@@ -299,6 +427,89 @@ services:
         condition: service_healthy
       ollama-init:
         condition: service_completed_successfully
+
+  # The worker role. Every Kafka consumer and background reconciliation worker in Iverson.Api is
+  # gated on `workloadRole == "worker"` (Iverson.Api/Program.cs) — IntelligenceStoreConsumer,
+  # DocumentRerenderConsumer, the DLQ/reconciliation workers, and AddEngagementStoreConsumer's
+  # hosted consumer. Without this service NO asynchronous projection is ever populated: Qdrant
+  # stays empty, StarRocks stays empty, and every read served from a projection returns nothing
+  # while the write path looks perfectly healthy. The Helm chart has always deployed a worker
+  # (deploy/helm/iverson/charts/worker); compose was the outlier.
+  iverson-worker:
+    build:
+      context: ..
+      dockerfile: Iverson.Server/Iverson.Api/Dockerfile
+    image: iverson-api
+    container_name: iverson-worker
+    restart: unless-stopped
+    user: "1000:1000"
+    # No `ports:` on purpose, mirroring the chart's worker Deployment, which publishes no gRPC
+    # port either: this role serves no client traffic. Nothing is published to the host, so the
+    # container's own 8080/8081 cannot collide with iverson-api's published bindings.
+    environment:
+      - ASPNETCORE_ENVIRONMENT=Production
+      # The one line that distinguishes this service from iverson-api. The env-var configuration
+      # provider folds "__" into ":" but leaves a single underscore alone, so this lands in
+      # IConfiguration under the literal key "WORKLOAD_ROLE" — the first key Program.cs checks.
+      - WORKLOAD_ROLE=worker
+      - Otel__Endpoint=http://jaeger:4317
+      - Embeddings__BaseUrl=http://ollama:11434
+      - Embeddings__ModelId=nomic-embed-text
+      - Enrichment__BaseUrl=http://ollama:11434
+      - Enrichment__ModelId=qwen2.5:3b
+      - Kafka__BootstrapServers=kafka:29092
+      # Matches the chart's api/worker deployments (deploy/helm/iverson/charts/api/templates/
+      # deployment.yaml): connect as iverson_app, the user starrocks-init provisions, not root —
+      # EngagementRepository.EnsureTenantProvisionedAsync's `SET ROLE user_admin` depends on
+      # authenticating as the user that role was granted to.
+      - ConnectionStrings__StarRocks=Server=starrocks;Port=9030;Database=iverson;Uid=iverson_app;Pwd=dev-only-not-for-production-starrocks-app-pw-0123456789;AllowPublicKeyRetrieval=true;
+      - Qdrant__ApiKey=dev-only-not-for-production-qdrant-key-0123456789
+      - Authentication__Authority=http://authentik-server:9000/application/o/iverson-api/
+      - Authentication__ExternalIssuer=http://authentik.iverson.local/application/o/iverson-api/
+      - Authentication__ValidAudiences__0=dev-iverson-human-oidc-client-id
+      - Authentication__ValidAudiences__1=dev-iverson-loadtest-client-id
+      - Authentication__ValidAudiences__2=dev-iverson-webtest-client-id
+      - Authentication__ValidAudiences__3=dev-iverson-admin-automation-client-id
+      - Authentication__ValidAudiences__4=dev-iverson-loadtest-human-client-id
+      - Authentication__ActingUser__Authority=http://authentik-server:9000/application/o/iverson-api/
+      - Authentication__ActingUser__ValidAudiences__0=dev-iverson-loadtest-human-client-id
+      - Authentik__BaseUrl=http://authentik-server:9000
+      - Authentik__AdminToken=dev-only-not-for-production-admin-orchestrator-token
+      - Jaeger__OtlpHttpUrl=http://jaeger:4318
+    depends_on:
+      # The same backing-service conditions iverson-api uses...
+      postgres:
+        condition: service_healthy
+      starrocks:
+        condition: service_healthy
+      starrocks-init:
+        condition: service_completed_successfully
+      qdrant:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      jaeger:
+        condition: service_healthy
+      authentik-server:
+        condition: service_healthy
+      ollama-init:
+        condition: service_completed_successfully
+      # ...plus one more: wait for iverson-api to finish its OWN bootstrap before starting this
+      # one. Both roles run the identical startup block (it sits outside Program.cs's
+      # `workloadRole == "api"` guard), and that block is genuinely concurrency-safe by design —
+      # every statement is CREATE/ALTER ... IF [NOT] EXISTS or ON CONFLICT DO NOTHING, and the two
+      # CREATE-then-catch paths (EnsureRuntimeRoleAsync, the RLS policy) both swallow SQLSTATE
+      # 42710 with an explicit "another replica created it concurrently" comment. Helm already
+      # runs api x2 plus a worker against one database on that basis.
+      #
+      # It is sequenced anyway because "safe by design" is not the same as "raced on every single
+      # `docker compose up -d`". Bare CREATE TABLE/INDEX IF NOT EXISTS is still not atomic against
+      # an identical concurrent statement in Postgres — it can surface as 23505 on a pg_catalog
+      # unique index, and that SQLSTATE is not caught anywhere. Starting second closes the window
+      # completely rather than relying on losing a race that is cheap to avoid: by the time this
+      # container starts, every IF NOT EXISTS check it runs is a no-op.
+      iverson-api:
+        condition: service_healthy
 
 volumes:
   postgres_data:

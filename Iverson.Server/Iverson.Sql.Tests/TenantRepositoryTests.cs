@@ -39,7 +39,7 @@ public class TenantRepositoryTests
     {
         var sql = Substitute.For<IRecordStoreQueryExecutor>();
         sql.QuerySingleOrDefaultAsync<TenantRow>(Arg.Any<string>(), Arg.Any<object?>())
-           .Returns(new TenantRow("tenant-1", "Display Name", "active", DateTimeOffset.UtcNow));
+           .Returns(new TenantRow("tenant-1", "Display Name", "active", DateTime.UtcNow));
         var repo = new TenantRepository(TableName, sql);
 
         var result = await repo.GetAsync("tenant-1");
@@ -55,7 +55,7 @@ public class TenantRepositoryTests
     {
         var sql = Substitute.For<IRecordStoreQueryExecutor>();
         sql.QueryAsync<TenantRow>(Arg.Any<string>(), Arg.Any<object?>())
-           .Returns(new List<TenantRow> { new("tenant-1", "Display Name", "active", DateTimeOffset.UtcNow) });
+           .Returns(new List<TenantRow> { new("tenant-1", "Display Name", "active", DateTime.UtcNow) });
         var repo = new TenantRepository(TableName, sql);
 
         var result = (await repo.ListAsync()).ToList();

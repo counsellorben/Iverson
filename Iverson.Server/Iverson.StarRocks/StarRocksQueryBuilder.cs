@@ -116,7 +116,12 @@ internal static class StarRocksQueryBuilder
 
         if (fields is null || fields.Count == 0)
         {
+            // EXCLUDE the server-owned tenant column: it is a real physical column (the tenant
+            // predicate below is generated against it) but it must never reach the wire. The
+            // explicit-fields branch below needs no equivalent filter — ResolveColumn already
+            // refuses to resolve the name — but this branch never consults ResolveColumn.
             var all = schema.ColumnNames
+                .Where(c => !schema.IsTenantColumn(c))
                 .Select(Quote)
                 .Prepend(Quote(schema.KeyColumnName));
             return string.Join(", ", all);
@@ -636,11 +641,27 @@ internal static class StarRocksQueryBuilder
         return string.Join(sep, parts);
     }
 
+    /// <summary>
+    /// Resolves a CALLER-SUPPLIED property name to a physical column. The server-owned tenant
+    /// column is deliberately absent from the index: every caller-facing reference — a projected
+    /// field, a filter or sort property, an aggregation field, a GROUP BY key — arrives through
+    /// here, so excluding it once makes the column unnameable everywhere at a single point. A
+    /// caller naming it gets the same "unknown property" treatment any typo gets, which is also
+    /// what closes the value oracle a <c>WHERE __TenantId = &lt;guess&gt;</c> filter would be.
+    /// <para>
+    /// The server's OWN tenant predicate does not go through this method — BuildSearch,
+    /// BuildAggregate, BuildGroupBy and StarRocksPipelineBuilder each splice
+    /// <c>AuthorizationConstraint.TenantColumn</c> straight into their WHERE clause — so the
+    /// tenant boundary is unaffected by this exclusion. The dedicated
+    /// <c>*_StillEmitsTheTenantPredicate</c>/<c>*_StillFiltersOnTheTenantColumn</c> tests pin that.
+    /// </para>
+    /// </summary>
     internal static string? ResolveColumn(EngagementQuerySchema schema, string property)
     {
         var index = _columnCache.GetValue(schema, static s =>
             s.ColumnNames
                 .Append(s.KeyColumnName)
+                .Where(n => !s.IsTenantColumn(n))
                 .ToDictionary(n => n, n => n, StringComparer.OrdinalIgnoreCase));
 
         return index.TryGetValue(property, out var col) ? col : null;

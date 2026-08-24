@@ -99,7 +99,9 @@ public class SchemaBuilderTests
             ChunkFields       = [],
             Relations         = [],
             SearchKeyColumns  = ["Category", "PublishedAt"],
-            LargeFieldColumns = ["Body"]
+            LargeFieldColumns = ["Body"],
+            // Required since Task 7 made SchemaDescriptor.TenantColumn non-nullable.
+            TenantColumn      = SchemaDescriptor.TenantColumnName
         };
 
         var schema = SchemaBuilder.ToEngagementTableSchema(descriptor);
@@ -278,6 +280,100 @@ public class SchemaBuilderTests
     }
 
     [Fact]
+    public void ToEngagementQuerySchema_CarriesTheTenantColumnNameThrough()
+    {
+        // Iverson.StarRocks cannot see SchemaDescriptor.TenantColumnName (no project reference),
+        // so the name travels as DATA on EngagementQuerySchema. Every tenant-column exclusion in
+        // StarRocksQueryBuilder/StarRocksPipelineBuilder is gated on this field being populated:
+        // if this adapter stopped passing it, all of them would silently go inert in production
+        // while their own unit tests — which construct EngagementQuerySchema directly — stayed
+        // green. This is the test that catches that.
+        var schema = SchemaFixtures.ArticleSchema() with
+        {
+            ScalarColumns =
+            [
+                new ColumnDescriptor("Title", "text", false),
+                new ColumnDescriptor(SchemaDescriptor.TenantColumnName, "TEXT", false)
+            ],
+            TenantColumn = SchemaDescriptor.TenantColumnName
+        };
+
+        var result = SchemaBuilder.ToEngagementQuerySchema(schema);
+
+        result.TenantColumnName.Should().Be(SchemaDescriptor.TenantColumnName);
+        result.IsTenantColumn(SchemaDescriptor.TenantColumnName).Should().BeTrue();
+        // Still a real physical column in the list — the read-time tenant predicate needs it.
+        result.ColumnNames.Should().Contain(SchemaDescriptor.TenantColumnName);
+    }
+
+    [Fact]
+    public void ToEngagementQuerySchema_LegacyClientDeclaredTenantColumn_IsNotCarriedAsAnExclusionKey()
+    {
+        // RULING 70. SchemaRegistry.LoadAsync admits a pre-cutover _iverson_schema row verbatim, and
+        // such a row persisted TenantColumn as the CLIENT-DECLARED tenant_field name — typically
+        // "TenantId". EngagementQuerySchema.TenantColumnName is not "the column that carries this
+        // schema's boundary"; it is the name StarRocksQueryBuilder/StarRocksPipelineBuilder refuse
+        // to project, to resolve for a caller, to sort on, and to track in a pipeline step. Every
+        // one of those exclusions in Iverson.Api is keyed on the RESERVED spelling and deliberately
+        // leaves a client-declared column alone (AuthorizationFieldMasking.RemoveTenantColumn says
+        // so in as many words), so this adapter — the only place that can see the constant — is
+        // where the two are made to agree.
+        //
+        // Carry the raw value instead and an upgraded deployment with one un-re-registered type
+        // gets SILENTLY WRONG RESULTS, not an error: Search(filter: TenantId == "team-a") loses the
+        // clause entirely, because an unresolvable filter property is dropped rather than rejected.
+        var schema = SchemaFixtures.ArticleSchema() with
+        {
+            ScalarColumns =
+            [
+                new ColumnDescriptor("Title", "text", false),
+                new ColumnDescriptor("TenantId", "TEXT", false)
+            ],
+            TenantColumn = "TenantId"
+        };
+
+        var result = SchemaBuilder.ToEngagementQuerySchema(schema);
+
+        result.TenantColumnName.Should().BeNull(
+            "a client-declared tenant column is not the reserved server-owned one, and it is the "
+            + "reserved name that every exclusion on both sides of the boundary is keyed on");
+        result.IsTenantColumn("TenantId").Should().BeFalse(
+            "this is the predicate StarRocksQueryBuilder.BuildSelectColumns and ResolveColumn "
+            + "consult — true here removes the client's own declared column from the projection "
+            + "and makes a filter or sort on it resolve to null, which is silently dropped");
+        result.ColumnNames.Should().Contain("TenantId",
+            "the column is still physically there and the legacy schema is still scoped by it — "
+            + "the tenant predicate is spliced from AuthorizationConstraint.TenantColumn, which "
+            + "never goes through ResolveColumn");
+    }
+
+    [Fact]
+    public void ToTableSchema_LegacyClientDeclaredTenantColumn_IsCarriedRaw()
+    {
+        // The COUNTERPART to the test above, and the reason the gating belongs on
+        // ToEngagementQuerySchema alone. TableSchema.TenantColumn is the BOUNDARY column itself:
+        // PostgresSchemaManager predicates the RLS policy on it and the write path injects the
+        // tenant value into it. Gating this one on the reserved name would leave a legacy table
+        // with no RLS policy and no tenant injection — a boundary break, the opposite of the
+        // silent-wrong-results the other gating prevents.
+        var schema = SchemaFixtures.ArticleSchema() with { TenantColumn = "TenantId" };
+
+        SchemaBuilder.ToTableSchema(schema).TenantColumn.Should().Be("TenantId");
+    }
+
+    [Fact]
+    public void ToTableSchema_CarriesTheTenantColumnNameThrough()
+    {
+        // The OutboxWriter injection is gated on TableSchema.TenantColumn for the same reason.
+        var schema = SchemaFixtures.ArticleSchema() with
+        {
+            TenantColumn = SchemaDescriptor.TenantColumnName
+        };
+
+        SchemaBuilder.ToTableSchema(schema).TenantColumn.Should().Be(SchemaDescriptor.TenantColumnName);
+    }
+
+    [Fact]
     public void ToCollectionSchema_PayloadIndexNames_AreCamelCase()
     {
         var descriptor = SchemaFixtures.ArticleSchema();
@@ -325,6 +421,20 @@ public class SchemaBuilderTests
         var schema = SchemaBuilder.ToChunkCollectionSchema(descriptor);
 
         schema.PayloadIndexes.Should().ContainSingle(p => p.FieldName == "parent_id");
+    }
+
+    [Fact]
+    public void ToChunkCollectionSchema_IncludesPayloadIndex_ForField()
+    {
+        // final-review Finding 4: IntelligenceStoreConsumer's orphan-delete pass filters
+        // DeleteByFilterAsync on parent_id AND field on every chunk write. Without a payload
+        // index for "field", Qdrant intersects an indexed parent_id match against an unindexed
+        // field scan on the hot path for every pre-existing chunked type.
+        var descriptor = SchemaFixtures.ArticleSchema();
+
+        var schema = SchemaBuilder.ToChunkCollectionSchema(descriptor);
+
+        schema.PayloadIndexes.Should().ContainSingle(p => p.FieldName == "field" && p.Kind == PayloadIndexKind.Keyword);
     }
 
     [Fact]
@@ -436,5 +546,73 @@ public class SchemaBuilderTests
             SchemaBuilder.SqlTypeToClr(arraySql).Should().Be((clrType, true),
                 $"array SQL type for {clrType} should map back to ({clrType}, true)");
         }
+    }
+
+    [Fact]
+    public void BuildDescriptor_WithDocumentTemplate_AppendsDocumentChunkField()
+    {
+        var embedding = Substitute.For<IEmbeddingService>();
+        embedding.Dimension.Returns(768);
+        embedding.ModelId.Returns("nomic-embed-text");
+
+        var typeDesc = new TypeDescriptor
+        {
+            TypeName         = "Article",
+            Properties       = { new PropertyDescriptor { Name = "Id", ClrType = ClrType.ClrGuid, IsKey = true } },
+            DocumentTemplate = "{Title}"
+        };
+
+        var descriptor = SchemaBuilder.BuildDescriptor(typeDesc, embedding);
+
+        descriptor.ChunkFields.Should().ContainSingle(c => c.PropertyName == "Document");
+        var chunk = descriptor.ChunkFields.Single(c => c.PropertyName == "Document");
+        chunk.ModelId.Should().Be("nomic-embed-text");
+        chunk.Dimension.Should().Be(768);
+        descriptor.CollectionName.Should().NotBeNull();
+        descriptor.LargeFieldColumns.Should().NotContain("Document");
+    }
+
+    [Fact]
+    public void BuildDescriptor_WithDocumentTemplate_UnsetTokenFields_DefaultToFallbackValues()
+    {
+        var embedding = Substitute.For<IEmbeddingService>();
+        embedding.Dimension.Returns(768);
+        embedding.ModelId.Returns("nomic-embed-text");
+
+        var typeDesc = new TypeDescriptor
+        {
+            TypeName         = "Article",
+            Properties       = { new PropertyDescriptor { Name = "Id", ClrType = ClrType.ClrGuid, IsKey = true } },
+            DocumentTemplate = "{Title}"
+            // DocumentMaxTokens / DocumentOverlap left unset (proto3 default 0).
+        };
+
+        var descriptor = SchemaBuilder.BuildDescriptor(typeDesc, embedding);
+
+        var chunk = descriptor.ChunkFields.Single(c => c.PropertyName == "Document");
+        chunk.MaxTokens.Should().Be(512);
+        chunk.Overlap.Should().Be(64);
+    }
+
+    [Fact]
+    public void BuildDescriptor_WithoutDocumentTemplate_IsByteIdenticalToPreExistingBehavior()
+    {
+        var embedding = Substitute.For<IEmbeddingService>();
+        embedding.Dimension.Returns(768);
+        embedding.ModelId.Returns("nomic-embed-text");
+
+        var typeDesc = new TypeDescriptor
+        {
+            TypeName   = "Article",
+            Properties = { new PropertyDescriptor { Name = "Id", ClrType = ClrType.ClrGuid, IsKey = true } }
+        };
+
+        var descriptor = SchemaBuilder.BuildDescriptor(typeDesc, embedding);
+
+        descriptor.ChunkFields.Should().BeEmpty();
+        descriptor.VectorFields.Should().BeEmpty();
+        descriptor.CollectionName.Should().BeNull();
+        descriptor.DocumentTemplate.Should().BeNull();
+        descriptor.DocumentTemplateSource.Should().BeNull();
     }
 }

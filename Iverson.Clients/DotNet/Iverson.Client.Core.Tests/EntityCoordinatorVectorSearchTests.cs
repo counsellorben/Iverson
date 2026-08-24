@@ -1,5 +1,6 @@
 using FluentAssertions;
 using Google.Protobuf.WellKnownTypes;
+using Grpc.Core;
 using Iverson.Client.Attributes;
 using Iverson.Client.Contracts;
 using Iverson.Client.Search;
@@ -16,8 +17,6 @@ public class EntityCoordinatorVectorSearchTests
     {
         [IversonKey]
         public string Id { get; set; } = "";
-        [IversonTenant]
-        public string TenantId { get; set; } = "";
         public string Title { get; set; } = "";
     }
 
@@ -26,7 +25,7 @@ public class EntityCoordinatorVectorSearchTests
     {
         var search = Substitute.For<ObjectSearchService.ObjectSearchServiceClient>();
         var responses = new List<SearchResponse> { new() { Score = 0.9f, Data = new Struct() } };
-        search.SearchSimilar(Arg.Any<SearchSimilarRequest>(), cancellationToken: Arg.Any<CancellationToken>())
+        search.SearchSimilar(Arg.Any<SearchSimilarRequest>(), Arg.Any<Metadata>(), cancellationToken: Arg.Any<CancellationToken>())
               .Returns(MakeCall(responses));
 
         var coordinator = TestCoordinatorFactory.Create<TestArticle>(search);
@@ -46,7 +45,7 @@ public class EntityCoordinatorVectorSearchTests
         {
             new() { ParentKey = "parent-1", ChunkText = "some passage", Score = 0.75f }
         };
-        search.SearchChunks(Arg.Any<SearchChunksRequest>(), cancellationToken: Arg.Any<CancellationToken>())
+        search.SearchChunks(Arg.Any<SearchChunksRequest>(), Arg.Any<Metadata>(), cancellationToken: Arg.Any<CancellationToken>())
               .Returns(MakeCall(responses));
 
         var coordinator = TestCoordinatorFactory.Create<TestArticle>(search);

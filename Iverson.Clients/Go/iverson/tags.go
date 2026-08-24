@@ -28,9 +28,6 @@
 //
 //	`iverson_desc:"Human-readable description"`
 //	`iverson_meta:"true"`  — denormalized onto chunk points for chunk-search filtering
-//	`iverson_tenant:"true"` — marks the field as the tenant boundary. Exactly one
-//	                          field on a type must carry it; the server requires
-//	                          every schema to declare a tenant boundary.
 //	`iverson_summary:"true"`     — marks the field as the ingest-time summary target
 //	`iverson_keywords:"true"`    — marks the field as the ingest-time keywords target
 //	`iverson_extract:"<hint>"`   — marks the field as an extraction target; the tag
@@ -73,12 +70,6 @@ const DescriptionTagKey = "iverson_desc"
 // DescriptionTagKey it is independent of TagKey, so it composes with any kind.
 const MetadataTagKey = "iverson_meta"
 
-// TenantTagKey is the struct tag key marking a field as the tenant boundary.
-// Independent of TagKey (not a kind) because the tenant field may legitimately
-// also be a search key or another kind; kinds are mutually exclusive but this
-// tag must compose with them.
-const TenantTagKey = "iverson_tenant"
-
 // SummaryTagKey is the struct tag key marking a field as the summary
 // enrichment target. Independent of TagKey.
 const SummaryTagKey = "iverson_summary"
@@ -99,6 +90,10 @@ const ContextualTagKey = "iverson_contextual"
 // KeyTagKey marks the primary key field: `iverson_key:"true"`.
 const KeyTagKey = "iverson_key"
 
+// GuidTagKey marks a property as a UUID column: `iverson_guid:"true"`. Go has no
+// UUID type in this client's dependency set, so the tag carries what the type cannot.
+const GuidTagKey = "iverson_guid"
+
 // SearchKeyTagKey declares a sort key at a 0-based position: `iverson_search_key:"0"`.
 const SearchKeyTagKey = "iverson_search_key"
 
@@ -112,6 +107,19 @@ const EmbeddingTagKey = "iverson_embedding"
 // ChunkTagKey marks the field for chunking. Value is "true" for defaults, "256" for a
 // window size, or "256:32" for window size and overlap.
 const ChunkTagKey = "iverson_chunk"
+
+// HydratedFieldName is the well-known name of the carrier field a struct declares to
+// receive depth-resolved related objects: `Hydrated map[string]any`, keyed by each
+// relation's wire (nav-property) name. reflect can set a struct's existing fields but
+// never add one, so Go — unlike the other four clients — cannot materialize an
+// undeclared navigation member at read time; this field is the declared landing spot
+// instead. The name must be well-known rather than tag-driven: the server-side
+// conformance verifier's fallback (Task 1) locates the carrier in a driver's JSON
+// report by this exact name, and a tag would let it be called anything, defeating
+// that lookup. It is excluded from schema-metadata extraction (InspectType, below),
+// from write-path serialization (entityToStruct), and populated only on the read path
+// (structToEntity).
+const HydratedFieldName = "Hydrated"
 
 // Kind constants for relation tag values.
 const (
@@ -131,6 +139,8 @@ type FieldMeta struct {
 	RelationKind string
 	// IsKey reports whether the field carries `iverson_key:"true"`.
 	IsKey bool
+	// IsGuid reports whether the field carries `iverson_guid:"true"`.
+	IsGuid bool
 	// IsSearchKey reports whether the field carries `iverson_search_key:"N"`.
 	IsSearchKey bool
 	// IsLargeField reports whether the field carries `iverson_large_field:"true"`.
@@ -153,9 +163,6 @@ type FieldMeta struct {
 	// Metadata reports whether the field carries `iverson_meta:"true"`.
 	// Independent, so it composes with search_key, large_field, and the rest.
 	Metadata bool
-	// Tenant reports whether the field carries `iverson_tenant:"true"`.
-	// Independent, so it composes with search_key and the rest.
-	Tenant bool
 	// IsSummaryTarget reports whether the field carries `iverson_summary:"true"`.
 	IsSummaryTarget bool
 	// IsKeywordsTarget reports whether the field carries `iverson_keywords:"true"`.
@@ -217,10 +224,15 @@ func InspectType(v interface{}) (EntityMeta, error) {
 	}
 
 	meta := EntityMeta{TypeName: t.Name()}
-	var tenantFields []string
 
 	for i := 0; i < t.NumField(); i++ {
 		sf := t.Field(i)
+		if sf.Name == HydratedFieldName {
+			// The read-path carrier for hydrated relation children (map[string]any)
+			// isn't schema metadata at all — goTypeToClr has no mapping for a map
+			// type, so leaving it in this walk fails Register outright.
+			continue
+		}
 		tagValue := sf.Tag.Get(TagKey)
 		fm, err := ParseTag(sf.Name, tagValue)
 		if err != nil {
@@ -228,11 +240,11 @@ func InspectType(v interface{}) (EntityMeta, error) {
 		}
 		fm.Description = sf.Tag.Get(DescriptionTagKey)
 		fm.Metadata = sf.Tag.Get(MetadataTagKey) == "true"
-		fm.Tenant = sf.Tag.Get(TenantTagKey) == "true"
 		fm.IsSummaryTarget = sf.Tag.Get(SummaryTagKey) == "true"
 		fm.IsKeywordsTarget = sf.Tag.Get(KeywordsTagKey) == "true"
 
 		fm.IsKey = sf.Tag.Get(KeyTagKey) == "true"
+		fm.IsGuid = sf.Tag.Get(GuidTagKey) == "true"
 		fm.IsLargeField = sf.Tag.Get(LargeFieldTagKey) == "true"
 		fm.IsEmbedding = sf.Tag.Get(EmbeddingTagKey) == "true"
 
@@ -313,23 +325,10 @@ func InspectType(v interface{}) (EntityMeta, error) {
 		}
 
 		if fm.RelationKind != "" {
-			// Relations never reach meta.Fields, which is where the tenant field
-			// is looked up on registration — so a tenant marker on a relation is
-			// not a tenant declaration at all and must not satisfy the check.
 			meta.Relations = append(meta.Relations, fm)
 		} else {
-			if fm.Tenant {
-				tenantFields = append(tenantFields, sf.Name)
-			}
 			meta.Fields = append(meta.Fields, fm)
 		}
-	}
-
-	if len(tenantFields) == 0 {
-		return EntityMeta{}, fmt.Errorf("iverson tag %q: type %s has no field marked iverson_tenant:\"true\"; the server requires every schema to declare a tenant boundary and will reject registration without one", TenantTagKey, meta.TypeName)
-	}
-	if len(tenantFields) > 1 {
-		return EntityMeta{}, fmt.Errorf("iverson tag %q: type %s has multiple fields marked iverson_tenant:\"true\" (%s); exactly one field must carry the tenant marker", TenantTagKey, meta.TypeName, strings.Join(tenantFields, ", "))
 	}
 
 	return meta, nil

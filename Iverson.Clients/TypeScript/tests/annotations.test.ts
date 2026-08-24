@@ -14,6 +14,7 @@ import {
     ManyToOne,
     ManyToMany,
     OneToMany,
+    OneToOne,
     isIversonEntity,
     getKeyField,
     getSearchKeys,
@@ -22,6 +23,7 @@ import {
     getTypeDescription,
     getPropertyDescriptions,
     getRelations,
+    getRelationsWithFactory,
 } from '../src/annotations.js';
 
 // ── Test entities ─────────────────────────────────────────────────────────────
@@ -71,6 +73,60 @@ class TestPost {
 
     @ManyToMany(() => TestAuthor)
     tags: string = '';
+}
+
+// ── Forward-reference entities ──────────────────────────────────────────────────
+//
+// Each of these decorated classes is declared BEFORE the class its relation
+// decorator names (`LaterDeclared`, below). Property decorators run at
+// class-definition time, so if a relation decorator called its `typeFactory`
+// eagerly, evaluating `() => LaterDeclared` here would throw
+// `ReferenceError: Cannot access 'LaterDeclared' before initialization` (TDZ)
+// while THIS MODULE is still loading — i.e. before any test body even runs.
+// Against the fixed (lazy) implementation, the factory is only invoked inside
+// `getRelations`, by which point the whole module has finished initializing,
+// so `LaterDeclared` is available and these classes construct without error.
+
+@IversonEntity()
+class ForwardManyToOne {
+    @IversonKey()
+    id: string = '';
+
+    @ManyToOne(() => LaterDeclared)
+    laterId: string = '';
+}
+
+@IversonEntity()
+class ForwardManyToMany {
+    @IversonKey()
+    id: string = '';
+
+    @ManyToMany(() => LaterDeclared)
+    laterIds: string = '';
+}
+
+@IversonEntity()
+class ForwardOneToMany {
+    @IversonKey()
+    id: string = '';
+
+    @OneToMany(() => LaterDeclared)
+    laters: string = '';
+}
+
+@IversonEntity()
+class ForwardOneToOne {
+    @IversonKey()
+    id: string = '';
+
+    @OneToOne(() => LaterDeclared)
+    laterId: string = '';
+}
+
+@IversonEntity()
+class LaterDeclared {
+    @IversonKey()
+    id: string = '';
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -163,6 +219,70 @@ describe('Relation decorators', () => {
 
     it('returns empty array when no relations', () => {
         expect(getRelations(TestAuthor)).toHaveLength(0);
+    });
+});
+
+describe('getRelationsWithFactory', () => {
+    it('returns the unresolved typeFactory alongside field and kind', () => {
+        const relations = getRelationsWithFactory(TestArticle);
+        expect(relations).toHaveLength(1);
+        expect(relations[0].field).toBe('authorId');
+        expect(relations[0].kind).toBe('many_to_one');
+        expect(typeof relations[0].typeFactory).toBe('function');
+        // Unlike getRelations, the factory itself is handed back, not collapsed to a name.
+        expect(relations[0].typeFactory()).toBe(TestAuthor);
+    });
+
+    it('returns empty array when no relations', () => {
+        expect(getRelationsWithFactory(TestAuthor)).toHaveLength(0);
+    });
+});
+
+describe('Relation decorators with forward references', () => {
+    // These prove the typeFactory is resolved lazily (at getRelations() call
+    // time) rather than eagerly (at class-decoration time). All four classes
+    // above are declared BEFORE `LaterDeclared`; if any decorator called its
+    // factory eagerly, importing this test file would itself throw a
+    // ReferenceError before any `it()` here could even run.
+
+    it('ManyToOne resolves a class declared later in the module', () => {
+        const relations = getRelations(ForwardManyToOne);
+        expect(relations).toHaveLength(1);
+        expect(relations[0]).toMatchObject({
+            field: 'laterId',
+            kind: 'many_to_one',
+            relatedType: 'LaterDeclared',
+        });
+    });
+
+    it('ManyToMany resolves a class declared later in the module', () => {
+        const relations = getRelations(ForwardManyToMany);
+        expect(relations).toHaveLength(1);
+        expect(relations[0]).toMatchObject({
+            field: 'laterIds',
+            kind: 'many_to_many',
+            relatedType: 'LaterDeclared',
+        });
+    });
+
+    it('OneToMany resolves a class declared later in the module', () => {
+        const relations = getRelations(ForwardOneToMany);
+        expect(relations).toHaveLength(1);
+        expect(relations[0]).toMatchObject({
+            field: 'laters',
+            kind: 'one_to_many',
+            relatedType: 'LaterDeclared',
+        });
+    });
+
+    it('OneToOne resolves a class declared later in the module', () => {
+        const relations = getRelations(ForwardOneToOne);
+        expect(relations).toHaveLength(1);
+        expect(relations[0]).toMatchObject({
+            field: 'laterId',
+            kind: 'one_to_one',
+            relatedType: 'LaterDeclared',
+        });
     });
 });
 

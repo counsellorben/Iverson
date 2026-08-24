@@ -817,4 +817,70 @@ public class ObjectRetrievalGrpcServiceTests
         public Task WriteAsync(T message, CancellationToken cancellationToken)
             { Written.Add(message); return Task.CompletedTask; }
     }
+
+    // ── Server-owned tenant column never reaches the caller ───────────────────
+    //
+    // FetchByKeyAsync/FetchManyByKeysAsync both select `row_to_json(t)`, which returns EVERY
+    // physical column — __TenantId included. Both of these call sites are covered by
+    // MaskDisallowedFields; neither schema below declares FieldPermissions, so AllowedFields is
+    // null and the strip has to fire on the early-return path.
+
+    private static SchemaDescriptor TenantAuthorSchema() => SchemaFixtures.AuthorSchema() with
+    {
+        ScalarColumns =
+        [
+            new ColumnDescriptor("Name", "text", false),
+            new ColumnDescriptor(SchemaDescriptor.TenantColumnName, "TEXT", false)
+        ],
+        TenantColumn = SchemaDescriptor.TenantColumnName
+    };
+
+    private static string TenantAuthorJson(string id) =>
+        $$"""{"Id":"{{id}}","Name":"Alice","{{SchemaDescriptor.TenantColumnName}}":"test-tenant"}""";
+
+    [Fact]
+    public async Task Get_OmitsTheServerOwnedTenantColumnFromTheResponse()
+    {
+        await _registry.RegisterAsync(TenantAuthorSchema());
+        _entities
+            .FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>(), Arg.Any<bool>(), Arg.Any<string?>())
+            .Returns(TenantAuthorJson(AuthorId));
+
+        var response = await _sut.Get(
+            new RetrievalRequest { TypeName = "Author", Key = AuthorId },
+            TestServerCallContext.Create());
+
+        response.Found.Should().BeTrue();
+        response.Data.Fields.Should().NotContainKey(SchemaDescriptor.TenantColumnName);
+        response.Data.Fields["Name"].StringValue.Should().Be("Alice");
+    }
+
+    [Fact]
+    public async Task GetMany_OmitsTheServerOwnedTenantColumnFromEveryResponse()
+    {
+        await _registry.RegisterAsync(TenantAuthorSchema());
+        _entities
+            .FetchManyByKeysAsync(
+                Arg.Any<TableSchema>(), Arg.Any<IReadOnlyList<string>>(), Arg.Any<bool>(), Arg.Any<string?>())
+            .Returns(new List<KeyedRow>
+            {
+                new(AuthorId,  TenantAuthorJson(AuthorId)),
+                new(AuthorId2, TenantAuthorJson(AuthorId2))
+            });
+
+        var request = new RetrievalManyRequest { TypeName = "Author" };
+        request.Keys.AddRange([AuthorId, AuthorId2]);
+        var stream = MakeStream<RetrievalResponse>();
+
+        await _sut.GetMany(request, stream, TestServerCallContext.Create());
+
+        var written = stream.Written;
+        written.Should().HaveCount(2);
+        written.Should().OnlyContain(r => r.Found);
+        foreach (var r in written)
+        {
+            r.Data.Fields.Should().NotContainKey(SchemaDescriptor.TenantColumnName);
+            r.Data.Fields["Name"].StringValue.Should().Be("Alice");
+        }
+    }
 }

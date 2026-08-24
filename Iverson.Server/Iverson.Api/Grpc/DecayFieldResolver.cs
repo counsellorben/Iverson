@@ -44,6 +44,9 @@ internal static class DecayFieldResolver
     private static string? Resolve(SchemaDescriptor schema, ILogger logger)
     {
         var candidates = schema.ScalarColumns
+            // ScalarColumns position: EXCLUDE __TenantId. The tenant column is never a decay field —
+            // it carries an identity, not a recency signal, and a schema cannot mark it as metadata.
+            .Where(c => !SchemaDescriptor.IsTenantColumn(c.Name))
             .Where(c => schema.MetadataColumns.Contains(c.Name))
             .Where(c => c.SqlType.Equals("TIMESTAMPTZ", StringComparison.OrdinalIgnoreCase) ||
                         c.SqlType.Equals("DATETIME", StringComparison.OrdinalIgnoreCase))

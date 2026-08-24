@@ -5,7 +5,8 @@ using Xunit;
 namespace Iverson.StarRocks.Tests;
 
 [Trait("Category", "Integration")]
-public sealed class PipelineIntegrationTests : IClassFixture<StarRocksContainerFixture>
+[Collection(StarRocksCollection.Name)]
+public sealed class PipelineIntegrationTests
 {
     private readonly StarRocksContainerFixture _fx;
 

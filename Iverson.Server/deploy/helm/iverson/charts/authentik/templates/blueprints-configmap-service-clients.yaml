@@ -37,7 +37,10 @@ data:
         attrs:
           name: "Iverson: group membership"
           description: Exposes the authenticated user's Authentik group names
-          expression: "return [group.name for group in user.ak_groups.all()]"
+          # Must return a DICT — a scope mapping's returned mapping is merged into the token's
+          # claims, so a bare list emits no "groups" claim and RowFieldAuthorizationEvaluator's
+          # FindAll("groups") finds nothing, denying every role-gated read and write.
+          expression: 'return {"groups": [group.name for group in user.ak_groups.all()]}'
       - model: authentik_providers_oauth2.scopemapping
         identifiers:
           scope_name: tenant_id
@@ -51,21 +54,21 @@ data:
         attrs:
           name: "Iverson: loadtest tenant id"
           description: Fixed tenant identifier issued to the loadtest service client
-          expression: 'return {"tenant_id": "tenant-loadtest"}'
+          expression: 'return {"tenant_id": "tenant_loadtest"}'
       - model: authentik_providers_oauth2.scopemapping
         identifiers:
           scope_name: tenant_id_webtest
         attrs:
           name: "Iverson: webtest tenant id"
           description: Fixed tenant identifier issued to the webtest service client
-          expression: 'return {"tenant_id": "tenant-webtest"}'
+          expression: 'return {"tenant_id": "tenant_webtest"}'
       - model: authentik_providers_oauth2.scopemapping
         identifiers:
           scope_name: tenant_id_admin
         attrs:
           name: "Iverson: admin automation tenant id"
           description: Fixed tenant identifier issued to the admin-automation service client
-          expression: 'return {"tenant_id": "tenant-admin"}'
+          expression: 'return {"tenant_id": "tenant_admin"}'
 {{- range $name := list "loadtest" "webtest" "admin-automation" }}
 {{- $secret := index (dict "loadtest" $loadtest "webtest" $webtest "admin-automation" $adminAuto) $name }}
       - model: authentik_providers_oauth2.oauth2provider
@@ -231,7 +234,7 @@ data:
           password: {{ if $smokeTestUser }}{{ index $smokeTestUser.data "password" | b64dec }}{{ else }}{{ randAlphaNum 32 }}{{ end }}
           is_active: true
           attributes:
-            tenant_id: "tenant-smoke-test"
+            tenant_id: "tenant_smoke_test"
       - model: authentik_core.group
         identifiers:
           name: iverson-loadtest-bypass
@@ -246,7 +249,7 @@ data:
           password: {{ if $bypassUser }}{{ index $bypassUser.data "password" | b64dec }}{{ else }}{{ randAlphaNum 32 }}{{ end }}
           is_active: true
           attributes:
-            tenant_id: "tenant-bypass"
+            tenant_id: "tenant_bypass"
           groups:
             - !Find [authentik_core.group, [name, iverson-loadtest-bypass]]
       - model: authentik_core.group

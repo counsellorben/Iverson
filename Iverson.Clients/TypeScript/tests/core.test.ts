@@ -21,11 +21,19 @@ import {
     IversonMetadata,
     IversonSearchKey,
     IversonSummary,
-    IversonTenant,
+    ManyToMany,
+    ManyToOne,
+    OneToMany,
+    OneToOne,
 } from '../src/annotations.js';
 import { ACTING_USER_METADATA_KEY } from '../src/auth.js';
 import { describeEntity, EntityCoordinator, IversonClient } from '../src/core.js';
 
+import {
+    MappingGetRequest,
+    MappingResponse,
+    MappingWriteRequest,
+} from '../generated/object_mapping.js';
 import {
     ObjectPersistenceServiceClient,
     PersistRequest,
@@ -181,6 +189,102 @@ describe('EntityCoordinator — acting-user token threading', () => {
     });
 });
 
+// ── EntityCoordinator — acting-user identity resolution (per-call → bound → ambient → none) ──
+
+describe('EntityCoordinator — acting-user identity resolution', () => {
+    it("withActingUser() binds an identity that wins over the client's ambient one", async () => {
+        const { fn, calls } = makeUnaryStub<PersistRequest, PersistResponse>({
+            success: true, key: 'k1', error: '', traceId: '',
+        });
+        const client = makeClientLike({ _persistenceClient: { post: fn }, _actingUserToken: 'ambient' });
+        const coordinator = new EntityCoordinator(TestEntity, client).withActingUser('bound');
+
+        await coordinator.persist(new TestEntity());
+
+        expect(calls[0].metadata.get(ACTING_USER_METADATA_KEY)).toEqual(['Bearer bound']);
+    });
+
+    it("the client's ambient identity applies when nothing is bound", async () => {
+        const { fn, calls } = makeUnaryStub<PersistRequest, PersistResponse>({
+            success: true, key: 'k1', error: '', traceId: '',
+        });
+        const client = makeClientLike({ _persistenceClient: { post: fn }, _actingUserToken: 'ambient' });
+        const coordinator = new EntityCoordinator(TestEntity, client);
+
+        await coordinator.persist(new TestEntity());
+
+        expect(calls[0].metadata.get(ACTING_USER_METADATA_KEY)).toEqual(['Bearer ambient']);
+    });
+
+    it('no identity anywhere emits no acting-user header', async () => {
+        const { fn, calls } = makeUnaryStub<PersistRequest, PersistResponse>({
+            success: true, key: 'k1', error: '', traceId: '',
+        });
+        const client = makeClientLike({ _persistenceClient: { post: fn } });
+        const coordinator = new EntityCoordinator(TestEntity, client);
+
+        await coordinator.persist(new TestEntity());
+
+        expect(calls[0].metadata.get(ACTING_USER_METADATA_KEY)).toEqual([]);
+    });
+
+    it('withActingUser() does not mutate the receiver', async () => {
+        const { fn, calls } = makeUnaryStub<PersistRequest, PersistResponse>({
+            success: true, key: 'k1', error: '', traceId: '',
+        });
+        const client = makeClientLike({ _persistenceClient: { post: fn }, _actingUserToken: 'ambient' });
+        const coordinator = new EntityCoordinator(TestEntity, client);
+
+        coordinator.withActingUser('bound');
+        await coordinator.persist(new TestEntity());
+
+        expect(calls[0].metadata.get(ACTING_USER_METADATA_KEY)).toEqual(['Bearer ambient']);
+    });
+});
+
+// ── EntityCoordinator — mapped CRUD ──────────────────────────────────────────
+
+describe('EntityCoordinator — mapped CRUD', () => {
+    it('getMapped() passes depth through', async () => {
+        const { fn, calls } = makeUnaryStub<MappingGetRequest, MappingResponse>({
+            success: true, data: { Id: '1', Name: 'n' }, error: '', traceId: '',
+        });
+        const client = makeClientLike({ _mappingClient: { get: fn } });
+        const coordinator = new EntityCoordinator(TestEntity, client);
+
+        await coordinator.getMapped('1', 2);
+
+        expect((calls[0].req as MappingGetRequest).depth).toBe(2);
+    });
+
+    it('postMapped() returns an entity hydrated from Data', async () => {
+        const { fn } = makeUnaryStub<MappingWriteRequest, MappingResponse>({
+            success: true, data: { Id: 'server-assigned-id', Name: 'n' }, error: '', traceId: '',
+        });
+        const client = makeClientLike({ _mappingClient: { post: fn } });
+        const coordinator = new EntityCoordinator(TestEntity, client);
+
+        const entity = new TestEntity();
+        const result = await coordinator.postMapped(entity);
+
+        expect(result.id).toBe('server-assigned-id');
+    });
+
+    it('updateMapped() sends the key it was given', async () => {
+        const { fn, calls } = makeUnaryStub<MappingWriteRequest, MappingResponse>({
+            success: true, data: { Id: 'k1', Name: 'n' }, error: '', traceId: '',
+        });
+        const client = makeClientLike({ _mappingClient: { update: fn } });
+        const coordinator = new EntityCoordinator(TestEntity, client);
+
+        const entity = new TestEntity();
+        entity.id = 'k1';
+        await coordinator.updateMapped(entity);
+
+        expect((calls[0].req as MappingWriteRequest).payload!.Id).toBe('k1');
+    });
+});
+
 // ── IversonClient — search-family execution methods ─────────────────────────
 
 describe('IversonClient — search-family execution methods', () => {
@@ -309,7 +413,6 @@ describe('describeEntity key-field validation', () => {
         class MetadataOnKeyEntity {
             @IversonKey() @IversonMetadata()
             id: string = '';
-            @IversonTenant()
             tenantId: string = '';
         }
 
@@ -325,7 +428,6 @@ describe('describeEntity key-field validation', () => {
         class SummaryOnKeyEntity {
             @IversonKey() @IversonSummary()
             id: string = '';
-            @IversonTenant()
             tenantId: string = '';
         }
 
@@ -343,7 +445,6 @@ describe('describeEntity key-field validation', () => {
             @IversonChunk() @IversonMetadata() @IversonSummary() @IversonKeywords()
             @IversonExtracted('hint')
             id: string = '';
-            @IversonTenant()
             tenantId: string = '';
         }
 
@@ -368,7 +469,6 @@ describe('describeEntity key-field validation', () => {
         class DescribedKeyEntity {
             @IversonKey() @IversonDescription('Stable identifier.')
             id: string = '';
-            @IversonTenant()
             tenantId: string = '';
         }
 
@@ -376,5 +476,384 @@ describe('describeEntity key-field validation', () => {
         const key = descriptor.properties.find(p => p.name === 'Id');
         expect(key?.isKey).toBe(true);
         expect(key?.description).toBe('Stable identifier.');
+    });
+});
+
+// ── FK-only write contract ──────────────────────────────────────────────────
+
+@IversonEntity()
+class FkAuthor {
+    @IversonKey()
+    id: string = '';
+    name: string = '';
+}
+
+@IversonEntity()
+class FkArticle {
+    @IversonKey()
+    id: string = '';
+    tenantId: string = '';
+
+    @ManyToOne(() => FkAuthor)
+    fkAuthorId: string = '';
+
+    @ManyToMany(() => FkAuthor)
+    contributorIds: string[] = [];
+
+    @OneToMany(() => FkAuthor)
+    comments: string = '';
+}
+
+describe('entityToPayload — FK-only write contract', () => {
+    it('writes the FK column, not the nav member name', async () => {
+        const { fn, calls } = makeUnaryStub<PersistRequest, PersistResponse>({
+            success: true, key: 'k1', error: '', traceId: '',
+        });
+        const client = makeClientLike({ _persistenceClient: { post: fn } });
+        const coordinator = new EntityCoordinator(FkArticle, client);
+
+        const entity = new FkArticle();
+        entity.fkAuthorId = 'auth-1';
+        entity.comments = 'ignored-nav-value';
+        await coordinator.persist(entity);
+
+        const payload = calls[0].req.payload as Record<string, unknown>;
+        expect(payload['FkAuthorId']).toBe('auth-1');
+        expect(Object.keys(payload)).not.toContain('AuthorId');
+        expect(Object.keys(payload)).not.toContain('FkArticleId');
+        expect(Object.keys(payload)).not.toContain('Comments');
+    });
+});
+
+describe('describeEntity — declared FK columns', () => {
+    it('declares the FK column under the inferred name for the three non-OneToMany kinds, and nothing for OneToMany', () => {
+        const descriptor = describeEntity(FkArticle);
+        const propNames = descriptor.properties.map(p => p.name);
+
+        expect(propNames).toContain('FkAuthorId');
+        expect(propNames).toContain('FkAuthorIds');
+        expect(propNames).not.toContain('FkArticleId');
+    });
+});
+
+describe('describeEntity — many-to-one/one-to-one FK naming enforcement', () => {
+    it('accepts a correctly-named many_to_one member', () => {
+        @IversonEntity()
+        class GoodArticle {
+            @IversonKey()
+            id: string = '';
+            @ManyToOne(() => FkAuthor)
+            fkAuthorId: string = '';
+        }
+
+        expect(() => describeEntity(GoodArticle)).not.toThrow();
+    });
+
+    it('throws when a many_to_one member is misnamed, naming both names', () => {
+        @IversonEntity()
+        class BadArticle {
+            @IversonKey()
+            id: string = '';
+            @ManyToOne(() => FkAuthor)
+            writerId: string = '';
+        }
+
+        let message = '';
+        try {
+            describeEntity(BadArticle);
+        } catch (err) {
+            message = (err as Error).message;
+        }
+        expect(message).toContain('WriterId');
+        expect(message).toContain('FkAuthorId');
+    });
+});
+
+describe('read/write round-trip — ManyToMany FK column symmetry', () => {
+    it('reads back the same ids set on write under the same member', async () => {
+        const { fn: postFn, calls: postCalls } = makeUnaryStub<PersistRequest, PersistResponse>({
+            success: true, key: 'k1', error: '', traceId: '',
+        });
+        const getResponse: RetrievalResponse = {
+            found: true,
+            data: {},
+            traceId: '',
+        };
+        const { fn: getFn } = makeUnaryStub<RetrievalManyRequest, RetrievalResponse>(getResponse);
+
+        const client = makeClientLike({
+            _persistenceClient: { post: postFn },
+            _retrievalClient: { get: getFn },
+        });
+        const coordinator = new EntityCoordinator(FkArticle, client);
+
+        const entity = new FkArticle();
+        entity.contributorIds = ['a1', 'a2'];
+        await coordinator.persist(entity);
+
+        const payload = postCalls[0].req.payload as Record<string, unknown>;
+        expect(payload['FkAuthorIds']).toEqual(['a1', 'a2']);
+
+        // Feed the written payload back through the read path and confirm symmetry.
+        getResponse.data = payload;
+        const readBack = await coordinator.get('k1');
+        expect(readBack?.contributorIds).toEqual(['a1', 'a2']);
+    });
+});
+
+// ── Depth-resolved read hydration ────────────────────────────────────────────
+
+@IversonEntity()
+class HydTag {
+    @IversonKey()
+    id: string = '';
+    label: string = '';
+}
+
+@IversonEntity()
+class HydArticle {
+    @IversonKey()
+    id: string = '';
+
+    @OneToMany(() => HydArticle)
+    hydArticles: HydArticle[] = [];
+}
+
+@IversonEntity()
+class HydAuthor {
+    @IversonKey()
+    id: string = '';
+    name: string = '';
+
+    @OneToMany(() => HydArticle)
+    hydArticles: HydArticle[] = [];
+}
+
+@IversonEntity()
+class HydArticleFull {
+    @IversonKey()
+    id: string = '';
+    title: string = '';
+
+    @ManyToOne(() => HydAuthor)
+    hydAuthorId: string = '';
+
+    @ManyToMany(() => HydTag)
+    hydTagIds: string[] = [];
+
+    // Second relation to the many_to_many's own related type, through the singular FK, to
+    // prove `hydTagIds` -> `hydTags` and `hydTagId` -> `hydTag` land on distinct members.
+    @OneToOne(() => HydTag)
+    hydTagId: string = '';
+}
+
+@IversonEntity()
+class HydCollisionArticle {
+    @IversonKey()
+    id: string = '';
+
+    // Declared field collides with the member `hydAuthorId` would derive to.
+    hydAuthor: string = 'declared-value';
+
+    @ManyToOne(() => HydAuthor)
+    hydAuthorId: string = '';
+}
+
+describe('EntityCoordinator — depth-resolved relation hydration (read path)', () => {
+    it('many_to_one hydrates a typed instance on the derived singular member', async () => {
+        const { fn } = makeUnaryStub<MappingGetRequest, MappingResponse>({
+            success: true,
+            data: {
+                Id: 'a1',
+                Title: 'T',
+                HydAuthorId: 'auth-1',
+                HydAuthor: { Id: 'auth-1', Name: 'Ada' },
+            },
+            error: '',
+            traceId: '',
+        });
+        const client = makeClientLike({ _mappingClient: { get: fn } });
+        const coordinator = new EntityCoordinator(HydArticleFull, client);
+
+        const result = await coordinator.getMapped('a1', 1);
+
+        expect(result!.hydAuthorId).toBe('auth-1');
+        expect((result as unknown as Record<string, unknown>)['hydAuthor']).toBeInstanceOf(HydAuthor);
+        expect(((result as unknown as Record<string, unknown>)['hydAuthor'] as HydAuthor).name).toBe('Ada');
+    });
+
+    it('many_to_many hydrates typed instances on the plural member, distinct from one_to_one', async () => {
+        const { fn } = makeUnaryStub<MappingGetRequest, MappingResponse>({
+            success: true,
+            data: {
+                Id: 'a1',
+                Title: 'T',
+                HydTagIds: ['t1', 't2'],
+                HydTags: [{ Id: 't1', Label: 'x' }, { Id: 't2', Label: 'y' }],
+                HydTagId: 't3',
+                HydTag: { Id: 't3', Label: 'z' },
+            },
+            error: '',
+            traceId: '',
+        });
+        const client = makeClientLike({ _mappingClient: { get: fn } });
+        const coordinator = new EntityCoordinator(HydArticleFull, client);
+
+        const result = await coordinator.getMapped('a1', 1);
+        const row = result as unknown as Record<string, unknown>;
+
+        expect(row['hydTags']).toBeInstanceOf(Array);
+        expect((row['hydTags'] as HydTag[]).map(t => t.label)).toEqual(['x', 'y']);
+        expect(row['hydTag']).toBeInstanceOf(HydTag);
+        expect((row['hydTag'] as HydTag).label).toBe('z');
+        // Distinct members: the plural relation didn't overwrite the singular one, or vice versa.
+        expect(row['hydTag']).not.toBe(row['hydTags']);
+    });
+
+    it('one_to_many hydrates typed instances in place at the declared member', async () => {
+        const { fn } = makeUnaryStub<MappingGetRequest, MappingResponse>({
+            success: true,
+            data: {
+                Id: 'auth-1',
+                Name: 'Ada',
+                HydArticles: [{ Id: 'a1' }, { Id: 'a2' }],
+            },
+            error: '',
+            traceId: '',
+        });
+        const client = makeClientLike({ _mappingClient: { get: fn } });
+        const coordinator = new EntityCoordinator(HydAuthor, client);
+
+        const result = await coordinator.getMapped('auth-1', 1);
+
+        expect(result!.hydArticles).toHaveLength(2);
+        expect(result!.hydArticles[0]).toBeInstanceOf(HydArticle);
+        expect(result!.hydArticles.map(a => a.id)).toEqual(['a1', 'a2']);
+    });
+
+    it('a derived navigation member colliding with a declared field throws', async () => {
+        const { fn } = makeUnaryStub<MappingGetRequest, MappingResponse>({
+            success: true,
+            data: { Id: 'a1', HydAuthorId: 'auth-1', HydAuthor: { Id: 'auth-1', Name: 'Ada' } },
+            error: '',
+            traceId: '',
+        });
+        const client = makeClientLike({ _mappingClient: { get: fn } });
+        const coordinator = new EntityCoordinator(HydCollisionArticle, client);
+
+        await expect(coordinator.getMapped('a1', 1)).rejects.toThrow(/hydAuthor/);
+    });
+
+    it('getMapped -> updateMapped round trip sends the FK, not the hydrated navigation member', async () => {
+        const { fn: getFn } = makeUnaryStub<MappingGetRequest, MappingResponse>({
+            success: true,
+            data: {
+                Id: 'a1',
+                Title: 'T',
+                HydAuthorId: 'auth-1',
+                HydAuthor: { Id: 'auth-1', Name: 'Ada' },
+                HydTagIds: ['t1'],
+                HydTags: [{ Id: 't1', Label: 'x' }],
+                HydTagId: 't3',
+                HydTag: { Id: 't3', Label: 'z' },
+            },
+            error: '',
+            traceId: '',
+        });
+        const { fn: updateFn, calls: updateCalls } = makeUnaryStub<MappingWriteRequest, MappingResponse>({
+            success: true,
+            data: { Id: 'a1', Title: 'T', HydAuthorId: 'auth-1', HydTagIds: ['t1'], HydTagId: 't3' },
+            error: '',
+            traceId: '',
+        });
+        const client = makeClientLike({ _mappingClient: { get: getFn, update: updateFn } });
+        const coordinator = new EntityCoordinator(HydArticleFull, client);
+
+        const article = await coordinator.getMapped('a1', 1);
+        expect((article as unknown as Record<string, unknown>)['hydAuthor']).toBeInstanceOf(HydAuthor);
+        // one_to_one nav member is actually assigned here — proving its exclusion from the
+        // outgoing payload below is bound to real behavior, not trivially true from an unset field.
+        expect((article as unknown as Record<string, unknown>)['hydTag']).toBeInstanceOf(HydTag);
+
+        await coordinator.updateMapped(article!);
+
+        const payload = updateCalls[0].req.payload as Record<string, unknown>;
+        expect(payload['HydAuthorId']).toBe('auth-1');
+        expect(payload['HydTagIds']).toEqual(['t1']);
+        expect(payload['HydTagId']).toBe('t3');
+        expect(Object.keys(payload)).not.toContain('Author');
+        expect(Object.keys(payload)).not.toContain('HydAuthor');
+        expect(Object.keys(payload)).not.toContain('HydTags');
+        expect(Object.keys(payload)).not.toContain('HydTag');
+    });
+});
+
+// ── C1 regression: many_to_many member whose name doesn't end in "Ids" ──────
+//
+// describeEntity only validates member naming for many_to_one/one_to_one (a many_to_many's wire
+// column comes from inferFk(kind, relatedType, ...), not from the member name), so a
+// many_to_many member named e.g. `contributors` is legal and registers without error.
+// relationNavMember's fallback then returns the field unchanged, which must NOT be treated as a
+// "suffix was stripped" derivation.
+
+@IversonEntity()
+class M2mNoSuffixAuthor {
+    @IversonKey()
+    id: string = '';
+}
+
+@IversonEntity()
+class M2mNoSuffixArticle {
+    @IversonKey()
+    id: string = '';
+    tenantId: string = '';
+
+    @ManyToMany(() => M2mNoSuffixAuthor)
+    contributors: string[] = [];
+}
+
+describe('C1 — many_to_many member not ending in "Ids"', () => {
+    it('write path: the foreign key still reaches the payload (no silent data loss)', async () => {
+        const { fn, calls } = makeUnaryStub<PersistRequest, PersistResponse>({
+            success: true, key: 'a1', error: '', traceId: '',
+        });
+        const client = makeClientLike({ _persistenceClient: { post: fn } });
+        const coordinator = new EntityCoordinator(M2mNoSuffixArticle, client);
+
+        const entity = new M2mNoSuffixArticle();
+        entity.id = 'a1';
+        entity.tenantId = 't';
+        entity.contributors = ['x', 'y'];
+        await coordinator.persist(entity);
+
+        const payload = calls[0].req.payload as Record<string, unknown>;
+        expect(payload['M2mNoSuffixAuthorIds']).toEqual(['x', 'y']);
+    });
+
+    it('read path: hydration does not throw and does not invent a nav member', async () => {
+        const { fn } = makeUnaryStub<MappingGetRequest, MappingResponse>({
+            success: true,
+            data: {
+                Id: 'a1',
+                TenantId: 't',
+                M2mNoSuffixAuthorIds: ['x', 'y'],
+                Contributors: [{ Id: 'x' }, { Id: 'y' }],
+            },
+            error: '',
+            traceId: '',
+        });
+        const client = makeClientLike({ _mappingClient: { get: fn } });
+        const coordinator = new EntityCoordinator(M2mNoSuffixArticle, client);
+
+        const result = await coordinator.getMapped('a1', 1);
+
+        expect(result).not.toBeNull();
+        // The declared field is overwritten in place by the hydrated typed instances — no
+        // separate/invented nav member is created, and no collision error is thrown.
+        const contributors = (result as unknown as Record<string, unknown>)['contributors'] as unknown[];
+        expect(contributors).toHaveLength(2);
+        expect(contributors[0]).toBeInstanceOf(M2mNoSuffixAuthor);
+        expect(Object.getOwnPropertyNames(result as object)).not.toContain('contributor');
+        expect(Object.getOwnPropertyNames(result as object)).not.toContain('contributorsHydrated');
     });
 });

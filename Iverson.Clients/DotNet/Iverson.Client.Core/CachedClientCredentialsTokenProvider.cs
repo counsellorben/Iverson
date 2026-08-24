@@ -20,13 +20,19 @@ internal sealed class CachedClientCredentialsTokenProvider(IversonClientCredenti
             if (_token is not null && DateTimeOffset.UtcNow < _expiresAt)
                 return _token;
 
-            var response = await _httpClient.RequestClientCredentialsTokenAsync(new ClientCredentialsTokenRequest
+            var request = new ClientCredentialsTokenRequest
             {
                 Address = credentials.TokenEndpoint,
                 ClientId = credentials.ClientId,
                 ClientSecret = credentials.ClientSecret,
                 Scope = credentials.Scope,
-            });
+            };
+            // ClientCredentialsTokenRequest derives from HttpRequestMessage — Headers.Host is
+            // settable directly, same mechanism AuthentikFlowExecutorClient already uses.
+            if (credentials.HostHeader is { Length: > 0 } host)
+                request.Headers.Host = host;
+
+            var response = await _httpClient.RequestClientCredentialsTokenAsync(request);
 
             if (response.IsError)
                 throw new InvalidOperationException($"Failed to acquire Iverson client token: {response.Error}");

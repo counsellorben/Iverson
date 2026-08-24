@@ -5,9 +5,31 @@ import (
 	"fmt"
 	"math"
 	"reflect"
+	"sync"
 
 	pb "github.com/iverson/clients/go/generated"
 )
+
+// registeredTypes maps a registered entity's simple type name (e.g. "GoAuthor") to its
+// reflect.Type, so structToEntity[T] can resolve a related type for hydration by name
+// alone. It must be package-level: structToEntity[T] (coordinator.go) takes only a
+// *structpb.Struct and has no SchemaRegistrar instance to reach through, and every one
+// of its seven call sites in coordinator.go would need to change to thread one through.
+var (
+	registeredTypesMu sync.RWMutex
+	registeredTypes   = make(map[string]reflect.Type)
+)
+
+// lookupRegisteredType resolves a relation's RelatedType name to the reflect.Type a
+// prior Register call recorded for it. Returns false if the type was never registered
+// (e.g. registered only by a different client, or not yet registered at all) — the
+// caller falls back to storing the untyped child rather than failing the read.
+func lookupRegisteredType(name string) (reflect.Type, bool) {
+	registeredTypesMu.RLock()
+	defer registeredTypesMu.RUnlock()
+	t, ok := registeredTypes[name]
+	return t, ok
+}
 
 // MappingClient is the interface for the ObjectMappingService stub.
 // Defined as an interface so tests can provide a mock.
@@ -29,10 +51,17 @@ func NewSchemaRegistrar(client MappingClient, entities ...interface{}) *SchemaRe
 	return &SchemaRegistrar{client: client, types: entities}
 }
 
-// RegisterAll synchronously registers all entity schemas.
-func (r *SchemaRegistrar) RegisterAll(ctx context.Context, traceID string) error {
+// RegisterAll synchronously registers all entity schemas, attaching per-type
+// authorization rules. A type with no map entry registers with none, which the server
+// denies for every read and write — a nil rule set is an unconditional deny, not an
+// absence of restrictions.
+func (r *SchemaRegistrar) RegisterAll(
+	ctx context.Context,
+	traceID string,
+	authByTypeName map[string]*pb.AuthorizationRules,
+) error {
 	for _, e := range r.types {
-		req, err := r.buildRequest(e, traceID)
+		req, err := r.buildRequest(e, traceID, authByTypeName)
 		if err != nil {
 			return err
 		}
@@ -48,7 +77,7 @@ func (r *SchemaRegistrar) RegisterAll(ctx context.Context, traceID string) error
 }
 
 // buildRequest reflects on entity e and constructs a SchemaRequest proto.
-func (r *SchemaRegistrar) buildRequest(e interface{}, traceID string) (*pb.SchemaRequest, error) {
+func (r *SchemaRegistrar) buildRequest(e interface{}, traceID string, authByTypeName map[string]*pb.AuthorizationRules) (*pb.SchemaRequest, error) {
 	meta, err := InspectType(e)
 	if err != nil {
 		return nil, err
@@ -60,6 +89,10 @@ func (r *SchemaRegistrar) buildRequest(e interface{}, traceID string) (*pb.Schem
 		t = t.Elem()
 	}
 
+	registeredTypesMu.Lock()
+	registeredTypes[t.Name()] = t
+	registeredTypesMu.Unlock()
+
 	properties := make([]*pb.PropertyDescriptor, 0, len(meta.Fields))
 	for _, fm := range meta.Fields {
 		sf, ok := t.FieldByName(fm.Name)
@@ -69,6 +102,12 @@ func (r *SchemaRegistrar) buildRequest(e interface{}, traceID string) (*pb.Schem
 		clrType, isArray, err := goTypeToClr(sf.Type)
 		if err != nil {
 			return nil, fmt.Errorf("field %s: %w", fm.Name, err)
+		}
+		if fm.IsGuid {
+			if !isGuidEligibleType(sf.Type) {
+				return nil, fmt.Errorf("field %s carries iverson_guid:\"true\" but its underlying type is %s, not string (or []string); iverson_guid marks a string-typed field as a UUID/UUID[] column, and the server would register that column type against payload data it cannot parse. Remove iverson_guid or change the field's type to string", fm.Name, sf.Type)
+			}
+			clrType = pb.ClrType_CLR_GUID
 		}
 		searchKeyOrder, err := int32FromInt(fm.SearchKeyOrder)
 		if err != nil {
@@ -107,6 +146,10 @@ func (r *SchemaRegistrar) buildRequest(e interface{}, traceID string) (*pb.Schem
 
 	relations := make([]*pb.RelationDescriptor, 0, len(meta.Relations))
 	for _, fm := range meta.Relations {
+		if (fm.RelationKind == KindManyToOne || fm.RelationKind == KindOneToOne) && fm.Name != fm.RelatedType+"Id" {
+			return nil, fmt.Errorf("field %s is a %s relation to %s but is named %q; it must be named %q, since the field itself is the foreign key", fm.Name, fm.RelationKind, fm.RelatedType, fm.Name, fm.RelatedType+"Id")
+		}
+
 		kind := relationKindToProto(fm.RelationKind)
 		fk := inferFK(fm, meta.TypeName)
 		propName := relationPropertyName(fm)
@@ -117,13 +160,15 @@ func (r *SchemaRegistrar) buildRequest(e interface{}, traceID string) (*pb.Schem
 			ForeignKey:   fk,
 		}
 		relations = append(relations, rel)
-	}
 
-	var tenantField string
-	for _, fm := range meta.Fields {
-		if fm.Tenant {
-			tenantField = fm.Name
-			break
+		if fm.RelationKind != KindOneToMany {
+			properties = append(properties, &pb.PropertyDescriptor{
+				Name:       fk,
+				ClrType:    pb.ClrType_CLR_GUID,
+				IsArray:    fm.RelationKind == KindManyToMany,
+				IsNullable: true,
+				IsKey:      false,
+			})
 		}
 	}
 
@@ -132,7 +177,9 @@ func (r *SchemaRegistrar) buildRequest(e interface{}, traceID string) (*pb.Schem
 		Properties:  properties,
 		Relations:   relations,
 		Description: typeDescription(e),
-		TenantField: tenantField,
+	}
+	if rules, ok := authByTypeName[meta.TypeName]; ok {
+		typeDesc.Authorization = rules
 	}
 	return &pb.SchemaRequest{
 		RootType: typeDesc,
@@ -172,6 +219,23 @@ func int32FromInt(v int) (int32, error) {
 		return 0, fmt.Errorf("value %d overflows int32", v)
 	}
 	return int32(v), nil
+}
+
+// isGuidEligibleType reports whether t is a string, or a slice of strings, once pointers
+// are unwrapped (both the field's own pointer and, for a slice, its element's pointer).
+// iverson_guid marks a string-typed field as a UUID/UUID[] column; anything else would
+// register a column type the payload's actual data cannot satisfy.
+func isGuidEligibleType(t reflect.Type) bool {
+	if t.Kind() == reflect.Ptr {
+		t = t.Elem()
+	}
+	if t.Kind() == reflect.Slice {
+		t = t.Elem()
+		if t.Kind() == reflect.Ptr {
+			t = t.Elem()
+		}
+	}
+	return t.Kind() == reflect.String
 }
 
 // goTypeToClr maps a reflect.Type to a ClrType proto enum value and whether it is an array.
@@ -277,12 +341,19 @@ func inferFK(fm FieldMeta, thisTypeName string) string {
 
 // relationPropertyName derives the navigation property name from the field name.
 // For many_to_one: AuthorId → Author (strip trailing "Id").
+// For many_to_many: RegTagIds → RegTags (strip trailing "Ids", append "s").
 // For others: use the field name as-is.
 func relationPropertyName(fm FieldMeta) string {
 	if fm.RelationKind == KindManyToOne || fm.RelationKind == KindOneToOne {
 		name := fm.Name
 		if len(name) > 2 && name[len(name)-2:] == "Id" {
 			return name[:len(name)-2]
+		}
+	}
+	if fm.RelationKind == KindManyToMany {
+		name := fm.Name
+		if len(name) > 3 && name[len(name)-3:] == "Ids" {
+			return name[:len(name)-3] + "s"
 		}
 	}
 	return fm.Name

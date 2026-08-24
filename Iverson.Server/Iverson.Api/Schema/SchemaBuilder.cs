@@ -145,6 +145,26 @@ internal static class SchemaBuilder
             r.ForeignKey
         )).ToList();
 
+        DocumentTemplate? documentTemplate = null;
+        if (!string.IsNullOrEmpty(typeDesc.DocumentTemplate))
+        {
+            documentTemplate = DocumentTemplateParser.Parse(typeDesc.DocumentTemplate);
+
+            // proto3 scalars default to 0 when unset, and no client emits these fields yet.
+            // SplitIntoChunks computes step = max(maxChars - overlapChars, maxChars / 2), which is 0
+            // when maxTokens is 0 — an infinite loop awaiting one embedding call per iteration.
+            var maxTokens = typeDesc.DocumentMaxTokens > 0 ? typeDesc.DocumentMaxTokens : 512;
+            var overlap   = typeDesc.DocumentOverlap  > 0 ? typeDesc.DocumentOverlap  : 64;
+
+            chunks.Add(new ChunkDescriptor(
+                "Document",
+                maxTokens,
+                overlap,
+                embedding.ModelId,
+                embedding.Dimension,
+                typeDesc.DocumentContextual));
+        }
+
         ContractsAuthorizationRules? contractsAuthorization = typeDesc.Authorization;
         var authorization = contractsAuthorization is null
             ? null
@@ -154,6 +174,21 @@ internal static class SchemaBuilder
                     rp.Role, rp.CanReadAll, rp.CanWriteAll, rp.CanDeleteAll)).ToList(),
                 contractsAuthorization.FieldPermissions.Select((ContractsFieldPermission fp) => new SchemaFieldPermission(
                     fp.FieldName, fp.ReadableRoles.ToList(), fp.WritableRoles.ToList())).ToList());
+
+        // The tenant column is owned by the SERVER, not declared by the client: it is appended here
+        // so it physically exists in every downstream schema (Postgres table, StarRocks table,
+        // engagement query schema, Qdrant payload index) and so TenantColumn always names a real
+        // column. TEXT and NOT NULL are both load-bearing:
+        //  * TEXT — PostgresSchemaManager's RLS policy compares this column to
+        //    current_setting('app.tenant_id', true), which returns text. The failure of a non-text
+        //    column is LOUD, not silent: Postgres has no `uuid = text` (or `int = text`) operator,
+        //    so CREATE POLICY itself fails with 42883 and registration fails with it, rather than
+        //    a policy being created that quietly denies every row. (Until Task 4 this comment also cited
+        //    SchemaRegistrationOrchestrator.ValidateFieldReference's string-valued allow-list; that
+        //    call ran on tenant_field and was deleted, so it no longer applies here.)
+        //  * NOT NULL — the write path's silent-overwrite case must fail loudly with a constraint
+        //    violation rather than orphan a row behind RLS with no tenant.
+        scalars.Add(new ColumnDescriptor(SchemaDescriptor.TenantColumnName, "TEXT", false));
 
         return new SchemaDescriptor
         {
@@ -169,14 +204,20 @@ internal static class SchemaBuilder
             SearchKeyColumns  = searchKeysSorted.ConvertAll(sk => sk.Name),
             LargeFieldColumns = largeFields,
             Authorization     = authorization,
-            TenantColumn      = string.IsNullOrEmpty(typeDesc.TenantField) ? null : typeDesc.TenantField,
+            // Server-owned, never derived from typeDesc.TenantField: the client no longer has any
+            // say in which column carries the tenant boundary, and the name never goes on the wire.
+            TenantColumn      = SchemaDescriptor.TenantColumnName,
             MetadataColumns   = metadataColumns,
             Description       = string.IsNullOrEmpty(typeDesc.Description) ? null : typeDesc.Description,
             FieldDescriptions = fieldDescriptions,
-            EnrichmentTargets = enrichmentTargets
+            EnrichmentTargets = enrichmentTargets,
+            DocumentTemplate       = documentTemplate,
+            DocumentTemplateSource = string.IsNullOrEmpty(typeDesc.DocumentTemplate) ? null : typeDesc.DocumentTemplate
         };
     }
 
+    // ScalarColumns position: INCLUDE __TenantId. The Postgres table must physically carry the
+    // column — the RLS policy created by PostgresSchemaManager predicates on it.
     internal static TableSchema ToTableSchema(SchemaDescriptor d) => new(
         d.TableName,
         ToColumnSchema(d.KeyColumn),
@@ -186,25 +227,96 @@ internal static class SchemaBuilder
     internal static ColumnSchema ToColumnSchema(ColumnDescriptor c) =>
         new(c.Name, c.SqlType, c.IsNullable);
 
+    // ScalarColumns position: INCLUDE __TenantId. The StarRocks table must carry the column so
+    // engagement rows are tenant-discriminated in the analytics store too.
+    /// <summary>
+    /// Projects a descriptor onto its StarRocks table.
+    ///
+    /// <para><b>Large text fields get a wide column, and that is a fix, not a tuning knob.</b>
+    /// Every text column used to be projected as <c>STRING</c>, which <c>DESC</c> reports as
+    /// <c>varchar(65533)</c> — an alias, not an unbounded type. A value over that limit is FILTERED
+    /// OUT by the insert ("Insert has filtered data"), which surfaces as an ordinary exception, so
+    /// <c>MessageDispatcher</c> retried it and then dead-lettered it. The write itself had already
+    /// returned success, and <c>SearchSimilar</c>/<c>SearchChunks</c> read Qdrant rather than
+    /// StarRocks — so the document stayed retrievable by vector search while <c>Search</c>,
+    /// <c>Aggregate</c> and <c>GroupBy</c> silently could not see it. The analytics store diverged
+    /// from the vector index with no error at the call that caused it.</para>
+    ///
+    /// <para>StarRocks does have a wider type: <c>VARCHAR(1048576)</c>, 16x the alias, verified by
+    /// storing 70 KB that <c>STRING</c> rejects. <see cref="SchemaDescriptor.LargeFieldColumns"/>
+    /// already named exactly the columns that need it — it had been collected since the reverted
+    /// 2026-06-28 exclusion filter and had no consumer at all. This is that consumer.</para>
+    ///
+    /// <para>Only large fields are widened. Ordinary attributes and sort keys keep the alias: they
+    /// have no reason to carry a megabyte, and the write path rejects anything that would not fit
+    /// the column it is going to (<c>StarRocksLimits.MaxBytesForTextColumn</c>) rather than letting
+    /// it fail downstream.</para>
+    /// </summary>
     internal static EngagementTableSchema ToEngagementTableSchema(SchemaDescriptor d) => new(
         d.TableName,
         new EngagementColumnSchema(d.KeyColumn.Name, ClrTypeToEngagementType(d.KeyColumn.SqlType), false),
         d.ScalarColumns
-            .Select(c => new EngagementColumnSchema(c.Name, ClrTypeToEngagementType(c.SqlType), c.IsNullable))
+            .Select(c => new EngagementColumnSchema(
+                c.Name, EngagementTypeFor(c, d.LargeFieldColumns), c.IsNullable))
             .ToList())
     {
         SortKey = d.SearchKeyColumns
     };
 
+    /// <summary>
+    /// The StarRocks type for one column: the wide text type when the column is a large field that
+    /// would otherwise be projected as <c>STRING</c>, and the ordinary mapping otherwise. Guarded on
+    /// the mapped type being <c>STRING</c> so a large field that is somehow not textual keeps
+    /// whatever type its CLR type maps to, rather than being silently retyped.
+    /// </summary>
+    internal static string EngagementTypeFor(ColumnDescriptor column, IReadOnlySet<string> largeFieldColumns)
+    {
+        var mapped = ClrTypeToEngagementType(column.SqlType);
+
+        return mapped == "STRING" && largeFieldColumns.Contains(column.Name)
+            ? StarRocksLimits.WideTextColumnType
+            : mapped;
+    }
+
+    // ScalarColumns position: INCLUDE __TenantId. StarRocksQueryBuilder resolves every column it
+    // emits against this list, and the authorization constraint's tenant predicate is one of them.
     internal static EngagementQuerySchema ToEngagementQuerySchema(SchemaDescriptor d) => new(
         d.TypeName,
         d.TableName,
         d.KeyColumn.Name,
-        d.ScalarColumns.Select(c => c.Name).ToList());
+        d.ScalarColumns.Select(c => c.Name).ToList(),
+        // Carried as data, not re-spelled as a literal: Iverson.StarRocks cannot see
+        // SchemaDescriptor.TenantColumnName (no project reference), and the name is defined
+        // exactly once. The query builders use it to exclude the column from every projection
+        // and from caller-facing column resolution.
+        //
+        // RESERVED-NAME GATED, and that is what makes this an EXCLUSION KEY rather than a
+        // boundary name (Ruling 70). EngagementQuerySchema.TenantColumnName decides which column
+        // is UNPROJECTABLE and UNNAMEABLE — it is the StarRocks twin of the
+        // SchemaDescriptor.IsTenantColumn test that every exclusion in Iverson.Api is keyed on
+        // (AuthorizationFieldMasking.RemoveTenantColumn states the rule). A pre-cutover
+        // _iverson_schema row rehydrated by SchemaRegistry.LoadAsync still carries a
+        // CLIENT-DECLARED TenantColumn such as "TenantId": that column is part of the client's
+        // own declared contract, so Iverson.Api deliberately leaves it alone, and passing it here
+        // would make StarRocks disagree — silently dropping the client's own column from every
+        // projection, silently dropping a caller filter or sort on it (unresolvable == dropped,
+        // no error), and removing it from the pipeline's tracked set. Wrong results, not a
+        // boundary break: the tenant PREDICATE is spliced from AuthorizationConstraint.TenantColumn
+        // and never consults this field or ResolveColumn, so a legacy schema is still scoped by its
+        // own column either way.
+        //
+        // Contrast ToTableSchema above, which passes d.TenantColumn RAW and must: there the value
+        // is the BOUNDARY column itself — the RLS policy predicate and the write-path injection —
+        // so a legacy schema's real column is exactly what belongs in it.
+        SchemaDescriptor.IsTenantColumn(d.TenantColumn) ? d.TenantColumn : null);
 
     internal static CollectionSchema ToChunkCollectionSchema(SchemaDescriptor d)
     {
-        var indexes = new List<PayloadIndex> { new("parent_id", PayloadIndexKind.Keyword) };
+        var indexes = new List<PayloadIndex>
+        {
+            new("parent_id", PayloadIndexKind.Keyword),
+            new("field", PayloadIndexKind.Keyword)
+        };
         if (d.Authorization?.OwnerField is { } ownerField)
             indexes.Add(new PayloadIndex(ownerField.ToCamelCase(), PayloadIndexKind.Keyword));
 
@@ -214,6 +326,9 @@ internal static class SchemaBuilder
             indexes);
     }
 
+    // ScalarColumns position: INCLUDE __TenantId. The Qdrant payload index on the tenant key is
+    // what makes the read-time tenant filter selective; omitting it would leave the field
+    // unindexed while IntelligenceStoreConsumer still writes it onto every point.
     internal static CollectionSchema ToCollectionSchema(SchemaDescriptor d) => new(
         d.CollectionName!,
         d.VectorFields.Select(v => new NamedVector($"{v.PropertyName.ToSnakeCase()}_vector", v.Dimension))

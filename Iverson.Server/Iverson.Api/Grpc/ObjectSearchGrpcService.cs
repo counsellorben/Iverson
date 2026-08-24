@@ -1,3 +1,4 @@
+using System.Globalization;
 using Google.Protobuf.WellKnownTypes;
 using Grpc.Core;
 using Iverson.Api.Authorization;
@@ -97,6 +98,13 @@ public sealed class ObjectSearchGrpcService(
         {
             var dict = ((IDictionary<string, object>)row)
                 .ToDictionary(kv => kv.Key, kv => (object?)kv.Value);
+
+            // Result-side strip for the server-owned tenant column. This path never reaches
+            // MaskDisallowedFields, so without it the SQL-side exclusion in the query builders is
+            // the ONLY defence — and a joined-type `Type`.* wildcard over a physical table proved
+            // that single point is bypassable. Unconditional, and independent of the AllowedFields
+            // filtering below, which does nothing at all when AllowedFields is null.
+            AuthorizationFieldMasking.RemoveTenantColumn(dict);
 
             if (primaryConstraint?.AllowedFields is not null)
                 foreach (var key in dict.Keys.Where(k => !primaryConstraint.AllowedFields.Contains(k)).ToList())
@@ -264,13 +272,31 @@ public sealed class ObjectSearchGrpcService(
                 centroids.TryGetValue(r.Id, out var v) ? v : null))
             .ToList();
 
+        // Camel-cased descriptor name → descriptor, built once per request rather than per row.
+        // Covers ScalarColumns and KeyColumn, plus the explicit "key" special case:
+        // IntelligenceStoreConsumer.cs:417 writes the identity value under the literal payload key
+        // "key", which ToCamelCase("Id") would never produce, so it cannot be derived from the
+        // lookup and must be seeded directly. StructSerializer.UpperFirst below only fires for a
+        // payload key with no matching descriptor column at all — e.g. a stale key left behind by
+        // a since-removed column.
+        var columnLookup = new Dictionary<string, ColumnDescriptor>(StringComparer.Ordinal);
+        foreach (var col in schema.ScalarColumns)
+            columnLookup[col.Name.ToCamelCase()] = col;
+        columnLookup[schema.KeyColumn.Name.ToCamelCase()] = schema.KeyColumn;
+        columnLookup["key"] = schema.KeyColumn;
+
         foreach (var ranked in diversifier.Diversify(diversityCandidates, (int)topK))
         {
             if (!byId.TryGetValue(ranked.Id, out var r)) continue;
 
             var protoStruct = new Struct();
             foreach (var kvp in r.Payload)
-                protoStruct.Fields[kvp.Key] = Value.ForString(kvp.Value);
+            {
+                if (columnLookup.TryGetValue(kvp.Key, out var col))
+                    protoStruct.Fields[col.Name] = ConvertPayloadValue(kvp.Value, col.SqlType);
+                else
+                    protoStruct.Fields[StructSerializer.UpperFirst(kvp.Key)] = Value.ForString(kvp.Value);
+            }
 
             AuthorizationFieldMasking.MaskDisallowedFields(protoStruct, decision.AllowedFields, exemptField: "Key");
 
@@ -591,6 +617,13 @@ public sealed class ObjectSearchGrpcService(
         {
             var dict = ((IDictionary<string, object>)row)
                 .ToDictionary(kv => kv.Key, kv => (object?)kv.Value);
+
+            // Result-side strip for the server-owned tenant column. This path never reaches
+            // MaskDisallowedFields, so without it the SQL-side exclusion in the query builders is
+            // the ONLY defence — and a joined-type `Type`.* wildcard over a physical table proved
+            // that single point is bypassable. Unconditional, and independent of the AllowedFields
+            // filtering below, which does nothing at all when AllowedFields is null.
+            AuthorizationFieldMasking.RemoveTenantColumn(dict);
             await responseStream.WriteAsync(
                 new SearchResponse
                 {
@@ -662,6 +695,13 @@ public sealed class ObjectSearchGrpcService(
         {
             var dict = ((IDictionary<string, object>)row)
                 .ToDictionary(kv => kv.Key, kv => (object?)kv.Value);
+
+            // Result-side strip for the server-owned tenant column. This path never reaches
+            // MaskDisallowedFields, so without it the SQL-side exclusion in the query builders is
+            // the ONLY defence — and a joined-type `Type`.* wildcard over a physical table proved
+            // that single point is bypassable. Unconditional, and independent of the AllowedFields
+            // filtering below, which does nothing at all when AllowedFields is null.
+            AuthorizationFieldMasking.RemoveTenantColumn(dict);
             await responseStream.WriteAsync(
                 new SearchResponse
                 {
@@ -770,7 +810,12 @@ public sealed class ObjectSearchGrpcService(
 
     private static void ValidateFilterProperty(SchemaDescriptor schema, string property, string rpcName)
     {
-        var known = schema.ScalarColumns.Any(c => string.Equals(c.Name, property, StringComparison.OrdinalIgnoreCase))
+        // ScalarColumns position: EXCLUDE __TenantId. It is a real column, but it is not addressable
+        // by clients: a filter naming it must be rejected with the same "unknown property" error any
+        // typo gets, so a caller can neither probe nor override the tenant boundary through a filter.
+        var known = schema.ScalarColumns.Any(c =>
+                        !SchemaDescriptor.IsTenantColumn(c.Name) &&
+                        string.Equals(c.Name, property, StringComparison.OrdinalIgnoreCase))
                  || schema.FkColumns.Any(fk => string.Equals(fk.ColumnName, property, StringComparison.OrdinalIgnoreCase));
         if (!known)
             throw new RpcException(new Status(StatusCode.InvalidArgument,
@@ -783,8 +828,13 @@ public sealed class ObjectSearchGrpcService(
     /// IntelligenceStoreConsumer stores these values in canonical round-trip ("o") form, so the
     /// filter builder must re-emit operands on them the same way or equality never matches.
     /// </summary>
-    private static IReadOnlySet<string> TimestampColumns(SchemaDescriptor schema) =>
+    internal static IReadOnlySet<string> TimestampColumns(SchemaDescriptor schema) =>
         schema.ScalarColumns
+            // ScalarColumns position: EXCLUDE __TenantId. This set names the properties a caller may
+            // write a timestamp operand against; the tenant column is not addressable by clients, so
+            // it must never enter it. (SchemaBuilder types it TEXT, so today it cannot — this keeps
+            // the exclusion true independently of that.)
+            .Where(c => !SchemaDescriptor.IsTenantColumn(c.Name))
             .Where(c => c.SqlType.ToUpperInvariant() is "TIMESTAMPTZ" or "DATETIME")
             .Select(c => c.Name.ToCamelCase())
             .ToHashSet(StringComparer.Ordinal);
@@ -911,4 +961,41 @@ public sealed class ObjectSearchGrpcService(
         DateTimeOffset o => Value.ForString(o.ToString("o")),
         _                => Value.ForString(v.ToString()!)
     };
+
+    // Exhaustive vocabulary per the design spec's §2, matched case-insensitively (StringComparer
+    // .OrdinalIgnoreCase, matching SchemaBuilder.cs:391's SqlTypeMap) and EXACTLY — never by
+    // prefix, so an array SqlType like "DOUBLE PRECISION[]" falls through to the string default
+    // rather than prefix-matching "DOUBLE PRECISION". Array types are absent from the vocabulary
+    // on purpose: the payload flattening upstream gives back no list to reconstruct, so they keep
+    // the string form. Deliberately NOT SchemaBuilder.SqlTypeToPayloadKind — that method is
+    // private to SchemaBuilder and assigns INTEGER[] the Integer kind even though an array's
+    // payload value is a serialized string, which would mis-type arrays as numbers here.
+    private static readonly HashSet<string> NumericSqlTypes = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "INTEGER", "INT", "BIGINT", "REAL", "FLOAT", "DOUBLE", "DOUBLE PRECISION"
+    };
+
+    private static readonly HashSet<string> BooleanSqlTypes = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "BOOLEAN"
+    };
+
+    // Converts a Qdrant payload's flattened string value to a typed proto Value, following the
+    // resolved descriptor column's SqlType. A value that fails to parse falls back to the string
+    // form rather than failing the row — the column's declared type is a hint about what the
+    // producer wrote, not a guarantee every stored value still matches it.
+    private static Value ConvertPayloadValue(string value, string sqlType)
+    {
+        if (NumericSqlTypes.Contains(sqlType))
+            return double.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out var n)
+                ? Value.ForNumber(n)
+                : Value.ForString(value);
+
+        if (BooleanSqlTypes.Contains(sqlType))
+            return bool.TryParse(value, out var b) ? Value.ForBool(b) : Value.ForString(value);
+
+        // TEXT, STRING, UUID, TIMESTAMPTZ, DATETIME, BYTEA, VARBINARY, array types, and anything
+        // unrecognized all keep the string form.
+        return Value.ForString(value);
+    }
 }

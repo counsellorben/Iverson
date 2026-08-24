@@ -74,15 +74,13 @@ public sealed class SchemaRegistrar(
             if (propDescriptor is not null) typeDesc.Properties.Add(propDescriptor);
         }
 
-        typeDesc.TenantField = ResolveTenantField(descriptor);
-
         foreach (var relation in descriptor.Relations)
         {
             var fk = relation.ForeignKey ?? InferForeignKey(relation, descriptor.EntityName);
             typeDesc.Relations.Add(
                 new Contracts.RelationDescriptor
                 {
-                    PropertyName = relation.Property.Name,
+                    PropertyName = DeriveRelationPropertyName(descriptor.EntityName, relation, fk),
                     Kind         = ToProtoKind(relation.Kind),
                     RelatedType  = relation.RelatedType.Name,
                     ForeignKey   = fk ?? string.Empty
@@ -125,28 +123,6 @@ public sealed class SchemaRegistrar(
             $"{string.Join(", ", rejected)}; the server builds every per-property declaration " +
             "from non-key properties only, so this would be accepted and silently discarded. " +
             "Remove it from the key field. (Only a description is valid on a key.)");
-    }
-
-    private static string ResolveTenantField(EntityDescriptor descriptor)
-    {
-        var tenantProps = descriptor.EntityType
-            .GetProperties(BindingFlags.Public | BindingFlags.Instance)
-            .Where(p => p.GetCustomAttribute<IversonTenantAttribute>() is not null)
-            .ToList();
-
-        if (tenantProps.Count == 0)
-            throw new ArgumentException(
-                $"'{descriptor.EntityName}' has no property marked [IversonTenant]; the server " +
-                "requires every schema to declare a tenant boundary and will reject registration " +
-                "without one.");
-
-        if (tenantProps.Count > 1)
-            throw new ArgumentException(
-                $"'{descriptor.EntityName}' has multiple properties marked [IversonTenant] " +
-                $"({string.Join(", ", tenantProps.Select(p => p.Name))}); exactly one property " +
-                "must carry the tenant marker.");
-
-        return tenantProps[0].Name;
     }
 
     private static PropertyDescriptor BuildKeyDescriptor(PropertyInfo prop)
@@ -263,6 +239,44 @@ public sealed class SchemaRegistrar(
         if (type == typeof(DateTimeOffset))  return (ClrType.ClrDatetime, isArray, false,       true);
 
         return (default, false, false, false); // unsupported — skip
+    }
+
+    /// <summary>
+    /// Derives the navigation property name from the relation's declared member name. When a
+    /// relation is declared directly on the foreign-key member (e.g. <c>[ManyToOne] Guid AuthorId</c>
+    /// or <c>[ManyToMany] Guid[] TagIds</c>), the member name and the foreign key are identical,
+    /// which would make the server's depth-resolved read overwrite the FK value with the hydrated
+    /// related entity. Strip the trailing "Id" (many-to-one / one-to-one) or "Ids" (many-to-many)
+    /// to get a distinct navigation property name — the same rule Python, TypeScript and Go use.
+    /// Guarded by length so a member named exactly "Id"/"Ids" is not truncated to nothing.
+    ///
+    /// .NET is the only client that lets a caller override the foreign key explicitly via
+    /// <c>ForeignKey</c>, so it is the only client where the strip rule above can still collide
+    /// with the resolved FK (e.g. <c>[ManyToOne(ForeignKey="Author")] Guid AuthorId</c> derives
+    /// "Author", which is also the FK). Rather than silently emit a corrupted schema, fail fast.
+    /// </summary>
+    private static string DeriveRelationPropertyName(string entityName, RelationDescriptor relation, string? fk)
+    {
+        var name = relation.Property.Name;
+        var derived = relation.Kind switch
+        {
+            RelationKind.ManyToOne or RelationKind.OneToOne
+                when name.Length > 2 && name.EndsWith("Id", StringComparison.Ordinal)
+                => name[..^2],
+            RelationKind.ManyToMany
+                when name.Length > 3 && name.EndsWith("Ids", StringComparison.Ordinal)
+                => name[..^3] + "s",
+            _ => name
+        };
+
+        if (fk is not null && string.Equals(derived, fk, StringComparison.OrdinalIgnoreCase))
+            throw new InvalidOperationException(
+                $"'{entityName}.{name}' derives navigation property name '{derived}', which collides " +
+                $"with its foreign key '{fk}'. The navigation property name and the foreign key must " +
+                "differ, or the server's depth-resolved read will overwrite the foreign key value with " +
+                "the hydrated related entity.");
+
+        return derived;
     }
 
     private static string? InferForeignKey(RelationDescriptor relation, string thisEntityName) =>

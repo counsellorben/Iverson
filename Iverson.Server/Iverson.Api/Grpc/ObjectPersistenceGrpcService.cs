@@ -8,14 +8,16 @@ using Iverson.Sql;
 namespace Iverson.Api.Grpc;
 
 /// <summary>
-/// Lightweight write path. Stamps a server-generated UUID v7 key when the
-/// client sends an empty key, writes directly to Postgres, then publishes
-/// an EntityEvent for StarRocks and Qdrant to consume via their consumer groups.
+/// Lightweight write path. Assigns the server-generated UUID v7 key on create — a client
+/// never assigns an ID, and a payload that already carries one is rejected — writes directly
+/// to Postgres, then publishes an EntityEvent for StarRocks and Qdrant to consume via their
+/// consumer groups.
 /// </summary>
 public sealed class ObjectPersistenceGrpcService(
     IOutboxPublisher outboxPublisher,
     SchemaRegistry registry,
     IRelationValidator relationValidator,
+    IPayloadSizeValidator payloadSizeValidator,
     IEntityKeyAccessor keyAccessor,
     IOutboxWriter outboxWriter,
     ILogger<ObjectPersistenceGrpcService> logger,
@@ -40,13 +42,12 @@ public sealed class ObjectPersistenceGrpcService(
             existingRowJson: null,
             auditLog);
 
-        relationValidator.ValidateRelations(request.Payload, schema);
+        relationValidator.ValidateAndNormalizeRelations(request.Payload, schema);
+        payloadSizeValidator.ValidateTextColumnSizes(request.Payload, schema);
 
         var targetStores = StoreTargeting.DetermineTargetStores(schema);
 
-        // Always assign a server-generated UUID v7; client-supplied Id is ignored
-        var key = Guid.CreateVersion7().ToString();
-        keyAccessor.SetKey(request.Payload, schema.KeyColumn.Name, key);
+        var key = keyAccessor.AssignNewKey(request.Payload, schema.KeyColumn.Name);
 
         var payloadJson = StructSerializer.SerializePayload(request.Payload);
 
@@ -111,7 +112,8 @@ public sealed class ObjectPersistenceGrpcService(
             existingRowJson,
             auditLog);
 
-        relationValidator.ValidateRelations(request.Payload, schema);
+        relationValidator.ValidateAndNormalizeRelations(request.Payload, schema);
+        payloadSizeValidator.ValidateTextColumnSizes(request.Payload, schema);
 
         var targetStores = StoreTargeting.DetermineTargetStores(schema);
 
@@ -143,7 +145,8 @@ public sealed class ObjectPersistenceGrpcService(
             request.TraceId,
             targetStores,
             outboxRowId,
-            "Persistence.Update");
+            "Persistence.Update",
+            priorPayloadJson: existingRowJson);
 
         return new PersistResponse
         {

@@ -72,7 +72,7 @@ func (m *mockObjectMappingServiceClient) GetSchema(_ context.Context, req *pb.Ge
 
 type registrarArticle struct {
 	Id          string `iverson_key:"true"`
-	TenantId    string `iverson_search_key:"2" iverson_tenant:"true"`
+	TenantId    string `iverson_search_key:"2"`
 	Title       string `iverson_embedding:"true"`
 	Body        string `iverson_large_field:"true"`
 	Category    string `iverson_search_key:"0"`
@@ -90,7 +90,7 @@ func TestSchemaRegistrar_RegisterAll_Success(t *testing.T) {
 	}
 	registrar := iverson.NewSchemaRegistrar(mock, registrarArticle{})
 
-	if err := registrar.RegisterAll(context.Background(), "trace-1"); err != nil {
+	if err := registrar.RegisterAll(context.Background(), "trace-1", nil); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if mock.capturedReq == nil {
@@ -101,7 +101,7 @@ func TestSchemaRegistrar_RegisterAll_Success(t *testing.T) {
 func TestSchemaRegistrar_RegisterAll_TypeName(t *testing.T) {
 	mock := &mockMappingClient{response: &pb.SchemaResponse{Success: true}}
 	registrar := iverson.NewSchemaRegistrar(mock, registrarArticle{})
-	_ = registrar.RegisterAll(context.Background(), "")
+	_ = registrar.RegisterAll(context.Background(), "", nil)
 
 	if mock.capturedReq.RootType.TypeName != "registrarArticle" {
 		t.Errorf("expected TypeName=registrarArticle, got %q", mock.capturedReq.RootType.TypeName)
@@ -111,7 +111,7 @@ func TestSchemaRegistrar_RegisterAll_TypeName(t *testing.T) {
 func TestSchemaRegistrar_RegisterAll_TraceId(t *testing.T) {
 	mock := &mockMappingClient{response: &pb.SchemaResponse{Success: true}}
 	registrar := iverson.NewSchemaRegistrar(mock, registrarArticle{})
-	_ = registrar.RegisterAll(context.Background(), "my-trace")
+	_ = registrar.RegisterAll(context.Background(), "my-trace", nil)
 
 	if mock.capturedReq.TraceId != "my-trace" {
 		t.Errorf("expected trace_id=my-trace, got %q", mock.capturedReq.TraceId)
@@ -121,19 +121,20 @@ func TestSchemaRegistrar_RegisterAll_TraceId(t *testing.T) {
 func TestSchemaRegistrar_RegisterAll_Properties(t *testing.T) {
 	mock := &mockMappingClient{response: &pb.SchemaResponse{Success: true}}
 	registrar := iverson.NewSchemaRegistrar(mock, registrarArticle{})
-	_ = registrar.RegisterAll(context.Background(), "")
+	_ = registrar.RegisterAll(context.Background(), "", nil)
 
 	props := mock.capturedReq.RootType.Properties
-	// Should have 8 properties (Id, TenantId, Title, Body, Category, WordCount, PublishedAt, Summary)
-	if len(props) != 8 {
-		t.Errorf("expected 8 properties, got %d", len(props))
+	// Should have 9 properties (Id, TenantId, Title, Body, Category, WordCount, PublishedAt,
+	// Summary, plus the synthesized AuthorId foreign-key property for the many_to_one relation).
+	if len(props) != 9 {
+		t.Errorf("expected 9 properties, got %d", len(props))
 	}
 }
 
 func TestSchemaRegistrar_RegisterAll_KeyField(t *testing.T) {
 	mock := &mockMappingClient{response: &pb.SchemaResponse{Success: true}}
 	registrar := iverson.NewSchemaRegistrar(mock, registrarArticle{})
-	_ = registrar.RegisterAll(context.Background(), "")
+	_ = registrar.RegisterAll(context.Background(), "", nil)
 
 	var keyProp *pb.PropertyDescriptor
 	for _, p := range mock.capturedReq.RootType.Properties {
@@ -153,7 +154,7 @@ func TestSchemaRegistrar_RegisterAll_KeyField(t *testing.T) {
 func TestSchemaRegistrar_RegisterAll_SearchKey(t *testing.T) {
 	mock := &mockMappingClient{response: &pb.SchemaResponse{Success: true}}
 	registrar := iverson.NewSchemaRegistrar(mock, registrarArticle{})
-	_ = registrar.RegisterAll(context.Background(), "")
+	_ = registrar.RegisterAll(context.Background(), "", nil)
 
 	searchKeys := map[string]int32{}
 	for _, p := range mock.capturedReq.RootType.Properties {
@@ -178,7 +179,7 @@ func TestSchemaRegistrar_RegisterAll_SearchKey(t *testing.T) {
 func TestSchemaRegistrar_RegisterAll_LargeField(t *testing.T) {
 	mock := &mockMappingClient{response: &pb.SchemaResponse{Success: true}}
 	registrar := iverson.NewSchemaRegistrar(mock, registrarArticle{})
-	_ = registrar.RegisterAll(context.Background(), "")
+	_ = registrar.RegisterAll(context.Background(), "", nil)
 
 	found := false
 	for _, p := range mock.capturedReq.RootType.Properties {
@@ -197,7 +198,7 @@ func TestSchemaRegistrar_RegisterAll_LargeField(t *testing.T) {
 func TestSchemaRegistrar_RegisterAll_Embedding(t *testing.T) {
 	mock := &mockMappingClient{response: &pb.SchemaResponse{Success: true}}
 	registrar := iverson.NewSchemaRegistrar(mock, registrarArticle{})
-	_ = registrar.RegisterAll(context.Background(), "")
+	_ = registrar.RegisterAll(context.Background(), "", nil)
 
 	found := false
 	for _, p := range mock.capturedReq.RootType.Properties {
@@ -216,7 +217,7 @@ func TestSchemaRegistrar_RegisterAll_Embedding(t *testing.T) {
 func TestSchemaRegistrar_RegisterAll_Chunk(t *testing.T) {
 	mock := &mockMappingClient{response: &pb.SchemaResponse{Success: true}}
 	registrar := iverson.NewSchemaRegistrar(mock, registrarArticle{})
-	_ = registrar.RegisterAll(context.Background(), "")
+	_ = registrar.RegisterAll(context.Background(), "", nil)
 
 	found := false
 	for _, p := range mock.capturedReq.RootType.Properties {
@@ -241,7 +242,7 @@ func TestSchemaRegistrar_RegisterAll_Chunk(t *testing.T) {
 func TestSchemaRegistrar_RegisterAll_Relation(t *testing.T) {
 	mock := &mockMappingClient{response: &pb.SchemaResponse{Success: true}}
 	registrar := iverson.NewSchemaRegistrar(mock, registrarArticle{})
-	_ = registrar.RegisterAll(context.Background(), "")
+	_ = registrar.RegisterAll(context.Background(), "", nil)
 
 	rels := mock.capturedReq.RootType.Relations
 	if len(rels) != 1 {
@@ -265,7 +266,7 @@ func TestSchemaRegistrar_RegisterAll_Relation(t *testing.T) {
 func TestSchemaRegistrar_RegisterAll_RPCError(t *testing.T) {
 	mock := &mockMappingClient{err: errors.New("connection refused")}
 	registrar := iverson.NewSchemaRegistrar(mock, registrarArticle{})
-	err := registrar.RegisterAll(context.Background(), "")
+	err := registrar.RegisterAll(context.Background(), "", nil)
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -276,7 +277,7 @@ func TestSchemaRegistrar_RegisterAll_ServerError(t *testing.T) {
 		response: &pb.SchemaResponse{Success: false, Error: "table already exists"},
 	}
 	registrar := iverson.NewSchemaRegistrar(mock, registrarArticle{})
-	err := registrar.RegisterAll(context.Background(), "")
+	err := registrar.RegisterAll(context.Background(), "", nil)
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -285,7 +286,7 @@ func TestSchemaRegistrar_RegisterAll_ServerError(t *testing.T) {
 func TestSchemaRegistrar_RegisterAll_MultipleEntities(t *testing.T) {
 	type secondEntity struct {
 		Id       string `iverson_key:"true"`
-		TenantId string `iverson_tenant:"true"`
+		TenantId string
 		Name     string
 	}
 
@@ -306,7 +307,7 @@ func TestSchemaRegistrar_RegisterAll_MultipleEntities(t *testing.T) {
 	countMock := &countingMappingClient{inner: mock, count: &cc.count}
 	registrar := iverson.NewSchemaRegistrar(countMock, registrarArticle{}, secondEntity{})
 	_ = callCount
-	if err := registrar.RegisterAll(context.Background(), ""); err != nil {
+	if err := registrar.RegisterAll(context.Background(), "", nil); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if cc.count != 2 {
@@ -328,7 +329,7 @@ func (c *countingMappingClient) RegisterSchema(ctx context.Context, req *pb.Sche
 
 type describedArticle struct {
 	Id       string `iverson_key:"true" iverson_desc:"Primary identifier"`
-	TenantId string `iverson_tenant:"true"`
+	TenantId string
 	Status   string `iverson_meta:"true" iverson_desc:"Publication status"`
 	Title    string `iverson_desc:"Headline"`
 	Body     string
@@ -338,7 +339,7 @@ func (describedArticle) IversonDescription() string { return "An article with me
 
 type undescribedArticle struct {
 	Id       string `iverson_key:"true"`
-	TenantId string `iverson_tenant:"true"`
+	TenantId string
 }
 
 func propByName(t *testing.T, req *pb.SchemaRequest, name string) *pb.PropertyDescriptor {
@@ -355,7 +356,7 @@ func propByName(t *testing.T, req *pb.SchemaRequest, name string) *pb.PropertyDe
 func TestSchemaRegistrar_MetadataAndDescriptions(t *testing.T) {
 	mock := &mockMappingClient{response: &pb.SchemaResponse{Success: true}}
 	registrar := iverson.NewSchemaRegistrar(mock, describedArticle{})
-	if err := registrar.RegisterAll(context.Background(), ""); err != nil {
+	if err := registrar.RegisterAll(context.Background(), "", nil); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	req := mock.capturedReq
@@ -401,7 +402,7 @@ func TestSchemaRegistrar_MetadataAndDescriptions(t *testing.T) {
 func TestSchemaRegistrar_NoTypeDescriptionWhenInterfaceAbsent(t *testing.T) {
 	mock := &mockMappingClient{response: &pb.SchemaResponse{Success: true}}
 	registrar := iverson.NewSchemaRegistrar(mock, undescribedArticle{})
-	if err := registrar.RegisterAll(context.Background(), ""); err != nil {
+	if err := registrar.RegisterAll(context.Background(), "", nil); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if got := mock.capturedReq.RootType.Description; got != "" {
@@ -412,7 +413,7 @@ func TestSchemaRegistrar_NoTypeDescriptionWhenInterfaceAbsent(t *testing.T) {
 func TestSchemaRegistrar_TypeDescriptionFromPointerEntity(t *testing.T) {
 	mock := &mockMappingClient{response: &pb.SchemaResponse{Success: true}}
 	registrar := iverson.NewSchemaRegistrar(mock, &describedArticle{})
-	if err := registrar.RegisterAll(context.Background(), ""); err != nil {
+	if err := registrar.RegisterAll(context.Background(), "", nil); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if got := mock.capturedReq.RootType.Description; got != "An article with metadata" {
@@ -424,7 +425,7 @@ func TestSchemaRegistrar_TypeDescriptionFromPointerEntity(t *testing.T) {
 
 type enrichedArticle struct {
 	Id       string `iverson_key:"true"`
-	TenantId string `iverson_tenant:"true"`
+	TenantId string
 	Summary  string `iverson_summary:"true"`
 	Keywords string `iverson_keywords:"true"`
 	Topic    string `iverson_extract:"the article's primary topic"`
@@ -435,7 +436,7 @@ type enrichedArticle struct {
 func TestSchemaRegistrar_EnrichmentTargets(t *testing.T) {
 	mock := &mockMappingClient{response: &pb.SchemaResponse{Success: true}}
 	registrar := iverson.NewSchemaRegistrar(mock, enrichedArticle{})
-	if err := registrar.RegisterAll(context.Background(), ""); err != nil {
+	if err := registrar.RegisterAll(context.Background(), "", nil); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	req := mock.capturedReq
@@ -478,7 +479,7 @@ type blankExtractHint struct {
 func TestSchemaRegistrar_BlankExtractHint_Rejected(t *testing.T) {
 	mock := &mockMappingClient{response: &pb.SchemaResponse{Success: true}}
 	registrar := iverson.NewSchemaRegistrar(mock, blankExtractHint{})
-	err := registrar.RegisterAll(context.Background(), "")
+	err := registrar.RegisterAll(context.Background(), "", nil)
 	if err == nil {
 		t.Fatal("expected error for blank extract hint, got nil")
 	}
@@ -492,68 +493,9 @@ type contextualWithoutChunk struct {
 func TestSchemaRegistrar_ContextualWithoutChunk_Rejected(t *testing.T) {
 	mock := &mockMappingClient{response: &pb.SchemaResponse{Success: true}}
 	registrar := iverson.NewSchemaRegistrar(mock, contextualWithoutChunk{})
-	err := registrar.RegisterAll(context.Background(), "")
+	err := registrar.RegisterAll(context.Background(), "", nil)
 	if err == nil {
 		t.Fatal("expected error for contextual on non-chunk field, got nil")
-	}
-}
-
-// ── tenant field registrar tests ────────────────────────────────────────────────
-
-func TestSchemaRegistrar_TenantField_Set(t *testing.T) {
-	mock := &mockMappingClient{response: &pb.SchemaResponse{Success: true}}
-	registrar := iverson.NewSchemaRegistrar(mock, registrarArticle{})
-	if err := registrar.RegisterAll(context.Background(), ""); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if got := mock.capturedReq.RootType.TenantField; got != "TenantId" {
-		t.Errorf("expected TenantField=TenantId, got %q", got)
-	}
-}
-
-// TestSchemaRegistrar_TenantField_ComposesWithSearchKey guards against the
-// e4a77ff regression class: iverson_tenant is an independent tag key, not a
-// mutually-exclusive kind, so a field must be able to carry both
-// iverson_tenant:"true" and iverson_search_key:"N" at once. registrarArticle's
-// TenantId field carries `iverson_search_key:"2" iverson_tenant:"true"`; this
-// test asserts BOTH halves survive together — that TenantField is set to the
-// field, AND that its search-key metadata (IsSearchKey/SearchKeyOrder) is not
-// dropped by the tenant tag.
-func TestSchemaRegistrar_TenantField_ComposesWithSearchKey(t *testing.T) {
-	mock := &mockMappingClient{response: &pb.SchemaResponse{Success: true}}
-	registrar := iverson.NewSchemaRegistrar(mock, registrarArticle{})
-	if err := registrar.RegisterAll(context.Background(), ""); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	req := mock.capturedReq
-
-	if got := req.RootType.TenantField; got != "TenantId" {
-		t.Errorf("expected TenantField=TenantId, got %q", got)
-	}
-
-	tenantProp := propByName(t, req, "TenantId")
-	if !tenantProp.IsSearchKey {
-		t.Error("expected TenantId.IsSearchKey=true; iverson_tenant must not suppress the search_key kind")
-	}
-	if tenantProp.SearchKeyOrder != 2 {
-		t.Errorf("expected TenantId.SearchKeyOrder=2, got %d", tenantProp.SearchKeyOrder)
-	}
-}
-
-type noTenantArticle struct {
-	Id    string `iverson_key:"true"`
-	Title string
-}
-
-func TestSchemaRegistrar_NoTenantField_Rejected(t *testing.T) {
-	mock := &mockMappingClient{response: &pb.SchemaResponse{Success: true}}
-	registrar := iverson.NewSchemaRegistrar(mock, noTenantArticle{})
-	err := registrar.RegisterAll(context.Background(), "")
-	if err == nil {
-		t.Fatal("expected error for missing tenant field, got nil")
-	}
-	if !strings.Contains(err.Error(), "noTenantArticle") {
-		t.Errorf("expected error to name the type noTenantArticle, got %q", err.Error())
 	}
 }
 
@@ -561,7 +503,7 @@ func TestSchemaRegistrar_NoTenantField_Rejected(t *testing.T) {
 
 type ComposedDeclArticle struct {
 	Id       string `iverson_key:"true"`
-	TenantId string `iverson_tenant:"true"`
+	TenantId string
 	Body     string `iverson_large_field:"true" iverson_chunk:"256:32"`
 }
 
@@ -574,7 +516,7 @@ type ComposedDeclArticle struct {
 func TestSchemaRegistrar_ComposedDeclarations_LargeFieldAndChunk(t *testing.T) {
 	mock := &mockMappingClient{response: &pb.SchemaResponse{Success: true}}
 	registrar := iverson.NewSchemaRegistrar(mock, ComposedDeclArticle{})
-	if err := registrar.RegisterAll(context.Background(), ""); err != nil {
+	if err := registrar.RegisterAll(context.Background(), "", nil); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	req := mock.capturedReq
@@ -594,27 +536,9 @@ func TestSchemaRegistrar_ComposedDeclarations_LargeFieldAndChunk(t *testing.T) {
 	}
 }
 
-type doubleTenantArticle struct {
-	Id       string `iverson_key:"true"`
-	TenantId string `iverson_tenant:"true"`
-	OrgId    string `iverson_tenant:"true"`
-}
-
-func TestSchemaRegistrar_MultipleTenantFields_Rejected(t *testing.T) {
-	mock := &mockMappingClient{response: &pb.SchemaResponse{Success: true}}
-	registrar := iverson.NewSchemaRegistrar(mock, doubleTenantArticle{})
-	err := registrar.RegisterAll(context.Background(), "")
-	if err == nil {
-		t.Fatal("expected error for multiple tenant fields, got nil")
-	}
-	if !strings.Contains(err.Error(), "TenantId") || !strings.Contains(err.Error(), "OrgId") {
-		t.Errorf("expected error to name both fields TenantId and OrgId, got %q", err.Error())
-	}
-}
-
 type arrayFieldsArticle struct {
 	Id       string `iverson_key:"true"`
-	TenantId string `iverson_tenant:"true"`
+	TenantId string
 	Tags     []string
 	Counts   []int
 	Blob     []byte
@@ -623,7 +547,7 @@ type arrayFieldsArticle struct {
 func TestSchemaRegistrar_RegisterAll_ArrayFields(t *testing.T) {
 	mock := &mockMappingClient{response: &pb.SchemaResponse{Success: true}}
 	registrar := iverson.NewSchemaRegistrar(mock, arrayFieldsArticle{})
-	if err := registrar.RegisterAll(context.Background(), ""); err != nil {
+	if err := registrar.RegisterAll(context.Background(), "", nil); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -668,7 +592,7 @@ func TestSchemaRegistrar_RegisterAll_ArrayFields(t *testing.T) {
 
 type nestedArrayArticle struct {
 	Id       string `iverson_key:"true"`
-	TenantId string `iverson_tenant:"true"`
+	TenantId string
 	Matrix   [][]string
 }
 
@@ -678,7 +602,7 @@ type customElement struct {
 
 type unsupportedElementArticle struct {
 	Id       string `iverson_key:"true"`
-	TenantId string `iverson_tenant:"true"`
+	TenantId string
 	Widgets  []customElement
 }
 
@@ -687,7 +611,7 @@ type unsupportedElementArticle struct {
 func TestSchemaRegistrar_RegisterAll_NestedArrayRejected(t *testing.T) {
 	mock := &mockMappingClient{response: &pb.SchemaResponse{Success: true}}
 	registrar := iverson.NewSchemaRegistrar(mock, nestedArrayArticle{})
-	err := registrar.RegisterAll(context.Background(), "")
+	err := registrar.RegisterAll(context.Background(), "", nil)
 	if err == nil {
 		t.Fatal("expected registration to fail for a nested array field")
 	}
@@ -698,7 +622,7 @@ func TestSchemaRegistrar_RegisterAll_NestedArrayRejected(t *testing.T) {
 
 type byteArrayArticle struct {
 	Id       string `iverson_key:"true"`
-	TenantId string `iverson_tenant:"true"`
+	TenantId string
 	Blobs    [][]byte
 }
 
@@ -707,7 +631,7 @@ type byteArrayArticle struct {
 func TestSchemaRegistrar_RegisterAll_NestedByteArrayAllowed(t *testing.T) {
 	mock := &mockMappingClient{response: &pb.SchemaResponse{Success: true}}
 	registrar := iverson.NewSchemaRegistrar(mock, byteArrayArticle{})
-	if err := registrar.RegisterAll(context.Background(), ""); err != nil {
+	if err := registrar.RegisterAll(context.Background(), "", nil); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -731,7 +655,7 @@ func TestSchemaRegistrar_RegisterAll_NestedByteArrayAllowed(t *testing.T) {
 func TestSchemaRegistrar_RegisterAll_UnsupportedElementTypeRejected(t *testing.T) {
 	mock := &mockMappingClient{response: &pb.SchemaResponse{Success: true}}
 	registrar := iverson.NewSchemaRegistrar(mock, unsupportedElementArticle{})
-	err := registrar.RegisterAll(context.Background(), "")
+	err := registrar.RegisterAll(context.Background(), "", nil)
 	if err == nil {
 		t.Fatal("expected registration to fail for an unsupported array element type")
 	}
@@ -825,5 +749,79 @@ func TestIversonClient_GetSchema_PropagatesError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "boom") {
 		t.Errorf("expected error to wrap %q, got %q", "boom", err.Error())
+	}
+}
+
+// ── RegisterAll authorization rules ────────────────────────────────────────────────
+
+// recordingMappingClient records every SchemaRequest it receives, keyed by TypeName,
+// so a test can assert what each of several registered types was sent — a plain
+// "last captured request" field (as mockMappingClient above uses) can't distinguish
+// per-type payloads when RegisterAll iterates over multiple entities.
+type recordingMappingClient struct {
+	response *pb.SchemaResponse
+	byType   map[string]*pb.SchemaRequest
+}
+
+func (m *recordingMappingClient) RegisterSchema(_ context.Context, req *pb.SchemaRequest) (*pb.SchemaResponse, error) {
+	if m.byType == nil {
+		m.byType = make(map[string]*pb.SchemaRequest)
+	}
+	m.byType[req.RootType.TypeName] = req
+	return m.response, nil
+}
+
+type ruleArticle struct {
+	Id       string `iverson_key:"true"`
+	TenantId string
+}
+
+type ruleAuthor struct {
+	Id       string `iverson_key:"true"`
+	TenantId string
+}
+
+type ruleUnrestricted struct {
+	Id       string `iverson_key:"true"`
+	TenantId string
+}
+
+func TestSchemaRegistrar_RegisterAll_PerTypeRules(t *testing.T) {
+	mock := &recordingMappingClient{response: &pb.SchemaResponse{Success: true}}
+	registrar := iverson.NewSchemaRegistrar(mock, ruleArticle{}, ruleAuthor{}, ruleUnrestricted{})
+
+	articleRules := &pb.AuthorizationRules{OwnerField: "AuthorId"}
+	authorRules := &pb.AuthorizationRules{OwnerField: "EditorId"}
+
+	err := registrar.RegisterAll(context.Background(), "", map[string]*pb.AuthorizationRules{
+		"ruleArticle": articleRules,
+		"ruleAuthor":  authorRules,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	articleReq, ok := mock.byType["ruleArticle"]
+	if !ok {
+		t.Fatal("no request captured for ruleArticle")
+	}
+	if articleReq.RootType.Authorization.GetOwnerField() != "AuthorId" {
+		t.Errorf("ruleArticle authorization OwnerField = %q, want %q", articleReq.RootType.Authorization.GetOwnerField(), "AuthorId")
+	}
+
+	authorReq, ok := mock.byType["ruleAuthor"]
+	if !ok {
+		t.Fatal("no request captured for ruleAuthor")
+	}
+	if authorReq.RootType.Authorization.GetOwnerField() != "EditorId" {
+		t.Errorf("ruleAuthor authorization OwnerField = %q, want %q", authorReq.RootType.Authorization.GetOwnerField(), "EditorId")
+	}
+
+	unrestrictedReq, ok := mock.byType["ruleUnrestricted"]
+	if !ok {
+		t.Fatal("no request captured for ruleUnrestricted")
+	}
+	if unrestrictedReq.RootType.Authorization != nil {
+		t.Errorf("ruleUnrestricted authorization = %v, want nil", unrestrictedReq.RootType.Authorization)
 	}
 }

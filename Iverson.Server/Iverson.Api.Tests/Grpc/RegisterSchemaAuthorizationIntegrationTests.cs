@@ -40,7 +40,11 @@ public sealed class AllStoresContainerFixture : IAsyncLifetime
         .Build();
 
     private readonly IContainer _starRocks = new ContainerBuilder()
-        .WithImage("starrocks/allin1-ubuntu:latest")
+        // PINNED, and to the tag docker-compose runs. This said `:latest`, which meant the test
+        // ran against whatever StarRocks had most recently published (4.1.4 when this was pinned,
+        // while the deployed stack was 4.1.1) — a suite silently testing a different engine version
+        // than production, and irreproducible the moment upstream publishes again.
+        .WithImage("starrocks/allin1-ubuntu:4.1.1")
         .WithPortBinding(StarRocksMysqlPort, true)
         .WithWaitStrategy(Wait.ForUnixContainer().UntilPortIsAvailable(StarRocksMysqlPort))
         .Build();
@@ -74,7 +78,8 @@ public sealed class AllStoresContainerFixture : IAsyncLifetime
 
         // Mirrors Program.cs startup ordering: the iverson_runtime role must exist before any
         // ApplySchemaAsync call that GRANTs to it for a tenant-scoped table (this fixture's tests
-        // register schemas with a TenantField set).
+        // register tenant-scoped schemas — every schema is tenant-scoped now that the server
+        // owns the column).
         await PostgresSchemaManager.EnsureRuntimeRoleAsync();
 
         var qdrantClient = new QdrantClient(
@@ -217,7 +222,9 @@ public sealed class RegisterSchemaAuthorizationIntegrationTests(AllStoresContain
         var schemaRegistration = new SchemaRegistrationOrchestrator(
             fixture.PostgresSchemaManager,
             Substitute.For<IEmbeddingService>(),
-            registry);
+            registry,
+            Substitute.For<IDocumentRerenderQueueRepository>(),
+            NullLogger<SchemaRegistrationOrchestrator>.Instance);
 
         var sut = new ObjectMappingGrpcService(
             Substitute.For<IEntityRepository>(),
@@ -240,7 +247,6 @@ public sealed class RegisterSchemaAuthorizationIntegrationTests(AllStoresContain
             OwnerField = "OwnerId",
             RowPermissions = { new Client.Contracts.RowPermission { Role = "admin", CanReadAll = true } }
         };
-        typeDesc.TenantField = "TenantId";
 
         var response = await sut.RegisterSchema(
             new SchemaRequest { RootType = typeDesc },

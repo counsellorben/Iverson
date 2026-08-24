@@ -56,7 +56,26 @@ public class StarRocksResiliencePipelineFactoryTests
     [Fact]
     public async Task Build_OpensCircuit_AfterFailureThreshold_AndFailsFastWithoutInvokingOperation()
     {
-        var pipeline = StarRocksResiliencePipelineFactory.Build(FastTestOptions(), NullLogger.Instance);
+        // NOT FastTestOptions. Its 600 ms BreakDuration is a wall clock this test races: if more
+        // than 600 ms passes between call 2 tripping the breaker and call 3, the breaker has
+        // already gone half-open, call 3 EXECUTES the operation, and the assertion below sees
+        // MySqlException instead of BrokenCircuitException. That is the exact failure recorded as
+        // an unplaceable flake during the tenant plan (Ruling 37) — on a box that was, at the time,
+        // hosting three to five StarRocks containers at once, where a 600 ms pause between two
+        // statements is unremarkable.
+        //
+        // This test never WAITS for the break to elapse — it makes three immediate calls — so a
+        // long BreakDuration costs it nothing. The half-open test below keeps the short one,
+        // because elapsing it is the thing that test is about.
+        var pipeline = StarRocksResiliencePipelineFactory.Build(
+            new EngagementCircuitBreakerOptions
+            {
+                FailureRatio      = 1.0,
+                MinimumThroughput = 2,
+                SamplingDuration  = TimeSpan.FromMinutes(1),
+                BreakDuration     = TimeSpan.FromMinutes(1),
+            },
+            NullLogger.Instance);
         var attempts = 0;
 
         Func<Task> failingCall = () => pipeline.ExecuteAsync<int>(async _ =>

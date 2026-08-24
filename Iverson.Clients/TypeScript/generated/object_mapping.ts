@@ -18,7 +18,7 @@ import {
   type ServiceError,
   type UntypedServiceImplementation,
 } from "@grpc/grpc-js";
-import { Struct } from "./google/protobuf/struct";
+import { Struct } from "./google/protobuf/struct.js";
 
 export const protobufPackage = "iverson";
 
@@ -273,7 +273,12 @@ export interface TypeDescriptor {
   authorization:
     | AuthorizationRules
     | undefined;
-  /** REQUIRED; names a declared scalar property holding the row's tenant id */
+  /**
+   * RESERVED — do NOT set. The server owns the tenant column outright and derives a row's
+   * tenant from the acting user's identity; a registration carrying a non-empty tenant_field
+   * is rejected with InvalidArgument. The field number stays declared for wire compatibility
+   * with clients built before the cutover.
+   */
   tenantField: string;
   /** type-level [IversonDescription] text; empty = none */
   description: string;

@@ -105,4 +105,38 @@ public class EntityRelationResolverTests
 
         entityStruct.Fields["Tags"].ListValue.Values.Should().HaveCount(2);
     }
+
+    [Fact]
+    public async Task ResolveRelationsAsync_OmitsTheServerOwnedTenantColumnFromTheResolvedRelation()
+    {
+        // A nested relation struct is built from the RELATED row's row_to_json, so it carries the
+        // related type's __TenantId. Depth > 0 makes this a second, independent wire path out of
+        // the same response — the parent's own strip does not cover the nested struct.
+        var tenantAuthor = SchemaFixtures.AuthorSchema() with
+        {
+            ScalarColumns =
+            [
+                new ColumnDescriptor("Name", "text", false),
+                new ColumnDescriptor(SchemaDescriptor.TenantColumnName, "TEXT", false)
+            ],
+            TenantColumn = SchemaDescriptor.TenantColumnName
+        };
+        await _registry.RegisterAsync(tenantAuthor);
+        await _registry.RegisterAsync(SchemaFixtures.ArticleSchema());
+
+        _entities
+            .FetchByKeyAsync(
+                Arg.Is<TableSchema>(s => s.TableName == "authors"),
+                Arg.Any<string>(), Arg.Any<bool>(), Arg.Any<string?>())
+            .Returns($$"""{"Id":"{{AuthorId}}","Name":"Alice","{{SchemaDescriptor.TenantColumnName}}":"test-tenant"}""");
+
+        var entityStruct = JsonParser.Default.Parse<Struct>(ArticleJson);
+        var schema = _registry.Get("Article")!;
+
+        await _sut.ResolveRelationsAsync(entityStruct, schema, depth: 1, ActingUser, CancellationToken.None);
+
+        var author = entityStruct.Fields["Author"].StructValue;
+        author.Fields.Should().NotContainKey(SchemaDescriptor.TenantColumnName);
+        author.Fields["Name"].StringValue.Should().Be("Alice");
+    }
 }

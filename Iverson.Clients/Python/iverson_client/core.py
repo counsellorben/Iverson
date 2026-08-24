@@ -3,19 +3,21 @@ Core client classes: IversonClient, SchemaRegistrar, EntityCoordinator.
 """
 from __future__ import annotations
 
+import copy
 import re
 import uuid
 from dataclasses import dataclass
-from typing import Generic, List, Optional, TypeVar, get_args, get_origin, get_type_hints
+from typing import Generic, List, Mapping, Optional, TypeVar, get_args, get_origin, get_type_hints
 
 import grpc
 from google.protobuf import struct_pb2
 
+from iverson_client.annotations import ENTITY_REGISTRY
 from iverson_client.auth import (
+    ACTING_USER_METADATA_KEY,
     IversonClientCredentials,
     _CachedTokenProvider,
     _BearerTokenAuthPlugin,
-    _ActingUserAuthPlugin,
 )
 from iverson_client.generated import (
     object_mapping_pb2 as mapping_pb,
@@ -96,6 +98,48 @@ def _to_pascal_case(snake: str) -> str:
     return "".join(part.capitalize() for part in snake.split("_"))
 
 
+def _relation_property_name(relation: dict) -> str:
+    """Derive the navigation property name from the relation's member name.
+
+    For many_to_one / one_to_one the member itself is the foreign key
+    (author_id → AuthorId), so strip the trailing "Id" to get the navigation
+    property name (Author). For many_to_many the member itself is the foreign
+    key (reg_tag_ids → RegTagIds), so strip the trailing "Ids" to get the
+    navigation property name (RegTags). Other kinds use the PascalCase member
+    name as-is.
+    """
+    pascal = _to_pascal_case(relation["field"])
+    if relation["kind"] in ("many_to_one", "one_to_one"):
+        if len(pascal) > 2 and pascal.endswith("Id"):
+            return pascal[:-2]
+    if relation["kind"] == "many_to_many":
+        if len(pascal) > 3 and pascal.endswith("Ids"):
+            return pascal[:-3] + "s"
+    return pascal
+
+
+def _relation_nav_member_name(relation: dict) -> str:
+    """Derive the Python member name a hydrated relation lands on.
+
+    For ``many_to_one``/``one_to_one`` the declared member IS the foreign key
+    (``py_author_id``), so strip the trailing ``_id`` to get the navigation
+    member (``py_author``). For ``many_to_many`` the declared member is the FK
+    list (``py_tag_ids``); stripping only ``_ids`` without re-adding the ``s``
+    would collapse onto the same name a ``one_to_one`` FK to the same related
+    type derives (``py_tag_id`` also strips to ``py_tag``) — so the plural is
+    kept (``py_tags``). ``one_to_many`` has no derived name; its declared
+    member is already the navigation member and is hydrated in place by the
+    caller.
+    """
+    field = relation["field"]
+    kind = relation["kind"]
+    if kind in ("many_to_one", "one_to_one") and field.endswith("_id"):
+        return field[: -len("_id")]
+    if kind == "many_to_many" and field.endswith("_ids"):
+        return field[: -len("_ids")] + "s"
+    return field
+
+
 def _infer_fk(relation: dict, this_type_name: str) -> str:
     """Infer the FK column name from relation metadata."""
     kind = relation["kind"]
@@ -128,27 +172,40 @@ class SchemaRegistrar:
         self._stub = mapping_stub
         self._classes = list(entity_classes)
 
-    def register_all(self, trace_id: str = "") -> None:
+    def register_all(
+        self,
+        trace_id: str = "",
+        authorization_by_type_name: Optional[Mapping[str, mapping_pb.AuthorizationRules]] = None,
+    ) -> None:
         """Synchronously register all entity schemas."""
         for cls in self._classes:
-            request = self._build_request(cls, trace_id)
+            request = self._build_request(cls, trace_id, authorization_by_type_name)
             response = self._stub.RegisterSchema(request)
             if not response.success:
                 raise RuntimeError(
                     f"Schema registration failed for {cls.__name__}: {response.error}"
                 )
 
-    async def register_all_async(self, trace_id: str = "") -> None:
+    async def register_all_async(
+        self,
+        trace_id: str = "",
+        authorization_by_type_name: Optional[Mapping[str, mapping_pb.AuthorizationRules]] = None,
+    ) -> None:
         """Asynchronously register all entity schemas (requires async channel)."""
         for cls in self._classes:
-            request = self._build_request(cls, trace_id)
+            request = self._build_request(cls, trace_id, authorization_by_type_name)
             response = await self._stub.RegisterSchema(request)
             if not response.success:
                 raise RuntimeError(
                     f"Schema registration failed for {cls.__name__}: {response.error}"
                 )
 
-    def _build_request(self, cls: type, trace_id: str) -> mapping_pb.SchemaRequest:
+    def _build_request(
+        self,
+        cls: type,
+        trace_id: str,
+        authorization_by_type_name: Optional[Mapping[str, mapping_pb.AuthorizationRules]] = None,
+    ) -> mapping_pb.SchemaRequest:
         meta = getattr(cls, "_iverson_meta", None)
         if meta is None:
             raise ValueError(
@@ -181,8 +238,17 @@ class SchemaRegistrar:
             keywords_fields_set,
             extracted_fields_by_name,
         )
-        tenant_field = self._resolve_tenant_field(type_name, meta.get("tenant_fields", []))
-
+        for rel in meta["relations"]:
+            if rel["kind"] in ("many_to_one", "one_to_one"):
+                actual = _to_pascal_case(rel["field"])
+                expected = f'{rel["related_type"]}Id'
+                if actual != expected:
+                    raise ValueError(
+                        f'{type_name}.{rel["field"]} declares a {rel["kind"]} relation to '
+                        f'{rel["related_type"]} but is named {actual!r} on the wire; '
+                        f"a {rel['kind']} foreign-key field must be named {expected!r} "
+                        f"(rename the member to match)."
+                    )
         properties: list[mapping_pb.PropertyDescriptor] = []
         for field_name in meta["fields"]:
             if field_name in relation_fields:
@@ -219,24 +285,39 @@ class SchemaRegistrar:
             )
             properties.append(prop)
 
+        for rel in meta["relations"]:
+            if rel["kind"] == "one_to_many":
+                continue
+            fk_name = _infer_fk(rel, type_name)
+            properties.append(
+                mapping_pb.PropertyDescriptor(
+                    name=fk_name,
+                    clr_type=mapping_pb.CLR_GUID,
+                    is_key=False,
+                    is_nullable=True,
+                    is_array=(rel["kind"] == "many_to_many"),
+                )
+            )
+
         relations: list[mapping_pb.RelationDescriptor] = []
         for rel in meta["relations"]:
             fk = _infer_fk(rel, type_name)
             relations.append(
                 mapping_pb.RelationDescriptor(
-                    property_name=_to_pascal_case(rel["field"]),
+                    property_name=_relation_property_name(rel),
                     kind=_RELATION_KIND_MAP.get(rel["kind"], mapping_pb.MANY_TO_ONE),
                     related_type=rel.get("related_type") or "",
                     foreign_key=fk,
                 )
             )
 
+        rules = (authorization_by_type_name or {}).get(type_name)
         type_descriptor = mapping_pb.TypeDescriptor(
             type_name=type_name,
             properties=properties,
             relations=relations,
             description=meta.get("description", ""),
-            tenant_field=_to_pascal_case(tenant_field),
+            **({"authorization": rules} if rules is not None else {}),
         )
         return mapping_pb.SchemaRequest(root_type=type_descriptor, trace_id=trace_id)
 
@@ -290,24 +371,25 @@ class SchemaRegistrar:
             "on a key.)"
         )
 
-    @staticmethod
-    def _resolve_tenant_field(type_name: str, tenant_fields: list[str]) -> str:
-        if len(tenant_fields) == 0:
-            raise ValueError(
-                f"{type_name} has no field marked with iverson_tenant(); the server "
-                "requires every schema to declare a tenant boundary and will reject "
-                "registration without one."
-            )
-        if len(tenant_fields) > 1:
-            raise ValueError(
-                f"{type_name} has multiple fields marked with iverson_tenant() "
-                f"({', '.join(tenant_fields)}); exactly one field must carry the "
-                "tenant marker."
-            )
-        return tenant_fields[0]
-
 
 # ── StructConverter ────────────────────────────────────────────────────────────
+
+def _append_list_value(list_value: struct_pb2.ListValue, item: object) -> None:
+    """Append a scalar element (recursively converted) to a protobuf ListValue."""
+    v = list_value.values.add()
+    if isinstance(item, bool):
+        v.bool_value = item
+    elif isinstance(item, int):
+        v.number_value = float(item)
+    elif isinstance(item, float):
+        v.number_value = item
+    elif isinstance(item, str):
+        v.string_value = item
+    elif isinstance(item, uuid.UUID):
+        v.string_value = str(item)
+    else:
+        v.string_value = str(item)
+
 
 def _entity_to_struct(entity: object) -> struct_pb2.Struct:
     """Convert an @iverson_entity instance to a google.protobuf.Struct."""
@@ -322,11 +404,22 @@ def _entity_to_struct(entity: object) -> struct_pb2.Struct:
             continue
         annotations.update(getattr(base, "__annotations__", {}))
 
+    type_name = meta["type_name"]
+    relation_by_field = {r["field"]: r for r in meta["relations"]}
+
     for field_name in annotations:
         value = getattr(entity, field_name, None)
         if value is None:
             continue
-        pascal = _to_pascal_case(field_name)
+
+        relation = relation_by_field.get(field_name)
+        if relation is not None:
+            if relation["kind"] == "one_to_many":
+                continue
+            pascal = _infer_fk(relation, type_name)
+        else:
+            pascal = _to_pascal_case(field_name)
+
         if isinstance(value, bool):
             s.fields[pascal].bool_value = value
         elif isinstance(value, int):
@@ -337,13 +430,138 @@ def _entity_to_struct(entity: object) -> struct_pb2.Struct:
             s.fields[pascal].string_value = value
         elif isinstance(value, uuid.UUID):
             s.fields[pascal].string_value = str(value)
+        elif isinstance(value, (list, tuple)):
+            list_value = s.fields[pascal].list_value
+            for item in value:
+                _append_list_value(list_value, item)
         else:
             s.fields[pascal].string_value = str(value)
     return s
 
 
+def _list_value_to_list(list_value: struct_pb2.ListValue) -> list:
+    """Convert a protobuf ListValue back to a plain Python list of scalars."""
+    result = []
+    for v in list_value.values:
+        kind = v.WhichOneof("kind")
+        if kind == "string_value":
+            result.append(v.string_value)
+        elif kind == "number_value":
+            result.append(v.number_value)
+        elif kind == "bool_value":
+            result.append(v.bool_value)
+        else:
+            result.append(None)
+    return result
+
+
 def _struct_to_dict(s: struct_pb2.Struct) -> dict:
     return dict(s)
+
+
+def _hydrate_relations(
+    obj: object,
+    cls: type,
+    annotations: dict,
+    relations: list[dict],
+    s: struct_pb2.Struct,
+) -> None:
+    """Populate an entity's relation members from nested Struct data.
+
+    Runs after the scalar-annotation pass in ``_entity_from_struct``. For
+    ``many_to_one``/``one_to_one``/``many_to_many`` the navigation member is
+    derived (and does not already exist as a declared annotated field — see
+    the collision guard below); for ``one_to_many`` the declared member IS the
+    navigation member and is overwritten in place, replacing the raw dicts the
+    scalar pass leaves there. An unregistered related type falls back to the
+    untyped child (a dict, or list of dicts) rather than raising.
+    """
+    for relation in relations:
+        kind = relation["kind"]
+        if kind == "one_to_many":
+            nav_member = relation["field"]
+        else:
+            nav_member = _relation_nav_member_name(relation)
+            # Only a genuine derivation (nav_member != field) can collide with a declared
+            # annotated field by definition — when no suffix was stripped (e.g. a many_to_many
+            # member not ending in "_ids"), nav_member equals the relation's own declared field,
+            # which is trivially "already declared" and must not raise here.
+            if nav_member != relation["field"] and nav_member in annotations:
+                raise ValueError(
+                    f"{cls.__name__}: relation '{relation['field']}' would hydrate "
+                    f"into member '{nav_member}', but '{nav_member}' is already a "
+                    "declared annotated field on this entity. Rename one of them."
+                )
+
+        wire_key = _relation_property_name(relation)
+        if wire_key not in s.fields:
+            continue
+
+        field = s.fields[wire_key]
+        related_cls = ENTITY_REGISTRY.get(relation.get("related_type") or "")
+
+        if kind in ("many_to_one", "one_to_one"):
+            if field.WhichOneof("kind") != "struct_value":
+                continue
+            if related_cls is None:
+                setattr(obj, nav_member, _struct_to_dict(field.struct_value))
+            else:
+                setattr(obj, nav_member, _entity_from_struct(related_cls, field.struct_value))
+        elif kind in ("many_to_many", "one_to_many"):
+            if field.WhichOneof("kind") != "list_value":
+                continue
+            items = []
+            for v in field.list_value.values:
+                if v.WhichOneof("kind") != "struct_value":
+                    continue
+                if related_cls is None:
+                    items.append(_struct_to_dict(v.struct_value))
+                else:
+                    items.append(_entity_from_struct(related_cls, v.struct_value))
+            setattr(obj, nav_member, items)
+
+
+def _entity_from_struct(cls: type, s: struct_pb2.Struct) -> object:
+    """Construct an instance of ``cls`` from a Struct proto, including any
+    hydrated relation members it carries. Shared by ``EntityCoordinator._from_struct``
+    and by the hydration pass itself, which recurses into related types."""
+    obj = object.__new__(cls)
+    annotations = {}
+    for base in reversed(cls.__mro__):
+        if base is object:
+            continue
+        annotations.update(getattr(base, "__annotations__", {}))
+
+    meta = getattr(cls, "_iverson_meta", None)
+    relations = (meta or {}).get("relations", [])
+    relation_by_field = {r["field"]: r for r in relations}
+    type_name = (meta or {}).get("type_name", cls.__name__)
+
+    for field_name in annotations:
+        relation = relation_by_field.get(field_name)
+        if relation is not None and relation["kind"] == "many_to_many":
+            pascal = _infer_fk(relation, type_name)
+        else:
+            pascal = _to_pascal_case(field_name)
+
+        if pascal in s.fields:
+            field = s.fields[pascal]
+            kind = field.WhichOneof("kind")
+            if kind == "string_value":
+                setattr(obj, field_name, field.string_value)
+            elif kind == "number_value":
+                setattr(obj, field_name, field.number_value)
+            elif kind == "bool_value":
+                setattr(obj, field_name, field.bool_value)
+            elif kind == "list_value":
+                setattr(obj, field_name, _list_value_to_list(field.list_value))
+            else:
+                setattr(obj, field_name, None)
+        else:
+            setattr(obj, field_name, None)
+
+    _hydrate_relations(obj, cls, annotations, relations, s)
+    return obj
 
 
 # ── SearchResult ────────────────────────────────────────────────────────────────
@@ -373,7 +591,12 @@ class EntityCoordinator(Generic[T]):
         channel: an open ``grpc.Channel``.
     """
 
-    def __init__(self, entity_class: type, channel: grpc.Channel) -> None:
+    def __init__(
+        self,
+        entity_class: type,
+        channel: grpc.Channel,
+        acting_user_token: str | None = None,
+    ) -> None:
         meta = getattr(entity_class, "_iverson_meta", None)
         if meta is None:
             raise ValueError(
@@ -386,6 +609,21 @@ class EntityCoordinator(Generic[T]):
         self._persistence = persist_grpc.ObjectPersistenceServiceStub(channel)
         self._retrieval = retrieval_grpc.ObjectRetrievalServiceStub(channel)
         self._search = search_grpc.ObjectSearchServiceStub(channel)
+        self._acting_user_token = acting_user_token
+
+    def with_acting_user(self, token: str) -> "EntityCoordinator[T]":
+        """Return a coordinator bound to ``token``, leaving this one untouched."""
+        bound = copy.copy(self)
+        bound._acting_user_token = token
+        return bound
+
+    def _acting_user_metadata(self) -> tuple[tuple[str, str], ...]:
+        # Use `is None`, not a falsy check: an empty-string token is a caller
+        # error that must reach the server and be rejected loudly, not be
+        # silently downgraded to an unauthenticated call.
+        if self._acting_user_token is None:
+            return ()
+        return ((ACTING_USER_METADATA_KEY, f"Bearer {self._acting_user_token}"),)
 
     def _get_key(self, entity: T) -> str:
         if self._key_field is None:
@@ -403,7 +641,8 @@ class EntityCoordinator(Generic[T]):
                 type_name=self._type_name,
                 payload=payload,
                 trace_id=trace_id,
-            )
+            ),
+            metadata=self._acting_user_metadata(),
         )
         if not response.success:
             raise RuntimeError(f"persist failed: {response.error}")
@@ -417,7 +656,8 @@ class EntityCoordinator(Generic[T]):
                 type_name=self._type_name,
                 payload=payload,
                 trace_id=trace_id,
-            )
+            ),
+            metadata=self._acting_user_metadata(),
         )
         if not response.success:
             raise RuntimeError(f"update failed: {response.error}")
@@ -429,10 +669,57 @@ class EntityCoordinator(Generic[T]):
                 type_name=self._type_name,
                 key=id,
                 trace_id=trace_id,
-            )
+            ),
+            metadata=self._acting_user_metadata(),
         )
         if not response.success:
             raise RuntimeError(f"delete failed: {response.error}")
+
+    def get_mapped(self, id: str, depth: int = 1, trace_id: str = "") -> Optional[T]:
+        """Retrieve an entity by key with server-side relation resolution to ``depth``.
+        Returns None if not found."""
+        response = self._mapping.Get(
+            mapping_pb.MappingGetRequest(
+                type_name=self._type_name,
+                key=id,
+                depth=depth,
+                trace_id=trace_id,
+            ),
+            metadata=self._acting_user_metadata(),
+        )
+        if not response.success:
+            return None
+        return self._from_struct(response.data)
+
+    def post_mapped(self, entity: T, trace_id: str = "") -> Optional[T]:
+        """Create an entity through the mapping path, which resolves its relations
+        server-side. Returns the entity hydrated from the response, carrying the
+        server-assigned key — the caller never assigns one."""
+        response = self._mapping.Post(
+            mapping_pb.MappingWriteRequest(
+                type_name=self._type_name,
+                payload=_entity_to_struct(entity),
+                trace_id=trace_id,
+            ),
+            metadata=self._acting_user_metadata(),
+        )
+        if not response.success:
+            raise RuntimeError(f"post_mapped failed: {response.error}")
+        return self._from_struct(response.data)
+
+    def update_mapped(self, entity: T, trace_id: str = "") -> Optional[T]:
+        """Update an existing entity through the mapping path."""
+        response = self._mapping.Update(
+            mapping_pb.MappingWriteRequest(
+                type_name=self._type_name,
+                payload=_entity_to_struct(entity),
+                trace_id=trace_id,
+            ),
+            metadata=self._acting_user_metadata(),
+        )
+        if not response.success:
+            raise RuntimeError(f"update_mapped failed: {response.error}")
+        return self._from_struct(response.data)
 
     def get(self, id: str, trace_id: str = "") -> Optional[T]:
         """Retrieve an entity by key. Returns None if not found."""
@@ -441,7 +728,8 @@ class EntityCoordinator(Generic[T]):
                 type_name=self._type_name,
                 key=id,
                 trace_id=trace_id,
-            )
+            ),
+            metadata=self._acting_user_metadata(),
         )
         if not response.found:
             return None
@@ -455,7 +743,8 @@ class EntityCoordinator(Generic[T]):
                 type_name=self._type_name,
                 keys=ids,
                 trace_id=trace_id,
-            )
+            ),
+            metadata=self._acting_user_metadata(),
         ):
             if response.found:
                 results.append(self._from_struct(response.data))
@@ -469,7 +758,7 @@ class EntityCoordinator(Generic[T]):
         ``SearchResult``."""
         return [
             SearchResult(self._from_struct(row.data), row.score)
-            for row in self._search.Search(request)
+            for row in self._search.Search(request, metadata=self._acting_user_metadata())
         ]
 
     def search_similar(self, request: search_pb.SearchSimilarRequest) -> List[SearchResult[T]]:
@@ -478,55 +767,34 @@ class EntityCoordinator(Generic[T]):
         in a ``SearchResult``."""
         return [
             SearchResult(self._from_struct(row.data), row.score)
-            for row in self._search.SearchSimilar(request)
+            for row in self._search.SearchSimilar(request, metadata=self._acting_user_metadata())
         ]
 
     def search_chunks(self, request: search_pb.SearchChunksRequest) -> List[search_pb.ChunkSearchResponse]:
         """Execute a SearchChunks request. Returns the flat chunk messages as-is."""
-        return list(self._search.SearchChunks(request))
+        return list(self._search.SearchChunks(request, metadata=self._acting_user_metadata()))
 
     def group_by(self, request: search_pb.GroupByRequest) -> List[dict]:
         """Execute a GroupBy request. Columns are aggregated/aliased and don't match
         ``T``'s own fields, so each row is converted via ``_struct_to_dict`` instead
         of ``_from_struct``."""
-        return [_struct_to_dict(row.data) for row in self._search.GroupBy(request)]
+        return [_struct_to_dict(row.data) for row in self._search.GroupBy(request, metadata=self._acting_user_metadata())]
 
     def aggregate(self, request: search_pb.AggregateRequest) -> search_pb.AggregateResponse:
         """Execute an Aggregate request. Single call; returns the ``AggregateResponse``
         as-is."""
-        return self._search.Aggregate(request)
+        return self._search.Aggregate(request, metadata=self._acting_user_metadata())
 
     def pipeline(self, request: search_pb.PipelineRequest) -> List[dict]:
         """Execute a Pipeline request. Columns are aggregated/aliased and don't match
         ``T``'s own fields, so each row is converted via ``_struct_to_dict`` instead
         of ``_from_struct``."""
-        return [_struct_to_dict(row.data) for row in self._search.Pipeline(request)]
+        return [_struct_to_dict(row.data) for row in self._search.Pipeline(request, metadata=self._acting_user_metadata())]
 
     def _from_struct(self, s: struct_pb2.Struct) -> T:
-        """Construct an entity instance from a Struct proto."""
-        obj = object.__new__(self._cls)
-        annotations = {}
-        for base in reversed(self._cls.__mro__):
-            if base is object:
-                continue
-            annotations.update(getattr(base, "__annotations__", {}))
-
-        for field_name in annotations:
-            pascal = _to_pascal_case(field_name)
-            if pascal in s.fields:
-                field = s.fields[pascal]
-                kind = field.WhichOneof("kind")
-                if kind == "string_value":
-                    setattr(obj, field_name, field.string_value)
-                elif kind == "number_value":
-                    setattr(obj, field_name, field.number_value)
-                elif kind == "bool_value":
-                    setattr(obj, field_name, field.bool_value)
-                else:
-                    setattr(obj, field_name, None)
-            else:
-                setattr(obj, field_name, None)
-        return obj  # type: ignore[return-value]
+        """Construct an entity instance from a Struct proto, hydrating any
+        related-object members it carries."""
+        return _entity_from_struct(self._cls, s)  # type: ignore[return-value]
 
 
 # ── IversonClient ──────────────────────────────────────────────────────────────
@@ -554,17 +822,12 @@ class IversonClient:
     ) -> None:
         address = f"{host}:{port}"
 
-        if credentials is not None or acting_user_token is not None:
+        if credentials is not None:
             call_creds_list = []
-            if credentials is not None:
-                provider = _CachedTokenProvider(credentials)
-                call_creds_list.append(
-                    grpc.metadata_call_credentials(_BearerTokenAuthPlugin(provider))
-                )
-            if acting_user_token is not None:
-                call_creds_list.append(
-                    grpc.metadata_call_credentials(_ActingUserAuthPlugin(acting_user_token))
-                )
+            provider = _CachedTokenProvider(credentials)
+            call_creds_list.append(
+                grpc.metadata_call_credentials(_BearerTokenAuthPlugin(provider))
+            )
             # grpcio rejects CallCredentials on a bare insecure_channel with
             # "UNAUTHENTICATED: Established channel does not have a sufficient security
             # level to transfer call credential" — confirmed live. Some ChannelCredentials
@@ -584,6 +847,16 @@ class IversonClient:
             self._channel = grpc.insecure_channel(address)
 
         self._mapping_stub = mapping_grpc.ObjectMappingServiceStub(self._channel)
+        self._acting_user_token = acting_user_token
+
+    def _acting_user_metadata(self) -> tuple[tuple[str, str], ...]:
+        """Per-call metadata carrying the ambient acting-user identity, or empty when none."""
+        # Use `is None`, not a falsy check: an empty-string token is a caller
+        # error that must reach the server and be rejected loudly, not be
+        # silently downgraded to an unauthenticated call.
+        if self._acting_user_token is None:
+            return ()
+        return ((ACTING_USER_METADATA_KEY, f"Bearer {self._acting_user_token}"),)
 
     def close(self) -> None:
         """Close the underlying gRPC channel."""
@@ -597,12 +870,13 @@ class IversonClient:
 
     def coordinator(self, entity_class: type) -> EntityCoordinator:
         """Return an ``EntityCoordinator`` for the given entity class."""
-        return EntityCoordinator(entity_class, self._channel)
+        return EntityCoordinator(entity_class, self._channel, self._acting_user_token)
 
     def get_schema(self, trace_id: str = "") -> list[mapping_pb.SchemaType]:
         """Return the catalog of registered types this identity may read."""
         response = self._mapping_stub.GetSchema(
-            mapping_pb.GetSchemaRequest(trace_id=trace_id)
+            mapping_pb.GetSchemaRequest(trace_id=trace_id),
+            metadata=self._acting_user_metadata(),
         )
         return list(response.types)
 

@@ -8,14 +8,68 @@ using Microsoft.Extensions.Logging;
 using static Iverson.Client.Search.SearchOperators;
 
 // ── DI Setup ───────────────────────────────────────────────────────────────────
+// Every Iverson write is authorized against an acting user; there is no anonymous write.
+// Obtain a user access token from your IdP and export it before running this sample.
+var actingUserToken = Environment.GetEnvironmentVariable("IVERSON_ACTING_USER_TOKEN");
+var clientId        = Environment.GetEnvironmentVariable("IVERSON_CLIENT_ID");
+var clientSecret    = Environment.GetEnvironmentVariable("IVERSON_CLIENT_SECRET");
+var tokenEndpoint   = Environment.GetEnvironmentVariable("IVERSON_TOKEN_ENDPOINT");
+
+var missingEnvVars = new List<string>();
+if (string.IsNullOrWhiteSpace(actingUserToken)) missingEnvVars.Add("IVERSON_ACTING_USER_TOKEN");
+if (string.IsNullOrWhiteSpace(clientId))        missingEnvVars.Add("IVERSON_CLIENT_ID");
+if (string.IsNullOrWhiteSpace(clientSecret))    missingEnvVars.Add("IVERSON_CLIENT_SECRET");
+if (string.IsNullOrWhiteSpace(tokenEndpoint))   missingEnvVars.Add("IVERSON_TOKEN_ENDPOINT");
+if (missingEnvVars.Count > 0)
+{
+    Console.Error.WriteLine(
+        $"{string.Join(", ", missingEnvVars)} not set. Every Iverson write is denied without an\n" +
+        "acting user, and the client needs its OAuth2 credentials to talk to the server, so this\n" +
+        "sample cannot seed anything. Export the missing variable(s) and re-run.");
+    return 1;
+}
+
 var services = new ServiceCollection()
     .AddLogging(b => b.AddConsole().SetMinimumLevel(LogLevel.Warning))
     .AddIversonClient(
         grpcEndpoint: "https://localhost:7142",
+        credentials: new IversonClientCredentials(
+            clientId!,
+            clientSecret!,
+            tokenEndpoint!,
+            Scope: "admin schema_admin"),
+        actingUserTokenProvider: () => Task.FromResult(actingUserToken),
         entityAssemblies: [typeof(Article).Assembly])
     .BuildServiceProvider();
 
-await services.GetRequiredService<SchemaRegistrar>().RegisterAllAsync();
+// OwnerField is left empty — none of the five sample models carries an owner column —
+// so a single bypass role carries authorization. The acting user behind
+// IVERSON_ACTING_USER_TOKEN must belong to this Authentik group, since the role is
+// matched against that token's `groups` claim, AND must carry a `tenant_id` claim —
+// the evaluator denies on a missing tenant claim before it consults roles
+// (RowFieldAuthorizationEvaluator.cs:18-23). The server stamps each row's tenant from
+// that claim; no sample model declares a tenant field, because tenancy is never client-supplied.
+var sampleRules = new AuthorizationRules
+{
+    RowPermissions =
+    {
+        new RowPermission
+        {
+            Role = "iverson-sample-bypass",
+            CanReadAll = true, CanWriteAll = true, CanDeleteAll = true
+        },
+    }
+};
+
+await services.GetRequiredService<SchemaRegistrar>().RegisterAllAsync(
+    new Dictionary<string, AuthorizationRules>
+    {
+        ["Author"]      = sampleRules,
+        ["Article"]     = sampleRules,
+        ["Tag"]         = sampleRules,
+        ["User"]        = sampleRules,
+        ["UserArticle"] = sampleRules,
+    });
 
 var authors      = services.GetRequiredService<EntityCoordinator<Author>>();
 var articles     = services.GetRequiredService<EntityCoordinator<Article>>();
@@ -27,29 +81,29 @@ var userArticles = services.GetRequiredService<EntityCoordinator<UserArticle>>()
 // separate RPCs not yet surfaced on EntityCoordinator).
 var searchClient = services.GetRequiredService<ObjectSearchService.ObjectSearchServiceClient>();
 
-// Every row must declare the tenant it belongs to; reads are filtered by it.
-const string sampleTenant = "sample-tenant";
-
 // ── Seed Data ─────────────────────────────────────────────────────────────────
 
 Console.WriteLine("\n=== Seed Data ===");
 
-// Authors
-var authorAiId   = Guid.NewGuid();
-var authorKobeId = Guid.NewGuid();
-
-await authors.PersistAsync(new Author
+// Write order is load-bearing: an entity must exist before another can reference its key.
+// Authors and tags before articles; articles before user-articles.
+var authorAiId   = await authors.PersistAsync(new Author
 {
-    Id    = authorAiId,
-    TenantId = sampleTenant,
     Name  = "Allen Iverson",
     Email = "ai@iverson.dev",
     Bio   = "The original AI. Point guard. Hall of Famer."
 });
-await authors.PersistAsync(new Author
+if (authorAiId is null)
 {
-    Id    = authorKobeId,
-    TenantId = sampleTenant,
+    Console.Error.WriteLine(
+        "The first write returned null, which means the server rejected it. The acting user\n" +
+        "behind IVERSON_ACTING_USER_TOKEN must belong to the 'iverson-sample-bypass' group AND\n" +
+        "carry a tenant_id claim — the evaluator denies on a missing tenant claim before it even\n" +
+        "consults roles. Check the token's groups and tenant_id claims, then re-run.");
+    return 1;
+}
+var authorKobeId = await authors.PersistAsync(new Author
+{
     Name  = "Kobe Bryant",
     Email = "kb@iverson.dev",
     Bio   = "The Black Mamba. Five-time NBA champion."
@@ -57,26 +111,17 @@ await authors.PersistAsync(new Author
 Console.WriteLine($"Created authors: {authorAiId}, {authorKobeId}");
 
 // Tags
-var tagBballId  = Guid.NewGuid();
-var tagCultureId = Guid.NewGuid();
-var tagLegacyId  = Guid.NewGuid();
-
-await tags.PersistAsync(new Tag { Id = tagBballId,   Label = "Basketball",   Slug = "basketball", TenantId = sampleTenant });
-await tags.PersistAsync(new Tag { Id = tagCultureId, Label = "Culture",      Slug = "culture", TenantId = sampleTenant });
-await tags.PersistAsync(new Tag { Id = tagLegacyId,  Label = "Legacy",       Slug = "legacy", TenantId = sampleTenant });
+var tagBballId   = await tags.PersistAsync(new Tag { Label = "Basketball", Slug = "basketball" });
+var tagCultureId = await tags.PersistAsync(new Tag { Label = "Culture",    Slug = "culture" });
+var tagLegacyId  = await tags.PersistAsync(new Tag { Label = "Legacy",     Slug = "legacy" });
 Console.WriteLine($"Created tags: basketball, culture, legacy");
 
 // Articles (PostMappedAsync so the server resolves Author and Tags and the full
 // hydrated document is emitted to Kafka for StarRocks/Qdrant indexing).
-var article1Id = Guid.NewGuid();
-var article2Id = Guid.NewGuid();
-
 var article1 = await articles.PostMappedAsync(new Article
 {
-    Id          = article1Id,
-    TenantId    = sampleTenant,
-    AuthorId    = authorAiId,
-    TagIds      = [tagBballId, tagCultureId],
+    AuthorId    = Guid.Parse(authorAiId!),
+    TagIds      = [Guid.Parse(tagBballId!), Guid.Parse(tagCultureId!)],
     Title       = "The Original AI: Allen Iverson's Legacy",
     Body        = "Before large language models, Allen Iverson was already doing the impossible on the hardwood.",
     PublishedAt = DateTime.UtcNow.AddDays(-7),
@@ -84,10 +129,8 @@ var article1 = await articles.PostMappedAsync(new Article
 });
 var article2 = await articles.PostMappedAsync(new Article
 {
-    Id          = article2Id,
-    TenantId    = sampleTenant,
-    AuthorId    = authorKobeId,
-    TagIds      = [tagBballId, tagLegacyId],
+    AuthorId    = Guid.Parse(authorKobeId!),
+    TagIds      = [Guid.Parse(tagBballId!), Guid.Parse(tagLegacyId!)],
     Title       = "The Black Mamba Mentality",
     Body        = "Kobe Bryant's relentless work ethic and Mamba Mentality redefined what dedication to the game looks like.",
     PublishedAt = DateTime.UtcNow.AddDays(-3),
@@ -96,11 +139,8 @@ var article2 = await articles.PostMappedAsync(new Article
 Console.WriteLine($"Created articles: '{article1?.Title}', '{article2?.Title}'");
 
 // User
-var userId = Guid.NewGuid();
-await users.PersistAsync(new User
+var userId = await users.PersistAsync(new User
 {
-    Id        = userId,
-    TenantId  = sampleTenant,
     Name      = "Test User",
     Email     = "test@example.com",
     Username  = "testuser",
@@ -111,45 +151,38 @@ Console.WriteLine($"Created user: {userId}");
 // UserArticles — PostMappedAsync so the server emits a fully hydrated document
 // (User + Article data) to Kafka for StarRocks indexing. UserArticle is the
 // primary entity to search because it carries a rich, denormalized view.
-var ua1Id = Guid.NewGuid();
-var ua2Id = Guid.NewGuid();
-
-await userArticles.PostMappedAsync(new UserArticle
+var ua1 = await userArticles.PostMappedAsync(new UserArticle
 {
-    Id        = ua1Id,
-    TenantId  = sampleTenant,
-    UserId    = userId,
-    ArticleId = article1Id,
+    UserId    = Guid.Parse(userId!),
+    ArticleId = article1!.Id,   // read off the entity PostMappedAsync returned
     CreatedAt = DateTime.UtcNow
 });
-await userArticles.PostMappedAsync(new UserArticle
+var ua2 = await userArticles.PostMappedAsync(new UserArticle
 {
-    Id        = ua2Id,
-    TenantId  = sampleTenant,
-    UserId    = userId,
-    ArticleId = article2Id,
+    UserId    = Guid.Parse(userId!),
+    ArticleId = article2!.Id,
     CreatedAt = DateTime.UtcNow
 });
-Console.WriteLine($"Created user-articles: {ua1Id}, {ua2Id}");
+Console.WriteLine($"Created user-articles: {ua1!.Id}, {ua2!.Id}");
 
 // ── Object Mapping — PostgreSQL CRUD with server-side graph resolution ─────────
 
 Console.WriteLine("\n=== Object Mapping (PostgreSQL) ===");
 
 // Author: GetMapped with depth=1 returns the Author with inline Articles list.
-var fetchedAuthor = await authors.GetMappedAsync(authorAiId.ToString(), depth: 1);
+var fetchedAuthor = await authors.GetMappedAsync(authorAiId!, depth: 1);
 Console.WriteLine($"Author: {fetchedAuthor?.Name} ({fetchedAuthor?.Articles.Count} articles)");
 
 // Article: GetMapped with depth=1 returns Author + Tags resolved.
-var fetchedArticle = await articles.GetMappedAsync(article1Id.ToString(), depth: 1);
+var fetchedArticle = await articles.GetMappedAsync(article1!.Id.ToString(), depth: 1);
 Console.WriteLine($"Article: '{fetchedArticle?.Title}' by {fetchedArticle?.Author?.Name} [{fetchedArticle?.Tags.Count} tags]");
 
 // Article: depth=2 also recurses into Author's Articles.
-var deepArticle = await articles.GetMappedAsync(article1Id.ToString(), depth: 2);
+var deepArticle = await articles.GetMappedAsync(article1!.Id.ToString(), depth: 2);
 Console.WriteLine($"Article (depth=2): author has {deepArticle?.Author?.Articles.Count} article(s)");
 
 // UserArticle: GetMapped with depth=1 returns both ManyToOne relations resolved.
-var fetchedUa = await userArticles.GetMappedAsync(ua1Id.ToString(), depth: 1);
+var fetchedUa = await userArticles.GetMappedAsync(ua1!.Id.ToString(), depth: 1);
 Console.WriteLine($"UserArticle: user='{fetchedUa?.User?.Name}' article='{fetchedUa?.Article?.Title}'");
 
 // Update an article title.
@@ -161,7 +194,7 @@ if (fetchedArticle is not null)
 }
 
 // Tag: GetMapped (no relations to resolve, just demonstrates the mapping path).
-var fetchedTag = await tags.GetMappedAsync(tagBballId.ToString());
+var fetchedTag = await tags.GetMappedAsync(tagBballId!);
 Console.WriteLine($"Tag: {fetchedTag?.Label} (slug: {fetchedTag?.Slug})");
 
 // ── Object Retrieval — PostgreSQL key-based, client assembles the graph ────────
@@ -169,21 +202,21 @@ Console.WriteLine($"Tag: {fetchedTag?.Label} (slug: {fetchedTag?.Slug})");
 Console.WriteLine("\n=== Object Retrieval (PostgreSQL) ===");
 
 // Author — client side graph assembly via GraphAssembler.
-var retrievedAuthor = await authors.GetAsync(authorKobeId.ToString());
+var retrievedAuthor = await authors.GetAsync(authorKobeId!);
 Console.WriteLine($"Retrieved author: {retrievedAuthor?.Name}, articles={retrievedAuthor?.Articles.Count}");
 
 // Tags — streaming via GetManyAsync.
 Console.WriteLine("Tags (GetMany):");
-var tagIds = new[] { tagBballId.ToString(), tagCultureId.ToString(), tagLegacyId.ToString() };
+var tagIds = new[] { tagBballId!, tagCultureId!, tagLegacyId! };
 await foreach (var tag in tags.GetManyAsync(tagIds))
     Console.WriteLine($"  - {tag.Label} ({tag.Slug})");
 
 // User — simple key lookup.
-var retrievedUser = await users.GetAsync(userId.ToString());
+var retrievedUser = await users.GetAsync(userId!);
 Console.WriteLine($"Retrieved user: {retrievedUser?.Name} ({retrievedUser?.Email})");
 
 // UserArticle — key lookup with both ManyToOne relations assembled client-side.
-var retrievedUa = await userArticles.GetAsync(ua2Id.ToString());
+var retrievedUa = await userArticles.GetAsync(ua2!.Id.ToString());
 Console.WriteLine($"Retrieved user-article: user={retrievedUa?.User?.Name}, article='{retrievedUa?.Article?.Title}'");
 
 // ── Object Search — StarRocks ─────────────────────────────────────────────────
@@ -201,7 +234,7 @@ await Task.Delay(TimeSpan.FromSeconds(3));
 // The StarRocks row is fully denormalized: User + Article data is stored flat,
 // so it is searchable by any column at query time.
 var uaUserQuery = Query.For<UserArticle>()
-    .Where(ua => ua.UserId, EqualTo, userId)
+    .Where(ua => ua.UserId, EqualTo, Guid.Parse(userId!))
     .OrderBy(ua => ua.CreatedAt, descending: true)
     .Page(0, size: 10);
 
@@ -285,7 +318,7 @@ try
 
     Console.WriteLine("Articles similar to 'AI basketball legend' (Title vector):");
     await foreach (var response in similarStream.ResponseStream.ReadAllAsync())
-        Console.WriteLine($"  [score={response.Score:F4}] {response.Data?.Fields.GetValueOrDefault("title")?.StringValue}");
+        Console.WriteLine($"  [score={response.Score:F4}] {response.Data?.Fields.GetValueOrDefault("Title")?.StringValue}");
 }
 catch (RpcException ex)
 {
@@ -316,10 +349,12 @@ catch (RpcException ex)
 
 Console.WriteLine("\n=== Cleanup ===");
 
-await userArticles.DeleteAsync(ua1Id.ToString());
-await userArticles.DeleteAsync(ua2Id.ToString());
-await articles.DeleteAsync(article1Id.ToString());
-await articles.DeleteAsync(article2Id.ToString());
+await userArticles.DeleteAsync(ua1!.Id.ToString());
+await userArticles.DeleteAsync(ua2!.Id.ToString());
+await articles.DeleteAsync(article1!.Id.ToString());
+await articles.DeleteAsync(article2!.Id.ToString());
 
 Console.WriteLine("Deleted user-articles and articles. Authors, tags, and user left in place.");
 Console.WriteLine("\nDone.");
+
+return 0;

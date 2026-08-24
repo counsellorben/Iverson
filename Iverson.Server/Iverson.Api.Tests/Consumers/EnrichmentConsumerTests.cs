@@ -102,23 +102,18 @@ public class EnrichmentConsumerTests
         ]
     };
 
-    private static SchemaDescriptor NoTenantArticle()
+    // A pre-2026-07-17 _iverson_schema row for Article: exactly what RegisterAsync would have
+    // written, minus the `tenantColumn` key, which did not exist before 63a577a. This is the only
+    // way a tenant-less descriptor can reach a consumer now that SchemaDescriptor.TenantColumn is
+    // non-nullable — RegisterAsync's argument is compile-time checked, LoadAsync's input is not.
+    private static string LegacyArticleRowJson()
     {
-        var s = EnrichedArticle();
-        return new SchemaDescriptor
-        {
-            TypeName          = s.TypeName,
-            TableName         = s.TableName,
-            CollectionName    = s.CollectionName,
-            KeyColumn         = s.KeyColumn,
-            ScalarColumns     = s.ScalarColumns,
-            FkColumns         = s.FkColumns,
-            VectorFields      = s.VectorFields,
-            ChunkFields       = s.ChunkFields,
-            Relations         = s.Relations,
-            TenantColumn      = null,
-            EnrichmentTargets = s.EnrichmentTargets
-        };
+        var json = JsonSerializer.Serialize(
+            EnrichedArticle(),
+            new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase });
+        var stripped = json.Replace(",\"tenantColumn\":\"TenantId\"", "", StringComparison.Ordinal);
+        stripped.Should().NotContain("tenantColumn");
+        return stripped;
     }
 
     private static string RowJson(string body = "The source body text.", string? tenant = Tenant) =>
@@ -274,13 +269,39 @@ public class EnrichmentConsumerTests
 
     // ── Null tenant ───────────────────────────────────────────────────────────
 
+    // RE-POINTED by Task 7, not weakened. It previously registered a hand-built descriptor with
+    // TenantColumn = null and asserted EnrichmentConsumer's own `schema.TenantColumn is not null`
+    // branch skipped the row. SchemaDescriptor.TenantColumn is now non-nullable and that branch is
+    // gone, so the test now drives the ONE path by which such a schema could ever have existed —
+    // SchemaRegistry.LoadAsync rehydrating a pre-cutover _iverson_schema row — and asserts the
+    // same outcome plus the mechanism that now produces it: the type is never registered at all,
+    // so the consumer drops on its existing unknown-type guard. Strictly more than before: the
+    // old version could not have caught a registry that admitted the row.
     [Fact]
-    public async Task HandleUpdated_WithNullTenantColumn_SkipsAndWritesNoStateRow()
+    public async Task HandleUpdated_LegacySchemaWithNoTenantColumn_IsNotRegistered_AndWritesNoStateRow()
     {
-        await _registry.RegisterAsync(NoTenantArticle());
+        var repository = Substitute.For<ISchemaRegistryRepository>();
+        repository.LoadAllAsync().Returns(new List<(string TypeName, string SchemaJson)>
+        {
+            ("Article", LegacyArticleRowJson())
+        });
+        var registry = new SchemaRegistry(repository, NullLogger<SchemaRegistry>.Instance);
+        await registry.LoadAsync();
 
-        var sut = BuildSut();
-        await sut.HandleAsync(Key, Event(EntityEventType.Updated), CancellationToken.None);
+        registry.IsRegistered("Article").Should()
+            .BeFalse("a rehydrated row with no server-owned tenant column must not be admitted");
+
+        var sut = new EnrichmentConsumer(_consumer, registry, _entities, _state, _outboxWriter,
+            _outboxPublisher, _txRunner, _enrichment, NullLogger<EnrichmentConsumer>.Instance);
+
+        // RE-POINTED AGAIN by the Ruling 56 fix, and the change of outcome is deliberate. The
+        // consumer's unknown-type guard used to RETURN, which commits the Kafka offset and loses
+        // the event silently; it now throws, so the event reaches the DLQ. For a row the registry
+        // will NEVER admit that means its events dead-letter rather than vanish — loud and
+        // recoverable instead of silent, which is the whole point of the fix. The three
+        // "wrote nothing" assertions below are unchanged and still the substance of the test.
+        var act = () => sut.HandleAsync(Key, Event(EntityEventType.Updated), CancellationToken.None);
+        await act.Should().ThrowAsync<InvalidOperationException>().WithMessage("*Article*");
 
         await _state.DidNotReceiveWithAnyArgs().UpsertAsync(
             default!, default!, default!, default!, default!, default);

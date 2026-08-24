@@ -18,7 +18,6 @@ namespace Iverson.Client.Core.Tests;
 internal sealed class SearchAnnotationTestEntity
 {
     [IversonKey]          public Guid            Id          { get; set; }
-    [IversonTenant]        public string          TenantId    { get; set; } = string.Empty;
     [IversonSearchKey(0)] public string          Category    { get; set; } = "";
     [IversonSearchKey(1)] public DateTimeOffset  PublishedAt { get; set; }
     [IversonLargeField]   public string          Body        { get; set; } = "";
@@ -31,9 +30,6 @@ internal sealed class MetadataAnnotationTestEntity
     [IversonKey]
     [IversonDescription("Primary identifier.")]
     public Guid Id { get; set; }
-
-    [IversonTenant]
-    public string TenantId { get; set; } = string.Empty;
 
     [IversonMetadata]
     [IversonDescription("Source system name.")]
@@ -50,9 +46,6 @@ internal sealed class EnrichmentAnnotationTestEntity
 {
     [IversonKey]
     public Guid Id { get; set; }
-
-    [IversonTenant]
-    public string TenantId { get; set; } = string.Empty;
 
     [IversonSummary]
     public string Summary { get; set; } = "";
@@ -74,8 +67,6 @@ internal sealed class SchemaTestAuthor
 {
     [IversonKey]
     public Guid Id { get; set; }
-    [IversonTenant]
-    public string TenantId { get; set; } = string.Empty;
     public string Name { get; set; } = string.Empty;
     public string? Bio { get; set; }
 }
@@ -85,8 +76,6 @@ internal sealed class SchemaTestArticle
 {
     [IversonKey]
     public Guid Id { get; set; }
-    [IversonTenant]
-    public string TenantId { get; set; } = string.Empty;
     public string Title { get; set; } = string.Empty;
     public Guid AuthorId { get; set; }
 
@@ -105,10 +94,33 @@ internal sealed class SchemaTestTag
 {
     [IversonKey]
     public Guid Id { get; set; }
-    [IversonTenant]
-    public string TenantId { get; set; } = string.Empty;
     public string Label { get; set; } = string.Empty;
     public Guid ArticleId { get; set; }
+}
+
+// Relation declared directly on the foreign-key member: today this makes
+// PropertyName == ForeignKey, which destroys the FK value on depth-resolved reads.
+[IversonEntity]
+internal sealed class SchemaTestFkNavCollisionEntity
+{
+    [IversonKey]
+    public Guid Id { get; set; }
+
+    [ManyToOne(typeof(SchemaTestAuthor), "AuthorId")]
+    public Guid AuthorId { get; set; }
+
+    [ManyToMany(typeof(SchemaTestTag), "TagIds")]
+    public Guid[] TagIds { get; set; } = [];
+}
+
+// Deliberately NOT [IversonEntity]: EntityRegistry scans the whole assembly, so any
+// attributed type here would be pulled into every other test's registry too. These
+// fixtures are only ever fed to SchemaRegistrar.BuildTypeDescriptor directly via
+// reflection, bypassing the scan entirely, so they stay isolated to the collision tests.
+internal sealed class UnregisteredFkCollisionEntity
+{
+    public Guid Id { get; set; }
+    public Guid AuthorId { get; set; }
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -315,6 +327,94 @@ public class SchemaRegistrarTests
         oneToMany.PropertyName.Should().Be("Tags");
         oneToMany.RelatedType.Should().Be("SchemaTestTag");
         oneToMany.ForeignKey.Should().Be("SchemaTestArticleId");
+    }
+
+    [Fact]
+    public async Task RegisterAllAsync_DerivesDistinctPropertyName_WhenRelationDeclaredOnForeignKeyMember()
+    {
+        SchemaRequest? req = null;
+        _mappingClient
+            .RegisterSchemaAsync(
+                Arg.Do<SchemaRequest>(r =>
+                {
+                    if (r.RootType?.TypeName == "SchemaTestFkNavCollisionEntity") req = r;
+                }),
+                Arg.Any<Metadata>(),
+                Arg.Any<DateTime?>(),
+                Arg.Any<CancellationToken>())
+            .Returns(new AsyncUnaryCall<SchemaResponse>(
+                Task.FromResult(new SchemaResponse { Success = true }),
+                Task.FromResult(new Metadata()),
+                () => Status.DefaultSuccess,
+                () => new Metadata(),
+                () => { }));
+
+        await _sut.RegisterAllAsync();
+
+        req.Should().NotBeNull();
+        var relations = req!.RootType!.Relations;
+
+        var manyToOne = relations.Single(r => r.Kind == ContractsRelKind.ManyToOne);
+        manyToOne.ForeignKey.Should().Be("AuthorId");
+        manyToOne.PropertyName.Should().NotBe(manyToOne.ForeignKey,
+            "the navigation property name must not collide with the foreign key, or a depth-resolved " +
+            "read overwrites the FK value with the hydrated related entity");
+        manyToOne.PropertyName.Should().Be("Author");
+
+        var manyToMany = relations.Single(r => r.Kind == ContractsRelKind.ManyToMany);
+        manyToMany.ForeignKey.Should().Be("TagIds");
+        manyToMany.PropertyName.Should().NotBe(manyToMany.ForeignKey,
+            "the navigation property name must not collide with the foreign key, or a depth-resolved " +
+            "read overwrites the FK value with the hydrated related entity");
+        manyToMany.PropertyName.Should().Be("Tags");
+    }
+
+    private static EntityDescriptor BuildFkCollisionDescriptor(string foreignKey) =>
+        new()
+        {
+            EntityType = typeof(UnregisteredFkCollisionEntity),
+            EntityName = nameof(UnregisteredFkCollisionEntity),
+            KeyProperty = typeof(UnregisteredFkCollisionEntity).GetProperty(
+                nameof(UnregisteredFkCollisionEntity.Id))!,
+            Relations =
+            [
+                new RelationDescriptor
+                {
+                    Property = typeof(UnregisteredFkCollisionEntity).GetProperty(
+                        nameof(UnregisteredFkCollisionEntity.AuthorId))!,
+                    RelatedType = typeof(SchemaTestAuthor),
+                    Kind = RelationKind.ManyToOne,
+                    ForeignKey = foreignKey
+                }
+            ]
+        };
+
+    [Fact]
+    public void BuildTypeDescriptor_Throws_WhenExplicitForeignKeyCollidesWithDerivedName()
+    {
+        // "AuthorId" derives to "Author" by the strip rule; an explicit FK of "Author"
+        // collides with that derived name.
+        var ex = InvokeBuildTypeDescriptor(BuildFkCollisionDescriptor("Author"));
+
+        ex.Should().BeOfType<InvalidOperationException>();
+        ex!.Message.Should().Contain("UnregisteredFkCollisionEntity.AuthorId");
+        ex.Message.Should().Contain("Author");
+    }
+
+    [Fact]
+    public void BuildTypeDescriptor_Registers_WhenExplicitForeignKeyDoesNotCollide()
+    {
+        // An explicit FK of "AuthorRef" does not collide with the derived name "Author", so
+        // registration should succeed and keep the derived navigation property name.
+        var method = typeof(SchemaRegistrar).GetMethod(
+            "BuildTypeDescriptor", BindingFlags.NonPublic | BindingFlags.Static)!;
+
+        var typeDescriptor = (TypeDescriptor)method.Invoke(
+            null, [BuildFkCollisionDescriptor("AuthorRef")])!;
+
+        var relation = typeDescriptor.Relations.Single();
+        relation.PropertyName.Should().Be("Author");
+        relation.ForeignKey.Should().Be("AuthorRef");
     }
 
     [Fact]
@@ -598,73 +698,12 @@ public class SchemaRegistrarTests
         tagRequest!.RootType!.Authorization.Should().BeNull();
     }
 
-    [Fact]
-    public async Task RegisterAllAsync_SetsTenantField_FromMarkedProperty()
-    {
-        SchemaRequest? authorRequest = null;
-        _mappingClient
-            .RegisterSchemaAsync(
-                Arg.Do<SchemaRequest>(r =>
-                {
-                    if (r.RootType?.TypeName == "SchemaTestAuthor") authorRequest = r;
-                }),
-                Arg.Any<Metadata>(),
-                Arg.Any<DateTime?>(),
-                Arg.Any<CancellationToken>())
-            .Returns(new AsyncUnaryCall<SchemaResponse>(
-                Task.FromResult(new SchemaResponse { Success = true }),
-                Task.FromResult(new Metadata()),
-                () => Status.DefaultSuccess,
-                () => new Metadata(),
-                () => { }));
-
-        await _sut.RegisterAllAsync();
-
-        authorRequest.Should().NotBeNull();
-        authorRequest!.RootType!.TenantField.Should().Be("TenantId");
-    }
-
-    private sealed class ComposedTenantMarkerEntity
-    {
-        public Guid Id { get; set; }
-        [IversonTenant, IversonSearchKey(0)] public string TenantId { get; set; } = "";
-    }
-
-    [Fact]
-    public void BuildTypeDescriptor_TenantMarker_ComposesWithSearchKey()
-    {
-        var method = typeof(SchemaRegistrar).GetMethod(
-            "BuildTypeDescriptor", BindingFlags.NonPublic | BindingFlags.Static)!;
-
-        var typeDescriptor = (TypeDescriptor)method.Invoke(
-            null, [BuildDescriptor<ComposedTenantMarkerEntity>()])!;
-
-        typeDescriptor.TenantField.Should().Be("TenantId");
-        var tenant = typeDescriptor.Properties.Single(p => p.Name == "TenantId");
-        tenant.IsSearchKey.Should().BeTrue(
-            "[IversonTenant] must not suppress [IversonSearchKey]");
-        tenant.SearchKeyOrder.Should().Be(0);
-    }
-
-    private sealed class NoTenantMarkerEntity
-    {
-        public Guid Id { get; set; }
-        public string Name { get; set; } = "";
-    }
-
-    private sealed class DualTenantMarkerEntity
-    {
-        public Guid Id { get; set; }
-        [IversonTenant] public string TenantA { get; set; } = "";
-        [IversonTenant] public string TenantB { get; set; } = "";
-    }
-
     private static EntityDescriptor BuildDescriptor<T>() where T : class =>
         new()
         {
             EntityType  = typeof(T),
             EntityName  = typeof(T).Name,
-            KeyProperty = typeof(T).GetProperty(nameof(NoTenantMarkerEntity.Id))!,
+            KeyProperty = typeof(T).GetProperty(nameof(SchemaTestAuthor.Id))!,
             Relations   = []
         };
 
@@ -683,43 +722,21 @@ public class SchemaRegistrarTests
         }
     }
 
-    [Fact]
-    public void BuildTypeDescriptor_Throws_WhenNoPropertyIsMarkedTenant()
-    {
-        var ex = InvokeBuildTypeDescriptor(BuildDescriptor<NoTenantMarkerEntity>());
-
-        ex.Should().BeOfType<ArgumentException>();
-        ex!.Message.Should().Contain(nameof(NoTenantMarkerEntity));
-    }
-
-    [Fact]
-    public void BuildTypeDescriptor_Throws_WhenMultiplePropertiesAreMarkedTenant()
-    {
-        var ex = InvokeBuildTypeDescriptor(BuildDescriptor<DualTenantMarkerEntity>());
-
-        ex.Should().BeOfType<ArgumentException>();
-        ex!.Message.Should().Contain("TenantA");
-        ex.Message.Should().Contain("TenantB");
-    }
-
     // ── Key-field declarations the server silently discards ───────────────────
 
     private sealed class MetadataOnKeyEntity
     {
         [IversonMetadata] public Guid Id { get; set; }
-        [IversonTenant] public string TenantId { get; set; } = "";
     }
 
     private sealed class DescribedKeyEntity
     {
         [IversonDescription("Stable identifier.")] public Guid Id { get; set; }
-        [IversonTenant] public string TenantId { get; set; } = "";
     }
 
     private sealed class SummaryOnKeyEntity
     {
         [IversonSummary] public Guid Id { get; set; }
-        [IversonTenant] public string TenantId { get; set; } = "";
     }
 
     private sealed class MultiDeclarationKeyEntity
@@ -727,7 +744,6 @@ public class SchemaRegistrarTests
         [IversonSearchKey(0), IversonLargeField, IversonEmbedding, IversonChunk,
          IversonMetadata, IversonSummary, IversonKeywords, IversonExtracted("hint")]
         public Guid Id { get; set; }
-        [IversonTenant] public string TenantId { get; set; } = "";
     }
 
     [Fact]

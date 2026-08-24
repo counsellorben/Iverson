@@ -310,8 +310,12 @@ public class StarRocksPipelineBuilderTests
         var (sql, _, _) = StarRocksPipelineBuilder.Build(
             ArticleSchema(), Request(), EmptyRegistry());
 
+        // The base CTE projects its tracked column set explicitly rather than `SELECT *` — see
+        // Build's remarks: a `SELECT *` base is what would carry the server-owned tenant column
+        // into every downstream step and out through the final projection.
         NormalizeWs(sql).Should().Be(
-            "WITH `base` AS (SELECT * FROM `articles`) SELECT * FROM `base` LIMIT 10000");
+            "WITH `base` AS (SELECT `Id`, `Title`, `Category`, `WordCount`, `IsPublished`, " +
+            "`PublishedAt`, `AuthorId` FROM `articles`) SELECT * FROM `base` LIMIT 10000");
     }
 
     [Fact]
@@ -1249,5 +1253,287 @@ public class StarRocksPipelineBuilderTests
             ArticleSchema(), Request(), EmptyRegistry());
 
         lastCols.Keys.Should().Contain(["Id", "Title", "Category", "WordCount", "IsPublished", "PublishedAt", "AuthorId"]);
+    }
+
+    // ── Server-owned tenant column: never in the CTE chain ────────────────────
+    //
+    // Pipeline is the wire path the plan's chokepoint table misses: the base CTE is
+    // `SELECT * FROM <physical table>` and the final projection is `SELECT * FROM <last step>`,
+    // neither of which goes through StarRocksQueryBuilder.BuildSelectColumns. With __TenantId a
+    // physical column, a zero-step Pipeline would otherwise return it verbatim on every row.
+
+    private const string TenantCol = "__TenantId";
+
+    private static EngagementQuerySchema TenantArticleSchema() => new(
+        "Article", "articles", "Id",
+        ["Title", "Category", "WordCount", "IsPublished", "PublishedAt", "AuthorId", TenantCol],
+        TenantCol);
+
+    /// <summary>
+    /// The base CTE's SELECT list: everything between <c>AS (SELECT </c> and the following
+    /// <c> FROM </c>. Isolating it matters because the server's own tenant PREDICATE legitimately
+    /// names the column later in the same CTE — a whole-SQL "does not contain" assertion would be
+    /// satisfiable by breaking the tenant boundary instead of by excluding the projection.
+    /// </summary>
+    private static string BaseProjection(string sql)
+    {
+        var start = sql.IndexOf("AS (SELECT ", StringComparison.Ordinal) + "AS (SELECT ".Length;
+        var end   = sql.IndexOf(" FROM ", start, StringComparison.Ordinal);
+        return sql[start..end];
+    }
+
+    private static Dictionary<string, AuthorizationConstraint> TenantAuthz() =>
+        new(StringComparer.OrdinalIgnoreCase)
+        {
+            ["Article"] = new AuthorizationConstraint(null, null, null, TenantCol, "tenant-a")
+        };
+
+    [Fact]
+    public void Build_EmptyPipeline_DoesNotProjectTheTenantColumn()
+    {
+        var (sql, _, _) = StarRocksPipelineBuilder.Build(
+            TenantArticleSchema(), Request(), EmptyRegistry(), TenantAuthz());
+
+        BaseProjection(sql).Should().NotContain(TenantCol);
+        BaseProjection(sql).Should().Contain("`Title`");
+    }
+
+    [Fact]
+    public void Build_EmptyPipeline_StillFiltersOnTheTenantColumn()
+    {
+        var (sql, param, _) = StarRocksPipelineBuilder.Build(
+            TenantArticleSchema(), Request(), EmptyRegistry(), TenantAuthz());
+
+        sql.Should().Contain($"WHERE `{TenantCol}` = @__tenantVal");
+        param.Get<string>("__tenantVal").Should().Be("tenant-a");
+    }
+
+    [Fact]
+    public void Build_LastColsExcludesTheTenantColumn()
+    {
+        var (_, _, lastCols) = StarRocksPipelineBuilder.Build(
+            TenantArticleSchema(), Request(), EmptyRegistry(), TenantAuthz());
+
+        lastCols.Keys.Should().NotContain(TenantCol);
+    }
+
+    [Fact]
+    public void Build_StepSelectingTheTenantColumn_IsRejected()
+    {
+        var step = new PipelineStep { Name = "picked" };
+        step.Select.Add(new SelectItem { Column = TenantCol });
+
+        var act = () => StarRocksPipelineBuilder.Build(
+            TenantArticleSchema(), Request(step), EmptyRegistry(), TenantAuthz());
+
+        act.Should().Throw<EngagementQueryTranslationException>();
+    }
+
+    [Fact]
+    public void Build_StepGroupingByTheTenantColumn_IsRejected()
+    {
+        var step = new PipelineStep { Name = "agg" };
+        step.GroupBy.Add(new GroupKey { Field = TenantCol });
+        step.Metrics.Add(new MetricSpec { Name = "n", Type = AggregationType.Count });
+
+        var act = () => StarRocksPipelineBuilder.Build(
+            TenantArticleSchema(), Request(step), EmptyRegistry(), TenantAuthz());
+
+        act.Should().Throw<EngagementQueryTranslationException>();
+    }
+
+    [Fact]
+    public void Build_BaseWhereOnTheTenantColumn_IsRejected()
+    {
+        var request = Request();
+        request.BaseWhere.Add(new SearchClause
+        {
+            Property = TenantCol, Operator = SearchOperator.Equals,
+            Value = new SearchValue { StringVal = "tenant-b" }, ClauseType = SearchClauseType.Filter
+        });
+
+        var act = () => StarRocksPipelineBuilder.Build(
+            TenantArticleSchema(), request, EmptyRegistry(), TenantAuthz());
+
+        act.Should().Throw<EngagementQueryTranslationException>();
+    }
+
+    [Fact]
+    public void Build_MultiStepPipeline_NeverCarriesTheTenantColumnDownstream()
+    {
+        // A `SELECT *` step inherits its input CTE's columns, so excluding the column at the base
+        // is what keeps it out of every downstream step too.
+        var step = new PipelineStep { Name = "filtered" };
+        step.Where.Add(new SearchClause
+        {
+            Property = "IsPublished", Operator = SearchOperator.Equals,
+            Value = new SearchValue { BoolVal = true }, ClauseType = SearchClauseType.Filter
+        });
+
+        var (sql, _, lastCols) = StarRocksPipelineBuilder.Build(
+            TenantArticleSchema(), Request(step), EmptyRegistry(), TenantAuthz());
+
+        BaseProjection(sql).Should().NotContain(TenantCol);
+        // Everything after the base CTE's WHERE clause — the whole downstream chain and the final
+        // projection — must be free of the column too. Only the base CTE's tenant predicate may
+        // name it, and that lives inside the base CTE.
+        sql[(sql.IndexOf("), `", StringComparison.Ordinal) + 1)..].Should().NotContain(TenantCol);
+        lastCols.Keys.Should().NotContain(TenantCol);
+    }
+
+    // ── Joined-type wildcard: `Type`.* is a raw wildcard over a PHYSICAL table ─
+    //
+    // Base-CTE and step-to-step wildcards expand a CTE, so excluding the tenant column from
+    // ColumnsFor keeps it out of them. A join against a FRESH REGISTERED TYPE is different:
+    // EmitStep joins that type's physical table, so `Type`.* expands to the table's real columns
+    // — __TenantId included — no matter what ColumnsFor says, because ColumnsFor shapes the
+    // TRACKED name set, not the emitted SQL. SelectItem.all is a wire field
+    // (object_search.proto:296), so this is caller-reachable, and ObjectSearchGrpcService.Pipeline
+    // streams rows verbatim with no masking, so there is no second line of defence downstream.
+
+    private static EngagementQuerySchema TenantAuthorSchema() => new(
+        "Author", "authors", "Id", ["Name", TenantCol], TenantCol);
+
+    private static Func<string, EngagementQuerySchema?> RegistryWithTenantAuthor() =>
+        BuildRegistry(TenantAuthorSchema());
+
+    private static Dictionary<string, AuthorizationConstraint> TenantAuthzWithAuthor() =>
+        new(StringComparer.OrdinalIgnoreCase)
+        {
+            ["Article"] = new AuthorizationConstraint(null, null, null, TenantCol, "tenant-a"),
+            // AllowedFields deliberately NULL — the ordinary case for a schema with no
+            // FieldPermissions, and the exact case the isFreshRestrictedType guard does NOT cover.
+            ["Author"]  = new AuthorizationConstraint(null, null, null, TenantCol, "tenant-a")
+        };
+
+    private static PipelineStep JoinedTypeWildcardStep()
+    {
+        var step = new PipelineStep { Name = "named" };
+        var join = new PipelineJoin { Source = "Author", Kind = JoinKind.Inner };
+        join.On.Add(new JoinCondition { Left = "AuthorId", Right = "Id" });
+        step.Joins.Add(join);
+        step.Select.Add(new SelectItem { Column = "Title" });
+        step.Select.Add(new SelectItem { Source = "Author", All = true });
+        return step;
+    }
+
+    [Fact]
+    public void Build_JoinedTypeWildcard_DoesNotEmitARawStarOverThePhysicalTable()
+    {
+        var (sql, _, _) = StarRocksPipelineBuilder.Build(
+            TenantArticleSchema(), Request(JoinedTypeWildcardStep()),
+            RegistryWithTenantAuthor(), TenantAuthzWithAuthor());
+
+        sql.Should().NotContain("`Author`.*");
+        sql.Should().Contain("`Author`.`Name`");
+    }
+
+    [Fact]
+    public void Build_JoinedTypeWildcard_WithNullAllowedFields_ExpandsToExactlyTheNonTenantColumns()
+    {
+        // A textual "select list does not contain __TenantId" assertion is VACUOUS here: the bug
+        // emits `Author`.*, which never spells the column out yet expands to it at execution.
+        // The assertion has to pin the expansion itself — the joined type contributes exactly its
+        // key plus its non-tenant scalars, and nothing wildcard-shaped.
+        var (sql, _, _) = StarRocksPipelineBuilder.Build(
+            TenantArticleSchema(), Request(JoinedTypeWildcardStep()),
+            RegistryWithTenantAuthor(), TenantAuthzWithAuthor());
+
+        var stepSelect = SelectLists(sql).Single(l => l.Contains("`Author`"));
+        stepSelect.Should().Contain("`Author`.`Id`");
+        stepSelect.Should().Contain("`Author`.`Name`");
+        stepSelect.Should().NotContain("`Author`.*");
+        stepSelect.Should().NotContain(TenantCol);
+    }
+
+    [Fact]
+    public void Build_JoinedTypeWildcard_StillEmitsTheJoinedTenantPredicate()
+    {
+        // The exclusion must not be achievable by dropping the joined type's tenant boundary.
+        var (sql, param) = (default(string), default(Dapper.DynamicParameters));
+        (sql, param, _) = StarRocksPipelineBuilder.Build(
+            TenantArticleSchema(), Request(JoinedTypeWildcardStep()),
+            RegistryWithTenantAuthor(), TenantAuthzWithAuthor());
+
+        sql.Should().Contain($"`Author`.`{TenantCol}` = @s1_j0_tenant");
+        param!.Get<string>("s1_j0_tenant").Should().Be("tenant-a");
+    }
+
+    [Fact]
+    public void Build_JoinedTypeWildcard_LastColsMatchesTheEmittedProjection()
+    {
+        // The whole invariant: what a step is TRACKED as exposing and what its SQL actually
+        // selects must be the same set. A `Type`.* that outruns lastCols is exactly the bug.
+        var (sql, _, lastCols) = StarRocksPipelineBuilder.Build(
+            TenantArticleSchema(), Request(JoinedTypeWildcardStep()),
+            RegistryWithTenantAuthor(), TenantAuthzWithAuthor());
+
+        lastCols.Keys.Should().NotContain(TenantCol);
+        lastCols.Keys.Should().Contain(["Title", "Id", "Name"]);
+        sql.Should().NotContain(".*");
+    }
+
+    // ── A LEGACY schema: boundary on a CLIENT-DECLARED column, no server-owned one ────────────
+    //
+    // RULING 70, the fourth exclusion site. ColumnsFor at StarRocksPipelineBuilder.cs:53 is the
+    // pipeline's whole notion of "columns a step may reference or emit", and it is keyed on
+    // EngagementQuerySchema.IsTenantColumn. SchemaBuilder.ToEngagementQuerySchema passes null for a
+    // pre-cutover schema whose TenantColumn is a client-declared name, so that client's column must
+    // stay in the tracked set and in the base projection — while the tenant predicate, spliced from
+    // AuthorizationConstraint.TenantColumn, still fires against it.
+
+    private const string LegacyTenantCol = "TenantId";
+
+    private static EngagementQuerySchema LegacyArticleSchema() => new(
+        "Article", "articles", "Id",
+        ["Title", "Category", "WordCount", "IsPublished", "PublishedAt", "AuthorId", LegacyTenantCol],
+        TenantColumnName: null);
+
+    private static Dictionary<string, AuthorizationConstraint> LegacyAuthz() =>
+        new(StringComparer.OrdinalIgnoreCase)
+        {
+            ["Article"] = new AuthorizationConstraint(null, null, null, LegacyTenantCol, "tenant-a")
+        };
+
+    [Fact]
+    public void Build_LegacySchema_ProjectsTheClientDeclaredTenantColumn_AndStillFiltersOnIt()
+    {
+        var (sql, _, _) = StarRocksPipelineBuilder.Build(
+            LegacyArticleSchema(), Request(), EmptyRegistry(), LegacyAuthz());
+
+        BaseProjection(sql).Should().Contain($"`{LegacyTenantCol}`",
+            "the client declared this column; the exclusion is keyed on the RESERVED name, which "
+            + "this schema does not carry");
+        sql.Should().Contain($"WHERE `{LegacyTenantCol}` = @__tenantVal");
+    }
+
+    [Fact]
+    public void TrackAndValidate_LegacySchema_TracksTheClientDeclaredTenantColumn()
+    {
+        var steps = StarRocksPipelineBuilder.TrackAndValidate(
+            LegacyArticleSchema(), Request(), EmptyRegistry(), LegacyAuthz());
+
+        steps[0].Columns.Keys.Should().Contain(LegacyTenantCol,
+            "dropping it from the tracked set makes the client's own column unreferenceable in "
+            + "every step's select/where/derive/group-by/join");
+    }
+
+    /// <summary>
+    /// Every SELECT list in the generated SQL — the text between each <c>SELECT </c> and the
+    /// <c> FROM </c> that follows it. The joined type's tenant column legitimately appears in the
+    /// JOIN's ON clause, so a whole-SQL "does not contain" assertion could be satisfied by
+    /// breaking the tenant boundary instead of by fixing the projection.
+    /// </summary>
+    private static IEnumerable<string> SelectLists(string sql)
+    {
+        var i = 0;
+        while ((i = sql.IndexOf("SELECT ", i, StringComparison.Ordinal)) >= 0)
+        {
+            i += "SELECT ".Length;
+            var end = sql.IndexOf(" FROM ", i, StringComparison.Ordinal);
+            if (end < 0) yield break;
+            yield return sql[i..end];
+            i = end;
+        }
     }
 }

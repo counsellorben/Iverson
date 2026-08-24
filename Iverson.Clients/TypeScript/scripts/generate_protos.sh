@@ -12,7 +12,7 @@ mkdir -p generated
 ~/sdk/protoc/bin/protoc \
   --plugin=./node_modules/.bin/protoc-gen-ts_proto \
   --ts_proto_out=generated \
-  --ts_proto_opt=outputServices=grpc-js,esModuleInterop=true \
+  --ts_proto_opt=outputServices=grpc-js,esModuleInterop=true,importSuffix=.js \
   -I"$PROTO_DIR" \
   "$PROTO_DIR"/*.proto
 

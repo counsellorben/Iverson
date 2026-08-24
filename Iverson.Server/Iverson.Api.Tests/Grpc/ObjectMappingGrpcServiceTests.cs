@@ -94,14 +94,15 @@ public class ObjectMappingGrpcServiceTests
             NullLogger<OutboxPublisher>.Instance);
         _relationResolver = new EntityRelationResolver(_registry, _entities, _authEvaluator);
         _schemaRegistration = new SchemaRegistrationOrchestrator(
-            _schemaManager, _embedding, _registry);
+            _schemaManager, _embedding, _registry, Substitute.For<IDocumentRerenderQueueRepository>(),
+            NullLogger<SchemaRegistrationOrchestrator>.Instance);
         _auditLog = new AuditLog(_auditLogger);
         _sut = new ObjectMappingGrpcService(
             _entities,
             _txRunner,
             _outboxPublisher,
             _registry,
-            new RelationValidator(_registry),
+            new RelationValidator(),
             new EntityKeyAccessor(),
             new OutboxWriter(ReconciliationSchema.TableName, _sql, _txRunner),
             NullLogger<ObjectMappingGrpcService>.Instance,
@@ -207,7 +208,7 @@ public class ObjectMappingGrpcServiceTests
             _txRunner,
             _outboxPublisher,
             _registry,
-            new RelationValidator(_registry),
+            new RelationValidator(),
             new EntityKeyAccessor(),
             new OutboxWriter(ReconciliationSchema.TableName, _sql, _txRunner),
             NullLogger<ObjectMappingGrpcService>.Instance,
@@ -234,7 +235,7 @@ public class ObjectMappingGrpcServiceTests
             .Returns(new List<string> { "Widget" });
         var sut = new ObjectMappingGrpcService(
             _entities, _txRunner, _outboxPublisher, _registry,
-            new RelationValidator(_registry), new EntityKeyAccessor(),
+            new RelationValidator(), new EntityKeyAccessor(),
             new OutboxWriter(ReconciliationSchema.TableName, _sql, _txRunner),
             NullLogger<ObjectMappingGrpcService>.Instance,
             _actingUserAccessor, _authEvaluator, _relationResolver, mockOrchestrator, _auditLog);
@@ -458,6 +459,29 @@ public class ObjectMappingGrpcServiceTests
     }
 
     [Fact]
+    public async Task GetSchema_OmitsTheServerOwnedTenantColumn_FromTheClientFacingCatalog()
+    {
+        // Task 1: __TenantId is a real ScalarColumns member on every registered schema, but the
+        // GetSchema catalog is client-facing and the column is never addressable by a client —
+        // publishing it would put the server-owned name back on the wire.
+        var schema = SchemaFixtures.AuthorSchema() with
+        {
+            ScalarColumns =
+            [
+                new ColumnDescriptor("Name", "text", false),
+                new ColumnDescriptor(SchemaDescriptor.TenantColumnName, "TEXT", false)
+            ],
+            TenantColumn = SchemaDescriptor.TenantColumnName
+        };
+        await _registry.RegisterAsync(schema);
+
+        var response = await _sut.GetSchema(new GetSchemaRequest(), MakeContext());
+
+        var author = response.Types_.Single(t => t.Name == "Author");
+        author.Fields.Select(f => f.Name).Should().BeEquivalentTo(new[] { "Id", "Name" });
+    }
+
+    [Fact]
     public async Task GetSchema_WhenEveryFieldIsFilteredOut_OmitsTheTypeEntirely()
     {
         // Spec §4 server test 4. The production RowFieldAuthorizationEvaluator unconditionally
@@ -472,7 +496,7 @@ public class ObjectMappingGrpcServiceTests
 
         var sut = new ObjectMappingGrpcService(
             _entities, _txRunner, _outboxPublisher, _registry,
-            new RelationValidator(_registry), new EntityKeyAccessor(),
+            new RelationValidator(), new EntityKeyAccessor(),
             new OutboxWriter(ReconciliationSchema.TableName, _sql, _txRunner),
             NullLogger<ObjectMappingGrpcService>.Instance,
             _actingUserAccessor, evaluator, _relationResolver, _schemaRegistration, _auditLog);
@@ -590,26 +614,22 @@ public class ObjectMappingGrpcServiceTests
     }
 
     [Fact]
-    public async Task Post_WithExistingKey_PreservesClientKey()
+    public async Task Post_WithClientProvidedKey_ThrowsInvalidArgument()
     {
         await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
-        _sql.QuerySingleOrDefaultAsync<string>(Arg.Any<string>(), Arg.Any<object?>())
-            .Returns(AuthorJson);
-
-        EntityEvent? evt = null;
-        _events.When(e => e.ProduceAsync(EntityTopics.Events, Arg.Any<string>(), Arg.Any<EntityEvent>()))
-               .Do(call => evt = call.ArgAt<EntityEvent>(2));
 
         var payload = MakePayload(new()
         {
             ["Id"]   = Value.ForString(AuthorId),
             ["Name"] = Value.ForString("Alice")
         });
-        await _sut.Post(
+        var act = () => _sut.Post(
             new MappingWriteRequest { TypeName = "Author", Payload = payload },
             TestServerCallContext.Create());
 
-        evt!.Key.Should().Be(AuthorId);
+        var ex = await act.Should().ThrowAsync<RpcException>();
+        ex.Which.StatusCode.Should().Be(StatusCode.InvalidArgument);
+        ex.Which.Status.Detail.Should().Contain("server-generated");
     }
 
     [Fact]
@@ -620,7 +640,6 @@ public class ObjectMappingGrpcServiceTests
 
         var payload = MakePayload(new()
         {
-            ["Id"]   = Value.ForString(AuthorId),
             ["Name"] = Value.ForString("Alice")
         });
         await _sut.Post(
@@ -641,7 +660,6 @@ public class ObjectMappingGrpcServiceTests
 
         var payload = MakePayload(new()
         {
-            ["Id"]       = Value.ForString(ArticleId),
             ["Title"]    = Value.ForString("Test"),
             ["AuthorId"] = Value.ForString(AuthorId)
         });
@@ -678,7 +696,6 @@ public class ObjectMappingGrpcServiceTests
 
         var payload = MakePayload(new()
         {
-            ["Id"]   = Value.ForString(AuthorId),
             ["Name"] = Value.ForString("Alice")
         });
         await _sut.Post(
@@ -687,8 +704,31 @@ public class ObjectMappingGrpcServiceTests
 
         evt.Should().NotBeNull();
         evt!.TypeName.Should().Be("Author");
-        evt.Key.Should().Be(AuthorId);
+        Guid.TryParse(evt.Key, out _).Should().BeTrue();
         evt.EventType.Should().Be(EntityEventType.Created);
+    }
+
+    [Fact]
+    public async Task Post_EmitsCreatedEvent_WithNullPriorPayloadJson()
+    {
+        await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
+        _sql.QuerySingleOrDefaultAsync<string>(Arg.Any<string>(), Arg.Any<object?>())
+            .Returns(AuthorJson);
+
+        EntityEvent? evt = null;
+        _events.When(e => e.ProduceAsync(EntityTopics.Events, Arg.Any<string>(), Arg.Any<EntityEvent>()))
+               .Do(call => evt = call.ArgAt<EntityEvent>(2));
+
+        var payload = MakePayload(new()
+        {
+            ["Name"] = Value.ForString("Alice")
+        });
+        await _sut.Post(
+            new MappingWriteRequest { TypeName = "Author", Payload = payload },
+            TestServerCallContext.Create());
+
+        evt.Should().NotBeNull();
+        evt!.PriorPayloadJson.Should().BeNull();
     }
 
     [Fact]
@@ -708,8 +748,7 @@ public class ObjectMappingGrpcServiceTests
     {
         var schema = MakeSchema("Player");
         await _registry.RegisterAsync(schema);
-        var sentKey = Guid.NewGuid().ToString();
-        var payload = MakePayload(schema.KeyColumn.Name, sentKey);
+        var payload = MakePayload(new Dictionary<string, Value>());
         var request = new MappingWriteRequest { TypeName = "Player", Payload = payload, TraceId = "t1" };
 
         var response = await _sut.Post(request, MakeContext());
@@ -731,7 +770,6 @@ public class ObjectMappingGrpcServiceTests
 
         var payload = MakePayload(new()
         {
-            ["Id"]       = Value.ForString(ArticleId),
             ["Title"]    = Value.ForString("Hello"),
             ["AuthorId"] = Value.ForString("not-a-guid")
         });
@@ -775,6 +813,25 @@ public class ObjectMappingGrpcServiceTests
         ex.Which.StatusCode.Should().Be(StatusCode.PermissionDenied);
     }
 
+    [Fact]
+    public async Task Post_WithSuppliedKey_AndUnauthorizedCaller_ThrowsPermissionDenied_NotInvalidArgument()
+    {
+        var schema = SchemaFixtures.AuthorSchema() with { Authorization = null };
+        await _registry.RegisterAsync(schema);
+        var payload = MakePayload(new()
+        {
+            ["Id"]   = Value.ForString(Guid.NewGuid().ToString()),
+            ["Name"] = Value.ForString("Alice")
+        });
+
+        var act = () => _sut.Post(
+            new MappingWriteRequest { TypeName = "Author", Payload = payload },
+            TestServerCallContext.Create());
+
+        var ex = await act.Should().ThrowAsync<RpcException>();
+        ex.Which.StatusCode.Should().Be(StatusCode.PermissionDenied);
+    }
+
     [Theory]
     [InlineData(null)]
     [InlineData("someone-else")]
@@ -784,7 +841,6 @@ public class ObjectMappingGrpcServiceTests
 
         var fields = new Dictionary<string, Value>
         {
-            ["Id"]   = Value.ForString(AuthorId),
             ["Name"] = Value.ForString("Alice")
         };
         if (clientSuppliedOwnerId is not null)
@@ -808,7 +864,6 @@ public class ObjectMappingGrpcServiceTests
 
         var fields = new Dictionary<string, Value>
         {
-            ["Id"]   = Value.ForString(AuthorId),
             ["Name"] = Value.ForString("Alice")
         };
         if (clientSuppliedOwnerId is not null)
@@ -833,7 +888,6 @@ public class ObjectMappingGrpcServiceTests
 
         var payload = MakePayload(new()
         {
-            ["Id"]   = Value.ForString(AuthorId),
             ["Name"] = Value.ForString("Alice")
         });
 
@@ -855,7 +909,6 @@ public class ObjectMappingGrpcServiceTests
 
         var payload = MakePayload(new()
         {
-            ["Id"]   = Value.ForString(AuthorId),
             ["Name"] = Value.ForString("Alice")
         });
 
@@ -884,7 +937,6 @@ public class ObjectMappingGrpcServiceTests
 
         var payload = MakePayload(new()
         {
-            ["Id"]   = Value.ForString(AuthorId),
             ["Name"] = Value.ForString("Alice"),
             ["Bio"]  = Value.ForString("Writer")
         });
@@ -913,7 +965,6 @@ public class ObjectMappingGrpcServiceTests
 
         var payload = MakePayload(new()
         {
-            ["Id"]   = Value.ForString(AuthorId),
             ["Name"] = Value.ForString("Alice")
         });
 
@@ -991,7 +1042,7 @@ public class ObjectMappingGrpcServiceTests
             _txRunner,
             _outboxPublisher,
             _registry,
-            new RelationValidator(_registry),
+            new RelationValidator(),
             new EntityKeyAccessor(),
             new OutboxWriter(ReconciliationSchema.TableName, _sql, _txRunner),
             NullLogger<ObjectMappingGrpcService>.Instance,
@@ -1024,7 +1075,7 @@ public class ObjectMappingGrpcServiceTests
             _txRunner,
             _outboxPublisher,
             _registry,
-            new RelationValidator(_registry),
+            new RelationValidator(),
             new EntityKeyAccessor(),
             new OutboxWriter(ReconciliationSchema.TableName, _sql, _txRunner),
             NullLogger<ObjectMappingGrpcService>.Instance,
@@ -1482,6 +1533,39 @@ public class ObjectMappingGrpcServiceTests
         response.Success.Should().BeTrue();
         evt!.Key.Should().Be(AuthorId);
         evt.EventType.Should().Be(EntityEventType.Updated);
+    }
+
+    [Fact]
+    public async Task Update_WithPriorRow_EmitsEventCarryingPriorPayloadJson()
+    {
+        await _registry.RegisterAsync(SchemaFixtures.AuthorSchema());
+        _entities
+            .FetchByKeyAsync(
+                Arg.Any<TableSchema>(),
+                Arg.Any<string>(),
+                Arg.Any<bool>(),
+                Arg.Any<string?>())
+            .Returns(AuthorJson);
+
+        EntityEvent? evt = null;
+        _events
+            .When(e => e.ProduceAsync(
+                EntityTopics.Events,
+                Arg.Any<string>(),
+                Arg.Any<EntityEvent>()))
+            .Do(call => evt = call.ArgAt<EntityEvent>(2));
+
+        var payload = MakePayload(new()
+        {
+            ["Id"]   = Value.ForString(AuthorId),
+            ["Name"] = Value.ForString("Alice Updated")
+        });
+        await _sut.Update(
+            new MappingWriteRequest { TypeName = "Author", Payload = payload },
+            TestServerCallContext.Create());
+
+        evt.Should().NotBeNull();
+        evt!.PriorPayloadJson.Should().Be(AuthorJson);
     }
 
     [Fact]
@@ -2470,5 +2554,165 @@ public class ObjectMappingGrpcServiceTests
             TestServerCallContext.Create());
 
         AssertAuditLogged("TenantMismatch");
+    }
+
+    // ── Server-owned tenant column: off the wire, but still in the projection ──
+    //
+    // EnforceWriteAuthorization mutates the caller's Struct IN PLACE (SetAuthoritativeField ->
+    // StructFieldAccess.SetField), and Post/Update return that same object as MappingResponse.Data
+    // — so without an explicit strip, every write hands the server-owned column straight back.
+    //
+    // The strip is placed AFTER StructSerializer.SerializePayload deliberately. The serialized
+    // payloadJson is what OutboxPublisher puts on Kafka, and it is the ONLY source of the tenant
+    // value for EngagementRepository.UpsertAsync (StarRocks) and
+    // IntelligenceStoreConsumer.BuildObjectPointPayload (Qdrant). Stripping before serialization —
+    // which the task brief's wording suggested — would empty the tenant column in the StarRocks
+    // projection and make every subsequent StarRocks read for that tenant return zero rows. The
+    // *_PublishedPayloadStillCarries_* tests below are the guard against that.
+
+    private static SchemaDescriptor TenantMappingSchema() => new()
+    {
+        TypeName      = "Widget",
+        TableName     = "widgets",
+        KeyColumn     = new ColumnDescriptor("Id", "uuid", false),
+        ScalarColumns =
+        [
+            new ColumnDescriptor("Name", "text", true),
+            new ColumnDescriptor(SchemaDescriptor.TenantColumnName, "TEXT", false)
+        ],
+        FkColumns     = [],
+        VectorFields  = [],
+        ChunkFields   = [],
+        Relations     = [],
+        TenantColumn  = SchemaDescriptor.TenantColumnName,
+        Authorization = new Iverson.Api.Schema.AuthorizationRules(
+            null,
+            new List<Iverson.Api.Schema.RowPermission> { new("test-bypass", true, true, true) },
+            new List<Iverson.Api.Schema.FieldPermission>())
+    };
+
+    /// <summary>Captures the EntityEvent handed to Kafka — i.e. what the projections will see.</summary>
+    private List<EntityEvent> CaptureEvents()
+    {
+        var captured = new List<EntityEvent>();
+        _events
+            .When(e => e.ProduceAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<EntityEvent>()))
+            .Do(call => captured.Add(call.ArgAt<EntityEvent>(2)));
+        return captured;
+    }
+
+    [Fact]
+    public async Task Post_ResponseDataOmitsTheServerOwnedTenantColumn()
+    {
+        await _registry.RegisterAsync(TenantMappingSchema());
+
+        var response = await _sut.Post(
+            new MappingWriteRequest
+            {
+                TypeName = "Widget",
+                Payload  = MakePayload(new Dictionary<string, Value> { ["Name"] = Value.ForString("w") })
+            },
+            MakeContext());
+
+        response.Success.Should().BeTrue();
+        response.Data.Fields.Should().NotContainKey(SchemaDescriptor.TenantColumnName);
+        response.Data.Fields.Should().ContainKey("Name");
+    }
+
+    [Fact]
+    public async Task Post_PublishedPayloadStillCarriesTheTenantColumn()
+    {
+        await _registry.RegisterAsync(TenantMappingSchema());
+        var events = CaptureEvents();
+
+        await _sut.Post(
+            new MappingWriteRequest
+            {
+                TypeName = "Widget",
+                Payload  = MakePayload(new Dictionary<string, Value> { ["Name"] = Value.ForString("w") })
+            },
+            MakeContext());
+
+        events.Should().HaveCount(1);
+        events[0].PayloadJson.Should()
+            .Contain($"\"{SchemaDescriptor.TenantColumnName}\":\"test-tenant\"");
+    }
+
+    [Fact]
+    public async Task Update_ResponseDataOmitsTheServerOwnedTenantColumn()
+    {
+        var schema = TenantMappingSchema();
+        await _registry.RegisterAsync(schema);
+        var key = Guid.CreateVersion7().ToString();
+        _entities
+            .FetchByKeyAsync(Arg.Any<TableSchema>(), key, Arg.Any<bool>(), Arg.Any<string?>())
+            .Returns($$"""{"Id":"{{key}}","Name":"old","{{SchemaDescriptor.TenantColumnName}}":"test-tenant"}""");
+
+        var response = await _sut.Update(
+            new MappingWriteRequest
+            {
+                TypeName = "Widget",
+                Payload  = MakePayload(new Dictionary<string, Value>
+                {
+                    ["Id"]   = Value.ForString(key),
+                    ["Name"] = Value.ForString("new")
+                })
+            },
+            MakeContext());
+
+        response.Success.Should().BeTrue();
+        response.Data.Fields.Should().NotContainKey(SchemaDescriptor.TenantColumnName);
+        response.Data.Fields["Name"].StringValue.Should().Be("new");
+    }
+
+    [Fact]
+    public async Task Update_PublishedPayloadStillCarriesTheTenantColumn()
+    {
+        // The update path is the sharper case: the pre-existing-row branch of
+        // EnforceWriteAuthorization only VALIDATES the tenant column, so a client payload (which
+        // can never carry the server-owned column) would reach StarRocks with no tenant value at
+        // all — and StarRocks' Primary Key model treats a partial INSERT as a full-row replace.
+        var schema = TenantMappingSchema();
+        await _registry.RegisterAsync(schema);
+        var key = Guid.CreateVersion7().ToString();
+        _entities
+            .FetchByKeyAsync(Arg.Any<TableSchema>(), key, Arg.Any<bool>(), Arg.Any<string?>())
+            .Returns($$"""{"Id":"{{key}}","Name":"old","{{SchemaDescriptor.TenantColumnName}}":"test-tenant"}""");
+        var events = CaptureEvents();
+
+        await _sut.Update(
+            new MappingWriteRequest
+            {
+                TypeName = "Widget",
+                Payload  = MakePayload(new Dictionary<string, Value>
+                {
+                    ["Id"]   = Value.ForString(key),
+                    ["Name"] = Value.ForString("new")
+                })
+            },
+            MakeContext());
+
+        events.Should().HaveCount(1);
+        events[0].PayloadJson.Should()
+            .Contain($"\"{SchemaDescriptor.TenantColumnName}\":\"test-tenant\"");
+    }
+
+    [Fact]
+    public async Task Get_OmitsTheServerOwnedTenantColumnFromTheResponse()
+    {
+        var schema = TenantMappingSchema();
+        await _registry.RegisterAsync(schema);
+        var key = Guid.CreateVersion7().ToString();
+        _entities
+            .FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>(), Arg.Any<bool>(), Arg.Any<string?>())
+            .Returns($$"""{"Id":"{{key}}","Name":"w","{{SchemaDescriptor.TenantColumnName}}":"test-tenant"}""");
+
+        var response = await _sut.Get(
+            new MappingGetRequest { TypeName = "Widget", Key = key },
+            MakeContext());
+
+        response.Success.Should().BeTrue();
+        response.Data.Fields.Should().NotContainKey(SchemaDescriptor.TenantColumnName);
+        response.Data.Fields["Name"].StringValue.Should().Be("w");
     }
 }

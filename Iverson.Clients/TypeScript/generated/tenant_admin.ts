@@ -18,7 +18,7 @@ import {
   type ServiceError,
   type UntypedServiceImplementation,
 } from "@grpc/grpc-js";
-import { Empty } from "./google/protobuf/empty";
+import { Empty } from "./google/protobuf/empty.js";
 
 export const protobufPackage = "iverson";
 

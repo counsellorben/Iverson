@@ -26,8 +26,12 @@ type RetrievalClient interface {
 	GetMany(ctx context.Context, req *pb.RetrievalManyRequest) (RetrievalStream, error)
 }
 
-// MappingDeleteClient is the interface for delete operations via ObjectMappingService.
-type MappingDeleteClient interface {
+// MappingCrudClient is the interface for the ObjectMappingService operations the coordinator
+// uses: full CRUD with server-side relation resolution, plus Delete.
+type MappingCrudClient interface {
+	Get(ctx context.Context, req *pb.MappingGetRequest) (*pb.MappingResponse, error)
+	Post(ctx context.Context, req *pb.MappingWriteRequest) (*pb.MappingResponse, error)
+	Update(ctx context.Context, req *pb.MappingWriteRequest) (*pb.MappingResponse, error)
 	Delete(ctx context.Context, req *pb.MappingDeleteRequest) (*pb.MappingDeleteResponse, error)
 }
 
@@ -116,7 +120,7 @@ func (c *IversonClient) GetSchema(ctx context.Context, traceID string) ([]*pb.Sc
 type coordinatorDeps struct {
 	persistence PersistenceClient
 	retrieval   RetrievalClient
-	mapping     MappingDeleteClient
+	mapping     MappingCrudClient
 	search      SearchClient
 }
 
@@ -147,7 +151,7 @@ func NewEntityCoordinator[T any](client *IversonClient, entity T) (*EntityCoordi
 		deps: coordinatorDeps{
 			persistence: &persistenceAdapter{client.PersistenceStub},
 			retrieval:   &retrievalAdapter{client.RetrievalStub},
-			mapping:     &mappingDeleteAdapter{client.MappingStub},
+			mapping:     &mappingAdapter{client.MappingStub},
 			search:      &searchAdapter{client.SearchStub},
 		},
 		typeName: meta.TypeName,
@@ -226,6 +230,65 @@ func (c *EntityCoordinator[T]) Delete(ctx context.Context, id string) error {
 		return fmt.Errorf("Delete: %s", resp.Error)
 	}
 	return nil
+}
+
+// GetMapped retrieves an entity by key with server-side relation resolution to the given depth.
+func (c *EntityCoordinator[T]) GetMapped(ctx context.Context, id string, depth int32) (T, error) {
+	var zero T
+	resp, err := c.deps.mapping.Get(ctx, &pb.MappingGetRequest{
+		TypeName: c.typeName,
+		Key:      id,
+		Depth:    depth,
+	})
+	if err != nil {
+		return zero, fmt.Errorf("GetMapped: %w", err)
+	}
+	if !resp.Success {
+		return zero, fmt.Errorf("GetMapped: %s", resp.Error)
+	}
+	return structToEntity[T](resp.Data)
+}
+
+// PostMapped creates an entity through the mapping path, which resolves its relations
+// server-side. Returns the entity hydrated from the response, carrying the
+// server-assigned key — the caller never assigns one.
+func (c *EntityCoordinator[T]) PostMapped(ctx context.Context, entity T) (T, error) {
+	var zero T
+	payload, err := entityToStruct(entity)
+	if err != nil {
+		return zero, err
+	}
+	resp, err := c.deps.mapping.Post(ctx, &pb.MappingWriteRequest{
+		TypeName: c.typeName,
+		Payload:  payload,
+	})
+	if err != nil {
+		return zero, fmt.Errorf("PostMapped: %w", err)
+	}
+	if !resp.Success {
+		return zero, fmt.Errorf("PostMapped: %s", resp.Error)
+	}
+	return structToEntity[T](resp.Data)
+}
+
+// UpdateMapped updates an existing entity through the mapping path.
+func (c *EntityCoordinator[T]) UpdateMapped(ctx context.Context, entity T) (T, error) {
+	var zero T
+	payload, err := entityToStruct(entity)
+	if err != nil {
+		return zero, err
+	}
+	resp, err := c.deps.mapping.Update(ctx, &pb.MappingWriteRequest{
+		TypeName: c.typeName,
+		Payload:  payload,
+	})
+	if err != nil {
+		return zero, fmt.Errorf("UpdateMapped: %w", err)
+	}
+	if !resp.Success {
+		return zero, fmt.Errorf("UpdateMapped: %s", resp.Error)
+	}
+	return structToEntity[T](resp.Data)
 }
 
 // Get retrieves an entity by key. Returns an error if not found.
@@ -434,16 +497,62 @@ func entityToStruct(entity interface{}) (*structpb.Struct, error) {
 
 	for i := 0; i < t.NumField(); i++ {
 		sf := t.Field(i)
+		if sf.Name == HydratedFieldName {
+			// The read-path carrier is never a write-side field: it holds pointers
+			// to related rows the server injected on a prior depth-resolved read,
+			// not data this write should send back under its own name.
+			continue
+		}
 		fv := v.Field(i)
 
-		// Skip relation fields
+		var fm FieldMeta
+		tagged := false
 		tag := sf.Tag.Get(TagKey)
 		if tag != "" {
-			fm, _ := ParseTag(sf.Name, tag)
-			switch fm.RelationKind {
-			case KindManyToOne, KindManyToMany, KindOneToMany, KindOneToOne:
+			var err error
+			fm, err = ParseTag(sf.Name, tag)
+			if err != nil {
+				return nil, fmt.Errorf("field %s: %w", sf.Name, err)
+			}
+			tagged = fm.RelationKind != ""
+		}
+
+		if tagged {
+			// OneToMany is the inverse side: its FK column names a property on the
+			// RELATED row, not this one, and its value is a nav slice of hydrated
+			// structs — never a write-side field.
+			if fm.RelationKind == KindOneToMany {
 				continue
 			}
+			// A relation field's own Go type may still be a nav property (a struct
+			// or slice-of-struct) rather than the FK-bearing scalar the contract
+			// requires; skip it as a nav property rather than serializing it. None
+			// exist today, but the rule should not depend on that.
+			ft := sf.Type
+			if ft.Kind() == reflect.Ptr {
+				ft = ft.Elem()
+			}
+			if ft.Kind() == reflect.Struct {
+				continue
+			}
+			if ft.Kind() == reflect.Slice {
+				elem := ft.Elem()
+				if elem.Kind() == reflect.Ptr {
+					elem = elem.Elem()
+				}
+				if elem.Kind() == reflect.Struct {
+					continue
+				}
+			}
+
+			val, err := goValueToProtoValue(fv)
+			if err != nil {
+				return nil, fmt.Errorf("field %s: %w", sf.Name, err)
+			}
+			if val != nil {
+				fields[inferFK(fm, t.Name())] = val
+			}
+			continue
 		}
 
 		val, err := goValueToProtoValue(fv)
@@ -485,6 +594,23 @@ func goValueToProtoValue(v reflect.Value) (*structpb.Value, error) {
 			return structpb.NewStringValue(t.Format(time.RFC3339Nano)), nil
 		}
 		return structpb.NewNullValue(), nil
+	case reflect.Slice, reflect.Array:
+		// []byte (and [N]byte) are scalar, not a relation id list; leave to default.
+		if v.Kind() == reflect.Slice && v.IsNil() {
+			return structpb.NewNullValue(), nil
+		}
+		if v.Type().Elem().Kind() == reflect.Uint8 {
+			return structpb.NewNullValue(), nil
+		}
+		values := make([]*structpb.Value, v.Len())
+		for i := 0; i < v.Len(); i++ {
+			elemVal, err := goValueToProtoValue(v.Index(i))
+			if err != nil {
+				return nil, err
+			}
+			values[i] = elemVal
+		}
+		return structpb.NewListValue(&structpb.ListValue{Values: values}), nil
 	default:
 		return structpb.NewNullValue(), nil
 	}
@@ -498,21 +624,147 @@ func structToEntity[T any](s *structpb.Struct) (T, error) {
 		t = t.Elem()
 	}
 
+	v, err := fillEntityValue(s, t)
+	if err != nil {
+		return zero, err
+	}
+	return v.Interface().(T), nil
+}
+
+// fillEntityValue reflects over struct type t, filling its scalar and foreign-key
+// fields from s, then populating its Hydrated carrier (if the type declares one) with
+// any related-row children the server attached for a depth-resolved read. Factored out
+// of structToEntity so hydration can recurse into related types by reflect.Type alone —
+// structToEntity's own type parameter T can't be threaded down to a related type chosen
+// at runtime from the registeredTypes registry.
+func fillEntityValue(s *structpb.Struct, t reflect.Type) (reflect.Value, error) {
 	v := reflect.New(t).Elem()
 
 	for i := 0; i < t.NumField(); i++ {
 		sf := t.Field(i)
-		pbVal, ok := s.Fields[sf.Name]
+		if sf.Name == HydratedFieldName {
+			continue
+		}
+
+		key := sf.Name
+		tag := sf.Tag.Get(TagKey)
+		if tag != "" {
+			fm, err := ParseTag(sf.Name, tag)
+			if err != nil {
+				return reflect.Value{}, fmt.Errorf("field %s: %w", sf.Name, err)
+			}
+			// The server injects hydrated child structs under the field's own name
+			// on depth-resolved reads for the inverse (OneToMany) side; that isn't
+			// a foreign-key list and must not be parsed as one. (Its hydrated
+			// children still land in Hydrated, below — this only guards the
+			// declared []string-of-ids member, which has no struct case in
+			// protoValueToGoValue and would otherwise silently fill with one
+			// empty string per related row.)
+			if fm.RelationKind == KindOneToMany {
+				continue
+			}
+			if fm.RelationKind == KindManyToMany {
+				key = inferFK(fm, t.Name())
+			}
+		}
+
+		pbVal, ok := s.Fields[key]
 		if !ok {
 			continue
 		}
 		fv := v.Field(i)
 		if err := protoValueToGoValue(pbVal, fv, sf.Type); err != nil {
-			return zero, fmt.Errorf("field %s: %w", sf.Name, err)
+			return reflect.Value{}, fmt.Errorf("field %s: %w", sf.Name, err)
 		}
 	}
 
-	return v.Interface().(T), nil
+	if err := populateHydrated(s, t, v); err != nil {
+		return reflect.Value{}, err
+	}
+
+	return v, nil
+}
+
+// populateHydrated fills t's Hydrated map[string]any carrier (if declared) with typed
+// pointers to related rows the server attached for a depth-resolved read, keyed by each
+// relation's wire (nav-property) name — the same name the schema registers and the
+// server-side conformance verifier looks under. Every relation kind lands here,
+// including one_to_many, since Go's declared []string member for that kind cannot hold
+// a struct. If the related type was never registered client-side, the raw (untyped)
+// wire value is stored instead of failing the read.
+func populateHydrated(s *structpb.Struct, t reflect.Type, v reflect.Value) error {
+	hf, ok := t.FieldByName(HydratedFieldName)
+	if !ok || hf.Type.Kind() != reflect.Map {
+		return nil
+	}
+
+	meta, err := InspectType(reflect.New(t).Interface())
+	if err != nil {
+		// Best-effort: a type whose own metadata doesn't parse can't tell us its
+		// relations' wire names, but that shouldn't fail an otherwise-successful
+		// read of its scalar fields.
+		return nil
+	}
+
+	hydrated := make(map[string]any, len(meta.Relations))
+	for _, fm := range meta.Relations {
+		wireKey := relationPropertyName(fm)
+		pbVal, ok := s.Fields[wireKey]
+		if !ok {
+			continue
+		}
+
+		relatedType, registered := lookupRegisteredType(fm.RelatedType)
+
+		switch fm.RelationKind {
+		case KindManyToMany, KindOneToMany:
+			lv := pbVal.GetListValue()
+			if lv == nil {
+				continue
+			}
+			if !registered {
+				hydrated[wireKey] = pbVal.AsInterface()
+				continue
+			}
+			items := reflect.MakeSlice(reflect.SliceOf(reflect.PointerTo(relatedType)), 0, len(lv.Values))
+			for _, elemVal := range lv.Values {
+				elemStruct := elemVal.GetStructValue()
+				if elemStruct == nil {
+					continue
+				}
+				childVal, err := fillEntityValue(elemStruct, relatedType)
+				if err != nil {
+					return fmt.Errorf("hydrating %s: %w", wireKey, err)
+				}
+				ptr := reflect.New(relatedType)
+				ptr.Elem().Set(childVal)
+				items = reflect.Append(items, ptr)
+			}
+			hydrated[wireKey] = items.Interface()
+
+		case KindManyToOne, KindOneToOne:
+			structVal := pbVal.GetStructValue()
+			if structVal == nil {
+				continue
+			}
+			if !registered {
+				hydrated[wireKey] = pbVal.AsInterface()
+				continue
+			}
+			childVal, err := fillEntityValue(structVal, relatedType)
+			if err != nil {
+				return fmt.Errorf("hydrating %s: %w", wireKey, err)
+			}
+			ptr := reflect.New(relatedType)
+			ptr.Elem().Set(childVal)
+			hydrated[wireKey] = ptr.Interface()
+		}
+	}
+
+	if len(hydrated) > 0 {
+		v.FieldByName(HydratedFieldName).Set(reflect.ValueOf(hydrated))
+	}
+	return nil
 }
 
 // protoValueToGoValue sets a struct field from a structpb.Value.
@@ -550,6 +802,18 @@ func protoValueToGoValue(pbVal *structpb.Value, target reflect.Value, targetType
 		if targetType.Kind() == reflect.Bool {
 			target.SetBool(v.BoolValue)
 		}
+	case *structpb.Value_ListValue:
+		if targetType.Kind() != reflect.Slice {
+			return nil
+		}
+		elems := v.ListValue.Values
+		slice := reflect.MakeSlice(targetType, len(elems), len(elems))
+		for i, elemVal := range elems {
+			if err := protoValueToGoValue(elemVal, slice.Index(i), targetType.Elem()); err != nil {
+				return err
+			}
+		}
+		target.Set(slice)
 	}
 	return nil
 }
@@ -603,11 +867,23 @@ func (a *retrievalAdapter) GetMany(ctx context.Context, req *pb.RetrievalManyReq
 	return a.stub.GetMany(ctx, req)
 }
 
-type mappingDeleteAdapter struct {
+type mappingAdapter struct {
 	stub pb.ObjectMappingServiceClient
 }
 
-func (a *mappingDeleteAdapter) Delete(ctx context.Context, req *pb.MappingDeleteRequest) (*pb.MappingDeleteResponse, error) {
+func (a *mappingAdapter) Get(ctx context.Context, req *pb.MappingGetRequest) (*pb.MappingResponse, error) {
+	return a.stub.Get(ctx, req)
+}
+
+func (a *mappingAdapter) Post(ctx context.Context, req *pb.MappingWriteRequest) (*pb.MappingResponse, error) {
+	return a.stub.Post(ctx, req)
+}
+
+func (a *mappingAdapter) Update(ctx context.Context, req *pb.MappingWriteRequest) (*pb.MappingResponse, error) {
+	return a.stub.Update(ctx, req)
+}
+
+func (a *mappingAdapter) Delete(ctx context.Context, req *pb.MappingDeleteRequest) (*pb.MappingDeleteResponse, error) {
 	return a.stub.Delete(ctx, req)
 }
 

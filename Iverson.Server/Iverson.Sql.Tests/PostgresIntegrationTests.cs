@@ -429,6 +429,85 @@ public sealed class PostgresIntegrationTests(PostgresContainerFixture fixture)
         (await RuntimeGrantCountAsync(table)).Should().Be(4);
     }
 
+
+    // Ruling 69. Reproduces the two-role redeploy: `iverson-api` and `iverson-worker` boot at the
+    // same instant and both run Program.cs's self-heal loop over every registered descriptor, so
+    // ApplySchemaAsync runs concurrently on the SAME table from separate connections. The
+    // ENABLE ROW LEVEL SECURITY / GRANT pair both rewrite the table's pg_class row; without the
+    // advisory lock Postgres answers the loser with XX000 "tuple concurrently updated", which
+    // nothing catches, so the process exits.
+    //
+    // This test is only meaningful because it FAILS when the pg_advisory_lock/unlock pair in
+    // ApplySchemaAsync is removed — verified by mutation, not assumed.
+    [Fact]
+    public async Task ApplySchemaAsync_EightConcurrentAppliesOfTheSameTenantScopedTable_AllSucceed()
+    {
+        var table = UniqueTable();
+        var schema = new TableSchema(
+            table,
+            new ColumnSchema("id", "uuid", IsNullable: false),
+            [
+                new ColumnSchema("name", "text", IsNullable: false),
+                new ColumnSchema("tenant_id", "text", IsNullable: false)
+            ],
+            TenantColumn: "tenant_id");
+
+        // A barrier rather than a plain Task.WhenAll over eight already-running tasks: the race is
+        // on the RLS/GRANT pair near the END of the apply, so the callers must still be in step by
+        // the time they reach it, not merely started together.
+        using var gate = new SemaphoreSlim(0, 8);
+        var applies = Enumerable.Range(0, 8).Select(async _ =>
+        {
+            await gate.WaitAsync();
+            await _schemaManager.ApplySchemaAsync(schema);
+        }).ToArray();
+
+        gate.Release(8);
+
+        var act = async () => await Task.WhenAll(applies);
+        await act.Should().NotThrowAsync();
+
+        (await PolicyExistsAsync(table, $"{table}_tenant_isolation")).Should().BeTrue();
+        (await RlsEnabledAsync(table)).Should().BeTrue();
+        (await RuntimeGrantCountAsync(table)).Should().Be(4);
+    }
+
+
+    // Companion to the test above, isolating the SECOND race: the table already exists, so every
+    // caller skips CREATE TABLE and goes straight to the RLS/GRANT pair. Split out because the two
+    // failures are different Postgres errors on different statements, and a single cold-table test
+    // would let the RLS/GRANT race hide behind the CREATE TABLE one.
+    [Fact]
+    public async Task ApplySchemaAsync_EightConcurrentAppliesOfAnAlreadyCreatedTenantScopedTable_AllSucceed()
+    {
+        var table = UniqueTable();
+        var schema = new TableSchema(
+            table,
+            new ColumnSchema("id", "uuid", IsNullable: false),
+            [
+                new ColumnSchema("name", "text", IsNullable: false),
+                new ColumnSchema("tenant_id", "text", IsNullable: false)
+            ],
+            TenantColumn: "tenant_id");
+
+        await _schemaManager.ApplySchemaAsync(schema);
+
+        using var gate = new SemaphoreSlim(0, 8);
+        var applies = Enumerable.Range(0, 8).Select(async _ =>
+        {
+            await gate.WaitAsync();
+            await _schemaManager.ApplySchemaAsync(schema);
+        }).ToArray();
+
+        gate.Release(8);
+
+        var act = async () => await Task.WhenAll(applies);
+        await act.Should().NotThrowAsync();
+
+        (await RlsEnabledAsync(table)).Should().BeTrue();
+        (await RuntimeGrantCountAsync(table)).Should().Be(4);
+    }
+
     // ── Schema-drift detection (Task 2 of array-column-mapping) ─────────────
 
     // All 18 SQL types PostgresSchemaManager can be asked to apply — the 9 scalar entries in

@@ -14,7 +14,18 @@ public sealed class RowFieldAuthorizationEvaluator : IRowFieldAuthorizationEvalu
         if (actingUser is null)
             return new AuthorizationDecision(true, false, null, null, null, null, null);
 
-        // Tenant is strictly additive: all non-denied paths must have a tenant_id claim and the schema must have a tenant column
+        // Tenant is strictly additive: all non-denied paths must have a tenant_id claim and the
+        // schema must have a tenant column.
+        //
+        // KEPT DELIBERATELY even though SchemaDescriptor.TenantColumn is now non-nullable and
+        // `required`. What SchemaRegistry.LoadAsync does with a legacy row (Ruling 34): it refuses
+        // to admit any descriptor whose TenantColumn is null or empty, so no schema reaching this
+        // evaluator through the registry can trip this check. That makes this the FAIL-CLOSED
+        // BACKSTOP for the one property whose absence opens a boundary rather than throwing —
+        // every other guard this task deleted degraded to an exception when it was wrong, but
+        // deleting THIS one would let a tenant-less descriptor (a hand-constructed one, a future
+        // second rehydration path) produce Denied = false with no tenant scoping at all, silently.
+        // Two lines, no runtime cost, and RowFieldAuthorizationEvaluatorTests pins it.
         if (string.IsNullOrEmpty(schema.TenantColumn))
             return new AuthorizationDecision(true, false, null, null, null, null, null);
         var tenantId = actingUser.FindFirst("tenant_id")?.Value;
@@ -63,15 +74,45 @@ public sealed class RowFieldAuthorizationEvaluator : IRowFieldAuthorizationEvalu
                 })
                 .Select(fp => fp.FieldName)
                 .Where(f => !string.Equals(f, schema.KeyColumn.Name, StringComparison.OrdinalIgnoreCase))
-                .ToHashSet();
+                // Case-insensitive to match the key-column filter above: a FieldPermission naming
+                // `authorId` must exclude the column `AuthorId`. Ordinal comparison let a
+                // case-mismatched permission silently protect nothing.
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
 
             if (excluded.Count > 0)
             {
                 var allFields = new[] { schema.KeyColumn.Name }
-                    .Concat(schema.ScalarColumns.Select(c => c.Name))
+                    // ScalarColumns position: EXCLUDE __TenantId. AllowedFields is the set of fields
+                    // a caller may read or write; the tenant column is neither permissionable nor
+                    // client-addressable, and the tenant boundary is enforced separately (and
+                    // unconditionally) by TenantColumn/TenantValue on the decision.
+                    .Concat(schema.ScalarColumns
+                        .Where(c => !SchemaDescriptor.IsTenantColumn(c.Name))
+                        .Select(c => c.Name))
                     .Concat(schema.FkColumns.Select(fk => fk.ColumnName))
                     .Concat(schema.VectorFields.Select(v => v.PropertyName))
                     .Concat(schema.ChunkFields.Select(c => c.PropertyName));
+
+                // A relation property is writable exactly when its FK column is writable: writing
+                // `Author` IS writing `AuthorId`, so one permission governs one concept. Nothing
+                // is normalized any more — RelationValidator rejects a nav property outright — but
+                // this carve-out still matters: without it, a caller sending `Author` while
+                // `AuthorId` is excluded would fail here with an opaque authorization error instead
+                // of reaching the validator's clearer nav-property rejection. A caller whose
+                // `AuthorId` is excluded still fails at authorization, which remains correct.
+                //
+                // OneToMany is the carve-out: its FK lives on the RELATED entity, so there is no
+                // local column to gate on. Permitted unconditionally — inert on write (the
+                // validator skips the kind) and injected on read after masking.
+                //
+                // Write actions only: AllowedFields also drives search filter/sort/vector
+                // authorization, which evaluates with Read; relation names have no meaning there
+                // and admitting them would widen search permissions.
+                if (action == AuthorizationAction.Write)
+                    allFields = allFields.Concat(schema.Relations
+                        .Where(r => r.Kind == RelationKind.OneToMany || !excluded.Contains(r.ForeignKey))
+                        .Select(r => r.PropertyName));
+
                 allowedFields = allFields.Where(f => !excluded.Contains(f)).ToHashSet();
             }
         }

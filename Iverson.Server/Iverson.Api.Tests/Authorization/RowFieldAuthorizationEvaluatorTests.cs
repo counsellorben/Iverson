@@ -27,9 +27,16 @@ public class RowFieldAuthorizationEvaluatorTests
         return new ClaimsPrincipal(new ClaimsIdentity(claims, "test"));
     }
 
+    // tenantColumn is declared nullable even though SchemaDescriptor.TenantColumn is not, and
+    // assigned through `!` below, deliberately: the evaluator's own IsNullOrEmpty guard exists
+    // precisely BECAUSE a non-nullable annotation is erased at runtime, and the only way to test
+    // that guard is to hand it the runtime null the annotation claims cannot happen. See
+    // Evaluate_SchemaTenantColumnNullAtRuntime_ReturnsDenied.
     private static SchemaDescriptor SchemaWithAuthorization(
         AuthorizationRules? authorization = null,
-        string? tenantColumn = "tenant_id")  // Default tenantColumn
+        string? tenantColumn = "tenant_id",  // Default tenantColumn
+        IReadOnlyList<RelationDescriptor>? relations = null,
+        IReadOnlyList<ForeignKeyDescriptor>? fkColumns = null)
     {
         return new SchemaDescriptor
         {
@@ -41,12 +48,12 @@ public class RowFieldAuthorizationEvaluatorTests
                 new("Name", "VARCHAR(255)", false),
                 new("OwnerId", "VARCHAR(255)", false)
             },
-            FkColumns = [],
+            FkColumns = fkColumns ?? [],
             VectorFields = [],
             ChunkFields = [],
-            Relations = [],
+            Relations = relations ?? [],
             Authorization = authorization,
-            TenantColumn = tenantColumn
+            TenantColumn = tenantColumn!
         };
     }
 
@@ -397,6 +404,27 @@ public class RowFieldAuthorizationEvaluatorTests
     }
 
     [Fact]
+    public void Evaluate_FieldPermissionNamedInDifferentCase_StillExcludesTheColumn()
+    {
+        // Clients serialize camelCase, and a declaration may name the field either way. An ordinal
+        // exclusion set let a case-mismatched FieldPermission silently protect nothing.
+        var rules = new AuthorizationRules(
+            "OwnerId",
+            new List<RowPermission>(),
+            new List<FieldPermission>
+            {
+                new("name", new List<string> { "editor" }, new List<string> { "editor" })
+            });
+        var schema = SchemaWithAuthorization(rules);
+        var user = ActingUser("user123", "viewer");
+
+        var result = _evaluator.Evaluate(schema, user, AuthorizationAction.Read);
+
+        result.AllowedFields.Should().NotBeNull();
+        result.AllowedFields.Should().NotContain("Name");
+    }
+
+    [Fact]
     public void Evaluate_WriteActionUsesWritableRolesNotReadableRoles()
     {
         var rules = new AuthorizationRules(
@@ -501,8 +529,16 @@ public class RowFieldAuthorizationEvaluatorTests
         result.TenantValue.Should().BeNull();
     }
 
+    /// <summary>
+    /// SchemaDescriptor.TenantColumn is non-nullable and `required` as of Task 7, and roughly a
+    /// dozen downstream null guards were deleted on that basis — but a nullable annotation is a
+    /// COMPILE-TIME contract that System.Text.Json erases, so this evaluator's IsNullOrEmpty
+    /// guard is kept as the fail-closed backstop. It is the one deleted-guard candidate whose
+    /// removal OPENS a boundary (Denied = false with no tenant scoping) rather than throwing.
+    /// The `null!` below is the point of the test, not an oversight.
+    /// </summary>
     [Fact]
-    public void Evaluate_SchemaTenantColumnNull_ReturnsDenied()
+    public void Evaluate_SchemaTenantColumnNullAtRuntime_ReturnsDenied()
     {
         var rules = new AuthorizationRules(
             "OwnerId",
@@ -537,5 +573,141 @@ public class RowFieldAuthorizationEvaluatorTests
         result.OwnershipRequired.Should().BeFalse();
         result.TenantColumn.Should().Be("TenantId");
         result.TenantValue.Should().Be("tenant-xyz");
+    }
+
+    [Fact]
+    public void Evaluate_WriteAction_ManyToOneRelationAllowedWhenFkAllowed()
+    {
+        var rules = new AuthorizationRules(
+            "OwnerId",
+            new List<RowPermission>(),
+            new List<FieldPermission>
+            {
+                new("Name", new List<string>(), new List<string> { "editor" })
+            });
+        var schema = SchemaWithAuthorization(
+            rules,
+            fkColumns: new List<ForeignKeyDescriptor> { new("AuthorId", "Author") },
+            relations: new List<RelationDescriptor>
+            {
+                new("Author", RelationKind.ManyToOne, "Author", "AuthorId")
+            });
+        var user = ActingUser("user123");
+
+        var result = _evaluator.Evaluate(schema, user, AuthorizationAction.Write);
+
+        result.Denied.Should().BeFalse();
+        result.AllowedFields.Should().NotBeNull();
+        result.AllowedFields.Should().Contain("Author");
+        result.AllowedFields.Should().Contain("AuthorId");
+    }
+
+    [Fact]
+    public void Evaluate_WriteAction_ManyToOneRelationExcludedWhenFkExcluded()
+    {
+        var rules = new AuthorizationRules(
+            "OwnerId",
+            new List<RowPermission>(),
+            new List<FieldPermission>
+            {
+                new("AuthorId", new List<string>(), new List<string> { "editor" })
+            });
+        var schema = SchemaWithAuthorization(
+            rules,
+            fkColumns: new List<ForeignKeyDescriptor> { new("AuthorId", "Author") },
+            relations: new List<RelationDescriptor>
+            {
+                new("Author", RelationKind.ManyToOne, "Author", "AuthorId")
+            });
+        var user = ActingUser("user123");
+
+        var result = _evaluator.Evaluate(schema, user, AuthorizationAction.Write);
+
+        result.Denied.Should().BeFalse();
+        result.AllowedFields.Should().NotBeNull();
+        result.AllowedFields.Should().NotContain("Author");
+        result.AllowedFields.Should().NotContain("AuthorId");
+    }
+
+    [Fact]
+    public void Evaluate_WriteAction_OneToManyRelationAllowedWithoutLocalFkColumn()
+    {
+        var rules = new AuthorizationRules(
+            "OwnerId",
+            new List<RowPermission>(),
+            new List<FieldPermission>
+            {
+                new("Name", new List<string>(), new List<string> { "editor" })
+            });
+        var schema = SchemaWithAuthorization(
+            rules,
+            relations: new List<RelationDescriptor>
+            {
+                new("Comments", RelationKind.OneToMany, "Comment", "PostId")
+            });
+        var user = ActingUser("user123");
+
+        var result = _evaluator.Evaluate(schema, user, AuthorizationAction.Write);
+
+        result.Denied.Should().BeFalse();
+        result.AllowedFields.Should().NotBeNull();
+        result.AllowedFields.Should().Contain("Comments");
+    }
+
+    [Fact]
+    public void Evaluate_WriteAction_RelationDirectlyExcludedByFieldPermissionStaysExcluded()
+    {
+        var rules = new AuthorizationRules(
+            "OwnerId",
+            new List<RowPermission>(),
+            new List<FieldPermission>
+            {
+                new("Name", new List<string>(), new List<string> { "editor" }),
+                new("Author", new List<string>(), new List<string> { "editor" })
+            });
+        var schema = SchemaWithAuthorization(
+            rules,
+            fkColumns: new List<ForeignKeyDescriptor> { new("AuthorId", "Author") },
+            relations: new List<RelationDescriptor>
+            {
+                new("Author", RelationKind.ManyToOne, "Author", "AuthorId")
+            });
+        var user = ActingUser("user123");
+
+        var result = _evaluator.Evaluate(schema, user, AuthorizationAction.Write);
+
+        result.Denied.Should().BeFalse();
+        result.AllowedFields.Should().NotBeNull();
+        result.AllowedFields.Should().NotContain("Author");
+        result.AllowedFields.Should().Contain("AuthorId");
+    }
+
+    [Fact]
+    public void Evaluate_ReadAction_RelationNamesAbsentFromAllowedFields()
+    {
+        var rules = new AuthorizationRules(
+            "OwnerId",
+            new List<RowPermission>(),
+            new List<FieldPermission>
+            {
+                new("Name", new List<string> { "premium" }, new List<string>())
+            });
+        var schema = SchemaWithAuthorization(
+            rules,
+            fkColumns: new List<ForeignKeyDescriptor> { new("AuthorId", "Author") },
+            relations: new List<RelationDescriptor>
+            {
+                new("Author", RelationKind.ManyToOne, "Author", "AuthorId"),
+                new("Comments", RelationKind.OneToMany, "Comment", "PostId")
+            });
+        var user = ActingUser("user123");
+
+        var result = _evaluator.Evaluate(schema, user, AuthorizationAction.Read);
+
+        result.Denied.Should().BeFalse();
+        result.AllowedFields.Should().NotBeNull();
+        result.AllowedFields.Should().NotContain("Author");
+        result.AllowedFields.Should().NotContain("Comments");
+        result.AllowedFields.Should().Contain("AuthorId");
     }
 }

@@ -19,15 +19,70 @@ public sealed class EntityCoordinator<T>(
     ObjectPersistenceService.ObjectPersistenceServiceClient persistence,
     ObjectRetrievalService.ObjectRetrievalServiceClient retrieval,
     ObjectSearchService.ObjectSearchServiceClient search,
-    ILogger<EntityCoordinator<T>> logger)
+    ILogger<EntityCoordinator<T>> logger,
+    ActingUserIdentity? identity = null)
     where T : class
 {
     private readonly EntityDescriptor _descriptor = registry.Get<T>();
 
+    private IReadOnlyCollection<string> NavPropertyNames =>
+        _descriptor.Relations.Select(r => r.Property.Name).ToList();
+
+    // Deliberately not `readonly`: WithActingUser assigns it through an object initializer on a
+    // freshly constructed instance, which the compiler rejects on a readonly field. Nothing else
+    // ever writes it, so the instance is still effectively immutable after construction.
+    private Func<Task<string>>? _boundActingUser;
+
+    /// <summary>
+    /// Returns a coordinator bound to <paramref name="tokenProvider"/>, leaving this one
+    /// untouched. The bound identity outranks the client's ambient one. This is the only
+    /// per-call override; the Metadata bag passed to individual calls is not an identity channel.
+    /// </summary>
+    public EntityCoordinator<T> WithActingUser(Func<Task<string>> tokenProvider) =>
+        new(registry, assembler, mapping, persistence, retrieval, search, logger, identity)
+        {
+            _boundActingUser = tokenProvider,
+        };
+
+    // The per-call Metadata bag is no longer an identity channel: any acting-user entry the
+    // caller supplies in it is stripped, never honored. Identity resolves from bound-then-ambient
+    // only. The per-call override is WithActingUser(...), matching the other four clients.
+    private async Task<Metadata> ResolveHeadersAsync(Metadata? headers)
+    {
+        headers ??= new Metadata();
+
+        var provider = _boundActingUser ?? identity?.TokenProvider;
+
+        // Never write into the caller's own Metadata instance: build a fresh copy so a bag the
+        // caller reuses across calls (e.g. on different coordinators bound to different
+        // identities) isn't mutated out from under them. The copy excludes any acting-user entry
+        // the caller supplied — otherwise, when an identity also resolves below, the call would
+        // carry two x-acting-user-authorization entries. gRPC/the server flattens multi-valued
+        // headers into one corrupt string that still passes the "Bearer " prefix check, so the
+        // request fails JWT validation as UNAUTHENTICATED instead of being cleanly denied. Exactly
+        // one acting-user entry, or zero, must ever be emitted.
+        var resolved = new Metadata();
+        foreach (var entry in headers)
+        {
+            if (entry.Key == ActingUserMetadata.MetadataKey)
+                continue;
+
+            resolved.Add(entry.IsBinary
+                ? new Metadata.Entry(entry.Key, entry.ValueBytes)
+                : new Metadata.Entry(entry.Key, entry.Value));
+        }
+
+        if (provider is not null)
+            resolved.WithActingUser(await provider());
+
+        return resolved;
+    }
+
     // ── Object Mapping ─────────────────────────────────────────────────────────
     // Full CRUD with server-side relationship resolution.
 
-    public async Task<T?> GetMappedAsync(string key, int depth = 1, CancellationToken ct = default)
+    public async Task<T?> GetMappedAsync(
+        string key, int depth = 1, Metadata? headers = null, CancellationToken ct = default)
     {
         logger.LogDebug("ObjectMapping.Get {Entity}:{Key} depth={Depth}", _descriptor.EntityName, key, depth);
         var response = await mapping.GetAsync(
@@ -38,39 +93,39 @@ public sealed class EntityCoordinator<T>(
                 Depth    = depth,
                 TraceId  = CurrentTraceId()
             },
-            cancellationToken: ct);
+            await ResolveHeadersAsync(headers), cancellationToken: ct);
 
         if (!response.Success) { LogError(response.Error); return null; }
         return StructConverter.FromStruct<T>(response.Data);
     }
 
-    public async Task<T?> PostMappedAsync(T entity, CancellationToken ct = default)
+    public async Task<T?> PostMappedAsync(T entity, Metadata? headers = null, CancellationToken ct = default)
     {
         logger.LogDebug("ObjectMapping.Post {Entity}", _descriptor.EntityName);
         var response = await mapping.PostAsync(
             new MappingWriteRequest
             {
                 TypeName = _descriptor.EntityName,
-                Payload  = StructConverter.ToStruct(entity),
+                Payload  = StructConverter.ToStruct(entity, NavPropertyNames),
                 TraceId  = CurrentTraceId()
             },
-            cancellationToken: ct);
+            await ResolveHeadersAsync(headers), cancellationToken: ct);
 
         if (!response.Success) { LogError(response.Error); return null; }
         return StructConverter.FromStruct<T>(response.Data);
     }
 
-    public async Task<T?> UpdateMappedAsync(T entity, CancellationToken ct = default)
+    public async Task<T?> UpdateMappedAsync(T entity, Metadata? headers = null, CancellationToken ct = default)
     {
         logger.LogDebug("ObjectMapping.Update {Entity}", _descriptor.EntityName);
         var response = await mapping.UpdateAsync(
             new MappingWriteRequest
             {
                 TypeName = _descriptor.EntityName,
-                Payload  = StructConverter.ToStruct(entity),
+                Payload  = StructConverter.ToStruct(entity, NavPropertyNames),
                 TraceId  = CurrentTraceId()
             },
-            cancellationToken: ct);
+            await ResolveHeadersAsync(headers), cancellationToken: ct);
 
         if (!response.Success) { LogError(response.Error); return null; }
         return StructConverter.FromStruct<T>(response.Data);
@@ -86,7 +141,7 @@ public sealed class EntityCoordinator<T>(
                 Key      = key,
                 TraceId  = CurrentTraceId()
             },
-            cancellationToken: ct);
+            await ResolveHeadersAsync(null), cancellationToken: ct);
 
         if (!response.Success) LogError(response.Error);
         return response.Success;
@@ -102,10 +157,10 @@ public sealed class EntityCoordinator<T>(
             new PersistRequest
             {
                 TypeName = _descriptor.EntityName,
-                Payload  = StructConverter.ToStruct(entity),
+                Payload  = StructConverter.ToStruct(entity, NavPropertyNames),
                 TraceId  = CurrentTraceId()
             },
-            headers, cancellationToken: ct);
+            await ResolveHeadersAsync(headers), cancellationToken: ct);
 
         if (!response.Success) { LogError(response.Error); return null; }
         return response.Key;
@@ -118,10 +173,10 @@ public sealed class EntityCoordinator<T>(
             new PersistRequest
             {
                 TypeName = _descriptor.EntityName,
-                Payload  = StructConverter.ToStruct(entity),
+                Payload  = StructConverter.ToStruct(entity, NavPropertyNames),
                 TraceId  = CurrentTraceId()
             },
-            cancellationToken: ct);
+            await ResolveHeadersAsync(null), cancellationToken: ct);
 
         if (!response.Success) { LogError(response.Error); return null; }
         return response.Key;
@@ -140,7 +195,7 @@ public sealed class EntityCoordinator<T>(
                 Key      = key,
                 TraceId  = CurrentTraceId()
             },
-            cancellationToken: ct);
+            await ResolveHeadersAsync(null), cancellationToken: ct);
 
         if (!response.Found) return null;
 
@@ -163,7 +218,7 @@ public sealed class EntityCoordinator<T>(
 
         // Buffer all results so we can batch-assemble relations in one pass
         var buffer = new List<T>();
-        var stream  = retrieval.GetMany(request, cancellationToken: ct);
+        var stream  = retrieval.GetMany(request, await ResolveHeadersAsync(null), cancellationToken: ct);
         await foreach (var response in stream.ResponseStream.ReadAllAsync(ct))
         {
             if (!response.Found) continue;
@@ -192,7 +247,7 @@ public sealed class EntityCoordinator<T>(
         logger.LogDebug("ObjectSearch.Search {Entity} ({Clauses} clauses)",
             _descriptor.EntityName, request.Query?.Clauses.Count ?? 0);
 
-        var stream = search.Search(request, cancellationToken: ct);
+        var stream = search.Search(request, await ResolveHeadersAsync(null), cancellationToken: ct);
         await foreach (var response in stream.ResponseStream.ReadAllAsync(ct))
         {
             var entity = StructConverter.FromStruct<T>(response.Data);
@@ -211,7 +266,7 @@ public sealed class EntityCoordinator<T>(
         logger.LogDebug("ObjectSearch.SearchSimilar {Entity} property={Property}",
             _descriptor.EntityName, request.Property);
 
-        var stream = search.SearchSimilar(request, cancellationToken: ct);
+        var stream = search.SearchSimilar(request, await ResolveHeadersAsync(null), cancellationToken: ct);
         await foreach (var response in stream.ResponseStream.ReadAllAsync(ct))
         {
             var entity = StructConverter.FromStruct<T>(response.Data);
@@ -229,7 +284,7 @@ public sealed class EntityCoordinator<T>(
         logger.LogDebug("ObjectSearch.SearchChunks {Entity} property={Property}",
             _descriptor.EntityName, request.Property);
 
-        var stream = search.SearchChunks(request, cancellationToken: ct);
+        var stream = search.SearchChunks(request, await ResolveHeadersAsync(null), cancellationToken: ct);
         await foreach (var response in stream.ResponseStream.ReadAllAsync(ct))
             yield return response;
     }
@@ -248,7 +303,7 @@ public sealed class EntityCoordinator<T>(
         logger.LogDebug("ObjectSearch.Pipeline {Entity} ({Steps} steps)",
             _descriptor.EntityName, request.Steps.Count);
 
-        var stream = search.Pipeline(request, cancellationToken: ct);
+        var stream = search.Pipeline(request, await ResolveHeadersAsync(null), cancellationToken: ct);
         await foreach (var response in stream.ResponseStream.ReadAllAsync(ct))
             yield return StructConverter.ToDictionary(response.Data);
     }
@@ -268,7 +323,7 @@ public sealed class EntityCoordinator<T>(
         logger.LogDebug("ObjectSearch.Pipeline {Entity} ({Steps} steps, typed)",
             _descriptor.EntityName, request.Steps.Count);
 
-        var stream = search.Pipeline(request, cancellationToken: ct);
+        var stream = search.Pipeline(request, await ResolveHeadersAsync(null), cancellationToken: ct);
         await foreach (var response in stream.ResponseStream.ReadAllAsync(ct))
         {
             var row = StructConverter.FromStruct<TResult>(response.Data);
@@ -292,7 +347,7 @@ public sealed class EntityCoordinator<T>(
         logger.LogDebug("ObjectSearch.GroupBy {Entity} ({Keys} keys)",
             _descriptor.EntityName, request.Keys.Count);
 
-        var stream = search.GroupBy(request, headers, cancellationToken: ct);
+        var stream = search.GroupBy(request, await ResolveHeadersAsync(headers), cancellationToken: ct);
         await foreach (var response in stream.ResponseStream.ReadAllAsync(ct))
             yield return StructConverter.ToDictionary(response.Data);
     }
@@ -312,7 +367,7 @@ public sealed class EntityCoordinator<T>(
         logger.LogDebug("ObjectSearch.Aggregate {Entity} ({Aggregations} aggregations)",
             _descriptor.EntityName, request.Aggregations.Count);
 
-        return await search.AggregateAsync(request, headers, cancellationToken: ct);
+        return await search.AggregateAsync(request, await ResolveHeadersAsync(headers), cancellationToken: ct);
     }
 
     private static string CurrentTraceId() =>

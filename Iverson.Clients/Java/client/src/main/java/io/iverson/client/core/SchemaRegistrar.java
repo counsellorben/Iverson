@@ -47,12 +47,26 @@ public final class SchemaRegistrar {
      * @throws StatusRuntimeException if the server rejects any registration
      */
     public void registerAll(Class<?>... classes) {
+        registerAll(Map.of(), classes);
+    }
+
+    /**
+     * Same as {@link #registerAll(Class[])}, attaching per-type authorization rules. A type with
+     * no entry registers with no rules, which the server denies for every read and write — a null
+     * rule set is an unconditional deny, not an absence of restrictions.
+     */
+    public void registerAll(
+            Map<String, ObjectMapping.AuthorizationRules> authorizationByTypeName,
+            Class<?>... classes) {
         for (Class<?> cls : classes) {
             if (cls.getAnnotation(IversonEntity.class) == null) {
                 throw new IllegalArgumentException(
                     cls.getSimpleName() + " is not annotated with @IversonEntity");
             }
-            TypeDescriptor descriptor = buildTypeDescriptor(cls);
+            TypeDescriptor.Builder descriptor = buildTypeDescriptor(cls).toBuilder();
+            ObjectMapping.AuthorizationRules rules =
+                authorizationByTypeName.get(cls.getSimpleName());
+            if (rules != null) descriptor.setAuthorization(rules);
             SchemaRequest request = SchemaRequest.newBuilder()
                 .setRootType(descriptor)
                 .build();
@@ -78,16 +92,13 @@ public final class SchemaRegistrar {
         }
 
         // Collect nav property field names (annotated with any relation annotation)
+        List<Field> allFields = getAllFields(cls);
         Set<String> navFieldNames = new HashSet<>();
         Field keyField = null;
-        List<Field> tenantFields = new ArrayList<>();
 
-        for (Field field : getAllFields(cls)) {
+        for (Field field : allFields) {
             if (field.getAnnotation(IversonKey.class) != null) {
                 keyField = field;
-            }
-            if (field.getAnnotation(IversonTenant.class) != null) {
-                tenantFields.add(field);
             }
             if (isRelationField(field)) {
                 navFieldNames.add(field.getName());
@@ -105,17 +116,15 @@ public final class SchemaRegistrar {
         builder.addProperties(buildKeyDescriptor(keyField));
 
         // Non-key scalar properties
-        for (Field field : getAllFields(cls)) {
-            if (field == keyField) continue;
+        for (Field field : allFields) {
+            if (field.getName().equals(keyField.getName())) continue;
             if (navFieldNames.contains(field.getName())) continue;
             PropertyDescriptor pd = tryBuildPropertyDescriptor(field);
             if (pd != null) builder.addProperties(pd);
         }
 
-        builder.setTenantField(resolveTenantField(cls, tenantFields));
-
         // Relation descriptors
-        for (Field field : getAllFields(cls)) {
+        for (Field field : allFields) {
             if (!isRelationField(field)) continue;
             RelationDescriptor rd = buildRelationDescriptor(field, cls.getSimpleName());
             if (rd != null) builder.addRelations(rd);
@@ -148,28 +157,6 @@ public final class SchemaRegistrar {
             String.join(", ", rejected) + "; the server builds every per-property declaration " +
             "from non-key properties only, so this would be accepted and silently discarded. " +
             "Remove it from the key field. (Only a description is valid on a key.)");
-    }
-
-    private static String resolveTenantField(Class<?> cls, List<Field> tenantFields) {
-        if (tenantFields.isEmpty()) {
-            throw new IllegalArgumentException(
-                cls.getSimpleName() + " has no field annotated with @IversonTenant; the server " +
-                "requires every schema to declare a tenant boundary and will reject registration " +
-                "without one.");
-        }
-
-        if (tenantFields.size() > 1) {
-            StringBuilder names = new StringBuilder();
-            for (Field field : tenantFields) {
-                if (names.length() > 0) names.append(", ");
-                names.append(field.getName());
-            }
-            throw new IllegalArgumentException(
-                cls.getSimpleName() + " has multiple fields annotated with @IversonTenant (" +
-                names + "); exactly one field must carry the tenant marker.");
-        }
-
-        return StructConverter.toPascalCase(tenantFields.get(0).getName());
     }
 
     private PropertyDescriptor buildKeyDescriptor(Field field) {
@@ -278,11 +265,33 @@ public final class SchemaRegistrar {
         String fk = inferForeignKey(kind, relatedType.getSimpleName(), ownerTypeName);
 
         return RelationDescriptor.newBuilder()
-            .setPropertyName(StructConverter.toPascalCase(field.getName()))
+            .setPropertyName(deriveRelationPropertyName(kind, field.getName()))
             .setKind(kind)
             .setRelatedType(relatedType.getSimpleName())
             .setForeignKey(fk)
             .build();
+    }
+
+    /**
+     * Derives the navigation property name from the relation's declared field name. When a
+     * relation is declared directly on the foreign-key member (e.g. {@code @ManyToOne UUID
+     * authorId} or {@code @ManyToMany List<UUID> tagIds}), the field name and the foreign key
+     * are identical, which would make the server's depth-resolved read overwrite the FK value
+     * with the hydrated related entity. Strip the trailing "Id" (many-to-one / one-to-one) or
+     * "Ids" (many-to-many) to get a distinct navigation property name — the same rule Python,
+     * TypeScript and Go use. Guarded by length so a field named exactly "id"/"ids" is not
+     * truncated to nothing.
+     */
+    private static String deriveRelationPropertyName(RelationKind kind, String fieldName) {
+        String pascal = StructConverter.toPascalCase(fieldName);
+        if ((kind == RelationKind.MANY_TO_ONE || kind == RelationKind.ONE_TO_ONE)
+                && pascal.length() > 2 && pascal.endsWith("Id")) {
+            return pascal.substring(0, pascal.length() - 2);
+        }
+        if (kind == RelationKind.MANY_TO_MANY && pascal.length() > 3 && pascal.endsWith("Ids")) {
+            return pascal.substring(0, pascal.length() - 3) + "s";
+        }
+        return pascal;
     }
 
     // ── Type detection ─────────────────────────────────────────────────────────

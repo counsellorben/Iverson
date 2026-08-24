@@ -16,9 +16,6 @@ public class Article {
     @IversonKey
     private UUID id;
 
-    @IversonTenant
-    private String tenantId;
-
     private String title;
 
     @IversonLargeField
@@ -37,6 +34,9 @@ public class Article {
 
     @ManyToOne(type = Author.class)
     private Author author;
+
+    /** FK column — convention: {RelatedTypeName}Ids. */
+    private List<UUID> tagIds;
 
     @ManyToMany(type = Tag.class)
     private List<Tag> tags;
@@ -61,9 +61,6 @@ public class Article {
     public UUID getId()                         { return id; }
     public void setId(UUID id)                  { this.id = id; }
 
-    public String getTenantId()                 { return tenantId; }
-    public void   setTenantId(String tenantId)  { this.tenantId = tenantId; }
-
     public String getTitle()                    { return title; }
     public void   setTitle(String title)        { this.title = title; }
 
@@ -87,6 +84,9 @@ public class Article {
 
     public List<Tag> getTags()                  { return tags; }
     public void      setTags(List<Tag> tags)    { this.tags = tags; }
+
+    public List<UUID> getTagIds()                  { return tagIds; }
+    public void       setTagIds(List<UUID> tagIds) { this.tagIds = tagIds; }
 
     @Override
     public String toString() {

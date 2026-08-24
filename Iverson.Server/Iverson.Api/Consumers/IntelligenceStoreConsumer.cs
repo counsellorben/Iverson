@@ -32,6 +32,7 @@ public sealed class IntelligenceStoreConsumer(
     IEmbeddingService embedding,
     SchemaRegistry registry,
     IEntityRepository entities,
+    DocumentRenderer documentRenderer,
     IntelligenceTenantScope tenantScope,
     IEnrichmentService enrichment,
     IOptions<EnrichmentServiceOptions> enrichmentOptions,
@@ -74,16 +75,25 @@ public sealed class IntelligenceStoreConsumer(
         var ev = Deserialize(key, value);
         if (!ev.TargetStores.HasFlag(StoreTarget.Intelligence)) return;
 
-        var schema = registry.Get(ev.TypeName);
-        if (schema is null || schema.CollectionName is null)
+        // The two arms below were one compound condition and are deliberately split: an UNKNOWN
+        // TYPE is a lost write and must not be committed, whereas a registered type with no vector
+        // collection has nothing to project and returning is correct.
+        var schema = await registry.GetOrReloadAsync(ev.TypeName, ct);
+        if (schema is null)
         {
-            logger.LogError(
-                "[Intelligence] Dropped event — no schema registered for type={Type} key={Key}.",
-                ev.TypeName, key);
             Activity.Current?
                 .SetTag("dropped_event", true)
                 .SetTag("dropped_event.reason", "schema_not_found")
                 .SetTag("dropped_event.type", ev.TypeName);
+            throw new InvalidOperationException(
+                $"[Intelligence] No schema registered for type '{ev.TypeName}' (key '{key}') after a forced registry reload.");
+        }
+
+        if (schema.CollectionName is null)
+        {
+            logger.LogDebug(
+                "[Intelligence] Skipped event — type={Type} has no vector collection. key={Key}",
+                ev.TypeName, key);
             return;
         }
 
@@ -113,9 +123,8 @@ public sealed class IntelligenceStoreConsumer(
         // so it must come from the authoritative Postgres row, not the unsigned event payload.
         // Computed unconditionally (not gated on VectorFields.Count > 0) because a chunks-only
         // schema needs it too — both the vector- and chunk-upsert blocks below reuse this value.
-        var authoritativeTenantValue = schema.TenantColumn is not null
-            ? await FetchAuthoritativeOwnerValueAsync(schema, schema.TenantColumn, ev.Key, ct)
-            : null;
+        var authoritativeTenantValue =
+            await FetchAuthoritativeOwnerValueAsync(schema, schema.TenantColumn, ev.Key, ct);
 
         // ── Named vector upsert (entity-level embeddings) ──────────────────────
         var objectPointWritten = false;
@@ -180,7 +189,40 @@ public sealed class IntelligenceStoreConsumer(
             {
                 foreach (var cf in schema.ChunkFields)
                 {
-                    var text = ExtractString(payload, cf.PropertyName);
+                    string? text;
+                    if (cf.PropertyName == "Document")
+                    {
+                        // authoritativeTenantValue can still be null even though every registered
+                        // type carries a tenant column — FetchAuthoritativeOwnerValueAsync
+                        // returns null when the authoritative Postgres row is gone by the time
+                        // this event is processed. That is still safe to render through: a null
+                        // tenant becomes a SQL NULL RLS GUC, so relation fetches return zero rows
+                        // and the document renders from payload scalars only — but it is a
+                        // silently degraded document, so log it rather than assert it away.
+                        if (authoritativeTenantValue is null)
+                        {
+                            logger.LogWarning(
+                                "[Intelligence] Rendering document for type={Type} key={Key} with no " +
+                                "authoritative tenant value — relation-backed placeholders will render empty.",
+                                schema.TypeName.SanitizeForLog(), ev.Key.SanitizeForLog());
+                        }
+
+                        text = await documentRenderer.RenderAsync(
+                            schema, payload, authoritativeTenantValue ?? string.Empty, ct);
+                    }
+                    else
+                    {
+                        text = ExtractString(payload, cf.PropertyName);
+                    }
+
+                    // Delete this field's stale chunk points before the empty-text guard below —
+                    // not after. A field whose text has shrunk or become empty must not leave
+                    // orphaned points from the previous write; scoping by parent_id AND field
+                    // (rather than parent_id alone) keeps this from touching other chunk fields'
+                    // points on the same parent.
+                    var chunkFieldFilter = IntelligenceFilterBuilder.MatchParentIdAndField(ev.Key, cf.PropertyName);
+                    await vectorWrite.DeleteByFilterAsync(chunksCollectionName, chunkFieldFilter);
+
                     if (string.IsNullOrWhiteSpace(text)) continue;
 
                     var vectorName = $"{cf.PropertyName.ToSnakeCase()}_vector";
@@ -265,6 +307,11 @@ public sealed class IntelligenceStoreConsumer(
                             // column whose camelCase name collides with a reserved chunk payload key
                             // at registration, so one cannot reach this loop.
                             var camelKey = name.ToCamelCase();
+                            // ScalarColumns position: INCLUDE __TenantId. This lookup only resolves
+                            // the SqlType of a column already named by MetadataColumns, so filtering
+                            // it out here would change nothing that MetadataColumns does not already
+                            // decide — and if the tenant column ever does need denormalizing onto a
+                            // chunk point, it must find its real TEXT type rather than fall back.
                             var sqlType = schema.ScalarColumns.FirstOrDefault(c =>
                                 string.Equals(c.Name, name, StringComparison.OrdinalIgnoreCase))?.SqlType ?? "TEXT";
                             var val = ExtractTypedValue(payload, name, sqlType);
@@ -374,6 +421,10 @@ public sealed class IntelligenceStoreConsumer(
             if (!string.IsNullOrWhiteSpace(fieldText))
                 pointPayload[vf.PropertyName.ToCamelCase()] = fieldText;
         }
+        // ScalarColumns position: INCLUDE __TenantId. This builds the Qdrant point payload, which
+        // is a projection of the stored row, not a client-facing surface — the tenant value must
+        // reach the vector store so points carry a tenant discriminator alongside the collection
+        // routing. Read-side exposure is governed at the search RPCs, not here.
         foreach (var col in schema.ScalarColumns)
         {
             var isOwnerColumn = ownerField is not null &&
@@ -444,16 +495,22 @@ public sealed class IntelligenceStoreConsumer(
         var ev = Deserialize(key, value);
         if (!ev.TargetStores.HasFlag(StoreTarget.Intelligence)) return;
 
-        var schema = registry.Get(ev.TypeName);
-        if (schema?.CollectionName is null)
+        var schema = await registry.GetOrReloadAsync(ev.TypeName, ct);
+        if (schema is null)
         {
-            logger.LogError(
-                "[Intelligence] Dropped event — no schema registered for type={Type} key={Key}.",
-                ev.TypeName, ev.Key);
             Activity.Current?
                 .SetTag("dropped_event", true)
                 .SetTag("dropped_event.reason", "schema_not_found")
                 .SetTag("dropped_event.type", ev.TypeName);
+            throw new InvalidOperationException(
+                $"[Intelligence] No schema registered for type '{ev.TypeName}' (key '{ev.Key}') after a forced registry reload.");
+        }
+
+        if (schema.CollectionName is null)
+        {
+            logger.LogDebug(
+                "[Intelligence] Skipped delete — type={Type} has no vector collection. key={Key}",
+                ev.TypeName, ev.Key);
             return;
         }
 
@@ -471,7 +528,7 @@ public sealed class IntelligenceStoreConsumer(
             throw new PoisonMessageException($"[Intelligence] Malformed payload JSON type={ev.TypeName} key={key}", ex);
         }
 
-        var tenantValue = schema.TenantColumn is not null ? ExtractString(payload, schema.TenantColumn) : null;
+        var tenantValue = ExtractString(payload, schema.TenantColumn);
 
         var pointId = KeyToUlong(ev.Key);
 
