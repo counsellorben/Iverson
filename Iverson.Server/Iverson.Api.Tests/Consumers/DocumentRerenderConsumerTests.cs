@@ -409,6 +409,11 @@ public class DocumentRerenderConsumerTests
     // pre-2026-07-17 _iverson_schema row written before the tenant column existed. Same asserted
     // contract (a tenant-less changed entity enqueues nothing), now with the mechanism that makes
     // it true asserted alongside it.
+    //
+    // NOT "strictly stronger", though — corrected in Task 7 fix round 1 (Ruling 63). The new path
+    // returns on DispatchAsync's unknown-type arm, which is EARLIER than the null-tenant guard the
+    // old test used to reach, so this re-pointing gave up that guard's only coverage. The two
+    // tests immediately below restore it; do not delete them believing this one covers it.
     [Fact]
     public async Task Dispatch_ChangedEntityRehydratedWithNoTenantColumn_IsNotRegistered_AndEnqueuesNothing()
     {
@@ -437,6 +442,63 @@ public class DocumentRerenderConsumerTests
         var sut = new DocumentRerenderConsumer(
             _consumer, registry, _entities, _queue, NullLogger<DocumentRerenderConsumer>.Instance);
         await sut.DispatchAsync(ev.Key, Serialize(ev), CancellationToken.None);
+
+        await _queue.DidNotReceiveWithAnyArgs().EnqueueEntityAsync(default, default!, default!);
+    }
+
+    // ── DispatchAsync's own `if (tenantId is null) return;` guard ───────────
+    //
+    // ADDED IN TASK 7 FIX ROUND 1 (Ruling 63). Re-pointing the test above onto the
+    // rehydrated-legacy-row path moved it onto DispatchAsync's UNKNOWN-TYPE arm
+    // (`registry.Get(ev.TypeName) is null`), which returns several lines EARLIER — so the null-
+    // tenant guard itself, which the old test used to reach through the since-deleted
+    // `changedSchema.TenantColumn is null` branch, was left with no coverage at all. Measured, not
+    // assumed: mutating that guard to assign a sentinel instead of returning SURVIVES the whole
+    // suite at 82dea39 (808/808) and is KILLED at base c095f75 (804/805).
+    //
+    // The guard is still reachable in production by two routes that survived Task 7 — the
+    // authoritative row being gone by the time the event is consumed (FetchByKeyAsync returns
+    // null), and the row being present but carrying no value in its tenant column. One test each.
+    // What they protect, per this consumer's own comment above the guard: the OneToMany branch
+    // reads its parent key straight out of the payload with no tenant-scoped query in between, so
+    // a null tenant reaching EnqueueEntityAsync is not filtered by anything, and the partial
+    // unique index on ("TenantId","TypeName","EntityKey") does NOT collapse duplicate NULL-tenant
+    // rows — the re-render queue would accumulate unbounded duplicates.
+
+    [Fact]
+    public async Task Dispatch_AuthoritativeRowGone_EnqueuesNothing()
+    {
+        await _registry.RegisterAsync(WidgetSchema());
+        await _registry.RegisterAsync(CommentSchema());
+
+        // The Comment row was deleted between the Created event being published and this
+        // consumer reading it, so the re-derivation of the tenant finds nothing.
+        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), CommentId).Returns((string?)null);
+
+        var payload = $$"""{"Id":"{{CommentId}}","Body":"hi","WidgetId":"{{WidgetId}}","TenantId":"{{TenantA}}"}""";
+        var ev = MakeEvent(EntityEventType.Created, "Comment", CommentId, payload);
+
+        await BuildSut().DispatchAsync(ev.Key, Serialize(ev), CancellationToken.None);
+
+        // The payload carries a perfectly good TenantId — the point is that the consumer must NOT
+        // fall back to it, and must not enqueue with a null tenant either.
+        await _queue.DidNotReceiveWithAnyArgs().EnqueueEntityAsync(default, default!, default!);
+    }
+
+    [Fact]
+    public async Task Dispatch_AuthoritativeRowHasNoTenantValue_EnqueuesNothing()
+    {
+        await _registry.RegisterAsync(WidgetSchema());
+        await _registry.RegisterAsync(CommentSchema());
+
+        // Row present, tenant column absent from it — ExtractString returns null.
+        _entities.FetchByKeyAsync(Arg.Any<TableSchema>(), CommentId)
+            .Returns($$"""{"Id":"{{CommentId}}","Body":"hi","WidgetId":"{{WidgetId}}"}""");
+
+        var ev = MakeEvent(EntityEventType.Created, "Comment", CommentId,
+            $$"""{"Id":"{{CommentId}}","Body":"hi","WidgetId":"{{WidgetId}}"}""");
+
+        await BuildSut().DispatchAsync(ev.Key, Serialize(ev), CancellationToken.None);
 
         await _queue.DidNotReceiveWithAnyArgs().EnqueueEntityAsync(default, default!, default!);
     }

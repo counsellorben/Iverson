@@ -3,7 +3,6 @@ using Iverson.Api.Schema;
 using Iverson.Api.Tests.Helpers;
 using Iverson.Sql;
 using Microsoft.Extensions.Logging;
-using Microsoft.Extensions.Logging.Abstractions;
 using NSubstitute;
 using Xunit;
 
@@ -14,10 +13,17 @@ public class SchemaRegistryTests
     private readonly ISchemaRegistryRepository _repository;
     private readonly SchemaRegistry _sut;
 
+    // A recording logger rather than NullLogger: LoadAsync's two rejection arms (the JsonException
+    // catch and the IsNullOrEmpty skip) produce the SAME observable outcome — the type is not
+    // registered — so IsRegistered alone cannot tell them apart, and a test asserting only that
+    // would pass no matter which arm ran, or if a future third arm ran instead. The log message is
+    // the only thing that discriminates them, so the boundary tests below assert on it.
+    private readonly RecordingLogger<SchemaRegistry> _logs = new();
+
     public SchemaRegistryTests()
     {
         _repository = Substitute.For<ISchemaRegistryRepository>();
-        _sut = new SchemaRegistry(_repository, NullLogger<SchemaRegistry>.Instance);
+        _sut = new SchemaRegistry(_repository, _logs);
     }
 
     [Fact]
@@ -330,6 +336,16 @@ public class SchemaRegistryTests
 
         _sut.IsRegistered("Article").Should().BeFalse("a row with no tenant column must never be admitted");
         _sut.IsRegistered("Author").Should().BeTrue("one bad row must not take the rest of the registry down");
+
+        // Which arm rejected it, not merely that something did: this row must fail inside
+        // System.Text.Json (the `required` member is missing) and be caught, NOT reach the
+        // IsNullOrEmpty skip, which would mean `required` had stopped doing anything.
+        _logs.Entries.Should().ContainSingle(e =>
+            e.Level == LogLevel.Error &&
+            e.Message.Contains("could not be deserialized") &&
+            e.Message.Contains("Article"),
+            "the JsonException catch is the arm that must fire for a row missing the key entirely");
+        _logs.Entries.Should().NotContain(e => e.Message.Contains("carries no server-owned tenant column"));
     }
 
     /// <summary>
@@ -353,6 +369,17 @@ public class SchemaRegistryTests
         await _sut.LoadAsync();
 
         _sut.IsRegistered("Article").Should().BeFalse();
+
+        // Which arm rejected it. `required` is satisfied here — the key IS present — so this row
+        // must deserialize cleanly and be stopped by the explicit IsNullOrEmpty check. If it were
+        // the JsonException catch firing instead, the runtime check this test exists to pin would
+        // be unexercised and the assertion above would still pass.
+        _logs.Entries.Should().ContainSingle(e =>
+            e.Level == LogLevel.Error &&
+            e.Message.Contains("carries no server-owned tenant column") &&
+            e.Message.Contains("Article"),
+            "the IsNullOrEmpty skip is the arm that must fire for an explicit null");
+        _logs.Entries.Should().NotContain(e => e.Message.Contains("could not be deserialized"));
     }
 
     /// <summary>
@@ -371,6 +398,7 @@ public class SchemaRegistryTests
 
         _sut.IsRegistered("Article").Should().BeTrue();
         _sut.Get("Article")!.TenantColumn.Should().Be("TenantId");
+        _logs.Entries.Should().NotContain(e => e.Level == LogLevel.Error);
     }
 
     // Serializes exactly as SchemaRegistry.RegisterAsync does, so the fixtures above are real
@@ -381,4 +409,20 @@ public class SchemaRegistryTests
             descriptor,
             new System.Text.Json.JsonSerializerOptions
                 { PropertyNamingPolicy = System.Text.Json.JsonNamingPolicy.CamelCase });
+
+    // Records level + formatted message so a test can assert WHICH log fired, not merely that the
+    // registry ended up in some state. Same shape as DocumentRerenderQueueWorkerTests'.
+    private sealed class RecordingLogger<T> : ILogger<T>
+    {
+        public List<(LogLevel Level, string Message)> Entries { get; } = [];
+
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+
+        public bool IsEnabled(LogLevel logLevel) => true;
+
+        public void Log<TState>(
+            LogLevel logLevel, EventId eventId, TState state, Exception? exception,
+            Func<TState, Exception?, string> formatter) =>
+            Entries.Add((logLevel, formatter(state, exception)));
+    }
 }

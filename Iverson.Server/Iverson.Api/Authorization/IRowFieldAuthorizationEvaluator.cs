@@ -46,6 +46,14 @@ public sealed record AuthorizationDecision(
     /// <c>Struct.Fields.TryGetValue(null)</c>, i.e. a thrown ArgumentNullException surfacing as a
     /// gRPC Unknown, in place of the clean "not found" they return today.
     /// </para>
+    /// <para>
+    /// There are NINE such guards in total: the three above, which are reached with a null on
+    /// every denied read, plus six (<c>ObjectRetrievalGrpcService</c> x2,
+    /// <c>ObjectMappingGrpcService</c> x1, <c>EntityRelationResolver</c> x1,
+    /// <c>AuthorizationFieldMasking</c> x2) that sit after a <c>Denied</c> return or behind
+    /// <c>decision.Denied ||</c> and so are non-null by flow. The declaration is shared, so all
+    /// nine stay.
+    /// </para>
     /// </summary>
     string? TenantColumn,
     string? TenantValue);

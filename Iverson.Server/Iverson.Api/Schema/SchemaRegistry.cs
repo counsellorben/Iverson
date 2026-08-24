@@ -43,6 +43,16 @@ public sealed class SchemaRegistry(
 
         foreach (var (typeName, json) in rows)
         {
+            // ORDER IS LOAD-BEARING: this runs BEFORE the try below, so a row that Postgres
+            // still returns counts as "present" even when it fails to deserialize. That is the
+            // only reason the skip-and-log containment argument holds. The reconcile loop at the
+            // bottom of this method evicts every cached schema NOT in this set, so if the Add were
+            // moved into the try (or after it), a row that becomes corrupt after a successful boot
+            // would be missing from the set on the next 30 s SchemaRefreshWorker poll and the
+            // reconcile loop would EVICT the already-good in-memory descriptor — silently
+            // unregistering a live type on a RUNNING instance, with the terminal write loss
+            // described at the catch below. Keeping the Add here confines that degradation to a
+            // cold boot or a fresh replica, which is what makes it survivable at all.
             loadedTypeNames.Add(typeName);
 
             // THE deserialization boundary. Everything downstream treats SchemaDescriptor's
@@ -61,11 +71,27 @@ public sealed class SchemaRegistry(
             }
             catch (JsonException ex)
             {
+                // THE COST OF SKIPPING, stated so nobody reads this catch as free. On a COLD BOOT
+                // or a FRESH REPLICA the type is simply never registered, and every consumer's
+                // unknown-type arm (EngagementStoreConsumer, IntelligenceStoreConsumer,
+                // EnrichmentConsumer) logs an Error and RETURNS — which COMMITS THE KAFKA OFFSET.
+                // That drop is TERMINAL; nothing retries it. So one corrupt _iverson_schema row
+                // turns every Kafka write for that type into permanently lost projection data for
+                // the life of that replica. It is still the better trade than throwing out of this
+                // loop (which would freeze every OTHER schema's 30 s refresh, and present as "the
+                // registry stopped updating" rather than a named row), and the Add above keeps a
+                // running instance out of it — but the Error below is the ONLY warning anyone gets.
+                //
+                // The message names the tenant column as the EXPECTED cause without asserting it:
+                // any malformed field in the row lands here, and `ex` is passed so the real
+                // System.Text.Json message renders alongside.
                 logger.LogError(ex,
                     "Schema '{TypeName}' could not be deserialized from storage and was NOT loaded. " +
-                    "A row missing the server-owned tenant column reads as \"missing required " +
-                    "properties including: 'tenantColumn'\" and predates the tenant boundary; " +
-                    "re-register the type to repair it.",
+                    "The usual cause is a row predating the tenant boundary, which carries no " +
+                    "`tenantColumn` key and surfaces as \"missing required properties including: " +
+                    "'tenantColumn'\" — but ANY malformed field in the row reaches this handler, so " +
+                    "read the deserializer message above before assuming. Re-register the type to " +
+                    "repair it.",
                     typeName);
                 continue;
             }
@@ -113,6 +139,9 @@ public sealed class SchemaRegistry(
         // returned by Postgres was unregistered by a different process (e.g. a different
         // api/worker replica calling UnregisterAsync) — without this, a periodic re-poll
         // could never converge on that removal.
+        // This loop is the reason `loadedTypeNames.Add` sits OUTSIDE the try above: "not in the
+        // set" means EVICT, so a row that merely failed to deserialize must still count as
+        // present, or a corruption appearing after boot would unregister a live type mid-flight.
         foreach (var typeName in _schemas.Keys)
             if (!loadedTypeNames.Contains(typeName))
                 _schemas.TryRemove(typeName, out _);
