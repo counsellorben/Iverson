@@ -265,7 +265,7 @@ public class NavPropertyRejectedScenarioTests
         others.Should().HaveCount(4);
         // The exact regression this test exists to catch: a broadcast implementation would mark
         // every one of these Ok too.
-        others.Should().OnlyContain(c => c.Status == CellStatus.Skip);
+        others.Should().OnlyContain(c => c.Status == CellStatus.NotApplicable);
         others.Should().OnlyContain(c => c.Reason != null && c.Reason.Contains("dotnet"));
     }
 
@@ -286,7 +286,7 @@ public class NavPropertyRejectedScenarioTests
         canonical.Detail.Should().Contain("rejects a navigation-property key");
 
         var skipped = cells.Single(c => c.Language == "python");
-        skipped.Status.Should().Be(CellStatus.Skip);
+        skipped.Status.Should().Be(CellStatus.NotApplicable);
     }
 
     [Fact]
@@ -310,7 +310,7 @@ public class NavPropertyRejectedScenarioTests
         canonical.Detail.Should().Contain("channel is not connected");
 
         var skipped = cells.Single(c => c.Language == "java");
-        skipped.Status.Should().Be(CellStatus.Skip);
+        skipped.Status.Should().Be(CellStatus.NotApplicable);
     }
 
     [Fact]

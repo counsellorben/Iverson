@@ -52,10 +52,37 @@ coverage.** Only a full matrix's exit code carries that claim.
 
 Preflight checks gRPC, Authentik and Postgres before any driver is built, and names what is down.
 
+## Cell statuses
+
+| Status | Meaning |
+|---|---|
+| `ok` | This language's client was observed satisfying the scenario. |
+| `FAIL` | Observed getting it wrong. Fails the run. |
+| `skip` | **Not observed.** Never means "passed". |
+| `n/a` | The scenario ran, but not per-language — it is a single orchestrator-side check with no client library involved, so it runs once and the other columns have nothing of their own to report. The cell's reason names the column holding the real result. |
+| `xfail` | Expected failure. No scenario currently emits one. |
+
+`skip` and `n/a` are deliberately different words. `n/a` work WAS observed — once, in the canonical
+column — so calling it `skip` would misreport a covered scenario as an unobserved one. Neither
+counts against the run's exit code; only `FAIL` and an untouched requirement do.
+
+Two `n/a` scenarios exist today: `nav-property-rejected` and `tenant-rejected`, each a
+server-side registration check no client library can express. Both run in the `dotnet` column.
+
+One genuine `skip` remains, and it is accepted rather than outstanding: **`java` /
+`naming-rejected`**. That scenario provokes a deliberately misnamed foreign key so the server can
+reject it; the Java registrar (`SchemaRegistrar.inferForeignKey`) always derives the FK name as
+`{RelatedTypeName}Id` with no override, so the misnaming cannot be expressed in that client's
+declaration style. The requirement itself (`IVC-REG-003`) is fully discharged — by the
+`dotnet` column's server-side check and by go/python/typescript's client-side checks — so this is a
+per-language capability gap, not a coverage gap. Closing it would mean adding a wrong-FK-name
+escape hatch to a shipped client library purely to satisfy a conformance test, which is a worse
+trade than documenting it here.
+
 ## Toolchains
 
-A language whose toolchain is absent is reported as `skip`, not as a failure — `skip` means "not
-observed", never "passed". Drivers need: .NET SDK, `python3`, `npx`/`node`, `go`, and `mvn`.
+A language whose toolchain is absent is reported as `skip`. Drivers need: .NET SDK, `python3`,
+`npx`/`node`, `go`, and `mvn`.
 
 ## After a run
 

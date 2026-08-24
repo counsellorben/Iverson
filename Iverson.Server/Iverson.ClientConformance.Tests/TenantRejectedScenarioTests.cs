@@ -345,9 +345,9 @@ public class TenantRejectedScenarioTests
             .RunAsync(["go", "dotnet", "python"], "acting-token");
 
         cells.Should().HaveCount(3);
-        cells.Count(c => c.Status != CellStatus.Skip).Should().Be(1,
+        cells.Count(c => c.Status != CellStatus.NotApplicable).Should().Be(1,
             "no client library is involved, so the matrix must not read as three independent verifications");
-        cells.Where(c => c.Status == CellStatus.Skip).Should().OnlyContain(c => c.Reason!.Contains("dotnet"));
+        cells.Where(c => c.Status == CellStatus.NotApplicable).Should().OnlyContain(c => c.Reason!.Contains("dotnet"));
     }
 
     [Fact]

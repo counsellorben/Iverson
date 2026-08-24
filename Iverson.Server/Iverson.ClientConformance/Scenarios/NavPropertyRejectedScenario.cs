@@ -180,13 +180,14 @@ public sealed class NavPropertyRejectedScenario(
             canonicalCell = ReportCell.Fail(canonical, Name, $"fixture registration failed: {Describe(ex)}", []);
         }
 
-        // Every other requested language did not run anything for this scenario at all — reusing
-        // S2's skip-with-reason mechanism rather than a copy of the canonical outcome is what
-        // keeps the matrix from reading as five independent verifications of one server call.
+        // Every other requested language did not run anything for this scenario at all — emitting
+        // NotApplicable-with-reason rather than a copy of the canonical outcome is what keeps the
+        // matrix from reading as five independent verifications of one server call. NotApplicable
+        // rather than Skip because the work WAS observed, once: `skip` means "not observed".
         return languages
             .Select(l => string.Equals(l, canonical, StringComparison.OrdinalIgnoreCase)
                 ? canonicalCell
-                : ReportCell.Skip(l, Name,
+                : ReportCell.NotApplicable(l, Name,
                     "nav-property-rejected is a single orchestrator-side gRPC check — no client " +
                     "library is involved — so it runs exactly once rather than once per language; " +
                     $"see the '{canonical}' column for the real result"))

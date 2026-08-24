@@ -13,11 +13,20 @@ public enum CellStatus
     Fail,
     Skip,
     Xfail,
+
+    /// <summary>
+    /// The scenario ran, but not for this language: it is a single orchestrator-side check with no
+    /// client library involved, so it runs once and the other columns have nothing of their own to
+    /// report. Distinct from <see cref="Skip"/>, which means "not observed" — an n/a cell's work
+    /// WAS observed, in the canonical column its reason names. Never counts against the run.
+    /// </summary>
+    NotApplicable,
 }
 
 /// <summary>
 /// One result for a given (language, scenario) pair. <see cref="Reason"/> is required whenever
-/// <see cref="Status"/> is <see cref="CellStatus.Skip"/>. Failure detail (the assertion, the three
+/// <see cref="Status"/> is <see cref="CellStatus.Skip"/> or <see cref="CellStatus.NotApplicable"/>
+/// — for the latter it carries the name of the column holding the real result. Failure detail (the assertion, the three
 /// observed values, and the driver's captured stderr) is carried in <see cref="Detail"/> and is
 /// expected whenever <see cref="Status"/> is <see cref="CellStatus.Fail"/>.
 ///
@@ -49,6 +58,9 @@ public sealed record ReportCell(
 
     public static ReportCell Xfail(string language, string scenario, string reason, IReadOnlyList<Assertion>? assertions = null) =>
         new(language, scenario, CellStatus.Xfail, assertions ?? [], Reason: reason);
+
+    public static ReportCell NotApplicable(string language, string scenario, string reason, IReadOnlyList<Assertion>? assertions = null) =>
+        new(language, scenario, CellStatus.NotApplicable, assertions ?? [], Reason: reason);
 }
 
 /// <summary>
@@ -64,10 +76,11 @@ public sealed class Report
     public void Add(ReportCell cell) => _cells.Add(cell);
 
     /// <summary>
-    /// True only when every non-skipped, non-expected-fail cell passed.
+    /// True only when every cell that could have passed did. Skip, Xfail and NotApplicable are all
+    /// excluded: none of them represents a client that was observed getting the answer wrong.
     /// </summary>
     public bool AllPassed => _cells
-        .Where(c => c.Status is not (CellStatus.Skip or CellStatus.Xfail))
+        .Where(c => c.Status is not (CellStatus.Skip or CellStatus.Xfail or CellStatus.NotApplicable))
         .All(c => c.Status == CellStatus.Ok);
 
     /// <summary>
@@ -128,7 +141,7 @@ public sealed class Report
             sb.AppendLine();
         }
 
-        foreach (var cell in _cells.Where(c => c.Status is CellStatus.Skip or CellStatus.Xfail))
+        foreach (var cell in _cells.Where(c => c.Status is CellStatus.Skip or CellStatus.Xfail or CellStatus.NotApplicable))
             sb.AppendLine($"  {cell.Language}/{cell.Scenario} {Symbol(cell.Status)}: {cell.Reason}");
 
         foreach (var cell in _cells.Where(c => c.Status == CellStatus.Fail))
@@ -224,6 +237,7 @@ public sealed class Report
         CellStatus.Fail => "FAIL",
         CellStatus.Skip => "skip",
         CellStatus.Xfail => "xfail",
+        CellStatus.NotApplicable => "n/a",
         _ => throw new ArgumentOutOfRangeException(nameof(status)),
     };
 }

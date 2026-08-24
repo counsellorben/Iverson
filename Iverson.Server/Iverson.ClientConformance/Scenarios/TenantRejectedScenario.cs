@@ -144,7 +144,7 @@ public sealed class TenantRejectedScenario(
         return languages
             .Select(l => string.Equals(l, canonical, StringComparison.OrdinalIgnoreCase)
                 ? canonicalCell
-                : ReportCell.Skip(l, Name,
+                : ReportCell.NotApplicable(l, Name,
                     "tenant-rejected is a set of orchestrator-side gRPC registration checks — no " +
                     "client library can express either violation — so it runs exactly once rather " +
                     $"than once per language; see the '{canonical}' column for the real result"))
