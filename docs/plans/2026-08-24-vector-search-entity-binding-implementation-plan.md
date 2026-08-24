@@ -40,10 +40,14 @@ stay case-insensitive.
    - the emitted key is `WordCount`, not `wordCount`;
    - `Data.Fields["WordCount"].NumberValue` is `100`, i.e. `KindCase` is `NumberValue`, not
      `StringValue`;
-   - the identity field is emitted as the key column's name (`Id`) and survives masking.
+   - the identity field is emitted as the key column's name (`Id`) and survives masking. This
+     requires seeding `["key"]` in the payload dictionaries — the existing test seeds only
+     `wordCount` and `tenantId`, so without it the assertion has no subject.
 
    **The schema under test must carry both an uppercase and a lowercase `SqlType`** — e.g. keep
-   `new ColumnDescriptor("WordCount", "integer", false)` and add one declared `"BIGINT"`. Production
+   `new ColumnDescriptor("WordCount", "integer", false)` and add one declared `"BIGINT"`, seeding a
+   payload value for it in both `UpsertNamedAsync` calls and asserting its emitted `KindCase` is
+   `NumberValue` — declaring the column alone puts no field in the emitted `Struct`. Production
    emits uppercase (`SchemaBuilder.cs:351-359`) while `SchemaFixtures` uses lowercase
    (`SchemaFixtures.cs:57-64`); a test exercising only one case cannot falsify a
    comparison that handles only the other.
@@ -103,8 +107,10 @@ stay case-insensitive.
 
 1. Rebuild the API image and redeploy the dev stack.
 2. Run the client conformance matrix (`docs/runbooks/client-conformance-matrix.md`).
-3. Confirm `vector-search` is `ok` for all five languages, and that the run reports
-   `0 untouched of 43`.
+3. Confirm `vector-search` is `ok` for all five languages, and that the full-matrix run exits 0
+   with no `FAIL: this was a full-matrix run...` line on stderr — the harness prints an untouched
+   line only when `untouched.Count > 0` (`Program.cs:252-257`) and expresses success through
+   `Report.RunSucceeded`'s exit code (`:260`).
 4. Report the actual cell states read off the run. Do not report a cell not personally read to
    completion.
 
@@ -140,6 +146,8 @@ Task 1 introduces no symbol Task 2 defines.
 | A21 | (Cat 6) Changing `exemptField` to the key column name is safe | Holds **only** with spec §1's `"key"` special case: `ToCamelCase("Id")` is `"id"`, and `SchemaBuilder.cs:53` excludes the key from `ScalarColumns`. Without it, `UpperFirst("key")` = `"Key"` ≠ `"Id"` and the identifier is masked under any FieldPermission. Task 1 step 3 pins both together; step 1 tests it. | holds, conditionally |
 | A22 | SqlType can be compared with a plain `switch` | **FAILED** — production emits uppercase (`SchemaBuilder.cs:351-359`), fixtures lowercase (`SchemaFixtures.cs:57-64`); the existing `SqlTypeMap` uses `OrdinalIgnoreCase` (`SchemaBuilder.cs:391`). Task 1 now mandates case-insensitive exact matching, and step 1 mandates a test covering both cases. | failed, folded in |
 | A23 | `ArticleSchema()`'s columns support the new test | `SchemaFixtures.cs:52-71` — `KeyColumn` `Id`/`uuid`, scalars `Title`/`Body`/`AuthorId`; the existing test already appends `WordCount` | holds |
+| A24 | The flattened payload string parses back to the value the mapping needs | `IntelligenceVectorService.ToCanonicalString:202-207` — `IntegerValue`/`DoubleValue` via `CultureInfo.InvariantCulture`, `BoolValue` as lowercase `"true"`/`"false"`; accepted by `double.TryParse(..., InvariantCulture)` and `bool.TryParse` | holds |
+| A25 | Renaming payload keys to descriptor names cannot leak the tenant column | `RemoveTenantColumn` (`AuthorizationFieldMasking.cs:171-178`) filters on `IsTenantColumn`, which compares `OrdinalIgnoreCase` against `"__TenantId"` (`SchemaDescriptor.cs:13,20-21`); it runs before the `allowedFields is null` early return, and matches the renamed form equally | holds |
 
 **Sibling sweep.** Every payload-emitting site in the target file: `Value.ForString(kvp.Value)`
 appears once (`:280`) and `MaskDisallowedFields` once (`:282`) — the other three hits are comments
