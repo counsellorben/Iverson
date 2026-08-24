@@ -5,6 +5,7 @@ import com.google.protobuf.Value;
 import io.iverson.client.annotations.*;
 import org.junit.jupiter.api.Test;
 
+import java.util.Arrays;
 import java.util.List;
 import java.util.UUID;
 
@@ -51,6 +52,84 @@ class StructConverterTest {
 
         @ManyToMany(type = StructTestTag.class)
         private List<UUID> someTagIds;
+    }
+
+    @IversonEntity
+    static class StructTestArrays {
+        @IversonKey
+        private UUID id;
+        // SchemaRegistrar.detectClrType accepts array-typed properties, so the server registers
+        // real array columns for these — the converter has to agree on both sides.
+        private UUID[] tagIds;
+        private int[] scores;
+        // byte[] is the exception: detectClrType maps it to CLR_BYTES (a scalar), so it must
+        // travel as a base64 string, not as a list.
+        private byte[] thumbnail;
+    }
+
+    @Test
+    void toStruct_arrayTypedProperty_serializesAsListNotStringifiedReference() {
+        StructTestArrays entity = new StructTestArrays();
+        UUID tagId1 = UUID.randomUUID();
+        UUID tagId2 = UUID.randomUUID();
+        entity.tagIds = new UUID[] { tagId1, tagId2 };
+
+        Struct struct = StructConverter.toStruct(entity);
+
+        Value tagIds = struct.getFieldsOrThrow("TagIds");
+        assertEquals(Value.KindCase.LIST_VALUE, tagIds.getKindCase(),
+            "an array-typed FK column must reach the server as a ListValue; a stringified "
+            + "\"[Ljava.util.UUID;@...\" would register as an array and then write garbage");
+        assertEquals(2, tagIds.getListValue().getValuesCount());
+        assertEquals(tagId1.toString(), tagIds.getListValue().getValues(0).getStringValue());
+        assertEquals(tagId2.toString(), tagIds.getListValue().getValues(1).getStringValue());
+    }
+
+    @Test
+    void toStruct_primitiveArrayProperty_serializesAsListOfNumbers() {
+        StructTestArrays entity = new StructTestArrays();
+        entity.scores = new int[] { 3, 1, 4 };
+
+        Struct struct = StructConverter.toStruct(entity);
+
+        Value scores = struct.getFieldsOrThrow("Scores");
+        assertEquals(Value.KindCase.LIST_VALUE, scores.getKindCase());
+        assertEquals(3, scores.getListValue().getValuesCount());
+        assertEquals(3.0, scores.getListValue().getValues(0).getNumberValue());
+        assertEquals(4.0, scores.getListValue().getValues(2).getNumberValue());
+    }
+
+    @Test
+    void toStruct_byteArrayProperty_serializesAsBase64StringNotAList() {
+        StructTestArrays entity = new StructTestArrays();
+        entity.thumbnail = new byte[] { 1, 2, 3, (byte) 200 };
+
+        Struct struct = StructConverter.toStruct(entity);
+
+        Value thumb = struct.getFieldsOrThrow("Thumbnail");
+        assertEquals(Value.KindCase.STRING_VALUE, thumb.getKindCase(),
+            "byte[] is CLR_BYTES, a scalar — it must match the .NET client's base64 encoding");
+        assertArrayEquals(
+            new byte[] { 1, 2, 3, (byte) 200 },
+            java.util.Base64.getDecoder().decode(thumb.getStringValue()));
+    }
+
+    @Test
+    void fromStruct_arrayTypedProperties_roundTripThroughToStruct() {
+        StructTestArrays original = new StructTestArrays();
+        original.id = UUID.randomUUID();
+        original.tagIds = new UUID[] { UUID.randomUUID(), UUID.randomUUID() };
+        original.scores = new int[] { 7, 8 };
+        original.thumbnail = new byte[] { 9, (byte) 255 };
+
+        StructTestArrays restored =
+            StructConverter.fromStruct(StructConverter.toStruct(original), StructTestArrays.class);
+
+        // Before the array branch existed, each of these came back null: the read side rejected a
+        // LIST_VALUE whose target was not a Collection, dropping the column without an error.
+        assertArrayEquals(original.tagIds, restored.tagIds);
+        assertArrayEquals(original.scores, restored.scores);
+        assertArrayEquals(original.thumbnail, restored.thumbnail);
     }
 
     @Test

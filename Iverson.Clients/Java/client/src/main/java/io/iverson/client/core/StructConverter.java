@@ -14,6 +14,7 @@ import java.lang.reflect.Type;
 import java.time.OffsetDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
+import java.util.Base64;
 import java.util.Collection;
 import java.util.HashMap;
 import java.util.List;
@@ -109,10 +110,31 @@ public final class StructConverter {
         if (val instanceof Number n)  return Value.newBuilder().setNumberValue(n.doubleValue()).build();
         if (val instanceof OffsetDateTime dt)
             return Value.newBuilder().setStringValue(dt.format(DateTimeFormatter.ISO_OFFSET_DATE_TIME)).build();
+        // byte[] is a primitive scalar, not an array column — SchemaRegistrar.detectClrType
+        // checks it before its own array unwrap and maps it to CLR_BYTES. It has to travel as a
+        // base64 string to match the .NET client, whose System.Text.Json round-trip encodes
+        // byte[] that way; sending it as a list of 0-255 numbers would not round-trip.
+        if (val instanceof byte[] bytes) {
+            return Value.newBuilder().setStringValue(Base64.getEncoder().encodeToString(bytes)).build();
+        }
         if (val instanceof Collection<?> coll) {
             ListValue.Builder listBuilder = ListValue.newBuilder();
             for (Object element : coll) {
                 listBuilder.addValues(toValue(element));
+            }
+            return Value.newBuilder().setListValue(listBuilder.build()).build();
+        }
+        // A Java array is NOT a Collection, so it reaches here rather than the branch above.
+        // SchemaRegistrar.detectClrType accepts array-typed properties (Class.isArray), which
+        // means the server registers a real array column for them — so letting them fall to the
+        // toString() default below would register `int[]`/`UUID[]` as an array and then send
+        // "[I@1b6d3586" for it. Reflection covers primitive arrays too, which a cast to Object[]
+        // would not.
+        if (val.getClass().isArray()) {
+            ListValue.Builder listBuilder = ListValue.newBuilder();
+            int length = java.lang.reflect.Array.getLength(val);
+            for (int i = 0; i < length; i++) {
+                listBuilder.addValues(toValue(java.lang.reflect.Array.get(val, i)));
             }
             return Value.newBuilder().setListValue(listBuilder.build()).build();
         }
@@ -170,6 +192,18 @@ public final class StructConverter {
 
     private static Object fromValue(Value value, Class<?> targetType, Type genericType) {
         if (value.getKindCase() == Value.KindCase.LIST_VALUE) {
+            // Array-typed target: the write side sends these as a ListValue, so the read side has
+            // to rebuild the array. Without this, a `UUID[]` field silently came back null — the
+            // Collection check below rejected it and the caller saw a dropped column, not an error.
+            if (targetType.isArray()) {
+                Class<?> elementType = targetType.getComponentType();
+                List<Value> elements = value.getListValue().getValuesList();
+                Object array = java.lang.reflect.Array.newInstance(elementType, elements.size());
+                for (int i = 0; i < elements.size(); i++) {
+                    java.lang.reflect.Array.set(array, i, fromValue(elements.get(i), elementType, null));
+                }
+                return array;
+            }
             if (!Collection.class.isAssignableFrom(targetType)) return null;
             Class<?> elementType = elementTypeOf(genericType);
             if (elementType == null) return null;
@@ -184,6 +218,10 @@ public final class StructConverter {
                 String s = value.getStringValue();
                 if (targetType == UUID.class) yield UUID.fromString(s);
                 if (targetType == OffsetDateTime.class) yield OffsetDateTime.parse(s);
+                // Mirror of the base64 encoding on the write side. Without this the String was
+                // handed straight to Field.set on a byte[] field, throwing IllegalArgumentException
+                // that fromStruct then rethrew as an opaque RuntimeException.
+                if (targetType == byte[].class) yield Base64.getDecoder().decode(s);
                 yield s;
             }
             case NUMBER_VALUE -> {
