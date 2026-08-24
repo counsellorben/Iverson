@@ -351,7 +351,8 @@ implemented requirement.
 | IVC-IDN-001 | Active | Behaviour | A client carries the service identity and the acting-user identity as two distinct credentials on one call, and a mapped write carrying both is accepted |
 | IVC-IDN-002 | Active | Behaviour | A row written under an acting user is readable back by that same acting user through the mapped read path, carrying the owner identity that acting user propagated |
 | IVC-IDN-003 | Active | Behaviour | The server derives a row's tenant from the acting-user identity rather than from the write payload, and denies an acting user of another tenant who attempts to write that row |
-| IVC-IDN-004 | Active | Behaviour | A row read back through any mapped path carries no server-owned tenant column |
+| IVC-IDN-004 | Retired | Behaviour | A row read back through any mapped path carries no server-owned tenant column |
+| IVC-IDN-005 | Active | Behaviour | A mapped point read of a row returns no field whose name matches the server-owned tenant column, compared case-insensitively |
 
 `IVC-IDN-001` is the two-credential claim every other axis silently rests on. The service identity
 rides in `authorization` and carries the scopes (`admin`, `schema_admin`) the server evaluates
@@ -419,7 +420,7 @@ client controls:
   ABSENT — proof that the probe is reading something gRPC genuinely cannot see, without which a
   Postgres-only assertion could not distinguish "the server derived it" from "the client sent it".
   That gRPC-absent half does NOT grade this Statement — it grades the outbound strip, a separate
-  claim — so it cites `IVC-IDN-004` and not `IVC-IDN-003`. Letting `IVC-IDN-003` cite it would
+  claim — so it cites `IVC-IDN-005` and not `IVC-IDN-003`. Letting `IVC-IDN-003` cite it would
   quietly widen this requirement to cover a rule it does not state. A server that took the client's
   word for it, a server that stopped injecting the column, or a client that propagated no acting
   user at all each fail here rather than agreeing by construction with what the driver sent.
@@ -473,20 +474,34 @@ The status code is reported and compared as the numeric gRPC code, never as a na
 languages spell the same code five ways (`PermissionDenied`, `PERMISSION_DENIED`, `7`), so a
 name-based comparison would report a cross-language spelling difference as a conformance failure.
 
-`IVC-IDN-004` is a WIRE claim, and it is the only requirement in this document that constrains what
+`IVC-IDN-004` is retired and re-authored as `IVC-IDN-005`. Its Statement said "any mapped path",
+which is wider than the single observation that grades it. One assertion is involved — the third in
+`IdentityScenario.JudgeTenantDerivation` — and it makes exactly one `ObjectMapping.Get` at
+`Depth = 0`, for one row of one type. A regression that stripped the column from that point read but
+emitted it on a depth-1 hydrated child, on a search projection, or on the mapped list would leave
+`IVC-IDN-004` green while a row read back through a mapped path carried the column. The retirement
+is for that gap alone; the earlier scoping note in this section was already careful to say the claim
+is "a mapped read-back, not `GetSchema`, not a search projection", but the Statement cell itself did
+not say it, and the Statement cell is what binds.
+
+The correction is deliberately narrower rather than the check being widened. Widening would mean
+authoring a claim no assertion in this harness discharges — the precise defect this document's
+coverage ledger exists to surface — and grading the wider claim needs new observations (a depth-1
+read, a search projection) that belong to whoever authors them, not to a wording fix. If those
+observations are added later, `IVC-IDN-005` is the row to extend by authoring siblings beside it.
+
+`IVC-IDN-005` is a WIRE claim, and it is the only requirement in this document that constrains what
 the server may EMIT rather than what a client must do. It is at home on `IDN` by the axis's own
 precedent — `IVC-IDN-003` already grades a SERVER derivation, not a client capability — and it needs
 no tenth axis: the column it is about exists only because of the identity model this axis owns.
 
 It is graded by the third assertion in `IdentityScenario.JudgeTenantDerivation`: the orchestrator's
-own gRPC read of the same row the Postgres probe found `__TenantId` in must come back with no field
-matching that name, compared case-INSENSITIVELY so a re-cased `__tenantid` cannot satisfy it. That
+own gRPC point read of the same row the Postgres probe found `__TenantId` in must come back with no
+field matching that name, compared case-INSENSITIVELY so a re-cased `__tenantid` cannot satisfy it —
+which is why the Statement names the comparison rather than leaving it to the assertion. That
 assertion is the same one that conjoins `IVC-IDN-003`'s Postgres probe — one observation, two claims
-graded from it, which is why the two requirements live in one cell — but it cites `IVC-IDN-004`
-ALONE. The scope is deliberately the wire and nothing more: it says the column is absent from a
-mapped read-back, not that it is absent from `GetSchema`, from a search projection, or from any
-other outbound surface. Widening it to "every outbound path" would make it a claim no single
-assertion observes, which is the exact defect this document's coverage ledger exists to surface.
+graded from it, which is why the two requirements live in one cell — but it cites `IVC-IDN-005`
+ALONE.
 
 A client cannot make this requirement fail or pass — it has no lever on it. It is authored anyway
 because the strip is the guarantee every client-facing tenancy claim rests on: were it to regress,
@@ -504,7 +519,7 @@ role are deliberately not authored here; see the Coverage table below.
 | Service and acting-user identities carried as two credentials on one call | Covered | IVC-IDN-001 |
 | Acting-user propagation observable in the stored row | Covered | IVC-IDN-002 |
 | Tenancy derived from the acting user and enforced against another tenant's acting user | Covered | IVC-IDN-003 |
-| A mapped read-back never carrying the server-owned tenant column | Covered | IVC-IDN-004 |
+| A mapped point read never carrying the server-owned tenant column | Covered | IVC-IDN-005 |
 | Token acquisition | Deferred | Every client can mint a service token from a client-credentials trio, but the harness passes a pre-minted `--service-token` to all five drivers on purpose (Authentik stamps the JWT's `iss` from the request's Host header and grants scopes only when asked, neither of which a driver's own minting expresses), so no assertion observes a client's token acquisition and no requirement constrains it. |
 | Suspended and deleted tenants | Deferred | `ActingUserInterceptor` rejects an acting user whose tenant is absent, `suspended` or `deleted` with `PermissionDenied`, but the harness runs entirely inside two active tenants and provisions none, so no assertion observes a suspended or deleted tenant and no requirement constrains that path. |
 | Field-permission narrowing by acting-user role | Deferred | `RowFieldAuthorizationEvaluator` narrows writable and readable fields by the acting user's `groups` claim, but the harness registers no `FieldPermission` (the `Reregistrar` sets row permissions only), so no assertion observes field narrowing and no requirement constrains it. |

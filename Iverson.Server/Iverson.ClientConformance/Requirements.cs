@@ -468,7 +468,7 @@ public static class Requirements
     /// could not otherwise distinguish "the server derived it" from "the client sent it". It does
     /// NOT cite this requirement: it grades the server's outbound strip, which is a different claim
     /// from this Statement, and citing it here would quietly widen this requirement to cover a rule
-    /// it does not state. It cites <see cref="IdnServerTenantColumnAbsentFromReadBack"/> instead.
+    /// it does not state. It cites <see cref="IdnServerTenantColumnAbsentFromPointRead"/> instead.
     /// One observation, two claims graded from it, in one cell — which is why the cell goes red if
     /// either the derivation or the strip regresses.</para>
     ///
@@ -483,11 +483,20 @@ public static class Requirements
     public const string IdnTenancyDerivedAndEnforced = "IVC-IDN-003";
 
     /// <summary>
-    /// A row read back through any mapped path carries no server-owned tenant column. Discharged by
-    /// the THIRD assertion in <c>IdentityScenario.JudgeTenantDerivation</c>: the orchestrator's own
-    /// gRPC read of the very row the Postgres probe found <c>__TenantId</c> in must come back with
-    /// no field matching that name, compared case-INSENSITIVELY so a re-cased <c>__tenantid</c>
+    /// A mapped point read of a row returns no field whose name matches the server-owned tenant
+    /// column, compared case-insensitively. Discharged by the THIRD assertion in
+    /// <c>IdentityScenario.JudgeTenantDerivation</c>: the orchestrator's own <c>ObjectMapping.Get</c>
+    /// at <c>Depth = 0</c>, of the very row the Postgres probe found <c>__TenantId</c> in, must come
+    /// back with no field matching that name — case-INSENSITIVELY, so a re-cased <c>__tenantid</c>
     /// cannot satisfy it.
+    ///
+    /// <para><b>Supersedes the retired IVC-IDN-004.</b> That Statement read "a row read back through
+    /// ANY MAPPED PATH", which was wider than the one observation behind it: a single
+    /// <c>Depth = 0</c> Get, of one row, of one type. A regression that stripped the column there
+    /// and emitted it on a depth-1 hydrated child, on a search projection, or on the mapped list
+    /// would have left IVC-IDN-004 green while a mapped read-back carried the column. The successor
+    /// says what is actually observed. Global Constraint 3 makes Statement cells immutable, so the
+    /// correction had to be a retirement plus a successor, not an edit.</para>
     ///
     /// <para><b>Why this is its own ID and not a clause of
     /// <see cref="IdnTenancyDerivedAndEnforced"/>.</b> That requirement states a DERIVATION —
@@ -500,11 +509,13 @@ public static class Requirements
     /// the area <c>Deferred</c> — was worse still, because <c>Deferred</c> in this standard means
     /// "no assertion observes it", and one does, on every run.</para>
     ///
-    /// <para><b>Scope is the wire, and nothing wider.</b> The Statement says a MAPPED READ-BACK,
-    /// because that is exactly what the assertion observes. It makes no claim about
-    /// <c>GetSchema</c>, about search projections, or about any other outbound surface. A Statement
+    /// <para><b>Scope is one point read, and nothing wider.</b> The Statement says a MAPPED POINT
+    /// READ because that is exactly what the assertion observes — not <c>GetSchema</c>, not a
+    /// search projection, not a depth-resolved read, not any other outbound surface. A Statement
     /// worded "every outbound path" would be a claim no assertion in this harness discharges, which
-    /// is the precise defect the coverage ledger exists to surface.</para>
+    /// is the precise defect the coverage ledger exists to surface. Widening this one to cover a
+    /// surface needs an assertion that OBSERVES that surface first; author a sibling then, and do
+    /// not reword this.</para>
     ///
     /// <para><b>No client can affect this one.</b> It is a server-emission claim on an axis whose
     /// other server-side claim (IVC-IDN-003's derivation half) set the precedent. It is authored
@@ -512,7 +523,7 @@ public static class Requirements
     /// regress, every driver in every language would start receiving a column it must never
     /// see.</para>
     /// </summary>
-    public const string IdnServerTenantColumnAbsentFromReadBack = "IVC-IDN-004";
+    public const string IdnServerTenantColumnAbsentFromPointRead = "IVC-IDN-005";
 
     // ── SCH — Schema ────────────────────────────────────────────────────────────────────────
 

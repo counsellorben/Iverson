@@ -224,9 +224,9 @@ public class IdentityScenarioTests
     public void JudgeTenantDerivation_TheGrpcControl_CitesIdn004AndNotIdn003()
     {
         Named(JudgeHappy(), "does not carry the server-owned tenant column").RequirementId.Should()
-            .Be(Requirements.IdnServerTenantColumnAbsentFromReadBack,
+            .Be(Requirements.IdnServerTenantColumnAbsentFromPointRead,
                 "the gRPC-absent half grades the server's OUTBOUND STRIP — an EMISSION claim, which " +
-                "is IVC-IDN-004 — and NOT IVC-IDN-003's DERIVATION statement; citing IVC-IDN-003 " +
+                "is IVC-IDN-005 — and NOT IVC-IDN-003's DERIVATION statement; citing IVC-IDN-003 " +
                 "here would silently widen that requirement to own a rule it does not make");
 
         // The negative half, stated so that it can actually FAIL ON ITS OWN. The `NotBe(IDN-003)`
@@ -236,7 +236,7 @@ public class IdentityScenarioTests
         // attempt and verified by running both mutants:
         //   - REPOINTING this const at IVC-IDN-003 is caught, and caught FIRST by Check1.
         //     `ToHashSet()` collapses the duplicate on the REGISTRY side only; the standard still
-        //     declares the orphaned IVC-IDN-004 row, so `registryIds` loses a member the standard
+        //     declares the orphaned IVC-IDN-005 row, so `registryIds` loses a member the standard
         //     keeps and Check1's `missingFromRegistry` is non-empty. Mutant DUP1 fails FIVE tests
         //     in the tree it ships in — Check1_ActiveIdsInStandard_ExactlyMatchConstsInRegistry,
         //     this test, Judge..._Idn004_IsCitedByExactlyOneAssertion,
@@ -268,7 +268,7 @@ public class IdentityScenarioTests
     }
 
     /// <summary>
-    /// IVC-IDN-004 must reach the cell, not merely exist as a const. Ruling 28 authored it because
+    /// IVC-IDN-005 must reach the cell, not merely exist as a const. Ruling 28 authored it because
     /// an assertion already observed the strip on every run while the standard recorded the area as
     /// Deferred — "no assertion observes it" — which was factually false. If this citation ever
     /// stops reaching a cell, the standard goes back to describing coverage it does not have.
@@ -276,7 +276,7 @@ public class IdentityScenarioTests
     [Fact]
     public void JudgeTenantDerivation_Idn004_IsCitedByExactlyOneAssertion()
     {
-        JudgeHappy().Count(a => a.RequirementId == Requirements.IdnServerTenantColumnAbsentFromReadBack)
+        JudgeHappy().Count(a => a.RequirementId == Requirements.IdnServerTenantColumnAbsentFromPointRead)
             .Should().Be(1, "one observation, one emission claim graded from it");
     }
 

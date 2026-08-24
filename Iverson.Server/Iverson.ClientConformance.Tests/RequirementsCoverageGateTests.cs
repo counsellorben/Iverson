@@ -154,7 +154,7 @@ public class RequirementsCoverageGateTests
     /// SELECTION was graded by nothing. Deleting the <c>Requirements.cs</c> clause passed the whole
     /// suite at 439/439: every const is then trivially "cited" by its own declaration line, which
     /// is real code and survives the strip. ONE deleted line made an entire check vacuously green
-    /// — proved end to end, not by argument: a clean de-citation of IVC-IDN-004 dies by name on
+    /// — proved end to end, not by argument: a clean de-citation of IVC-IDN-005 dies by name on
     /// Check2, and that same de-citation PLUS the deleted clause passed 439/439.</para>
     ///
     /// <para>The test-project clause is DEFENSIVE and, as the tree stands, unreachable: the
@@ -237,7 +237,7 @@ public class RequirementsCoverageGateTests
     ///
     /// <para>Without this, a <c>&lt;see cref="Requirements.Xxx"/&gt;</c> in a doc comment COUNTS AS
     /// A CITATION and Check2 passes for a const no assertion constructs. That is not hypothetical:
-    /// de-citing <c>IVC-IDN-004</c>'s assertion (replacing the const with the string literal it
+    /// de-citing <c>IVC-IDN-005</c>'s assertion (replacing the const with the string literal it
     /// evaluates to) survived the gate at 13/13 solely because the method's own doc comment named
     /// the const. The cref is worth keeping — it is the doc link a reader follows — so the check
     /// gets stricter instead.</para>
@@ -571,7 +571,7 @@ public class RequirementsCoverageGateTests
     /// <para>Reach, verified rather than argued. REPOINTING an existing const at another's value
     /// does NOT survive: <c>ToHashSet()</c> collapses the duplicate on the REGISTRY side only,
     /// while the standard still declares the now-orphaned ID, so Check1's comparison does not
-    /// balance — mutant DUP1 (IdnServerTenantColumnAbsentFromReadBack -&gt; "IVC-IDN-003") fails
+    /// balance — mutant DUP1 (IdnServerTenantColumnAbsentFromPointRead -&gt; "IVC-IDN-003") fails
     /// FOUR tests with Check1 among them. What survives is an ADDITIONAL const with no standard row
     /// of its own: mutant DUP2 (a new <c>IdnAliasOfIdn003 = "IVC-IDN-003"</c>, cited from
     /// Verifier.cs) passed 442/442. Check1 balances because the extra value is already in the set,
@@ -1428,7 +1428,7 @@ public class RequirementsCoverageGateTests
         // CONSTRUCTION and no mutation of Check2Inputs can falsify it — the same vacuity fix
         // round 2 removed from IdentityScenarioTests, shipped again in this fixture (Ruling 44's
         // Minor 2). An assertion nothing can break is not coverage.
-        fed.Should().Contain("IdnServerTenantColumnAbsentFromReadBack",
+        fed.Should().Contain("IdnServerTenantColumnAbsentFromPointRead",
             "the const this plan authored must be inside the feed, not merely inside the registry");
         fed.Should().Contain("RegForeignKeyNamingEnforced");
     }

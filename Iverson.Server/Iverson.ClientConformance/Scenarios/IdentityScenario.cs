@@ -533,7 +533,7 @@ public sealed class IdentityScenario(
     /// control is a comment, and the next cleanup takes it.</description></item>
     /// <item><description>ABSENT from the wire — the orchestrator's own gRPC read of the SAME row
     /// does not carry the column at all. Cited, but to
-    /// <see cref="Requirements.IdnServerTenantColumnAbsentFromReadBack"/> (<c>IVC-IDN-004</c>) and
+    /// <see cref="Requirements.IdnServerTenantColumnAbsentFromPointRead"/> (<c>IVC-IDN-005</c>) and
     /// NOT to <c>IVC-IDN-003</c>. It grades the server's outbound STRIP — an EMISSION claim — which
     /// is a different rule from IVC-IDN-003's DERIVATION Statement; citing it there would silently
     /// widen that requirement to own a rule it does not make. Two requirements graded from one
@@ -579,7 +579,7 @@ public sealed class IdentityScenario(
                       $"'{storedTenant ?? "<absent>"}'",
                 Requirements.IdnTenancyDerivedAndEnforced),
 
-            // Cites IVC-IDN-004, NOT IVC-IDN-003 — see this method's doc comment. It grades the
+            // Cites IVC-IDN-005, NOT IVC-IDN-003 — see this method's doc comment. It grades the
             // server's outbound STRIP (an emission claim), not IVC-IDN-003's DERIVATION Statement.
             Assertion.From(
                 $"{language}: the orchestrator's own gRPC read of the same row does not carry the " +
@@ -592,7 +592,7 @@ public sealed class IdentityScenario(
                           "never observed and the Postgres probe beside it is unconjoined"
                         : "the write phase reported no row key for this language, so no gRPC read was made"
                     : $"gRPC returned fields [{string.Join(", ", observation.GrpcFieldNames)}]",
-                Requirements.IdnServerTenantColumnAbsentFromReadBack),
+                Requirements.IdnServerTenantColumnAbsentFromPointRead),
         ];
     }
 
