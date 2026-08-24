@@ -515,7 +515,7 @@ public sealed class EngagementRepository(
         var probeConnectionString = new MySqlConnectionStringBuilder(connectionString) { Database = "" }.ToString();
         await using var conn = new MySqlConnection(probeConnectionString);
         await conn.OpenAsync(ct);
-        return await EngagementHealthChecker.AnyBackendAliveAsync(conn, ct);
+        return await EngagementHealthChecker.AnyBackendReadyAsync(conn, ct);
     }
 
     private static object? JsonElementToObject(JsonElement el) => el.ValueKind switch

@@ -18,7 +18,11 @@ public sealed class StarRocksReadinessIntegrationTests : IAsyncLifetime
     private const int MysqlPort = 9030;
 
     private readonly IContainer _container = new ContainerBuilder()
-        .WithImage("starrocks/allin1-ubuntu:latest")
+        // PINNED, and to the tag docker-compose runs. This said `:latest`, which meant the test
+        // ran against whatever StarRocks had most recently published (4.1.4 when this was pinned,
+        // while the deployed stack was 4.1.1) — a suite silently testing a different engine version
+        // than production, and irreproducible the moment upstream publishes again.
+        .WithImage("starrocks/allin1-ubuntu:4.1.1")
         .WithPortBinding(MysqlPort, true)
         .WithWaitStrategy(Wait.ForUnixContainer().UntilPortIsAvailable(MysqlPort))
         .Build();

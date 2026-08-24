@@ -8,12 +8,50 @@ using Xunit;
 
 namespace Iverson.StarRocks.Tests;
 
+/// <summary>
+/// The StarRocks image every integration fixture in the solution starts. PINNED, and pinned to the
+/// SAME tag docker-compose runs.
+///
+/// <para>These fixtures used to say <c>:latest</c>, which meant the tests ran against whatever
+/// StarRocks had most recently published — 4.1.4 at the time this was pinned, while the deployed
+/// stack was on 4.1.1. A test suite silently drifting to a different engine version than production
+/// is not a suite that can tell you production works, and it makes a failure irreproducible the
+/// moment upstream publishes again.</para>
+/// </summary>
+public static class StarRocksImage
+{
+    public const string Tag = "starrocks/allin1-ubuntu:4.1.1";
+}
+
+/// <summary>
+/// ONE StarRocks container shared by every test class in this assembly.
+///
+/// <para><b>Why a collection fixture and not a class fixture.</b> xunit builds an
+/// <c>IClassFixture</c> once PER TEST CLASS, so the three classes that used this fixture started
+/// THREE StarRocks all-in-one containers and ran them concurrently. Each all-in-one is a full FE
+/// plus BE that claims 4 CPU cores and a ~7.9 GB memory limit; this dev box has 4 cores and 9 GB in
+/// total. That 3x oversubscription is the mechanism behind the flake families recorded during the
+/// tenant plan — measured, not guessed:</para>
+/// <list type="bullet">
+/// <item><description>"StarRocks planner use long time NNNN ms in memo phase ... FE Full GC" —
+/// three FE JVMs contending for one 9 GB box. Reproduced on demand.</description></item>
+/// <item><description>"Command Timeout expired" inside a seed — the same contention.</description></item>
+/// <item><description>"Current available backends: [], backends without enough disk space: [1000x]"
+/// — a BE reports <c>Alive: true</c> BEFORE its first disk heartbeat lands, with
+/// <c>AvailCapacity: 1.000 B</c>. Observed directly. Contention widens that window, and the
+/// readiness gate below only checked <c>Alive</c>.</description></item>
+/// </list>
+///
+/// <para>Classes in one collection also do not run in parallel with each other, which is the point:
+/// the wall-clock cost of serializing them is far smaller than two extra container boots, and the
+/// suite stops competing with itself for the machine.</para>
+/// </summary>
 public sealed class StarRocksContainerFixture : IAsyncLifetime
 {
     private const int MysqlPort = 9030;
 
     private readonly IContainer _container = new ContainerBuilder()
-        .WithImage("starrocks/allin1-ubuntu:latest")
+        .WithImage(StarRocksImage.Tag)
         .WithPortBinding(MysqlPort, true)
         .WithWaitStrategy(Wait.ForUnixContainer().UntilPortIsAvailable(MysqlPort))
         .Build();
@@ -75,9 +113,11 @@ public sealed class StarRocksContainerFixture : IAsyncLifetime
                 // SELECT against a real table) fails with "Backend node not found" until the BE
                 // is alive, which — observed directly against this image — can take noticeably
                 // longer than FE readiness. Gate readiness on BE aliveness too, not just FE.
-                if (!await IsBackendAliveAsync(conn))
+                if (!await IsBackendReadyAsync(conn))
                 {
-                    lastError = new Exception("StarRocks backend was never reported alive (SHOW BACKENDS Alive=false)");
+                    lastError = new Exception(
+                        "StarRocks backend was not ready (SHOW BACKENDS reported Alive=false, or Alive=true " +
+                        "with no usable disk capacity yet)");
                     await Task.Delay(TimeSpan.FromSeconds(3));
                     continue;
                 }
@@ -95,28 +135,79 @@ public sealed class StarRocksContainerFixture : IAsyncLifetime
             $"StarRocks did not become query-ready within {timeout}.", lastError);
     }
 
-    private static async Task<bool> IsBackendAliveAsync(MySqlConnection conn)
+    /// <summary>
+    /// Whether a backend is both alive AND has reported real disk capacity.
+    ///
+    /// <para><b>Alive alone is not enough, and that gap has a recorded cost.</b> A freshly started BE
+    /// registers with the FE and flips <c>Alive</c> to <c>true</c> BEFORE its first disk heartbeat
+    /// lands. In that window <c>SHOW BACKENDS</c> reports <c>AvailCapacity: 1.000 B</c> — observed
+    /// directly against this image — and the FE, seeing a backend with no space, rejects any query
+    /// that touches table data with "Current available backends: [], backends without enough disk
+    /// space: [1000x]". That is the exact signature the tenant plan recorded twice as an
+    /// undiagnosed flake family (Rulings 26 and 67), in two different assemblies. The gate checked
+    /// <c>Alive</c> and nothing else, so it opened inside the window.</para>
+    ///
+    /// <para>Capacity is compared as a magnitude rather than parsed, because the column is a
+    /// human-formatted string ("1.000 B", "907.304 GB") whose unit is the whole signal: anything
+    /// still measured in bytes means the heartbeat has not landed.</para>
+    /// </summary>
+    private static async Task<bool> IsBackendReadyAsync(MySqlConnection conn)
     {
         await using var cmd = new MySqlCommand("SHOW BACKENDS", conn);
         await using var reader = await cmd.ExecuteReaderAsync();
         var aliveOrdinal = -1;
+        var availOrdinal = -1;
         while (await reader.ReadAsync())
         {
             if (aliveOrdinal < 0)
+            {
                 aliveOrdinal = reader.GetOrdinal("Alive");
+                availOrdinal = reader.GetOrdinal("AvailCapacity");
+            }
 
-            if (string.Equals(reader.GetString(aliveOrdinal), "true", StringComparison.OrdinalIgnoreCase))
+            if (!string.Equals(reader.GetString(aliveOrdinal), "true", StringComparison.OrdinalIgnoreCase))
+                continue;
+
+            if (HasReportedDiskCapacity(reader.GetString(availOrdinal)))
                 return true;
         }
 
         return false;
     }
 
+    /// <summary>
+    /// True when <paramref name="availCapacity"/> — <c>SHOW BACKENDS</c>' AvailCapacity, formatted
+    /// by the FE as e.g. "1.000 B" or "907.304 GB" — is at least megabyte scale. A value still
+    /// expressed in plain bytes (or in KB) is the pre-heartbeat placeholder, not a real reading;
+    /// no machine that can run StarRocks has a genuinely megabyte-sized data disk, so treating
+    /// "smaller than MB" as "not reported yet" cannot mask a real out-of-space condition.
+    /// </summary>
+    internal static bool HasReportedDiskCapacity(string availCapacity)
+    {
+        var unit = availCapacity.Split(' ', StringSplitOptions.RemoveEmptyEntries) is [_, var u] ? u : "B";
+        return unit.Equals("MB", StringComparison.OrdinalIgnoreCase)
+            || unit.Equals("GB", StringComparison.OrdinalIgnoreCase)
+            || unit.Equals("TB", StringComparison.OrdinalIgnoreCase)
+            || unit.Equals("PB", StringComparison.OrdinalIgnoreCase);
+    }
+
     public async Task DisposeAsync() => await _container.DisposeAsync();
 }
 
+/// <summary>
+/// The collection every StarRocks-backed test class in this assembly joins, so they share the one
+/// container <see cref="StarRocksContainerFixture"/> starts. Adding a new StarRocks test class?
+/// Put <c>[Collection(StarRocksCollection.Name)]</c> on it and take the fixture in its constructor
+/// — do NOT use <c>IClassFixture</c>, which silently starts another container.
+/// </summary>
+[CollectionDefinition(StarRocksCollection.Name)]
+public sealed class StarRocksCollection : ICollectionFixture<StarRocksContainerFixture>
+{
+    public const string Name = "starrocks";
+}
+
+[Collection(StarRocksCollection.Name)]
 public sealed class StarRocksIntegrationTests(StarRocksContainerFixture fixture)
-    : IClassFixture<StarRocksContainerFixture>
 {
     private readonly EngagementRepository _repo = fixture.Repository;
 
