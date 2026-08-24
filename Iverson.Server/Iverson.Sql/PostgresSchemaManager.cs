@@ -22,11 +22,22 @@ public sealed class PostgresSchemaManager(
 
         // Serialise the whole apply against other processes doing the same table. Without this,
         // `iverson-api` and `iverson-worker` booting simultaneously both run Program.cs's
-        // self-heal loop over every registered descriptor, and the ENABLE ROW LEVEL SECURITY /
-        // GRANT pair below races on the table's pg_class row: Postgres answers the loser with
-        // XX000 "tuple concurrently updated", which nothing catches, so the process exits and only
-        // `restart: unless-stopped` recovers it. That is every routine redeploy of the two-role
-        // deployment, not just an upgrade.
+        // self-heal loop over every registered descriptor, and TWO distinct races fire — both
+        // reproduced by removing this lock and running
+        // PostgresIntegrationTests.ApplySchemaAsync_EightConcurrentApplies*:
+        //
+        //   * Cold table: CREATE TABLE IF NOT EXISTS is NOT atomic — the existence check and the
+        //     create are separate steps, so concurrent creators collide on the catalogue with
+        //     23505 "duplicate key value violates unique constraint pg_type_typname_nsp_index".
+        //     Deterministic; fires on first contact.
+        //   * Existing table: the ENABLE ROW LEVEL SECURITY / GRANT pair below both rewrite the
+        //     table's pg_class row, and Postgres answers the loser with XX000 "tuple concurrently
+        //     updated". Intermittent — ~3 runs in 5 at 8 callers, so a single green run proves
+        //     nothing about it.
+        //
+        // Neither is caught anywhere, so the process exits and only `restart: unless-stopped`
+        // recovers it. That is every routine redeploy of the two-role deployment, not just an
+        // upgrade.
         //
         // A SESSION-level lock (not pg_advisory_xact_lock) because these statements are
         // deliberately non-transactional — see the drift comment below. The unlock is in the

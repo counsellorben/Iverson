@@ -118,15 +118,23 @@ public sealed class SchemaRegistry(
             catch (JsonException ex)
             {
                 // THE COST OF SKIPPING, stated so nobody reads this catch as free. On a COLD BOOT
-                // or a FRESH REPLICA the type is simply never registered, and every consumer's
-                // unknown-type arm (EngagementStoreConsumer, IntelligenceStoreConsumer,
-                // EnrichmentConsumer) logs an Error and RETURNS — which COMMITS THE KAFKA OFFSET.
-                // That drop is TERMINAL; nothing retries it. So one corrupt _iverson_schema row
-                // turns every Kafka write for that type into permanently lost projection data for
-                // the life of that replica. It is still the better trade than throwing out of this
-                // loop (which would freeze every OTHER schema's 30 s refresh, and present as "the
-                // registry stopped updating" rather than a named row), and the Add above keeps a
-                // running instance out of it — but the Error below is the ONLY warning anyone gets.
+                // or a FRESH REPLICA the type is simply never registered, so every Kafka write for
+                // it hits the consumers' unknown-type arm (EngagementStoreConsumer,
+                // IntelligenceStoreConsumer, EnrichmentConsumer) for the life of that replica.
+                //
+                // Those arms used to log an Error and RETURN, which COMMITS THE KAFKA OFFSET and
+                // made the drop TERMINAL. They now call GetOrReloadAsync and THROW when the type is
+                // still unknown after a forced reload, so the offset is not committed and the
+                // message goes to the DLQ via MessageDispatcher's bounded retry. A corrupt row is
+                // therefore no longer silent data loss — but it is not harmless either: the
+                // registry can never admit this row, so every retry fails and every message for the
+                // type dead-letters until someone re-registers it. The Error below is still the
+                // first warning anyone gets, and now the DLQ is the second.
+                //
+                // Skipping remains the better trade than throwing out of this loop (which would
+                // freeze every OTHER schema's 30 s refresh, and present as "the registry stopped
+                // updating" rather than a named row), and the Add above keeps a running instance
+                // out of it entirely.
                 //
                 // The message names the tenant column as the EXPECTED cause without asserting it:
                 // any malformed field in the row lands here, and `ex` is passed so the real

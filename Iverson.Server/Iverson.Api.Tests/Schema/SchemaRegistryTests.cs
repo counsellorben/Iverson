@@ -93,6 +93,58 @@ public class SchemaRegistryTests
     }
 
     [Fact]
+    public async Task GetOrReloadAsync_SecondCallerBlockedOnTheGate_TakesTheReloadedSchemaWithoutReloadingAgain()
+    {
+        // The double-check INSIDE the gate. A burst of messages for a type registered moments ago
+        // arrives together: the first caller reloads, and every caller queued behind it must take
+        // that result. Without the re-check they fall through to the throttle test, which — having
+        // just been stamped by the winner — returns null, and each of them dead-letters a message
+        // whose schema is by then sitting in the cache.
+        //
+        // Distinct from the throttle test above, which only proves the SECOND reload is suppressed.
+        // This one proves the queued caller still gets its schema, which is the part that decides
+        // whether the message survives.
+        var schema = SchemaFixtures.AuthorSchema();
+        var loadEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseLoad = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        _repository.LoadAllAsync().Returns<IEnumerable<(string TypeName, string SchemaJson)>>(_ =>
+        {
+            loadEntered.TrySetResult();
+            releaseLoad.Task.GetAwaiter().GetResult();
+            return new[] { (schema.TypeName, SerializeAsRegistryWould(schema)) };
+        });
+
+        var first = Task.Run(() => _sut.GetOrReloadAsync(schema.TypeName));
+        await loadEntered.Task;
+
+        // The first caller is now parked INSIDE LoadAllAsync, so it has published nothing and the
+        // cache is still cold — which is what makes the second caller's top-level Get miss and
+        // send it to the gate rather than letting it return a hit without ever reaching the
+        // double-check. secondStarted only proves the task body began; the delay is the margin for
+        // it to get from there to the gate. Verified by mutation (M5): with the double-check
+        // removed this test fails, so the margin is doing real work rather than passing either way.
+        var secondStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var second = Task.Run(() =>
+        {
+            secondStarted.SetResult();
+            return _sut.GetOrReloadAsync(schema.TypeName);
+        });
+        await secondStarted.Task;
+        await Task.Delay(250);
+
+        releaseLoad.SetResult();
+
+        var firstResult = await first;
+        var secondResult = await second;
+
+        firstResult.Should().NotBeNull();
+        secondResult.Should().NotBeNull("the caller queued behind the reload must take its result");
+        secondResult!.TypeName.Should().Be(schema.TypeName);
+        await _repository.Received(1).LoadAllAsync();
+    }
+
+    [Fact]
     public async Task RegisterAsync_StoresDescriptor()
     {
         var schema = SchemaFixtures.AuthorSchema();
