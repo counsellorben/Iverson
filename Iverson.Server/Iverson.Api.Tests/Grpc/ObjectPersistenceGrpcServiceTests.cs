@@ -61,6 +61,7 @@ public class ObjectPersistenceGrpcServiceTests
             _outboxPublisher,
             _registry,
             new RelationValidator(),
+            new PayloadSizeValidator(),
             new EntityKeyAccessor(),
             new OutboxWriter(ReconciliationSchema.TableName, _sql, _txRunner),
             NullLogger<ObjectPersistenceGrpcService>.Instance,

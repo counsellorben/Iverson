@@ -229,15 +229,54 @@ internal static class SchemaBuilder
 
     // ScalarColumns position: INCLUDE __TenantId. The StarRocks table must carry the column so
     // engagement rows are tenant-discriminated in the analytics store too.
+    /// <summary>
+    /// Projects a descriptor onto its StarRocks table.
+    ///
+    /// <para><b>Large text fields get a wide column, and that is a fix, not a tuning knob.</b>
+    /// Every text column used to be projected as <c>STRING</c>, which <c>DESC</c> reports as
+    /// <c>varchar(65533)</c> — an alias, not an unbounded type. A value over that limit is FILTERED
+    /// OUT by the insert ("Insert has filtered data"), which surfaces as an ordinary exception, so
+    /// <c>MessageDispatcher</c> retried it and then dead-lettered it. The write itself had already
+    /// returned success, and <c>SearchSimilar</c>/<c>SearchChunks</c> read Qdrant rather than
+    /// StarRocks — so the document stayed retrievable by vector search while <c>Search</c>,
+    /// <c>Aggregate</c> and <c>GroupBy</c> silently could not see it. The analytics store diverged
+    /// from the vector index with no error at the call that caused it.</para>
+    ///
+    /// <para>StarRocks does have a wider type: <c>VARCHAR(1048576)</c>, 16x the alias, verified by
+    /// storing 70 KB that <c>STRING</c> rejects. <see cref="SchemaDescriptor.LargeFieldColumns"/>
+    /// already named exactly the columns that need it — it had been collected since the reverted
+    /// 2026-06-28 exclusion filter and had no consumer at all. This is that consumer.</para>
+    ///
+    /// <para>Only large fields are widened. Ordinary attributes and sort keys keep the alias: they
+    /// have no reason to carry a megabyte, and the write path rejects anything that would not fit
+    /// the column it is going to (<c>StarRocksLimits.MaxBytesForTextColumn</c>) rather than letting
+    /// it fail downstream.</para>
+    /// </summary>
     internal static EngagementTableSchema ToEngagementTableSchema(SchemaDescriptor d) => new(
         d.TableName,
         new EngagementColumnSchema(d.KeyColumn.Name, ClrTypeToEngagementType(d.KeyColumn.SqlType), false),
         d.ScalarColumns
-            .Select(c => new EngagementColumnSchema(c.Name, ClrTypeToEngagementType(c.SqlType), c.IsNullable))
+            .Select(c => new EngagementColumnSchema(
+                c.Name, EngagementTypeFor(c, d.LargeFieldColumns), c.IsNullable))
             .ToList())
     {
         SortKey = d.SearchKeyColumns
     };
+
+    /// <summary>
+    /// The StarRocks type for one column: the wide text type when the column is a large field that
+    /// would otherwise be projected as <c>STRING</c>, and the ordinary mapping otherwise. Guarded on
+    /// the mapped type being <c>STRING</c> so a large field that is somehow not textual keeps
+    /// whatever type its CLR type maps to, rather than being silently retyped.
+    /// </summary>
+    internal static string EngagementTypeFor(ColumnDescriptor column, IReadOnlySet<string> largeFieldColumns)
+    {
+        var mapped = ClrTypeToEngagementType(column.SqlType);
+
+        return mapped == "STRING" && largeFieldColumns.Contains(column.Name)
+            ? StarRocksLimits.WideTextColumnType
+            : mapped;
+    }
 
     // ScalarColumns position: INCLUDE __TenantId. StarRocksQueryBuilder resolves every column it
     // emits against this list, and the authorization constraint's tenant predicate is one of them.
