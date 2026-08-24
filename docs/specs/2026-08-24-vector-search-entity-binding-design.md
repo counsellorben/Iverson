@@ -61,8 +61,11 @@ key `key` maps to the key column's own name. A key not in the descriptor falls b
 should still be able to make.
 
 **2. Typed values.** Convert the payload string to a proto `Value` whose kind follows the descriptor
-column's `SqlType`: numeric kinds to `Value.ForNumber`, `BOOLEAN` to `Value.ForBool`, everything else
-to `Value.ForString`. Timestamps stay strings, matching both `ToProtoValue`'s `DateTime` case and the
+column's `SqlType`. The vocabulary is bounded and known, so the mapping is stated exhaustively rather
+than left to a predicate: `INTEGER`, `INT`, `BIGINT`, `REAL`, `FLOAT`, `DOUBLE`, `DOUBLE PRECISION`
+to `Value.ForNumber`; `BOOLEAN` to `Value.ForBool`; `TEXT`, `STRING`, `UUID`, `TIMESTAMPTZ`,
+`DATETIME`, `BYTEA`, `VARBINARY` to `Value.ForString`. Array types keep the string form — the payload
+flattening upstream gives no list back to reconstruct, and inventing one would be a guess. Timestamps stay strings, matching both `ToProtoValue`'s `DateTime` case and the
 ISO-canonical form the write path already stores (`IntelligenceStoreConsumer.cs:772`). A value that
 does not parse falls back to the string form rather than failing the row.
 
