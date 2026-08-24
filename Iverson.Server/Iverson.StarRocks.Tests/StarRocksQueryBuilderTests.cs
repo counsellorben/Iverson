@@ -2904,4 +2904,82 @@ public class StarRocksQueryBuilderTests
         sql.Should().Contain($"WHERE `{TenantCol}` = @__tenantVal");
         param.Get<string>("__tenantVal").Should().Be("tenant-a");
     }
+
+    // ── A LEGACY schema: boundary on a CLIENT-DECLARED column, no server-owned one ────────────
+    //
+    // RULING 70. Every fixture above hard-codes TenantColumnName = "__TenantId", so the whole
+    // section grades only the shape a current registration produces. SchemaBuilder
+    // .ToEngagementQuerySchema passes null for a pre-cutover schema whose TenantColumn is a
+    // client-declared name, because the exclusions this file pins are keyed on the RESERVED name —
+    // the same key every exclusion in Iverson.Api uses, which deliberately leaves a client's own
+    // declared column alone. These three assertions are the OTHER half of that contract: with a
+    // null carrier the client's column must behave like any ordinary column, while the tenant
+    // predicate — spliced from AuthorizationConstraint.TenantColumn, never from this schema — must
+    // still fire against it.
+    //
+    // Every assertion below is the INVERSE of one above, which is what makes the pair
+    // discriminating: an exclusion keyed on anything other than this schema's own
+    // TenantColumnName (a hard-coded literal, a name-shape heuristic such as "contains Tenant")
+    // satisfies every fixture above and reddens here.
+
+    private const string LegacyTenantCol = "TenantId";
+
+    private static EngagementQuerySchema LegacyAuthorSchema() => new(
+        "Author", "authors", "Id", ["Name", "Bio", LegacyTenantCol], TenantColumnName: null);
+
+    private static Dictionary<string, AuthorizationConstraint> LegacyAuthz() =>
+        new(StringComparer.OrdinalIgnoreCase)
+        {
+            ["Author"] = new AuthorizationConstraint(null, null, null, LegacyTenantCol, "tenant-a")
+        };
+
+    [Fact]
+    public void BuildSearch_LegacySchema_ProjectsTheClientDeclaredTenantColumn_AndStillFiltersOnIt()
+    {
+        var (sql, param) = StarRocksQueryBuilder.BuildSearch(
+            "authors", LegacyAuthorSchema(), null, 0, 10, authz: LegacyAuthz());
+
+        var select = sql[..sql.IndexOf(" FROM ", StringComparison.Ordinal)];
+        select.Should().Contain($"`{LegacyTenantCol}`",
+            "the client declared this column and has always read it back; dropping it here would "
+            + "silently remove a field from every row of an un-re-registered legacy type");
+        sql.Should().Contain($"WHERE `{LegacyTenantCol}` = @__tenantVal");
+        param.Get<string>("__tenantVal").Should().Be("tenant-a");
+    }
+
+    [Fact]
+    public void BuildSearch_LegacySchema_FilterOnTheClientDeclaredTenantColumn_IsEmitted()
+    {
+        // THE FAILURE THIS PAIR EXISTS TO CATCH. An unresolvable filter property is DROPPED, not
+        // rejected (see "Unresolvable == silently dropped" above), so excluding this column would
+        // turn Search(filter: TenantId == "team-a") into an unfiltered read of the caller's whole
+        // tenant — every row returned, no error, and the field missing from each.
+        var query = new SearchQuery();
+        query.Clauses.Add(new SearchClause
+        {
+            Property = LegacyTenantCol,
+            Operator = SearchOperator.Equals,
+            Value = new SearchValue { StringVal = "team-a" },
+            ClauseType = SearchClauseType.Filter
+        });
+
+        var (sql, param) = StarRocksQueryBuilder.BuildSearch(
+            "authors", LegacyAuthorSchema(), query, 0, 10, authz: LegacyAuthz());
+
+        param.ParameterNames.Should().Contain("p0");
+        param.Get<string>("p0").Should().Be("team-a");
+        sql.Should().Contain($"`{LegacyTenantCol}` = @p0");
+    }
+
+    [Fact]
+    public void BuildSearch_LegacySchema_SortOnTheClientDeclaredTenantColumn_IsEmitted()
+    {
+        var query = new SearchQuery();
+        query.Sort.Add(new SearchSort { Property = LegacyTenantCol, Descending = true });
+
+        var (sql, _) = StarRocksQueryBuilder.BuildSearch(
+            "authors", LegacyAuthorSchema(), query, 0, 10, authz: LegacyAuthz());
+
+        sql.Should().Contain($"ORDER BY `{LegacyTenantCol}` DESC");
+    }
 }

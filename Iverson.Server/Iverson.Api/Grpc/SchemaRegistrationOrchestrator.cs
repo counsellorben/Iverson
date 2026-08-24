@@ -561,6 +561,18 @@ public sealed class SchemaRegistrationOrchestrator(
         string fieldName,
         string fieldLabel)
     {
+        // ScalarColumns position: INCLUDE __TenantId — the FOURTEENTH site, and the only one that
+        // does NOT filter. Deliberate, and Ruling 18's rule applies: the reason is named rather
+        // than inferred. RejectReservedTenantName (called at :47 on the INBOUND TypeDescriptor,
+        // before BuildDescriptor) already rejects an owner_field naming the reserved column, and
+        // owner_field is this method's only caller — so no reachable call can arrive here with
+        // that name, and adding a filter would be an unreachable clause no test could
+        // discriminate. Unlike the relation lookup at :116 there is no live twin to keep in
+        // agreement, so the exclusion is omitted rather than kept-and-annotated. WHAT THE UPFRONT
+        // GUARD IS THEREFORE HOLDING UP (reasoned, not measured — if you are moving that guard,
+        // measure it): remove it and owner_field '__TenantId' resolves here, since the column is
+        // real and TEXT-typed, and the type registers with its OwnerColumn pointing at the tenant
+        // column — which RowFieldAuthorizationEvaluator deliberately keeps out of allFields.
         if (!descriptor.ScalarColumns.Any(c => string.Equals(c.Name, fieldName, StringComparison.OrdinalIgnoreCase)))
         {
             throw new RpcException(

@@ -2,6 +2,28 @@ using Iverson.Api.Schema;
 
 namespace Iverson.Api.Tests.Helpers;
 
+/// <summary>
+/// THE FIXTURE-SHAPE INVERSION, recorded rather than fixed (final whole-branch review, minor m1).
+/// Every descriptor in this file — and 45 sites across Iverson.Api.Tests — sets
+/// <c>TenantColumn = "TenantId"</c>, the CLIENT-DECLARED legacy shape, against 18 sites using
+/// <c>SchemaDescriptor.TenantColumnName</c>. So this assembly's DEFAULT descriptor is one
+/// <c>SchemaBuilder.BuildDescriptor</c> can no longer produce.
+/// <para>
+/// This is not wrong in itself — the legacy shape is live and deliberately still admitted by
+/// <c>SchemaRegistry.LoadAsync</c>, so exercising it is valuable — but it is WHY two findings hid:
+/// Ruling 70 (Iverson.StarRocks keyed its tenant-column exclusion on the per-schema VALUE while
+/// Iverson.Api keyed every one of its own on the RESERVED LITERAL, and no fixture that met both
+/// sides existed), and Task 7's <c>tenantScoped:</c> mutants M4/M5, which survive because the
+/// expression they mutate is already true for every fixture here.
+/// </para>
+/// <para>
+/// DELIBERATELY NOT MASS-REWRITTEN. Flipping 45 sites to the reserved name would silently retire
+/// the legacy-shape coverage that Ruling 30 established is load-bearing. The remedy is the opposite:
+/// where a rule DEPENDS on which shape it is given, the test must say so and pin BOTH — as
+/// <c>SchemaBuilderTests.ToEngagementQuerySchema_LegacyClientDeclaredTenantColumn_*</c> and its
+/// reserved-name sibling now do.
+/// </para>
+/// </summary>
 public static class SchemaFixtures
 {
     // Permissive bypass: existing tests don't configure Authorization, so every fixture

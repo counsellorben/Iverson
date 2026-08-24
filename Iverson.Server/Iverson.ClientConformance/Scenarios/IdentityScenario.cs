@@ -78,11 +78,14 @@ namespace Iverson.ClientConformance.Scenarios;
 /// <para><b>The immutability branch is NOT dead code, and must not be deleted.</b>
 /// <c>SchemaRegistry.LoadAsync</c> rehydrates pre-cutover <c>_iverson_schema</c> rows VERBATIM, and
 /// those rows persisted <c>TenantColumn</c> as the CLIENT-DECLARED <c>tenant_field</c> name such as
-/// <c>TenantId</c> (which is why <c>SchemaDescriptor.TenantColumn</c> is nullable: only a NULL
-/// short-circuits the evaluator). On an upgraded deployment carrying such a row for a type not yet
-/// re-registered, a payload carrying <c>TenantId</c> passes the <c>InvalidArgument</c> guard — which
-/// matches only the server-owned name — reaches the immutability check with a non-null attempted
-/// tenant, and is denied with <c>TenantImmutable</c> TODAY. What is true here is narrower: THIS
+/// <c>TenantId</c>. A legacy row registers with a client-declared NAME, not with a null:
+/// <c>SchemaDescriptor.TenantColumn</c> is <c>public required string</c> and <c>LoadAsync</c>
+/// refuses to admit any row whose <c>tenantColumn</c> is null or empty, so
+/// <c>RowFieldAuthorizationEvaluator</c>'s <c>string.IsNullOrEmpty</c> short-circuit does not fire
+/// for it. On an upgraded deployment carrying such a row for a type not yet re-registered, a
+/// payload carrying <c>TenantId</c> passes the <c>InvalidArgument</c> guard — which matches only the
+/// server-owned name — reaches the immutability check with a non-null attempted tenant, and is
+/// denied with <c>TenantImmutable</c> TODAY. What is true here is narrower: THIS
 /// harness registers its types fresh against the build under test, so this leg alone is insensitive
 /// to the payload tenant. The only refusal left on it is the tenant MISMATCH between the existing
 /// row's tenant and the wrong acting user's own claim — precisely the identity-derived denial this

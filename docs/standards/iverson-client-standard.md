@@ -448,12 +448,20 @@ branches earlier — so against a freshly registered type the immutability branc
 
 **The branch is NOT dead code.** `SchemaRegistry.LoadAsync` rehydrates pre-cutover `_iverson_schema`
 rows verbatim, with no normalisation, and those rows persisted `TenantColumn` as the CLIENT-DECLARED
-`tenant_field` name — typically `TenantId`. `SchemaDescriptor.TenantColumn` is nullable for exactly
-that reason, and only a NULL value short-circuits the evaluator. On a deployment upgraded with such
-rows still present and a type not yet re-registered, a payload carrying `TenantId` passes the
-`InvalidArgument` guard (which matches only `__TenantId`), reaches the immutability check with a
-non-null attempted tenant, and is denied with `TenantImmutable` — today. Deleting the branch would
-silently convert that denial and its audit record into a successful update.
+`tenant_field` name — typically `TenantId`. A legacy row registers with a client-declared NAME, not
+with a null: `SchemaDescriptor.TenantColumn` is `public required string` and `LoadAsync` refuses to
+admit any row whose `tenantColumn` is null or empty, so what reaches the evaluator from a legacy row
+is the string `TenantId`. `RowFieldAuthorizationEvaluator`'s `string.IsNullOrEmpty(schema.TenantColumn)`
+short-circuit therefore does NOT fire for it, and the `InvalidArgument` guard does not match it
+either, because that guard is keyed on the reserved `__TenantId` spelling. On a deployment upgraded
+with such rows still present and a type not yet re-registered, a payload carrying `TenantId` passes
+the `InvalidArgument` guard, reaches the immutability check with a non-null attempted tenant, and is
+denied with `TenantImmutable` — today. Deleting the branch would silently convert that denial and
+its audit record into a successful update.
+
+(`AuthorizationDecision.TenantColumn` — a different property — *is* nullable, and for an unrelated
+reason: null there means "this decision established no tenant boundary", which every denied path
+produces against a perfectly current schema.)
 
 What is true HERE is narrower: the conformance harness registers its types fresh against the build
 under test, so its `TenantColumn` is always `__TenantId` and this leg is insensitive to what the

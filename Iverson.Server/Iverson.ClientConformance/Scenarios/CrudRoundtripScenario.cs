@@ -361,7 +361,9 @@ public sealed class CrudRoundtripScenario(
     /// <para><b>The residual this does NOT close (Ruling 38).</b> What the test grades is THIS
     /// METHOD; the line in <c>RunAsync</c> that calls it is not graded. Deleting
     /// <c>JudgeDriverDepthRead(...)</c> from <c>RunAsync</c> still passes <c>dotnet test</c>
-    /// (mutant N5, survived 439/439). Bounding it: both assertions here carry requirement IDs
+    /// (mutant N5; survived 439/439 when first measured and RE-MEASURED at 448/448, exit 0, in the
+    /// final fix wave — the figure is dated because the suite grows, but the SURVIVAL is the
+    /// claim). Bounding it: both assertions here carry requirement IDs
     /// (IVC-LIFE-006 and IVC-LIFE-008), so a full-matrix live run's <c>UntouchedRequirementIds</c>
     /// exit code catches the deletion — the cost is a CI-to-live delay, not a silent hole. The
     /// proper fix is making <c>DriverRunner</c> substitutable so a test can drive <c>RunAsync</c>

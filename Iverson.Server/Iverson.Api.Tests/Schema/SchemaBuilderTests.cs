@@ -307,6 +307,61 @@ public class SchemaBuilderTests
     }
 
     [Fact]
+    public void ToEngagementQuerySchema_LegacyClientDeclaredTenantColumn_IsNotCarriedAsAnExclusionKey()
+    {
+        // RULING 70. SchemaRegistry.LoadAsync admits a pre-cutover _iverson_schema row verbatim, and
+        // such a row persisted TenantColumn as the CLIENT-DECLARED tenant_field name — typically
+        // "TenantId". EngagementQuerySchema.TenantColumnName is not "the column that carries this
+        // schema's boundary"; it is the name StarRocksQueryBuilder/StarRocksPipelineBuilder refuse
+        // to project, to resolve for a caller, to sort on, and to track in a pipeline step. Every
+        // one of those exclusions in Iverson.Api is keyed on the RESERVED spelling and deliberately
+        // leaves a client-declared column alone (AuthorizationFieldMasking.RemoveTenantColumn says
+        // so in as many words), so this adapter — the only place that can see the constant — is
+        // where the two are made to agree.
+        //
+        // Carry the raw value instead and an upgraded deployment with one un-re-registered type
+        // gets SILENTLY WRONG RESULTS, not an error: Search(filter: TenantId == "team-a") loses the
+        // clause entirely, because an unresolvable filter property is dropped rather than rejected.
+        var schema = SchemaFixtures.ArticleSchema() with
+        {
+            ScalarColumns =
+            [
+                new ColumnDescriptor("Title", "text", false),
+                new ColumnDescriptor("TenantId", "TEXT", false)
+            ],
+            TenantColumn = "TenantId"
+        };
+
+        var result = SchemaBuilder.ToEngagementQuerySchema(schema);
+
+        result.TenantColumnName.Should().BeNull(
+            "a client-declared tenant column is not the reserved server-owned one, and it is the "
+            + "reserved name that every exclusion on both sides of the boundary is keyed on");
+        result.IsTenantColumn("TenantId").Should().BeFalse(
+            "this is the predicate StarRocksQueryBuilder.BuildSelectColumns and ResolveColumn "
+            + "consult — true here removes the client's own declared column from the projection "
+            + "and makes a filter or sort on it resolve to null, which is silently dropped");
+        result.ColumnNames.Should().Contain("TenantId",
+            "the column is still physically there and the legacy schema is still scoped by it — "
+            + "the tenant predicate is spliced from AuthorizationConstraint.TenantColumn, which "
+            + "never goes through ResolveColumn");
+    }
+
+    [Fact]
+    public void ToTableSchema_LegacyClientDeclaredTenantColumn_IsCarriedRaw()
+    {
+        // The COUNTERPART to the test above, and the reason the gating belongs on
+        // ToEngagementQuerySchema alone. TableSchema.TenantColumn is the BOUNDARY column itself:
+        // PostgresSchemaManager predicates the RLS policy on it and the write path injects the
+        // tenant value into it. Gating this one on the reserved name would leave a legacy table
+        // with no RLS policy and no tenant injection — a boundary break, the opposite of the
+        // silent-wrong-results the other gating prevents.
+        var schema = SchemaFixtures.ArticleSchema() with { TenantColumn = "TenantId" };
+
+        SchemaBuilder.ToTableSchema(schema).TenantColumn.Should().Be("TenantId");
+    }
+
+    [Fact]
     public void ToTableSchema_CarriesTheTenantColumnNameThrough()
     {
         // The OutboxWriter injection is gated on TableSchema.TenantColumn for the same reason.

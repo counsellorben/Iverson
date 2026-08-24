@@ -53,6 +53,17 @@ public sealed class DocumentRerenderConsumer(
         // natural zero-rows gate. Returning early here is what keeps a null tenant from ever
         // reaching EnqueueEntityAsync — see T6 review note: the partial unique index on
         // ("TenantId","TypeName","EntityKey") does not collapse duplicate NULL-tenant rows.
+        //
+        // THREE producers can put a null here; the guard's TEST coverage is two of them.
+        //   1. the authoritative Postgres row is already gone by consumption time
+        //      (ResolveTenantIdAsync's `if (rowJson is null) return null`);
+        //   2. ExtractString finds no tenant value on that row;
+        //   3. the DELETED-event arm's ExtractString finds none on the pre-delete snapshot.
+        // (3) is UNGRADED and deliberately so (final-review Task 7 minor a): it is a bare `return`
+        // with no branch, so a branch-coverage diff cannot see it, and the mutant that grades this
+        // guard already dies on (1) and (2). Its production reachability is LOW — the delete path
+        // stores the raw pre-delete Postgres row, which carries the tenant column by construction —
+        // judged unlikely rather than proven impossible. Recorded, not tested.
         var tenantId = await ResolveTenantIdAsync(ev, changedSchema, ct);
         if (tenantId is null) return;
 

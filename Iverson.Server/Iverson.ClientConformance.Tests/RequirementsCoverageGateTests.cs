@@ -470,6 +470,14 @@ public class RequirementsCoverageGateTests
     {
         var markdown = File.ReadAllText(StandardPath());
 
+        // This ID-cell pattern is deliberately WIDER than RequirementTableParser.IdCellPattern
+        // (`IVC-[A-Za-z]+-\d+`): `IVC-\S+` accepts anything non-blank after the prefix, and it
+        // scans the WHOLE document rather than the parser's row set. Divergence between the two can
+        // therefore only ever hand this fixture MORE id cells than the parser would accept — a
+        // FALSE RED, never a false green — so the widening is safe in the one direction that
+        // matters. Same argument, same shape, as the KnownAxes fixture's note about
+        // CoverageTableParser.AxisHeadingPattern, which that fixture states and this one did not
+        // (final-review Task 5 minor 4).
         var idCells = Regex.Matches(
                 markdown,
                 @"^\|\s*(IVC-\S+)\s*\|\s*(?:Active|Retired)\s*\|",
@@ -694,6 +702,16 @@ public class RequirementsCoverageGateTests
 
             foreach (var id in ids)
             {
+                // RULING 55(b), recorded rather than deleted. `|| claimants.Count == 0` is
+                // UNREACHABLE BY CONSTRUCTION: claimed[id] is created on the line before an
+                // unconditional claimants.Add above, so no list in this dictionary is ever empty.
+                // Dropping the disjunct survives the whole suite, and no fixture can grade it —
+                // Ruling 43's precedent (grade unreachable defensive code through a fixture path)
+                // does not apply, because that path was INPUT-driven and this is an internal
+                // invariant. It is kept as a fail-closed backstop on that invariant: if a future
+                // edit ever creates the list before deciding whether to Add, the requirement would
+                // otherwise pass Mode 5 with zero claimants. Introduced by this plan at cc98eb9 and
+                // missed by seven review rounds including round 4's exhaustive enumeration.
                 if (!claimed.TryGetValue(id, out var claimants) || claimants.Count == 0)
                 {
                     failures.Add($"'{id}' (axis '{axis}') is Active but claimed by no Covered area");

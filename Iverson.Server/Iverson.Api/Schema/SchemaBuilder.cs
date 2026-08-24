@@ -250,7 +250,26 @@ internal static class SchemaBuilder
         // SchemaDescriptor.TenantColumnName (no project reference), and the name is defined
         // exactly once. The query builders use it to exclude the column from every projection
         // and from caller-facing column resolution.
-        d.TenantColumn);
+        //
+        // RESERVED-NAME GATED, and that is what makes this an EXCLUSION KEY rather than a
+        // boundary name (Ruling 70). EngagementQuerySchema.TenantColumnName decides which column
+        // is UNPROJECTABLE and UNNAMEABLE — it is the StarRocks twin of the
+        // SchemaDescriptor.IsTenantColumn test that every exclusion in Iverson.Api is keyed on
+        // (AuthorizationFieldMasking.RemoveTenantColumn states the rule). A pre-cutover
+        // _iverson_schema row rehydrated by SchemaRegistry.LoadAsync still carries a
+        // CLIENT-DECLARED TenantColumn such as "TenantId": that column is part of the client's
+        // own declared contract, so Iverson.Api deliberately leaves it alone, and passing it here
+        // would make StarRocks disagree — silently dropping the client's own column from every
+        // projection, silently dropping a caller filter or sort on it (unresolvable == dropped,
+        // no error), and removing it from the pipeline's tracked set. Wrong results, not a
+        // boundary break: the tenant PREDICATE is spliced from AuthorizationConstraint.TenantColumn
+        // and never consults this field or ResolveColumn, so a legacy schema is still scoped by its
+        // own column either way.
+        //
+        // Contrast ToTableSchema above, which passes d.TenantColumn RAW and must: there the value
+        // is the BOUNDARY column itself — the RLS policy predicate and the write-path injection —
+        // so a legacy schema's real column is exactly what belongs in it.
+        SchemaDescriptor.IsTenantColumn(d.TenantColumn) ? d.TenantColumn : null);
 
     internal static CollectionSchema ToChunkCollectionSchema(SchemaDescriptor d)
     {

@@ -111,9 +111,9 @@ var authorKobeId = await authors.PersistAsync(new Author
 Console.WriteLine($"Created authors: {authorAiId}, {authorKobeId}");
 
 // Tags
-var tagBballId   = await tags.PersistAsync(new Tag { Label = "Basketball", Slug = "basketball"});
-var tagCultureId = await tags.PersistAsync(new Tag { Label = "Culture",    Slug = "culture"});
-var tagLegacyId  = await tags.PersistAsync(new Tag { Label = "Legacy",     Slug = "legacy"});
+var tagBballId   = await tags.PersistAsync(new Tag { Label = "Basketball", Slug = "basketball" });
+var tagCultureId = await tags.PersistAsync(new Tag { Label = "Culture",    Slug = "culture" });
+var tagLegacyId  = await tags.PersistAsync(new Tag { Label = "Legacy",     Slug = "legacy" });
 Console.WriteLine($"Created tags: basketball, culture, legacy");
 
 // Articles (PostMappedAsync so the server resolves Author and Tags and the full

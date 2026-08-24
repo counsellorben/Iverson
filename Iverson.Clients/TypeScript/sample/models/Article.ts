@@ -15,7 +15,6 @@ export class Article {
     @IversonGuid()
     id: string = '';
 
-
     title: string = '';
 
     @IversonLargeField()

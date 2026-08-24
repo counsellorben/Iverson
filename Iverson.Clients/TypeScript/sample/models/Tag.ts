@@ -7,6 +7,5 @@ export class Tag {
     @IversonGuid()
     id: string = '';
 
-
     label: string = '';
 }

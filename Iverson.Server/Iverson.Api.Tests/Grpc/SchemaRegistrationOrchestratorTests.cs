@@ -287,6 +287,46 @@ public class SchemaRegistrationOrchestratorTests
         _registry.Get("Widget").Should().BeNull();
     }
 
+    [Theory]
+    [InlineData(Client.Contracts.RelationKind.OneToMany)]
+    [InlineData(Client.Contracts.RelationKind.ManyToMany)]
+    public async Task RegisterAsync_ARelationNavigationPropertyNamedLikeTheTenantColumn_IsRejectedForEveryKind(
+        Client.Contracts.RelationKind kind)
+    {
+        // SURVIVOR X7. The fact above is the only nav-property fixture the guard had, and it is a
+        // ManyToOne — so restricting the guard to `r.Kind == ManyToOne` passed the whole suite.
+        // That is not hypothetical hygiene: the loop ONE LEVEL UP in the same method is genuinely
+        // kind-filtered (`Where(r => r.Kind != OneToMany)`, SchemaRegistrationOrchestrator.cs:101),
+        // so "this relation rule applies only to some kinds" is an established local idiom and a
+        // plausible future edit.
+        //
+        // If the mutant became real, the COLLECTION kinds are the dangerous ones:
+        // EntityRelationResolver writes `entityStruct.Fields[relation.PropertyName] =
+        // Value.ForList(...)` for OneToMany and ManyToMany, so a nav property named __TenantId puts
+        // the reserved name back on the wire by exactly the mechanism Ruling 24 exists to close —
+        // and the ManyToOne fixture above would stay green throughout.
+        var td = new TypeDescriptor { TypeName = "Widget" };
+        td.Properties.Add(new PropertyDescriptor { Name = "Id", ClrType = ClrType.ClrGuid, IsKey = true });
+        td.Properties.Add(new PropertyDescriptor { Name = "AuthorIds", ClrType = ClrType.ClrGuid, IsArray = true });
+        td.Relations.Add(new Client.Contracts.RelationDescriptor
+        {
+            PropertyName = SchemaDescriptor.TenantColumnName,
+            Kind = kind,
+            RelatedType = "Author",
+            ForeignKey = "AuthorIds",
+        });
+
+        var act = () => _sut.RegisterAsync(new SchemaRequest { RootType = td }, CancellationToken.None);
+
+        var ex = await act.Should().ThrowAsync<RpcException>();
+        ex.Which.StatusCode.Should().Be(StatusCode.InvalidArgument);
+        ex.Which.Status.Detail.Should().StartWith("Relation navigation property '__TenantId' on 'Widget'");
+        // The foreign key is legal, so a message from the FK arm would mean the nav-property arm
+        // never ran for this kind — which is the survivor's exact shape.
+        ex.Which.Status.Detail.Should().NotStartWith("Relation foreign key");
+        _registry.Get("Widget").Should().BeNull();
+    }
+
     [Fact]
     public async Task RegisterAsync_WithAFieldPermissionNamingTheServerOwnedTenantColumn_ThrowsInvalidArgument()
     {

@@ -1473,6 +1473,51 @@ public class StarRocksPipelineBuilderTests
         sql.Should().NotContain(".*");
     }
 
+    // ── A LEGACY schema: boundary on a CLIENT-DECLARED column, no server-owned one ────────────
+    //
+    // RULING 70, the fourth exclusion site. ColumnsFor at StarRocksPipelineBuilder.cs:53 is the
+    // pipeline's whole notion of "columns a step may reference or emit", and it is keyed on
+    // EngagementQuerySchema.IsTenantColumn. SchemaBuilder.ToEngagementQuerySchema passes null for a
+    // pre-cutover schema whose TenantColumn is a client-declared name, so that client's column must
+    // stay in the tracked set and in the base projection — while the tenant predicate, spliced from
+    // AuthorizationConstraint.TenantColumn, still fires against it.
+
+    private const string LegacyTenantCol = "TenantId";
+
+    private static EngagementQuerySchema LegacyArticleSchema() => new(
+        "Article", "articles", "Id",
+        ["Title", "Category", "WordCount", "IsPublished", "PublishedAt", "AuthorId", LegacyTenantCol],
+        TenantColumnName: null);
+
+    private static Dictionary<string, AuthorizationConstraint> LegacyAuthz() =>
+        new(StringComparer.OrdinalIgnoreCase)
+        {
+            ["Article"] = new AuthorizationConstraint(null, null, null, LegacyTenantCol, "tenant-a")
+        };
+
+    [Fact]
+    public void Build_LegacySchema_ProjectsTheClientDeclaredTenantColumn_AndStillFiltersOnIt()
+    {
+        var (sql, _, _) = StarRocksPipelineBuilder.Build(
+            LegacyArticleSchema(), Request(), EmptyRegistry(), LegacyAuthz());
+
+        BaseProjection(sql).Should().Contain($"`{LegacyTenantCol}`",
+            "the client declared this column; the exclusion is keyed on the RESERVED name, which "
+            + "this schema does not carry");
+        sql.Should().Contain($"WHERE `{LegacyTenantCol}` = @__tenantVal");
+    }
+
+    [Fact]
+    public void TrackAndValidate_LegacySchema_TracksTheClientDeclaredTenantColumn()
+    {
+        var steps = StarRocksPipelineBuilder.TrackAndValidate(
+            LegacyArticleSchema(), Request(), EmptyRegistry(), LegacyAuthz());
+
+        steps[0].Columns.Keys.Should().Contain(LegacyTenantCol,
+            "dropping it from the tracked set makes the client's own column unreferenceable in "
+            + "every step's select/where/derive/group-by/join");
+    }
+
     /// <summary>
     /// Every SELECT list in the generated SQL — the text between each <c>SELECT </c> and the
     /// <c> FROM </c> that follows it. The joined type's tenant column legitimately appears in the

@@ -703,7 +703,7 @@ public class SchemaRegistrarTests
         {
             EntityType  = typeof(T),
             EntityName  = typeof(T).Name,
-            KeyProperty = typeof(T).GetProperty("Id")!,
+            KeyProperty = typeof(T).GetProperty(nameof(SchemaTestAuthor.Id))!,
             Relations   = []
         };
 

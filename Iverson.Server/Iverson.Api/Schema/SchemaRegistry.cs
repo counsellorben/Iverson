@@ -90,8 +90,8 @@ public sealed class SchemaRegistry(
                     "The usual cause is a row predating the tenant boundary, which carries no " +
                     "`tenantColumn` key and surfaces as \"missing required properties including: " +
                     "'tenantColumn'\" — but ANY malformed field in the row reaches this handler, so " +
-                    "read the deserializer message above before assuming. Re-register the type to " +
-                    "repair it.",
+                    "read the deserializer message logged BELOW this line before assuming. " +
+                    "Re-register the type to repair it.",
                     typeName);
                 continue;
             }

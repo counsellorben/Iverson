@@ -327,10 +327,40 @@ This task is **partly manual and cannot be fully verified in advance.** Spec ass
 recorded as FAILED: teardown is required for correctness and nothing reports a skipped step. Treat
 the ordering below as load-bearing.
 
-Re-registration alone is insufficient. `PostgresSchemaManager.cs:88-90` ALTERs new columns in and
-**never drops orphans**, `:76-78` throws only on a *type* mismatch, and `:126-150` creates the RLS
-policy only when no policy of that name exists. A re-register over a live table therefore leaves the
-old client-declared tenant column in place and leaves the old RLS policy pointing at it.
+Re-registration alone is insufficient — but NOT for the reason first written here. **Three of the
+four claims in the original paragraph were false; they are corrected below, probed against live
+Postgres by the final whole-branch review (Ruling 72).**
+
+- `PostgresSchemaManager` **does** drop orphan columns (`:104-110`, `ALTER TABLE ... DROP COLUMN IF
+  EXISTS`), unchanged by this branch. The original "never drops orphans" was wrong.
+- Postgres does **not** reject the `NOT NULL`. `:88-96` emits `ADD COLUMN ... NOT NULL DEFAULT ('')`,
+  which Postgres accepts and backfills — verified live, a pre-existing row came back with
+  `__TenantId = ''`. So the constraint *could* have been added in place.
+- Reads do **not** silently return zero rows if the policy is left behind. That old "known failure
+  mode" contradicted the "never drops orphans" claim two paragraphs above it.
+
+**What actually happens on a populated deployment with no teardown.** This branch is the first change
+to make an existing tenant column an *orphan* (T3 deletes the property from all five sample model
+sets and the three LoadTest entities), so the orphan-drop path finally fires on it and collides with
+the RLS policy that predicates on it:
+
+1. `ADD COLUMN "__TenantId" TEXT NOT NULL DEFAULT ('')` succeeds.
+2. `DROP COLUMN IF EXISTS "TenantId"` is **REFUSED** — `cannot drop column TenantId ... policy
+   ... depends on column TenantId`.
+3. `SchemaRegistrationOrchestrator.cs:257` catches only `SchemaDriftException` (thrown at
+   `PostgresSchemaManager.cs:78`, and only for a TYPE mismatch), so the raw
+   `PostgresException` escapes as gRPC **`Unknown`**, not `FailedPrecondition`.
+4. The statements are explicitly non-transactional (`:58-61`), so the table is left **half-migrated**
+   and every retry fails identically until an operator drops the policy by hand.
+5. Phase 3 is a **per-descriptor loop** (`:251-264`), so earlier types in the same batch are already
+   applied and registered when the failing one throws.
+
+`:76-78` throws only on a *type* mismatch and `:126-150` creates the RLS policy only when no policy
+of that name exists — those two claims were correct and still are.
+
+**The operator-facing procedure lives in `docs/runbooks/tenant-column-cutover.md`**, which is where a
+deployment upgrading across this branch should be driven from; the steps below are this plan's own
+verification ordering.
 
 ### Steps, in order
 
@@ -338,20 +368,29 @@ old client-declared tenant column in place and leaves the old RLS policy pointin
    This is what removes the legacy pre-cutover schema rows that T7 depends on being gone.
 2. **Drop the RLS policies** by name, so `:126`'s existence check does not skip re-creation against
    `__TenantId`.
-3. **Re-register** from each client. This is when `__TenantId`'s `NOT NULL` constraint is created,
-   and it is why the constraint could not simply be added in place: Postgres rejects it while any
-   legacy NULL remains, so steps 1-2 must have run first.
-4. Run the full live conformance matrix — **all six scenarios** (`CrudRoundtrip`, `Interop`,
-   `NamingRejected`, `NavPropertyRejected`, `Query`, `SchemaCatalog`), all five clients. The
+3. **Re-register** from each client. This is when `__TenantId` is created. (Steps 1-2 are not
+   required by the `NOT NULL` — `ADD COLUMN ... NOT NULL DEFAULT ('')` backfills fine. They are
+   required because the orphan drop of the old client-declared column is refused while the RLS
+   policy depends on it, which is the failure enumerated above.)
+4. Run the full live conformance matrix — **all TEN scenarios** (`crud-roundtrip`,
+   `naming-rejected`, `nav-property-rejected`, `interop`, `schema-catalog`, `query`,
+   `vector-search`, `identity`, `error-contract`, `tenant-rejected`; the recognized list at
+   `Program.cs:66-75` doubles as the default run set), all five clients. Six was the count when
+   this plan was written — Ruling 5 corrected it to nine and Ruling 29 to ten. The
    entrypoint is `Iverson.ClientConformance/Program.cs`, configured by `IVERSON_GRPC_URL` and
    `IVERSON_POSTGRES_CS`.
 
-**Known failure mode:** if step 2 is skipped, registration succeeds and reads silently return zero
-rows, because the policy still filters on a column that no longer exists.
+**Known failure mode:** if step 2 is skipped, registration does not silently succeed — it FAILS, at
+the orphan drop, with a gRPC `Unknown` and a half-migrated table. See the five-step account above and
+`docs/runbooks/tenant-column-cutover.md`.
 
-**Out of scope, will still be red:** the StarRocks hyphenated-tenant-role defect
-(`Iverson.StarRocks/TenantIdentifier.cs:13`) fails any tenant id containing a hyphen. It is a
-pre-existing separate initiative, not a regression from this work.
+**~~Out of scope, will still be red:~~ STRUCK (Ruling 59).** This plan predicted the StarRocks
+hyphenated-tenant-role defect (`Iverson.StarRocks/TenantIdentifier.cs:13`) as an expected red. It did
+NOT fire: Ruling 13 renamed the five dev tenants to underscore form and the live tenants are
+`tenant_bypass` / `tenant_smoke_test`, so `query` is green for all five languages. The underlying
+defect is untouched and still real for a hyphenated tenant id — `project-starrocks-hyphenated-tenant-
+role` stays open — but it is not an expected red for this plan's matrix. The reds that ARE expected
+are `vector-search` for all five languages (Ruling 6's recorded pre-existing baseline).
 
 ---
 

@@ -237,11 +237,14 @@ public class IdentityScenarioTests
         //   - REPOINTING this const at IVC-IDN-003 is caught, and caught FIRST by Check1.
         //     `ToHashSet()` collapses the duplicate on the REGISTRY side only; the standard still
         //     declares the orphaned IVC-IDN-004 row, so `registryIds` loses a member the standard
-        //     keeps and Check1's `missingFromRegistry` is non-empty. Mutant DUP1 fails FOUR tests
-        //     — Check1_ActiveIdsInStandard_ExactlyMatchConstsInRegistry, this test, Judge...
-        //     _Idn004_IsCitedByExactlyOneAssertion, and Judge..._ProbeThrew_BothCitedAssertions
-        //     FailNamingTheProbe. An earlier version of this comment said this case "survives
-        //     every check in the gate"; that was FALSE (Ruling 49).
+        //     keeps and Check1's `missingFromRegistry` is non-empty. Mutant DUP1 fails FIVE tests
+        //     in the tree it ships in — Check1_ActiveIdsInStandard_ExactlyMatchConstsInRegistry,
+        //     this test, Judge..._Idn004_IsCitedByExactlyOneAssertion,
+        //     Judge..._ProbeThrew_BothCitedAssertionsFailNamingTheProbe, and
+        //     RequirementsCoverageGateTests.RegistryConstValues_AreUniqueAcrossTheRegistry, which
+        //     the SAME round added and which this comment first omitted. An earlier version said
+        //     this case "survives every check in the gate"; that was FALSE (Ruling 49), and the
+        //     replacement then understated the count by one (final-review Task 5 minor 1).
         //   - What genuinely survived was narrower: an ADDITIONAL const carrying the same value and
         //     no standard row of its own. Check1 balances (the value is already in both sets),
         //     Check2 matches IDENTIFIERS, which stay distinct, and Check3's uniqueness is over the

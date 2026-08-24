@@ -70,7 +70,8 @@ public class CrudRoundtripScenarioTests
     //
     // What is graded is the EXTRACTED JUDGE. The line in RunAsync that CALLS it is not: delete
     // `JudgeDriverDepthRead(...)` or `TakeDescriptor(...)` from RunAsync and `dotnet test` still
-    // passes — mutants N3 and N5 both survived at 439/439. This is a property of the pattern
+    // passes — mutants N3 and N5 both survived at 439/439 when first measured, and both were
+    // RE-MEASURED at 448/448 exit 0 in the final fix wave. This is a property of the pattern
     // itself, shared by every site that uses it (TakeDescriptor and JudgeDriverDepthRead here,
     // SchemaCatalogScenario.JudgeReadPhase, NamingRejectedScenario.BuildDriverCell), not of any
     // one application of it.

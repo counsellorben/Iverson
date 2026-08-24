@@ -7,6 +7,5 @@ export class Author {
     @IversonGuid()
     id: string = '';
 
-
     name: string = '';
 }
