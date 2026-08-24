@@ -137,15 +137,17 @@ public sealed class BenchmarkQueryScenario(
             using var call = search.SearchSimilar(request, headers, cancellationToken: ct);
             await foreach (var r in call.ResponseStream.ReadAllAsync(ct))
             {
-                // Data is a Struct of camelCase STRING fields taken from the Qdrant payload (P9);
-                // it is not a deserialized entity, and StructConverter is internal to Core (P10).
-                // BuildObjectPointPayload omits a scalar whose value is null, so "docId" can be
-                // absent — indexing would throw KeyNotFoundException past the catch below and kill
-                // the whole sweep over one bad result.
-                if (!r.Data.Fields.TryGetValue("docId", out var docIdValue))
+                // Data is a Struct keyed by descriptor column name — PascalCase, matching the
+                // entity property — with values typed from each column's SQL type; it is not a
+                // deserialized entity, and StructConverter is internal to Core (P10). DocId is a
+                // TEXT column, so its value stays a string. BuildObjectPointPayload omits a scalar
+                // whose value is null, so "DocId" can still be absent — indexing would throw
+                // KeyNotFoundException past the catch below and kill the whole sweep over one bad
+                // result.
+                if (!r.Data.Fields.TryGetValue("DocId", out var docIdValue))
                 {
                     logger.LogWarning(
-                        "SearchSimilar result for QueryId={QueryId} has no docId payload field; skipping it.",
+                        "SearchSimilar result for QueryId={QueryId} has no DocId payload field; skipping it.",
                         query.QueryId);
                     continue;
                 }
