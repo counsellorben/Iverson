@@ -68,6 +68,15 @@ reproduced — recorded as mitigated rather than fixed.
 Seen once, in `Iverson.Api.Tests`. A Kafka testcontainer competing for the same exhausted box.
 Peak StarRocks containers dropping 5 → 2 removes most of that pressure. Not separately reproduced.
 
+**Mitigation verified 2026-08-24.** The peak was measured directly rather than assumed: polling
+`docker ps --filter ancestor=starrocks/allin1-ubuntu:4.1.1` every 5 s across a full
+`Iverson.StarRocks.Tests` run peaked at **2** containers, matching the predicted 5 → 2. Five
+consecutive suite runs and one full-solution run (2,126 tests) produced neither signature.
+
+Neither is *reproduced*, and deliberately reproducing them would mean re-creating the
+oversubscription that wedged this box at load 1329 — don't, without a specific reason and a way
+back. The mechanism being demonstrably gone is the closure available here.
+
 ## Open — not reproduced
 
 ### Syntax error on `@`
@@ -96,6 +105,21 @@ Both conditions present when this was seen are now gone: the fixtures ran `:late
 time) and are pinned to 4.1.1, and the oversubscription is removed. A recurrence would therefore be
 new information — capture the FE audit log (`/data/deploy/starrocks/fe/log/fe.audit.log`) while the
 container is still up, since the fixture disposes it within seconds of the run ending.
+
+**Still not reproduced as of 2026-08-24**, across five consecutive `Iverson.StarRocks.Tests` runs
+and one full-solution run. That is evidence of absence only under current conditions; it does not
+explain the original sighting.
+
+**The silent-results hazard above is now guarded, which is the part that was actionable.**
+`StarRocksParameterGuard` refuses any statement carrying an `@name` placeholder that nothing binds,
+so a substitution failure raises `InvalidOperationException` naming the placeholder instead of
+returning zero rows. It runs on all four execution paths in `EngagementRepository` (`QueryAsync`,
+`ExecuteAsync`, and the two tenant-scoped sites that call `conn.ExecuteAsync` directly). Its regex
+deliberately ignores `@@session_var` and the `'iverson_app'@'%'` user spec — both have tests, and
+the guard refused nothing across the full 2,126-test solution run.
+
+Note what this does and does not buy: it makes an *unbound placeholder* loud. It cannot detect a
+placeholder that is bound to the wrong value.
 
 ## Reproducing any of this
 

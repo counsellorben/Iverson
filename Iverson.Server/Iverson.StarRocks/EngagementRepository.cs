@@ -50,6 +50,8 @@ public sealed class EngagementRepository(
 
     public async Task<IEnumerable<T>> QueryAsync<T>(string sql, object? param = null)
     {
+        StarRocksParameterGuard.EnsureAllPlaceholdersBound(sql, param);
+
         using var activity = Telemetry.Source.StartActivity("sr.query", ActivityKind.Client);
         activity?.SetTag("db.system", "starrocks");
         activity?.SetTag("db.statement", sql);
@@ -74,6 +76,8 @@ public sealed class EngagementRepository(
 
     public async Task<int> ExecuteAsync(string sql, object? param = null)
     {
+        StarRocksParameterGuard.EnsureAllPlaceholdersBound(sql, param);
+
         using var activity = Telemetry.Source.StartActivity("sr.execute", ActivityKind.Client);
         activity?.SetTag("db.system", "starrocks");
         activity?.SetTag("db.statement", sql);
@@ -248,6 +252,7 @@ public sealed class EngagementRepository(
         for (var i = 0; i < entries.Count; i++)
             param.Add($"p{i}", JsonElementToObject(entries[i].Value));
 
+        StarRocksParameterGuard.EnsureAllPlaceholdersBound(sql, param);
         await RunTenantScopedAsync("sr.execute", tenantId, sql, conn => conn.ExecuteAsync(sql, param));
         activity?.SetStatus(ActivityStatusCode.Ok);
     }
@@ -258,6 +263,7 @@ public sealed class EngagementRepository(
 
         var qualifiedTable = TenantIdentifier.Qualify(TenantIdentifier.DatabaseName(tenantId), tableName);
         var sql = $"DELETE FROM {qualifiedTable} WHERE `{keyColumn}` = @key";
+        StarRocksParameterGuard.EnsureAllPlaceholdersBound(sql, new { key = keyValue });
         await RunTenantScopedAsync("sr.execute", tenantId, sql, conn => conn.ExecuteAsync(sql, new { key = keyValue }));
     }
 
