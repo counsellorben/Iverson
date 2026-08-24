@@ -17,6 +17,7 @@ public sealed class ObjectPersistenceGrpcService(
     IOutboxPublisher outboxPublisher,
     SchemaRegistry registry,
     IRelationValidator relationValidator,
+    IPayloadSizeValidator payloadSizeValidator,
     IEntityKeyAccessor keyAccessor,
     IOutboxWriter outboxWriter,
     ILogger<ObjectPersistenceGrpcService> logger,
@@ -42,6 +43,7 @@ public sealed class ObjectPersistenceGrpcService(
             auditLog);
 
         relationValidator.ValidateAndNormalizeRelations(request.Payload, schema);
+        payloadSizeValidator.ValidateTextColumnSizes(request.Payload, schema);
 
         var targetStores = StoreTargeting.DetermineTargetStores(schema);
 
@@ -111,6 +113,7 @@ public sealed class ObjectPersistenceGrpcService(
             auditLog);
 
         relationValidator.ValidateAndNormalizeRelations(request.Payload, schema);
+        payloadSizeValidator.ValidateTextColumnSizes(request.Payload, schema);
 
         var targetStores = StoreTargeting.DetermineTargetStores(schema);
 
