@@ -2,16 +2,20 @@ using DotNet.Testcontainers.Builders;
 using FluentAssertions;
 using Google.Protobuf.WellKnownTypes;
 using Grpc.Core;
+using System.Text.Json;
 using Iverson.Api.Authorization;
+using Iverson.Api.Consumers;
 using Iverson.Api.Grpc;
 using Iverson.Api.Schema;
 using Iverson.Api.Tests.Helpers;
 using Iverson.Client.Contracts;
 using Iverson.Embeddings;
+using Iverson.Events;
 using Iverson.Sql;
 using Iverson.StarRocks;
 using Iverson.Vector;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
 using NSubstitute;
 using Qdrant.Client;
 using Xunit;
@@ -194,6 +198,115 @@ public sealed class ObjectSearchVectorIntegrationTests : IClassFixture<QdrantGrp
         // Identity field is emitted under the key column's own name ("Id"), not the literal wire
         // key "key" it was seeded under.
         fields.Should().ContainKey("Id");
+    }
+
+    [Fact]
+    public async Task SearchSimilar_EmitsTheKeyTheConsumerActuallyWrote_ForAMultiWordColumn()
+    {
+        // The write side (IntelligenceStoreConsumer.BuildObjectPointPayload) and the read side
+        // (ObjectSearchGrpcService's columnLookup) each derive the Qdrant payload key from the same
+        // ColumnDescriptor.Name through the same ToCamelCase. Both halves are covered elsewhere in
+        // this file and in IntelligenceStoreConsumerTests — but each of those seeds or asserts its
+        // own hardcoded literal ("wordCount"), so nothing fails if one side's derivation changes.
+        // This test removes the literal from the middle: it captures the payload the real consumer
+        // produces and replays that dictionary verbatim into the collection SearchSimilar reads.
+        // A multi-word column is the subject deliberately — a single-word one cannot distinguish
+        // camelCase from a hypothetical snake_case or all-lower derivation.
+        var collection = UniqueName();
+        var baseSchema = SchemaFixtures.ArticleSchema();
+        var schema = baseSchema with
+        {
+            CollectionName = collection,
+            ScalarColumns  = [
+                .. baseSchema.ScalarColumns,
+                new ColumnDescriptor("DocId", "text", false),
+                // Production's SchemaBuilder adds the tenant discriminator as a real scalar column,
+                // which is how it reaches the point payload at all; the shared fixture omits it.
+                new ColumnDescriptor("TenantId", "text", false)],
+            // Dropped so the object-level point is the only UpsertNamedAsync the capture can see —
+            // the chunk path writes through the same method.
+            ChunkFields    = []
+        };
+        await _registry.RegisterAsync(schema);
+
+        var vec = new float[768];
+        vec[0] = 1f;
+        _embedding.EmbedAsync(Arg.Any<string>(), Arg.Any<CancellationToken>()).Returns(vec);
+
+        // ── write side: run the real consumer, capture what it hands the vector store ──
+        var vectorWrite = Substitute.For<IVectorWriteService>();
+        string? capturedCollection = null;
+        IReadOnlyDictionary<string, float[]>? capturedVectors = null;
+        IReadOnlyDictionary<string, object>? capturedPayload = null;
+        vectorWrite
+            .UpsertNamedAsync(
+                Arg.Do<string>(c => capturedCollection = c),
+                Arg.Any<ulong>(),
+                Arg.Do<IReadOnlyDictionary<string, float[]>>(v => capturedVectors = v),
+                Arg.Do<IReadOnlyDictionary<string, object>?>(p => capturedPayload = p))
+            .Returns(Task.CompletedTask);
+
+        var entities = Substitute.For<IEntityRepository>();
+        entities.FetchByKeyAsync(Arg.Any<TableSchema>(), Arg.Any<string>())
+                .Returns($$"""{"TenantId":"{{TestTenant}}"}""");
+
+        var vectorSchema = Substitute.For<IVectorSchemaManager>();
+        vectorSchema.ApplyCollectionAsync(Arg.Any<CollectionSchema>()).Returns(Task.CompletedTask);
+
+        var consumer = new IntelligenceStoreConsumer(
+            Substitute.For<IEventConsumer>(),
+            vectorSchema,
+            vectorWrite,
+            _embedding,
+            _registry,
+            entities,
+            new DocumentRenderer(_registry, entities),
+            _tenantScope,
+            Substitute.For<IEnrichmentService>(),
+            Options.Create(new EnrichmentServiceOptions()),
+            NullLogger<IntelligenceStoreConsumer>.Instance);
+
+        const string docId = "corpus-doc-42";
+        var ev = new EntityEvent(
+            EventType:     EntityEventType.Created,
+            TypeName:      "Article",
+            Key:           Guid.NewGuid().ToString(),
+            PayloadJson:   $$"""{"Title":"Great Title","DocId":"{{docId}}","TenantId":"{{TestTenant}}"}""",
+            TraceId:       "trace-roundtrip",
+            SchemaVersion: "1",
+            OccurredAt:    DateTimeOffset.UtcNow,
+            TargetStores:  StoreTarget.Intelligence);
+
+        await consumer.HandleAsync(
+            ev.Key,
+            JsonSerializer.Serialize(
+                ev,
+                new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase }),
+            CancellationToken.None);
+
+        capturedPayload.Should().NotBeNull(
+            "the consumer must write an object-level point for a schema with a vector field");
+        capturedCollection.Should().NotBeNull();
+
+        // ── replay: the captured dictionary goes into Qdrant untouched ──
+        await _mgr.ApplyCollectionAsync(new CollectionSchema(
+            capturedCollection!, [new NamedVector("title_vector", 768)], []));
+        await _vector.UpsertNamedAsync(capturedCollection!, 1, capturedVectors!, capturedPayload!);
+
+        // ── read side: the real RPC over that same point ──
+        var (writer, written) = MakeStream<SearchResponse>();
+        await BuildSut().SearchSimilar(
+            new SearchSimilarRequest { TypeName = "Article", Property = "Title", Query = "q", TopK = 10 },
+            writer,
+            TestServerCallContext.Create());
+
+        written.Should().ContainSingle();
+        var fields = written[0].Data.Fields;
+
+        // The point of the whole test: the canonical descriptor name reaches the client, and the
+        // value is the one that went in — with no literal wire key written down anywhere above.
+        fields.Should().ContainKey("DocId");
+        fields["DocId"].StringValue.Should().Be(docId);
     }
 
     [Fact]
