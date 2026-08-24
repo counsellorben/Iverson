@@ -81,9 +81,8 @@ stay case-insensitive.
      - A payload key with no descriptor column emits `Value.ForString`.
    - **Add `using System.Globalization;`** to the file — it is not currently imported, and the
      numeric parses take `CultureInfo.InvariantCulture`.
-   - **Masking** — `exemptField: "Key"` becomes `exemptField: schema.KeyColumn.Name`
-     (`AuthorizationFieldMasking.MaskDisallowedFields`, `:195-198`, third parameter
-     `string? exemptField`). Correct only in combination with the `"key"` special case above.
+   - **Masking** — leave `exemptField: "Key"` unchanged; it is inert for the identity field once
+     the keys are canonical, so this task does not touch it.
 
    Do **not** reuse `SchemaBuilder.SqlTypeToPayloadKind`: it is private to `SchemaBuilder`, and it
    assigns `INTEGER[]` the `Integer` kind (`SchemaBuilder.cs:369`) although an array's payload value
@@ -143,11 +142,11 @@ Task 1 introduces no symbol Task 2 defines.
 | A18 | The test fixture seeds payloads via `UpsertNamedAsync` with a numeric value | `ObjectSearchVectorIntegrationTests.cs:115-120` (`["wordCount"] = 100L`) | holds |
 | A19 | `MakeStream<SearchResponse>()` exists | `ObjectSearchVectorIntegrationTests.cs:87` | holds |
 | A20 | (Cat 6) The payload's identity key is written as literal `"key"` | `IntelligenceStoreConsumer.cs:417` | holds |
-| A21 | (Cat 6) Changing `exemptField` to the key column name is safe | Holds **only** with spec §1's `"key"` special case: `ToCamelCase("Id")` is `"id"`, and `SchemaBuilder.cs:53` excludes the key from `ScalarColumns`. Without it, `UpperFirst("key")` = `"Key"` ≠ `"Id"` and the identifier is masked under any FieldPermission. Task 1 step 3 pins both together; step 1 tests it. | holds, conditionally |
 | A22 | SqlType can be compared with a plain `switch` | **FAILED** — production emits uppercase (`SchemaBuilder.cs:351-359`), fixtures lowercase (`SchemaFixtures.cs:57-64`); the existing `SqlTypeMap` uses `OrdinalIgnoreCase` (`SchemaBuilder.cs:391`). Task 1 now mandates case-insensitive exact matching, and step 1 mandates a test covering both cases. | failed, folded in |
 | A23 | `ArticleSchema()`'s columns support the new test | `SchemaFixtures.cs:52-71` — `KeyColumn` `Id`/`uuid`, scalars `Title`/`Body`/`AuthorId`; the existing test already appends `WordCount` | holds |
 | A24 | The flattened payload string parses back to the value the mapping needs | `IntelligenceVectorService.ToCanonicalString:202-207` — `IntegerValue`/`DoubleValue` via `CultureInfo.InvariantCulture`, `BoolValue` as lowercase `"true"`/`"false"`; accepted by `double.TryParse(..., InvariantCulture)` and `bool.TryParse` | holds |
 | A25 | Renaming payload keys to descriptor names cannot leak the tenant column | `RemoveTenantColumn` (`AuthorizationFieldMasking.cs:171-178`) filters on `IsTenantColumn`, which compares `OrdinalIgnoreCase` against `"__TenantId"` (`SchemaDescriptor.cs:13,20-21`); it runs before the `allowedFields is null` early return, and matches the renamed form equally | holds |
+| A26 | The live matrix verifies the naming half only | `VectorDoc` is `id: uuid.UUID` plus six `str` fields (`Iverson.Clients/Python/conformance/models.py:133-139`) — no numeric, boolean, or timestamp property, so Task 2 cannot detect a broken typed-value mapping; typed values rest on Task 1's unit test | holds |
 
 **Sibling sweep.** Every payload-emitting site in the target file: `Value.ForString(kvp.Value)`
 appears once (`:280`) and `MaskDisallowedFields` once (`:282`) — the other three hits are comments
