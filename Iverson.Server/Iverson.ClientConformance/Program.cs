@@ -273,6 +273,19 @@ static void PrintUsage() => Console.WriteLine("""
       --json <path>       Also write the report as JSON to this path.
       --keep              Keep driver-created data instead of tearing it down.
       --help              Show this message.
+
+    Credentials:
+      IVERSON_CLIENT_ID / IVERSON_CLIENT_SECRET / IVERSON_TOKEN_ENDPOINT / IVERSON_CLIENT_SCOPE
+      have no defaults. For a docker-compose stack their values are in the local-development
+      Authentik blueprint, which nothing else in this repo points at:
+
+        Iverson.Server/deploy/helm/iverson/charts/authentik/blueprints/compose-only/service-clients.yaml
+
+      IVERSON_CLIENT_SCOPE must be "schema_admin tenant_id_loadtest" — the provider's two
+      property_mappings in that file. Without schema_admin the token is accepted and then
+      refused on RegisterSchema, which reads as a driver defect rather than a missing export.
+      Every IVERSON_ACTING_USER_* has a working compose default (TokenBroker.cs).
+      Full procedure: docs/runbooks/client-conformance-matrix.md
     """);
 
 namespace Iverson.ClientConformance

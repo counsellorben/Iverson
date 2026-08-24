@@ -27,6 +27,22 @@ public sealed class TokenBroker : IDisposable
         _grpcUrl = grpcUrl;
 
         var clientId = Environment.GetEnvironmentVariable("IVERSON_CLIENT_ID");
+        // WHERE THESE VALUES COME FROM. Grepping any of these variable names finds only readers —
+        // nothing in the repo names the file that holds the values, and that file never names the
+        // variables, so both halves look empty from the other side. Every past live verification of
+        // this harness lost time here and one declined to run at all (tenant-plan Ruling 66).
+        //
+        // For a docker-compose stack they are in the local-development Authentik blueprint:
+        //   Iverson.Server/deploy/helm/iverson/charts/authentik/blueprints/compose-only/service-clients.yaml
+        // That blueprint is compose-only by its own banner; Helm generates these secrets for kind
+        // and for real deployments, which therefore still need them supplied out of band.
+        //
+        // IVERSON_CLIENT_SCOPE has no default and is not optional in practice: it must be
+        // "schema_admin tenant_id_loadtest", the provider's two property_mappings in that file.
+        // Without schema_admin the token is accepted and then refused on RegisterSchema, which
+        // presents as a driver defect rather than as a missing export.
+        //
+        // Full procedure: docs/runbooks/client-conformance-matrix.md
         var clientSecret = Environment.GetEnvironmentVariable("IVERSON_CLIENT_SECRET");
         var tokenEndpoint = Environment.GetEnvironmentVariable("IVERSON_TOKEN_ENDPOINT");
         var clientScope = Environment.GetEnvironmentVariable("IVERSON_CLIENT_SCOPE");
