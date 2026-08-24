@@ -276,9 +276,9 @@ public sealed class ObjectSearchGrpcService(
         // Covers ScalarColumns and KeyColumn, plus the explicit "key" special case:
         // IntelligenceStoreConsumer.cs:417 writes the identity value under the literal payload key
         // "key", which ToCamelCase("Id") would never produce, so it cannot be derived from the
-        // lookup and must be seeded directly. A payload key that misses this lookup entirely
-        // (vector-field text, FK columns) falls back to StructSerializer.UpperFirst below — the
-        // exact inverse of the ToCamelCase(name) those two producers write under.
+        // lookup and must be seeded directly. StructSerializer.UpperFirst below only fires for a
+        // payload key with no matching descriptor column at all — e.g. a stale key left behind by
+        // a since-removed column.
         var columnLookup = new Dictionary<string, ColumnDescriptor>(StringComparer.Ordinal);
         foreach (var col in schema.ScalarColumns)
             columnLookup[col.Name.ToCamelCase()] = col;

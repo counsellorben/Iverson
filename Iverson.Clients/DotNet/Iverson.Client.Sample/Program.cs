@@ -318,7 +318,7 @@ try
 
     Console.WriteLine("Articles similar to 'AI basketball legend' (Title vector):");
     await foreach (var response in similarStream.ResponseStream.ReadAllAsync())
-        Console.WriteLine($"  [score={response.Score:F4}] {response.Data?.Fields.GetValueOrDefault("title")?.StringValue}");
+        Console.WriteLine($"  [score={response.Score:F4}] {response.Data?.Fields.GetValueOrDefault("Title")?.StringValue}");
 }
 catch (RpcException ex)
 {
