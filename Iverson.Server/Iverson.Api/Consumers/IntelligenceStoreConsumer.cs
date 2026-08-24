@@ -75,16 +75,25 @@ public sealed class IntelligenceStoreConsumer(
         var ev = Deserialize(key, value);
         if (!ev.TargetStores.HasFlag(StoreTarget.Intelligence)) return;
 
-        var schema = registry.Get(ev.TypeName);
-        if (schema is null || schema.CollectionName is null)
+        // The two arms below were one compound condition and are deliberately split: an UNKNOWN
+        // TYPE is a lost write and must not be committed, whereas a registered type with no vector
+        // collection has nothing to project and returning is correct.
+        var schema = await registry.GetOrReloadAsync(ev.TypeName, ct);
+        if (schema is null)
         {
-            logger.LogError(
-                "[Intelligence] Dropped event — no schema registered for type={Type} key={Key}.",
-                ev.TypeName, key);
             Activity.Current?
                 .SetTag("dropped_event", true)
                 .SetTag("dropped_event.reason", "schema_not_found")
                 .SetTag("dropped_event.type", ev.TypeName);
+            throw new InvalidOperationException(
+                $"[Intelligence] No schema registered for type '{ev.TypeName}' (key '{key}') after a forced registry reload.");
+        }
+
+        if (schema.CollectionName is null)
+        {
+            logger.LogDebug(
+                "[Intelligence] Skipped event — type={Type} has no vector collection. key={Key}",
+                ev.TypeName, key);
             return;
         }
 
@@ -486,16 +495,22 @@ public sealed class IntelligenceStoreConsumer(
         var ev = Deserialize(key, value);
         if (!ev.TargetStores.HasFlag(StoreTarget.Intelligence)) return;
 
-        var schema = registry.Get(ev.TypeName);
-        if (schema?.CollectionName is null)
+        var schema = await registry.GetOrReloadAsync(ev.TypeName, ct);
+        if (schema is null)
         {
-            logger.LogError(
-                "[Intelligence] Dropped event — no schema registered for type={Type} key={Key}.",
-                ev.TypeName, ev.Key);
             Activity.Current?
                 .SetTag("dropped_event", true)
                 .SetTag("dropped_event.reason", "schema_not_found")
                 .SetTag("dropped_event.type", ev.TypeName);
+            throw new InvalidOperationException(
+                $"[Intelligence] No schema registered for type '{ev.TypeName}' (key '{ev.Key}') after a forced registry reload.");
+        }
+
+        if (schema.CollectionName is null)
+        {
+            logger.LogDebug(
+                "[Intelligence] Skipped delete — type={Type} has no vector collection. key={Key}",
+                ev.TypeName, ev.Key);
             return;
         }
 

@@ -68,17 +68,15 @@ public sealed class EnrichmentConsumer(
     {
         var ev = Deserialize(key, value);
 
-        var schema = registry.Get(ev.TypeName);
+        var schema = await registry.GetOrReloadAsync(ev.TypeName, ct);
         if (schema is null)
         {
-            logger.LogError(
-                "[Enrichment] Dropped event — no schema registered for type={Type} key={Key}.",
-                ev.TypeName.SanitizeForLog(), key);
             Activity.Current?
                 .SetTag("dropped_event", true)
                 .SetTag("dropped_event.reason", "schema_not_found")
                 .SetTag("dropped_event.type", ev.TypeName);
-            return;
+            throw new InvalidOperationException(
+                $"[Enrichment] No schema registered for type '{ev.TypeName}' (key '{key}') after a forced registry reload.");
         }
 
         if (schema.EnrichmentTargets.Count == 0) return;
@@ -215,6 +213,8 @@ public sealed class EnrichmentConsumer(
     {
         var ev = Deserialize(key, value);
 
+        // Unlike the site above this one is a best-effort cleanup path, so an unknown type here is
+        // not a lost write — the row it would have cleaned is already gone. Left as a return.
         var schema = registry.Get(ev.TypeName);
         if (schema is null || schema.EnrichmentTargets.Count == 0) return;
 

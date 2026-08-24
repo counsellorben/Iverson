@@ -34,6 +34,64 @@ public class SchemaRegistryTests
         result.Should().BeNull();
     }
 
+    // ── GetOrReloadAsync: the cold-registry race ──────────────────────────────────────────────
+    // SchemaRefreshWorker polls every 30s, so a type registered moments before its first write is
+    // invisible to a consumer that only consults the cached map. The projection consumers used to
+    // log an Error and RETURN on that miss, which completes the Kafka handler normally and
+    // therefore COMMITS the offset — a terminal, silent loss of the write.
+
+    [Fact]
+    public async Task GetOrReloadAsync_TypeRegisteredSinceTheLastPoll_IsFoundByTheForcedReload()
+    {
+        var schema = SchemaFixtures.AuthorSchema();
+        _sut.Get(schema.TypeName).Should().BeNull("the cache starts cold");
+
+        // The row exists in Postgres but no poll has observed it yet.
+        _repository.LoadAllAsync().Returns([(schema.TypeName, SerializeAsRegistryWould(schema))]);
+
+        var result = await _sut.GetOrReloadAsync(schema.TypeName);
+
+        result.Should().NotBeNull("the forced reload must find a type registered since the last poll");
+        result!.TypeName.Should().Be(schema.TypeName);
+    }
+
+    [Fact]
+    public async Task GetOrReloadAsync_CacheHit_DoesNotReload()
+    {
+        var schema = SchemaFixtures.AuthorSchema();
+        await _sut.RegisterAsync(schema);
+        _repository.ClearReceivedCalls();
+
+        var result = await _sut.GetOrReloadAsync(schema.TypeName);
+
+        result.Should().NotBeNull();
+        await _repository.DidNotReceive().LoadAllAsync();
+    }
+
+    [Fact]
+    public async Task GetOrReloadAsync_GenuinelyUnknownType_ReturnsNullSoTheCallerCanThrow()
+    {
+        _repository.LoadAllAsync().Returns([]);
+
+        var result = await _sut.GetOrReloadAsync("NeverRegistered");
+
+        result.Should().BeNull();
+        await _repository.Received(1).LoadAllAsync();
+    }
+
+    [Fact]
+    public async Task GetOrReloadAsync_SecondMissWithinTheThrottle_DoesNotReloadAgain()
+    {
+        // A backlog of genuinely-unknown-type messages must not issue one Postgres round trip per
+        // delivery attempt. The throttle collapses a burst to one reload per interval.
+        _repository.LoadAllAsync().Returns([]);
+
+        await _sut.GetOrReloadAsync("NeverRegistered");
+        await _sut.GetOrReloadAsync("NeverRegisteredEither");
+
+        await _repository.Received(1).LoadAllAsync();
+    }
+
     [Fact]
     public async Task RegisterAsync_StoresDescriptor()
     {

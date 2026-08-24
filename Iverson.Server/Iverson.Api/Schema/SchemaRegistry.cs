@@ -25,6 +25,52 @@ public sealed class SchemaRegistry(
 
     public bool IsRegistered(string typeName) => _schemas.ContainsKey(typeName);
 
+    // Serialises the on-demand reloads below and throttles them. Without the throttle a backlog
+    // of genuinely-unknown-type messages would issue one Postgres round trip per delivery
+    // attempt; with it, a burst collapses to one reload per interval and every waiter re-reads
+    // the map the winner published.
+    private readonly SemaphoreSlim _reloadGate = new(1, 1);
+    private DateTimeOffset _lastReload = DateTimeOffset.MinValue;
+    private static readonly TimeSpan ReloadThrottle = TimeSpan.FromSeconds(1);
+
+    /// <summary>
+    /// The descriptor for <paramref name="typeName"/>, forcing at most one registry reload when it
+    /// is not already cached.
+    ///
+    /// This closes the cold-registry race: <c>SchemaRefreshWorker</c> polls every 30 s, so a type
+    /// registered moments before its first write is invisible to a consumer that only consults the
+    /// cached map. The projection consumers used to log an Error and RETURN on a cache miss, which
+    /// completes the Kafka handler normally and therefore COMMITS the offset — a terminal, silent
+    /// loss. Reloading here converts the common case (the type really is registered, we just have
+    /// not polled yet) into a hit; a still-missing type is left for the caller to throw on, so the
+    /// delivery contract's bounded retry and dead-letter apply instead of a silent drop.
+    /// </summary>
+    public async Task<SchemaDescriptor?> GetOrReloadAsync(string typeName, CancellationToken ct = default)
+    {
+        var cached = Get(typeName);
+        if (cached is not null) return cached;
+
+        await _reloadGate.WaitAsync(ct);
+        try
+        {
+            // Re-check under the gate: while we waited, another caller may have reloaded and
+            // published the very descriptor we are after.
+            cached = Get(typeName);
+            if (cached is not null) return cached;
+
+            if (DateTimeOffset.UtcNow - _lastReload < ReloadThrottle) return null;
+
+            await LoadAsync(ct);
+            _lastReload = DateTimeOffset.UtcNow;
+        }
+        finally
+        {
+            _reloadGate.Release();
+        }
+
+        return Get(typeName);
+    }
+
     /// <summary>
     /// The (declaringType, relation) pairs whose document template references <paramref name="typeName"/>
     /// — i.e. whose rendered document must be re-rendered when an entity of <paramref name="typeName"/>

@@ -20,6 +20,21 @@ public sealed class PostgresSchemaManager(
         await using var conn = CreateConnection();
         await conn.OpenAsync();
 
+        // Serialise the whole apply against other processes doing the same table. Without this,
+        // `iverson-api` and `iverson-worker` booting simultaneously both run Program.cs's
+        // self-heal loop over every registered descriptor, and the ENABLE ROW LEVEL SECURITY /
+        // GRANT pair below races on the table's pg_class row: Postgres answers the loser with
+        // XX000 "tuple concurrently updated", which nothing catches, so the process exits and only
+        // `restart: unless-stopped` recovers it. That is every routine redeploy of the two-role
+        // deployment, not just an upgrade.
+        //
+        // A SESSION-level lock (not pg_advisory_xact_lock) because these statements are
+        // deliberately non-transactional — see the drift comment below. The unlock is in the
+        // finally rather than left to connection close: Npgsql pools connections, and a pooled
+        // connection handed back while still holding a session advisory lock keeps holding it.
+        await conn.ExecuteAsync(
+            "SELECT pg_advisory_lock(hashtext(@TableName)::bigint)", new { schema.TableName });
+
         try
         {
             var existingColumnRows = (await conn.QueryAsync<(string Name, string Type)>(
@@ -156,6 +171,11 @@ public sealed class PostgresSchemaManager(
             activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
             activity?.RecordException(ex);
             throw;
+        }
+        finally
+        {
+            await conn.ExecuteAsync(
+                "SELECT pg_advisory_unlock(hashtext(@TableName)::bigint)", new { schema.TableName });
         }
     }
 

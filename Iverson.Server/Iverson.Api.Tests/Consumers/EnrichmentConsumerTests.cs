@@ -293,7 +293,15 @@ public class EnrichmentConsumerTests
 
         var sut = new EnrichmentConsumer(_consumer, registry, _entities, _state, _outboxWriter,
             _outboxPublisher, _txRunner, _enrichment, NullLogger<EnrichmentConsumer>.Instance);
-        await sut.HandleAsync(Key, Event(EntityEventType.Updated), CancellationToken.None);
+
+        // RE-POINTED AGAIN by the Ruling 56 fix, and the change of outcome is deliberate. The
+        // consumer's unknown-type guard used to RETURN, which commits the Kafka offset and loses
+        // the event silently; it now throws, so the event reaches the DLQ. For a row the registry
+        // will NEVER admit that means its events dead-letter rather than vanish — loud and
+        // recoverable instead of silent, which is the whole point of the fix. The three
+        // "wrote nothing" assertions below are unchanged and still the substance of the test.
+        var act = () => sut.HandleAsync(Key, Event(EntityEventType.Updated), CancellationToken.None);
+        await act.Should().ThrowAsync<InvalidOperationException>().WithMessage("*Article*");
 
         await _state.DidNotReceiveWithAnyArgs().UpsertAsync(
             default!, default!, default!, default!, default!, default);

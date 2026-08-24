@@ -84,6 +84,33 @@ public class EngagementStoreConsumerTests
             "tenant-a");
     }
 
+    // ── The cold-registry projection-drop race ────────────────────────────────────────────────
+    // These two pin THROW rather than RETURN. Returning completes the Kafka handler normally, so
+    // KafkaConsumer commits the offset (KafkaConsumer.cs:65-66) and the write is lost terminally
+    // with only an Error-level log. Throwing hands the message to MessageDispatcher's bounded
+    // retry and then the DLQ, so it stays recoverable. Reproduced live: after a teardown a full
+    // conformance matrix went red across all five languages on `0 of 5 row(s) visible to Search`.
+
+    [Fact]
+    public async Task HandleDelete_TypeStillUnknownAfterAReload_Throws_SoTheOffsetIsNotCommitted()
+    {
+        var ev = new EntityEvent(
+            EventType:     EntityEventType.Deleted,
+            TypeName:      "NeverRegistered",
+            Key:           Guid.NewGuid().ToString(),
+            PayloadJson:   "{}",
+            TraceId:       "trace-unknown",
+            SchemaVersion: "1",
+            OccurredAt:    DateTimeOffset.UtcNow,
+            TargetStores:  StoreTarget.Engagement);
+
+        var act = () => BuildSut().HandleDeleteAsync(ev.Key, Serialize(ev), CancellationToken.None);
+
+        await act.Should().ThrowAsync<InvalidOperationException>()
+            .WithMessage("*NeverRegistered*");
+        await _sr.DidNotReceiveWithAnyArgs().DeleteAsync(default!, default!, default!, default!);
+    }
+
     [Fact]
     public async Task HandleDelete_WithEngagementFlag_CallsDeleteAsync()
     {
@@ -139,8 +166,12 @@ public class EngagementStoreConsumerTests
         await act.Should().ThrowAsync<PoisonMessageException>();
     }
 
+    // Renamed from DropsEvent_WhenSchemaNotRegistered, whose name described the DEFECT: it pinned
+    // the silent drop. Returning completes the Kafka handler normally, so KafkaConsumer commits the
+    // offset (KafkaConsumer.cs:65-66) and the write is lost terminally with only an Error log. The
+    // surviving half of the old assertion — the store is never called — is kept below.
     [Fact]
-    public async Task DropsEvent_WhenSchemaNotRegistered()
+    public async Task HandleUpsert_TypeStillUnknownAfterAReload_Throws_SoTheOffsetIsNotCommitted()
     {
         var ev = new EntityEvent(
             EventType:     EntityEventType.Created,
@@ -152,7 +183,9 @@ public class EngagementStoreConsumerTests
             OccurredAt:    DateTimeOffset.UtcNow,
             TargetStores:  StoreTarget.Engagement);
 
-        await BuildSut().HandleUpsertAsync(ev.Key, Serialize(ev), CancellationToken.None);
+        var act = () => BuildSut().HandleUpsertAsync(ev.Key, Serialize(ev), CancellationToken.None);
+
+        await act.Should().ThrowAsync<InvalidOperationException>().WithMessage("*Unknown*");
 
         await _sr.DidNotReceive().UpsertAsync(
             Arg.Any<EngagementTableSchema>(),

@@ -45,11 +45,14 @@ public sealed class EngagementStoreConsumer(
         var ev = Deserialize(key, value);
         if (!ev.TargetStores.HasFlag(StoreTarget.Engagement)) return;
 
-        var schema = registry.Get(ev.TypeName);
+        var schema = await registry.GetOrReloadAsync(ev.TypeName, ct);
         if (schema is null)
         {
-            logger.LogError("[Engagement] Dropped upsert — no schema for type={Type} key={Key}", ev.TypeName.SanitizeForLog(), key);
-            return;
+            // Throw, never return: returning completes the handler normally and the caller COMMITS
+            // the offset, which loses the write terminally. Throwing hands the message to the
+            // dispatcher's bounded retry and then the DLQ, so it is recoverable either way.
+            throw new InvalidOperationException(
+                $"[Engagement] No schema registered for type '{ev.TypeName}' (key '{key}') after a forced registry reload.");
         }
 
         var authoritativeTenantValue =
@@ -96,11 +99,11 @@ public sealed class EngagementStoreConsumer(
         var ev = Deserialize(key, value);
         if (!ev.TargetStores.HasFlag(StoreTarget.Engagement)) return;
 
-        var schema = registry.Get(ev.TypeName);
+        var schema = await registry.GetOrReloadAsync(ev.TypeName, ct);
         if (schema is null)
         {
-            logger.LogError("[Engagement] Dropped delete — no schema for type={Type} key={Key}", ev.TypeName.SanitizeForLog(), key);
-            return;
+            throw new InvalidOperationException(
+                $"[Engagement] No schema registered for type '{ev.TypeName}' (key '{key}') after a forced registry reload.");
         }
 
         JsonElement payload;
