@@ -521,6 +521,15 @@ locals {
 # here rather than via the node group's disk_size argument: EKS rejects a
 # disk_size on a node group once a launch template supplies block device
 # mappings.
+#
+# IMDS hardening (metadata_options / IMDSv2) is out of this task's
+# encryption scope. Before this launch template existed, these nodes
+# already permitted IMDSv1 under the EKS default, so leaving it unset
+# preserves the current posture rather than regressing it. Enforcing
+# IMDSv2 safely needs http_put_response_hop_limit = 2 (containers reach
+# IMDS across an extra network hop; the AWS default hop limit of 1 would
+# cut them off) — that is its own change, not a side effect of this one.
+#tfsec:ignore:aws-ec2-enforce-launch-config-http-token-imds
 resource "aws_launch_template" "pools" {
   for_each    = local.node_pools
   name_prefix = "${var.cluster_name}-${each.key}-"
@@ -534,15 +543,6 @@ resource "aws_launch_template" "pools" {
       kms_key_id            = aws_kms_key.data_volumes.arn
       delete_on_termination = true
     }
-  }
-
-  # Not part of this task's encryption scope, but tfsec correctly flags a
-  # launch template with no metadata_options as allowing IMDSv1 (no token
-  # required); enforcing IMDSv2 here is a no-downside hardening default,
-  # not a linter workaround.
-  metadata_options {
-    http_endpoint = "enabled"
-    http_tokens   = "required"
   }
 }
 
