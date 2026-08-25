@@ -45,50 +45,102 @@ public class HealthCheckCacheTests
     // version passed against both the correct implementation and the broken GetOrCreate-based
     // one, so it proved nothing about single-flighting.
     //
-    // This version uses real OS/thread-pool threads (Task.Run) synchronized on a Barrier so all
-    // callers enter HealthCheckCache.GetAsync at (as close to) the same instant as the runtime
-    // allows — the actual precondition for the GetOrCreate race to manifest. The shared
-    // TaskCompletionSource gate additionally keeps any fan-out that DOES start from completing
-    // (and publishing its result) until every caller has had a chance to reach and pass the
-    // race window, which is what makes the failure reproducible rather than a rare flake:
-    // without it, whichever caller wins the race can complete and populate the cache before the
-    // rest even reach GetAsync, so a broken implementation could still get lucky and only fan
-    // out once.
+    // This version releases 32 callers together per round and needs them to actually be
+    // concurrent at the OS level for the race window to open. A second review finding caught the
+    // first fix of this test: it used Task.Run (thread-pool threads) for the 32 workers, each
+    // blocking inside barrier.SignalAndWait(). With the pool's default min-worker-thread count
+    // equal to the processor count, the pool has to INJECT roughly 24-28 additional threads at
+    // its starvation-detection rate (~1 every 500ms) before the barrier can trip — 12-15s. Two
+    // consequences: the 200ms Task.Delay below almost always fired before any caller even
+    // reached GetAsync (so the release-gate's job of holding the winner's fan-out open across
+    // the race window was never actually exercised), and blocking 32 pool threads for 12-15s
+    // each starved xunit's own parallel test collections, more than doubling the whole suite's
+    // wall-clock time.
+    //
+    // Using dedicated background threads (not Task.Run) removes the pool dependency: the OS can
+    // schedule 32 real threads onto the barrier immediately, no starvation-detection ramp
+    // involved, so the barrier trips in microseconds. That fix alone, however, turned out to
+    // trade thread-pool-starvation slowness for a DIFFERENT reliability problem, found while
+    // verifying this test still fails against the pre-fix GetOrCreate implementation as
+    // instructed: the actual defect window inside GetOrCreate (TryGetValue -> CreateEntry ->
+    // run factory -> publish) is a few hundred nanoseconds of pure in-memory code with no I/O
+    // yield point, and this sandbox has only 4 logical processors. A single simultaneous release
+    // of 32 threads across 4 cores does not reliably land two threads inside that sub-microsecond
+    // window every time — across 13 verification runs against the broken implementation with a
+    // single round, it failed (correctly) ~65% of the time and false-passed ~35% of the time
+    // (fan-out counts observed on the failing runs: 5, 11, 19, 22 — see the fix-round-3 report
+    // entry for the full log). A test that only catches the bug roughly two times in three is not
+    // acceptable regression coverage.
+    //
+    // The fix keeps exactly the structure the coordinator specified — Barrier(32),
+    // .SignalAndWait() immediately before GetAsync(), dedicated non-pool threads — but repeats
+    // that independent 32-thread race five times (fresh cache/counters/threads each round, so
+    // each round is a genuinely cold cache again) and fails if ANY round shows more than one
+    // fan-out. Five independent ~65%-detection rounds compound to a >99.4% chance of catching a
+    // regression (1 - 0.35^5), while keeping the whole test well under a second per round —
+    // cheaper than the single 12-15s Task.Run-based round it replaced twice over.
     //
     // Verified against the pre-fix HealthCheckCache (cache.GetOrCreate(key, entry => new
-    // Lazy<Task<HealthChecks>>(FanOutAsync)) with no lock): this test failed, observing multiple
-    // independent fan-outs (all four counters landed in the double digits, not 1) — confirming
-    // it actually catches the defect the double-checked-lock fix addresses, not just the
-    // memoize-only shape the sequential test above already covers.
+    // Lazy<Task<HealthChecks>>(FanOutAsync)) with no lock), 5-round version, 8 consecutive runs:
+    // failed every time (round 1 alone was always enough to catch it in this sample, since a
+    // false-pass on round 1 still gets caught by rounds 2-5) — see the fix-round-3 report entry.
     [Fact]
     public async Task GetAsync_NConcurrentCallsOnColdCache_FansOutExactlyOnce()
     {
         const int concurrentCallers = 32;
-        var counters = new CallCounters();
-        var releaseGate = new TaskCompletionSource();
-        var cache = BuildCache(counters, releaseGate.Task);
-        using var barrier = new Barrier(concurrentCallers);
+        const int rounds = 5;
 
-        var callerTasks = Enumerable.Range(0, concurrentCallers)
-            .Select(_ => Task.Run(async () =>
+        for (var round = 0; round < rounds; round++)
+        {
+            var counters = new CallCounters();
+            var releaseGate = new TaskCompletionSource();
+            var cache = BuildCache(counters, releaseGate.Task);
+            using var barrier = new Barrier(concurrentCallers);
+            var exceptions = new Exception?[concurrentCallers];
+
+            var threads = new Thread[concurrentCallers];
+            for (var i = 0; i < concurrentCallers; i++)
             {
-                barrier.SignalAndWait();
-                await cache.GetAsync();
-            }))
-            .ToArray();
+                var index = i;
+                threads[i] = new Thread(() =>
+                {
+                    try
+                    {
+                        barrier.SignalAndWait();
+                        cache.GetAsync().GetAwaiter().GetResult();
+                    }
+                    catch (Exception ex)
+                    {
+                        exceptions[index] = ex;
+                    }
+                })
+                {
+                    IsBackground = true
+                };
+            }
 
-        // Give every real thread a chance to actually reach (and race on) GetAsync — and, on a
-        // non-single-flighting implementation, to have already incremented the counters — before
-        // releasing the gate that lets any in-flight fan-out complete.
-        await Task.Delay(TimeSpan.FromMilliseconds(200));
-        releaseGate.SetResult();
+            foreach (var thread in threads)
+                thread.Start();
 
-        await Task.WhenAll(callerTasks);
+            // Give every dedicated thread a chance to actually reach (and race on) GetAsync —
+            // and, on a non-single-flighting implementation, to have already incremented the
+            // counters — before releasing the gate that lets any in-flight fan-out complete.
+            // With real threads (not pool threads) this window is dominated by OS scheduling,
+            // not thread-pool injection, so 200ms is ample rather than a race against a 12-15s
+            // ramp.
+            await Task.Delay(TimeSpan.FromMilliseconds(200));
+            releaseGate.SetResult();
 
-        counters.Postgres.Should().Be(1);
-        counters.StarRocks.Should().Be(1);
-        counters.Qdrant.Should().Be(1);
-        counters.Kafka.Should().Be(1);
+            foreach (var thread in threads)
+                thread.Join();
+
+            exceptions.Should().OnlyContain(ex => ex == null, $"round {round}");
+
+            counters.Postgres.Should().Be(1, $"round {round}");
+            counters.StarRocks.Should().Be(1, $"round {round}");
+            counters.Qdrant.Should().Be(1, $"round {round}");
+            counters.Kafka.Should().Be(1, $"round {round}");
+        }
     }
 
     // Regression test for the review finding that an unwrapped IEngagementStoreHealthCheck
