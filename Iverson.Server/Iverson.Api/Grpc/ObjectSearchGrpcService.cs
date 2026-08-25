@@ -4,6 +4,7 @@ using Grpc.Core;
 using Iverson.Api.Authorization;
 using Iverson.Api.Consumers;
 using Iverson.Api.Schema;
+using Iverson.Api.Search;
 using Iverson.Client.Contracts;
 using Iverson.Embeddings;
 using Iverson.StarRocks;
@@ -543,13 +544,18 @@ public sealed class ObjectSearchGrpcService(
     {
         try
         {
-            return await search.AggregateAsync(
-                SchemaBuilder.ToEngagementQuerySchema(schema),
+            // AggregateReader owns the store call so the admin-console endpoint can reach the same
+            // path without a ServerCallContext or a proto AggregateRequest. Authorization is still
+            // evaluated here — EvaluateAuthorization covers the whole request's joins, which the
+            // reader's own count path has no equivalent of.
+            return await AggregateReader.RunAsync(
+                search,
+                registry,
+                schema,
                 query,
                 spec,
                 having,
                 joins,
-                t => registry.Get(t) is { } d ? SchemaBuilder.ToEngagementQuerySchema(d) : null,
                 authz);
         }
         catch (EngagementQueryTranslationException ex)

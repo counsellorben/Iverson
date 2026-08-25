@@ -223,6 +223,11 @@ builder.Services.AddSingleton<IOutboxPublisher, OutboxPublisher>();
 builder.Services.AddSingleton<IEnrichmentStateRepository>(sp =>
     new EnrichmentStateRepository(sp.GetRequiredService<IRecordStoreQueryExecutor>()));
 builder.Services.AddSingleton<IEntityRelationResolver, EntityRelationResolver>();
+// The admin-console JSON endpoints' two readers. Both take the acting user as a method
+// parameter — the gRPC-only ActingUserInterceptor never runs for them, so they are handed
+// HttpContext.User instead. Singleton to match every dependency they hold.
+builder.Services.AddSingleton<Iverson.Api.Schema.SchemaCatalogReader>();
+builder.Services.AddSingleton<Iverson.Api.Search.AggregateReader>();
 builder.Services.AddSingleton<ISchemaRegistrationOrchestrator, SchemaRegistrationOrchestrator>();
 builder.Services.AddSingleton<IReconciliationQueueRepository>(sp => new ReconciliationQueueRepository(
     Iverson.Api.Reconciliation.ReconciliationSchema.TableName,
