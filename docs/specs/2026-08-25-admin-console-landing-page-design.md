@@ -154,8 +154,20 @@ Two consequential changes come with that:
 Local and kind profiles need the new hostname resolvable.
 `docs/user-management-and-security.md:231-235` already documents adding
 `<ingress-controller-ip>  iverson.local authentik.iverson.local` to `/etc/hosts`;
-`admin-api.iverson.local` joins that line. On the cloud profiles the ACM certificate must carry
-the new name as a SAN alongside the existing host.
+`admin-api.iverson.local` joins that line.
+
+The cloud profiles need a certificate covering the new name, and the two mechanisms differ:
+
+- **aws** — the ACM certificate referenced by `alb.ingress.kubernetes.io/certificate-arn` must
+  cover `admin-api.<ingressHost>`, as a SAN alongside the existing host or via a wildcard.
+- **azure and gcp** — the new Ingress gets its **own** `tlsSecretName`, for example
+  `iverson-admin-api-tls`, holding a certificate for `admin-api.<ingressHost>`. This follows the
+  one-Secret-per-Ingress pattern those profiles already use three times over
+  (`values-azure.yaml:78,130,141` and `values-gcp.yaml:79,131,143` declare `iverson-api-tls`,
+  `iverson-authentik-tls` and `iverson-admin-ui-tls`), and it must **not** reuse
+  `iverson-api-tls`: that certificate names the bare host, and
+  `charts/api/templates/ingress.yaml:9-13` binds one host to one Secret, so presenting it for
+  `admin-api.<ingressHost>` fails the handshake on name mismatch.
 
 ### The endpoint set
 
@@ -864,6 +876,10 @@ enumerating the two deployment profiles under discussion rather than the five th
 carries. Every per-profile value this design introduces — `clusterCidrs`, the new Ingress's class
 and annotations, the CORS origin and `apiBaseUrl` — is supplied for all five.
 
+A70 closes round 10's span-check gap. It is the same shape one level finer: A69 established that
+the profiles use different TLS *mechanisms*, and the gap was what each mechanism's certificate has
+to *contain*.
+
 | # | Assumption | Disposition |
 |---|---|---|
 | A1 | `Iverson.Api` uses minimal-API `MapGet` for `/health` and `/probe/starrocks`, both `AllowAnonymous` | **Holds** — `Program.cs:301`/`:334` and `:342`/`:346` |
@@ -934,6 +950,7 @@ and annotations, the CORS origin and `apiBaseUrl` — is supplied for all five.
 | A67 | An Ingress's annotations are scoped to the object that declares them | **Holds, and it is the hazard** — `charts/api/templates/ingress.yaml:4-6` renders `.Values.ingress.annotations` onto the Ingress's own `metadata`, so a second Ingress reusing that value would inherit `values-aws.yaml:75`'s `backend-protocol-version: GRPC`. Object scoping is also what lets two Ingresses in one ALB group carry different backend-protocol annotations |
 | A68 | The chart's deployment profiles are the two this design had been reasoning about | **Failed** — `deploy/helm/iverson/` carries six values files: `values.yaml` plus `values-aws.yaml`, `values-azure.yaml`, `values-gcp.yaml`, `values-laptop.yaml` and `values-local.yaml`, i.e. five deployment profiles over a base. `values-azure.yaml` and `values-gcp.yaml` are complete profiles with their own api, admin-ui and authentik ingress blocks, and both enforce NetworkPolicy (`cluster-azure/main.tf:183` `network_policy = "azure"`; `cluster-gcp/main.tf:165` Dataplane V2). Overlays are self-contained by convention — `values-laptop.yaml`'s header records that the CI harness passes exactly one `-f` per overlay — so a key absent from an overlay is absent, not inherited from a sibling. Any per-profile value this design introduces must be supplied for all five |
 | A69 | The new Ingress's class and TLS convention are the same on every profile | **Failed** — the three cloud profiles use three different ingress classes and two different TLS mechanisms: `values-aws.yaml:71-85` `alb` with an ACM `certificate-arn` and empty `tlsSecretName`; `values-azure.yaml:70-73` `azure-application-gateway` and `values-gcp.yaml:71-74` `gce`, both terminating TLS from a Kubernetes Secret via the Ingress's `tls:` block. `values-laptop.yaml:19` disables the console entirely (`adminUi.enabled: false`), so it needs no such Ingress |
+| A70 | A certificate covering `admin-api.<ingressHost>` exists on each cloud profile | **Failed as scoped** — A69 covers which TLS *mechanism* each profile uses, not what the certificate must contain, and no certificate covering the new host exists on any profile today. The two mechanisms need different work: aws adds the name to the ACM certificate behind `certificate-arn` (`values-aws.yaml:77,135,148` keep `tlsSecretName` empty on purpose), while azure and gcp need a new per-host Secret, since `values-azure.yaml:78,130,141` and `values-gcp.yaml:79,131,143` give every Ingress its own and `charts/api/templates/ingress.yaml:9-13` binds one host to one Secret |
 | A51 | The `AllowAnonymous` endpoints are reachable only on port 8081 | **Failed** — `RequireHost` appears nowhere in `Program.cs`, so ASP.NET routing serves every endpoint on both listeners. `GET /metrics` over h2c prior-knowledge on `:8080` returns 200 with the full 121,797-byte body, and an anonymous `POST /probe/kafka` on the same port created the `iverson.probe` Kafka topic. The port split is a protocol convention, not a security boundary; see Design 5f |
 
 ## Known issues
