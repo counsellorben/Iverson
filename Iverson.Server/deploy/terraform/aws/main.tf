@@ -64,7 +64,11 @@ module "operators" {
   cluster_autoscaler_irsa_role_arn = module.cluster.cluster_autoscaler_irsa_role_arn
   storage_class_config = {
     provisioner = "ebs.csi.aws.com"
-    parameters  = { type = "gp3" }
+    parameters = {
+      type      = "gp3"
+      encrypted = "true"
+      kmsKeyId  = module.cluster.data_volumes_key_arn
+    }
   }
 }
 

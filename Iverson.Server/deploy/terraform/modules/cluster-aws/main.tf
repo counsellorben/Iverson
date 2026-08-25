@@ -10,6 +10,8 @@ data "aws_availability_zones" "available" {
   state = "available"
 }
 
+data "aws_caller_identity" "current" {}
+
 resource "aws_vpc" "this" {
   cidr_block           = var.vpc_cidr
   enable_dns_support   = true
@@ -174,6 +176,51 @@ resource "aws_kms_key" "eks_secrets" {
   enable_key_rotation     = true
 }
 
+resource "aws_kms_key" "data_volumes" {
+  description             = "${var.cluster_name} data volume encryption (PersistentVolumes and node root volumes)"
+  deletion_window_in_days = 30
+  enable_key_rotation     = true
+}
+
+# Root statement is mandatory: without an explicit root grant, an IAM key
+# policy with no root principal makes the key unmanageable by anyone,
+# including the account's own administrators. Resource = "*" in a key
+# policy means "this key" (the policy is attached to and scoped by
+# aws_kms_key.data_volumes.id already) — it is not an unscoped wildcard
+# grant, so the tfsec ignores below are confirmed false positives, not a
+# real gap. Task 3 extends this same resource with node-root-volume grants.
+#tfsec:ignore:aws-iam-no-policy-wildcards
+resource "aws_kms_key_policy" "data_volumes" {
+  key_id = aws_kms_key.data_volumes.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid       = "EnableIAMUserPermissions"
+        Effect    = "Allow"
+        Principal = { AWS = "arn:aws:iam::${data.aws_caller_identity.current.account_id}:root" }
+        Action    = "kms:*"
+        Resource  = "*"
+      },
+      {
+        Sid       = "AllowEBSCSIDriverUseOfTheKey"
+        Effect    = "Allow"
+        Principal = { AWS = aws_iam_role.ebs_csi_irsa.arn }
+        Action    = ["kms:Encrypt", "kms:Decrypt", "kms:ReEncrypt*", "kms:GenerateDataKey*", "kms:DescribeKey"]
+        Resource  = "*"
+      },
+      {
+        Sid       = "AllowEBSCSIDriverAttachmentOfPersistentResources"
+        Effect    = "Allow"
+        Principal = { AWS = aws_iam_role.ebs_csi_irsa.arn }
+        Action    = "kms:CreateGrant"
+        Resource  = "*"
+        Condition = { Bool = { "kms:GrantIsForAWSResource" = "true" } }
+      }
+    ]
+  })
+}
+
 # tfsec's aws-eks-no-public-cluster-access check can't resolve var.api_public_access_cidrs
 # statically, so it treats any endpoint_public_access = true as unrestricted. This module
 # requires that variable with no default specifically to force an explicit, real CIDR
@@ -240,6 +287,34 @@ resource "aws_iam_role" "ebs_csi_irsa" {
 resource "aws_iam_role_policy_attachment" "ebs_csi_irsa" {
   role       = aws_iam_role.ebs_csi_irsa.name
   policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonEBSCSIDriverPolicy"
+}
+
+# KMS is deny-by-default on both the key-policy side (aws_kms_key_policy.data_volumes
+# above) and the IAM side — AmazonEBSCSIDriverPolicy carries no KMS actions at all, so
+# the CSI role needs this grant too or every encrypted-volume attach/detach fails.
+resource "aws_iam_policy" "ebs_csi_kms" {
+  name = "${var.cluster_name}-ebs-csi-kms"
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect   = "Allow"
+        Action   = ["kms:Encrypt", "kms:Decrypt", "kms:ReEncrypt*", "kms:GenerateDataKey*", "kms:DescribeKey"]
+        Resource = aws_kms_key.data_volumes.arn
+      },
+      {
+        Effect    = "Allow"
+        Action    = "kms:CreateGrant"
+        Resource  = aws_kms_key.data_volumes.arn
+        Condition = { Bool = { "kms:GrantIsForAWSResource" = "true" } }
+      }
+    ]
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "ebs_csi_kms" {
+  role       = aws_iam_role.ebs_csi_irsa.name
+  policy_arn = aws_iam_policy.ebs_csi_kms.arn
 }
 
 resource "aws_iam_role" "lb_controller_irsa" {
