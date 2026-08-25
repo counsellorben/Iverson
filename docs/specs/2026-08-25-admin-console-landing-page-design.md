@@ -342,16 +342,45 @@ verification, then checked. Nineteen held; seven failed or resolved differently.
 
 ## Known issues
 
-**The `groups` claim may not reach the API.** The `Operator` policy is satisfied by a `groups`
-claim or a `scope` claim (`Program.cs:146-149`), and the console requests
-`scope: "openid profile email offline_access"` (`AuthProvider.tsx`). Whether the resulting
-token satisfies `Operator` depends on Authentik emitting `groups` — a claim that has been
-absent in this deployment before. This gates the tenant-roster widget and both new endpoints.
+**CONFIRMED BLOCKER: no human identity can satisfy the `Operator` policy today.**
+Verified live against the running compose stack on 2026-08-25. This is not a risk to watch —
+it is a defect that must be fixed before the tenant-roster widget or either new endpoint can
+work. There are **two independent gaps**, and both must close.
 
-It is recorded rather than solved because it is a pre-existing condition of the console, not
-something this design introduces: the already-planned Tenants page hits the same wall through
-the same policy on the same service. It should be confirmed live before implementation
-begins, since a negative result changes what the page can show, not how it is built.
+`OperatorAuthorizationPolicy.IsSatisfiedBy` (`Iverson.Server/Iverson.Api/OperatorAuthorizationPolicy.cs:9-15`)
+has two arms: the `groups` claim contains `operators`, or the `scope` claim contains `admin`.
+
+**Gap A — the console never requests the `groups` scope.** `AuthProvider.tsx` requests
+`scope: "openid profile email offline_access"`. Authentik applies a scope mapping only when
+the client requests that scope, so the `groups` mapping bound to the `iverson-oidc-default`
+provider never fires. A token minted with the console's exact scope string against the
+console's own client (`dev-iverson-human-oidc-client-id`) came back with **no `groups` claim,
+no `tenant_id` claim, and an empty `scope` claim** — `profile` and `email` are not bound to
+that provider either, so nothing at all was granted. Both policy arms fail on an empty scope.
+The same token against the Operator-gated `/admin/dlq` returned **403** (versus 401 with no
+token, confirming it authenticated and failed authorization, not authentication).
+
+**Gap B — the `operators` group does not exist.** Live enumeration of Authentik groups returns
+`authentik Admins`, `authentik Read-only`, `iverson-admin-orchestrators`,
+`iverson-loadtest-bypass`, `tenant-admins`. No `operators` group is provisioned by any
+blueprint. Fixing Gap A alone is therefore insufficient: a token minted for
+`iverson-loadtest-bypass-user` **with** the `groups` scope correctly emitted
+`groups: ["iverson-loadtest-bypass"]` — proving the mapping works — and still returned **403**
+from `/admin/dlq`.
+
+The `admin` scope arm is no escape hatch: that scope mapping is bound only to
+`iverson-admin-automation`, a `client_credentials` service client with no human login path.
+
+**What implementation must include, ahead of any widget work:**
+
+1. Add `groups` (and `tenant_id`, which the data-volume widget's tenant scoping needs) to the
+   console's requested OIDC scope in `AuthProvider.tsx`.
+2. Provision an `operators` group in the Authentik blueprints and place the console's operator
+   users in it.
+
+This is not scope this design introduces — the already-planned Tenants page hits the identical
+wall through the same policy on the same service — but it is now a confirmed prerequisite
+rather than an open question, and the implementation plan must sequence it first.
 
 **Data volume cannot report authorization denial.** Accepted, not solved — see Design 2. The
 alternative would be changing `Aggregate`'s denial behaviour from empty-response to error,
