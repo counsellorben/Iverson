@@ -8,3 +8,5 @@ output "kube_config" {
 output "node_pool_labels" {
   value = { for k, v in local.extra_pools : v.label => "iverson.io/node-pool=${v.label}" }
 }
+
+output "data_volumes_des_id" { value = azurerm_disk_encryption_set.data_volumes.id }

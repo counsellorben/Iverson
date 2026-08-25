@@ -60,7 +60,10 @@ module "operators" {
   cluster_name = module.cluster.cluster_name
   storage_class_config = {
     provisioner = "disk.csi.azure.com"
-    parameters  = { skuName = "PremiumV2_LRS" }
+    parameters = {
+      skuName             = "PremiumV2_LRS"
+      diskEncryptionSetID = module.cluster.data_volumes_des_id
+    }
   }
 }
 

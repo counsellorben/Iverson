@@ -9,6 +9,69 @@ resource "azurerm_resource_group" "this" {
   location = var.location
 }
 
+data "azurerm_client_config" "current" {}
+
+# No network_acls block (accepted follow-up — restricting vault network access
+# is its own change, not requested by this task, and the AWS CMK path this
+# mirrors doesn't scope network access on its key either).
+#tfsec:ignore:azure-keyvault-specify-network-acl
+resource "azurerm_key_vault" "data_volumes" {
+  name                       = "${var.cluster_name}-dv-kv"
+  location                   = azurerm_resource_group.this.location
+  resource_group_name        = azurerm_resource_group.this.name
+  tenant_id                  = data.azurerm_client_config.current.tenant_id
+  sku_name                   = "standard"
+  purge_protection_enabled   = true
+  soft_delete_retention_days = 30
+}
+
+# No expiration_date (accepted follow-up — key rotation policy is its own
+# change, not requested by this task; the disk encryption set references this
+# key's id directly, so an expiring key would need a rotation/rewrap plan that
+# is out of scope here).
+#tfsec:ignore:azure-keyvault-ensure-key-expiry
+resource "azurerm_key_vault_key" "data_volumes" {
+  name         = "data-volumes"
+  key_vault_id = azurerm_key_vault.data_volumes.id
+  key_type     = "RSA"
+  key_size     = 2048
+  key_opts     = ["decrypt", "encrypt", "sign", "unwrapKey", "verify", "wrapKey"]
+
+  depends_on = [azurerm_key_vault_access_policy.terraform]
+}
+
+# Grants the deploying principal key-management permissions on the vault;
+# without this, Step 2's key creation is denied.
+resource "azurerm_key_vault_access_policy" "terraform" {
+  key_vault_id = azurerm_key_vault.data_volumes.id
+  tenant_id    = data.azurerm_client_config.current.tenant_id
+  object_id    = data.azurerm_client_config.current.object_id
+
+  key_permissions = ["Create", "Delete", "Get", "List", "Purge", "Recover", "Update", "GetRotationPolicy"]
+}
+
+resource "azurerm_disk_encryption_set" "data_volumes" {
+  name                = "${var.cluster_name}-des"
+  location            = azurerm_resource_group.this.location
+  resource_group_name = azurerm_resource_group.this.name
+  key_vault_key_id    = azurerm_key_vault_key.data_volumes.id
+
+  identity {
+    type = "SystemAssigned"
+  }
+}
+
+# Grants the disk encryption set's own managed identity wrap/unwrap access;
+# without this, disk I/O fails within the hour once the data key needs
+# to be unwrapped.
+resource "azurerm_key_vault_access_policy" "des" {
+  key_vault_id = azurerm_key_vault.data_volumes.id
+  tenant_id    = azurerm_disk_encryption_set.data_volumes.identity[0].tenant_id
+  object_id    = azurerm_disk_encryption_set.data_volumes.identity[0].principal_id
+
+  key_permissions = ["Get", "WrapKey", "UnwrapKey"]
+}
+
 resource "azurerm_virtual_network" "this" {
   name                = "${var.cluster_name}-vnet"
   address_space       = ["10.1.0.0/16"]
