@@ -93,7 +93,7 @@ Newly introduced by this plan and verified at plan-write time.
 | 20 | Code validity | `AddCors`/`UseCors` and `AddEndpointFilter` need no package reference; they ship in the ASP.NET Core shared framework used by `Iverson.Api.csproj` (`net10.0`) | `Iverson.Api.csproj:4` `<TargetFramework>net10.0</TargetFramework>`; no CORS package referenced anywhere today |
 | 21 | File path | `charts/worker/templates/` exists and already holds a ClusterIP `service.yaml`, so T8's headless Service sits alongside it rather than replacing it | `ls charts/worker/templates/` returns `deployment.yaml hpa.yaml service.yaml` |
 | 22 | File path | `docs/runbooks/grpc-admin-auth-cutover.md` exists, so T1 Step 4's membership note has the neighbour the spec names | `ls docs/runbooks/` returns it among seven runbooks |
-| 23 | Code validity | The `IMemoryCache` shape T2 cites **memoizes but does not single-flight** — `TenantStatusCache` holds no lock, semaphore, `GetOrCreate` or `Lazy`, so every concurrent caller on a miss runs the work independently. T2 Step 2 therefore caches a `Lazy<Task<…>>` instead of copying that shape | `grep -nE "lock\|Semaphore\|GetOrCreate\|Lazy" Tenancy/TenantStatusCache.cs` returns nothing; the body at `:12-23` is `TryGetValue` → work → `Set` |
+| 23 | Code validity | The `IMemoryCache` shape T2 cites **memoizes but does not single-flight** — `TenantStatusCache` holds no lock, semaphore, `GetOrCreate` or `Lazy`, so every concurrent caller on a miss runs the work independently. T2 Step 2 therefore caches a `Lazy<Task<…>>` behind a double-checked lock instead of copying that shape. `GetOrCreate` does not close the gap either — it returns the locally created value rather than re-reading the cache, so it memoizes without single-flighting | `grep -nE "lock\|Semaphore\|GetOrCreate\|Lazy" Tenancy/TenantStatusCache.cs` returns nothing; the body at `:12-23` is `TryGetValue` → work → `Set` |
 | 24 | Code validity | Helm's `required` does **not** abort on an empty list — only on nil and on an empty string. T3 Step 4 therefore uses `fail` behind a `not` test | `helm template` over a fixture chart with `cidrs: []` and `{{ required "…" .Values.cidrs }}` renders `x: []` and exits 0, on helm v3.16.4+g7877b45 |
 
 ## Tasks
@@ -150,19 +150,32 @@ git commit -m "make the Operator policy satisfiable: request groups scope and cr
 
 - [ ] **Step 2: Single-flight `/health`'s fan-out on a 5-second window.** Cache behind `IMemoryCache` (already registered at `Program.cs:217`) with a `private static readonly TimeSpan Ttl = TimeSpan.FromSeconds(5)`. Cache the checks result, not the `IResult`, so the 200/503 decision is re-derived each call. The window must stay under the readiness probe's 10-second default period.
 
-  **Cache a `Lazy<Task<…>>`, not the resolved value**, so concurrent callers on a miss await the same in-flight fan-out:
+  **Cache a `Lazy<Task<…>>`, not the resolved value**, so concurrent callers on a miss await the same in-flight fan-out. `IMemoryCache.GetOrCreate` is NOT sufficient here: it is `TryGetValue` → `CreateEntry` → factory → publish, and it returns the value the *local* call created rather than re-reading the cache, so N callers racing the miss window each build their own `Lazy` and each run the fan-out (measured: 13 independent fan-outs from 32 barrier-released threads). Use a double-checked lock, with `.Value` evaluated OUTSIDE the lock so the `Lazy`'s `ExecutionAndPublication` monitor never blocks a thread while holding the gate:
 ```csharp
-cache.GetOrCreate(HealthCacheKey, entry =>
+private readonly object _gate = new();
+
+public Task<HealthChecks> GetAsync()
 {
-    entry.AbsoluteExpirationRelativeToNow = Ttl;
-    return new Lazy<Task<HealthChecks>>(FanOutAsync);
-})!.Value
+    if (cache.TryGetValue(CacheKey, out Lazy<Task<HealthChecks>>? lazy))
+        return lazy!.Value;
+
+    lock (_gate)
+    {
+        if (!cache.TryGetValue(CacheKey, out lazy))
+        {
+            lazy = new Lazy<Task<HealthChecks>>(FanOutAsync);
+            cache.Set(CacheKey, lazy, Ttl);
+        }
+    }
+
+    return lazy!.Value;
+}
 ```
   This **deliberately departs from `Tenancy/TenantStatusCache.cs`'s shape**. That file is `TryGetValue` → work → `Set` with no lock, semaphore or `Lazy`, which memoizes but does not single-flight: every concurrent caller on a miss runs the work independently. That is harmless where it guards one indexed read, and wrong here — `/health` fans out to four backends of which two are writes, and this plan routes it to the public `admin-api` host while it stays `AllowAnonymous`. Without single-flighting, N concurrent requests at expiry produce N Kafka produces and N Qdrant collection-ensures, and the stated bound below is not achieved. Do not "correct" this back to the `TenantStatusCache` pattern.
 
   The bound this delivers: **at most one fan-out per 5s per pod regardless of request rate**, which is the whole of the change.
 
-- [ ] **Step 3: Test.** Assert an anonymous probe request is rejected, an Operator-authorized one succeeds, that two sequential `/health` calls inside the window issue one fan-out, and — separately — that **N concurrent** calls on a cold cache also issue one. The sequential assertion alone passes against a non-single-flighting implementation, so the concurrent case is the one that pins this step.
+- [ ] **Step 3: Test.** Assert an anonymous probe request is rejected, an Operator-authorized one succeeds, that two sequential `/health` calls inside the window issue one fan-out, and — separately — that **N concurrent** calls on a cold cache also issue one. The sequential assertion alone passes against a non-single-flighting implementation, so the concurrent case is the one that pins this step. The concurrent case must use **real threads released together by a `Barrier`**: `Enumerable.Range(0, N).Select(_ => GetAsync())` starts the calls sequentially on one thread — caller 0 publishes the entry before returning, so callers 1..N-1 are cache hits and no race is ever created. Verify the concurrent test FAILS against a `GetOrCreate`-shaped implementation before accepting it.
 ```bash
 dotnet test Iverson.Server/Iverson.Api.Tests
 ```
