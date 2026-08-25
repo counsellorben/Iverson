@@ -12,9 +12,10 @@
 # as an explicit, logged exception, not a default anyone should ship with.
 #
 # networkPolicy.clusterCidrs has no default here on purpose. It scopes the
-# api-ingress rules: list every non-pod IP range that must legitimately reach
-# api on 8080/8081 — always the node/kubelet range, plus whatever load-balancer
-# or health-check ranges the platform itself connects from (on AWS/Azure/GCP,
+# api-ingress rules on 8080/8081 AND prometheus-ingress's 9090 rule (where it
+# carries the kubelet's /-/ready probe): list every non-pod IP range that must
+# legitimately reach those ports — always the node/kubelet range, plus whatever
+# load-balancer or health-check ranges the platform itself connects from (on AWS/Azure/GCP,
 # which have no ingress-nginx namespace, that's the cloud load balancer; GCP
 # additionally needs GCLB's fixed health-check ranges alongside its node
 # subnet — see values-gcp.yaml). That set is a different, non-overlapping value
