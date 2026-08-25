@@ -82,8 +82,8 @@ listener (`RequireHost` appears nowhere in the file) — `GET /metrics` over h2c
 caller must speak, nothing more. See Design 5f.
 
 This design adds a browser-reachable route to the HTTP/1.1 port under a **dedicated path
-prefix**, `/admin-api`. The console calls `/admin-api/iverson.<Service>/<Method>`; the ingress
-strips the prefix and forwards to port 8081. Bare `/iverson.<Service>/<Method>` is left alone on
+prefix**, `/admin-api`. The console calls `/admin-api/iverson.<Service>/<Method>`; **the API
+strips the prefix itself** and the ingress does no rewriting. Bare `/iverson.<Service>/<Method>` is left alone on
 8080, so the language SDK clients' native gRPC is unaffected. The prefix, not the service path,
 is what distinguishes the two consumers — and it is the only axis that can, since both speak the
 same gRPC paths.
@@ -95,31 +95,46 @@ question arises between the two rules.
 
 The route serves all five gRPC widgets and the health strip, not only these two RPCs:
 
-- **a new Ingress object** — not the existing api Ingress — backed by the api service on port
-  **8081**, carrying `rewrite-target: /$1` and **three `pathType: ImplementationSpecific` paths,
-  as an allowlist rather than a catch-all**:
+- **prefix handling in the API, not the ingress.** A middleware inspects `Request.Path`; when it
+  begins with `/admin-api`, the remainder is matched against an **allowlist** and, only on a match,
+  becomes the new `Request.Path`. Anything else under the prefix returns 404 without reaching an
+  endpoint. The allowlist is exactly three shapes:
 
   ```
-  /admin-api/(iverson\.[A-Za-z0-9_.]+/[A-Za-z0-9_]+)$   # gRPC-Web RPCs
-  /admin-api/(health)$                                   # the health strip's source
-  /admin-api/(v1/traces)$                                # the OTLP export; see Design 5g
+  ^/iverson\.[A-Za-z0-9_.]+/[A-Za-z0-9_]+$   # gRPC-Web RPCs
+  /health                                     # the health strip's source
+  /v1/traces                                  # the OTLP export; see Design 5g
   ```
 
-  An earlier revision of this design used one path, `/admin-api(/|$)(.*)`, with
-  `rewrite-target: /$2`. That is a **catch-all**, and port 8081 serves the entire application —
-  not only the gRPC surface. It would therefore have published `/metrics` and all four
-  `/probe/*` endpoints, every one of them `AllowAnonymous`, to the internet on every profile.
-  The allowlist admits exactly the three shapes this design needs and leaves the rest
-  unroutable from outside. Each regex captures its target into **group 1** because
-  `rewrite-target` is an Ingress-level annotation shared by all paths on the object, so a single
-  `/$1` has to serve all three.
+  **This must sit before routing, and routing must be made explicit to guarantee that.**
+  `Program.cs` never calls `app.UseRouting()` (`:280-284` goes straight from `UseHttpsRedirection`
+  to `UseGrpcWeb`), and minimal hosting then auto-inserts routing at the *head* of the pipeline —
+  so a middleware registered with `app.Use(...)` would run after the endpoint had already been
+  matched against the unstripped path, and the strip would silently do nothing. The fix is to call
+  `app.UseRouting()` explicitly, immediately after this middleware.
+
+  Two earlier revisions of this design were wrong here, and the reasons are worth keeping. The
+  first used a single ingress path `/admin-api(/|$)(.*)` with `rewrite-target: /$2` — a
+  **catch-all**, and port 8081 serves the entire application, so it would have published
+  `/metrics` and all four `/probe/*` endpoints, every one `AllowAnonymous`, to the internet on
+  every profile. The second narrowed that to three regex ingress paths, which fixed the catch-all
+  but still depended on `nginx.ingress.kubernetes.io/rewrite-target` — an annotation the AWS Load
+  Balancer Controller does not interpret, and ALB cannot rewrite paths at all
+  (`deploy/terraform/modules/operators/main.tf:113-115` installs that controller;
+  `values-aws.yaml:71` sets `className: "alb"`). Every console RPC would have 404'd on AWS.
+
+  Doing the strip in the API fixes both at once and expresses the allowlist **once, in one
+  language**, instead of twice in two ingress dialects.
 
   `/health/live` is deliberately absent: the health strip reads the per-store `checks` object,
   which only `/health` returns, and the kubelet reaches `/health/live` in-cluster without the
   ingress. `/metrics` is absent and must stay so — it cannot simply be authenticated instead,
   because Prometheus scrapes it anonymously (Design 4c); keeping it off the edge is the control.
 
-  This mirrors the shape `charts/admin-ui/templates/ingress.yaml` already uses.
+- **a new Ingress object** — not the existing api Ingress — with a single `pathType: Prefix` path
+  `/admin-api` backed by the api service on port **8081**, and **no rewrite annotation of any
+  kind**. A plain prefix route is expressible natively on both controllers, so this is one rule
+  that behaves identically on ingress-nginx and on ALB.
   It must be a separate object because `charts/api/templates/ingress.yaml:4-6`
   renders `.Values.ingress.annotations` onto the Ingress's metadata, so `values-aws.yaml:75`'s
   `alb.ingress.kubernetes.io/backend-protocol-version: GRPC` applies to the whole object; an 8081
@@ -131,8 +146,8 @@ The route serves all five gRPC widgets and the health strip, not only these two 
   Within an IngressGroup the controller orders rules by that annotation and falls back to the
   lexical order of the Ingress's namespace/name; the api Ingress's `/` `pathType: Prefix` path
   matches every request, so without explicit ordering it shadows this one entirely.
-- a `server.proxy` entry in `vite.config.ts` mapping `/admin-api` to `http://localhost:8081` with
-  the prefix rewritten away, matching what the ingress does. `vite.config.ts` declares no proxy
+- a `server.proxy` entry in `vite.config.ts` mapping `/admin-api` to `http://localhost:8081`,
+  **passing the prefix through unchanged** — the API strips it, so the dev proxy must not. `vite.config.ts` declares no proxy
   today, which is also why `src/telemetry.ts:19`'s relative `/v1/traces` export does not reach the
   API in development.
 
@@ -598,8 +613,27 @@ Port 8081 has **four** legitimate consumers, and a correct rule set names each:
 | **AWS ALB** | `ipBlock` over the VPC CIDR | `values-aws.yaml:74` sets `target-type: ip`, so the ALB registers pod IPs and traffic arrives from VPC ENIs — **no `namespaceSelector` can express this**, because there is no ingress-nginx namespace on AWS |
 
 The CIDRs differ per environment, so they come from a values key
-(`networkPolicy.clusterCidrs`, a list) rather than being hardcoded; the nginx profiles set the node
-CIDR and the AWS overlay sets the VPC CIDR.
+(`networkPolicy.clusterCidrs`, a list) rather than being hardcoded. **Every profile ships a
+default, and the template fails the render when the list is empty** — `required` in Helm, not a
+rule that silently denies. That failure mode is the reason: an empty list would render an
+`ipBlock` matching nothing, the kubelet's readiness probe to `/health` on 8081 would be denied,
+and pods would never become Ready — a silent non-readiness rather than a visible error.
+
+| Profile | `networkPolicy.clusterCidrs` | Source |
+|---|---|---|
+| `values-aws.yaml` | `["10.0.0.0/16"]` | the VPC CIDR — `deploy/terraform/modules/cluster-aws/variables.tf:16-19` declares `vpc_cidr` with exactly this default. Keep the two in lockstep, the same way `global.ingressHost` and `api.ingress.host` are kept in lockstep |
+| `values-local.yaml` | `["172.18.0.0/16"]` | the Docker network kind puts its nodes on. Verify per machine with `docker network inspect kind`; Docker's default for that network is `172.18.0.0/16` but it is assigned, not guaranteed |
+
+This choice is taken with one eye open. `templates/networkpolicies.yaml:154-166` already records
+this chart rejecting CIDR-scoping as non-portable for the Kubernetes API server, whose address
+"differs across kind/EKS/AKS/GKE". That reasoning applies to the kubelet too, and the cost accepted
+here is a value operators must get right per environment. It is accepted because the alternative —
+a port-scoped allow-all — is what this subsection exists to remove, and because the failure is now
+loud at render time rather than silent at readiness time.
+
+NetworkPolicy is genuinely enforced on both profiles, so this rule is not decorative:
+`deploy/kind/kind-config.yaml:3-9` disables kindnet specifically so Calico can be installed in its
+place, and `cluster-aws/main.tf:475` enables the VPC CNI's native enforcement.
 
 **The same gap exists on port 8080 and is fixed here too.** The rule at `:22-27` admits only the
 `ingress-nginx` namespace. NetworkPolicy is enforced on AWS —
@@ -661,8 +695,19 @@ The second is what covers the error path, where the first never runs.
 `X-Frame-Options`, `X-Content-Type-Options`, or `Referrer-Policy`. The base image adds none, and
 `Dockerfile:24` replaces the stock `conf.d/default.conf` wholesale.
 
-**Fix:** add an `add_header` block. Three directives are dictated by what this design introduces,
-which is why authoring it before the widgets land means writing it twice:
+**Fix:** add an `add_header` block — **emitted at container start, not baked into the image.**
+`nginx.conf` is copied in at build time (`Dockerfile:24`) while the Authentik origin is a
+per-environment value (`http://localhost:9000/...` in `.env.development`,
+`http://authentik.iverson.example.com/...` at `values-aws.yaml:142`), so a hardcoded
+`connect-src` either carries an unresolved placeholder or omits the origin. Omitting it blocks
+`oidc-client-ts`'s discovery fetch and token exchange, which are `connect-src` subjects — **login
+cannot complete.** `docker-entrypoint.sh` already runs at startup and already reads
+`OIDC_AUTHORITY`, so it renders the CSP header there with the origin interpolated, using
+`envsubst` (present in the image, A43). 5d's validation regex already constrains that value, so
+the same check that makes `config.js` safe makes the header safe.
+
+Three directives are dictated by what this design introduces, which is why authoring it before the
+widgets land means writing it twice:
 
 - `connect-src 'self' <authentik-origin>` — `'self'` covers the same-origin `/admin-api` gRPC-Web
   calls and the `/v1/traces` export; the Authentik origin is needed for the token endpoint
@@ -728,7 +773,7 @@ with 400 — the same failure this design already documents for development, whe
 exists. The console's trace export therefore does not work in either environment.
 
 **Fix:** point `OTLP_TRACES_URL` at `/admin-api/v1/traces`, which Design 1's allowlist admits and
-the ingress rewrites to `/v1/traces` on 8081. No server change is needed: the endpoint already
+the API's prefix middleware strips to `/v1/traces` on 8081. No server change is needed: the endpoint already
 exists at `Program.cs:452-460` with `RequireAuthorization()`, and `telemetry.ts:29-38` already
 attaches the bearer token through the exporter's `headers` factory.
 
@@ -748,6 +793,11 @@ four failed. Two of the failures changed the design's shape rather than a detail
 from the runtime image (A43), and namespace-selector NetworkPolicy rules grant nothing on AWS
 (A44). Two more corrected beliefs this spec previously relied on: the anonymous endpoints are not
 confined to port 8081 (A51), and the console's trace export works in neither environment (A50).
+
+A52-A54 were added when critical-design-review round 7 found that the transport's rewrite had been
+verified on ingress-nginx and assumed on ALB. All three hold. A38 and A45 are marked superseded
+rather than failed: both were verified correctly for the controller they were checked against, and
+the design moved off the mechanism they describe.
 
 | # | Assumption | Disposition |
 |---|---|---|
@@ -788,19 +838,22 @@ confined to port 8081 (A51), and the console's trace export works in neither env
 | A35 | Adding a proto to `Common/Proto` does not break the other language clients | **Holds** — `Iverson.Client.Contracts.csproj:17` globs `../../Common/Proto/*.proto` with `GrpcServices="Both"`, so the server base class generates without a csproj edit; `Iverson.AdminUI/scripts/generate_protos.sh` and `Iverson.Clients/TypeScript/scripts/generate_protos.sh` also glob. Python (`Iverson.Clients/Python/scripts/generate_protos.sh`) and Go both list the four `object_*` protos explicitly, so neither is touched. Nothing in `Iverson.ClientConformance` enumerates the service set |
 | A36 | `http_route` is a real label on the server-duration metric | **Holds** — present on every `http_server_request_duration_seconds_*` sample on the live `/metrics` endpoint, alongside `http_request_method`, `http_response_status_code` and `network_protocol_version`. The Prometheus scrape endpoint appears as `http_route="/metrics"` and gRPC calls as `http_route="/iverson.<Service>/<Method>"`, so Design 2's exclusion filter is expressible as written |
 | A37 | `/admin-api` cannot match the console's own ingress rule | **Holds** — `charts/admin-ui/templates/ingress.yaml:21` is `/admin(/|$)(.*)`, whose `(/|$)` guard requires `/` or end-of-string after a literal `admin`; `/admin-api/...` supplies `-` at that position and `^/admin` cannot match elsewhere. No precedence contest between the two rules |
-| A38 | An ingress rewrite can strip the prefix so the backend sees the real gRPC path | **Holds, restated** — originally verified for `rewrite-target: /$2` over `/admin-api(/|$)(.*)`. That catch-all was replaced by Design 1's three-path allowlist, so the live form is `rewrite-target: /$1` with each regex capturing into group 1. The rewrite mechanism is unchanged and the same pattern is already in service in this chart for `/admin`, which sets no `use-regex` annotation either. See A45 |
+| A38 | An ingress rewrite can strip the prefix so the backend sees the real gRPC path | **Superseded — verified true for ingress-nginx only, and the design no longer relies on it.** The mechanism works as verified under ingress-nginx, but the AWS Load Balancer Controller does not interpret `nginx.ingress.kubernetes.io/*` annotations and ALB cannot rewrite paths at all, so an ingress rewrite is not a portable way to strip the prefix. Design 1 now strips it in the API instead and the ingress carries no rewrite annotation. See A52 |
 | A39 | Nothing in the deployment calls `/probe/*` anonymously | **Holds** — `grep -rn "/probe/"` across the repo returns only the four definitions in `Program.cs:336-359` and one descriptive mention in `Iverson.Server/docs/security/tma.md:117`. No kubelet probe, compose healthcheck, test or script depends on them. Gating them behind `Operator` (4e) breaks nothing |
 | A40 | Prometheus scrapes `/metrics` on 8081 without authentication | **Holds** — `charts/prometheus/templates/configmap.yaml:10-15` defines `iverson-api` → `<release>-api:8081` and `iverson-worker` → `<release>-worker:8081`, no auth stanza. This is why 4e leaves `/metrics` anonymous and Design 1's allowlist excludes it instead |
 | A41 | The kubelet's readiness probe period bounds `/health`'s cache window | **Holds** — `charts/api/templates/deployment.yaml:173-180` targets `/health` on 8081 and declares **no** `periodSeconds`, inheriting Kubernetes' 10-second default. 4e's 5-second window sits under it |
 | A42 | An in-process cache is available without new infrastructure | **Holds** — `Program.cs:217` already calls `AddMemoryCache()`, and `Tenancy/TenantStatusCache.cs:8` is an existing `IMemoryCache` consumer to pattern 4e after |
 | A43 | `jq` is available in the runtime image, so `config.js` can be emitted as JSON | **Failed** — running `nginxinc/nginx-unprivileged:1.27-alpine` reports `jq` **absent**, `envsubst` present. The JSON-emission fix would have crash-looped the container at startup. Resolved by allowlist validation of the three values instead; see Design 5d |
 | A44 | NetworkPolicy on AWS can admit ingress traffic by namespace selector | **Failed** — `values-aws.yaml:74` sets `target-type: ip`, so the ALB registers pod IPs and traffic originates from VPC ENIs, not from any namespace; `deploy/terraform/modules/cluster-aws/main.tf:475` sets `enableNetworkPolicy = "true"` so policies **are** enforced; and the operators module installs `aws-load-balancer-controller`, so no `ingress-nginx` namespace exists. Selector-based rules grant nothing on AWS. Resolved with an `ipBlock` list; see Design 4f |
-| A45 | Multiple regex paths on one Ingress can each be rewritten correctly | **Holds, with a constraint** — `charts/admin-ui/templates/ingress.yaml:5` sets `rewrite-target` as an **Ingress-level annotation**, shared by every path on the object. Design 1's three paths therefore all capture into group 1 so one `/$1` serves all three. Restates A38 |
+| A45 | Multiple regex paths on one Ingress can each be rewritten correctly | **Superseded, with the underlying fact intact.** `charts/admin-ui/templates/ingress.yaml:5` does set `rewrite-target` as an Ingress-level annotation shared by every path, so the one-capture-group constraint was real. It no longer binds: Design 1's ingress is a single `pathType: Prefix` path with no rewrite, and the allowlist moved into the API |
 | A46 | Real gRPC-Web request paths match the allowlist regex | **Holds** — every proto in `Iverson.Clients/Common/Proto/` declares `package iverson`, and the six services are `ObjectPersistenceService`, `ObjectRetrievalService`, `ObjectSearchService`, `ObjectMappingService`, `TenantLifecycleGrpcService`, `TenantAdminGrpcService`. `iverson\.[A-Za-z0-9_.]+/[A-Za-z0-9_]+` matches all of them and the new `AdminConsoleService` |
 | A47 | `revokeTokensOnSignout` reaches `UserManagerSettings` through `react-oidc-context` | **Holds** — `react-oidc-context.js:139-149` destructures its own props and spreads `...userManagerSettings` into the `UserManager` constructor, so unrecognised settings pass through unchanged |
 | A48 | `onSigninCallback` is a supported `AuthProvider` prop | **Holds** — declared in `react-oidc-context`'s types as `onSigninCallback?: (user: User \| undefined) => Promise<void> \| void`, and invoked at `react-oidc-context.js:209` only when supplied |
 | A49 | `DocumentLoadInstrumentation` allows overwriting span attributes | **Holds** — `instrumentation-document-load/types.d.ts:14-18` declares `applyCustomAttributesOnSpan?: { documentLoad?, documentFetch?, resourceFetch? }`, covering both spans that receive `location.href` |
 | A50 | The console's `/v1/traces` export works in production | **Failed** — `telemetry.ts:19` posts to a relative `/v1/traces`, which resolves against the api Ingress's `/` `Prefix` rule to port 8080, where a browser's HTTP/1.1 POST is rejected with 400. The export works in neither environment. Resolved by routing it through `/admin-api`; see Design 5g |
+| A52 | A path-rewriting middleware can be placed before endpoint routing | **Holds, with a required change** — `Program.cs` never calls `app.UseRouting()` (`:280-284` runs `UseHttpsRedirection`, `UseAuthentication`, `UseAuthorization`, `UseGrpcWeb` and nothing else), so minimal hosting auto-inserts routing at the head of the pipeline. A middleware added with `app.Use(...)` would therefore run *after* the endpoint was matched and the strip would silently do nothing. Design 1 calls `UseRouting()` explicitly, immediately after the middleware |
+| A53 | The AWS VPC CIDR is knowable at chart-authoring time | **Holds** — `deploy/terraform/modules/cluster-aws/variables.tf:16-19` declares `vpc_cidr` with default `10.0.0.0/16`, so `values-aws.yaml` can ship a matching `clusterCidrs` default. It is a variable, not a constant, so the two must be kept in lockstep like `global.ingressHost` and `api.ingress.host` |
+| A54 | NetworkPolicy is actually enforced on the local profile | **Holds** — `deploy/kind/kind-config.yaml:3-9` sets `disableDefaultCNI: true` precisely because kindnet does not enforce NetworkPolicy, so `setup.sh`/`setup.ps1` can install Calico instead. 4f's rules are load-bearing locally, not decorative |
 | A51 | The `AllowAnonymous` endpoints are reachable only on port 8081 | **Failed** — `RequireHost` appears nowhere in `Program.cs`, so ASP.NET routing serves every endpoint on both listeners. `GET /metrics` over h2c prior-knowledge on `:8080` returns 200 with the full 121,797-byte body, and an anonymous `POST /probe/kafka` on the same port created the `iverson.probe` Kafka topic. The port split is a protocol convention, not a security boundary; see Design 5f |
 
 ## Known issues
