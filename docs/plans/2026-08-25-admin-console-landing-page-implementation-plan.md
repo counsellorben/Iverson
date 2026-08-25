@@ -317,7 +317,7 @@ git commit -m "extract the schema-catalog and aggregate readers from their gRPC 
   - `GET /admin/console/data-volume` — **authenticated only**, same principal handling, one count per type
   - `GET /admin/console/qdrant` — `Operator`, over the new read interface
 
-- [ ] **Step 3: Do not normalise the two authenticated rows to `Operator`.** `GetSchema` carries no `[Authorize]` by design (`ObjectMappingGrpcService.cs:61-62`) and `ObjectSearchGrpcService` is mapped without one (`Program.cs:443`); gating them would change who can see what. They pass `HttpContext.User` explicitly because the acting-user interceptor is gRPC-only and the evaluator grants full access on a null principal (spec A58, A59).
+- [ ] **Step 3: Do not normalise the two authenticated rows to `Operator`.** `GetSchema` carries no `[Authorize]` by design (`ObjectMappingGrpcService.cs:61-62`) and `ObjectSearchGrpcService` is mapped without one (`Program.cs:443`); gating them would change who can see what. They pass `HttpContext.User` explicitly because the acting-user interceptor is gRPC-only and the evaluator **denies** a null principal (spec A58, A59 — corrected: `AuthorizationDecision`'s first positional member is `Denied`, so `RowFieldAuthorizationEvaluator.cs:14-15` fails closed). A dropped principal therefore yields an **empty** view, not a widened one. Note the corollary: an operator carrying no `tenant_id` claim is denied every type, so these two rows render nothing for operators until Design 4d is resolved — surface that as an explicit no-access state, never as a zero.
 
 - [ ] **Step 4: Return projections, not descriptors** — the schema endpoint returns object types with field counts and relation edges, which is what the widget renders.
 
