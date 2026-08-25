@@ -61,7 +61,7 @@ The load-bearing ones, by area:
 
 - **Identity (T1):** A27–A29 — no human identity satisfies `Operator` today; the console requests a scope that yields no `groups`; no `operators` group exists.
 - **Transport (T4):** A55, A56, A69, A70 — the api subchart sees `global.ingressHost`; a second hostname is an established pattern; the cloud profiles use three ingress classes and two TLS mechanisms; no certificate covers the new host yet.
-- **Endpoints (T5, T6, T7):** A58, A59 — the acting-user interceptor is gRPC-only and the evaluator grants full access with a null principal; A65, A66 — `GetCollectionInfoAsync` is not on `IVectorSchemaManager`, and the aggregate path is private.
+- **Endpoints (T5, T6, T7):** A58, A59 — the acting-user interceptor is gRPC-only and the evaluator **denies** a null principal (corrected; a dropped principal empties the view rather than widening it); A65, A66 — `GetCollectionInfoAsync` is not on `IVectorSchemaManager`, and the aggregate path is private.
 - **Deployment (T3):** A68 — five deployment profiles, overlays self-contained; A53, A54 — the AWS VPC CIDR default and Calico enforcement in kind.
 - **Console (T9–T12):** A47, A48, A49 — `revokeTokensOnSignout` passes through, `onSigninCallback` is a real prop, `applyCustomAttributesOnSpan` has the shape the fix uses; A63 — the four gRPC-Web npm dependencies are unused.
 
