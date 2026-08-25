@@ -106,10 +106,16 @@ checks).
 
 ## Creating a human user and granting operator access
 
-Unlike service accounts, **no blueprint creates human operator users or the
-`operators` Group** — this is a deliberate design decision (Part 1 spec,
-decision #6): group membership is a manual runtime/operational step, not
-something to hardcode into version-controlled config.
+The `operators` Group itself is created automatically — it's a top-level blueprint
+(`Iverson.Server/deploy/helm/iverson/charts/authentik/blueprints/operators-group.yaml`), applied in
+both compose and kind/Helm targets, named exactly `operators` because that string is the literal
+value `OperatorAuthorizationPolicy` checks for. **No blueprint creates human operator users or adds
+them to that Group**, though — this is a deliberate design decision: group *membership* is a manual
+runtime/operational step, not something to hardcode into version-controlled config. Seeding a real
+user into `operators` from a deployment overlay would be a privilege-escalation defect. (The compose
+target's `iverson-loadtest-bypass-user` is the one exception, seeded into `operators` from
+`blueprints/compose-only/service-clients.yaml` purely so local admin-console development has a
+ready-made operator identity — that file never ships to a real deployment.)
 
 **Steps (compose or kind):**
 
@@ -120,18 +126,17 @@ something to hardcode into version-controlled config.
      `<release>-authentik-app` Secret's `bootstrap-password` key.
 2. Create the new user (Directory → Users → Create), or invite them via
    Authentik's normal enrollment flow.
-3. Create the `operators` Group once, if it doesn't already exist (Directory
-   → Groups → Create, name exactly `operators` — this string is the literal
-   value `OperatorAuthorizationPolicy` checks for).
-4. Add the user to the `operators` Group.
-5. Have the user complete a browser login through the `iverson-oidc-default`
+3. Add the user to the `operators` Group (Directory → Groups → `operators`) — it already exists,
+   do not recreate it.
+4. Have the user complete a browser login through the `iverson-oidc-default`
    Application (Authorization Code + PKCE, MFA-enforced — see
    [Issuing tokens](#issuing-tokens)) to confirm their token's `groups` claim
    now contains `operators` and is accepted on `/admin/*`.
 
-This exact procedure (with copy-pasteable verification commands) is also
-documented in `docs/runbooks/grpc-admin-auth-cutover.md`, since it's flagged
-there as the one path with no automated smoke-test coverage.
+This exact procedure (with copy-pasteable verification commands) is also documented in
+`docs/runbooks/operator-access-onboarding.md`, and the deploy-cutover precondition it feeds is in
+`docs/runbooks/grpc-admin-auth-cutover.md`, since it's flagged there as the one path with no
+automated smoke-test coverage.
 
 > **Note:** As of the Tenant Admin APIs (Part D), manually editing a user's
 > `attributes.tenant_id` in the Authentik admin UI, outside `CreateTenant`/

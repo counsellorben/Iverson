@@ -294,6 +294,11 @@ entries:
         tenant_id: "tenant_bypass"
       groups:
         - !Find [authentik_core.group, [name, iverson-loadtest-bypass]]
+        # Compose-only: gives this dev user operator access so a developer can log the admin
+        # console into a user that already satisfies the Operator policy without a manual
+        # Authentik UI step. Never blueprinted for a deployment overlay -- see
+        # docs/runbooks/operator-access-onboarding.md.
+        - !Find [authentik_core.group, [name, operators]]
   - model: authentik_core.group
     identifiers:
       name: tenant-admins

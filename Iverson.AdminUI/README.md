@@ -22,7 +22,9 @@ manage tenants, view storage, and inspect performance data via Iverson.Api.
 - At least one human user in the `operators` Authentik group to log in with —
   see [Creating a human user and granting operator access](../docs/user-management-and-security.md#creating-a-human-user-and-granting-operator-access)
   if you don't have one yet. (Bootstrap admin login for compose:
-  `admin@iverson.local` / `dev-admin-password`.)
+  `admin@iverson.local` / `dev-admin-password`.) For compose, one is already
+  seeded: `iverson-loadtest-bypass-user` / `dev-only-not-for-production-bypass-password-0123456789`
+  belongs to `operators` out of the box (`blueprints/compose-only/service-clients.yaml`).
 
 ## Running locally
 

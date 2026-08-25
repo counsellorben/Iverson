@@ -7,7 +7,7 @@ const oidcConfig = {
   client_id: config.oidcClientId,
   redirect_uri: `${window.location.origin}${import.meta.env.DEV ? "" : "/admin"}/callback`,
   post_logout_redirect_uri: `${window.location.origin}${import.meta.env.DEV ? "" : "/admin"}/`,
-  scope: "openid profile email offline_access",
+  scope: "openid groups tenant_id offline_access",
   automaticSilentRenew: true,
 };
 
