@@ -67,11 +67,14 @@ resource "google_kms_crypto_key_iam_binding" "gke_secrets" {
 
 # Persistent disk encryption for the pd.csi.storage.gke.io StorageClasses,
 # reusing the same key ring as gke_secrets above. Rotation period matches
-# gke_secrets.
+# gke_secrets. destroy_scheduled_duration matches the 30-day window AWS
+# (deletion_window_in_days) and Azure (soft_delete_retention_days) both use
+# for the same key — Cloud KMS defaults to 24 hours without this.
 resource "google_kms_crypto_key" "data_volumes" {
-  name            = "data-volumes"
-  key_ring        = google_kms_key_ring.gke.id
-  rotation_period = "7776000s" # 90 days
+  name                       = "data-volumes"
+  key_ring                   = google_kms_key_ring.gke.id
+  rotation_period            = "7776000s" # 90 days
+  destroy_scheduled_duration = "2592000s" # 30 days
 }
 
 # The Compute Engine service agent is the principal that encrypts persistent

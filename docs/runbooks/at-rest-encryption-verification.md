@@ -4,14 +4,20 @@ This is the auditor-facing evidence procedure for the cloud deployment's at-rest
 control. It answers one question five ways: is every persistent volume in the cluster — data
 volumes and node root volumes alike — encrypted with a key this account controls, with no gaps.
 
-Every command below is runnable as written except for the bracketed substitutions
-(`<cluster-name>`, `<namespace>`) — `<namespace>` is always `iverson`, the release namespace
-`kubernetes_namespace.iverson` in
-`Iverson.Server/deploy/terraform/modules/operators/main.tf` creates.
+Every command below is runnable as written except for the bracketed substitution `<zone>` in
+check 3's GCP variant — the Compute Engine zone the node's disk lives in (e.g. `us-central1-a`).
+The release namespace is always `iverson` (`kubernetes_namespace.iverson` in
+`Iverson.Server/deploy/terraform/modules/operators/main.tf` creates it), and check 4 hardcodes it.
 
 Commands are written against AWS, the primary target of this control's Terraform. Checks 1 and 3
 have an Azure/GCP equivalent, noted inline. Check 5 (node root volumes) is AWS-only by design —
 see the coverage note at the end.
+
+**First AWS deploy on an account with prior EC2 Auto Scaling use:** `terraform apply` may fail on
+`aws_iam_service_linked_role.autoscaling` with `InvalidInput: Service role name
+AWSServiceRoleForAutoScaling has been taken`. This is expected on any account where Auto Scaling
+has run before — the role already exists account-wide. Remedy: `terraform import
+module.cluster.aws_iam_service_linked_role.autoscaling <role-arn>`, then re-apply.
 
 ## 1. Key management
 
@@ -42,11 +48,14 @@ volume encrypted under it becomes unrecoverable.
 terraform -chdir=Iverson.Server/deploy/terraform/azure state show 'module.cluster.azurerm_key_vault_key.data_volumes'
 ```
 
-This key currently has no rotation policy configured — an accepted follow-up recorded at the
-resource's definition in `Iverson.Server/deploy/terraform/modules/cluster-azure/main.tf`, not an
-oversight this runbook should paper over. Report it as-is: no automatic rotation, soft-delete
-retention of 30 days (`azurerm_key_vault.data_volumes`'s `soft_delete_retention_days`) plus purge
-protection in place of the deletion-window concept AWS uses.
+Expected output includes a `rotation_policy` block rotating the key every 90 days
+(`time_after_creation = "P90D"`), matching GCP's cadence below — see the resource's definition in
+`Iverson.Server/deploy/terraform/modules/cluster-azure/main.tf` for why 90 days was chosen over
+AWS's annual default. `azurerm_disk_encryption_set.data_volumes`'s `auto_key_rotation_enabled =
+true` is what keeps the disk encryption set following each new key version this policy creates;
+also confirm soft-delete retention of 30 days (`azurerm_key_vault.data_volumes`'s
+`soft_delete_retention_days`) plus purge protection, in place of the deletion-window concept AWS
+uses.
 
 **GCP equivalent:**
 
@@ -54,7 +63,9 @@ protection in place of the deletion-window concept AWS uses.
 terraform -chdir=Iverson.Server/deploy/terraform/gcp state show 'module.cluster.google_kms_crypto_key.data_volumes'
 ```
 
-Expected: `rotation_period = "7776000s"` (90 days).
+Expected: `rotation_period = "7776000s"` (90 days) and `destroy_scheduled_duration =
+"2592000s"` (30 days) — the latter matches AWS's 30-day `deletion_window_in_days` and Azure's
+30-day `soft_delete_retention_days`; Cloud KMS defaults to a 24-hour destroy window without it.
 
 ## 2. Uniform application
 
@@ -77,8 +88,10 @@ parameters:
 ```
 
 On Azure the provisioner is `disk.csi.azure.com` with a `diskEncryptionSetID` parameter instead of
-a bare `encrypted`/`kmsKeyId` pair (the disk encryption set itself is what makes encryption
-mandatory — see `azurerm_disk_encryption_set.data_volumes`). On GCP the provisioner is
+a bare `encrypted`/`kmsKeyId` pair. Azure managed disks are encrypted at rest unconditionally —
+that part is never optional — so `diskEncryptionSetID` isn't what makes encryption mandatory;
+it's what switches the key from platform-managed to this customer-managed one (see
+`azurerm_disk_encryption_set.data_volumes`). On GCP the provisioner is
 `pd.csi.storage.gke.io` with a `disk-encryption-kms-key` parameter. In all three cases, confirm the
 key/set reference is identical across all six classes — six classes pointing at five different keys
 would still fail this check even though each individual class looks encrypted.

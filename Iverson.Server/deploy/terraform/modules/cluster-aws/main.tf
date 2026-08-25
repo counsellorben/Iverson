@@ -583,6 +583,7 @@ resource "aws_eks_node_group" "pools" {
     aws_iam_role_policy_attachment.node_cni,
     aws_iam_role_policy_attachment.node_ecr,
     aws_eks_addon.vpc_cni,
+    aws_kms_key_policy.data_volumes,
   ]
 }
 

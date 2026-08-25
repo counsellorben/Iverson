@@ -25,10 +25,9 @@ resource "azurerm_key_vault" "data_volumes" {
   soft_delete_retention_days = 30
 }
 
-# No expiration_date (accepted follow-up — key rotation policy is its own
-# change, not requested by this task; the disk encryption set references this
-# key's id directly, so an expiring key would need a rotation/rewrap plan that
-# is out of scope here).
+# No expiration_date (accepted follow-up — key expiry is a separate concern
+# from rotation; rotation_policy below rotates key material on a schedule
+# without ever expiring the key itself).
 #tfsec:ignore:azure-keyvault-ensure-key-expiry
 resource "azurerm_key_vault_key" "data_volumes" {
   name         = "data-volumes"
@@ -37,24 +36,44 @@ resource "azurerm_key_vault_key" "data_volumes" {
   key_size     = 2048
   key_opts     = ["decrypt", "encrypt", "sign", "unwrapKey", "verify", "wrapKey"]
 
+  # 90-day cadence to match GCP's rotation_period (google_kms_crypto_key.data_volumes
+  # in modules/cluster-gcp/main.tf) — both clouds require an explicit, Terraform-set
+  # interval, unlike AWS where enable_key_rotation = true delegates to KMS's opaque
+  # annual default. time_after_creation (rather than time_before_expiry) is used
+  # because this key intentionally has no expiration_date.
+  rotation_policy {
+    automatic {
+      time_after_creation = "P90D"
+    }
+  }
+
   depends_on = [azurerm_key_vault_access_policy.terraform]
 }
 
 # Grants the deploying principal key-management permissions on the vault;
-# without this, Step 2's key creation is denied.
+# without this, Step 2's key creation is denied. SetRotationPolicy is required
+# for Terraform to apply the rotation_policy block above (GetRotationPolicy
+# alone only allows reading it back).
 resource "azurerm_key_vault_access_policy" "terraform" {
   key_vault_id = azurerm_key_vault.data_volumes.id
   tenant_id    = data.azurerm_client_config.current.tenant_id
   object_id    = data.azurerm_client_config.current.object_id
 
-  key_permissions = ["Create", "Delete", "Get", "List", "Purge", "Recover", "Update", "GetRotationPolicy"]
+  key_permissions = ["Create", "Delete", "Get", "List", "Purge", "Recover", "Update", "GetRotationPolicy", "SetRotationPolicy"]
 }
 
 resource "azurerm_disk_encryption_set" "data_volumes" {
   name                = "${var.cluster_name}-des"
   location            = azurerm_resource_group.this.location
   resource_group_name = azurerm_resource_group.this.name
-  key_vault_key_id    = azurerm_key_vault_key.data_volumes.id
+  # versionless_id (not .id, which pins the current key version) is required
+  # for auto_key_rotation_enabled below — the DES resolves the current key
+  # version at unwrap time instead of staying pinned to the version that
+  # existed when this resource was created.
+  key_vault_key_id = azurerm_key_vault_key.data_volumes.versionless_id
+  # Keeps the DES following the key as azurerm_key_vault_key.data_volumes's
+  # rotation_policy above creates new versions.
+  auto_key_rotation_enabled = true
 
   identity {
     type = "SystemAssigned"
@@ -70,6 +89,24 @@ resource "azurerm_key_vault_access_policy" "des" {
   object_id    = azurerm_disk_encryption_set.data_volumes.identity[0].principal_id
 
   key_permissions = ["Get", "WrapKey", "UnwrapKey"]
+}
+
+# Grants the AKS cluster's own (control-plane) system-assigned identity Reader
+# access to the disk encryption set. Without this, disk.csi.azure.com cannot
+# create a managed disk referencing this DES and every Azure PVC stays
+# Pending. Per Microsoft's AKS BYOK documentation
+# (https://learn.microsoft.com/en-us/azure/aks/azure-disk-customer-managed-keys,
+# section "Encrypt your AKS cluster data disk"): "The AKS cluster identity
+# needs Reader access to the DiskEncryptionSet, otherwise you get an error
+# suggesting that the managed identity doesn't have permissions", resolved via
+# `az aks show --query "identity.principalId"` — i.e. the cluster's own
+# system-assigned identity (azurerm_kubernetes_cluster.this.identity[0], not
+# the node-resource-group Contributor identity granted elsewhere), granted the
+# built-in "Reader" role scoped to the DES.
+resource "azurerm_role_assignment" "aks_data_volumes_des" {
+  scope                = azurerm_disk_encryption_set.data_volumes.id
+  role_definition_name = "Reader"
+  principal_id         = azurerm_kubernetes_cluster.this.identity[0].principal_id
 }
 
 resource "azurerm_virtual_network" "this" {
