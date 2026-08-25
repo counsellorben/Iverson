@@ -24,14 +24,23 @@ So AWS has a real gap, and no cloud uses a customer-managed key for data volumes
 only Kubernetes Secrets do, via `aws_kms_key.eks_secrets` and the GKE
 `database_encryption` block.
 
+PersistentVolumes are not the only place data rests. The EKS node root volumes carry every
+container's writable layer, all kubelet ephemeral storage, and Jaeger's `emptyDir` trace
+buffer, and they are governed by exactly the same unasserted account-level flag:
+`aws_eks_node_group.pools` (`modules/cluster-aws/main.tf:413-446`) sets no
+`launch_template`, no `disk_size` and no block device mapping, so nodes take the EKS
+default root volume. Section 5 covers them.
+
 For a compliance control the question is not merely "are the bytes encrypted" but "with
 which key, controlled by whom, and how do you prove it". Platform-default encryption
 answers the first and none of the rest.
 
 ## Scope
 
-**In scope.** The six PersistentVolumes in cloud production: Postgres, StarRocks, Qdrant,
-Kafka, Ollama, Prometheus.
+**In scope.** The six PersistentVolumes in cloud production — Postgres, StarRocks, Qdrant,
+Kafka, Ollama, Prometheus — and the EKS node root volumes, which hold every container's
+writable layer, all kubelet ephemeral storage, and Jaeger's `emptyDir` trace buffer
+(`charts/jaeger/templates/deployment.yaml:66-68`).
 
 **Out of scope, with reasons.**
 
@@ -53,7 +62,10 @@ following the established pattern in `modules/cluster-aws/main.tf:172-176`:
 
 - **AWS** — `aws_kms_key "data_volumes"`, output as an ARN.
 - **Azure** — a Key Vault key plus a Disk Encryption Set; the CSI driver consumes the DES
-  resource ID, not the raw key.
+  resource ID, not the raw key. Two prerequisites come with it: the DES's system-assigned
+  managed identity must be granted `get`, `wrapKey` and `unwrapKey` on the Key Vault, or the
+  data encryption key cannot be unwrapped and disk I/O fails within the hour; and the Key
+  Vault must be in the same Azure region as the disks.
 - **GCP** — a Cloud KMS `CryptoKey` plus an IAM binding granting the Compute Engine
   service agent `roles/cloudkms.cryptoKeyEncrypterDecrypter`.
 
@@ -87,9 +99,12 @@ by that single change — no per-store edits.
 reference introduces no new pattern and no dependency cycle.
 
 Azure additionally accepts an optional `diskEncryptionType`, defaulting to
-`EncryptionAtRestWithCustomerKey`. Leave it at the default;
-`EncryptionAtRestWithPlatformAndCustomerKeys` (double encryption) is available if an
-auditor asks for it.
+`EncryptionAtRestWithCustomerKey`. Leave it at the default. Its alternative,
+`EncryptionAtRestWithPlatformAndCustomerKeys` (double encryption), is **not** available on
+the disk SKU this deployment provisions — `terraform/azure/main.tf:63` sets
+`PremiumV2_LRS`, and Azure does not support double encryption at rest on Premium SSD v2 or
+Ultra Disks. Taking it up would mean moving off Premium SSD v2, which is a performance
+decision rather than a free toggle.
 
 ### 3. The AWS CSI driver needs KMS permission — on both sides
 
@@ -108,7 +123,8 @@ KMS is deny-by-default on both sides, so **both** of these are needed:
 2. A key policy on the CMK granting that role those actions.
 
 Satisfying one and missing the other produces the same failure as doing neither. GCP and
-Azure have equivalent service-agent bindings, described in section 1.
+Azure need equivalent bindings of their own; section 1 names each — the Compute Engine
+service agent's KMS role for GCP, and the disk encryption set's managed identity for Azure.
 
 ### 4. Prometheus gets a real StorageClass — which also fixes a latent bug
 
@@ -132,7 +148,42 @@ volume under the same key and makes the PVC bindable. `values-local.yaml:97` alr
 Prometheus `"standard"`, so the chart is known to work with a named StorageClass — the
 cloud profiles are the outlier.
 
-### 5. Greenfield — no migration
+### 5. Node root volumes
+
+The six StorageClasses cover PersistentVolumes only. Node root volumes hold data too — every
+container's writable layer, kubelet ephemeral storage, and Jaeger's `emptyDir`
+(`charts/jaeger/templates/deployment.yaml:66-68`), which buffers request traces.
+
+`aws_eks_node_group.pools` (`modules/cluster-aws/main.tf:413-446`) declares no
+`launch_template`, no `disk_size` and no `block_device_mappings`, so its nodes take the EKS
+default root volume — encrypted only if the account's EBS encryption-by-default flag happens
+to be set. That is the same conditional the Problem section rejects as insufficient for data
+volumes, so accepting it here would leave the control's claim untrue in the same cluster it
+governs.
+
+Each node group therefore gains an `aws_launch_template` whose `block_device_mappings` sets
+`encrypted = true` and `kms_key_id` to the same data-volume CMK, referenced from the node
+group's `launch_template` block. Instance type stays on the node group; the launch template
+must not also set one.
+
+**The key policy needs a second principal.** Encrypted node root volumes are created by
+Auto Scaling, not by the EBS CSI driver, and AWS is explicit that the Auto Scaling
+service-linked role's predefined permissions "include access to your AWS managed keys.
+However, they do not include access to your customer managed keys." So the CMK's key policy
+must additionally grant `AWSServiceRoleForAutoScaling`:
+
+1. `kms:Encrypt`, `kms:Decrypt`, `kms:ReEncrypt*`, `kms:GenerateDataKey*`, `kms:DescribeKey`
+2. `kms:CreateGrant`, conditioned on `kms:GrantIsForAWSResource: true`
+
+Without both statements the instances fail to launch. Unlike section 3's requirement this
+one is key-policy-only — the service-linked role is AWS-managed and takes no attached policy
+of ours.
+
+Azure and GCP need no equivalent: AKS and GKE node OS disks are encrypted by the platform by
+default, and bringing them under the same CMK is a separate decision this design does not
+take.
+
+### 6. Greenfield — no migration
 
 A PersistentVolume cannot be encrypted in place; every migration path ends in moving data
 to a new volume. Cloud production has not been deployed, so there is no data to move.
@@ -145,7 +196,7 @@ Prometheus are disposable, Qdrant and StarRocks are derived from Postgres and re
 Kafka supports broker-by-broker JBOD replacement, and Postgres requires a CNPG rolling
 replica replacement onto the new StorageClass followed by a failover.
 
-### 6. Audit evidence
+### 7. Audit evidence
 
 A compliance control that cannot be demonstrated is not finished. Three artifacts, all
 falling out of the sections above, plus one negative check.
@@ -161,6 +212,11 @@ falling out of the sections above, plus one negative check.
    one's StorageClass is one of the six. Section 4 is the reason this check exists: a PVC
    can carry a StorageClass outside the controlled set without any error, and that
    happened here in all three cloud profiles.
+
+5. **Node root volumes are encrypted too** — `aws ec2 describe-instances` for the cluster's
+   nodes, resolving each root volume and confirming `Encrypted: true` with the same
+   `KmsKeyId`. Without this the other four checks can pass while unencrypted trace data sits
+   on the node disks of the same cluster.
 
 These commands and their expected output go in a new
 `docs/runbooks/at-rest-encryption-verification.md`. That directory is not gitignored.
@@ -186,6 +242,8 @@ Each was checked against the codebase or upstream source before this spec was wr
 | A13 | **Dependents** — nothing else depends on these names or parameters | `iverson-*` StorageClass names appear only in `modules/operators/main.tf` and the three cloud values files. Doc matches are container names, not classes. `values-local.yaml` / `values-laptop.yaml` use `"standard"` and are unaffected |
 | A14 | `docs/runbooks/` is not gitignored | `git check-ignore` returns nothing for it |
 | A15 | All six charts template `storageClassName` from values | postgres `cluster.yaml:10` (`storageClass`), kafka `kafka.yaml:53` (`class`), starrocks `starrockscluster.yaml:17,35` (FE and BE), qdrant `statefulset.yaml:119`, ollama `statefulset.yaml:108`, prometheus `pvc.yaml:7` |
+| A16 | **Completeness** — the six named stores are the only PVC producers in cloud | All 12 charts grepped for `kind: PersistentVolumeClaim` / `volumeClaimTemplates`: only `ollama`, `qdrant`, `prometheus` declare one directly; `postgres`, `kafka`, `starrocks` produce theirs via operator CRs from values; `authentik`, `jaeger`, `redis`, `api`, `worker`, `admin-ui` declare none (their `storage:` matches are `ephemeral-storage` limits) |
+| A17 | The provisioner strings are the CSI drivers whose parameters A1–A3 verify | `terraform/aws/main.tf:66` `ebs.csi.aws.com`, `azure/main.tf:62` `disk.csi.azure.com`, `gcp/main.tf:67` `pd.csi.storage.gke.io` |
 
 Two assumptions were falsified or sharpened by verification, and the design above reflects
 the corrected version:
@@ -211,7 +269,7 @@ data: every future storage migration, including any re-keying of these volumes, 
 having a restorable copy. Ben's call to keep it out of this design; it warrants its own
 project before production data exists.
 
-**No CI or admission-policy gate enforces the StorageClass allow-list.** Section 6's
+**No CI or admission-policy gate enforces the StorageClass allow-list.** Section 7's
 negative check is a documented manual procedure. A Kyverno/OPA policy rejecting PVCs
 outside the six classes is the natural next step and would convert the check from
 point-in-time to continuous, but a documented verification procedure satisfies the
