@@ -31,6 +31,10 @@ so that the first screen after sign-in answers "is this deployment healthy, and 
   foundation, a browser-reachable route to the API's HTTP/1.1 port, Prometheus
   scrape-target changes, and the identity fixes without which every Operator-gated
   surface returns 403.
+- The security remediation in Design 5. Eleven findings are folded into this design: nine from
+  the two critical-security-review rounds of 2026-08-25, plus two adjacent defects this design's
+  own verification surfaced. Four gate widget work — one in Design 1's transport allowlist, one
+  in 4e, two in 4f — and the seven in Design 5 do not.
 
 **Out of scope**
 
@@ -42,7 +46,9 @@ so that the first screen after sign-in answers "is this deployment healthy, and 
   `EnsureCollectionAsync` and produces to `iverson.health.probe` on every call). Every other
   widget and both new RPCs are read-only.
 - Alerting, thresholds, or notification. The page displays; it does not judge.
-- Authentication changes. The page uses the console's existing OIDC session.
+- Authentication changes, with one exception. The page uses the console's existing OIDC
+  session and does not alter the login flow. Design 5a does change one session setting
+  (`revokeTokensOnSignout`), which is remediation folded in here, not page behaviour.
 
 ## Design 1 — Server surface
 
@@ -69,6 +75,12 @@ over TLS, where ALPN can negotiate HTTP/2 — and the default and local profiles
 request to 8080 is rejected. Confirmed directly: HTTP/1.1 to `:8080/health` returns 400, the
 same request to `:8081` returns 200.
 
+That 400 is protocol negotiation, not authorization, and it is not a security boundary. A client
+that speaks h2c reaches every route on 8080, because no endpoint in `Program.cs` is bound to a
+listener (`RequireHost` appears nowhere in the file) — `GET /metrics` over h2c prior-knowledge on
+`:8080` returns 200 with the full metrics body. The port split determines which wire protocol a
+caller must speak, nothing more. See Design 5f.
+
 This design adds a browser-reachable route to the HTTP/1.1 port under a **dedicated path
 prefix**, `/admin-api`. The console calls `/admin-api/iverson.<Service>/<Method>`; the ingress
 strips the prefix and forwards to port 8081. Bare `/iverson.<Service>/<Method>` is left alone on
@@ -83,11 +95,32 @@ question arises between the two rules.
 
 The route serves all five gRPC widgets and the health strip, not only these two RPCs:
 
-- **a new Ingress object** — not the existing api Ingress — with a single
-  `pathType: ImplementationSpecific` path `/admin-api(/|$)(.*)` and `rewrite-target: /$2`, backed
-  by the api service on port **8081**. This mirrors the shape
-  `charts/admin-ui/templates/ingress.yaml` already uses, and one rule covers both the gRPC paths
-  and `/health`. It must be a separate object because `charts/api/templates/ingress.yaml:4-6`
+- **a new Ingress object** — not the existing api Ingress — backed by the api service on port
+  **8081**, carrying `rewrite-target: /$1` and **three `pathType: ImplementationSpecific` paths,
+  as an allowlist rather than a catch-all**:
+
+  ```
+  /admin-api/(iverson\.[A-Za-z0-9_.]+/[A-Za-z0-9_]+)$   # gRPC-Web RPCs
+  /admin-api/(health)$                                   # the health strip's source
+  /admin-api/(v1/traces)$                                # the OTLP export; see Design 5g
+  ```
+
+  An earlier revision of this design used one path, `/admin-api(/|$)(.*)`, with
+  `rewrite-target: /$2`. That is a **catch-all**, and port 8081 serves the entire application —
+  not only the gRPC surface. It would therefore have published `/metrics` and all four
+  `/probe/*` endpoints, every one of them `AllowAnonymous`, to the internet on every profile.
+  The allowlist admits exactly the three shapes this design needs and leaves the rest
+  unroutable from outside. Each regex captures its target into **group 1** because
+  `rewrite-target` is an Ingress-level annotation shared by all paths on the object, so a single
+  `/$1` has to serve all three.
+
+  `/health/live` is deliberately absent: the health strip reads the per-store `checks` object,
+  which only `/health` returns, and the kubelet reaches `/health/live` in-cluster without the
+  ingress. `/metrics` is absent and must stay so — it cannot simply be authenticated instead,
+  because Prometheus scrapes it anonymously (Design 4c); keeping it off the edge is the control.
+
+  This mirrors the shape `charts/admin-ui/templates/ingress.yaml` already uses.
+  It must be a separate object because `charts/api/templates/ingress.yaml:4-6`
   renders `.Values.ingress.annotations` onto the Ingress's metadata, so `values-aws.yaml:75`'s
   `alb.ingress.kubernetes.io/backend-protocol-version: GRPC` applies to the whole object; an 8081
   path there would place grpc-web, which speaks HTTP/1.1, under a GRPC protocol declaration.
@@ -340,9 +373,13 @@ responses, including its error and stale states.
 
 ## Design 4 — Prerequisite work
 
-Verification found four foundations this design assumed were present that do not exist.
+Verification found four foundations this design assumed were present that do not exist (4a-4d).
 They are in scope because without them the specified widgets are impossible. 4d is the one
 that blocks everything else: until it lands, every Operator-gated surface returns 403.
+
+4e and 4f are security findings that gate widget work for the same reason — this design either
+causes them or depends on them. The seven findings that do **not** gate widget work are in
+Design 5.
 
 ### 4a — grpc-web enablement for two services
 
@@ -498,12 +535,219 @@ The email display is left alone by this design. Fixing it means binding Authenti
 here so the next reader does not mistake it for something this work broke.
 
 
+### 4e — Operational endpoint authorization and the cost of `/health`
+
+The four probe endpoints — `/probe/sql`, `/probe/starrocks`, `/probe/vector` (`Program.cs:336-352`)
+and `/probe/kafka` (`:354-359`) — are `AllowAnonymous` and perform real work against live
+datastores. `/probe/vector` issues a Qdrant `EnsureCollectionAsync`; `/probe/kafka` produces to
+`iverson.probe`. Verified live: a single anonymous `POST /probe/kafka` **created** the
+`iverson.probe` topic, which did not exist beforehand, through broker auto-create.
+
+**Fix:** add `.RequireAuthorization("Operator")` to all four. They are operator diagnostics, and
+nothing calls them — `grep -rn "/probe/"` across the repo returns only the four definitions and one
+descriptive mention in `Iverson.Server/docs/security/tma.md:117`. No kubelet probe, compose
+healthcheck, test, or script depends on them being anonymous. This sequences after 4d, since
+`Operator` is unsatisfiable until then.
+
+**`/metrics` is not included and must stay anonymous.** Design 4c has Prometheus scraping
+`{{ .Release.Name }}-api:8081` and `-worker:8081` with no auth; requiring authorization there
+breaks metrics collection, which would take Band B down with it. It is kept off the public edge by
+Design 1's allowlist instead — routing, not authentication, is the right control for it.
+
+**`/health` stays anonymous and gets a cache.** The kubelet's `readinessProbe`
+(`charts/api/templates/deployment.yaml:173-180`) hits `/health` on 8081, and Design 1's allowlist
+publishes it for the health strip. It is also the most expensive endpoint in the application: each
+call fans out to Postgres, StarRocks, Qdrant and Kafka (`Program.cs:308-313`), two of those being
+writes. One cheap request therefore costs four backend operations, at any rate a caller chooses.
+
+**Fix:** memoize the fan-out result for **5 seconds** behind `IMemoryCache`, already registered at
+`Program.cs:217`, following the existing `Tenancy/TenantStatusCache.cs` pattern. The window must
+stay below the readiness probe's period — that probe declares no `periodSeconds`, so it inherits
+Kubernetes' 10-second default. 5s keeps readiness at most one cycle stale while bounding the
+Qdrant and Kafka writes to at most one per 5s per pod **regardless of request rate**. Today that
+rate is unbounded; that is the whole of the change.
+
+This does not alter Design 3's 60-second health-strip poll. The cadence reasoning there is about
+what the console itself should cost; this is about what an arbitrary caller can force.
+
+### 4f — NetworkPolicy: reaching port 8081
+
+`templates/networkpolicies.yaml:7-10` applies a namespace-wide default-deny. The rule that
+currently lets anything reach the api on 8081 is `:28-33`:
+
+```yaml
+- from: []   # kubelet readiness/liveness probes: ...
+  ports: [{ protocol: TCP, port: 8081 }]
+```
+
+An **empty `from` matches every source**, not the kubelet its comment describes. Since 8081 serves
+the whole application, every pod in the cluster can currently reach every REST endpoint on the api
+directly by pod IP. That is the finding.
+
+It is also, today, the only thing that would let the new `/admin-api` Ingress work at all — **this
+design's transport currently depends on the defect.** Closing the hole without replacing it breaks
+the landing page. Both halves land together.
+
+Port 8081 has **four** legitimate consumers, and a correct rule set names each:
+
+| Consumer | Selector | Why |
+|---|---|---|
+| ingress-nginx | `namespaceSelector{kubernetes.io/metadata.name: ingress-nginx}` | serves the new `/admin-api` Ingress on the nginx profiles |
+| Prometheus | `podSelector{app: <release>-prometheus}` | scrapes `api:8081` and `worker:8081` (Design 4c) — omitting it silently empties Band B |
+| kubelet | `ipBlock` over the node CIDR | `readinessProbe` and `livenessProbe` both target 8081 |
+| **AWS ALB** | `ipBlock` over the VPC CIDR | `values-aws.yaml:74` sets `target-type: ip`, so the ALB registers pod IPs and traffic arrives from VPC ENIs — **no `namespaceSelector` can express this**, because there is no ingress-nginx namespace on AWS |
+
+The CIDRs differ per environment, so they come from a values key
+(`networkPolicy.clusterCidrs`, a list) rather than being hardcoded; the nginx profiles set the node
+CIDR and the AWS overlay sets the VPC CIDR.
+
+**The same gap exists on port 8080 and is fixed here too.** The rule at `:22-27` admits only the
+`ingress-nginx` namespace. NetworkPolicy is enforced on AWS —
+`deploy/terraform/modules/cluster-aws/main.tf:475` sets `enableNetworkPolicy = "true"` on the VPC
+CNI, and `values-aws.yaml` never disables `networkPolicy.enabled` (`values.yaml:13-14`, default
+`true`). The operators module installs `aws-load-balancer-controller`, not ingress-nginx. So on AWS
+the port-8080 rule selects a namespace that does not exist, and the default-deny denies ALB→8080:
+**the api Ingress cannot work on the AWS profile as configured.** The same `ipBlock` list fixes it.
+This is a pre-existing defect that this design does not cause; it is repaired here because 4f is
+already rewriting these rules and leaving one port correct and the other broken would be worse.
+
+## Design 5 — Security remediation
+
+Seven findings that do **not** gate widget work — six from the critical-security-review rounds of
+2026-08-25, and 5g, which this design's own verification surfaced. They are in this spec because
+all eleven findings were scoped into it; the plan should not sequence widget tasks behind them.
+
+### 5a — Revoke tokens at signout
+
+`AuthProvider.tsx:5-12` never sets `revokeTokensOnSignout`, which defaults to `false`
+(`oidc-client-ts.js:2484`); `_signoutStart` revokes only when it is true (`:3418-3420`). Because
+the console requests `offline_access`, a **refresh token** is issued and persisted, and clicking
+Logout ends the Authentik session while leaving that credential valid until its own expiry.
+
+**Fix:** set `revokeTokensOnSignout: true`. `react-oidc-context`'s `AuthProvider` destructures its
+own props and spreads `...userManagerSettings` into the `UserManager`
+(`react-oidc-context.js:139-149`), so the setting passes straight through.
+
+**`offline_access` is deliberately kept.** Dropping it would remove the refresh token from browser
+storage, but this design creates a page that polls for hours, so the access token must renew.
+Without a refresh token `automaticSilentRenew` falls back to iframe silent renew, which needs a
+`silent_redirect_uri` handler the console does not have — `CallbackPage` would mount the entire app
+inside the iframe. That is real work this design does not otherwise need, and the revocation fix
+addresses the sharper half of the finding without it.
+
+### 5b — Keep the OIDC authorization code out of telemetry
+
+`DocumentLoadInstrumentation` writes the full `location.href` into `http.url` and `url.full`
+(`instrumentation-document-load/instrumentation.js:69,72,83,87`), and the OIDC redirect lands on
+`/admin/callback?code=…&state=…`. Those spans are exported to `/v1/traces` and relayed to Jaeger.
+Nothing cleans the URL: `react-oidc-context` strips auth params only when an `onSigninCallback` is
+supplied (`react-oidc-context.js:209`) and `AuthProvider.tsx` supplies none, so the only thing that
+removes them is `CallbackPage`'s `navigate("/", { replace: true })` — which `CallbackPage.tsx:15-19`
+runs **only on the success path**. On an authentication error the code stays in the address bar.
+
+**Fix, both halves:**
+
+- pass `onSigninCallback: () => window.history.replaceState({}, document.title, window.location.pathname)`
+  to `AuthProvider` — a documented prop (`react-oidc-context` types, `onSigninCallback?: (user) => Promise<void> | void`)
+- pass `applyCustomAttributesOnSpan: { documentLoad: span => …, documentFetch: span => … }` to
+  `DocumentLoadInstrumentation`, overwriting `http.url`/`url.full` with `location.pathname`. The
+  option exists with exactly that shape (`instrumentation-document-load/types.d.ts:14-18`).
+
+The second is what covers the error path, where the first never runs.
+
+### 5c — Security response headers
+
+`nginx.conf:10-20` is the complete server block and sets no `Content-Security-Policy`,
+`X-Frame-Options`, `X-Content-Type-Options`, or `Referrer-Policy`. The base image adds none, and
+`Dockerfile:24` replaces the stock `conf.d/default.conf` wholesale.
+
+**Fix:** add an `add_header` block. Three directives are dictated by what this design introduces,
+which is why authoring it before the widgets land means writing it twice:
+
+- `connect-src 'self' <authentik-origin>` — `'self'` covers the same-origin `/admin-api` gRPC-Web
+  calls and the `/v1/traces` export; the Authentik origin is needed for the token endpoint
+- `style-src 'self' 'unsafe-inline'` — MUI/Emotion injects styles at runtime
+- `frame-ancestors 'none'` — an authenticated admin console should not be framable
+
+`Strict-Transport-Security` belongs at the TLS-terminating ingress, not here: this listener is
+plaintext HTTP behind a proxy.
+
+### 5d — Runtime config generation
+
+`docker-entrypoint.sh:3-5` runs `envsubst` over `config.js.template` to produce `config.js`, a file
+the browser executes. `envsubst` has no notion of JavaScript syntax, so a value containing a double
+quote breaks out of its string literal into executable code that runs on every page load with full
+session access.
+
+**Fix:** validate before substituting. Each of `OIDC_CLIENT_ID`, `OIDC_AUTHORITY` and
+`API_BASE_URL` must match `^[A-Za-z0-9:/._-]+$`; the entrypoint exits non-zero otherwise. That is
+an allowlist, not a denylist, and the value space (a client id and two URLs) genuinely fits it.
+
+Emitting JSON with `jq` would be the more usual fix and was rejected on evidence: **`jq` is not
+present in the runtime image.** Verified by running it — `nginxinc/nginx-unprivileged:1.27-alpine`
+reports `jq` absent and `envsubst` present. Adding `apk add --no-cache jq` would work but grows the
+runtime image for a check three lines of shell already cover.
+
+### 5e — Route-level group guards
+
+`router.tsx:20-21` registers `/tenants` and `/tenant-admin` with no authorization guard;
+`Sidebar.tsx:18,23` only hides the links. Any authenticated user reaching those URLs directly gets
+the component. `Sidebar.test.tsx:57-64` asserts link absence, never route unreachability.
+
+**Fix:** a `RequireGroup` wrapper mirroring `AuthGate`'s shape, checking the claim and redirecting
+otherwise, plus a test asserting the route is unreachable rather than merely unlinked.
+
+This is defense-in-depth, not a live exposure: both pages are `Coming soon` stubs and stay stubs
+under this design. It is explicitly **not** a change to the landing page at `/`, which shows
+Operator-gated widgets to every authenticated user by design and degrades per Design 3 — the server
+is the authority there, and a 403 renders as an unavailable card.
+
+### 5f — Bind operational endpoints to a listener
+
+No endpoint is bound to a Kestrel listener; `RequireHost` appears nowhere in `Program.cs`. The
+`appsettings.json:9-17` split between 8080 (`Http2`) and 8081 (`Http1`) selects which wire protocol
+a caller must speak, and nothing else. `GET /metrics` over h2c on 8080 returns 200 with the full
+body, and 8080 is the port `charts/api/templates/ingress.yaml:18-24` routes `/` to.
+
+**Fix, two parts:**
+
+- Settle empirically whether AWS ALB with `backend-protocol-version: GRPC` (`values-aws.yaml:75`)
+  forwards a non-gRPC HTTP/2 request through to `/metrics` on 8080. One request against a deployed
+  ALB answers it. If it does, this is already reachable from the internet and the finding is more
+  urgent than its current rating.
+- Serve the operational endpoints only on 8081, by testing `HttpContext.Connection.LocalPort` in an
+  endpoint filter. **Not** `RequireHost("*:8081")`: `RequireHost` matches the `Host` header, and
+  behind an ingress that header carries the external hostname with no port, so the filter would
+  reject legitimate traffic and admit nothing. `Connection.LocalPort` reads the accepting socket.
+
+### 5g — Telemetry export path
+
+`telemetry.ts:19` posts spans to a relative `/v1/traces`. In production that resolves against the
+api Ingress's `/` `pathType: Prefix` rule to port 8080, where a browser's HTTP/1.1 POST is rejected
+with 400 — the same failure this design already documents for development, where no Vite proxy
+exists. The console's trace export therefore does not work in either environment.
+
+**Fix:** point `OTLP_TRACES_URL` at `/admin-api/v1/traces`, which Design 1's allowlist admits and
+the ingress rewrites to `/v1/traces` on 8081. No server change is needed: the endpoint already
+exists at `Program.cs:452-460` with `RequireAuthorization()`, and `telemetry.ts:29-38` already
+attaches the bearer token through the exporter's `headers` factory.
+
+Reading trace data back into a widget remains out of scope. This restores an export path the
+console already believes it has.
+
 ## Verified assumptions
 
 A1-A26 were enumerated against the approved design before any file was read for verification,
 then checked: nineteen held, seven failed or resolved differently. A27-A29 record the live
 verification of the `Operator` policy, run afterwards against the running compose stack on
 2026-08-25; all three failed.
+
+A39-A51 were enumerated the same way against the security remediation added to this design
+(Design 1's allowlist, 4e, 4f and Design 5), before any file was read for that pass: nine held,
+four failed. Two of the failures changed the design's shape rather than a detail — `jq` is absent
+from the runtime image (A43), and namespace-selector NetworkPolicy rules grant nothing on AWS
+(A44). Two more corrected beliefs this spec previously relied on: the anonymous endpoints are not
+confined to port 8081 (A51), and the console's trace export works in neither environment (A50).
 
 | # | Assumption | Disposition |
 |---|---|---|
@@ -544,7 +788,20 @@ verification of the `Operator` policy, run afterwards against the running compos
 | A35 | Adding a proto to `Common/Proto` does not break the other language clients | **Holds** — `Iverson.Client.Contracts.csproj:17` globs `../../Common/Proto/*.proto` with `GrpcServices="Both"`, so the server base class generates without a csproj edit; `Iverson.AdminUI/scripts/generate_protos.sh` and `Iverson.Clients/TypeScript/scripts/generate_protos.sh` also glob. Python (`Iverson.Clients/Python/scripts/generate_protos.sh`) and Go both list the four `object_*` protos explicitly, so neither is touched. Nothing in `Iverson.ClientConformance` enumerates the service set |
 | A36 | `http_route` is a real label on the server-duration metric | **Holds** — present on every `http_server_request_duration_seconds_*` sample on the live `/metrics` endpoint, alongside `http_request_method`, `http_response_status_code` and `network_protocol_version`. The Prometheus scrape endpoint appears as `http_route="/metrics"` and gRPC calls as `http_route="/iverson.<Service>/<Method>"`, so Design 2's exclusion filter is expressible as written |
 | A37 | `/admin-api` cannot match the console's own ingress rule | **Holds** — `charts/admin-ui/templates/ingress.yaml:21` is `/admin(/|$)(.*)`, whose `(/|$)` guard requires `/` or end-of-string after a literal `admin`; `/admin-api/...` supplies `-` at that position and `^/admin` cannot match elsewhere. No precedence contest between the two rules |
-| A38 | An ingress rewrite can strip the prefix so the backend sees the real gRPC path | **Holds** — `rewrite-target: /$2` over `/admin-api(/|$)(.*)` yields `/iverson.<Service>/<Method>` and `/health`, traced over both real request shapes. The same pattern is already in service in this chart for `/admin`, which sets no `use-regex` annotation either |
+| A38 | An ingress rewrite can strip the prefix so the backend sees the real gRPC path | **Holds, restated** — originally verified for `rewrite-target: /$2` over `/admin-api(/|$)(.*)`. That catch-all was replaced by Design 1's three-path allowlist, so the live form is `rewrite-target: /$1` with each regex capturing into group 1. The rewrite mechanism is unchanged and the same pattern is already in service in this chart for `/admin`, which sets no `use-regex` annotation either. See A45 |
+| A39 | Nothing in the deployment calls `/probe/*` anonymously | **Holds** — `grep -rn "/probe/"` across the repo returns only the four definitions in `Program.cs:336-359` and one descriptive mention in `Iverson.Server/docs/security/tma.md:117`. No kubelet probe, compose healthcheck, test or script depends on them. Gating them behind `Operator` (4e) breaks nothing |
+| A40 | Prometheus scrapes `/metrics` on 8081 without authentication | **Holds** — `charts/prometheus/templates/configmap.yaml:10-15` defines `iverson-api` → `<release>-api:8081` and `iverson-worker` → `<release>-worker:8081`, no auth stanza. This is why 4e leaves `/metrics` anonymous and Design 1's allowlist excludes it instead |
+| A41 | The kubelet's readiness probe period bounds `/health`'s cache window | **Holds** — `charts/api/templates/deployment.yaml:173-180` targets `/health` on 8081 and declares **no** `periodSeconds`, inheriting Kubernetes' 10-second default. 4e's 5-second window sits under it |
+| A42 | An in-process cache is available without new infrastructure | **Holds** — `Program.cs:217` already calls `AddMemoryCache()`, and `Tenancy/TenantStatusCache.cs:8` is an existing `IMemoryCache` consumer to pattern 4e after |
+| A43 | `jq` is available in the runtime image, so `config.js` can be emitted as JSON | **Failed** — running `nginxinc/nginx-unprivileged:1.27-alpine` reports `jq` **absent**, `envsubst` present. The JSON-emission fix would have crash-looped the container at startup. Resolved by allowlist validation of the three values instead; see Design 5d |
+| A44 | NetworkPolicy on AWS can admit ingress traffic by namespace selector | **Failed** — `values-aws.yaml:74` sets `target-type: ip`, so the ALB registers pod IPs and traffic originates from VPC ENIs, not from any namespace; `deploy/terraform/modules/cluster-aws/main.tf:475` sets `enableNetworkPolicy = "true"` so policies **are** enforced; and the operators module installs `aws-load-balancer-controller`, so no `ingress-nginx` namespace exists. Selector-based rules grant nothing on AWS. Resolved with an `ipBlock` list; see Design 4f |
+| A45 | Multiple regex paths on one Ingress can each be rewritten correctly | **Holds, with a constraint** — `charts/admin-ui/templates/ingress.yaml:5` sets `rewrite-target` as an **Ingress-level annotation**, shared by every path on the object. Design 1's three paths therefore all capture into group 1 so one `/$1` serves all three. Restates A38 |
+| A46 | Real gRPC-Web request paths match the allowlist regex | **Holds** — every proto in `Iverson.Clients/Common/Proto/` declares `package iverson`, and the six services are `ObjectPersistenceService`, `ObjectRetrievalService`, `ObjectSearchService`, `ObjectMappingService`, `TenantLifecycleGrpcService`, `TenantAdminGrpcService`. `iverson\.[A-Za-z0-9_.]+/[A-Za-z0-9_]+` matches all of them and the new `AdminConsoleService` |
+| A47 | `revokeTokensOnSignout` reaches `UserManagerSettings` through `react-oidc-context` | **Holds** — `react-oidc-context.js:139-149` destructures its own props and spreads `...userManagerSettings` into the `UserManager` constructor, so unrecognised settings pass through unchanged |
+| A48 | `onSigninCallback` is a supported `AuthProvider` prop | **Holds** — declared in `react-oidc-context`'s types as `onSigninCallback?: (user: User \| undefined) => Promise<void> \| void`, and invoked at `react-oidc-context.js:209` only when supplied |
+| A49 | `DocumentLoadInstrumentation` allows overwriting span attributes | **Holds** — `instrumentation-document-load/types.d.ts:14-18` declares `applyCustomAttributesOnSpan?: { documentLoad?, documentFetch?, resourceFetch? }`, covering both spans that receive `location.href` |
+| A50 | The console's `/v1/traces` export works in production | **Failed** — `telemetry.ts:19` posts to a relative `/v1/traces`, which resolves against the api Ingress's `/` `Prefix` rule to port 8080, where a browser's HTTP/1.1 POST is rejected with 400. The export works in neither environment. Resolved by routing it through `/admin-api`; see Design 5g |
+| A51 | The `AllowAnonymous` endpoints are reachable only on port 8081 | **Failed** — `RequireHost` appears nowhere in `Program.cs`, so ASP.NET routing serves every endpoint on both listeners. `GET /metrics` over h2c prior-knowledge on `:8080` returns 200 with the full 121,797-byte body, and an anonymous `POST /probe/kafka` on the same port created the `iverson.probe` Kafka topic. The port split is a protocol convention, not a security boundary; see Design 5f |
 
 ## Known issues
 
