@@ -93,6 +93,8 @@ Newly introduced by this plan and verified at plan-write time.
 | 20 | Code validity | `AddCors`/`UseCors` and `AddEndpointFilter` need no package reference; they ship in the ASP.NET Core shared framework used by `Iverson.Api.csproj` (`net10.0`) | `Iverson.Api.csproj:4` `<TargetFramework>net10.0</TargetFramework>`; no CORS package referenced anywhere today |
 | 21 | File path | `charts/worker/templates/` exists and already holds a ClusterIP `service.yaml`, so T8's headless Service sits alongside it rather than replacing it | `ls charts/worker/templates/` returns `deployment.yaml hpa.yaml service.yaml` |
 | 22 | File path | `docs/runbooks/grpc-admin-auth-cutover.md` exists, so T1 Step 4's membership note has the neighbour the spec names | `ls docs/runbooks/` returns it among seven runbooks |
+| 23 | Code validity | The `IMemoryCache` shape T2 cites **memoizes but does not single-flight** — `TenantStatusCache` holds no lock, semaphore, `GetOrCreate` or `Lazy`, so every concurrent caller on a miss runs the work independently. T2 Step 2 therefore caches a `Lazy<Task<…>>` instead of copying that shape | `grep -nE "lock\|Semaphore\|GetOrCreate\|Lazy" Tenancy/TenantStatusCache.cs` returns nothing; the body at `:12-23` is `TryGetValue` → work → `Set` |
+| 24 | Code validity | Helm's `required` does **not** abort on an empty list — only on nil and on an empty string. T3 Step 4 therefore uses `fail` behind a `not` test | `helm template` over a fixture chart with `cidrs: []` and `{{ required "…" .Values.cidrs }}` renders `x: []` and exits 0, on helm v3.16.4+g7877b45 |
 
 ## Tasks
 
@@ -146,9 +148,21 @@ git commit -m "make the Operator policy satisfiable: request groups scope and cr
 
 - [ ] **Step 1: Gate the four probes.** Add `.RequireAuthorization("Operator")` to `/probe/sql`, `/probe/starrocks`, `/probe/vector` and `/probe/kafka`. Nothing calls them (plan assumption 14, spec A39), so no caller breaks. Leave `/metrics`, `/health` and `/health/live` anonymous.
 
-- [ ] **Step 2: Cache `/health`'s fan-out for 5 seconds.** Memoize the four-way result behind `IMemoryCache` (already registered at `Program.cs:217`), following `Tenancy/TenantStatusCache.cs`'s pattern — a `private static readonly TimeSpan Ttl = TimeSpan.FromSeconds(5)`, `TryGetValue` then `Set`. Cache the checks result, not the `IResult`, so the 200/503 decision is re-derived each call. The window must stay under the readiness probe's 10-second default period.
+- [ ] **Step 2: Single-flight `/health`'s fan-out on a 5-second window.** Cache behind `IMemoryCache` (already registered at `Program.cs:217`) with a `private static readonly TimeSpan Ttl = TimeSpan.FromSeconds(5)`. Cache the checks result, not the `IResult`, so the 200/503 decision is re-derived each call. The window must stay under the readiness probe's 10-second default period.
 
-- [ ] **Step 3: Test.** Assert an anonymous probe request is rejected, an Operator-authorized one succeeds, and that two `/health` calls inside the window issue one fan-out.
+  **Cache a `Lazy<Task<…>>`, not the resolved value**, so concurrent callers on a miss await the same in-flight fan-out:
+```csharp
+cache.GetOrCreate(HealthCacheKey, entry =>
+{
+    entry.AbsoluteExpirationRelativeToNow = Ttl;
+    return new Lazy<Task<HealthChecks>>(FanOutAsync);
+})!.Value
+```
+  This **deliberately departs from `Tenancy/TenantStatusCache.cs`'s shape**. That file is `TryGetValue` → work → `Set` with no lock, semaphore or `Lazy`, which memoizes but does not single-flight: every concurrent caller on a miss runs the work independently. That is harmless where it guards one indexed read, and wrong here — `/health` fans out to four backends of which two are writes, and this plan routes it to the public `admin-api` host while it stays `AllowAnonymous`. Without single-flighting, N concurrent requests at expiry produce N Kafka produces and N Qdrant collection-ensures, and the stated bound below is not achieved. Do not "correct" this back to the `TenantStatusCache` pattern.
+
+  The bound this delivers: **at most one fan-out per 5s per pod regardless of request rate**, which is the whole of the change.
+
+- [ ] **Step 3: Test.** Assert an anonymous probe request is rejected, an Operator-authorized one succeeds, that two sequential `/health` calls inside the window issue one fan-out, and — separately — that **N concurrent** calls on a cold cache also issue one. The sequential assertion alone passes against a non-single-flighting implementation, so the concurrent case is the one that pins this step.
 ```bash
 dotnet test Iverson.Server/Iverson.Api.Tests
 ```
@@ -173,7 +187,21 @@ git commit -m "require Operator on the probe endpoints and cache the health fan-
 
 - [ ] **Step 3: Add the two Prometheus rules Design 1 requires** — an `api-egress` rule to `podSelector: { app: {{ .Release.Name }}-prometheus }` on TCP 9090, and a `prometheus-ingress` policy allowing from `app: {{ .Release.Name }}-api` on TCP 9090. Guard both with the existing `{{- if .Values.prometheus.enabled }}` used at `:474`.
 
-- [ ] **Step 4: Make the key required and supply it for all five profiles.** Render must fail loudly on an empty list rather than emit an `ipBlock` matching nothing. Values: aws `["10.0.0.0/16"]`, azure `["10.1.0.0/16"]`, gcp `["10.2.0.0/20"]`, local and laptop `["172.18.0.0/16"]`.
+- [ ] **Step 4: Guard the key explicitly and supply it for all five profiles.** Values: aws `["10.0.0.0/16"]`, azure `["10.1.0.0/16"]`, gcp `["10.2.0.0/20"]`, local and laptop `["172.18.0.0/16"]`.
+
+  **Use `fail`, not `required`.** Helm's `required` aborts only on nil and on an empty *string*; an empty **list** passes straight through it. Verified on helm v3.16.4: `required "…" .Values.cidrs` over `cidrs: []` renders `x: []` and exits 0. What renders then is worse than an `ipBlock` matching nothing — a NetworkPolicy ingress rule with an empty `from` **matches all sources**, silently reinstating the `from: []` allow-all this subsection exists to remove. Guard on emptiness instead:
+```
+{{- if not .Values.networkPolicy.clusterCidrs }}
+{{- fail "networkPolicy.clusterCidrs must list at least one CIDR; an empty list renders an allow-all ingress rule" }}
+{{- end }}
+```
+  `fail` aborts unconditionally, and `not` is true for an empty list as well as for nil.
+
+- [ ] **Step 4b: Assert the guard fires.** Render one overlay with the key nulled and again with it set to an empty list; both must abort rather than emit a policy.
+```bash
+helm template Iverson.Server/deploy/helm/iverson -f Iverson.Server/deploy/helm/iverson/values-local.yaml --set networkPolicy.clusterCidrs=null
+helm template Iverson.Server/deploy/helm/iverson -f Iverson.Server/deploy/helm/iverson/values-local.yaml --set 'networkPolicy.clusterCidrs={}'
+```
 
 - [ ] **Step 5: Verify the CI gate passes for every overlay.**
 ```bash
