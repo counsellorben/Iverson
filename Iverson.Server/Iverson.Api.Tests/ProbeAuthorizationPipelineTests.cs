@@ -99,4 +99,32 @@ public class ProbeAuthorizationPipelineTests : IClassFixture<AuthTestWebApplicat
 
         response.StatusCode.Should().Be(HttpStatusCode.OK);
     }
+
+    // Regression coverage for the review finding that gating the four probes could silently
+    // gate one of the three endpoints that must stay anonymous alongside them: the
+    // FallbackPolicy is RequireAuthenticatedUser(), so /metrics, /health and /health/live are
+    // anonymous ONLY because of their explicit .AllowAnonymous() call in Program.cs — dropping
+    // one (e.g. by a stray find-and-replace across the probe block) would silently break
+    // Prometheus scraping or the kubelet liveness probe. /health itself is deliberately excluded
+    // here: it fans out to real Postgres/StarRocks/Qdrant/Kafka with no internal catch for most
+    // of those checks, so calling it for real against this test host (which has none of those
+    // backends) hangs on connection attempts rather than failing fast — AuthenticationPipelineTests
+    // already covers /health/live and /metrics from the pre-Task-2 baseline; these are
+    // additional, colocated coverage of the same two endpoints specifically against Task 2's
+    // probe-gating diff.
+    [Fact]
+    public async Task AnonymousGet_HealthLive_Returns200()
+    {
+        var response = await _client.GetAsync("/health/live");
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+    }
+
+    [Fact]
+    public async Task AnonymousGet_Metrics_Returns200()
+    {
+        var response = await _client.GetAsync("/metrics");
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+    }
 }
