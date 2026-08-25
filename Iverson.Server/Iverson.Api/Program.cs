@@ -3,6 +3,7 @@ using System.Net.Http.Headers;
 using System.Text.Json;
 using Iverson.Api;
 using Iverson.Api.Authorization;
+using Iverson.Api.Console;
 using Iverson.Api.Consumers;
 using Iverson.Api.Grpc;
 using Iverson.Api.Schema;
@@ -414,6 +415,12 @@ app.MapPost("/admin/dlq/{id}/replay", async (Guid id, IDlqRepository dlq, IEvent
 
     return Results.Ok(new { replayed = true, id, topic = row.SourceTopic });
 }).WithName("ReplayDlq").RequireAuthorization("Operator");
+
+// The admin console's four read-only JSON endpoints, under the same /admin prefix and — for
+// three of the four — the same Operator policy as the routes above. /admin/console/schema and
+// /admin/console/data-volume are authenticated-only on purpose and pass HttpContext.User to
+// their readers; see AdminConsoleEndpoints for why neither may be normalised to Operator.
+app.MapAdminConsoleEndpoints();
 
 // ── Schema hydration ───────────────────────────────────────────────────────────
 try

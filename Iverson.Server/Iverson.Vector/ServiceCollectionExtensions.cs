@@ -45,6 +45,14 @@ public static class ServiceCollectionExtensions
             sp.GetRequiredService<QdrantClient>(), apiKey, sp.GetRequiredService<ILogger<IntelligenceCollectionManager>>()));
         services.AddSingleton<IVectorSchemaManager>(sp => sp.GetRequiredService<IntelligenceCollectionManager>());
 
+        // Registered here rather than in the consumer's own composition root for one reason:
+        // apiKey is a parameter of THIS method and is not otherwise reachable — the QdrantClient
+        // itself is constructed with apiKey: null (see above), so every caller must supply the
+        // "api-key" request header itself, exactly as IntelligenceCollectionManager does.
+        services.AddSingleton<IVectorCollectionReader>(sp => new IntelligenceCollectionReader(
+            sp.GetRequiredService<QdrantClient>(), apiKey,
+            sp.GetRequiredService<ILogger<IntelligenceCollectionReader>>()));
+
         services.AddSingleton(new IntelligenceTenantScope(apiKey));
 
         services.AddSingleton<IResultReranker, ResultReranker>();
