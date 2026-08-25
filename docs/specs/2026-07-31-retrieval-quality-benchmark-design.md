@@ -203,11 +203,11 @@ The smallest viable FreshStack topic, godot, is 25,482 documents with 99 queries
 volume that produced that load, and one topic alone matches the ~100-question statistical power the
 prior spec assumed from two.
 
-**~100 queries is modest statistical power.** Two FreshStack topics give roughly 100 questions. That is
-enough to detect a large diversification effect and not enough to resolve a subtle one, so a null
-result on the λ sweep should be read as "no large effect detected", never as "λ = 0.70 is optimal".
-Ben chose two topics over one for exactly this reason; more topics would cost proportionally more
-ingest.
+**~150 queries is modest statistical power.** Two FreshStack topics give roughly 150 questions — more
+than the ~100 originally estimated, but still modest. That is enough to detect a large diversification
+effect and not enough to resolve a subtle one, so a null result on the λ sweep should be read as "no
+large effect detected", never as "λ = 0.70 is optimal". Ben chose two topics over one for exactly this
+reason; more topics would cost proportionally more ingest.
 
 **α-nDCG depends on expressing FreshStack's nuggets in the scoring tool's expected shape.** `ir_measures`
 reads subtopic ids from the qrels iteration field. FreshStack's own evaluation package would have been
