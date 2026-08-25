@@ -98,10 +98,21 @@ use. It does not reuse the api subchart's: `charts/api/templates/ingress.yaml:4-
 `.Values.ingress.annotations` onto the Ingress's own metadata, so on AWS that value carries
 `values-aws.yaml:75`'s `alb.ingress.kubernetes.io/backend-protocol-version: GRPC` — **which this
 Ingress must not have**, because it serves HTTP/1.1 JSON and not gRPC. Declaring a gRPC target
-group for it would break every console call on that profile. The AWS overlay gives it the same
-shape every other Ingress here carries: `scheme`, `target-type`, `certificate-arn`,
-`listen-ports` and `ssl-redirect`; omitting them yields an internal-scheme load balancer with no
-TLS, which does not serve a browser.
+group for it would break every console call on that profile.
+
+**In every other respect it follows the api Ingress's own per-profile shape**, in the same values
+file — `className`, annotations and TLS convention — exactly as the admin-ui and authentik
+Ingresses already do. That shape is not one thing: `values-aws.yaml:71-85` uses `className: "alb"`
+with `scheme`, `target-type`, `certificate-arn`, `listen-ports` and `ssl-redirect`, terminating TLS
+on an ACM certificate with `tlsSecretName` deliberately empty; `values-azure.yaml:70-73` uses
+`className: "azure-application-gateway"` and `values-gcp.yaml:71-74` uses `className: "gce"`, and
+both of those terminate TLS from a Kubernetes Secret through the Ingress's own `tls:` block
+instead. An object rendered without a `className` reaches no controller, and one rendered without
+`tlsSecretName` on azure or gcp serves no TLS — either way the console cannot reach the API on that
+profile.
+
+`values-laptop.yaml` needs no such block: it sets `adminUi.enabled: false` (`:19`), so that profile
+runs no console.
 
 Whether this Ingress shares an ALB with the api Ingress through
 `alb.ingress.kubernetes.io/group.name` or provisions its own is a cost preference, not a
@@ -636,10 +647,23 @@ rule that silently denies. That failure mode is the reason: an empty list would 
 `ipBlock` matching nothing, the kubelet's readiness probe to `/health` on 8081 would be denied,
 and pods would never become Ready — a silent non-readiness rather than a visible error.
 
+The chart has **five deployment profiles** over a base, and every one of them needs a value.
+Overlays are self-contained here by convention — `values-laptop.yaml`'s header records that the CI
+harness passes exactly one `-f` per overlay — so each restates the key rather than relying on
+inheritance:
+
 | Profile | `networkPolicy.clusterCidrs` | Source |
 |---|---|---|
-| `values-aws.yaml` | `["10.0.0.0/16"]` | the VPC CIDR — `deploy/terraform/modules/cluster-aws/variables.tf:16-19` declares `vpc_cidr` with exactly this default. Keep the two in lockstep, the same way `global.ingressHost` and `api.ingress.host` are kept in lockstep |
-| `values-local.yaml` | `["172.18.0.0/16"]` | the Docker network kind puts its nodes on. Verify per machine with `docker network inspect kind`; Docker's default for that network is `172.18.0.0/16` but it is assigned, not guaranteed |
+| `values-aws.yaml` | `["10.0.0.0/16"]` | the VPC CIDR — `deploy/terraform/modules/cluster-aws/variables.tf:16-19` declares `vpc_cidr` with exactly this default |
+| `values-azure.yaml` | `["10.1.0.0/16"]` | the VNet `address_space` at `deploy/terraform/modules/cluster-azure/main.tf:127`; the node subnet is `10.1.0.0/20` at `:136` |
+| `values-gcp.yaml` | `["10.2.0.0/20"]` | the subnet `ip_cidr_range` at `deploy/terraform/modules/cluster-gcp/main.tf:16` |
+| `values-local.yaml` | `["172.18.0.0/16"]` | the Docker network kind puts its nodes on |
+| `values-laptop.yaml` | `["172.18.0.0/16"]` | also kind — `values-laptop.yaml:65` uses `className: "nginx"` like local |
+
+Keep each in lockstep with its terraform module, the same way `global.ingressHost` and
+`api.ingress.host` are kept in lockstep. The two kind rows are the least certain: verify per
+machine with `docker network inspect kind`, because `172.18.0.0/16` is Docker's default for that
+network but is assigned rather than guaranteed.
 
 This choice is taken with one eye open. `templates/networkpolicies.yaml:154-166` already records
 this chart rejecting CIDR-scoping as non-portable for the Kubernetes API server, whose address
@@ -648,9 +672,13 @@ here is a value operators must get right per environment. It is accepted because
 a port-scoped allow-all — is what this subsection exists to remove, and because the failure is now
 loud at render time rather than silent at readiness time.
 
-NetworkPolicy is genuinely enforced on both profiles, so this rule is not decorative:
-`deploy/kind/kind-config.yaml:3-9` disables kindnet specifically so Calico can be installed in its
-place, and `cluster-aws/main.tf:475` enables the VPC CNI's native enforcement.
+NetworkPolicy is genuinely enforced on all five profiles, so this rule is not decorative anywhere:
+`cluster-aws/main.tf:475` enables the VPC CNI's native enforcement,
+`deploy/terraform/modules/cluster-azure/main.tf:183` sets `network_policy = "azure"` — its own
+comment notes that without it "every NetworkPolicy silently does nothing" —
+`deploy/terraform/modules/cluster-gcp/main.tf:165` uses Dataplane V2, and the two kind profiles get
+Calico because `deploy/kind/kind-config.yaml:3-9` disables kindnet specifically so it can be
+installed in its place.
 
 **The same gap exists on port 8080 and is fixed here too.** The rule at `:22-27` admits only the
 `ingress-nginx` namespace. NetworkPolicy is enforced on AWS —
@@ -831,6 +859,11 @@ endpoint set or the Ingress depends on that no earlier item covered. Two failed,
 cases where a capability existing somewhere in the codebase had been read as the operation being
 reachable from where the endpoint would call it.
 
+A68-A69 close round 9's two span-check gaps, and both failed for one reason: the design had been
+enumerating the two deployment profiles under discussion rather than the five the chart actually
+carries. Every per-profile value this design introduces — `clusterCidrs`, the new Ingress's class
+and annotations, the CORS origin and `apiBaseUrl` — is supplied for all five.
+
 | # | Assumption | Disposition |
 |---|---|---|
 | A1 | `Iverson.Api` uses minimal-API `MapGet` for `/health` and `/probe/starrocks`, both `AllowAnonymous` | **Holds** — `Program.cs:301`/`:334` and `:342`/`:346` |
@@ -899,6 +932,8 @@ reachable from where the endpoint would call it.
 | A65 | The Qdrant read operation is reachable through an injectable interface | **Failed** — `Iverson.Server/Iverson.Vector/IVectorRoles.cs:23-27` declares `IVectorSchemaManager` with exactly two members, `EnsureCollectionAsync` and `ApplyCollectionAsync`. The only `GetCollectionInfoAsync` call in the repository is on a Qdrant `client` object at `IntelligenceCollectionManager.cs:60`, alongside `ListCollectionsAsync` at `:22`. The endpoint therefore adds a read interface over that client rather than consuming an existing one. A57 covers injectability of the interface, not which operations it carries |
 | A66 | The aggregate path is reachable from outside the gRPC service | **Failed** — `Aggregate`'s body is inline in `ObjectSearchGrpcService` and built from members private to it (`RequireSchema` at `:771`, `RunAggregationAsync` at `:536`), over proto types, in a method requiring a `ServerCallContext`. The reachable seam is one level down: `RunAggregationAsync` delegates to `search.AggregateAsync(...)` over domain types. This is why the design specifies two extractions rather than one |
 | A67 | An Ingress's annotations are scoped to the object that declares them | **Holds, and it is the hazard** — `charts/api/templates/ingress.yaml:4-6` renders `.Values.ingress.annotations` onto the Ingress's own `metadata`, so a second Ingress reusing that value would inherit `values-aws.yaml:75`'s `backend-protocol-version: GRPC`. Object scoping is also what lets two Ingresses in one ALB group carry different backend-protocol annotations |
+| A68 | The chart's deployment profiles are the two this design had been reasoning about | **Failed** — `deploy/helm/iverson/` carries six values files: `values.yaml` plus `values-aws.yaml`, `values-azure.yaml`, `values-gcp.yaml`, `values-laptop.yaml` and `values-local.yaml`, i.e. five deployment profiles over a base. `values-azure.yaml` and `values-gcp.yaml` are complete profiles with their own api, admin-ui and authentik ingress blocks, and both enforce NetworkPolicy (`cluster-azure/main.tf:183` `network_policy = "azure"`; `cluster-gcp/main.tf:165` Dataplane V2). Overlays are self-contained by convention — `values-laptop.yaml`'s header records that the CI harness passes exactly one `-f` per overlay — so a key absent from an overlay is absent, not inherited from a sibling. Any per-profile value this design introduces must be supplied for all five |
+| A69 | The new Ingress's class and TLS convention are the same on every profile | **Failed** — the three cloud profiles use three different ingress classes and two different TLS mechanisms: `values-aws.yaml:71-85` `alb` with an ACM `certificate-arn` and empty `tlsSecretName`; `values-azure.yaml:70-73` `azure-application-gateway` and `values-gcp.yaml:71-74` `gce`, both terminating TLS from a Kubernetes Secret via the Ingress's `tls:` block. `values-laptop.yaml:19` disables the console entirely (`adminUi.enabled: false`), so it needs no such Ingress |
 | A51 | The `AllowAnonymous` endpoints are reachable only on port 8081 | **Failed** — `RequireHost` appears nowhere in `Program.cs`, so ASP.NET routing serves every endpoint on both listeners. `GET /metrics` over h2c prior-knowledge on `:8080` returns 200 with the full 121,797-byte body, and an anonymous `POST /probe/kafka` on the same port created the `iverson.probe` Kafka topic. The port split is a protocol convention, not a security boundary; see Design 5f |
 
 ## Known issues
