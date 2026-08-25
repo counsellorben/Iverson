@@ -28,7 +28,8 @@ so that the first screen after sign-in answers "is this deployment healthy, and 
 - Two new read-only REST endpoints on `Iverson.Api` (see Design 1).
 - The prerequisite work those widgets depend on and which does not exist today
   (see Design 4): grpc-web enablement for two services, a console gRPC client
-  foundation, and Prometheus scrape-target changes.
+  foundation, Prometheus scrape-target changes, and the identity fixes without
+  which every Operator-gated surface returns 403.
 
 **Out of scope**
 
@@ -240,8 +241,9 @@ responses, including its error and stale states.
 
 ## Design 4 — Prerequisite work
 
-Verification found that three foundations this design assumed were present do not exist.
-They are in scope because without them the specified widgets are impossible.
+Verification found four foundations this design assumed were present that do not exist.
+They are in scope because without them the specified widgets are impossible. 4d is the one
+that blocks everything else: until it lands, every Operator-gated surface returns 403.
 
 ### 4a — grpc-web enablement for two services
 
@@ -306,10 +308,91 @@ the fan-out backlog and DLQ/retry widgets would be permanently empty.
 
 **Fix:** add `iverson-worker:8081` to `prometheus.local.yml`, matching the Helm chart.
 
+### 4d — Identity: making the `Operator` policy satisfiable
+
+Verified live on 2026-08-25 against the running compose stack: **no human identity can satisfy
+the `Operator` policy today.** The tenant-roster widget and both new endpoints would return 403
+for every user. Two independent gaps must both close. The evidence is in Known Issues; the
+fixes are specified here.
+
+#### 4d-1 — Request the claims the policy reads
+
+`Iverson.AdminUI/src/auth/AuthProvider.tsx:10` requests
+`scope: "openid profile email offline_access"`. Authentik applies a scope mapping only when the
+client requests that scope, so the `groups` and `tenant_id` mappings bound to the
+`iverson-oidc-default` provider never fire.
+
+Change the requested scope to `openid groups tenant_id offline_access`.
+
+- `groups` is the claim `OperatorAuthorizationPolicy` reads.
+- `tenant_id` is what the data-volume widget's tenant scoping needs, and is absent today for
+  the same reason.
+- This exact scope string was verified working against this exact client
+  (`dev-iverson-human-oidc-client-id`), returning populated `groups` and `tenant_id` claims.
+- `profile` and `email` are dropped from the request because they are inert. A provider's
+  `property_mappings` list replaces Authentik's default set, and neither mapping is bound to
+  this provider — requesting them today yields an empty `scope` claim and nothing else.
+
+#### 4d-2 — Create the `operators` group
+
+No `operators` group exists — not in any blueprint, and not in the live directory. The name is
+fixed by two independent consumers and is not a free choice: `OperatorAuthorizationPolicy.cs:11`
+tests `groupClaims.Contains("operators")`, and `Iverson.AdminUI/src/layout/Sidebar.tsx:20` gates
+the Tenants nav item on `groups.includes("operators")`.
+
+Add it as a **new top-level blueprint**, `charts/authentik/blueprints/operators-group.yaml`:
+
+```yaml
+version: 1
+metadata:
+  name: Iverson operator group
+entries:
+  - model: authentik_core.group
+    identifiers:
+      name: operators
+    attrs: {}
+```
+
+Top-level placement is deliberate. `blueprints-configmap.yaml` globs `blueprints/*.yaml` for the
+Helm path, and `docker-compose.yml:294,328` bind-mounts the whole `blueprints` directory for
+compose — so one file covers both. The alternative, adding the group to
+`blueprints/compose-only/service-clients.yaml` *and*
+`templates/blueprints-configmap-service-clients.yaml`, would duplicate an
+environment-independent definition across two files that already drift from each other.
+
+#### 4d-3 — Group membership
+
+For local development, add the compose dev users to the group in
+`blueprints/compose-only/service-clients.yaml`, using the `groups:` attribute pattern the file
+already uses for `iverson-loadtest-bypass-user`.
+
+For real deployments, membership is **not** blueprinted. Who holds operator rights is an
+operational decision, and seeding a test user into an operator group in a production overlay
+would be a privilege-escalation defect. It is an onboarding step, and belongs in a runbook
+beside the existing `docs/runbooks/grpc-admin-auth-cutover.md`.
+
+#### What this repairs beyond this design
+
+Both are pre-existing defects that the missing `groups` claim currently masks:
+
+- `Sidebar.tsx:20` and `:25` gate the Tenants and Tenant Admin nav items on group membership.
+  With no `groups` claim, **both are invisible to every user** — two of the console's four pages
+  are unreachable through the UI today. 4d-1 alone restores Tenant Admin, since the
+  `tenant-admins` group already exists; Tenants additionally needs 4d-2.
+- `AppLayout.tsx:9` renders `auth.user?.profile?.email`, which is never emitted, so the AppBar
+  shows the literal string `"User"` for everyone.
+
+The email display is left alone by this design. Fixing it means binding Authentik's built-in
+`email` scope mapping to the provider, which is unrelated to the landing page. It is recorded
+here so the next reader does not mistake it for something this work broke.
+
+
 ## Verified assumptions
 
-Every assumption was enumerated against the approved design before any file was read for
-verification, then checked. Nineteen held; seven failed or resolved differently.
+A1-A26 were enumerated against the approved design before any file was read for verification,
+then checked: nineteen held, seven failed or resolved differently. A27-A29 record the live
+verification of the `Operator` policy, run afterwards against the running compose stack on
+2026-08-25; all three failed.
 
 | # | Assumption | Disposition |
 |---|---|---|
@@ -339,6 +422,9 @@ verification, then checked. Nineteen held; seven failed or resolved differently.
 | A24 | The OIDC token is reachable from a plain fetch layer | **Failed** — `AuthProvider.tsx` uses `react-oidc-context`; the token is React-context-only at `auth.user?.access_token`. The hook takes it as an argument |
 | A25 | The four existing pages are stubs, so nothing conflicts | **Holds** — all four return `Coming soon` |
 | A26 | The API may run multiple replicas, requiring cross-instance aggregation | **Holds, and worse than assumed** — `charts/api/values.yaml:1` sets 2 replicas; `charts/api/values.yaml:9-12` sets an HPA range of 2-5. Prometheus scrapes the ClusterIP Service VIP, so there is only ever one `instance` label and `sum()` cannot repair it. See Design 4c |
+| A27 | The console's token satisfies the `Operator` policy | **Failed — verified live 2026-08-25.** A token minted with the console's exact scope against its own client carried no `groups`, no `tenant_id`, and an empty `scope` claim; `/admin/dlq` returned **403** (401 with no token). See Design 4d |
+| A28 | An `operators` group exists for users to belong to | **Failed — verified live 2026-08-25.** Live groups are `authentik Admins`, `authentik Read-only`, `iverson-admin-orchestrators`, `iverson-loadtest-bypass`, `tenant-admins`. A correctly-scoped token for a user with real group membership still returned **403**. See Design 4d-2 |
+| A29 | The console does not already depend on the `groups` claim | **Failed** — `Sidebar.tsx:20` and `:25` already gate two nav items on it, so both are invisible to every user today; `AppLayout.tsx:9` reads a never-emitted `email` claim |
 
 ## Known issues
 
@@ -371,16 +457,13 @@ from `/admin/dlq`.
 The `admin` scope arm is no escape hatch: that scope mapping is bound only to
 `iverson-admin-automation`, a `client_credentials` service client with no human login path.
 
-**What implementation must include, ahead of any widget work:**
+**The fixes are specified in Design 4d** and are in scope for this work. They must sequence
+ahead of any widget implementation: until both gaps close, the tenant-roster widget and both
+new endpoints return 403 for every user.
 
-1. Add `groups` (and `tenant_id`, which the data-volume widget's tenant scoping needs) to the
-   console's requested OIDC scope in `AuthProvider.tsx`.
-2. Provision an `operators` group in the Authentik blueprints and place the console's operator
-   users in it.
-
-This is not scope this design introduces — the already-planned Tenants page hits the identical
-wall through the same policy on the same service — but it is now a confirmed prerequisite
-rather than an open question, and the implementation plan must sequence it first.
+This is not scope this design invents — the already-planned Tenants page hits the identical
+wall through the same policy on the same service, and its nav item is invisible today for the
+same reason — but it is now a confirmed defect rather than an open question.
 
 **Data volume cannot report authorization denial.** Accepted, not solved — see Design 2. The
 alternative would be changing `Aggregate`'s denial behaviour from empty-response to error,
