@@ -27,15 +27,20 @@ variable "cluster_name" {
 # allow-list. See cluster-azure's api_authorized_ip_ranges.
 variable "api_authorized_ip_ranges" { type = list(string) }
 
+# Public addresses permitted to reach the data-volume Key Vault data plane.
+# See cluster-azure's key_vault_authorized_ip_ranges.
+variable "key_vault_authorized_ip_ranges" { type = list(string) }
+
 provider "azurerm" {
   features {}
 }
 
 module "cluster" {
-  source                   = "../modules/cluster-azure"
-  cluster_name             = var.cluster_name
-  location                 = var.location
-  api_authorized_ip_ranges = var.api_authorized_ip_ranges
+  source                         = "../modules/cluster-azure"
+  cluster_name                   = var.cluster_name
+  location                       = var.location
+  api_authorized_ip_ranges       = var.api_authorized_ip_ranges
+  key_vault_authorized_ip_ranges = var.key_vault_authorized_ip_ranges
 }
 
 provider "kubernetes" {

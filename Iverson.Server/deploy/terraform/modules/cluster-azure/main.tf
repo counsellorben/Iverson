@@ -11,10 +11,6 @@ resource "azurerm_resource_group" "this" {
 
 data "azurerm_client_config" "current" {}
 
-# No network_acls block (accepted follow-up — restricting vault network access
-# is its own change, not requested by this task, and the AWS CMK path this
-# mirrors doesn't scope network access on its key either).
-#tfsec:ignore:azure-keyvault-specify-network-acl
 resource "azurerm_key_vault" "data_volumes" {
   name                       = "${var.cluster_name}-dv-kv"
   location                   = azurerm_resource_group.this.location
@@ -23,6 +19,23 @@ resource "azurerm_key_vault" "data_volumes" {
   sku_name                   = "standard"
   purge_protection_enabled   = true
   soft_delete_retention_days = 30
+
+  # Deny by default. The disk encryption set still reaches the vault: Azure
+  # lists "Azure Disk Storage — when configured with a Disk Encryption Set" in
+  # the trusted-services table that `bypass = "AzureServices"` admits, and the
+  # DES additionally holds the access policy below, which the bypass does not
+  # replace.
+  #
+  # ip_rules is required and has no default, because Key Vault firewall rules
+  # apply to the DATA plane — and `azurerm_key_vault_key` is a data-plane call.
+  # Whoever runs `terraform apply` must have their egress address in this list
+  # or key creation is refused. Same forced-explicit-choice rationale as
+  # api_authorized_ip_ranges.
+  network_acls {
+    default_action = "Deny"
+    bypass         = "AzureServices"
+    ip_rules       = var.key_vault_authorized_ip_ranges
+  }
 }
 
 # No expiration_date (accepted follow-up — key expiry is a separate concern

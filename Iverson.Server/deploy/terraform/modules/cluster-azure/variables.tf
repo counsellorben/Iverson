@@ -23,6 +23,19 @@ variable "api_authorized_ip_ranges" {
   }
 }
 
+# No default — same rationale as api_authorized_ip_ranges: forces an explicit
+# choice of which public addresses may reach the data-volume Key Vault's data
+# plane. Key Vault firewall rules do not apply to control-plane operations, but
+# creating the key is a data-plane call, so the address `terraform apply` runs
+# from must appear here.
+variable "key_vault_authorized_ip_ranges" {
+  type = list(string)
+  validation {
+    condition     = length(var.key_vault_authorized_ip_ranges) > 0
+    error_message = "key_vault_authorized_ip_ranges must contain at least one CIDR — with default_action = Deny and an empty list, terraform apply cannot create the key."
+  }
+}
+
 variable "postgres_vm_size" {
   type    = string
   default = "Standard_E8ds_v5"
