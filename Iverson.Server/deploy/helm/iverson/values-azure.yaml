@@ -83,6 +83,15 @@ api:
     # renders one whenever tlsSecretName is set) — replace with a real
     # cert-manager-issued Secret name for the real host before applying.
     tlsSecretName: "iverson-api-tls"
+  adminApiIngress:
+    className: "azure-application-gateway"
+    annotations: {}
+    # A NEW Secret, distinct from iverson-api-tls above — its SAN must cover
+    # admin-api.iverson.example.com, a different hostname, or AGIC's TLS handshake
+    # fails on a name mismatch. Replace with a real cert-manager-issued Secret name
+    # for the real host before applying.
+    tlsSecretName: "iverson-admin-api-tls"
+  adminConsoleOrigin: "https://iverson.example.com"
 
 # worker/prometheus/redis/authentik: none of these get a dedicated node pool in
 # modules/cluster-azure (only postgres/kafka/starrocks/qdrant/ollama do — confirmed
@@ -138,7 +147,7 @@ authentik:
 
 adminUi:
   oidcAuthority: "http://authentik.iverson.example.com/application/o/iverson-api/"
-  apiBaseUrl: "https://iverson.example.com"
+  apiBaseUrl: "https://admin-api.iverson.example.com"
   ingress:
     className: "azure-application-gateway"
     annotations: {}

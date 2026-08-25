@@ -231,17 +231,19 @@ For the admin-operator login, this happens through `Iverson.AdminUI` (the
 admin dashboard), which initiates the `iverson-oidc-default` Application's
 Authorization Code flow; Authentik handles the login UI itself.
 
-> **kind prerequisite:** the browser needs to resolve **two** hostnames to
-> the ingress controller's IP — `iverson.local` (the admin UI and API) and
+> **kind prerequisite:** the browser needs to resolve **three** hostnames to
+> the ingress controller's IP — `iverson.local` (the admin UI),
+> `admin-api.iverson.local` (the API's dedicated host, which the admin UI's
+> own browser-side fetch calls target directly over CORS), and
 > `authentik.iverson.local` (Authentik's own login pages, which the browser
-> is full-page-redirected to and back from during the flow above). Add both
-> to `/etc/hosts`, e.g.:
+> is full-page-redirected to and back from during the flow above). Add all
+> three to `/etc/hosts`, e.g.:
 > ```
-> <ingress-controller-ip>  iverson.local authentik.iverson.local
+> <ingress-controller-ip>  iverson.local admin-api.iverson.local authentik.iverson.local
 > ```
-> Missing the second entry fails silently from the UI's perspective — the
-> redirect to Authentik just can't resolve, with no error surfaced anywhere
-> in this repo's own logs.
+> Missing the `authentik.iverson.local` entry fails silently from the UI's
+> perspective — the redirect to Authentik just can't resolve, with no error
+> surfaced anywhere in this repo's own logs.
 
 **For automated/scripted testing of a human-equivalent login** (used by the
 Part 4 acting-user smoke test, and adaptable for any other scripted

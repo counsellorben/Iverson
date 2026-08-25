@@ -84,6 +84,9 @@ api:
     annotations: {}
     host: "iverson.local"
     tlsSecretName: ""
+  # admin-api.iverson.local relies on the api subchart's own nginx/no-TLS default —
+  # same reasoning as values.yaml, no override needed here.
+  adminConsoleOrigin: "http://iverson.local"
 
 worker:
   replicas: 1
@@ -127,7 +130,7 @@ adminUi:
     requests: { cpu: "50m", memory: "64Mi" }
     limits: { cpu: "100m", memory: "128Mi" }
   oidcAuthority: "http://authentik.iverson.local/application/o/iverson-api/"
-  apiBaseUrl: "http://iverson.local"
+  apiBaseUrl: "http://admin-api.iverson.local"
   ingress:
     className: "nginx"
     annotations: {}

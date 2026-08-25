@@ -86,6 +86,27 @@ builder.Logging.AddOpenTelemetry(o =>
 builder.Services.AddOpenApi();
 builder.Services.AddGrpc(options => options.Interceptors.Add<ActingUserInterceptor>());
 
+// ── CORS (admin console) ────────────────────────────────────────────────────────
+// The admin console is served from the shared iverson.local-style hostname while this
+// API answers on the dedicated admin-api hostname (Task 4) — the browser's fetch calls
+// to /health, /admin/*, and /v1/traces are cross-origin, so they need an explicit CORS
+// policy or the preflight OPTIONS (and the real request behind it) fails closed.
+// AllowAnyOrigin is never acceptable: with a bearer token in play, it would let any page
+// on the internet drive these endpoints from a visitor's browser. AllowCredentials is
+// deliberately NOT set — this API authenticates via a bearer token in the Authorization
+// header, not a cookie, so credentialed CORS buys nothing here.
+const string AdminConsoleCorsPolicy = "AdminConsole";
+var adminConsoleOrigin = cfg["AdminConsole:Origin"];
+if (!string.IsNullOrEmpty(adminConsoleOrigin))
+{
+    builder.Services.AddCors(options => options.AddPolicy(AdminConsoleCorsPolicy, policy => policy
+        .WithOrigins(adminConsoleOrigin)
+        .WithHeaders("Authorization", "Content-Type")
+        .AllowAnyMethod()));
+}
+// If adminConsoleOrigin is unset, no CORS policy is registered at all — cross-origin
+// requests fail closed rather than silently falling back to a permissive policy.
+
 builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
     .AddJwtBearer(options =>
     {
@@ -279,6 +300,12 @@ if (app.Environment.IsDevelopment())
     app.MapOpenApi();
 
 app.UseHttpsRedirection();
+
+// Must run before UseAuthentication: a cross-origin preflight OPTIONS carries no
+// Authorization header, so if it reached the FallbackPolicy's RequireAuthenticatedUser
+// first, every preflight would be rejected before CORS ever got to answer it.
+if (!string.IsNullOrEmpty(adminConsoleOrigin))
+    app.UseCors(AdminConsoleCorsPolicy);
 
 app.UseAuthentication();
 app.UseAuthorization();

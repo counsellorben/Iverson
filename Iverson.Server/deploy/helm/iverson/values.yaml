@@ -135,6 +135,18 @@ api:
     annotations: {}
     host: "iverson.local"
     tlsSecretName: ""   # set per-environment; empty disables the tls: block (kind only — see values-local.yaml)
+  # admin-api.<global.ingressHost>, the console's dedicated JSON/CORS-reachable host (Task
+  # 4) — no override needed here or in values-local.yaml: the api subchart's own default
+  # (nginx/no-TLS) is correct for both. Cloud overlays override className/annotations/
+  # tlsSecretName the same way api.ingress above does.
+  adminApiIngress: {}
+  # The exact scheme+host the browser loads the console from — fed to the API as
+  # AdminConsole__Origin for CORS. Left empty here (the api subchart's own default)
+  # rather than "http://iverson.local": this file is the base every overlay merges,
+  # including values-laptop.yaml (adminUi.enabled: false, no console to grant CORS
+  # to) — a non-empty default here would leak a CORS grant onto that profile. Every
+  # overlay that actually runs a console (values-local/-aws/-azure/-gcp) sets its own.
+  adminConsoleOrigin: ""
 
 worker:
   enabled: true
@@ -187,7 +199,7 @@ adminUi:
     requests: { cpu: "100m", memory: "128Mi" }
     limits: { cpu: "250m", memory: "256Mi" }
   oidcAuthority: "http://authentik.iverson.local/application/o/iverson-api/"
-  apiBaseUrl: "http://iverson.local"
+  apiBaseUrl: "http://admin-api.iverson.local"
   ingress:
     className: ""
     annotations: {}

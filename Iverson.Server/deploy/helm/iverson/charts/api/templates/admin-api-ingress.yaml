@@ -1,0 +1,38 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ .Release.Name }}-admin-api
+  annotations:
+    {{- toYaml .Values.adminApiIngress.annotations | nindent 4 }}
+spec:
+  ingressClassName: {{ .Values.adminApiIngress.className | quote }}
+{{- if .Values.adminApiIngress.tlsSecretName }}
+  tls:
+    - hosts: [{{ printf "admin-api.%s" .Values.global.ingressHost | quote }}]
+      secretName: {{ .Values.adminApiIngress.tlsSecretName | quote }}
+{{- end }}
+  rules:
+    - host: {{ printf "admin-api.%s" .Values.global.ingressHost | quote }}
+      http:
+        paths:
+          - path: /admin
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ .Release.Name }}-api
+                port:
+                  number: 8081
+          - path: /health
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ .Release.Name }}-api
+                port:
+                  number: 8081
+          - path: /v1/traces
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ .Release.Name }}-api
+                port:
+                  number: 8081

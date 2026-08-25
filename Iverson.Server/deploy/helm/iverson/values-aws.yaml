@@ -89,6 +89,20 @@ api:
       alb.ingress.kubernetes.io/listen-ports: '[{"HTTPS":443}, {"HTTP":80}]'
       alb.ingress.kubernetes.io/ssl-redirect: "443"
     host: "iverson.example.com"
+  # admin-api.iverson.example.com — same ALB, same ACM certificate (assumed to cover
+  # every *.iverson.example.com host the way it already does for authentik/adminUi
+  # below), but this backend serves plain HTTP/1.1 JSON, not gRPC — the
+  # backend-protocol-version: GRPC annotation above must NEVER be copied here. Omitting
+  # it leaves ALB's default (HTTP1), which is correct for this Ingress.
+  adminApiIngress:
+    className: "alb"
+    annotations:
+      alb.ingress.kubernetes.io/scheme: internet-facing
+      alb.ingress.kubernetes.io/target-type: ip
+      alb.ingress.kubernetes.io/certificate-arn: "<ACM_CERT_ARN>"
+      alb.ingress.kubernetes.io/listen-ports: '[{"HTTPS":443}, {"HTTP":80}]'
+      alb.ingress.kubernetes.io/ssl-redirect: "443"
+  adminConsoleOrigin: "https://iverson.example.com"
 
 # worker/prometheus/redis/authentik: none of these get a dedicated node pool in
 # modules/cluster-aws (only postgres/kafka/starrocks/qdrant/ollama do — confirmed
@@ -146,7 +160,7 @@ authentik:
 
 adminUi:
   oidcAuthority: "http://authentik.iverson.example.com/application/o/iverson-api/"
-  apiBaseUrl: "https://iverson.example.com"
+  apiBaseUrl: "https://admin-api.iverson.example.com"
   ingress:
     className: "alb"
     annotations:

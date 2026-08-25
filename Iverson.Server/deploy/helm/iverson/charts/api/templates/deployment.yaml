@@ -161,6 +161,10 @@ spec:
             - name: Jaeger__OtlpHttpUrl
               value: "http://{{ .Release.Name }}-jaeger:4318"
             {{- end }}
+            {{- if .Values.adminConsoleOrigin }}
+            - name: AdminConsole__Origin
+              value: {{ .Values.adminConsoleOrigin | quote }}
+            {{- end }}
           resources:
             requests:
               cpu: {{ .Values.resources.requests.cpu | quote }}

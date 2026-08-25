@@ -91,6 +91,15 @@ api:
     # with a real cert-manager-issued Secret name for the real host before
     # applying.
     tlsSecretName: "iverson-api-tls"
+  adminApiIngress:
+    className: "gce"
+    annotations: {}
+    # A NEW Secret, distinct from iverson-api-tls above — its SAN must cover
+    # admin-api.iverson.example.com, a different hostname, or the GCE ingress's TLS
+    # handshake fails on a name mismatch. Replace with a real cert-manager-issued
+    # Secret name for the real host before applying.
+    tlsSecretName: "iverson-admin-api-tls"
+  adminConsoleOrigin: "https://iverson.example.com"
 
 # worker/prometheus/redis/authentik: none of these get a dedicated node pool in
 # modules/cluster-gcp (only postgres/kafka/starrocks/qdrant/ollama do — confirmed
@@ -146,7 +155,7 @@ authentik:
 
 adminUi:
   oidcAuthority: "http://authentik.iverson.example.com/application/o/iverson-api/"
-  apiBaseUrl: "https://iverson.example.com"
+  apiBaseUrl: "https://admin-api.iverson.example.com"
   ingress:
     className: "gce"
     annotations: {}
