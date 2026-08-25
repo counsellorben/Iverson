@@ -63,7 +63,16 @@ The API has no Prometheus client today — `Program.cs` wires only the *exporter
 - a configuration key for the Prometheus base URL,
 - a named `HttpClient` for it,
 - graceful handling of Prometheus being absent, which is a real deployment state:
-  `values-laptop.yaml:16-17` sets `prometheus.enabled: false`.
+  `values-laptop.yaml:16-17` sets `prometheus.enabled: false`,
+- **two NetworkPolicy additions, without which this endpoint cannot connect in any Kubernetes
+  profile.** `templates/networkpolicies.yaml:7-10` declares a namespace-wide default-deny on both
+  Ingress and Egress; `api-egress` (`:38-63`) enumerates postgres, kafka, starrocks, qdrant,
+  ollama, jaeger and authentik but has no Prometheus rule, and no `prometheus-ingress` policy
+  exists at all. Both are needed, guarded by the existing `{{- if .Values.prometheus.enabled }}`
+  used at `:474`: an `api-egress` rule to `podSelector: { app: {{ .Release.Name }}-prometheus }`
+  on TCP 9090, and a `prometheus-ingress` policy allowing from `app: {{ .Release.Name }}-api` on
+  TCP 9090. The reverse direction is already allowed (`:487-490`), which is why scraping works
+  today and the missing direction is easy to overlook.
 
 PromQL uses Prometheus-mangled metric names (dots to underscores, `_total` on counters,
 `_bucket`/`_sum`/`_count` on histograms), not the OTel instrument names.
@@ -170,6 +179,19 @@ acting user's tenant, not a deployment total. The widget labels it as such.
 status. A gRPC call that fails with a non-OK status inside a 200 response does not count.
 The widget is honest as *transport* health; it is not labelled "RPC errors".
 
+**RPC health must exclude probe and scrape traffic.** The `/health` path filter at
+`Program.cs:56-59` is on the **tracing** provider; the metrics provider (`:66-71`) is a bare
+`AddAspNetCoreInstrumentation()`. So kubelet liveness/readiness probes, load-balancer health
+checks and Prometheus's own scrape of `MapPrometheusScrapingEndpoint` (`:275`) are all counted as
+requests, and the unfiltered rate is dominated by them. This design compounds it: the health strip
+polls `/health` every 10s per open tab, feeding the metric shown in the card beside it.
+
+Every RPC-health query is therefore constrained by `http_route`, excluding `/health`,
+`/health/live` and the scraping endpoint's route. The filtering lives in the proxy's PromQL rather
+than on the shared metrics provider, because mirroring the tracing `Filter` onto
+`AddAspNetCoreInstrumentation` would change what the whole deployment exports — not just what this
+page displays — and other consumers may rely on total request volume.
+
 **Embedding latency may conflate two clients.** `AddEmbeddings` and `AddEnrichment`
 (`Iverson.Server/Iverson.Embeddings/ServiceCollectionExtensions.cs:12` and `:29`) each
 register a named `HttpClient`, but HTTP client metrics label by `server.address`, not by the
@@ -274,9 +296,16 @@ design does not change it.
 `scripts/generate_protos.sh` generates into an uncommitted `generated/` directory — but
 nothing consumes it and no token-attaching transport exists.
 
-This design adds: generated client code committed to the repo, and a grpc-web transport
-that attaches the OIDC access token to outbound calls. All three Band A gRPC widgets depend
-on it, as will the already-planned Tenants and Tenant Admin pages.
+This design adds a grpc-web transport that attaches the OIDC access token to outbound calls,
+and wires proto generation into the build rather than committing its output. `generated/` stays
+ignored (`Iverson.AdminUI/.gitignore:3`): `generate` becomes a prerequisite of `build` and
+`test`, `scripts/generate_protos.sh`'s hardcoded `~/sdk/protoc/bin/protoc` is replaced by a
+resolvable path (a protoc devDependency, or a documented `PROTOC` override), and CI gains the
+codegen step. This costs a build dependency and buys a client that cannot drift from the
+`.proto` contract.
+
+All three Band A gRPC widgets depend on this, as will the already-planned Tenants and Tenant
+Admin pages.
 
 ### 4c — Prometheus scrape targets
 
@@ -417,7 +446,7 @@ verification of the `Operator` policy, run afterwards against the running compos
 | A19 | The router's `index` route is the redirect to be replaced | **Holds** — `src/router.tsx`, `{ index: true, element: <Navigate to="/performance" replace /> }` |
 | A20 | MUI is available for layout | **Holds** — `@mui/material` ^9.2.0 |
 | A21 | vitest is configured and runs | **Holds** — `vitest` ^3.2.0, `"test": "vitest run"`, three existing test files |
-| A22 | `config.ts`'s `apiBaseUrl` is the right base for the new endpoints | **Holds** — `src/config.ts` reads `API_BASE_URL`, plumbed via `charts/admin-ui/templates/deployment.yaml:63`, `public/config.js.template`, `docker-entrypoint.sh` |
+| A22 | `config.ts`'s `apiBaseUrl` is the right base for the new endpoints | **Failed** — it is read nowhere in `src/` (one hit: its own declaration at `config.ts:16`); `.env.development:3` points it at `http://localhost:8080`, which `appsettings.json:12-13` binds as `Protocols: Http2` cleartext h2c that browsers will not speak (empirically 400, versus 200 on `:8081`); and the console's only real API call uses a relative same-origin path instead (`src/telemetry.ts:19`, reason at `:43`) |
 | A23 | No data-fetching library is present | **Holds** — `package.json` has none |
 | A24 | The OIDC token is reachable from a plain fetch layer | **Failed** — `AuthProvider.tsx` uses `react-oidc-context`; the token is React-context-only at `auth.user?.access_token`. The hook takes it as an argument |
 | A25 | The four existing pages are stubs, so nothing conflicts | **Holds** — all four return `Coming soon` |
@@ -425,6 +454,9 @@ verification of the `Operator` policy, run afterwards against the running compos
 | A27 | The console's token satisfies the `Operator` policy | **Failed — verified live 2026-08-25.** A token minted with the console's exact scope against its own client carried no `groups`, no `tenant_id`, and an empty `scope` claim; `/admin/dlq` returned **403** (401 with no token). See Design 4d |
 | A28 | An `operators` group exists for users to belong to | **Failed — verified live 2026-08-25.** Live groups are `authentik Admins`, `authentik Read-only`, `iverson-admin-orchestrators`, `iverson-loadtest-bypass`, `tenant-admins`. A correctly-scoped token for a user with real group membership still returned **403**. See Design 4d-2 |
 | A29 | The console does not already depend on the `groups` claim | **Failed** — `Sidebar.tsx:20` and `:25` already gate two nav items on it, so both are invisible to every user today; `AppLayout.tsx:9` reads a never-emitted `email` claim |
+| A30 | The API pod can open a connection to Prometheus | **Failed** — `networkpolicies.yaml:7-10` declares a namespace-wide default-deny on Ingress and Egress; `api-egress` (`:38-63`) has no Prometheus rule; and no `prometheus-ingress` policy exists at all. See Design 1's `/admin/metrics` section |
+| A31 | `http.server.request.duration` measures RPC traffic | **Failed** — the `/health` path filter is on the tracing provider (`Program.cs:56-59`); the metrics provider (`:66-71`) is a bare `AddAspNetCoreInstrumentation()`, so probe and scrape traffic are counted. See Design 2's RPC-health constraint |
+| A32 | Generated proto code can be committed to the repo | **Failed** — `Iverson.AdminUI/.gitignore:3` ignores `generated/`, which is where `scripts/generate_protos.sh` writes. Resolved by generating at build time instead; see Design 4b |
 
 ## Known issues
 
