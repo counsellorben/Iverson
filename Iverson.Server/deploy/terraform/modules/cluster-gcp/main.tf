@@ -65,6 +65,27 @@ resource "google_kms_crypto_key_iam_binding" "gke_secrets" {
   ]
 }
 
+# Persistent disk encryption for the pd.csi.storage.gke.io StorageClasses,
+# reusing the same key ring as gke_secrets above. Rotation period matches
+# gke_secrets.
+resource "google_kms_crypto_key" "data_volumes" {
+  name            = "data-volumes"
+  key_ring        = google_kms_key_ring.gke.id
+  rotation_period = "7776000s" # 90 days
+}
+
+# The Compute Engine service agent is the principal that encrypts persistent
+# disks — a different agent than container-engine-robot above, and a
+# different (brand-new) key, so this binding being authoritative for this
+# role on this key is safe.
+resource "google_kms_crypto_key_iam_binding" "data_volumes" {
+  crypto_key_id = google_kms_crypto_key.data_volumes.id
+  role          = "roles/cloudkms.cryptoKeyEncrypterDecrypter"
+  members = [
+    "serviceAccount:service-${data.google_project.this.number}@compute-system.iam.gserviceaccount.com",
+  ]
+}
+
 # Dedicated node service account, in place of the broad-permission default
 # Compute Engine SA — one shared account for all pools is sufficient since
 # this project doesn't need per-pool identity separation.

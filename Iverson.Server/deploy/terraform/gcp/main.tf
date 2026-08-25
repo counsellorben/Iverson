@@ -65,7 +65,10 @@ module "operators" {
   cluster_name = module.cluster.cluster_name
   storage_class_config = {
     provisioner = "pd.csi.storage.gke.io"
-    parameters  = { type = "pd-ssd" }
+    parameters = {
+      type                      = "pd-ssd"
+      "disk-encryption-kms-key" = module.cluster.data_volumes_key_id
+    }
   }
 }
 
