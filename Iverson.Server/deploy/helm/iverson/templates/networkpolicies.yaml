@@ -18,15 +18,22 @@ spec:
   policyTypes: ["Ingress", "Egress"]
 ---
 # api is reachable from outside the namespace two ways: through ingress-nginx
-# (local/laptop, where it runs as an in-cluster namespace) or directly from the
-# cloud load balancer's pod-IP targets (AWS/Azure/GCP have no ingress-nginx
-# namespace at all — ALB/App Gateway/GCE ingress connect from inside the cluster
-# CIDR instead). `.Values.networkPolicy.clusterCidrs` supplies that CIDR per
-# profile (guarded near the top of this file: an empty list would otherwise
-# render an ingress rule that matches every source, not zero). Port 8081 also
-# admits the kubelet, which connects the same way (no pod/namespace identity of
-# its own) for readiness/liveness probes, and Prometheus, which scrapes
-# /metrics from the dedicated Http1 health port rather than from 8080.
+# (local/laptop, where it runs as an in-cluster namespace) or directly from
+# whatever IP ranges `.Values.networkPolicy.clusterCidrs` lists for the profile
+# (AWS/Azure/GCP have no ingress-nginx namespace at all — the cloud load
+# balancer connects from inside those ranges instead; guarded near the top of
+# this file, since an empty list would otherwise render an ingress rule that
+# matches every source, not zero). This is NOT a tight four-consumer allowlist
+# on every profile: on AWS (VPC CNI) and Azure (`network_plugin: azure`), pod
+# IPs are drawn from the VPC/VNet itself, so the `ipBlock` entries there admit
+# every pod in every namespace and every VM in that VPC/VNet to api:8080 and
+# api:8081 — not just the load balancer and kubelet. That is still far
+# narrower than the `from: []` it replaces, and is the accepted design; see
+# each profile's values-*.yaml for what its clusterCidrs entries actually
+# cover. Port 8081 also admits the kubelet, which connects the same way (no
+# pod/namespace identity of its own) for readiness/liveness probes, and
+# Prometheus, which scrapes /metrics from the dedicated Http1 health port
+# rather than from 8080.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -534,6 +541,13 @@ spec:
         - podSelector: { matchLabels: { app: {{ .Release.Name }}-api } }
                # api's own query path into Prometheus's HTTP API (the api-egress rule's
                # counterpart) — for the admin console landing page's live status.
+        {{- range .Values.networkPolicy.clusterCidrs }}
+        - ipBlock: { cidr: {{ . }} }
+               # kubelet readiness probe (charts/prometheus/templates/deployment.yaml's
+               # /-/ready on :9090) — same no-pod/namespace-identity reasoning as the
+               # api-ingress kubelet peers above, scoped the same way via clusterCidrs
+               # instead of an unrestricted `from: []`.
+        {{- end }}
       ports: [{ protocol: TCP, port: 9090 }]
 {{- end }}
 ---

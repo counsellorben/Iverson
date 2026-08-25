@@ -10,8 +10,11 @@
 # measured ~2.0; metrics-server ~0.1. Total ~3.55 of 4.0 (~89%). Margin is thin —
 # roughly 450m. Re-measure with `kubectl top` after deploying.
 #
-# kind's default pod/service CIDR range (this profile also runs on kind) — see
-# values.yaml's networkPolicy comment for why every profile must set this itself.
+# 172.18.0.0/16 is kind's Docker bridge network (this profile also runs on
+# kind) — the *node* IP range the kubelet probes api from, not kind's pod CIDR
+# (10.244.0.0/16) or service CIDR (10.96.0.0/12); pod IPs come from Calico's
+# own pool (deploy/kind/setup.sh installs it), not this range. See values.yaml's
+# networkPolicy comment for why every profile must set this itself.
 networkPolicy:
   clusterCidrs: ["172.18.0.0/16"]
 
