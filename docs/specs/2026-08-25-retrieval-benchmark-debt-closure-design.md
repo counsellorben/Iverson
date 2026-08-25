@@ -116,8 +116,11 @@ reads the wrong doc id, rank and score with no error anywhere — while `qrels.t
 tab-separated, survives intact, leaving run file and qrels to disagree silently rather than both
 failing.
 
-The converter therefore asserts that no emitted `_id` contains whitespace, failing with a non-zero
-exit and a count. If it ever fires, that is known before eight sweep cycles are spent on it.
+The converter therefore asserts that **none of the ids it emits into a whitespace-delimited file —
+`query_id`, `nugget_id`, `corpus_id` — contains whitespace**, failing with a non-zero exit and a count.
+All three are `qrels.tsv` columns, and TREC qrels readers split on whitespace rather than strictly on
+tabs, so the same column shift applies to each. If it ever fires, that is known before eight sweep
+cycles are spent on it.
 
 ### 2. C# consequences of normalisation
 
@@ -211,6 +214,7 @@ a design turns on "the external service produces X", a mock that produces X is n
 | V16 | Prior spec structure — line 92 false sentence, A1/A10/A21 at 161/170/181, Known issues 184, §7 sweep procedure at 135 | Read directly |
 | V17 | Python stdlib-only convention exists and is deliberate | `mint_acting_user_token.py:87` — "No third-party dependency (pyotp isn't guaranteed to be installed on every ...)" |
 | V18 | Registration validates `OwnerField` against declared scalars regardless of roles | `SchemaRegistrationOrchestrator.cs:82-84` — `var ownerField = descriptor.Authorization?.OwnerField;` then `ValidateFieldReference(descriptor, ownerField, "owner_field")`; test at `SchemaRegistrationOrchestratorTests.cs:48`; `SchemaRegistrar.cs:47` rethrows |
+| V19 | Prior spec §5 `Scoring is external` spans lines 120–126; lines 123–125 carry the `ir_measures` / FreshStack-package statement §3's third bullet amends | Read directly |
 
 ## Known issues / accepted as out of scope
 
