@@ -38,10 +38,11 @@ A converter normalises the dataset into the BEIR-shaped JSONL the harness alread
 --out-dir <corpus-path>                          writes into <out-dir>/freshstack/
 ```
 
-Loads `freshstack/corpus-oct-2024` and `freshstack/queries-oct-2024` at the given topic
-(`load_dataset(repo, topic, split="test")` — the config is the **second positional** argument; there is
-no `subset=` parameter, and an unknown keyword falls through to `**config_kwargs` without selecting the
-topic) and writes three files:
+Loads `freshstack/corpus-oct-2024` from its **`train`** split and `freshstack/queries-oct-2024` from
+its **`test`** split, at the given topic (`load_dataset(repo, topic, split=split)` — the config is the
+**second positional** argument; there is no `subset=` parameter, and an unknown keyword falls through
+to `**config_kwargs` without selecting the topic. The split differs between the two repos, so it is
+passed alongside the topic rather than fixed once for both) and writes three files:
 
 | File | Shape | Derivation |
 |---|---|---|
@@ -94,6 +95,10 @@ guarantees differ**.
   unresolvable non-relevant id is dropped and counted, and the converter prints the total it dropped.
   Aborting on these would let a legitimate corpus block the λ measurement outright.
 
+**An excluded document is not a join break.** §1.5 omits corpus ids containing whitespace; a judgment
+referencing one must be tested against that exclusion set and dropped *before* the missing-id test
+above, or excluding those documents trips the very hard-fail this section exists to raise.
+
 A `qrels.tsv` referencing documents that were never ingested scores zero relevance and exits cleanly —
 the same silent-success failure family that has already cost this branch three defects (`4330667`,
 `5f25c35`, `cc674fa`).
@@ -116,11 +121,17 @@ reads the wrong doc id, rank and score with no error anywhere — while `qrels.t
 tab-separated, survives intact, leaving run file and qrels to disagree silently rather than both
 failing.
 
-The converter therefore asserts that **none of the ids it emits into a whitespace-delimited file —
-`query_id`, `nugget_id`, `corpus_id` — contains whitespace**, failing with a non-zero exit and a count.
-All three are `qrels.tsv` columns, and TREC qrels readers split on whitespace rather than strictly on
-tabs, so the same column shift applies to each. If it ever fires, that is known before eight sweep
-cycles are spent on it.
+All three ids reach `qrels.tsv`, and TREC qrels readers split on whitespace rather than strictly on
+tabs, so the column shift applies to each. The columns are nevertheless handled differently, because
+measurement shows only one of them actually carries the problem and because the remedies differ:
+
+- **`query_id` and `nugget_id` — hard-fail.** Both measured clean (0 violations across godot's 99
+  queries and 325 nuggets). An offending value here cannot simply be dropped: excluding a query or a
+  nugget silently changes what is being measured. The converter exits non-zero with a count.
+- **`corpus_id` — exclude and report.** 24 of godot's 25,482 corpus ids contain spaces, because those
+  ids are GitHub paths and real paths have spaces in them. Aborting would make the smallest topic —
+  the one §4 recommends — unconvertible, so those documents are omitted from `corpus.jsonl`, the
+  judgments referencing them are dropped, and both counts are printed.
 
 ### 2. C# consequences of normalisation
 
@@ -215,6 +226,8 @@ a design turns on "the external service produces X", a mock that produces X is n
 | V17 | Python stdlib-only convention exists and is deliberate | `mint_acting_user_token.py:87` — "No third-party dependency (pyotp isn't guaranteed to be installed on every ...)" |
 | V18 | Registration validates `OwnerField` against declared scalars regardless of roles | `SchemaRegistrationOrchestrator.cs:82-84` — `var ownerField = descriptor.Authorization?.OwnerField;` then `ValidateFieldReference(descriptor, ownerField, "owner_field")`; test at `SchemaRegistrationOrchestratorTests.cs:48`; `SchemaRegistrar.cs:47` rethrows |
 | V19 | Prior spec §5 `Scoring is external` spans lines 120–126; lines 123–125 carry the `ir_measures` / FreshStack-package statement §3's third bullet amends | Read directly |
+| V20 | The two repos expose **different splits**: `corpus-oct-2024` has `train`, `queries-oct-2024` has `test` | Executed against `datasets` 5.0.1: `get_dataset_split_names("freshstack/corpus-oct-2024", "godot")` → `['train']`; the same call on the queries repo → `['test']` |
+| V21 | `row["nuggets"]` is a list of dicts, so §1.2's per-nugget iteration is correct | Executed against `datasets` 5.0.1: feature type `List({'_id':…, 'non_relevant_corpus_ids':…, 'relevant_corpus_ids':…, 'text':…})`; `type(row["nuggets"])` is `list` |
 
 ## Known issues / accepted as out of scope
 
@@ -229,6 +242,10 @@ a design turns on "the external service produces X", a mock that produces X is n
 - **The nugget → iteration-field convention moves to Python** and is no longer covered by the C# test
   suite. Accepted: the failure that matters is upstream schema drift, which the C# suite could never
   have caught.
+- **The converted corpus is 24 documents short of upstream's** (§1.5), and the judgments referencing
+  them are dropped with them. Immaterial to comparing the sweep's eight configurations against each
+  other, since the omission is identical across all eight; material to any comparison against
+  FreshStack's published numbers.
 
 ## Not in this spec
 
