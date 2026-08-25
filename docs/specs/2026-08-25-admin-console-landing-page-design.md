@@ -27,10 +27,8 @@ so that the first screen after sign-in answers "is this deployment healthy, and 
 - Nine widgets across three source bands (see Design 2).
 - Two new read-only gRPC methods on `Iverson.Api` (see Design 1).
 - The prerequisite work those widgets depend on and which does not exist today
-  (see Design 4): grpc-web enablement for two existing services, a console gRPC client
-  foundation, a browser-reachable route to the API's HTTP/1.1 port, Prometheus
-  scrape-target changes, and the identity fixes without which every Operator-gated
-  surface returns 403.
+  (see Design 4): Prometheus scrape-target changes and the identity fixes without which every
+  Operator-gated surface returns 403.
 - The security remediation in Design 5. Eleven findings are folded into this design: nine from
   the two critical-security-review rounds of 2026-08-25, plus two adjacent defects this design's
   own verification surfaced. Four gate widget work — one in Design 1's transport allowlist, one
@@ -52,123 +50,149 @@ so that the first screen after sign-in answers "is this deployment healthy, and 
 
 ## Design 1 — Server surface
 
-Two new read-only RPCs on `Iverson.Api`, on a new `AdminConsoleService` defined in
-`Iverson.Clients/Common/Proto/admin_console.proto`. Neither existing service is a natural home:
-`ObjectSearch` is data queries, `ObjectMapping` is schema, and the two tenant services are
-tenancy.
+Five read-only JSON endpoints on `Iverson.Api`, under `/admin/console/`. They are ordinary
+minimal-API endpoints, not gRPC.
 
-**These are gRPC, not minimal-API REST, because REST cannot reach the browser here.**
-`charts/admin-ui/templates/ingress.yaml:21` matches `/admin(/|$)(.*)` with
-`rewrite-target: /$2` and `charts/api/templates/ingress.yaml:18` matches `/`, both on the same
-host — so any endpoint under `/admin/` is rewritten and served by the console's own static file
-server, never reaching the API. gRPC paths (`/iverson.AdminConsoleService/<Method>`) do not
-collide with that pattern. Going gRPC also puts all five data widgets on the one transport
-Design 4b already builds, needs no CORS, and removes the JSON-versus-proto split.
+**REST reaches the browser here because the console reaches the API on its own hostname.** An
+earlier revision of this design made these gRPC methods, on the reasoning that
+`charts/admin-ui/templates/ingress.yaml:21` matches `/admin(/|$)(.*)` and
+`charts/api/templates/ingress.yaml:18` matches `/` on the same host, so any `/admin/*` endpoint is
+rewritten to the console's own static file server and never reaches the API. That is true, and it
+is a property of putting both on one hostname. Once the API has its own host the collision does
+not exist, and the reason to introduce a proto contract no other client consumes goes with it.
+
+Three of the five endpoints project data the existing gRPC services already produce; two are new
+surface. **None of them changes the proto contract the five language SDK clients share**, and no
+`.proto` file is added.
 
 ### Transport
 
-grpc-web from a browser is HTTP/1.1 over cleartext. `Iverson.Api/appsettings.json:12-13` binds
-`http://*:8080` to `Protocols: Http2` and `:16-17` binds `http://*:8081` to `Protocols: Http1`,
-and both Ingress backends currently target **8080**. A browser therefore reaches the API only
-over TLS, where ALPN can negotiate HTTP/2 — and the default and local profiles are cleartext
-(`values.yaml:22` and `values-local.yaml` both use `http://iverson.local`), where an HTTP/1.1
-request to 8080 is rejected. Confirmed directly: HTTP/1.1 to `:8080/health` returns 400, the
-same request to `:8081` returns 200.
+The console is served at `<ingressHost>/admin`; the API answers on a **dedicated hostname**,
+`admin-api.<ingressHost>`. This mirrors `charts/authentik/templates/ingress.yaml:21`, which
+already does `printf "authentik.%s" .Values.global.ingressHost` — a second hostname is an
+established, working pattern in this chart, not new machinery. The api subchart can see the
+global value; `charts/api/templates/deployment.yaml:137` already uses
+`.Values.global.ingressHost`.
 
-That 400 is protocol negotiation, not authorization, and it is not a security boundary. A client
-that speaks h2c reaches every route on 8080, because no endpoint in `Program.cs` is bound to a
-listener (`RequireHost` appears nowhere in the file) — `GET /metrics` over h2c prior-knowledge on
-`:8080` returns 200 with the full metrics body. The port split determines which wire protocol a
-caller must speak, nothing more. See Design 5f.
+The name is `admin-api`, not `api`, because the bare host already *is* the API: it serves native
+gRPC on 8080 to the five SDK clients, and that Ingress is left completely alone.
 
-This design adds a browser-reachable route to the HTTP/1.1 port under a **dedicated path
-prefix**, `/admin-api`. The console calls `/admin-api/iverson.<Service>/<Method>`; **the API
-strips the prefix itself** and the ingress does no rewriting. Bare `/iverson.<Service>/<Method>` is left alone on
-8080, so the language SDK clients' native gRPC is unaffected. The prefix, not the service path,
-is what distinguishes the two consumers — and it is the only axis that can, since both speak the
-same gRPC paths.
+**A new Ingress object** on `admin-api.<ingressHost>`, backed by the api service on port
+**8081**, with three `pathType: Prefix` paths and **no rewrite annotation of any kind**:
 
-`/admin-api` is deliberately not `/admin`. The console's own rule at
-`charts/admin-ui/templates/ingress.yaml:21` is `/admin(/|$)(.*)`, whose `(/|$)` guard requires a
-slash or end-of-string after `admin`, so `/admin-api/...` does not match it and no precedence
-question arises between the two rules.
+| Path | Serves |
+|---|---|
+| `/admin` | the console's JSON endpoints under `/admin/console/`, and the existing Operator-gated `/admin/dlq` and `/admin/reconcile` |
+| `/health` | the health strip's source |
+| `/v1/traces` | the OTLP export (see Design 5g) |
 
-The route serves all five gRPC widgets and the health strip, not only these two RPCs:
+`Prefix` matches element-wise on `/`-split segments, so `/admin` matches `/admin/console/tenants`
+and `/admin/dlq` but not `/administration`. Plain prefix routing is expressible natively on
+ingress-nginx **and** as an ALB path pattern, so one rule behaves identically on both
+controllers — no regex, no `rewrite-target`, no path-stripping middleware, and no ordering
+contest with the api Ingress, which is on a different host.
 
-- **prefix handling in the API, not the ingress.** A middleware inspects `Request.Path`; when it
-  begins with `/admin-api`, the remainder is matched against an **allowlist** and, only on a match,
-  becomes the new `Request.Path`. Anything else under the prefix returns 404 without reaching an
-  endpoint. The allowlist is exactly three shapes:
+**This is also what keeps the anonymous surface off the edge.** `/metrics` and the four
+`/probe/*` endpoints sit under none of the three prefixes, so they are simply not routed to this
+host. The allowlist is expressed as ordinary ingress paths rather than as a regex or a filter.
+`/metrics` cannot be authenticated instead — Prometheus scrapes it anonymously (Design 4c) — so
+keeping it unrouted is the control.
 
-  ```
-  ^/iverson\.[A-Za-z0-9_.]+/[A-Za-z0-9_]+$   # gRPC-Web RPCs
-  /health                                     # the health strip's source
-  /v1/traces                                  # the OTLP export; see Design 5g
-  ```
+**CORS is required and is new.** The console at `<ingressHost>` calling
+`admin-api.<ingressHost>` is cross-origin. The API adds `AddCors`/`UseCors` with the console
+origin supplied by configuration — explicitly **not** `AllowAnyOrigin` — allowing the
+`Authorization` and `Content-Type` request headers so the preflight succeeds. `AllowCredentials`
+is **not** set: authentication is a bearer token in a header, not a cookie, so there is no
+`SameSite` or credentialed-CORS dimension. `UseCors` is placed before `UseAuthentication`, so
+preflight `OPTIONS` requests are answered before the fallback policy can reject them.
 
-  **This must sit before routing, and routing must be made explicit to guarantee that.**
-  `Program.cs` never calls `app.UseRouting()` (`:280-284` goes straight from `UseHttpsRedirection`
-  to `UseGrpcWeb`), and minimal hosting then auto-inserts routing at the *head* of the pipeline —
-  so a middleware registered with `app.Use(...)` would run after the endpoint had already been
-  matched against the unstripped path, and the strip would silently do nothing. The fix is to call
-  `app.UseRouting()` explicitly, immediately after this middleware.
+The console is already a multi-origin application — it calls `authentik.<ingressHost>` for OIDC
+discovery and the token exchange on every login — so this is a third origin in an existing
+pattern, not a new architecture.
 
-  Two earlier revisions of this design were wrong here, and the reasons are worth keeping. The
-  first used a single ingress path `/admin-api(/|$)(.*)` with `rewrite-target: /$2` — a
-  **catch-all**, and port 8081 serves the entire application, so it would have published
-  `/metrics` and all four `/probe/*` endpoints, every one `AllowAnonymous`, to the internet on
-  every profile. The second narrowed that to three regex ingress paths, which fixed the catch-all
-  but still depended on `nginx.ingress.kubernetes.io/rewrite-target` — an annotation the AWS Load
-  Balancer Controller does not interpret, and ALB cannot rewrite paths at all
-  (`deploy/terraform/modules/operators/main.tf:113-115` installs that controller;
-  `values-aws.yaml:71` sets `className: "alb"`). Every console RPC would have 404'd on AWS.
+**`config.apiBaseUrl` becomes the base for every API call.** It is read nowhere in `src/` today;
+it now carries the `admin-api` origin per environment, and the console composes absolute URLs
+from it. This removes the relative-path arrangement entirely: no `server.proxy` entry in
+`vite.config.ts`, and development exercises the same cross-origin CORS path as production rather
+than a proxy that conceals it.
 
-  Doing the strip in the API fixes both at once and expresses the allowlist **once, in one
-  language**, instead of twice in two ingress dialects.
+Two consequential changes come with that:
 
-  `/health/live` is deliberately absent: the health strip reads the per-store `checks` object,
-  which only `/health` returns, and the kubelet reaches `/health/live` in-cluster without the
-  ingress. `/metrics` is absent and must stay so — it cannot simply be authenticated instead,
-  because Prometheus scrapes it anonymously (Design 4c); keeping it off the edge is the control.
+- `Iverson.AdminUI/.env.development` sets `VITE_API_BASE_URL=http://localhost:8080`, which is the
+  h2c-only gRPC port. It moves to `8081`.
+- **`docker-compose.yml` does not publish 8081** (`docker compose port iverson-api 8081` returns
+  nothing). It must, or local development cannot reach the API at all.
 
-- **a new Ingress object** — not the existing api Ingress — with a single `pathType: Prefix` path
-  `/admin-api` backed by the api service on port **8081**, and **no rewrite annotation of any
-  kind**. A plain prefix route is expressible natively on both controllers, so this is one rule
-  that behaves identically on ingress-nginx and on ALB.
-  It must be a separate object because `charts/api/templates/ingress.yaml:4-6`
-  renders `.Values.ingress.annotations` onto the Ingress's metadata, so `values-aws.yaml:75`'s
-  `alb.ingress.kubernetes.io/backend-protocol-version: GRPC` applies to the whole object; an 8081
-  path there would place grpc-web, which speaks HTTP/1.1, under a GRPC protocol declaration.
+Local and kind profiles need the new hostname resolvable.
+`docs/user-management-and-security.md:231-235` already documents adding
+`<ingress-controller-ip>  iverson.local authentik.iverson.local` to `/etc/hosts`;
+`admin-api.iverson.local` joins that line. On the cloud profiles the ACM certificate must carry
+the new name as a SAN alongside the existing host.
 
-  On AWS give both Ingresses the same `alb.ingress.kubernetes.io/group.name` so they keep sharing
-  one ALB while carrying different backend-protocol annotations, **and set
-  `alb.ingress.kubernetes.io/group.order` explicitly with this Ingress ahead of the api Ingress.**
-  Within an IngressGroup the controller orders rules by that annotation and falls back to the
-  lexical order of the Ingress's namespace/name; the api Ingress's `/` `pathType: Prefix` path
-  matches every request, so without explicit ordering it shadows this one entirely.
-- a `server.proxy` entry in `vite.config.ts` mapping `/admin-api` to `http://localhost:8081`,
-  **passing the prefix through unchanged** — the API strips it, so the dev proxy must not. `vite.config.ts` declares no proxy
-  today, which is also why `src/telemetry.ts:19`'s relative `/v1/traces` export does not reach the
-  API in development.
+### The endpoint set
 
-The console addresses the API by a **relative, same-origin base** of `/admin-api` — the
-same-origin pattern `src/telemetry.ts` already uses — not through `config.apiBaseUrl`, which is
-read nowhere in `src/` and whose development value points at the h2c port.
-`@improbable-eng/grpc-web` takes that base as its `host` option and appends
-`/<package>.<Service>/<Method>` itself.
+| Endpoint | Authorization | Backed by |
+|---|---|---|
+| `GET /admin/console/tenants` | `Operator` | `ITenantRepository.ListAsync()` (`Program.cs:214`) |
+| `GET /admin/console/schema` | authenticated; evaluator consulted with the caller's own principal | the extracted schema-catalog reader |
+| `GET /admin/console/data-volume` | authenticated; evaluator consulted with the caller's own principal | the aggregate path `ObjectSearchGrpcService.Aggregate` uses |
+| `GET /admin/console/metrics` | `Operator` | a new Prometheus `HttpClient` |
+| `GET /admin/console/qdrant` | `Operator` | `IVectorSchemaManager.GetCollectionInfoAsync` |
 
-### `GetMetrics` — Prometheus proxy
+The health strip uses the existing anonymous `GET /health` and adds no endpoint.
+
+Injecting these services into minimal-API endpoints follows a pattern already in the file:
+`Program.cs:348` injects `IVectorSchemaManager` into `/probe/vector`.
+
+**The two authenticated rows are deliberate and must not be normalised to `Operator`.**
+`ObjectMappingGrpcService.GetSchema` carries no `[Authorize]` — `:61-62` records that it is
+discovery, reachable by any authenticated caller, filtering per-row and per-field internally —
+and `ObjectSearchGrpcService` is mapped at `Program.cs:443` with no `RequireAuthorization` for
+the same reason. Gating these two on `Operator` because their three siblings are would silently
+change who can see what.
+
+**These two endpoints pass `HttpContext.User` to the evaluator as the acting user.** This matters
+because of how the evaluator treats an absent one: `RowFieldAuthorizationEvaluator.cs:14-15`
+returns a not-denied, unrestricted decision when `actingUser` is null. The acting user is
+populated only by `ActingUserInterceptor`, which is registered on the gRPC pipeline
+(`Program.cs:87`) and returns early when no `x-acting-user-authorization` header is present. The
+console sends no such header, so without this the filtering would be inert and every
+authenticated caller would receive the complete catalog and every type's row count.
+
+Note what this does and does not change: `RowFieldAuthorizationEvaluator.cs:32-33` also returns
+an unrestricted decision when the principal carries no `tenant_id` claim, and an operator has
+none. So for an operator the result is the same full view either way; the difference appears only
+for a tenant-scoped human, which is exactly where it should.
+
+**One extraction is required.** `GetSchema`'s two-pass algorithm — pass one drops types under
+row-level denial or an empty authorized-field set, pass two emits relations and drops those whose
+related type did not survive — moves into a service taking `ClaimsPrincipal?` as a parameter. The
+gRPC method passes `_actingUserAccessor.ActingUser`; the endpoint passes `HttpContext.User`. Each
+caller supplies its own identity source, so the extraction depends on no shared mutable accessor
+and no interceptor. This is the one genuine cost of serving JSON from endpoints rather than
+annotating the proto, and it is the only place where logic would otherwise be duplicated —
+`ListTenants` is already a three-line delegation to the repository.
+
+Responses are plain JSON projections of what each widget renders: the schema endpoint returns
+object types with field counts and relation edges, not full descriptors.
+
+**The console gains no client dependency and loses four.** `@improbable-eng/grpc-web` (last
+published 2022-04-05), `google-protobuf`, `long`, and the `ts-proto` devDependency are removed
+from `Iverson.AdminUI/package.json`. There is no generated code to delete — `src/` has none — so
+this is subtraction only. The console calls the API with `fetch`.
+
+### `GET /admin/console/metrics` — Prometheus proxy
 
 Queries Prometheus server-side and returns a fixed, named result set. It does **not** accept
 a PromQL parameter from the browser: a pass-through would turn an authenticated console
-RPC into an open query interface over every metric the deployment emits, and the page
-needs seven numbers.
+endpoint into an open query interface over every metric the deployment emits, and the page needs
+nine named values across four widgets.
 
 The response carries: the three reconciliation gauges, the two consumer counters, RPC
 request rate / error percentage / p95, and Ollama client p95.
 
 The API has no Prometheus client today — `Program.cs` wires only the *exporter*
-(`:71` `AddPrometheusExporter`, `:275` `MapPrometheusScrapingEndpoint`). This RPC adds:
+(`:71` `AddPrometheusExporter`, `:275` `MapPrometheusScrapingEndpoint`). This endpoint adds:
 
 - a configuration key for the Prometheus base URL,
 - a named `HttpClient` for it,
@@ -182,7 +206,8 @@ The API has no Prometheus client today — `Program.cs` wires only the *exporter
   used at `:474`: an `api-egress` rule to `podSelector: { app: {{ .Release.Name }}-prometheus }`
   on TCP 9090, and a `prometheus-ingress` policy allowing from `app: {{ .Release.Name }}-api` on
   TCP 9090. The reverse direction is already allowed (`:487-490`), which is why scraping works
-  today and the missing direction is easy to overlook.
+  today and the missing direction is easy to overlook. These are unaffected by the transport
+  change: they concern api→prometheus egress inside the cluster.
 
 PromQL uses Prometheus-mangled metric names, not the OTel instrument names: dots to underscores,
 `_total` on counters, `_bucket`/`_sum`/`_count` on histograms, **and the instrument's unit appended
@@ -199,7 +224,7 @@ The Ollama filter is built server-side from `EmbeddingServiceOptions.BaseUrl` ra
 hard-coded, because HTTP client metrics label by `server.address` and the host is
 configuration-driven.
 
-### `GetQdrantStats` — collection stats
+### `GET /admin/console/qdrant` — collection stats
 
 Returns points count and indexed-vectors count per collection.
 
@@ -218,17 +243,19 @@ operation and is gated accordingly.
 
 ### Authorization
 
-`AdminConsoleService` is mapped with `.RequireAuthorization("Operator").EnableGrpcWeb()`,
-matching how `TenantLifecycleGrpcService` is mapped at `Program.cs:444`.
+Per-endpoint, as tabled above. Three endpoints carry `Operator`; two are authenticated-only with
+the evaluator consulted, matching the gRPC services they project.
 
 There is no generic "admin" scope. `Program.cs:141-156` declares exactly three policies —
-`Operator`, `SchemaAdmin`, `TenantAdmin` — over a `FallbackPolicy` that requires an
-authenticated user (`:142-145`). `Operator` is the policy the existing operational endpoints
-use (`/reconcile` at `:373`, `/admin/dlq` at `:380`, `/admin/dlq/replay` at `:392`), and it is
-the correct peer for these two.
+`Operator`, `SchemaAdmin`, `TenantAdmin` — over a `FallbackPolicy` requiring an authenticated
+user (`:142-145`). `Operator` is the policy the existing operational endpoints use (`/reconcile`
+at `:373`, `/admin/dlq` at `:380`, `/admin/dlq/replay` at `:392`), so the three new
+Operator-gated endpoints sit alongside them under the same `/admin` prefix and the same policy.
+`RequireAuthorization()` with no policy name yields the fallback, which is what the two
+authenticated-only endpoints use.
 
-This is a deliberate departure from `/health` and `/probe/*`, which are `AllowAnonymous`
-because a load balancer calls them.
+This is a deliberate departure from `/health` and `/probe/*`, which are `AllowAnonymous` because
+a load balancer calls them — and which Design 4e narrows.
 
 ### Explicitly not included
 
@@ -245,9 +272,9 @@ Nine widgets in three bands. The landing page is a new route at `/`, replacing
 | Widget | Source | Shows |
 |---|---|---|
 | Store health strip | `GET /health` | One tile per store: postgres, starrocks, qdrant, kafka |
-| Tenant roster | `TenantLifecycleGrpcService.ListTenants` | Tenant count and list with state |
-| Schema catalog | `ObjectMappingGrpcService.GetSchema` | Object types, field counts, relation edges |
-| Data volume per type | `ObjectSearchGrpcService.Aggregate`, one call per type | Row count per object type |
+| Tenant roster | `GET /admin/console/tenants` | Tenant count and list with state |
+| Schema catalog | `GET /admin/console/schema` | Object types, field counts, relation edges |
+| Data volume per type | `GET /admin/console/data-volume` | Row count per object type |
 
 ### Band B — OTel via the metrics proxy
 
@@ -262,7 +289,7 @@ Nine widgets in three bands. The landing page is a new route at `/`, replacing
 
 | Widget | Source | Shows |
 |---|---|---|
-| Qdrant collection stats | `AdminConsoleService.GetQdrantStats` | Points, indexed vectors per collection |
+| Qdrant collection stats | `GET /admin/console/qdrant` | Points, indexed vectors per collection |
 
 ### Constraints each widget carries
 
@@ -388,58 +415,18 @@ responses, including its error and stale states.
 
 ## Design 4 — Prerequisite work
 
-Verification found four foundations this design assumed were present that do not exist (4a-4d).
+Verification found foundations this design assumed were present that do not exist (4c, 4d).
 They are in scope because without them the specified widgets are impossible. 4d is the one
 that blocks everything else: until it lands, every Operator-gated surface returns 403.
+
+Two earlier prerequisites, 4a (grpc-web enablement on two services) and 4b (a console gRPC client
+foundation with build-time proto codegen), existed only to serve a gRPC transport. Moving the
+console to JSON on its own hostname removed both, along with the browser-reachability problem
+they were solving.
 
 4e and 4f are security findings that gate widget work for the same reason — this design either
 causes them or depends on them. The seven findings that do **not** gate widget work are in
 Design 5.
-
-### 4a — grpc-web enablement for two services
-
-`Program.cs:438-445` maps six gRPC services, but only two carry `.EnableGrpcWeb()`:
-
-```
-app.MapGrpcService<ObjectMappingGrpcService>();                                          // no grpc-web
-app.MapGrpcService<ObjectPersistenceGrpcService>();
-app.MapGrpcService<ObjectRetrievalGrpcService>();
-app.MapGrpcService<ObjectSearchGrpcService>();                                           // no grpc-web
-app.MapGrpcService<TenantLifecycleGrpcService>().RequireAuthorization("Operator").EnableGrpcWeb();
-app.MapGrpcService<TenantAdminGrpcService>().RequireAuthorization("TenantAdmin").EnableGrpcWeb();
-```
-
-`app.UseGrpcWeb()` is already in the pipeline at `:284`, so the middleware is present; the
-two services simply are not opted in. The schema-catalog and data-volume widgets are
-unreachable from a browser until `ObjectMappingGrpcService` and `ObjectSearchGrpcService`
-gain `.EnableGrpcWeb()`.
-
-Neither service carries an explicit `.RequireAuthorization(...)`, so both fall under the
-`FallbackPolicy` requiring an authenticated user. That is the correct level for them and this
-design does not change it.
-
-### 4b — Console gRPC client foundation
-
-`Iverson.AdminUI/src/` contains no generated proto code and no gRPC client wrapper.
-`package.json` carries `@improbable-eng/grpc-web`, `google-protobuf` and `ts-proto`, and
-`scripts/generate_protos.sh` generates into an uncommitted `generated/` directory — but
-nothing consumes it and no token-attaching transport exists.
-
-This design adds a grpc-web transport that attaches the OIDC access token to outbound calls,
-and wires proto generation into the build rather than committing its output. `generated/` stays
-ignored (`Iverson.AdminUI/.gitignore:3`): `generate` becomes a prerequisite of `build` and
-`test`, `scripts/generate_protos.sh`'s hardcoded `~/sdk/protoc/bin/protoc` is replaced by a
-resolvable path (a protoc devDependency, or a documented `PROTOC` override). This costs a build
-dependency and buys a client that cannot drift from the `.proto` contract.
-
-CI enforcement is **not** in scope, because there is nothing to enforce it in:
-`.github/workflows/` contains only `codeql.yml` and `deploy-validate.yml`, neither of which
-installs Node, runs `npm`, or references `Iverson.AdminUI`. The console has no build, lint,
-type-check or test job in CI today. Making the build regenerate is the drift guarantee this
-section claims; adding an AdminUI CI job is separate, currently-unscoped work.
-
-All three Band A gRPC widgets depend on this, as will the already-planned Tenants and Tenant
-Admin pages.
 
 ### 4c — Prometheus scrape targets
 
@@ -599,7 +586,7 @@ An **empty `from` matches every source**, not the kubelet its comment describes.
 the whole application, every pod in the cluster can currently reach every REST endpoint on the api
 directly by pod IP. That is the finding.
 
-It is also, today, the only thing that would let the new `/admin-api` Ingress work at all — **this
+It is also, today, the only thing that would let the new `admin-api` Ingress work at all — **this
 design's transport currently depends on the defect.** Closing the hole without replacing it breaks
 the landing page. Both halves land together.
 
@@ -607,7 +594,7 @@ Port 8081 has **four** legitimate consumers, and a correct rule set names each:
 
 | Consumer | Selector | Why |
 |---|---|---|
-| ingress-nginx | `namespaceSelector{kubernetes.io/metadata.name: ingress-nginx}` | serves the new `/admin-api` Ingress on the nginx profiles |
+| ingress-nginx | `namespaceSelector{kubernetes.io/metadata.name: ingress-nginx}` | serves the new `admin-api` Ingress on the nginx profiles |
 | Prometheus | `podSelector{app: <release>-prometheus}` | scrapes `api:8081` and `worker:8081` (Design 4c) — omitting it silently empties Band B |
 | kubelet | `ipBlock` over the node CIDR | `readinessProbe` and `livenessProbe` both target 8081 |
 | **AWS ALB** | `ipBlock` over the VPC CIDR | `values-aws.yaml:74` sets `target-type: ip`, so the ALB registers pod IPs and traffic arrives from VPC ENIs — **no `namespaceSelector` can express this**, because there is no ingress-nginx namespace on AWS |
@@ -709,8 +696,11 @@ the same check that makes `config.js` safe makes the header safe.
 Three directives are dictated by what this design introduces, which is why authoring it before the
 widgets land means writing it twice:
 
-- `connect-src 'self' <authentik-origin>` — `'self'` covers the same-origin `/admin-api` gRPC-Web
-  calls and the `/v1/traces` export; the Authentik origin is needed for the token endpoint
+- `connect-src 'self' <admin-api-origin> <authentik-origin>` — **`'self'` is not sufficient.**
+  The API now answers on `admin-api.<ingressHost>`, a different origin from the console, so every
+  widget fetch and the `/v1/traces` export are cross-origin and must be named explicitly; the
+  Authentik origin is needed for OIDC discovery and the token exchange. Both origins are
+  interpolated at container start from the same environment the entrypoint already reads
 - `style-src 'self' 'unsafe-inline'` — MUI/Emotion injects styles at runtime
 - `frame-ancestors 'none'` — an authenticated admin console should not be framable
 
@@ -772,8 +762,8 @@ api Ingress's `/` `pathType: Prefix` rule to port 8080, where a browser's HTTP/1
 with 400 — the same failure this design already documents for development, where no Vite proxy
 exists. The console's trace export therefore does not work in either environment.
 
-**Fix:** point `OTLP_TRACES_URL` at `/admin-api/v1/traces`, which Design 1's allowlist admits and
-the API's prefix middleware strips to `/v1/traces` on 8081. No server change is needed: the endpoint already
+**Fix:** compose the export URL from `config.apiBaseUrl` — `${apiBaseUrl}/v1/traces` — which
+Design 1's `admin-api` host serves through its `/v1/traces` Prefix path. No server change is needed: the endpoint already
 exists at `Program.cs:452-460` with `RequireAuthorization()`, and `telemetry.ts:29-38` already
 attaches the bearer token through the exporter's `headers` factory.
 
@@ -795,9 +785,16 @@ from the runtime image (A43), and namespace-selector NetworkPolicy rules grant n
 confined to port 8081 (A51), and the console's trace export works in neither environment (A50).
 
 A52-A54 were added when critical-design-review round 7 found that the transport's rewrite had been
-verified on ingress-nginx and assumed on ALB. All three hold. A38 and A45 are marked superseded
-rather than failed: both were verified correctly for the controller they were checked against, and
-the design moved off the mechanism they describe.
+verified on ingress-nginx and assumed on ALB. All three hold.
+
+A55-A64 were enumerated cold against the transport replacement — a dedicated `admin-api` hostname
+and JSON endpoints in place of a path prefix and gRPC-Web — and then checked: six held, four
+failed. Two of the failures shaped the design rather than a detail. The acting-user mechanism does
+not reach minimal-API endpoints and the evaluator grants full access without one (A58, A59), so the
+two authenticated endpoints pass `HttpContext.User` explicitly. And `google.api.http` annotations
+would have broken codegen for four SDK clients (A64), which is why this design uses endpoints
+rather than JSON transcoding. A38, A45 and A52 are marked moot: the mechanisms they describe are no
+longer part of the design.
 
 | # | Assumption | Disposition |
 |---|---|---|
@@ -807,11 +804,11 @@ the design moved off the mechanism they describe.
 | A4 | `/health`'s body reports per-store status for the four stores | **Holds, with a wrinkle** — `Program.cs:318-323` returns `postgres`, `starrocks`, `qdrant`, `kafka`; `starrocks` is the literal string `"disabled"` when the engagement store is off |
 | A5 | The Qdrant client can read collection info | **Holds** — `IntelligenceCollectionManager.cs:22` (`ListCollectionsAsync`) and `:60` (`GetCollectionInfoAsync`); `Qdrant.Client` 1.18.1. Not on `IVectorSchemaManager` (`IVectorRoles.cs:23-27`), so a read interface is new |
 | A6 | Qdrant collections are per-tenant, needing a scoping decision | **Holds** — `IntelligenceTenantScope.cs:11` resolves per-tenant names; `:18` mints per-collection scoped keys |
-| A7 | `TenantLifecycle.ListTenants` exists and is reachable from the console | **Holds** — `tenant_lifecycle.proto:9`; mapped with `.RequireAuthorization("Operator").EnableGrpcWeb()` at `Program.cs:444` |
+| A7 | `TenantLifecycle.ListTenants` exists and is reachable from the console | **Holds** — `tenant_lifecycle.proto:9`, mapped with `.RequireAuthorization("Operator")` at `Program.cs:444`. The console now reaches it through `GET /admin/console/tenants`, which projects `ITenantRepository.ListAsync()` under the same `Operator` policy |
 | A8 | `ObjectMapping.GetSchema` returns types, fields, relations | **Holds** — `object_mapping.proto:15`; `GetSchemaResponse` carries `repeated SchemaType`, each with `fields` and `relations` |
 | A9 | `Aggregate` can produce a row count for one object type | **Failed twice** — `ObjectSearchGrpcService.cs:490-494` throws `InvalidArgument` on zero aggregations, so a `COUNT` spec is mandatory; and `AggregateResponse.Total` is never assigned (`:514`), so the proto's `// total matching docs` field is always zero. Also `:501` returns an empty response on denial rather than an error |
-| A10 | grpc-web is wired in the console with a token-attaching interceptor | **Failed** — `Iverson.AdminUI/src/` has no generated proto code and no client wrapper; `scripts/generate_protos.sh` writes to an uncommitted `generated/`. See Design 4b |
-| A11 | A grpc-web path exists for the services the page calls | **Failed** — `app.UseGrpcWeb()` is present (`Program.cs:284`), but only `TenantLifecycle` and `TenantAdmin` call `.EnableGrpcWeb()` (`:444-445`). `ObjectMapping` and `ObjectSearch` do not. See Design 4a |
+| A10 | grpc-web is wired in the console with a token-attaching interceptor | **Failed, and now moot** — `Iverson.AdminUI/src/` has no generated proto code and no client wrapper. The design no longer uses grpc-web: the console calls JSON endpoints with `fetch`, attaching the token from `useAuth()` per Design 3's hook. See A63 |
+| A11 | A grpc-web path exists for the services the page calls | **Failed, and now moot** — only `TenantLifecycle` and `TenantAdmin` call `.EnableGrpcWeb()` (`Program.cs:444-445`); `ObjectMapping` and `ObjectSearch` do not. The design no longer needs them to: those two services are projected through JSON endpoints instead, which also avoids widening the browser-reachable surface to every method on both services |
 | A12 | The three reconciliation gauge names are exact | **Holds** — `ReconciliationTelemetry.cs:26`, `:32`, `:38` |
 | A13 | The consumer counters exist and are emitted by a scraped process | **Failed in part** — names correct (`Iverson.Events/Telemetry.cs:14`, `:17`) and the meter is registered on the API's provider (`Program.cs:68`), but all six emitting hosted services run only under `workloadRole == "worker"` (`:254-264`). Helm scrapes the worker; `prometheus.local.yml` does not. See Design 4c |
 | A14 | `http.server.request.duration` is emitted as a histogram | **Holds** — `AddAspNetCoreInstrumentation()` on the metrics provider (`Program.cs:69`), `OpenTelemetry.Instrumentation.AspNetCore` 1.15.2 |
@@ -832,28 +829,38 @@ the design moved off the mechanism they describe.
 | A29 | The console does not already depend on the `groups` claim | **Failed** — `Sidebar.tsx:20` and `:25` already gate two nav items on it, so both are invisible to every user today; `AppLayout.tsx:9` reads a never-emitted `email` claim |
 | A30 | The API pod can open a connection to Prometheus | **Failed** — `networkpolicies.yaml:7-10` declares a namespace-wide default-deny on Ingress and Egress; `api-egress` (`:38-63`) has no Prometheus rule; and no `prometheus-ingress` policy exists at all. See Design 1's `/admin/metrics` section |
 | A31 | `http.server.request.duration` measures RPC traffic | **Failed** — the `/health` path filter is on the tracing provider (`Program.cs:56-59`); the metrics provider (`:66-71`) is a bare `AddAspNetCoreInstrumentation()`, so probe and scrape traffic are counted. See Design 2's RPC-health constraint |
-| A32 | Generated proto code can be committed to the repo | **Failed** — `Iverson.AdminUI/.gitignore:3` ignores `generated/`, which is where `scripts/generate_protos.sh` writes. Resolved by generating at build time instead; see Design 4b |
+| A32 | Generated proto code can be committed to the repo | **Failed, and now moot** — `Iverson.AdminUI/.gitignore:3` ignores `generated/`. The design generates no proto code for the console at all; `scripts/generate_protos.sh` is left unused by this work |
 | A33 | The `groups` claim reaches `auth.user?.profile` | **Holds** — `oidc-client-ts` populates `user.profile` from the ID token, not the access token. A real token response for `dev-iverson-human-oidc-client-id` with scope `openid groups tenant_id offline_access` carries an `id_token` whose claims include `groups` and `tenant_id`. Design 4d's `Sidebar.tsx:20` repair claim therefore holds |
 | A34 | An `iverson-worker` scrape target exists in docker-compose | **Holds** — `docker-compose.yml:438` defines the service with `WORKLOAD_ROLE=worker` at `:454`, and `MapPrometheusScrapingEndpoint` (`Program.cs:275`) sits outside the `if (workloadRole == "api")` gate at `:438`, so the worker serves `/metrics` on 8081 |
 | A35 | Adding a proto to `Common/Proto` does not break the other language clients | **Holds** — `Iverson.Client.Contracts.csproj:17` globs `../../Common/Proto/*.proto` with `GrpcServices="Both"`, so the server base class generates without a csproj edit; `Iverson.AdminUI/scripts/generate_protos.sh` and `Iverson.Clients/TypeScript/scripts/generate_protos.sh` also glob. Python (`Iverson.Clients/Python/scripts/generate_protos.sh`) and Go both list the four `object_*` protos explicitly, so neither is touched. Nothing in `Iverson.ClientConformance` enumerates the service set |
 | A36 | `http_route` is a real label on the server-duration metric | **Holds** — present on every `http_server_request_duration_seconds_*` sample on the live `/metrics` endpoint, alongside `http_request_method`, `http_response_status_code` and `network_protocol_version`. The Prometheus scrape endpoint appears as `http_route="/metrics"` and gRPC calls as `http_route="/iverson.<Service>/<Method>"`, so Design 2's exclusion filter is expressible as written |
-| A37 | `/admin-api` cannot match the console's own ingress rule | **Holds** — `charts/admin-ui/templates/ingress.yaml:21` is `/admin(/|$)(.*)`, whose `(/|$)` guard requires `/` or end-of-string after a literal `admin`; `/admin-api/...` supplies `-` at that position and `^/admin` cannot match elsewhere. No precedence contest between the two rules |
-| A38 | An ingress rewrite can strip the prefix so the backend sees the real gRPC path | **Superseded — verified true for ingress-nginx only, and the design no longer relies on it.** The mechanism works as verified under ingress-nginx, but the AWS Load Balancer Controller does not interpret `nginx.ingress.kubernetes.io/*` annotations and ALB cannot rewrite paths at all, so an ingress rewrite is not a portable way to strip the prefix. Design 1 now strips it in the API instead and the ingress carries no rewrite annotation. See A52 |
+| A37 | `/admin-api` cannot match the console's own ingress rule | **Moot** — there is no `/admin-api` path; the API is on its own hostname, so no rule on the console's host can contest it. Original finding retained: | **Holds** — `charts/admin-ui/templates/ingress.yaml:21` is `/admin(/|$)(.*)`, whose `(/|$)` guard requires `/` or end-of-string after a literal `admin`; `/admin-api/...` supplies `-` at that position and `^/admin` cannot match elsewhere. No precedence contest between the two rules |
+| A38 | An ingress rewrite can strip the prefix so the backend sees the real gRPC path | **Moot** — the design no longer routes the console through a path prefix on the shared host, so nothing strips anything. The console reaches the API on `admin-api.<ingressHost>` and the ingress rewrites nothing. Retained because it records why the prefix arrangement was abandoned: the mechanism works on ingress-nginx and has no equivalent on ALB |
 | A39 | Nothing in the deployment calls `/probe/*` anonymously | **Holds** — `grep -rn "/probe/"` across the repo returns only the four definitions in `Program.cs:336-359` and one descriptive mention in `Iverson.Server/docs/security/tma.md:117`. No kubelet probe, compose healthcheck, test or script depends on them. Gating them behind `Operator` (4e) breaks nothing |
 | A40 | Prometheus scrapes `/metrics` on 8081 without authentication | **Holds** — `charts/prometheus/templates/configmap.yaml:10-15` defines `iverson-api` → `<release>-api:8081` and `iverson-worker` → `<release>-worker:8081`, no auth stanza. This is why 4e leaves `/metrics` anonymous and Design 1's allowlist excludes it instead |
 | A41 | The kubelet's readiness probe period bounds `/health`'s cache window | **Holds** — `charts/api/templates/deployment.yaml:173-180` targets `/health` on 8081 and declares **no** `periodSeconds`, inheriting Kubernetes' 10-second default. 4e's 5-second window sits under it |
 | A42 | An in-process cache is available without new infrastructure | **Holds** — `Program.cs:217` already calls `AddMemoryCache()`, and `Tenancy/TenantStatusCache.cs:8` is an existing `IMemoryCache` consumer to pattern 4e after |
 | A43 | `jq` is available in the runtime image, so `config.js` can be emitted as JSON | **Failed** — running `nginxinc/nginx-unprivileged:1.27-alpine` reports `jq` **absent**, `envsubst` present. The JSON-emission fix would have crash-looped the container at startup. Resolved by allowlist validation of the three values instead; see Design 5d |
 | A44 | NetworkPolicy on AWS can admit ingress traffic by namespace selector | **Failed** — `values-aws.yaml:74` sets `target-type: ip`, so the ALB registers pod IPs and traffic originates from VPC ENIs, not from any namespace; `deploy/terraform/modules/cluster-aws/main.tf:475` sets `enableNetworkPolicy = "true"` so policies **are** enforced; and the operators module installs `aws-load-balancer-controller`, so no `ingress-nginx` namespace exists. Selector-based rules grant nothing on AWS. Resolved with an `ipBlock` list; see Design 4f |
-| A45 | Multiple regex paths on one Ingress can each be rewritten correctly | **Superseded, with the underlying fact intact.** `charts/admin-ui/templates/ingress.yaml:5` does set `rewrite-target` as an Ingress-level annotation shared by every path, so the one-capture-group constraint was real. It no longer binds: Design 1's ingress is a single `pathType: Prefix` path with no rewrite, and the allowlist moved into the API |
-| A46 | Real gRPC-Web request paths match the allowlist regex | **Holds** — every proto in `Iverson.Clients/Common/Proto/` declares `package iverson`, and the six services are `ObjectPersistenceService`, `ObjectRetrievalService`, `ObjectSearchService`, `ObjectMappingService`, `TenantLifecycleGrpcService`, `TenantAdminGrpcService`. `iverson\.[A-Za-z0-9_.]+/[A-Za-z0-9_]+` matches all of them and the new `AdminConsoleService` |
+| A45 | Multiple regex paths on one Ingress can each be rewritten correctly | **Moot** — the new Ingress carries three `pathType: Prefix` paths and no rewrite annotation, so the shared-annotation constraint this recorded no longer applies to anything in the design |
+| A46 | Real gRPC-Web request paths match the allowlist regex | **Moot** — there is no allowlist regex and no gRPC-Web. Original finding retained: | **Holds** — every proto in `Iverson.Clients/Common/Proto/` declares `package iverson`, and the six services are `ObjectPersistenceService`, `ObjectRetrievalService`, `ObjectSearchService`, `ObjectMappingService`, `TenantLifecycleGrpcService`, `TenantAdminGrpcService`. `iverson\.[A-Za-z0-9_.]+/[A-Za-z0-9_]+` matches all of them and the new `AdminConsoleService` |
 | A47 | `revokeTokensOnSignout` reaches `UserManagerSettings` through `react-oidc-context` | **Holds** — `react-oidc-context.js:139-149` destructures its own props and spreads `...userManagerSettings` into the `UserManager` constructor, so unrecognised settings pass through unchanged |
 | A48 | `onSigninCallback` is a supported `AuthProvider` prop | **Holds** — declared in `react-oidc-context`'s types as `onSigninCallback?: (user: User \| undefined) => Promise<void> \| void`, and invoked at `react-oidc-context.js:209` only when supplied |
 | A49 | `DocumentLoadInstrumentation` allows overwriting span attributes | **Holds** — `instrumentation-document-load/types.d.ts:14-18` declares `applyCustomAttributesOnSpan?: { documentLoad?, documentFetch?, resourceFetch? }`, covering both spans that receive `location.href` |
-| A50 | The console's `/v1/traces` export works in production | **Failed** — `telemetry.ts:19` posts to a relative `/v1/traces`, which resolves against the api Ingress's `/` `Prefix` rule to port 8080, where a browser's HTTP/1.1 POST is rejected with 400. The export works in neither environment. Resolved by routing it through `/admin-api`; see Design 5g |
-| A52 | A path-rewriting middleware can be placed before endpoint routing | **Holds, with a required change** — `Program.cs` never calls `app.UseRouting()` (`:280-284` runs `UseHttpsRedirection`, `UseAuthentication`, `UseAuthorization`, `UseGrpcWeb` and nothing else), so minimal hosting auto-inserts routing at the head of the pipeline. A middleware added with `app.Use(...)` would therefore run *after* the endpoint was matched and the strip would silently do nothing. Design 1 calls `UseRouting()` explicitly, immediately after the middleware |
+| A50 | The console's `/v1/traces` export works in production | **Failed** — `telemetry.ts:19` posts to a relative `/v1/traces`, which resolves against the api Ingress's `/` `Prefix` rule to port 8080, where a browser's HTTP/1.1 POST is rejected with 400. The export works in neither environment. Resolved by composing the URL from `config.apiBaseUrl`; see Design 5g |
+| A52 | A path-rewriting middleware can be placed before endpoint routing | **Moot** — there is no path-rewriting middleware. The finding it recorded is still true of `Program.cs` (routing is auto-inserted at the head of the pipeline because `UseRouting()` is never called explicitly) and is retained for the one place it still bears on this design: `UseCors` must be registered before `UseAuthentication` so preflight `OPTIONS` requests are answered before the fallback policy rejects them |
 | A53 | The AWS VPC CIDR is knowable at chart-authoring time | **Holds** — `deploy/terraform/modules/cluster-aws/variables.tf:16-19` declares `vpc_cidr` with default `10.0.0.0/16`, so `values-aws.yaml` can ship a matching `clusterCidrs` default. It is a variable, not a constant, so the two must be kept in lockstep like `global.ingressHost` and `api.ingress.host` |
 | A54 | NetworkPolicy is actually enforced on the local profile | **Holds** — `deploy/kind/kind-config.yaml:3-9` sets `disableDefaultCNI: true` precisely because kindnet does not enforce NetworkPolicy, so `setup.sh`/`setup.ps1` can install Calico instead. 4f's rules are load-bearing locally, not decorative |
+| A55 | The api subchart can see `global.ingressHost` | **Holds** — `charts/api/templates/deployment.yaml:137` already interpolates `http://authentik.{{ .Values.global.ingressHost }}/...`, so the global value is in scope for this subchart's templates |
+| A56 | A second hostname is an established, resolvable pattern | **Holds** — `charts/authentik/templates/ingress.yaml:21` renders `printf "authentik.%s" .Values.global.ingressHost`, and `docs/user-management-and-security.md:231-235` documents adding `<ingress-controller-ip>  iverson.local authentik.iverson.local` to `/etc/hosts` for kind. `admin-api.<ingressHost>` follows both |
+| A57 | The backing services are injectable into minimal-API endpoints | **Holds** — `ITenantRepository` is registered at `Program.cs:214`, and `Program.cs:348` already injects `IVectorSchemaManager` into the `/probe/vector` minimal-API endpoint. The pattern exists in the same file |
+| A58 | The acting-user identity mechanism reaches minimal-API endpoints | **Failed** — `ActingUserInterceptor` is registered on the gRPC pipeline only (`Program.cs:87`, `AddGrpc(options => options.Interceptors.Add<...>())`), and even on that pipeline it returns early leaving the acting user null when no `x-acting-user-authorization` header is present, which the console never sends. Resolved by having the two authenticated endpoints pass `HttpContext.User` to the evaluator; see Design 1's endpoint set |
+| A59 | The evaluator filters by default when no acting user is supplied | **Failed** — `RowFieldAuthorizationEvaluator.cs:14-15` returns a not-denied, unrestricted decision when `actingUser` is null, and `:32-33` does the same when the principal carries no `tenant_id` claim. So "authenticated plus internal filtering" would have been inert for the console. This is what forced the acting-user decision above, and it means an operator (who has no `tenant_id`) sees the full view either way |
+| A60 | The two projected gRPC services are authenticated-only, not Operator-gated | **Holds** — `ObjectMappingGrpcService.cs:61-62` states GetSchema is discovery with no `[Authorize]`, filtering internally; `Program.cs:443` maps `ObjectSearchGrpcService` with no `RequireAuthorization`. The two JSON endpoints projecting them match that model rather than the Operator model of their three siblings |
+| A61 | Nothing depends on `admin_console.proto` or `AdminConsoleService` | **Holds** — `grep -rn "admin_console\|AdminConsoleService"` across `*.cs`, `*.proto` and `*.ts` returns nothing outside `docs/`. The proto was specified but never created, so dropping it removes no dependency |
+| A62 | Local development can reach the API today | **Failed** — `docker compose port iverson-api 8081` returns nothing, so the REST port is unpublished, and `.env.development` points `VITE_API_BASE_URL` at `8080`, the h2c-only port. Both must change for the console to reach the API locally |
+| A63 | The four gRPC-Web npm dependencies can be removed without breaking anything | **Holds** — `Iverson.AdminUI/src/` contains no generated proto code and no gRPC client, and nothing imports `@improbable-eng/grpc-web`, `google-protobuf` or `long`. Removal is subtraction only |
+| A64 | `google.api.http` annotations could be added to the shared protos instead | **Failed** — each client's protoc invocation carries exactly one include path, `-I"$PROTO_DIR"` (TypeScript, Python, Go and AdminUI generation scripts), and nothing in the repo supplies `google/api/annotations.proto`; unlike `google/protobuf/struct.proto` it is not a bundled well-known type. Annotating a shared proto would break codegen for four clients until all four scripts gained a googleapis include. This is why JSON transcoding was rejected in favour of endpoints |
 | A51 | The `AllowAnonymous` endpoints are reachable only on port 8081 | **Failed** — `RequireHost` appears nowhere in `Program.cs`, so ASP.NET routing serves every endpoint on both listeners. `GET /metrics` over h2c prior-knowledge on `:8080` returns 200 with the full 121,797-byte body, and an anonymous `POST /probe/kafka` on the same port created the `iverson.probe` Kafka topic. The port split is a protocol convention, not a security boundary; see Design 5f |
 
 ## Known issues
@@ -895,9 +902,13 @@ This is not scope this design invents — the already-planned Tenants page hits 
 wall through the same policy on the same service, and its nav item is invisible today for the
 same reason — but it is now a confirmed defect rather than an open question.
 
-**Data volume cannot report authorization denial.** Accepted, not solved — see Design 2. The
-alternative would be changing `Aggregate`'s denial behaviour from empty-response to error,
-which is a contract change affecting all five clients and well outside this page's scope.
+**Data volume can now report authorization denial.** Previously accepted as unsolved, because
+`Aggregate` returns an empty response on denial and distinguishing it would have meant changing
+that contract for all five clients. A server-side endpoint holds the caller's principal and can
+consult `IRowFieldAuthorizationEvaluator` directly, so denial and genuinely-zero are
+distinguishable without touching the proto contract. The same applies to `Aggregate`'s other two
+awkwardnesses — its `InvalidArgument` on a zero-aggregation request and its never-assigned
+`Total` field — which are now handled once server-side rather than worked around in the browser.
 
 **The page has no cross-tenant aggregate view.** Data volume is tenant-scoped by design;
 an operator wanting deployment-wide row counts is not served by this page. No such surface
