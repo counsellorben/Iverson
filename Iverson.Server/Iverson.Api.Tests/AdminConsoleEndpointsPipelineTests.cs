@@ -150,7 +150,9 @@ public class AdminConsoleEndpointsPipelineTests : IClassFixture<AdminConsoleTest
                 AdminConsoleTestWebApplicationFactory.VisibleTypeWithRows);
         body.GetProperty("typeCount").GetInt32().Should().Be(2);
 
-        // The denied fixture is absent, name and all.
+        // The denied fixture is absent, name and all — but its ABSENCE is reported, so an empty
+        // or short catalog can never be read as "that is all there is".
+        body.GetProperty("withheldTypeCount").GetInt32().Should().Be(1);
         body.ToString().Should().NotContain(AdminConsoleTestWebApplicationFactory.DeniedType);
 
         var author = types.Single(t =>
@@ -186,9 +188,16 @@ public class AdminConsoleEndpointsPipelineTests : IClassFixture<AdminConsoleTest
     /// and the evaluator denies every type without one. The endpoint reports an empty catalog —
     /// it does NOT fall back to an unfiltered one, which is what a dropped principal would ALSO
     /// look like, and is why the reader assertions above are the ones that pin the routing.
+    /// <para>
+    /// <b>And it must not report that as a bare zero.</b> An empty <c>types</c> with no other
+    /// signal is byte-identical to a deployment with no registered types, which would make the
+    /// widget render "0 object types" where the truth is "you may see none of the 3 that exist".
+    /// The assertion on <c>withheldTypeCount</c> is what separates those two states; without it
+    /// this test would pin the false zero as correct.
+    /// </para>
     /// </summary>
     [Fact]
-    public async Task Operator_Schema_ReturnsEmptyCatalogBecauseTheOperatorHasNoTenantClaim()
+    public async Task Operator_Schema_ReportsEveryTypeWithheldRatherThanAnEmptyCatalog()
     {
         var response = await GetAsync(Schema, OperatorToken());
         response.StatusCode.Should().Be(HttpStatusCode.OK);
@@ -196,6 +205,7 @@ public class AdminConsoleEndpointsPipelineTests : IClassFixture<AdminConsoleTest
         var body = await BodyAsync(response);
         body.GetProperty("typeCount").GetInt32().Should().Be(0);
         body.GetProperty("types").GetArrayLength().Should().Be(0);
+        body.GetProperty("withheldTypeCount").GetInt32().Should().Be(3);
     }
 
     // ── /admin/console/data-volume ─────────────────────────────────────────────

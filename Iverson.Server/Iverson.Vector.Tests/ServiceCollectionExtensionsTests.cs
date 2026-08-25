@@ -2,6 +2,8 @@ using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 using FluentAssertions;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 using Qdrant.Client;
 using Xunit;
 
@@ -19,6 +21,32 @@ public class ServiceCollectionExtensionsTests
         var client = provider.GetRequiredService<QdrantClient>();
 
         client.Should().NotBeNull();
+    }
+
+    // GREEN-WHEN-DELETED, which is exactly what this test exists to stop. The admin console's
+    // /admin/console/qdrant endpoint resolves IVectorCollectionReader from DI, and its pipeline
+    // tests substitute a fake with RemoveAll<IVectorCollectionReader>() + AddSingleton —
+    // RemoveAll on an unregistered service is a NO-OP, so deleting the registration in
+    // AddQdrant leaves every Iverson.Api.Tests and Iverson.Vector.Tests case green and fails only
+    // as a DI-resolution 500 against a real deployment. Resolving it here from a real built
+    // provider is the only assertion in either suite that goes red for that deletion.
+    //
+    // The reader is resolved, not merely looked up in the descriptor list, so the api-key closure
+    // AddQdrant captures has to actually be constructible too.
+    [Fact]
+    public void AddQdrant_RegistersResolvableVectorCollectionReader()
+    {
+        var services = new ServiceCollection();
+        // The reader takes an ILogger<T>. Supplied directly rather than via AddLogging(), which
+        // lives in Microsoft.Extensions.Logging — this project references only the Abstractions.
+        services.AddSingleton<ILogger<IntelligenceCollectionReader>>(
+            NullLogger<IntelligenceCollectionReader>.Instance);
+        services.AddQdrant("localhost", 6334, apiKey: "test-api-key");
+
+        using var provider = services.BuildServiceProvider();
+        var reader = provider.GetRequiredService<IVectorCollectionReader>();
+
+        reader.Should().BeOfType<IntelligenceCollectionReader>();
     }
 
     [Fact]

@@ -56,6 +56,14 @@ public static class AdminConsoleEndpoints
         // RequireAuthorization() with no policy name applies the DefaultPolicy
         // (RequireAuthenticatedUser). Stated explicitly rather than relying on the
         // FallbackPolicy, so these two stay authenticated even if that fallback ever changes.
+        //
+        // NOT PINNED BY A TEST, deliberately, so nobody assumes otherwise. The anonymous-401
+        // assertions in AdminConsoleEndpointsPipelineTests are satisfied by the FallbackPolicy
+        // alone, which means deleting either RequireAuthorization() call below leaves the whole
+        // suite green. That is not a security gap — the fallback denies by default, so the
+        // endpoints stay closed either way — and pinning it would take endpoint-metadata
+        // introspection tests that assert on registration rather than behaviour. These two calls
+        // are defence-in-depth against a future change to that fallback, and nothing more.
         app.MapGet($"{RoutePrefix}/schema", GetSchema)
             .WithName("AdminConsoleSchema")
             .RequireAuthorization();
@@ -86,9 +94,26 @@ public static class AdminConsoleEndpoints
     /// count and its relation edges. Field <em>names</em> are deliberately not returned — the
     /// widget renders a count and a graph, and the full per-field descriptor already has a
     /// surface (<c>GetSchema</c>) with its own client contract.
+    /// <para>
+    /// <b>An empty catalog is reported as withheld, not as zero</b> — the same rule
+    /// <see cref="GetDataVolumeAsync"/> follows. Without
+    /// <see cref="SchemaCatalogResponse.WithheldTypeCount"/> an operator (denied every type today,
+    /// having no <c>tenant_id</c> claim) would receive a body byte-identical to a deployment with
+    /// no registered types at all, and the widget would render "0 object types" when the truth is
+    /// "you may see none of the N that exist". Disclosing the count of withheld types re-discloses
+    /// nothing: <c>/data-volume</c> already reports the same figure to the same authenticated
+    /// audience, and neither endpoint names them.
+    /// </para>
     /// </summary>
-    public static IResult GetSchema(HttpContext http, SchemaCatalogReader reader)
+    public static IResult GetSchema(HttpContext http, SchemaRegistry registry, SchemaCatalogReader reader)
     {
+        // Snapshot the registry size BEFORE reading the catalog. registry.All is a live
+        // ConcurrentDictionary that SchemaRefreshWorker can grow or shrink between the two reads;
+        // taking the count first means a type registered mid-request can only ever make the
+        // subtraction below smaller (down to the clamp), never invent a withheld type that was
+        // never registered.
+        var registeredTypeCount = registry.All.Count;
+
         // HttpContext.User, never null and never elided — see the class note.
         var catalog = reader.ReadCatalog(http.User);
 
@@ -103,7 +128,10 @@ public static class AdminConsoleEndpoints
                     .ToList()))
             .ToList();
 
-        return Results.Ok(new SchemaCatalogResponse(types.Count, types));
+        // Math.Max, not a bare subtraction: the two reads above are not atomic, so a type
+        // registered between them would otherwise yield a negative count.
+        return Results.Ok(new SchemaCatalogResponse(
+            types.Count, types, Math.Max(0, registeredTypeCount - types.Count)));
     }
 
     /// <summary>
@@ -235,7 +263,26 @@ public sealed record SchemaRelationEdge(string PropertyName, string Kind, string
 public sealed record SchemaTypeSummary(
     string Name, string Description, int FieldCount, IReadOnlyList<SchemaRelationEdge> Relations);
 
-public sealed record SchemaCatalogResponse(int TypeCount, IReadOnlyList<SchemaTypeSummary> Types);
+/// <summary>
+/// The catalog projection, plus the count of registered types this caller did not get.
+/// <para>
+/// <b><see cref="WithheldTypeCount"/> is "withheld", not "denied", and the name is the contract.</b>
+/// <c>SchemaCatalogReader</c> drops a type on two grounds — row-level denial, and an empty
+/// authorized field set after <c>FieldPermission</c> filtering (<c>SchemaCatalogReader.cs</c>, the
+/// <c>fields.Count == 0</c> guard) — and this figure merges them, because it is derived from the
+/// registry size rather than from the reader's own reasons. Both grounds genuinely mean "withheld
+/// from you", so the merge is honest; calling it <c>deniedTypeCount</c> would not be, since it
+/// would claim a precision the derivation does not have. Contrast
+/// <see cref="DataVolumeResponse.DeniedTypeCount"/>, which is incremented from an actual
+/// <c>TypeRowCountStatus.Denied</c> and therefore may make that stronger claim.
+/// </para>
+/// <para>
+/// Withheld types are counted, never named — the same rule <see cref="DataVolumeResponse"/>
+/// follows, and the whole point of the reader's filtering.
+/// </para>
+/// </summary>
+public sealed record SchemaCatalogResponse(
+    int TypeCount, IReadOnlyList<SchemaTypeSummary> Types, int WithheldTypeCount);
 
 /// <summary>
 /// One type's row count. <c>Status</c> is always <c>"counted"</c> as this endpoint is written —
