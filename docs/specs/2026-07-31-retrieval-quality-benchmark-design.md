@@ -88,8 +88,10 @@ attaches authorization only to types present in its dictionary, and a type regis
 denied on read — both vector RPCs return an empty stream rather than an error, so the failure looks
 like "retrieval found nothing" (A21). `BenchmarkDocument` therefore needs an entry in
 `authorizationByTypeName` granting `CanReadAll` to `iverson-loadtest-bypass`, and the scenario queries
-as the already-provisioned `iverson-loadtest-bypass-user`. That identity's bypass role sets
-`ownershipRequired` false, so no `OwnerId` property is needed. It must also carry a `tenant_id` claim,
+as the already-provisioned `iverson-loadtest-bypass-user`. Schema registration validates `OwnerField`
+against the type's declared scalars regardless of role (`SchemaRegistrationOrchestrator.cs:82-84`, via
+`ValidateFieldReference`) (A21a), so `BenchmarkDocument` requires an `OwnerId` property — which the
+shipped code has. It must also carry a `tenant_id` claim,
 which the load test's existing tenant provisioning supplies.
 
 Ingestion goes through `EntityCoordinator`, **not** `DirectSeeder`. `DirectSeeder` writes straight to
@@ -119,11 +121,14 @@ compare run files built from different candidate-pool sizes.
 
 ### 5. Scoring is external
 
-The harness computes no metrics. It writes run files; scoring happens with the reference
-implementations the benchmarks themselves use — `ir_measures` supports `alpha_nDCG`, reading subtopic
-ids from the qrels iteration field per TREC convention (A3), and FreshStack ships its own evaluation
-package. Hand-rolling α-nDCG was rejected: the α redundancy discount and the ideal-ranking
-denominator are easy to get subtly wrong, and a wrong metric invalidates every conclusion silently.
+The harness computes no metrics. It writes run files; scoring targets `ir_measures` — which supports
+`alpha_nDCG`, reading subtopic ids from the qrels iteration field per TREC convention (A3) — fed by a
+converter-derived TREC qrels file, rather than FreshStack's own evaluation package. This is a recorded
+decision, not a silent default: FreshStack's package takes three objects (`qrels_nuggets`,
+`qrels_query`, `query_to_nuggets`) that the harness does not produce, so building a TREC qrels file for
+`ir_measures` is the route taken instead. Hand-rolling α-nDCG was rejected: the α redundancy discount
+and the ideal-ranking denominator are easy to get subtly wrong, and a wrong metric invalidates every
+conclusion silently.
 
 ### 6. Harness location
 
@@ -158,7 +163,7 @@ Verified against the codebase at `main@d3c8b3c` before this spec was written.
 
 | # | Assumption | Evidence |
 |---|---|---|
-| A1 | FreshStack is publicly available with nugget-level judgments, but its smallest unit is ~25K documents and ~50 questions per topic | Published dataset: five topics (langchain, yolo, laravel, angular, godot) on HuggingFace, each ≥25K documents from 4–10 GitHub repos, ≥50 questions, 3–4 nuggets per question; reports α@10, C@20, R@50 |
+| A1 | FreshStack is publicly available with nugget-level judgments, but its smallest topic (godot) has ~25K documents and 99 questions — not the ~50 questions originally assumed | Measured from the published HuggingFace dataset: angular 117,288 docs / 129 queries, laravel 52,351 docs / 184 queries, langchain 49,514 docs / 203 queries, yolo 27,207 docs / 57 queries, godot 25,482 docs / 99 queries; reports α@10, C@20, R@50. Nuggets are 1–7 per question, not a flat 3–4. FreshStack ships no qrels file — judgments are nested inside each query's row, not a separate TREC-style qrels file. The corpus carries no `title` field |
 | A2 | BEIR SciFact and NFCorpus are small enough for the fusion half | ~5.2K and ~3.6K documents, ~300 and ~323 test queries — the small end of BEIR's 18 datasets, which are now a subset of MTEB. **Stated from published dataset documentation, not fetched and counted in this session**; confirm the exact figures when downloading, since the scale decision rests on them |
 | A3 | `ir_measures` computes α-nDCG from TREC-format inputs | `ir_measures` supports `alpha_nDCG`, taking subtopic ids from the qrels *iteration* field per TREC convention; `trec_eval`/`ndeval` are the underlying references |
 | A4 | Dual `[IversonEmbedding]` + `[IversonChunk]` annotation is what makes the centroid signal live | `ObjectSearchGrpcService.cs:204` — `centroidPossible = schema.ChunkFields.Any(c => …PropertyName == vectorDesc.PropertyName)` |
@@ -167,7 +172,7 @@ Verified against the codebase at `main@d3c8b3c` before this spec was written.
 | A7 | The entity can declare its tenant field declaratively | `Iverson.Client.Attributes/IversonTenantAttribute.cs:9` |
 | A8 | Ingestion must use the client write path, not `DirectSeeder` | `Seeding/DirectSeeder.cs` opens Npgsql, MySqlConnector and a Kafka producer directly and targets 400K articles — a bulk path that bypasses the API |
 | A9 | `Iverson.LoadTest` can register a schema and write as an authorized acting user | `Program.cs:118-126` wires `AddIversonClient` with a tenant-admin token provider; `Auth/ActingUserTokenProvider.cs` and `Auth/AuthentikFlowExecutorClient.cs` exist |
-| A10 | **NOT VERIFIED — deliberately.** Whether ~59K documents can be ingested on the laptop deployment in tolerable time | Cannot be established by reading code; it depends on CPU Ollama embedding throughput under real chunking. Listed here rather than silently omitted, and carried as the first entry under "Known issues" |
+| A10 | **NOT VERIFIED — still open, now quantified.** Whether ~59K documents can be ingested on the laptop deployment in tolerable time | Cannot be established by reading code; it depends on CPU Ollama embedding throughput under real chunking. The 2026-08-24 live run ingested 400 documents and drove a 4-core box to a load average of ~20, hard enough that Kafka's `FIND_COORDINATOR` lookup began timing out — reproduced at the broker, not a client artifact (`8db2bf4`, `docs/runbooks/integration-test-flake-signatures.md`). The smallest viable FreshStack topic, godot, is 25,482 documents / 99 queries — roughly 64× that volume. Listed here rather than silently omitted, and carried as the first entry under "Known issues" |
 | A11 | `SearchSimilarAsync` returns the deserialized entity plus score | `EntityCoordinator.cs:204-220` — yields `new SearchResult<T>(entity, response.Score)` |
 | A12 | `SearchChunksAsync` returns `ParentKey` and `Score` | `EntityCoordinator.cs:222-234` yields the raw `ChunkSearchResponse`, whose fields are `parent_key`, `chunk_text`, `score`, `trace_id` |
 | A13 | `top_k` has no upper clamp | `ObjectSearchGrpcService.cs:198` and `:347` — `(ulong)Math.Max(1, (int)request.TopK)`, lower bound only |
@@ -179,6 +184,7 @@ Verified against the codebase at `main@d3c8b3c` before this spec was written.
 | A19 | **Operational.** Every ablation build has a failing test suite | `ResultRerankerTests.cs:28-29` asserts `(0.6*0.9 + 0.3*0.5 + 0.1*0.8)/1.0 = 0.77`, with more at `:44-46` and `:62`; `ResultDiversifierTests.cs` hand-computes at λ = 0.70. Editing a constant falsifies them by construction |
 | A20 | *(Recurrence)* Every configuration in the sweep is a pure constant edit — no member of the matrix needs a code-shape change | Members enumerated: `WCentroid ∈ {0.30, 0.00}` and `Lambda ∈ {1.00, 0.70, 0.50, 0.30}`. Both symbols are `private const double` (`ResultReranker.cs:12`, `ResultDiversifier.cs:12`) read at a single expression site each, and A16's sweep confirms no other code path branches on their values |
 | A21 | A type registered without authorization rules is denied on read, and both vector RPCs return an empty stream rather than an error | `SchemaRegistrar.cs:26-30` attaches `Authorization` only for dictionary-present types; `RowFieldAuthorizationEvaluator.cs:11-12` returns `Denied` when rules are null; `ObjectSearchGrpcService.cs:126-127` and `:298-299` — `if (decision.Denied) return;` |
+| A21a | *(Scope)* A21 governs authorization **evaluation** only — it says nothing about schema **registration**, which validates independently of any role's authorization state | `SchemaRegistrationOrchestrator.cs:82-84` calls `ValidateFieldReference` on `owner_field` unconditionally at registration time, before any authorization rule is consulted. Conflating the two — reading A21's bypass-role behavior as also excusing registration-time validation — is what produced the false §3 claim that `BenchmarkDocument` needs no `OwnerId` |
 | A22 | `top_k` counts entities on `SearchSimilar` and chunks on `SearchChunks`; the chunk path does not dedup by parent | `ObjectSearchGrpcService.cs:437` bounds `Diversify` over chunk points and `:442-450` writes one response per chunk carrying `ParentKey`, with no dedup; `:267` bounds the same call over entity points |
 
 ## Known issues / accepted as out of scope
@@ -189,6 +195,13 @@ on the laptop deployment cannot be established without running it — and a prev
 machine hit a local `pids.max=307` ceiling. This is the largest open risk in the design. If ingestion
 proves intractable, the fallback is BEIR alone, which is ~9K documents and answers the fusion question
 without the diversity half.
+
+The 2026-08-24 live run is evidence, not resolution: ingesting 400 documents drove a 4-core box to a
+load average of ~20, hard enough that Kafka's `FIND_COORDINATOR` lookup began timing out — reproduced
+at the broker, not a client artifact (`8db2bf4`, `docs/runbooks/integration-test-flake-signatures.md`).
+The smallest viable FreshStack topic, godot, is 25,482 documents with 99 queries — roughly 64× the
+volume that produced that load, and one topic alone matches the ~100-question statistical power the
+prior spec assumed from two.
 
 **~100 queries is modest statistical power.** Two FreshStack topics give roughly 100 questions. That is
 enough to detect a large diversification effect and not enough to resolve a subtle one, so a null
