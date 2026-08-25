@@ -72,13 +72,31 @@ same request to `:8081` returns 200.
 This design adds a browser-reachable route to the HTTP/1.1 port. It serves all five gRPC widgets
 and the health strip, not only these two RPCs:
 
-- an api Ingress path routing the gRPC path prefix and `/health` to service port **8081**, with
-  per-profile annotation care — `values-aws.yaml:75` marks the existing path
-  `alb.ingress.kubernetes.io/backend-protocol-version: GRPC`, which is correct for native gRPC on
-  8080 and wrong for grpc-web on 8081;
-- a `server.proxy` entry in `vite.config.ts` forwarding the same prefixes to
-  `http://localhost:8081` for development. `vite.config.ts` declares no proxy today, which is also
-  why `src/telemetry.ts:19`'s relative `/v1/traces` export does not reach the API in development.
+- **a new Ingress object** — not the existing api Ingress — carrying one path per gRPC service
+  routing to service port **8081**, plus one for `/health`. It must be separate because
+  `charts/api/templates/ingress.yaml:4-6` renders `.Values.ingress.annotations` onto the Ingress's
+  metadata, so `values-aws.yaml:75`'s `alb.ingress.kubernetes.io/backend-protocol-version: GRPC`
+  applies to the whole object; adding an 8081 path there would place grpc-web, which speaks
+  HTTP/1.1, under a GRPC protocol declaration. On AWS give both Ingresses the same
+  `alb.ingress.kubernetes.io/group.name` so they keep sharing one ALB while carrying different
+  backend-protocol annotations, and leave the existing native-gRPC path on 8080 untouched.
+
+  Kubernetes `pathType: Prefix` matches element-wise on `/`-split labels, so no single prefix
+  covers the gRPC surface: every proto declares `package iverson;`, making paths
+  `/iverson.<Service>/<Method>`, and a path of `/iverson.` has the element `iverson.`, which never
+  equals `iverson.AdminConsoleService`. Each service name *is* a whole element, so one Prefix path
+  per service matches its own methods: `/iverson.AdminConsoleService`,
+  `/iverson.ObjectSearchService`, `/iverson.ObjectMappingService`,
+  `/iverson.TenantLifecycleGrpcService`, `/iverson.TenantAdminGrpcService`. A single
+  `pathType: ImplementationSpecific` regex path — the form
+  `charts/admin-ui/templates/ingress.yaml:21` already uses — is the alternative; the per-service
+  form is preferred because it needs no `use-regex` annotation and a missing service 404s rather
+  than silently over-matching. `/health` is a single element and needs no special handling;
+- a `server.proxy` entry in `vite.config.ts` forwarding `/iverson.` and `/health` to
+  `http://localhost:8081` for development. Vite's proxy keys are plain string prefixes, not
+  element-wise, so the single `/iverson.` key works here even though the Ingress needs the
+  per-service form above. `vite.config.ts` declares no proxy today, which is also why
+  `src/telemetry.ts:19`'s relative `/v1/traces` export does not reach the API in development.
 
 The console addresses the API by a **relative, same-origin base** — the pattern
 `src/telemetry.ts` already uses — not through `config.apiBaseUrl`, which is read nowhere in
@@ -508,6 +526,7 @@ verification of the `Operator` policy, run afterwards against the running compos
 | A32 | Generated proto code can be committed to the repo | **Failed** — `Iverson.AdminUI/.gitignore:3` ignores `generated/`, which is where `scripts/generate_protos.sh` writes. Resolved by generating at build time instead; see Design 4b |
 | A33 | The `groups` claim reaches `auth.user?.profile` | **Holds** — `oidc-client-ts` populates `user.profile` from the ID token, not the access token. A real token response for `dev-iverson-human-oidc-client-id` with scope `openid groups tenant_id offline_access` carries an `id_token` whose claims include `groups` and `tenant_id`. Design 4d's `Sidebar.tsx:20` repair claim therefore holds |
 | A34 | An `iverson-worker` scrape target exists in docker-compose | **Holds** — `docker-compose.yml:438` defines the service with `WORKLOAD_ROLE=worker` at `:454`, and `MapPrometheusScrapingEndpoint` (`Program.cs:275`) sits outside the `if (workloadRole == "api")` gate at `:438`, so the worker serves `/metrics` on 8081 |
+| A35 | Adding a proto to `Common/Proto` does not break the other language clients | **Holds** — `Iverson.Client.Contracts.csproj:17` globs `../../Common/Proto/*.proto` with `GrpcServices="Both"`, so the server base class generates without a csproj edit; `Iverson.AdminUI/scripts/generate_protos.sh` and `Iverson.Clients/TypeScript/scripts/generate_protos.sh` also glob. Python (`Iverson.Clients/Python/scripts/generate_protos.sh`) and Go both list the four `object_*` protos explicitly, so neither is touched. Nothing in `Iverson.ClientConformance` enumerates the service set |
 
 ## Known issues
 
