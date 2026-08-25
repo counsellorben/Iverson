@@ -66,9 +66,9 @@ most important constraint in the design:
   the small end of BEIR.
 - **Diversification → FreshStack (two topics).** α-nDCG scores a result set by how much of a query's
   *facets* it covers, so it needs subtopic- or nugget-level judgments. **BEIR does not have these**,
-  and no amount of nDCG on BEIR will answer the λ question. FreshStack ships 3–4 GPT-4o-generated
+  and no amount of nDCG on BEIR will answer the λ question. FreshStack ships 1–7 GPT-4o-generated
   nuggets per question and reports α-nDCG@10, Coverage@20 and Recall@50 — the exact metric family
-  MMR exists to move. Two topics give ~50K documents and ~100 queries (A1).
+  MMR exists to move. Two topics give ~50K documents and ~150 queries (A1).
 
 ### 3. Corpus → Iverson mapping
 
@@ -210,9 +210,10 @@ Ben chose two topics over one for exactly this reason; more topics would cost pr
 ingest.
 
 **α-nDCG depends on expressing FreshStack's nuggets in the scoring tool's expected shape.** `ir_measures`
-reads subtopic ids from the qrels iteration field; FreshStack's own evaluation package is the lower-risk
-route and should be preferred if its input format accepts a standard run file. This was not verified
-end-to-end.
+reads subtopic ids from the qrels iteration field. FreshStack's own evaluation package would have been
+the lower-risk route, but its API takes three objects (`qrels_nuggets`, `qrels_query`,
+`query_to_nuggets`) the harness does not produce; §5 records `ir_measures` against a converter-derived
+TREC qrels file as the route taken instead. This was not verified end-to-end.
 
 **Ablation builds are knowingly red.** See A19 and §7. Accepted as the cost of not adding a
 configuration seam.
