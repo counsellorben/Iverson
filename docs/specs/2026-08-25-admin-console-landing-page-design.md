@@ -69,38 +69,45 @@ over TLS, where ALPN can negotiate HTTP/2 — and the default and local profiles
 request to 8080 is rejected. Confirmed directly: HTTP/1.1 to `:8080/health` returns 400, the
 same request to `:8081` returns 200.
 
-This design adds a browser-reachable route to the HTTP/1.1 port. It serves all five gRPC widgets
-and the health strip, not only these two RPCs:
+This design adds a browser-reachable route to the HTTP/1.1 port under a **dedicated path
+prefix**, `/admin-api`. The console calls `/admin-api/iverson.<Service>/<Method>`; the ingress
+strips the prefix and forwards to port 8081. Bare `/iverson.<Service>/<Method>` is left alone on
+8080, so the language SDK clients' native gRPC is unaffected. The prefix, not the service path,
+is what distinguishes the two consumers — and it is the only axis that can, since both speak the
+same gRPC paths.
 
-- **a new Ingress object** — not the existing api Ingress — carrying one path per gRPC service
-  routing to service port **8081**, plus one for `/health`. It must be separate because
-  `charts/api/templates/ingress.yaml:4-6` renders `.Values.ingress.annotations` onto the Ingress's
-  metadata, so `values-aws.yaml:75`'s `alb.ingress.kubernetes.io/backend-protocol-version: GRPC`
-  applies to the whole object; adding an 8081 path there would place grpc-web, which speaks
-  HTTP/1.1, under a GRPC protocol declaration. On AWS give both Ingresses the same
-  `alb.ingress.kubernetes.io/group.name` so they keep sharing one ALB while carrying different
-  backend-protocol annotations, and leave the existing native-gRPC path on 8080 untouched.
+`/admin-api` is deliberately not `/admin`. The console's own rule at
+`charts/admin-ui/templates/ingress.yaml:21` is `/admin(/|$)(.*)`, whose `(/|$)` guard requires a
+slash or end-of-string after `admin`, so `/admin-api/...` does not match it and no precedence
+question arises between the two rules.
 
-  Kubernetes `pathType: Prefix` matches element-wise on `/`-split labels, so no single prefix
-  covers the gRPC surface: every proto declares `package iverson;`, making paths
-  `/iverson.<Service>/<Method>`, and a path of `/iverson.` has the element `iverson.`, which never
-  equals `iverson.AdminConsoleService`. Each service name *is* a whole element, so one Prefix path
-  per service matches its own methods: `/iverson.AdminConsoleService`,
-  `/iverson.ObjectSearchService`, `/iverson.ObjectMappingService`,
-  `/iverson.TenantLifecycleGrpcService`, `/iverson.TenantAdminGrpcService`. A single
-  `pathType: ImplementationSpecific` regex path — the form
-  `charts/admin-ui/templates/ingress.yaml:21` already uses — is the alternative; the per-service
-  form is preferred because it needs no `use-regex` annotation and a missing service 404s rather
-  than silently over-matching. `/health` is a single element and needs no special handling;
-- a `server.proxy` entry in `vite.config.ts` forwarding `/iverson.` and `/health` to
-  `http://localhost:8081` for development. Vite's proxy keys are plain string prefixes, not
-  element-wise, so the single `/iverson.` key works here even though the Ingress needs the
-  per-service form above. `vite.config.ts` declares no proxy today, which is also why
-  `src/telemetry.ts:19`'s relative `/v1/traces` export does not reach the API in development.
+The route serves all five gRPC widgets and the health strip, not only these two RPCs:
 
-The console addresses the API by a **relative, same-origin base** — the pattern
-`src/telemetry.ts` already uses — not through `config.apiBaseUrl`, which is read nowhere in
-`src/` and whose development value points at the h2c port.
+- **a new Ingress object** — not the existing api Ingress — with a single
+  `pathType: ImplementationSpecific` path `/admin-api(/|$)(.*)` and `rewrite-target: /$2`, backed
+  by the api service on port **8081**. This mirrors the shape
+  `charts/admin-ui/templates/ingress.yaml` already uses, and one rule covers both the gRPC paths
+  and `/health`. It must be a separate object because `charts/api/templates/ingress.yaml:4-6`
+  renders `.Values.ingress.annotations` onto the Ingress's metadata, so `values-aws.yaml:75`'s
+  `alb.ingress.kubernetes.io/backend-protocol-version: GRPC` applies to the whole object; an 8081
+  path there would place grpc-web, which speaks HTTP/1.1, under a GRPC protocol declaration.
+
+  On AWS give both Ingresses the same `alb.ingress.kubernetes.io/group.name` so they keep sharing
+  one ALB while carrying different backend-protocol annotations, **and set
+  `alb.ingress.kubernetes.io/group.order` explicitly with this Ingress ahead of the api Ingress.**
+  Within an IngressGroup the controller orders rules by that annotation and falls back to the
+  lexical order of the Ingress's namespace/name; the api Ingress's `/` `pathType: Prefix` path
+  matches every request, so without explicit ordering it shadows this one entirely.
+- a `server.proxy` entry in `vite.config.ts` mapping `/admin-api` to `http://localhost:8081` with
+  the prefix rewritten away, matching what the ingress does. `vite.config.ts` declares no proxy
+  today, which is also why `src/telemetry.ts:19`'s relative `/v1/traces` export does not reach the
+  API in development.
+
+The console addresses the API by a **relative, same-origin base** of `/admin-api` — the
+same-origin pattern `src/telemetry.ts` already uses — not through `config.apiBaseUrl`, which is
+read nowhere in `src/` and whose development value points at the h2c port.
+`@improbable-eng/grpc-web` takes that base as its `host` option and appends
+`/<package>.<Service>/<Method>` itself.
 
 ### `GetMetrics` — Prometheus proxy
 
@@ -129,8 +136,16 @@ The API has no Prometheus client today — `Program.cs` wires only the *exporter
   TCP 9090. The reverse direction is already allowed (`:487-490`), which is why scraping works
   today and the missing direction is easy to overlook.
 
-PromQL uses Prometheus-mangled metric names (dots to underscores, `_total` on counters,
-`_bucket`/`_sum`/`_count` on histograms), not the OTel instrument names.
+PromQL uses Prometheus-mangled metric names, not the OTel instrument names: dots to underscores,
+`_total` on counters, `_bucket`/`_sum`/`_count` on histograms, **and the instrument's unit appended
+where it declares one**. The five gauge and counter instruments declare no unit
+(`ReconciliationTelemetry.cs:25-41` and `Iverson.Events/Telemetry.cs:14,17` pass only
+`description:`), so they mangle straight: `reconciliation_queue_depth`, `dlq_unreplayed_count`,
+`document_rerender_queue_depth`, `consumer_retries_total`, `consumer_dlq_routed_total`. The two
+duration metrics are declared in seconds by the ASP.NET Core and HttpClient instrumentation, so
+their real series are `http_server_request_duration_seconds_{bucket,sum,count}` and
+`http_client_request_duration_seconds_{bucket,sum,count}` — written out here because the general
+rule is exactly where the `_seconds` segment gets dropped.
 
 The Ollama filter is built server-side from `EmbeddingServiceOptions.BaseUrl` rather than
 hard-coded, because HTTP client metrics label by `server.address` and the host is
@@ -190,7 +205,7 @@ Nine widgets in three bands. The landing page is a new route at `/`, replacing
 
 | Widget | Metrics | Shows |
 |---|---|---|
-| Fan-out backlog | `reconciliation.queue_depth`, `dlq.unreplayed_count`, `document_rerender.queue_depth` | Three gauges, current value plus sparkline |
+| Fan-out backlog | `reconciliation.queue_depth`, `dlq.unreplayed_count`, `document_rerender.queue_depth` | Three gauges, current value |
 | DLQ and retry rate | `consumer.retries`, `consumer.dlq_routed` | Rate over the window |
 | RPC health | `http.server.request.duration` | Request rate, error percentage, p95 |
 | Embedding latency | `http.client.request.duration` | p95 against Ollama |
@@ -527,6 +542,7 @@ verification of the `Operator` policy, run afterwards against the running compos
 | A33 | The `groups` claim reaches `auth.user?.profile` | **Holds** — `oidc-client-ts` populates `user.profile` from the ID token, not the access token. A real token response for `dev-iverson-human-oidc-client-id` with scope `openid groups tenant_id offline_access` carries an `id_token` whose claims include `groups` and `tenant_id`. Design 4d's `Sidebar.tsx:20` repair claim therefore holds |
 | A34 | An `iverson-worker` scrape target exists in docker-compose | **Holds** — `docker-compose.yml:438` defines the service with `WORKLOAD_ROLE=worker` at `:454`, and `MapPrometheusScrapingEndpoint` (`Program.cs:275`) sits outside the `if (workloadRole == "api")` gate at `:438`, so the worker serves `/metrics` on 8081 |
 | A35 | Adding a proto to `Common/Proto` does not break the other language clients | **Holds** — `Iverson.Client.Contracts.csproj:17` globs `../../Common/Proto/*.proto` with `GrpcServices="Both"`, so the server base class generates without a csproj edit; `Iverson.AdminUI/scripts/generate_protos.sh` and `Iverson.Clients/TypeScript/scripts/generate_protos.sh` also glob. Python (`Iverson.Clients/Python/scripts/generate_protos.sh`) and Go both list the four `object_*` protos explicitly, so neither is touched. Nothing in `Iverson.ClientConformance` enumerates the service set |
+| A36 | `http_route` is a real label on the server-duration metric | **Holds** — present on every `http_server_request_duration_seconds_*` sample on the live `/metrics` endpoint, alongside `http_request_method`, `http_response_status_code` and `network_protocol_version`. The Prometheus scrape endpoint appears as `http_route="/metrics"` and gRPC calls as `http_route="/iverson.<Service>/<Method>"`, so Design 2's exclusion filter is expressible as written |
 
 ## Known issues
 
