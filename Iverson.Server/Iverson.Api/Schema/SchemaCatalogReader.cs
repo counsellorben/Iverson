@@ -13,9 +13,13 @@ namespace Iverson.Api.Schema;
 /// The acting user is a <b>parameter</b>, never ambient state. <c>ObjectMappingGrpcService.GetSchema</c>
 /// passes <c>IActingUserAccessor.ActingUser</c> (populated by the gRPC-only
 /// <c>ActingUserInterceptor</c>); the admin-console JSON endpoint passes <c>HttpContext.User</c>.
-/// This is load-bearing rather than stylistic: <see cref="IRowFieldAuthorizationEvaluator"/> returns
-/// a not-denied, unrestricted decision for a <c>null</c> principal, so a caller that forgets to
-/// supply one does not get an error — it gets the complete catalog.
+/// This is load-bearing rather than stylistic: <see cref="IRowFieldAuthorizationEvaluator"/>
+/// <b>denies</b> a <c>null</c> principal — every early return in <c>RowFieldAuthorizationEvaluator</c>
+/// pairs <c>Denied = true</c>, pinned by <c>Evaluate_NoIdentity_ReturnsDenied</c>. So a caller that
+/// forgets to supply one gets an <b>empty</b> catalog, not a widened one: every type is dropped in
+/// pass one and every relation with it. The failure is loud in the UI and closed at the boundary,
+/// which is why the principal is explicit here rather than ambient — a dropped principal must not be
+/// masked by accessor state that happens to hold a stale value.
 /// </para>
 /// <para>
 /// Two entry points over one implementation. <see cref="ReadCatalog"/> is the injectable form, for
@@ -31,7 +35,8 @@ public sealed class SchemaCatalogReader(
 {
     /// <summary>
     /// The catalog as <paramref name="actingUser"/> may see it. See the null-principal note on the
-    /// class: pass the caller's real principal, not <c>null</c>, unless full access is intended.
+    /// class: pass the caller's real principal. Passing <c>null</c> does not widen access — it
+    /// yields an empty catalog, because the evaluator denies a null principal.
     /// </summary>
     public IReadOnlyList<SchemaType> ReadCatalog(ClaimsPrincipal? actingUser) =>
         BuildCatalog(registry, authEvaluator, actingUser, logger);

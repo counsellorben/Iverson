@@ -14,9 +14,11 @@ namespace Iverson.Api.Search;
 /// <para>
 /// The acting user is a <b>parameter</b>, never ambient state — the same contract as
 /// <see cref="Iverson.Api.Schema.SchemaCatalogReader"/>, and for the same reason:
-/// <see cref="IRowFieldAuthorizationEvaluator"/> returns a not-denied, unrestricted decision for a
-/// <c>null</c> principal, so passing <c>null</c> silently disables tenant and ownership scoping
-/// rather than failing.
+/// <see cref="IRowFieldAuthorizationEvaluator"/> <b>denies</b> a <c>null</c> principal — every early
+/// return in <c>RowFieldAuthorizationEvaluator</c> pairs <c>Denied = true</c>, pinned by
+/// <c>Evaluate_NoIdentity_ReturnsDenied</c>. Passing <c>null</c> therefore yields
+/// <see cref="TypeRowCount.Denied"/> for every type rather than an unscoped count. The principal is
+/// explicit so a dropped one fails visibly here instead of being masked by ambient accessor state.
 /// </para>
 /// <para>
 /// Two entry points over one call. <see cref="CountRowsAsync"/> is the injectable form used by the
@@ -75,8 +77,13 @@ public sealed class AggregateReader(
         var result = await RunAsync(
             search, registry, schema, query: null, spec, having: null, joins: null, authz: constraints);
 
-        // A null result means the store answered "nothing addressable for this tenant" — an absent
-        // or not-yet-provisioned tenant database. That is zero rows, not an error.
+        // A null result means the store had no tenant database to address. EngagementRepository
+        // returns null both for an absent or not-yet-provisioned tenant AND when the tenant id is
+        // null or fails TenantIdentifier.IsValid — the evaluator checks the tenant_id claim is
+        // non-empty but never checks it is well-formed. Both render as zero rows: provisioning uses
+        // the same identifier, so a tenant whose id cannot address a database genuinely has none.
+        // Note this DIVERGES deliberately from the Aggregate RPC, which omits the result entirely
+        // for the same null; a count widget needs a number, and zero is the honest one.
         return TypeRowCount.Counted((long)(result?.MetricValue ?? 0d));
     }
 
