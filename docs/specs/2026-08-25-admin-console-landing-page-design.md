@@ -193,16 +193,22 @@ change who can see what.
 
 **These two endpoints pass `HttpContext.User` to the evaluator as the acting user.** This matters
 because of how the evaluator treats an absent one: `RowFieldAuthorizationEvaluator.cs:14-15`
-returns a not-denied, unrestricted decision when `actingUser` is null. The acting user is
-populated only by `ActingUserInterceptor`, which is registered on the gRPC pipeline
-(`Program.cs:87`) and returns early when no `x-acting-user-authorization` header is present. The
-console sends no such header, so without this the filtering would be inert and every
-authenticated caller would receive the complete catalog and every type's row count.
+returns `new AuthorizationDecision(true, …)`, and `AuthorizationDecision`'s first positional
+member is `Denied` (`IRowFieldAuthorizationEvaluator.cs:16-17`) — so an absent acting user is
+**denied**, not unrestricted. The acting user is populated only by `ActingUserInterceptor`, which
+is registered on the gRPC pipeline (`Program.cs:87`) and returns early when no
+`x-acting-user-authorization` header is present. The console sends no such header, so without
+this every authenticated caller would receive an **empty** catalog and a denial for every type's
+row count. The failure mode is a blank console, not a disclosure.
 
-Note what this does and does not change: `RowFieldAuthorizationEvaluator.cs:32-33` also returns
-an unrestricted decision when the principal carries no `tenant_id` claim, and an operator has
-none. So for an operator the result is the same full view either way; the difference appears only
-for a tenant-scoped human, which is exactly where it should.
+Note what this does and does not change: `RowFieldAuthorizationEvaluator.cs:32-33` likewise
+returns `Denied = true` when the principal carries no `tenant_id` claim, and an operator has
+none. **So an operator is denied every type through these two endpoints** — the schema catalog
+comes back empty and every row count comes back denied. This is a live consequence, not a
+theoretical one, and it compounds Design 4d, which records that no human satisfies the `Operator`
+policy today. The endpoints therefore report denial as a distinct outcome rather than as a zero
+count; whether operators should see cross-tenant data at all is a decision for after 4d, and
+changing the evaluator's semantics to grant it is explicitly out of scope here.
 
 **Two extractions are required**, and they are the genuine cost of serving JSON from endpoints
 rather than annotating the proto. `ListTenants` needs neither: it is already a three-line
