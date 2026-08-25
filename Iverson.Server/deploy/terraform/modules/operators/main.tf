@@ -180,3 +180,12 @@ resource "kubernetes_storage_class" "ollama" {
   parameters          = var.storage_class_config.parameters
   volume_binding_mode = "WaitForFirstConsumer"
 }
+
+resource "kubernetes_storage_class" "prometheus" {
+  metadata {
+    name = "iverson-prometheus"
+  }
+  storage_provisioner = var.storage_class_config.provisioner
+  parameters          = var.storage_class_config.parameters
+  volume_binding_mode = "WaitForFirstConsumer"
+}
