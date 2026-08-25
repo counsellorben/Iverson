@@ -39,7 +39,9 @@ A converter normalises the dataset into the BEIR-shaped JSONL the harness alread
 ```
 
 Loads `freshstack/corpus-oct-2024` and `freshstack/queries-oct-2024` at the given topic
-(`load_dataset(repo, subset=topic)`, split `test`) and writes three files:
+(`load_dataset(repo, topic, split="test")` — the config is the **second positional** argument; there is
+no `subset=` parameter, and an unknown keyword falls through to `**config_kwargs` without selecting the
+topic) and writes three files:
 
 | File | Shape | Derivation |
 |---|---|---|
@@ -49,6 +51,9 @@ Loads `freshstack/corpus-oct-2024` and `freshstack/queries-oct-2024` at the give
 
 `title` is omitted rather than emitted empty: FreshStack has no such field, and the parser already
 defaults a missing `title` to `""`.
+
+The converter asserts the loaded config's name matches `--topic` rather than trusting the call, so an
+upstream rename fails loudly instead of silently converting a different topic.
 
 #### 1.1 Query text composition — an explicit, upstream-unverified choice
 
@@ -75,17 +80,23 @@ emitted rather than skipped, because the metric's pooling expects them.
 
 #### 1.3 The join assertion
 
-Whether `relevant_corpus_ids` actually resolve to `_id`s in the same topic's corpus **cannot be
-verified from published documentation**. Rather than assume it, the converter checks it: it builds the
-corpus id set, and fails with a non-zero exit and a count if any qrels id is unresolvable.
+Whether the nugget id lists resolve to `_id`s in the same topic's corpus **cannot be verified from
+published documentation**. Rather than assume it, the converter checks it: it builds the corpus id set
+and validates every qrels id against it — but the two lists get **different treatment, because their
+guarantees differ**.
 
-Failing on **any** unresolvable id, rather than dropping the row or tolerating a fraction, is
-deliberate strictness: FreshStack's nuggets are generated *from* the corpus, so every
-`relevant_corpus_id` should resolve by construction. If even one does not, the understanding of the
-join encoded here is wrong, and the right response is to stop rather than emit a qrels file that is
-quietly missing judgments. A `qrels.tsv` referencing documents that were never ingested scores zero
-relevance and exits cleanly — the same silent-success failure family that has already cost this branch
-three defects (`4330667`, `5f25c35`, `cc674fa`).
+- **`relevant_corpus_ids` — hard-fail.** FreshStack's nuggets are generated *from* the corpus, so every
+  relevant id should resolve by construction. If even one does not, the understanding of the join
+  encoded here is wrong, and the right response is to stop rather than emit a qrels file that is
+  quietly missing judgments. The converter exits non-zero with a count.
+- **`non_relevant_corpus_ids` — drop and report.** These come from a retrieval judgment pool rather
+  than from nugget generation, so the by-construction argument does not transfer to them. An
+  unresolvable non-relevant id is dropped and counted, and the converter prints the total it dropped.
+  Aborting on these would let a legitimate corpus block the λ measurement outright.
+
+A `qrels.tsv` referencing documents that were never ingested scores zero relevance and exits cleanly —
+the same silent-success failure family that has already cost this branch three defects (`4330667`,
+`5f25c35`, `cc674fa`).
 
 #### 1.4 Dependency
 
@@ -94,6 +105,19 @@ The converter requires `datasets` (HuggingFace). The repo's only other standalon
 `:87`. That rule is scoped to a smoke-test script that must run on any machine; this is a dev-only tool
 run deliberately before a sweep, so the rationale does not carry. The dependency and its install command
 are documented in the script's docstring. **Ben approved taking the dependency (2026-08-25).**
+
+#### 1.5 The doc-id whitespace assertion
+
+`TrecRunWriter` emits `qid Q0 docid rank score runtag` **space-separated**
+(`Iverson.Server/Iverson.LoadTest/Benchmark/TrecRunWriter.cs:27`) — correct TREC format, and fine for
+BEIR's opaque ids. FreshStack's `_id` is derived from repository paths and byte offsets, and real
+GitHub paths can contain spaces. One such id shifts every subsequent column in its row, so the scorer
+reads the wrong doc id, rank and score with no error anywhere — while `qrels.tsv`, being
+tab-separated, survives intact, leaving run file and qrels to disagree silently rather than both
+failing.
+
+The converter therefore asserts that no emitted `_id` contains whitespace, failing with a non-zero
+exit and a count. If it ever fires, that is known before eight sweep cycles are spent on it.
 
 ### 2. C# consequences of normalisation
 
@@ -120,7 +144,7 @@ plus one guard:
 - **§3, line 92.** Replace "That identity's bypass role sets `ownershipRequired` false, so no
   `OwnerId` property is needed" with the rule that actually governs: registration validates
   `OwnerField` against declared scalars regardless of roles
-  (`SchemaRegistrationOrchestrator.cs:54-56`), so `BenchmarkDocument` requires `OwnerId` — which the
+  (`SchemaRegistrationOrchestrator.cs:82-84`, via `ValidateFieldReference`), so `BenchmarkDocument` requires `OwnerId` — which the
   shipped code has. Add an assumptions-table row scoping **A21 to evaluation only**; conflating
   evaluation with registration is what generated the original Critical.
 - **A1 (line 161).** Correct with the verified schema and measured sizes (§"Verified assumptions"
@@ -175,7 +199,7 @@ a design turns on "the external service produces X", a mock that produces X is n
 | V4 | Corpus ids in the nugget lists resolve to corpus `_id`s | **NOT VERIFIABLE from docs.** Absorbed as the converter's runtime join assertion (§1.3) |
 | V5 | No separate qrels dataset ships | FreshStack README exposes only `dataloader.load_qrels(...)` deriving from the loaded queries; no qrels repo published |
 | V6 | Query text composition | **NOT DOCUMENTED upstream.** Decided explicitly in §1.1 |
-| V7 | `datasets` loads topics as `subset=` with those five exact names | FreshStack README quickstart, verbatim |
+| V7 | `datasets` selects a topic config via the **`name`** argument (second positional), not `subset=`; the five topic names are correct | HF loading docs: config selection "is done by providing `datasets.load_dataset()` with a `name` argument" (`load_dataset('glue','sst2')`); unknown keywords fall through to `**config_kwargs`. FreshStack's README writes `subset=` — upstream's error, faithfully transcribed |
 | V8 | `ir_measures` reads subtopic ids from the qrels iteration field | ir-measures docs: "we include the 'subtopic ID' as the optional 'iteration' field of a qrel"; TREC 4-col is query_id, iteration, doc_id, relevance |
 | V9 | `Qrel` has no consumer outside `ParseQrels` and one test | `grep -rn "\bQrel\b" --include=*.cs` — `CorpusModels.cs:6`, both parsers, `BeirCorpusParserTests.cs:108-110`, nothing else |
 | V10 | `BeirCorpusParser` rename blast radius | `BenchmarkIngestScenario.cs:81`, `BenchmarkQueryScenario.cs:200`, `BeirCorpusParserTests.cs` |
@@ -186,6 +210,7 @@ a design turns on "the external service produces X", a mock that produces X is n
 | V15 | `Iverson.LoadTest.Tests` is absent from root `Iverson.slnx` | Full file read; root lists `Iverson.LoadTest` only, at line 23 |
 | V16 | Prior spec structure — line 92 false sentence, A1/A10/A21 at 161/170/181, Known issues 184, §7 sweep procedure at 135 | Read directly |
 | V17 | Python stdlib-only convention exists and is deliberate | `mint_acting_user_token.py:87` — "No third-party dependency (pyotp isn't guaranteed to be installed on every ...)" |
+| V18 | Registration validates `OwnerField` against declared scalars regardless of roles | `SchemaRegistrationOrchestrator.cs:82-84` — `var ownerField = descriptor.Authorization?.OwnerField;` then `ValidateFieldReference(descriptor, ownerField, "owner_field")`; test at `SchemaRegistrationOrchestratorTests.cs:48`; `SchemaRegistrar.cs:47` rethrows |
 
 ## Known issues / accepted as out of scope
 
