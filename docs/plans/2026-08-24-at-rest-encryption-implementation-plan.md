@@ -154,10 +154,13 @@ terraform -chdir=Iverson.Server/deploy/terraform/aws validate
 ```bash
 helm template iverson Iverson.Server/deploy/helm/iverson \
   -f Iverson.Server/deploy/helm/iverson/values-aws.yaml \
-  | grep -A2 'kind: PersistentVolumeClaim'
+  | grep -A6 'kind: PersistentVolumeClaim' | grep 'storageClassName'
 ```
 
-Expected: `storageClassName: "iverson-prometheus"`, not `""`.
+Expected: `storageClassName: "iverson-prometheus"`. Before this task's change the
+same command prints `storageClassName: ""`, so the check distinguishes the two
+states. Note the PVC's own `metadata.name` is also `iverson-prometheus`; assert on
+the `storageClassName` line, not on the substring appearing anywhere in the output.
 
 - [ ] **Step 6: Commit**
 ```bash
@@ -333,14 +336,27 @@ resource "aws_launch_template" "pools" {
   }
 ```
 
-- [ ] **Step 3: Add the Auto Scaling principal to the key policy.** Node root volumes are created by Auto Scaling, not by the CSI driver, and the service-linked role has no access to customer-managed keys by default. It is AWS-managed and takes no attached policy, so this is key-policy-only. Add both statements to the `Statement` list in `aws_kms_key_policy.data_volumes`:
+- [ ] **Step 3: Create the Auto Scaling service-linked role.** The key policy in the next step names this role as a principal, and it is created on demand at an account's first Auto Scaling use — so on a greenfield account it may not exist when the policy is applied. Declaring it here also creates the dependency edge that orders the key policy after it:
+
+```hcl
+resource "aws_iam_service_linked_role" "autoscaling" {
+  aws_service_name = "autoscaling.amazonaws.com"
+}
+```
+
+If the target account already has the role, `terraform apply` fails with
+`InvalidInput: Service role name AWSServiceRoleForAutoScaling has been taken`.
+Remedy: `terraform import module.cluster.aws_iam_service_linked_role.autoscaling <role-arn>`,
+then re-apply. This is the accepted cost of creating it rather than assuming it.
+
+- [ ] **Step 4: Add the Auto Scaling principal to the key policy.** Node root volumes are created by Auto Scaling, not by the CSI driver, and the service-linked role has no access to customer-managed keys by default. It is AWS-managed and takes no attached policy, so this is key-policy-only. Reference the resource from Step 3 rather than interpolating the ARN, so Terraform orders the two correctly. Add both statements to the `Statement` list in `aws_kms_key_policy.data_volumes`:
 
 ```hcl
       {
         Sid    = "AllowAutoScalingUseOfTheKey"
         Effect = "Allow"
         Principal = {
-          AWS = "arn:aws:iam::${data.aws_caller_identity.current.account_id}:role/aws-service-role/autoscaling.amazonaws.com/AWSServiceRoleForAutoScaling"
+          AWS = aws_iam_service_linked_role.autoscaling.arn
         }
         Action   = ["kms:Encrypt", "kms:Decrypt", "kms:ReEncrypt*", "kms:GenerateDataKey*", "kms:DescribeKey"]
         Resource = "*"
@@ -349,7 +365,7 @@ resource "aws_launch_template" "pools" {
         Sid    = "AllowAutoScalingAttachmentOfPersistentResources"
         Effect = "Allow"
         Principal = {
-          AWS = "arn:aws:iam::${data.aws_caller_identity.current.account_id}:role/aws-service-role/autoscaling.amazonaws.com/AWSServiceRoleForAutoScaling"
+          AWS = aws_iam_service_linked_role.autoscaling.arn
         }
         Action    = "kms:CreateGrant"
         Resource  = "*"
@@ -357,7 +373,7 @@ resource "aws_launch_template" "pools" {
       }
 ```
 
-- [ ] **Step 4: Verify**
+- [ ] **Step 5: Verify**
 ```bash
 terraform -chdir=Iverson.Server/deploy/terraform/aws fmt -check
 terraform -chdir=Iverson.Server/deploy/terraform/aws init -backend=false
@@ -365,7 +381,7 @@ terraform -chdir=Iverson.Server/deploy/terraform/aws validate
 tfsec Iverson.Server/deploy/terraform/
 ```
 
-- [ ] **Step 5: Confirm all seven pools are covered.** A subset would leave node volumes unencrypted on the missed pools:
+- [ ] **Step 6: Confirm all seven pools are covered.** A subset would leave node volumes unencrypted on the missed pools:
 
 ```bash
 grep -c 'for_each    = local.node_pools' Iverson.Server/deploy/terraform/modules/cluster-aws/main.tf
@@ -373,7 +389,7 @@ grep -c 'for_each    = local.node_pools' Iverson.Server/deploy/terraform/modules
 
 Expected: at least 1 for the launch template, and `aws_eks_node_group.pools` still using `for_each = local.node_pools`.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 7: Commit**
 ```bash
 git add Iverson.Server/deploy/terraform/modules/cluster-aws/main.tf
 git commit -m "encrypt eks node root volumes with the data-volume key"
