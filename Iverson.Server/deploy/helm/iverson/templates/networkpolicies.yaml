@@ -2,6 +2,11 @@
 {{- if not .Values.networkPolicy.clusterCidrs }}
 {{- fail "networkPolicy.clusterCidrs must list at least one CIDR; an empty list renders an allow-all ingress rule" }}
 {{- end }}
+{{- range .Values.networkPolicy.clusterCidrs }}
+{{- if not (trim (toString .)) }}
+{{- fail "networkPolicy.clusterCidrs contains a blank entry; every entry must be a CIDR (note: helm's --set x={} produces a one-element list [\"\"], not an empty list — use --set-json or a values file for a true empty list)" }}
+{{- end }}
+{{- end }}
 # Default-deny: nothing in the namespace can talk to anything else unless a
 # more specific policy below explicitly allows it.
 apiVersion: networking.k8s.io/v1
