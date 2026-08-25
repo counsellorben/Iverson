@@ -66,7 +66,28 @@ reproduced — recorded as mitigated rather than fixed.
 > `KafkaException: Failed while waiting for controller: Local: Timed out`
 
 Seen once, in `Iverson.Api.Tests`. A Kafka testcontainer competing for the same exhausted box.
-Peak StarRocks containers dropping 5 → 2 removes most of that pressure. Not separately reproduced.
+Peak StarRocks containers dropping 5 → 2 removes most of that pressure.
+
+**REPRODUCED 2026-08-25, and it is not a testcontainers artifact.** It surfaced on the *dev stack*
+during the first live `benchmark-ingest`, as
+`QueryWatermarkOffsets → Local: Timed out`. Confirmed at the broker, not the client:
+
+```bash
+docker exec iverson-kafka bash -lc \
+  "kafka-consumer-groups --bootstrap-server kafka:29092 --describe --group iverson.consumer.intelligence"
+```
+
+failed with `TimeoutException ... Call: describeGroups(api=FIND_COORDINATOR)` on **one of three
+consecutive attempts**, while the intelligence consumer was running and the box sat at load ~20 on
+4 cores. The other two attempts returned full offset tables. Note `--list` succeeded throughout —
+plain metadata is fine; it is specifically the coordinator lookup that blinks.
+
+So the contention hypothesis was right, and the mechanism is narrower than "Kafka is unhealthy":
+under CPU starvation `FIND_COORDINATOR` intermittently exceeds its timeout. **Any long-lived poller
+against a consumer group needs to tolerate a transient failure rather than treat the first one as
+fatal** — that is what it cost here: a fully successful 400-document post wave was discarded by a
+single blip in the drain probe that followed it. `BenchmarkIngestScenario` now retries up to 10
+consecutive probe errors, resetting the counter on any success.
 
 **Mitigation verified 2026-08-24.** The peak was measured directly rather than assumed: polling
 `docker ps --filter ancestor=starrocks/allin1-ubuntu:4.1.1` every 5 s across a full
