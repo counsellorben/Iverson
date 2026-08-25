@@ -373,9 +373,18 @@ page. Two corrections that the implementation must honour:
   `// total matching docs`, but the implementation never assigns it — it constructs
   `new AggregateResponse { TraceId = ... }` at `:514` and only ever adds to `Results`.
   The field is always zero.
-- A **denied type is indistinguishable from an empty type.** When authorization denies the
-  primary type, `:501` returns an empty response rather than an error. The widget renders
-  zero in both cases and the page says so, rather than implying the count is authoritative.
+- A **denied type is distinguishable from an empty one, and must be rendered differently.**
+  This constraint was inverted while the design still routed the widget through the `Aggregate`
+  RPC, where `:501` returns an empty response on denial and the two genuinely collapse. The
+  JSON endpoints do not: `/admin/console/data-volume` reports `Denied`, `Counted(n)` and
+  `UnknownType` as three distinct outcomes, and a denied type is not merely "not a zero" — it
+  gets **no entry at all**, only an aggregate `deniedTypeCount`, so a client cannot construct a
+  zero for it even by mistake. `/admin/console/schema` carries the same signal as
+  `withheldTypeCount`. Naming the denied types is deliberately withheld: it would disclose to an
+  authenticated caller that a type it may not see exists, which is exactly what `GetSchema`'s
+  filtering withholds. **The widget must render an explicit no-access state when that count is
+  non-zero, never a zero count.** This matters today, not hypothetically: an operator carries no
+  `tenant_id` claim and is therefore denied every type (A59, Design 4d).
 
 **Data volume is tenant-scoped.** `Aggregate` enforces tenant isolation, so the number is the
 acting user's tenant, not a deployment total. The widget labels it as such.
