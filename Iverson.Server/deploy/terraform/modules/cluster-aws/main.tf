@@ -216,9 +216,37 @@ resource "aws_kms_key_policy" "data_volumes" {
         Action    = "kms:CreateGrant"
         Resource  = "*"
         Condition = { Bool = { "kms:GrantIsForAWSResource" = "true" } }
+      },
+      {
+        Sid       = "AllowAutoScalingUseOfTheKey"
+        Effect    = "Allow"
+        Principal = { AWS = aws_iam_service_linked_role.autoscaling.arn }
+        Action    = ["kms:Encrypt", "kms:Decrypt", "kms:ReEncrypt*", "kms:GenerateDataKey*", "kms:DescribeKey"]
+        Resource  = "*"
+      },
+      {
+        Sid       = "AllowAutoScalingAttachmentOfPersistentResources"
+        Effect    = "Allow"
+        Principal = { AWS = aws_iam_service_linked_role.autoscaling.arn }
+        Action    = "kms:CreateGrant"
+        Resource  = "*"
+        Condition = { Bool = { "kms:GrantIsForAWSResource" = "true" } }
       }
     ]
   })
+}
+
+# Created here (rather than assumed) so the key policy above can reference
+# it as a principal safely: on a greenfield account the AWS-managed
+# AWSServiceRoleForAutoScaling service-linked role doesn't exist until
+# Auto Scaling is first used, and this resource creates the dependency
+# edge that orders the key policy after it. If the target account already
+# has the role, `terraform apply` fails with `InvalidInput: Service role
+# name AWSServiceRoleForAutoScaling has been taken` — remedy is
+# `terraform import module.cluster.aws_iam_service_linked_role.autoscaling <role-arn>`,
+# then re-apply.
+resource "aws_iam_service_linked_role" "autoscaling" {
+  aws_service_name = "autoscaling.amazonaws.com"
 }
 
 # tfsec's aws-eks-no-public-cluster-access check can't resolve var.api_public_access_cidrs
@@ -485,6 +513,39 @@ locals {
   }
 }
 
+# /dev/xvda is the root device of the EKS-optimized AL2 x86_64 AMI that
+# these node groups take (they set no ami_type and the cluster pins
+# kubernetes_version 1.30) — naming a different device here would silently
+# ADD a second volume instead of encrypting the root, leaving the root
+# volume this task exists to encrypt untouched. volume_size must be set
+# here rather than via the node group's disk_size argument: EKS rejects a
+# disk_size on a node group once a launch template supplies block device
+# mappings.
+resource "aws_launch_template" "pools" {
+  for_each    = local.node_pools
+  name_prefix = "${var.cluster_name}-${each.key}-"
+
+  block_device_mappings {
+    device_name = "/dev/xvda"
+    ebs {
+      volume_size           = 20
+      volume_type           = "gp3"
+      encrypted             = true
+      kms_key_id            = aws_kms_key.data_volumes.arn
+      delete_on_termination = true
+    }
+  }
+
+  # Not part of this task's encryption scope, but tfsec correctly flags a
+  # launch template with no metadata_options as allowing IMDSv1 (no token
+  # required); enforcing IMDSv2 here is a no-downside hardening default,
+  # not a linter workaround.
+  metadata_options {
+    http_endpoint = "enabled"
+    http_tokens   = "required"
+  }
+}
+
 resource "aws_eks_node_group" "pools" {
   for_each        = local.node_pools
   cluster_name    = aws_eks_cluster.this.name
@@ -492,6 +553,11 @@ resource "aws_eks_node_group" "pools" {
   node_role_arn   = aws_iam_role.node.arn
   subnet_ids      = aws_subnet.private[*].id
   instance_types  = [each.value.instance_type]
+
+  launch_template {
+    id      = aws_launch_template.pools[each.key].id
+    version = aws_launch_template.pools[each.key].latest_version
+  }
 
   scaling_config {
     desired_size = each.value.count
