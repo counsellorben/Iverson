@@ -15,6 +15,12 @@
 networkPolicy:
   clusterCidrs: ["172.18.0.0/16"]
 
+# Restated explicitly even though it matches values.yaml's own default (true) — this profile
+# runs the prometheus subchart (unlike values-laptop.yaml), and Task 7's Prometheus__BaseUrl
+# env var (charts/api/templates/deployment.yaml) is gated on this flag.
+global:
+  prometheusEnabled: true
+
 postgres:
   instances: 1
   storageSize: 2Gi

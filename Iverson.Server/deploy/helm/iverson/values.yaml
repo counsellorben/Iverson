@@ -48,6 +48,17 @@ global:
   engagementEnabled: true
   # Drives the jaeger subchart's condition AND the api/worker OTLP env vars.
   tracingEnabled: true
+  # NOT the prometheus subchart's own install condition (Chart.yaml uses the top-level
+  # `prometheus.enabled`, and templates/networkpolicies.yaml's api-egress/prometheus-ingress
+  # rules read the same key — both out of Task 7's scope to touch). This is a values-author-
+  # maintained MIRROR of that flag, existing purely so charts/api (a sibling subchart, which can
+  # only see its own values plus `.Values.global`) knows whether Prometheus__BaseUrl should be
+  # rendered at all — see charts/api/templates/deployment.yaml. Keep this equal to
+  # `prometheus.enabled` below in every values-*.yaml file that overrides either one; `helm lint`
+  # does not catch the two disagreeing, only rendering a Prometheus__BaseUrl that points at a
+  # Service the prometheus subchart never installed (or vice versa, silently reporting
+  # "not deployed" when it is) would.
+  prometheusEnabled: true
 
 postgres:
   enabled: true

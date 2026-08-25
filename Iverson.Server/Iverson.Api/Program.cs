@@ -261,6 +261,25 @@ builder.Services.AddHttpClient("JaegerOtlpHttp", client =>
     client.BaseAddress = new Uri(cfg["Jaeger:OtlpHttpUrl"] ?? "http://iverson-jaeger:4318");
 });
 
+// The admin console's metrics proxy (/admin/console/metrics). BaseUrl is empty by default
+// (appsettings.json) and stays empty on any profile that never installs the prometheus
+// subchart (values-laptop.yaml) — the named client below is still registered unconditionally,
+// same as JaegerOtlpHttp above, but AdminConsoleMetricsEndpoint checks PrometheusOptions.BaseUrl
+// BEFORE ever asking this client to make a call, so an unconfigured deployment reports
+// "notDeployed" rather than attempting (and failing) a connection to an empty BaseAddress.
+builder.Services.Configure<Iverson.Api.Console.PrometheusOptions>(
+    cfg.GetSection(Iverson.Api.Console.PrometheusOptions.Section));
+builder.Services.AddHttpClient(Iverson.Api.Console.PrometheusQueryClient.HttpClientName, (sp, client) =>
+{
+    var promOptions = sp.GetRequiredService<IOptions<Iverson.Api.Console.PrometheusOptions>>().Value;
+    if (!string.IsNullOrEmpty(promOptions.BaseUrl))
+        client.BaseAddress = new Uri(promOptions.BaseUrl);
+    // Short: this endpoint is polled by every open console tab, and a hung Prometheus must not
+    // hang all of them for the framework's 100s default.
+    client.Timeout = TimeSpan.FromSeconds(5);
+});
+builder.Services.AddSingleton<Iverson.Api.Console.IPrometheusQueryClient, Iverson.Api.Console.PrometheusQueryClient>();
+
 builder.Services.Configure<EngagementStoreOptions>(cfg.GetSection(EngagementStoreOptions.Section));
 
 builder.Services.AddEmbeddings(cfg);
@@ -421,6 +440,11 @@ app.MapPost("/admin/dlq/{id}/replay", async (Guid id, IDlqRepository dlq, IEvent
 // /admin/console/data-volume are authenticated-only on purpose and pass HttpContext.User to
 // their readers; see AdminConsoleEndpoints for why neither may be normalised to Operator.
 app.MapAdminConsoleEndpoints();
+
+// The console's fifth endpoint, Operator-gated like /tenants and /qdrant above — a Prometheus
+// proxy over a fixed, server-authored query set. In its own file/registration call per the SDD
+// pre-flight ledger's Ruling 1; see AdminConsoleMetricsEndpoint for the three-state contract.
+app.MapAdminConsoleMetricsEndpoint();
 
 // ── Schema hydration ───────────────────────────────────────────────────────────
 try

@@ -20,6 +20,7 @@ networkPolicy:
 # comment for why this is a separate key instead of a single source of truth.
 global:
   ingressHost: "iverson.example.com"
+  prometheusEnabled: true   # mirrors prometheus.enabled — see values.yaml's comment
 
 postgres:
   storageClassName: "iverson-postgres"
