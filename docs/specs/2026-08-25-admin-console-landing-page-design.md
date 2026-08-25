@@ -153,7 +153,7 @@ configuration-driven.
 
 ### `GetQdrantStats` — collection stats
 
-Returns points count, vectors count, and indexed-vectors count per collection.
+Returns points count and indexed-vectors count per collection.
 
 No such surface exists. `/health` performs a *write* probe
 (`EnsureCollectionAsync("iverson-probe", 4)`) and never reads collection metadata, and
@@ -214,7 +214,7 @@ Nine widgets in three bands. The landing page is a new route at `/`, replacing
 
 | Widget | Source | Shows |
 |---|---|---|
-| Qdrant collection stats | `AdminConsoleService.GetQdrantStats` | Points, vectors, indexed vectors per collection |
+| Qdrant collection stats | `AdminConsoleService.GetQdrantStats` | Points, indexed vectors per collection |
 
 ### Constraints each widget carries
 
@@ -543,6 +543,8 @@ verification of the `Operator` policy, run afterwards against the running compos
 | A34 | An `iverson-worker` scrape target exists in docker-compose | **Holds** — `docker-compose.yml:438` defines the service with `WORKLOAD_ROLE=worker` at `:454`, and `MapPrometheusScrapingEndpoint` (`Program.cs:275`) sits outside the `if (workloadRole == "api")` gate at `:438`, so the worker serves `/metrics` on 8081 |
 | A35 | Adding a proto to `Common/Proto` does not break the other language clients | **Holds** — `Iverson.Client.Contracts.csproj:17` globs `../../Common/Proto/*.proto` with `GrpcServices="Both"`, so the server base class generates without a csproj edit; `Iverson.AdminUI/scripts/generate_protos.sh` and `Iverson.Clients/TypeScript/scripts/generate_protos.sh` also glob. Python (`Iverson.Clients/Python/scripts/generate_protos.sh`) and Go both list the four `object_*` protos explicitly, so neither is touched. Nothing in `Iverson.ClientConformance` enumerates the service set |
 | A36 | `http_route` is a real label on the server-duration metric | **Holds** — present on every `http_server_request_duration_seconds_*` sample on the live `/metrics` endpoint, alongside `http_request_method`, `http_response_status_code` and `network_protocol_version`. The Prometheus scrape endpoint appears as `http_route="/metrics"` and gRPC calls as `http_route="/iverson.<Service>/<Method>"`, so Design 2's exclusion filter is expressible as written |
+| A37 | `/admin-api` cannot match the console's own ingress rule | **Holds** — `charts/admin-ui/templates/ingress.yaml:21` is `/admin(/|$)(.*)`, whose `(/|$)` guard requires `/` or end-of-string after a literal `admin`; `/admin-api/...` supplies `-` at that position and `^/admin` cannot match elsewhere. No precedence contest between the two rules |
+| A38 | An ingress rewrite can strip the prefix so the backend sees the real gRPC path | **Holds** — `rewrite-target: /$2` over `/admin-api(/|$)(.*)` yields `/iverson.<Service>/<Method>` and `/health`, traced over both real request shapes. The same pattern is already in service in this chart for `/admin`, which sets no `use-regex` annotation either |
 
 ## Known issues
 
