@@ -164,12 +164,22 @@ adminUi:
   ingress:
     className: "alb"
     annotations:
+      # Completed to match api.ingress/adminApiIngress above (scheme/target-type/
+      # listen-ports/ssl-redirect) — without them the AWS Load Balancer Controller
+      # defaults to listen-ports [{"HTTP":80}] and serves this Ingress over plain
+      # HTTP, so the browser's Origin header would be http://iverson.example.com,
+      # not https://, and adminConsoleOrigin below (which this Ingress's own host
+      # is the origin of) would never match the CORS grant on the API side.
+      alb.ingress.kubernetes.io/scheme: internet-facing
+      alb.ingress.kubernetes.io/target-type: ip
       # ALB terminates TLS using an ACM certificate referenced by ARN, not a
       # Kubernetes Secret — tlsSecretName stays empty (chart default) same as
       # api.ingress/authentik.ingress above. Replace <ACM_CERT_ARN> with a real
       # certificate provisioned for the real host before applying — without it
       # ALB will only serve HTTP.
       alb.ingress.kubernetes.io/certificate-arn: "<ACM_CERT_ARN>"
+      alb.ingress.kubernetes.io/listen-ports: '[{"HTTPS":443}, {"HTTP":80}]'
+      alb.ingress.kubernetes.io/ssl-redirect: "443"
 
 jaeger:
   nodeSelector: {}

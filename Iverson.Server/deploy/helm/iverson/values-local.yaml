@@ -84,8 +84,14 @@ api:
     annotations: {}
     host: "iverson.local"
     tlsSecretName: ""
-  # admin-api.iverson.local relies on the api subchart's own nginx/no-TLS default —
-  # same reasoning as values.yaml, no override needed here.
+  # Stated explicitly (even though it matches the api subchart's own nginx/no-TLS
+  # default) for the same self-contained-overlay reason api.ingress above is
+  # restated in full: an operator reading this file shouldn't have to open
+  # charts/api/values.yaml to know what admin-api.iverson.local resolves to.
+  adminApiIngress:
+    className: "nginx"
+    annotations: {}
+    tlsSecretName: ""
   adminConsoleOrigin: "http://iverson.local"
 
 worker:
