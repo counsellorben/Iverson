@@ -25,46 +25,83 @@ so that the first screen after sign-in answers "is this deployment healthy, and 
 
 - A new landing page route at `/`, replacing the current redirect.
 - Nine widgets across three source bands (see Design 2).
-- Two new read-only REST endpoints on `Iverson.Api` (see Design 1).
+- Two new read-only gRPC methods on `Iverson.Api` (see Design 1).
 - The prerequisite work those widgets depend on and which does not exist today
-  (see Design 4): grpc-web enablement for two services, a console gRPC client
-  foundation, Prometheus scrape-target changes, and the identity fixes without
-  which every Operator-gated surface returns 403.
+  (see Design 4): grpc-web enablement for two existing services, a console gRPC client
+  foundation, a browser-reachable route to the API's HTTP/1.1 port, Prometheus
+  scrape-target changes, and the identity fixes without which every Operator-gated
+  surface returns 403.
 
 **Out of scope**
 
 - The four existing stub pages. They stay stubs; this design does not fill them in.
 - Jaeger traces. The console already relays browser spans to Jaeger via `/v1/traces`,
   but no widget reads trace data back.
-- Any write or mutation surface. Every widget and both new endpoints are read-only.
+- Any write or mutation surface, with one inherited exception: the health strip's source,
+  `GET /health`, is itself write-bearing (`Program.cs:310-311` issues a Qdrant
+  `EnsureCollectionAsync` and produces to `iverson.health.probe` on every call). Every other
+  widget and both new RPCs are read-only.
 - Alerting, thresholds, or notification. The page displays; it does not judge.
 - Authentication changes. The page uses the console's existing OIDC session.
 
 ## Design 1 — Server surface
 
-Two new endpoints on `Iverson.Api`, following the minimal-API pattern already established
-by `MapGet("/health")` (`Iverson.Server/Iverson.Api/Program.cs:301`) and
-`MapGet("/probe/starrocks")` (`:342`) rather than adding gRPC services. The console needs
-plain JSON for these two reads, and grpc-web codegen would be ceremony for that.
+Two new read-only RPCs on `Iverson.Api`, on a new `AdminConsoleService` defined in
+`Iverson.Clients/Common/Proto/admin_console.proto`. Neither existing service is a natural home:
+`ObjectSearch` is data queries, `ObjectMapping` is schema, and the two tenant services are
+tenancy.
 
-### `GET /admin/metrics` — Prometheus proxy
+**These are gRPC, not minimal-API REST, because REST cannot reach the browser here.**
+`charts/admin-ui/templates/ingress.yaml:21` matches `/admin(/|$)(.*)` with
+`rewrite-target: /$2` and `charts/api/templates/ingress.yaml:18` matches `/`, both on the same
+host — so any endpoint under `/admin/` is rewritten and served by the console's own static file
+server, never reaching the API. gRPC paths (`/iverson.AdminConsoleService/<Method>`) do not
+collide with that pattern. Going gRPC also puts all five data widgets on the one transport
+Design 4b already builds, needs no CORS, and removes the JSON-versus-proto split.
+
+### Transport
+
+grpc-web from a browser is HTTP/1.1 over cleartext. `Iverson.Api/appsettings.json:12-13` binds
+`http://*:8080` to `Protocols: Http2` and `:16-17` binds `http://*:8081` to `Protocols: Http1`,
+and both Ingress backends currently target **8080**. A browser therefore reaches the API only
+over TLS, where ALPN can negotiate HTTP/2 — and the default and local profiles are cleartext
+(`values.yaml:22` and `values-local.yaml` both use `http://iverson.local`), where an HTTP/1.1
+request to 8080 is rejected. Confirmed directly: HTTP/1.1 to `:8080/health` returns 400, the
+same request to `:8081` returns 200.
+
+This design adds a browser-reachable route to the HTTP/1.1 port. It serves all five gRPC widgets
+and the health strip, not only these two RPCs:
+
+- an api Ingress path routing the gRPC path prefix and `/health` to service port **8081**, with
+  per-profile annotation care — `values-aws.yaml:75` marks the existing path
+  `alb.ingress.kubernetes.io/backend-protocol-version: GRPC`, which is correct for native gRPC on
+  8080 and wrong for grpc-web on 8081;
+- a `server.proxy` entry in `vite.config.ts` forwarding the same prefixes to
+  `http://localhost:8081` for development. `vite.config.ts` declares no proxy today, which is also
+  why `src/telemetry.ts:19`'s relative `/v1/traces` export does not reach the API in development.
+
+The console addresses the API by a **relative, same-origin base** — the pattern
+`src/telemetry.ts` already uses — not through `config.apiBaseUrl`, which is read nowhere in
+`src/` and whose development value points at the h2c port.
+
+### `GetMetrics` — Prometheus proxy
 
 Queries Prometheus server-side and returns a fixed, named result set. It does **not** accept
 a PromQL parameter from the browser: a pass-through would turn an authenticated console
-endpoint into an open query interface over every metric the deployment emits, and the page
+RPC into an open query interface over every metric the deployment emits, and the page
 needs seven numbers.
 
 The response carries: the three reconciliation gauges, the two consumer counters, RPC
 request rate / error percentage / p95, and Ollama client p95.
 
 The API has no Prometheus client today — `Program.cs` wires only the *exporter*
-(`:71` `AddPrometheusExporter`, `:275` `MapPrometheusScrapingEndpoint`). This endpoint adds:
+(`:71` `AddPrometheusExporter`, `:275` `MapPrometheusScrapingEndpoint`). This RPC adds:
 
 - a configuration key for the Prometheus base URL,
 - a named `HttpClient` for it,
 - graceful handling of Prometheus being absent, which is a real deployment state:
   `values-laptop.yaml:16-17` sets `prometheus.enabled: false`,
-- **two NetworkPolicy additions, without which this endpoint cannot connect in any Kubernetes
+- **two NetworkPolicy additions, without which this RPC cannot connect in any Kubernetes
   profile.** `templates/networkpolicies.yaml:7-10` declares a namespace-wide default-deny on both
   Ingress and Egress; `api-egress` (`:38-63`) enumerates postgres, kafka, starrocks, qdrant,
   ollama, jaeger and authentik but has no Prometheus rule, and no `prometheus-ingress` policy
@@ -81,7 +118,7 @@ The Ollama filter is built server-side from `EmbeddingServiceOptions.BaseUrl` ra
 hard-coded, because HTTP client metrics label by `server.address` and the host is
 configuration-driven.
 
-### `GET /admin/stores/qdrant` — collection stats
+### `GetQdrantStats` — collection stats
 
 Returns points count, vectors count, and indexed-vectors count per collection.
 
@@ -90,7 +127,7 @@ No such surface exists. `/health` performs a *write* probe
 `IVectorSchemaManager` (`Iverson.Server/Iverson.Vector/IVectorRoles.cs:23-27`) exposes only
 `EnsureCollectionAsync` and `ApplyCollectionAsync`. The underlying capability does exist —
 `IntelligenceCollectionManager` already calls `ListCollectionsAsync` (`:22`) and
-`GetCollectionInfoAsync` (`:60`) — so this endpoint adds a read interface over the same
+`GetCollectionInfoAsync` (`:60`) — so this RPC adds a read interface over the same
 client, not new infrastructure.
 
 Collections are tenant-scoped by `IntelligenceTenantScope.ResolveCollectionName`
@@ -100,7 +137,8 @@ operation and is gated accordingly.
 
 ### Authorization
 
-Both endpoints require `RequireAuthorization("Operator")`.
+`AdminConsoleService` is mapped with `.RequireAuthorization("Operator").EnableGrpcWeb()`,
+matching how `TenantLifecycleGrpcService` is mapped at `Program.cs:444`.
 
 There is no generic "admin" scope. `Program.cs:141-156` declares exactly three policies —
 `Operator`, `SchemaAdmin`, `TenantAdmin` — over a `FallbackPolicy` that requires an
@@ -143,7 +181,7 @@ Nine widgets in three bands. The landing page is a new route at `/`, replacing
 
 | Widget | Source | Shows |
 |---|---|---|
-| Qdrant collection stats | `GET /admin/stores/qdrant` | Points, vectors, indexed vectors per collection |
+| Qdrant collection stats | `AdminConsoleService.GetQdrantStats` | Points, vectors, indexed vectors per collection |
 
 ### Constraints each widget carries
 
@@ -211,11 +249,17 @@ first response.
 
 | Band | Refresh |
 |---|---|
-| Health strip | 10s poll |
+| Health strip | 60s poll |
 | Band B metrics | 30s poll |
 | Qdrant stats | 30s poll |
 | Tenant roster, schema catalog | On mount, plus manual refresh |
 | Data volume per type | On mount, plus manual refresh — never polled |
+
+The health strip polls at 60s rather than the 10s a status tile would otherwise want, because
+`/health` is write-bearing: each call produces a Kafka message and issues a Qdrant
+collection-ensure (`Program.cs:310-311`). The kubelet already probes it; a console tab adding six
+more writes a minute is the part that is hard to justify. `/health/live` (`:299`) would avoid the
+writes entirely but returns no `checks` object, which is what the per-store tiles are built from.
 
 Data volume is excluded from polling deliberately: it is N gRPC calls per render, and a
 30-second timer turns an open browser tab into sustained aggregate load against StarRocks
@@ -300,9 +344,14 @@ This design adds a grpc-web transport that attaches the OIDC access token to out
 and wires proto generation into the build rather than committing its output. `generated/` stays
 ignored (`Iverson.AdminUI/.gitignore:3`): `generate` becomes a prerequisite of `build` and
 `test`, `scripts/generate_protos.sh`'s hardcoded `~/sdk/protoc/bin/protoc` is replaced by a
-resolvable path (a protoc devDependency, or a documented `PROTOC` override), and CI gains the
-codegen step. This costs a build dependency and buys a client that cannot drift from the
-`.proto` contract.
+resolvable path (a protoc devDependency, or a documented `PROTOC` override). This costs a build
+dependency and buys a client that cannot drift from the `.proto` contract.
+
+CI enforcement is **not** in scope, because there is nothing to enforce it in:
+`.github/workflows/` contains only `codeql.yml` and `deploy-validate.yml`, neither of which
+installs Node, runs `npm`, or references `Iverson.AdminUI`. The console has no build, lint,
+type-check or test job in CI today. Making the build regenerate is the drift guarantee this
+section claims; adding an AdminUI CI job is separate, currently-unscoped work.
 
 All three Band A gRPC widgets depend on this, as will the already-planned Tenants and Tenant
 Admin pages.
@@ -457,6 +506,8 @@ verification of the `Operator` policy, run afterwards against the running compos
 | A30 | The API pod can open a connection to Prometheus | **Failed** — `networkpolicies.yaml:7-10` declares a namespace-wide default-deny on Ingress and Egress; `api-egress` (`:38-63`) has no Prometheus rule; and no `prometheus-ingress` policy exists at all. See Design 1's `/admin/metrics` section |
 | A31 | `http.server.request.duration` measures RPC traffic | **Failed** — the `/health` path filter is on the tracing provider (`Program.cs:56-59`); the metrics provider (`:66-71`) is a bare `AddAspNetCoreInstrumentation()`, so probe and scrape traffic are counted. See Design 2's RPC-health constraint |
 | A32 | Generated proto code can be committed to the repo | **Failed** — `Iverson.AdminUI/.gitignore:3` ignores `generated/`, which is where `scripts/generate_protos.sh` writes. Resolved by generating at build time instead; see Design 4b |
+| A33 | The `groups` claim reaches `auth.user?.profile` | **Holds** — `oidc-client-ts` populates `user.profile` from the ID token, not the access token. A real token response for `dev-iverson-human-oidc-client-id` with scope `openid groups tenant_id offline_access` carries an `id_token` whose claims include `groups` and `tenant_id`. Design 4d's `Sidebar.tsx:20` repair claim therefore holds |
+| A34 | An `iverson-worker` scrape target exists in docker-compose | **Holds** — `docker-compose.yml:438` defines the service with `WORKLOAD_ROLE=worker` at `:454`, and `MapPrometheusScrapingEndpoint` (`Program.cs:275`) sits outside the `if (workloadRole == "api")` gate at `:438`, so the worker serves `/metrics` on 8081 |
 
 ## Known issues
 
