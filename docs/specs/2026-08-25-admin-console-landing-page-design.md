@@ -92,6 +92,23 @@ ingress-nginx **and** as an ALB path pattern, so one rule behaves identically on
 controllers — no regex, no `rewrite-target`, no path-stripping middleware, and no ordering
 contest with the api Ingress, which is on a different host.
 
+**The object carries its own annotations block**, supplied from its own values key on the pattern
+`charts/admin-ui/templates/ingress.yaml` and `charts/authentik/templates/ingress.yaml` already
+use. It does not reuse the api subchart's: `charts/api/templates/ingress.yaml:4-6` renders
+`.Values.ingress.annotations` onto the Ingress's own metadata, so on AWS that value carries
+`values-aws.yaml:75`'s `alb.ingress.kubernetes.io/backend-protocol-version: GRPC` — **which this
+Ingress must not have**, because it serves HTTP/1.1 JSON and not gRPC. Declaring a gRPC target
+group for it would break every console call on that profile. The AWS overlay gives it the same
+shape every other Ingress here carries: `scheme`, `target-type`, `certificate-arn`,
+`listen-ports` and `ssl-redirect`; omitting them yields an internal-scheme load balancer with no
+TLS, which does not serve a browser.
+
+Whether this Ingress shares an ALB with the api Ingress through
+`alb.ingress.kubernetes.io/group.name` or provisions its own is a cost preference, not a
+correctness question — `backend-protocol-version` is Ingress-scoped, so group members may carry
+different values. Unlike the previous path-prefix arrangement, **no `group.order` is needed**: the
+two objects are on different hosts and cannot shadow one another.
+
 **This is also what keeps the anonymous surface off the edge.** `/metrics` and the four
 `/probe/*` endpoints sit under none of the three prefixes, so they are simply not routed to this
 host. The allowlist is expressed as ordinary ingress paths rather than as a regex or a filter.
@@ -135,9 +152,9 @@ the new name as a SAN alongside the existing host.
 |---|---|---|
 | `GET /admin/console/tenants` | `Operator` | `ITenantRepository.ListAsync()` (`Program.cs:214`) |
 | `GET /admin/console/schema` | authenticated; evaluator consulted with the caller's own principal | the extracted schema-catalog reader |
-| `GET /admin/console/data-volume` | authenticated; evaluator consulted with the caller's own principal | the aggregate path `ObjectSearchGrpcService.Aggregate` uses |
+| `GET /admin/console/data-volume` | authenticated; evaluator consulted with the caller's own principal | the extracted aggregate reader |
 | `GET /admin/console/metrics` | `Operator` | a new Prometheus `HttpClient` |
-| `GET /admin/console/qdrant` | `Operator` | `IVectorSchemaManager.GetCollectionInfoAsync` |
+| `GET /admin/console/qdrant` | `Operator` | a new read interface over the Qdrant client (see that endpoint's section) |
 
 The health strip uses the existing anonymous `GET /health` and adds no endpoint.
 
@@ -164,14 +181,27 @@ an unrestricted decision when the principal carries no `tenant_id` claim, and an
 none. So for an operator the result is the same full view either way; the difference appears only
 for a tenant-scoped human, which is exactly where it should.
 
-**One extraction is required.** `GetSchema`'s two-pass algorithm — pass one drops types under
+**Two extractions are required**, and they are the genuine cost of serving JSON from endpoints
+rather than annotating the proto. `ListTenants` needs neither: it is already a three-line
+delegation to `ITenantRepository.ListAsync()`.
+
+**The schema-catalog reader.** `GetSchema`'s two-pass algorithm — pass one drops types under
 row-level denial or an empty authorized-field set, pass two emits relations and drops those whose
 related type did not survive — moves into a service taking `ClaimsPrincipal?` as a parameter. The
 gRPC method passes `_actingUserAccessor.ActingUser`; the endpoint passes `HttpContext.User`. Each
 caller supplies its own identity source, so the extraction depends on no shared mutable accessor
-and no interceptor. This is the one genuine cost of serving JSON from endpoints rather than
-annotating the proto, and it is the only place where logic would otherwise be duplicated —
-`ListTenants` is already a three-line delegation to the repository.
+and no interceptor.
+
+**The aggregate reader.** `Aggregate`'s path is not callable as it stands: its body is inline in
+the gRPC service, composed from members private to it — `RequireSchema`
+(`ObjectSearchGrpcService.cs:771`) and `RunAggregationAsync` (`:536`) — and it operates on proto
+types (`AggregateRequest`, `AggregationSpec`, `request.Joins`) that a JSON endpoint has no reason
+to construct, while the method itself needs a `ServerCallContext`. The reachable seam is one level
+down: `RunAggregationAsync` delegates to
+`search.AggregateAsync(SchemaBuilder.ToEngagementQuerySchema(schema), query, spec, having, …)`,
+which takes domain types. The extraction is a service that resolves the schema, evaluates
+authorization, builds a count spec and calls `search.AggregateAsync` — used by both the gRPC
+method and the endpoint.
 
 Responses are plain JSON projections of what each widget renders: the schema endpoint returns
 object types with field counts and relation edges, not full descriptors.
@@ -233,7 +263,7 @@ No such surface exists. `/health` performs a *write* probe
 `IVectorSchemaManager` (`Iverson.Server/Iverson.Vector/IVectorRoles.cs:23-27`) exposes only
 `EnsureCollectionAsync` and `ApplyCollectionAsync`. The underlying capability does exist —
 `IntelligenceCollectionManager` already calls `ListCollectionsAsync` (`:22`) and
-`GetCollectionInfoAsync` (`:60`) — so this RPC adds a read interface over the same
+`GetCollectionInfoAsync` (`:60`) — so this endpoint adds a read interface over the same
 client, not new infrastructure.
 
 Collections are tenant-scoped by `IntelligenceTenantScope.ResolveCollectionName`
@@ -796,6 +826,11 @@ would have broken codegen for four SDK clients (A64), which is why this design u
 rather than JSON transcoding. A38, A45 and A52 are marked moot: the mechanisms they describe are no
 longer part of the design.
 
+A65-A67 close the three gaps critical-design-review round 8's span check found — each a fact the
+endpoint set or the Ingress depends on that no earlier item covered. Two failed, and both were
+cases where a capability existing somewhere in the codebase had been read as the operation being
+reachable from where the endpoint would call it.
+
 | # | Assumption | Disposition |
 |---|---|---|
 | A1 | `Iverson.Api` uses minimal-API `MapGet` for `/health` and `/probe/starrocks`, both `AllowAnonymous` | **Holds** — `Program.cs:301`/`:334` and `:342`/`:346` |
@@ -861,6 +896,9 @@ longer part of the design.
 | A62 | Local development can reach the API today | **Failed** — `docker compose port iverson-api 8081` returns nothing, so the REST port is unpublished, and `.env.development` points `VITE_API_BASE_URL` at `8080`, the h2c-only port. Both must change for the console to reach the API locally |
 | A63 | The four gRPC-Web npm dependencies can be removed without breaking anything | **Holds** — `Iverson.AdminUI/src/` contains no generated proto code and no gRPC client, and nothing imports `@improbable-eng/grpc-web`, `google-protobuf` or `long`. Removal is subtraction only |
 | A64 | `google.api.http` annotations could be added to the shared protos instead | **Failed** — each client's protoc invocation carries exactly one include path, `-I"$PROTO_DIR"` (TypeScript, Python, Go and AdminUI generation scripts), and nothing in the repo supplies `google/api/annotations.proto`; unlike `google/protobuf/struct.proto` it is not a bundled well-known type. Annotating a shared proto would break codegen for four clients until all four scripts gained a googleapis include. This is why JSON transcoding was rejected in favour of endpoints |
+| A65 | The Qdrant read operation is reachable through an injectable interface | **Failed** — `Iverson.Server/Iverson.Vector/IVectorRoles.cs:23-27` declares `IVectorSchemaManager` with exactly two members, `EnsureCollectionAsync` and `ApplyCollectionAsync`. The only `GetCollectionInfoAsync` call in the repository is on a Qdrant `client` object at `IntelligenceCollectionManager.cs:60`, alongside `ListCollectionsAsync` at `:22`. The endpoint therefore adds a read interface over that client rather than consuming an existing one. A57 covers injectability of the interface, not which operations it carries |
+| A66 | The aggregate path is reachable from outside the gRPC service | **Failed** — `Aggregate`'s body is inline in `ObjectSearchGrpcService` and built from members private to it (`RequireSchema` at `:771`, `RunAggregationAsync` at `:536`), over proto types, in a method requiring a `ServerCallContext`. The reachable seam is one level down: `RunAggregationAsync` delegates to `search.AggregateAsync(...)` over domain types. This is why the design specifies two extractions rather than one |
+| A67 | An Ingress's annotations are scoped to the object that declares them | **Holds, and it is the hazard** — `charts/api/templates/ingress.yaml:4-6` renders `.Values.ingress.annotations` onto the Ingress's own `metadata`, so a second Ingress reusing that value would inherit `values-aws.yaml:75`'s `backend-protocol-version: GRPC`. Object scoping is also what lets two Ingresses in one ALB group carry different backend-protocol annotations |
 | A51 | The `AllowAnonymous` endpoints are reachable only on port 8081 | **Failed** — `RequireHost` appears nowhere in `Program.cs`, so ASP.NET routing serves every endpoint on both listeners. `GET /metrics` over h2c prior-knowledge on `:8080` returns 200 with the full 121,797-byte body, and an anonymous `POST /probe/kafka` on the same port created the `iverson.probe` Kafka topic. The port split is a protocol convention, not a security boundary; see Design 5f |
 
 ## Known issues
@@ -904,9 +942,11 @@ same reason — but it is now a confirmed defect rather than an open question.
 
 **Data volume can now report authorization denial.** Previously accepted as unsolved, because
 `Aggregate` returns an empty response on denial and distinguishing it would have meant changing
-that contract for all five clients. A server-side endpoint holds the caller's principal and can
-consult `IRowFieldAuthorizationEvaluator` directly, so denial and genuinely-zero are
-distinguishable without touching the proto contract. The same applies to `Aggregate`'s other two
+that contract for all five clients. A server-side endpoint holds the caller's principal and calls
+`IRowFieldAuthorizationEvaluator` itself — the evaluator is DI-registered and takes a
+`ClaimsPrincipal?`, so this is a direct call, not a reuse of `Aggregate`'s private
+`EvaluateAuthorization` helper. Denial and genuinely-zero become distinguishable without touching
+the proto contract. The same applies to `Aggregate`'s other two
 awkwardnesses — its `InvalidArgument` on a zero-aggregation request and its never-assigned
 `Total` field — which are now handled once server-side rather than worked around in the browser.
 
