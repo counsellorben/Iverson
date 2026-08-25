@@ -1,4 +1,7 @@
 {{- if .Values.networkPolicy.enabled }}
+{{- if not .Values.networkPolicy.clusterCidrs }}
+{{- fail "networkPolicy.clusterCidrs must list at least one CIDR; an empty list renders an allow-all ingress rule" }}
+{{- end }}
 # Default-deny: nothing in the namespace can talk to anything else unless a
 # more specific policy below explicitly allows it.
 apiVersion: networking.k8s.io/v1
@@ -9,8 +12,16 @@ spec:
   podSelector: {}
   policyTypes: ["Ingress", "Egress"]
 ---
-# api is the only component allowed in from outside the namespace (via
-# ingress-nginx), and the only component allowed to reach every datastore.
+# api is reachable from outside the namespace two ways: through ingress-nginx
+# (local/laptop, where it runs as an in-cluster namespace) or directly from the
+# cloud load balancer's pod-IP targets (AWS/Azure/GCP have no ingress-nginx
+# namespace at all — ALB/App Gateway/GCE ingress connect from inside the cluster
+# CIDR instead). `.Values.networkPolicy.clusterCidrs` supplies that CIDR per
+# profile (guarded near the top of this file: an empty list would otherwise
+# render an ingress rule that matches every source, not zero). Port 8081 also
+# admits the kubelet, which connects the same way (no pod/namespace identity of
+# its own) for readiness/liveness probes, and Prometheus, which scrapes
+# /metrics from the dedicated Http1 health port rather than from 8080.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -23,12 +34,18 @@ spec:
     - from:
         - namespaceSelector:
             matchLabels: { kubernetes.io/metadata.name: ingress-nginx }
+        {{- range .Values.networkPolicy.clusterCidrs }}
+        - ipBlock: { cidr: {{ . }} }
+        {{- end }}
       ports:
         - { protocol: TCP, port: 8080 }
-    - from: []   # kubelet readiness/liveness probes: the kubelet connects directly from the
-               # node, not from any pod/namespace, so there's no podSelector/namespaceSelector
-               # to scope this to — same any-source reasoning as the port-only egress rules
-               # elsewhere in this file. Scoped to the dedicated Http1 health port only.
+    - from:
+        - namespaceSelector:
+            matchLabels: { kubernetes.io/metadata.name: ingress-nginx }
+        - podSelector: { matchLabels: { app: {{ .Release.Name }}-prometheus } }
+        {{- range .Values.networkPolicy.clusterCidrs }}
+        - ipBlock: { cidr: {{ . }} }
+        {{- end }}
       ports:
         - { protocol: TCP, port: 8081 }
 ---
@@ -57,6 +74,12 @@ spec:
       ports: [{ protocol: TCP, port: 4317 }, { protocol: TCP, port: 4318 }]
     - to: [{ podSelector: { matchLabels: { app: {{ .Release.Name }}-authentik-server } } }]
       ports: [{ protocol: TCP, port: 9000 }]
+{{- if .Values.prometheus.enabled }}
+    - to: [{ podSelector: { matchLabels: { app: {{ .Release.Name }}-prometheus } } }]
+               # api queries Prometheus's own HTTP API (not the /metrics scrape port) to
+               # serve live status on the admin console landing page.
+      ports: [{ protocol: TCP, port: 9090 }]
+{{- end }}
     - to: []   # DNS — every egress policy needs this or in-cluster name resolution breaks
       ports: [{ protocol: UDP, port: 53 }, { protocol: TCP, port: 53 }]
 ---
@@ -153,10 +176,14 @@ spec:
     - to: []   # Kubernetes API server: CNPG's own initdb/bootstrap job (baked into the
                # postgres image, not a sidecar) calls back to the API server directly to
                # sync Cluster status — without this it times out forever and the Cluster
-               # never leaves "Setting up primary". No portable way to scope this tighter:
-               # the API server isn't a normal in-namespace pod, and its address/CIDR
-               # differs across kind/EKS/AKS/GKE (managed control planes aren't even
-               # in-cluster pods), so this can't be a podSelector/namespaceSelector rule.
+               # never leaves "Setting up primary". This is a different scoping problem
+               # than api-ingress's ipBlock rules above: those cover node/pod-IP traffic
+               # inside the per-profile `.Values.networkPolicy.clusterCidrs` range, but
+               # the control-plane API server isn't guaranteed to live inside that range —
+               # on managed control planes (EKS/AKS/GKE) it's provider-operated
+               # infrastructure, not a normal in-cluster pod, and its address varies in a
+               # way no single CIDR (per-profile or otherwise) reliably covers. So this
+               # stays a port-only `to: []` rule rather than an ipBlock/podSelector one.
                # Both 443 and 6443 are listed because NetworkPolicy enforcement happens
                # after kube-proxy's Service DNAT rewrites the destination port: the
                # `kubernetes` Service is always :443, but self-hosted/kubeadm-style
@@ -488,6 +515,21 @@ spec:
         - podSelector: { matchLabels: { app: {{ .Release.Name }}-api } }
         - podSelector: { matchLabels: { app: {{ .Release.Name }}-worker } }
       ports: [{ protocol: TCP, port: 8081 }]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ .Release.Name }}-prometheus-ingress
+spec:
+  podSelector:
+    matchLabels: { app: {{ .Release.Name }}-prometheus }
+  policyTypes: ["Ingress"]
+  ingress:
+    - from:
+        - podSelector: { matchLabels: { app: {{ .Release.Name }}-api } }
+               # api's own query path into Prometheus's HTTP API (the api-egress rule's
+               # counterpart) — for the admin console landing page's live status.
+      ports: [{ protocol: TCP, port: 9090 }]
 {{- end }}
 ---
 apiVersion: networking.k8s.io/v1

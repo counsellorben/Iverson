@@ -10,6 +10,15 @@
 # cannot enforce NetworkPolicy at all — disabling it removes network
 # segmentation entirely rather than degrading gracefully, so treat "false"
 # as an explicit, logged exception, not a default anyone should ship with.
+#
+# networkPolicy.clusterCidrs has no default here on purpose. It scopes the
+# api-ingress rules that admit the kubelet and (on AWS/Azure/GCP, which have
+# no ingress-nginx namespace) the cloud load balancer's pod-IP targets, and
+# that range is a different, non-overlapping value per profile — every
+# values-*.yaml overlay MUST set its own. templates/networkpolicies.yaml
+# fails the render with `fail` (not `required`, which lets an empty list
+# through) if this is left unset, rather than silently falling back to an
+# ingress rule that matches every source.
 networkPolicy:
   enabled: true
 

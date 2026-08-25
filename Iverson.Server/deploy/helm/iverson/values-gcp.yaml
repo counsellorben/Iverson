@@ -2,6 +2,13 @@
 # and modules/cluster-gcp's fixed naming exactly (see Tasks 2 and 5 of this plan).
 # No separate ingress controller to install — GKE's built-in GCE ingress class is used directly.
 
+# modules/cluster-gcp's VPC subnet CIDR — covers both the kubelet (node IPs) and the
+# GCE ingress's pod-IP targets, since GKE has no ingress-nginx namespace for
+# api-ingress to admit instead. See values.yaml's networkPolicy comment for why
+# every profile sets this.
+networkPolicy:
+  clusterCidrs: ["10.2.0.0/20"]
+
 # Keep in lockstep with api.ingress.host below — see values.yaml's global.ingressHost
 # comment for why this is a separate key instead of a single source of truth.
 global:

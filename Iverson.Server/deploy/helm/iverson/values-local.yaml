@@ -7,6 +7,11 @@
 # because this profile never leaves localhost. Every cloud overlay in the
 # companion Terraform plan sets a real tlsSecretName.
 
+# kind's default pod/service CIDR range — see values.yaml's networkPolicy
+# comment for why every profile must set this itself.
+networkPolicy:
+  clusterCidrs: ["172.18.0.0/16"]
+
 postgres:
   instances: 1
   storageSize: 2Gi
