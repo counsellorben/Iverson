@@ -59,7 +59,7 @@ Newly introduced by this plan and verified at plan-write time:
 |---|---|---|---|
 | 1 | File path | All 9 files the plan modifies/deletes exist at the cited paths | `test -f` on each returned OK: both parsers, `BeirCorpusParserTests.cs`, `CorpusModels.cs`, `Iverson.slnx`, the 2026-07-31 spec, both scenarios, `Program.cs` |
 | 2 | File path | `Iverson.Server/Iverson.LoadTest/scripts/` does not exist; Task 2 creates it | `ls` returned absent |
-| 3 | Signature | `ParseCorpus(TextReader)` / `ParseQueries(TextReader)` — callsites pass `StreamReader`, which derives from `TextReader` | `BeirCorpusParser.cs:13` `public static List<CorpusDocument> ParseCorpus(TextReader reader)`; `:55` same shape for `ParseQueries` |
+| 3 | Signature | `ParseCorpus(TextReader)` / `ParseQueries(TextReader)` — callsites pass `StreamReader`, which derives from `TextReader` | `BeirCorpusParser.cs:13` `public static List<CorpusDocument> ParseCorpus(TextReader reader)`; `:56` same shape for `ParseQueries` |
 | 4 | Signature | `CorpusDocument(string DocId, string Title, string Text)`, `CorpusQuery(string QueryId, string Text)` | `CorpusModels.cs:3-4` |
 | 5 | Code-in-plan | The guard pattern being mirrored throws `FormatException` with the line number interpolated | `BeirCorpusParser.cs:32` and `:46` — `throw new FormatException($"BEIR corpus line {lineNumber} ...")` |
 | 6 | Code-in-plan | Test conventions: xunit `[Fact]`, FluentAssertions `act.Should().Throw<FormatException>().WithMessage("*line N*")`, C# raw string literals for fixtures | `BeirCorpusParserTests.cs:1-3` (usings), `:44-46`, `:54-56` |
@@ -76,6 +76,7 @@ Newly introduced by this plan and verified at plan-write time:
 | 17 | Sibling sweep | **Complete** corpus-arm enumeration — the spec's §2 prose list was incomplete (it cited `BenchmarkIngestScenario.cs:19-20` for XML docs; the real mentions are `:14`, `:20`, `:21`). Task 1 carries the grep-verified list | `grep -rn -io "beir\|freshstack" --include=*.cs` over `Iverson.LoadTest/` and `Iverson.LoadTest.Tests/` |
 | 18 | Sibling sweep | Every identifier the plan names resolves at its point of use: `FreshStackCorpusParser`, `BeirCorpusParser`, `ParseCorpus`, `ParseQueries`, `ParseQrels`, `Qrel`, `CorpusDocument`, `CorpusQuery`, `FormatException`, `TrecRunWriter`, `KeyMap`, `BenchmarkIngestScenario`, `BenchmarkQueryScenario`, `Iverson.LoadTest.Tests`, `Iverson.slnx` | Each read or grep'd this round; all resolve |
 | 19 | Consumer impact | `BeirCorpusParser.cs` hardcodes "BEIR" in its class doc and three exception messages, which the rename must also carry — otherwise a FreshStack parse failure reports "BEIR corpus line N" | `:6-7` class doc "Parses BEIR-format corpus files"; messages at `:32`, `:46`, `:75` (`:110`/`:117` vanish with `ParseQrels`) |
+| 20 | Code-in-plan | The two repos expose **different splits**: `freshstack/corpus-oct-2024` has `train`; `freshstack/queries-oct-2024` has `test` | HF dataset page for the corpus repo reports a train split (117k rows at its largest config, matching V1's angular 117,288) and exposes no test split; spec V2 records the queries repo as split `test`, 672 rows |
 
 ---
 
@@ -232,23 +233,31 @@ import json
 import os
 import sys
 
-from datasets import get_dataset_config_names, load_dataset
+from datasets import get_dataset_config_names, get_dataset_split_names, load_dataset
 
 CORPUS_REPO = "freshstack/corpus-oct-2024"
 QUERIES_REPO = "freshstack/queries-oct-2024"
 TOPICS = ["angular", "godot", "langchain", "laravel", "yolo"]
 
 
-def load_config(repo, topic):
+def load_config(repo, topic, split):
     """Load one topic. The config is the SECOND POSITIONAL argument to load_dataset --
     there is no `subset=` parameter (FreshStack's own README says otherwise, and an unknown
     keyword would fall through to **config_kwargs without selecting the topic), so the
-    loaded config is asserted against the request rather than trusted."""
+    loaded config is asserted against the request rather than trusted.
+
+    The split is a parameter because the two repos DIFFER: the corpus repo publishes its
+    rows under `train`, the queries repo under `test`. Asserting it before loading turns an
+    upstream rename into a named cause rather than a bare ValueError."""
     available = get_dataset_config_names(repo)
     if topic not in available:
         sys.exit(f"{repo}: topic '{topic}' not among configs {sorted(available)}")
 
-    ds = load_dataset(repo, topic, split="test")
+    splits = get_dataset_split_names(repo, topic)
+    if split not in splits:
+        sys.exit(f"{repo} ({topic}): split '{split}' not among {sorted(splits)}")
+
+    ds = load_dataset(repo, topic, split=split)
 
     loaded = getattr(ds.info, "config_name", None)
     if loaded != topic:
@@ -277,32 +286,21 @@ def main():
     ap.add_argument("--out-dir", required=True)
     args = ap.parse_args()
 
-    out = os.path.join(args.out_dir, "freshstack")
-    os.makedirs(out, exist_ok=True)
+    corpus = load_config(CORPUS_REPO, args.topic, "train")
+    queries = load_config(QUERIES_REPO, args.topic, "test")
 
-    corpus = load_config(CORPUS_REPO, args.topic)
-    queries = load_config(QUERIES_REPO, args.topic)
-
-    # corpus.jsonl -- `metadata` dropped; `title` omitted entirely rather than emitted
-    # empty, since FreshStack has no such field and the parser defaults a missing one to "".
-    corpus_ids = set()
-    with open(os.path.join(out, "corpus.jsonl"), "w", encoding="utf-8") as f:
-        for row in corpus:
-            corpus_ids.add(row["_id"])
-            f.write(json.dumps({"_id": row["_id"], "text": row["text"]}) + "\n")
+    # Everything is validated BEFORE anything is written. A converter that exits non-zero
+    # having already left corpus.jsonl on disk is worse than one that writes nothing:
+    # BenchmarkIngestScenario gates on File.Exists alone, so the next benchmark-ingest run
+    # would ingest a corpus whose judgments were never produced and score zero throughout.
+    # Re-iterating a Dataset is cheap -- it is memory-mapped Arrow, not held in RAM.
+    corpus_ids = {row["_id"] for row in corpus}
     check_no_whitespace("corpus _id", corpus_ids)
 
-    # queries.jsonl -- title + body. This composition is a DECISION, not a verified fact:
-    # FreshStack does not document how it composes retrieval query text (spec section 1.1).
-    query_ids = set()
-    with open(os.path.join(out, "queries.jsonl"), "w", encoding="utf-8") as f:
-        for row in queries:
-            query_ids.add(row["query_id"])
-            text = f"{row['query_title']}\n\n{row['query_text']}"
-            f.write(json.dumps({"_id": row["query_id"], "text": text}) + "\n")
+    query_ids = {row["query_id"] for row in queries}
     check_no_whitespace("query_id", query_ids)
 
-    # qrels.tsv -- the nugget id lands in column 2, the TREC iteration field, which is what
+    # qrels -- the nugget id lands in column 2, the TREC iteration field, which is what
     # makes alpha-nDCG computable: ir_measures reads subtopic ids from exactly that column.
     nugget_ids = set()
     rows, missing_relevant, dropped_non_relevant = [], [], 0
@@ -331,6 +329,23 @@ def main():
             f"{len(missing_relevant)} relevant_corpus_id(s) are absent from the '{args.topic}' "
             f"corpus. First few: {sorted(set(missing_relevant))[:5]}"
         )
+
+    # Every assertion has passed; only now does anything reach disk.
+    out = os.path.join(args.out_dir, "freshstack")
+    os.makedirs(out, exist_ok=True)
+
+    # corpus.jsonl -- `metadata` dropped; `title` omitted entirely rather than emitted
+    # empty, since FreshStack has no such field and the parser defaults a missing one to "".
+    with open(os.path.join(out, "corpus.jsonl"), "w", encoding="utf-8") as f:
+        for row in corpus:
+            f.write(json.dumps({"_id": row["_id"], "text": row["text"]}) + "\n")
+
+    # queries.jsonl -- title + body. This composition is a DECISION, not a verified fact:
+    # FreshStack does not document how it composes retrieval query text (spec section 1.1).
+    with open(os.path.join(out, "queries.jsonl"), "w", encoding="utf-8") as f:
+        for row in queries:
+            text = f"{row['query_title']}\n\n{row['query_text']}"
+            f.write(json.dumps({"_id": row["query_id"], "text": text}) + "\n")
 
     with open(os.path.join(out, "qrels.tsv"), "w", encoding="utf-8") as f:
         for qid, nid, cid, rel in rows:
@@ -362,12 +377,12 @@ python3 Iverson.Server/Iverson.LoadTest/scripts/freshstack_to_jsonl.py \
 
 Confirm: all three files are written; the printed document and query counts match V1/V2 (25,482 and 99); the run exits 0, meaning the config-name, whitespace, and relevant-join assertions all passed. Note the dropped-non-relevant count if any — that is expected behaviour, not a failure.
 
-Then confirm the renamed parser actually reads what the converter wrote:
+Then inspect the emitted shapes directly — this confirms the file format, not parser acceptance:
 ```bash
 head -2 /tmp/freshstack-check/freshstack/corpus.jsonl
 head -2 /tmp/freshstack-check/freshstack/qrels.tsv
 ```
-The corpus lines must carry `_id` and `text` and no `title`; the qrels lines must have exactly four tab-separated columns.
+The corpus lines must carry `_id` and `text` and no `title`; the qrels lines must have exactly four tab-separated columns. True parser conformance is first exercised when `benchmark-ingest` runs against this output — `Program.cs:86-87` puts both benchmark commands behind `needsTenantAndSchema`, so no CLI path parses without a live stack.
 
 If the relevant-join assertion fires, **stop and report** rather than relaxing it — it means V4's unverifiable assumption is false and the spec's understanding of the join is wrong.
 
