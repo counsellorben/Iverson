@@ -216,6 +216,7 @@ builder.Services.AddSingleton<ITenantRepository>(sp => new TenantRepository(
     sp.GetRequiredService<IRecordStoreQueryExecutor>()));
 builder.Services.AddMemoryCache();
 builder.Services.AddSingleton<Iverson.Api.Tenancy.ITenantStatusCache, Iverson.Api.Tenancy.TenantStatusCache>();
+builder.Services.AddSingleton<HealthCheckCache>();
 builder.Services.AddSingleton<Iverson.Api.Reconciliation.ReconciliationService>();
 
 builder.Services.AddHttpClient(Iverson.Api.Tenancy.IdpAdminClient.HttpClientName, client =>
@@ -298,33 +299,20 @@ app.Use(async (context, next) =>
 // ── Endpoints ──────────────────────────────────────────────────────────────────
 app.MapGet("/health/live", () => Results.Ok(new { status = "alive" })).WithName("HealthLive").AllowAnonymous();
 
-app.MapGet("/health", async (
-    IRecordStoreQueryExecutor db,
-    IEngagementStoreHealthCheck sr,
-    IVectorSchemaManager vector,
-    IEventProducer kafka,
-    IOptions<EngagementStoreOptions> engagementOptions) =>
+app.MapGet("/health", async (HealthCheckCache healthCheckCache) =>
 {
-    var pgTask     = db.QuerySingleOrDefaultAsync<int>("SELECT 1").ContinueWith(t => t.IsCompletedSuccessfully && t.Result == 1);
-    var srTask     = sr.CheckHealthAsync();
-    var vectorTask = vector.EnsureCollectionAsync("iverson-probe", 4).ContinueWith(t => t.IsCompletedSuccessfully);
-    var kafkaTask  = kafka.ProduceAsync("iverson.health.probe", "probe", new { ts = DateTime.UtcNow })
-                         .ContinueWith(t => t.IsCompletedSuccessfully);
+    var result = await healthCheckCache.GetAsync();
 
-    await Task.WhenAll(pgTask, srTask, vectorTask, kafkaTask);
-
-    var srStatus = await srTask;
-    var engagementEnabled = engagementOptions.Value.Enabled;
     var checks = new
     {
-        postgres  = pgTask.Result,
-        starrocks = engagementEnabled ? (object)(srStatus == EngagementHealthStatus.Healthy) : "disabled",
-        qdrant    = vectorTask.Result,
-        kafka     = kafkaTask.Result
+        postgres  = result.Postgres,
+        starrocks = result.EngagementEnabled ? (object)(result.StarRocks == EngagementHealthStatus.Healthy) : "disabled",
+        qdrant    = result.Qdrant,
+        kafka     = result.Kafka
     };
 
     var readiness = ReadinessPolicy.Evaluate(
-        pgTask.Result, srStatus, vectorTask.Result, kafkaTask.Result, engagementEnabled);
+        result.Postgres, result.StarRocks, result.Qdrant, result.Kafka, result.EngagementEnabled);
 
     return readiness.Ready
         ? Results.Ok(new { status = readiness.FullyHealthy ? "healthy" : "degraded", checks })
@@ -337,26 +325,26 @@ app.MapGet("/probe/sql", async (IRecordStoreQueryExecutor db) =>
 {
     var result = await db.QuerySingleOrDefaultAsync<int>("SELECT 1");
     return Results.Ok(new { connected = result == 1, traceId = Activity.Current?.TraceId.ToString() });
-}).WithName("ProbeSql").AllowAnonymous();
+}).WithName("ProbeSql").RequireAuthorization("Operator");
 
 app.MapGet("/probe/starrocks", async (IEngagementStoreHealthCheck sr) =>
 {
     var healthy = await sr.IsHealthyAsync();
     return Results.Ok(new { connected = healthy, traceId = Activity.Current?.TraceId.ToString() });
-}).WithName("ProbeStarRocks").AllowAnonymous();
+}).WithName("ProbeStarRocks").RequireAuthorization("Operator");
 
 app.MapGet("/probe/vector", async (IVectorSchemaManager vector) =>
 {
     await vector.EnsureCollectionAsync("iverson-probe", 4);
     return Results.Ok(new { connected = true, collection = "iverson-probe", traceId = Activity.Current?.TraceId.ToString() });
-}).WithName("ProbeVector").AllowAnonymous();
+}).WithName("ProbeVector").RequireAuthorization("Operator");
 
 app.MapPost("/probe/kafka", async (IEventProducer producer) =>
 {
     var traceId = Activity.Current?.TraceId.ToString();
     await producer.ProduceAsync("iverson.probe", "probe", new { timestamp = DateTime.UtcNow, traceId });
     return Results.Ok(new { produced = true, topic = "iverson.probe", traceId });
-}).WithName("ProbeKafka").AllowAnonymous();
+}).WithName("ProbeKafka").RequireAuthorization("Operator");
 
 app.MapPost("/admin/reconcile/{typeName}", async (
     string typeName,
