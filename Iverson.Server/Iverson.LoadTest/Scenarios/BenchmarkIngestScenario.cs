@@ -30,6 +30,12 @@ public sealed class BenchmarkIngestScenario(
 {
     private const int ProgressEvery = 1_000;
 
+    // The drain probe tolerates this many CONSECUTIVE failures before giving up. Any successful
+    // poll resets the counter, so a slow drain punctuated by occasional broker blips still
+    // completes, while a genuinely broken probe still fails the run rather than reporting drained.
+    private const int MaxConsecutiveProbeErrors = 10;
+    private static readonly TimeSpan ProbeRetryDelay = TimeSpan.FromSeconds(5);
+
     public async Task RunAsync(CommandFlags flags, CancellationToken ct = default)
     {
         if (string.IsNullOrWhiteSpace(flags.CorpusPath))
@@ -165,20 +171,30 @@ public sealed class BenchmarkIngestScenario(
     {
         long succeeded = 0, failed = 0;
         var done = 0;
+
+        // Bypass only — NOT PickRandom(). BuildAuthorizationRules restricts Body to the
+        // iverson-loadtest-bypass role for both read and write, so the regular identity's
+        // PersistAsync is rejected outright by RejectDisallowedFields (every payload carries
+        // Body). The latency scenarios can afford a random identity; a correctness harness
+        // cannot.
+        var identity = identities.Bypass;
+
+        // Identity MUST be bound to the coordinator, not passed in a per-call Metadata bag.
+        // EntityCoordinator.ResolveHeadersAsync strips any acting-user entry the caller puts in
+        // that bag and resolves bound-then-ambient instead — so the pre-parity idiom
+        // (`new Metadata().WithActingUser(token)`) sends NO acting-user header at all. The server
+        // then treats the call as anonymous: ActingUserInterceptor returns silently on a missing
+        // header, and every Post comes back PermissionDenied with `actor=unknown` in the audit
+        // log. See Iverson.Client.Core/EntityCoordinator.cs:36-49.
+        var writer = documents.WithActingUser(() => identity.GetTokenAsync(ct));
+
+        // The bypass identity's writes are never ownership-checked, so it must set its own
+        // OwnerId (same rule WritePathRunner follows for the other benchmark entities).
+        var ownerId = await identity.GetSubAsync(ct);
+
         foreach (var corpusDoc in corpus)
         {
             ct.ThrowIfCancellationRequested();
-
-            // Bypass only — NOT PickRandom(). BuildAuthorizationRules restricts Body to the
-            // iverson-loadtest-bypass role for both read and write, so the regular identity's
-            // PersistAsync is rejected outright by RejectDisallowedFields (every payload carries
-            // Body). The latency scenarios can afford a random identity; a correctness harness
-            // cannot.
-            var identity = identities.Bypass;
-            var headers  = new Grpc.Core.Metadata().WithActingUser(await identity.GetTokenAsync(ct));
-            // The bypass identity's writes are never ownership-checked, so it must set its own
-            // OwnerId (same rule WritePathRunner follows for the other benchmark entities).
-            var ownerId = await identity.GetSubAsync(ct);
 
             var doc = new BenchmarkDocument
             {
@@ -192,7 +208,7 @@ public sealed class BenchmarkIngestScenario(
             string? key;
             try
             {
-                key = await documents.PersistAsync(doc, headers, ct);
+                key = await writer.PersistAsync(doc, ct: ct);
             }
             catch (Grpc.Core.RpcException ex)
             {
@@ -245,6 +261,7 @@ public sealed class BenchmarkIngestScenario(
 
         var opts = new ListConsumerGroupOffsetsOptions();
         long prevLag = -1;
+        var consecutiveProbeErrors = 0;
 
         while (true)
         {
@@ -276,10 +293,29 @@ public sealed class BenchmarkIngestScenario(
             }
             catch (Exception ex)
             {
-                // No silent `break`: an errored probe must fail the run, not be mistaken for "drained".
-                throw new InvalidOperationException(
-                    $"Kafka drain probe for group '{group}' failed: {ex.Message}", ex);
+                // No silent `break`: an errored probe must fail the run, not be mistaken for
+                // "drained". But a SINGLE transient error must not discard a post wave that has
+                // already fully succeeded. Kafka's coordinator lookup on this stack intermittently
+                // times out under embedding load — reproduced directly with kafka-consumer-groups
+                // --describe from inside the broker container, which failed once in three attempts
+                // while the intelligence consumer was running. Retrying a bounded number of times
+                // distinguishes "the probe is broken" from "the broker blinked".
+                consecutiveProbeErrors++;
+                if (consecutiveProbeErrors > MaxConsecutiveProbeErrors)
+                {
+                    throw new InvalidOperationException(
+                        $"Kafka drain probe for group '{group}' failed {consecutiveProbeErrors} " +
+                        $"consecutive times; last error: {ex.Message}", ex);
+                }
+
+                Console.WriteLine(
+                    $"[benchmark-ingest] Drain probe error {consecutiveProbeErrors}/{MaxConsecutiveProbeErrors} " +
+                    $"({ex.GetType().Name}: {ex.Message}) — retrying.");
+                await Task.Delay(ProbeRetryDelay, ct);
+                continue;
             }
+
+            consecutiveProbeErrors = 0;
 
             Console.WriteLine($"[benchmark-ingest] Intelligence consumer lag: {totalLag:N0} messages ({DateTime.UtcNow:HH:mm:ss})");
 
