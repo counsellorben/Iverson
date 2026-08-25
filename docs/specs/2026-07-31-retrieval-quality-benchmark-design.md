@@ -68,7 +68,7 @@ most important constraint in the design:
   *facets* it covers, so it needs subtopic- or nugget-level judgments. **BEIR does not have these**,
   and no amount of nDCG on BEIR will answer the λ question. FreshStack ships 1–7 GPT-4o-generated
   nuggets per question and reports α-nDCG@10, Coverage@20 and Recall@50 — the exact metric family
-  MMR exists to move. Two topics give ~50K documents and ~150 queries (A1).
+  MMR exists to move. Two topics — godot and yolo — give ~50K documents and ~150 queries (A1).
 
 ### 3. Corpus → Iverson mapping
 
@@ -77,7 +77,7 @@ A new `BenchmarkDocument` entity in `Iverson.LoadTest`:
 - `[IversonKey] Guid Id` — **server-assigned**, not the corpus id. Iverson generates a UUIDv7 when
   the supplied key is empty, and non-GUID keys are documented as unreachable (A5).
 - `DocId` (string) — the corpus document id, carried as an ordinary property.
-- `Title` (string) — the corpus title.
+- `Title` (string) — the corpus title. Comes out empty for FreshStack, which has no `title` field.
 - `Body` — annotated **both** `[IversonEmbedding]` and `[IversonChunk]`. The dual annotation is what
   makes `centroidPossible` true and the centroid signal live; an embedding-only property would make
   the fusion a mathematical identity and the ablation meaningless (A4).
@@ -151,9 +151,16 @@ not commit an edited constant to `main`.
 Two parts of the harness can be silently wrong in ways that would invalidate every result, and they
 get unit tests:
 
-- the corpus parsers (BEIR `corpus.jsonl` / `queries.jsonl` / `qrels` TSV, and FreshStack's format);
+- the corpus parser — a single `JsonlCorpusParser` covering both `corpus.jsonl` and `queries.jsonl`,
+  BEIR's on-disk shape, into which FreshStack data is normalised upstream before this parser ever sees
+  it;
 - the max-passage aggregation — that several chunks of one parent collapse to a single document entry
   carrying the maximum chunk score, and that ordering follows the aggregated score.
+
+The FreshStack nugget → iteration-field convention lives in the Python converter that does that
+upstream normalisation, not in this C# suite, and is no longer covered by a unit test; it is verified
+by running the converter against real data instead, since the failure that matters is upstream schema
+drift, which no C# fixture could have caught anyway.
 
 The rest of the harness is I/O against a live stack and is not usefully unit-testable.
 
@@ -203,7 +210,8 @@ The smallest viable FreshStack topic, godot, is 25,482 documents with 99 queries
 volume that produced that load, and one topic alone matches the ~100-question statistical power the
 prior spec assumed from two.
 
-**~150 queries is modest statistical power.** Two FreshStack topics give roughly 150 questions — more
+**~150 queries is modest statistical power.** Two FreshStack topics — godot and yolo, 52,689 documents
+and 156 queries combined — give roughly 150 questions, more
 than the ~100 originally estimated, but still modest. That is enough to detect a large diversification
 effect and not enough to resolve a subtle one, so a null result on the λ sweep should be read as "no
 large effect detected", never as "λ = 0.70 is optimal". Ben chose two topics over one for exactly this
