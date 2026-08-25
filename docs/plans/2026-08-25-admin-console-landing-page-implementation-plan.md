@@ -210,11 +210,21 @@ git commit -m "require Operator on the probe endpoints and cache the health fan-
 ```
   `fail` aborts unconditionally, and `not` is true for an empty list as well as for nil.
 
-- [ ] **Step 4b: Assert the guard fires.** Render one overlay with the key nulled and again with it set to an empty list; both must abort rather than emit a policy.
+- [ ] **Step 4b: Assert the guard fires.** Render one overlay three ways — key nulled, key set to a true empty list, and key set via `--set`'s `{}` spelling. All three must abort rather than emit a policy.
 ```bash
 helm template Iverson.Server/deploy/helm/iverson -f Iverson.Server/deploy/helm/iverson/values-local.yaml --set networkPolicy.clusterCidrs=null
+helm template Iverson.Server/deploy/helm/iverson -f Iverson.Server/deploy/helm/iverson/values-local.yaml --set-json 'networkPolicy.clusterCidrs=[]'
 helm template Iverson.Server/deploy/helm/iverson -f Iverson.Server/deploy/helm/iverson/values-local.yaml --set 'networkPolicy.clusterCidrs={}'
 ```
+  **`--set 'x={}'` does not produce an empty list** — helm parses it to a ONE-ELEMENT list `[""]`, so the emptiness guard above never fires on it and the render emits `ipBlock: { cidr: }`. That is a loud failure rather than a silent one (the API server rejects an `ipBlock` with no CIDR, unlike an empty `from`, which matches every source) — but `{}` is the spelling a human clearing an override actually types, so guard the blank entry too:
+```
+{{- range .Values.networkPolicy.clusterCidrs }}
+{{- if not (trim (toString .)) }}
+{{- fail "networkPolicy.clusterCidrs contains a blank entry; every entry must be a CIDR" }}
+{{- end }}
+{{- end }}
+```
+  Use `--set-json` (or a values file) for the true-empty-list case; that one exercises the emptiness guard.
 
 - [ ] **Step 5: Verify the CI gate passes for every overlay.**
 ```bash
