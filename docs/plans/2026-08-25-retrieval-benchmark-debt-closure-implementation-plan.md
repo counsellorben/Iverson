@@ -267,14 +267,21 @@ def load_config(repo, topic, split):
     return ds
 
 
-def check_no_whitespace(kind, values):
-    """Every id emitted into a whitespace-delimited file must be whitespace-free.
+def whitespace_ids(values):
+    """Ids that cannot survive a whitespace-delimited file.
 
     qrels.tsv carries three id columns and TREC qrels readers split on whitespace rather
     than strictly on tabs; TrecRunWriter emits the run file space-separated. One id with a
     space shifts every later column in its row, and the reader takes the tail of that id as
     the next field -- wrong scores, no error anywhere."""
-    bad = sorted({v for v in values if any(c.isspace() for c in v)})
+    return {v for v in values if any(c.isspace() for c in v)}
+
+
+def check_no_whitespace(kind, values):
+    """Hard-fail for the id columns that cannot simply be dropped. Excluding a query or a
+    nugget would silently change what is being measured; excluding a document does not, so
+    the corpus column is handled by exclusion in main() instead."""
+    bad = sorted(whitespace_ids(values))
     if bad:
         sys.exit(
             f"{len(bad)} {kind} value(s) contain whitespace, which would shift columns in "
@@ -296,8 +303,12 @@ def main():
     # BenchmarkIngestScenario gates on File.Exists alone, so the next benchmark-ingest run
     # would ingest a corpus whose judgments were never produced and score zero throughout.
     # Re-iterating a Dataset is cheap -- it is memory-mapped Arrow, not held in RAM.
-    corpus_ids = {row["_id"] for row in corpus}
-    check_no_whitespace("corpus _id", corpus_ids)
+    all_corpus_ids = {row["_id"] for row in corpus}
+    # Corpus ids are GitHub paths, and some contain spaces -- 24 of godot's 25,482 -- which
+    # no whitespace-delimited file can carry. Those documents are excluded and reported
+    # rather than aborting the run; judgments referencing them are dropped alongside them.
+    excluded_ids = whitespace_ids(all_corpus_ids)
+    corpus_ids = all_corpus_ids - excluded_ids
 
     query_ids = {row["query_id"] for row in queries}
     check_no_whitespace("query_id", query_ids)
@@ -305,11 +316,17 @@ def main():
     # qrels -- the nugget id lands in column 2, the TREC iteration field, which is what
     # makes alpha-nDCG computable: ir_measures reads subtopic ids from exactly that column.
     nugget_ids = set()
-    rows, missing_relevant, dropped_non_relevant = [], [], 0
+    rows, missing_relevant = [], []
+    dropped_non_relevant, dropped_excluded = 0, 0
     for row in queries:
         for nugget in row["nuggets"]:
             nugget_ids.add(nugget["_id"])
             for cid in nugget["relevant_corpus_ids"]:
+                # An excluded document is a known omission, not a broken join -- test it
+                # first, or excluding those 24 documents would trip the hard-fail below.
+                if cid in excluded_ids:
+                    dropped_excluded += 1
+                    continue
                 # Hard-fail: nuggets are generated FROM the corpus, so every relevant id
                 # should resolve by construction. If one does not, the join encoded here is
                 # wrong and the right response is to stop.
@@ -317,6 +334,9 @@ def main():
                     missing_relevant.append(cid)
                 rows.append((row["query_id"], nugget["_id"], cid, 1))
             for cid in nugget["non_relevant_corpus_ids"]:
+                if cid in excluded_ids:
+                    dropped_excluded += 1
+                    continue
                 # Drop and report: these come from a retrieval judgment pool, not from
                 # nugget generation, so the by-construction argument does not transfer.
                 if cid not in corpus_ids:
@@ -338,9 +358,13 @@ def main():
 
     # corpus.jsonl -- `metadata` dropped; `title` omitted entirely rather than emitted
     # empty, since FreshStack has no such field and the parser defaults a missing one to "".
+    written = 0
     with open(os.path.join(out, "corpus.jsonl"), "w", encoding="utf-8") as f:
         for row in corpus:
+            if row["_id"] in excluded_ids:
+                continue
             f.write(json.dumps({"_id": row["_id"], "text": row["text"]}) + "\n")
+            written += 1
 
     # queries.jsonl -- title + body. This composition is a DECISION, not a verified fact:
     # FreshStack does not document how it composes retrieval query text (spec section 1.1).
@@ -353,7 +377,12 @@ def main():
         for qid, nid, cid, rel in rows:
             f.write(f"{qid}\t{nid}\t{cid}\t{rel}\n")
 
-    print(f"corpus.jsonl  {len(corpus_ids):,} documents")
+    print(f"corpus.jsonl  {written:,} documents written")
+    if excluded_ids:
+        print(f"              {len(excluded_ids):,} excluded (whitespace in _id); "
+              f"{dropped_excluded:,} judgment(s) dropped with them")
+    if written != len(corpus_ids):
+        print(f"              {written - len(corpus_ids):,} row(s) share an _id with another")
     print(f"queries.jsonl {len(query_ids):,} queries")
     print(f"qrels.tsv     {len(rows):,} judgments ({len(nugget_ids):,} nuggets)")
     if dropped_non_relevant:
@@ -366,18 +395,18 @@ if __name__ == "__main__":
 
 - [ ] **Step 2: Install the dependency**
 ```bash
-pip install datasets
+python3 -m pip install --target "$HOME/.freshstack-libs" datasets
 ```
-`datasets` is not currently installed (assumption #11), so this is required before Step 3 and cannot be skipped.
+A bare `pip install datasets` **fails on this machine**: system Python is PEP 668 externally-managed (`/usr/lib/python3.14/EXTERNALLY-MANAGED` is present), and the usual `python3 -m venv` fallback is unavailable until `python3.14-venv` is installed via apt. A `--target` directory install needs neither and touches no system or user site-packages. `datasets` is not otherwise installed (assumption #11), so this is required before Step 3 and cannot be skipped.
 
 - [ ] **Step 3: Run against the smallest topic and verify the output end-to-end**
 ```bash
-python3 Iverson.Server/Iverson.LoadTest/scripts/freshstack_to_jsonl.py \
+PYTHONPATH="$HOME/.freshstack-libs" python3 Iverson.Server/Iverson.LoadTest/scripts/freshstack_to_jsonl.py \
     --topic godot --out-dir /tmp/freshstack-check
 ```
 **This step needs network access and downloads a real dataset** — godot is the smallest topic at 25,482 documents and 99 queries. It parses the corpus; it does **not** ingest it into Iverson, so it costs a download, not an embedding run.
 
-Confirm: all three files are written; the printed document and query counts match V1/V2 (25,482 and 99); the run exits 0, meaning the config-name, whitespace, and relevant-join assertions all passed. Note the dropped-non-relevant count if any — that is expected behaviour, not a failure.
+Confirm: all three files are written and the run exits 0, meaning the config-name, query/nugget whitespace, and relevant-join assertions all passed. Read the printed counts rather than checking them against a fixed number: godot's corpus is 25,482 rows but only 25,477 unique `_id`s, and 24 documents are excluded for whitespace in their id, so the written-document count is legitimately lower than V1's figure. The queries count should be 99. Exclusion, duplicate-id and dropped-judgment counts are expected output, not failures.
 
 Then inspect the emitted shapes directly — this confirms the file format, not parser acceptance:
 ```bash
