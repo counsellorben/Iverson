@@ -319,10 +319,59 @@ builder.Services.AddHostedService<Iverson.Api.Schema.SchemaRefreshWorker>();
 
 // ── Middleware ─────────────────────────────────────────────────────────────────
 var app = builder.Build();
-app.MapPrometheusScrapingEndpoint().AllowAnonymous();
+app.MapPrometheusScrapingEndpoint().AllowAnonymous().WithMetadata(new HttpListenerOnly());
 
 if (app.Environment.IsDevelopment())
     app.MapOpenApi();
+
+// ── Operational endpoints answer only on the HTTP listener ─────────────────────
+// /metrics, /health, /health/live and the four /probe/* routes are operational surfaces.
+// Every real caller reaches them on the Http1 listener (appsettings.json's
+// Kestrel:Endpoints:Http, 8081): the kubelet readiness/liveness probes for both the api and
+// worker Deployments, Prometheus (dns_sd_configs against the headless Services, port 8081),
+// and the admin-api ingress (/admin, /health, /v1/traces → 8081). They were ALSO answering
+// on the gRPC listener (8080), which the main api ingress publishes under a bare `/` prefix —
+// a security review confirmed live that GET /metrics returns 200 with ~121KB of body there
+// over h2c. The 8080/8081 split was only ever a protocol convention; this makes it a routing
+// boundary for the operational endpoints.
+//
+// NOT RequireHost("*:8081"): RequireHost matches the Host header, which behind an ingress
+// carries the external hostname and usually no port at all, so it would reject every
+// legitimate request and admit nothing. HttpContext.Connection.LocalPort reads the accepting
+// socket, which is the actual fact this needs.
+//
+// The rule is expressed as "not the gRPC listener" rather than "only the HTTP listener" on
+// purpose. LocalPort is 0 whenever no TCP socket sits underneath (TestServer's in-memory
+// transport; a Unix-domain-socket binding), and if ASPNETCORE_URLS ever overrode
+// Kestrel:Endpoints entirely the port read below would be stale. An allow-list would fail
+// closed in exactly those cases and take /health with it — a readiness probe that starts
+// 404ing rolls the whole Deployment. Failing open there costs only defence in depth: the four
+// probes carry .RequireAuthorization("Operator") in their own right, and /metrics is
+// deliberately anonymous on 8081 because Prometheus scrapes it without credentials — this
+// changes WHERE those endpoints answer, not WHO may call them.
+var grpcListenerPort = ParseListenerPort(cfg["Kestrel:Endpoints:Grpc:Url"], 8080);
+
+app.Use(async (context, next) =>
+{
+    if (context.Connection.LocalPort == grpcListenerPort &&
+        context.GetEndpoint()?.Metadata.GetMetadata<HttpListenerOnly>() is not null)
+    {
+        // 404, not 403: on this listener the route genuinely does not exist.
+        context.Response.StatusCode = StatusCodes.Status404NotFound;
+        return;
+    }
+
+    await next(context);
+});
+
+// Kestrel URLs are of the form "http://*:8080" — not parseable by System.Uri because of the
+// wildcard host, so take the trailing port off the string directly.
+static int ParseListenerPort(string? url, int fallback)
+{
+    var trimmed = url?.TrimEnd('/');
+    var lastColon = trimmed?.LastIndexOf(':') ?? -1;
+    return lastColon >= 0 && int.TryParse(trimmed![(lastColon + 1)..], out var port) ? port : fallback;
+}
 
 app.UseHttpsRedirection();
 
@@ -353,7 +402,7 @@ app.Use(async (context, next) =>
 });
 
 // ── Endpoints ──────────────────────────────────────────────────────────────────
-app.MapGet("/health/live", () => Results.Ok(new { status = "alive" })).WithName("HealthLive").AllowAnonymous();
+app.MapGet("/health/live", () => Results.Ok(new { status = "alive" })).WithName("HealthLive").AllowAnonymous().WithMetadata(new HttpListenerOnly());
 
 app.MapGet("/health", async (HealthCheckCache healthCheckCache) =>
 {
@@ -375,32 +424,33 @@ app.MapGet("/health", async (HealthCheckCache healthCheckCache) =>
         : Results.Json(new { status = "degraded", checks }, statusCode: 503);
 })
 .WithName("Health")
-.AllowAnonymous();
+.AllowAnonymous()
+.WithMetadata(new HttpListenerOnly());
 
 app.MapGet("/probe/sql", async (IRecordStoreQueryExecutor db) =>
 {
     var result = await db.QuerySingleOrDefaultAsync<int>("SELECT 1");
     return Results.Ok(new { connected = result == 1, traceId = Activity.Current?.TraceId.ToString() });
-}).WithName("ProbeSql").RequireAuthorization("Operator");
+}).WithName("ProbeSql").RequireAuthorization("Operator").WithMetadata(new HttpListenerOnly());
 
 app.MapGet("/probe/starrocks", async (IEngagementStoreHealthCheck sr) =>
 {
     var healthy = await sr.IsHealthyAsync();
     return Results.Ok(new { connected = healthy, traceId = Activity.Current?.TraceId.ToString() });
-}).WithName("ProbeStarRocks").RequireAuthorization("Operator");
+}).WithName("ProbeStarRocks").RequireAuthorization("Operator").WithMetadata(new HttpListenerOnly());
 
 app.MapGet("/probe/vector", async (IVectorSchemaManager vector) =>
 {
     await vector.EnsureCollectionAsync("iverson-probe", 4);
     return Results.Ok(new { connected = true, collection = "iverson-probe", traceId = Activity.Current?.TraceId.ToString() });
-}).WithName("ProbeVector").RequireAuthorization("Operator");
+}).WithName("ProbeVector").RequireAuthorization("Operator").WithMetadata(new HttpListenerOnly());
 
 app.MapPost("/probe/kafka", async (IEventProducer producer) =>
 {
     var traceId = Activity.Current?.TraceId.ToString();
     await producer.ProduceAsync("iverson.probe", "probe", new { timestamp = DateTime.UtcNow, traceId });
     return Results.Ok(new { produced = true, topic = "iverson.probe", traceId });
-}).WithName("ProbeKafka").RequireAuthorization("Operator");
+}).WithName("ProbeKafka").RequireAuthorization("Operator").WithMetadata(new HttpListenerOnly());
 
 app.MapPost("/admin/reconcile/{typeName}", async (
     string typeName,
@@ -523,3 +573,13 @@ app.Lifetime.ApplicationStarted.Register(() =>
 });
 
 app.Run();
+
+namespace Iverson.Api
+{
+    // Endpoint metadata marking a route as operational: served on the HTTP listener only, never
+    // on the gRPC one. Read by the middleware registered just after MapPrometheusScrapingEndpoint
+    // above. Deliberately NOT applied to the gRPC services, the /admin/console/* console
+    // endpoints or /v1/traces — those reach 8081 through the admin-api ingress and are
+    // authorization-gated in their own right.
+    internal sealed class HttpListenerOnly;
+}
