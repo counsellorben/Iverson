@@ -6,10 +6,23 @@ data:
   prometheus.yml: |
     global:
       scrape_interval: 30s
+    # dns_sd_configs, not kubernetes_sd_configs: the prometheus chart's ServiceAccount and
+    # pod spec both set automountServiceAccountToken: false and there is no RBAC object
+    # granting it list/watch on pods/endpoints, so an API-server-based service discovery
+    # mechanism has nothing to authenticate with. DNS discovery needs none of that — it
+    # just resolves the headless Services' A records (charts/api and charts/worker's
+    # headless-service.yaml, Task 8), which returns one address per ready pod instead of
+    # the ClusterIP VIP's single load-balanced address, fixing the non-monotonic
+    # counters/flickering gauges that come from scraping across 2-5 HPA replicas as if
+    # they were one target.
     scrape_configs:
       - job_name: iverson-api
-        static_configs:
-          - targets: ["{{ .Release.Name }}-api:8081"]
+        dns_sd_configs:
+          - names: ["{{ .Release.Name }}-api-headless.{{ .Release.Namespace }}.svc.cluster.local"]
+            type: A
+            port: 8081
       - job_name: iverson-worker
-        static_configs:
-          - targets: ["{{ .Release.Name }}-worker:8081"]
+        dns_sd_configs:
+          - names: ["{{ .Release.Name }}-worker-headless.{{ .Release.Namespace }}.svc.cluster.local"]
+            type: A
+            port: 8081
