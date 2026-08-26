@@ -95,6 +95,8 @@ Newly introduced by this plan and verified at plan-write time.
 | P17 | Code validity | `uuid.uuid5` is deterministic and `UUID(...).bytes[8:16]` little-endian gives the point id | `uuid5(NAMESPACE_URL,'scifact:4983')` stable across calls; `bytes[8:16]` LE → `2381698666080542355` |
 | P18 | Code validity | **Qdrant round-trips u64 point ids above 2⁶³ exactly** | 50% of `uuid5` keys are ≥ 2⁶³ (1006/2000 sampled), so this is exercised on every run. Upserted `2**64-1`, `2**63+7` and a real `uuid5` id; all three scrolled back byte-exact |
 | P19 | Sibling sweep | Every container name the `query` tier states matches compose | `container_name:` lines — `iverson-postgres`, `iverson-qdrant`, `iverson-ollama`, `iverson-redis`, `iverson-authentik-server`, `iverson-api` |
+| P20 | Code validity | The `ownerId` and `__TenantId` values Python must write are `8f5c3da2e5ecbad46e1dab4890c109a4826919be420f5d7a3d0029a9fbff273e` and `tenant_bypass` | Read at plan-review time from a live C#-written object point in `benchmark_documents_tenant_bypass`. **These are the only C#-written points in existence** and Task 5 step 3 destroys them; the values must be captured before that, not read at runtime |
+| P21 | Signature | The key map's on-disk shape is a flat JSON object of `{parentKey: docId}` | `KeyMap.cs:20,26,30` — `SerializeAsync`/`DeserializeAsync<Dictionary<string,string>>` with `WriteIndented = true` and no naming policy, so keys are written as-is. A flat object from `json.dump` is byte-compatible |
 
 *Category 6 (consumer impact) is not required: this plan is create-only — no task has a `Modify:` entry, so no existing caller is touched.*
 
@@ -205,9 +207,9 @@ def split_into_chunks(text, max_chars=2048, step=1792):
 
 - [ ] **Step 6: Compute the centroid.** Divide each chunk vector by its own magnitude, sum, divide by count — **do not re-normalise** (V14). Exclude zero-magnitude vectors from the input; a document whose every chunk vector is degenerate gets no centroid at all.
 
-- [ ] **Step 7: Build payloads and upsert.** Object: `key`, `docId`, `title`, `body`, `ownerId`, `__TenantId`. Chunk: `text`, `parent_id`, `field="Body"`, `chunk_index` **as a string**, `ownerId`. Take `ownerId` and `__TenantId` from a live C#-written reference point rather than guessing.
+- [ ] **Step 7: Build payloads and upsert.** Object: `key`, `docId`, `title`, `body`, `ownerId`, `__TenantId`. Chunk: `text`, `parent_id`, `field="Body"`, `chunk_index` **as a string**, `ownerId`. Take `ownerId` and `__TenantId` from P20 as **module-level constants**, with a comment recording that they were read from a live C#-written point on 2026-08-26. Do **not** read them from Qdrant at runtime: Task 5 step 3 drops the collections, so by the time the measured run executes there is no C#-written point left to read, and every point would carry `null` where the read path filters on ownership and routes by tenant.
 
-- [ ] **Step 8: Write the key map and progress file.** Key map is a flat `{parentKey: docId}` JSON object — what `KeyMap.LoadAsync` deserialises. Progress file records completed docIds; `--resume` skips them.
+- [ ] **Step 8: Write the key map, progress file and stats sidecar.** Key map is a flat `{parentKey: docId}` JSON object — what `KeyMap.LoadAsync` deserialises. Progress file records completed docIds, **appended and flushed as each document's points are upserted** — not accumulated in memory and written at exit, which would provide no resumability for the case resume exists for. `--resume` skips them. Stats sidecar at `<key-map-path>.stats.json` records `documents`, `chunks`, `embed_calls`, `embeds_saved` and wall-clock `started_at`/`finished_at` — Task 4 reads these and none of them is recoverable afterwards from Qdrant or the key map.
 
 - [ ] **Step 9: Verify against a live reference point.** Ingest a ~20-document slice, then **scroll one Python-written object point and one chunk point and compare against a C#-written point in the same collection**: point id recomputes from the payload `key`, payload key sets match exactly, vector dimensions are 768, and `chunk_index` is a string. This is the check that catches a contract drift the scores would only show much later.
 
@@ -226,7 +228,7 @@ git commit -m "add ingest.py: direct Qdrant write path reproducing the consumer'
 
 - [ ] **Step 2: Score with `ir_measures`.** Use measure **objects** — `from ir_measures import nDCG, R, AP` then `calc_aggregate([nDCG@10, R@50, AP], qrels, run)`. **Never `parse_measure`**: it calls the `ast.Num` removed in Python 3.12 and raises on this box (V24). Read qrels with `read_trec_qrels`, runs with `read_trec_run` (P7, P9).
 
-- [ ] **Step 3: Report ingest statistics and the headline.** Documents, chunks, embed calls, embeds saved by the reuse gate, wall time, docs/hour, seconds/embed — read from the stats file `ingest.py` writes. Then the headline: measured seconds/document against the 34 s/document of the full pipeline.
+- [ ] **Step 3: Report ingest statistics and the headline.** Documents, chunks, embed calls, embeds saved by the reuse gate, wall time, docs/hour, seconds/embed — read from `<key-map-path>.stats.json`, the sidecar Task 3 step 8 writes. Then the headline: measured seconds/document against the 34 s/document of the full pipeline.
 
 - [ ] **Step 4: Verify against the existing run files.** Run against `iverson-benchmark-corpora/runs-2026-08-26/` with `qrels-small.trec`. Expect `baseline.chunks.trec` → `AP=0.8662`, `R@50=1.0000`, `nDCG@10=0.8948`, and `baseline.similar.trec` → `AP=0.8657`, `R@50=0.9700`, `nDCG@10=0.8880` (P3). Any deviation means the reader is wrong, not the data.
 
@@ -246,7 +248,7 @@ git commit -m "add report.py: TREC run structural checks and ir_measures scoring
 
 - [ ] **Step 2: Drop to the ingest tier.** `stack.py ingest` — confirm exactly two containers.
 
-- [ ] **Step 3: Recreate the collections empty.** `ingest.py --drop`. The collection currently holds ~450 points from two earlier ingests; this is what removes them.
+- [ ] **Step 3: Recreate the collections empty.** `ingest.py --drop`. The collection currently holds ~450 points from two earlier ingests; this is what removes them. **Irreversible for the reference data:** those points are the only C#-written ones in existence — they came from ingests through the full write path at ~34 s/document and will not be recreated. Anything that needs them (P20's values, Task 3 step 9's comparison) must have been captured before this step.
 
 - [ ] **Step 4: Ingest.** `ingest.py`. Expect roughly 4–6 hours. **Checkpoint before proceeding:** the reported document count equals 5,183, and a Qdrant point count confirms it. If interrupted, resume with `--resume` rather than restarting.
 
