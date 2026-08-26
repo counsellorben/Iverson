@@ -50,6 +50,19 @@ This location is forced by access, and it is the cheapest one available:
 - Building a descriptor without containers is likewise established: `SchemaBuilderTests.cs:28`
   calls `SchemaBuilder.BuildDescriptor(typeDesc, embedding)` with a stub (V10).
 
+The emit derives its `TypeDescriptor` from the real `BenchmarkDocument`, not from a hand-written
+literal: `Iverson.Api.Tests` takes a project reference on `Iverson.LoadTest`, obtains the
+`EntityDescriptor` via `new EntityRegistry([typeof(BenchmarkDocument).Assembly]).Get<BenchmarkDocument>()`
+(`EntityRegistry.cs:103-106`), and converts it with `SchemaRegistrar.BuildTypeDescriptor`
+(`SchemaRegistrar.cs:52`), which is `private static` and is reached by the same reflection convention
+V3 records. This keeps the gate sensitive to entity drift: adding a property to `BenchmarkDocument`
+changes the emitted payload indexes and fails the comparison. A hand-written descriptor would not —
+both sides of the gate would derive from the same hand-copied replica (V18).
+
+The reference direction is `Iverson.Api.Tests → Iverson.LoadTest`, which is not the
+`Iverson.LoadTest → Iverson.Api` edge rejected below; `Iverson.LoadTest` still never references
+`Iverson.Api`.
+
 The rejected alternative was an emit command in `Iverson.LoadTest`. That project references only
 `Iverson.Client.Core` and `Iverson.Events` (V4); reaching `SchemaBuilder` would force a
 `Iverson.LoadTest → Iverson.Api` reference, dragging the ASP.NET host into the load-test tool.
@@ -59,7 +72,8 @@ The rejected alternative was an emit command in `Iverson.LoadTest`. That project
 
 | contract field | sourced from | verified |
 |---|---|---|
-| collection-naming rule | `IntelligenceTenantScope.ResolveCollectionName` | V5 |
+| entity shape (property set) | the real `BenchmarkDocument` via `EntityRegistry` + `BuildTypeDescriptor` | V18 |
+| collection-naming rule **and base** | `IntelligenceTenantScope.ResolveCollectionName`; `SchemaBuilder.cs:197` (`CollectionName = tableName`) | V5, V19 |
 | object vectors (`_vector`, `_centroid`), payload indexes | `SchemaBuilder.ToCollectionSchema` | V6 |
 | chunk vectors, chunk payload indexes | `SchemaBuilder.ToChunkCollectionSchema` | V6 |
 | chunk window (`maxChars`, `step`, `wordBoundaryLookback`) | the real derivation in `SplitIntoChunks` | V7 |
@@ -81,7 +95,8 @@ read it, with a header naming the owning test and the regeneration command.
 ```json
 {
   "chunkWindow":      { "maxChars": 2048, "step": 1792, "wordBoundaryLookback": 50 },
-  "collectionNaming": { "template": "{base}{suffix}_{tenant}",
+  "collectionNaming": { "base": "benchmark_documents",
+                        "template": "{base}{suffix}_{tenant}",
                         "chunksSuffix": "_chunks",
                         "noTenantSentinel": "__no-tenant-claim__" },
   "distance":         "Cosine",
@@ -95,8 +110,6 @@ read it, with a header naming the owning test and the regeneration command.
                         "payloadIndexes": [ { "field": "parent_id", "kind": "Keyword" },
                                             { "field": "field",     "kind": "Keyword" },
                                             { "field": "ownerId",   "kind": "Keyword" } ] },
-  "payloadKeys":      { "chunk":  ["text", "parent_id", "field", "chunk_index"],
-                        "chunkIndexIsString": true },
   "golden":           { "chunking": [ /* the five cases of §6 */ ],
                         "pointIds": [ /* one GUID-key case */ ],
                         "centroid": { "inputs": [ /* fixed 4-dim vectors */ ], "output": [ /* ... */ ],
@@ -113,9 +126,12 @@ contract states something about `ResolveCollectionName` rather than about one be
 The `__TenantId` index name is emitted verbatim because `ToCamelCase` leaves a leading underscore
 unchanged — Python already matches, but by coincidence rather than by contract (V16).
 
-The payload keys are load-bearing for **readers**, not only the writer: the query path reads
-`parent_id`, `text` and `{prop}_centroid` (`ObjectSearchGrpcService.cs:406-468`, V11). A contract
-that described only what the consumer writes would miss half the coupling.
+Payload **key** names are not in the contract. They exist only as inline dictionary literals in the
+consumer (`IntelligenceStoreConsumer.cs:294-298`) with no schema type carrying them, and the payload
+*index* list cannot substitute — `text` and `chunk_index` are written but never indexed. They stay
+hand-synced in `ingest.py`, on the same footing as `modelId` and `dimension`. This is a real gap: the
+query path reads `parent_id`, `text` and `{prop}_centroid` (`ObjectSearchGrpcService.cs:406-468`,
+V11), so those names are load-bearing for readers as well as the writer.
 
 ### 4. Production changes — two, both small
 
@@ -196,6 +212,8 @@ are server-generated UUIDv7)"* (`IntelligenceStoreConsumer.cs:684`, V14). Golden
 | V15 | **Recurrence:** only `ingest.py` encodes C#-owned constants | `stack.py`, `report.py`, `sample_corpus.py`, `freshstack_to_jsonl.py` match none of `768\|nomic\|_vector\|_centroid\|_chunks\|2048\|1792\|parent_id\|chunk_index\|benchmark_documents\|Cosine` |
 | V16 | Python's `"__TenantId"` index name matches C# | `ToCamelCase` is `char.ToLowerInvariant(name[0]) + name[1..]`; a leading `_` round-trips unchanged |
 | V17 | No repo-relative-path convention exists in `Iverson.Api.Tests` | No match for `AppContext.BaseDirectory`, `SolutionDir`, or parent-walking — this is a **new** pattern |
+| V18 | `BenchmarkDocument`'s descriptor is obtainable from a project referencing `Iverson.LoadTest`; the only `EntityDescriptor`→`TypeDescriptor` converter is private | `BenchmarkDocument.cs` is in `Iverson.LoadTest/Entities/`, and `Iverson.Api.Tests.csproj:30-35` does not reference it today; `EntityRegistry.cs:103-106` (`Get<T>()` public); `SchemaRegistrar.cs:52` (`private static BuildTypeDescriptor`, sole converter) |
+| V19 | The collection base name is on the descriptor the emit already builds | `SchemaBuilder.cs:197` — `CollectionName = (vectors.Count > 0 \|\| chunks.Count > 0) ? tableName : null` |
 
 ## Known issues, accepted
 
