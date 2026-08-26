@@ -75,3 +75,7 @@ Iverson.Server/deploy/helm/**/charts/*.tgz
 
 # Local git worktrees (SDD isolation)
 .worktrees/
+
+# Python
+__pycache__/
+*.pyc

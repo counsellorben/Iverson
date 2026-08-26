@@ -100,7 +100,7 @@ public class JsonlCorpusParserTests
 
         var act = () => JsonlCorpusParser.ParseQueries(new StringReader(input));
 
-        act.Should().Throw<FormatException>().WithMessage("*line 1*");
+        act.Should().Throw<FormatException>().WithMessage("*line 1*text*");
     }
 
     [Fact]
@@ -110,6 +110,6 @@ public class JsonlCorpusParserTests
 
         var act = () => JsonlCorpusParser.ParseQueries(new StringReader(input));
 
-        act.Should().Throw<FormatException>().WithMessage("*line 1*");
+        act.Should().Throw<FormatException>().WithMessage("*line 1*text*");
     }
 }

@@ -132,6 +132,7 @@ def main():
                 # wrong and the right response is to stop.
                 if cid not in corpus_ids:
                     missing_relevant.append(cid)
+                    continue
                 rows.append((row["query_id"], nugget["_id"], cid, 1))
             for cid in nugget["non_relevant_corpus_ids"]:
                 if cid in excluded_ids:
