@@ -115,6 +115,39 @@ describe("initTelemetry", () => {
     }
   });
 
+  it("escapes regex metacharacters in the API host, so a lookalike URL is not also ignored", async () => {
+    // The configured test base URL is `http://localhost:8080` — no dots, no metacharacters —
+    // so the escaping in telemetry.ts is INVISIBLE to the assertions above: deleting it leaves
+    // them green. Re-import the module against a dotted host, where an unescaped `.` becomes a
+    // wildcard and the ignore pattern silently widens to match hosts it was never meant to.
+    vi.resetModules();
+    vi.doMock("./config", () => ({
+      config: {
+        oidcClientId: "test-oidc-client-id",
+        oidcAuthority: "http://localhost:9000/application/o/test/",
+        apiBaseUrl: "https://admin-api.iverson.example",
+      },
+    }));
+
+    try {
+      const fresh = await import("./telemetry");
+      fresh.initTelemetry();
+
+      const ignoreUrls = fetchInstrumentationConfigs.at(-1)!.ignoreUrls as RegExp[];
+      const matches = (url: string) => ignoreUrls.some((pattern) => pattern.test(url));
+
+      // The real export endpoint is still ignored...
+      expect(matches("https://admin-api.iverson.example/v1/traces")).toBe(true);
+      // ...but a host that merely has the same shape is not. Unescaped, every `.` matches any
+      // character, so this would match and that host's spans would be dropped without trace.
+      expect(matches("https://admin-apiXiversonXexample/v1/traces")).toBe(false);
+      expect(matches("https://admin-api-iverson-example/v1/traces")).toBe(false);
+    } finally {
+      vi.doUnmock("./config");
+      vi.resetModules();
+    }
+  });
+
   it("does not scrub resourceFetch spans, whose URLs are legitimate sub-resource URLs", () => {
     initTelemetry();
 

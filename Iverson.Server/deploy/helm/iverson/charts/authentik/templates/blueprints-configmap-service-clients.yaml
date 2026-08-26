@@ -131,6 +131,15 @@ data:
           signing_key: !Find [authentik_crypto.certificatekeypair, [name, "authentik Self-signed Certificate"]]
           issuer_mode: global
           grant_types: ["authorization_code", "refresh_token"]
+          # Pinned, not left to the model default. The admin console reads group membership off
+          # the ID TOKEN (`auth.user.profile.groups` in Iverson.AdminUI) to decide which nav items
+          # to show and which routes to guard, whereas Iverson.Api reads it off the ACCESS token.
+          # The scope mapping below governs the claim's CONTENT; this flag governs whether it
+          # appears on the surface the console actually reads. Authentik's model defaults it to
+          # True, so the console works today by inheritance -- but an inherited default is not a
+          # contract, and if it ever flipped the console would silently show a signed-in operator
+          # no Tenants nav item and a refusal page at /tenants, with nothing failing loudly.
+          include_claims_in_id_token: true
           property_mappings:
             - !Find [authentik_providers_oauth2.scopemapping, [scope_name, groups]]
             - !Find [authentik_providers_oauth2.scopemapping, [scope_name, tenant_id]]

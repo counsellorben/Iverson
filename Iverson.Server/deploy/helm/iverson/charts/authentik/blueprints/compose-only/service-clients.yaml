@@ -164,6 +164,10 @@ entries:
       signing_key: !Find [authentik_crypto.certificatekeypair, [name, "authentik Self-signed Certificate"]]
       issuer_mode: global
       grant_types: ["authorization_code", "refresh_token"]
+      # Pinned, not left to the model default -- see the Helm twin in
+      # templates/blueprints-configmap-service-clients.yaml for the reasoning. The admin console
+      # reads group membership off the ID token; this flag is what puts it there.
+      include_claims_in_id_token: true
       property_mappings:
         - !Find [authentik_providers_oauth2.scopemapping, [scope_name, groups]]
         - !Find [authentik_providers_oauth2.scopemapping, [scope_name, tenant_id]]
