@@ -249,7 +249,10 @@ switch (command)
                                      IVERSON_KAFKA_SASL_MECHANISM, IVERSON_KAFKA_SASL_USERNAME,
                                      IVERSON_KAFKA_SASL_PASSWORD, IVERSON_KAFKA_SSL_CA_LOCATION.
               --corpus-path <dir>    Root directory for benchmark-ingest; expects beir/corpus.jsonl
-                                     and/or freshstack/corpus.jsonl beneath it
+                                     and/or freshstack/corpus.jsonl beneath it. Produce the freshstack/
+                                     directory with scripts/freshstack_to_jsonl.py, which normalises
+                                     FreshStack's native format into the same corpus.jsonl/queries.jsonl
+                                     shape beir/ uses.
               --output-dir <dir>     Directory benchmark-query writes TREC run files to
               --key-map-path <file> Path benchmark-ingest saves the ParentKey -> DocId map to, and
                                      benchmark-query reads it from

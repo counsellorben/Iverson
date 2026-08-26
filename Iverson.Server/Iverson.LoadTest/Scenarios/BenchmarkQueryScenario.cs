@@ -197,14 +197,14 @@ public sealed class BenchmarkQueryScenario(
         if (File.Exists(beirQueries))
         {
             using var reader = new StreamReader(beirQueries);
-            queries.AddRange(BeirCorpusParser.ParseQueries(reader));
+            queries.AddRange(JsonlCorpusParser.ParseQueries(reader));
         }
 
         var freshStackQueries = Path.Combine(corpusPath, "freshstack", "queries.jsonl");
         if (File.Exists(freshStackQueries))
         {
             using var reader = new StreamReader(freshStackQueries);
-            queries.AddRange(FreshStackCorpusParser.ParseQueries(reader));
+            queries.AddRange(JsonlCorpusParser.ParseQueries(reader));
         }
 
         return queries;

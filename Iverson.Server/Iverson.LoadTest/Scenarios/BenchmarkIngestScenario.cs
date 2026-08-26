@@ -78,7 +78,7 @@ public sealed class BenchmarkIngestScenario(
         {
             Console.WriteLine($"[benchmark-ingest] BEIR corpus: {beirCorpus}");
             using var reader = new StreamReader(beirCorpus);
-            var corpus = BeirCorpusParser.ParseCorpus(reader);
+            var corpus = JsonlCorpusParser.ParseCorpus(reader);
             var (s, f) = await IngestAsync(corpus, keyMap, ct);
             succeeded += s; failed += f;
         }
@@ -87,7 +87,7 @@ public sealed class BenchmarkIngestScenario(
         {
             Console.WriteLine($"[benchmark-ingest] FreshStack corpus: {freshStackCorpus}");
             using var reader = new StreamReader(freshStackCorpus);
-            var corpus = FreshStackCorpusParser.ParseCorpus(reader);
+            var corpus = JsonlCorpusParser.ParseCorpus(reader);
             var (s, f) = await IngestAsync(corpus, keyMap, ct);
             succeeded += s; failed += f;
         }

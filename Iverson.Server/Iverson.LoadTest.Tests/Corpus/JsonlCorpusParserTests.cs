@@ -4,7 +4,7 @@ using Xunit;
 
 namespace Iverson.LoadTest.Tests.Corpus;
 
-public class BeirCorpusParserTests
+public class JsonlCorpusParserTests
 {
     [Fact]
     public void ParseCorpus_WellFormedMultiLine_ParsesAllDocuments()
@@ -14,7 +14,7 @@ public class BeirCorpusParserTests
             {"_id": "doc2", "title": "Second Title", "text": "Second body text."}
             """;
 
-        var result = BeirCorpusParser.ParseCorpus(new StringReader(input));
+        var result = JsonlCorpusParser.ParseCorpus(new StringReader(input));
 
         result.Should().BeEquivalentTo(new[]
         {
@@ -28,7 +28,7 @@ public class BeirCorpusParserTests
     {
         var input = """{"_id": "doc1", "text": "Body text only."}""";
 
-        var result = BeirCorpusParser.ParseCorpus(new StringReader(input));
+        var result = JsonlCorpusParser.ParseCorpus(new StringReader(input));
 
         result.Should().ContainSingle().Which.Should().Be(new CorpusDocument("doc1", "", "Body text only."));
     }
@@ -41,7 +41,7 @@ public class BeirCorpusParserTests
             {"title": "No id here", "text": "Y"}
             """;
 
-        var act = () => BeirCorpusParser.ParseCorpus(new StringReader(input));
+        var act = () => JsonlCorpusParser.ParseCorpus(new StringReader(input));
 
         act.Should().Throw<FormatException>().WithMessage("*line 2*");
     }
@@ -51,7 +51,7 @@ public class BeirCorpusParserTests
     {
         var input = """{"_id": "", "title": "T", "text": "X"}""";
 
-        var act = () => BeirCorpusParser.ParseCorpus(new StringReader(input));
+        var act = () => JsonlCorpusParser.ParseCorpus(new StringReader(input));
 
         act.Should().Throw<FormatException>().WithMessage("*line 1*");
     }
@@ -61,7 +61,7 @@ public class BeirCorpusParserTests
     {
         var input = """{"_id": "doc1", "title": "T"}""";
 
-        var act = () => BeirCorpusParser.ParseCorpus(new StringReader(input));
+        var act = () => JsonlCorpusParser.ParseCorpus(new StringReader(input));
 
         act.Should().Throw<FormatException>().WithMessage("*line 1*text*");
     }
@@ -71,7 +71,7 @@ public class BeirCorpusParserTests
     {
         var input = """{"_id": "doc1", "title": "T", "text": "   "}""";
 
-        var act = () => BeirCorpusParser.ParseCorpus(new StringReader(input));
+        var act = () => JsonlCorpusParser.ParseCorpus(new StringReader(input));
 
         act.Should().Throw<FormatException>().WithMessage("*line 1*text*");
     }
@@ -84,7 +84,7 @@ public class BeirCorpusParserTests
             {"_id": "q2", "text": "How does photosynthesis work?"}
             """;
 
-        var result = BeirCorpusParser.ParseQueries(new StringReader(input));
+        var result = JsonlCorpusParser.ParseQueries(new StringReader(input));
 
         result.Should().BeEquivalentTo(new[]
         {
@@ -94,20 +94,22 @@ public class BeirCorpusParserTests
     }
 
     [Fact]
-    public void ParseQrels_HeaderIsSkipped_AndSubtopicIsZero()
+    public void ParseQueries_MissingText_ThrowsRatherThanYieldingAnEmptyQuery()
     {
-        var input = "query-id\tcorpus-id\tscore\n" +
-                     "q1\tdoc1\t1\n" +
-                     "q1\tdoc2\t0\n" +
-                     "q2\tdoc3\t2\n";
+        var input = """{"_id": "q1"}""";
 
-        var result = BeirCorpusParser.ParseQrels(new StringReader(input));
+        var act = () => JsonlCorpusParser.ParseQueries(new StringReader(input));
 
-        result.Should().BeEquivalentTo(new[]
-        {
-            new Qrel("q1", "0", "doc1", 1),
-            new Qrel("q1", "0", "doc2", 0),
-            new Qrel("q2", "0", "doc3", 2),
-        }, options => options.WithStrictOrdering());
+        act.Should().Throw<FormatException>().WithMessage("*line 1*text*");
+    }
+
+    [Fact]
+    public void ParseQueries_EmptyText_ThrowsRatherThanYieldingAnEmptyQuery()
+    {
+        var input = """{"_id": "q1", "text": "   "}""";
+
+        var act = () => JsonlCorpusParser.ParseQueries(new StringReader(input));
+
+        act.Should().Throw<FormatException>().WithMessage("*line 1*text*");
     }
 }
