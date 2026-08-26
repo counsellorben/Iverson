@@ -39,12 +39,14 @@ beforeEach(() => {
 });
 
 describe("describeCheck", () => {
-  it("keeps StarRocks's three states apart", () => {
+  it("keeps StarRocks's four states apart", () => {
     expect(describeCheck(true)).toBe("up");
     expect(describeCheck(false)).toBe("down");
-    // The literal string, NOT a falsy boolean. Rendering this as "down" would put a red tile
-    // on a deployment whose engagement store was switched off on purpose.
+    // Both literal strings, NOT falsy booleans. Rendering either as "down" would put a red
+    // tile on a deployment that is fine: one whose engagement store was switched off on
+    // purpose, and one that is still bootstrapping its StarRocks user on a fresh install.
     expect(describeCheck("disabled")).toBe("disabled");
+    expect(describeCheck("authPending")).toBe("authPending");
     expect(describeCheck(undefined)).toBe("unknown");
   });
 });
@@ -112,11 +114,48 @@ describe("HealthStrip", () => {
     expect(downTile).toHaveClass("MuiChip-filled");
   });
 
+  it("renders an auth-pending StarRocks as its own state, not as Down", async () => {
+    fetchHealthMock.mockResolvedValue(healthy({ starrocks: "authPending" }));
+
+    render(<HealthStrip accessToken={TOKEN} />);
+
+    await waitFor(() => expect(tileState("starrocks")).toBe("authPending"));
+    const tile = screen.getByTestId("health-tile-starrocks");
+    expect(tile).toHaveTextContent("StarRocks: Auth pending");
+    expect(tile).not.toHaveTextContent("Down");
+  });
+
+  it("does not make a fresh install's bootstrapping StarRocks LOOK like a failure", async () => {
+    // ReadinessPolicy counts AuthPending as READY — the create-user post-install hook cannot
+    // run until this probe passes — so /health answers 200 with status "degraded" and this
+    // check not "up". An operator's first look at a correctly-progressing install must not be
+    // a red chip, and colour beats text at a glance, so colour is what gets asserted.
+    fetchHealthMock.mockResolvedValue(healthy({ starrocks: "authPending", qdrant: false }));
+
+    render(<HealthStrip accessToken={TOKEN} />);
+
+    await waitFor(() => expect(tileState("starrocks")).toBe("authPending"));
+    const pendingTile = screen.getByTestId("health-tile-starrocks");
+    expect(pendingTile).not.toHaveClass("MuiChip-colorError");
+    expect(pendingTile).not.toHaveClass("MuiChip-filled");
+    expect(pendingTile).toHaveClass("MuiChip-outlined");
+
+    // …and a store that really IS down still looks like one, so the contrast carries meaning.
+    const downTile = screen.getByTestId("health-tile-qdrant");
+    expect(downTile).toHaveClass("MuiChip-colorError");
+    expect(downTile).toHaveClass("MuiChip-filled");
+  });
+
   it("pins the appearance of every check state", () => {
     expect(CHECK_APPEARANCE.disabled).toEqual({ color: "default", variant: "outlined" });
     expect(CHECK_APPEARANCE.down).toEqual({ color: "error", variant: "filled" });
     expect(CHECK_APPEARANCE.up).toEqual({ color: "success", variant: "filled" });
+    expect(CHECK_APPEARANCE.authPending).toEqual({ color: "warning", variant: "outlined" });
     expect(CHECK_APPEARANCE.unknown).toEqual({ color: "warning", variant: "outlined" });
+    // The one promise that must hold whatever the palette becomes: only a real failure is red.
+    for (const [state, appearance] of Object.entries(CHECK_APPEARANCE)) {
+      if (state !== "down") expect(appearance.color).not.toBe("error");
+    }
   });
 
   it("renders a failed StarRocks check as Down", async () => {

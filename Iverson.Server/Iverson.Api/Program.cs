@@ -440,7 +440,9 @@ app.MapGet("/health", async (HealthCheckCache healthCheckCache) =>
     var checks = new
     {
         postgres  = result.Postgres,
-        starrocks = result.EngagementEnabled ? (object)(result.StarRocks == EngagementHealthStatus.Healthy) : "disabled",
+        // Four values, not two: true / false / "authPending" / "disabled". See
+        // HealthCheckWireFormat for why AuthPending must not flatten to false.
+        starrocks = HealthCheckWireFormat.StarRocksCheck(result.StarRocks, result.EngagementEnabled),
         qdrant    = result.Qdrant,
         kafka     = result.Kafka
     };

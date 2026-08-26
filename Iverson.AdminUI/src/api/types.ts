@@ -150,12 +150,22 @@ export interface QdrantResponse {
 // ── /health (anonymous, also served on the admin-api host) ────────────────────
 
 /**
- * `starrocks` has THREE states, not two: `true`, `false`, or the literal string
- * `"disabled"` when the engagement store is switched off. The other three are booleans.
+ * `starrocks` has FOUR states, not two — it is the wire projection of a three-valued
+ * `EngagementHealthStatus` plus an off switch:
+ *
+ *  - `true` / `false` — healthy / unhealthy.
+ *  - `"disabled"` — the engagement store is switched off in this deployment.
+ *  - `"authPending"` — StarRocks answers but the `iverson_app` user does not exist yet,
+ *    expected during a fresh install before the create-user post-install hook has run.
+ *    `ReadinessPolicy` counts it as READY, so `/health` answers 200 with `status:
+ *    "degraded"` while this is the value. Reading it as a falsy boolean puts a red
+ *    "Down" chip on a deployment that is progressing correctly.
+ *
+ * The other three checks are plain booleans.
  */
 export interface HealthChecks {
   postgres: boolean;
-  starrocks: boolean | "disabled";
+  starrocks: boolean | "disabled" | "authPending";
   qdrant: boolean;
   kafka: boolean;
 }

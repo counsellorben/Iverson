@@ -9,9 +9,14 @@ import { WidgetCard } from "./WidgetCard";
  *
  * Three things about this widget are contract, not preference:
  *
- * - **`checks.starrocks` has THREE states.** `true`, `false`, and the literal string
- *   `"disabled"` when the engagement store is switched off. A boolean read would render a
- *   deliberately disabled store as DOWN and put a red tile on a perfectly healthy deployment.
+ * - **`checks.starrocks` has FOUR states.** `true`, `false`, `"disabled"` when the engagement
+ *   store is switched off, and `"authPending"` while a fresh install is waiting for its
+ *   create-user post-install hook. A boolean read would render EITHER of the two strings as
+ *   DOWN and put a red tile on a deployment that is fine. `"authPending"` is the sharper case:
+ *   `ReadinessPolicy` deliberately counts it as ready — the hook cannot run until the readiness
+ *   probe passes, so failing on it would deadlock every first install — which means `/health`
+ *   answers 200 while this check is not "up", and the operator's very first look at a
+ *   correctly-progressing deployment would have been a red "StarRocks: Down".
  * - **There is no Ollama tile.** `/health` does not check it; its state is inferred from the
  *   embedding-latency figure in the Band B widgets. A tile here would be a guess.
  * - **60 seconds, not 30.** `/health` is write-bearing — it drives readiness — so its cadence
@@ -33,14 +38,22 @@ const STORE_TILES: readonly { readonly key: keyof HealthChecks; readonly label: 
   { key: "kafka", label: "Kafka" },
 ];
 
-export type CheckState = "up" | "down" | "disabled" | "unknown";
+export type CheckState = "up" | "down" | "disabled" | "authPending" | "unknown";
 
 /**
- * Maps one check value to its rendered state. `"disabled"` is a first-class answer, not a
- * falsy boolean: it means the operator turned the store off, which is neither up nor down.
+ * Maps one check value to its rendered state. Both string values are first-class answers, not
+ * falsy booleans: `"disabled"` means the operator turned the store off and `"authPending"`
+ * means a fresh install has not finished bootstrapping its database user — neither is up, and
+ * neither is down.
+ *
+ * The `undefined` fallthrough is `"unknown"`, not `"down"`: a field missing from the body is
+ * something we failed to read, which is not a claim about the store.
  */
-export function describeCheck(value: boolean | "disabled" | undefined): CheckState {
+export function describeCheck(
+  value: boolean | "disabled" | "authPending" | undefined
+): CheckState {
   if (value === "disabled") return "disabled";
+  if (value === "authPending") return "authPending";
   if (value === true) return "up";
   if (value === false) return "down";
   return "unknown";
@@ -50,6 +63,7 @@ const CHECK_LABELS: Record<CheckState, string> = {
   up: "Up",
   down: "Down",
   disabled: "Disabled",
+  authPending: "Auth pending",
   unknown: "Unknown",
 };
 
@@ -65,11 +79,19 @@ export interface CheckAppearance {
  * text at a glance, which is the entire job of a health strip. So `disabled` is a neutral
  * OUTLINED chip: visibly not a fault, visibly not "up" either. `error` red is reserved for
  * `down`, the one state that is actually a failure.
+ *
+ * `authPending` follows the same reasoning and lands on `warning` outlined rather than
+ * `default`: unlike `disabled` it is a state the deployment is expected to LEAVE, so it is
+ * worth noticing — a cluster still auth-pending an hour in really is stuck — but it is not a
+ * fault while a fresh install is progressing, and it must never be red. It shares an
+ * appearance with `unknown` deliberately: both mean "not confirmed up, not confirmed down",
+ * and the chip's label is what separates them.
  */
 export const CHECK_APPEARANCE: Record<CheckState, CheckAppearance> = {
   up: { color: "success", variant: "filled" },
   down: { color: "error", variant: "filled" },
   disabled: { color: "default", variant: "outlined" },
+  authPending: { color: "warning", variant: "outlined" },
   unknown: { color: "warning", variant: "outlined" },
 };
 
