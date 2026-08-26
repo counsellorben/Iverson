@@ -122,7 +122,7 @@ services:
       retries: 5
 
   ollama:
-    image: ollama/ollama:0.5.0
+    image: ollama/ollama:0.12.11
     container_name: iverson-ollama
     restart: unless-stopped
     ports:
