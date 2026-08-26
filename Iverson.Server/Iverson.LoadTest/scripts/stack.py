@@ -2,15 +2,19 @@
 """Bring up (or tear down) the Docker Compose container tier the direct-Qdrant benchmark
 scripts need, without paying for the full stack's cold start.
 
-BenchmarkIngestScenario writes straight to Qdrant, bypassing the gRPC/Kafka write path, so
-it needs far fewer containers than a normal `docker compose up`. Two tiers:
+ingest.py writes straight to Qdrant, bypassing the gRPC/Kafka write path (BenchmarkIngestScenario.cs
+is the other side of that comparison: it calls PersistAsync, the ~34s/document path this whole
+project exists to avoid). The `ingest` tier here needs far fewer containers than a normal
+`docker compose up`. Two tiers:
 
     ingest  qdrant, ollama
             everything ingest.py touches: the vector store and the embedding model.
 
     query   qdrant, ollama, postgres, redis, authentik-server, iverson-api
-            adds what report.py needs to issue real SearchSimilar/SearchChunks calls
-            through the gRPC read path.
+            adds what `dotnet run -- benchmark-query` needs to issue real SearchSimilar/
+            SearchChunks calls through the gRPC read path -- report.py itself issues no
+            RPCs and needs no containers; it only scores the *.trec run files that
+            produces.
 
 Usage:
     python3 Iverson.Server/Iverson.LoadTest/scripts/stack.py ingest
@@ -40,9 +44,16 @@ readiness -- there is no tier left running afterward to wait on.
 and for iverson-api a raw TCP connect to 127.0.0.1:8080 -- port 8080 is h2c/gRPC-only
 (Kestrel configured Http2-only) and refuses HTTP/1.1, so an HTTP probe against it hangs or
 errors rather than reporting readiness. Postgres/redis/authentik-server have no readiness
-check of their own here: iverson-api's own startup runs its bootstrap DDL against them
-before Kestrel ever binds 8080 (see docker-compose.yml's comment on iverson-api's
-healthcheck), so a successful connect to 8080 already implies they were reachable.
+check of their own here, and that is still sound even though iverson-api's bootstrap DDL
+(the thing that gates Kestrel binding 8080) only ever touches postgres, not redis or
+authentik: `docker compose up -d --no-deps <tier services>` still enforces
+`depends_on: service_healthy` among the services *named on the command line*, and
+iverson-api's compose entry declares `authentik-server: condition: service_healthy` --
+verified experimentally, not merely reasoned from the DDL. So a successful connect to 8080
+already implies postgres, redis, and authentik-server were all reachable, via compose's own
+dependency gate rather than anything iverson-api's startup code does. (A DDL-only argument
+would wrongly license dropping authentik-server from this tier -- it is required here for a
+different reason.)
 
 Exit status is nonzero, with a diagnostic on stderr, if `docker compose up`/`docker stop`
 fails or a tier does not reach readiness within --timeout seconds -- so a caller can chain

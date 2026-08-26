@@ -5,9 +5,13 @@ report read from ingest.py's stats sidecar.
 Three things, in order, per invocation:
 
     1. Structural checks on each run file -- rows, distinct queries, count of non-zero
-       scores, and duplicate doc ids within a query. These are exactly the malformations a
-       TREC scorer either rejects outright or silently collapses, so they are surfaced
-       before any score is trusted.
+       scores, duplicate doc ids within a query, and qrels query coverage (how many of the
+       qrels file's queries this run actually has rows for). These are exactly the
+       malformations a TREC scorer either rejects outright or silently collapses, so they
+       are surfaced before any score is trusted -- coverage included: a query present in
+       qrels but absent from the run contributes zero and drags every aggregate down without
+       raising an error, so a 300-query run scored against a 40-query qrels file (or vice
+       versa) must be visible here, not discovered by a suspiciously low score later.
 
     2. ir_measures scoring -- nDCG@10, R@50, AP against a qrels file, one line per run.
 
@@ -106,14 +110,17 @@ def resolve_run_paths(run_args, qrels_path):
 
 # ── Step 1: structural checks ──────────────────────────────────────────────────────────
 
-def structural_check(path):
-    """Rows, distinct queries, non-zero scores, and duplicate (query_id, doc_id) pairs --
-    parsed from the raw whitespace-delimited columns rather than through
-    ir_measures.read_trec_run, which returns whatever list of ScoredDoc rows it read without
-    flagging a doc id repeated under one query. A repeated doc id is exactly the malformation
-    a TREC scorer either rejects (pytrec_eval raises) or silently collapses (a dict-keyed
-    reader keeps only the last occurrence) -- either way, the run file does not mean what it
-    looks like it means, and that has to be visible before its score is trusted.
+def structural_check(path, qrels_query_ids=None):
+    """Rows, distinct queries, non-zero scores, duplicate (query_id, doc_id) pairs, and (when
+    qrels_query_ids is given) qrels query coverage -- parsed from the raw whitespace-delimited
+    columns rather than through ir_measures.read_trec_run, which returns whatever list of
+    ScoredDoc rows it read without flagging a doc id repeated under one query. A repeated doc
+    id is exactly the malformation a TREC scorer either rejects (pytrec_eval raises) or
+    silently collapses (a dict-keyed reader keeps only the last occurrence) -- either way, the
+    run file does not mean what it looks like it means, and that has to be visible before its
+    score is trusted. A query missing from the run entirely is the same kind of problem by a
+    different mechanism: it contributes zero to every aggregate with no error from
+    ir_measures, so coverage against the qrels file's own query set is checked here too.
 
     Standard TREC run columns: query_id, iter, doc_id, rank, score, tag. Malformed lines
     (fewer than 6 whitespace-separated fields) are counted and reported rather than raising,
@@ -146,6 +153,12 @@ def structural_check(path):
     duplicates = {k: c for k, c in seen.items() if c > 1}
     duplicate_rows = sum(c - 1 for c in duplicates.values())
 
+    qrels_total = None
+    qrels_covered = None
+    if qrels_query_ids is not None:
+        qrels_total = len(qrels_query_ids)
+        qrels_covered = len(query_ids & qrels_query_ids)
+
     return {
         "rows": rows,
         "malformed_lines": malformed,
@@ -154,6 +167,8 @@ def structural_check(path):
         "duplicate_pairs": len(duplicates),
         "duplicate_rows": duplicate_rows,
         "duplicate_examples": sorted(duplicates)[:5],
+        "qrels_total": qrels_total,
+        "qrels_covered": qrels_covered,
     }
 
 
@@ -164,6 +179,9 @@ def print_structural_check(path, check):
         print(f"  malformed lines      {check['malformed_lines']:,} (fewer than 6 fields; skipped)")
     print(f"  distinct queries     {check['distinct_queries']:,}")
     print(f"  non-zero scores      {check['nonzero_scores']:,} / {check['rows']:,}")
+    if check["qrels_total"] is not None:
+        print(f"  qrels queries        {check['qrels_total']:,}")
+        print(f"  covered by this run  {check['qrels_covered']:,} / {check['qrels_total']:,}")
     if check["duplicate_pairs"]:
         print(
             f"  duplicate doc ids    {check['duplicate_pairs']:,} (query, doc) pair(s), "
@@ -305,10 +323,14 @@ def main():
     if not run_paths:
         sys.exit("no run files resolved from --run (after excluding --qrels)")
 
-    for path in run_paths:
-        print_structural_check(path, structural_check(path))
-
+    # Read once, ahead of the structural-check loop rather than after it, so query coverage
+    # against the qrels file can be part of the structural section itself -- the section
+    # whose whole purpose is surfacing problems before any score is trusted.
     qrels = list(ir_measures.read_trec_qrels(args.qrels))
+    qrels_query_ids = {row.query_id for row in qrels}
+
+    for path in run_paths:
+        print_structural_check(path, structural_check(path, qrels_query_ids))
 
     for path in run_paths:
         results = score_run(qrels, path, measures)

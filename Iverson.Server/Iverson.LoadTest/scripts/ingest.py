@@ -50,20 +50,52 @@ Usage:
     python3 Iverson.Server/Iverson.LoadTest/scripts/ingest.py \\
         --corpus /path/to/corpus.jsonl --key-map-path /tmp/keymap.json --limit 20
 
+    # Drop-only: wipe both collections (and any stale progress/stats for --key-map-path)
+    # without ingesting anything. --corpus is NOT required for this form -- it is the clean
+    # way to run the plan's "drop" step as an invocation separate from the ingest that
+    # follows it. The script exits immediately after dropping.
+    python3 Iverson.Server/Iverson.LoadTest/scripts/ingest.py \\
+        --drop --key-map-path /path/to/keymap.json
+
+    # --drop combined with --corpus still works (drop, then ingest in one invocation) --
+    # useful for a quick wipe-and-reingest of a small corpus. It is exactly a drop-only
+    # invocation followed by a normal (non-resumed) ingest, so it is subject to the same
+    # reset-unless-resumed rule below: it does NOT double-count with a separate later
+    # non-drop invocation, because that invocation resets rather than accumulates.
+
 Writes, alongside --key-map-path:
     <key-map-path>            flat {parentKey: docId} JSON -- what KeyMap.LoadAsync reads
-    <key-map-path>.progress   one completed docId per line, appended+flushed per document
+    <key-map-path>.progress   one completed docId per line, appended+flushed per document.
+                               Opened "a" (append) ONLY when --resume is passed; otherwise
+                               opened "w" (truncate) -- a non-resumed invocation is by
+                               definition ingesting a corpus from zero, so any stale content
+                               left by an earlier invocation against the same --key-map-path
+                               must not leak into this run's counts.
     <key-map-path>.stats.json documents/chunks/embed_calls/embeds_saved/elapsed_seconds +
                                started_at/finished_at -- ACCUMULATES across invocations
-                               against the same --key-map-path (counters and elapsed_seconds
+                               ONLY when --resume is passed (counters and elapsed_seconds
                                increment, started_at is preserved from the first run), so a
                                --resume'd run reports the same totals a single unbroken run
-                               would have. elapsed_seconds is the SUM of each invocation's own
+                               would have. A non-resumed invocation instead REPLACES whatever
+                               the sidecar already held, for the same reason the progress
+                               file resets: it is measuring a whole corpus from zero, and
+                               mixing its totals with an unrelated prior invocation's would
+                               silently double-count (this is exactly what running the plan's
+                               documented "ingest.py --drop" then "ingest.py" as two separate
+                               invocations used to do, before --drop gained a drop-only exit
+                               path and this reset rule existed -- both of those invocations
+                               used to run the full ingest and accumulate into the same
+                               sidecar). elapsed_seconds is the SUM of each invocation's own
                                (finish - start), i.e. working time only -- started_at/
                                finished_at instead span first-start to last-finish, so after a
                                --resume across a gap (crash, or just stopping overnight) that
                                span includes the idle time between runs and elapsed_seconds
-                               does not.
+                               does not. Written from a try/finally around the ingest loop, so
+                               a crashed (not just interrupted-and-resumed) invocation still
+                               records however many documents it completed before dying,
+                               rather than losing them: --resume's skip-already-done logic
+                               means a document recorded in .progress but never counted in the
+                               sidecar would otherwise vanish from the totals permanently.
 
 Requires Qdrant at http://localhost:6333 and Ollama (nomic-embed-text, already pulled) at
 http://localhost:11434 -- see scripts/stack.py's `ingest` tier.
@@ -82,6 +114,14 @@ from datetime import datetime, timezone
 QDRANT_URL = "http://localhost:6333"
 QDRANT_API_KEY = "dev-only-not-for-production-qdrant-key-0123456789"
 OLLAMA_URL = "http://localhost:11434"
+
+# Generous rather than tight: per-embed latency runs 5-14s under load (see the plan's own
+# measurements), and this is a 4-6h unattended run -- a stalled Ollama/Qdrant with no timeout
+# hangs it forever instead of failing loudly. stack.py uses timeout=2 for its own readiness
+# probes, which is a different job (poll-until-ready, expected to fail fast and retry) --
+# this is "don't hang forever mid-ingest", not a readiness probe.
+HTTP_TIMEOUT_SECONDS = 300
+EMBED_RETRIES = 2
 
 DEFAULT_OBJECT_COLLECTION = "benchmark_documents_tenant_bypass"
 DEFAULT_CHUNKS_COLLECTION = "benchmark_documents_chunks_tenant_bypass"
@@ -184,7 +224,7 @@ def qdrant_request(method, path, body=None):
     if data is not None:
         req.add_header("Content-Type", "application/json")
     try:
-        with urllib.request.urlopen(req) as resp:
+        with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT_SECONDS) as resp:
             raw = resp.read()
             return resp.status, (json.loads(raw) if raw else None)
     except urllib.error.HTTPError as e:
@@ -194,7 +234,10 @@ def qdrant_request(method, path, body=None):
         except json.JSONDecodeError:
             parsed = None
         return e.code, parsed
-    except urllib.error.URLError as e:
+    except (urllib.error.URLError, TimeoutError) as e:
+        # TimeoutError doesn't subclass URLError (verified on this box's 3.14) -- urlopen's
+        # own timeout= can raise either depending on where the stall happens, so both are
+        # caught here.
         sys.exit(f"could not reach Qdrant at {url}: {e}")
 
 
@@ -264,13 +307,25 @@ def upsert_points(collection, points):
 def embed(text):
     url = f"{OLLAMA_URL}/api/embed"
     data = json.dumps({"model": "nomic-embed-text", "input": text}).encode()
-    req = urllib.request.Request(url, data=data, method="POST")
-    req.add_header("Content-Type", "application/json")
-    try:
-        with urllib.request.urlopen(req) as resp:
-            parsed = json.loads(resp.read())
-    except urllib.error.URLError as e:
-        sys.exit(f"embed request to {url} failed: {e}")
+    last_error = None
+    for attempt in range(1, EMBED_RETRIES + 2):  # e.g. EMBED_RETRIES=2 -> 3 attempts total
+        req = urllib.request.Request(url, data=data, method="POST")
+        req.add_header("Content-Type", "application/json")
+        try:
+            with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT_SECONDS) as resp:
+                parsed = json.loads(resp.read())
+            break
+        except (urllib.error.URLError, TimeoutError) as e:
+            # TimeoutError doesn't subclass URLError (verified on this box's 3.14) -- both
+            # are caught here for the same reason as qdrant_request.
+            last_error = e
+            if attempt <= EMBED_RETRIES:
+                print(
+                    f"[ingest] embed request to {url} failed (attempt {attempt}/{EMBED_RETRIES + 1}): "
+                    f"{e} -- retrying"
+                )
+    else:
+        sys.exit(f"embed request to {url} failed after {EMBED_RETRIES + 1} attempt(s): {last_error}")
     embeddings = parsed.get("embeddings")
     if not embeddings:
         sys.exit(f"ollama /api/embed returned no embeddings (input length {len(text)}): {parsed}")
@@ -370,14 +425,17 @@ def ingest_document(key, doc_id, title, body, object_collection, chunks_collecti
 
 # ── Stats sidecar ───────────────────────────────────────────────────────────────────────
 
-def update_stats_sidecar(path, run_stats, started_at_iso, finished_at_iso, elapsed_seconds):
-    """elapsed_seconds is THIS invocation's own (finish - start), summed into whatever the
-    sidecar already holds -- working time only. started_at/finished_at, by contrast, span
+def update_stats_sidecar(path, run_stats, started_at_iso, finished_at_iso, elapsed_seconds, resume):
+    """Accumulates into whatever the sidecar already holds ONLY when resume is True -- a
+    non-resumed invocation is measuring a whole corpus from zero, so any prior sidecar
+    content (from an unrelated earlier invocation against the same --key-map-path) must not
+    be folded in, or totals silently double. elapsed_seconds is THIS invocation's own
+    (finish - start) -- working time only. started_at/finished_at, by contrast, span
     first-start to last-finish and so include any idle gap between a crash and a later
     --resume; they are kept for display but must not be used to derive throughput (see
     module docstring)."""
     existing = {}
-    if os.path.exists(path):
+    if resume and os.path.exists(path):
         with open(path, encoding="utf-8") as f:
             existing = json.load(f)
 
@@ -399,7 +457,11 @@ def main():
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
-    ap.add_argument("--corpus", required=True, help="path to a BEIR-shaped corpus.jsonl")
+    ap.add_argument(
+        "--corpus", default=None,
+        help="path to a BEIR-shaped corpus.jsonl -- required unless --drop is passed with no "
+             "--corpus (a drop-only invocation)",
+    )
     ap.add_argument("--key-map-path", required=True)
     ap.add_argument(
         "--limit", type=int, default=None, help="ingest only the first N documents (for trying the script out)"
@@ -411,12 +473,17 @@ def main():
     ap.add_argument(
         "--drop", action="store_true",
         help="delete and recreate both collections, and delete the progress file and stats "
-             "sidecar, before ingesting. NEVER pass this with the live benchmark_documents_* "
-             "collection names outside of the plan's Task 5 -- see module docstring.",
+             "sidecar, before ingesting. Pass with no --corpus for a drop-only invocation "
+             "that exits immediately after dropping. NEVER pass this with the live "
+             "benchmark_documents_* collection names outside of the plan's Task 5 -- see "
+             "module docstring.",
     )
     ap.add_argument("--object-collection", default=DEFAULT_OBJECT_COLLECTION)
     ap.add_argument("--chunks-collection", default=DEFAULT_CHUNKS_COLLECTION)
     args = ap.parse_args()
+
+    if not args.drop and args.corpus is None:
+        ap.error("--corpus is required unless --drop is passed")
 
     progress_path = f"{args.key_map_path}.progress"
     stats_path = f"{args.key_map_path}.stats.json"
@@ -428,6 +495,9 @@ def main():
             if os.path.exists(p):
                 os.remove(p)
                 print(f"[ingest] removed {p}")
+        if args.corpus is None:
+            print("[ingest] --drop: collections dropped, no --corpus given -- exiting without ingesting")
+            return
 
     ensure_collection(
         args.object_collection,
@@ -457,40 +527,54 @@ def main():
     started_at = datetime.now(timezone.utc)
     skipped = 0
 
-    with open(progress_path, "a", encoding="utf-8") as progress_f:
-        for i, (doc_id, title, body) in enumerate(docs, start=1):
-            key = str(uuid.uuid5(NAMESPACE, f"{corpus_name}:{doc_id}"))
-            key_map[key] = doc_id
+    # "a" (append) only under --resume, so a resumed run's progress lines add to what is
+    # already there; otherwise "w" (truncate), so a plain re-run starts the file from zero
+    # rather than accumulating alongside a previous invocation's lines. Paired with
+    # update_stats_sidecar's own resume-gated accumulation below, this is what keeps a
+    # non-resumed re-run from double-counting against the same --key-map-path.
+    progress_mode = "a" if args.resume else "w"
 
-            if args.resume and doc_id in already_done:
-                skipped += 1
-                continue
+    # The key map and stats sidecar are written from `finally` -- not just after the loop
+    # completes normally -- so a crashed (not merely interrupted-and-later-resumed)
+    # invocation still records however many documents it actually completed before dying,
+    # instead of losing them: they are already recorded as done in the (flushed-per-document)
+    # progress file, so a later --resume would otherwise skip them without ever having
+    # counted them anywhere.
+    try:
+        with open(progress_path, progress_mode, encoding="utf-8") as progress_f:
+            for i, (doc_id, title, body) in enumerate(docs, start=1):
+                key = str(uuid.uuid5(NAMESPACE, f"{corpus_name}:{doc_id}"))
+                key_map[key] = doc_id
 
-            ingest_document(key, doc_id, title, body, args.object_collection, args.chunks_collection, run_stats)
-            progress_f.write(doc_id + "\n")
-            progress_f.flush()
+                if args.resume and doc_id in already_done:
+                    skipped += 1
+                    continue
 
-            if i % 100 == 0 or i == len(docs):
-                print(f"[ingest] {i:,}/{len(docs):,} processed ({skipped:,} skipped via --resume)")
+                ingest_document(key, doc_id, title, body, args.object_collection, args.chunks_collection, run_stats)
+                progress_f.write(doc_id + "\n")
+                progress_f.flush()
 
-    with open(args.key_map_path, "w", encoding="utf-8") as f:
-        json.dump(key_map, f, indent=2)
-    print(f"[ingest] key map ({len(key_map):,} entries) written to {args.key_map_path}")
+                if i % 100 == 0 or i == len(docs):
+                    print(f"[ingest] {i:,}/{len(docs):,} processed ({skipped:,} skipped via --resume)")
+    finally:
+        with open(args.key_map_path, "w", encoding="utf-8") as f:
+            json.dump(key_map, f, indent=2)
+        print(f"[ingest] key map ({len(key_map):,} entries) written to {args.key_map_path}")
 
-    finished_at = datetime.now(timezone.utc)
-    elapsed_seconds = (finished_at - started_at).total_seconds()
-    merged = update_stats_sidecar(
-        stats_path, run_stats, started_at.isoformat(), finished_at.isoformat(), elapsed_seconds
-    )
-    print(
-        f"[ingest] this run: {run_stats['documents']:,} documents, {run_stats['chunks']:,} chunks, "
-        f"{run_stats['embed_calls']:,} embed calls ({run_stats['embeds_saved']:,} saved)"
-    )
-    print(
-        f"[ingest] cumulative ({stats_path}): {merged['documents']:,} documents, "
-        f"{merged['chunks']:,} chunks, {merged['embed_calls']:,} embed calls "
-        f"({merged['embeds_saved']:,} saved), {merged['started_at']} -> {merged['finished_at']}"
-    )
+        finished_at = datetime.now(timezone.utc)
+        elapsed_seconds = (finished_at - started_at).total_seconds()
+        merged = update_stats_sidecar(
+            stats_path, run_stats, started_at.isoformat(), finished_at.isoformat(), elapsed_seconds, args.resume
+        )
+        print(
+            f"[ingest] this run: {run_stats['documents']:,} documents, {run_stats['chunks']:,} chunks, "
+            f"{run_stats['embed_calls']:,} embed calls ({run_stats['embeds_saved']:,} saved)"
+        )
+        print(
+            f"[ingest] cumulative ({stats_path}): {merged['documents']:,} documents, "
+            f"{merged['chunks']:,} chunks, {merged['embed_calls']:,} embed calls "
+            f"({merged['embeds_saved']:,} saved), {merged['started_at']} -> {merged['finished_at']}"
+        )
 
 
 if __name__ == "__main__":
