@@ -169,12 +169,10 @@ spec:
             # The admin console's metrics proxy (/admin/console/metrics — Task 7). The Service
             # name/port are deterministic (charts/prometheus/templates/service.yaml), so no
             # per-profile URL value is needed — only whether the prometheus subchart is installed
-            # at all. Gated on global.prometheusEnabled, not the top-level prometheus.enabled this
-            # umbrella chart's own Chart.yaml condition and templates/networkpolicies.yaml use
-            # (T3's file, out of this task's scope to touch): a subchart template cannot read a
-            # sibling subchart's own values namespace, only .Values.global, so this is a values-
-            # author-maintained MIRROR of prometheus.enabled — kept in lockstep the same way
-            # global.engagementEnabled/tracingEnabled are, and verified per-profile by `helm lint`.
+            # at all. global.prometheusEnabled is the single source of truth for that (Chart.yaml's
+            # subchart condition and both NetworkPolicy rules in templates/networkpolicies.yaml use
+            # the same key) — a subchart template can only read its own values plus
+            # `.Values.global`, which is why the flag lives under `global` at all.
             - name: Prometheus__BaseUrl
               value: "http://{{ .Release.Name }}-prometheus:9090"
             {{- end }}

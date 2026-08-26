@@ -176,4 +176,40 @@ public class AdminConsoleMetricsSeriesNamesTests
         yield return [PrometheusQueries.RpcErrorPercentage];
         yield return [PrometheusQueries.RpcP95Seconds];
     }
+
+    /// <summary>
+    /// THE NUMERATOR-AND-DENOMINATOR ASSERTION. <see cref="PrometheusQueries.RpcErrorPercentage"/>
+    /// is a ratio of two `sum(rate(http_server_request_duration_seconds_count{...}))` clauses, and
+    /// a plain `.Should().Contain(...)` on the whole string (as
+    /// <see cref="EveryRpcHealthQuery_ExcludesHealthAndScrapeRoutes"/> above does, for the two
+    /// single-clause queries) cannot tell "the filter is on both clauses" apart from "the filter
+    /// is on only one clause" — a mutant that drops <c>RpcRouteFilter</c> from just the
+    /// denominator would inflate that divisor with probe/scrape traffic, understate the error
+    /// percentage, and still pass a substring-only check. Counted occurrences catch it: each of
+    /// the three route exclusions must appear exactly twice — once per clause.
+    /// </summary>
+    [Theory]
+    [InlineData("http_route!=\"/health\"")]
+    [InlineData("http_route!=\"/health/live\"")]
+    [InlineData("http_route!=\"/metrics\"")]
+    public void RpcErrorPercentage_AppliesTheRouteFilter_ToBothClauses(string routeExclusion)
+    {
+        var occurrences = CountOccurrences(PrometheusQueries.RpcErrorPercentage, routeExclusion);
+
+        occurrences.Should().Be(2,
+            $"'{routeExclusion}' must be present in BOTH the numerator and the denominator of the ratio");
+    }
+
+    private static int CountOccurrences(string haystack, string needle)
+    {
+        var count = 0;
+        var index = 0;
+        while ((index = haystack.IndexOf(needle, index, StringComparison.Ordinal)) >= 0)
+        {
+            count++;
+            index += needle.Length;
+        }
+
+        return count;
+    }
 }

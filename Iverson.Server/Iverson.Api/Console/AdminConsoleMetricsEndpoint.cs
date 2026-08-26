@@ -184,22 +184,11 @@ public sealed class PrometheusQueryClient(IHttpClientFactory httpClientFactory) 
     {
         using var client = httpClientFactory.CreateClient(HttpClientName);
 
-        HttpResponseMessage response;
-        try
-        {
-            response = await client.GetAsync(
-                $"/api/v1/query?query={Uri.EscapeDataString(promQl)}", ct);
-        }
-        catch (HttpRequestException ex)
-        {
-            throw new PrometheusUnavailableException($"Could not reach Prometheus: {ex.Message}", ex);
-        }
-        catch (OperationCanceledException ex) when (!ct.IsCancellationRequested)
-        {
-            // The caller's own token was not the source — this is the HttpClient's own request
-            // timeout, which is a Prometheus-unavailability condition, not a cancelled request.
-            throw new PrometheusUnavailableException("Prometheus request timed out.", ex);
-        }
+        // Disposed via `using` below regardless of which path this method takes out (a real
+        // number, null for no current sample, or throwing PrometheusUnavailableException) — a
+        // bare `HttpResponseMessage response;` here previously left it undisposed on every path,
+        // and this is called nine times per poll for every open console tab.
+        using var response = await SendAsync(client, promQl, ct);
 
         if (!response.IsSuccessStatusCode)
         {
@@ -248,6 +237,24 @@ public sealed class PrometheusQueryClient(IHttpClientFactory httpClientFactory) 
         }
     }
 
+    private static async Task<HttpResponseMessage> SendAsync(HttpClient client, string promQl, CancellationToken ct)
+    {
+        try
+        {
+            return await client.GetAsync($"/api/v1/query?query={Uri.EscapeDataString(promQl)}", ct);
+        }
+        catch (HttpRequestException ex)
+        {
+            throw new PrometheusUnavailableException($"Could not reach Prometheus: {ex.Message}", ex);
+        }
+        catch (OperationCanceledException ex) when (!ct.IsCancellationRequested)
+        {
+            // The caller's own token was not the source — this is the HttpClient's own request
+            // timeout, which is a Prometheus-unavailability condition, not a cancelled request.
+            throw new PrometheusUnavailableException("Prometheus request timed out.", ex);
+        }
+    }
+
     private static string Truncate(string s) => s.Length <= 500 ? s : s[..500] + "...";
 }
 
@@ -270,12 +277,15 @@ public sealed class PrometheusQueryClient(IHttpClientFactory httpClientFactory) 
 internal static class PrometheusQueries
 {
     /// <summary>
-    /// Multiple `api`/`worker` replicas can each expose these gauges (worker.replicas defaults to
-    /// 2 — charts/worker/values.yaml); every replica reads the same shared Postgres-backed queue,
-    /// so the value is the same on every series and `max()` picks one without inventing a total
-    /// `sum()` would. Restated per instrument: `sum()` is correct for the two counters below
-    /// because those genuinely add across replicas — each consumer instance's own retries are its
-    /// own, real, additional retries.
+    /// All five instruments here — these three gauges and the two counters below — are emitted
+    /// only by hosted services gated on `workloadRole == "worker"` (Program.cs), not by `api`.
+    /// Multiple `worker` replicas (worker.replicas defaults to 2 — charts/worker/values.yaml) can
+    /// each expose these gauges; every replica reads the same shared Postgres-backed queue, so the
+    /// value is the same on every series and `max()` picks one without inventing a total `sum()`
+    /// would. Restated per instrument: `sum()` IS correct for the two counters below, despite the
+    /// same multi-replica shape, because those genuinely add across replicas — each consumer
+    /// instance's own retries are its own, real, additional retries, not a repeated read of one
+    /// shared number.
     /// </summary>
     internal const string ReconciliationQueueDepth = "max(reconciliation_queue_depth)";
     internal const string DlqUnreplayedCount = "max(dlq_unreplayed_count)";

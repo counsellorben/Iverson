@@ -201,6 +201,48 @@ public sealed class PrometheusQueryClientTests
         }
     }
 
+    /// <summary>
+    /// THE NUMERATOR-AND-DENOMINATOR ASSERTION, at the wire level. A plain `.Contain(...)` over
+    /// the sent query string (as <see cref="RpcHealthQueries_ExcludeHealthAndScrapeRoutes_OnTheWire"/>
+    /// does) is satisfied even if the route filter appears in only ONE of
+    /// <see cref="PrometheusQueries.RpcErrorPercentage"/>'s two `count{...}` clauses — a mutant
+    /// dropping the filter from just the denominator would inflate that divisor with
+    /// probe/scrape traffic and understate the error percentage, and still pass. Counting
+    /// occurrences over what was actually sent catches it: each exclusion must appear twice.
+    /// </summary>
+    [Fact]
+    public async Task RpcErrorPercentageQuery_AppliesTheRouteFilter_ToBothClauses_OnTheWire()
+    {
+        var handler = new FakeHttpMessageHandler(_ => JsonResponse(HttpStatusCode.OK,
+            """{"status":"success","data":{"resultType":"vector","result":[]}}"""));
+        var sut = CreateClient(handler);
+
+        await sut.QueryInstantAsync(PrometheusQueries.RpcErrorPercentage, CancellationToken.None);
+
+        var sent = SentQuery(handler.Requests[0]);
+        foreach (var routeExclusion in new[]
+                 {
+                     "http_route!=\"/health\"", "http_route!=\"/health/live\"", "http_route!=\"/metrics\""
+                 })
+        {
+            CountOccurrences(sent, routeExclusion).Should().Be(2,
+                $"'{routeExclusion}' must be present in BOTH the numerator and the denominator of the ratio");
+        }
+    }
+
+    private static int CountOccurrences(string haystack, string needle)
+    {
+        var count = 0;
+        var index = 0;
+        while ((index = haystack.IndexOf(needle, index, StringComparison.Ordinal)) >= 0)
+        {
+            count++;
+            index += needle.Length;
+        }
+
+        return count;
+    }
+
     [Fact]
     public async Task EmbeddingLatencyQuery_UsesTheHttpClientSeries_WithTheSecondsUnitSuffix()
     {

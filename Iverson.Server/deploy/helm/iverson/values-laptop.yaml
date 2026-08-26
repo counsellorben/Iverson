@@ -21,10 +21,9 @@ networkPolicy:
 global:
   engagementEnabled: false   # no StarRocks: vendor sizes FE at 8 CPU/16GB
   tracingEnabled: false      # no jaeger
-  prometheusEnabled: false   # mirrors prometheus.enabled below — see values.yaml's comment
+  prometheusEnabled: false   # single source of truth (Chart.yaml condition, both prometheus
+                              # NetworkPolicy rules, and api's Prometheus__BaseUrl env var)
 
-prometheus:
-  enabled: false
 adminUi:
   enabled: false
 
