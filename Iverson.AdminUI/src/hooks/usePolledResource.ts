@@ -87,7 +87,13 @@ export interface PolledResource<T> {
    * from `loading`, which means "fetching, nothing to show yet".
    */
   awaitingToken: boolean;
-  /** Fetch now, resetting backoff. The manual-retry action behind `exhausted`. */
+  /**
+   * Fetch now, resetting backoff. The manual-retry action behind `exhausted`.
+   *
+   * A NO-OP while `awaitingToken` — there is nothing to fetch with, so it changes no state
+   * rather than clearing `exhausted` for a request that will not happen. A returning token
+   * re-arms the resource on its own.
+   */
   refresh: () => void;
 }
 
@@ -270,6 +276,11 @@ export function usePolledResource<T>(
   }, [clearTimer]);
 
   const refresh = useCallback(() => {
+    // With no token there is nothing to fetch with, and `attempt` would return immediately
+    // having scheduled nothing. Clearing `exhausted` here would report a retry that never
+    // happened and leave the resource silent with no flag saying so. Leave the state alone:
+    // the token effect below re-arms the resource the moment a token comes back.
+    if (!hasToken(tokenRef.current)) return;
     failuresRef.current = 0;
     clearTimer();
     pendingDelayRef.current = null;
@@ -296,6 +307,9 @@ export function usePolledResource<T>(
 
     if (!startedRef.current) {
       startedRef.current = true;
+      // Backoff restarts from the base. Carrying the pre-token-loss failure count over would
+      // resume at base*2^(n+1) and could exhaust after a single further failure instead of
+      // three — a resource that lost its token mid-backoff would come back nearly dead.
       failuresRef.current = 0;
       attemptRef.current();
       return;

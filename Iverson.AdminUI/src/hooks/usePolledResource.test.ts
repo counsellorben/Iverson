@@ -409,9 +409,13 @@ describe("usePolledResource", () => {
       defineVisibility("hidden");
       const fetcher = vi.fn<ApiFetcher<Payload>>().mockResolvedValue(ok(1));
 
-      await mount(() => usePolledResource(fetcher, 1_000, TOKEN));
+      const { result } = await mount(() => usePolledResource(fetcher, 1_000, TOKEN));
       // The mount fetch still happens — the widget has to render something.
       expect(fetcher).toHaveBeenCalledTimes(1);
+      // Pinned explicitly: the initial `paused` is seeded from the visibility state at mount,
+      // and no visibilitychange event will ever arrive to correct it. Call counts alone leave
+      // that seed unfalsifiable.
+      expect(result.current.paused).toBe(true);
 
       // But no polling follows it, even though no visibilitychange event ever arrived.
       await advance(60_000);
@@ -545,6 +549,77 @@ describe("usePolledResource", () => {
       await advance(1_000);
       expect(fetcher).toHaveBeenCalledTimes(3);
     });
+
+    it("restarts backoff from the base once a lost token comes back", async () => {
+      const fetcher = vi.fn<ApiFetcher<Payload>>().mockResolvedValue(failed);
+
+      const { rerender } = await mountWith(
+        ({ token }: { token: string | undefined }) =>
+          usePolledResource(fetcher, 1_000, token, { backoffCeilingMs: 8_000 }),
+        { token: "first" as string | undefined }
+      );
+      expect(fetcher).toHaveBeenCalledTimes(1); // one failure banked, retry due at 2s
+      await advance(2_000);
+      expect(fetcher).toHaveBeenCalledTimes(2); // two banked, retry due at 4s
+
+      await act(async () => {
+        rerender({ token: undefined });
+        await settle(0);
+      });
+      await advance(30_000);
+      expect(fetcher).toHaveBeenCalledTimes(2);
+
+      await act(async () => {
+        rerender({ token: "second" });
+        await settle(0);
+      });
+      expect(fetcher).toHaveBeenCalledTimes(3);
+
+      // Back to the 2s base. Carrying the earlier count over would have put this retry at 8s
+      // and left the resource one failure from exhausting instead of three.
+      await advance(1_999);
+      expect(fetcher).toHaveBeenCalledTimes(3);
+      await advance(1);
+      expect(fetcher).toHaveBeenCalledTimes(4);
+    });
+
+    it("does not pretend to retry while there is no token to retry with", async () => {
+      const fetcher = vi.fn<ApiFetcher<Payload>>().mockResolvedValue(failed);
+
+      const { result, rerender } = await mountWith(
+        ({ token }: { token: string | undefined }) =>
+          usePolledResource(fetcher, 1_000, token, { backoffCeilingMs: 1_000 }),
+        { token: "first" as string | undefined }
+      );
+      expect(fetcher).toHaveBeenCalledTimes(1);
+      expect(result.current.exhausted).toBe(true);
+
+      await act(async () => {
+        rerender({ token: undefined });
+        await settle(0);
+      });
+      expect(result.current.awaitingToken).toBe(true);
+
+      await act(async () => {
+        result.current.refresh();
+        await settle(0);
+      });
+
+      // `refresh` cannot fetch without a token, so it must not clear the one flag that tells
+      // the widget the resource has stopped. Reporting `exhausted: false` here would promise a
+      // retry that issues no request and re-arms no timer.
+      expect(result.current.exhausted).toBe(true);
+      expect(fetcher).toHaveBeenCalledTimes(1);
+      await advance(60_000);
+      expect(fetcher).toHaveBeenCalledTimes(1);
+
+      // The token returning is what actually re-arms it.
+      await act(async () => {
+        rerender({ token: "second" });
+        await settle(0);
+      });
+      expect(fetcher).toHaveBeenCalledTimes(2);
+    });
   });
 
   describe("in-flight requests", () => {
@@ -603,6 +678,21 @@ describe("usePolledResource", () => {
       await advance(10_999);
       expect(fetcher).toHaveBeenCalledTimes(1);
       // ...but 10% late, at 11s.
+      await advance(1);
+      expect(fetcher).toHaveBeenCalledTimes(2);
+    });
+
+    it("spreads early as well as late, so the drift is not one-sided", async () => {
+      random.mockReturnValue(0); // the bottom of the +/-10% draw
+      const fetcher = vi.fn<ApiFetcher<Payload>>().mockResolvedValue(ok(1));
+
+      await mount(() => usePolledResource(fetcher, 10_000, TOKEN));
+      expect(fetcher).toHaveBeenCalledTimes(1);
+
+      // 10% EARLY, at 9s. A jitter that only ever ran late would halve the spread and leave
+      // every widget drifting the same direction.
+      await advance(8_999);
+      expect(fetcher).toHaveBeenCalledTimes(1);
       await advance(1);
       expect(fetcher).toHaveBeenCalledTimes(2);
     });

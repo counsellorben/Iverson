@@ -3,9 +3,9 @@ import { config } from "../config";
 /**
  * The console's fetch layer.
  *
- * ## Four outcomes, never flattened into one
+ * ## Five outcomes, never flattened into one
  *
- * `getJson` returns a discriminated union rather than throwing, because three of the four
+ * `getJson` returns a discriminated union rather than throwing, because four of the five
  * outcomes below are things a widget must RENDER, not things it should treat as "request
  * failed":
  *
