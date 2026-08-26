@@ -246,6 +246,16 @@ a design turns on "the external service produces X", a mock that produces X is n
   them are dropped with them. Immaterial to comparing the sweep's eight configurations against each
   other, since the omission is identical across all eight; material to any comparison against
   FreshStack's published numbers.
+- **`qrels.tsv` is subtopic-scoped only, and that is correct for α-nDCG but not for query-level
+  metrics.** The nugget id in column 2 (the TREC iteration field) is exactly what makes α-nDCG and
+  Coverage computable (§1.2) — but it is the only qrels file the harness emits, and the 2026-07-31
+  design also promises Recall@50 and nDCG from FreshStack. A query-level reader keys on `(qid, docid)`
+  and ignores the iteration column; measured on real godot output, 464 of 585 relevant `(qid, docid)`
+  pairs carry both a `1` and a `0` under different nuggets, so collapsing to query-level loses 43–55%
+  of relevant judgments and Recall@50 would come out roughly halved with no error anywhere. **Ruling:
+  document the limitation, do not emit a second qrels file** — a `qrels.query.tsv` this spec's §1 file
+  table does not list would create a fresh spec/code divergence, which is the disease this branch
+  exists to cure; a query-level file is a code change that belongs in its own spec round.
 
 ## Not in this spec
 

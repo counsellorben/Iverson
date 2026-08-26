@@ -8,6 +8,16 @@ inside the query rows. This script flattens both into <out-dir>/freshstack/:
     queries.jsonl  {"_id", "text"}
     qrels.tsv      query_id \t nugget_id \t corpus_id \t relevance
 
+qrels.tsv is subtopic-scoped only: column 2 carries the nugget id, which is exactly what
+makes it valid for alpha-nDCG and Coverage. It is not valid for query-level metrics
+(Recall@k, nDCG) without a per-query collapse first -- measured on real godot output, 464
+of 585 relevant (qid, docid) pairs carry both a 1 and a 0 under different nuggets, so a
+naive collapse keyed on (qid, docid) alone would lose 43-55% of relevant judgments.
+
+Writes into a fixed <out-dir>/freshstack/, so --topic is one-per-directory: running this
+twice into the same --out-dir silently overwrites the first run's output. To score two
+topics, convert each into its own --out-dir and concatenate the three files afterward.
+
 Unlike deploy/scripts/mint_acting_user_token.py this is NOT stdlib-only: it needs the
 HuggingFace datasets library. That script must run on any machine; this one is a dev tool
 run deliberately before a sweep. A bare `pip install datasets` fails on this machine (system
