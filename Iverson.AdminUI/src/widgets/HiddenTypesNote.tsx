@@ -33,7 +33,7 @@ export function HiddenTypesNote({
   return (
     <Typography
       variant="body2"
-      color="text.secondary"
+      sx={{ color: "text.secondary" }}
       data-testid={testId}
       data-hidden-count={count}
     >

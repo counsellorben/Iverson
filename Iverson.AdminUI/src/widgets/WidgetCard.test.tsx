@@ -1,5 +1,6 @@
 import { StrictMode } from "react";
 import { fireEvent, render, screen } from "@testing-library/react";
+import { Typography } from "@mui/material";
 import { describe, it, expect, vi } from "vitest";
 import type { PolledResource } from "../hooks/usePolledResource";
 import { WidgetCard, noticeSeverityFor, resolveWidgetState } from "./WidgetCard";
@@ -41,6 +42,10 @@ function renderCard(
     options.strict === true ? { wrapper: StrictMode } : undefined
   );
   return r;
+}
+
+function colourOf(testId: string): string {
+  return window.getComputedStyle(screen.getByTestId(testId)).color;
 }
 
 function state(): string | null {
@@ -264,6 +269,37 @@ describe("WidgetCard", () => {
     );
     expect(caption).not.toHaveTextContent("Use Refresh");
     expect(screen.getByRole("button", { name: "Refresh Example" })).toBeDisabled();
+  });
+
+  it("renders the retries-have-stopped caption as a caution, not as a third grey footnote", () => {
+    // This caption says the card has stopped updating itself and only a human pressing
+    // Refresh will change that. It renders directly beneath the as-of caption and, when
+    // polling, the paused one — both secondary text — so in ordinary body colour it reads as
+    // one more footnote instead of as the one line on the card asking for an action.
+    //
+    // This is also the site that proved MUI v9's `color` prop is inert: `color="warning.main"`
+    // here rendered no colour whatsoever, with no type error, from the upgrade until now.
+    render(
+      <Typography sx={{ color: "warning.main" }} data-testid="reference-warning">
+        reference
+      </Typography>
+    );
+    renderCard({
+      failure: { kind: "failed", status: null, message: "boom" },
+      exhausted: true,
+      data: { value: "x" },
+      lastUpdatedAt: 1_700_000_000_000,
+      asOf: "12:34",
+      stale: true,
+    });
+
+    const exhausted = colourOf("widget-example-exhausted");
+    expect(exhausted).not.toBe("");
+    // Positive, and theme-independent: the same colour a `warning.main` reference resolves to,
+    // rather than a hard-coded rgb that a palette change would falsify for the wrong reason.
+    expect(exhausted).toBe(colourOf("reference-warning"));
+    // Negative: distinct from the secondary caption it sits directly beneath.
+    expect(exhausted).not.toBe(colourOf("widget-example-as-of"));
   });
 
   it("renders under StrictMode", () => {

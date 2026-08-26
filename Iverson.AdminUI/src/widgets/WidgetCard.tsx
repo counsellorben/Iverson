@@ -193,7 +193,7 @@ export function WidgetCard<T>(props: WidgetCardProps<T>) {
             {title}
           </Typography>
           {subtitle !== undefined && (
-            <Typography variant="body2" color="text.secondary">
+            <Typography variant="body2" sx={{ color: "text.secondary" }}>
               {subtitle}
             </Typography>
           )}
@@ -233,8 +233,7 @@ export function WidgetCard<T>(props: WidgetCardProps<T>) {
         // operator in a non-UTC zone reads a several-hour gap as a fault.
         <Typography
           variant="caption"
-          color="text.secondary"
-          sx={{ mt: 1, display: "block" }}
+          sx={{ mt: 1, display: "block", color: "text.secondary" }}
           data-testid={`${testId}-as-of`}
           data-stale={resource.stale}
         >
@@ -246,8 +245,7 @@ export function WidgetCard<T>(props: WidgetCardProps<T>) {
       {resource.paused && (props.pollIntervalMs ?? null) !== null && (
         <Typography
           variant="caption"
-          color="text.secondary"
-          sx={{ mt: 1, display: "block" }}
+          sx={{ mt: 1, display: "block", color: "text.secondary" }}
           data-testid={`${testId}-paused`}
         >
           Polling is paused while this tab is hidden.
@@ -257,8 +255,15 @@ export function WidgetCard<T>(props: WidgetCardProps<T>) {
       {resource.exhausted && (
         <Typography
           variant="caption"
-          color="warning.main"
-          sx={{ mt: 1, display: "block" }}
+          // A CAUTION, and the colour is the part that says so at a glance: this caption sits
+          // directly under two secondary-text captions, and in ordinary body colour it reads
+          // as a third footnote rather than as "this card has stopped updating itself".
+          //
+          // Through `sx`, NOT Typography's `color` prop. MUI v9 dropped that prop and renders
+          // it as nothing at all — no type error, no warning — so `color="warning.main"` here
+          // was an entirely dead promise from the upgrade until a computed-colour assertion
+          // caught it. Every colour in this file goes through `sx` for that reason.
+          sx={{ mt: 1, display: "block", color: "warning.main" }}
           data-testid={`${testId}-exhausted`}
         >
           {resource.awaitingToken
