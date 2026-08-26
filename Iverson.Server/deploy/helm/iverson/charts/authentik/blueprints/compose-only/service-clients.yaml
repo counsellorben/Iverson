@@ -171,6 +171,21 @@ entries:
       property_mappings:
         - !Find [authentik_providers_oauth2.scopemapping, [scope_name, groups]]
         - !Find [authentik_providers_oauth2.scopemapping, [scope_name, tenant_id]]
+        # MUST stay in step with the Helm twin's property_mappings list in
+        # templates/blueprints-configmap-service-clients.yaml -- the two paths configure the SAME
+        # provider for two environments, and this list is the only place they had drifted.
+        #
+        # Without this mapping the provider issues no refresh token even though the console asks
+        # for `offline_access` and grant_types allows `refresh_token`. The console polls for hours,
+        # so oidc-client-ts's automaticSilentRenew would fall back to IFRAME silent renew, for
+        # which the console registers no handler: the session dies when the access token expires.
+        # That is precisely the failure the console's `offline_access` scope exists to prevent.
+        #
+        # Not defined anywhere in this repo: `scope_name: offline_access` is a BUILT-IN, shipped
+        # in the image at /blueprints/system/providers-oauth2.yaml (managed
+        # goauthentik.io/providers/oauth2/scope-offline_access). The compose mount lands on
+        # /blueprints/custom, a sibling of /blueprints/system, so it does not shadow it.
+        - !Find [authentik_providers_oauth2.scopemapping, [scope_name, offline_access]]
   - model: authentik_core.application
     identifiers:
       slug: iverson-api
@@ -264,6 +279,21 @@ entries:
       property_mappings:
         - !Find [authentik_providers_oauth2.scopemapping, [scope_name, groups]]
         - !Find [authentik_providers_oauth2.scopemapping, [scope_name, tenant_id]]
+        # MUST stay in step with the Helm twin's property_mappings list in
+        # templates/blueprints-configmap-service-clients.yaml -- the two paths configure the SAME
+        # provider for two environments, and this list is the only place they had drifted.
+        #
+        # Without this mapping the provider issues no refresh token even though the console asks
+        # for `offline_access` and grant_types allows `refresh_token`. The console polls for hours,
+        # so oidc-client-ts's automaticSilentRenew would fall back to IFRAME silent renew, for
+        # which the console registers no handler: the session dies when the access token expires.
+        # That is precisely the failure the console's `offline_access` scope exists to prevent.
+        #
+        # Not defined anywhere in this repo: `scope_name: offline_access` is a BUILT-IN, shipped
+        # in the image at /blueprints/system/providers-oauth2.yaml (managed
+        # goauthentik.io/providers/oauth2/scope-offline_access). The compose mount lands on
+        # /blueprints/custom, a sibling of /blueprints/system, so it does not shadow it.
+        - !Find [authentik_providers_oauth2.scopemapping, [scope_name, offline_access]]
   - model: authentik_core.application
     identifiers:
       slug: iverson-loadtest-human
