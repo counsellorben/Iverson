@@ -14,6 +14,7 @@ import { config } from "../config";
  * | `"ok"`           | 2xx (or a declared body-bearing status) with a parsed JSON body.      |
  * | `"problem"`      | Non-2xx WITH a parsed JSON body — e.g. a 503 carrying `reason`.       |
  * | `"unauthorized"` | 401. Token renewal has been requested; the widget shows nothing new.  |
+ * | `"forbidden"`    | 403. This session may not read this endpoint. Derived from the STATUS.|
  * | `"failed"`       | Transport failure, or a non-2xx whose body is not JSON.               |
  *
  * The `"problem"` case is the one that is easy to get wrong. `/admin/console/metrics` answers
@@ -38,9 +39,20 @@ import { config } from "../config";
  * Concurrent 401s are COALESCED into a single renewal. Without that, nine widgets failing at
  * once would open nine silent-renew iframes.
  *
- * Note that 403 is deliberately NOT part of this: a 403 is a real, per-endpoint authorization
- * answer (a non-Operator user reading `/admin/console/tenants`) and belongs on that widget as
- * `kind: "problem"` or `"failed"`, not in the renewal path.
+ * ## 403 is its own outcome, and it is derived from the status alone
+ *
+ * 403 is deliberately NOT routed to renewal: it is a real, per-endpoint authorization answer
+ * that a fresh token cannot change, and it belongs on the widget that asked.
+ *
+ * It gets its own `kind` because **the server sends a 403 with NO BODY**.
+ * `RequireAuthorization("Operator")` is handled by `AuditingAuthorizationMiddlewareResultHandler`,
+ * which delegates to the stock `AuthorizationMiddlewareResultHandler` and emits an empty
+ * response. Anything reading a `reason` or `error` out of a 403 body would be reading a field
+ * that never arrives, and the outcome would degrade to a generic `"failed"` — a red "request
+ * failed" card where "you are not authorized to see this" belongs. That is not a hypothetical:
+ * the three Operator-gated endpoints (`tenants`, `qdrant`, `metrics`) 403 for every human today,
+ * because nobody currently satisfies the Operator policy. `error` is carried only on the chance
+ * a future 403 does include a body, and is `null` for every 403 the server sends now.
  */
 
 // ── Result contract ───────────────────────────────────────────────────────────
@@ -68,6 +80,16 @@ export interface ApiUnauthorized {
   status: 401;
 }
 
+/**
+ * 403 — authenticated, but not permitted to read this endpoint. Recognised by STATUS, because
+ * the server's 403 has no body; `error` is `null` unless some future 403 supplies one.
+ */
+export interface ApiForbidden {
+  kind: "forbidden";
+  status: 403;
+  error: string | null;
+}
+
 /** Transport failure (`status: null`) or an unreadable non-2xx response. */
 export interface ApiFailed {
   kind: "failed";
@@ -75,7 +97,7 @@ export interface ApiFailed {
   message: string;
 }
 
-export type ApiFailure = ApiProblem | ApiUnauthorized | ApiFailed;
+export type ApiFailure = ApiProblem | ApiUnauthorized | ApiForbidden | ApiFailed;
 
 export type ApiResult<T> = ApiSuccess<T> | ApiFailure;
 
@@ -98,7 +120,14 @@ export function isOk<T>(result: ApiResult<T>): result is ApiSuccess<T> {
 export type TokenRenewer = () => Promise<unknown>;
 
 let tokenRenewer: TokenRenewer | null = null;
-let renewalInFlight = false;
+/**
+ * The renewal currently in flight, or `null`. Held as the PROMISE rather than a boolean, and
+ * cleared only by that promise settling — never by {@link setTokenRenewer}. `useTokenRenewal`
+ * re-registers on every change of `signinSilent`'s identity, and a boolean that a
+ * re-registration reset would drop the guard mid-renewal, letting the next 401 burst open a
+ * second one.
+ */
+let renewalInFlight: Promise<unknown> | null = null;
 
 /**
  * Registers (or with `null`, clears) the silent-renewal callback a 401 triggers. Called from
@@ -106,9 +135,6 @@ let renewalInFlight = false;
  */
 export function setTokenRenewer(renewer: TokenRenewer | null): void {
   tokenRenewer = renewer;
-  if (renewer === null) {
-    renewalInFlight = false;
-  }
 }
 
 /**
@@ -118,16 +144,18 @@ export function setTokenRenewer(renewer: TokenRenewer | null): void {
  */
 export function requestTokenRenewal(): void {
   const renewer = tokenRenewer;
-  if (renewer === null || renewalInFlight) return;
-  renewalInFlight = true;
-  void Promise.resolve()
+  if (renewer === null || renewalInFlight !== null) return;
+  const pending = Promise.resolve()
     .then(() => renewer())
     // A failed renewal is not this layer's problem to report: react-oidc-context clears the
     // user, and AuthGate redirects into the login flow.
     .catch(() => undefined)
     .finally(() => {
-      renewalInFlight = false;
+      // Releasing the guard is what lets the NEXT 401 renew. Leaving it raised would mean the
+      // console never renews again for the life of the page.
+      renewalInFlight = null;
     });
+  renewalInFlight = pending;
 }
 
 // ── Requests ──────────────────────────────────────────────────────────────────
@@ -195,6 +223,10 @@ export async function getJson<T>(
   } catch (error) {
     if (isAbort(error)) throw error;
     parsed = false;
+  }
+
+  if (response.status === 403) {
+    return { kind: "forbidden", status: 403, error: readStringField(body, "error") };
   }
 
   if (bodyBearing) {

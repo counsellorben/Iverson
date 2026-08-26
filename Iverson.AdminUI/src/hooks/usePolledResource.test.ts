@@ -1,3 +1,5 @@
+import { StrictMode } from "react";
+import type { ComponentType, ReactNode } from "react";
 import { renderHook, act } from "@testing-library/react";
 import type { RenderHookResult } from "@testing-library/react";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
@@ -61,13 +63,34 @@ async function advance(ms: number): Promise<void> {
  * first state update outside it too — React reports it, and the escaped update is a real
  * timing hole, not just noise.
  */
-async function mount<R>(render: () => R): Promise<RenderHookResult<R, unknown>> {
+async function mount<R>(
+  render: () => R,
+  wrapper?: ComponentType<{ children: ReactNode }>
+): Promise<RenderHookResult<R, unknown>> {
   let handle!: RenderHookResult<R, unknown>;
   await act(async () => {
-    handle = renderHook(render);
+    handle = renderHook(render, wrapper ? { wrapper } : undefined);
     await settle(0);
   });
   return handle;
+}
+
+/**
+ * A fetcher whose every call is left pending until the test resolves it by hand, with the
+ * token and signal it was handed. Needed for anything about ordering: two requests in flight
+ * at once, or one still in flight at unmount.
+ */
+function deferredFetcher<T>() {
+  const calls: Array<{
+    token: string;
+    signal: AbortSignal;
+    resolve: (result: ApiResult<T>) => void;
+  }> = [];
+  const fetcher: ApiFetcher<T> = (token, signal) =>
+    new Promise<ApiResult<T>>((resolve) => {
+      calls.push({ token, signal, resolve });
+    });
+  return { fetcher, calls };
 }
 
 async function mountWith<P, R>(
@@ -83,13 +106,20 @@ async function mountWith<P, R>(
 }
 
 describe("usePolledResource", () => {
+  let random: ReturnType<typeof vi.spyOn>;
+
   beforeEach(() => {
     vi.useFakeTimers();
     // Pinned so the "as of HH:MM" assertions are not clock-dependent.
     vi.setSystemTime(new Date(2026, 7, 25, 14, 5, 0));
+    // Scheduled delays are jittered by +/-10%. 0.5 is the centre of that draw and yields the
+    // delay unchanged, which keeps every boundary assertion below exact. The jitter itself is
+    // tested on its own further down.
+    random = vi.spyOn(Math, "random").mockReturnValue(0.5);
   });
 
   afterEach(() => {
+    random.mockRestore();
     // Restore the property WITHOUT dispatching: React Testing Library's automatic cleanup
     // runs after this hook, so anything still mounted here would take the event — and its
     // state update would land outside `act`.
@@ -136,6 +166,7 @@ describe("usePolledResource", () => {
       await advance(90_000);
       expect(fetcher).not.toHaveBeenCalled();
       expect(result.current.loading).toBe(true);
+      expect(result.current.awaitingToken).toBe(true);
 
       await act(async () => {
         rerender({ token: TOKEN });
@@ -449,6 +480,158 @@ describe("usePolledResource", () => {
         await settle(0);
       });
       expect(fetcher).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe("StrictMode", () => {
+    it("still loads when the first effect pass is torn down and remounted", async () => {
+      const fetcher = vi.fn<ApiFetcher<Payload>>().mockResolvedValue(ok(1));
+
+      // `main.tsx` wraps the whole app in StrictMode, which in dev mounts every effect, tears
+      // it down, and mounts it again. A first-fetch latch that survived that teardown would
+      // leave every widget on a permanent spinner under `npm run dev` — while the production
+      // build, `npm run build` and this suite all stayed green.
+      const { result } = await mount(
+        () => usePolledResource(fetcher, 30_000, TOKEN),
+        StrictMode
+      );
+
+      expect(fetcher).toHaveBeenCalledTimes(2);
+      expect(result.current.data).toEqual({ value: 1 });
+      expect(result.current.loading).toBe(false);
+
+      // And it is genuinely polling afterwards, not merely showing one value.
+      await advance(30_000);
+      expect(fetcher).toHaveBeenCalledTimes(3);
+    });
+  });
+
+  describe("losing the access token", () => {
+    it("stops polling, says so, and restarts when a token comes back", async () => {
+      const fetcher = vi.fn<ApiFetcher<Payload>>().mockResolvedValue(ok(1));
+
+      const { result, rerender } = await mountWith(
+        ({ token }: { token: string | undefined }) =>
+          usePolledResource(fetcher, 1_000, token),
+        { token: "first" as string | undefined }
+      );
+      expect(fetcher).toHaveBeenCalledTimes(1);
+      expect(result.current.awaitingToken).toBe(false);
+
+      await act(async () => {
+        rerender({ token: undefined });
+        await settle(0);
+      });
+
+      // Visible, not silent: the widget can say why the figure stopped moving.
+      expect(result.current.awaitingToken).toBe(true);
+      expect(result.current.stale).toBe(true);
+      expect(result.current.data).toEqual({ value: 1 });
+
+      await advance(60_000);
+      expect(fetcher).toHaveBeenCalledTimes(1);
+
+      await act(async () => {
+        rerender({ token: "second" });
+        await settle(0);
+      });
+
+      // Recoverable: a restored token restarts the resource rather than leaving it frozen.
+      expect(fetcher).toHaveBeenCalledTimes(2);
+      expect(fetcher).toHaveBeenLastCalledWith("second", expect.any(AbortSignal));
+      expect(result.current.awaitingToken).toBe(false);
+      expect(result.current.stale).toBe(false);
+
+      await advance(1_000);
+      expect(fetcher).toHaveBeenCalledTimes(3);
+    });
+  });
+
+  describe("in-flight requests", () => {
+    it("aborts a superseded request and ignores the answer it arrives with", async () => {
+      const { fetcher, calls } = deferredFetcher<Payload>();
+
+      const { result } = await mount(() => usePolledResource(fetcher, null, TOKEN));
+      expect(calls).toHaveLength(1);
+
+      await act(async () => {
+        result.current.refresh();
+        await settle(0);
+      });
+      expect(calls).toHaveLength(2);
+      // The older request is cancelled, not merely ignored — it stops occupying a connection.
+      expect(calls[0].signal.aborted).toBe(true);
+      expect(calls[1].signal.aborted).toBe(false);
+
+      await act(async () => {
+        calls[1].resolve(ok(2));
+        await settle(0);
+      });
+      expect(result.current.data).toEqual({ value: 2 });
+
+      // The superseded request answers late — as a pre-renewal request would, landing after
+      // the renewed one. Its older value must not overwrite the newer one.
+      await act(async () => {
+        calls[0].resolve(ok(1));
+        await settle(0);
+      });
+      expect(result.current.data).toEqual({ value: 2 });
+    });
+
+    it("aborts the request still in flight when the hook unmounts", async () => {
+      const { fetcher, calls } = deferredFetcher<Payload>();
+
+      const { unmount } = await mount(() => usePolledResource(fetcher, 1_000, TOKEN));
+      expect(calls).toHaveLength(1);
+      expect(calls[0].signal.aborted).toBe(false);
+
+      unmount();
+
+      expect(calls[0].signal.aborted).toBe(true);
+    });
+  });
+
+  describe("jitter", () => {
+    it("spreads the poll interval so widgets mounted together drift apart", async () => {
+      random.mockReturnValue(1); // the top of the +/-10% draw
+      const fetcher = vi.fn<ApiFetcher<Payload>>().mockResolvedValue(ok(1));
+
+      await mount(() => usePolledResource(fetcher, 10_000, TOKEN));
+      expect(fetcher).toHaveBeenCalledTimes(1);
+
+      // Not on the round boundary every other widget would also pick...
+      await advance(10_999);
+      expect(fetcher).toHaveBeenCalledTimes(1);
+      // ...but 10% late, at 11s.
+      await advance(1);
+      expect(fetcher).toHaveBeenCalledTimes(2);
+    });
+
+    it("can be switched off, which is what keeps a cadence exact when one is needed", async () => {
+      random.mockReturnValue(1);
+      const fetcher = vi.fn<ApiFetcher<Payload>>().mockResolvedValue(ok(1));
+
+      await mount(() => usePolledResource(fetcher, 10_000, TOKEN, { jitterRatio: 0 }));
+
+      await advance(9_999);
+      expect(fetcher).toHaveBeenCalledTimes(1);
+      await advance(1);
+      expect(fetcher).toHaveBeenCalledTimes(2);
+    });
+
+    it("decides where backoff gives up on the unjittered delay", async () => {
+      random.mockReturnValue(1);
+      const fetcher = vi.fn<ApiFetcher<Payload>>().mockResolvedValue(failed);
+
+      const { result } = await mount(() =>
+        usePolledResource(fetcher, 1_000, TOKEN, { backoffCeilingMs: 8_000 })
+      );
+
+      await advance(60_000);
+      // Jitter moves WHEN each retry lands, never HOW MANY there are: 2s, 4s and 8s raw are
+      // all within the ceiling, 16s is not, so it is four attempts either way.
+      expect(fetcher).toHaveBeenCalledTimes(4);
+      expect(result.current.exhausted).toBe(true);
     });
   });
 });

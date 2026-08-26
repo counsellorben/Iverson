@@ -23,6 +23,23 @@ import { describeError, isAbort } from "../api/client";
  *
  * The access token is an ARGUMENT, not something the fetch layer reaches for: `useAuth()` is
  * React context and the fetch layer is module scope.
+ *
+ * ## Notes on the edges
+ *
+ * - **It is StrictMode-safe.** `main.tsx` wraps the app in `React.StrictMode`, which in dev
+ *   mounts, tears down and remounts every effect. `startedRef` is therefore cleared in the
+ *   teardown at the same time as the in-flight fetch is aborted; a latch that survived the
+ *   simulated remount would leave every widget on a permanent spinner under `npm run dev`
+ *   while production, `npm run build` and the test suite all looked fine.
+ * - **Losing the access token is recoverable and visible.** No token means no polling — but it
+ *   also sets `awaitingToken`, marks retained data stale, and rearms the first fetch, so a
+ *   token that comes back restarts the resource instead of leaving it frozen forever.
+ * - **A `null` interval still retries a FAILED fetch.** With the default base and ceiling that
+ *   is three retries at 60s, 120s and 240s, then `exhausted`. It is "never polled on success",
+ *   not "exactly one request, ever".
+ * - **Changing `intervalMs` does not reschedule the timer already pending.** Going 10s → 1s
+ *   runs out the current 10s wait first, then polls at 1s. Widgets pick a cadence once, so
+ *   the extra bookkeeping to cut a pending wait short would never run in this app.
  */
 
 /** Where doubling gives up. Chosen so a 30s poll retries at 60s, 120s and 240s, then stops. */
@@ -31,11 +48,20 @@ export const DEFAULT_BACKOFF_CEILING_MS = 5 * 60_000;
 /** Backoff base for a non-polled resource, which has no interval to derive one from. */
 export const DEFAULT_RETRY_BASE_MS = 30_000;
 
+/**
+ * How far either side of a scheduled delay the timer may land, as a fraction. Nine widgets
+ * mount together, so without this they would poll on exactly the same boundary for the life of
+ * the page and hand the API a periodic spike instead of a flat load.
+ */
+export const DEFAULT_JITTER_RATIO = 0.1;
+
 export interface PolledResourceOptions {
   /** Delay past which the hook stops retrying. Defaults to {@link DEFAULT_BACKOFF_CEILING_MS}. */
   readonly backoffCeilingMs?: number;
   /** Backoff base. Defaults to `intervalMs`, or {@link DEFAULT_RETRY_BASE_MS} when not polling. */
   readonly retryBaseMs?: number;
+  /** Jitter fraction. Defaults to {@link DEFAULT_JITTER_RATIO}; `0` disables it. */
+  readonly jitterRatio?: number;
 }
 
 export interface PolledResource<T> {
@@ -55,6 +81,12 @@ export interface PolledResource<T> {
   exhausted: boolean;
   /** True while the tab is hidden and the timer is stopped. */
   paused: boolean;
+  /**
+   * True while there is no access token to fetch with — the session is still resolving, or it
+   * went away. Polling is stopped, and it restarts by itself once a token arrives. Distinct
+   * from `loading`, which means "fetching, nothing to show yet".
+   */
+  awaitingToken: boolean;
   /** Fetch now, resetting backoff. The manual-retry action behind `exhausted`. */
   refresh: () => void;
 }
@@ -67,6 +99,7 @@ interface InternalState<T> {
   failure: ApiFailure | null;
   exhausted: boolean;
   paused: boolean;
+  awaitingToken: boolean;
 }
 
 /** Local 24-hour `HH:MM`. Formatted by hand rather than via `toLocaleTimeString`, which would
@@ -81,6 +114,10 @@ function isHidden(): boolean {
   return typeof document !== "undefined" && document.visibilityState === "hidden";
 }
 
+function hasToken(token: string | undefined): token is string {
+  return token !== undefined && token !== "";
+}
+
 export function usePolledResource<T>(
   fetcher: ApiFetcher<T>,
   intervalMs: number | null,
@@ -89,6 +126,7 @@ export function usePolledResource<T>(
 ): PolledResource<T> {
   const backoffCeilingMs = options.backoffCeilingMs ?? DEFAULT_BACKOFF_CEILING_MS;
   const retryBaseMs = options.retryBaseMs ?? intervalMs ?? DEFAULT_RETRY_BASE_MS;
+  const jitterRatio = options.jitterRatio ?? DEFAULT_JITTER_RATIO;
 
   const [state, setState] = useState<InternalState<T>>(() => ({
     data: null,
@@ -98,6 +136,7 @@ export function usePolledResource<T>(
     failure: null,
     exhausted: false,
     paused: isHidden(),
+    awaitingToken: !hasToken(accessToken),
   }));
 
   // "Latest value" refs, so a changed fetcher or token does not tear down the scheduler.
@@ -110,7 +149,8 @@ export function usePolledResource<T>(
   const abortRef = useRef<AbortController | null>(null);
   const mountedRef = useRef(true);
   const failuresRef = useRef(0);
-  const exhaustedRef = useRef(false);
+  /** Whether a first fetch has been started for this MOUNT. Cleared on teardown — see the
+   *  StrictMode note on the hook — and whenever the access token goes away. */
   const startedRef = useRef(false);
   // The delay currently scheduled, and when it was scheduled — kept so hiding the tab can
   // clear the timer and unhiding can resume the REMAINDER rather than restarting the wait.
@@ -124,6 +164,16 @@ export function usePolledResource<T>(
       timerRef.current = null;
     }
   }, []);
+
+  /** Spread a delay by ±`jitterRatio`. `Math.random() === 0.5` returns the delay unchanged. */
+  const jitter = useCallback(
+    (delayMs: number) => {
+      if (jitterRatio <= 0) return delayMs;
+      const spread = delayMs * jitterRatio;
+      return Math.max(0, Math.round(delayMs + (Math.random() - 0.5) * 2 * spread));
+    },
+    [jitterRatio]
+  );
 
   const scheduleNext = useCallback(
     (delayMs: number) => {
@@ -145,8 +195,10 @@ export function usePolledResource<T>(
 
   const attempt = useCallback(async () => {
     const token = tokenRef.current;
-    if (token === undefined || token === "") return;
+    if (!hasToken(token)) return;
 
+    // Supersede whatever is in flight. Without this, a request issued before a token renewal
+    // could land AFTER the one issued with the renewed token and overwrite it with older data.
     abortRef.current?.abort();
     const controller = new AbortController();
     abortRef.current = controller;
@@ -164,7 +216,6 @@ export function usePolledResource<T>(
 
     if (result.kind === "ok") {
       failuresRef.current = 0;
-      exhaustedRef.current = false;
       const at = Date.now();
       setState((s) => ({
         ...s,
@@ -175,7 +226,7 @@ export function usePolledResource<T>(
         failure: null,
         exhausted: false,
       }));
-      if (intervalMs !== null) scheduleNext(intervalMs);
+      if (intervalMs !== null) scheduleNext(jitter(intervalMs));
       return;
     }
 
@@ -183,9 +234,10 @@ export function usePolledResource<T>(
     // 401 whose renewal is already in flight — backs off the same way. What differs is what
     // the widget DISPLAYS, which is `failure.kind`'s job, not the scheduler's.
     failuresRef.current += 1;
+    // The ceiling is compared against the UNJITTERED delay, so where backoff gives up is
+    // exact and does not wobble with the jitter draw.
     const delay = retryBaseMs * 2 ** failuresRef.current;
     const giveUp = delay > backoffCeilingMs;
-    exhaustedRef.current = giveUp;
     const failure = result;
     setState((s) => ({
       ...s,
@@ -194,8 +246,8 @@ export function usePolledResource<T>(
       stale: s.data !== null,
       exhausted: giveUp,
     }));
-    if (!giveUp) scheduleNext(delay);
-  }, [intervalMs, retryBaseMs, backoffCeilingMs, scheduleNext]);
+    if (!giveUp) scheduleNext(jitter(delay));
+  }, [intervalMs, retryBaseMs, backoffCeilingMs, scheduleNext, jitter]);
 
   // Declared before the effects that call it, so the assignment lands first.
   useEffect(() => {
@@ -208,6 +260,9 @@ export function usePolledResource<T>(
     mountedRef.current = true;
     return () => {
       mountedRef.current = false;
+      // Cleared alongside the abort below, so a StrictMode remount — or any real remount —
+      // starts a fresh first fetch instead of inheriting a latch from the torn-down pass.
+      startedRef.current = false;
       clearTimer();
       pendingDelayRef.current = null;
       abortRef.current?.abort();
@@ -216,7 +271,6 @@ export function usePolledResource<T>(
 
   const refresh = useCallback(() => {
     failuresRef.current = 0;
-    exhaustedRef.current = false;
     clearTimer();
     pendingDelayRef.current = null;
     setState((s) => ({ ...s, exhausted: false }));
@@ -224,9 +278,25 @@ export function usePolledResource<T>(
   }, [clearTimer]);
 
   useEffect(() => {
-    if (accessToken === undefined || accessToken === "") return;
+    if (!hasToken(accessToken)) {
+      // No token, no polling — and SAY SO. Leaving `awaitingToken` off here would freeze the
+      // last good value on screen with `stale: false`, `failure: null` and `exhausted: false`,
+      // giving the widget nothing to render and no reason to think anything was wrong.
+      clearTimer();
+      pendingDelayRef.current = null;
+      startedRef.current = false;
+      setState((s) => {
+        const stale = s.data !== null;
+        return s.awaitingToken && s.stale === stale ? s : { ...s, awaitingToken: true, stale };
+      });
+      return;
+    }
+
+    setState((s) => (s.awaitingToken ? { ...s, awaitingToken: false } : s));
+
     if (!startedRef.current) {
       startedRef.current = true;
+      failuresRef.current = 0;
       attemptRef.current();
       return;
     }
@@ -234,7 +304,7 @@ export function usePolledResource<T>(
     // not refetch on every silent renew — that would put `/admin/console/data-volume` back on
     // a timer through the back door, at whatever cadence the IdP happens to renew on.
     if (failuresRef.current > 0) refresh();
-  }, [accessToken, refresh]);
+  }, [accessToken, refresh, clearTimer]);
 
   useEffect(() => {
     const onVisibilityChange = () => {
@@ -248,6 +318,8 @@ export function usePolledResource<T>(
       const pending = pendingDelayRef.current;
       // No pending schedule means nothing was waiting: exhausted, or a settled one-shot.
       if (pending === null) return;
+      // Resumed unjittered: the wait was already drawn when it was first scheduled, and
+      // re-drawing it here would let a hide/show cycle stretch a delay past its own ceiling.
       const remaining = Math.max(0, pending - (Date.now() - pendingSinceRef.current));
       if (remaining === 0) {
         pendingDelayRef.current = null;
@@ -270,6 +342,7 @@ export function usePolledResource<T>(
     failure: state.failure,
     exhausted: state.exhausted,
     paused: state.paused,
+    awaitingToken: state.awaitingToken,
     refresh,
   };
 }

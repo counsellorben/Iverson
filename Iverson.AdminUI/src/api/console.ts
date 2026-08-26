@@ -23,7 +23,12 @@ import type {
 
 export const CONSOLE_ROUTE_PREFIX = "/admin/console";
 
-/** Operator-gated: a cross-tenant enumeration. A non-Operator gets a 403 `problem`. */
+/**
+ * Operator-gated: a cross-tenant enumeration. A non-Operator gets `kind: "forbidden"` with a
+ * null `error` — the server's 403 carries no body. NOBODY SATISFIES THE OPERATOR POLICY TODAY,
+ * so this is the outcome every human currently gets; render it as "not authorized", not as a
+ * request failure.
+ */
 export const fetchTenants: ApiFetcher<TenantsResponse> = (token, signal) =>
   getJson<TenantsResponse>(`${CONSOLE_ROUTE_PREFIX}/tenants`, token, signal);
 
@@ -45,12 +50,16 @@ export const fetchSchema: ApiFetcher<SchemaCatalogResponse> = (token, signal) =>
 export const fetchDataVolume: ApiFetcher<DataVolumeResponse> = (token, signal) =>
   getJson<DataVolumeResponse>(`${CONSOLE_ROUTE_PREFIX}/data-volume`, token, signal);
 
-/** Operator-gated: collection names are tenant-scoped, so enumerating them is cross-tenant. */
+/**
+ * Operator-gated: collection names are tenant-scoped, so enumerating them is cross-tenant.
+ * Answers `kind: "forbidden"` for every human today — see {@link fetchTenants}.
+ */
 export const fetchQdrant: ApiFetcher<QdrantResponse> = (token, signal) =>
   getJson<QdrantResponse>(`${CONSOLE_ROUTE_PREFIX}/qdrant`, token, signal);
 
 /**
- * Operator-gated. Answers 503 with `reason` `"notDeployed"` (Prometheus is not installed in
+ * Operator-gated, so `kind: "forbidden"` for every human today — see {@link fetchTenants}.
+ * Otherwise answers 503 with `reason` `"notDeployed"` (Prometheus is not installed in
  * this profile — a supported configuration) or `"unreachable"` (installed but not
  * answering); both arrive as `kind: "problem"` with the reason lifted out. Individual metric
  * values may also be `null`, meaning "no current sample", which is not zero.
