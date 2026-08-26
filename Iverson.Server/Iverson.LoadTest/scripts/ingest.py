@@ -53,11 +53,17 @@ Usage:
 Writes, alongside --key-map-path:
     <key-map-path>            flat {parentKey: docId} JSON -- what KeyMap.LoadAsync reads
     <key-map-path>.progress   one completed docId per line, appended+flushed per document
-    <key-map-path>.stats.json documents/chunks/embed_calls/embeds_saved + started_at/
-                               finished_at -- ACCUMULATES across invocations against the same
-                               --key-map-path (counters increment, started_at is preserved from
-                               the first run), so a --resume'd run reports the same totals a
-                               single unbroken run would have.
+    <key-map-path>.stats.json documents/chunks/embed_calls/embeds_saved/elapsed_seconds +
+                               started_at/finished_at -- ACCUMULATES across invocations
+                               against the same --key-map-path (counters and elapsed_seconds
+                               increment, started_at is preserved from the first run), so a
+                               --resume'd run reports the same totals a single unbroken run
+                               would have. elapsed_seconds is the SUM of each invocation's own
+                               (finish - start), i.e. working time only -- started_at/
+                               finished_at instead span first-start to last-finish, so after a
+                               --resume across a gap (crash, or just stopping overnight) that
+                               span includes the idle time between runs and elapsed_seconds
+                               does not.
 
 Requires Qdrant at http://localhost:6333 and Ollama (nomic-embed-text, already pulled) at
 http://localhost:11434 -- see scripts/stack.py's `ingest` tier.
@@ -364,7 +370,12 @@ def ingest_document(key, doc_id, title, body, object_collection, chunks_collecti
 
 # ── Stats sidecar ───────────────────────────────────────────────────────────────────────
 
-def update_stats_sidecar(path, run_stats, started_at_iso, finished_at_iso):
+def update_stats_sidecar(path, run_stats, started_at_iso, finished_at_iso, elapsed_seconds):
+    """elapsed_seconds is THIS invocation's own (finish - start), summed into whatever the
+    sidecar already holds -- working time only. started_at/finished_at, by contrast, span
+    first-start to last-finish and so include any idle gap between a crash and a later
+    --resume; they are kept for display but must not be used to derive throughput (see
+    module docstring)."""
     existing = {}
     if os.path.exists(path):
         with open(path, encoding="utf-8") as f:
@@ -375,6 +386,7 @@ def update_stats_sidecar(path, run_stats, started_at_iso, finished_at_iso):
         "chunks": existing.get("chunks", 0) + run_stats["chunks"],
         "embed_calls": existing.get("embed_calls", 0) + run_stats["embed_calls"],
         "embeds_saved": existing.get("embeds_saved", 0) + run_stats["embeds_saved"],
+        "elapsed_seconds": existing.get("elapsed_seconds", 0) + elapsed_seconds,
         "started_at": existing.get("started_at", started_at_iso),
         "finished_at": finished_at_iso,
     }
@@ -466,7 +478,10 @@ def main():
     print(f"[ingest] key map ({len(key_map):,} entries) written to {args.key_map_path}")
 
     finished_at = datetime.now(timezone.utc)
-    merged = update_stats_sidecar(stats_path, run_stats, started_at.isoformat(), finished_at.isoformat())
+    elapsed_seconds = (finished_at - started_at).total_seconds()
+    merged = update_stats_sidecar(
+        stats_path, run_stats, started_at.isoformat(), finished_at.isoformat(), elapsed_seconds
+    )
     print(
         f"[ingest] this run: {run_stats['documents']:,} documents, {run_stats['chunks']:,} chunks, "
         f"{run_stats['embed_calls']:,} embed calls ({run_stats['embeds_saved']:,} saved)"

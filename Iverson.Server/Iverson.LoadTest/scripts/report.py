@@ -13,9 +13,15 @@ Three things, in order, per invocation:
 
     3. Ingest throughput, read from --stats-path (ingest.py's <key-map-path>.stats.json
        sidecar, if given and present): documents, chunks, embed calls, embeds saved by the
-       reuse gate, wall time, docs/hour, seconds/embed, and the headline -- measured
-       seconds/document against the ~34s/document of the full gRPC/Kafka pipeline (see
-       ingest.py's module docstring).
+       reuse gate, docs/hour, seconds/embed, and the headline -- measured seconds/document
+       against the ~34s/document of the full gRPC/Kafka pipeline (see ingest.py's module
+       docstring). Throughput is derived from the sidecar's elapsed_seconds (the SUM of
+       each invocation's own working time), never from started_at/finished_at: those two
+       fields span first-start to last-finish and, after a --resume across a gap, include
+       idle time between invocations that elapsed_seconds does not. The span is still
+       printed, clearly labelled, for reference. A sidecar written before elapsed_seconds
+       existed falls back to the span for throughput, with a printed notice that the figure
+       may include idle time.
 
 Run-file discovery: --run may be passed more than once, and each value is either a run file
 directly or a directory, in which case every *.trec file inside it (sorted) is scored. This
@@ -196,6 +202,16 @@ def load_stats(path):
 
 
 def print_stats(path, stats):
+    """Throughput (docs/hour, seconds/document, seconds/embed, the headline multiplier) is
+    derived from elapsed_seconds -- the SUM of each invocation's own (finish - start),
+    working time only. started_at/finished_at span first-start to last-finish instead, and
+    after a --resume across a gap (a crash, or just stopping for the night) that span
+    includes the idle time between invocations: document/embed counters stay correctly
+    cumulative while the span balloons, silently inflating seconds/document if used for
+    throughput. They are printed here purely as a labelled span, never used for arithmetic.
+
+    Older sidecars (written before elapsed_seconds existed) fall back to the span for
+    throughput, with a one-line notice that the figure may include idle time."""
     print(f"\n[stats] {path}")
     documents = stats.get("documents", 0)
     chunks = stats.get("chunks", 0)
@@ -207,28 +223,42 @@ def print_stats(path, stats):
 
     started_at = stats.get("started_at")
     finished_at = stats.get("finished_at")
-    if not started_at or not finished_at:
-        print("  wall time            unavailable (started_at/finished_at missing from sidecar)")
-        return
+    if started_at and finished_at:
+        print(f"  first-start -> last-finish span   {started_at} -> {finished_at}")
 
-    started = datetime.fromisoformat(started_at)
-    finished = datetime.fromisoformat(finished_at)
-    wall_seconds = (finished - started).total_seconds()
-    print(f"  wall time            {wall_seconds:,.1f}s ({started_at} -> {finished_at})")
+    elapsed_seconds = stats.get("elapsed_seconds")
+    used_fallback = False
+    if elapsed_seconds is None:
+        used_fallback = True
+        if not started_at or not finished_at:
+            print(
+                "  working time         unavailable (no elapsed_seconds, and "
+                "started_at/finished_at missing from sidecar)"
+            )
+            return
+        started = datetime.fromisoformat(started_at)
+        finished = datetime.fromisoformat(finished_at)
+        elapsed_seconds = (finished - started).total_seconds()
+        print(
+            "  [note] this sidecar predates elapsed_seconds -- falling back to the "
+            "first-start -> last-finish span, which may include idle time across a --resume"
+        )
 
-    if wall_seconds <= 0:
-        print("  docs/hour            unavailable (non-positive wall time)")
+    print(f"  working time          {elapsed_seconds:,.1f}s")
+
+    if elapsed_seconds <= 0:
+        print("  docs/hour            unavailable (non-positive working time)")
         return
     if documents == 0:
         print("  docs/hour            unavailable (zero documents)")
         return
 
-    docs_per_hour = documents / (wall_seconds / 3600.0)
-    seconds_per_document = wall_seconds / documents
+    docs_per_hour = documents / (elapsed_seconds / 3600.0)
+    seconds_per_document = elapsed_seconds / documents
     print(f"  docs/hour            {docs_per_hour:,.1f}")
-    print(f"  seconds/document     {seconds_per_document:.3f}")
+    print(f"  seconds/document     {seconds_per_document:.3f}" + ("  (may include idle time)" if used_fallback else ""))
     if embed_calls > 0:
-        print(f"  seconds/embed        {wall_seconds / embed_calls:.3f}")
+        print(f"  seconds/embed        {elapsed_seconds / embed_calls:.3f}")
 
     speedup = FULL_PIPELINE_SECONDS_PER_DOCUMENT / seconds_per_document
     print(
