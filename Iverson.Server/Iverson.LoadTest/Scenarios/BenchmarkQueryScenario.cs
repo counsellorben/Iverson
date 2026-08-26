@@ -81,6 +81,7 @@ public sealed class BenchmarkQueryScenario(
 
         var done = 0;
         long failures = 0;
+        var unresolvedParents = new HashSet<string>(StringComparer.Ordinal);
         foreach (var query in queries)
         {
             ct.ThrowIfCancellationRequested();
@@ -94,6 +95,8 @@ public sealed class BenchmarkQueryScenario(
             var similar = await RunSimilarAsync(query, headers, ct);
             var chunks  = await RunChunksAsync(query, headers, keyMap, ct);
             failures += similar.Failed + chunks.Failed;
+            foreach (var parentKey in chunks.Unresolved)
+                unresolvedParents.Add(parentKey);
 
             similarResults.Add((query.QueryId, similar.Ranked));
             chunksResults.Add((query.QueryId, chunks.Ranked));
@@ -120,6 +123,20 @@ public sealed class BenchmarkQueryScenario(
             throw new InvalidOperationException(
                 $"[benchmark-query] {failures:N0} search RPC(s) failed — the run files above are " +
                 "incomplete and must not be scored.");
+
+        // Same contract as the failures check above: the run files are written first because they are
+        // useful for diagnosis, and the command then fails so they cannot be mistaken for scoreable
+        // output. An unresolved parent is a document that IS in the index but is NOT in this run's key
+        // map — every chunk of it was dropped, so the chunk ranking is missing candidates it should
+        // have ranked and its Recall is understated by an unknown amount.
+        if (unresolvedParents.Count > 0)
+            throw new InvalidOperationException(
+                $"[benchmark-query] {unresolvedParents.Count:N0} parent key(s) returned by SearchChunks " +
+                $"are absent from the key map at {flags.KeyMapPath} — the index holds documents this run " +
+                "cannot name, so the run files above are built from an unknown corpus and must not be " +
+                $"scored. First few: {string.Join(", ", unresolvedParents.Take(5))}. Either drop the " +
+                "tenant's Qdrant collections and re-ingest (clear-data does NOT touch Qdrant), or pass a " +
+                "key map covering every ingest the collection holds.");
     }
 
     private async Task<(IReadOnlyList<(string DocId, double Score)> Ranked, int Failed)> RunSimilarAsync(
@@ -161,10 +178,13 @@ public sealed class BenchmarkQueryScenario(
             failed = 1;
         }
 
-        return (results.OrderByDescending(r => r.Score).Take(DocumentBudget).ToList(), failed);
+        // Collapse by DocId, exactly as the chunk path does. Two entities can carry one DocId (the
+        // same corpus ingested twice), and SearchSimilar returns entities — so without this the run
+        // file lists that doc id at two ranks, which is malformed TREC written silently.
+        return (DocumentRanking.CollapseByDocId(results, DocumentBudget), failed);
     }
 
-    private async Task<(IReadOnlyList<(string DocId, double Score)> Ranked, int Failed)> RunChunksAsync(
+    private async Task<(IReadOnlyList<(string DocId, double Score)> Ranked, int Failed, IReadOnlyList<string> Unresolved)> RunChunksAsync(
         CorpusQuery query, Metadata headers, IReadOnlyDictionary<string, string> keyMap, CancellationToken ct)
     {
         var request = Query.Chunks<BenchmarkDocument>(d => d.Body)
@@ -186,7 +206,8 @@ public sealed class BenchmarkQueryScenario(
             failed = 1;
         }
 
-        return (MaxPassageAggregator.Aggregate(chunks, keyMap, DocumentBudget), failed);
+        var aggregated = MaxPassageAggregator.Aggregate(chunks, keyMap, DocumentBudget);
+        return (aggregated.Ranked, failed, aggregated.UnresolvedParentKeys);
     }
 
     private static List<CorpusQuery> LoadQueries(string corpusPath)
