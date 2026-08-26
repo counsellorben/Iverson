@@ -426,7 +426,7 @@ git commit -m "add the console fetch layer and polled-resource hook"
 
 - [ ] **Step 4: Tenant roster and schema catalog.** Fetch on mount plus manual refresh; no polling. Both go through the console's existing OIDC token and return what that user is entitled to.
 
-- [ ] **Step 5: Data volume.** One call per object type, on mount plus manual refresh, **never polled** — a 30-second timer turns an open tab into sustained aggregate load against StarRocks for a number that changes slowly. Label it **tenant-scoped**, not a deployment total. State that zero may mean denied rather than empty.
+- [ ] **Step 5: Data volume.** One call per object type, on mount plus manual refresh, **never polled** — a 30-second timer turns an open tab into sustained aggregate load against StarRocks for a number that changes slowly. Label it **tenant-scoped**, not a deployment total. **Do NOT caveat the zeros** — that instruction predates Task 6, which made a denied type *unconstructible* as a zero: denied types get no entry at all, only an aggregate `deniedTypeCount`, and unknown types get `unknownTypeCount`. Render those two counts as an explicit "N types not shown" affordance; a zero in the list is now a real, trustworthy zero.
 
 - [ ] **Step 6: Render-test each widget** over fixture responses, including error and stale states.
 ```bash
