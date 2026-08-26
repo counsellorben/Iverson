@@ -2,6 +2,8 @@ import { useAuth } from "react-oidc-context";
 import { Box, Typography } from "@mui/material";
 import { DataVolumeWidget } from "../widgets/DataVolumeWidget";
 import { HealthStrip } from "../widgets/HealthStrip";
+import { MetricsBand } from "../widgets/MetricsBand";
+import { QdrantCollectionsWidget } from "../widgets/QdrantCollectionsWidget";
 import { SchemaCatalogWidget } from "../widgets/SchemaCatalogWidget";
 import { TenantRosterWidget } from "../widgets/TenantRosterWidget";
 
@@ -17,7 +19,12 @@ import { TenantRosterWidget } from "../widgets/TenantRosterWidget";
  * as "waiting for session" — the state that must NOT be confused with a spinner, since both
  * `awaitingToken` and `loading` are true at that first mount.
  *
- * Band B's widgets (metrics, Qdrant collections) are added to this page by a later task.
+ * Nine cards, seven sources: the four Band B metrics cards are all fed by ONE poll of
+ * `/admin/console/metrics`, which `MetricsBand` owns — see the note there. Six of the nine
+ * render "not authorized" on a real deployment today, because `tenants`, `metrics` and
+ * `qdrant` are all `Operator`-gated and no human satisfies that policy yet (Design 4d). That
+ * is a first-class rendered state, not an error, and it is deliberately not hidden: the page
+ * degrades per Design 3 rather than showing a smaller page to a less privileged user.
  */
 export function LandingPage() {
   const auth = useAuth();
@@ -41,6 +48,8 @@ export function LandingPage() {
         <TenantRosterWidget accessToken={accessToken} />
         <SchemaCatalogWidget accessToken={accessToken} />
         <DataVolumeWidget accessToken={accessToken} />
+        <MetricsBand accessToken={accessToken} />
+        <QdrantCollectionsWidget accessToken={accessToken} />
       </Box>
     </Box>
   );
