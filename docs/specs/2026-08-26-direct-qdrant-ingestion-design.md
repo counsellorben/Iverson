@@ -134,7 +134,9 @@ level, so `LoadQueries` finds nothing and throws. A target size at or above the 
 
 **It also selects the query set**, which BEIR forces: `queries.jsonl` carries all 1,109 train, dev and
 test queries in one file and `LoadQueries` applies no filter. It emits only the queries carrying
-judgments in the qrels — ~300 — so every run-file row is scoreable. It reads those qrels in
+judgments in `qrels/test.tsv` — ~300 — so every run-file row is scoreable. The file matters: `qrels/`
+also holds `train.tsv`, whose 809 queries are disjoint from test's 300 and together exhaust
+`queries.jsonl`, so filtering on the directory would filter nothing. It reads those qrels in
 TREC form: the conversion runs before sampling (below), because BEIR's column 2 is `corpus-id` and
 column 3 is `score` where TREC's are the iteration field and the doc id — reading one as the other
 takes the score as a doc id and drops every relevant document the sample exists to include.
@@ -212,6 +214,7 @@ Verified 2026-08-26 against the running compose stack and the code at `bump-olla
 | V28 | `nomic-embed-text` is already present in the ollama volume, so skipping `ollama-init` is safe | `GET /api/tags` → `['nomic-embed-text:latest', 'qwen2.5:3b']`. **Machine state, not code state** — it holds only while `iversonserver_ollama_data` survives; a fresh volume needs `ollama-init` run once before the `ingest` tier is usable |
 | V29 | `ir_measures` computes `nDCG@10`, `R@50` and `AP` on this box | `calc_aggregate([nDCG@10, R@50, AP], …)` over real `qrels-small.trec` and `fix2.chunks.trec` → `AP=0.8662`, `R@50=1.0000`, `nDCG@10=0.8948`. Stated separately from V24 because that item records only that `alpha_nDCG` fails — the working measures cannot be inferred from a neighbouring negative, especially with `parse_measure` already broken here |
 | V30 | `ir_measures` resolves repeated `(qid, docid)` qrels rows **last-wins, by file order** | Identical run and judgments, row order swapped: `q1 0 dA 1` / `q1 0 dA 0` → `AP=0.0000`; reversed → `AP=1.0000`. This is why BEIR's one-row-per-pair qrels are safe to score against, and why FreshStack's subtopic qrels are not |
+| V31 | The api role serves `SearchSimilar`/`SearchChunks` with `iverson-worker` stopped | `Iverson.Api/Program.cs:438` gates gRPC endpoint mapping on `workloadRole == "api"`, and `:443` maps `ObjectSearchGrpcService` inside that block; the worker role's exclusive work is the consumer registration at `:254`. Stated because **V2 does not cover it** — that experiment stopped five other containers with `iverson-worker` running throughout, so the `query` tier's omission of the worker rested on an experiment that never tested it |
 
 ## Known issues / accepted as out of scope
 
