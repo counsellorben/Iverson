@@ -132,8 +132,19 @@ export interface QdrantCollectionSummary {
 }
 
 export interface QdrantResponse {
+  /**
+   * The length of `collections` — NOT the number of collections the deployment holds. The two
+   * differ by `unreadableCollectionCount`.
+   */
   collectionCount: number;
   collections: QdrantCollectionSummary[];
+  /**
+   * Collections Qdrant listed whose stats could not be read, counted but not named. NON-ZERO
+   * MEANS THE LIST ABOVE IS INCOMPLETE — "7 collections" while Qdrant holds 10. Render it; do
+   * not drop it. Not an authorization statement: the endpoint is Operator-gated and a caller
+   * who got a 200 is entitled to all of them.
+   */
+  unreadableCollectionCount: number;
 }
 
 // ── /health (anonymous, also served on the admin-api host) ────────────────────

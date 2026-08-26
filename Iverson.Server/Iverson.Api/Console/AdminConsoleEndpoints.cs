@@ -222,15 +222,29 @@ public static class AdminConsoleEndpoints
     /// <summary>
     /// Qdrant collection stats. Operator-gated: collection names are tenant-scoped, so
     /// enumerating them is a cross-tenant read.
+    /// <para>
+    /// <b>A collection whose stats could not be read is counted, not silently dropped</b> — the
+    /// same rule <see cref="GetSchema"/> and <see cref="GetDataVolumeAsync"/> follow.
+    /// <c>IntelligenceCollectionReader</c> contains a per-collection failure so one bad
+    /// collection cannot blank the widget, which without
+    /// <see cref="QdrantResponse.UnreadableCollectionCount"/> would show an operator "7
+    /// collections" as a complete answer while Qdrant actually holds 10.
+    /// <see cref="VectorCollectionListing.ListedCount"/> is the count Qdrant NAMED, so the
+    /// subtraction below is the shortfall.
+    /// </para>
     /// </summary>
     public static async Task<IResult> GetQdrantAsync(
         IVectorCollectionReader reader, CancellationToken ct)
     {
-        var stats = await reader.ListCollectionStatsAsync(ct);
-        var projected = stats
+        var listing = await reader.ListCollectionStatsAsync(ct);
+        var projected = listing.Collections
             .Select(c => new QdrantCollectionSummary(c.Name, c.PointsCount, c.IndexedVectorsCount))
             .ToList();
-        return Results.Ok(new QdrantResponse(projected.Count, projected));
+        // Math.Max for the same reason GetSchema uses it: the reader is the only thing that can
+        // make these two counts consistent, and a clamp here means a future reader that reports
+        // them wrong yields 0 rather than a negative count on the wire.
+        return Results.Ok(new QdrantResponse(
+            projected.Count, projected, Math.Max(0, listing.ListedCount - projected.Count)));
     }
 
     /// <summary>
@@ -299,4 +313,21 @@ public sealed record EngagementUnavailableResponse(string Reason, string Error);
 
 public sealed record QdrantCollectionSummary(string Name, ulong? PointsCount, ulong? IndexedVectorsCount);
 
-public sealed record QdrantResponse(int CollectionCount, IReadOnlyList<QdrantCollectionSummary> Collections);
+/// <summary>
+/// The collections read, plus the count Qdrant listed but whose stats could not be read.
+/// <para>
+/// <b><see cref="CollectionCount"/> is the length of <see cref="Collections"/>, not the size of
+/// the deployment.</b> The two differ whenever <see cref="UnreadableCollectionCount"/> is
+/// non-zero, and that field is the whole reason a short list is not the same claim as a complete
+/// one — exactly as <see cref="DataVolumeResponse.DeniedTypeCount"/> is for row counts. A
+/// collection is dropped from the list on one ground only (its <c>GetCollectionInfoAsync</c>
+/// failed — dropped mid-enumeration, or a Qdrant fault on that collection), so unlike
+/// <see cref="SchemaCatalogResponse.WithheldTypeCount"/> this figure merges nothing and is not an
+/// authorization statement: the endpoint is <c>Operator</c>-gated, and a caller who gets this far
+/// is entitled to every collection.
+/// </para>
+/// </summary>
+public sealed record QdrantResponse(
+    int CollectionCount,
+    IReadOnlyList<QdrantCollectionSummary> Collections,
+    int UnreadableCollectionCount);

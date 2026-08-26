@@ -53,6 +53,13 @@ public sealed class AdminConsoleTestWebApplicationFactory : AuthTestWebApplicati
 
     public const string CollectionWithStats    = "iverson-articles";
     public const string CollectionWithoutStats = "iverson-unoptimized";
+    /// <summary>
+    /// How many collections Qdrant NAMED. Deliberately one more than the two whose stats the
+    /// fake reader returns, so the shortfall the endpoint has to surface is non-zero in every
+    /// test that reaches <c>/admin/console/qdrant</c>. A fixture where listed == read would let
+    /// the endpoint compute <c>unreadableCollectionCount</c> from the wrong number and stay green.
+    /// </summary>
+    public const int ListedCollectionCount = 3;
 
     public static readonly TenantRow[] Tenants =
     [
@@ -214,15 +221,23 @@ internal sealed class AdminConsoleSearchService : IEngagementStoreSearchService
 }
 
 /// <summary>
-/// Two collections, one of which reports no counts at all — the shape Qdrant really returns for
-/// a collection that has never been optimized (both counts are proto3 optional).
+/// Two collections read out of three listed.
+/// <para>
+/// One of the two reports no counts at all — the shape Qdrant really returns for a collection
+/// that has never been optimized (both counts are proto3 optional). The third is the one whose
+/// <c>GetCollectionInfoAsync</c> failed: <c>IntelligenceCollectionReader</c> contains that
+/// failure and leaves the collection out of the list, but still reports it in
+/// <see cref="VectorCollectionListing.ListedCount"/>, and the endpoint must turn that gap into
+/// <c>unreadableCollectionCount</c> rather than letting the collection vanish.
+/// </para>
 /// </summary>
 internal sealed class AdminConsoleVectorCollectionReader : IVectorCollectionReader
 {
-    public Task<IReadOnlyList<VectorCollectionStats>> ListCollectionStatsAsync(CancellationToken ct = default) =>
-        Task.FromResult<IReadOnlyList<VectorCollectionStats>>(
-        [
-            new VectorCollectionStats(AdminConsoleTestWebApplicationFactory.CollectionWithStats, 1234, 1200),
-            new VectorCollectionStats(AdminConsoleTestWebApplicationFactory.CollectionWithoutStats, null, null)
-        ]);
+    public Task<VectorCollectionListing> ListCollectionStatsAsync(CancellationToken ct = default) =>
+        Task.FromResult(new VectorCollectionListing(
+            AdminConsoleTestWebApplicationFactory.ListedCollectionCount,
+            [
+                new VectorCollectionStats(AdminConsoleTestWebApplicationFactory.CollectionWithStats, 1234, 1200),
+                new VectorCollectionStats(AdminConsoleTestWebApplicationFactory.CollectionWithoutStats, null, null)
+            ]));
 }

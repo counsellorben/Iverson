@@ -2,6 +2,7 @@ import { Table, TableBody, TableCell, TableHead, TableRow, Typography } from "@m
 import { fetchQdrant } from "../api/console";
 import type { QdrantResponse } from "../api/types";
 import { usePolledResource } from "../hooks/usePolledResource";
+import { HiddenTypesNote } from "./HiddenTypesNote";
 import { NO_SAMPLE_VALUE, formatInteger, pluralise } from "./format";
 import { WidgetCard } from "./WidgetCard";
 
@@ -16,6 +17,12 @@ import { WidgetCard } from "./WidgetCard";
  *   traffic is the kind of number someone deletes a collection over. Absent renders as words —
  *   `NO_SAMPLE_VALUE`, the same word a metric with no current sample gets, so one fact has
  *   one spelling across the whole page.
+ * - **Present a partial list as a complete one.** `IntelligenceCollectionReader` contains a
+ *   per-collection stats failure so one bad collection cannot blank the card, which means
+ *   `collections` can be SHORTER than what Qdrant listed. `unreadableCollectionCount` is that
+ *   shortfall and gets its own `HiddenTypesNote` line — the same affordance the schema and
+ *   data-volume cards use — because "7 collections" read as complete while Qdrant holds 10 is
+ *   the same class of lie as a denied type rendered as "0 rows".
  * - **Present its 403 as an error.** The endpoint is `Operator`-gated — collection names are
  *   tenant-scoped, so enumerating them is a cross-tenant read — and no human satisfies the
  *   `Operator` policy today (Design 4d), so 403 is what this card shows on a real deployment.
@@ -61,6 +68,12 @@ export function QdrantCollectionsWidget({
             >
               {formatInteger(collections.length)} {pluralise(collections.length, "collection")}
             </Typography>
+            <HiddenTypesNote
+              count={data.unreadableCollectionCount}
+              testId="qdrant-unreadable-collections"
+              noun="collection"
+              explanation="listed by Qdrant, but their stats could not be read"
+            />
             {collections.length > 0 && (
               <Table size="small" aria-label="Qdrant collections">
                 <TableHead>

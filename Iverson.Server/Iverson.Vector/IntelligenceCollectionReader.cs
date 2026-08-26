@@ -22,8 +22,26 @@ namespace Iverson.Vector;
 /// </summary>
 public interface IVectorCollectionReader
 {
-    Task<IReadOnlyList<VectorCollectionStats>> ListCollectionStatsAsync(CancellationToken ct = default);
+    Task<VectorCollectionListing> ListCollectionStatsAsync(CancellationToken ct = default);
 }
+
+/// <summary>
+/// What one enumeration found: the collections whose stats were actually read, and
+/// <see cref="ListedCount"/> — how many Qdrant named in the first place.
+/// <para>
+/// <b>The two are separate on purpose and must not be collapsed to one number.</b> A
+/// per-collection stats read can fail (the collection was dropped between the listing and the
+/// read, or Qdrant faulted on that one collection); the implementation contains that failure so
+/// one bad collection does not blank the whole view. Returning only the survivors would then hand
+/// the caller a list that LOOKS complete and is not — "7 collections" while Qdrant holds 10 —
+/// which is the exact defect the admin console's <c>deniedTypeCount</c> /
+/// <c>unknownTypeCount</c> / <c>withheldTypeCount</c> fields exist to prevent everywhere else.
+/// <see cref="ListedCount"/> is what makes the shortfall visible.
+/// </para>
+/// </summary>
+public sealed record VectorCollectionListing(
+    int ListedCount,
+    IReadOnlyList<VectorCollectionStats> Collections);
 
 /// <summary>
 /// One collection's reported size. Both counts are <b>nullable</b> because Qdrant declares them
@@ -48,7 +66,7 @@ public sealed class IntelligenceCollectionReader(
     string apiKey,
     ILogger<IntelligenceCollectionReader> logger) : IVectorCollectionReader
 {
-    public async Task<IReadOnlyList<VectorCollectionStats>> ListCollectionStatsAsync(
+    public async Task<VectorCollectionListing> ListCollectionStatsAsync(
         CancellationToken ct = default)
     {
         using var _ = RequestHeaders.Use("api-key", apiKey);
@@ -64,6 +82,10 @@ public sealed class IntelligenceCollectionReader(
             // dropped between the listing and this read, and one missing collection must not
             // blank the whole widget. Cancellation is NOT contained — it is the caller going
             // away, not a Qdrant fault.
+            //
+            // Contained is not the same as hidden: every collection skipped here still shows up
+            // in the returned VectorCollectionListing.ListedCount, which is the count Qdrant
+            // NAMED, not the count that survived this loop.
             try
             {
                 var info = await client.GetCollectionInfoAsync(name, cancellationToken: ct);
@@ -84,7 +106,10 @@ public sealed class IntelligenceCollectionReader(
         }
 
         activity?.SetTag("qdrant.collection_count", stats.Count);
+        // Reported separately from the count above, so a deployment where reads are quietly
+        // failing is visible in traces rather than only in the warning log.
+        activity?.SetTag("qdrant.listed_collection_count", names.Count);
         activity?.SetStatus(ActivityStatusCode.Ok);
-        return stats;
+        return new VectorCollectionListing(names.Count, stats);
     }
 }

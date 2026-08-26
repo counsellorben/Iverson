@@ -169,7 +169,7 @@ describe("LandingPage", () => {
     fetchQdrantMock.mockResolvedValue({
       kind: "ok",
       status: 200,
-      data: { collectionCount: 0, collections: [] },
+      data: { collectionCount: 0, collections: [], unreadableCollectionCount: 0 },
     });
 
     render(<LandingPage />, { wrapper: StrictMode });

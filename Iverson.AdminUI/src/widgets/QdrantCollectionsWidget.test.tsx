@@ -25,6 +25,7 @@ function qdrant(over: Partial<QdrantResponse> = {}): ApiResult<QdrantResponse> {
         { name: "tenant_a_objects", pointsCount: 1234567, indexedVectorsCount: 0 },
         { name: "tenant_b_objects", pointsCount: 42, indexedVectorsCount: 42 },
       ],
+      unreadableCollectionCount: 0,
       ...over,
     },
   };
@@ -101,6 +102,58 @@ describe("QdrantCollectionsWidget", () => {
     const empty = screen.getByTestId("qdrant-row-genuinely_empty").querySelectorAll("td")[1];
     expect(unreported.textContent).not.toBe(empty.textContent);
     expect(empty).toHaveTextContent("0");
+  });
+
+  it("says how many collections Qdrant listed but could not be read", async () => {
+    // The endpoint drops a collection whose GetCollectionInfoAsync failed, so this list can be
+    // SHORTER than the deployment. Rendering "2 collections" as a complete answer while Qdrant
+    // holds four is the same lie as rendering a denied type as "0 rows".
+    fetchQdrantMock.mockResolvedValue(qdrant({ unreadableCollectionCount: 2 }));
+
+    render(<QdrantCollectionsWidget accessToken={TOKEN} />);
+
+    await waitFor(() => expect(cardState()).toBe("ready"));
+    const note = screen.getByTestId("qdrant-unreadable-collections");
+    expect(note).toHaveAttribute("data-hidden-count", "2");
+    expect(note).toHaveTextContent(
+      "2 collections not shown (listed by Qdrant, but their stats could not be read)."
+    );
+    // The noun is "collections", not the component's default "types".
+    expect(note).not.toHaveTextContent("types");
+  });
+
+  it("reads correctly at one unreadable collection", async () => {
+    fetchQdrantMock.mockResolvedValue(qdrant({ unreadableCollectionCount: 1 }));
+
+    render(<QdrantCollectionsWidget accessToken={TOKEN} />);
+
+    await waitFor(() => expect(cardState()).toBe("ready"));
+    expect(screen.getByTestId("qdrant-unreadable-collections")).toHaveTextContent(
+      "1 collection not shown"
+    );
+  });
+
+  it("renders no 'not shown' line at all when every listed collection was read", async () => {
+    fetchQdrantMock.mockResolvedValue(qdrant());
+
+    render(<QdrantCollectionsWidget accessToken={TOKEN} />);
+
+    await waitFor(() => expect(cardState()).toBe("ready"));
+    expect(screen.queryByTestId("qdrant-unreadable-collections")).not.toBeInTheDocument();
+  });
+
+  it("renders nothing rather than 'NaN collections not shown' when the count is missing", async () => {
+    fetchQdrantMock.mockResolvedValue({
+      kind: "ok",
+      status: 200,
+      data: { collectionCount: 0, collections: [] } as unknown as QdrantResponse,
+    });
+
+    render(<QdrantCollectionsWidget accessToken={TOKEN} />);
+
+    await waitFor(() => expect(cardState()).toBe("ready"));
+    expect(screen.queryByTestId("qdrant-unreadable-collections")).not.toBeInTheDocument();
+    expect(card()).not.toHaveTextContent("NaN");
   });
 
   it("renders the 403 every human gets today as an authorization answer, not a fault", async () => {

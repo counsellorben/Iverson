@@ -297,6 +297,33 @@ public class AdminConsoleEndpointsPipelineTests : IClassFixture<AdminConsoleTest
         withoutStats.GetProperty("indexedVectorsCount").ValueKind.Should().Be(JsonValueKind.Null);
     }
 
+    /// <summary>
+    /// A collection Qdrant listed but whose stats could not be read is COUNTED, not dropped.
+    /// <para>
+    /// The fake reader lists three and returns two, the shape
+    /// <c>IntelligenceCollectionReader</c> produces when one <c>GetCollectionInfoAsync</c>
+    /// fails and is contained. Without <c>unreadableCollectionCount</c> the body would say
+    /// "2 collections" as a complete answer while Qdrant holds three — the same false-complete
+    /// list that <c>deniedTypeCount</c> / <c>withheldTypeCount</c> exist to prevent on the other
+    /// two endpoints.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public async Task Operator_Qdrant_ReportsCollectionsListedButNotRead()
+    {
+        var response = await GetAsync(Qdrant, OperatorToken());
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        var body = await BodyAsync(response);
+        var read = body.GetProperty("collections").GetArrayLength();
+
+        // Asserted against the fixture's listed count rather than the literal 1, so the
+        // assertion is "the shortfall", not "some number that happens to be one".
+        body.GetProperty("unreadableCollectionCount").GetInt32().Should()
+            .Be(AdminConsoleTestWebApplicationFactory.ListedCollectionCount - read);
+        body.GetProperty("unreadableCollectionCount").GetInt32().Should().BePositive();
+    }
+
     // ── Nothing else moved ─────────────────────────────────────────────────────
 
     /// <summary>
