@@ -123,7 +123,11 @@ silently invalidating every downstream metric.
 **`sample_corpus.py`** builds a coherent subset the way `corpus-small` was built: N queries, every
 document judged relevant to them, plus distractors to a target size — so sampled queries retain
 reachable answers. It emits the `<corpus-path>/{beir,freshstack}/` layout `benchmark-query` reads
-(V23).
+(V23), **and alongside it a qrels restricted to the queries it kept** — which is what `report.py`
+scores against. `ir_measures.calc_aggregate` aggregates over the queries in the qrels, so a query
+present there but absent from the run contributes zero and drags every aggregate down; scoring a
+sampled run against the corpus's full qrels reports a wrong number rather than a missing one.
+`corpus-small` already ships its qrels this way — 40 queries, 40 covered, against 300 in the full set.
 
 **Both arms go through it**, because that layout is the only one `benchmark-query` can read and
 `scifact-full/` does not have it — its `corpus.jsonl`, `queries.jsonl` and `qrels/` sit at the top
@@ -132,7 +136,10 @@ level, so `LoadQueries` finds nothing and throws. A target size at or above the 
 
 **It also selects the query set**, which BEIR forces: `queries.jsonl` carries all 1,109 train, dev and
 test queries in one file and `LoadQueries` applies no filter. Both arms emit only the queries carrying
-judgments in the TREC qrels — ~300 for SciFact — so every run-file row is scoreable.
+judgments in the qrels — ~300 for SciFact — so every run-file row is scoreable. It reads those qrels in
+TREC form: the conversion runs before sampling (below), because BEIR's column 2 is `corpus-id` and
+column 3 is `score` where TREC's are the iteration field and the doc id — reading one as the other
+takes the score as a doc id and drops every relevant document the sample exists to include.
 
 **The two corpora must not share a collection.** The collection name is `benchmark_documents_{tenant}`
 — entity type and tenant, nothing corpus-specific — so a combined ingest leaves godot documents
@@ -141,16 +148,19 @@ competing for BEIR's top-50 and vice versa, silently depressing both Recall figu
 
 **Procedure, per corpus:**
 
-1. `stack.py ingest` — down to two containers
-2. `ingest.py --drop` — recreate both collections empty
-3. `ingest.py` — embed, upsert, write the key map
-4. `stack.py query` — bring up the query tier
-5. `dotnet run -- benchmark-query` — the existing C# command, unchanged
-6. `report.py` — score and summarise
+1. `sample_corpus.py` — convert the qrels to TREC, then write the corpus directory steps 4 and 6 both
+   read. Needs no containers
+2. `stack.py ingest` — down to two containers
+3. `ingest.py --drop` — recreate both collections empty
+4. `ingest.py` — embed, upsert, write the key map
+5. `stack.py query` — bring up the query tier
+6. `dotnet run -- benchmark-query` — the existing C# command, unchanged
+7. `report.py` — score and summarise
 
-**`report.py` also closes the missing BEIR qrels converter.** BEIR ships 3-column qrels
+**The BEIR qrels converter is the repo's missing piece**, and it runs first. BEIR ships 3-column qrels
 (`query-id`/`corpus-id`/`score`) with a header and sometimes CRLF; `ir_measures` needs 4-column TREC
-`qid iteration docid rel`. Nothing in the repo does this today. One implementation serves both corpora.
+`qid iteration docid rel`. Nothing in the repo does this today. One implementation serves both corpora
+and runs once per corpus before sampling, so the sampler and `report.py` both read TREC.
 
 It **must use `ir_measures` measure objects, never `parse_measure`** — the string parser calls the
 `ast.Num` removed in Python 3.12 and raises `AttributeError` on this box's 3.14 (V24).
@@ -206,6 +216,7 @@ Verified 2026-08-26 against the running compose stack and the code at `bump-olla
 | V26 | `Body` is the only `[IversonEmbedding]`/`[IversonChunk]` field | `BenchmarkDocument.cs:16-18` — the set has exactly one member |
 | V27 | Centroids are fetched by `KeyToUlong(parentKey)` | `ObjectSearchGrpcService.cs:408,445` |
 | V28 | `nomic-embed-text` is already present in the ollama volume, so skipping `ollama-init` is safe | `GET /api/tags` → `['nomic-embed-text:latest', 'qwen2.5:3b']`. **Machine state, not code state** — it holds only while `iversonserver_ollama_data` survives; a fresh volume needs `ollama-init` run once before the `ingest` tier is usable |
+| V29 | `ir_measures` computes `nDCG@10`, `R@50` and `AP` on this box | `calc_aggregate([nDCG@10, R@50, AP], …)` over real `qrels-small.trec` and `fix2.chunks.trec` → `AP=0.8662`, `R@50=1.0000`, `nDCG@10=0.8948`. Stated separately from V24 because that item records only that `alpha_nDCG` fails — the working measures cannot be inferred from a neighbouring negative, especially with `parse_measure` already broken here |
 
 ## Known issues / accepted as out of scope
 
