@@ -4,9 +4,9 @@
 
 The retrieval-quality harness ingests through the full write path: gRPC `PersistAsync` → Postgres →
 Kafka → `IntelligenceStoreConsumer` → chunk → embed → Qdrant. Measured on the live compose stack on
-2026-08-26 that costs **~34 s/document**, which puts BEIR SciFact at ~3.5 days and FreshStack godot at
-~10 days. Neither corpus is ingestible on this hardware by that route, so the eight-configuration
-ablation sweep — the reason the harness exists — remains unrun.
+2026-08-26 that costs **~34 s/document**, which puts BEIR SciFact at ~3.5 days. That
+corpus is not ingestible on this hardware by that route, so the eight-configuration ablation sweep —
+the reason the harness exists — remains unrun.
 
 Most of that cost is embedding, and embedding is unavoidable. But the *rate* is not fixed: per-embed
 latency measured 5–14 s while 13 containers competed for two physical cores, against a 1.7–3 s idle
@@ -57,8 +57,7 @@ HTTP/1.1. Compose's own healthcheck is `exec 3<>/dev/tcp/127.0.0.1/8080`, and th
 
 ### 2. `ingest.py` — the Qdrant write contract
 
-Corpus-agnostic: reads any BEIR-shaped `corpus.jsonl`, so FreshStack works unchanged once
-`freshstack_to_jsonl.py` has normalised it.
+Corpus-agnostic: reads any BEIR-shaped `corpus.jsonl`.
 
 **Chunking mirrors `IntelligenceStoreConsumer.SplitIntoChunks` exactly** — 2048-char window
 (`maxTokens 512 × 4`), 1792 step (`2048 − 64×4`), extend to a word boundary within 50 chars (V13).
@@ -99,11 +98,10 @@ short document produces equals the body only when the body is already trimmed. T
 therefore gated on the identity holding, not on length: reuse one embed for both `body_vector` and the
 chunk's vector when `text == text.strip() and len(text) <= 1792`, and embed twice otherwise.
 
-Measured, the length test alone would have been wrong on FreshStack: scifact has **0** documents where
-`text != text.strip()`, godot has **12,987**, of which **5,534** are ≤1792 chars. Gating on length
-would have written `body_vector = embed(trimmed)` for 72% of godot's single-chunk documents where the
-C# consumer writes `embed(untrimmed)` — diverging silently, and only on FreshStack. The saving still
-roughly halves BEIR's embed count, where the identity does hold.
+SciFact is measured clean — **0** documents where `text != text.strip()` — so the gate never fires on
+it. The condition is stated rather than folded into the length test because it is the identity the
+saving depends on: a corpus whose bodies carry surrounding whitespace would get
+`body_vector = embed(trimmed)` where the C# consumer writes `embed(untrimmed)`, diverging silently.
 
 **`body_vector` is still required.** `SearchSimilar` searches `<property>_vector` on the object
 collection; omitting it breaks that RPC entirely.
@@ -122,31 +120,31 @@ silently invalidating every downstream metric.
 
 **`sample_corpus.py`** builds a coherent subset the way `corpus-small` was built: N queries, every
 document judged relevant to them, plus distractors to a target size — so sampled queries retain
-reachable answers. It emits the `<corpus-path>/{beir,freshstack}/` layout `benchmark-query` reads
+reachable answers. It emits the `<corpus-path>/beir/` layout `benchmark-query` reads
 (V23), **and alongside it a qrels restricted to the queries it kept** — which is what `report.py`
 scores against. `ir_measures.calc_aggregate` aggregates over the queries in the qrels, so a query
 present there but absent from the run contributes zero and drags every aggregate down; scoring a
 sampled run against the corpus's full qrels reports a wrong number rather than a missing one.
 `corpus-small` already ships its qrels this way — 40 queries, 40 covered, against 300 in the full set.
 
-**Both arms go through it**, because that layout is the only one `benchmark-query` can read and
+**SciFact goes through it**, because that layout is the only one `benchmark-query` can read and
 `scifact-full/` does not have it — its `corpus.jsonl`, `queries.jsonl` and `qrels/` sit at the top
 level, so `LoadQueries` finds nothing and throws. A target size at or above the corpus size means
-"re-lay out, sample nothing", which is how the BEIR arm keeps all 5,183 documents.
+"re-lay out, sample nothing", which is how this run keeps all 5,183 documents.
 
 **It also selects the query set**, which BEIR forces: `queries.jsonl` carries all 1,109 train, dev and
-test queries in one file and `LoadQueries` applies no filter. Both arms emit only the queries carrying
-judgments in the qrels — ~300 for SciFact — so every run-file row is scoreable. It reads those qrels in
+test queries in one file and `LoadQueries` applies no filter. It emits only the queries carrying
+judgments in the qrels — ~300 — so every run-file row is scoreable. It reads those qrels in
 TREC form: the conversion runs before sampling (below), because BEIR's column 2 is `corpus-id` and
 column 3 is `score` where TREC's are the iteration field and the doc id — reading one as the other
 takes the score as a doc id and drops every relevant document the sample exists to include.
 
-**The two corpora must not share a collection.** The collection name is `benchmark_documents_{tenant}`
-— entity type and tenant, nothing corpus-specific — so a combined ingest leaves godot documents
-competing for BEIR's top-50 and vice versa, silently depressing both Recall figures. They are
-**sequential runs with a `--drop` between them**.
+**The collection must hold this corpus alone.** The collection name is `benchmark_documents_{tenant}`
+— entity type and tenant, nothing corpus-specific — so points from any earlier ingest survive into
+this one, competing for the top-50 and depressing Recall; and any parent absent from this run's key
+map fails `benchmark-query` outright. `--drop` is what guarantees that.
 
-**Procedure, per corpus:**
+**Procedure:**
 
 1. `sample_corpus.py` — convert the qrels to TREC, then write the corpus directory steps 4 and 6 both
    read. Needs no containers
@@ -159,8 +157,9 @@ competing for BEIR's top-50 and vice versa, silently depressing both Recall figu
 
 **The BEIR qrels converter is the repo's missing piece**, and it runs first. BEIR ships 3-column qrels
 (`query-id`/`corpus-id`/`score`) with a header and sometimes CRLF; `ir_measures` needs 4-column TREC
-`qid iteration docid rel`. Nothing in the repo does this today. One implementation serves both corpora
-and runs once per corpus before sampling, so the sampler and `report.py` both read TREC.
+`qid iteration docid rel`. Nothing in the repo does this today. It runs before sampling, so the
+sampler and `report.py` both read TREC, and it is applied only to 3-column input — a file already in
+4-column TREC passes through unchanged, since its column 2 is meaningful and must survive to disk.
 
 It **must use `ir_measures` measure objects, never `parse_measure`** — the string parser calls the
 `ast.Num` removed in Python 3.12 and raises `AttributeError` on this box's 3.14 (V24).
@@ -170,17 +169,12 @@ It **must use `ir_measures` measure objects, never `parse_measure`** — the str
 - *Ingest* — documents, chunks, embed calls, embeds saved by the single-chunk path, wall time,
   docs/hour, seconds/embed
 - *Query* — rows, queries, non-zero scores, duplicate-docid count
-- *Scoring* — `nDCG@10` and `AP` for both corpora; `R@50` **for BEIR only** (see below)
+- *Scoring* — `nDCG@10`, `R@50` and `AP`
 - *Headline* — measured seconds/document against the 34 s/document of the full pipeline
-
-**Recall@50 is suppressed for FreshStack.** Its qrels are subtopic-scoped: 464 of 585 relevant
-(qid, docid) pairs carry both a 1 and a 0 under different nuggets, so a query-level reader silently
-halves Recall. Reporting a number known to be wrong is worse than reporting none.
 
 ## Scope
 
-BEIR SciFact **full** (5,183 documents, ~300 test-judged queries) and a FreshStack godot **sample**
-(~3,000 documents). One corpus measured completely; both paths exercised end to end.
+BEIR SciFact **full** — 5,183 documents, ~300 test-judged queries. One corpus, measured completely.
 
 ## Verified assumptions
 
@@ -217,14 +211,19 @@ Verified 2026-08-26 against the running compose stack and the code at `bump-olla
 | V27 | Centroids are fetched by `KeyToUlong(parentKey)` | `ObjectSearchGrpcService.cs:408,445` |
 | V28 | `nomic-embed-text` is already present in the ollama volume, so skipping `ollama-init` is safe | `GET /api/tags` → `['nomic-embed-text:latest', 'qwen2.5:3b']`. **Machine state, not code state** — it holds only while `iversonserver_ollama_data` survives; a fresh volume needs `ollama-init` run once before the `ingest` tier is usable |
 | V29 | `ir_measures` computes `nDCG@10`, `R@50` and `AP` on this box | `calc_aggregate([nDCG@10, R@50, AP], …)` over real `qrels-small.trec` and `fix2.chunks.trec` → `AP=0.8662`, `R@50=1.0000`, `nDCG@10=0.8948`. Stated separately from V24 because that item records only that `alpha_nDCG` fails — the working measures cannot be inferred from a neighbouring negative, especially with `parse_measure` already broken here |
+| V30 | `ir_measures` resolves repeated `(qid, docid)` qrels rows **last-wins, by file order** | Identical run and judgments, row order swapped: `q1 0 dA 1` / `q1 0 dA 0` → `AP=0.0000`; reversed → `AP=1.0000`. This is why BEIR's one-row-per-pair qrels are safe to score against, and why FreshStack's subtopic qrels are not |
 
 ## Known issues / accepted as out of scope
 
-**α-nDCG is not computable on this machine — Ben's decision, 2026-08-26: ship without it.**
-FreshStack reports `nDCG@10` and `AP` only. The qrels are correct and carry nugget ids in the
-iteration field, so the measurement becomes available the moment a C toolchain exists
-(`sudo apt install build-essential python3.14-dev`, then `pip install pyndeval`). Until then **this
-project does not advance the λ measurement**, which remains the harness's original purpose.
+**FreshStack was dropped from this project — Ben's decision, 2026-08-26.** Its qrels are
+subtopic-scoped: one `(qid, docid)` pair appears once per nugget, and `ir_measures` resolves repeats
+last-wins by file order (V30), so a query-level reader silently reads 322 of 585 relevant pairs — 55%,
+across 79 of 99 queries — as non-relevant. `nDCG@10`, `AP` and `R@50` are all invalid against those
+qrels, and the subtopic-aware measure that would be valid, α-nDCG, cannot be computed here: `pyndeval`
+has no Python 3.14 wheel and this box has no gcc, make or Python headers (V24). Re-admitting FreshStack
+needs either a query-level qrels collapsed on `rel = max` over nuggets, or a C toolchain
+(`sudo apt install build-essential python3.14-dev`, then `pip install pyndeval`). **This project
+therefore does not advance the λ measurement**, which remains the harness's original purpose.
 
 **V3 was never isolated.** postgres, authentik-server and redis are assumed required; they were never
 removed independently. The query tier includes them, so the risk is a tier one container larger than
