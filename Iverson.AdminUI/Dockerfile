@@ -1,4 +1,13 @@
-FROM node:20-alpine AS build
+# node:22, not node:20. react-router@8.3.0 declares engines.node ">=22.22.0" — the
+# highest floor in the installed tree (164 packages declare engines.node; the next
+# highest is vite/rolldown/@vitejs/plugin-react at "^20.19.0 || >=22.12.0", which
+# already excludes the whole 21 line). node:20-alpine built only because npm treats an
+# unmet engines range as a warning, not an error; the next dependency bump that turns
+# it into a hard failure would break the image build with no warning beforehand.
+# `engines.node` in Iverson.AdminUI/package.json records that floor so this tag and
+# the tree cannot drift apart silently. node:22-alpine currently ships v22.23.2.
+# The runtime stage below is a separate nginx image and is unaffected by this.
+FROM node:22-alpine AS build
 WORKDIR /src
 COPY Iverson.AdminUI/package.json Iverson.AdminUI/package-lock.json ./
 RUN npm ci
