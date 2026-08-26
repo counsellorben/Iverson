@@ -80,6 +80,13 @@ OLLAMA_URL = "http://localhost:11434"
 DEFAULT_OBJECT_COLLECTION = "benchmark_documents_tenant_bypass"
 DEFAULT_CHUNKS_COLLECTION = "benchmark_documents_chunks_tenant_bypass"
 
+# Read 2026-08-26 from the live collections' own payload_schema (GET /collections/{name}) --
+# what IntelligenceStoreConsumer's collection-creation path indexes today. All "keyword".
+# ensure_collection recreates these when it creates a collection from scratch, so a --drop
+# does not leave the read side (tenant/ownership filtering) running an unindexed scan.
+OBJECT_PAYLOAD_INDEXES = ["__TenantId", "body", "docId", "ownerId", "title"]
+CHUNKS_PAYLOAD_INDEXES = ["field", "ownerId", "parent_id"]
+
 # Read 2026-08-26 from a live point written by IntelligenceStoreConsumer (via
 # BenchmarkIngestScenario's bypass identity) in benchmark_documents_tenant_bypass. Hard-coded
 # rather than read from Qdrant at runtime: Task 5 of this plan drops both live collections
@@ -128,7 +135,14 @@ def split_into_chunks(text, max_chars=MAX_CHARS, step=STEP):
     while start < len(text):
         end = min(start + max_chars, len(text))
         if end < len(text) and not text[end].isspace():
-            ws = text.rfind(" ", max(start, end - 50), end)
+            # C#'s text.LastIndexOf(' ', end, Math.Min(end - start, 50)) examines the range
+            # [end - count + 1, end] inclusive (count positions ending at `end`). rfind's stop
+            # is exclusive, so the upper bound stays `end` (position `end` itself is unreachable
+            # -- the isspace guard above proves text[end] isn't a space) and the lower bound must
+            # be end - count + 1, not end - 50: a space at exactly end - 50 with no other space
+            # in [end - 49, end - 1] is found by C# but was missed here before this fix.
+            count = min(end - start, 50)
+            ws = text.rfind(" ", end - count + 1, end)
             if ws > start:
                 end = ws
         yield text[start:end].strip(), idx
@@ -183,15 +197,43 @@ def collection_exists(name):
     return status == 200
 
 
-def ensure_collection(name, vectors_config):
-    """Create-if-missing. Leaves an existing collection untouched -- callers that want a clean
-    slate use --drop first."""
+def create_payload_index(collection, field_name, field_schema="keyword"):
+    status, body = qdrant_request(
+        "PUT",
+        f"/collections/{collection}/index",
+        {"field_name": field_name, "field_schema": field_schema},
+    )
+    if status != 200:
+        sys.exit(
+            f"failed to create payload index '{field_name}' on '{collection}': HTTP {status} {body}"
+        )
+
+
+def ensure_collection(name, vectors_config, payload_indexes=()):
+    """Create-if-missing. Leaves an existing collection (and its indexes) untouched -- callers
+    that want a clean slate use --drop first. payload_indexes is a list of field names to index
+    as "keyword", created only on the create path -- these are read straight off the live
+    collections (GET /collections/{name}'s payload_schema) and are exactly what
+    IntelligenceStoreConsumer's own collection-creation path (IVectorSchemaManager) creates, so
+    a --drop-then-recreate must not leave the read side without them: SearchSimilar/SearchChunks
+    filter on ownerId/__TenantId/parent_id/field for tenant and row-authorization scoping, and
+    those filters degrade from an indexed lookup to a full collection scan without this.
+    on_disk_payload is set false at creation to match the live collections (Qdrant's own current
+    default is true)."""
     if collection_exists(name):
         return
-    status, body = qdrant_request("PUT", f"/collections/{name}", {"vectors": vectors_config})
+    status, body = qdrant_request(
+        "PUT",
+        f"/collections/{name}",
+        {"vectors": vectors_config, "on_disk_payload": False},
+    )
     if status != 200:
         sys.exit(f"failed to create collection '{name}': HTTP {status} {body}")
     print(f"[ingest] created collection '{name}'")
+    for field_name in payload_indexes:
+        create_payload_index(name, field_name)
+    if payload_indexes:
+        print(f"[ingest] created {len(payload_indexes)} payload index(es) on '{name}': {', '.join(payload_indexes)}")
 
 
 def drop_collection(name):
@@ -378,8 +420,13 @@ def main():
     ensure_collection(
         args.object_collection,
         {"body_vector": {"size": 768, "distance": "Cosine"}, "body_centroid": {"size": 768, "distance": "Cosine"}},
+        payload_indexes=OBJECT_PAYLOAD_INDEXES,
     )
-    ensure_collection(args.chunks_collection, {"body_vector": {"size": 768, "distance": "Cosine"}})
+    ensure_collection(
+        args.chunks_collection,
+        {"body_vector": {"size": 768, "distance": "Cosine"}},
+        payload_indexes=CHUNKS_PAYLOAD_INDEXES,
+    )
 
     corpus_name = os.path.basename(os.path.dirname(os.path.abspath(args.corpus))) or "corpus"
     docs = read_corpus(args.corpus)
