@@ -22,6 +22,14 @@ import { WidgetCard } from "./WidgetCard";
  * `deniedTypeCount` — so there is no path by which authorization can manufacture a `0`. The
  * hidden types are surfaced as their own "N types not shown" line instead of as a hedge
  * smeared across trustworthy numbers.
+ *
+ * **Denied and unknown are reported SEPARATELY.** They look alike — both are types missing
+ * from the list — but they are different facts: `deniedTypeCount` is an authorization answer
+ * about types that exist, `unknownTypeCount` is a registry race, types that vanished
+ * mid-request and are not "not visible to you" at all. Summing them makes the distinction
+ * unrecoverable in the UI and puts a false explanation on whichever half is not the cause.
+ * `unknownTypeCount` is documented as effectively always 0, so this is a latent mislabel
+ * rather than a live one — which is exactly the kind that survives to become a real defect.
  */
 
 /** `reason` values `/admin/console/data-volume` sends with its 503, as prose. */
@@ -48,10 +56,6 @@ export function DataVolumeWidget({ accessToken }: { accessToken: string | undefi
       reasonText={describeDataVolumeReason}
     >
       {(data: DataVolumeResponse) => {
-        // Denied and unknown are separate server-side causes with one user-facing meaning:
-        // this list is shorter than the registry. They are summed for the affordance and
-        // never folded into the visible rows.
-        const hiddenTypeCount = data.deniedTypeCount + data.unknownTypeCount;
         return (
           <>
             <Typography
@@ -62,9 +66,14 @@ export function DataVolumeWidget({ accessToken }: { accessToken: string | undefi
               {formatInteger(data.types.length)} {pluralise(data.types.length, "type")} counted
             </Typography>
             <HiddenTypesNote
-              count={hiddenTypeCount}
-              testId="data-volume-hidden-types"
+              count={data.deniedTypeCount}
+              testId="data-volume-denied-types"
               explanation="not visible to you"
+            />
+            <HiddenTypesNote
+              count={data.unknownTypeCount}
+              testId="data-volume-unknown-types"
+              explanation="no longer in the type registry"
             />
             {data.types.length > 0 && (
               <Table size="small" aria-label="Row counts by type">

@@ -76,7 +76,7 @@ describe("LandingPage", () => {
         "disabled"
       );
       expect(screen.getByTestId("schema-hidden-types")).toHaveAttribute("data-hidden-count", "2");
-      expect(screen.getByTestId("data-volume-hidden-types")).toHaveAttribute(
+      expect(screen.getByTestId("data-volume-denied-types")).toHaveAttribute(
         "data-hidden-count",
         "1"
       );

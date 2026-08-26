@@ -24,7 +24,11 @@ export function HiddenTypesNote({
   readonly testId: string;
   readonly explanation: string;
 }) {
-  if (count <= 0) return null;
+  // `count <= 0` alone is FALSE for `undefined` and for `NaN`, either of which would reach the
+  // formatter and render the literal string "NaN types not shown". Every other field these
+  // widgets read is handled defensively; a missing `deniedTypeCount` or `withheldTypeCount`
+  // gets the same treatment — say nothing rather than say nonsense.
+  if (!Number.isFinite(count) || count <= 0) return null;
 
   return (
     <Typography

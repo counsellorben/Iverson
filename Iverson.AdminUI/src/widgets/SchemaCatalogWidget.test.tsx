@@ -1,5 +1,5 @@
 import { StrictMode } from "react";
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import type { ApiResult } from "../api/client";
 import type { SchemaCatalogResponse } from "../api/types";
@@ -88,6 +88,50 @@ describe("SchemaCatalogWidget", () => {
 
     await waitFor(() => expect(cardState()).toBe("ready"));
     expect(screen.queryByTestId("schema-hidden-types")).not.toBeInTheDocument();
+  });
+
+  it("renders nothing rather than 'NaN types not shown' when the count is missing", async () => {
+    // The endpoint always sends withheldTypeCount, but `count <= 0` is FALSE for undefined and
+    // for NaN, so an absent field would otherwise reach the formatter and be rendered as the
+    // literal string "NaN types not shown".
+    fetchSchemaMock.mockResolvedValue({
+      kind: "ok",
+      status: 200,
+      data: { typeCount: 0, types: [] } as unknown as SchemaCatalogResponse,
+    });
+
+    render(<SchemaCatalogWidget accessToken={TOKEN} />);
+
+    await waitFor(() => expect(cardState()).toBe("ready"));
+    expect(screen.queryByTestId("schema-hidden-types")).not.toBeInTheDocument();
+    expect(screen.getByTestId("widget-schema")).not.toHaveTextContent("NaN");
+  });
+
+  it("renders a transport failure as an error with nothing to show", async () => {
+    fetchSchemaMock.mockResolvedValue({ kind: "failed", status: null, message: "network down" });
+
+    render(<SchemaCatalogWidget accessToken={TOKEN} />);
+
+    await waitFor(() => expect(cardState()).toBe("error"));
+    expect(screen.getByTestId("widget-schema-notice")).toHaveTextContent("network down");
+    expect(screen.queryByTestId("schema-type-count")).not.toBeInTheDocument();
+  });
+
+  it("keeps the last good catalog on screen and marks it stale when a refresh fails", async () => {
+    fetchSchemaMock
+      .mockResolvedValueOnce(catalog({ withheldTypeCount: 4 }))
+      .mockResolvedValue({ kind: "failed", status: null, message: "network down" });
+
+    render(<SchemaCatalogWidget accessToken={TOKEN} />);
+
+    await waitFor(() => expect(cardState()).toBe("ready"));
+    fireEvent.click(screen.getByRole("button", { name: "Refresh Schema" }));
+
+    await waitFor(() =>
+      expect(screen.getByTestId("widget-schema-as-of")).toHaveAttribute("data-stale", "true")
+    );
+    expect(screen.getByTestId("schema-type-Contact")).toBeInTheDocument();
+    expect(screen.getByTestId("schema-hidden-types")).toHaveAttribute("data-hidden-count", "4");
   });
 
   it("waits for the session rather than spinning when there is no token", () => {

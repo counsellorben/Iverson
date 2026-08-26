@@ -53,12 +53,30 @@ const CHECK_LABELS: Record<CheckState, string> = {
   unknown: "Unknown",
 };
 
-const CHECK_COLORS: Record<CheckState, "success" | "error" | "default" | "warning"> = {
-  up: "success",
-  down: "error",
-  disabled: "default",
-  unknown: "warning",
+export interface CheckAppearance {
+  readonly color: "success" | "error" | "default" | "warning";
+  readonly variant: "filled" | "outlined";
+}
+
+/**
+ * How each check state LOOKS. This is contract, not styling.
+ *
+ * The word "Disabled" in a red filled chip still reads as a broken store — colour wins over
+ * text at a glance, which is the entire job of a health strip. So `disabled` is a neutral
+ * OUTLINED chip: visibly not a fault, visibly not "up" either. `error` red is reserved for
+ * `down`, the one state that is actually a failure.
+ */
+export const CHECK_APPEARANCE: Record<CheckState, CheckAppearance> = {
+  up: { color: "success", variant: "filled" },
+  down: { color: "error", variant: "filled" },
+  disabled: { color: "default", variant: "outlined" },
+  unknown: { color: "warning", variant: "outlined" },
 };
+
+/** The cadence sentence, derived from the constant so the two cannot drift apart. */
+export function describeCadence(intervalMs: number): string {
+  return `Polled every ${Math.round(intervalMs / 1000)} seconds.`;
+}
 
 export function HealthStrip({ accessToken }: { accessToken: string | undefined }) {
   const resource = usePolledResource(fetchHealth, HEALTH_POLL_INTERVAL_MS, accessToken);
@@ -66,9 +84,10 @@ export function HealthStrip({ accessToken }: { accessToken: string | undefined }
   return (
     <WidgetCard
       title="Store health"
-      subtitle="Polled every 60 seconds."
+      subtitle={describeCadence(HEALTH_POLL_INTERVAL_MS)}
       testId="widget-health"
       resource={resource}
+      pollIntervalMs={HEALTH_POLL_INTERVAL_MS}
     >
       {(data: HealthResponse) => (
         <Box>
@@ -83,13 +102,14 @@ export function HealthStrip({ accessToken }: { accessToken: string | undefined }
           <Box sx={{ display: "flex", flexWrap: "wrap", gap: 1 }}>
             {STORE_TILES.map(({ key, label }) => {
               const state = describeCheck(data.checks?.[key]);
+              const appearance = CHECK_APPEARANCE[state];
               return (
                 <Chip
                   key={key}
                   data-testid={`health-tile-${key}`}
                   data-check-state={state}
-                  color={CHECK_COLORS[state]}
-                  variant={state === "disabled" ? "outlined" : "filled"}
+                  color={appearance.color}
+                  variant={appearance.variant}
                   label={`${label}: ${CHECK_LABELS[state]}`}
                 />
               );

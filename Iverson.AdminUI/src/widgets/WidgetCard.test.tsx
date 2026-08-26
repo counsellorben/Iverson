@@ -2,7 +2,7 @@ import { StrictMode } from "react";
 import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, it, expect, vi } from "vitest";
 import type { PolledResource } from "../hooks/usePolledResource";
-import { WidgetCard, resolveWidgetState } from "./WidgetCard";
+import { WidgetCard, noticeSeverityFor, resolveWidgetState } from "./WidgetCard";
 
 interface Payload {
   value: string;
@@ -24,13 +24,21 @@ function resource(over: Partial<PolledResource<Payload>> = {}): PolledResource<P
   };
 }
 
-function renderCard(over: Partial<PolledResource<Payload>>, strict = false) {
+function renderCard(
+  over: Partial<PolledResource<Payload>>,
+  options: { strict?: boolean; pollIntervalMs?: number | null } = {}
+) {
   const r = resource(over);
   render(
-    <WidgetCard title="Example" testId="widget-example" resource={r}>
+    <WidgetCard
+      title="Example"
+      testId="widget-example"
+      resource={r}
+      pollIntervalMs={options.pollIntervalMs ?? null}
+    >
       {(data) => <span data-testid="payload">{data.value}</span>}
     </WidgetCard>,
-    strict ? { wrapper: StrictMode } : undefined
+    options.strict === true ? { wrapper: StrictMode } : undefined
   );
   return r;
 }
@@ -79,6 +87,29 @@ describe("resolveWidgetState", () => {
   });
 });
 
+describe("noticeSeverityFor", () => {
+  it("reserves error red for actual faults", () => {
+    expect(noticeSeverityFor("error")).toBe("error");
+  });
+
+  it("renders an authorization answer and a configuration statement as warnings, not errors", () => {
+    // A 403 is not a break, and neither is a store that was deliberately switched off.
+    expect(noticeSeverityFor("forbidden")).toBe("warning");
+    expect(noticeSeverityFor("unavailable")).toBe("warning");
+  });
+
+  it("renders the informational states as info", () => {
+    expect(noticeSeverityFor("awaitingToken")).toBe("info");
+    expect(noticeSeverityFor("unauthorized")).toBe("info");
+    expect(noticeSeverityFor("empty")).toBe("info");
+  });
+
+  it("has no notice for the states that render content", () => {
+    expect(noticeSeverityFor("ready")).toBeNull();
+    expect(noticeSeverityFor("loading")).toBeNull();
+  });
+});
+
 describe("WidgetCard", () => {
   it("says it is waiting for the session instead of spinning, at a tokenless mount", () => {
     renderCard({ loading: true, awaitingToken: true });
@@ -119,6 +150,39 @@ describe("WidgetCard", () => {
     expect(state()).toBe("forbidden");
     expect(screen.getByText("Not authorized: needs the Operator role.")).toBeInTheDocument();
     expect(screen.queryByText(/Could not load/)).not.toBeInTheDocument();
+
+    // The promise is VISUAL, so the assertion has to be visual. Identical wording rendered in
+    // error red is still "a generic error card" to anyone reading the page at a glance, and a
+    // text-only assertion cannot tell the two apart.
+    const notice = screen.getByTestId("widget-example-notice");
+    expect(notice).toHaveClass("MuiAlert-colorWarning");
+    expect(notice).not.toHaveClass("MuiAlert-colorError");
+  });
+
+  it("renders a real fault in error red, so warning still means something", () => {
+    renderCard({ failure: { kind: "failed", status: null, message: "network down" } });
+
+    const notice = screen.getByTestId("widget-example-notice");
+    expect(notice).toHaveClass("MuiAlert-colorError");
+    expect(notice).not.toHaveClass("MuiAlert-colorWarning");
+  });
+
+  it("renders a 503 configuration statement as a warning, not as a fault", () => {
+    render(
+      <WidgetCard
+        title="Example"
+        testId="widget-example"
+        resource={resource({
+          failure: { kind: "problem", status: 503, reason: "disabled", error: null, body: {} },
+        })}
+      >
+        {(data) => <span>{data.value}</span>}
+      </WidgetCard>
+    );
+
+    const notice = screen.getByTestId("widget-example-notice");
+    expect(notice).toHaveClass("MuiAlert-colorWarning");
+    expect(notice).not.toHaveClass("MuiAlert-colorError");
   });
 
   it("renders a problem body's reason through the widget's own wording", () => {
@@ -149,19 +213,61 @@ describe("WidgetCard", () => {
 
     expect(state()).toBe("error");
     expect(screen.getByTestId("payload")).toHaveTextContent("retained");
-    expect(screen.getByTestId("widget-example-stale")).toHaveTextContent("Showing data as of 09:41");
+    const asOf = screen.getByTestId("widget-example-as-of");
+    expect(asOf).toHaveAttribute("data-stale", "true");
+    expect(asOf).toHaveTextContent("Showing data as of 09:41 local time");
   });
 
-  it("says so when backoff has given up", () => {
-    renderCard({ failure: { kind: "failed", status: null, message: "boom" }, exhausted: true });
+  it("shows the as-of line on a HEALTHY resource too, so freshness is never invisible", () => {
+    renderCard({ data: { value: "fresh" }, asOf: "09:41" });
 
-    expect(screen.getByTestId("widget-example-exhausted")).toHaveTextContent(
-      "Automatic retries have stopped."
+    expect(state()).toBe("ready");
+    const asOf = screen.getByTestId("widget-example-as-of");
+    expect(asOf).toHaveAttribute("data-stale", "false");
+    expect(asOf).toHaveTextContent("Updated 09:41 local time");
+  });
+
+  it("labels the as-of clock as local, because the instants in the payload are UTC", () => {
+    renderCard({ data: { value: "fresh" }, asOf: "09:41" });
+
+    expect(screen.getByTestId("widget-example-as-of")).toHaveTextContent(/local time/);
+  });
+
+  it("says polling is paused only for a widget that actually polls", () => {
+    renderCard({ data: { value: "x" }, paused: true }, { pollIntervalMs: 60_000 });
+    expect(screen.getByTestId("widget-example-paused")).toHaveTextContent(
+      "Polling is paused while this tab is hidden."
     );
   });
 
+  it("does not claim a paused poll on a widget that never polls", () => {
+    renderCard({ data: { value: "x" }, paused: true }, { pollIntervalMs: null });
+    expect(screen.queryByTestId("widget-example-paused")).not.toBeInTheDocument();
+  });
+
+  it("says so when backoff has given up, and points at the button it left enabled", () => {
+    renderCard({ failure: { kind: "failed", status: null, message: "boom" }, exhausted: true });
+
+    expect(screen.getByTestId("widget-example-exhausted")).toHaveTextContent(
+      "Automatic retries have stopped. Use Refresh to try again."
+    );
+    expect(screen.getByRole("button", { name: "Refresh Example" })).toBeEnabled();
+  });
+
+  it("does NOT tell the user to press Refresh in the state where Refresh is disabled", () => {
+    // `exhausted && awaitingToken`: the button is disabled and refresh() would no-op anyway.
+    renderCard({ exhausted: true, awaitingToken: true, loading: true });
+
+    const caption = screen.getByTestId("widget-example-exhausted");
+    expect(caption).toHaveTextContent(
+      "Automatic retries have stopped. They resume on their own once the session is back."
+    );
+    expect(caption).not.toHaveTextContent("Use Refresh");
+    expect(screen.getByRole("button", { name: "Refresh Example" })).toBeDisabled();
+  });
+
   it("renders under StrictMode", () => {
-    renderCard({ data: { value: "strict" } }, true);
+    renderCard({ data: { value: "strict" } }, { strict: true });
 
     expect(state()).toBe("ready");
     expect(screen.getByTestId("payload")).toHaveTextContent("strict");

@@ -1,5 +1,5 @@
 import { StrictMode } from "react";
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import type { ApiResult } from "../api/client";
 import type { TenantsResponse } from "../api/types";
@@ -54,9 +54,29 @@ describe("TenantRosterWidget", () => {
     expect(screen.getByTestId("tenant-count")).toHaveAttribute("data-count", "2");
     expect(screen.getByText("Acme")).toBeInTheDocument();
     expect(screen.getByText("Globex")).toBeInTheDocument();
+    // The instant is UTC off the wire and is LABELLED as such, because the card's own
+    // "Updated {asOf} local time" line is the viewer's clock. Two unlabelled clocks on one
+    // card is how an operator several hours off UTC reads a normal timestamp as a fault.
     expect(
       screen.getByTestId("tenant-row-11111111-1111-1111-1111-111111111111")
-    ).toHaveTextContent("2026-01-02 03:04");
+    ).toHaveTextContent("2026-01-02 03:04 UTC");
+    expect(screen.getByTestId("widget-tenants-as-of")).toHaveTextContent(/local time/);
+  });
+
+  it("keeps the last good roster on screen and marks it stale when a refresh fails", async () => {
+    fetchTenantsMock
+      .mockResolvedValueOnce(ROSTER)
+      .mockResolvedValue({ kind: "failed", status: null, message: "network down" });
+
+    render(<TenantRosterWidget accessToken={TOKEN} />);
+
+    await waitFor(() => expect(cardState()).toBe("ready"));
+    fireEvent.click(screen.getByRole("button", { name: "Refresh Tenants" }));
+
+    await waitFor(() =>
+      expect(screen.getByTestId("widget-tenants-as-of")).toHaveAttribute("data-stale", "true")
+    );
+    expect(screen.getByText("Acme")).toBeInTheDocument();
   });
 
   it("renders a 403 as an explicit not-authorized state, not as an error", async () => {
@@ -68,11 +88,15 @@ describe("TenantRosterWidget", () => {
     render(<TenantRosterWidget accessToken={TOKEN} />);
 
     await waitFor(() => expect(cardState()).toBe("forbidden"));
-    expect(screen.getByTestId("widget-tenants-notice")).toHaveTextContent(
-      "Not authorized: listing tenants requires the Operator role."
-    );
+    const notice = screen.getByTestId("widget-tenants-notice");
+    expect(notice).toHaveTextContent("Not authorized: listing tenants requires the Operator role.");
     expect(screen.queryByText(/Could not load/)).not.toBeInTheDocument();
     expect(screen.queryByRole("table", { name: "Tenants" })).not.toBeInTheDocument();
+
+    // Contract fact 3 is a promise about how this LOOKS, so it is asserted visually. The same
+    // sentence rendered in error red is still a generic error card to anyone glancing at it.
+    expect(notice).toHaveClass("MuiAlert-colorWarning");
+    expect(notice).not.toHaveClass("MuiAlert-colorError");
   });
 
   it("distinguishes a transport failure from a 403", async () => {

@@ -20,7 +20,10 @@ import type { PolledResource } from "../hooks/usePolledResource";
  * 3. **`forbidden` is its own rendered state, not an error card.** `tenants`, `qdrant` and
  *    `metrics` are Operator-gated and NOBODY SATISFIES THE OPERATOR POLICY TODAY, so 403 is
  *    the outcome every real human currently gets there. "You are not authorized to view this"
- *    is the honest answer; a red "request failed" card is not.
+ *    is the honest answer; a red "request failed" card is not. That promise is VISUAL as much
+ *    as textual — the severity carries it, so {@link noticeSeverityFor} is exported and pinned
+ *    by test. Wording alone is not the contract: an authorization answer rendered in error red
+ *    reads as a fault no matter what the sentence says.
  *
  * Retained data always renders, in every state. When a poll fails, the last good value stays
  * on screen under an "as of {asOf}" line rather than being replaced by a spinner.
@@ -87,6 +90,13 @@ export interface WidgetCardProps<T> {
   readonly forbiddenMessage?: string;
   /** Renders a `kind: "problem"` body's `reason` as prose. */
   readonly reasonText?: (reason: string | null) => string;
+  /**
+   * The widget's poll cadence, or `null`/omitted when it is fetched on mount and refresh only.
+   * Used solely to decide whether "polling paused" is a true thing to say about this widget:
+   * `resource.paused` is set by the tab being hidden regardless of whether anything was on a
+   * timer, so a never-polled widget must not claim a poll was suspended.
+   */
+  readonly pollIntervalMs?: number | null;
   /** Renders the payload. Called only when `resource.data` is non-null. */
   readonly children: (data: T) => ReactNode;
 }
@@ -97,46 +107,70 @@ function defaultReasonText(reason: string | null): string {
   return reason === null ? "Currently unavailable." : `Currently unavailable: ${reason}.`;
 }
 
-interface Notice {
-  readonly severity: "info" | "warning" | "error";
-  readonly text: string;
-}
+export type NoticeSeverity = "info" | "warning" | "error";
 
-function noticeFor<T>(
-  state: WidgetState,
-  props: WidgetCardProps<T>
-): Notice | null {
-  const failure = props.resource.failure;
+/**
+ * The severity each state's notice is rendered at.
+ *
+ * This is contract, not decoration. `"error"` is reserved for outcomes that are actually
+ * FAULTS — a transport failure, an unreadable response. An authorization answer (`forbidden`)
+ * and a configuration statement (`unavailable`: `disabled`, `notDeployed`) are neither, and
+ * rendering them in error red would send an operator hunting a break that does not exist.
+ */
+export function noticeSeverityFor(state: WidgetState): NoticeSeverity | null {
   switch (state) {
-    case "awaitingToken":
-      return { severity: "info", text: "Waiting for session…" };
-    case "forbidden":
-      return {
-        severity: "warning",
-        text: props.forbiddenMessage ?? DEFAULT_FORBIDDEN_MESSAGE,
-      };
-    case "unauthorized":
-      return { severity: "info", text: "Session expired — renewing…" };
-    case "unavailable":
-      return {
-        severity: "warning",
-        text: (props.reasonText ?? defaultReasonText)(
-          failure !== null && failure.kind === "problem" ? failure.reason : null
-        ),
-      };
     case "error":
-      return {
-        severity: "error",
-        text:
-          failure !== null && failure.kind === "failed"
-            ? `Could not load: ${failure.message}`
-            : "Could not load.",
-      };
+      return "error";
+    case "forbidden":
+    case "unavailable":
+      return "warning";
+    case "awaitingToken":
+    case "unauthorized":
     case "empty":
-      return { severity: "info", text: "No data." };
+      return "info";
     default:
       return null;
   }
+}
+
+interface Notice {
+  readonly severity: NoticeSeverity;
+  readonly text: string;
+}
+
+/**
+ * The notice text for a state. The SEVERITY is not chosen here — it comes from
+ * {@link noticeSeverityFor}, so there is exactly one place a state's severity is decided and
+ * no way for a widget's wording change to quietly re-colour it.
+ */
+function noticeTextFor<T>(state: WidgetState, props: WidgetCardProps<T>): string | null {
+  const failure = props.resource.failure;
+  switch (state) {
+    case "awaitingToken":
+      return "Waiting for session…";
+    case "forbidden":
+      return props.forbiddenMessage ?? DEFAULT_FORBIDDEN_MESSAGE;
+    case "unauthorized":
+      return "Session expired — renewing…";
+    case "unavailable":
+      return (props.reasonText ?? defaultReasonText)(
+        failure !== null && failure.kind === "problem" ? failure.reason : null
+      );
+    case "error":
+      return failure !== null && failure.kind === "failed"
+        ? `Could not load: ${failure.message}`
+        : "Could not load.";
+    case "empty":
+      return "No data.";
+    default:
+      return null;
+  }
+}
+
+function noticeFor<T>(state: WidgetState, props: WidgetCardProps<T>): Notice | null {
+  const severity = noticeSeverityFor(state);
+  const text = noticeTextFor(state, props);
+  return severity === null || text === null ? null : { severity, text };
 }
 
 export function WidgetCard<T>(props: WidgetCardProps<T>) {
@@ -188,14 +222,35 @@ export function WidgetCard<T>(props: WidgetCardProps<T>) {
         </Box>
       )}
 
-      {resource.stale && resource.asOf !== null && (
+      {resource.asOf !== null && (
+        // Shown on EVERY successful state, not only the stale one. A widget that reveals its
+        // age only once something has gone wrong leaves a healthy-looking number with no way
+        // to tell a fresh figure from one fetched twenty minutes ago.
+        //
+        // "local" is not filler: `asOf` comes from `formatAsOf`, which reads `getHours()`, so
+        // it is the VIEWER's clock — while the instants inside these widgets (a tenant's
+        // `createdAt`) are UTC off the wire. Two unlabelled clocks on one card is how an
+        // operator in a non-UTC zone reads a several-hour gap as a fault.
         <Typography
           variant="caption"
           color="text.secondary"
           sx={{ mt: 1, display: "block" }}
-          data-testid={`${testId}-stale`}
+          data-testid={`${testId}-as-of`}
+          data-stale={resource.stale}
         >
-          Showing data as of {resource.asOf}
+          {resource.stale ? "Showing data as of" : "Updated"} {resource.asOf} local time
+          {resource.stale ? " — the latest attempt failed" : ""}
+        </Typography>
+      )}
+
+      {resource.paused && (props.pollIntervalMs ?? null) !== null && (
+        <Typography
+          variant="caption"
+          color="text.secondary"
+          sx={{ mt: 1, display: "block" }}
+          data-testid={`${testId}-paused`}
+        >
+          Polling is paused while this tab is hidden.
         </Typography>
       )}
 
@@ -206,7 +261,11 @@ export function WidgetCard<T>(props: WidgetCardProps<T>) {
           sx={{ mt: 1, display: "block" }}
           data-testid={`${testId}-exhausted`}
         >
-          Automatic retries have stopped. Use Refresh to try again.
+          {resource.awaitingToken
+            ? // Refresh is disabled in this state, and `refresh()` would no-op anyway. Telling
+              // someone to press a greyed-out button is worse than telling them to wait.
+              "Automatic retries have stopped. They resume on their own once the session is back."
+            : "Automatic retries have stopped. Use Refresh to try again."}
         </Typography>
       )}
 

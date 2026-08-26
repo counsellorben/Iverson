@@ -1,5 +1,5 @@
 import { StrictMode } from "react";
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import type { ApiResult } from "../api/client";
 import type { DataVolumeResponse } from "../api/types";
@@ -74,24 +74,82 @@ describe("DataVolumeWidget", () => {
     expect(screen.getByTestId("data-volume-row-Account")).toHaveAttribute("data-row-count", "0");
   });
 
-  it("counts denied and unknown types together into one 'not shown' line", async () => {
+  it("reports denied and unknown types SEPARATELY, each with its own true explanation", async () => {
+    // Summing them would put "not visible to you" on types that vanished from the registry —
+    // a false statement about a different fact — and make the distinction unrecoverable.
     fetchDataVolumeMock.mockResolvedValue(volume({ deniedTypeCount: 3, unknownTypeCount: 2 }));
 
     render(<DataVolumeWidget accessToken={TOKEN} />);
 
     await waitFor(() => expect(cardState()).toBe("ready"));
-    const note = screen.getByTestId("data-volume-hidden-types");
-    expect(note).toHaveAttribute("data-hidden-count", "5");
-    expect(note).toHaveTextContent("5 types not shown (not visible to you).");
+    const denied = screen.getByTestId("data-volume-denied-types");
+    expect(denied).toHaveAttribute("data-hidden-count", "3");
+    expect(denied).toHaveTextContent("3 types not shown (not visible to you).");
+
+    const unknown = screen.getByTestId("data-volume-unknown-types");
+    expect(unknown).toHaveAttribute("data-hidden-count", "2");
+    expect(unknown).toHaveTextContent("2 types not shown (no longer in the type registry).");
+    expect(unknown).not.toHaveTextContent("not visible to you");
   });
 
-  it("renders no 'not shown' line when the list is complete", async () => {
+  it("shows only the denied line when nothing raced out of the registry", async () => {
+    fetchDataVolumeMock.mockResolvedValue(volume({ deniedTypeCount: 4, unknownTypeCount: 0 }));
+
+    render(<DataVolumeWidget accessToken={TOKEN} />);
+
+    await waitFor(() => expect(cardState()).toBe("ready"));
+    expect(screen.getByTestId("data-volume-denied-types")).toHaveAttribute(
+      "data-hidden-count",
+      "4"
+    );
+    expect(screen.queryByTestId("data-volume-unknown-types")).not.toBeInTheDocument();
+  });
+
+  it("renders no 'not shown' line at all when the list is complete", async () => {
     fetchDataVolumeMock.mockResolvedValue(volume());
 
     render(<DataVolumeWidget accessToken={TOKEN} />);
 
     await waitFor(() => expect(cardState()).toBe("ready"));
-    expect(screen.queryByTestId("data-volume-hidden-types")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("data-volume-denied-types")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("data-volume-unknown-types")).not.toBeInTheDocument();
+  });
+
+  it("renders nothing rather than 'NaN types not shown' when the counts are missing", async () => {
+    fetchDataVolumeMock.mockResolvedValue({
+      kind: "ok",
+      status: 200,
+      data: { types: [] } as unknown as DataVolumeResponse,
+    });
+
+    render(<DataVolumeWidget accessToken={TOKEN} />);
+
+    await waitFor(() => expect(cardState()).toBe("ready"));
+    expect(screen.queryByTestId("data-volume-denied-types")).not.toBeInTheDocument();
+    expect(screen.getByTestId("widget-data-volume")).not.toHaveTextContent("NaN");
+  });
+
+  it("keeps the last good counts on screen and marks them stale when a refresh fails", async () => {
+    fetchDataVolumeMock
+      .mockResolvedValueOnce(volume({ deniedTypeCount: 3 }))
+      .mockResolvedValue({ kind: "failed", status: null, message: "network down" });
+
+    render(<DataVolumeWidget accessToken={TOKEN} />);
+
+    await waitFor(() => expect(cardState()).toBe("ready"));
+    fireEvent.click(screen.getByRole("button", { name: "Refresh Data volume" }));
+
+    await waitFor(() =>
+      expect(screen.getByTestId("widget-data-volume-as-of")).toHaveAttribute("data-stale", "true")
+    );
+    expect(screen.getByTestId("data-volume-row-Contact")).toHaveAttribute(
+      "data-row-count",
+      "1234567"
+    );
+    expect(screen.getByTestId("data-volume-denied-types")).toHaveAttribute(
+      "data-hidden-count",
+      "3"
+    );
   });
 
   it("renders a 503 'disabled' body as a configuration statement, not a fault", async () => {
@@ -134,6 +192,9 @@ describe("DataVolumeWidget", () => {
     render(<DataVolumeWidget accessToken={TOKEN} />, { wrapper: StrictMode });
 
     await waitFor(() => expect(cardState()).toBe("ready"));
-    expect(screen.getByTestId("data-volume-hidden-types")).toHaveAttribute("data-hidden-count", "4");
+    expect(screen.getByTestId("data-volume-denied-types")).toHaveAttribute(
+      "data-hidden-count",
+      "4"
+    );
   });
 });
