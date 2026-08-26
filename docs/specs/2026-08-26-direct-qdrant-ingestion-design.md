@@ -94,9 +94,16 @@ afterwards** — each vector is divided by its own magnitude, summed, then divid
 Zero-magnitude vectors are excluded from the centroid input, as the consumer does; a document whose
 every chunk vector is degenerate gets no centroid at all.
 
-**The single-chunk saving.** A document ≤1792 chars yields exactly one chunk byte-identical to the
-body, so one embed fills both `body_vector` and that chunk's vector. This is an identity, not an
-approximation, and it roughly halves BEIR's embed count.
+**The single-chunk saving.** `SplitIntoChunks` yields `text[start..end].Trim()`, so the one chunk a
+short document produces equals the body only when the body is already trimmed. The optimisation is
+therefore gated on the identity holding, not on length: reuse one embed for both `body_vector` and the
+chunk's vector when `text == text.strip() and len(text) <= 1792`, and embed twice otherwise.
+
+Measured, the length test alone would have been wrong on FreshStack: scifact has **0** documents where
+`text != text.strip()`, godot has **12,987**, of which **5,534** are ≤1792 chars. Gating on length
+would have written `body_vector = embed(trimmed)` for 72% of godot's single-chunk documents where the
+C# consumer writes `embed(untrimmed)` — diverging silently, and only on FreshStack. The saving still
+roughly halves BEIR's embed count, where the identity does hold.
 
 **`body_vector` is still required.** `SearchSimilar` searches `<property>_vector` on the object
 collection; omitting it breaks that RPC entirely.
@@ -104,7 +111,10 @@ collection; omitting it breaks that RPC entirely.
 **Resumability is required, not optional.** A progress file records completed docIds; `--resume`
 skips them. A six-hour run that cannot resume is a six-hour run that restarts from zero.
 
-**`--drop` recreates both collections empty.** Destructive, therefore never the default.
+**`--drop` recreates both collections empty, and deletes the progress file with them.** Destructive,
+therefore never the default. The two must move together: a `--drop` that left the progress file behind
+would make the next `--resume` skip every document, reporting success over an empty collection and
+silently invalidating every downstream metric.
 
 **`ownerId` and `__TenantId` are copied from a live C#-written reference point**, not guessed.
 
@@ -113,7 +123,16 @@ skips them. A six-hour run that cannot resume is a six-hour run that restarts fr
 **`sample_corpus.py`** builds a coherent subset the way `corpus-small` was built: N queries, every
 document judged relevant to them, plus distractors to a target size — so sampled queries retain
 reachable answers. It emits the `<corpus-path>/{beir,freshstack}/` layout `benchmark-query` reads
-(V23). Used for the godot sample; BEIR runs at full size.
+(V23).
+
+**Both arms go through it**, because that layout is the only one `benchmark-query` can read and
+`scifact-full/` does not have it — its `corpus.jsonl`, `queries.jsonl` and `qrels/` sit at the top
+level, so `LoadQueries` finds nothing and throws. A target size at or above the corpus size means
+"re-lay out, sample nothing", which is how the BEIR arm keeps all 5,183 documents.
+
+**It also selects the query set**, which BEIR forces: `queries.jsonl` carries all 1,109 train, dev and
+test queries in one file and `LoadQueries` applies no filter. Both arms emit only the queries carrying
+judgments in the TREC qrels — ~300 for SciFact — so every run-file row is scoreable.
 
 **The two corpora must not share a collection.** The collection name is `benchmark_documents_{tenant}`
 — entity type and tenant, nothing corpus-specific — so a combined ingest leaves godot documents
@@ -150,8 +169,8 @@ halves Recall. Reporting a number known to be wrong is worse than reporting none
 
 ## Scope
 
-BEIR SciFact **full** (5,183 documents) and a FreshStack godot **sample** (~3,000 documents). One
-corpus measured completely; both paths exercised end to end.
+BEIR SciFact **full** (5,183 documents, ~300 test-judged queries) and a FreshStack godot **sample**
+(~3,000 documents). One corpus measured completely; both paths exercised end to end.
 
 ## Verified assumptions
 
@@ -186,6 +205,7 @@ Verified 2026-08-26 against the running compose stack and the code at `bump-olla
 | V25 | Nothing else shares these collections | Live collections: `benchmark_documents_*` (this work), `vector_docs_*` (entity-binding), `iverson-probe` |
 | V26 | `Body` is the only `[IversonEmbedding]`/`[IversonChunk]` field | `BenchmarkDocument.cs:16-18` — the set has exactly one member |
 | V27 | Centroids are fetched by `KeyToUlong(parentKey)` | `ObjectSearchGrpcService.cs:408,445` |
+| V28 | `nomic-embed-text` is already present in the ollama volume, so skipping `ollama-init` is safe | `GET /api/tags` → `['nomic-embed-text:latest', 'qwen2.5:3b']`. **Machine state, not code state** — it holds only while `iversonserver_ollama_data` survives; a fresh volume needs `ollama-init` run once before the `ingest` tier is usable |
 
 ## Known issues / accepted as out of scope
 
