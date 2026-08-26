@@ -38,6 +38,12 @@ fail() {
 # operator's session and access token. The values are URLs and a client id, none of
 # which need a character outside this set, so the narrow allow-list costs nothing.
 #
+# Excluding `$` is load-bearing too, and for a SECOND consumer: these same values are
+# interpolated into an nginx config below, where `$foo` is a variable reference. A value
+# carrying a `$` would either resolve to some unrelated nginx variable inside the CSP or
+# fail the config parse and stop the container. Do not "simplify" `$` back into the
+# character class.
+#
 # Written with `tr` rather than `grep -Eq '^[A-Za-z0-9:/._-]+$'` because grep is
 # LINE-oriented: for a value whose first line is a clean URL and whose second line
 # carries the payload, grep -q finds a matching line and returns 0, and the double
@@ -82,8 +88,13 @@ export ADMIN_API_ORIGIN OIDC_ORIGIN
 
 # Included by name from nginx.conf's server block. The `.inc` extension is not an
 # accident: the base image's /etc/nginx/nginx.conf globs `/etc/nginx/conf.d/*.conf`
-# into the http block, so a `.conf` name here would be pulled in twice, once at http
-# level and once where we actually want it.
+# into the http block, so a `.conf` name here would ALSO be included at http level —
+# and an http-level add_header applies to every server block in that context, not just
+# ours. (It would not double the header on our own responses: add_header is inherited
+# from an outer level only when the current level defines none, and this server block
+# defines its own. The problem is the blast radius, not duplication.) Today this image
+# serves one server block, so the practical effect is nil; the naming keeps it that way
+# if a second one is ever added.
 #
 # `always` on every header: without it nginx omits add_header on error responses, so
 # the 404 that a client-side route resolves through — and any 4xx/5xx — would come
@@ -98,7 +109,7 @@ envsubst '${ADMIN_API_ORIGIN} ${OIDC_ORIGIN}' > "$HEADERS_OUTPUT" <<'TEMPLATE'
 # default-src 'self' covers script-src, img-src and font-src — the bundle, the
 # self-hosted Fraunces woff2 files and every image are served from this origin, and
 # nothing in the build emits a data: URI, a blob:, a Worker or a `new Function`.
-# Only the four directives that default-src cannot express are spelled out:
+# Only the directives that default-src cannot express are spelled out:
 #
 #   style-src   MUI/Emotion inject their styles as inline <style> elements at
 #               runtime, so 'unsafe-inline' is required here or the console renders
@@ -106,11 +117,22 @@ envsubst '${ADMIN_API_ORIGIN} ${OIDC_ORIGIN}' > "$HEADERS_OUTPUT" <<'TEMPLATE'
 #   connect-src the two cross-origin hosts the console talks to: admin-api (every
 #               widget's fetch, plus the OTLP trace export) and Authentik (discovery,
 #               token exchange, refresh and revocation).
+#   frame-src   inert on today's happy path and deliberately present anyway. The
+#               console requests `offline_access` and the provider grants a refresh
+#               token, so automaticSilentRenew uses the refresh-token FETCH path that
+#               connect-src already covers. But auth/AuthProvider.tsx's own comment
+#               documents the fallback: with no refresh token, oidc-client-ts drops to
+#               IFRAME silent renew. default-src 'self' would block that frame outright
+#               and silently, stacking a second invisible failure on top of the missing
+#               callback handler that comment already warns about. Naming the IdP origin
+#               here leaves that path with one documented failure instead of two silent
+#               ones. (frame-src is not spelled 'none' like frame-ancestors: they are
+#               opposite directions — who we may frame, versus who may frame us.)
 #   base-uri    does NOT fall back to default-src; without it an injected <base>
 #               could re-point every relative asset URL.
 #   frame-ancestors  does NOT fall back to default-src; 'none' is the clickjacking
 #               control for a console that is never legitimately framed.
-add_header Content-Security-Policy "default-src 'self'; base-uri 'self'; frame-ancestors 'none'; style-src 'self' 'unsafe-inline'; connect-src 'self' ${ADMIN_API_ORIGIN} ${OIDC_ORIGIN}" always;
+add_header Content-Security-Policy "default-src 'self'; base-uri 'self'; frame-ancestors 'none'; style-src 'self' 'unsafe-inline'; connect-src 'self' ${ADMIN_API_ORIGIN} ${OIDC_ORIGIN}; frame-src ${OIDC_ORIGIN}" always;
 add_header X-Content-Type-Options "nosniff" always;
 # no-referrer rather than the usual strict-origin-when-cross-origin: the OIDC redirect
 # lands the browser on /callback?code=..., and a Referer sent from that document would
