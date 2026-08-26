@@ -15,6 +15,9 @@ describe("router", () => {
   beforeEach(() => {
     signinRedirect.mockClear();
     useAuthMock.mockReset();
+    // jsdom's location persists across tests in a file; pin it so the "no redirect" assertion
+    // below is about the router's behaviour and not about what an earlier test left behind.
+    window.history.replaceState({}, "", "/");
   });
 
   it("redirects an unauthenticated visitor at the root route instead of rendering the app", () => {
@@ -29,7 +32,10 @@ describe("router", () => {
     expect(signinRedirect).toHaveBeenCalledTimes(1);
   });
 
-  it("redirects / to /performance when authenticated", async () => {
+  it("renders the landing page at / when authenticated, without redirecting away", async () => {
+    // The index route used to be <Navigate to="/performance" replace />. Task 10 replaced it
+    // with the landing page, so the assertion is inverted: the router must now STAY at "/"
+    // and render the overview rather than navigating to any of the four sub-pages.
     useAuthMock.mockReturnValue({
       isLoading: false,
       isAuthenticated: true,
@@ -42,14 +48,20 @@ describe("router", () => {
       signoutRedirect: vi.fn(),
     });
 
-    const { container } = render(<RouterProvider router={router} future={{ v7_startTransition: true }} />);
+    render(<RouterProvider router={router} future={{ v7_startTransition: true }} />);
 
-    // Verify the router navigated to /performance specifically (not /storage, /tenants, or /tenant-admin)
+    // The landing page renders, and it renders at "/" — no redirect to /performance,
+    // /storage, /tenants or /tenant-admin.
     await waitFor(() => {
-      expect(window.location.pathname).toBe("/performance");
+      expect(screen.getByRole("heading", { name: "Overview", level: 1 })).toBeInTheDocument();
     });
+    expect(window.location.pathname).toBe("/");
+    expect(screen.queryByText("Coming soon")).not.toBeInTheDocument();
 
-    // The router should have navigated to /performance, which renders "Coming soon"
-    expect(screen.getByText("Coming soon")).toBeInTheDocument();
+    // Its four Band A widgets are mounted. No access token is present on the mocked session,
+    // so each one reports that it is waiting for the session rather than spinning forever.
+    for (const testId of ["widget-health", "widget-tenants", "widget-schema", "widget-data-volume"]) {
+      expect(screen.getByTestId(testId)).toHaveAttribute("data-state", "awaitingToken");
+    }
   });
 });
