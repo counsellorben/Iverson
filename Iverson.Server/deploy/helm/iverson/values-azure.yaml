@@ -147,7 +147,13 @@ authentik:
     tlsSecretName: "iverson-authentik-tls"
 
 adminUi:
-  oidcAuthority: "http://authentik.iverson.example.com/application/o/iverson-api/"
+  # https, matching authentik.ingress above — that Ingress sets tlsSecretName, so it
+  # renders a tls: block and AGIC terminates TLS for authentik.iverson.example.com.
+  # This console is itself an https:// page (adminUi.ingress below sets tlsSecretName
+  # too), and an https:// page may not make OIDC calls to an http:// authority — the
+  # browser blocks them as mixed content and login never completes. Keep the scheme
+  # here in lockstep with authentik.ingress.tlsSecretName.
+  oidcAuthority: "https://authentik.iverson.example.com/application/o/iverson-api/"
   apiBaseUrl: "https://admin-api.iverson.example.com"
   ingress:
     className: "azure-application-gateway"

@@ -152,15 +152,27 @@ authentik:
   ingress:
     className: "alb"
     annotations:
-      # ALB terminates TLS using an ACM certificate referenced by ARN, not a
-      # Kubernetes Secret — tlsSecretName stays empty (chart default) same as
-      # api.ingress above. Replace <ACM_CERT_ARN> with a real certificate
-      # provisioned for the real host before applying — without it ALB will
-      # only serve HTTP.
+      # Completed to match api.ingress/adminApiIngress/adminUi.ingress (scheme/
+      # target-type/listen-ports/ssl-redirect). certificate-arn ALONE is not enough:
+      # without listen-ports the AWS Load Balancer Controller defaults to
+      # [{"HTTP":80}] and this Ingress answers over plain HTTP only. That matters
+      # here specifically because adminUi.ingress below now DOES serve HTTPS, so the
+      # console is an https:// page — and an https:// page may not make OIDC calls to
+      # an http:// authority (the browser blocks them as mixed content and login never
+      # completes). Authentik and the console must terminate the same scheme; keep
+      # these four annotations and adminUi.oidcAuthority below in lockstep.
+      alb.ingress.kubernetes.io/scheme: internet-facing
+      alb.ingress.kubernetes.io/target-type: ip
       alb.ingress.kubernetes.io/certificate-arn: "<ACM_CERT_ARN>"
+      alb.ingress.kubernetes.io/listen-ports: '[{"HTTPS":443}, {"HTTP":80}]'
+      alb.ingress.kubernetes.io/ssl-redirect: "443"
 
 adminUi:
-  oidcAuthority: "http://authentik.iverson.example.com/application/o/iverson-api/"
+  # https, matching authentik.ingress above (which terminates TLS on the same ALB via
+  # the same ACM certificate) and this profile's own https console origin. An http://
+  # authority on an https:// page is blocked by the browser as mixed content, so this
+  # scheme is not cosmetic — it is what makes login work at all.
+  oidcAuthority: "https://authentik.iverson.example.com/application/o/iverson-api/"
   apiBaseUrl: "https://admin-api.iverson.example.com"
   ingress:
     className: "alb"
