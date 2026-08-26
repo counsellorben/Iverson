@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
-"""Normalise one FreshStack topic into the BEIR-shaped JSONL the benchmark harness parses.
+# Raw docstring: --help renders it verbatim, so the \t column separators and the backslash
+# line-continuations in the install command below must survive as written.
+r"""Normalise one FreshStack topic into the BEIR-shaped JSONL the benchmark harness parses.
 
 FreshStack ships as HuggingFace parquet and ships NO qrels file — its judgments are nested
 inside the query rows. This script flattens both into <out-dir>/freshstack/:
@@ -35,8 +37,6 @@ import json
 import os
 import sys
 
-from datasets import get_dataset_config_names, get_dataset_split_names, load_dataset
-
 CORPUS_REPO = "freshstack/corpus-oct-2024"
 QUERIES_REPO = "freshstack/queries-oct-2024"
 TOPICS = ["angular", "godot", "langchain", "laravel", "yolo"]
@@ -51,6 +51,11 @@ def load_config(repo, topic, split):
     The split is a parameter because the two repos DIFFER: the corpus repo publishes its
     rows under `train`, the queries repo under `test`. Asserting it before loading turns an
     upstream rename into a named cause rather than a bare ValueError."""
+    # Imported here, not at module scope: `datasets` is absent until the install below the
+    # docstring has been run, and a module-level import would make `--help` -- which prints that
+    # very install command -- fail with ModuleNotFoundError on exactly the machine that needs it.
+    from datasets import get_dataset_config_names, get_dataset_split_names, load_dataset
+
     available = get_dataset_config_names(repo)
     if topic not in available:
         sys.exit(f"{repo}: topic '{topic}' not among configs {sorted(available)}")
@@ -89,8 +94,30 @@ def check_no_whitespace(kind, values):
         )
 
 
+def check_no_blank_text(kind, ids):
+    """Hard-fail on empty text, matching JsonlCorpusParser, which rejects blank "text" on both
+    the corpus and the query path. Catching it here keeps the failure in the converter -- where
+    the cause is a renamed upstream field and the fix is one line -- rather than at the front of
+    a benchmark-ingest run against a corpus that is already on disk. Measured clean on godot."""
+    if ids:
+        sys.exit(
+            f"{len(ids)} {kind} row(s) have empty text, which JsonlCorpusParser rejects outright. "
+            f"First few: {sorted(ids)[:5]}"
+        )
+
+
+def compose_query(row):
+    """Title + body. This composition is a DECISION, not a verified fact: FreshStack does not
+    document how it composes retrieval query text (spec section 1.1). Defined once so the string
+    validated by check_no_blank_text is the same string queries.jsonl receives."""
+    return f"{row['query_title']}\n\n{row['query_text']}"
+
+
 def main():
-    ap = argparse.ArgumentParser()
+    ap = argparse.ArgumentParser(
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     ap.add_argument("--topic", required=True, choices=TOPICS)
     ap.add_argument("--out-dir", required=True)
     args = ap.parse_args()
@@ -103,15 +130,25 @@ def main():
     # BenchmarkIngestScenario gates on File.Exists alone, so the next benchmark-ingest run
     # would ingest a corpus whose judgments were never produced and score zero throughout.
     # Re-iterating a Dataset is cheap -- it is memory-mapped Arrow, not held in RAM.
-    all_corpus_ids = {row["_id"] for row in corpus}
+    all_corpus_ids, blank_corpus_ids = set(), []
+    for row in corpus:
+        all_corpus_ids.add(row["_id"])
+        if not (row["text"] or "").strip():
+            blank_corpus_ids.append(row["_id"])
+    check_no_blank_text("corpus", blank_corpus_ids)
     # Corpus ids are GitHub paths, and some contain spaces -- 24 of godot's 25,482 -- which
     # no whitespace-delimited file can carry. Those documents are excluded and reported
     # rather than aborting the run; judgments referencing them are dropped alongside them.
     excluded_ids = whitespace_ids(all_corpus_ids)
     corpus_ids = all_corpus_ids - excluded_ids
 
-    query_ids = {row["query_id"] for row in queries}
+    query_ids, blank_query_ids = set(), []
+    for row in queries:
+        query_ids.add(row["query_id"])
+        if not compose_query(row).strip():
+            blank_query_ids.append(row["query_id"])
     check_no_whitespace("query_id", query_ids)
+    check_no_blank_text("query", blank_query_ids)
 
     # qrels -- the nugget id lands in column 2, the TREC iteration field, which is what
     # makes alpha-nDCG computable: ir_measures reads subtopic ids from exactly that column.
@@ -159,20 +196,27 @@ def main():
 
     # corpus.jsonl -- `metadata` dropped; `title` omitted entirely rather than emitted
     # empty, since FreshStack has no such field and the parser defaults a missing one to "".
-    written = 0
+    written, duplicate_rows = 0, 0
+    seen_ids = set()
     with open(os.path.join(out, "corpus.jsonl"), "w", encoding="utf-8") as f:
         for row in corpus:
-            if row["_id"] in excluded_ids:
+            cid = row["_id"]
+            if cid in excluded_ids:
                 continue
-            f.write(json.dumps({"_id": row["_id"], "text": row["text"]}) + "\n")
+            # Five of godot's 25,482 rows share an _id with another. Emitting both files two
+            # distinct documents under one judgment key and lets one run file list the same doc
+            # id at two ranks, which TREC scorers treat as malformed or silently collapse. First
+            # occurrence wins, so the written corpus and the qrels id space describe one corpus.
+            if cid in seen_ids:
+                duplicate_rows += 1
+                continue
+            seen_ids.add(cid)
+            f.write(json.dumps({"_id": cid, "text": row["text"]}) + "\n")
             written += 1
 
-    # queries.jsonl -- title + body. This composition is a DECISION, not a verified fact:
-    # FreshStack does not document how it composes retrieval query text (spec section 1.1).
     with open(os.path.join(out, "queries.jsonl"), "w", encoding="utf-8") as f:
         for row in queries:
-            text = f"{row['query_title']}\n\n{row['query_text']}"
-            f.write(json.dumps({"_id": row["query_id"], "text": text}) + "\n")
+            f.write(json.dumps({"_id": row["query_id"], "text": compose_query(row)}) + "\n")
 
     with open(os.path.join(out, "qrels.tsv"), "w", encoding="utf-8") as f:
         for qid, nid, cid, rel in rows:
@@ -182,8 +226,8 @@ def main():
     if excluded_ids:
         print(f"              {len(excluded_ids):,} excluded (whitespace in _id); "
               f"{dropped_excluded:,} judgment(s) dropped with them")
-    if written != len(corpus_ids):
-        print(f"              {written - len(corpus_ids):,} row(s) share an _id with another")
+    if duplicate_rows:
+        print(f"              {duplicate_rows:,} row(s) skipped (duplicate _id)")
     print(f"queries.jsonl {len(query_ids):,} queries")
     print(f"qrels.tsv     {len(rows):,} judgments ({len(nugget_ids):,} nuggets)")
     if dropped_non_relevant:

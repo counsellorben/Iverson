@@ -114,7 +114,7 @@ are documented in the script's docstring. **Ben approved taking the dependency (
 #### 1.5 The doc-id whitespace assertion
 
 `TrecRunWriter` emits `qid Q0 docid rank score runtag` **space-separated**
-(`Iverson.Server/Iverson.LoadTest/Benchmark/TrecRunWriter.cs:27`) — correct TREC format, and fine for
+(`Iverson.Server/Iverson.LoadTest/Benchmark/TrecRunWriter.cs:30-31`) — correct TREC format, and fine for
 BEIR's opaque ids. FreshStack's `_id` is derived from repository paths and byte offsets, and real
 GitHub paths can contain spaces. One such id shifts every subsequent column in its row, so the scorer
 reads the wrong doc id, rank and score with no error anywhere — while `qrels.tsv`, being
@@ -132,6 +132,21 @@ measurement shows only one of them actually carries the problem and because the 
   ids are GitHub paths and real paths have spaces in them. Aborting would make the smallest topic —
   the one §4 recommends — unconvertible, so those documents are omitted from `corpus.jsonl`, the
   judgments referencing them are dropped, and both counts are printed.
+
+#### 1.6 Duplicate ids and blank text
+
+Two further conditions are settled in the converter rather than left to the harness:
+
+- **Duplicate `_id` — first occurrence wins.** godot's 25,482 corpus rows carry only 25,477 distinct
+  ids: five ids each cover two documents. Writing both files two documents under one judgment key and
+  lets a single run file list the same doc id at two ranks, which TREC scorers treat as malformed or
+  silently collapse — either way the ranking scored is not the ranking produced. The converter emits
+  the first row for each id, skips the rest, and prints the count.
+- **Blank `text` — hard-fail.** `JsonlCorpusParser` rejects empty text on both the corpus and the query
+  path (§2), so a renamed upstream field would otherwise surface as a `FormatException` at the front of
+  a `benchmark-ingest` run, against a corpus already written to disk. The converter tests the same
+  condition — on the *composed* query string, so what is validated is what is written — and exits
+  non-zero before writing anything. Measured clean on godot.
 
 ### 2. C# consequences of normalisation
 
