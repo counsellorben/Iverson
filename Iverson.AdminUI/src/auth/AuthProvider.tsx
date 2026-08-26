@@ -1,6 +1,7 @@
 import { useEffect } from "react";
 import { AuthProvider as OidcAuthProvider, useAuth } from "react-oidc-context";
 import { config } from "../config";
+import { useTokenRenewal } from "../api/useTokenRenewal";
 
 const oidcConfig = {
   authority: config.oidcAuthority,
@@ -20,9 +21,15 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
  * unauthenticated visitor into the Authentik login flow. `AppLayout`
  * (Task 4) is the intended child; this component only concerns itself
  * with the auth boundary.
+ *
+ * It is also where the console's fetch layer is bridged to silent renewal. A 401 on any of
+ * the landing page's nine widgets is one expired session, not nine broken cards, so the
+ * renewal callback is registered ONCE here — inside the auth boundary, where `useAuth()` is
+ * reachable — rather than per widget. See `api/useTokenRenewal`.
  */
 export function AuthGate({ children }: { children: React.ReactNode }) {
   const auth = useAuth();
+  useTokenRenewal();
 
   useEffect(() => {
     if (!auth.isLoading && !auth.isAuthenticated) {
