@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 import { Box, Typography } from "@mui/material";
+import { NO_SAMPLE_CAPTION, NO_SAMPLE_VALUE } from "./format";
 
 /**
  * One named figure from `/admin/console/metrics`, and the single place the console decides
@@ -23,12 +24,6 @@ import { Box, Typography } from "@mui/material";
  * silently became `0`.
  */
 
-/** Shown in place of the figure when the series has no current sample. */
-export const NO_SAMPLE_VALUE = "No data";
-
-/** The caption under an absent figure. Says "not zero" in as many words. */
-export const NO_SAMPLE_CAPTION = "No current sample — this is not a zero.";
-
 export interface MetricStatProps {
   /** The figure's name, e.g. "Reconciliation queue depth". */
   readonly label: string;
@@ -49,20 +44,29 @@ export function MetricStat({ label, value, format, testId }: MetricStatProps) {
       data-metric-null={absent}
       sx={{ minWidth: 160, flexGrow: 1, flexBasis: 0 }}
     >
-      <Typography variant="caption" color="text.secondary" component="div">
+      <Typography variant="caption" component="div" sx={{ color: "text.secondary" }}>
         {label}
       </Typography>
       <Typography
         variant="h6"
         component="div"
         // Greyed rather than emphasised: an absent figure must not read as a headline number.
-        color={absent ? "text.secondary" : "text.primary"}
+        // Through `sx`, NOT through Typography's `color` prop — MUI v9 has dropped that prop
+        // and renders it as nothing at all, silently and without a type error, so the same
+        // line written the obvious way would be a styling promise that never applied. A test
+        // asserts the two computed colours differ, which is what caught it.
+        sx={{ color: absent ? "text.secondary" : "text.primary" }}
         data-testid={`${testId}-value`}
       >
         {absent ? NO_SAMPLE_VALUE : format(value)}
       </Typography>
       {absent && (
-        <Typography variant="caption" color="text.secondary" component="div">
+        <Typography
+          variant="caption"
+          component="div"
+          sx={{ color: "text.secondary" }}
+          data-testid={`${testId}-caption`}
+        >
           {NO_SAMPLE_CAPTION}
         </Typography>
       )}

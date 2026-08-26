@@ -2,8 +2,7 @@ import { Table, TableBody, TableCell, TableHead, TableRow, Typography } from "@m
 import { fetchQdrant } from "../api/console";
 import type { QdrantResponse } from "../api/types";
 import { usePolledResource } from "../hooks/usePolledResource";
-import { formatInteger, pluralise } from "./format";
-import { NO_SAMPLE_VALUE } from "./MetricStat";
+import { NO_SAMPLE_VALUE, formatInteger, pluralise } from "./format";
 import { WidgetCard } from "./WidgetCard";
 
 /**
@@ -14,9 +13,9 @@ import { WidgetCard } from "./WidgetCard";
  * - **Render a missing count as zero.** `pointsCount` and `indexedVectorsCount` are
  *   `number | null`: Qdrant does not always report them, and a collection whose figure is
  *   absent is not an empty collection. "0 points" on a collection that is actually serving
- *   traffic is the kind of number someone deletes a collection over. Absent renders as words,
- *   the same words `MetricStat` uses for an absent metric, so the two mean the same thing
- *   across the page.
+ *   traffic is the kind of number someone deletes a collection over. Absent renders as words —
+ *   `NO_SAMPLE_VALUE`, the same word a metric with no current sample gets, so one fact has
+ *   one spelling across the whole page.
  * - **Present its 403 as an error.** The endpoint is `Operator`-gated — collection names are
  *   tenant-scoped, so enumerating them is a cross-tenant read — and no human satisfies the
  *   `Operator` policy today (Design 4d), so 403 is what this card shows on a real deployment.

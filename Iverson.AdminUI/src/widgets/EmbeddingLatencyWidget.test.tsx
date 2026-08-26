@@ -5,7 +5,7 @@ import type { ApiResult } from "../api/client";
 import type { MetricsResponse } from "../api/types";
 import { MetricsBand } from "./MetricsBand";
 import { EMBEDDING_LATENCY_CAVEAT } from "./EmbeddingLatencyWidget";
-import { NO_SAMPLE_VALUE } from "./MetricStat";
+import { NO_SAMPLE_VALUE } from "./format";
 import { metricsAllNull, metricsOk, metricsUnavailable } from "./metricsFixture";
 
 const fetchMetricsMock =

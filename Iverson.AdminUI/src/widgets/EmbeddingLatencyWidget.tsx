@@ -53,9 +53,8 @@ export function EmbeddingLatencyWidget({
           </MetricStatRow>
           <Typography
             variant="caption"
-            color="text.secondary"
             component="p"
-            sx={{ mt: 1 }}
+            sx={{ mt: 1, color: "text.secondary" }}
             data-testid="embedding-latency-caveat"
           >
             {EMBEDDING_LATENCY_CAVEAT}

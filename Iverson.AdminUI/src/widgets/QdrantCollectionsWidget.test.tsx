@@ -4,7 +4,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import type { ApiResult } from "../api/client";
 import type { QdrantResponse } from "../api/types";
 import { QdrantCollectionsWidget } from "./QdrantCollectionsWidget";
-import { NO_SAMPLE_VALUE } from "./MetricStat";
+import { NO_SAMPLE_VALUE } from "./format";
 
 const fetchQdrantMock =
   vi.fn<(token: string, signal: AbortSignal) => Promise<ApiResult<QdrantResponse>>>();

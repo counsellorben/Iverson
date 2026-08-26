@@ -8,7 +8,7 @@ import {
   TRANSPORT_HEALTH_SUBTITLE,
   TRANSPORT_HEALTH_TITLE,
 } from "./TransportHealthWidget";
-import { NO_SAMPLE_VALUE } from "./MetricStat";
+import { NO_SAMPLE_VALUE } from "./format";
 import { metricsAllNull, metricsForbidden, metricsOk } from "./metricsFixture";
 
 const fetchMetricsMock =
@@ -94,6 +94,22 @@ describe("TransportHealthWidget", () => {
       expect(value).not.toHaveTextContent("%");
       expect(screen.getByTestId(testId)).toHaveAttribute("data-metric-null", "true");
     }
+  });
+
+  it("does not render a live 5xx trickle as a clean deployment", async () => {
+    // errorPercentage is (5xx rate / total rate) * 100. At 42.5 req/s, one 5xx every hundred
+    // seconds is 0.024% — which rounds to "0.0%", the string a genuinely clean deployment
+    // shows, while 5xx responses are actively being served.
+    fetchMetricsMock.mockResolvedValue(
+      metricsOk({ rpcHealth: { requestsPerSecond: 42.5, errorPercentage: 0.024, p95Seconds: 0.043 } })
+    );
+
+    render(<MetricsBand accessToken={TOKEN} />);
+
+    await waitFor(() => expect(cardState()).toBe("ready"));
+    const value = screen.getByTestId("transport-error-percentage-value");
+    expect(value).toHaveTextContent("<0.1%");
+    expect(value).not.toHaveTextContent("0.0%");
   });
 
   it("renders a measured zero error percentage as a zero", async () => {

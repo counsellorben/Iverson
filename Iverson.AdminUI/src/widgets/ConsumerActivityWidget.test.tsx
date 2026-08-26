@@ -6,7 +6,7 @@ import type { MetricsResponse } from "../api/types";
 import { MetricsBand } from "./MetricsBand";
 import { CONSUMER_ACTIVITY_SUBTITLE } from "./ConsumerActivityWidget";
 import { describeMetricsReason } from "./MetricsWidgetCard";
-import { NO_SAMPLE_VALUE } from "./MetricStat";
+import { NO_SAMPLE_VALUE } from "./format";
 import {
   metricsAllNull,
   metricsOk,
@@ -61,6 +61,27 @@ describe("ConsumerActivityWidget", () => {
     expect(screen.getByTestId("consumer-retries-rate-value")).toHaveTextContent("0.25 /s");
     // Nothing is being routed to the DLQ: a measured zero, and it says so as a rate.
     expect(screen.getByTestId("consumer-dlq-routed-rate-value")).toHaveTextContent("0.00 /s");
+  });
+
+  it("does not render a live DLQ trickle as a stopped one", async () => {
+    // 0.004/s is about fourteen messages an hour landing in the DLQ. Rounded to two places
+    // it is "0.00 /s" — the exact string the test above pins as meaning "nothing is being
+    // routed to the DLQ" — with `data-metric-null` correctly false, so nothing flags it.
+    fetchMetricsMock.mockResolvedValue(
+      metricsOk({
+        consumerActivity: { consumerRetriesPerSecond: 0.004, consumerDlqRoutedPerSecond: 0 },
+      })
+    );
+
+    render(<MetricsBand accessToken={TOKEN} />);
+
+    await waitFor(() => expect(cardState()).toBe("ready"));
+    const trickle = screen.getByTestId("consumer-retries-rate-value");
+    const stopped = screen.getByTestId("consumer-dlq-routed-rate-value");
+    expect(trickle).toHaveTextContent("<0.01 /s");
+    expect(trickle).not.toHaveTextContent("0.00 /s");
+    expect(stopped).toHaveTextContent("0.00 /s");
+    expect(trickle.textContent).not.toBe(stopped.textContent);
   });
 
   it("NEVER renders an absent rate as a zero rate", async () => {

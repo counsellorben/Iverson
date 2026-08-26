@@ -5,7 +5,7 @@ import type { ApiResult } from "../api/client";
 import type { MetricsResponse } from "../api/types";
 import { MetricsBand } from "./MetricsBand";
 import { FAN_OUT_BACKLOG_SUBTITLE } from "./FanOutBacklogWidget";
-import { NO_SAMPLE_VALUE } from "./MetricStat";
+import { NO_SAMPLE_VALUE } from "./format";
 import { metricsAllNull, metricsForbidden, metricsOk } from "./metricsFixture";
 
 const fetchMetricsMock =
