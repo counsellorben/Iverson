@@ -155,6 +155,10 @@ api:
   # including values-laptop.yaml (adminUi.enabled: false, no console to grant CORS
   # to) — a non-empty default here would leak a CORS grant onto that profile. Every
   # overlay that actually runs a console (values-local/-aws/-azure/-gcp) sets its own.
+  #
+  # It ALSO gates whether the admin-api Ingress renders at all — see
+  # charts/api/templates/admin-api-ingress.yaml. On laptop that leaves the admin-api
+  # hostname unpublished, which is right: there is no console there to call it.
   adminConsoleOrigin: ""
 
 worker:

@@ -1,3 +1,22 @@
+{{/*
+  Rendered ONLY where a console exists to reach this host.
+
+  adminConsoleOrigin is the api subchart's own "is there a console on this profile"
+  value — the parent sets it on every profile that deploys the admin UI
+  (values-local/-aws/-azure/-gcp) and leaves it empty on the one that does not
+  (values-laptop.yaml, adminUi.enabled: false). It is the right condition here because
+  it is the SAME fact the CORS grant in deployment.yaml is gated on: an admin-api host
+  with no console has nobody it would answer cross-origin for.
+
+  adminUi.enabled itself is unusable as the condition — it lives at the parent's top
+  level, and a subchart can see only its own scope plus .Values.global.
+
+  Why guard at all: this Ingress publishes /admin, /health and /v1/traces on a public
+  hostname, and /health is ANONYMOUS and write-bearing (it drives Qdrant
+  EnsureCollectionAsync and a Kafka produce). Publishing that with no console deployed
+  and no CORS grant is attack surface for zero function.
+*/}}
+{{- if .Values.adminConsoleOrigin }}
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
@@ -36,3 +55,4 @@ spec:
                 name: {{ .Release.Name }}-api
                 port:
                   number: 8081
+{{- end }}

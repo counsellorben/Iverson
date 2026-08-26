@@ -29,4 +29,8 @@ adminApiIngress:
 # scheme+host the browser loads the console from. Empty means "no console reachable on
 # this profile": Program.cs registers no CORS policy at all rather than falling back to
 # something permissive, so cross-origin calls fail closed.
+#
+# It ALSO gates the admin-api Ingress (templates/admin-api-ingress.yaml): empty means the
+# admin-api host is not published at all, so a console-less profile does not expose
+# /admin, /health and /v1/traces on a public hostname for nobody to call.
 adminConsoleOrigin: ""
