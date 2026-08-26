@@ -1,8 +1,11 @@
 using System.Net;
 using FluentAssertions;
+using Iverson.Api;
 using Iverson.Api.Tests.Helpers;
 using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Routing;
 using Microsoft.AspNetCore.TestHost;
+using Microsoft.Extensions.DependencyInjection;
 using Xunit;
 
 namespace Iverson.Api.Tests;
@@ -98,5 +101,39 @@ public class OperationalListenerBindingPipelineTests : IClassFixture<AuthTestWeb
         var context = await SendAsync(method, path, GrpcListenerPort);
 
         context.Response.StatusCode.Should().Be(StatusCodes.Status401Unauthorized);
+    }
+
+    // Drift guard, and the reason the two theories above are not sufficient on their own: their
+    // seven paths are enumerated by hand, by the same hand that attaches the metadata in
+    // Program.cs. An eighth /probe/* added next month would ship answering on the gRPC listener
+    // with the whole suite green, because no InlineData would name it. This asserts over the
+    // app's real EndpointDataSource that the set of endpoints carrying HttpListenerOnly is
+    // EXACTLY these seven route patterns, which fails in both directions: a marker missing from
+    // a new operational endpoint, and a marker landing somewhere it must not (a gRPC service,
+    // /v1/traces, /admin/console/*). Route patterns rather than endpoint names because
+    // MapPrometheusScrapingEndpoint sets no name.
+    [Fact]
+    public void HttpListenerOnlyMetadata_IsOnExactlyTheOperationalEndpoints()
+    {
+        string[] expected =
+        [
+            "/health",
+            "/health/live",
+            "/metrics",
+            "/probe/kafka",
+            "/probe/sql",
+            "/probe/starrocks",
+            "/probe/vector"
+        ];
+
+        var marked = _factory.Services.GetRequiredService<EndpointDataSource>().Endpoints
+            .Where(endpoint => endpoint.Metadata.GetMetadata<HttpListenerOnly>() is not null)
+            .Select(endpoint => endpoint is RouteEndpoint route
+                ? "/" + route.RoutePattern.RawText!.TrimStart('/')
+                : endpoint.DisplayName ?? endpoint.ToString()!)
+            .OrderBy(pattern => pattern, StringComparer.Ordinal)
+            .ToArray();
+
+        marked.Should().Equal(expected);
     }
 }

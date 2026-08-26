@@ -340,20 +340,47 @@ if (app.Environment.IsDevelopment())
 // legitimate request and admit nothing. HttpContext.Connection.LocalPort reads the accepting
 // socket, which is the actual fact this needs.
 //
-// The rule is expressed as "not the gRPC listener" rather than "only the HTTP listener" on
-// purpose. LocalPort is 0 whenever no TCP socket sits underneath (TestServer's in-memory
-// transport; a Unix-domain-socket binding), and if ASPNETCORE_URLS ever overrode
-// Kestrel:Endpoints entirely the port read below would be stale. An allow-list would fail
-// closed in exactly those cases and take /health with it — a readiness probe that starts
-// 404ing rolls the whole Deployment. Failing open there costs only defence in depth: the four
-// probes carry .RequireAuthorization("Operator") in their own right, and /metrics is
-// deliberately anonymous on 8081 because Prometheus scrapes it without credentials — this
-// changes WHERE those endpoints answer, not WHO may call them.
-var grpcListenerPort = ParseListenerPort(cfg["Kestrel:Endpoints:Grpc:Url"], 8080);
+// The rule is an allow-list — answer on the HTTP listener, nowhere else — rather than a
+// deny-list of the gRPC listener's port. A deny-list fails OPEN, and silently: a third
+// listener, a debug port, a mesh sidecar, or a rename of the Kestrel "Grpc" endpoint key and
+// /metrics answers there again with no test failing and no log line. The allow-list's failure
+// mode is the opposite, and it is neither silent nor reachable: every caller's port is
+// hardcoded alongside these routes (charts/api deployment.yaml probes 8081, the prometheus
+// configmap's scrape port 8081, admin-api-ingress.yaml's backend 8081), so if the HTTP
+// listener ever moved, kubelet would get connection-refused before it could get a 404.
+//
+// Kestrel:Endpoints is the binding that actually takes effect, so reading the port from it is
+// right: AddressBinder picks OverrideWithEndpointsStrategy whenever Kestrel:Endpoints has
+// entries and PreferHostingUrls is false (the default — ASPNETCORE_PREFERHOSTINGURLS is set
+// nowhere in this repo), logging "Overriding address(es) ... Binding to endpoints defined in
+// UseKestrel() instead". That is not hypothetical: the aspnet base image ships
+// ASPNETCORE_HTTP_PORTS=8080, and it is already being overridden in the deployed container.
+//
+// The one carve-out is LocalPort == 0, which means no TCP socket sits underneath at all —
+// TestServer's in-memory transport, a Unix-domain-socket or named-pipe binding. There is no
+// port to check in that case, so the request is allowed through.
+const int DefaultHttpListenerPort = 8081;
+var configuredHttpListenerUrl = cfg["Kestrel:Endpoints:Http:Url"];
+var parsedHttpListenerPort = TryParseListenerPort(configuredHttpListenerUrl);
+
+// A silently-defaulted port is the one way this binding can go wrong without anyone noticing,
+// so say so at startup rather than falling back mutely.
+if (parsedHttpListenerPort is null)
+    app.Logger.LogWarning(
+        "No port could be read from Kestrel:Endpoints:Http:Url ('{Url}') — the operational endpoints " +
+        "(/metrics, /health, /health/live, /probe/*) will be bound to the default port {Port} instead. " +
+        "If the HTTP listener is not on that port, they will not answer anywhere.",
+        configuredHttpListenerUrl, DefaultHttpListenerPort);
+
+var httpListenerPort = parsedHttpListenerPort ?? DefaultHttpListenerPort;
+app.Logger.LogInformation(
+    "Operational endpoints (/metrics, /health, /health/live, /probe/*) are bound to listener port {Port}",
+    httpListenerPort);
 
 app.Use(async (context, next) =>
 {
-    if (context.Connection.LocalPort == grpcListenerPort &&
+    if (context.Connection.LocalPort is not 0 &&
+        context.Connection.LocalPort != httpListenerPort &&
         context.GetEndpoint()?.Metadata.GetMetadata<HttpListenerOnly>() is not null)
     {
         // 404, not 403: on this listener the route genuinely does not exist.
@@ -364,13 +391,15 @@ app.Use(async (context, next) =>
     await next(context);
 });
 
-// Kestrel URLs are of the form "http://*:8080" — not parseable by System.Uri because of the
-// wildcard host, so take the trailing port off the string directly.
-static int ParseListenerPort(string? url, int fallback)
+// Kestrel URLs are of the form "http://*:8081" — not parseable by System.Uri because of the
+// wildcard host, so take the trailing port off the string directly. Null (rather than a silent
+// fallback) when the URL is absent, portless, or has a path after the port, so the caller can
+// report it.
+static int? TryParseListenerPort(string? url)
 {
     var trimmed = url?.TrimEnd('/');
     var lastColon = trimmed?.LastIndexOf(':') ?? -1;
-    return lastColon >= 0 && int.TryParse(trimmed![(lastColon + 1)..], out var port) ? port : fallback;
+    return lastColon >= 0 && int.TryParse(trimmed![(lastColon + 1)..], out var port) ? port : null;
 }
 
 app.UseHttpsRedirection();
