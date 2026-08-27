@@ -94,6 +94,8 @@ Newly introduced by this plan and verified at plan-write time.
 | P16 | Consumer impact | No `EmbedAsync` consumer exists outside `Iverson.Server` | Grep across `Iverson.Clients` and `Iverson.LoadTest` returned nothing |
 | P17 | Sweep (C#) | Every C# identifier the plan names resolves with the accessibility assumed — `SplitIntoChunks`, `ToCollectionSchema`, `ToChunkCollectionSchema`, `SqlTypeToPayloadKind`, `ResolveCollectionName`, `EntityRegistry.Get<T>`, `BuildTypeDescriptor`, `ComputeChunkPointId`, `KeyToUlong`, `ComputeCentroid`, `IsZeroMagnitude`, `NoOpEmbeddingService`, `BenchmarkDocument`, `Distance.Cosine` | Per-symbol greps recorded in P5–P10 |
 | P18 | Sweep (Python) | Every Python identifier the plan names exists as named, and `verify_contract` does **not** yet exist | `ingest.py` sweep: 13 present, `verify_contract` 0 occurrences |
+| P19 | Code validity | `Iverson.LoadTest` is `OutputType Exe`; referencing it from a test project is supported, and `BenchmarkDocument` is public so the emit needs no IVT from it | `Iverson.LoadTest.csproj:3` (`<OutputType>Exe</OutputType>`, `net10.0`); `BenchmarkDocument.cs` declares `public sealed class` |
+| P20 | Code validity | `SchemaRegistrar` and `EntityRegistry` live in `Iverson.Clients/DotNet/Iverson.Client.Core/`, not `Iverson.Server`; Task 2 Step 5 reaches them **transitively** through the `Iverson.LoadTest` reference Step 3 adds. Marking that reference `PrivateAssets="all"` would break the emit with no other symptom | `SchemaRegistrar.cs:52`, `EntityRegistry.cs:105` are under `Iverson.Clients/DotNet/Iverson.Client.Core/`; `Iverson.LoadTest.csproj:10` references it; `Iverson.Api.Tests.csproj:30-35` does not |
 
 ## Tasks
 
@@ -196,6 +198,10 @@ git commit -m "generate the ingest contract from the real C# write path"
 
 - [ ] **Step 1: Load the contract and delete the constants it replaces.** Remove `MAX_CHARS`, `STEP`, `DEFAULT_OBJECT_COLLECTION`, `DEFAULT_CHUNKS_COLLECTION`, `OBJECT_PAYLOAD_INDEXES`, `CHUNKS_PAYLOAD_INDEXES`, and the hardcoded `768` / `"Cosine"` at `:504,509`. Resolve the contract relative to `__file__`. `split_into_chunks`, `compute_centroid`, `key_to_ulong` and `chunk_point_id` **keep their Python implementations** — the contract pins their behaviour, not their code.
 
+  **The word-boundary lookback is not a module-level constant and needs a behavioural change, not a deletion.** `split_into_chunks` hardcodes it inline as `count = min(end - start, 50)`. It must come from the contract's `chunkWindow.wordBoundaryLookback` instead — either widen the signature the way `max_chars` and `step` already are (`def split_into_chunks(text, max_chars=..., step=..., lookback=...)`) or read it from the loaded contract inside the function. Left as-is, the contract emits a field no consumer reads while the one constant with a history of C#/Python divergence (`4771286`) stays duplicated.
+
+  **Where the contract loads is constrained, not free.** `split_into_chunks` binds `MAX_CHARS` and `STEP` as **default parameter values**, which Python evaluates at function-definition time. Removing them and loading the contract inside `main()` — or lazily, or in a helper called from `main()` — raises `NameError` at import, before `parse_args()` and before `verify_contract()` can report anything. Either load the contract at module scope above `split_into_chunks`, binding the same names, or drop the module-level defaults from the signature and pass the window in from the caller. This failure is loud and immediate rather than silent, so it costs minutes; it is stated here because Step 1 otherwise points at the broken shape as readily as the working one.
+
 - [ ] **Step 2: Apply the prefix inside `embed()` (`:307`), and nowhere else.** The reuse gate at `:369` compares **raw** text (`body == body.strip() and len(body) <= STEP`); prefixing at the embed boundary leaves that comparison untouched and the gate valid, where prefixing earlier would force the gate to reason about prefixed strings for no benefit. The 4,180 saved embed calls must stay saved.
 
 - [ ] **Step 3: Add `--model` (default `nomic-embed-text`) and probe Ollama for the dimension,** the way `EmbeddingService.EnsureInitializedAsync` does. Document `--model` as needing to match the API's `Embeddings__ModelId`. This replaces the hardcoded `768` and makes the Python and query paths agree by construction rather than by two literals happening to match.
@@ -234,7 +240,11 @@ git commit -m "compose the document title into the embedded corpus text"
 **Interfaces:**
 - Consumes: Tasks 1–4.
 
-- [ ] **Step 1: Regenerate the corpus.** Re-run `sample_corpus.py` over the full SciFact download into the run directory. **The title composition of Task 4 takes effect here and nowhere else.**
+**Paths** (both live outside the repository and are not discoverable from it):
+- Full SciFact download — `/home/ben/iverson-benchmark-data/scifact-full/` — a flat BEIR directory holding `corpus.jsonl`, `queries.jsonl` and `qrels/test.tsv`. This is Step 1's `--corpus-dir`.
+- Run directory — `/home/ben/repositories/iverson-benchmark-corpora/scifact-run-2026-08-26/` — Step 1's `--out-dir`, the parent of `ingest.py --corpus`'s `beir/corpus.jsonl`, `benchmark-query`'s `--output-dir` (its `runs/`), and `report.py --run`'s argument. It already holds the baseline's `qrels.trec`, `keymap.json` and `runs/direct-ingest-baseline.*.trec`.
+
+- [ ] **Step 1: Regenerate the corpus.** Re-run `sample_corpus.py` with the `--corpus-dir` and `--out-dir` above. **The title composition of Task 4 takes effect here and nowhere else.**
 
 - [ ] **Step 2: Confirm the regenerated `text` carries the title,** by inspecting one row. This step exists because skipping step 1 fails silently: the ingest would succeed, every structural check would pass, and the result would be prefix-only while being reported as prefix + title.
 
