@@ -62,8 +62,14 @@ every call site and every test stub fails to compile until consciously visited. 
 method in place would let a stub silently attach to it and keep passing while covering nothing —
 the failure mode this repo has already recorded (see Testing).
 
-`EmbeddingService` keeps `EmbedAsync` as a **private** method that both public methods call after
-prepending. `EnsureInitializedAsync`'s dimension probe calls it directly and **unprefixed**: the
+`EmbeddingService` keeps `EmbedAsync` as a **private** method. Composition itself lives in two pure
+helpers — `internal static string ComposeDocumentInput(string text)` and
+`ComposeQueryInput(string text)` — which the two public methods call before handing the result to
+`EmbedAsync`. They are extracted for the same reason the superseded design lifts `ChunkWindow` out
+of `SplitIntoChunks`: composition inside an HTTP-calling method is unreachable from a test, and the
+contract's golden case must be produced by the real code path rather than a test-local replica.
+
+`EnsureInitializedAsync`'s dimension probe calls `EmbedAsync` directly and **unprefixed**: the
 dimension is prefix-independent, and probing with a prefix would only mislead a reader into thinking
 the probe is representative.
 
@@ -116,8 +122,10 @@ field with no consumer is dead surface.
 The source-of-truth table gains one row: *document prefix ← `Iverson.Embeddings` constant*.
 
 **One new golden case**, alongside the five chunking cases: the composed document string for a plain
-chunk. The context-composed form is not goldened, because the benchmark entity does not enable
-contextual chunking (A6).
+chunk, obtained by reflectively calling `ComposeDocumentInput` — the same
+`BindingFlags.NonPublic | BindingFlags.Static` convention the contract already uses for
+`ComputeChunkPointId` and `KeyToUlong`. The context-composed form is not goldened, because the
+benchmark entity does not enable contextual chunking (A6).
 
 **A limitation stated rather than buried:** the contract pins C#/Python *agreement*, not
 model-*appropriateness*. Change `Embeddings__ModelId` to a model with different conventions and both
@@ -168,10 +176,25 @@ nothing. Multi-property search is a real platform gap, and a separate project.
 
 ### 5. The measurement
 
-One full re-ingest of the standard split, then `benchmark-query` over the same 300 queries and
-`report.py` against the same `qrels.trec`. The existing run is a clean control: same corpus, same
-queries, same judgments, same code but for this spec's two changes. Baseline figures are recorded
-in `scifact-run-2026-08-26/report.txt` (A13).
+The execution sequence, in order:
+
+1. Re-run `sample_corpus.py` to regenerate `corpus.jsonl` — **the title composition of §4 takes
+   effect here and nowhere else.**
+2. Confirm the regenerated `text` field carries the title, by inspecting any one row. This step
+   exists because skipping step 1 fails silently: the ingest would succeed, the structural checks
+   would pass, and the result would be prefix-only while being reported as prefix + title.
+3. `ingest.py --drop`, then ingest.
+4. `benchmark-query` over the same 300 queries, with `--config-label prefixed-titled`.
+5. `report.py` against the same `qrels.trec`, writing to a new report file.
+
+The distinct config label is load-bearing, not cosmetic: reusing `direct-ingest-baseline` would
+overwrite the control's run files, and step 3's drop removes any way to regenerate them. With
+distinct labels both runs coexist in one directory and `report.py --run <dir>` scores them side by
+side, which is what its directory-mode discovery exists for.
+
+The existing run is a clean control: same document set (A23), same queries, same judgments, same
+code but for this spec's two changes. Baseline figures are recorded in
+`scifact-run-2026-08-26/report.txt` (A13).
 
 | | baseline | this spec |
 |---|---|---|
@@ -230,6 +253,8 @@ golden case; `verify_contract()` replays it in `ingest.py` before `--drop` acts.
 | A19 | `report.py` needs no change | It reports absolute figures; the baseline comparison is spec-level |
 | A20 | The `title` payload field stays populated | Sourced from the separate `title` field, which composition leaves in place |
 | A21 | No proto or client change | No RPC signature changes; the query prefix never leaves C# |
+| A22 | Ollama injects no prefix of its own; text reaches the model exactly as sent | `/api/show` for `nomic-embed-text` — `template` is `{{ .Prompt }}`, no `system`, no prefix in the modelfile. Had a template prefix existed, prepending would double-prefix |
+| A23 | Re-running `sample_corpus.py` selects the same document set, so the baseline remains a valid control | `sample_corpus.py:208-209` — the full-corpus path is `chosen_docids = set(all_corpus.keys())`, no sampling; the `--target-size` path is seeded at `:218` |
 
 ## Known issues, accepted
 
