@@ -1,5 +1,10 @@
 # Generated Ingest Contract — One Source of Truth for the Python Write Path
 
+> **SUPERSEDED 2026-08-26 by `2026-08-26-embedding-prefixes-and-title-design.md`.** This design was
+> never planned. Its content is carried forward there in full, with the prefix contract folded in and
+> its stale `Base` section corrected (`direct-qdrant-ingestion` merged at `4558491`). Do not plan from
+> this file.
+
 ## Context
 
 `2026-08-26-direct-qdrant-ingestion-design.md` moved benchmark ingest off the full write path and
