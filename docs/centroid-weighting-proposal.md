@@ -18,10 +18,18 @@ Measured on BEIR SciFact (2026-08-28), the centroid **improves recall and is neu
 That asymmetry suggested exposing the trade-off to callers, since a caller fetching 10 results for
 display wants different behaviour from one fetching 200 to feed a reranker.
 
-**It should not be exposed, because there is no trade-off to expose.** The centroid costs nothing
-measurable on precision, so a caller offered the choice could only opt out of a free benefit.
+**It should not be exposed, because there is no stable trade-off to expose.** A second corpus
+(NFCorpus, 2026-08-28) with 35x SciFact's judgment density reverses the asymmetry's direction: there
+the centroid *helps* precision and is flat-to-negative on recall. Neither corpus resolves the effect
+as significant. A knob whose sign flips between corpora and whose magnitude never clears noise is not
+a trade-off a caller could set correctly.
 
-## Experimental record
+**The same experiment found something that is not about the centroid at all, and matters more:**
+MMR diversification at the shipped `Lambda = 0.70` costs `SearchSimilar` a measurable amount of
+retrieval quality — R@50 -0.0216 (t = 4.46) and AP -0.0050 (t = 7.59) against `Lambda = 1.00`. On
+SciFact that cost measured as exactly zero. See "The MMR finding" below.
+
+## Experimental record — SciFact
 
 All runs: BEIR SciFact standard test split (5,183 documents, 300 queries, 339 judgments), scored with
 `ir_measures`. Run files are preserved in `iverson-benchmark-corpora/scifact-run-2026-08-26/runs/`.
@@ -83,8 +91,101 @@ thinly across several passages from falling out of the candidate set.
 λ 0.70 → 1.00 (diversification off) leaves chunks R@50 and nDCG@10 **identical to four decimals**
 (t = 0.00), while only 3 of 300 queries retain an identical full ordering. MMR reshuffles the tail
 heavily and the reshuffling is metric-neutral. Expected: MMR optimises *diversity*; BEIR measures
-*relevance*. **This benchmark can measure λ's cost (zero) but structurally cannot measure its
-benefit.** λ must not be tuned from it.
+*relevance*.
+
+**The conclusion drawn from this — "λ's cost is zero" — was wrong, and only a denser corpus could
+show it.** SciFact has 1.1 relevant documents per query, so there is almost nothing for
+diversification to displace: the reshuffling moves non-relevant documents past each other. NFCorpus,
+at 38.2 relevant per query, measures a real and highly significant cost. See "The MMR finding".
+
+## NFCorpus results (2026-08-28)
+
+BEIR NFCorpus test split: 3,633 documents, 323 queries, **12,334 judgments — 38.2 relevant
+documents per query against SciFact's 1.1**, graded (11,758 at rel=1, 576 at rel=2). Ingested
+through the same path and configuration as the SciFact reference run (512-char chunks, document and
+query prefixes, titles composed): 14,729 chunks, 18,327 embed calls, 6.4 s/document.
+
+Run files in `iverson-benchmark-corpora/nfcorpus-run-2026-08-27/runs/`.
+
+Documents are **not** longer than SciFact's (1,591.8 vs 1,500.4 composed chars, 4.05 vs 3.96
+chunks/document). This corpus tests *resolution*, not the long-document hypothesis.
+
+### Fusion weight sweep — `SearchChunks`
+
+| w = WCentroid/(WBase+WCentroid) | nDCG@10 | R@50 | AP |
+|---|---|---|---|
+| 0.000 | 0.3477 | **0.2515** | 0.1552 |
+| 0.167 | 0.3487 | 0.2503 | **0.1562** |
+| **0.333 — shipped** | **0.3522** | 0.2489 | 0.1556 |
+| 0.500 | 0.3517 | 0.2479 | 0.1544 |
+| 0.667 | 0.3446 | 0.2395 | 0.1502 |
+| 1.000 | 0.3271 | 0.2260 | 0.1385 |
+
+Paired per-query t against w = 0.333, Bonferroni |t| > 2.50 over four comparisons. The curve is
+again cleanly unimodal, and w = 0.667 (R@50 t = -2.75) and w = 1.000 (t = -4.63) are significantly
+worse. **The shipped constants survive a second corpus.**
+
+### The centroid's direction reverses between corpora
+
+| ablation w = 0.333 → 0 | SciFact | NFCorpus |
+|---|---|---|
+| nDCG@10 | +0.0021 (t = +0.36) | **-0.0045 (t = -1.58)** |
+| R@50 | **-0.0167 (t = -2.25)** | +0.0026 (t = +1.08) |
+| AP | +0.0052 (t = +0.76) | -0.0004 (t = -0.40) |
+
+On SciFact, removing the centroid **cost recall** and was neutral for precision. On NFCorpus,
+removing it **gains** recall and **costs** precision. Both nDCG@10 deltas and both NFCorpus deltas
+are non-significant; only SciFact's R@50 result reached |t| = 2.25, and that does not survive
+correction either.
+
+**This is the finding that settles the proposed design.** The design assumes a fixed direction — the
+centroid buys recall at the price of precision — and scales it by `top_k`. That premise does not
+survive contact with a second corpus: on NFCorpus the trade runs the other way, so a `top_k`
+schedule tuned on SciFact would be pointed backwards. There is no stable sign to condition on.
+
+### Underpowered, or genuinely null?
+
+This was the question NFCorpus was chosen to answer, and it answers it cleanly. **The instrument
+works**: in the same run, on the same queries, it resolved the MMR effect at t = 7.59. A corpus that
+can detect one effect at that confidence and still reports the centroid at |t| < 1.6 is not failing
+to see a large centroid effect. **The centroid's effect on ranking quality is genuinely small**, in
+both directions, on both corpora tested.
+
+## The MMR finding
+
+λ 0.70 → 1.00 (diversification off), same collection, same weights, no re-ingest:
+
+| | nDCG@10 | R@50 | AP |
+|---|---|---|---|
+| `SearchChunks` | +0.0006 (t = +1.21) | **-0.0000 (t = 0.00)** | +0.0007 (t = +3.11) |
+| `SearchSimilar` | +0.0021 (t = +2.34) | **+0.0216 (t = +4.46)** | **+0.0050 (t = +7.59)** |
+
+On `SearchSimilar`, turning diversification off improves R@50 on **123 queries and harms 30**. This
+comfortably survives Bonferroni correction and is the largest, most confidently measured effect this
+project has produced.
+
+**The split between the two endpoints is mechanically coherent, which is why it is believable.**
+`SearchChunks` fetches 250 chunks and collapses them to documents by max-passage. Diversifying
+*among chunks* mostly reorders chunks belonging to the same document, and the collapse then discards
+that reordering — so the measured cost is exactly zero. `SearchSimilar` ranks one vector per
+document, so MMR displaces whole documents directly, and every displaced relevant document is a
+recall loss.
+
+### What this does and does not license
+
+It does **not** license setting `Lambda = 1.00`. The original reasoning still holds: MMR optimises
+*diversity*, and BEIR measures *relevance* only. A benchmark that scores no credit for diversity
+will always prefer diversification off; that is a property of the measure, not evidence that
+diversity is worthless to callers.
+
+What changed is the price tag. λ's cost was previously believed to be **zero**, on SciFact evidence,
+and a free knob needs no justification. Its cost on `SearchSimilar` is now known to be real,
+significant, and roughly **9% of R@50**. Whether that buys enough diversity to be worth it is a
+product question this benchmark cannot answer — but it is now a question that has to be asked, and
+answered with a diversity measure (α-nDCG or subtopic recall) rather than assumed.
+
+The cheapest honest next step is not a λ change. It is to make the cost visible where it is paid:
+`SearchChunks` demonstrably pays nothing, so if λ is ever tuned, it should be tuned per endpoint.
 
 ## The proposed design
 
@@ -104,21 +205,30 @@ cycle by this repo's history. A new field also converts a decision the system cu
 correctly by construction into one every caller can get wrong silently, since a bad choice produces
 no error, only worse ranking.
 
-## Why this is not justified today
+## Why this is not justified
 
-The design trades precision for recall. **On SciFact there is nothing to trade.**
+The design trades precision for recall. **On SciFact there is nothing to trade; on NFCorpus the
+trade runs backwards.**
 
-- Removing the centroid moves nDCG@10 by **+0.0021 (t = +0.36)** — the centroid is *neutral* for
-  precision, not harmful.
-- The nominal precision optimum (w = 0.167) versus the recall optimum (w = 0.333) differs by
-  **+0.0051 (t = +1.30)** — not significant. Within resolution they are the same optimum.
+- On SciFact, removing the centroid moves nDCG@10 by **+0.0021 (t = +0.36)** — the centroid is
+  *neutral* for precision, not harmful.
+- On SciFact, the nominal precision optimum (w = 0.167) versus the recall optimum (w = 0.333)
+  differs by **+0.0051 (t = +1.30)** — not significant. Within resolution they are the same optimum.
+- On NFCorpus, the w that **maximises R@50 is w = 0.000** — the centroid buys no recall at all — and
+  the centroid instead contributes **+0.0045 nDCG@10 (t = +1.58)**, the opposite face of the trade.
 
-A knob whose two settings measure the same is API surface with no payload.
+A knob whose two settings measure the same on one corpus, and whose sign inverts on the next, is API
+surface with no payload — and a `top_k` schedule fitted to either corpus would be actively wrong on
+the other.
 
 ## The evidence bar
 
 Build this only when a corpus shows a **significant negative nDCG@10 delta at the w that maximises
-R@50**. On SciFact that delta is +0.0021 — pointing the wrong way for the argument.
+R@50**, *and* that direction replicates on a second corpus. SciFact gives +0.0021 at its R@50
+optimum; NFCorpus gives -0.0045 at its own R@50 optimum (w = 0), which is the right sign but
+**non-significant (t = -1.58)** and, more damagingly, arises from an R@50 curve that peaks where
+SciFact's does not. Two corpora now disagree about the sign. The bar is further away than it looked
+after SciFact alone, not closer.
 
 Where that evidence plausibly exists: long, heterogeneous documents. SciFact documents are a title
 plus a single-topic abstract (mean 1,500 characters), so the centroid is a mean over passages that
@@ -126,7 +236,11 @@ mostly say the same thing. A document covering several distinct topics should pr
 represents none of them well, and *that* is where a whole-document signal should begin costing
 precision.
 
-## Next experiments: two corpora, two questions
+## Next experiments
+
+**Question 1 (resolution) is answered — see "NFCorpus results" above.** The section below is kept
+because it records why NFCorpus was chosen and how the corpora were measured; the FreshStack half is
+still outstanding.
 
 SciFact is exhausted as an instrument, for two reasons — and **measurement showed the second one
 matters more, and that the first is not fixable within BEIR.**
@@ -154,7 +268,7 @@ BEIR corpora are abstracts, forum posts and passages. **No BEIR corpus tests the
 hypothesis.** NFCorpus at 2048-char chunks is 86% single-chunk — reproducing the exact degeneracy
 that made the centroid unmeasurable on SciFact.
 
-### Question 1 — resolution: NFCorpus
+### Question 1 — resolution: NFCorpus ✅ DONE 2026-08-28
 
 | | SciFact | **NFCorpus** |
 |---|---|---|
@@ -168,10 +282,13 @@ real headroom. This does **not** test long documents; it tests whether our null 
 null or merely underpowered — which is the cheaper and arguably more urgent question, since every
 conclusion in this document rests on non-significant deltas.
 
+**Outcome:** genuinely null for the centroid, and the added resolution immediately paid for itself by
+exposing the MMR cost that SciFact measured as exactly zero.
+
 Note the graded qrels (11,758 judgments at level 1, 576 at level 2) change how nDCG behaves relative
 to SciFact's binary judgments.
 
-### Question 2 — long documents: FreshStack (godot), sampled
+### Question 2 — long documents: FreshStack (godot), sampled — STILL OUTSTANDING
 
 Already converted and on disk at `iverson-benchmark-corpora/freshstack/`. Mean 3,899.7 chars, **2.6x
 SciFact**, and only **32% single-chunk at the 2048-char default** versus SciFact's 87%. Its documents
@@ -201,7 +318,25 @@ collapsed qrels are valid and sufficient for this question.
 
 ## Open risk: deployed-artifact drift
 
-The stale-image incident above is unaddressed and will recur. Nothing in the harness establishes that
-the running API contains the code under test. A cheap guard: have `benchmark-query` log the API's
-build identity, or assert a known symbol, and record it in the run's metadata alongside the config
-label — so a run file carries evidence of what actually produced it.
+The stale-image incident above is **still unaddressed in the harness** and will recur. Nothing in
+the tooling establishes that the running API contains the code under test. A cheap guard: have
+`benchmark-query` log the API's build identity, or assert a known symbol, and record it in the run's
+metadata alongside the config label — so a run file carries evidence of what actually produced it.
+
+The NFCorpus run worked around it by hand, and the workaround is worth recording as the interim
+procedure: before the run, `Iverson.Embeddings.dll` was extracted from the live container with
+`docker cp` and searched for the UTF-16 literals `search_document: ` and `search_query: `. Both were
+present. This is a manual check that must be repeated after every rebuild until the guard exists.
+
+## Reproducibility check
+
+The NFCorpus reference configuration was re-run after the sweep, on a fully settled collection, as a
+control. It reproduced **bit-identically** — same documents, same ranks, all 323 queries, on both
+`SearchChunks` and `SearchSimilar` (delta 0.0000, t = 0.00, 323 ties on every measure).
+
+This matters because the sweep's first run executed seconds after the ingest finished, while Qdrant
+was still building indexes on the chunks collection (13,341 of 14,729 vectors indexed), and the
+headline MMR result compares that first run against the last. The control rules out an indexing
+artifact. Note also that the object collection reports `indexed_vectors: 0` — below Qdrant's
+20,000-vector HNSW threshold it serves exact brute-force search, so `SearchSimilar` results are
+exact rather than approximate.
