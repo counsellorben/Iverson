@@ -126,41 +126,78 @@ mostly say the same thing. A document covering several distinct topics should pr
 represents none of them well, and *that* is where a whole-document signal should begin costing
 precision.
 
-## Next experiments: a long-document corpus
+## Next experiments: two corpora, two questions
 
-SciFact is exhausted as an instrument. Two properties limit it, and the second matters more than
-document length:
+SciFact is exhausted as an instrument, for two reasons — and **measurement showed the second one
+matters more, and that the first is not fixable within BEIR.**
 
-1. **Documents are short.** 87% were a single chunk at the 2048-char default, making the centroid a
-   degenerate copy of the object vector — it could not be evaluated at all until the 512-char run.
-2. **1.1 relevant documents per query.** With one relevant document and 50 slots, R@50 is nearly
+1. **1.1 relevant documents per query.** With one relevant document and 50 slots, R@50 is nearly
    binary per query: it saturates at 0.93 and resolves almost nothing. This is why every effect in
-   this project has been ~0.005–0.017 with t < 2.5.
+   this project landed at ~0.005-0.017 with t < 2.5.
+2. **Documents are short**, so the centroid was a degenerate copy of the object vector for 87% of
+   documents at the 2048-char default.
 
-### Recommendation: NFCorpus
+### Measured document lengths — BEIR is a SHORT-document benchmark
 
-| | SciFact | **NFCorpus** | TREC-COVID | FiQA | SCIDOCS |
-|---|---|---|---|---|---|
-| test queries | 300 | **323** | 50 | 648 | 1,000 |
-| corpus | 5.2K | **3.6K** | 171K | 57K | 25K |
-| **relevant docs / query** | 1.1 | **38.2** | 493.5 | 2.6 | 4.9 |
+Downloaded and measured 2026-08-28. **SciFact already has among the longest documents in BEIR**,
+which inverts the original premise of this section:
 
-NFCorpus wins on the axis that actually binds. **38.2 relevant documents per query against SciFact's
-1.1** turns R@50 from a near-binary indicator into a graded measure with real headroom — roughly a
-35-fold increase in relevance signal per query, at comparable query count. Its corpus is also
-*smaller* than SciFact's, so a full ingest is cheaper than the runs already completed, with no
-sampling and therefore full comparability to published numbers.
+| corpus | docs | mean chars | median | p90 |
+|---|---|---|---|---|
+| NFCorpus | 3,633 | 1,591.8 | 1,616 | 2,124 |
+| SciFact (current) | 5,183 | 1,500.4 | ~1,400 | — |
+| TREC-COVID | 171,332 | 1,118.7 | 1,175 | 2,052 |
+| FiQA | 57,638 | 767.2 | 522 | 1,551 |
+| **FreshStack (godot)** | **25,458** | **3,899.7** | **3,732** | **7,563** |
 
-TREC-COVID and Touché-2020 have the longest documents but only ~50 test queries, which is worse
-statistical power than the setup that already failed to resolve most effects. They should not be
-used for measuring small deltas.
+BEIR corpora are abstracts, forum posts and passages. **No BEIR corpus tests the long-document
+hypothesis.** NFCorpus at 2048-char chunks is 86% single-chunk — reproducing the exact degeneracy
+that made the centroid unmeasurable on SciFact.
 
-**Verify before committing:** NFCorpus's document-length distribution is assumed longer than
-SciFact's but has not been measured here. The pre-flight check is the chunk-count model already used
-in this project — run the corpus through the chunk window and confirm the mean chunks/document is
-comfortably above 1 and that `250 / mean-chunks-per-doc` stays above the 50-document budget. Note
-also that NFCorpus qrels are graded (multi-level), unlike SciFact's binary judgments, which changes
-how nDCG behaves.
+### Question 1 — resolution: NFCorpus
+
+| | SciFact | **NFCorpus** |
+|---|---|---|
+| test queries | 300 | 323 |
+| corpus | 5,183 | **3,633** (cheaper than runs already done) |
+| **relevant docs / query** | 1.1 | **38.2** |
+| relevance levels | binary | **graded (1 and 2)** |
+
+38.2 relevant documents per query turns R@50 from a near-binary indicator into a graded measure with
+real headroom. This does **not** test long documents; it tests whether our null results are genuinely
+null or merely underpowered — which is the cheaper and arguably more urgent question, since every
+conclusion in this document rests on non-significant deltas.
+
+Note the graded qrels (11,758 judgments at level 1, 576 at level 2) change how nDCG behaves relative
+to SciFact's binary judgments.
+
+### Question 2 — long documents: FreshStack (godot), sampled
+
+Already converted and on disk at `iverson-benchmark-corpora/freshstack/`. Mean 3,899.7 chars, **2.6x
+SciFact**, and only **32% single-chunk at the 2048-char default** versus SciFact's 87%. Its documents
+are technical documentation — heterogeneous and multi-topic, which is precisely the case where a
+whole-document centroid should represent no single topic well and begin costing precision.
+
+Measured properties: 99 queries; **585 relevant (qid, docid) pairs after a `rel = max` collapse over
+nuggets — 5.9 per query**, 5.4x SciFact's density; only **449 distinct relevant documents**, so
+`sample_corpus.py --target-size` can cut the corpus to ~3,000 documents while keeping every judged
+one. At 2.62 chunks/document that is roughly 9,900 embed calls, about 5 hours — affordable, unlike
+the full 25,458-document corpus (~43 hours).
+
+Two caveats, both known:
+
+- **The qrels are nugget-scoped and must be collapsed before use.** One `(qid, docid)` pair appears
+  once per nugget, and `ir_measures` resolves duplicates last-wins by file order, so a query-level
+  reader silently misreads relevance. The fix is the documented `rel = max` collapse (~6 lines,
+  mirroring upstream's own `qrels_query`). **Emit that file before any FreshStack scoring run.**
+- 99 queries is fewer than SciFact's 300, so the paired test has less power per unit effect. That is
+  acceptable only if the effect is larger here — which is the hypothesis being tested. If FreshStack
+  also returns null, the honest reading is that the centroid's precision cost is small everywhere,
+  not that the corpus was wrong.
+
+α-nDCG, the measure FreshStack's subtopic structure actually calls for, remains uncomputable on this
+machine (`pyndeval` has no Python 3.14 wheel and there is no C toolchain). R@50 and nDCG@10 over
+collapsed qrels are valid and sufficient for this question.
 
 ## Open risk: deployed-artifact drift
 
