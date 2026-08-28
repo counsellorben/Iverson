@@ -86,6 +86,18 @@ One-directional on chunks: no query gained. Mechanically coherent — a whole-do
 passages cannot sharpen which of the top 10 is best, but it keeps documents whose relevance is spread
 thinly across several passages from falling out of the candidate set.
 
+> **⚠️ Retracted 2026-08-28.** The R@50 row does not survive an assumption-free test. **Only 5 of 300
+> queries changed at all**; the other 295 deltas are exactly zero, and a paired *t*-test on a
+> distribution that is 98.3% zeros badly violates its own normality assumption. A sign-flip
+> permutation test over the same per-query deltas gives **p = 0.063**, against the *t*-test's
+> p = 0.025. The observed −0.0167 also sits below this study's minimum detectable effect at 80%
+> power (0.0188).
+>
+> This was the only evidence that the centroid buys recall, and it is the observation the design
+> below was built on. It should not be treated as a finding. The honest summary across both corpora
+> is that **the centroid has no demonstrated effect on ranking quality in either direction** — and
+> NFCorpus, which appeared to contradict SciFact, in fact agrees with it.
+
 ### MMR λ
 
 λ 0.70 → 1.00 (diversification off) leaves chunks R@50 and nDCG@10 **identical to four decimals**
@@ -138,10 +150,40 @@ removing it **gains** recall and **costs** precision. Both nDCG@10 deltas and bo
 are non-significant; only SciFact's R@50 result reached |t| = 2.25, and that does not survive
 correction either.
 
-**This is the finding that settles the proposed design.** The design assumes a fixed direction — the
-centroid buys recall at the price of precision — and scales it by `top_k`. That premise does not
-survive contact with a second corpus: on NFCorpus the trade runs the other way, so a `top_k`
-schedule tuned on SciFact would be pointed backwards. There is no stable sign to condition on.
+**This is the finding that settles the proposed design** — and the re-analysis above settles it
+harder. The design assumes a fixed direction: the centroid buys recall at the price of precision,
+scaled by `top_k`. Two things now falsify that premise. On NFCorpus the trade runs the *other* way,
+so a `top_k` schedule fitted to SciFact would be pointed backwards. And SciFact's recall benefit —
+the observation that motivated the design at all — **does not survive a permutation test** (p = 0.063
+on 5 changed queries out of 300). There is no stable sign to condition on because there is no
+demonstrated effect to condition on.
+
+### Statistical re-analysis (2026-08-28)
+
+Every run file was re-analysed with exact paired *t*-tests, **sign-flip permutation tests** (no
+normality assumption), 95% confidence intervals, Cohen's *d_z*, Holm-Bonferroni correction, and
+minimum detectable effect at 80% power. No experiment was re-run: significance is analysis over the
+preserved run files.
+
+| check | outcome |
+|---|---|
+| *t*-test vs permutation, NFCorpus | agree to 3 decimals — normality was fine where deltas are dense |
+| *t*-test vs permutation, SciFact R@50 | **disagree** (0.025 vs 0.063) — deltas are 98.3% zeros |
+| Bonferroni vs Holm | no verdict changes on any comparison |
+| bpref as a fourth measure | **useless here** — see below |
+| MDE at n = 323 (NFCorpus) | 0.0080 nDCG@10 / 0.0069 R@50 / 0.0029 AP |
+| MDE at n = 300 (SciFact) | 0.0152 nDCG@10 / 0.0188 R@50 / 0.0176 AP |
+
+**bpref cannot help on BEIR.** It was added to guard against shallow judging, but bpref is defined
+over *judged non-relevant* documents — and neither corpus has a single `rel=0` row (SciFact: 339
+rows, all rel=1; NFCorpus: 12,334 rows, all rel≥1). With no judged negatives the formula reduces
+algebraically to recall, and it reproduced R@50 to six decimal places. Any measure robust to
+incomplete judgments needs qrels that record negatives; BEIR's do not.
+
+**The *t*-test was the right tool except where the deltas are degenerate.** Its failure mode here is
+specific and identifiable in advance: when a change moves only a handful of queries, the per-query
+delta distribution is a spike at zero with a few outliers, and the *t*-test overstates significance.
+Report a permutation test alongside whenever fewer than ~10% of queries change.
 
 ### Underpowered, or genuinely null?
 
