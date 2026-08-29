@@ -93,7 +93,7 @@ matchable by queries but showing no text — cannot be written either. Same defe
 | # | Assumption | Evidence |
 |---|---|---|
 | A1 | `SplitIntoChunks` is the only chunker in production code | one hit for `LastIndexOf(' '` outside worktrees: `IntelligenceStoreConsumer.cs:663` |
-| A2 | `step ≤ maxChars` and `step > 0` always, so windows cover every character | `step = max(maxChars − overlapChars, maxChars/2)`; zero violations across `maxTokens`×`overlap` = 600×600. Hence any field with one non-whitespace character still yields ≥1 non-empty chunk — the filter can never produce an empty chunk list |
+| A2 | `step ≤ maxChars` and `step > 0` always, so the window loop terminates and makes forward progress | `step = max(maxChars − overlapChars, maxChars/2)`; zero violations across `maxTokens`×`overlap` = 600×600. This does **not** establish gapless coverage: the word-boundary adjustment (`IntelligenceStoreConsumer.cs:661-664`) pulls `end` back by up to 50 characters, so coverage is gapless only when `step ≤ maxChars − 50`. Every configuration in use satisfies it (default 2048/1792; benchmark 512/448), but `overlap = 0` — reachable, since `SchemaBuilder.cs:70-72` passes `ChunkOverlap` through unvalidated, unlike the document path's default at `:157` — drops up to 50 characters per boundary (measured: 13 at `maxTokens 128`). A zero-overlap chunk field can therefore yield an empty chunk list |
 | A3/A6 | No caller indexes chunks positionally or depends on their count | only uses are `chunkResults.Length` (`:262`) and `chunks.Count` (`:329`), both for logging |
 | A4 | No existing test asserts a chunk count that this changes | `ChunkSplitting_ProducesMultipleChunks_ForLongText` uses `new string('a', 3000)` — no whitespace, so no empty windows |
 | A5 | Nothing reads `chunk_index` back | written at `:297`; elsewhere only as a reserved-key name in `SchemaBuilder.cs:26` and `SchemaRegistrationOrchestrator.cs:603` |
@@ -105,6 +105,7 @@ matchable by queries but showing no text — cannot be written either. Same defe
 | A15 | Tests can reach a private static member without changing production visibility | `InternalsVisibleTo("Iverson.Api.Tests")` in `Iverson.Api.csproj:10`, and `GetMethod("ComputeChunkPointId", BindingFlags.NonPublic \| BindingFlags.Static)` at `IntelligenceStoreConsumerTests.cs:765` |
 | A16 | The embedding tests can assert that no HTTP request was issued | `FakeHttpMessageHandler.LastRequest` at `EmbeddingServiceTests.cs:16` |
 | A14 | **FAILED.** Default chunk window is not 512/448 | `SchemaBuilder.cs:156-157`: defaults are `maxTokens 512`, `overlap 64` → `maxChars 2048`, `step 1792`. 512/448 is the *benchmark's* `128/16`. Fix is mechanical: the chunker test passes explicit parameters |
+| A19 | The zero-chunk state the filter can now produce is safe downstream | `Task.WhenAll` on an empty task list completes normally (`:249`); the centroid write is gated on `centroidInput.Count > 0` (`:287`), so `ComputeCentroid` — which throws on an empty list — never receives one; the chunk upsert sits inside the `foreach` over `chunkResults` (`:290`), so no empty-list write is issued; `chunks.Count` feeds only a log line (`:329`) |
 
 ## Not doing: a backfill
 
