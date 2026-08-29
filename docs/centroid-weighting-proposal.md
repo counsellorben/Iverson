@@ -18,6 +18,11 @@ Measured on BEIR SciFact (2026-08-28), the centroid **improves recall and is neu
 That asymmetry suggested exposing the trade-off to callers, since a caller fetching 10 results for
 display wants different behaviour from one fetching 200 to feed a reranker.
 
+**Superseded 2026-08-28 — see "FreshStack results" below.** On a corpus with 10.79 chunks per
+document the centroid is decisively significant on every measure, and the optimum sits above the
+shipped weight. The conclusion that follows was drawn from two short-document corpora and does not
+generalise.
+
 **It should not be exposed, because there is no stable trade-off to expose.** A second corpus
 (NFCorpus, 2026-08-28) with 35x SciFact's judgment density reverses the asymmetry's direction: there
 the centroid *helps* precision and is flat-to-negative on recall. Neither corpus resolves the effect
@@ -228,6 +233,104 @@ answered with a diversity measure (α-nDCG or subtopic recall) rather than assum
 
 The cheapest honest next step is not a λ change. It is to make the cost visible where it is paid:
 `SearchChunks` demonstrably pays nothing, so if λ is ever tuned, it should be tuned per endpoint.
+
+## FreshStack results (2026-08-28) — the centroid is vindicated on long documents
+
+Five FreshStack topics combined (angular, godot, langchain, laravel, yolo): **672 queries**,
+6,000 documents (all 3,804 relevant + 2,196 judged hard negatives), 8.1 relevant/query, qrels
+collapsed with `rel = max` over nuggets. Mean 4,609 chars, **10.79 chunks/document** — 2.7x
+NFCorpus. `ChunkBudgetMultiplier` raised 5 -> 20 (at 10.79 chunks/doc the shipped 250-chunk budget
+reaches only ~23 documents against `DocumentBudget` 50, so R@50 would have measured the budget).
+Embedding model `snowflake-arctic-embed:s` (384d) — nomic needs 88 h on this corpus because it
+actually processes 2,048 tokens; arctic scores 51.98 MTEB Retrieval against nomic's 52.81 at 1/10
+the cost. Run files in `iverson-benchmark-corpora/freshstack-run-2026-08-28/runs/`.
+
+### The centroid ablation, at last significant — and in the direction nobody predicted
+
+`SearchChunks`, removing the centroid (w = 0.333 -> 0), n = 672:
+
+| measure | delta | 95% CI | t | p_perm | d_z |
+|---|---|---|---|---|---|
+| nDCG@10 | **-0.0263** | [-0.0329, -0.0196] | -7.74 | <0.0001 | -0.30 |
+| R@50 | **-0.0273** | [-0.0353, -0.0194] | -6.78 | <0.0001 | -0.26 |
+| AP | **-0.0199** | [-0.0244, -0.0153] | -8.59 | <0.0001 | -0.33 |
+| bpref | -0.0111 | [-0.0184, -0.0037] | -2.93 | 0.0018 | -0.11 |
+
+All Holm-significant, all CIs excluding zero, all well above this study's MDE (0.0069-0.0122).
+Permutation and *t*-test p-values agree to four decimals — deltas are dense here, so none of the
+SciFact degeneracy applies. Effects are **3-10x larger** than anything SciFact or NFCorpus produced.
+
+**This refutes the hypothesis this document was built on, in the opposite direction.** The prediction
+was that long heterogeneous documents are where a whole-document mean starts *costing precision*,
+because a centroid over many topics represents none of them. The opposite happened: the centroid
+helps precision *and* recall, more strongly than anywhere else. The mechanism that fits is that at
+10.79 chunks/document a single matching passage is weak evidence — one incidental passage in a long
+technical document — so the whole-document signal disambiguates. At SciFact's 3.96 and NFCorpus's
+4.05 chunks/doc, max-chunk and mean-chunk barely diverge; at 10.79 they separate sharply.
+
+### The shipped weight is miscalibrated for long documents
+
+`SearchChunks` sweep, absolute values:
+
+| w | nDCG@10 | R@50 | AP |
+|---|---|---|---|
+| 0.000 | 0.2379 | 0.4821 | 0.1675 |
+| 0.167 | 0.2541 | 0.4979 | 0.1796 |
+| **0.333 — shipped** | 0.2642 | 0.5094 | 0.1873 |
+| 0.500 | 0.2697 | **0.5181** | 0.1932 |
+| **0.667** | **0.2720** | 0.5175 | **0.1940** |
+| 1.000 | 0.2590 | 0.4994 | 0.1826 |
+
+Against the shipped w = 0.333, on the pre-declared primary endpoint **AP**: w = 0.500 is +0.0059
+(p = 0.0008) and w = 0.667 is +0.0067 (p = 0.0154), **both Holm-significant**. w = 1.000 is not
+better, so the curve is unimodal with an optimum near 0.5-0.667 — not at the shipped value.
+
+On SciFact and NFCorpus the optimum sat at 0.333. **The optimal centroid weight tracks chunks per
+document**, and the shipped constant is right for short corpora and too low for long ones.
+
+### This revives the design — conditioned on the wrong variable
+
+The proposal below scales the centroid by `top_k`. That premise is dead: `top_k` never predicted
+anything, and the retraction above removed the recall/precision trade it assumed. But the data now
+supports a *different* conditioning variable the design never considered — **chunks per document**,
+which the server knows at scoring time without any request-shape change at all. Three corpora give
+three points: 3.96 chunks/doc -> w 0.333, 4.05 -> 0.333, 10.79 -> 0.5-0.667.
+
+Three points is not a schedule, and two of them are nearly the same x value. This is a hypothesis
+worth a fourth corpus, not a change to ship.
+
+### MMR: the NFCorpus finding replicates, and more than doubles
+
+λ 0.70 -> 1.00 (diversification off), same collection, no re-ingest:
+
+| | nDCG@10 | R@50 | AP | bpref |
+|---|---|---|---|---|
+| `SearchChunks` | -0.0000 (t=-1.27) | **+0.0001 (t=0.05)** | +0.0002 (t=1.16) | +0.0004 (t=0.74) |
+| `SearchSimilar` | -0.0008 (t=-1.09) | **+0.0558 (t=9.69)** | +0.0075 (t=8.98) | +0.0144 (t=6.02) |
+
+`SearchChunks` is neutral to four decimals on every measure; `SearchSimilar` pays **12.8% of R@50**.
+NFCorpus measured +0.0216; FreshStack measures +0.0558 on 672 independent queries. **Two corpora,
+same direction, same endpoint split** — this is now a replicated finding, not a single result.
+
+The interpretation is unchanged and still binding: BEIR-style relevance judgments award no credit
+for diversity, so this measures MMR's price, never its benefit. What has changed is confidence that
+the price is real and endpoint-specific.
+
+### `SearchSimilar` centroid results — read with caution
+
+`SearchSimilar` shows much larger centroid effects (removing it costs R@50 -0.0615, t = -10.80;
+w = 1.000 gains +0.0572). **Do not read these as a general result.** `arctic-embed:s` truncates at
+512 tokens (~2,048 chars) on a corpus averaging 4,609, so the object vector literally sees less than
+half of each document while the chunk-mean centroid covers all of it. Much of this margin is
+measuring truncation, not the centroid's merit. `SearchChunks` never reads the object vector and is
+unaffected — which is why it, not `SearchSimilar`, carries the conclusions above.
+
+### Caveats that bound all of the above
+
+- Prefixes are still nomic's (`search_document: ` / `search_query: `), wrong for arctic. Symmetric
+  and ~4 tokens of 512, so small, but these numbers are not a fair read on absolute model quality.
+- `ChunkBudgetMultiplier` 20 and a different embedding model mean **absolute values are not
+  comparable to SciFact or NFCorpus**. Every comparison above is within-corpus, which is the question.
 
 ## The proposed design
 
