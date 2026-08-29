@@ -108,43 +108,44 @@ N documents out of `SearchChunks`. Worth documenting; **not** worth a proto chan
 
 ## Tier 3 — spike first, do not ship
 
-### 6. ~~Centroid weight conditioned on chunks per document~~ — REFUTED 2026-08-29
+### 6. Centroid weight conditioned on chunks per document — UNTESTED (an earlier "REFUTED" here was wrong)
 
-**Do not build this.** The control run killed it, and the ordering above is why it cost 2.3 h
-instead of 11.
+**Retraction.** This item was marked REFUTED earlier on 2026-08-29, on the strength of NFCorpus
+under arctic-embed:s giving optimal w = 1.000 where nomic gave 0.333 at identical chunk density —
+read as "the model drives the optimum." **That comparison was between a correctly configured model
+and a misconfigured one**, and the conclusion does not survive.
 
-NFCorpus re-ingested at the *same* 512-char chunking, *same* budget, *same* corpus and qrels, with
-**only the embedding model changed** (nomic 768d → arctic-embed:s 384d), n = 323:
+Arctic takes a query-side instruction (`Represent this sentence for searching relevant passages: `)
+and **no document prefix**. It was being run with nomic's prefixes on both sides. Fixing that, on
+identical NFCorpus inputs:
 
-| w | nomic nDCG@10 | arctic nDCG@10 |
-|---|---|---|
-| 0.000 | 0.3477 | 0.1285 |
-| **0.333 — shipped** | **0.3522** | 0.1673 |
-| 0.667 | 0.3446 | 0.2044 |
-| **1.000** | 0.3271 | **0.2236** |
+| w | nomic (correct) | arctic + nomic prefixes | arctic + no prefixes | **arctic (correct)** |
+|---|---|---|---|---|
+| 0.000 | 0.3477 | 0.1285 | 0.2210 | 0.3304 |
+| **0.167** | 0.3487 | 0.1492 | 0.2394 | **0.3325** |
+| 0.333 | **0.3522** | 0.1673 | 0.2560 | 0.3298 |
+| 0.667 | 0.3446 | 0.2044 | **0.2723** | 0.3208 |
+| 1.000 | 0.3271 | **0.2236** | 0.2661 | 0.3059 |
 
-Chunk density never moved (4.05 throughout). The optimum moved **all the way across the range**,
-0.333 → 1.000, on the model alone. Every step is Holm-significant (w = 1.000 vs shipped: +0.0563
-nDCG@10, t = 7.73).
+Two things follow, and they matter more than the original item.
 
-Adding ArguAna, all three of these run under the *same* model, so chunk density is the only thing
-varying between them:
+**The optimal centroid weight is monotone in how wrong the prefixes are** — mis-prefixed w = 1.000,
+unprefixed 0.667, correct 0.167. The mechanism is coherent: a badly encoded query degrades
+*chunk*-level matching more than document-level matching, because averaging over a document's chunks
+cancels noise the individual chunk vectors carry. **The centroid was acting as a crutch for
+misconfiguration.** Any observed "the centroid earns its weight" must therefore rule out encoder
+misconfiguration before it can be believed.
 
-| corpus | chunks/doc | optimal w |
-|---|---|---|
-| ArguAna | 2.80 | **0.000–0.167** |
-| NFCorpus | 4.05 | **1.000** |
-| FreshStack | 10.79 | **0.500–0.667** |
+**Model choice barely matters once configuration is right.** Correctly configured, arctic reaches
+0.3325 against nomic's 0.3522 — a 5.6% gap, matching published MTEB Retrieval parity (51.98 vs
+52.81) — and its curve has nomic's shape. So the "model drives the optimum" reading is dead, and
+with it the refutation that rested on it. **Chunks-per-document is neither confirmed nor refuted; it
+has never been tested under a correct configuration.**
 
-Non-monotonic, and the middle point is the extreme. **Optimal fusion weight is corpus-specific and
-is not predicted by chunks/document, by document length, or by anything else we have identified.**
-Three hypotheses have now died on three points each; the discipline this earns is to stop fitting
-curves to three points and to make the constant configurable instead (item 1).
-
-**This also puts the FreshStack headline in question.** "The centroid earns its weight decisively"
-was measured under arctic, and arctic shows the same pathological preference for the centroid on
-NFCorpus, where nomic shows the opposite. That result may be a property of the model, not of long
-documents. It has not been reproduced under nomic and should not be treated as settled.
+The one high-density point we have — FreshStack at 10.79 chunks/doc, optimal w = 0.5–0.667 — was
+measured mis-prefixed, and 0.5–0.667 is squarely in the range misconfiguration produces. Re-running
+FreshStack under the correct arctic configuration is the only way to know whether the sole evidence
+that the centroid ever significantly helps is real or an artifact.
 
 ### 7. Per-endpoint λ
 
