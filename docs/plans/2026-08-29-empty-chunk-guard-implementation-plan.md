@@ -66,6 +66,7 @@ Verified by `thorough-brainstorming` at spec-write time and NOT re-verified here
 | P23–P25 | Consumer impact | Adding the guard and the catch arm breaks no existing caller or test | Covered by inherited A4, A10, A13; additionally no test asserts the `"Embedding service unavailable"` message (only the two production sites contain it) and no test constructs an empty `Query` |
 | P26 | Sibling sweep | Every identifier the plan's code blocks name resolves at its point of use — `SplitIntoChunks`, `EmbedAsync`, `RpcException`, `Status`, `StatusCode`, `ArgumentException`, `FakeHttpMessageHandler`, `IntelligenceStoreConsumer`, `BindingFlags` | each confirmed above or BCL |
 | P27 | Sibling sweep | The NSubstitute throw idiom and the status assertion the plan reuses in both gRPC tests already exist in the target file | `.Returns<Task<T>>(_ => throw …)` at `:517` and `:612`; `ThrowAsync<RpcException>().Where(e => e.Status.StatusCode == …)` at `:1017` |
+| P28 | Test fixture | The gRPC tests must register a schema **and** name a type/property that is actually an embedded field, or they never reach `EmbedAsync` | `ObjectSearchGrpcServiceTests.cs:1069` and `:1363` — every working embedding test opens with `await _registry.RegisterAsync(SchemaFixtures.ArticleSchema());`. `SchemaFixtures.cs:66-67` — `ArticleSchema()` declares `VectorFields = [Title]`, `ChunkFields = [Body]`; `AuthorSchema()` (`:44-45`) declares both empty and is itself the not-a-vector-property negative fixture at `:1024-1032` |
 
 ## Tasks
 
@@ -175,12 +176,14 @@ In `ObjectSearchGrpcServiceTests`, one per endpoint — the fix is made at two c
     [Fact]
     public async Task SearchSimilar_ThrowsInvalidArgument_WhenQueryIsEmpty()
     {
+        await _registry.RegisterAsync(SchemaFixtures.ArticleSchema());
+
         _embedding.EmbedAsync("", Arg.Any<CancellationToken>())
             .Returns<Task<float[]>>(_ => throw new ArgumentException("Cannot embed empty input.", "text"));
 
         var (writer, _) = MakeStream<SearchResponse>();
         var act = async () => await _sut.SearchSimilar(
-            new SearchSimilarRequest { TypeName = "Author", Property = "Name", Query = "" },
+            new SearchSimilarRequest { TypeName = "Article", Property = "Title", Query = "" },
             writer, TestServerCallContext.Create());
 
         await act.Should().ThrowAsync<RpcException>()
@@ -195,10 +198,12 @@ And the `SearchChunks` counterpart, on the registered chunk field its neighbouri
     [Fact]
     public async Task SearchChunks_ThrowsInvalidArgument_WhenQueryIsEmpty()
     {
+        await _registry.RegisterAsync(SchemaFixtures.ArticleSchema());
+
         _embedding.EmbedAsync("", Arg.Any<CancellationToken>())
             .Returns<Task<float[]>>(_ => throw new ArgumentException("Cannot embed empty input.", "text"));
 
-        var (writer, _) = MakeStream<SearchResponse>();
+        var (writer, _) = MakeStream<ChunkSearchResponse>();
         var act = async () => await _sut.SearchChunks(
             new SearchChunksRequest { TypeName = "Article", Property = "Body", Query = "" },
             writer, TestServerCallContext.Create());
