@@ -92,9 +92,59 @@ N documents out of `SearchChunks`. Worth documenting; **not** worth a proto chan
 
 The request-scaled design, revived on a different variable. `top_k` never predicted anything, but
 chunks/document has three data points: 3.96 → 0.333, 4.05 → 0.333, 10.79 → 0.5–0.667. **Two of the
-three sit at nearly the same x.** That is a hypothesis, not a schedule. It needs a fourth corpus at
-an intermediate chunk density (~6–8 chunks/doc) before any curve is fitted. The server already knows
+three sit at nearly the same x.** That is a hypothesis, not a schedule. The server already knows
 chunks/document at scoring time, so no request-shape change would be required if it survives.
+
+#### Fill the gap by re-chunking, not by finding a corpus
+
+Two rival explanations fit the three points equally well, and **a new corpus cannot separate them**
+because it varies both at once:
+
+- **H1 — chunks per document.** More chunks means any single matching passage is weaker evidence, so
+  the document-level signal earns more weight.
+- **H2 — document length / topical heterogeneity.** Longer documents are simply different, and chunk
+  count is incidental.
+
+Re-chunking an existing corpus varies chunks/document **while holding the documents themselves
+fixed**, which discriminates the two. Three pairs land in the 6–8 window, all already ingested and
+scored, so each has a known answer at its shipped chunk size:
+
+| corpus | chunks/doc at 256 | 512 (shipped) | 768 | known optimum |
+|---|---|---|---|---|
+| SciFact | **7.20** | 3.85 | 2.62 | w = 0.333 at 3.96 |
+| NFCorpus | **7.60** | 4.05 | 2.76 | w = 0.333 at 4.05 |
+| FreshStack | 21.08 | 10.79 | **7.05** | w = 0.5–0.667 at 10.79 |
+
+**Run it as a crossover.** NFCorpus at 256-char chunks moves 4.05 → 7.60 from below; FreshStack at
+768-char chunks moves 10.79 → 7.05 from above. Same documents in both cases, only granularity changes.
+
+- If both optima **converge** near the same w at ~7 chunks/doc — approaching from opposite
+  directions, at different absolute chunk sizes (256 vs 768) — H1 is strongly supported, and that
+  convergence is hard to explain by any chunk-semantics artifact.
+- If **neither moves**, chunk count is not the variable and H2 (document length) is.
+
+Cost: NFCorpus @ 256 is ~3 h and is the cheapest decisive test; FreshStack @ 768 is ~8 h and is the
+confirmatory arm. Both need the C# chunk window changed and `ingest-contract.json` regenerated — the
+same path already used for the 2048 → 512 change.
+
+**Known confound:** re-chunking also changes what a chunk *means* (a 256-char chunk is a small
+semantic unit). The crossover mitigates this rather than eliminating it; a result where both arms
+move toward each other is much harder to attribute to chunk semantics than either arm alone.
+
+#### Why not simply find a corpus
+
+Checked and rejected. BEIR has nothing in the window — SciFact and NFCorpus are among its longest.
+BRIGHT's `documents` average ~900 bytes/row (~2 chunks) and its `long_documents` ~56 KB/row (~125
+chunks); Touché-2020 is ~1,773 bytes/row and ships **49 queries**, far too few for any effect at this
+scale.
+
+There is also a selection trap worth recording. A first attempt tried to get the point free by
+decomposing the existing FreshStack run by topic, since the full per-topic corpora span 6.16
+(laravel) to 11.16 (yolo) chunks/doc. It fails: **judged documents are ~1.6x longer than the corpus
+average** — angular's corpus mean is 2,854 chars but its relevant documents average 4,553 — so inside
+the ingested sample every topic sits at 9.7–12.8 chunks/doc and the low-density group is empty. Any
+corpus selected for this experiment must be screened on the length of its **judged** documents, not
+its corpus mean.
 
 ### 7. Per-endpoint λ
 
