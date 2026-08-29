@@ -188,7 +188,25 @@ In `ObjectSearchGrpcServiceTests`, one per endpoint — the fix is made at two c
     }
 ```
 
-Add the `SearchChunks` counterpart using that endpoint's request type and the registered chunk-field type/property its neighbouring tests already use.
+And the `SearchChunks` counterpart, on the registered chunk field its neighbouring tests use
+(`Article` / `Body`, per `ObjectSearchGrpcServiceTests.cs:1377`):
+
+```csharp
+    [Fact]
+    public async Task SearchChunks_ThrowsInvalidArgument_WhenQueryIsEmpty()
+    {
+        _embedding.EmbedAsync("", Arg.Any<CancellationToken>())
+            .Returns<Task<float[]>>(_ => throw new ArgumentException("Cannot embed empty input.", "text"));
+
+        var (writer, _) = MakeStream<SearchResponse>();
+        var act = async () => await _sut.SearchChunks(
+            new SearchChunksRequest { TypeName = "Article", Property = "Body", Query = "" },
+            writer, TestServerCallContext.Create());
+
+        await act.Should().ThrowAsync<RpcException>()
+            .Where(e => e.Status.StatusCode == StatusCode.InvalidArgument);
+    }
+```
 
 - [ ] **Step 2: Run both and watch them fail**
 
