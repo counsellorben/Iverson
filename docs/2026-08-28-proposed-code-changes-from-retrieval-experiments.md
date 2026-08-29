@@ -24,6 +24,12 @@ difference is **significant in both directions**:
 
 Same change, opposite sign, both significant. Any constant is wrong for half the deployments.
 
+**The model control makes this far stronger.** On one corpus, holding chunking, budget, corpus and
+qrels fixed and changing *only* the embedding model moves the optimum from w = 0.333 to w = 1.000
+(+0.0563 nDCG@10, t = 7.73). The optimal weight is not a property of the corpus alone — it is a
+property of the corpus *and the model*, and it swings across the entire range. A compile-time
+constant cannot survive an embedding-model upgrade, which is a thing deployments do.
+
 **Proposal:** bind these to an options class from configuration. **Keep the defaults exactly as
 shipped** (0.60 / 0.30 / 0.10, λ 0.70) — this change enables tuning, it does not retune anything.
 
@@ -48,6 +54,20 @@ with nomic's pair configured wherever nomic is configured. **Same values today, 
 re-ingest to correct. The drift gate in `IngestContractTests` already pins the document prefix into
 `ingest-contract.json`; that gate must extend to whatever the configured value is, or it becomes
 vacuous.
+
+**Evidence that mis-prefixing is not benign — a judgement of mine that was wrong.** Running arctic
+with nomic's prefixes was waved through as "symmetric, ~4 tokens of 512, negligible." Measured on
+NFCorpus, best-configuration against best-configuration, arctic reaches nDCG@10 0.2236 against
+nomic's 0.3522 — **37% relative worse** — despite published MTEB Retrieval parity (51.98 vs 52.81).
+The pattern across corpora points at the prefixes specifically: arctic is competitive on **ArguAna**
+(0.5670), a *symmetric* task where query and document are both documents and a wrong prefix hurts
+both sides equally, and collapses on **NFCorpus**, an *asymmetric* short-query task where the query
+encoding carries the burden. That is what a broken query-side instruction looks like.
+
+**Cheap falsification available:** re-ingest NFCorpus under arctic with prefixes disabled (~2.3 h).
+If quality recovers toward nomic's, the prefixes caused the collapse and this item moves to Tier 1
+urgent. Until that runs, arctic-derived numbers — including all of FreshStack — carry an untested
+confound.
 
 ## Tier 2 — harness and tooling; cheap, and each prevents a real error that already happened
 
@@ -88,92 +108,43 @@ N documents out of `SearchChunks`. Worth documenting; **not** worth a proto chan
 
 ## Tier 3 — spike first, do not ship
 
-### 6. Centroid weight conditioned on chunks per document
+### 6. ~~Centroid weight conditioned on chunks per document~~ — REFUTED 2026-08-29
 
-The request-scaled design, revived on a different variable. `top_k` never predicted anything, but
-chunks/document has three data points: 3.96 → 0.333, 4.05 → 0.333, 10.79 → 0.5–0.667. **Two of the
-three sit at nearly the same x.** That is a hypothesis, not a schedule. The server already knows
-chunks/document at scoring time, so no request-shape change would be required if it survives.
+**Do not build this.** The control run killed it, and the ordering above is why it cost 2.3 h
+instead of 11.
 
-#### ⚠️ The three points are confounded — read this before designing anything on them
+NFCorpus re-ingested at the *same* 512-char chunking, *same* budget, *same* corpus and qrels, with
+**only the embedding model changed** (nomic 768d → arctic-embed:s 384d), n = 323:
 
-| corpus | chunks/doc | model | chunk budget | optimal w |
-|---|---|---|---|---|
-| SciFact | 3.96 | nomic-embed-text, 768d | x5 | 0.333 |
-| NFCorpus | 4.05 | nomic-embed-text, 768d | x5 | 0.333 |
-| FreshStack | 10.79 | **snowflake-arctic-embed:s, 384d** | **x20** | **0.5–0.667** |
+| w | nomic nDCG@10 | arctic nDCG@10 |
+|---|---|---|
+| 0.000 | 0.3477 | 0.1285 |
+| **0.333 — shipped** | **0.3522** | 0.1673 |
+| 0.667 | 0.3446 | 0.2044 |
+| **1.000** | 0.3271 | **0.2236** |
 
-The one point where the optimum moved is also the one point where the **embedding model** and the
-**chunk budget** changed. Three variables move together, so "optimal w tracks chunks/document" is
-only one reading of this table; "arctic-s wants more centroid weight than nomic" fits it exactly as
-well, and so does the budget change. **No schedule may be fitted to these points, and the
-re-chunking crossover below is worthless until the confound is broken.**
+Chunk density never moved (4.05 throughout). The optimum moved **all the way across the range**,
+0.333 → 1.000, on the model alone. Every step is Holm-significant (w = 1.000 vs shipped: +0.0563
+nDCG@10, t = 7.73).
 
-#### Fill the gap by re-chunking, not by finding a corpus
+Adding ArguAna, all three of these run under the *same* model, so chunk density is the only thing
+varying between them:
 
-Two rival explanations fit the three points equally well, and **a new corpus cannot separate them**
-because it varies both at once:
+| corpus | chunks/doc | optimal w |
+|---|---|---|
+| ArguAna | 2.80 | **0.000–0.167** |
+| NFCorpus | 4.05 | **1.000** |
+| FreshStack | 10.79 | **0.500–0.667** |
 
-- **H1 — chunks per document.** More chunks means any single matching passage is weaker evidence, so
-  the document-level signal earns more weight.
-- **H2 — document length / topical heterogeneity.** Longer documents are simply different, and chunk
-  count is incidental.
+Non-monotonic, and the middle point is the extreme. **Optimal fusion weight is corpus-specific and
+is not predicted by chunks/document, by document length, or by anything else we have identified.**
+Three hypotheses have now died on three points each; the discipline this earns is to stop fitting
+curves to three points and to make the constant configurable instead (item 1).
 
-Re-chunking an existing corpus varies chunks/document **while holding the documents themselves
-fixed**, which discriminates the two. Three pairs land in the 6–8 window, all already ingested and
-scored, so each has a known answer at its shipped chunk size:
-
-| corpus | chunks/doc at 256 | 512 (shipped) | 768 | known optimum |
-|---|---|---|---|---|
-| SciFact | **7.20** | 3.85 | 2.62 | w = 0.333 at 3.96 |
-| NFCorpus | **7.60** | 4.05 | 2.76 | w = 0.333 at 4.05 |
-| FreshStack | 21.08 | 10.79 | **7.05** | w = 0.5–0.667 at 10.79 |
-
-**Run it as a crossover.** NFCorpus at 256-char chunks moves 4.05 → 7.60 from below; FreshStack at
-768-char chunks moves 10.79 → 7.05 from above. Same documents in both cases, only granularity changes.
-
-- If both optima **converge** near the same w at ~7 chunks/doc — approaching from opposite
-  directions, at different absolute chunk sizes (256 vs 768) — H1 is strongly supported, and that
-  convergence is hard to explain by any chunk-semantics artifact.
-- If **neither moves**, chunk count is not the variable and H2 (document length) is.
-
-**Order of operations — the control comes first.** Because of the confound above, the cheapest
-informative run is not the 256-char treatment but a model control at the *shipped* chunk size:
-
-1. **NFCorpus @ 512 under arctic-s (~2.3 h).** Identical to the existing NFCorpus run in every
-   respect except the model. If the optimum stays at w = 0.333, the model is not the explanation and
-   chunk density survives as a hypothesis. If it moves to ~0.5, **the FreshStack shift was the model
-   all along** and this whole line of work is dead — for 2.3 h rather than 11.
-2. **Re-sweep that same collection at `ChunkBudgetMultiplier` = 12 (~35 min, no re-ingest).** The
-   multiplier is query-side only. This supplies a budget-matched baseline for step 3, which needs it:
-   at 256-char chunks NFCorpus reaches 7.60 chunks/doc, where x5 covers only ~33 documents against a
-   `DocumentBudget` of 50 — the starvation trap again.
-3. **NFCorpus @ 256 under arctic-s (~3 h)**, swept at multiplier 12 and compared against step 2. Only
-   then are model, budget and corpus all held fixed while chunk density varies.
-
-FreshStack @ 768 (~8 h) remains the confirmatory crossover arm, and is worth running only if step 3
-shows movement. Steps 1–3 total ~6 h of ingest plus ~1.5 h of sweeps. Steps 1 and 2 need no code
-change at all; only step 3 needs the C# chunk window changed and `ingest-contract.json` regenerated,
-by the same path already used for the 2048 → 512 change.
-
-**Known confound:** re-chunking also changes what a chunk *means* (a 256-char chunk is a small
-semantic unit). The crossover mitigates this rather than eliminating it; a result where both arms
-move toward each other is much harder to attribute to chunk semantics than either arm alone.
-
-#### Why not simply find a corpus
-
-Checked and rejected. BEIR has nothing in the window — SciFact and NFCorpus are among its longest.
-BRIGHT's `documents` average ~900 bytes/row (~2 chunks) and its `long_documents` ~56 KB/row (~125
-chunks); Touché-2020 is ~1,773 bytes/row and ships **49 queries**, far too few for any effect at this
-scale.
-
-There is also a selection trap worth recording. A first attempt tried to get the point free by
-decomposing the existing FreshStack run by topic, since the full per-topic corpora span 6.16
-(laravel) to 11.16 (yolo) chunks/doc. It fails: **judged documents are ~1.6x longer than the corpus
-average** — angular's corpus mean is 2,854 chars but its relevant documents average 4,553 — so inside
-the ingested sample every topic sits at 9.7–12.8 chunks/doc and the low-density group is empty. Any
-corpus selected for this experiment must be screened on the length of its **judged** documents, not
-its corpus mean.
+**This also puts the FreshStack headline in question.** "The centroid earns its weight decisively"
+was measured under arctic, and arctic shows the same pathological preference for the centroid on
+NFCorpus, where nomic shows the opposite. That result may be a property of the model, not of long
+documents. It has not been reproduced under nomic and should not be treated as settled.
 
 ### 7. Per-endpoint λ
 
