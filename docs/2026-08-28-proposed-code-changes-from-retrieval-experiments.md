@@ -95,6 +95,20 @@ chunks/document has three data points: 3.96 → 0.333, 4.05 → 0.333, 10.79 →
 three sit at nearly the same x.** That is a hypothesis, not a schedule. The server already knows
 chunks/document at scoring time, so no request-shape change would be required if it survives.
 
+#### ⚠️ The three points are confounded — read this before designing anything on them
+
+| corpus | chunks/doc | model | chunk budget | optimal w |
+|---|---|---|---|---|
+| SciFact | 3.96 | nomic-embed-text, 768d | x5 | 0.333 |
+| NFCorpus | 4.05 | nomic-embed-text, 768d | x5 | 0.333 |
+| FreshStack | 10.79 | **snowflake-arctic-embed:s, 384d** | **x20** | **0.5–0.667** |
+
+The one point where the optimum moved is also the one point where the **embedding model** and the
+**chunk budget** changed. Three variables move together, so "optimal w tracks chunks/document" is
+only one reading of this table; "arctic-s wants more centroid weight than nomic" fits it exactly as
+well, and so does the budget change. **No schedule may be fitted to these points, and the
+re-chunking crossover below is worthless until the confound is broken.**
+
 #### Fill the gap by re-chunking, not by finding a corpus
 
 Two rival explanations fit the three points equally well, and **a new corpus cannot separate them**
@@ -123,9 +137,24 @@ scored, so each has a known answer at its shipped chunk size:
   convergence is hard to explain by any chunk-semantics artifact.
 - If **neither moves**, chunk count is not the variable and H2 (document length) is.
 
-Cost: NFCorpus @ 256 is ~3 h and is the cheapest decisive test; FreshStack @ 768 is ~8 h and is the
-confirmatory arm. Both need the C# chunk window changed and `ingest-contract.json` regenerated — the
-same path already used for the 2048 → 512 change.
+**Order of operations — the control comes first.** Because of the confound above, the cheapest
+informative run is not the 256-char treatment but a model control at the *shipped* chunk size:
+
+1. **NFCorpus @ 512 under arctic-s (~2.3 h).** Identical to the existing NFCorpus run in every
+   respect except the model. If the optimum stays at w = 0.333, the model is not the explanation and
+   chunk density survives as a hypothesis. If it moves to ~0.5, **the FreshStack shift was the model
+   all along** and this whole line of work is dead — for 2.3 h rather than 11.
+2. **Re-sweep that same collection at `ChunkBudgetMultiplier` = 12 (~35 min, no re-ingest).** The
+   multiplier is query-side only. This supplies a budget-matched baseline for step 3, which needs it:
+   at 256-char chunks NFCorpus reaches 7.60 chunks/doc, where x5 covers only ~33 documents against a
+   `DocumentBudget` of 50 — the starvation trap again.
+3. **NFCorpus @ 256 under arctic-s (~3 h)**, swept at multiplier 12 and compared against step 2. Only
+   then are model, budget and corpus all held fixed while chunk density varies.
+
+FreshStack @ 768 (~8 h) remains the confirmatory crossover arm, and is worth running only if step 3
+shows movement. Steps 1–3 total ~6 h of ingest plus ~1.5 h of sweeps. Steps 1 and 2 need no code
+change at all; only step 3 needs the C# chunk window changed and `ingest-contract.json` regenerated,
+by the same path already used for the 2048 → 512 change.
 
 **Known confound:** re-chunking also changes what a chunk *means* (a 256-char chunk is a small
 semantic unit). The crossover mitigates this rather than eliminating it; a result where both arms
