@@ -494,6 +494,57 @@ evidence never touched.
 three-signal path is exercised and the two triples become distinguishable. Until then this document
 records a measured result about a two-signal fusion, not a licensed change to a three-signal one.
 
+### Decay-weight sensitivity sweep (2026-08-31) — the hold stands, for a sharper reason
+
+**Outcome: HOLD.** Two candidate triples that are bit-identical on no-decay documents —
+**A** = 0.50/0.50/0.10 (sum 1.10, the swept triple, decay share 9.09%) and
+**B** = 0.45/0.45/0.10 (sum 1.00, decay share held at the shipped 10.00%) — were replayed offline
+against the reranker's real per-candidate inputs (captured live, per-call, from the running
+benchmark harness: 806,400 rows across 1344 calls at 5x overfetch, 2,822,400 rows across 1344 calls
+at 20x overfetch), under four synthetic per-document age distributions, to test whether B is a safe
+drop-in for A once decay is actually live.
+
+**Falsification check passed:** the `uniform` control (every document assigned the same age, so
+decay is a constant additive term under both triples) produced **zero** top-10 set changes across
+both overfetch arms (0/1344 each) — a mathematical necessity if the fusion is implemented correctly,
+confirmed rather than assumed.
+
+**Scenario sweep — fraction of calls whose top-10 document set differs between triple A and triple B:**
+
+| scenario | 5x overfetch | 20x overfetch |
+|---|---|---|
+| uniform (control) | 0.00% | 0.00% |
+| narrow (age ~ U(0,30) days) | 13.91% | 12.95% |
+| **wide (age ~ U(0,720) days)** | **47.25%** | **48.36%** |
+| bimodal (age in {7, 730} days) | 0.67% | 0.89% |
+
+**Decision rule (fixed by the earlier spec): ship triple B only if the top-10 set is unchanged for
+>=99% of calls under both `wide` and `bimodal`.** Applied separately per overfetch arm:
+
+| arm | wide passes (<=1% changed)? | bimodal passes (<=1% changed)? | verdict |
+|---|---|---|---|
+| 5x overfetch | no (47.25%) | yes (0.67%) | **HOLD** |
+| 20x overfetch | no (48.36%) | yes (0.89%) | **HOLD** |
+
+**Both arms agree: HOLD.** `wide` fails the 1% bar by roughly 47x in both arms; `bimodal` passes
+comfortably in both. Because the rule requires both scenarios to pass, B is not licensed to replace
+A under this rule in either arm — there is no arm-vs-arm disagreement, but the joint outcome is a
+hold.
+
+nDCG@10 against the FreshStack qrels was also recorded for both triples on every scenario (full
+numbers in the task report) and, as expected, consistently favors triple A (less decay weight) since
+these synthetic ages carry no real correlation with relevance — **this number was not used to reach
+the verdict above**, per the earlier finding that it favors whichever triple carries less decay by
+construction.
+
+**Coverage caveat:** every captured row had `hasCentroid = 1`; this sweep, like the captures it
+replays, exercises the fusion's centroid-present branch only. The `not has_centroid` path is
+unexercised here.
+
+Full methodology, loader assertions, and a `ir_measures.read_trec_qrels` one-shot-generator bug
+found and fixed while producing these numbers: see
+`.superpowers/sdd/2026-08-31-decay-weight-sensitivity-implementation-plan/task-2-report.md`.
+
 ## The proposed design
 
 Scale the centroid's share of the fused score by the requested result-set size:
