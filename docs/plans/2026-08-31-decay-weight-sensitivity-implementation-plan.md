@@ -14,7 +14,7 @@
 
 ## File Structure
 
-**Modify (scratch branch only — never committed):**
+**Modify (in the worktree `.worktrees/embedding-prefixes-and-title` — never committed):**
 - `Iverson.Server/Iverson.Vector/IResultReranker.cs` — add `ParentId` to `RerankCandidate`
 - `Iverson.Server/Iverson.Vector/ResultReranker.cs` — locked capture of fusion inputs
 - `Iverson.Server/Iverson.Api/Grpc/ObjectSearchGrpcService.cs` — populate `ParentId` at both call sites
@@ -72,11 +72,28 @@ The 21 assumptions in the spec's `Verified assumptions` table (A1–A21) were ve
 
 **Nothing in this task is committed.** The instrumentation is scratch-only, matching the existing practice for edited fusion constants. Step 7 restores the tree.
 
-- [ ] **Step 1: Create the scratch branch**
+- [ ] **Step 1: Work in the arctic worktree — do not branch, do not commit**
+
+All of Task 1 happens in `.worktrees/embedding-prefixes-and-title` (branch `centroid-ablation`),
+because the arctic model configuration the capture must reproduce exists **only** there — `main`
+has no `DocumentPrefix`/`QueryPrefix` at all. Two of that worktree's files carry **uncommitted**
+work that must survive this task:
+
+- `EmbeddingService.cs` — the arctic prefixes themselves (`DocumentPrefix = ""`,
+  `QueryPrefix = "Represent this sentence for searching relevant passages: "`), a 2-line
+  uncommitted diff. **Never touch, checkout, stash or clean this file.**
+- `BenchmarkQueryScenario.cs` — 24 lines of an unrelated, uncommitted `--exclude-self` feature.
+  Step 6 seds one constant in it and Step 7 seds that constant back. **Never `git checkout --`
+  this file.**
+
 ```bash
-cd /home/ben/repositories/Iverson
-git checkout -b decay-capture-scratch
+W=/home/ben/repositories/Iverson/.worktrees/embedding-prefixes-and-title
+cd $W && git branch --show-current && git status --porcelain
 ```
+
+Expect branch `centroid-ablation` and exactly 5 modified files. If `EmbeddingService.cs` is not
+among them, **stop** — the arctic prefixes are gone and the capture would describe a different
+model than the crossover.
 
 - [ ] **Step 2: Add `ParentId` to `RerankCandidate`**
 
@@ -159,11 +176,23 @@ lock (CaptureLock)
     File.AppendAllLines(CapturePath, captureRows);
 ```
 
-- [ ] **Step 5: Build, deploy, and confirm the model**
+- [ ] **Step 5: Point compose at arctic, build, deploy, and confirm the model**
+
+Both compose files pin `nomic-embed-text`; the crossover sed'd it to arctic at run time and
+restored it afterwards. This step does the same, and refuses to build if the arctic prefixes are
+absent.
 
 ```bash
-cd /home/ben/repositories/Iverson/Iverson.Server && docker compose build iverson-api
-cd /home/ben/repositories/Iverson && python3 Iverson.Server/Iverson.LoadTest/scripts/stack.py query
+W=/home/ben/repositories/Iverson/.worktrees/embedding-prefixes-and-title
+ES=$W/Iverson.Server/Iverson.Embeddings/EmbeddingService.cs
+grep -q 'public const string DocumentPrefix = "";' "$ES" \
+  || { echo "REFUSING: arctic DocumentPrefix absent"; exit 1; }
+grep -q 'QueryPrefix    = "Represent this sentence for searching relevant passages: ";' "$ES" \
+  || { echo "REFUSING: arctic QueryPrefix absent"; exit 1; }
+sed -i 's|- Embeddings__ModelId=nomic-embed-text|- Embeddings__ModelId=snowflake-arctic-embed:s|g' \
+  $W/Iverson.Server/docker-compose.yml
+cd $W/Iverson.Server && docker compose build iverson-api
+cd $W && python3 Iverson.Server/Iverson.LoadTest/scripts/stack.py query
 docker logs iverson-api 2>&1 | grep "EmbeddingService initialized" | tail -1
 ```
 
@@ -177,14 +206,15 @@ Expect `model=snowflake-arctic-embed:s dimension=384`. Stop if it differs — th
 set -a; . /home/ben/iverson-benchmark-data/bench-env.sh; set +a
 OUT=/home/ben/repositories/iverson-benchmark-corpora/decay-capture-2026-08-31
 CORPUS=/home/ben/repositories/iverson-benchmark-corpora/freshstack-chunk256-2026-08-30
-BQ=/home/ben/repositories/Iverson/Iverson.Server/Iverson.LoadTest/Scenarios/BenchmarkQueryScenario.cs
+W=/home/ben/repositories/Iverson/.worktrees/embedding-prefixes-and-title
+BQ=$W/Iverson.Server/Iverson.LoadTest/Scenarios/BenchmarkQueryScenario.cs
 mkdir -p "$OUT"
 
 for M in 5 20; do
   sed -i -E "s/private const int    ChunkBudgetMultiplier = [0-9]+;/private const int    ChunkBudgetMultiplier = $M;/" "$BQ"
   grep -q "ChunkBudgetMultiplier = $M;" "$BQ" || { echo "REFUSING: multiplier not set to $M"; break; }
   docker exec iverson-api rm -f /tmp/fusion-capture.csv
-  cd /home/ben/repositories/Iverson/Iverson.Server/Iverson.LoadTest
+  cd $W/Iverson.Server/Iverson.LoadTest
   dotnet run -c Release -- benchmark-query \
     --corpus-path "$CORPUS" --key-map-path "$CORPUS/keymap.json" \
     --output-dir "$OUT" --config-label "capture-m$M" 2>&1 | tee "$OUT/capture-run-m$M.log"
@@ -208,17 +238,27 @@ for M in 5 20; do
 done
 ```
 
-Then restore, whatever the gates said — the harness constant as well as the three server files:
+Then restore, whatever the gates said. **`BenchmarkQueryScenario.cs` is restored by `sed`, not by
+`git checkout --`** — it carries unrelated uncommitted work that a checkout would destroy. The
+other three files this task edited were clean, so a checkout is safe on them. `EmbeddingService.cs`
+is never touched.
 
 ```bash
-cd /home/ben/repositories/Iverson
+W=/home/ben/repositories/Iverson/.worktrees/embedding-prefixes-and-title
+cd $W
 git checkout -- Iverson.Server/Iverson.Vector/IResultReranker.cs \
                 Iverson.Server/Iverson.Vector/ResultReranker.cs \
-                Iverson.Server/Iverson.Api/Grpc/ObjectSearchGrpcService.cs \
-                Iverson.Server/Iverson.LoadTest/Scenarios/BenchmarkQueryScenario.cs
-git checkout main && git branch -D decay-capture-scratch
-cd Iverson.Server && docker compose build iverson-api
-cd /home/ben/repositories/Iverson && python3 Iverson.Server/Iverson.LoadTest/scripts/stack.py query
+                Iverson.Server/Iverson.Api/Grpc/ObjectSearchGrpcService.cs
+sed -i -E "s/private const int    ChunkBudgetMultiplier = [0-9]+;/private const int    ChunkBudgetMultiplier = 5;/" \
+  Iverson.Server/Iverson.LoadTest/Scenarios/BenchmarkQueryScenario.cs
+
+# rebuild the clean arctic image (compose is still arctic here), then put compose back to nomic
+cd $W/Iverson.Server && docker compose build iverson-api
+cd $W && python3 Iverson.Server/Iverson.LoadTest/scripts/stack.py query
+sed -i 's|- Embeddings__ModelId=snowflake-arctic-embed:s|- Embeddings__ModelId=nomic-embed-text|g' \
+  $W/Iverson.Server/docker-compose.yml
+
+git status --porcelain   # expect exactly the same 5 modified files as Step 1
 ```
 
 ### Task 2: Score the scenarios offline and apply the decision rule
