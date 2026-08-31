@@ -18,6 +18,12 @@ Measured on BEIR SciFact (2026-08-28), the centroid **improves recall and is neu
 That asymmetry suggested exposing the trade-off to callers, since a caller fetching 10 results for
 display wants different behaviour from one fetching 200 to feed a reranker.
 
+**Superseded twice — see "FreshStack results" and then "Corrected prefixes and the re-chunking
+crossover" below.** The 2026-08-28 FreshStack numbers were themselves produced with the wrong
+model's prefixes and are superseded by the 2026-08-29 replication. The current conclusion is that
+**`w = 0.500` should replace the shipped `0.333` as a constant**, and that no conditioning variable
+— neither `top_k` nor chunks-per-document — earns its place.
+
 **Superseded 2026-08-28 — see "FreshStack results" below.** On a corpus with 10.79 chunks per
 document the centroid is decisively significant on every measure, and the optimum sits above the
 shipped weight. The conclusion that follows was drawn from two short-document corpora and does not
@@ -290,6 +296,10 @@ document**, and the shipped constant is right for short corpora and too low for 
 
 ### This revives the design — conditioned on the wrong variable
 
+**Superseded 2026-08-31.** The chunks-per-document conditioning variable proposed
+below was tested directly by the re-chunking crossover and refuted — see "Corrected prefixes and
+the re-chunking crossover".
+
 The proposal below scales the centroid by `top_k`. That premise is dead: `top_k` never predicted
 anything, and the retraction above removed the recall/precision trade it assumed. But the data now
 supports a *different* conditioning variable the design never considered — **chunks per document**,
@@ -331,6 +341,115 @@ unaffected — which is why it, not `SearchSimilar`, carries the conclusions abo
   and ~4 tokens of 512, so small, but these numbers are not a fair read on absolute model quality.
 - `ChunkBudgetMultiplier` 20 and a different embedding model mean **absolute values are not
   comparable to SciFact or NFCorpus**. Every comparison above is within-corpus, which is the question.
+
+## Corrected prefixes and the re-chunking crossover (2026-08-29 -> 08-31)
+
+Everything in the FreshStack section above was produced with **nomic's prefixes on an arctic model**
+— the caveat that section lists as "small". It was not small enough to leave unrepeated. Both
+corpora were re-run with arctic's own prefixes (`DocumentPrefix = ""`,
+`QueryPrefix = "Represent this sentence for searching relevant passages: "`), at
+`ChunkBudgetMultiplier = 20`, and the corrected runs supersede the 2026-08-28 numbers throughout.
+Run files: `iverson-benchmark-corpora/freshstack-correct-2026-08-29/runs/` and
+`nfcorpus-noprefix-2026-08-29/runs/m20-q-*`.
+
+### The chunks-per-document schedule, tested directly and refuted
+
+The section above proposed conditioning `w` on **chunks per document**, from three points that were
+really two x-values (3.96 -> 0.333, 4.05 -> 0.333, 10.79 -> 0.5-0.667). That hypothesis is now
+tested properly and it does not survive.
+
+FreshStack was re-ingested at three chunk sizes, holding the corpus, the model, the prefixes and the
+query budget fixed. Only `[IversonChunk(maxTokens, overlap)]` changed. All three sizes keep
+`maxChars <= 2048`, so **no chunk is ever truncated and the object vector is truncated identically in
+every arm** — body truncation is held constant while density varies 3.4x. Each arm's chunk count was
+predicted offline and gated before scoring; all three gates matched **to the unit**.
+
+| arm | maxTokens/overlap | chunks | chunks/doc |
+|---|---|---|---|
+| baseline | 128 / 16 | 64,735 | 10.79 |
+| midpoint | 256 / 32 | 33,950 | 5.66 |
+| coarse | 512 / 64 | 18,622 | 3.14 |
+
+`SearchChunks` nDCG@10, n = 672:
+
+| w | 10.79 c/d | 5.66 c/d | 3.14 c/d |
+|---|---|---|---|
+| 0.000 | 0.2461 | 0.2571 | 0.2627 |
+| 0.167 | 0.2619 | 0.2680 | 0.2719 |
+| 0.333 — shipped | 0.2739 | 0.2755 | 0.2771 |
+| **0.500** | **0.2828** | **0.2828** | **0.2808** |
+| 0.667 | 0.2825 | 0.2824 | 0.2803 |
+
+**The optimum sits at w = 0.500 in all three arms.** A schedule `w = f(chunks/doc)` requires the
+optimum to move with density; across a 3.4x change it does not move at all.
+
+The cross-corpus comparison kills the schedule outright. At **nearly the same density** the two
+corpora want opposite things:
+
+| corpus | chunks/doc | peak w | peak gain over w = 0 |
+|---|---|---|---|
+| NFCorpus | 4.05 | 0.167 | +0.0024 (curve flat within 0.0044 end to end) |
+| FreshStack coarse | 3.14 | 0.500 | **+0.0180** |
+
+A server computing `w` from chunks/doc would read ~4 for both and owe them different answers. The
+conditioning variable does not carry the signal.
+
+### What density does change: magnitude, not location
+
+The gain from `w = 0` to the optimum falls monotonically as chunks thin out, and the midpoint arm —
+run only to test smoothness — lands where a smooth trend requires:
+
+| density | peak gain | 95% CI | p_perm |
+|---|---|---|---|
+| 10.79 c/d | +0.0367 | [+0.0274, +0.0459] | <0.0001 |
+| 5.66 c/d | +0.0257 | [+0.0168, +0.0346] | <0.0001 |
+| 3.14 c/d | +0.0180 | [+0.0110, +0.0251] | <0.0001 |
+
+The 10.79 and 3.14 intervals do not overlap. Density modulates **how much** the centroid is worth
+within a corpus; it does not predict that worth across corpora, and it does not set where the weight
+belongs.
+
+### The arms converge at their optima
+
+Against the 10.79 c/d peak, both coarser arms measure null at w = 0.500:
+
+| comparison | delta nDCG@10 | 95% CI | p | MDE |
+|---|---|---|---|---|
+| 5.66 vs 10.79 | **+0.0000** | [-0.0077, +0.0077] | 0.999 | 0.0110 |
+| 3.14 vs 10.79 | -0.0020 | [-0.0120, +0.0080] | 0.693 | 0.0143 |
+
+With the centroid **off**, the same comparison is not null: 3.14 c/d beats 10.79 c/d by
+**+0.0166** [+0.0047, +0.0286], p_perm = 0.0059 — though that effect only just clears its own MDE
+of 0.0171, so it is detected rather than precisely estimated.
+
+Chunk size is worth something when the centroid is off and **nothing** once the weight is tuned. The
+centroid's larger gain at fine granularity is substantially **compensation for chunks too small to
+stand alone as retrieval units**. Tune `w` and all three granularities arrive at ~0.281.
+
+One reservation against reading the convergence as complete: R@50 leans toward the finest arm in
+both comparisons (-0.0085, p = 0.10; -0.0121, p = 0.065). Neither is significant, but two arms
+leaning the same way at p ~ 0.1 is weak evidence rather than none. Ranking quality converges;
+**candidate recall may still favour more chunks**, which matters wherever stage-1 recall is the
+objective rather than ordering.
+
+### What this licenses
+
+Raising the shipped weight from `w = 0.333` to `w = 0.500` is a **single constant**, not a schedule:
+
+| corpus / arm | delta nDCG@10, 0.333 -> 0.500 | p_perm |
+|---|---|---|
+| FreshStack 10.79 c/d | +0.0089 [+0.0043, +0.0135] | 0.0001 |
+| FreshStack 5.66 c/d | +0.0073 [+0.0025, +0.0120] | 0.0028 |
+| FreshStack 3.14 c/d | +0.0037 [+0.0000, +0.0074] | 0.0469 |
+| NFCorpus 4.05 c/d | -0.0005 [-0.0049, +0.0038] | 0.81 |
+
+Positive and Holm-significant on every FreshStack arm, and **free** on NFCorpus — the corpus where
+the centroid does nearly nothing pays nothing for the change. The 3.14 arm's lower bound touches
+zero, so the gain shrinks toward the sparse-chunk end rather than holding flat.
+
+This is the opposite shape of evidence from the design this document proposes. The finding is that
+one weight generalises better than the shipped one, across corpora and across a 3.4x density range —
+which argues for **changing a constant**, and against making it a function of anything.
 
 ## The proposed design
 
@@ -433,7 +552,10 @@ exposing the MMR cost that SciFact measured as exactly zero.
 Note the graded qrels (11,758 judgments at level 1, 576 at level 2) change how nDCG behaves relative
 to SciFact's binary judgments.
 
-### Question 2 — long documents: FreshStack (godot), sampled — STILL OUTSTANDING
+### Question 2 — long documents: FreshStack (godot), sampled — ✅ DONE 2026-08-29
+
+Answered, and then extended by the re-chunking crossover; see "Corrected prefixes and the
+re-chunking crossover". The plan below is kept as the record of how the corpus was prepared.
 
 Already converted and on disk at `iverson-benchmark-corpora/freshstack/`. Mean 3,899.7 chars, **2.6x
 SciFact**, and only **32% single-chunk at the 2048-char default** versus SciFact's 87%. Its documents
@@ -478,6 +600,11 @@ present. This is a manual check that must be repeated after every rebuild until 
 The NFCorpus reference configuration was re-run after the sweep, on a fully settled collection, as a
 control. It reproduced **bit-identically** — same documents, same ranks, all 323 queries, on both
 `SearchChunks` and `SearchSimilar` (delta 0.0000, t = 0.00, 323 ties on every measure).
+
+A tooling hazard found while scoring the crossover, recorded so it is not rediscovered:
+`scratchpad/stats.py` keys its results by run-file **basename**, so passing two arms' identically
+named `w0500.chunks.trec` in one invocation silently collides and reports one arm's numbers twice.
+Cross-arm comparisons must be run one at a time, or the files renamed.
 
 This matters because the sweep's first run executed seconds after the ingest finished, while Qdrant
 was still building indexes on the chunks collection (13,341 of 14,729 vectors indexed), and the
