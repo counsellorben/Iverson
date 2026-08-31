@@ -8,6 +8,7 @@ using Iverson.Client.Contracts;
 using Iverson.Embeddings;
 using Iverson.StarRocks;
 using Iverson.Vector;
+using Microsoft.Extensions.Options;
 using Qdrant.Client;
 
 using Filter = Qdrant.Client.Grpc.Filter;
@@ -37,7 +38,8 @@ public sealed class ObjectSearchGrpcService(
     IRowFieldAuthorizationEvaluator authEvaluator,
     IntelligenceTenantScope tenantScope,
     IResultReranker reranker,
-    IResultDiversifier diversifier)
+    IResultDiversifier diversifier,
+    IOptions<DecayOptions> decayOptions)
     : ObjectSearchService.ObjectSearchServiceBase
 {
     // ── SQL Search ─────────────────────────────────────────────────────────────
@@ -257,7 +259,7 @@ public sealed class ObjectSearchGrpcService(
             Id:        r.Id,
             BaseScore: r.Score,
             Centroid:  centroids.TryGetValue(r.Id, out var centroid) ? centroid : null,
-            Decay:     DecayFor(r, decayField, now))).ToList();
+            Decay:     DecayFor(r, decayField, now, decayOptions.Value.HalfLifeDays))).ToList();
 
         var byId = ResultsById(results);
 
@@ -444,7 +446,8 @@ public sealed class ObjectSearchGrpcService(
             if (r.Payload.TryGetValue("parent_id", out var parent) && !string.IsNullOrEmpty(parent))
                 centroids.TryGetValue(IntelligenceStoreConsumer.KeyToUlong(parent), out centroid);
 
-            return new RerankCandidate(r.Id, r.Score, centroid, DecayFor(r, decayField, now));
+            return new RerankCandidate(
+                r.Id, r.Score, centroid, DecayFor(r, decayField, now, decayOptions.Value.HalfLifeDays));
         }).ToList();
 
         var byId = ResultsById(results);
@@ -761,9 +764,10 @@ public sealed class ObjectSearchGrpcService(
         return byId;
     }
 
-    private static double? DecayFor(VectorSearchResult result, string? decayField, DateTimeOffset now) =>
+    private static double? DecayFor(
+        VectorSearchResult result, string? decayField, DateTimeOffset now, double halfLifeDays) =>
         decayField is not null && result.Payload.TryGetValue(decayField, out var stored)
-            ? DecayFieldResolver.ComputeDecay(stored, now)
+            ? DecayFieldResolver.ComputeDecay(stored, now, halfLifeDays)
             : null;
 
     // ── Helpers ────────────────────────────────────────────────────────────────

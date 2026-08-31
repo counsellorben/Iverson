@@ -67,7 +67,8 @@ public class ObjectSearchGrpcServiceTests
             _registry, _search, _vector, _embedding,
             NullLogger<ObjectSearchGrpcService>.Instance,
             _actingUserAccessor, _authEvaluator, new IntelligenceTenantScope("test-signing-key-0123456789abcdef"),
-            new ResultReranker(Options.Create(new VectorRankingOptions())), new ResultDiversifier(Options.Create(new VectorRankingOptions())));
+            new ResultReranker(Options.Create(new VectorRankingOptions())), new ResultDiversifier(Options.Create(new VectorRankingOptions())),
+            Options.Create(new DecayOptions()));
     }
 
     private static (IServerStreamWriter<T> writer, List<T> written) MakeStream<T>()

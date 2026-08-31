@@ -186,6 +186,7 @@ builder.Services.AddQdrant(
     cfg["Qdrant:CertPath"]);
 
 builder.Services.AddVectorRanking(cfg);
+builder.Services.AddDecayOptions(cfg);
 
 builder.Services.AddKafka(cfg);
 

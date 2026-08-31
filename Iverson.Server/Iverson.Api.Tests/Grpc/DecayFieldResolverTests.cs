@@ -1,5 +1,7 @@
 using Iverson.Api.Grpc;
 using Iverson.Api.Schema;
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 using Xunit;
 
@@ -122,7 +124,7 @@ public class DecayFieldResolverTests
         var now = new DateTimeOffset(2026, 7, 30, 0, 0, 0, TimeSpan.Zero);
         var stored = now.ToString("o");
 
-        var result = DecayFieldResolver.ComputeDecay(stored, now);
+        var result = DecayFieldResolver.ComputeDecay(stored, now, 180.0);
 
         Assert.NotNull(result);
         Assert.Equal(1.0, result!.Value, precision: 9);
@@ -134,7 +136,7 @@ public class DecayFieldResolverTests
         var now = new DateTimeOffset(2026, 7, 30, 0, 0, 0, TimeSpan.Zero);
         var stored = now.AddDays(-180).ToString("o");
 
-        var result = DecayFieldResolver.ComputeDecay(stored, now);
+        var result = DecayFieldResolver.ComputeDecay(stored, now, 180.0);
 
         Assert.NotNull(result);
         Assert.Equal(0.5, result!.Value, precision: 9);
@@ -146,7 +148,7 @@ public class DecayFieldResolverTests
         var now = new DateTimeOffset(2026, 7, 30, 0, 0, 0, TimeSpan.Zero);
         var stored = now.AddDays(-360).ToString("o");
 
-        var result = DecayFieldResolver.ComputeDecay(stored, now);
+        var result = DecayFieldResolver.ComputeDecay(stored, now, 180.0);
 
         Assert.NotNull(result);
         Assert.Equal(0.25, result!.Value, precision: 9);
@@ -158,7 +160,7 @@ public class DecayFieldResolverTests
         var now = new DateTimeOffset(2026, 7, 30, 0, 0, 0, TimeSpan.Zero);
         var stored = now.AddDays(180).ToString("o"); // 180 days in the future
 
-        var result = DecayFieldResolver.ComputeDecay(stored, now);
+        var result = DecayFieldResolver.ComputeDecay(stored, now, 180.0);
 
         Assert.NotNull(result);
         Assert.Equal(1.0, result!.Value, precision: 9);
@@ -167,7 +169,7 @@ public class DecayFieldResolverTests
     [Fact]
     public void ComputeDecay_NullValue_ReturnsNull()
     {
-        var result = DecayFieldResolver.ComputeDecay(null, DateTimeOffset.UtcNow);
+        var result = DecayFieldResolver.ComputeDecay(null, DateTimeOffset.UtcNow, 180.0);
 
         Assert.Null(result);
     }
@@ -175,7 +177,7 @@ public class DecayFieldResolverTests
     [Fact]
     public void ComputeDecay_EmptyValue_ReturnsNull()
     {
-        var result = DecayFieldResolver.ComputeDecay(string.Empty, DateTimeOffset.UtcNow);
+        var result = DecayFieldResolver.ComputeDecay(string.Empty, DateTimeOffset.UtcNow, 180.0);
 
         Assert.Null(result);
     }
@@ -183,8 +185,42 @@ public class DecayFieldResolverTests
     [Fact]
     public void ComputeDecay_UnparseableValue_ReturnsNull()
     {
-        var result = DecayFieldResolver.ComputeDecay("not-a-timestamp", DateTimeOffset.UtcNow);
+        var result = DecayFieldResolver.ComputeDecay("not-a-timestamp", DateTimeOffset.UtcNow, 180.0);
 
         Assert.Null(result);
+    }
+
+    [Fact]
+    public void ComputeDecay_NonDefaultHalfLife_DiffersFromDefault()
+    {
+        var now = new DateTimeOffset(2026, 7, 30, 0, 0, 0, TimeSpan.Zero);
+        var stored = now.AddDays(-180).ToString("o");
+
+        var defaultResult  = DecayFieldResolver.ComputeDecay(stored, now, 180.0);
+        var nonDefault     = DecayFieldResolver.ComputeDecay(stored, now, 90.0);
+
+        Assert.NotNull(defaultResult);
+        Assert.NotNull(nonDefault);
+        Assert.NotEqual(defaultResult!.Value, nonDefault!.Value);
+        Assert.Equal(0.25, nonDefault!.Value, precision: 9);
+    }
+
+    [Theory]
+    [InlineData("0")]
+    [InlineData("-1")]
+    [InlineData("NaN")]
+    [InlineData("Infinity")]
+    public void AddDecayOptions_InvalidHalfLifeDays_Throws(string halfLifeDays)
+    {
+        var config = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["Decay:HalfLifeDays"] = halfLifeDays,
+            })
+            .Build();
+
+        var services = new ServiceCollection();
+
+        Assert.Throws<InvalidOperationException>(() => services.AddDecayOptions(config));
     }
 }

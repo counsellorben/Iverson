@@ -11,8 +11,6 @@ namespace Iverson.Api.Grpc;
 /// </summary>
 internal static class DecayFieldResolver
 {
-    private const double HalfLifeDays = 180.0;
-
     // Keyed on schema IDENTITY via reference equality, not on derived content: SchemaRegistry
     // (Iverson.Api/Schema/SchemaRegistry.cs) stores one SchemaDescriptor instance per type in
     // its own ConcurrentDictionary and replaces the instance wholesale on RegisterAsync
@@ -68,12 +66,12 @@ internal static class DecayFieldResolver
 
     /// <summary>
     /// Turns a stored payload timestamp string into a decay value in [0,1] via
-    /// 0.5 ^ (age / halfLife) with a fixed 180-day half-life. Returns null — signal
-    /// absent, never a neutral 1.0 — when the value is null, empty, or unparseable.
+    /// 0.5 ^ (age / halfLife), with the half-life supplied by the caller. Returns null —
+    /// signal absent, never a neutral 1.0 — when the value is null, empty, or unparseable.
     /// A future-dated timestamp (negative age — clock skew or bad ingestion data) is clamped
     /// to 1.0, maximum freshness, rather than exceeding the documented [0,1] range.
     /// </summary>
-    internal static double? ComputeDecay(string? storedValue, DateTimeOffset now)
+    internal static double? ComputeDecay(string? storedValue, DateTimeOffset now, double halfLifeDays)
     {
         if (string.IsNullOrEmpty(storedValue)) return null;
 
@@ -82,6 +80,6 @@ internal static class DecayFieldResolver
             return null;
 
         var ageDays = (now - timestamp).TotalDays;
-        return Math.Min(1.0, Math.Pow(0.5, ageDays / HalfLifeDays));
+        return Math.Min(1.0, Math.Pow(0.5, ageDays / halfLifeDays));
     }
 }

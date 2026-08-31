@@ -330,7 +330,8 @@ public class DocumentTemplateValidationTests
             NullLogger<ObjectSearchGrpcService>.Instance,
             actingUserAccessor, new RowFieldAuthorizationEvaluator(),
             new IntelligenceTenantScope("test-signing-key-0123456789abcdef"),
-            new ResultReranker(Options.Create(new VectorRankingOptions())), new ResultDiversifier(Options.Create(new VectorRankingOptions())));
+            new ResultReranker(Options.Create(new VectorRankingOptions())), new ResultDiversifier(Options.Create(new VectorRankingOptions())),
+            Options.Create(new DecayOptions()));
 
         var writer = Substitute.For<IServerStreamWriter<ChunkSearchResponse>>();
         writer.WriteAsync(Arg.Any<ChunkSearchResponse>(), Arg.Any<CancellationToken>()).Returns(Task.CompletedTask);

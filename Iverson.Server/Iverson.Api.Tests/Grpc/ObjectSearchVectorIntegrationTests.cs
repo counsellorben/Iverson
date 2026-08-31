@@ -87,7 +87,8 @@ public sealed class ObjectSearchVectorIntegrationTests : IClassFixture<QdrantGrp
             new RowFieldAuthorizationEvaluator(),
             _tenantScope,
             new ResultReranker(Options.Create(new VectorRankingOptions())),
-            new ResultDiversifier(Options.Create(new VectorRankingOptions())));
+            new ResultDiversifier(Options.Create(new VectorRankingOptions())),
+            Options.Create(new DecayOptions()));
 
     private static (IServerStreamWriter<T> writer, List<T> written) MakeStream<T>()
     {
