@@ -62,10 +62,14 @@ practice for edited fusion constants — to append one line per candidate:
 callIndex, candidateId, parentId, hasCentroid, baseScore, centroidCos
 ```
 
-`parentId` is the document the candidate belongs to: `r.Payload["parent_id"]` on the `SearchChunks`
-path (`ObjectSearchGrpcService.cs:445-446`), and `candidateId` itself on the `SearchSimilar` path,
-where candidates are objects. `hasCentroid` records whether the centroid term was included, which
-selects the fusion branch offline.
+`RerankCandidate` carries no payload (`IResultReranker.cs:3-7` — `Id`, `BaseScore`, `Centroid`,
+`Decay`), so `parentId` is not reachable inside `Rerank` as it stands. The scratch branch therefore
+adds a `ParentId` field to `RerankCandidate` and populates it at both call sites:
+`r.Payload["parent_id"]` on the `SearchChunks` path (`ObjectSearchGrpcService.cs:444-445`) and
+`r.Id` on the `SearchSimilar` path, where candidates are objects. The record is internal to the
+scratch branch and never committed, so widening it keeps the capture in one place and preserves the
+single-computation-site property A1 records for `centroidCos`. `hasCentroid` records whether the
+centroid term was included, which selects the fusion branch offline.
 
 `ResultReranker` is registered as a **singleton** (`ServiceCollectionExtensions.cs:50`) and may serve
 concurrent requests, so the append must be guarded by a lock.
@@ -189,4 +193,5 @@ letting it decide is the guard against repeating that error.
 | A17 | Every query returns >= 10 results, so a top-10 set comparison is defined | `freshstack-chunk256-2026-08-30/runs/w0500.{chunks,similar}.trec`: 672 queries each, min = max = 50 results |
 | A19 | Chunk payloads carry the parent's metadata columns, so decay is non-null on `SearchChunks` | `IntelligenceStoreConsumer.cs:302-318` copies every `schema.MetadataColumns` entry onto each chunk payload |
 | A20 | All chunks of one document share a single decay value | Same loop — each chunk's metadata is extracted from the parent's `payload`, so every chunk carries the identical timestamp |
+| A21 | `RerankCandidate` carries no payload, so `parentId` must be plumbed to reach the capture site | `IResultReranker.cs:3-7` — the record is `(ulong Id, double BaseScore, float[]? Centroid, double? Decay)`; `:12` — `Rerank(float[] queryVector, IReadOnlyList<RerankCandidate> candidates)` takes no payload |
 | A18 | Benchmark candidates carry a non-null centroid | `BenchmarkDocument.cs:16-18` marks `Body` with both `[IversonEmbedding]` and `[IversonChunk]`, which is what makes the centroid non-degenerate |
