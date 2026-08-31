@@ -26,7 +26,8 @@
 - `docs/centroid-weighting-proposal.md` — the measured outcome and the decision it licenses
 
 **Artifacts (not in git; `iverson-benchmark-corpora` is not a repository):**
-- `iverson-benchmark-corpora/decay-capture-2026-08-31/fusion-capture.csv`
+- `iverson-benchmark-corpora/decay-capture-2026-08-31/fusion-capture-m5.csv`
+- `iverson-benchmark-corpora/decay-capture-2026-08-31/fusion-capture-m20.csv`
 
 ## Inherited from spec
 
@@ -53,6 +54,7 @@ The 21 assumptions in the spec's `Verified assumptions` table (A1–A21) were ve
 | P8 | File path | The 5.66 chunks/doc corpus has the inputs `benchmark-query` needs | `freshstack-chunk256-2026-08-30/` contains `beir/`, `keymap.json`, `qrels.trec`, `runs/` |
 | P9 | File path | The analysis script cannot be committed beside the capture | `git -C iverson-benchmark-corpora rev-parse` → `fatal: not a git repository`. Script therefore lives in `scratchpad/` (uncommitted), matching `stats.py` and `crossover.sh` |
 | P10 | Task ordering | Task 2 consumes Task 1's capture; there is no reverse dependency | Task 2 reads only `fusion-capture.csv` and `qrels.trec`; it modifies no file Task 1 touches |
+| P12 | Consumer impact | Both endpoints' `ParentId` values key `keymap.json`, so captured rows join to BEIR docIds | Live object point carries `key: cfad0138-89de-5053-9da0-06cddeda0800`; live chunk point carries `parent_id: 966ded21-0d91-5f57-b309-fc8e71ca6e48`; `keymap.json` is Guid-keyed, 6,000 entries |
 | P11 | Command | Commit messages are plain imperative — no Conventional Commits prefix | `git log --oneline -20`: entries like `record the re-chunking crossover…`, `spec: decay-weight sensitivity…`; no `feat:`/`fix:` prefixes |
 
 ## Tasks
@@ -65,7 +67,7 @@ The 21 assumptions in the spec's `Verified assumptions` table (A1–A21) were ve
 - Modify: `Iverson.Server/Iverson.Api/Grpc/ObjectSearchGrpcService.cs:256-260` and `:441-447`
 
 **Interfaces:**
-- Produces: `iverson-benchmark-corpora/decay-capture-2026-08-31/fusion-capture.csv`, consumed by Task 2.
+- Produces: `fusion-capture-m5.csv` and `fusion-capture-m20.csv` in `iverson-benchmark-corpora/decay-capture-2026-08-31/`, both consumed by Task 2.
 
 **Nothing in this task is committed.** The instrumentation is scratch-only, matching the existing practice for edited fusion constants. Step 7 restores the tree.
 
@@ -90,7 +92,7 @@ public sealed record RerankCandidate(
 
 - [ ] **Step 3: Populate `ParentId` at both call sites**
 
-`ObjectSearchGrpcService.cs:256-260` (SearchSimilar — candidates are objects, so the candidate *is* the document):
+`ObjectSearchGrpcService.cs:256-260` (SearchSimilar — the object payload's `key` is the Guid that `keymap.json` is keyed by, putting both endpoints in one key space; `r.Payload` is already in scope here, since `DecayFor(r, …)` reads it):
 
 ```csharp
 var candidates = results.Select(r => new RerankCandidate(
@@ -98,7 +100,7 @@ var candidates = results.Select(r => new RerankCandidate(
     BaseScore: r.Score,
     Centroid:  centroids.TryGetValue(r.Id, out var centroid) ? centroid : null,
     Decay:     DecayFor(r, decayField, now),
-    ParentId:  r.Id.ToString(CultureInfo.InvariantCulture))).ToList();
+    ParentId:  r.Payload.TryGetValue("key", out var k) ? k : null)).ToList();
 ```
 
 `ObjectSearchGrpcService.cs:441-447` (SearchChunks — the parent key already drives the centroid lookup):
@@ -166,42 +168,53 @@ docker logs iverson-api 2>&1 | grep "EmbeddingService initialized" | tail -1
 
 Expect `model=snowflake-arctic-embed:s dimension=384`. Stop if it differs — the capture would describe a different model than the crossover it is compared against.
 
-- [ ] **Step 6: Run the capture**
+- [ ] **Step 6: Run the capture twice — once per chunk budget**
 
-No other traffic may hit the API for the duration (spec, "Run procedure"). ~30 minutes.
+`ChunkBudgetMultiplier` lives in the harness (`BenchmarkQueryScenario.cs:38`) and reaches the server only as a query parameter (`:192` — `.TopK((uint)(DocumentBudget * ChunkBudgetMultiplier))`), so switching it needs **no docker rebuild**; `dotnet run` recompiles the harness. No other traffic may hit the API for the duration of either run (spec, "Run procedure"). ~30 minutes each.
 
 ```bash
-docker exec iverson-api rm -f /tmp/fusion-capture.csv
 set -a; . /home/ben/iverson-benchmark-data/bench-env.sh; set +a
 OUT=/home/ben/repositories/iverson-benchmark-corpora/decay-capture-2026-08-31
 CORPUS=/home/ben/repositories/iverson-benchmark-corpora/freshstack-chunk256-2026-08-30
+BQ=/home/ben/repositories/Iverson/Iverson.Server/Iverson.LoadTest/Scenarios/BenchmarkQueryScenario.cs
 mkdir -p "$OUT"
-cd /home/ben/repositories/Iverson/Iverson.Server/Iverson.LoadTest
-dotnet run -c Release -- benchmark-query \
-  --corpus-path "$CORPUS" --key-map-path "$CORPUS/keymap.json" \
-  --output-dir "$OUT" --config-label capture 2>&1 | tee "$OUT/capture-run.log"
-docker cp iverson-api:/tmp/fusion-capture.csv "$OUT/fusion-capture.csv"
+
+for M in 5 20; do
+  sed -i -E "s/private const int    ChunkBudgetMultiplier = [0-9]+;/private const int    ChunkBudgetMultiplier = $M;/" "$BQ"
+  grep -q "ChunkBudgetMultiplier = $M;" "$BQ" || { echo "REFUSING: multiplier not set to $M"; break; }
+  docker exec iverson-api rm -f /tmp/fusion-capture.csv
+  cd /home/ben/repositories/Iverson/Iverson.Server/Iverson.LoadTest
+  dotnet run -c Release -- benchmark-query \
+    --corpus-path "$CORPUS" --key-map-path "$CORPUS/keymap.json" \
+    --output-dir "$OUT" --config-label "capture-m$M" 2>&1 | tee "$OUT/capture-run-m$M.log"
+  docker cp iverson-api:/tmp/fusion-capture.csv "$OUT/fusion-capture-m$M.csv"
+done
 ```
 
-- [ ] **Step 7: Run the validation gate, then restore the tree**
+The capture file is deleted before each run so the two are not concatenated. The API process is **not** restarted between runs, so the `_callIndex` static continues: the second file's indices start at 1,344 rather than 0. That is even, so the `2i`/`2i+1` parity still holds — Task 2 normalises by each file's own minimum index rather than assuming zero.
 
-The gate is the spec's; it refuses the analysis if a pre-`Rerank` throw shifted the call parity.
+- [ ] **Step 7: Run the validation gate on each capture, then restore the tree**
+
+The gate is the spec's; it refuses the analysis if a pre-`Rerank` throw shifted the call parity. Each arm is gated independently.
 
 ```bash
 OUT=/home/ben/repositories/iverson-benchmark-corpora/decay-capture-2026-08-31
-CALLS=$(cut -d, -f1 "$OUT/fusion-capture.csv" | sort -u | wc -l)
-echo "distinct callIndex = $CALLS (expect 1344)"
-grep -c "search RPC(s) failed" "$OUT/capture-run.log" || echo "no failure line — failures == 0"
-[ "$CALLS" = "1344" ] || echo "GATE FAILED — do not proceed to Task 2"
+for M in 5 20; do
+  CALLS=$(cut -d, -f1 "$OUT/fusion-capture-m$M.csv" | sort -u | wc -l)
+  echo "m$M: distinct callIndex = $CALLS (expect 1344)"
+  grep -c "search RPC(s) failed" "$OUT/capture-run-m$M.log" || echo "  m$M: no failure line — failures == 0"
+  [ "$CALLS" = "1344" ] || echo "  m$M GATE FAILED — exclude this arm from Task 2"
+done
 ```
 
-Then restore, whatever the gate said:
+Then restore, whatever the gates said — the harness constant as well as the three server files:
 
 ```bash
 cd /home/ben/repositories/Iverson
 git checkout -- Iverson.Server/Iverson.Vector/IResultReranker.cs \
                 Iverson.Server/Iverson.Vector/ResultReranker.cs \
-                Iverson.Server/Iverson.Api/Grpc/ObjectSearchGrpcService.cs
+                Iverson.Server/Iverson.Api/Grpc/ObjectSearchGrpcService.cs \
+                Iverson.Server/Iverson.LoadTest/Scenarios/BenchmarkQueryScenario.cs
 git checkout main && git branch -D decay-capture-scratch
 cd Iverson.Server && docker compose build iverson-api
 cd /home/ben/repositories/Iverson && python3 Iverson.Server/Iverson.LoadTest/scripts/stack.py query
@@ -214,7 +227,7 @@ cd /home/ben/repositories/Iverson && python3 Iverson.Server/Iverson.LoadTest/scr
 - Modify: `docs/centroid-weighting-proposal.md`
 
 **Interfaces:**
-- Consumes: `fusion-capture.csv` from Task 1 (columns `callIndex, candidateId, parentId, hasCentroid, baseScore, centroidCos`).
+- Consumes: `fusion-capture-m5.csv` and `fusion-capture-m20.csv` from Task 1 (columns `callIndex, candidateId, parentId, hasCentroid, baseScore, centroidCos`), plus `freshstack-chunk256-2026-08-30/keymap.json` for the docId join.
 
 - [ ] **Step 1: Write the scenario sweep**
 
@@ -251,16 +264,16 @@ SCENARIOS = {
 
 - [ ] **Step 2: Report per scenario**
 
-Group rows by `callIndex` (one result set per call), score both triples, sort descending, and report:
+Run the whole sweep once per capture file and report the two arms side by side. Group rows by `callIndex` (one result set per call), score both triples, sort descending, and report:
 fraction of calls whose **top-10 set** changes, mean rank displacement, and Kendall tau. Assert the `uniform` control shows zero set changes — a non-zero control means the implementation is wrong, not that the fusion is sensitive.
 
-Also record nDCG@10 for both triples against `freshstack-chunk256-2026-08-30/qrels.trec`, joining calls to queries by `callIndex` parity (`2i` similar, `2i+1` chunks). **This number is recorded, not used to choose** — with timestamps uncorrelated to relevance it favours whichever triple carries less decay by construction (spec, "Reported but explicitly not decisive").
+Also record nDCG@10 for both triples against `freshstack-chunk256-2026-08-30/qrels.trec`. Calls map to queries by parity **relative to each file's minimum `callIndex`** — `i = (callIndex - min) // 2`, even = similar, odd = chunks — because the second capture's indices continue from the first. Candidate ids reach BEIR docIds through `parentId` -> `keymap.json`. **This number is recorded, not used to choose** — with timestamps uncorrelated to relevance it favours whichever triple carries less decay by construction (spec, "Reported but explicitly not decisive").
 
 - [ ] **Step 3: Apply the decision rule and record the outcome**
 
-The rule is fixed by the spec: if the top-10 set is unchanged for **≥99% of calls** under **both** `wide` and `bimodal`, ship triple B and close the hold; otherwise the choice becomes a product decision about decay's intended share.
+The rule is fixed by the spec: if the top-10 set is unchanged for **≥99% of calls** under **both** `wide` and `bimodal`, ship triple B and close the hold; otherwise the choice becomes a product decision about decay's intended share. Apply it **separately to each multiplier arm** and report both verdicts; if the two arms disagree, say so rather than picking one.
 
-Write the result into `docs/centroid-weighting-proposal.md` — the scenario table, the decision the rule produced, and the fact that it covers the centroid-present branch only.
+Write the result into `docs/centroid-weighting-proposal.md` — the scenario table per multiplier, the decision the rule produced for each, and the fact that it covers the centroid-present branch only.
 
 - [ ] **Step 4: Commit**
 ```bash
