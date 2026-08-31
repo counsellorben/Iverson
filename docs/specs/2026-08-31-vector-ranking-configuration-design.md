@@ -60,8 +60,13 @@ public sealed class ResultReranker(IOptions<VectorRankingOptions> options) : IRe
 }
 ```
 
-Neither algorithm changes. The short-circuit at `ResultReranker.cs:26-31` stays correct: a weighted
-mean over a single present signal is still that signal, for any weight.
+Neither algorithm changes. The short-circuit at `ResultReranker.cs:26-31` stays correct whenever
+`WBase > 0`: a weighted mean over a single present signal is still that signal. At `WBase = 0` —
+a value validation admits — the general formula is undefined for a signal-less candidate (0/0),
+and the short-circuit's substitution of `BaseScore` is a deliberate special case, not an
+equivalence: that candidate is scored on `BaseScore` while a centroid- or decay-bearing candidate
+is scored on centroid similarity or decay alone, with no `BaseScore` contribution to make the two
+comparable.
 
 The comment block recording *why* the shipped triple is what it is moves from the constant to the
 options class, because that is now where the shipped value is decided.

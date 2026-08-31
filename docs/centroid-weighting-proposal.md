@@ -655,7 +655,7 @@ Two consequences worth stating plainly:
   Holm-significant), and -0.0005 (p = 0.81, not significant) on NFCorpus. The sweep never disputed
   that gain; it only established that the triple carrying it had to be chosen deliberately.
 
-Shipped in `Iverson.Server/Iverson.Vector/ResultReranker.cs`; the constant carries a comment
+Shipped in `Iverson.Server/Iverson.Vector/VectorRankingOptions.cs`; the default carries a comment
 pointing back here.
 
 ## The proposed design

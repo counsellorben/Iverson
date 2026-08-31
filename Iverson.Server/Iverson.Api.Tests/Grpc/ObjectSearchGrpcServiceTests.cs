@@ -2449,6 +2449,57 @@ public class ObjectSearchGrpcServiceTests
         written.Should().HaveCount(5);
     }
 
+    // DecayFieldResolverTests proves ComputeDecay honours whatever half-life it is handed
+    // directly — it does NOT prove ObjectSearchGrpcService passes the CONFIGURED half-life
+    // through rather than a hard-coded one. Bind a non-default DecayOptions and assert a fused
+    // score that is only correct if that value reached ComputeDecay.
+    [Fact]
+    public async Task SearchSimilar_UsesConfiguredHalfLife_NotAHardCodedOne()
+    {
+        await _registry.RegisterAsync(EmbeddingOnlyWithDecaySchema());
+
+        const double halfLifeDays = 90.0;
+        var sut = new ObjectSearchGrpcService(
+            _registry, _search, _vector, _embedding,
+            NullLogger<ObjectSearchGrpcService>.Instance,
+            _actingUserAccessor, _authEvaluator, new IntelligenceTenantScope("test-signing-key-0123456789abcdef"),
+            new ResultReranker(Options.Create(new VectorRankingOptions())),
+            new ResultDiversifier(Options.Create(new VectorRankingOptions())),
+            Options.Create(new DecayOptions { HalfLifeDays = halfLifeDays }));
+
+        var fakeVector = UnitVector();
+        _embedding.EmbedAsync("q", Arg.Any<CancellationToken>()).Returns(fakeVector);
+
+        // Published exactly one CONFIGURED half-life ago: Decay = 0.5 under the 90-day value
+        // bound above, but 0.5^(90/180) ≈ 0.7071 under the shipped 180-day default — a
+        // hard-coded call site cannot reproduce the 0.5 this test expects.
+        const double baseScore = 0.80;
+        var publishedAt = DateTimeOffset.UtcNow.AddDays(-halfLifeDays);
+        var results = new List<VectorSearchResult>
+        {
+            new(1, baseScore, new Dictionary<string, string>
+            {
+                ["title"]       = "a1",
+                ["publishedAt"] = publishedAt.ToString("O")
+            })
+        };
+        _vector.SearchNamedAsync("dated_test-tenant", "title_vector", fakeVector, Arg.Any<ulong>(), Arg.Any<Filter>())
+               .Returns(results.AsReadOnly());
+
+        var (writer, written) = MakeStream<SearchResponse>();
+        await sut.SearchSimilar(
+            new SearchSimilarRequest { TypeName = "Dated", Property = "Title", Query = "q", TopK = 1 },
+            writer, TestServerCallContext.Create());
+
+        // Title is embedding-only (no centroid), so the fused score is the two-signal blend:
+        // (WBase*BaseScore + WDecay*Decay) / (WBase+WDecay).
+        const double wBase = 0.45, wDecay = 0.10, expectedDecay = 0.5;
+        var expectedFused = (wBase * baseScore + wDecay * expectedDecay) / (wBase + wDecay);
+
+        written.Should().HaveCount(1);
+        written[0].Score.Should().BeApproximately((float)expectedFused, 1e-4f);
+    }
+
     // ── Result diversification (MMR) ────────────────────────────────────────────
 
     private static float[] OrthogonalUnitVector()

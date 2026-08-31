@@ -42,6 +42,8 @@ public sealed class ObjectSearchGrpcService(
     IOptions<DecayOptions> decayOptions)
     : ObjectSearchService.ObjectSearchServiceBase
 {
+    private readonly DecayOptions _decayOptions = decayOptions.Value;
+
     // ── SQL Search ─────────────────────────────────────────────────────────────
 
     public override async Task Search(
@@ -259,7 +261,7 @@ public sealed class ObjectSearchGrpcService(
             Id:        r.Id,
             BaseScore: r.Score,
             Centroid:  centroids.TryGetValue(r.Id, out var centroid) ? centroid : null,
-            Decay:     DecayFor(r, decayField, now, decayOptions.Value.HalfLifeDays))).ToList();
+            Decay:     DecayFor(r, decayField, now, _decayOptions.HalfLifeDays))).ToList();
 
         var byId = ResultsById(results);
 
@@ -447,7 +449,7 @@ public sealed class ObjectSearchGrpcService(
                 centroids.TryGetValue(IntelligenceStoreConsumer.KeyToUlong(parent), out centroid);
 
             return new RerankCandidate(
-                r.Id, r.Score, centroid, DecayFor(r, decayField, now, decayOptions.Value.HalfLifeDays));
+                r.Id, r.Score, centroid, DecayFor(r, decayField, now, _decayOptions.HalfLifeDays));
         }).ToList();
 
         var byId = ResultsById(results);
