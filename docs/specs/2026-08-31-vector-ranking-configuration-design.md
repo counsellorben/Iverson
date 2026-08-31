@@ -68,11 +68,16 @@ options class, because that is now where the shipped value is decided.
 
 ### `DecayOptions` — the fifth constant
 
-New file `Iverson.Server/Iverson.Api/Grpc/DecayOptions.cs`, `internal` (Iverson.Api carries
-`InternalsVisibleTo` for `Iverson.Api.Tests`):
+New file `Iverson.Server/Iverson.Api/Grpc/DecayOptions.cs`, `public` — it is a parameter type of
+`ObjectSearchGrpcService`'s public primary constructor, so an `internal` type would be
+`CS0051: Inconsistent accessibility`. `Iverson.Api` is an application assembly rather than a
+published library, so widening costs nothing, and it matches `VectorRankingOptions` being public in
+`Iverson.Vector`. Keeping it internal and adding a separate internal constructor is not an option:
+`MapGrpcService<ObjectSearchGrpcService>()` (`Program.cs:443`) resolves the type from DI and needs
+an accessible constructor.
 
 ```csharp
-internal sealed class DecayOptions
+public sealed class DecayOptions
 {
     public const string Section = "Decay";
     public double HalfLifeDays { get; set; } = 180.0;
@@ -98,6 +103,12 @@ registered as a concrete `IOptions<T>`:
 var opts = new VectorRankingOptions();
 config.GetSection(VectorRankingOptions.Section).Bind(opts);
 
+if (!double.IsFinite(opts.WBase) || !double.IsFinite(opts.WCentroid) ||
+    !double.IsFinite(opts.WDecay) || !double.IsFinite(opts.Lambda))
+    throw new InvalidOperationException(
+        $"{VectorRankingOptions.Section}: every value must be finite " +
+        $"(WBase={opts.WBase}, WCentroid={opts.WCentroid}, WDecay={opts.WDecay}, Lambda={opts.Lambda}).");
+
 if (opts.WBase < 0 || opts.WCentroid < 0 || opts.WDecay < 0)
     throw new InvalidOperationException(
         $"{VectorRankingOptions.Section}: weights must be non-negative " +
@@ -119,10 +130,14 @@ Throwing from the registration call fails startup **without** `Iverson.Vector` t
 on `Microsoft.Extensions.Hosting` merely to reach `ValidateOnStart()`. Registering a bound instance
 also means no reload, matching `EmbeddingServiceOptions`; hot-reload is not wanted here.
 
-`DecayOptions` gets the same three steps with one check, `HalfLifeDays > 0`. Zero does not throw on
-its own — `ageDays / 0` is infinity and `Math.Min(1.0, ...)` swallows it — it silently makes every
-document maximally fresh or maximally stale. A negative half-life inverts the curve so older
-documents rank *fresher*. Both are exactly the silent wrongness this spec exists to prevent.
+`DecayOptions` gets the same three steps with two checks, finite and `HalfLifeDays > 0`. Zero does
+not throw on its own — `ageDays / 0` is infinity and `Math.Min(1.0, ...)` swallows it — it silently
+makes every document maximally fresh or maximally stale. A negative half-life inverts the curve so
+older documents rank *fresher*. `Infinity` passes `> 0` and yields `0.5^0 = 1.0` for every document,
+disabling decay while appearing configured; `NaN` fails every comparison and so passes the range
+check unchallenged. Unparseable strings like `"abc"` already throw at `Bind`, so the gap is exactly
+the values .NET parses as valid doubles. All of these are the silent wrongness this spec exists to
+prevent.
 
 **There is deliberately no sum-to-1 rule on the weights.** The fusion divides by the weights
 actually present, so `(0.60, 0.30)` and `(0.20, 0.10)` are the same configuration; constraining the
@@ -156,6 +171,11 @@ target-typed `new()` in `Iverson.Vector.Tests` (invisible to a `new ResultRerank
 explicit in `Iverson.Api.Tests`. Seven `ComputeDecay` call sites in `DecayFieldResolverTests` gain
 the half-life argument.
 
+`ObjectSearchGrpcService`'s three construction sites gain the new `IOptions<DecayOptions>` argument:
+`ObjectSearchGrpcServiceTests.cs:65`, `DocumentTemplateValidationTests.cs:327`, and
+`ObjectSearchVectorIntegrationTests.cs:80` — the last is a target-typed `new(`, so a
+`new ObjectSearchGrpcService` grep will not find it.
+
 Because the defaults equal the shipped constants, **every existing hand-computed expectation stays
 valid unchanged.** That is what demonstrates "no behavioural change at defaults", and it is the
 reason the re-pointed tests are worth keeping rather than rewriting.
@@ -169,8 +189,8 @@ defaults are identical — a green suite would prove nothing. So the implementat
 - at least one test computing decay at a **non-default** half-life, asserting a correspondingly
   different decay value.
 
-Plus four validation tests: negative weights, all-zero weights, `Lambda` outside `[0,1]`, and
-non-positive `HalfLifeDays`.
+Plus five validation tests: negative weights, all-zero weights, `Lambda` outside `[0,1]`,
+non-positive `HalfLifeDays`, and non-finite values (`NaN`, `Infinity`) in each options class.
 
 ## Verified assumptions
 
@@ -196,6 +216,8 @@ bodies down by seven lines. Empirical checks were run, not reasoned about.
 | A16 | `VectorRankingOptions` is reachable from both test projects | `public` in namespace `Iverson.Vector`, which both already use |
 | A18 | *(sibling sweep)* Every hard-coded ranking constant in production code is covered | **FAILED as originally scoped** — the sweep found `DecayFieldResolver.cs:14 HalfLifeDays = 180.0`, a fifth ranking-affecting constant. Folded into the design as `DecayOptions` |
 | A19 | An `internal` options class in `Iverson.Api` is testable | `Iverson.Api.csproj:10-12` `InternalsVisibleTo` → `Iverson.Api.Tests` |
+| A22 | An options type used as a parameter of a `public` primary constructor must itself be `public` | Probe reproducing the exact shape (public sealed class, primary constructor, `IOptions<T>` with internal `T`) fails: `error CS0051: Inconsistent accessibility: parameter type 'IOptions<DecayOptions>' is less accessible than method`. `InternalsVisibleTo` (A19) does not affect this — it governs test visibility, not the public-surface rule |
+| A23 | `ObjectSearchGrpcService` has exactly three construction sites, all of which gain the new argument | `ObjectSearchGrpcServiceTests.cs:65`, `DocumentTemplateValidationTests.cs:327`, and `ObjectSearchVectorIntegrationTests.cs:80` — the third is target-typed `new(`, invisible to a `new ObjectSearchGrpcService` grep |
 | A20 | `ComputeDecay`'s signature change has bounded blast radius | 9 mentions: 1 declaration (`DecayFieldResolver.cs:76`), 1 production call (`ObjectSearchGrpcService.cs:766`), 7 in `DecayFieldResolverTests` |
 | A21 | The production decay path runs through a static helper reachable from instance methods | `ObjectSearchGrpcService.cs:764` `private static DecayFor(...)`, called at `:260` and `:447`, both inside instance methods |
 
