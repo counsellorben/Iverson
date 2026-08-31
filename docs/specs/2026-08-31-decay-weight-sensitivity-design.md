@@ -4,6 +4,12 @@
 `w = 0.500` but differ in decay's share. The question is narrow and bounded: *does the incidental
 0.91-percentage-point dilution of decay change search results enough to care?*
 
+**Scoped to the centroid-present fusion branch.** The reranker's weighted mean runs over signals
+present, so a candidate without a centroid fuses differently and carries a larger perturbation (see
+Background). The measured corpus cannot produce that branch (A18), so this experiment speaks for the
+centroid-present branch only; the centroid-absent branch is decided analytically in "Scope of the
+comparison" and is not measured.
+
 This spec does **not** try to find the best decay weight. No corpus available here judges recency,
 so no benchmark here can answer that. See "Out of scope".
 
@@ -27,13 +33,19 @@ could not distinguish them:
 | A — 0.50 / 0.50 / 0.10 | 1.10 | 0.500 | 45.45% | 45.45% | 9.09% |
 | B — 0.45 / 0.45 / 0.10 | 1.00 | 0.500 | 45.00% | 45.00% | 10.00% |
 
-Their difference has an exact closed form, verified numerically to 1e-12 over 200,000 random draws:
+Their difference has an exact closed form — but the reranker accumulates `weightTotal` only over
+signals **present**, so the form is branch-dependent. Each branch verified numerically to 1e-12 over
+200,000 draws:
 
-```
-A - B = (1/110) * ( mean(base, centroid) - decay )
-```
+| branch | closed form | bound |
+|---|---|---|
+| base + centroid + decay | `(1/110) * ( mean(base,centroid) - decay )` | ±0.00909 |
+| base + decay (centroid absent) | `(1/66) * ( base - decay )` | ±0.01515 |
+| base + centroid (no decay), or base alone | triples agree exactly | 0 |
 
-Bounded at **±0.00909** when all signals lie in [0,1]. That bound is not obviously negligible: in the
+The measured corpus exercises only the first branch (A18), and that is the branch this experiment
+speaks for; the centroid-absent branch is decided analytically in "Scope of the comparison" rather
+than measured. Against the measured branch the bound (signals in [0,1]) is not obviously negligible: in the
 measured runs the median adjacent top-10 score gap is **0.00173**, and **91.5%** of adjacent top-10
 gaps are smaller than the worst-case perturbation. Reordering is therefore possible, and the closed
 form shows it is driven by the **spread** of `mean(base,centroid) - decay` across a result set — a
@@ -47,8 +59,13 @@ Instrument `ResultReranker.Rerank` on a scratch branch — never committed, matc
 practice for edited fusion constants — to append one line per candidate:
 
 ```
-callIndex, candidateId, baseScore, centroidCos
+callIndex, candidateId, parentId, hasCentroid, baseScore, centroidCos
 ```
+
+`parentId` is the document the candidate belongs to: `r.Payload["parent_id"]` on the `SearchChunks`
+path (`ObjectSearchGrpcService.cs:445-446`), and `candidateId` itself on the `SearchSimilar` path,
+where candidates are objects. `hasCentroid` records whether the centroid term was included, which
+selects the fusion branch offline.
 
 `ResultReranker` is registered as a **singleton** (`ServiceCollectionExtensions.cs:50`) and may serve
 concurrent requests, so the append must be guarded by a lock.
@@ -64,6 +81,13 @@ maps to query `i`.
 **Run procedure:** no other traffic may hit the API during capture, or call ordering interleaves and
 the correlation silently breaks.
 
+**Validation gate — before any analysis.** Both endpoints can throw
+`RpcException(StatusCode.Unavailable)` on the embedding path *before* reaching `Rerank`, and the
+harness counts the failure and continues (`BenchmarkQueryScenario.cs:97`), so one such throw shifts
+the parity of every later row and silently joins components to the wrong queries. Before trusting the
+join, assert that the number of distinct `callIndex` values is exactly `2 x <queries>` (1,344 for
+this corpus) **and** that the harness reported `failures == 0`. Refuse to proceed otherwise.
+
 ### One run
 
 A single `benchmark-query` invocation against the currently loaded collection (the 5.66 chunks/doc
@@ -72,9 +96,11 @@ weight-independent, so the triple in force during the run does not matter. No re
 
 ### Offline model
 
-For each scenario, assign each document an age, compute `d = 0.5^(ageDays/180)` mirroring
-`DecayFieldResolver.ComputeDecay` (`HalfLifeDays = 180.0`, clamped to `<= 1.0`), then score both
-triples, re-rank, and compare.
+For each scenario, assign each **document** an age keyed by `parentId` — never per candidate, since
+production denormalises a single parent timestamp onto every chunk (A20) — compute
+`d = 0.5^(ageDays/180)` mirroring `DecayFieldResolver.ComputeDecay` (`HalfLifeDays = 180.0`, clamped
+to `<= 1.0`), then score both triples **using the branch indicated by `hasCentroid`**, re-rank, and
+compare.
 
 Scenarios vary **age spread**, because the closed form shows spread — not level — drives reordering:
 
@@ -97,11 +123,28 @@ deterministic function of that ordering plus the diversity vectors, an unchanged
 a reordering deep in the candidate list can leave the final top-10 identical — which is conservative
 in the safe direction.
 
+**The centroid-absent branch, decided analytically.** Decay's share is not a fixed 10% today: it is
+10.00% when the centroid is present and **14.29%** when it is absent, because `weightTotal` omits
+`WCentroid`. No triple at `w = 0.500` preserves both — branch 1 requires `WBase = 4.5 * WDecay`,
+branch 2 requires `WBase = 6 * WDecay`, and together those force `WDecay = 0`. The drift is
+structural, not a tuning failure, and the branches favour opposite triples:
+
+| triple | branch 1 decay share | branch 2 decay share |
+|---|---|---|
+| shipped 0.60 / 0.30 / 0.10 | 10.00% | 14.29% |
+| A — 0.50 / 0.50 / 0.10 | 9.09% (-0.91pp) | 16.67% (**+2.38pp**) |
+| B — 0.45 / 0.45 / 0.10 | 10.00% (+0.00pp) | 18.18% (**+3.90pp**) |
+
+**Decision: accept the branch-2 drift, do not optimise for it.** It is bounded at +2.38 to +3.90pp,
+no triple removes it, and preserving it would require retuning `WDecay` itself, which is out of
+scope. This does not overturn a preference for B; it retires the premise that B is *universally*
+share-preserving — that property holds in branch 1 only.
+
 ### Decision rule — fixed before the run
 
 If the top-10 set is unchanged for **>= 99% of queries** under **both** the wide and bimodal
 scenarios, the 0.91pp dilution is immaterial: ship **triple B (0.45 / 0.45 / 0.10)**, which holds
-decay's share at exactly today's 10.00%, and close the hold recorded in
+decay's share at exactly today's 10.00% **in the measured branch**, and close the hold recorded in
 `docs/centroid-weighting-proposal.md`.
 
 Otherwise the dilution is material, and the choice becomes a product decision about decay's intended
@@ -144,4 +187,6 @@ letting it decide is the guard against repeating that error.
 | A16 | Offline analysis tooling is available | `iverson-benchmark-corpora/python-libs/ir_measures` imports and scored all three arms this session; `numpy`/`scipy` back `scratchpad/stats.py` |
 | A15 | No test asserts `ResultReranker` performs no I/O | No purity assertion against `ResultReranker` in `Iverson.Vector.Tests`; the claim lives only in the class doc comment, which the scratch branch does not ship |
 | A17 | Every query returns >= 10 results, so a top-10 set comparison is defined | `freshstack-chunk256-2026-08-30/runs/w0500.{chunks,similar}.trec`: 672 queries each, min = max = 50 results |
+| A19 | Chunk payloads carry the parent's metadata columns, so decay is non-null on `SearchChunks` | `IntelligenceStoreConsumer.cs:302-318` copies every `schema.MetadataColumns` entry onto each chunk payload |
+| A20 | All chunks of one document share a single decay value | Same loop — each chunk's metadata is extracted from the parent's `payload`, so every chunk carries the identical timestamp |
 | A18 | Benchmark candidates carry a non-null centroid | `BenchmarkDocument.cs:16-18` marks `Body` with both `[IversonEmbedding]` and `[IversonChunk]`, which is what makes the centroid non-degenerate |
