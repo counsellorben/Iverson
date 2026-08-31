@@ -31,7 +31,8 @@ property of the corpus *and the model*, and it swings across the entire range. A
 constant cannot survive an embedding-model upgrade, which is a thing deployments do.
 
 **Proposal:** bind these to an options class from configuration. **Keep the defaults exactly as
-shipped** (0.60 / 0.30 / 0.10, λ 0.70) — this change enables tuning, it does not retune anything.
+shipped** (0.45 / 0.45 / 0.10 as of 2026-08-31, λ 0.70) — this change enables tuning, it does not
+retune anything.
 
 **Risk:** low. No behavioural change at default values. `ResultRerankerTests` hand-computes expected
 values at the shipped constants and must be re-pointed at the same values via the options object.

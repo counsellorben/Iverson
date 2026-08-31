@@ -630,6 +630,34 @@ which is exactly why, per the earlier finding, it was not used to reach the verd
 replays, exercises the fusion's centroid-present branch only. The `not has_centroid` path is
 unexercised here.
 
+### Decision 2026-08-31 — triple B ships; the hold is closed
+
+The product decision the sweep escalated has been made: **B (0.45/0.45/0.10) ships.** The rationale
+is decay's intended share, which is the only axis the sweep left open — B holds decay at **10.00% on
+the centroid-present branch**, exactly what the shipped 0.60/0.30/0.10 gave it, so moving to a
+centroid ratio of `w = 0.500` changes the centroid's weight without also quietly changing decay's.
+Triple A's 9.09% would have been an unremarked second change riding along with the first.
+
+This is a judgement, not a measurement, and the sweep above is the reason it had to be: A and B
+reorder ~47% of top-10 document sets once ages vary, so they are not interchangeable, and no corpus
+available to this project judges recency well enough to choose between them. Recording it as a
+judgement is the point — a later measurement on real timestamps can overturn it, and should.
+
+Two consequences worth stating plainly:
+
+- **The share is branch-dependent and B does not preserve it everywhere.** On the centroid-absent
+  branch B gives decay 18.18%, against 14.29% under the shipped triple. No triple at `w = 0.500`
+  preserves both branches (branch 1 needs `WBase = 4.5 * WDecay`, branch 2 needs `6 * WDecay`, which
+  together force `WDecay = 0`). B was chosen on the centroid-present branch because that is the
+  branch every captured row exercised and the one both benchmarks measure.
+- **The retrieval gain this unblocks is the `w = 0.500` move itself**, measured earlier in this
+  document: +0.0089 / +0.0073 / +0.0037 nDCG@10 on FreshStack across the three densities (all
+  Holm-significant), and -0.0005 (p = 0.81, not significant) on NFCorpus. The sweep never disputed
+  that gain; it only established that the triple carrying it had to be chosen deliberately.
+
+Shipped in `Iverson.Server/Iverson.Vector/ResultReranker.cs`; the constant carries a comment
+pointing back here.
+
 ## The proposed design
 
 Scale the centroid's share of the fused score by the requested result-set size:

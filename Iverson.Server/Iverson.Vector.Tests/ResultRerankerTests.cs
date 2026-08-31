@@ -25,8 +25,8 @@ public sealed class ResultRerankerTests
 
         var results = _reranker.Rerank(Query, candidates);
 
-        // (0.6*0.9 + 0.3*0.5 + 0.1*0.8) / 1.0 = 0.77
-        results.Single().FusedScore.Should().BeApproximately(0.77, 1e-6);
+        // (0.45*0.9 + 0.45*0.5 + 0.1*0.8) / 1.0 = 0.71
+        results.Single().FusedScore.Should().BeApproximately(0.71, 1e-6);
     }
 
     [Fact]
@@ -41,9 +41,9 @@ public sealed class ResultRerankerTests
         var results = _reranker.Rerank(Query, candidates);
 
         // Candidate 1: fused = 0.5 (base only).
-        // Candidate 2: fused = (0.6*0.4 + 0.3*1.0) / 0.9 = 0.6.
+        // Candidate 2: fused = (0.45*0.4 + 0.45*1.0) / 0.9 = 0.7.
         results[0].Id.Should().Be(2);
-        results[0].FusedScore.Should().BeApproximately(0.6, 1e-6);
+        results[0].FusedScore.Should().BeApproximately(0.7, 1e-6);
         results[1].Id.Should().Be(1);
         results[1].FusedScore.Should().BeApproximately(0.5, 1e-6);
     }
@@ -59,7 +59,7 @@ public sealed class ResultRerankerTests
 
         var results = _reranker.Rerank(Query, candidates);
 
-        // Both: 0.6*0.5 + 0.3*0.5 = 0.45 before decay.
+        // Both: 0.45*0.5 + 0.45*0.5 = 0.45 before decay (unchanged: base and centroid are equal here).
         // Candidate 1: 0.45 + 0.1*1.0 = 0.55. Candidate 2: 0.45 + 0.1*0.0 = 0.45.
         results[0].Id.Should().Be(1);
         results[0].FusedScore.Should().BeApproximately(0.55, 1e-6);
@@ -77,10 +77,10 @@ public sealed class ResultRerankerTests
 
         var results = _reranker.Rerank(Query, candidates);
 
-        // (0.6*0.8 + 0.1*0.6) / 0.7 = 0.6/0.7*0.8 ... explicitly:
-        // weightedSum = 0.48 + 0.06 = 0.54; weightTotal = 0.7; fused = 0.54/0.7.
-        var expected = (0.6 * 0.8 + 0.1 * 0.6) / 0.7;
-        expected.Should().BeApproximately(0.857142857 * 0.8 + 0.142857143 * 0.6, 1e-6);
+        // weightedSum = 0.36 + 0.06 = 0.42; weightTotal = 0.55; fused = 0.42/0.55.
+        // Decay's share is 0.1/0.55 = 18.18% here, against 10.00% when the centroid is present.
+        var expected = (0.45 * 0.8 + 0.1 * 0.6) / 0.55;
+        expected.Should().BeApproximately(0.818181818 * 0.8 + 0.181818182 * 0.6, 1e-6);
         results.Single().FusedScore.Should().BeApproximately(expected, 1e-9);
     }
 
@@ -94,11 +94,11 @@ public sealed class ResultRerankerTests
 
         var results = _reranker.Rerank(Query, candidates);
 
-        // (0.6*0.7 + 0.3*1.0) / 0.9 = 0.8
-        var expected = (0.6 * 0.7 + 0.3 * 1.0) / 0.9;
-        expected.Should().BeApproximately(0.666666667 * 0.7 + 0.333333333 * 1.0, 1e-6);
+        // (0.45*0.7 + 0.45*1.0) / 0.9 = 0.85
+        var expected = (0.45 * 0.7 + 0.45 * 1.0) / 0.9;
+        expected.Should().BeApproximately(0.5 * 0.7 + 0.5 * 1.0, 1e-6);
         results.Single().FusedScore.Should().BeApproximately(expected, 1e-9);
-        results.Single().FusedScore.Should().BeApproximately(0.8, 1e-6);
+        results.Single().FusedScore.Should().BeApproximately(0.85, 1e-6);
     }
 
     [Fact]
@@ -131,8 +131,8 @@ public sealed class ResultRerankerTests
 
         var results = _reranker.Rerank(Query, candidates);
 
-        // Same as centroid-absent case: (0.6*0.8 + 0.1*0.6) / 0.7.
-        var expected = (0.6 * 0.8 + 0.1 * 0.6) / 0.7;
+        // Same as centroid-absent case: (0.45*0.8 + 0.1*0.6) / 0.55.
+        var expected = (0.45 * 0.8 + 0.1 * 0.6) / 0.55;
         results.Single().FusedScore.Should().BeApproximately(expected, 1e-9);
     }
 }

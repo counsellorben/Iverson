@@ -9,7 +9,14 @@ namespace Iverson.Vector;
 /// </summary>
 public sealed class ResultReranker : IResultReranker
 {
-    private const double WBase = 0.60, WCentroid = 0.30, WDecay = 0.10;
+    // Triple B. Chosen 2026-08-31 over triple A (0.50/0.50/0.10) as a product decision about
+    // decay's intended share, not an empirical one: the two triples reorder ~47% of top-10
+    // document sets once ages vary, so they are not interchangeable, and no available corpus
+    // judges recency well enough to choose between them. B keeps decay's share at 10.00% on the
+    // centroid-present branch, matching what 0.60/0.30/0.10 gave. The share is branch-dependent
+    // -- 18.18% when the centroid is absent -- and no triple at this centroid ratio preserves
+    // both. See docs/centroid-weighting-proposal.md.
+    private const double WBase = 0.45, WCentroid = 0.45, WDecay = 0.10;
 
     public IReadOnlyList<RerankedResult> Rerank(float[] queryVector, IReadOnlyList<RerankCandidate> candidates)
     {

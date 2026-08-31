@@ -2457,16 +2457,22 @@ public class ObjectSearchGrpcServiceTests
     }
 
     // Hand-computed MMR (lambda = 0.70) over 3 dual-annotated candidates, query = e0:
-    //   A: BaseScore=1.00, centroid=e0 (sim to query=1.0)  → fused = (0.6*1.00 + 0.3*1.0)/0.9 = 1.0000
-    //   B: BaseScore=0.85, centroid=e0 (sim to query=1.0)  → fused = (0.6*0.85 + 0.3*1.0)/0.9 = 0.9000
-    //   C: BaseScore=1.00, centroid=e1 (sim to query=0.0)  → fused = (0.6*1.00 + 0.3*0.0)/0.9 = 0.6667
+    //   A: BaseScore=1.00, centroid=e0 (sim to query=1.0)  → fused = (0.45*1.00 + 0.45*1.0)/0.9 = 1.0000
+    //   B: BaseScore=0.85, centroid=e0 (sim to query=1.0)  → fused = (0.45*0.85 + 0.45*1.0)/0.9 = 0.9250
+    //   C: BaseScore=1.00, centroid=e1 (sim to query=0.0)  → fused = (0.45*1.00 + 0.45*0.0)/0.9 = 0.5000
     // Fused-descending order fed to the diversifier: [A, B, C].
     // Step 1 selects A unconditionally (highest fused).
     // A's centroid is e0, same as B's (cosine(B,A) = 1.0) and orthogonal to C's (cosine(C,A) = 0.0).
-    //   Mmr(B) = 0.7*0.9000 - 0.3*1.0 = 0.33
-    //   Mmr(C) = 0.7*0.6667 - 0.3*0.0 = 0.4667
+    //   Mmr(B) = 0.7*0.9250 - 0.3*1.0 = 0.3475
+    //   Mmr(C) = 0.7*0.5000 - 0.3*0.0 = 0.3500
     // C's MMR score beats B's, so C is selected second despite its materially lower fused score —
     // B (the near-duplicate of the already-selected A) is passed over.
+    //
+    // NOTE: the equal-weight triple (0.45/0.45/0.10) narrows this margin sharply — 0.3500 vs
+    // 0.3475, where the 0.60/0.30/0.10 triple gave 0.4667 vs 0.33. Weighting the centroid equally
+    // with base punishes C (centroid cos 0.0) and rewards B (centroid cos 1.0), so the two nearly
+    // meet. The arithmetic is exact and hand-checkable, so this is not flaky — but any future
+    // weight change should re-derive these two numbers rather than assume the property survives.
     [Fact]
     public async Task SearchSimilar_PromotesDissimilarCandidate_OverNearDuplicate_DespiteLowerFusedScore()
     {
@@ -2502,7 +2508,7 @@ public class ObjectSearchGrpcServiceTests
         written[0].Data.Fields["Body"].StringValue.Should().Be("A");
         written[0].Score.Should().BeApproximately(1.0f, 0.001f);
         written[1].Data.Fields["Body"].StringValue.Should().Be("C-dissimilar");
-        written[1].Score.Should().BeApproximately(0.6667f, 0.001f);
+        written[1].Score.Should().BeApproximately(0.5000f, 0.001f);
     }
 
     // Embedding-only property: no centroid signal exists at all, so every candidate's
@@ -2718,8 +2724,8 @@ public class ObjectSearchGrpcServiceTests
 
         capturedVectorName.Should().Be("body_centroid");
         written.Should().ContainSingle();
-        // (0.60 × 0.50 + 0.30 × 1.00) / 0.90 — no decay column on this schema.
-        written[0].Score.Should().BeApproximately(0.6667f, 0.0005f);
+        // (0.45 × 0.50 + 0.45 × 1.00) / 0.90 — no decay column on this schema.
+        written[0].Score.Should().BeApproximately(0.7500f, 0.0005f);
     }
 
     [Fact]
@@ -2728,8 +2734,8 @@ public class ObjectSearchGrpcServiceTests
         // Guards the re-join: the fused ranking here is a genuine PERMUTATION of the order Qdrant
         // returned, so a positional re-join (ranked[i] paired with results[i]) would emit chunk A's
         // text and parent alongside chunk B's score. Ranking arithmetic (no decay column on Article):
-        //   A: base 0.90, parent centroid orthogonal to the query → cos 0.0 → (0.6×0.90 + 0.3×0.0)/0.9 = 0.6000
-        //   B: base 0.50, parent centroid identical to the query  → cos 1.0 → (0.6×0.50 + 0.3×1.0)/0.9 = 0.6667
+        //   A: base 0.90, parent centroid orthogonal to the query → cos 0.0 → (0.45×0.90 + 0.45×0.0)/0.9 = 0.4500
+        //   B: base 0.50, parent centroid identical to the query  → cos 1.0 → (0.45×0.50 + 0.45×1.0)/0.9 = 0.7500
         // so B outranks A despite the lower base cosine, reversing the search order.
         await _registry.RegisterAsync(SchemaFixtures.ArticleSchema());
 
@@ -2769,11 +2775,11 @@ public class ObjectSearchGrpcServiceTests
         // B first, carrying ITS OWN text/parent — a positional join would put "text-A"/parentA here.
         written[0].ChunkText.Should().Be("text-B");
         written[0].ParentKey.Should().Be(parentB);
-        written[0].Score.Should().BeApproximately(0.6667f, 0.0005f);
+        written[0].Score.Should().BeApproximately(0.7500f, 0.0005f);
 
         written[1].ChunkText.Should().Be("text-A");
         written[1].ParentKey.Should().Be(parentA);
-        written[1].Score.Should().BeApproximately(0.6000f, 0.0005f);
+        written[1].Score.Should().BeApproximately(0.4500f, 0.0005f);
     }
 
     // ── SearchChunks diversification (chunk-level, not parent-level) ───────────
@@ -2853,16 +2859,16 @@ public class ObjectSearchGrpcServiceTests
     // both (orthogonal chunk vector), even though all three came from the same document.
     //
     // Query = e0. Parent centroid = e0 for all three (cos to query = 1.0) — identical, so it
-    // contributes the same +0.3 term to every fused score and never changes relative order.
-    //   A: base=0.95 → fused = (0.6*0.95 + 0.3*1.0)/0.9 = 0.9667
-    //   B: base=0.90 → fused = (0.6*0.90 + 0.3*1.0)/0.9 = 0.9333
-    //   C: base=0.85 → fused = (0.6*0.85 + 0.3*1.0)/0.9 = 0.9000
+    // contributes the same +0.45 term to every fused score and never changes relative order.
+    //   A: base=0.95 → fused = (0.45*0.95 + 0.45*1.0)/0.9 = 0.9750
+    //   B: base=0.90 → fused = (0.45*0.90 + 0.45*1.0)/0.9 = 0.9500
+    //   C: base=0.85 → fused = (0.45*0.85 + 0.45*1.0)/0.9 = 0.9250
     // Fused-descending order fed to the diversifier: [A, B, C].
     // Step 1 selects A unconditionally (highest fused).
     // A's CHUNK vector is e0 — identical to B's chunk vector (cos(B,A) = 1.0) and orthogonal to
     // C's chunk vector (cos(C,A) = 0.0).
-    //   Mmr(B) = 0.7*0.9333 - 0.3*1.0 = 0.3533
-    //   Mmr(C) = 0.7*0.9000 - 0.3*0.0 = 0.6300
+    //   Mmr(B) = 0.7*0.9500 - 0.3*1.0 = 0.3650
+    //   Mmr(C) = 0.7*0.9250 - 0.3*0.0 = 0.6475
     // C's MMR score beats B's, so with top_k=2 the selection is [A, C]: the near-duplicate B
     // (same parent AND a near-identical passage) is suppressed, while C (same parent but a
     // dissimilar passage) is NOT suppressed — proving the diversity signal operates at chunk
@@ -2908,9 +2914,9 @@ public class ObjectSearchGrpcServiceTests
 
         written.Should().HaveCount(2);
         written[0].ChunkText.Should().Be("A");
-        written[0].Score.Should().BeApproximately(0.9667f, 0.001f);
+        written[0].Score.Should().BeApproximately(0.9750f, 0.001f);
         written[1].ChunkText.Should().Be("C-dissimilar");
-        written[1].Score.Should().BeApproximately(0.9000f, 0.001f);
+        written[1].Score.Should().BeApproximately(0.9250f, 0.001f);
     }
 
     // A failed chunk-vector retrieve must degrade selection, never fail the search: every
