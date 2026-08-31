@@ -22,7 +22,9 @@ display wants different behaviour from one fetching 200 to feed a reranker.
 crossover" below.** The 2026-08-28 FreshStack numbers were themselves produced with the wrong
 model's prefixes and are superseded by the 2026-08-29 replication. The current conclusion is that
 **`w = 0.500` should replace the shipped `0.333` as a constant**, and that no conditioning variable
-— neither `top_k` nor chunks-per-document — earns its place.
+— neither `top_k` nor chunks-per-document — earns its place. **That change is held as of
+2026-08-31**: every run in this document was measured on the no-decay path, so it cannot arbitrate
+between two weight triples that differ only where decay is present. See "Decision 2026-08-31".
 
 **Superseded 2026-08-28 — see "FreshStack results" below.** On a corpus with 10.79 chunks per
 document the centroid is decisively significant on every measure, and the optimum sits above the
@@ -450,6 +452,47 @@ zero, so the gain shrinks toward the sparse-chunk end rather than holding flat.
 This is the opposite shape of evidence from the design this document proposes. The finding is that
 one weight generalises better than the shipped one, across corpora and across a 3.4x density range —
 which argues for **changing a constant**, and against making it a function of anything.
+
+### Decision 2026-08-31 — the weight change is held: the benchmark never exercised decay
+
+**Ben's call, on the evidence below: do not ship `w = 0.500` until a decay-bearing corpus is
+measured.** Recorded here because the gain being deferred is real and the reason for deferring it is
+easy to forget.
+
+`ResultReranker` does not apply a fixed three-way split. It computes a weighted mean **over the
+signals present on each candidate** (`ResultReranker.cs:35-51`): `weightTotal` accumulates only the
+weights whose signals exist. `w` as used throughout this document is therefore
+`WCentroid / (WBase + WCentroid)` — the *two-signal* ratio — and it describes the fusion only when
+decay is absent.
+
+Decay was absent from every run in this document. `BenchmarkDocument` carries no timestamp metadata
+column, so `DecayFieldResolver.ResolveDecayField` returns `null` and every benchmark candidate was
+constructed with `Decay: null`. **Every number above was measured on the no-decay path.** Decay is
+not dead code — it is resolved for any schema with a `TIMESTAMPTZ` or `DATETIME` metadata column
+(`DecayFieldResolver.cs:41-67`) and applied at `ObjectSearchGrpcService.cs:260` and `:447`.
+
+That makes the weight change a decision the benchmark cannot settle, because two triples both reach
+the measured optimum and differ only where decay exists:
+
+| triple | sum | w | base | centroid | decay |
+|---|---|---|---|---|---|
+| **shipped** 0.60 / 0.30 / 0.10 | 1.00 | 0.333 | 60.00% | 30.00% | **10.00%** |
+| 0.50 / 0.50 / 0.10 (as swept) | 1.10 | 0.500 | 45.45% | 45.45% | **9.09%** |
+| 0.45 / 0.45 / 0.10 | 1.00 | 0.500 | 45.00% | 45.00% | **10.00%** |
+
+The two candidates are **bit-identical on no-decay documents** — `(0.5b + 0.5c)/1.0` and
+`(0.45b + 0.45c)/0.9` are the same weighted mean, which is why the sweep could not distinguish them.
+They diverge only on decay-bearing schemas, where the swept triple quietly dilutes decay by 0.91
+percentage points. Picking between them on this document's evidence would be picking on a path the
+evidence never touched.
+
+**What is being deferred:** +0.0089 [+0.0043, +0.0135], +0.0073 [+0.0025, +0.0120] and
++0.0037 [+0.0000, +0.0074] nDCG@10 on the three FreshStack arms, all Holm-significant, at a cost of
+-0.0005 (p = 0.81) on NFCorpus.
+
+**What unblocks it:** a benchmark corpus whose entity carries a timestamp metadata column, so the
+three-signal path is exercised and the two triples become distinguishable. Until then this document
+records a measured result about a two-signal fusion, not a licensed change to a three-signal one.
 
 ## The proposed design
 
