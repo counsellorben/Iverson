@@ -53,8 +53,9 @@ The 21 assumptions in the spec's `Verified assumptions` table (A1–A21) were ve
 | P7 | Code validity | The container process can write the capture file | `docker exec iverson-api id` → `uid=1000(ubuntu)`; `/tmp`, `/app`, `/var/tmp` all confirmed writable |
 | P8 | File path | The 5.66 chunks/doc corpus has the inputs `benchmark-query` needs | `freshstack-chunk256-2026-08-30/` contains `beir/`, `keymap.json`, `qrels.trec`, `runs/` |
 | P9 | File path | The analysis script cannot be committed beside the capture | `git -C iverson-benchmark-corpora rev-parse` → `fatal: not a git repository`. Script therefore lives in `scratchpad/` (uncommitted), matching `stats.py` and `crossover.sh` |
-| P10 | Task ordering | Task 2 consumes Task 1's capture; there is no reverse dependency | Task 2 reads only `fusion-capture.csv` and `qrels.trec`; it modifies no file Task 1 touches |
+| P10 | Task ordering | Task 2 consumes Task 1's capture; there is no reverse dependency | Task 2 reads only the two capture files, `keymap.json` and `qrels.trec`; it modifies no file Task 1 touches |
 | P12 | Consumer impact | Both endpoints' `ParentId` values key `keymap.json`, so captured rows join to BEIR docIds | Live object point carries `key: cfad0138-89de-5053-9da0-06cddeda0800`; live chunk point carries `parent_id: 966ded21-0d91-5f57-b309-fc8e71ca6e48`; `keymap.json` is Guid-keyed, 6,000 entries |
+| P13 | Consumer impact | The harness collapses to document level before writing TREC, so the offline replica must too | `BenchmarkQueryScenario.cs:209` -> `MaxPassageAggregator.Aggregate` (doc comment at `MaxPassageAggregator.cs:17-20`: "the parent's score is the maximum score among its chunks"; `:40-45` drops parents absent from the key map); `:184` -> `DocumentRanking.CollapseByDocId` (`DocumentRanking.cs:19-25`, max per docId) |
 | P11 | Command | Commit messages are plain imperative — no Conventional Commits prefix | `git log --oneline -20`: entries like `record the re-chunking crossover…`, `spec: decay-weight sensitivity…`; no `feat:`/`fix:` prefixes |
 
 ## Tasks
@@ -264,10 +265,29 @@ SCENARIOS = {
 
 - [ ] **Step 2: Report per scenario**
 
-Run the whole sweep once per capture file and report the two arms side by side. Group rows by `callIndex` (one result set per call), score both triples, sort descending, and report:
-fraction of calls whose **top-10 set** changes, mean rank displacement, and Kendall tau. Assert the `uniform` control shows zero set changes — a non-zero control means the implementation is wrong, not that the fusion is sensitive.
+Run the whole sweep once per capture file and report the two arms side by side. Group rows by `callIndex` (one result set per call) and score both triples.
 
-Also record nDCG@10 for both triples against `freshstack-chunk256-2026-08-30/qrels.trec`. Calls map to queries by parity **relative to each file's minimum `callIndex`** — `i = (callIndex - min) // 2`, even = similar, odd = chunks — because the second capture's indices continue from the first. Candidate ids reach BEIR docIds through `parentId` -> `keymap.json`. **This number is recorded, not used to choose** — with timestamps uncorrelated to relevance it favours whichever triple carries less decay by construction (spec, "Reported but explicitly not decisive").
+**Collapse to document level first.** The harness never scores the reranker's output directly: `BenchmarkQueryScenario.cs:209` runs `MaxPassageAggregator.Aggregate` (max score per parent, unresolved parents dropped) and `:184` runs `DocumentRanking.CollapseByDocId` (max score per docId). `qrels.trec` is document-level, so every metric below is computed on the collapsed ranking, not on the captured rows:
+
+```python
+# collapse captured candidates to one row per document, exactly as the harness does
+def to_documents(rows, fused, keymap):
+    best = {}                                  # docId -> max fused score
+    for r in rows:
+        doc = keymap.get(r.parent_id)          # unresolved parents are dropped,
+        if doc is None:                        # matching MaxPassageAggregator
+            continue
+        s = fused[r.candidate_id]
+        if doc not in best or s > best[doc]:
+            best[doc] = s
+    return sorted(best.items(), key=lambda kv: -kv[1])[:DOCUMENT_BUDGET]
+```
+
+The same function serves the similar path unchanged — it degenerates to a no-op when each object maps to a distinct docId, which is what `CollapseByDocId` does there.
+
+On that document-level ranking, report: fraction of calls whose **top-10 set** changes, mean rank displacement, and Kendall tau. Assert the `uniform` control shows zero set changes — a non-zero control means the implementation is wrong, not that the fusion is sensitive.
+
+Also record nDCG@10 for both triples against `freshstack-chunk256-2026-08-30/qrels.trec`, on the same collapsed ranking. Calls map to queries by parity **relative to each file's minimum `callIndex`** — `i = (callIndex - min) // 2`, even = similar, odd = chunks — because the second capture's indices continue from the first. Candidate ids reach BEIR docIds through `parentId` -> `keymap.json`. **This number is recorded, not used to choose** — with timestamps uncorrelated to relevance it favours whichever triple carries less decay by construction (spec, "Reported but explicitly not decisive").
 
 - [ ] **Step 3: Apply the decision rule and record the outcome**
 
