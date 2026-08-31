@@ -10,6 +10,7 @@ using Iverson.Sql;
 using Iverson.StarRocks;
 using Iverson.Vector;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
 using NSubstitute;
 using Xunit;
 
@@ -329,7 +330,7 @@ public class DocumentTemplateValidationTests
             NullLogger<ObjectSearchGrpcService>.Instance,
             actingUserAccessor, new RowFieldAuthorizationEvaluator(),
             new IntelligenceTenantScope("test-signing-key-0123456789abcdef"),
-            new ResultReranker(), new ResultDiversifier());
+            new ResultReranker(Options.Create(new VectorRankingOptions())), new ResultDiversifier(Options.Create(new VectorRankingOptions())));
 
         var writer = Substitute.For<IServerStreamWriter<ChunkSearchResponse>>();
         writer.WriteAsync(Arg.Any<ChunkSearchResponse>(), Arg.Any<CancellationToken>()).Returns(Task.CompletedTask);

@@ -1,4 +1,5 @@
 using FluentAssertions;
+using Microsoft.Extensions.Options;
 using Xunit;
 
 namespace Iverson.Vector.Tests;
@@ -13,7 +14,7 @@ public sealed class ResultRerankerTests
     // Centroid aligned with Query: cos = 1.0 exactly regardless of magnitude.
     private static readonly float[] CentroidCos1 = { 1f, 0f };
 
-    private readonly ResultReranker _reranker = new();
+    private readonly ResultReranker _reranker = new(Options.Create(new VectorRankingOptions()));
 
     [Fact]
     public void Rerank_AllThreeSignalsPresent_ComputesWeightedMean()

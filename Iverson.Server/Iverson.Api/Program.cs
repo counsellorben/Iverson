@@ -185,6 +185,8 @@ builder.Services.AddQdrant(
     cfg["Qdrant:ApiKey"],
     cfg["Qdrant:CertPath"]);
 
+builder.Services.AddVectorRanking(cfg);
+
 builder.Services.AddKafka(cfg);
 
 builder.Services.AddSingleton<SchemaRegistry>();

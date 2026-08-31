@@ -11,6 +11,7 @@ using Iverson.Sql;
 using Iverson.StarRocks;
 using Iverson.Vector;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
 using NSubstitute;
 using Xunit;
 using Filter        = Qdrant.Client.Grpc.Filter;
@@ -66,7 +67,7 @@ public class ObjectSearchGrpcServiceTests
             _registry, _search, _vector, _embedding,
             NullLogger<ObjectSearchGrpcService>.Instance,
             _actingUserAccessor, _authEvaluator, new IntelligenceTenantScope("test-signing-key-0123456789abcdef"),
-            new ResultReranker(), new ResultDiversifier());
+            new ResultReranker(Options.Create(new VectorRankingOptions())), new ResultDiversifier(Options.Create(new VectorRankingOptions())));
     }
 
     private static (IServerStreamWriter<T> writer, List<T> written) MakeStream<T>()

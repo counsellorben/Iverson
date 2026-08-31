@@ -1,4 +1,5 @@
 using System.Numerics.Tensors;
+using Microsoft.Extensions.Options;
 
 namespace Iverson.Vector;
 
@@ -7,16 +8,9 @@ namespace Iverson.Vector;
 /// Pure and I/O-free: performs no network calls and reads no clock. The decay signal
 /// is consumed as a pre-computed value in [0,1]; the decay curve itself is owned elsewhere.
 /// </summary>
-public sealed class ResultReranker : IResultReranker
+public sealed class ResultReranker(IOptions<VectorRankingOptions> options) : IResultReranker
 {
-    // Triple B. Chosen 2026-08-31 over triple A (0.50/0.50/0.10) as a product decision about
-    // decay's intended share, not an empirical one: the two triples reorder ~47% of top-10
-    // document sets once ages vary, so they are not interchangeable, and no available corpus
-    // judges recency well enough to choose between them. B keeps decay's share at 10.00% on the
-    // centroid-present branch, matching what 0.60/0.30/0.10 gave. The share is branch-dependent
-    // -- 18.18% when the centroid is absent -- and no triple at this centroid ratio preserves
-    // both. See docs/centroid-weighting-proposal.md.
-    private const double WBase = 0.45, WCentroid = 0.45, WDecay = 0.10;
+    private readonly VectorRankingOptions _o = options.Value;
 
     public IReadOnlyList<RerankedResult> Rerank(float[] queryVector, IReadOnlyList<RerankCandidate> candidates)
     {
@@ -39,20 +33,20 @@ public sealed class ResultReranker : IResultReranker
             }
             else
             {
-                var weightedSum = WBase * candidate.BaseScore;
-                var weightTotal = WBase;
+                var weightedSum = _o.WBase * candidate.BaseScore;
+                var weightTotal = _o.WBase;
 
                 if (hasCentroid)
                 {
                     var centroidSimilarity = TensorPrimitives.CosineSimilarity(queryVector, candidate.Centroid!);
-                    weightedSum += WCentroid * centroidSimilarity;
-                    weightTotal += WCentroid;
+                    weightedSum += _o.WCentroid * centroidSimilarity;
+                    weightTotal += _o.WCentroid;
                 }
 
                 if (hasDecay)
                 {
-                    weightedSum += WDecay * candidate.Decay!.Value;
-                    weightTotal += WDecay;
+                    weightedSum += _o.WDecay * candidate.Decay!.Value;
+                    weightTotal += _o.WDecay;
                 }
 
                 fusedScore = weightedSum / weightTotal;
