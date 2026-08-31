@@ -247,6 +247,8 @@ def fuse(wb, wc, wd, base, centroid, decay, has_centroid):
 
 A = lambda b, c, d, h: fuse(0.50, 0.50, 0.10, b, c, d, h)
 B = lambda b, c, d, h: fuse(0.45, 0.45, 0.10, b, c, d, h)
+
+DOCUMENT_BUDGET = 50        # BenchmarkQueryScenario.cs:37 — the harness's DocumentBudget
 ```
 
 Ages are assigned **per `parentId`**, never per candidate (A20), and decay mirrors `DecayFieldResolver.ComputeDecay`:
