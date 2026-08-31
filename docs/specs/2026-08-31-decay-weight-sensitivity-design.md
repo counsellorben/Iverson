@@ -140,6 +140,8 @@ letting it decide is the guard against repeating that error.
 | A11 | A queryable collection is loaded | Live: `benchmark_documents_tenant_bypass` = 6,000, `benchmark_documents_chunks_tenant_bypass` = 33,950 (the 5.66 chunks/doc arm) |
 | A12 | A query run costs ~30 min | Sweep logs, `freshstack-chunk256-2026-08-30/sweep.log`: five arms at 04:01 -> 06:39, ~32 min each |
 | A13 | The reranker is a singleton and may serve concurrent requests | `ServiceCollectionExtensions.cs:50` — `AddSingleton<IResultReranker, ResultReranker>()`. Forces the capture write to be locked |
+| A14 | The scratch build deploys through the existing compose path | `scratchpad/crossover.sh` rebuilt and redeployed the API this way once per sweep arm across both crossover arms, 10 times, without failure |
+| A16 | Offline analysis tooling is available | `iverson-benchmark-corpora/python-libs/ir_measures` imports and scored all three arms this session; `numpy`/`scipy` back `scratchpad/stats.py` |
 | A15 | No test asserts `ResultReranker` performs no I/O | No purity assertion against `ResultReranker` in `Iverson.Vector.Tests`; the claim lives only in the class doc comment, which the scratch branch does not ship |
 | A17 | Every query returns >= 10 results, so a top-10 set comparison is defined | `freshstack-chunk256-2026-08-30/runs/w0500.{chunks,similar}.trec`: 672 queries each, min = max = 50 results |
 | A18 | Benchmark candidates carry a non-null centroid | `BenchmarkDocument.cs:16-18` marks `Body` with both `[IversonEmbedding]` and `[IversonChunk]`, which is what makes the centroid non-degenerate |
