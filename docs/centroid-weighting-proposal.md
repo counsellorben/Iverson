@@ -24,7 +24,12 @@ model's prefixes and are superseded by the 2026-08-29 replication. The current c
 **`w = 0.500` should replace the shipped `0.333` as a constant**, and that no conditioning variable
 — neither `top_k` nor chunks-per-document — earns its place. **That change is held as of
 2026-08-31**: every run in this document was measured on the no-decay path, so it cannot arbitrate
-between two weight triples that differ only where decay is present. See "Decision 2026-08-31".
+between two weight triples that differ only where decay is present. A 2026-08-31 offline sweep then
+showed the two triples are *not* interchangeable once decay is live (~47% top-10 churn under a wide
+synthetic age spread), but per the decision rule a missed bar escalates to **a product decision about
+decay's intended share**, not to a further measurement — no relevance benchmark, decay-bearing or
+not, was going to settle *which* triple to ship. See "Decision 2026-08-31" and "Decay-weight
+sensitivity sweep (2026-08-31)" below.
 
 **Superseded 2026-08-28 — see "FreshStack results" below.** On a corpus with 10.79 chunks per
 document the centroid is decisively significant on every measure, and the optimum sits above the
@@ -474,11 +479,17 @@ not dead code — it is resolved for any schema with a `TIMESTAMPTZ` or `DATETIM
 That makes the weight change a decision the benchmark cannot settle, because two triples both reach
 the measured optimum and differ only where decay exists:
 
-| triple | sum | w | base | centroid | decay |
+| triple | sum | w | base | centroid | decay (centroid present) |
 |---|---|---|---|---|---|
 | **shipped** 0.60 / 0.30 / 0.10 | 1.00 | 0.333 | 60.00% | 30.00% | **10.00%** |
 | 0.50 / 0.50 / 0.10 (as swept) | 1.10 | 0.500 | 45.45% | 45.45% | **9.09%** |
 | 0.45 / 0.45 / 0.10 | 1.00 | 0.500 | 45.00% | 45.00% | **10.00%** |
+
+*Decay shares above are the centroid-present figure — every row the 2026-08-31 sweep captured had
+`hasCentroid = 1` (see "Coverage caveat" below). On the centroid-absent branch (base + decay only, no
+centroid term, `den = wb + wd`) the shares are different: shipped 14.29% (0.10/0.70), swept 16.67%
+(0.10/0.60), **B 18.18%** (0.10/0.55). B is not universally share-preserving — it matches shipped's
+10.00% only on the branch this document's evidence actually covers.*
 
 The two candidates are **bit-identical on no-decay documents** — `(0.5b + 0.5c)/1.0` and
 `(0.45b + 0.45c)/0.9` are the same weighted mean, which is why the sweep could not distinguish them.
@@ -490,9 +501,18 @@ evidence never touched.
 +0.0037 [+0.0000, +0.0074] nDCG@10 on the three FreshStack arms, all Holm-significant, at a cost of
 -0.0005 (p = 0.81) on NFCorpus.
 
-**What unblocks it:** a benchmark corpus whose entity carries a timestamp metadata column, so the
-three-signal path is exercised and the two triples become distinguishable. Until then this document
-records a measured result about a two-signal fusion, not a licensed change to a three-signal one.
+**Superseded 2026-08-31 — see "Decay-weight sensitivity sweep" below.** The sweep exercised the
+three-signal path offline, without waiting for a live timestamp-bearing corpus, and the two triples
+*are* now distinguishable (~47% top-10 churn under a wide synthetic age spread). But a relevance
+corpus was never actually going to settle *which* one to ship: nDCG@10 mechanically favors whichever
+triple carries less decay when ages are uncorrelated with relevance, so it cannot arbitrate this
+choice either. What actually unblocks the hold is **a product decision about decay's intended
+share** — the same escalation the sweep's own decision rule produces on a missed bar.
+
+**What unblocks it (original, 2026-08-31, superseded above):** a benchmark corpus whose entity
+carries a timestamp metadata column, so the three-signal path is exercised and the two triples become
+distinguishable. Until then this document records a measured result about a two-signal fusion, not a
+licensed change to a three-signal one.
 
 ### Decay-weight sensitivity sweep (2026-08-31) — the hold stands, for a sharper reason
 
@@ -503,6 +523,17 @@ against the reranker's real per-candidate inputs (captured live, per-call, from 
 benchmark harness: 806,400 rows across 1344 calls at 5x overfetch, 2,822,400 rows across 1344 calls
 at 20x overfetch), under four synthetic per-document age distributions, to test whether B is a safe
 drop-in for A once decay is actually live.
+
+**Capture provenance.** The captured `baseScore`/`centroidCos` pairs came from `snowflake-arctic-embed:s`
+(384 dimensions), built and deployed from **uncommitted** work in worktree
+`.worktrees/embedding-prefixes-and-title` (branch `centroid-ablation`) — that worktree is where the
+arctic embedding prefixes currently exist; `main` does not have them. The corpus is
+`freshstack-chunk256-2026-08-30` (FreshStack, chunk-256, the 5.66 chunks/document arm — 33,950
+chunks over 6,000 documents). Capture CSVs live at
+`iverson-benchmark-corpora/decay-capture-2026-08-31/fusion-capture-{m5,m20}.csv`, a sibling repo on
+this machine, not inside `Iverson` and not committed anywhere. Because base and centroid scores are
+embedding-model-dependent, the churn fractions below are conditional on this specific
+configuration.
 
 **Method, inlined so this record stands alone.** Ages are assigned **per `parentId`** (one synthetic
 age per document, reused for every candidate/call referencing it), never per candidate — a document
@@ -519,34 +550,43 @@ narrow=20261032, wide=20261033, bimodal=20261034):
 | bimodal | `age ∈ {7, 730}` days, chosen independently per document with equal probability |
 
 The full implementation — loader, the four scenarios, the fusion, the harness-collapse replication,
-and the decision rule — is `scratchpad/decay_sensitivity.py`, committed alongside this doc so the
-table below can be regenerated (`PYTHONPATH=<path-to-iverson-benchmark-corpora>/python-libs python3
-scratchpad/decay_sensitivity.py`; inputs are Task 1's capture CSVs and FreshStack's keymap/qrels,
-documented in the script's header).
+and the decision rule — is `scratchpad/decay_sensitivity.py`, committed alongside this doc. That
+commits the *method*, not the ability to regenerate the table from git alone: the capture CSVs and
+the FreshStack keymap/qrels they join against live only on this machine (see "Capture provenance"
+above), and Task 1's capture instrumentation was reverted rather than committed (scratch-only, by
+design). Given those machine-local inputs, the table is regenerable with
+`PYTHONPATH=<path-to-iverson-benchmark-corpora>/python-libs python3 scratchpad/decay_sensitivity.py`
+— `CORPUS_DIR`, `CAPTURE_DIR` and `OUTPUT_JSON_PATH` are constants at the top of the script, not
+arguments; edit them by hand if your paths differ.
 
 **Falsification check passed:** the `uniform` control (every document assigned the same age, so
 decay is a constant additive term under both triples) produced **zero** top-10 set changes across
 both overfetch arms (0/1344 each) — a mathematical necessity if the fusion is implemented correctly,
 confirmed rather than assumed.
 
-**Scenario sweep — fraction of calls whose top-10 document set differs between triple A and triple B:**
+**Scenario sweep — top-10 set churn, mean rank displacement (over docs common to both rankings),
+and mean Kendall tau (rank-order agreement, 1.0 = identical order), triple A vs triple B:**
 
-| scenario | 5x overfetch | 20x overfetch |
-|---|---|---|
-| uniform (control) | 0.00% | 0.00% |
-| narrow (age ~ U(0,30) days) | 13.91% | 12.95% |
-| **wide (age ~ U(0,720) days)** | **47.25%** | **48.36%** |
-| bimodal (age in {7, 730} days) | 0.67% | 0.89% |
+| scenario | 5x: top-10 changed | 5x: mean disp | 5x: mean tau | 20x: top-10 changed | 20x: mean disp | 20x: mean tau |
+|---|---|---|---|---|---|---|
+| uniform (control) | 0.00% | 0.0000 | 1.0000 | 0.00% | 0.0000 | 1.0000 |
+| narrow (age ~ U(0,30) days) | 13.91% | 0.5658 | 0.9748 | 12.95% | 0.5613 | 0.9749 |
+| **wide (age ~ U(0,720) days)** | **47.25%** | 1.9443 | 0.9028 | **48.36%** | 2.0167 | 0.8991 |
+| bimodal (age in {7, 730} days) | 0.67% | 0.0677 | 0.9980 | 0.89% | 0.0661 | 0.9980 |
 
-**Why `wide` churns ~47% while `bimodal` churns <1% despite a comparable age range — this looks like
-a bug and isn't one.** `bimodal` assigns each document one of exactly two decay values, so within any
-call the candidates split into two coherent blocks that shift together; the rank-10 boundary only
-flips when the split itself lands near it, which is rare (confirmed independently: zero order
-inversions among 1,630,538 same-decay-value candidate pairs, stable across 15 reseeds). `wide` gives
-every document an independent continuous decay value, so it has far more effective degrees of
-freedom at that boundary. `narrow` corroborates the mechanism rather than contradicting it: an 8x
-smaller age range than `wide` still produces 13.9% churn — 20x `bimodal`'s rate — because `narrow`'s
-perturbations are independent per document like `wide`'s, not coherent like `bimodal`'s. Correlation
+**Why `wide` churns ~47% while `bimodal` churns <1% despite comparable decay ranges — this looks
+like a bug and isn't one.** `bimodal` assigns each document one of exactly two decay values, so
+within any call the candidates split into two coherent blocks that shift together; the rank-10
+boundary only flips when the split itself lands near it, which is rare (confirmed independently:
+zero order inversions among 1,630,538 same-decay-value candidate pairs, stable across 15 reseeds).
+`wide` and `narrow` give every document an independent continuous decay value instead, so they have
+far more effective degrees of freedom at that boundary. `narrow` is the sharper corroboration:
+its decay-value spread, `1 - decay_for(30) = 0.1091`, is **8.37x smaller** than bimodal's decay gap,
+`decay_for(7) - decay_for(730) = 0.9133` — a materially *smaller* perturbation than bimodal's — and
+yet `narrow` still produces 13.9% churn, 20x `bimodal`'s rate, purely because its perturbation is
+independent per document instead of a coherent two-block split. (Age range alone is not the relevant
+quantity: narrow's 0-30 days vs wide's 0-720 days is a 24x difference in range but only an 8.6x
+difference in the resulting decay-value spread, since `decay_for` is nonlinear.) Correlation
 structure drives the churn rate, not the magnitude of the perturbation.
 
 **Decision rule (fixed by the earlier spec): ship triple B only if the top-10 set is unchanged for
@@ -560,13 +600,31 @@ structure drives the churn rate, not the magnitude of the perturbation.
 **Both arms agree: HOLD.** `wide` fails the 1% bar by roughly 47x in both arms; `bimodal` passes
 comfortably in both. Because the rule requires both scenarios to pass, B is not licensed to replace
 A under this rule in either arm — there is no arm-vs-arm disagreement, but the joint outcome is a
-hold.
+hold. Per the decision rule's own `otherwise` branch, a missed bar does not send this back for more
+measurement: **the choice is now a product decision about decay's intended share** — whether the
+swept triple's 9.09% or B's 10.00% (centroid-present branch; B is 18.18% on the centroid-absent
+branch, see the table above) is the intended decay weight once real timestamps are live. No corpus
+available to this project can make that call.
 
-nDCG@10 against the FreshStack qrels was also recorded for both triples on every scenario (full
-numbers in `scratchpad/decay_sensitivity.py`'s output) and, as expected, consistently favors triple A
-(less decay weight) since these synthetic ages carry no real correlation with relevance — **this
-number was not used to reach the verdict above**, per the earlier finding that it favors whichever
-triple carries less decay by construction.
+**nDCG@10 (recorded for the record; NOT used to reach the verdict above)** against the FreshStack
+qrels, on the same document-collapsed ranking, split by retrieval path (`similar` = SearchSimilar,
+`chunks` = SearchChunks) since the two paths were always reported separately in this document:
+
+| scenario | path | 5x: A | 5x: B | 20x: A | 20x: B |
+|---|---|---|---|---|---|
+| uniform | similar | 0.2700 | 0.2700 | 0.2700 | 0.2700 |
+| uniform | chunks | 0.2828 | 0.2828 | 0.2828 | 0.2828 |
+| narrow | similar | 0.2634 | 0.2631 | 0.2684 | 0.2679 |
+| narrow | chunks | 0.2779 | 0.2770 | 0.2775 | 0.2774 |
+| wide | similar | 0.1659 | 0.1546 | 0.1621 | 0.1493 |
+| wide | chunks | 0.1697 | 0.1588 | 0.1687 | 0.1572 |
+| bimodal | similar | 0.1927 | 0.1923 | 0.1990 | 0.1982 |
+| bimodal | chunks | 0.2000 | 0.1992 | 0.2088 | 0.2072 |
+
+Triple A (less decay weight, 9.09% vs B's 10.00%) scores at or above triple B on all 16 cells in both
+files, as expected: with synthetic ages uncorrelated to actual relevance, more decay weight can only
+hurt nDCG, so this number mechanically favors whichever triple carries less decay by construction —
+which is exactly why, per the earlier finding, it was not used to reach the verdict above.
 
 **Coverage caveat:** every captured row had `hasCentroid = 1`; this sweep, like the captures it
 replays, exercises the fusion's centroid-present branch only. The `not has_centroid` path is

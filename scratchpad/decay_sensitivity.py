@@ -9,9 +9,11 @@ Run with:
   PYTHONPATH=/home/ben/repositories/iverson-benchmark-corpora/python-libs \
     python3 scratchpad/decay_sensitivity.py
 
-See task-2-brief.md for the exact interface this implements. Formulas below
-are copied verbatim from the brief; do not "simplify" the dead branch in
-fuse() — it is intentionally kept even though this dataset never exercises it.
+fuse() below intentionally keeps the `not has_centroid and decay is None`
+branch even though this dataset never exercises it (hasCentroid is uniformly
+1 in every captured row) -- do not "simplify" it away; it mirrors
+ResultReranker.cs:24-31's no-signals-present fallback and is correct on data
+where it is live.
 """
 
 import csv
@@ -35,6 +37,12 @@ FILES = {
     "m20": f"{CAPTURE_DIR}/fusion-capture-m20.csv",
 }
 
+# CORPUS_DIR, CAPTURE_DIR (above) and OUTPUT_JSON_PATH (below) are
+# machine-local constants, not parameterised via argv/env -- edit them by
+# hand if your capture/corpus directories differ. Only PYTHONPATH varies in
+# the invocation this script's docstring shows.
+OUTPUT_JSON_PATH = "/tmp/decay_sensitivity_results.json"
+
 DOCUMENT_BUDGET = 50  # BenchmarkQueryScenario.cs:37 -- the harness's DocumentBudget
 
 GLOBAL_SEED = 20260831  # recorded so the scenario table is reproducible
@@ -43,9 +51,11 @@ FILE_SEED_OFFSET = {"m5": 100, "m20": 200}
 
 
 # ---------------------------------------------------------------------------
-# fuse(): copied verbatim from task-2-brief.md. Do NOT alter the
-# `not has_centroid and decay is None` branch -- hasCentroid is uniformly 1
-# on this data, so that branch is dead here, and it stays exactly as written.
+# fuse(): the weighted-mean-over-present-signals formula from ResultReranker.cs
+# (:24-31 for the no-signal fallback, :35-51 for the weighted mean itself).
+# Do NOT alter the `not has_centroid and decay is None` branch -- hasCentroid
+# is uniformly 1 on this data, so that branch is dead here, and it stays
+# exactly as written.
 # ---------------------------------------------------------------------------
 def fuse(wb, wc, wd, base, centroid, decay, has_centroid):
     if not has_centroid and decay is None:
@@ -396,9 +406,9 @@ def main():
         "verdicts": {k: {"ship_b": v[0], "wide_ok": v[1], "bimodal_ok": v[2]} for k, v in verdicts.items()},
         "arms_agree": agree,
     }
-    with open("/tmp/decay_sensitivity_results.json", "w") as f:
+    with open(OUTPUT_JSON_PATH, "w") as f:
         json.dump(out, f, indent=2, default=str)
-    print("\nwrote /tmp/decay_sensitivity_results.json")
+    print(f"\nwrote {OUTPUT_JSON_PATH}")
 
 
 if __name__ == "__main__":
