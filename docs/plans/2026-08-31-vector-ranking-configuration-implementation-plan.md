@@ -6,7 +6,7 @@
 
 **Goal:** Bind the five compile-time constants that decide retrieval ordering to configuration, with defaults equal to the constants currently shipped, so a deployment can tune them without a rebuild.
 
-**Architecture:** Two options classes, one per assembly. `VectorRankingOptions` in `Iverson.Vector` carries the three fusion weights and MMR's `Lambda`, injected as `IOptions<T>` into `ResultReranker` and `ResultDiversifier`, and registered by a new `AddVectorRanking(cfg)` that also takes over the two ranking singletons currently registered inside `AddQdrant`. `DecayOptions` in `Iverson.Api` carries `HalfLifeDays`, bound inline in `Program.cs` and threaded through `ComputeDecay` as a parameter so `DecayFieldResolver` stays `internal static` and pure. Both bind eagerly, validate, and throw at startup.
+**Architecture:** Two options classes, one per assembly. `VectorRankingOptions` in `Iverson.Vector` carries the three fusion weights and MMR's `Lambda`, injected as `IOptions<T>` into `ResultReranker` and `ResultDiversifier`, and registered by a new `AddVectorRanking(cfg)` that also takes over the two ranking singletons currently registered inside `AddQdrant`. `DecayOptions` in `Iverson.Api` carries `HalfLifeDays`, registered by a new `AddDecayOptions(cfg)` and threaded through `ComputeDecay` as a parameter so `DecayFieldResolver` stays `internal static` and pure. Both bind eagerly, validate, and throw at startup.
 
 **Tech stack:** .NET 10, `Microsoft.Extensions.Options.ConfigurationExtensions` 10.0.9 (already used by `Iverson.Embeddings` at the same version), xunit + FluentAssertions + NSubstitute.
 
@@ -25,7 +25,7 @@ Copied from the spec; every task holds to these.
 
 **Create**
 - `Iverson.Server/Iverson.Vector/VectorRankingOptions.cs` — the four fusion/diversification values, `public`.
-- `Iverson.Server/Iverson.Api/Grpc/DecayOptions.cs` — `HalfLifeDays`, `public` (CS0051; see Task 2 Step 1).
+- `Iverson.Server/Iverson.Api/Grpc/DecayOptions.cs` — `HalfLifeDays`, `public` (CS0051; see Task 2 Step 1), plus `AddDecayOptions`.
 - `Iverson.Server/Iverson.Vector.Tests/VectorRankingOptionsTests.cs` — non-default-weight behaviour and `AddVectorRanking` validation.
 
 **Modify**
@@ -35,7 +35,7 @@ Copied from the spec; every task holds to these.
 - `Iverson.Server/Iverson.Vector/ServiceCollectionExtensions.cs` — new `AddVectorRanking`; the two ranking singletons move out of `AddQdrant`.
 - `Iverson.Server/Iverson.Api/Grpc/DecayFieldResolver.cs` — `ComputeDecay` gains `double halfLifeDays`.
 - `Iverson.Server/Iverson.Api/Grpc/ObjectSearchGrpcService.cs` — new constructor parameter; `DecayFor` gains the half-life.
-- `Iverson.Server/Iverson.Api/Program.cs` — `AddVectorRanking(cfg)` call; inline `DecayOptions` bind + validate.
+- `Iverson.Server/Iverson.Api/Program.cs` — `AddVectorRanking(cfg)` and `AddDecayOptions(cfg)` calls.
 
 **Test**
 - `Iverson.Server/Iverson.Vector.Tests/ResultRerankerTests.cs`, `ResultDiversifierTests.cs` — construction sites.
@@ -94,6 +94,8 @@ Newly introduced by this plan and verified at plan-write time.
 | P21 | Consumer impact | Moving the two `AddSingleton` lines out of `AddQdrant` breaks no caller | `ServiceCollectionExtensionsTests` asserts only `GetRequiredService<QdrantClient>()`; `AuthTestWebApplicationFactory` does not call `AddQdrant` (it boots `Program`); no hosted service or `Program.cs` factory lambda resolves either interface |
 | P23 | File path | `Program.cs` already carries both usings the new code needs, so neither task adds one there | `Program.cs:7` `using Iverson.Api.Grpc;`, `Program.cs:13` `using Iverson.Vector;` |
 | P24 | Signature | The half-life is applied at exactly one expression, `DecayFieldResolver.cs:85` | `return Math.Min(1.0, Math.Pow(0.5, ageDays / HalfLifeDays));` |
+| P25 | Code validity | `ConfigurationBuilder().AddInMemoryCollection` is available in `Iverson.Vector.Tests` once `Iverson.Vector` takes the new package — the test project has no Configuration package of its own | `dotnet list package --include-transitive` on `Iverson.Vector.Tests` returns no `Microsoft.Extensions.Configuration` at any version today. Probe replicating both real package sets (library with `Options.ConfigurationExtensions` 10.0.9 + `DependencyInjection.Abstractions`; consumer with `Logging.Abstractions` + `DependencyInjection` + `ProjectReference`) compiled the exact call: `Build succeeded` |
+| P26 | Code validity | All three `ObjectSearchGrpcService` construction-site files see namespace `Iverson.Api.Grpc`, so `DecayOptions` resolves unqualified | `using Iverson.Api.Grpc;` present in `ObjectSearchGrpcServiceTests.cs`, `DocumentTemplateValidationTests.cs`, and `ObjectSearchVectorIntegrationTests.cs` |
 | P22 | Sibling sweep | Every identifier the plan's code blocks name resolves at its point of use — meta-class: *a referenced name has a definition reachable from the file using it* | Framework: `IOptions`, `Options.Create`, `IConfiguration`, `IServiceCollection`, `Bind`, `GetSection`, `double.IsFinite`, `InvalidOperationException` — all compiled in probes. Repo: `IResultReranker`/`IResultDiversifier`/`ResultReranker`/`ResultDiversifier` (`Iverson.Vector`), `DecayFieldResolver.ComputeDecay` (`DecayFieldResolver.cs:76`), `DecayFor` (`ObjectSearchGrpcService.cs:764`), `MapGrpcService` (`Program.cs:443`). `VectorRankingOptions`/`DecayOptions` are created by this plan |
 
 ## Tasks
@@ -292,7 +294,7 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 ### Task 2: The decay half-life becomes configuration
 
 **Files:**
-- Create: `Iverson.Server/Iverson.Api/Grpc/DecayOptions.cs`
+- Create: `Iverson.Server/Iverson.Api/Grpc/DecayOptions.cs` (the options class **and** `AddDecayOptions`)
 - Modify: `Iverson.Server/Iverson.Api/Grpc/DecayFieldResolver.cs:14,76,85`
 - Modify: `Iverson.Server/Iverson.Api/Grpc/ObjectSearchGrpcService.cs:30-41,260,447,764-767`
 - Modify: `Iverson.Server/Iverson.Api/Program.cs`
@@ -349,20 +351,36 @@ private static double? DecayFor(
 
 Both call sites (`:260`, `:447`) are inside instance methods, so each passes `decayOptions.Value.HalfLifeDays`.
 
-- [ ] **Step 4: Bind and validate in `Program.cs`**
+- [ ] **Step 4: Add `AddDecayOptions` and call it from `Program.cs`**
 
-Beside Task 1's `AddVectorRanking(cfg)` call. `using Iverson.Api.Grpc;` is already present at `Program.cs:7`.
+The guard goes in a callable extension rather than inline in `Program.cs`. `Program.cs` is top-level statements, so an inline guard is unreachable from a test and Step 6's validation tests could only assert a re-implementation of it — a test that passes whether the real guard is correct, wrong, or absent. Put the method in the `DecayOptions.cs` file created in Step 1: `Iverson.Api` has no `ServiceCollectionExtensions`, and this keeps the task's file count unchanged.
+
+Add `using Microsoft.Extensions.Configuration;`, `using Microsoft.Extensions.DependencyInjection;` and `using Microsoft.Extensions.Options;` to that file.
 
 ```csharp
-var decayOptions = new DecayOptions();
-cfg.GetSection(DecayOptions.Section).Bind(decayOptions);
+public static class DecayOptionsExtensions
+{
+    public static IServiceCollection AddDecayOptions(
+        this IServiceCollection services, IConfiguration config)
+    {
+        var opts = new DecayOptions();
+        config.GetSection(DecayOptions.Section).Bind(opts);
 
-if (!double.IsFinite(decayOptions.HalfLifeDays) || decayOptions.HalfLifeDays <= 0)
-    throw new InvalidOperationException(
-        $"{DecayOptions.Section}:HalfLifeDays must be finite and greater than zero " +
-        $"(was {decayOptions.HalfLifeDays}).");
+        if (!double.IsFinite(opts.HalfLifeDays) || opts.HalfLifeDays <= 0)
+            throw new InvalidOperationException(
+                $"{DecayOptions.Section}:HalfLifeDays must be finite and greater than zero " +
+                $"(was {opts.HalfLifeDays}).");
 
-builder.Services.AddSingleton(Options.Create(decayOptions));
+        services.AddSingleton(Options.Create(opts));
+        return services;
+    }
+}
+```
+
+Then, beside Task 1's `AddVectorRanking(cfg)` call — `using Iverson.Api.Grpc;` is already present at `Program.cs:7`:
+
+```csharp
+builder.Services.AddDecayOptions(cfg);
 ```
 
 Finiteness is checked first for the same reason as Task 1, and it is load-bearing here specifically: `Infinity` passes `> 0` and yields `0.5^0 = 1.0` for every document, disabling decay while appearing configured.
@@ -380,7 +398,7 @@ All three `ObjectSearchGrpcService` construction sites gain `Options.Create(new 
 
 In `DecayFieldResolverTests.cs`:
 - One test calling `ComputeDecay` at a **non-default** half-life, asserting a decay value that differs from the same input at the default. Without it the whole task is unfalsifiable, exactly as in Task 1.
-- Validation tests asserting the `Program.cs` guard's condition rejects `0`, a negative value, `NaN`, and `Infinity`. If the guard is not reachable from a test, assert the same predicate over a bound `DecayOptions` built from an in-memory configuration.
+- Four validation tests calling the **real** `AddDecayOptions` against an in-memory configuration and asserting it throws `InvalidOperationException`: `HalfLifeDays` of `0`, a negative value, `NaN`, and `Infinity`. Because Step 4 put the guard in a callable extension, these exercise the shipped code rather than a re-implementation of it.
 
 - [ ] **Step 7: Run both suites**
 
