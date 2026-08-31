@@ -120,7 +120,7 @@ var candidates = results.Select(r =>
 
 - [ ] **Step 4: Capture the fusion inputs inside `Rerank`**
 
-`centroidCos` is hoisted out of the `if (hasCentroid)` block so it survives to the capture, and the rows for one call are appended under a single lock (A13). Add `using System.Globalization;` to the file's usings.
+`centroidCos` is hoisted out of the `if (hasCentroid)` block so it survives to the capture, and the rows for one call are appended under a single lock (A13). Add `using System.Globalization;` to **this** file — `ImplicitUsings` covers `System.Threading` and `System.IO` but not `System.Globalization`. `ObjectSearchGrpcService.cs` already imports it at line 1, so Step 3 needs no using change.
 
 ```csharp
 private static readonly object CaptureLock = new();
@@ -222,12 +222,14 @@ The two fusions, branch-selected by `hasCentroid` exactly as the spec's table sp
 
 ```python
 def fuse(wb, wc, wd, base, centroid, decay, has_centroid):
+    if not has_centroid and decay is None:
+        return base                      # mirrors ResultReranker.cs:24-31
     num, den = wb * base, wb
     if has_centroid:
         num += wc * centroid; den += wc
     if decay is not None:
         num += wd * decay;    den += wd
-    return base if den == wb and decay is None and not has_centroid else num / den
+    return num / den
 
 A = lambda b, c, d, h: fuse(0.50, 0.50, 0.10, b, c, d, h)
 B = lambda b, c, d, h: fuse(0.45, 0.45, 0.10, b, c, d, h)
