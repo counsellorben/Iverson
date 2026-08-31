@@ -504,6 +504,26 @@ benchmark harness: 806,400 rows across 1344 calls at 5x overfetch, 2,822,400 row
 at 20x overfetch), under four synthetic per-document age distributions, to test whether B is a safe
 drop-in for A once decay is actually live.
 
+**Method, inlined so this record stands alone.** Ages are assigned **per `parentId`** (one synthetic
+age per document, reused for every candidate/call referencing it), never per candidate — a document
+has one age. `decay = min(1.0, 0.5 ** (age_days / 180.0))`, matching `DecayFieldResolver.ComputeDecay`.
+The four scenarios (`numpy.random.default_rng`, `GLOBAL_SEED = 20260831`, offset per file and
+scenario — m5: uniform=20260931, narrow=20260932, wide=20260933, bimodal=20260934; m20: uniform=20261031,
+narrow=20261032, wide=20261033, bimodal=20261034):
+
+| scenario | age distribution |
+|---|---|
+| uniform (control) | every document gets `age = 365.0` days (constant) |
+| narrow | `age ~ Uniform(0, 30)` days |
+| wide | `age ~ Uniform(0, 720)` days |
+| bimodal | `age ∈ {7, 730}` days, chosen independently per document with equal probability |
+
+The full implementation — loader, the four scenarios, the fusion, the harness-collapse replication,
+and the decision rule — is `scratchpad/decay_sensitivity.py`, committed alongside this doc so the
+table below can be regenerated (`PYTHONPATH=<path-to-iverson-benchmark-corpora>/python-libs python3
+scratchpad/decay_sensitivity.py`; inputs are Task 1's capture CSVs and FreshStack's keymap/qrels,
+documented in the script's header).
+
 **Falsification check passed:** the `uniform` control (every document assigned the same age, so
 decay is a constant additive term under both triples) produced **zero** top-10 set changes across
 both overfetch arms (0/1344 each) — a mathematical necessity if the fusion is implemented correctly,
@@ -517,6 +537,17 @@ confirmed rather than assumed.
 | narrow (age ~ U(0,30) days) | 13.91% | 12.95% |
 | **wide (age ~ U(0,720) days)** | **47.25%** | **48.36%** |
 | bimodal (age in {7, 730} days) | 0.67% | 0.89% |
+
+**Why `wide` churns ~47% while `bimodal` churns <1% despite a comparable age range — this looks like
+a bug and isn't one.** `bimodal` assigns each document one of exactly two decay values, so within any
+call the candidates split into two coherent blocks that shift together; the rank-10 boundary only
+flips when the split itself lands near it, which is rare (confirmed independently: zero order
+inversions among 1,630,538 same-decay-value candidate pairs, stable across 15 reseeds). `wide` gives
+every document an independent continuous decay value, so it has far more effective degrees of
+freedom at that boundary. `narrow` corroborates the mechanism rather than contradicting it: an 8x
+smaller age range than `wide` still produces 13.9% churn — 20x `bimodal`'s rate — because `narrow`'s
+perturbations are independent per document like `wide`'s, not coherent like `bimodal`'s. Correlation
+structure drives the churn rate, not the magnitude of the perturbation.
 
 **Decision rule (fixed by the earlier spec): ship triple B only if the top-10 set is unchanged for
 >=99% of calls under both `wide` and `bimodal`.** Applied separately per overfetch arm:
@@ -532,18 +563,14 @@ A under this rule in either arm — there is no arm-vs-arm disagreement, but the
 hold.
 
 nDCG@10 against the FreshStack qrels was also recorded for both triples on every scenario (full
-numbers in the task report) and, as expected, consistently favors triple A (less decay weight) since
-these synthetic ages carry no real correlation with relevance — **this number was not used to reach
-the verdict above**, per the earlier finding that it favors whichever triple carries less decay by
-construction.
+numbers in `scratchpad/decay_sensitivity.py`'s output) and, as expected, consistently favors triple A
+(less decay weight) since these synthetic ages carry no real correlation with relevance — **this
+number was not used to reach the verdict above**, per the earlier finding that it favors whichever
+triple carries less decay by construction.
 
 **Coverage caveat:** every captured row had `hasCentroid = 1`; this sweep, like the captures it
 replays, exercises the fusion's centroid-present branch only. The `not has_centroid` path is
 unexercised here.
-
-Full methodology, loader assertions, and a `ir_measures.read_trec_qrels` one-shot-generator bug
-found and fixed while producing these numbers: see
-`.superpowers/sdd/2026-08-31-decay-weight-sensitivity-implementation-plan/task-2-report.md`.
 
 ## The proposed design
 
