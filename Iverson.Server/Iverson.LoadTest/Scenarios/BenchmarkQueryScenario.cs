@@ -94,6 +94,14 @@ public sealed class BenchmarkQueryScenario(
             var r = ChunkBudgetGuard.Evaluate(stats.Documents, stats.Chunks, DocumentBudget, ChunkBudgetMultiplier);
             if (!r.Ok)
             {
+                // MinimumMultiplier is Ceiling(ChunksPerDocument), computed unconditionally -- when
+                // ChunksPerDocument is not finite or not positive (a degenerate .stats.json, e.g. a
+                // missing "documents"/"chunks" count) that ceiling is nonsense (e.g. int.MinValue),
+                // so the "raise to" advice is suppressed rather than printed.
+                var advice = double.IsFinite(r.ChunksPerDocument) && r.ChunksPerDocument > 0
+                    ? $"Raise ChunkBudgetMultiplier to >= {r.MinimumMultiplier}."
+                    : "The stats sidecar's document/chunk counts are unusable -- fix or regenerate it " +
+                      "rather than raising ChunkBudgetMultiplier.";
                 Console.Error.WriteLine(
                     $"""
                     REFUSING: chunk budget cannot reach DocumentBudget distinct documents.
@@ -104,7 +112,7 @@ public sealed class BenchmarkQueryScenario(
                       chunk top_k         {r.ChunkTopK}
                       reachable documents ~{r.ReachableDocuments:F0}  (worst case: a document's chunks retrieved together)
 
-                      Raise ChunkBudgetMultiplier to >= {r.MinimumMultiplier}.
+                      {advice}
                     """);
                 throw new InvalidOperationException("chunk budget cannot reach DocumentBudget distinct documents.");
             }
@@ -138,6 +146,14 @@ public sealed class BenchmarkQueryScenario(
             var buildBody = await buildResponse.Content.ReadAsStreamAsync(ct);
             var buildJson = await JsonNode.ParseAsync(buildBody, cancellationToken: ct)
                             ?? throw new InvalidOperationException($"{buildUrl} returned an empty body.");
+
+            if (buildJson["composite"] is null)
+            {
+                Console.Error.WriteLine(
+                    $"REFUSING: {buildUrl} returned no \"composite\" -- a run that cannot be " +
+                    "attributed to a build must not start.");
+                throw new InvalidOperationException("/build response had no composite for run attribution.");
+            }
 
             var sidecar = new JsonObject
             {

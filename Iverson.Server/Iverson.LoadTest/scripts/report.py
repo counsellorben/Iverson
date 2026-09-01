@@ -104,7 +104,7 @@ PERMUTATION_RESAMPLES = 10_000
 HOLM_ALPHA = 0.05
 CHANGED_QUERY_WARNING_FRACTION = 0.10
 
-# Mirrors BenchmarkQueryScenario.cs:39-40 -- the two fixed suffixes a run file's sidecar
+# Mirrors BenchmarkQueryScenario.cs:42-43 -- the two fixed suffixes a run file's sidecar
 # derivation strips before appending .meta.json.
 SIMILAR_RUN_SUFFIX = ".similar"
 CHUNKS_RUN_SUFFIX = ".chunks"
@@ -158,7 +158,7 @@ def sidecar_path_for(run_path):
     trailing .similar or .chunks if present, then append .meta.json. So
     runs/reference.chunks.trec and runs/reference.similar.trec both resolve to
     runs/reference.meta.json. The two suffixes are fixed constants at
-    BenchmarkQueryScenario.cs:39-40, so this rule is closed -- a run file ending in neither
+    BenchmarkQueryScenario.cs:42-43, so this rule is closed -- a run file ending in neither
     has no sidecar by construction."""
     base = run_path
     if base.endswith(".trec"):
@@ -174,12 +174,20 @@ def load_build_composite(run_path):
     """The run's build composite from its sidecar, or None if the sidecar does not exist --
     every run file predating this work, since BenchmarkQueryScenario only started writing
     sidecars in the change that introduced them. None means "unknown", not "no build": the
-    caller must not treat it as agreeing with anything."""
+    caller must not treat it as agreeing with anything.
+
+    A sidecar that exists but is not valid JSON (a truncated or corrupted write) is treated
+    the same as a missing one, not raised: this is called after scoring has completed, so an
+    uncaught JSONDecodeError here would discard the scoring work rather than just leave the
+    build column unknown."""
     sidecar = sidecar_path_for(run_path)
     if not os.path.exists(sidecar):
         return None
     with open(sidecar, encoding="utf-8") as f:
-        data = json.load(f)
+        try:
+            data = json.load(f)
+        except json.JSONDecodeError:
+            return None
     return data.get("composite")
 
 
@@ -444,7 +452,12 @@ def paired_comparison(baseline_values, run_path, qrels, measure):
     half_width = t_crit * se
     ci = (delta - half_width, delta + half_width)
 
-    d_z = delta / sd if sd else float("nan")  # sd is falsy for both 0.0 and NaN
+    # Guards only sd == 0.0 (falsy), which would otherwise raise ZeroDivisionError -- the
+    # likeliest degenerate input, two identical runs. sd == NaN is truthy in Python (NaN is
+    # truthy for every float value except 0.0), so that case takes the delta / sd branch, not
+    # this guard; it lands on the same float("nan") result anyway, via IEEE 754 float division
+    # propagating NaN rather than raising.
+    d_z = delta / sd if sd else float("nan")
 
     z_975 = st.norm.ppf(0.975)
     z_80 = st.norm.ppf(0.80)
@@ -528,7 +541,7 @@ def run_paired_statistics(qrels, run_paths, baseline_path, measures):
     compare_paths = []
     for path in run_paths:
         if os.path.abspath(path) == baseline_abspath:
-            print(f"[compare] excluded {path} (it is the --baseline file)")
+            print(f"[baseline] excluded {path} (it is the --baseline file)")
             continue
         compare_paths.append(path)
 

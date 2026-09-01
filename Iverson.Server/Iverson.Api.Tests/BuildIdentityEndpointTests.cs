@@ -1,4 +1,6 @@
 using System.Net;
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using FluentAssertions;
@@ -49,5 +51,30 @@ public class BuildIdentityEndpointTests : IClassFixture<AuthTestWebApplicationFa
             "Iverson.StarRocks",
             "Iverson.Vector",
         });
+    }
+
+    // Nothing else ties the composite to the assemblies map: an implementation that
+    // hashed only the entry assembly (Iverson.Api) would still return a full, correct
+    // assemblies map and would pass every other test on this branch. Recomputing the
+    // expected composite from the returned assemblies map, using the same algorithm
+    // BuildIdentity.Compute uses, catches that specific failure.
+    [Fact]
+    public void Compute_CompositeIsDerivedFromEveryAssemblyInTheMap()
+    {
+        var (composite, assemblies) = BuildIdentity.Compute();
+
+        // Sanity: guard against a degenerate single-entry map making the recomputation
+        // below vacuously true.
+        assemblies.Count.Should().BeGreaterThan(1);
+
+        var sb = new StringBuilder();
+        foreach (var (name, mvid) in assemblies)
+            sb.Append(name).Append(':').Append(mvid).Append('\n');
+
+        var expectedComposite = Convert
+            .ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(sb.ToString())))[..16]
+            .ToLowerInvariant();
+
+        composite.Should().Be(expectedComposite);
     }
 }

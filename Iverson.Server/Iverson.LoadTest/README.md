@@ -164,6 +164,7 @@ are missing.
 | Variable | Default |
 |---|---|
 | `IVERSON_GRPC_URL` | `http://localhost:8080` |
+| `IVERSON_HTTP_URL` | `http://localhost:8081` (used by `benchmark-query` to fetch `/build` for run attribution) |
 | `IVERSON_CLIENT_ID` / `IVERSON_CLIENT_SECRET` / `IVERSON_TOKEN_ENDPOINT` | unset (client-credentials auth for the gRPC client itself; optional) |
 | `IVERSON_CLIENT_SCOPE` | unset (optional space-separated scope list for the `client_credentials` token request above, e.g. `"schema_admin tenant_id_loadtest"` — must match the scopes bound to whichever OIDC provider `IVERSON_CLIENT_ID` names) |
 | `IVERSON_LOADTEST_TENANT_ID` | `iverson-loadtest-dynamic` (only used when `IVERSON_CLIENT_ID` etc. are set — provisioned via `TenantLifecycleGrpcService.CreateTenant` if not already registered) |
