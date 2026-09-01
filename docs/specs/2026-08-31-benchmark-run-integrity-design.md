@@ -151,6 +151,13 @@ came from different binaries:
 Without this, item 3 writes evidence nobody reads, and a stale build stays as invisible as it was.
 A warning, not a hard failure: comparing across builds is sometimes exactly the intent.
 
+**A run with no sidecar prints `build: unknown` and is excluded from the mismatch check.** The
+check runs only over the subset of compared runs that carry a composite, and when at least one run
+in a comparison lacks one the section says so rather than reporting agreement — silence would make
+the guarantee vacuous exactly where it is least warranted. Every run file predating this work is in
+that subset: there are 168 run files under the corpora directory today and no sidecars at all, so
+the first invocations of `--baseline` will report `unknown` throughout.
+
 Run discovery is unaffected — `resolve_run_paths` globs `*.trec` only, so `.meta.json` sidecars
 sitting beside run files are invisible to it.
 
@@ -232,6 +239,8 @@ count lies between it and `topK`.
 | A17-A18 | `flags.KeyMapPath` and both budget constants are reachable at the pre-flight point | `BenchmarkQueryScenario.cs:37-38` (consts), `:49` (KeyMapPath validation) |
 | A19 | The established failure path is throw, not exit | Three instances in `RunAsync`: `Console.Error.WriteLine` + `throw new InvalidOperationException` |
 | A20 | *(sibling sweep over every sidecar this design reads or writes)* No consumer globs a directory in a way the new `.meta.json` would break | `resolve_run_paths` (`report.py:72-95`) globs `*.trec` only, and already excludes the qrels file by absolute path. `ingest.py`'s sidecar and the new meta sidecar both sit beside files discovered by extension |
+| A22 | ir_measures measures must be constructed as OBJECTS, never via `parse_measure` | `parse_measure("nDCG@10")` raises `AttributeError: module 'ast' has no attribute 'Num'` on this box (Python 3.14; `ast.Num` removed in 3.12). `report.py:52-57` already carries a `CRITICAL:` comment about this. `iter_calc([nDCG@10, R@50, AP], …)` verified working: `Metric(query_id=…, measure=…, value=…)`, 1,401 rows per measure on a real ArguAna run |
+| A23 | The deployed image contains the `Iverson.*` assemblies as discrete files at `AppContext.BaseDirectory` | `Iverson.Api/Dockerfile` runtime stage: `WORKDIR /app`, `COPY --from=build /app/publish .`, `ENTRYPOINT ["dotnet", "Iverson.Api.dll"]` — a plain framework-dependent publish, not single-file or trimmed. The running container lists exactly 7 `Iverson.*.dll` in `/app`. A single-file or trimmed publish would void item 3 |
 | A21 | A single entry-assembly MVID is insufficient | Measured: a `Iverson.Vector`-only change moved that MVID but left `Iverson.Api`'s identical. (The two probes render GUIDs differently — the raw metadata heap is big-endian in its first three fields, .NET's `Guid` is little-endian — so the same MVID appears as `d0f9f226-b1ec-a14c-…` in the narrative above and `26f2f9d0-ecb1-4ca1-…` in the endpoint example. The finding is unaffected; the implementation should use .NET's rendering throughout.) |
 
 ## Out of scope
