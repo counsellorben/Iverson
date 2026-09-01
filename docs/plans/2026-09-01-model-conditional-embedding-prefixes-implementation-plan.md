@@ -78,6 +78,8 @@ Verified by `thorough-brainstorming` at spec-write time and NOT re-verified here
 | P23 | Code validity | `ingest.py` is import-safe offline, so `verify_contract()` can be exercised without Ollama or Qdrant | `def main()` at `:456`, `if __name__ == "__main__":` at `:580`; every `urlopen` is inside a function (`:227`, `:315`) |
 | P24 | Consumer impact | NSubstitute substitutes auto-implement new interface members, so only the two concrete implementors need editing | `Substitute.For<IEmbeddingService>()` appears across many test files; none declares members |
 | P26 | Consumer impact | `SchemaRegistrationOrchestrator.cs:55` calls `EnsureInitializedAsync`, untouched by the split | read of that line |
+| P28 | Command | Task 2's coverage step has a collector to produce output | `Iverson.Api.Tests.csproj:18` — `coverlet.collector` 6.0.2; without it `--collect:"XPlat Code Coverage"` emits nothing |
+| P29 | Command | `sample_corpus.py` takes the two arguments Task 5 Step 2 passes | `--corpus-dir` at `:138`, `--out-dir` at `:142`, both `required=True` |
 
 ## Tasks
 
@@ -389,12 +391,36 @@ git commit -m "split embedding into document and query intents"
 **Files:**
 - Create: `Iverson.Server/Iverson.Api.Tests/Schema/IngestContractTests.cs`
 - Create: `Iverson.Server/Iverson.LoadTest/scripts/ingest-contract.json`
+- Modify: `Iverson.Server/Iverson.Api/Consumers/IntelligenceStoreConsumer.cs` — extract `ChunkWindow`
 
 **Interfaces:**
 - Consumes: `EmbeddingPrefixes.Table`, `EmbeddingPrefixes.DefaultDocument`, `ComposeDocumentInput` from Task 1.
 - Produces: `ingest-contract.json`, consumed by Task 4.
 
-- [ ] **Step 1: Write the emit-and-gate test**
+- [ ] **Step 1: Extract the chunk-window arithmetic so the emit can read it**
+
+`SplitIntoChunks` computes `maxChars` and `step` inline and carries the word-boundary lookback as a
+bare `50` (`IntelligenceStoreConsumer.cs:671`), so there is nothing for the contract to read. Lift
+them, leaving `SplitIntoChunks` calling the new helper — the shape
+`centroid-ablation:IntelligenceStoreConsumer.cs:658` already proved:
+
+```csharp
+// internal, not inlined into SplitIntoChunks, because these numbers are a cross-language contract
+// rather than an implementation detail: ingest.py must window text identically, and
+// IngestContractTests emits them so the two sides cannot drift apart silently.
+internal static (int MaxChars, int Step, int Lookback) ChunkWindow(int maxTokens, int overlap)
+{
+    var maxChars     = maxTokens * 4;
+    var overlapChars = overlap * 4;
+    var step         = Math.Max(maxChars - overlapChars, maxChars / 2);
+    return (maxChars, step, 50);
+}
+```
+
+Nothing about the arithmetic changes. `Iverson.Api.Tests` already references `Iverson.Api`, so the
+emit can call it directly.
+
+- [ ] **Step 2: Write the emit-and-gate test**
 
 One test that both writes the contract (under `IVERSON_REGENERATE_INGEST_CONTRACT=1`) and, by default, asserts a fresh emit equals the committed copy, failing with a diff. Generator and gate are one artefact, which is what keeps "generated" from decaying into "stale".
 
@@ -417,15 +443,27 @@ Emit, at minimum:
   },
   "golden": {
     "documentComposition": {
-      "nomic-embed-text": "search_document: the quick brown fox",
-      "snowflake-arctic-embed": "the quick brown fox",
-      "__default__": "the quick brown fox"
+      "nomic-embed-text":       { "text": "the quick brown fox", "composed": "search_document: the quick brown fox" },
+      "snowflake-arctic-embed": { "text": "the quick brown fox", "composed": "the quick brown fox" },
+      "__default__":            { "text": "the quick brown fox", "composed": "the quick brown fox" }
     }
   }
 }
 ```
 
-Every value is read out of the C# path, never written by hand: `documentPrefixes` from `EmbeddingPrefixes.Table`, `defaultDocumentPrefix` from `EmbeddingPrefixes.DefaultDocument`, and each `documentComposition` entry from a reflective call to `ComposeDocumentInput` with that family's prefix and a fixed sample string.
+Every value is read out of the C# path, never written by hand: `chunkWindow` from
+`IntelligenceStoreConsumer.ChunkWindow(512, 64)` — the benchmark entity's values, since
+`BenchmarkDocument.cs:17` carries a bare `[IversonChunk]` and `IversonChunkAttribute`'s defaults are
+`maxTokens = 512, overlap = 64` — `documentPrefixes` from `EmbeddingPrefixes.Table`,
+`defaultDocumentPrefix` from `EmbeddingPrefixes.DefaultDocument`, and each `documentComposition`
+entry from a reflective call to `ComposeDocumentInput` with that family's prefix and a fixed sample
+string.
+
+**Each case carries its input as well as its expected output.** A golden holding only the composed
+string gives the Python side nothing to compose *from*: recovering the input by stripping the prefix
+makes the check `prefix + composed.removeprefix(prefix) == composed`, which is true for every prefix
+including a wrong one. `centroid-ablation:ingest.py:646-648` replays the branch's equivalent the same
+way, from `text` against `composed`.
 
 **Query prefixes are deliberately not emitted** — queries are embedded in `Iverson.Api`, so nothing Python-side reads them, and a field with no consumer is dead surface.
 
@@ -433,7 +471,7 @@ Every value is read out of the C# path, never written by hand: `documentPrefixes
 
 Reflection for `ComposeDocumentInput` uses `BindingFlags.NonPublic | BindingFlags.Static`, the convention already used at `IntelligenceStoreConsumerTests.cs:766`.
 
-- [ ] **Step 2: Generate the contract and confirm the gate bites**
+- [ ] **Step 3: Generate the contract and confirm the gate bites**
 
 ```bash
 cd /home/ben/repositories/Iverson
@@ -443,12 +481,13 @@ dotnet test Iverson.Server/Iverson.Api.Tests/Iverson.Api.Tests.csproj --filter I
 
 The second run must pass against the committed file. Then hand-edit one character of `ingest-contract.json`, re-run, and confirm it **fails** — a gate that cannot fail is not a gate. Restore the file afterwards.
 
-- [ ] **Step 3: Run the suite and commit**
+- [ ] **Step 4: Run the suite and commit**
 
 ```bash
 cd /home/ben/repositories/Iverson
 dotnet test Iverson.Server/Iverson.Api.Tests/Iverson.Api.Tests.csproj
-git add Iverson.Server/Iverson.Api.Tests/Schema/IngestContractTests.cs \
+git add Iverson.Server/Iverson.Api/Consumers/IntelligenceStoreConsumer.cs \
+        Iverson.Server/Iverson.Api.Tests/Schema/IngestContractTests.cs \
         Iverson.Server/Iverson.LoadTest/scripts/ingest-contract.json
 git commit -m "generate the ingest contract from the C# write path"
 ```
@@ -477,9 +516,16 @@ Global Constraint 2 — the same rule Task 1 implements in C#:
 def family(model_id):
     return model_id.split(":", 1)[0]
 
-DOCUMENT_PREFIX = CONTRACT["embedding"]["documentPrefixes"].get(
-    family(args.model), CONTRACT["embedding"]["defaultDocumentPrefix"])
+# NOT a module-level constant: the prefix depends on --model, and args are parsed inside main()
+# (ingest.py:483). A function keeps one resolution path that both main() and verify_contract() call,
+# which is what lets Step 7 verify the real thing without invoking main().
+def document_prefix_for(model_id):
+    return CONTRACT["embedding"]["documentPrefixes"].get(
+        family(model_id), CONTRACT["embedding"]["defaultDocumentPrefix"])
 ```
+
+`embed()` takes the resolved prefix from its caller, and `verify_contract(model_id)` takes the model
+id and resolves through `document_prefix_for` — the same call `main()` makes.
 
 Apply it inside `embed()` (`:308`), the single `/api/embed` wrapper. This leaves the reuse gate at `:369` comparing raw text and therefore still valid.
 
@@ -499,7 +545,10 @@ This design makes an empty document prefix reachable through configuration, and 
 
 - [ ] **Step 6: Replay the golden in `verify_contract()`**
 
-Run it immediately after `parse_args()` and **before `--drop` acts** — dropping against a drifted contract is as damaging as ingesting against one. It replays the resolved family's `documentComposition` golden through this script's own prefix application, falling back to the `__default__` case for an unmatched family.
+Run it immediately after `parse_args()` and **before `--drop` acts** — dropping against a drifted contract is as damaging as ingesting against one. It replays the resolved family's case by composing `case["text"]` with this script's own resolved
+prefix and comparing against `case["composed"]`, exiting non-zero on mismatch — falling back to the
+`__default__` case for an unmatched family. Composing from the golden's own `text` is what makes this
+a cross-language check rather than a self-comparison.
 
 - [ ] **Step 7: Verify without a live stack**
 
@@ -510,12 +559,10 @@ cd /home/ben/repositories/Iverson/Iverson.Server/Iverson.LoadTest/scripts
 python3 -m py_compile ingest.py
 python3 ingest.py --help | grep -- --model
 python3 -c "
-import sys; sys.argv = ['ingest.py', '--model', 'snowflake-arctic-embed:s']
-import ingest; ingest.verify_contract(); print('verify_contract OK for a tagged arctic id')
-"
-python3 -c "
-import sys; sys.argv = ['ingest.py', '--model', 'nomic-embed-text:latest']
-import ingest; ingest.verify_contract(); print('verify_contract OK for a tagged nomic id')
+import ingest
+ingest.verify_contract('snowflake-arctic-embed:s')
+ingest.verify_contract('nomic-embed-text:latest')
+print('verify_contract OK for both tagged ids')
 "
 ```
 
