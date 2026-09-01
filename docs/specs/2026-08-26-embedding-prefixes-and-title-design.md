@@ -1,5 +1,8 @@
 # Embedding Task Prefixes and Title Composition
 
+**Superseded by `docs/specs/2026-09-01-model-conditional-embedding-prefixes-design.md`.** Prefixes are
+configuration derived from the model there, not `const`. Do not execute this document.
+
 **Supersedes `2026-08-26-ingest-contract-generation-design.md`**, which was never planned. That
 design's content is carried forward here in full; prefixes and title composition change it rather
 than merely adding to it, so one document replaces two.

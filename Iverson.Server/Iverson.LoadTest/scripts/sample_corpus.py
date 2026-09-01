@@ -225,10 +225,14 @@ def main():
     with open(os.path.join(out_beir, "corpus.jsonl"), "w", encoding="utf-8") as f:
         for docid in sorted(chosen_docids):
             row = all_corpus[docid]
+            title = row.get("title") or ""
+            text = row.get("text") or ""
+            if title.strip():
+                text = f"{title.strip()}\n\n{text}"
             f.write(json.dumps({
                 "_id": docid,
                 "title": row.get("title") or "",
-                "text": row.get("text") or "",
+                "text": text,
             }) + "\n")
 
     with open(os.path.join(out_beir, "queries.jsonl"), "w", encoding="utf-8") as f:

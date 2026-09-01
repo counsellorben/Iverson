@@ -1,5 +1,8 @@
 # Embedding Task Prefixes and Title Composition Implementation Plan
 
+**Superseded by `docs/specs/2026-09-01-model-conditional-embedding-prefixes-design.md`.** Prefixes are
+configuration derived from the model there, not `const`. Do not execute this document.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Source spec:** `docs/specs/2026-08-26-embedding-prefixes-and-title-design.md` (commit SHA: `dbc5fb6`)
