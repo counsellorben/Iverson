@@ -514,7 +514,12 @@ git commit -m "generate the ingest contract from the C# write path"
 
 - [ ] **Step 1: Load the contract at module level**
 
-Replace `MAX_CHARS` (`:153`), `STEP` (`:154`), the collection-name constants (`:126-127`) and the `"Cosine"` literals (`:504`, `:509`) with values read from `ingest-contract.json`, resolved relative to this script's own directory.
+Replace `MAX_CHARS` (`:153`), `STEP` (`:154`), the word-boundary lookback literal (`:190`), the collection-name constants (`:126-127`) and the `"Cosine"` literals (`:504`, `:509`) with values read from `ingest-contract.json`, resolved relative to this script's own directory.
+
+The lookback has no named constant today — `split_into_chunks` (`:179`) carries a bare `50` at `:190`.
+Bind it like the other two: `WORD_BOUNDARY_LOOKBACK = CONTRACT["chunkWindow"]["wordBoundaryLookback"]`
+at module level, add it as `split_into_chunks`'s third default parameter, and use that parameter in
+place of the literal.
 
 - [ ] **Step 2: Add `--model` and wire it to `embed()`**
 
