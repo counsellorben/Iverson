@@ -307,4 +307,42 @@ public sealed class EmbeddingServiceTests
 
         handler.LastRequestBody.Should().NotContain("search_document: ");
     }
+
+    [Fact]
+    public async Task EmbedQueryAsync_PrependsTheResolvedPrefix()
+    {
+        var handler = new FakeHttpMessageHandler(SuccessResponse([1f, 0f, 0f]));
+        var sut     = CreateService(handler, "nomic-embed-text");
+
+        await sut.EmbedQueryAsync("hello");
+
+        handler.LastRequestBody.Should().Contain("search_query: hello");
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("   ")]
+    public async Task EmbedQueryAsync_WithEmptyInput_ThrowsEvenWhenAPrefixWouldMakeItNonEmpty(string input)
+    {
+        var handler = new FakeHttpMessageHandler(SuccessResponse([1f, 0f, 0f]));
+        var sut     = CreateService(handler, "nomic-embed-text");   // non-empty query prefix
+
+        var act = async () => await sut.EmbedQueryAsync(input);
+
+        await act.Should().ThrowAsync<EmptyEmbeddingInputException>();
+        handler.LastRequest.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task EmbedQueryAsync_WithExplicitEmptyPrefixOverride_SendsNoPrefix()
+    {
+        var handler = new FakeHttpMessageHandler(SuccessResponse([1f, 0f, 0f]));
+        var sut     = CreateService(
+            handler,
+            new EmbeddingServiceOptions { ModelId = "nomic-embed-text", QueryPrefix = "" });
+
+        await sut.EmbedQueryAsync("hello");
+
+        handler.LastRequestBody.Should().NotContain("search_query: ");
+    }
 }
