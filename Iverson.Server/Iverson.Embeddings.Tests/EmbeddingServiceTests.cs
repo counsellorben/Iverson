@@ -229,4 +229,19 @@ public sealed class EmbeddingServiceTests
         svc.Dimension.Should().Be(2);
         handler.CallCount.Should().Be(2);
     }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("   ")]
+    [InlineData("\t\n")]
+    public async Task EmbedAsync_WithEmptyOrWhitespaceInput_ThrowsWithoutCallingOllama(string input)
+    {
+        var handler = new FakeHttpMessageHandler(SuccessResponse([1f, 0f, 0f]));
+        var sut     = CreateService(handler);
+
+        var act = async () => await sut.EmbedAsync(input);
+
+        await act.Should().ThrowAsync<EmptyEmbeddingInputException>();
+        handler.LastRequest.Should().BeNull();
+    }
 }
