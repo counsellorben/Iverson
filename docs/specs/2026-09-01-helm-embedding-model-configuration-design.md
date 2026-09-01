@@ -20,6 +20,14 @@ spaces.
 This matters more since prefixes became model-derived: `EmbeddingPrefixes` resolves the task prefix
 from the model id, and a family absent from its table resolves to empty prefixes rather than failing.
 
+Underneath both is a second, larger limitation. `IEmbeddingService` is a singleton with one `ModelId`
+and one probed `Dimension` (`ServiceCollectionExtensions.cs:21`), so **a deployment serves exactly one
+embedding model for every registered type**. A corpus that would retrieve better under a different
+model cannot have one without changing the model for everything else, and an entity carries no record
+of the model its vectors were built with — `VectorDescriptor.ModelId` exists and is written at three
+sites, but always from the singleton, and nothing reads it. Part B addresses that; Part A is its
+prerequisite, since a per-type model is only selectable from the set the deployment actually pulled.
+
 ## Scope and decomposition
 
 The cloud multi-model goal decomposes into three independently deployable pieces:
@@ -122,8 +130,8 @@ emitting one `ollama pull {{ .name }}` per entry. The generative pull at `:60` i
 
 ### Env wiring
 
-Both api and worker get `Embeddings__ModelId` plus the active entry's prefixes, inserted next to the
-existing `Embeddings__BaseUrl` (`charts/api/templates/deployment.yaml:124`,
+Both api and worker get `Embeddings__ModelId` plus the active entry's prefixes — which, per Part B's
+prefix rule, govern the default model only — inserted next to the existing `Embeddings__BaseUrl` (`charts/api/templates/deployment.yaml:124`,
 `charts/worker/templates/deployment.yaml:119`).
 
 **Both deployments get both prefixes**, even though api only embeds queries and worker only embeds
