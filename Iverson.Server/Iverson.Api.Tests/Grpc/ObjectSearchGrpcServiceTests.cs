@@ -1071,7 +1071,7 @@ public class ObjectSearchGrpcServiceTests
         await _registry.RegisterAsync(SchemaFixtures.ArticleSchema());
 
         var fakeVector = new float[768];
-        _embedding.EmbedAsync("test query", Arg.Any<CancellationToken>()).Returns(fakeVector);
+        _embedding.EmbedQueryAsync("test query", Arg.Any<CancellationToken>()).Returns(fakeVector);
 
         var vectorResult = new VectorSearchResult(
             Id: 1, Score: 0.95,
@@ -1087,13 +1087,15 @@ public class ObjectSearchGrpcServiceTests
 
         written.Should().HaveCount(1);
         written[0].Score.Should().BeApproximately(0.95f, 0.001f);
+        _ = _embedding.Received(1).EmbedQueryAsync(Arg.Any<string>(), Arg.Any<CancellationToken>());
+        _ = _embedding.DidNotReceive().EmbedDocumentAsync(Arg.Any<string>(), Arg.Any<CancellationToken>());
     }
 
     [Fact]
     public async Task SearchSimilar_WithEmptyQuery_ThrowsInvalidArgumentNotUnavailable()
     {
         await _registry.RegisterAsync(SchemaFixtures.ArticleSchema());
-        _embedding.EmbedAsync("", Arg.Any<CancellationToken>())
+        _embedding.EmbedQueryAsync("", Arg.Any<CancellationToken>())
                   .Returns<float[]>(_ => throw new EmptyEmbeddingInputException("Cannot embed empty or whitespace-only text."));
 
         var request = new SearchSimilarRequest { TypeName = "Article", Property = "Title", Query = "", TopK = 5 };
@@ -1110,7 +1112,7 @@ public class ObjectSearchGrpcServiceTests
         await _registry.RegisterAsync(SchemaFixtures.ArticleSchema());
 
         var fakeVector = new float[768];
-        _embedding.EmbedAsync("test query", Arg.Any<CancellationToken>()).Returns(fakeVector);
+        _embedding.EmbedQueryAsync("test query", Arg.Any<CancellationToken>()).Returns(fakeVector);
         _vector.SearchNamedAsync("articles_test-tenant", "title_vector", fakeVector, Arg.Any<ulong>(), Arg.Any<Filter>())
                .Returns(new List<VectorSearchResult>().AsReadOnly());
 
@@ -1139,7 +1141,7 @@ public class ObjectSearchGrpcServiceTests
     public async Task SearchSimilar_FilterOnUnknownProperty_ThrowsInvalidArgument()
     {
         await _registry.RegisterAsync(SchemaFixtures.ArticleSchema());
-        _embedding.EmbedAsync("q", Arg.Any<CancellationToken>()).Returns(new float[768]);
+        _embedding.EmbedQueryAsync("q", Arg.Any<CancellationToken>()).Returns(new float[768]);
 
         var request = new SearchSimilarRequest { TypeName = "Article", Property = "Title", Query = "q", TopK = 5 };
         request.Filter.Add(new SearchClause
@@ -1171,7 +1173,7 @@ public class ObjectSearchGrpcServiceTests
             TenantColumn = SchemaDescriptor.TenantColumnName
         };
         await _registry.RegisterAsync(schema);
-        _embedding.EmbedAsync("q", Arg.Any<CancellationToken>()).Returns(new float[768]);
+        _embedding.EmbedQueryAsync("q", Arg.Any<CancellationToken>()).Returns(new float[768]);
 
         var request = new SearchSimilarRequest { TypeName = "Article", Property = "Title", Query = "q", TopK = 5 };
         request.Filter.Add(new SearchClause
@@ -1225,7 +1227,7 @@ public class ObjectSearchGrpcServiceTests
         // The tenant boundary is enforced by collection routing (Task 3), not by a query-time filter
         // condition, so only the ownership condition is expected here.
         await _registry.RegisterAsync(OwnedQdrantSchema("Owned", "OwnerId", bypassRole: "other-bypass"));
-        _embedding.EmbedAsync("q", Arg.Any<CancellationToken>()).Returns(new float[768]);
+        _embedding.EmbedQueryAsync("q", Arg.Any<CancellationToken>()).Returns(new float[768]);
         _vector.SearchNamedAsync("owneds_test-tenant", "name_vector", Arg.Any<float[]>(), Arg.Any<ulong>(), Arg.Any<Filter>())
                .Returns(new List<VectorSearchResult>().AsReadOnly());
 
@@ -1249,7 +1251,7 @@ public class ObjectSearchGrpcServiceTests
         // collection routing (Task 3) rather than a query-time filter condition — with no
         // caller-supplied filter clause either, no Filter is built at all.
         await _registry.RegisterAsync(OwnedQdrantSchema("Owned", "OwnerId")); // bypassRole defaults to "test-bypass"
-        _embedding.EmbedAsync("q", Arg.Any<CancellationToken>()).Returns(new float[768]);
+        _embedding.EmbedQueryAsync("q", Arg.Any<CancellationToken>()).Returns(new float[768]);
         _vector.SearchNamedAsync("owneds_test-tenant", "name_vector", Arg.Any<float[]>(), Arg.Any<ulong>(), Arg.Any<Filter>())
                .Returns(new List<VectorSearchResult>().AsReadOnly());
 
@@ -1285,7 +1287,7 @@ public class ObjectSearchGrpcServiceTests
     {
         var fieldPermissions = new List<Iverson.Api.Schema.FieldPermission> { new("Secret", ["admin"], []) };
         await _registry.RegisterAsync(OwnedQdrantSchema("Owned", null, fieldPermissions));
-        _embedding.EmbedAsync("q", Arg.Any<CancellationToken>()).Returns(new float[768]);
+        _embedding.EmbedQueryAsync("q", Arg.Any<CancellationToken>()).Returns(new float[768]);
 
         var request = new SearchSimilarRequest { TypeName = "Owned", Property = "Name", Query = "q" };
         request.Filter.Add(new SearchClause
@@ -1306,7 +1308,7 @@ public class ObjectSearchGrpcServiceTests
     {
         var fieldPermissions = new List<Iverson.Api.Schema.FieldPermission> { new("Secret", ["admin"], []) };
         await _registry.RegisterAsync(OwnedQdrantSchema("Owned", null, fieldPermissions));
-        _embedding.EmbedAsync("q", Arg.Any<CancellationToken>()).Returns(new float[768]);
+        _embedding.EmbedQueryAsync("q", Arg.Any<CancellationToken>()).Returns(new float[768]);
 
         var vectorResult = new VectorSearchResult(
             Id: 1, Score: 0.9,
@@ -1334,7 +1336,7 @@ public class ObjectSearchGrpcServiceTests
         await _registry.RegisterAsync(SchemaFixtures.ArticleSchema());
 
         var fakeVector = new float[768];
-        _embedding.EmbedAsync("test query", Arg.Any<CancellationToken>()).Returns(fakeVector);
+        _embedding.EmbedQueryAsync("test query", Arg.Any<CancellationToken>()).Returns(fakeVector);
         _vector.SearchNamedAsync("articles_test-tenant", "title_vector", fakeVector, Arg.Any<ulong>(), Arg.Any<Filter>())
                .Returns<Task<IReadOnlyList<VectorSearchResult>>>(_ => throw new RpcException(new Status(StatusCode.NotFound, "collection not found")));
 
@@ -1380,7 +1382,7 @@ public class ObjectSearchGrpcServiceTests
         await _registry.RegisterAsync(SchemaFixtures.ArticleSchema());
 
         var fakeVector = new float[768];
-        _embedding.EmbedAsync("test query", Arg.Any<CancellationToken>()).Returns(fakeVector);
+        _embedding.EmbedQueryAsync("test query", Arg.Any<CancellationToken>()).Returns(fakeVector);
 
         var chunkResult = new VectorSearchResult(
             Id: 42, Score: 0.88,
@@ -1397,13 +1399,15 @@ public class ObjectSearchGrpcServiceTests
         await _vector.Received(1).SearchNamedAsync(
             "articles_chunks_test-tenant", Arg.Any<string>(), Arg.Any<float[]>(), Arg.Any<ulong>(), Arg.Any<Filter>());
         written.Should().HaveCount(1);
+        _ = _embedding.Received(1).EmbedQueryAsync(Arg.Any<string>(), Arg.Any<CancellationToken>());
+        _ = _embedding.DidNotReceive().EmbedDocumentAsync(Arg.Any<string>(), Arg.Any<CancellationToken>());
     }
 
     [Fact]
     public async Task SearchChunks_WithEmptyQuery_ThrowsInvalidArgumentNotUnavailable()
     {
         await _registry.RegisterAsync(SchemaFixtures.ArticleSchema());
-        _embedding.EmbedAsync("", Arg.Any<CancellationToken>())
+        _embedding.EmbedQueryAsync("", Arg.Any<CancellationToken>())
                   .Returns<float[]>(_ => throw new EmptyEmbeddingInputException("Cannot embed empty or whitespace-only text."));
 
         var request = new SearchChunksRequest { TypeName = "Article", Property = "Body", Query = "", TopK = 5 };
@@ -1423,7 +1427,7 @@ public class ObjectSearchGrpcServiceTests
         await _registry.RegisterAsync(SchemaFixtures.ArticleSchema());
 
         var fakeVector = new float[768];
-        _embedding.EmbedAsync("test query", Arg.Any<CancellationToken>()).Returns(fakeVector);
+        _embedding.EmbedQueryAsync("test query", Arg.Any<CancellationToken>()).Returns(fakeVector);
         _vector.SearchNamedAsync("articles_chunks_test-tenant", "body_vector", fakeVector, Arg.Any<ulong>(), Arg.Any<Filter>())
                .Returns<Task<IReadOnlyList<VectorSearchResult>>>(_ => throw new RpcException(new Status(StatusCode.NotFound, "collection not found")));
 
@@ -1441,7 +1445,7 @@ public class ObjectSearchGrpcServiceTests
         await _registry.RegisterAsync(SchemaFixtures.ArticleSchema());
 
         var fakeVector = new float[768];
-        _embedding.EmbedAsync(Arg.Any<string>(), Arg.Any<CancellationToken>()).Returns(fakeVector);
+        _embedding.EmbedQueryAsync(Arg.Any<string>(), Arg.Any<CancellationToken>()).Returns(fakeVector);
 
         var chunkResult = new VectorSearchResult(
             Id: 99, Score: 0.75,
@@ -1468,7 +1472,7 @@ public class ObjectSearchGrpcServiceTests
     public async Task SearchChunks_WithPkEqualsFilter_PassesParentIdMatchToVectorService()
     {
         await _registry.RegisterAsync(SchemaFixtures.ArticleSchema());
-        _embedding.EmbedAsync("q", Arg.Any<CancellationToken>()).Returns(new float[768]);
+        _embedding.EmbedQueryAsync("q", Arg.Any<CancellationToken>()).Returns(new float[768]);
         _vector.SearchNamedAsync("articles_chunks_test-tenant", "body_vector", Arg.Any<float[]>(), Arg.Any<ulong>(), Arg.Any<Filter>())
                .Returns(new List<VectorSearchResult>().AsReadOnly());
 
@@ -1499,7 +1503,7 @@ public class ObjectSearchGrpcServiceTests
     public async Task SearchChunks_FilterOnNonPkProperty_ThrowsInvalidArgument()
     {
         await _registry.RegisterAsync(SchemaFixtures.ArticleSchema());
-        _embedding.EmbedAsync("q", Arg.Any<CancellationToken>()).Returns(new float[768]);
+        _embedding.EmbedQueryAsync("q", Arg.Any<CancellationToken>()).Returns(new float[768]);
 
         var request = new SearchChunksRequest { TypeName = "Article", Property = "Body", Query = "q", TopK = 5 };
         request.Filter.Add(new SearchClause
@@ -1519,7 +1523,7 @@ public class ObjectSearchGrpcServiceTests
     public async Task SearchChunks_WithMetadataColumnEqualsFilter_PassesCamelCasePayloadMatch()
     {
         await _registry.RegisterAsync(SchemaFixtures.ArticleSchema() with { MetadataColumns = ["Title"] });
-        _embedding.EmbedAsync("q", Arg.Any<CancellationToken>()).Returns(new float[768]);
+        _embedding.EmbedQueryAsync("q", Arg.Any<CancellationToken>()).Returns(new float[768]);
         _vector.SearchNamedAsync("articles_chunks_test-tenant", "body_vector", Arg.Any<float[]>(), Arg.Any<ulong>(), Arg.Any<Filter>())
                .Returns(new List<VectorSearchResult>().AsReadOnly());
 
@@ -1546,7 +1550,7 @@ public class ObjectSearchGrpcServiceTests
     public async Task SearchChunks_MultipleClausesMixingPkAndMetadata_AreAllTranslated()
     {
         await _registry.RegisterAsync(SchemaFixtures.ArticleSchema() with { MetadataColumns = ["Title"] });
-        _embedding.EmbedAsync("q", Arg.Any<CancellationToken>()).Returns(new float[768]);
+        _embedding.EmbedQueryAsync("q", Arg.Any<CancellationToken>()).Returns(new float[768]);
         _vector.SearchNamedAsync("articles_chunks_test-tenant", "body_vector", Arg.Any<float[]>(), Arg.Any<ulong>(), Arg.Any<Filter>())
                .Returns(new List<VectorSearchResult>().AsReadOnly());
 
@@ -1580,7 +1584,7 @@ public class ObjectSearchGrpcServiceTests
         // Schema declares "Title"; caller filters as "TITLE". The payload key must still be
         // "title" (what IntelligenceStoreConsumer wrote), not "tITLE".
         await _registry.RegisterAsync(SchemaFixtures.ArticleSchema() with { MetadataColumns = ["Title"] });
-        _embedding.EmbedAsync("q", Arg.Any<CancellationToken>()).Returns(new float[768]);
+        _embedding.EmbedQueryAsync("q", Arg.Any<CancellationToken>()).Returns(new float[768]);
         _vector.SearchNamedAsync("articles_chunks_test-tenant", "body_vector", Arg.Any<float[]>(), Arg.Any<ulong>(), Arg.Any<Filter>())
                .Returns(new List<VectorSearchResult>().AsReadOnly());
 
@@ -1607,7 +1611,7 @@ public class ObjectSearchGrpcServiceTests
     public async Task SearchChunks_MetadataFilterWithUnsupportedValueKind_ThrowsInvalidArgument()
     {
         await _registry.RegisterAsync(SchemaFixtures.ArticleSchema() with { MetadataColumns = ["Title"] });
-        _embedding.EmbedAsync("q", Arg.Any<CancellationToken>()).Returns(new float[768]);
+        _embedding.EmbedQueryAsync("q", Arg.Any<CancellationToken>()).Returns(new float[768]);
 
         var request = new SearchChunksRequest { TypeName = "Article", Property = "Body", Query = "q", TopK = 5 };
         request.Filter.Add(new SearchClause
@@ -1632,7 +1636,7 @@ public class ObjectSearchGrpcServiceTests
         var fieldPermissions = new List<Iverson.Api.Schema.FieldPermission> { new("Name", ["admin"], []) };
         var schema = OwnedQdrantSchema("Owned", null, fieldPermissions) with { MetadataColumns = ["Name"] };
         await _registry.RegisterAsync(schema);
-        _embedding.EmbedAsync("q", Arg.Any<CancellationToken>()).Returns(new float[768]);
+        _embedding.EmbedQueryAsync("q", Arg.Any<CancellationToken>()).Returns(new float[768]);
 
         var request = new SearchChunksRequest { TypeName = "Owned", Property = "Secret", Query = "q" };
         request.Filter.Add(new SearchClause
@@ -1655,7 +1659,7 @@ public class ObjectSearchGrpcServiceTests
         var fieldPermissions = new List<Iverson.Api.Schema.FieldPermission> { new("Name", ["test-bypass"], []) };
         var schema = OwnedQdrantSchema("Owned", null, fieldPermissions) with { MetadataColumns = ["Name"] };
         await _registry.RegisterAsync(schema);
-        _embedding.EmbedAsync("q", Arg.Any<CancellationToken>()).Returns(new float[768]);
+        _embedding.EmbedQueryAsync("q", Arg.Any<CancellationToken>()).Returns(new float[768]);
         _vector.SearchNamedAsync("owneds_chunks_test-tenant", "secret_vector", Arg.Any<float[]>(), Arg.Any<ulong>(), Arg.Any<Filter>())
                .Returns(new List<VectorSearchResult>().AsReadOnly());
 
@@ -1681,7 +1685,7 @@ public class ObjectSearchGrpcServiceTests
     public async Task SearchChunks_NonEqualsOperator_ThrowsInvalidArgument()
     {
         await _registry.RegisterAsync(SchemaFixtures.ArticleSchema());
-        _embedding.EmbedAsync("q", Arg.Any<CancellationToken>()).Returns(new float[768]);
+        _embedding.EmbedQueryAsync("q", Arg.Any<CancellationToken>()).Returns(new float[768]);
 
         var request = new SearchChunksRequest { TypeName = "Article", Property = "Body", Query = "q", TopK = 5 };
         request.Filter.Add(new SearchClause
@@ -1702,7 +1706,7 @@ public class ObjectSearchGrpcServiceTests
     public async Task SearchChunks_MustNotClauseType_ThrowsInvalidArgument()
     {
         await _registry.RegisterAsync(SchemaFixtures.ArticleSchema());
-        _embedding.EmbedAsync("q", Arg.Any<CancellationToken>()).Returns(new float[768]);
+        _embedding.EmbedQueryAsync("q", Arg.Any<CancellationToken>()).Returns(new float[768]);
 
         var request = new SearchChunksRequest { TypeName = "Article", Property = "Body", Query = "q", TopK = 5 };
         request.Filter.Add(new SearchClause
@@ -1771,7 +1775,7 @@ public class ObjectSearchGrpcServiceTests
         // BuildChunksFilter's single EQUALS-on-key-column clause needs no AllowedFields check.
         var fieldPermissions = new List<Iverson.Api.Schema.FieldPermission> { new("Name", ["admin"], []) };
         await _registry.RegisterAsync(OwnedQdrantSchema("Owned", null, fieldPermissions));
-        _embedding.EmbedAsync("q", Arg.Any<CancellationToken>()).Returns(new float[768]);
+        _embedding.EmbedQueryAsync("q", Arg.Any<CancellationToken>()).Returns(new float[768]);
         _vector.SearchNamedAsync("owneds_chunks_test-tenant", "secret_vector", Arg.Any<float[]>(), Arg.Any<ulong>(), Arg.Any<Filter>())
                .Returns(new List<VectorSearchResult>().AsReadOnly());
 
@@ -1792,7 +1796,7 @@ public class ObjectSearchGrpcServiceTests
     public async Task SearchChunks_OwnershipRequired_MergesMatchKeywordConditionWithKeyFilter()
     {
         await _registry.RegisterAsync(OwnedQdrantSchema("Owned", "OwnerId", bypassRole: "other-bypass"));
-        _embedding.EmbedAsync("q", Arg.Any<CancellationToken>()).Returns(new float[768]);
+        _embedding.EmbedQueryAsync("q", Arg.Any<CancellationToken>()).Returns(new float[768]);
         _vector.SearchNamedAsync("owneds_chunks_test-tenant", "secret_vector", Arg.Any<float[]>(), Arg.Any<ulong>(), Arg.Any<Filter>())
                .Returns(new List<VectorSearchResult>().AsReadOnly());
 
@@ -2400,7 +2404,7 @@ public class ObjectSearchGrpcServiceTests
         await _registry.RegisterAsync(DualAnnotatedSchema());
 
         var fakeVector = UnitVector();
-        _embedding.EmbedAsync("q", Arg.Any<CancellationToken>()).Returns(fakeVector);
+        _embedding.EmbedQueryAsync("q", Arg.Any<CancellationToken>()).Returns(fakeVector);
 
         var results = Enumerable.Range(1, 20)
             .Select(i => new VectorSearchResult((ulong)i, 1.0 - i * 0.01,
@@ -2429,7 +2433,7 @@ public class ObjectSearchGrpcServiceTests
         await _registry.RegisterAsync(SchemaFixtures.ArticleSchema());
 
         var fakeVector = UnitVector();
-        _embedding.EmbedAsync("q", Arg.Any<CancellationToken>()).Returns(fakeVector);
+        _embedding.EmbedQueryAsync("q", Arg.Any<CancellationToken>()).Returns(fakeVector);
 
         var results = Enumerable.Range(1, 5)
             .Select(i => new VectorSearchResult((ulong)i, 1.0 - i * 0.01,
@@ -2461,7 +2465,7 @@ public class ObjectSearchGrpcServiceTests
         await _registry.RegisterAsync(EmbeddingOnlyWithDecaySchema());
 
         var fakeVector = UnitVector();
-        _embedding.EmbedAsync("q", Arg.Any<CancellationToken>()).Returns(fakeVector);
+        _embedding.EmbedQueryAsync("q", Arg.Any<CancellationToken>()).Returns(fakeVector);
 
         var results = Enumerable.Range(1, 8)
             .Select(i => new VectorSearchResult((ulong)i, 1.0 - i * 0.01,
@@ -2498,7 +2502,7 @@ public class ObjectSearchGrpcServiceTests
             Options.Create(new DecayOptions { HalfLifeDays = halfLifeDays }));
 
         var fakeVector = UnitVector();
-        _embedding.EmbedAsync("q", Arg.Any<CancellationToken>()).Returns(fakeVector);
+        _embedding.EmbedQueryAsync("q", Arg.Any<CancellationToken>()).Returns(fakeVector);
 
         // Published exactly one CONFIGURED half-life ago: Decay = 0.5 under the 90-day value
         // bound above, but 0.5^(90/180) ≈ 0.7071 under the shipped 180-day default — a
@@ -2562,7 +2566,7 @@ public class ObjectSearchGrpcServiceTests
         await _registry.RegisterAsync(DualAnnotatedSchema());
 
         var queryVector = UnitVector(); // e0
-        _embedding.EmbedAsync("q", Arg.Any<CancellationToken>()).Returns(queryVector);
+        _embedding.EmbedQueryAsync("q", Arg.Any<CancellationToken>()).Returns(queryVector);
 
         var results = new List<VectorSearchResult>
         {
@@ -2603,7 +2607,7 @@ public class ObjectSearchGrpcServiceTests
         await _registry.RegisterAsync(SchemaFixtures.ArticleSchema());
 
         var fakeVector = UnitVector();
-        _embedding.EmbedAsync("q", Arg.Any<CancellationToken>()).Returns(fakeVector);
+        _embedding.EmbedQueryAsync("q", Arg.Any<CancellationToken>()).Returns(fakeVector);
 
         var results = Enumerable.Range(1, 5)
             .Select(i => new VectorSearchResult((ulong)i, 1.0 - i * 0.01,
@@ -2630,7 +2634,7 @@ public class ObjectSearchGrpcServiceTests
         await _registry.RegisterAsync(DualAnnotatedSchema());
 
         var fakeVector = UnitVector();
-        _embedding.EmbedAsync("q", Arg.Any<CancellationToken>()).Returns(fakeVector);
+        _embedding.EmbedQueryAsync("q", Arg.Any<CancellationToken>()).Returns(fakeVector);
 
         var results = Enumerable.Range(1, 8)
             .Select(i => new VectorSearchResult((ulong)i, 1.0 - i * 0.01,
@@ -2659,7 +2663,7 @@ public class ObjectSearchGrpcServiceTests
         await _registry.RegisterAsync(SchemaFixtures.ArticleSchema());
 
         var fakeVector = UnitVector();
-        _embedding.EmbedAsync("q", Arg.Any<CancellationToken>()).Returns(fakeVector);
+        _embedding.EmbedQueryAsync("q", Arg.Any<CancellationToken>()).Returns(fakeVector);
 
         var results = Enumerable.Range(1, 12)
             .Select(i => new VectorSearchResult((ulong)i, 1.0 - i * 0.01,
@@ -2683,7 +2687,7 @@ public class ObjectSearchGrpcServiceTests
         await _registry.RegisterAsync(SchemaFixtures.ArticleSchema());
 
         var fakeVector = UnitVector();
-        _embedding.EmbedAsync("q", Arg.Any<CancellationToken>()).Returns(fakeVector);
+        _embedding.EmbedQueryAsync("q", Arg.Any<CancellationToken>()).Returns(fakeVector);
 
         var sharedParent = Guid.NewGuid().ToString();
         var results = Enumerable.Range(1, 3)
@@ -2727,7 +2731,7 @@ public class ObjectSearchGrpcServiceTests
         await _registry.RegisterAsync(SchemaFixtures.ArticleSchema());
 
         var fakeVector = UnitVector();
-        _embedding.EmbedAsync("q", Arg.Any<CancellationToken>()).Returns(fakeVector);
+        _embedding.EmbedQueryAsync("q", Arg.Any<CancellationToken>()).Returns(fakeVector);
 
         var results = new List<VectorSearchResult>
         {
@@ -2758,7 +2762,7 @@ public class ObjectSearchGrpcServiceTests
         await _registry.RegisterAsync(SchemaFixtures.ArticleSchema());
 
         var fakeVector = UnitVector();
-        _embedding.EmbedAsync("q", Arg.Any<CancellationToken>()).Returns(fakeVector);
+        _embedding.EmbedQueryAsync("q", Arg.Any<CancellationToken>()).Returns(fakeVector);
         _vector.SearchNamedAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<float[]>(), Arg.Any<ulong>(), Arg.Any<Filter>())
                .Returns(new List<VectorSearchResult>
                {
@@ -2782,7 +2786,7 @@ public class ObjectSearchGrpcServiceTests
         await _registry.RegisterAsync(DualAnnotatedSchema());
 
         var fakeVector = UnitVector();
-        _embedding.EmbedAsync("q", Arg.Any<CancellationToken>()).Returns(fakeVector);
+        _embedding.EmbedQueryAsync("q", Arg.Any<CancellationToken>()).Returns(fakeVector);
         _vector.SearchNamedAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<float[]>(), Arg.Any<ulong>(), Arg.Any<Filter>())
                .Returns(new List<VectorSearchResult>
                {
@@ -2823,7 +2827,7 @@ public class ObjectSearchGrpcServiceTests
         await _registry.RegisterAsync(SchemaFixtures.ArticleSchema());
 
         var query = UnitVector();                     // e0
-        _embedding.EmbedAsync("q", Arg.Any<CancellationToken>()).Returns(query);
+        _embedding.EmbedQueryAsync("q", Arg.Any<CancellationToken>()).Returns(query);
 
         var parentA = Guid.NewGuid().ToString();
         var parentB = Guid.NewGuid().ToString();
@@ -2876,7 +2880,7 @@ public class ObjectSearchGrpcServiceTests
         await _registry.RegisterAsync(SchemaFixtures.ArticleSchema());
 
         var fakeVector = UnitVector();
-        _embedding.EmbedAsync("q", Arg.Any<CancellationToken>()).Returns(fakeVector);
+        _embedding.EmbedQueryAsync("q", Arg.Any<CancellationToken>()).Returns(fakeVector);
 
         var parent = Guid.NewGuid().ToString();
         var results = new List<VectorSearchResult>
@@ -2910,7 +2914,7 @@ public class ObjectSearchGrpcServiceTests
         await _registry.RegisterAsync(SchemaFixtures.ArticleSchema());
 
         var fakeVector = UnitVector();
-        _embedding.EmbedAsync("q", Arg.Any<CancellationToken>()).Returns(fakeVector);
+        _embedding.EmbedQueryAsync("q", Arg.Any<CancellationToken>()).Returns(fakeVector);
 
         var parent = Guid.NewGuid().ToString();
         var results = new List<VectorSearchResult>
@@ -2962,7 +2966,7 @@ public class ObjectSearchGrpcServiceTests
         await _registry.RegisterAsync(SchemaFixtures.ArticleSchema());
 
         var queryVector = UnitVector(); // e0
-        _embedding.EmbedAsync("q", Arg.Any<CancellationToken>()).Returns(queryVector);
+        _embedding.EmbedQueryAsync("q", Arg.Any<CancellationToken>()).Returns(queryVector);
 
         var sharedParent = Guid.NewGuid().ToString();
         var results = new List<VectorSearchResult>
@@ -3014,7 +3018,7 @@ public class ObjectSearchGrpcServiceTests
         await _registry.RegisterAsync(SchemaFixtures.ArticleSchema());
 
         var fakeVector = UnitVector();
-        _embedding.EmbedAsync("q", Arg.Any<CancellationToken>()).Returns(fakeVector);
+        _embedding.EmbedQueryAsync("q", Arg.Any<CancellationToken>()).Returns(fakeVector);
 
         var results = Enumerable.Range(1, 5)
             .Select(i => new VectorSearchResult((ulong)i, 1.0 - i * 0.1,
@@ -3057,7 +3061,7 @@ public class ObjectSearchGrpcServiceTests
         await _registry.RegisterAsync(SchemaFixtures.ArticleSchema());
 
         var fakeVector = new float[768];
-        _embedding.EmbedAsync("test query", Arg.Any<CancellationToken>()).Returns(fakeVector);
+        _embedding.EmbedQueryAsync("test query", Arg.Any<CancellationToken>()).Returns(fakeVector);
 
         var vectorResult = new VectorSearchResult(
             Id: 1, Score: 0.95,

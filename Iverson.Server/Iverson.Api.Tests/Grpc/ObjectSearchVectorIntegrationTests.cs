@@ -116,7 +116,7 @@ public sealed class ObjectSearchVectorIntegrationTests : IClassFixture<QdrantGrp
             physicalCollection, [new NamedVector("title_vector", 4)], []));
 
         var vec = new float[] { 0.1f, 0.2f, 0.3f, 0.4f };
-        _embedding.EmbedAsync(Arg.Any<string>(), Arg.Any<CancellationToken>()).Returns(vec);
+        _embedding.EmbedQueryAsync(Arg.Any<string>(), Arg.Any<CancellationToken>()).Returns(vec);
 
         await _vector.UpsertNamedAsync(physicalCollection, 1,
             new Dictionary<string, float[]> { ["title_vector"] = vec },
@@ -162,7 +162,7 @@ public sealed class ObjectSearchVectorIntegrationTests : IClassFixture<QdrantGrp
             physicalCollection, [new NamedVector("title_vector", 4)], []));
 
         var vec = new float[] { 0.1f, 0.2f, 0.3f, 0.4f };
-        _embedding.EmbedAsync(Arg.Any<string>(), Arg.Any<CancellationToken>()).Returns(vec);
+        _embedding.EmbedQueryAsync(Arg.Any<string>(), Arg.Any<CancellationToken>()).Returns(vec);
 
         // "key" is the literal payload key IntelligenceStoreConsumer.cs:417 writes the identity
         // value under — it must be seeded explicitly here, or the Id-vs-Key assertion below has no
@@ -232,7 +232,11 @@ public sealed class ObjectSearchVectorIntegrationTests : IClassFixture<QdrantGrp
 
         var vec = new float[768];
         vec[0] = 1f;
-        _embedding.EmbedAsync(Arg.Any<string>(), Arg.Any<CancellationToken>()).Returns(vec);
+        // This test drives both halves of the round trip on the same substitute: the real
+        // consumer below embeds the write side via EmbedDocumentAsync, and the read side's
+        // SearchSimilar call further down embeds the query via EmbedQueryAsync.
+        _embedding.EmbedDocumentAsync(Arg.Any<string>(), Arg.Any<CancellationToken>()).Returns(vec);
+        _embedding.EmbedQueryAsync(Arg.Any<string>(), Arg.Any<CancellationToken>()).Returns(vec);
 
         // ── write side: run the real consumer, capture what it hands the vector store ──
         var vectorWrite = Substitute.For<IVectorWriteService>();
@@ -330,7 +334,7 @@ public sealed class ObjectSearchVectorIntegrationTests : IClassFixture<QdrantGrp
 
         var vec = new float[] { 0.1f, 0.2f, 0.3f, 0.4f };
         _embedding
-            .EmbedAsync(
+            .EmbedQueryAsync(
                 Arg.Any<string>(),
                 Arg.Any<CancellationToken>())
             .Returns(vec);

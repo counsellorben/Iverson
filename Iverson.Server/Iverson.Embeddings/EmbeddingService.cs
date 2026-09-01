@@ -51,11 +51,8 @@ public sealed class EmbeddingService(
         }
     }
 
-    public async Task<float[]> EmbedAsync(string text, CancellationToken ct = default)
+    private async Task<float[]> EmbedAsync(string text, CancellationToken ct = default)
     {
-        if (string.IsNullOrWhiteSpace(text))
-            throw new EmptyEmbeddingInputException("Cannot embed empty or whitespace-only text.");
-
         using var activity = Telemetry.Source.StartActivity("embeddings.embed", ActivityKind.Client);
         activity?.SetTag("embedding.model", ModelId);
         activity?.SetTag("embedding.input_chars", text.Length);

@@ -72,7 +72,7 @@ public class IntelligenceStoreConsumerTests
             Arg.Any<ulong>(),
             Arg.Any<IReadOnlyDictionary<string, float[]>>())
             .Returns(Task.CompletedTask);
-        _embedding.EmbedAsync(Arg.Any<string>(), Arg.Any<CancellationToken>())
+        _embedding.EmbedDocumentAsync(Arg.Any<string>(), Arg.Any<CancellationToken>())
                   .Returns(UnitVector());
 
         _enrichment = Substitute.For<IEnrichmentService>();
@@ -114,7 +114,7 @@ public class IntelligenceStoreConsumerTests
         await _registry.RegisterAsync(SchemaFixtures.ArticleSchema());
 
         var fakeVector = UnitVector();
-        _embedding.EmbedAsync("Great Title", Arg.Any<CancellationToken>())
+        _embedding.EmbedDocumentAsync("Great Title", Arg.Any<CancellationToken>())
                   .Returns(fakeVector);
 
         var payload = """{"Title":"Great Title","Body":"Some body text","AuthorId":"00000000-0000-0000-0000-000000000001"}""";
@@ -131,9 +131,13 @@ public class IntelligenceStoreConsumerTests
         var sut = BuildSut();
         await sut.HandleAsync(ev.Key, Serialize(ev), CancellationToken.None);
 
-        _ = _embedding.Received().EmbedAsync(
+        _ = _embedding.Received().EmbedDocumentAsync(
             "Great Title",
             Arg.Any<CancellationToken>());
+        // ArticleSchema has one vector field (Title) and one chunk field (Body), so both the
+        // object-vector and chunk-vector paths embed here — both through EmbedDocumentAsync.
+        _ = _embedding.Received(2).EmbedDocumentAsync(Arg.Any<string>(), Arg.Any<CancellationToken>());
+        _ = _embedding.DidNotReceive().EmbedQueryAsync(Arg.Any<string>(), Arg.Any<CancellationToken>());
 
         await _vectorWrite.Received().UpsertNamedAsync(
             "articles_test-tenant",
@@ -473,7 +477,7 @@ public class IntelligenceStoreConsumerTests
         var sut = BuildSut();
         await sut.HandleAsync(ev.Key, Serialize(ev), CancellationToken.None);
 
-        _ = _embedding.DidNotReceive().EmbedAsync(Arg.Any<string>(), Arg.Any<CancellationToken>());
+        _ = _embedding.DidNotReceive().EmbedDocumentAsync(Arg.Any<string>(), Arg.Any<CancellationToken>());
         await _vectorWrite.DidNotReceive().UpsertNamedAsync(
             Arg.Any<string>(),
             Arg.Any<ulong>(),
@@ -501,7 +505,7 @@ public class IntelligenceStoreConsumerTests
         var sut = BuildSut();
         await sut.HandleAsync(ev.Key, Serialize(ev), CancellationToken.None);
 
-        _ = _embedding.DidNotReceive().EmbedAsync("", Arg.Any<CancellationToken>());
+        _ = _embedding.DidNotReceive().EmbedDocumentAsync("", Arg.Any<CancellationToken>());
     }
 
     [Fact]
@@ -509,7 +513,7 @@ public class IntelligenceStoreConsumerTests
     {
         await _registry.RegisterAsync(SchemaFixtures.ArticleSchema());
 
-        _embedding.EmbedAsync(Arg.Any<string>(), Arg.Any<CancellationToken>())
+        _embedding.EmbedDocumentAsync(Arg.Any<string>(), Arg.Any<CancellationToken>())
                   .Returns<float[]>(_ => throw new Exception("Ollama timeout"));
 
         var payload = """{"Title":"Test Title","Body":"Some body","AuthorId":"00000000-0000-0000-0000-000000000001"}""";
@@ -621,7 +625,7 @@ public class IntelligenceStoreConsumerTests
     [Fact]
     public async Task HandleCreated_WithMultipleVectorFields_EmbedsAllFields()
     {
-        // Schema with two vector fields — verifies both EmbedAsync calls fire
+        // Schema with two vector fields — verifies both EmbedDocumentAsync calls fire
         var twoVectorSchema = new SchemaDescriptor
         {
             TypeName       = "Doc",
@@ -645,7 +649,7 @@ public class IntelligenceStoreConsumerTests
         await _registry.RegisterAsync(twoVectorSchema);
 
         _embedding
-            .EmbedAsync(Arg.Any<string>(), Arg.Any<CancellationToken>())
+            .EmbedDocumentAsync(Arg.Any<string>(), Arg.Any<CancellationToken>())
             .Returns(UnitVector());
 
         var payload = """{"Title":"Hello","Summary":"World","Id":"00000000-0000-0000-0000-000000000001"}""";
@@ -662,9 +666,9 @@ public class IntelligenceStoreConsumerTests
         var sut = BuildSut();
         await sut.HandleAsync(ev.Key, Serialize(ev), CancellationToken.None);
 
-        _ = _embedding.Received(1).EmbedAsync("Hello",  Arg.Any<CancellationToken>());
-        _ = _embedding.Received(1).EmbedAsync("World",  Arg.Any<CancellationToken>());
-        _ = _embedding.Received(2).EmbedAsync(Arg.Any<string>(), Arg.Any<CancellationToken>());
+        _ = _embedding.Received(1).EmbedDocumentAsync("Hello",  Arg.Any<CancellationToken>());
+        _ = _embedding.Received(1).EmbedDocumentAsync("World",  Arg.Any<CancellationToken>());
+        _ = _embedding.Received(2).EmbedDocumentAsync(Arg.Any<string>(), Arg.Any<CancellationToken>());
     }
 
     [Fact]
@@ -1230,7 +1234,7 @@ public class IntelligenceStoreConsumerTests
     private (List<string> EmbeddedTexts, List<IReadOnlyDictionary<string, object>?> Payloads) CaptureChunkWrites()
     {
         var embedded = new List<string>();
-        _embedding.EmbedAsync(Arg.Any<string>(), Arg.Any<CancellationToken>())
+        _embedding.EmbedDocumentAsync(Arg.Any<string>(), Arg.Any<CancellationToken>())
                   .Returns(ci =>
                   {
                       lock (embedded) embedded.Add((string)ci[0]);
@@ -1779,7 +1783,7 @@ public class IntelligenceStoreConsumerTests
         // Exactly one chunk ("C07") embeds to a zero-magnitude vector; the rest are unit vectors
         // on component 0. Unfiltered, that single zero divides to NaN and poisons every component
         // of the centroid — so asserting the value, not just the key, is the point of this test.
-        _embedding.EmbedAsync(Arg.Any<string>(), Arg.Any<CancellationToken>())
+        _embedding.EmbedDocumentAsync(Arg.Any<string>(), Arg.Any<CancellationToken>())
                   .Returns(ci => Task.FromResult(
                       ((string)ci[0]).Contains("C07") ? new float[768] : UnitVector()));
 
@@ -1819,7 +1823,7 @@ public class IntelligenceStoreConsumerTests
     {
         await _registry.RegisterAsync(DegenerateDocSchema());
 
-        _embedding.EmbedAsync(Arg.Any<string>(), Arg.Any<CancellationToken>())
+        _embedding.EmbedDocumentAsync(Arg.Any<string>(), Arg.Any<CancellationToken>())
                   .Returns(_ => Task.FromResult(new float[768]));
 
         var ev = DocEvent($$$"""{"Body":"{{{MultiChunkBody}}}","TenantId":"test-tenant"}""", "trace-all-degenerate");
@@ -2283,7 +2287,7 @@ public class IntelligenceStoreConsumerTests
 
         // The gap is the point: a renumbering implementation yields "0","1" and fails here.
         indexes.Should().Equal("0", "2");
-        _ = _embedding.DidNotReceive().EmbedAsync(
+        _ = _embedding.DidNotReceive().EmbedDocumentAsync(
             Arg.Is<string>(s => string.IsNullOrWhiteSpace(s)), Arg.Any<CancellationToken>());
     }
 

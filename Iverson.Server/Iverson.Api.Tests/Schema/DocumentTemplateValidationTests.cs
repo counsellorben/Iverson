@@ -318,7 +318,7 @@ public class DocumentTemplateValidationTests
 
         var vector = Substitute.For<IVectorQueryService>();
         var embedding = Substitute.For<IEmbeddingService>();
-        embedding.EmbedAsync(Arg.Any<string>(), Arg.Any<CancellationToken>()).Returns(new float[768]);
+        embedding.EmbedQueryAsync(Arg.Any<string>(), Arg.Any<CancellationToken>()).Returns(new float[768]);
         vector.SearchNamedAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<float[]>(), Arg.Any<ulong>(), Arg.Any<Qdrant.Client.Grpc.Filter>())
               .Returns(new List<VectorSearchResult>().AsReadOnly());
         var search = Substitute.For<IEngagementStoreSearchService>();

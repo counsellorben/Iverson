@@ -198,7 +198,7 @@ public sealed class ObjectSearchGrpcService(
         float[] queryVector;
         try
         {
-            queryVector = await embedding.EmbedAsync(request.Query, context.CancellationToken);
+            queryVector = await embedding.EmbedQueryAsync(request.Query, context.CancellationToken);
         }
         catch (EmptyEmbeddingInputException ex)
         {
@@ -373,7 +373,7 @@ public sealed class ObjectSearchGrpcService(
         float[] queryVector;
         try
         {
-            queryVector = await embedding.EmbedAsync(request.Query, context.CancellationToken);
+            queryVector = await embedding.EmbedQueryAsync(request.Query, context.CancellationToken);
         }
         catch (EmptyEmbeddingInputException ex)
         {

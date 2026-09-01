@@ -34,8 +34,8 @@ public sealed class EmbeddingServiceTests
         // (`using var client = httpClientFactory.CreateClient(...)`), matching real
         // IHttpClientFactory usage where each CreateClient() call returns a fresh client
         // over a shared, undisposed handler. Return a new client per call here too, so
-        // tests that call EnsureInitializedAsync/EmbedAsync more than once on the same
-        // service instance don't hit a spurious ObjectDisposedException from client reuse.
+        // tests that call EnsureInitializedAsync/EmbedDocumentAsync more than once on the
+        // same service instance don't hit a spurious ObjectDisposedException from client reuse.
         var factory = Substitute.For<IHttpClientFactory>();
         factory
             .CreateClient(Arg.Any<string>())
@@ -70,66 +70,67 @@ public sealed class EmbeddingServiceTests
         };
 
     [Fact]
-    public async Task EmbedAsync_ReturnsCorrectVector_OnSuccessResponse()
+    public async Task EmbedDocumentAsync_ReturnsCorrectVector_OnSuccessResponse()
     {
         var expected = new float[] { 0.1f, 0.2f, 0.3f };
         var handler = new FakeHttpMessageHandler(SuccessResponse(expected));
         var svc = CreateService(handler);
 
-        var result = await svc.EmbedAsync("hello");
+        var result = await svc.EmbedDocumentAsync("hello");
 
         result.Should().BeEquivalentTo(expected, o => o.WithStrictOrdering());
     }
 
     [Fact]
-    public async Task EmbedAsync_SendsModelId_FromOptions_InRequestBody()
+    public async Task EmbedDocumentAsync_SendsModelId_FromOptions_InRequestBody()
     {
         var handler = new FakeHttpMessageHandler(SuccessResponse([0.1f]));
         var svc = CreateService(handler, modelId: "nomic-embed-text");
 
-        await svc.EmbedAsync("some text");
+        await svc.EmbedDocumentAsync("some text");
 
         using var doc = JsonDocument.Parse(handler.LastRequestBody!);
         doc.RootElement.GetProperty("model").GetString().Should().Be("nomic-embed-text");
     }
 
     [Fact]
-    public async Task EmbedAsync_DoesNotSendAuthorizationHeader()
+    public async Task EmbedDocumentAsync_DoesNotSendAuthorizationHeader()
     {
         var handler = new FakeHttpMessageHandler(SuccessResponse([0.1f]));
         var svc = CreateService(handler);
 
-        await svc.EmbedAsync("hello");
+        await svc.EmbedDocumentAsync("hello");
 
         handler.LastRequest!.Headers.Authorization.Should().BeNull();
     }
 
     [Fact]
-    public async Task EmbedAsync_SendsInputText_InRequestBody()
+    public async Task EmbedDocumentAsync_SendsInputText_InRequestBody()
     {
         var handler = new FakeHttpMessageHandler(SuccessResponse([0.1f]));
-        var svc = CreateService(handler);
+        // no prefix for this model family, so the input text travels unmodified
+        var svc = CreateService(handler, modelId: "some-unknown-model");
         const string inputText = "the quick brown fox";
 
-        await svc.EmbedAsync(inputText);
+        await svc.EmbedDocumentAsync(inputText);
 
         using var doc = JsonDocument.Parse(handler.LastRequestBody!);
         doc.RootElement.GetProperty("input").GetString().Should().Be(inputText);
     }
 
     [Fact]
-    public async Task EmbedAsync_ThrowsHttpRequestException_OnNonSuccessStatusCode()
+    public async Task EmbedDocumentAsync_ThrowsHttpRequestException_OnNonSuccessStatusCode()
     {
         var handler = new FakeHttpMessageHandler(
             new HttpResponseMessage(HttpStatusCode.InternalServerError));
         var svc = CreateService(handler);
 
-        await svc.Invoking(s => s.EmbedAsync("hello"))
+        await svc.Invoking(s => s.EmbedDocumentAsync("hello"))
                  .Should().ThrowAsync<HttpRequestException>();
     }
 
     [Fact]
-    public async Task EmbedAsync_Throws_OnMalformedResponseJson()
+    public async Task EmbedDocumentAsync_Throws_OnMalformedResponseJson()
     {
         var malformed = new HttpResponseMessage(HttpStatusCode.OK)
         {
@@ -139,7 +140,7 @@ public sealed class EmbeddingServiceTests
         var svc = CreateService(new FakeHttpMessageHandler(malformed));
 
         await svc
-            .Invoking(s => s.EmbedAsync("hello"))
+            .Invoking(s => s.EmbedDocumentAsync("hello"))
             .Should().ThrowAsync<Exception>();
     }
 
@@ -153,6 +154,18 @@ public sealed class EmbeddingServiceTests
         await svc.InitializeAsync();
 
         svc.Dimension.Should().Be(5);
+    }
+
+    [Fact]
+    public async Task EnsureInitializedAsync_ProbesWithoutAPrefix()
+    {
+        var handler = new FakeHttpMessageHandler(SuccessResponse([1f, 0f, 0f]));
+        var sut     = CreateService(handler, "nomic-embed-text");   // non-empty document prefix
+
+        await sut.EnsureInitializedAsync();
+
+        handler.LastRequestBody.Should().Contain("\"probe\"");
+        handler.LastRequestBody.Should().NotContain("search_document: ");
     }
 
     [Fact]
@@ -244,21 +257,6 @@ public sealed class EmbeddingServiceTests
     }
 
     [Theory]
-    [InlineData("")]
-    [InlineData("   ")]
-    [InlineData("\t\n")]
-    public async Task EmbedAsync_WithEmptyOrWhitespaceInput_ThrowsWithoutCallingOllama(string input)
-    {
-        var handler = new FakeHttpMessageHandler(SuccessResponse([1f, 0f, 0f]));
-        var sut     = CreateService(handler);
-
-        var act = async () => await sut.EmbedAsync(input);
-
-        await act.Should().ThrowAsync<EmptyEmbeddingInputException>();
-        handler.LastRequest.Should().BeNull();
-    }
-
-    [Theory]
     [InlineData("nomic-embed-text",          "search_document: ", "search_query: ")]
     [InlineData("nomic-embed-text:latest",   "search_document: ", "search_query: ")]
     [InlineData("snowflake-arctic-embed:s",  "",                  "Represent this sentence for searching relevant passages: ")]
@@ -284,6 +282,7 @@ public sealed class EmbeddingServiceTests
     [Theory]
     [InlineData("")]
     [InlineData("   ")]
+    [InlineData("\t\n")]
     public async Task EmbedDocumentAsync_WithEmptyInput_ThrowsEvenWhenAPrefixWouldMakeItNonEmpty(string input)
     {
         var handler = new FakeHttpMessageHandler(SuccessResponse([1f, 0f, 0f]));

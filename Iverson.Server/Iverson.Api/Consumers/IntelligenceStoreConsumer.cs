@@ -137,7 +137,7 @@ public sealed class IntelligenceStoreConsumer(
                 .Where(x => !string.IsNullOrWhiteSpace(x.text))
                 .Select(async x => (
                     vectorKey: $"{x.vf.PropertyName.ToSnakeCase()}_vector",
-                    vector: await embedding.EmbedAsync(x.text!, ct)
+                    vector: await embedding.EmbedDocumentAsync(x.text!, ct)
                 ))
                 .ToList();
 
@@ -249,7 +249,7 @@ public sealed class IntelligenceStoreConsumer(
                             ? await PrefixWithContextAsync(
                                   prefixGate, documentContext, chunkText, schema.TypeName, ev.Key, ct)
                             : chunkText;
-                        var chunkVector = await embedding.EmbedAsync(textToEmbed, ct);
+                        var chunkVector = await embedding.EmbedDocumentAsync(textToEmbed, ct);
                         var chunkId     = ComputeChunkPointId(pointId, cf.PropertyName, chunkIndex);
                         return (chunkVector, chunkId, chunkText, chunkIndex);
                     }).ToList();
