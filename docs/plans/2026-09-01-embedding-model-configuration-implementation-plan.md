@@ -35,7 +35,7 @@ Project-wide rules every task must hold to. Copied from the spec.
 **Modify**
 - Chart: `values.yaml`, `charts/ollama/templates/statefulset.yaml`, `charts/{api,worker}/templates/deployment.yaml`, `values-laptop.yaml`, `values-local.yaml`, `charts/ollama/Chart.yaml`.
 - Server: `Iverson.Embeddings/ServiceCollectionExtensions.cs`, `Iverson.Api/Grpc/SchemaRegistrationOrchestrator.cs`, `Iverson.Api/Consumers/IntelligenceStoreConsumer.cs`, `Iverson.Api/Grpc/ObjectSearchGrpcService.cs`, `Iverson.Api/Schema/SchemaDescriptor.cs`.
-- Harness: `Reregistrar.cs`, `Program.cs`, `Requirements.cs`, `Iverson.ClientConformance.Tests/ScriptedDriverRunner.cs`.
+- Harness: `Reregistrar.cs`, `Program.cs`, `Requirements.cs`, `Iverson.ClientConformance.Tests/ScriptedDriverRunner.cs`, `docs/standards/iverson-client-standard.md`.
 - Clients: each language's registrar and its conformance driver.
 
 **Test**
@@ -107,6 +107,7 @@ Newly introduced by this plan and verified at plan-write time against `main@f213
 | P42 | Code validity | `SchemaProbe` can be constructed the way `PostgresProbe` is | `Program.cs:17` reads `IVERSON_POSTGRES_CS` (default `Database=iverson`) into `postgresCs`, already passed to `new PostgresProbe(postgresCs)` at `:108` and `:119` |
 | P43 | Code validity | A `jsonb` column reads back as `string`, so T5's `ExecuteScalarAsync(...) is not string json` holds | `SchemaRegistryRepository.LoadAllAsync:17-18` maps `schema_json` into a `string` tuple element in production today |
 | P44 | Code validity | The write path needs no probed dimension, so the worker's unprobed per-model instances are safe | `_dimension` is read only by the `Dimension` getter (`EmbeddingService.cs:25-28`); `EmbedDocumentAsync`/`EmbedQueryAsync` route through `EmbedAsync` (`:54-95`), which never touches it |
+| P45 | Code validity | `Requirements.cs` is gated at build time against the standard, not a free-form list | `Requirements.cs:5-14` states the contract; `RequirementsCoverageGateTests.cs:211` (Check 1, bidirectional), `:368` (Check 2, citation), `:796` with `:1038`/`:1095` (Check 4, exactly one claimant); `:115` resolves `docs/standards/iverson-client-standard.md`, `:92-94` fixes the nine known axes |
 
 ## Tasks
 
@@ -499,14 +500,21 @@ public sealed class SchemaProbe(string connectionString)
 
 **State the limitation in the scenario's own doc comment rather than overselling it:** in a single-model environment this cannot distinguish "the client stamped the declared model" from "the client sent `""` and the server fell back to the same value". Per-client stamping is pinned by a client-side unit test in each of T6–T10; this assertion covers server-side parity across the five, which is what it is for.
 
-- [ ] **Step 5: Wire it up** — a requirement ID in `Requirements.cs`, scenario registration in `Program.cs`, and a per-language skip for a driver that has not implemented the phase yet, following `DriverPhaseOutcome.Skipped` → `ReportCell.Skip` (`VectorSearchScenario.cs:154,563-564`).
+- [ ] **Step 5: Wire it up — the requirement ID lands in four places, not one.** `Requirements.cs` is not a list a task may append to: `RequirementsCoverageGateTests` enforces its contract as an ordinary test, so adding the const alone turns Step 7's `dotnet test` red.
+  1. **The standard.** A row in `docs/standards/iverson-client-standard.md`'s REG requirement table: `| IVC-REG-006 | Active | Behaviour | The server rejects re-registration of a type whose resolved embedding model differs from the model its registered schema carries |`. REG is "Schema registration and reregistration behaviour", its four Active rows are all "The server rejects registration of …", and `IVC-REG-006` is unused. Check 1 is bidirectional — a const with no Active row fails exactly as an Active row with no const does.
+  2. **The const** in `Requirements.cs`, carrying the rationale-and-discharging-assertion doc comment the axis preamble says this document's convention requires.
+  3. **The citation.** Check 2 requires the const's C# identifier to appear as a whole identifier, outside a whole-line comment, under `Iverson.ClientConformance/` excluding `Requirements.cs`, build output and the test project — so Steps 3 and 4 construct their assertions citing `Requirements.<NewConst>`.
+  4. **The coverage row.** One new Covered area in REG's `#### Coverage` ledger citing `IVC-REG-006`. Check 4 requires exactly one claimant — unclaimed is Mode 5, two claimants is Mode 7. The ledger already carries a `Reregistration | Deferred` row whose Evidence reads "no assertion cites a requirement ID against that behaviour", which this work makes false: update or narrow that row's text, but do **not** also cite `IVC-REG-006` from it.
+
+  Then scenario registration in `Program.cs`, and a per-language skip for a driver that has not implemented the phase yet, following `DriverPhaseOutcome.Skipped` → `ReportCell.Skip` (`VectorSearchScenario.cs:154,563-564`).
 
 - [ ] **Step 6: Tests** in `Iverson.ClientConformance.Tests`, driving the scenario through `ScriptedDriverRunner` as the existing scenario tests do.
 
 - [ ] **Step 7: Run and commit.**
 ```bash
 dotnet test Iverson.slnx
-git add Iverson.Server/Iverson.ClientConformance/ Iverson.Server/Iverson.ClientConformance.Tests/
+git add Iverson.Server/Iverson.ClientConformance/ Iverson.Server/Iverson.ClientConformance.Tests/ \
+        docs/standards/iverson-client-standard.md
 git commit -m "add the model-rejection conformance scenario and a schema-table probe"
 ```
 
