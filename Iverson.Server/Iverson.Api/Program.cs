@@ -301,6 +301,12 @@ app.Use(async (context, next) =>
 // ── Endpoints ──────────────────────────────────────────────────────────────────
 app.MapGet("/health/live", () => Results.Ok(new { status = "alive" })).WithName("HealthLive").AllowAnonymous();
 
+app.MapGet("/build", () =>
+{
+    var (composite, assemblies) = BuildIdentity.Compute();
+    return Results.Ok(new { composite, assemblies });
+}).WithName("BuildIdentity").AllowAnonymous();
+
 app.MapGet("/health", async (
     IRecordStoreQueryExecutor db,
     IEngagementStoreHealthCheck sr,
