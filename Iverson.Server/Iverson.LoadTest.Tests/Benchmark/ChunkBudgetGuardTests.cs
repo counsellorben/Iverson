@@ -41,4 +41,40 @@ public class ChunkBudgetGuardTests
 
         result.ChunkTopK.Should().Be(250);
     }
+
+    // Fix round 1: a missing "documents" or "chunks" key in the caller's JSON source binds to 0
+    // via the default(int), not an exception. Before the double.IsFinite guard, a missing "chunks"
+    // (documents present) made chunksPerDoc == 0.0, so reachable == topK / 0.0 == +Infinity, and
+    // +Infinity >= documentBudget evaluated true -- Ok silently came back true, the inverse of the
+    // guard's fail-closed contract. A missing "documents" happened to fail closed already (reachable
+    // collapses to 0), so the two degenerate inputs behaved oppositely. These three cases assert Ok
+    // is false for all of them, symmetrically.
+    [Fact]
+    public void Evaluate_ZeroChunksWithPositiveDocuments_FailsClosedNotOpen()
+    {
+        // Regression case for the bug: chunksPerDoc == 0.0 makes reachable == +Infinity, which
+        // compares >= documentBudget as true unless finiteness is checked first.
+        var result = ChunkBudgetGuard.Evaluate(documents: 6_000, chunks: 0, documentBudget: 50, chunkBudgetMultiplier: 5);
+
+        result.Ok.Should().BeFalse();
+        double.IsPositiveInfinity(result.ReachableDocuments).Should().BeTrue();
+    }
+
+    [Fact]
+    public void Evaluate_ZeroDocumentsWithPositiveChunks_FailsClosed()
+    {
+        var result = ChunkBudgetGuard.Evaluate(documents: 0, chunks: 64_763, documentBudget: 50, chunkBudgetMultiplier: 5);
+
+        result.Ok.Should().BeFalse();
+    }
+
+    [Fact]
+    public void Evaluate_ZeroDocumentsAndZeroChunks_FailsClosed()
+    {
+        // chunksPerDoc == 0.0 / 0.0 == NaN here; NaN >= documentBudget is already false without the
+        // finiteness guard, but this asserts the "both missing" case stays refused too.
+        var result = ChunkBudgetGuard.Evaluate(documents: 0, chunks: 0, documentBudget: 50, chunkBudgetMultiplier: 5);
+
+        result.Ok.Should().BeFalse();
+    }
 }

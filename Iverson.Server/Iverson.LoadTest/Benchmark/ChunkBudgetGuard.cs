@@ -10,6 +10,11 @@ namespace Iverson.LoadTest.Benchmark;
 ///
 /// reachable = topK / chunksPerDoc is a WORST case: it assumes a document's chunks are
 /// retrieved together. The true count lies between it and topK.
+///
+/// A missing "documents" or "chunks" count in the caller's source data binds to 0, not an
+/// exception -- and chunksPerDoc == 0 makes reachable == +Infinity, which compares >= to
+/// anything as true. Finiteness is checked before the comparison so that degenerate input
+/// fails closed (Ok == false) symmetrically for either missing count, rather than only one.
 /// </summary>
 public static class ChunkBudgetGuard
 {
@@ -28,7 +33,7 @@ public static class ChunkBudgetGuard
         var reachable    = topK / chunksPerDoc;
 
         return new Result(
-            Ok:                 reachable >= documentBudget,
+            Ok:                 double.IsFinite(reachable) && reachable >= documentBudget,
             ChunksPerDocument:  chunksPerDoc,
             ChunkTopK:          topK,
             ReachableDocuments: reachable,
