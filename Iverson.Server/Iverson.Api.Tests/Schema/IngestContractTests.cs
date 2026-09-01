@@ -3,11 +3,10 @@ using System.Text;
 using System.Text.Encodings.Web;
 using System.Text.Json;
 using FluentAssertions;
-using Iverson.Api;
 using Iverson.Api.Consumers;
+using Iverson.Api.Schema;
 using Iverson.Embeddings;
 using Iverson.Vector;
-using Qdrant.Client.Grpc;
 using Xunit;
 
 namespace Iverson.Api.Tests.Schema;
@@ -116,7 +115,7 @@ public class IngestContractTests
                 step                 = window.Step,
                 wordBoundaryLookback = window.Lookback
             },
-            distance         = Distance.Cosine.ToString(),
+            distance         = IntelligenceCollectionManager.Metric.ToString(),
             collectionNaming = DeriveCollectionNaming(),
             embedding = new
             {
@@ -165,7 +164,7 @@ public class IngestContractTests
 
         return new
         {
-            @base    = "BenchmarkDocument".ToSnakeCase() + "s",
+            @base    = SchemaBuilder.ToTableName("BenchmarkDocument"),
             template = "{base}{suffix}" + tenantSlot,
             objectSuffix,
             chunksSuffix

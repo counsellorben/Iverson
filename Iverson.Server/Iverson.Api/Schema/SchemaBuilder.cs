@@ -25,9 +25,14 @@ internal static class SchemaBuilder
     private static readonly HashSet<string> s_reservedChunkPayloadKeys =
         new(StringComparer.Ordinal) { "text", "parent_id", "field", "chunk_index" };
 
+    // internal, not inlined into BuildDescriptor, because the pluralization rule is a
+    // cross-language contract rather than an implementation detail: IngestContractTests reads
+    // it to emit collectionNaming.base, so the two sides cannot drift apart silently.
+    internal static string ToTableName(string typeName) => typeName.ToSnakeCase() + "s";
+
     internal static SchemaDescriptor BuildDescriptor(TypeDescriptor typeDesc, IEmbeddingService embedding)
     {
-        var tableName = typeDesc.TypeName.ToSnakeCase() + "s";
+        var tableName = ToTableName(typeDesc.TypeName);
 
         var keyProp = typeDesc.Properties.FirstOrDefault(p => p.IsKey)
             ?? throw new InvalidOperationException($"No key property on '{typeDesc.TypeName}'.");
