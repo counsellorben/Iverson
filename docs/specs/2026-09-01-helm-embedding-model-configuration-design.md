@@ -224,8 +224,15 @@ default model is reachable".
 
 `SchemaRegistry.Get(typeName)` returns the previously registered descriptor. Registration is
 **rejected** only when the prior descriptor carries a model, the new one carries a model, and the two
-differ — naming the old model, the new one, and the collection that must be dropped. Ben's decision,
-2026-09-01.
+differ — naming the old model, the new one, and **both artifacts that must be cleared**. Ben's
+decision, 2026-09-01.
+
+**The remedy is two acts, not one.** The guard's operand is the registry, not Qdrant: dropping the
+collection alone leaves `_iverson_schema` carrying the old model, so the next registration is rejected
+identically. The schema-registry row must be removed as well. `SchemaRegistry.UnregisterAsync` exists
+but has no production caller — no RPC, no admin endpoint — so today that is a manual
+`DELETE FROM _iverson_schema WHERE type_name = …` against the api database. Exposing an unregister path
+so the remedy is performable through the product is a scope addition, not taken here.
 
 The three-way condition matters: a type's model lives on `VectorFields[]` / `ChunkFields[]`, which
 exist only when it has embedding or chunk properties. A type gaining its first embedded property has
@@ -235,13 +242,23 @@ either would block an evolution the write path already supports — `ApplyCollec
 also has `CollectionName == null` (`SchemaBuilder.cs:197`), so the rejection would name a collection
 that does not exist.
 
-This is the first reader of `VectorDescriptor.ModelId`, which is written at three sites today and
-read nowhere.
+`VectorDescriptor.ModelId` is written at three sites today and read nowhere. The guard and the write
+path above are its first two readers.
 
 Rejection is the only option that cannot silently corrupt a collection. Letting it through fails
 loudly when dimensions differ, but two 768-dimension models produce no failure at all: points are
 upserted by deterministic id, so the collection quietly accumulates vectors from two incompatible
 spaces.
+
+### Write path
+
+`IntelligenceStoreConsumer` embeds entity vectors and chunks with the injected singleton (`:140`,
+`:252`), which is the default model regardless of the type being written. It resolves the model per
+field from the descriptor instead — `schema.VectorFields[].ModelId` and `schema.ChunkFields[].ModelId`,
+both of which it already iterates. **The descriptor's model, not the process's default, is what the
+write path embeds with.** Without this a type declaring a different model gets a collection sized for
+that model and queries embedded with it, while its documents are embedded with the default — the same
+two-incompatible-spaces failure named in the Problem section, reintroduced per type.
 
 ### Query path
 
@@ -252,20 +269,28 @@ one — silently, since nothing about the comparison errors.
 
 ### Conformance harness
 
-Both halves land in `Iverson.ClientConformance`:
+Both halves land in `Iverson.ClientConformance`, and both need fixtures the harness does not have.
+**Each driver gains its own vector-carrying type** — one per language, each with one
+`[IversonEmbedding]` and one `[IversonChunk]` property. The existing `VectorDoc` cannot serve: it is a
+single shared type name that only the .NET driver registers, deliberately, because
+`SchemaRegistry.RegisterAsync` replaces the stored descriptor wholesale and five registrations of one
+name would leave four silent overwrites (`Scenarios/VectorSearchScenario.cs:13-16`). Every other
+registered fixture carries no embedded property, so its descriptor has no model to read. This is five
+new models across five drivers, not a scenario written against types that already exist.
 
 - **A rejection scenario**, mirroring `Scenarios/NamingRejectedScenario.cs` and
   `Scenarios/TenantRejectedScenario.cs` and driving `Reregistrar.cs`, which already re-registers a
-  type with a changed schema. All five drivers register a type, re-register it declaring a different
-  model, and each must receive the same rejection.
+  type with a changed schema. All five drivers register **their own** vector-carrying type, re-register
+  it declaring a different model, and each must receive the same rejection. Per-language fixtures are
+  what `NamingRejectedScenario` already does (`:8-10`) for exactly this reason.
 - **A positive parity assertion made server-side.** The harness cannot read the resolved model
   today: `PostgresProbe.FetchRowAsync` (`:54-63`) reads an entity projection row, not schema state,
   and `Iverson.ClientConformance.csproj:10-11` references only `Iverson.LoadTest` and
   `Iverson.Client.Core`, so `SchemaDescriptor` cannot be deserialized. It gains a schema-table read —
   its own copy of the table name plus a minimal JSON field read, mirroring the deliberate-duplication
   pattern `PostgresProbe.cs:20-23` records, and without taking a reference to `Iverson.Api`. On that
-  it asserts that all five drivers' registrations resolve to the same model, without requiring a
-  second model pulled in the conformance environment.
+  it asserts that all five drivers' registrations resolve to the same model — five rows now, one per
+  language — without requiring a second model pulled in the conformance environment.
 
 `GetSchemaResponse.SchemaField` carries `is_embedding` and `is_chunk` but **no model id**, so the
 resolved model is not observable to a client over the wire. Exposing it would make the positive case
@@ -286,7 +311,8 @@ additive proto change across five generated clients and is deliberately not take
 - **Per-property model selection.** Ruled out by Ben: one model per type, so no query fuses across
   incompatible vector spaces.
 - **Multi-property search and cross-vector fusion.** A separate, previously costed avenue.
-- **Migration tooling for a model change.** Rejection makes the drop a deliberate manual act.
+- **Migration tooling for a model change**, and **an unregister path**. Rejection makes clearing both
+  artifacts a deliberate manual act.
 - **Per-model prefix configuration**, per the prefix rule in Part B.
 - **Exposing the resolved model through `GetSchema`.**
 
@@ -375,6 +401,8 @@ standalone console app.
 | B13 | Test fixtures do not assert model uniformity in a way this breaks | `SchemaRegistrationOrchestratorTests.cs:623,632` sends `ModelId = string.Empty` and asserts the resolved `nomic-embed-text` — that is the fallback path and still passes; consumer fixtures construct `ChunkDescriptor` literals directly, bypassing `BuildDescriptor` |
 | B14 | The ingest contract survives per-type selection | `IngestContractTests.cs:117-130` iterates `EmbeddingPrefixes.Table` and pins the whole table plus a per-family golden, not one model |
 | B15 | The startup probe still has a meaning | `Program.cs:406` probes the singleton, which becomes the default model's reachability check |
+| B16 | The ingest path can reach the per-type model | `IntelligenceStoreConsumer.cs:32` injects the singleton and embeds at `:140`/`:252`, but the consumer already holds `schema` — it iterates `schema.VectorFields` at `:131` and `schema.ChunkFields` below it, so the descriptor's `ModelId` is in hand at both call sites |
+| B17 | Clearing a rejected type's prior model is a manual, out-of-product act | `SchemaRegistry.UnregisterAsync` (`:220-226`) is the only method that removes a descriptor, and `grep -rn UnregisterAsync --include=*.cs` across `Iverson.Server/` returns the declaration, one comment and `SchemaRegistryTests.cs:173,177` — no production caller |
 
 ### Conformance-harness assumptions
 
@@ -385,3 +413,4 @@ standalone console app.
 | C3 | The harness can assert server-side state directly | `PostgresProbe.cs`, plus `Verifier.cs` as the pure-assertion home |
 | C5 | The harness **cannot** observe the resolved model today | `PostgresProbe.FetchRowAsync:54-63` selects from the entity projection table, not the schema-registry table; `Iverson.ClientConformance.csproj:10-11` references only `Iverson.LoadTest` and `Iverson.Client.Core`, so `SchemaDescriptor` cannot be deserialized. Observing the model requires new harness machinery — see the conformance section |
 | C4 | The resolved model is **not** observable over the wire | `GetSchemaResponse` → `SchemaType` → `SchemaField` carries `is_embedding` and `is_chunk` but no model id (`object_mapping.proto:145-152`) |
+| C6 | The harness has no per-driver vector-carrying fixture | `VectorDoc` is one shared type name; `VectorSearchScenario.cs:13-16` and `driver.py:52` record that only the .NET driver registers it. The annotations exist nowhere else: `Models/VectorDoc.cs:40-41`, `models.py:137-138`, `models.ts:194,197`, `VectorDoc.java:43,46` |
