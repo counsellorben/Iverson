@@ -111,6 +111,16 @@ import urllib.request
 import uuid
 from datetime import datetime, timezone
 
+# Read once at import time, resolved relative to this script's own directory so the script
+# works regardless of the caller's cwd. This is the single source of truth for chunk-window
+# sizing, collection naming, distance, and embedding document prefixes -- generated out of the
+# C# write path and gated by IngestContractTests, which is proven to fail on drift. A local
+# file read is import-safe offline (no network call), unlike everything below the "Qdrant REST"
+# and "Ollama" sections.
+_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+with open(os.path.join(_SCRIPT_DIR, "ingest-contract.json"), encoding="utf-8") as _contract_f:
+    CONTRACT = json.load(_contract_f)
+
 QDRANT_URL = "http://localhost:6333"
 QDRANT_API_KEY = "dev-only-not-for-production-qdrant-key-0123456789"
 OLLAMA_URL = "http://localhost:11434"
@@ -122,9 +132,6 @@ OLLAMA_URL = "http://localhost:11434"
 # this is "don't hang forever mid-ingest", not a readiness probe.
 HTTP_TIMEOUT_SECONDS = 300
 EMBED_RETRIES = 2
-
-DEFAULT_OBJECT_COLLECTION = "benchmark_documents_tenant_bypass"
-DEFAULT_CHUNKS_COLLECTION = "benchmark_documents_chunks_tenant_bypass"
 
 # Read 2026-08-26 from the live collections' own payload_schema (GET /collections/{name}) --
 # what IntelligenceStoreConsumer's collection-creation path indexes today. All "keyword".
@@ -142,6 +149,19 @@ CHUNKS_PAYLOAD_INDEXES = ["field", "ownerId", "parent_id"]
 OWNER_ID = "8f5c3da2e5ecbad46e1dab4890c109a4826919be420f5d7a3d0029a9fbff273e"
 TENANT_ID = "tenant_bypass"
 
+# Reconstructed from the contract's collectionNaming template ("{base}{suffix}_{tenant}") and
+# TENANT_ID above. Must reproduce the two literal names the module docstring calls out as
+# irreplaceable -- benchmark_documents_tenant_bypass / benchmark_documents_chunks_tenant_bypass
+# -- exactly; a silently different name would point the benchmark at a collection that does not
+# exist.
+_naming = CONTRACT["collectionNaming"]
+DEFAULT_OBJECT_COLLECTION = _naming["template"].format(
+    base=_naming["base"], suffix=_naming["objectSuffix"], tenant=TENANT_ID
+)
+DEFAULT_CHUNKS_COLLECTION = _naming["template"].format(
+    base=_naming["base"], suffix=_naming["chunksSuffix"], tenant=TENANT_ID
+)
+
 # Any fixed UUID works as the uuid5 namespace -- the only requirement is that it never changes
 # between runs, since key = uuid5(NAMESPACE, "{corpus}:{docId}") must be reproducible across
 # processes and machines. uuid.NAMESPACE_URL is a stdlib constant, so nothing else needs to
@@ -150,8 +170,11 @@ NAMESPACE = uuid.NAMESPACE_URL
 
 # Mirrors IntelligenceStoreConsumer.SplitIntoChunks for BenchmarkDocument.Body specifically
 # (MaxTokens/Overlap resolved to chars via the consumer's 1 token ~= 4 chars approximation).
-MAX_CHARS = 2048
-STEP = 1792
+MAX_CHARS = CONTRACT["chunkWindow"]["maxChars"]
+STEP = CONTRACT["chunkWindow"]["step"]
+WORD_BOUNDARY_LOOKBACK = CONTRACT["chunkWindow"]["wordBoundaryLookback"]
+
+DISTANCE = CONTRACT["distance"]
 
 M = (1 << 64) - 1
 
@@ -176,18 +199,19 @@ def chunk_point_id(parent_id: int, field: str, idx: int) -> int:
 
 # ── Chunking (mirrors SplitIntoChunks) ─────────────────────────────────────────────────
 
-def split_into_chunks(text, max_chars=MAX_CHARS, step=STEP):
+def split_into_chunks(text, max_chars=MAX_CHARS, step=STEP, word_boundary_lookback=WORD_BOUNDARY_LOOKBACK):
     start, idx = 0, 0
     while start < len(text):
         end = min(start + max_chars, len(text))
         if end < len(text) and not text[end].isspace():
-            # C#'s text.LastIndexOf(' ', end, Math.Min(end - start, 50)) examines the range
-            # [end - count + 1, end] inclusive (count positions ending at `end`). rfind's stop
-            # is exclusive, so the upper bound stays `end` (position `end` itself is unreachable
-            # -- the isspace guard above proves text[end] isn't a space) and the lower bound must
-            # be end - count + 1, not end - 50: a space at exactly end - 50 with no other space
-            # in [end - 49, end - 1] is found by C# but was missed here before this fix.
-            count = min(end - start, 50)
+            # C#'s text.LastIndexOf(' ', end, Math.Min(end - start, wordBoundaryLookback))
+            # examines the range [end - count + 1, end] inclusive (count positions ending at
+            # `end`). rfind's stop is exclusive, so the upper bound stays `end` (position `end`
+            # itself is unreachable -- the isspace guard above proves text[end] isn't a space)
+            # and the lower bound must be end - count + 1, not end - word_boundary_lookback: a
+            # space at exactly that boundary with no other space closer in was found by C# but
+            # was missed here before this fix.
+            count = min(end - start, word_boundary_lookback)
             ws = text.rfind(" ", end - count + 1, end)
             if ws > start:
                 end = ws
@@ -302,11 +326,47 @@ def upsert_points(collection, points):
         sys.exit(f"failed to upsert {len(points)} point(s) into '{collection}': HTTP {status} {body}")
 
 
+# ── Embedding prefix (mirrors EmbeddingPrefixes) ───────────────────────────────────────
+
+def family(model_id):
+    return model_id.split(":", 1)[0]
+
+
+# NOT a module-level constant: the prefix depends on --model, and args are parsed inside main()
+# (ingest.py's main()). A function keeps one resolution path that both main() and
+# verify_contract() call, which is what lets Step 7 verify the real thing without invoking
+# main().
+def document_prefix_for(model_id):
+    return CONTRACT["embedding"]["documentPrefixes"].get(
+        family(model_id), CONTRACT["embedding"]["defaultDocumentPrefix"])
+
+
+def verify_contract(model_id):
+    """Replays the contract's golden document-composition case for model_id's family by
+    composing that case's own "text" through this script's own document_prefix_for and
+    comparing against its "composed" -- the same rule Task 1 implements in C#, read from the
+    same file the C# side generated. Composing from the golden's own text (rather than, say,
+    recovering the input by stripping the prefix back off "composed") is what makes this a
+    cross-language check instead of a tautology. Falls back to the "__default__" golden case
+    for a family the contract doesn't carry, so an unrecognized --model still verifies (against
+    the empty-prefix default) instead of crashing. Exits non-zero on mismatch."""
+    prefix = document_prefix_for(model_id)
+    fam = family(model_id)
+    golden = CONTRACT["golden"]["documentComposition"]
+    case = golden.get(fam, golden["__default__"])
+    composed = prefix + case["text"]
+    if composed != case["composed"]:
+        sys.exit(
+            f"contract verification failed for model '{model_id}' (family '{fam}'): "
+            f"resolved prefix {prefix!r} composed {composed!r}, expected {case['composed']!r}"
+        )
+
+
 # ── Ollama ──────────────────────────────────────────────────────────────────────────────
 
-def embed(text):
+def embed(text, model, document_prefix):
     url = f"{OLLAMA_URL}/api/embed"
-    data = json.dumps({"model": "nomic-embed-text", "input": text}).encode()
+    data = json.dumps({"model": model, "input": document_prefix + text}).encode()
     last_error = None
     for attempt in range(1, EMBED_RETRIES + 2):  # e.g. EMBED_RETRIES=2 -> 3 attempts total
         req = urllib.request.Request(url, data=data, method="POST")
@@ -357,9 +417,14 @@ def read_corpus(path):
 
 # ── Ingest one document ─────────────────────────────────────────────────────────────────
 
-def ingest_document(key, doc_id, title, body, object_collection, chunks_collection, stats):
+def ingest_document(key, doc_id, title, body, object_collection, chunks_collection, model, document_prefix, stats):
     parent_id = key_to_ulong(key)
     chunks = list(split_into_chunks(body))
+    # An empty document prefix is reachable through configuration (Arctic's is ""), so this
+    # is not dead code: without it, the first all-whitespace window would otherwise kill the
+    # run below. Dropping the window rather than renumbering preserves every surviving chunk's
+    # original index, so chunk_point_id stays stable -- the same rule the C# path follows.
+    chunks = [c for c in chunks if c[0]]
 
     # Reuse gate: an identity check, never a length check alone. When body carries no
     # surrounding whitespace AND is short enough that split_into_chunks yields exactly one
@@ -367,7 +432,7 @@ def ingest_document(key, doc_id, title, body, object_collection, chunks_collecti
     # vector -- otherwise the chunk text (stripped, windowed) is a different string from body
     # and needs its own embedding.
     reuse = body == body.strip() and len(body) <= STEP
-    body_vector = embed(body)
+    body_vector = embed(body, model, document_prefix)
     stats["embed_calls"] += 1
 
     if reuse:
@@ -379,7 +444,7 @@ def ingest_document(key, doc_id, title, body, object_collection, chunks_collecti
     else:
         chunk_vectors = []
         for chunk_text, _ in chunks:
-            chunk_vectors.append(embed(chunk_text))
+            chunk_vectors.append(embed(chunk_text, model, document_prefix))
             stats["embed_calls"] += 1
 
     centroid_input = [v for v in chunk_vectors if not is_zero_magnitude(v)]
@@ -480,7 +545,17 @@ def main():
     )
     ap.add_argument("--object-collection", default=DEFAULT_OBJECT_COLLECTION)
     ap.add_argument("--chunks-collection", default=DEFAULT_CHUNKS_COLLECTION)
+    ap.add_argument(
+        "--model", default="nomic-embed-text",
+        help="Ollama embedding model id, e.g. 'nomic-embed-text' or 'snowflake-arctic-embed:s'. "
+             "Resolves this run's document prefix by family (everything before the first ':') "
+             "against ingest-contract.json.",
+    )
     args = ap.parse_args()
+
+    # Runs before --drop acts: dropping against a drifted contract is as damaging as ingesting
+    # against one.
+    verify_contract(args.model)
 
     if not args.drop and args.corpus is None:
         ap.error("--corpus is required unless --drop is passed")
@@ -499,14 +574,22 @@ def main():
             print("[ingest] --drop: collections dropped, no --corpus given -- exiting without ingesting")
             return
 
+    document_prefix = document_prefix_for(args.model)
+
+    # The contract carries distance but deliberately no dimension (modelId/dimension are owned
+    # by configuration and a startup probe, not this file) -- so ensure_collection's vector
+    # size comes from actually asking Ollama, not from a hard-coded constant.
+    dimension = len(embed("dimension probe", args.model, document_prefix))
+    print(f"[ingest] probed embedding dimension {dimension} for model '{args.model}' (document prefix {document_prefix!r})")
+
     ensure_collection(
         args.object_collection,
-        {"body_vector": {"size": 768, "distance": "Cosine"}, "body_centroid": {"size": 768, "distance": "Cosine"}},
+        {"body_vector": {"size": dimension, "distance": DISTANCE}, "body_centroid": {"size": dimension, "distance": DISTANCE}},
         payload_indexes=OBJECT_PAYLOAD_INDEXES,
     )
     ensure_collection(
         args.chunks_collection,
-        {"body_vector": {"size": 768, "distance": "Cosine"}},
+        {"body_vector": {"size": dimension, "distance": DISTANCE}},
         payload_indexes=CHUNKS_PAYLOAD_INDEXES,
     )
 
@@ -550,7 +633,10 @@ def main():
                     skipped += 1
                     continue
 
-                ingest_document(key, doc_id, title, body, args.object_collection, args.chunks_collection, run_stats)
+                ingest_document(
+                    key, doc_id, title, body, args.object_collection, args.chunks_collection,
+                    args.model, document_prefix, run_stats,
+                )
                 progress_f.write(doc_id + "\n")
                 progress_f.flush()
 
