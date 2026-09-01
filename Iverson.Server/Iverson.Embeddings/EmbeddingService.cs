@@ -17,6 +17,11 @@ public sealed class EmbeddingService(
     private int _dimension;
     private readonly SemaphoreSlim _initLock = new(1, 1);
 
+    private readonly string _documentPrefix =
+        options.Value.DocumentPrefix ?? EmbeddingPrefixes.For(options.Value.ModelId).Document;
+    private readonly string _queryPrefix =
+        options.Value.QueryPrefix ?? EmbeddingPrefixes.For(options.Value.ModelId).Query;
+
     public int Dimension => _dimension > 0
         ? _dimension
         : throw new InvalidOperationException(
@@ -37,7 +42,8 @@ public sealed class EmbeddingService(
             var probe = await EmbedAsync("probe", ct);
             _dimension = probe.Length;
             logger.LogInformation(
-                "EmbeddingService initialized: model={Model} dimension={Dimension}", ModelId, _dimension);
+                "EmbeddingService initialized: model={Model} dimension={Dimension} documentPrefix={DocPrefix} queryPrefix={QueryPrefix}",
+                ModelId, _dimension, _documentPrefix, _queryPrefix);
         }
         finally
         {
@@ -89,5 +95,22 @@ public sealed class EmbeddingService(
             logger.LogError(ex, "EmbedAsync failed for model {Model}", ModelId);
             throw;
         }
+    }
+
+    internal static string ComposeDocumentInput(string prefix, string text) => prefix + text;
+    internal static string ComposeQueryInput(string prefix, string text)    => prefix + text;
+
+    public Task<float[]> EmbedDocumentAsync(string text, CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+            throw new EmptyEmbeddingInputException("Cannot embed empty or whitespace-only text.");
+        return EmbedAsync(ComposeDocumentInput(_documentPrefix, text), ct);
+    }
+
+    public Task<float[]> EmbedQueryAsync(string text, CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+            throw new EmptyEmbeddingInputException("Cannot embed empty or whitespace-only text.");
+        return EmbedAsync(ComposeQueryInput(_queryPrefix, text), ct);
     }
 }

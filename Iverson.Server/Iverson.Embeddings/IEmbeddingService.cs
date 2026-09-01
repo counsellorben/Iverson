@@ -6,5 +6,7 @@ public interface IEmbeddingService
     string        ModelId   { get; }
     Task          InitializeAsync(CancellationToken ct = default);
     Task          EnsureInitializedAsync(CancellationToken ct = default);
-    Task<float[]> EmbedAsync(string text, CancellationToken ct = default);
+    Task<float[]> EmbedAsync(string text, CancellationToken ct = default);   // removed in Task 2
+    Task<float[]> EmbedDocumentAsync(string text, CancellationToken ct = default);
+    Task<float[]> EmbedQueryAsync(string text, CancellationToken ct = default);
 }

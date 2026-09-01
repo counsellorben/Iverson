@@ -21,6 +21,8 @@ internal sealed class NoOpEmbeddingService : IEmbeddingService
     public Task InitializeAsync(CancellationToken ct = default) => Task.CompletedTask;
     public Task EnsureInitializedAsync(CancellationToken ct = default) => Task.CompletedTask;
     public Task<float[]> EmbedAsync(string text, CancellationToken ct = default) => Task.FromResult(new float[4]);
+    public Task<float[]> EmbedDocumentAsync(string text, CancellationToken ct = default) => Task.FromResult(new float[4]);
+    public Task<float[]> EmbedQueryAsync(string text, CancellationToken ct = default)    => Task.FromResult(new float[4]);
 }
 
 internal sealed class NoOpSchemaRegistryRepository : ISchemaRegistryRepository

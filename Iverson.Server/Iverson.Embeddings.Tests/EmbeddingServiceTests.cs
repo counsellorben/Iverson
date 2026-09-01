@@ -47,6 +47,19 @@ public sealed class EmbeddingServiceTests
             NullLogger<EmbeddingService>.Instance);
     }
 
+    private EmbeddingService CreateService(HttpMessageHandler handler, EmbeddingServiceOptions options)
+    {
+        var factory = Substitute.For<IHttpClientFactory>();
+        factory
+            .CreateClient(Arg.Any<string>())
+            .Returns(_ => new HttpClient(handler, disposeHandler: false)
+                { BaseAddress = new Uri("http://localhost:11434") });
+        return new EmbeddingService(
+            factory,
+            Options.Create(options),
+            NullLogger<EmbeddingService>.Instance);
+    }
+
     private static HttpResponseMessage SuccessResponse(float[] embedding) =>
         new(HttpStatusCode.OK)
         {
@@ -243,5 +256,55 @@ public sealed class EmbeddingServiceTests
 
         await act.Should().ThrowAsync<EmptyEmbeddingInputException>();
         handler.LastRequest.Should().BeNull();
+    }
+
+    [Theory]
+    [InlineData("nomic-embed-text",          "search_document: ", "search_query: ")]
+    [InlineData("nomic-embed-text:latest",   "search_document: ", "search_query: ")]
+    [InlineData("snowflake-arctic-embed:s",  "",                  "Represent this sentence for searching relevant passages: ")]
+    [InlineData("some-unknown-model",        "",                  "")]
+    public void For_ResolvesByFamily_StrippingAnyTag(string modelId, string doc, string query)
+    {
+        var pair = EmbeddingPrefixes.For(modelId);
+        pair.Document.Should().Be(doc);
+        pair.Query.Should().Be(query);
+    }
+
+    [Fact]
+    public async Task EmbedDocumentAsync_PrependsTheResolvedPrefix()
+    {
+        var handler = new FakeHttpMessageHandler(SuccessResponse([1f, 0f, 0f]));
+        var sut     = CreateService(handler, "nomic-embed-text");
+
+        await sut.EmbedDocumentAsync("hello");
+
+        handler.LastRequestBody.Should().Contain("search_document: hello");
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("   ")]
+    public async Task EmbedDocumentAsync_WithEmptyInput_ThrowsEvenWhenAPrefixWouldMakeItNonEmpty(string input)
+    {
+        var handler = new FakeHttpMessageHandler(SuccessResponse([1f, 0f, 0f]));
+        var sut     = CreateService(handler, "nomic-embed-text");   // non-empty document prefix
+
+        var act = async () => await sut.EmbedDocumentAsync(input);
+
+        await act.Should().ThrowAsync<EmptyEmbeddingInputException>();
+        handler.LastRequest.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task EmbedDocumentAsync_WithExplicitEmptyPrefixOverride_SendsNoPrefix()
+    {
+        var handler = new FakeHttpMessageHandler(SuccessResponse([1f, 0f, 0f]));
+        var sut     = CreateService(
+            handler,
+            new EmbeddingServiceOptions { ModelId = "nomic-embed-text", DocumentPrefix = "" });
+
+        await sut.EmbedDocumentAsync("hello");
+
+        handler.LastRequestBody.Should().NotContain("search_document: ");
     }
 }
