@@ -1,0 +1,37 @@
+{
+  "chunkWindow": {
+    "maxChars": 2048,
+    "step": 1792,
+    "wordBoundaryLookback": 50
+  },
+  "distance": "Cosine",
+  "collectionNaming": {
+    "base": "benchmark_documents",
+    "template": "{base}{suffix}_{tenant}",
+    "objectSuffix": "",
+    "chunksSuffix": "_chunks"
+  },
+  "embedding": {
+    "documentPrefixes": {
+      "nomic-embed-text": "search_document: ",
+      "snowflake-arctic-embed": ""
+    },
+    "defaultDocumentPrefix": ""
+  },
+  "golden": {
+    "documentComposition": {
+      "nomic-embed-text": {
+        "text": "the quick brown fox",
+        "composed": "search_document: the quick brown fox"
+      },
+      "snowflake-arctic-embed": {
+        "text": "the quick brown fox",
+        "composed": "the quick brown fox"
+      },
+      "__default__": {
+        "text": "the quick brown fox",
+        "composed": "the quick brown fox"
+      }
+    }
+  }
+}

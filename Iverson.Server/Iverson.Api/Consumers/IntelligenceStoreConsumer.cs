@@ -651,12 +651,21 @@ public sealed class IntelligenceStoreConsumer(
         _ensuredCollections.Add(collectionSchema.CollectionName);
     }
 
-    // Splits text into overlapping windows. Token approximation: 1 token ≈ 4 characters.
-    private static IEnumerable<(string Text, int Index)> SplitIntoChunks(string text, int maxTokens, int overlap)
+    // internal, not inlined into SplitIntoChunks, because these numbers are a cross-language contract
+    // rather than an implementation detail: ingest.py must window text identically, and
+    // IngestContractTests emits them so the two sides cannot drift apart silently.
+    internal static (int MaxChars, int Step, int Lookback) ChunkWindow(int maxTokens, int overlap)
     {
         var maxChars     = maxTokens * 4;
         var overlapChars = overlap * 4;
         var step         = Math.Max(maxChars - overlapChars, maxChars / 2);
+        return (maxChars, step, 50);
+    }
+
+    // Splits text into overlapping windows. Token approximation: 1 token ≈ 4 characters.
+    private static IEnumerable<(string Text, int Index)> SplitIntoChunks(string text, int maxTokens, int overlap)
+    {
+        var (maxChars, step, lookback) = ChunkWindow(maxTokens, overlap);
 
         var start = 0;
         var index = 0;
@@ -668,7 +677,7 @@ public sealed class IntelligenceStoreConsumer(
             // Extend to word boundary if possible
             if (end < text.Length && !char.IsWhiteSpace(text[end]))
             {
-                var ws = text.LastIndexOf(' ', end, Math.Min(end - start, 50));
+                var ws = text.LastIndexOf(' ', end, Math.Min(end - start, lookback));
                 if (ws > start) end = ws;
             }
 
