@@ -67,7 +67,7 @@ rather than `""`.
 ### 2. Derivation keyed on the model family
 
 ```csharp
-internal static class EmbeddingPrefixes
+public static class EmbeddingPrefixes
 {
     // Ollama ids carry tags -- "snowflake-arctic-embed:s", "nomic-embed-text:latest" -- so the
     // family is everything before the first ':'.
@@ -82,6 +82,9 @@ internal static class EmbeddingPrefixes
 | anything else | `""` | `""` |
 
 Both pairs are verbatim from the branches that measured them (A5, A6), trailing spaces included.
+**The class is `public`, not `internal`**, because §5's contract emit reads the table from
+`Iverson.Api.Tests` and `Iverson.Embeddings` grants `InternalsVisibleTo` to nothing;
+`EmbeddingServiceOptions` in the same assembly is already public for the same reason.
 
 `EmbeddingService` resolves once at construction: `options.DocumentPrefix ?? derived.Document`.
 
@@ -103,8 +106,12 @@ consciously visited. A neutral method left in place would let a stub silently at
 passing while covering nothing.
 
 `EmbeddingService` keeps `EmbedAsync` **private**. Composition lives in two pure helpers,
-`internal static string ComposeDocumentInput(string)` and `ComposeQueryInput(string)`, so the
-contract's golden case is produced by the real code path rather than a test-local replica.
+`internal static string ComposeDocumentInput(string prefix, string text)` and
+`ComposeQueryInput(string prefix, string text)`, so the contract's golden case is produced by the
+real code path rather than a test-local replica. **They take the prefix as a parameter rather than
+reading it**: it is resolved per instance from `IOptions` under §1, so a `static` helper has no
+access to it, and an instance helper would force the golden case onto a constructed service — the
+coupling the pure-helper extraction exists to avoid.
 
 The four production call sites map unambiguously (A9):
 
@@ -165,6 +172,15 @@ The prefix content departs from that design, and must:
 }
 ```
 
+**The lookup key is the model family: everything before the first `:` in the model id.** This is a
+cross-language rule, not a C# detail — both sides derive the key from their own model id and must
+derive it identically, or they read different rows from the same file and the drift gate sees
+nothing, because the contract *data* matches while the *resolution* differs. A tagged id makes this
+concrete: `nomic-embed-text:latest` unstripped matches no row, so Python would fall back to
+`defaultDocumentPrefix` and write unprefixed vectors while `Iverson.Api` embeds queries prefixed.
+`snowflake-arctic-embed:s` hides the same bug, because its fallback `""` is coincidentally arctic's
+correct value.
+
 **Why the table rather than one string.** The superseded design emitted a single resolved value
 because the prefix was a `const` — deployment-independent by construction. It is now derived from
 configuration, and the emitting test runs under *test* configuration. Emitting a resolved value
@@ -181,7 +197,8 @@ prefix. Here, changing `Embeddings__ModelId` changes what each side resolves, so
 visible.
 
 **One new golden case**: the composed document string for a plain chunk, obtained by reflectively
-calling `ComposeDocumentInput` — the `BindingFlags.NonPublic | BindingFlags.Static` convention the
+calling `ComposeDocumentInput` **with the resolved prefix the emit already read from the table** —
+the `BindingFlags.NonPublic | BindingFlags.Static` convention the
 contract already uses for `ComputeChunkPointId` and `KeyToUlong`. The context-composed form is not
 goldened, because the benchmark entity does not enable contextual chunking.
 
@@ -196,8 +213,9 @@ a drifted contract is as damaging as ingesting against one.
 
 **Add `--model`, and wire it to the embedding call.** `ingest.py` has no `--model` argument at all
 today (A17), and `embed()` hard-codes `{"model": "nomic-embed-text"}` at `:309`. The argument
-selects both the Ollama model and the contract row used to resolve the document prefix; an
-unmatched family falls back to `defaultDocumentPrefix`.
+selects both the Ollama model and the contract row used to resolve the document prefix, stripping
+the tag to obtain the family exactly as §5 specifies; an unmatched family falls back to
+`defaultDocumentPrefix`.
 
 **The prefix is applied in one place: inside `embed()` (`:308`), the single `/api/embed` wrapper**
 (A16). This matters for the reuse gate at `:369`, which decides "this document's single chunk equals
@@ -224,12 +242,19 @@ Dropping the window rather than renumbering preserves every surviving chunk's or
 At corpus-build time in `sample_corpus.py`, the sole writer of `corpus.jsonl` (`:225-232`, A21):
 
 ```python
-text = f"{title.strip()}\n\n{text}"   # when a title is present; unchanged when it is not
+if title.strip():
+    text = f"{title.strip()}\n\n{text}"   # unchanged when the title is absent or blank
 ```
 
 **`.strip()` is required, not cosmetic.** SciFact titles carry trailing whitespace — the first
 corpus row's title ends `"...Synaptic Input "` while the composed text reads `"...Synaptic Input\n\n"`.
 Without the strip this spec would not reproduce the text that was actually measured.
+
+**The guard and the interpolation must test and interpolate the same string.** Guarding on raw
+`title` while interpolating `title.strip()` composes `"\n\n" + text` for a whitespace-only title — a
+leading blank run in the embedded text. The branch that produced the corpus §8 cites hit exactly
+this and records it at `sample_corpus.py:235-241`; it affected 3 documents, which matches the 3 of
+200 sampled rows whose `text` does not begin with their raw `title`.
 
 Both writers read `text` from `corpus.jsonl` — the C# path via `BenchmarkIngestScenario.cs:204`
 (`Body = corpusDoc.Text`, A22), the Python path directly — so composing upstream reaches both with
@@ -279,6 +304,8 @@ source is intact at `/home/ben/iverson-benchmark-data/scifact-full`.
 **Unit, C#.** Both prefixes compose correctly for a known model; an unknown family resolves to the
 empty pair; an explicit `""` override is honoured and is distinguishable from unset; the dimension
 probe stays unprefixed; the empty-input guard throws **with a non-empty prefix configured** (§4).
+The C# and Python resolutions are asserted to agree **for a tagged model id**, not merely an
+untagged one — an untagged id passes against a Python side that never strips.
 The four production call sites are asserted to use the correct method — a wrong choice raises no
 error and produces only a worse number.
 
