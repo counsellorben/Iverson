@@ -44,8 +44,13 @@ throughput picture, and the eviction contention motivating piece 2 may not survi
 **Piece 1 was widened on 2026-09-01, at Ben's direction, to include per-type model selection**
 (Part B below). The author's recommendation was to spec Part B separately, on the grounds that it
 combines a four-file chart change with a five-client registration change and a migration problem;
-Ben decided one document. The two parts remain independently implementable in the order A then B —
-B's fallback is A's default, so A landing alone is a coherent state, while B alone is not.
+Ben decided one document. **A and B ship as one unit** — Ben's decision, 2026-09-01, on review.
+They are separable on paper, but Part A's whole purpose is to make changing the model a one-line
+values edit, and Part B's guard is what makes changing it safe. `ApplyCollectionAsync:75-79` already
+throws when an existing collection's vector dimension differs from the schema's, so a swap that
+changes dimension is caught today; a swap between two models of the **same** dimension is caught by
+nothing until Part B lands. Shipping A alone would make that swap trivially easy during exactly the
+interval in which nothing detects it.
 
 ## Part A — deploy-time model configuration
 
@@ -217,9 +222,18 @@ default model is reachable".
 
 ### The re-registration guard
 
-`SchemaRegistry.Get(typeName)` returns the previously registered descriptor. If its model differs
-from the newly declared one, registration is **rejected**, naming the old model, the new one, and the
-collection that must be dropped. Ben's decision, 2026-09-01.
+`SchemaRegistry.Get(typeName)` returns the previously registered descriptor. Registration is
+**rejected** only when the prior descriptor carries a model, the new one carries a model, and the two
+differ — naming the old model, the new one, and the collection that must be dropped. Ben's decision,
+2026-09-01.
+
+The three-way condition matters: a type's model lives on `VectorFields[]` / `ChunkFields[]`, which
+exist only when it has embedding or chunk properties. A type gaining its first embedded property has
+no prior model; a type losing its last has no new one. Neither is a model change, and rejecting
+either would block an evolution the write path already supports — `ApplyCollectionAsync` collects
+`missingVectors` and calls `MigrateCollectionAsync` for exactly the add case. A type with no vectors
+also has `CollectionName == null` (`SchemaBuilder.cs:197`), so the rejection would name a collection
+that does not exist.
 
 This is the first reader of `VectorDescriptor.ModelId`, which is written at three sites today and
 read nowhere.
@@ -244,9 +258,14 @@ Both halves land in `Iverson.ClientConformance`:
   `Scenarios/TenantRejectedScenario.cs` and driving `Reregistrar.cs`, which already re-registers a
   type with a changed schema. All five drivers register a type, re-register it declaring a different
   model, and each must receive the same rejection.
-- **A positive parity assertion made server-side.** The harness already probes state directly
-  (`PostgresProbe.cs`), so it asserts that all five drivers' registrations resolve to the same model —
-  without requiring a second model pulled in the conformance environment.
+- **A positive parity assertion made server-side.** The harness cannot read the resolved model
+  today: `PostgresProbe.FetchRowAsync` (`:54-63`) reads an entity projection row, not schema state,
+  and `Iverson.ClientConformance.csproj:10-11` references only `Iverson.LoadTest` and
+  `Iverson.Client.Core`, so `SchemaDescriptor` cannot be deserialized. It gains a schema-table read —
+  its own copy of the table name plus a minimal JSON field read, mirroring the deliberate-duplication
+  pattern `PostgresProbe.cs:20-23` records, and without taking a reference to `Iverson.Api`. On that
+  it asserts that all five drivers' registrations resolve to the same model, without requiring a
+  second model pulled in the conformance environment.
 
 `GetSchemaResponse.SchemaField` carries `is_embedding` and `is_chunk` but **no model id**, so the
 resolved model is not observable to a client over the wire. Exposing it would make the positive case
@@ -364,4 +383,5 @@ standalone console app.
 | C1 | The harness has a rejection-scenario pattern to mirror | `Scenarios/NamingRejectedScenario.cs`, `Scenarios/TenantRejectedScenario.cs` |
 | C2 | The harness can re-register a type with a changed schema | `Reregistrar.cs:10-32` — the documented seam scenarios re-register through |
 | C3 | The harness can assert server-side state directly | `PostgresProbe.cs`, plus `Verifier.cs` as the pure-assertion home |
+| C5 | The harness **cannot** observe the resolved model today | `PostgresProbe.FetchRowAsync:54-63` selects from the entity projection table, not the schema-registry table; `Iverson.ClientConformance.csproj:10-11` references only `Iverson.LoadTest` and `Iverson.Client.Core`, so `SchemaDescriptor` cannot be deserialized. Observing the model requires new harness machinery — see the conformance section |
 | C4 | The resolved model is **not** observable over the wire | `GetSchemaResponse` → `SchemaType` → `SchemaField` carries `is_embedding` and `is_chunk` but no model id (`object_mapping.proto:145-152`) |
