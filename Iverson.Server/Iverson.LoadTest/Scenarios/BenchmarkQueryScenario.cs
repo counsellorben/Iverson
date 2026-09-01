@@ -1,3 +1,5 @@
+using System.Text.Json;
+using System.Text.Json.Nodes;
 using Grpc.Core;
 using Iverson.Client.Contracts;
 using Iverson.Client.Core;
@@ -28,6 +30,7 @@ namespace Iverson.LoadTest.Scenarios;
 public sealed class BenchmarkQueryScenario(
     ObjectSearchService.ObjectSearchServiceClient search,
     ActingUserIdentities                          identities,
+    LoadTestConfig                                config,
     ILogger<BenchmarkQueryScenario>               logger)
 {
     // SearchSimilar's top_k counts entities (50 results = 50 documents). SearchChunks' top_k counts
@@ -38,6 +41,16 @@ public sealed class BenchmarkQueryScenario(
     private const int    ChunkBudgetMultiplier = 5;
     private const string SimilarRunSuffix      = "similar";
     private const string ChunksRunSuffix       = "chunks";
+
+    // ingest.py writes documents/chunks in lowercase (plus embed_calls/embeds_saved/elapsed_seconds,
+    // which this scenario has no use for and JsonSerializer silently ignores).
+    private static readonly JsonSerializerOptions StatsJsonOptions =
+        new() { PropertyNameCaseInsensitive = true };
+
+    private static readonly JsonSerializerOptions SidecarWriteOptions =
+        new() { WriteIndented = true };
+
+    private sealed record IngestStats(int Documents, int Chunks);
 
     public async Task RunAsync(CommandFlags flags, CancellationToken ct = default)
     {
@@ -60,6 +73,85 @@ public sealed class BenchmarkQueryScenario(
         {
             Console.Error.WriteLine("benchmark-query requires --config-label.");
             throw new InvalidOperationException("--config-label was not provided.");
+        }
+
+        // Refuse a chunk budget that cannot reach DocumentBudget distinct documents (see
+        // ChunkBudgetGuard's doc comment). ingest.py writes this sidecar; the C# ingest path does
+        // not, so its absence is not itself an error -- refusing here would block corpora ingested
+        // that way.
+        var statsPath = $"{flags.KeyMapPath}.stats.json";
+        if (!File.Exists(statsPath))
+        {
+            Console.WriteLine(
+                $"[benchmark-query] No stats sidecar at {statsPath} -- skipping the chunk-budget guard.");
+        }
+        else
+        {
+            var stats = JsonSerializer.Deserialize<IngestStats>(
+                            await File.ReadAllTextAsync(statsPath, ct), StatsJsonOptions)
+                        ?? throw new InvalidOperationException($"{statsPath} could not be parsed.");
+
+            var r = ChunkBudgetGuard.Evaluate(stats.Documents, stats.Chunks, DocumentBudget, ChunkBudgetMultiplier);
+            if (!r.Ok)
+            {
+                Console.Error.WriteLine(
+                    $"""
+                    REFUSING: chunk budget cannot reach DocumentBudget distinct documents.
+
+                      corpus              {r.ChunksPerDocument:F2} chunks/doc  ({stats.Chunks:N0} chunks / {stats.Documents:N0} documents)
+                      DocumentBudget      {DocumentBudget}
+                      ChunkBudgetMult     {ChunkBudgetMultiplier}
+                      chunk top_k         {r.ChunkTopK}
+                      reachable documents ~{r.ReachableDocuments:F0}  (worst case: a document's chunks retrieved together)
+
+                      Raise ChunkBudgetMultiplier to >= {r.MinimumMultiplier}.
+                    """);
+                throw new InvalidOperationException("chunk budget cannot reach DocumentBudget distinct documents.");
+            }
+        }
+
+        // Record which build produced this run. A run that cannot be attributed to a build should
+        // not start -- and an API that cannot answer a read-only GET will not serve the sweep either.
+        using (var http = new HttpClient())
+        {
+            HttpResponseMessage buildResponse;
+            var buildUrl = $"{config.HttpUrl}/build";
+            try
+            {
+                buildResponse = await http.GetAsync(buildUrl, ct);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                Console.Error.WriteLine(
+                    $"REFUSING: could not reach {buildUrl} to attribute this run: {ex.Message}");
+                throw new InvalidOperationException("could not fetch /build for run attribution.", ex);
+            }
+
+            if (!buildResponse.IsSuccessStatusCode)
+            {
+                Console.Error.WriteLine(
+                    $"REFUSING: {buildUrl} returned {(int)buildResponse.StatusCode} " +
+                    $"{buildResponse.StatusCode} -- a run that cannot be attributed to a build must not start.");
+                throw new InvalidOperationException("/build did not return success for run attribution.");
+            }
+
+            var buildBody = await buildResponse.Content.ReadAsStreamAsync(ct);
+            var buildJson = await JsonNode.ParseAsync(buildBody, cancellationToken: ct)
+                            ?? throw new InvalidOperationException($"{buildUrl} returned an empty body.");
+
+            var sidecar = new JsonObject
+            {
+                ["configLabel"]   = flags.ConfigLabel,
+                ["composite"]     = buildJson["composite"]?.DeepClone(),
+                ["assemblies"]    = buildJson["assemblies"]?.DeepClone(),
+                ["recordedAtUtc"] = DateTime.UtcNow.ToString("yyyy-MM-ddTHH:mm:ssZ"),
+            };
+
+            Directory.CreateDirectory(flags.OutputDir);
+            var sidecarPath = Path.Combine(flags.OutputDir, $"{flags.ConfigLabel}.meta.json");
+            await File.WriteAllTextAsync(
+                sidecarPath, sidecar.ToJsonString(SidecarWriteOptions), ct);
+            Console.WriteLine($"[benchmark-query] Wrote {sidecarPath}");
         }
 
         var keyMap = await KeyMap.LoadAsync(flags.KeyMapPath, ct);

@@ -31,6 +31,7 @@ var clientScope   = Environment.GetEnvironmentVariable("IVERSON_CLIENT_SCOPE");
 var postgresCs   = Env("IVERSON_POSTGRES_CS",     "Host=localhost;Port=5432;Database=iverson;Username=iverson;Password=iverson");
 var starRocksCs  = Env("IVERSON_STARROCKS_CS",    "Server=127.0.0.1;Port=9030;Database=iverson;Uid=root;Pwd=;");
 var kafkaBoots   = Env("IVERSON_KAFKA_BOOTSTRAP", "localhost:9092");
+var httpUrl      = Env("IVERSON_HTTP_URL",        "http://localhost:8081");
 var actingUserToken = Environment.GetEnvironmentVariable("IVERSON_ACTING_USER_TOKEN");
 var actingUserHostHeader = Environment.GetEnvironmentVariable("IVERSON_ACTING_USER_HOST_HEADER") ?? "authentik-server:9000";
 // Compose-fixed defaults; kind requires an explicit override (client_id and redirect_uri are
@@ -50,7 +51,7 @@ var actingUserBaseUrl = tokenEndpoint is not null
     ? tokenEndpoint[..tokenEndpoint.IndexOf("/application/o/token/", StringComparison.Ordinal)]
     : "http://localhost:9000";
 
-var config = new LoadTestConfig(postgresCs, starRocksCs, kafkaBoots);
+var config = new LoadTestConfig(postgresCs, starRocksCs, kafkaBoots, httpUrl);
 
 // Only meaningful for --target kind: the kind/cloud charts' Kafka (Strimzi) exposes just a
 // TLS + SCRAM-SHA-512 listener, unlike docker-compose's plaintext broker — see
@@ -373,7 +374,8 @@ static async Task ClearDataAsync(string starRocksCs, string postgresCs)
 
 // ── Supporting types ──────────────────────────────────────────────────────────
 
-public sealed record LoadTestConfig(string PostgresCs, string StarRocksCs, string KafkaBootstrap);
+public sealed record LoadTestConfig(
+    string PostgresCs, string StarRocksCs, string KafkaBootstrap, string HttpUrl);
 
 public sealed class CommandFlags
 {
