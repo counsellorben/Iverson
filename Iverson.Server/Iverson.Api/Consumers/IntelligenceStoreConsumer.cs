@@ -226,7 +226,15 @@ public sealed class IntelligenceStoreConsumer(
                     if (string.IsNullOrWhiteSpace(text)) continue;
 
                     var vectorName = $"{cf.PropertyName.ToSnakeCase()}_vector";
-                    var chunks     = SplitIntoChunks(text, cf.MaxTokens, cf.Overlap).ToList();
+                    // A window falling entirely inside a run of whitespace strips to "". Filter AFTER the
+                    // generator, never inside it: SplitIntoChunks assigns index++ per window, so dropping a
+                    // window here preserves every survivor's ORIGINAL index and keeps ComputeChunkPointId
+                    // stable across re-ingests. Filtering before PrefixWithContextAsync also matters — that
+                    // method returns "{prefix}\n\n{chunkText}", which is non-empty even for an empty chunk,
+                    // so a later guard could not see the problem.
+                    var chunks = SplitIntoChunks(text, cf.MaxTokens, cf.Overlap)
+                        .Where(c => c.Text.Length > 0)
+                        .ToList();
 
                     // No summary yet (always so on first ingest) — stand in a truncated slice of
                     // the parent text so the excerpt is still situated in *something*.

@@ -200,6 +200,10 @@ public sealed class ObjectSearchGrpcService(
         {
             queryVector = await embedding.EmbedAsync(request.Query, context.CancellationToken);
         }
+        catch (EmptyEmbeddingInputException ex)
+        {
+            throw new RpcException(new Status(StatusCode.InvalidArgument, ex.Message));
+        }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             throw new RpcException(new Status(StatusCode.Unavailable,
@@ -370,6 +374,10 @@ public sealed class ObjectSearchGrpcService(
         try
         {
             queryVector = await embedding.EmbedAsync(request.Query, context.CancellationToken);
+        }
+        catch (EmptyEmbeddingInputException ex)
+        {
+            throw new RpcException(new Status(StatusCode.InvalidArgument, ex.Message));
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {

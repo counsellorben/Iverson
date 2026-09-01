@@ -1090,6 +1090,21 @@ public class ObjectSearchGrpcServiceTests
     }
 
     [Fact]
+    public async Task SearchSimilar_WithEmptyQuery_ThrowsInvalidArgumentNotUnavailable()
+    {
+        await _registry.RegisterAsync(SchemaFixtures.ArticleSchema());
+        _embedding.EmbedAsync("", Arg.Any<CancellationToken>())
+                  .Returns<float[]>(_ => throw new EmptyEmbeddingInputException("Cannot embed empty or whitespace-only text."));
+
+        var request = new SearchSimilarRequest { TypeName = "Article", Property = "Title", Query = "", TopK = 5 };
+        var (writer, _) = MakeStream<SearchResponse>();
+        var act = async () => await _sut.SearchSimilar(request, writer, TestServerCallContext.Create());
+
+        (await act.Should().ThrowAsync<RpcException>())
+            .Where(e => e.Status.StatusCode == StatusCode.InvalidArgument);
+    }
+
+    [Fact]
     public async Task SearchSimilar_WithFilter_PassesTranslatedFilterToVectorService()
     {
         await _registry.RegisterAsync(SchemaFixtures.ArticleSchema());
@@ -1382,6 +1397,21 @@ public class ObjectSearchGrpcServiceTests
         await _vector.Received(1).SearchNamedAsync(
             "articles_chunks_test-tenant", Arg.Any<string>(), Arg.Any<float[]>(), Arg.Any<ulong>(), Arg.Any<Filter>());
         written.Should().HaveCount(1);
+    }
+
+    [Fact]
+    public async Task SearchChunks_WithEmptyQuery_ThrowsInvalidArgumentNotUnavailable()
+    {
+        await _registry.RegisterAsync(SchemaFixtures.ArticleSchema());
+        _embedding.EmbedAsync("", Arg.Any<CancellationToken>())
+                  .Returns<float[]>(_ => throw new EmptyEmbeddingInputException("Cannot embed empty or whitespace-only text."));
+
+        var request = new SearchChunksRequest { TypeName = "Article", Property = "Body", Query = "", TopK = 5 };
+        var (writer, _) = MakeStream<ChunkSearchResponse>();
+        var act = async () => await _sut.SearchChunks(request, writer, TestServerCallContext.Create());
+
+        (await act.Should().ThrowAsync<RpcException>())
+            .Where(e => e.Status.StatusCode == StatusCode.InvalidArgument);
     }
 
     [Fact]

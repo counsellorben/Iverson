@@ -2234,6 +2234,59 @@ public class IntelligenceStoreConsumerTests
             Arg.Any<IReadOnlyDictionary<string, object>?>());
     }
 
+    [Fact]
+    public async Task ChunkSplitting_WithAllWhitespaceWindow_DropsItAndPreservesSurvivingIndexes()
+    {
+        var schema = new SchemaDescriptor
+        {
+            TypeName       = "Doc",
+            TableName      = "docs",
+            CollectionName = "docs",
+            KeyColumn      = new ColumnDescriptor("Id", "uuid", false),
+            ScalarColumns  = [new ColumnDescriptor("Body", "text", false)],
+            FkColumns      = [],
+            VectorFields   = [],
+            ChunkFields    = [new ChunkDescriptor("Body", 50, 10, "text-embedding-3-small", 1536)],
+            Relations      = [],
+            TenantColumn   = "TenantId"
+        };
+        await _registry.RegisterAsync(schema);
+
+        var body    = "alpha" + new string(' ', 360) + "omega";
+        var payload = $$"""{"Body":"{{body}}"}""";
+        var ev = new EntityEvent(
+            EventType:     EntityEventType.Created,
+            TypeName:      "Doc",
+            Key:           Guid.NewGuid().ToString(),
+            PayloadJson:   payload,
+            TraceId:       "trace-empty-window",
+            SchemaVersion: "1",
+            OccurredAt:    DateTimeOffset.UtcNow,
+            TargetStores:  StoreTarget.Intelligence);
+
+        var indexes = new List<string>();
+        _vectorWrite
+            .UpsertNamedAsync(
+                "docs_chunks_test-tenant",
+                Arg.Any<ulong>(),
+                Arg.Any<IReadOnlyDictionary<string, float[]>>(),
+                Arg.Any<IReadOnlyDictionary<string, object>?>())
+            .Returns(ci =>
+            {
+                var p = ci.Arg<IReadOnlyDictionary<string, object>?>();
+                if (p is not null && p.TryGetValue("chunk_index", out var idx))
+                    indexes.Add((string)idx);
+                return Task.CompletedTask;
+            });
+
+        await BuildSut().HandleAsync(ev.Key, Serialize(ev), CancellationToken.None);
+
+        // The gap is the point: a renumbering implementation yields "0","1" and fails here.
+        indexes.Should().Equal("0", "2");
+        _ = _embedding.DidNotReceive().EmbedAsync(
+            Arg.Is<string>(s => string.IsNullOrWhiteSpace(s)), Arg.Any<CancellationToken>());
+    }
+
     // A test logger that records level + formatted message, mirroring
     // DocumentRerenderQueueWorkerTests.RecordingLogger, so a specific warning's content (not
     // merely its presence) can be asserted.
