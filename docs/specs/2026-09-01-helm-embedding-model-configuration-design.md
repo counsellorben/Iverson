@@ -270,19 +270,22 @@ one — silently, since nothing about the comparison errors.
 ### Conformance harness
 
 Both halves land in `Iverson.ClientConformance`, and both need fixtures the harness does not have.
-**Each driver gains its own vector-carrying type** — one per language, each with one
-`[IversonEmbedding]` and one `[IversonChunk]` property. The existing `VectorDoc` cannot serve: it is a
+**Each driver gains two vector-carrying classes bound to one type name** — per language, each with
+one `[IversonEmbedding]` and one `[IversonChunk]` property, differing only in the declared model. The existing `VectorDoc` cannot serve: it is a
 single shared type name that only the .NET driver registers, deliberately, because
 `SchemaRegistry.RegisterAsync` replaces the stored descriptor wholesale and five registrations of one
 name would leave four silent overwrites (`Scenarios/VectorSearchScenario.cs:13-16`). Every other
-registered fixture carries no embedded property, so its descriptor has no model to read. This is five
-new models across five drivers, not a scenario written against types that already exist.
+registered fixture carries no embedded property, so its descriptor has no model to read. This is ten
+new classes across five drivers, not a scenario written against types that already exist.
 
 - **A rejection scenario**, mirroring `Scenarios/NamingRejectedScenario.cs` and
-  `Scenarios/TenantRejectedScenario.cs` and driving `Reregistrar.cs`, which already re-registers a
-  type with a changed schema. All five drivers register **their own** vector-carrying type, re-register
-  it declaring a different model, and each must receive the same rejection. Per-language fixtures are
-  what `NamingRejectedScenario` already does (`:8-10`) for exactly this reason.
+  `Scenarios/TenantRejectedScenario.cs`. Each driver registers its own vector-carrying type, then
+  registers a **second class bound to the same type name** — the entity name is overridable, e.g.
+  `IversonEntityAttribute(string? name = null)` — declaring a different model, and each must receive
+  the same rejection. The second class is what supplies the differing declaration: the model is a
+  class-level compile-time constant, so one class per driver can only re-send the model it sent first,
+  and `Reregistrar` rewrites only `Authorization` (`:44-52`), never the model. Per-language fixtures
+  are what `NamingRejectedScenario` already does (`:8-10`) for exactly this reason.
 - **A positive parity assertion made server-side.** The harness cannot read the resolved model
   today: `PostgresProbe.FetchRowAsync` (`:54-63`) reads an entity projection row, not schema state,
   and `Iverson.ClientConformance.csproj:10-11` references only `Iverson.LoadTest` and
@@ -414,3 +417,4 @@ standalone console app.
 | C5 | The harness **cannot** observe the resolved model today | `PostgresProbe.FetchRowAsync:54-63` selects from the entity projection table, not the schema-registry table; `Iverson.ClientConformance.csproj:10-11` references only `Iverson.LoadTest` and `Iverson.Client.Core`, so `SchemaDescriptor` cannot be deserialized. Observing the model requires new harness machinery — see the conformance section |
 | C4 | The resolved model is **not** observable over the wire | `GetSchemaResponse` → `SchemaType` → `SchemaField` carries `is_embedding` and `is_chunk` but no model id (`object_mapping.proto:145-152`) |
 | C6 | The harness has no per-driver vector-carrying fixture | `VectorDoc` is one shared type name; `VectorSearchScenario.cs:13-16` and `driver.py:52` record that only the .NET driver registers it. The annotations exist nowhere else: `Models/VectorDoc.cs:40-41`, `models.py:137-138`, `models.ts:194,197`, `VectorDoc.java:43,46` |
+| C7 | `Reregistrar` cannot supply a differing model | `Reregistrar.ReregisterAsync` (`:44-52`) parses the driver's reported `TypeDescriptor` and assigns only `descriptor.Authorization = Rules(ownerField)` before re-posting; it takes no model parameter and rewrites no other field, so a re-registration through it carries the model the first registration sent |
