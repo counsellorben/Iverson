@@ -165,6 +165,17 @@ internal static class SchemaBuilder
                 typeDesc.DocumentContextual));
         }
 
+        // Placed AFTER the document-template block on purpose, so the guard sits downstream of
+        // every source of chunk fields. Counted off typeDesc.Properties, NOT `chunks`: the block
+        // above synthesizes a "Document" chunk field, and that entry is legitimate alongside one
+        // attributed property. Counting `chunks` here rejects every templated type.
+        var chunkProps = typeDesc.Properties.Where(p => p.IsChunk).Select(p => p.Name).ToList();
+        if (chunkProps.Count > 1)
+            throw new InvalidOperationException(
+                $"Type '{typeDesc.TypeName}' has [IversonChunk] on {chunkProps.Count} properties "
+                + $"({string.Join(", ", chunkProps.Select(n => $"'{n}'"))}). "
+                + "Only one property per type may be chunked.");
+
         ContractsAuthorizationRules? contractsAuthorization = typeDesc.Authorization;
         var authorization = contractsAuthorization is null
             ? null
