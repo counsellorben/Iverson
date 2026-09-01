@@ -97,9 +97,11 @@ system would embed a pure hallucination and store a chunk point whose `text` pay
 garbage vector entering the index silently is worse than the dead-letter. Filtering first also
 avoids a wasted enrichment round-trip per empty window.
 
-The list cannot come out empty: `:226` has already rejected an all-whitespace field, so at least
-one window carries content. `ComputeCentroid` (`:470`) dereferences `vectors[0]` and requires a
-non-empty list; that precondition is preserved.
+At standard defaults (with `step <= maxChars - 50`), the list cannot come out empty: `:226` has
+already rejected an all-whitespace field, so at least one window carries content. For contrived
+sub-25-`maxTokens` cases where coverage gaps can create an empty list, filtering prevents crashes
+because the centroid write is gated on `centroidInput.Count > 0` (`:472`) and the chunk write
+yields zero chunk points.
 
 The only other use of `chunks` is the log at `:329`, which today over-reports
 `Ingested {Count} chunk(s)` when windows are empty. After the filter it reports what was written.
@@ -169,8 +171,10 @@ emptiness rule in a third location and let it drift from `EmbeddingService`'s de
 
 ## Out of scope
 
-- **`ingest.py`.** Already fixed at `4d835c0`; this design deliberately mirrors its shape rather
-  than changing it.
+- **`ingest.py`.** The equivalent fix exists at `4d835c0` on the unmerged `centroid-ablation` branch.
+  This design mirrors its shape; consequently, once this C# fix merges to `main`, the ingest path
+  drops empty windows there while `ingest.py` (benchmark tooling only) still lacks the fix until
+  `centroid-ablation` lands.
 - **The `centroid-ablation` branch.** Its `ingest-contract.json` drift gate pins the C#/Python
   chunking contract. When that branch lands, the empty-window rule becomes another parity item the
   contract should pin — a note for that branch, not work here.
