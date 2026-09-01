@@ -104,6 +104,9 @@ Newly introduced by this plan and verified at plan-write time against `main@f213
 | P39 | Consumer impact | `IReregistrar` has a second implementer that must gain the parameter | `RecordingReregistrar` at `ClientConformance.Tests/ScriptedDriverRunner.cs:95,102` |
 | P40 | Consumer impact | Exactly one client test asserts the model field, and it still passes — its fixture declares no model, so `""` is still correct | `DotNet/Iverson.Client.Core.Tests/SchemaRegistrarTests.cs:293` `bodyProp.ModelId.Should().BeEmpty()`; no equivalent assertion in the Java, Python, TypeScript or Go test suites |
 | P41 | Consumer impact | The conformance environment pulls one model, and this plan keeps it that way — the guard fires before the probe, so the rejection needs no second pull | T3 Step 2's placement; `docker-compose.yml:372,457` set `Embeddings__ModelId=nomic-embed-text` |
+| P42 | Code validity | `SchemaProbe` can be constructed the way `PostgresProbe` is | `Program.cs:17` reads `IVERSON_POSTGRES_CS` (default `Database=iverson`) into `postgresCs`, already passed to `new PostgresProbe(postgresCs)` at `:108` and `:119` |
+| P43 | Code validity | A `jsonb` column reads back as `string`, so T5's `ExecuteScalarAsync(...) is not string json` holds | `SchemaRegistryRepository.LoadAllAsync:17-18` maps `schema_json` into a `string` tuple element in production today |
+| P44 | Code validity | The write path needs no probed dimension, so the worker's unprobed per-model instances are safe | `_dimension` is read only by the `Dimension` getter (`EmbeddingService.cs:25-28`); `EmbedDocumentAsync`/`EmbedQueryAsync` route through `EmbedAsync` (`:54-95`), which never touches it |
 
 ## Tasks
 
@@ -351,8 +354,16 @@ resolved service already knows its own model, so the guard needs no new dependen
 `IOptions<EmbeddingServiceOptions>`:
 ```csharp
 var priorModel = registry.Get(typeDesc.TypeName) is { } prior ? SchemaDescriptor.ModelOf(prior) : null;
-var nextModel  = service.ModelId;   // the resolved service's model: declared, else the default
-if (priorModel is not null && !string.Equals(priorModel, nextModel, StringComparison.Ordinal))
+
+// Null when this registration carries no embedded content at all — a type that has just lost its
+// last embedding/chunk property is not changing its model, it is ceasing to have one, and the
+// write path already supports that. Taking service.ModelId here instead would reject exactly that
+// evolution whenever the deployment default has moved on.
+var hasEmbedded = typeDesc.Properties.Any(p => p.IsEmbedding || p.IsChunk);
+var nextModel   = hasEmbedded ? service.ModelId : null;
+
+if (priorModel is not null && nextModel is not null &&
+    !string.Equals(priorModel, nextModel, StringComparison.Ordinal))
 {
     throw new RpcException(new Status(StatusCode.FailedPrecondition,
         $"Type '{typeDesc.TypeName}' is registered with embedding model '{priorModel}', but this "
@@ -366,7 +377,7 @@ if (priorModel is not null && !string.Equals(priorModel, nextModel, StringCompar
         + $"rejected identically."));
 }
 ```
-`nextModel` is never null — an undeclared type resolves to the configured default — so the spec's three-way condition reduces to two checks here: the prior must exist and the two must differ. A type gaining its first embedded property has `priorModel == null` and is allowed, which is the `missingVectors` → `MigrateCollectionAsync` migration the write path already supports. A type losing its last embedded property produces a descriptor with no vector or chunk fields, so it never reaches this comparison in a way that matters, and its `CollectionName` is null anyway.
+The condition is three-way, matching the spec: the prior descriptor must carry a model, this registration must resolve to one, and the two must differ. A type gaining its first embedded property has `priorModel == null` and is allowed — that is the `missingVectors` → `MigrateCollectionAsync` migration the write path already supports. A type losing its last has `nextModel == null` and is allowed: it is removing vectors, not mixing two spaces, and `SchemaBuilder.cs:213` gives it a null `CollectionName`, so a rejection would name a collection that will not exist. `hasEmbedded` is read off the inbound request's properties, not off vector/chunk fields, because the guard runs before `BuildDescriptor` produces any.
 
 `FailedPrecondition`, not `InvalidArgument`: this file already splits the two that way — input validation throws `InvalidArgument` (`:76,91,122,133,150,166`), checks against already-registered state throw `FailedPrecondition` (`:201,259`). The declaration is not invalid; it conflicts with state.
 
@@ -376,6 +387,7 @@ if (priorModel is not null && !string.Equals(priorModel, nextModel, StringCompar
   - A type with no embedded properties gaining its first one registers cleanly (absent → present).
   - A type losing its last embedded property registers cleanly (present → absent).
   - An undeclared type whose deployment default has changed is rejected — the guard compares resolved models, not declared ones.
+  - **The discriminating case: the deployment default has changed AND the type drops its last embedded property → registers cleanly.** Neither of the two cases above catches this alone — a two-check guard taking `nextModel = service.ModelId` unconditionally passes both of them and fails only this one.
 
 - [ ] **Step 4: Run and commit.**
 ```bash
