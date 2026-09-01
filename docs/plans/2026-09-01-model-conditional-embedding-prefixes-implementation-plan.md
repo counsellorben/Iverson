@@ -426,7 +426,19 @@ One test that both writes the contract (under `IVERSON_REGENERATE_INGEST_CONTRAC
 
 Locate the file by walking up from `AppContext.BaseDirectory` to the `Iverson.slnx` marker, then to `Iverson.Server/Iverson.LoadTest/scripts/ingest-contract.json`. This is a new pattern here, with no precedent to copy.
 
-Emit, at minimum:
+Emit **exactly these five top-level keys** — `chunkWindow`, `distance`, `collectionNaming`,
+`embedding`, `golden` — and nothing else. This is the closed set Task 4 reads; anything further is a
+field with no consumer, which the spec's own reasoning for excluding `queryPrefix` rules out.
+
+In particular do **not** carry forward the branch contract's `objectCollection` / `chunksCollection`
+blocks. Their `payloadIndexes` and `vectorNames` derive from `SchemaBuilder.ToCollectionSchema`
+(`SchemaBuilder.cs:332`), whose list order comes from `Type.GetProperties()` — an order the CLR does
+not guarantee, and which also yields a duplicate index for an FK-named scalar column. Emitting them
+would require de-duplicating and ordinal-sorting to stop the gate flaking against its own committed
+copy. Ben's decision, 2026-09-01: collection-creation parity is **not** pinned by this contract.
+
+The five keys carry no such hazard: the only enumerated collections are `EmbeddingPrefixes.Table`
+and the golden map, both literal dictionaries built once by collection initializer and never mutated.
 
 ```json
 {
