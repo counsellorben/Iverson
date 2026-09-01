@@ -227,6 +227,11 @@ def main():
             row = all_corpus[docid]
             title = row.get("title") or ""
             text = row.get("text") or ""
+            # HAZARD: this composition is UNCONDITIONAL, so the input must be a RAW BEIR corpus
+            # -- /home/ben/iverson-benchmark-data/scifact-full is the correct source. Re-running
+            # this against an output of this script (e.g. ~/repositories/iverson-benchmark-corpora/
+            # scifact-run-2026-08-26/beir/corpus.jsonl, whose "text" is ALREADY composed) doubles
+            # every title, silently changing what gets embedded and invalidating the comparison.
             if title.strip():
                 text = f"{title.strip()}\n\n{text}"
             f.write(json.dumps({

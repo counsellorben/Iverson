@@ -8,16 +8,25 @@ drain to wait on): it embeds locally via Ollama and upserts to Qdrant over its R
 is the whole point — the normal path costs ~34s/document; this is the fast path a benchmark
 sweep needs.
 
-The point contract (fixed; a divergence from any of this makes results incomparable with a
-C#-written corpus, and the search endpoints would silently return nothing for a wrong id):
+The point contract (a divergence from any of this makes results incomparable with a C#-written
+corpus, and the search endpoints would silently return nothing for a wrong id). Its SHAPE is
+fixed; the vector DIMENSION is not -- it is probed from --model's Ollama embedding at startup
+(768 for nomic-embed-text, 384 for snowflake-arctic-embed:s), never hard-coded:
 
     object collection   {object-collection}   default benchmark_documents_tenant_bypass
-      vectors: body_vector, body_centroid -- both 768-dim, Cosine
+      vectors: body_vector, body_centroid -- both {probed dimension}-dim, Cosine
       payload: key, docId, title, body, ownerId, __TenantId
 
     chunks collection   {chunks-collection}   default benchmark_documents_chunks_tenant_bypass
-      vectors: body_vector -- 768-dim, Cosine
+      vectors: body_vector -- {probed dimension}-dim, Cosine
       payload: text, parent_id, field ("Body"), chunk_index (a STRING), ownerId
+
+A run's VECTORS are model- and prefix-dependent, even where the point ids are not: --model
+selects both the Ollama model and the document task prefix resolved from its family
+(ingest-contract.json's embedding.documentPrefixes). Two runs that differ in either produce
+vectors that are not comparable with each other, while writing to the SAME deterministic point
+ids -- which is why changing --model against an existing collection requires --drop (see
+ensure_collection, which refuses the mismatched-dimension case outright).
 
 Point ids are derived the same way IntelligenceStoreConsumer.KeyToUlong /
 ComputeChunkPointId derive them, verified byte-for-byte against real C#-written points
@@ -49,6 +58,16 @@ Usage:
     # Small slice, for trying the script out without paying for a full corpus:
     python3 Iverson.Server/Iverson.LoadTest/scripts/ingest.py \\
         --corpus /path/to/corpus.jsonl --key-map-path /tmp/keymap.json --limit 20
+
+    # A different embedding model. --model selects the Ollama model AND the document task
+    # prefix resolved from its family, so it changes every vector written. --drop is REQUIRED
+    # when an existing collection was written under a different model (a different dimension
+    # is refused outright; a same-dimension model would otherwise silently leave the
+    # collection holding a mixture of two vector spaces):
+    python3 Iverson.Server/Iverson.LoadTest/scripts/ingest.py \\
+        --corpus /path/to/corpus.jsonl --key-map-path /path/to/keymap.json \\
+        --model snowflake-arctic-embed:s --drop \\
+        --object-collection scratch_objects --chunks-collection scratch_chunks
 
     # Drop-only: wipe both collections (and any stale progress/stats for --key-map-path)
     # without ingesting anything. --corpus is NOT required for this form -- it is the clean
@@ -97,8 +116,10 @@ Writes, alongside --key-map-path:
                                means a document recorded in .progress but never counted in the
                                sidecar would otherwise vanish from the totals permanently.
 
-Requires Qdrant at http://localhost:6333 and Ollama (nomic-embed-text, already pulled) at
-http://localhost:11434 -- see scripts/stack.py's `ingest` tier.
+Requires Qdrant at http://localhost:6333 and Ollama at http://localhost:11434 with --model's
+model ALREADY PULLED (`ollama pull <model>`) -- the dimension probe runs before --drop acts,
+so an unpulled model fails the run rather than deleting collections it then cannot refill.
+See scripts/stack.py's `ingest` tier.
 """
 
 import argparse
@@ -160,6 +181,20 @@ DEFAULT_OBJECT_COLLECTION = _naming["template"].format(
 )
 DEFAULT_CHUNKS_COLLECTION = _naming["template"].format(
     base=_naming["base"], suffix=_naming["chunksSuffix"], tenant=TENANT_ID
+)
+
+# The paragraph above states a requirement; these enforce it. Without them, a change to the
+# contract's base/template/suffixes (or to TENANT_ID) would silently rename the defaults, and the
+# next run would create two brand-new empty collections and report a "successful" ingest the
+# benchmark then queries nothing out of. Written as literals on purpose -- deriving the expected
+# value from the same contract fields would be a tautology.
+assert DEFAULT_OBJECT_COLLECTION == "benchmark_documents_tenant_bypass", (
+    f"default object collection derived from the contract as {DEFAULT_OBJECT_COLLECTION!r}, "
+    "not benchmark_documents_tenant_bypass"
+)
+assert DEFAULT_CHUNKS_COLLECTION == "benchmark_documents_chunks_tenant_bypass", (
+    f"default chunks collection derived from the contract as {DEFAULT_CHUNKS_COLLECTION!r}, "
+    "not benchmark_documents_chunks_tenant_bypass"
 )
 
 # Any fixed UUID works as the uuid5 namespace -- the only requirement is that it never changes
@@ -265,9 +300,27 @@ def qdrant_request(method, path, body=None):
         sys.exit(f"could not reach Qdrant at {url}: {e}")
 
 
-def collection_exists(name):
-    status, _ = qdrant_request("GET", f"/collections/{name}")
-    return status == 200
+def collection_vector_sizes(name):
+    """Returns {vector_name: size} for an existing collection, or None when it does not exist.
+
+    Qdrant reports named vectors as config.params.vectors = {name: {"size": N, ...}}; an
+    unnamed (single-vector) collection puts "size" directly on config.params.vectors instead.
+    This script only ever creates named vectors, so the unnamed shape is reported as an empty
+    mapping -- ensure_collection's per-vector-name lookup then fails loudly rather than this
+    function pretending the shapes are comparable."""
+    status, body = qdrant_request("GET", f"/collections/{name}")
+    if status != 200:
+        return None
+    vectors = (
+        (body or {}).get("result", {}).get("config", {}).get("params", {}).get("vectors") or {}
+    )
+    if "size" in vectors:
+        return {}
+    return {
+        vector_name: config.get("size")
+        for vector_name, config in vectors.items()
+        if isinstance(config, dict)
+    }
 
 
 def create_payload_index(collection, field_name, field_schema="keyword"):
@@ -283,7 +336,13 @@ def create_payload_index(collection, field_name, field_schema="keyword"):
 
 
 def ensure_collection(name, vectors_config, payload_indexes=()):
-    """Create-if-missing. Leaves an existing collection (and its indexes) untouched -- callers
+    """Create-if-missing, but NOT accept-if-present: an existing collection whose vectors are
+    sized differently from this run's probed dimension stops the run. The probed dimension only
+    ever reaches Qdrant on the create path, so without this check `--model
+    snowflake-arctic-embed:s` (384-dim) against the existing 768-dim collections embeds a
+    document and then dies on the first upsert with a raw Qdrant dimension error naming nothing.
+
+    Leaves an existing collection (and its indexes) untouched otherwise -- callers
     that want a clean slate use --drop first. payload_indexes is a list of field names to index
     as "keyword", created only on the create path -- these are read straight off the live
     collections (GET /collections/{name}'s payload_schema) and are exactly what
@@ -293,7 +352,23 @@ def ensure_collection(name, vectors_config, payload_indexes=()):
     those filters degrade from an indexed lookup to a full collection scan without this.
     on_disk_payload is set false at creation to match the live collections (Qdrant's own current
     default is true)."""
-    if collection_exists(name):
+    existing_sizes = collection_vector_sizes(name)
+    if existing_sizes is not None:
+        for vector_name, config in vectors_config.items():
+            requested = config["size"]
+            actual = existing_sizes.get(vector_name)
+            if actual != requested:
+                sys.exit(
+                    f"collection '{name}' already exists with vector '{vector_name}' sized "
+                    f"{actual if actual is not None else 'absent'}, but this run's probed "
+                    f"embedding dimension is {requested}. Ingesting anyway would fail on the "
+                    f"first upsert (different sizes), and even at equal sizes a model or prefix "
+                    f"change writes incomparable vectors to the SAME deterministic point ids -- "
+                    f"overwriting the documents that overlap and leaving the rest, so the "
+                    f"collection ends up holding a silent mixture. Re-run with --drop to "
+                    f"recreate the collections at {requested} dimensions, or point "
+                    f"--object-collection/--chunks-collection at a throwaway name."
+                )
         return
     status, body = qdrant_request(
         "PUT",
@@ -351,6 +426,9 @@ def verify_contract(model_id, *, require_known_family=False):
     for a family the contract doesn't carry, so an unrecognized --model still verifies (against
     the empty-prefix default) instead of crashing. Exits non-zero on mismatch.
 
+    Then delegates to _verify_algorithm_goldens(), which replays the model-INDEPENDENT goldens
+    (chunking, point ids, centroid) -- see its own docstring.
+
     require_known_family=False (main()'s default) is deliberately permissive: a real ingest
     against an unrecognized model must still be able to run. But permissive alone makes this
     unfalsifiable as a check on family() itself -- document_prefix_for(model_id) and this
@@ -377,6 +455,73 @@ def verify_contract(model_id, *, require_known_family=False):
         sys.exit(
             f"contract verification failed for model '{model_id}' (family '{fam}'): "
             f"resolved prefix {prefix!r} composed {composed!r}, expected {case['composed']!r}"
+        )
+
+    _verify_algorithm_goldens()
+
+
+def _verify_algorithm_goldens():
+    """Replays the contract's goldens for the four algorithms this script re-implements by hand
+    in Python -- split_into_chunks, key_to_ulong, chunk_point_id and compute_centroid.
+
+    These are the reason the design is allowed to keep hand-written Python copies of write-path
+    algorithms at all: the spec's §6 justification is that "the contract pins their behaviour
+    rather than their code", which is only true while these replays exist. Every expected value
+    below was produced by calling the REAL C# method (IngestContractTests reflects into
+    SplitIntoChunks / ComputeChunkPointId and calls KeyToUlong / ComputeCentroid directly), so a
+    mismatch here is a genuine cross-language divergence, not this script disagreeing with a
+    number some test computed for itself. split_into_chunks' word-boundary translation has
+    already been wrong once (4771286), which is what two of the five chunking cases straddle.
+
+    Exits non-zero on mismatch."""
+    golden = CONTRACT["golden"]
+
+    for case in golden["chunking"]:
+        expected = [(c["text"], c["index"]) for c in case["chunks"]]
+        actual = list(split_into_chunks(case["text"]))
+        if actual != expected:
+            sys.exit(
+                f"contract verification failed: chunking case '{case['name']}' mismatch "
+                f"({case['why']})\n"
+                f"  expected: {expected!r}\n"
+                f"  actual:   {actual!r}"
+            )
+
+    for entry in golden["pointIds"]:
+        key = entry["key"]
+        actual_parent = key_to_ulong(key)
+        if actual_parent != entry["parentId"]:
+            sys.exit(
+                f"contract verification failed: key_to_ulong({key!r}) mismatch: "
+                f"expected {entry['parentId']}, got {actual_parent}"
+            )
+        for chunk in entry["chunks"]:
+            actual_point = chunk_point_id(actual_parent, chunk["field"], chunk["chunkIndex"])
+            if actual_point != chunk["pointId"]:
+                sys.exit(
+                    f"contract verification failed: chunk_point_id({actual_parent}, "
+                    f"{chunk['field']!r}, {chunk['chunkIndex']}) mismatch: "
+                    f"expected {chunk['pointId']}, got {actual_point}"
+                )
+
+    # A TOLERANCE, not exact equality, and the tolerance is contract data rather than a literal
+    # here so both ends move together. ComputeCentroid accumulates in C# `float` with MathF.Sqrt
+    # while this script computes in float64, so the two agree only to roughly 1e-7 -- a known and
+    # accepted difference (spec §8), far below anything that reorders a result set. This is the
+    # one golden that cannot be an equality check -- but it is still falsifiable: 1e-6 leaves one
+    # order of magnitude of headroom over the observed gap while staying orders of magnitude
+    # below what a real change to the formula produces (dropping the per-vector L2
+    # normalization, or the divide by the vector count, both trip it).
+    centroid = golden["centroid"]
+    actual_centroid = compute_centroid([[float(c) for c in v] for v in centroid["inputs"]])
+    tolerance = centroid["tolerance"]
+    if len(actual_centroid) != len(centroid["output"]) or any(
+        abs(e - a) > tolerance for e, a in zip(centroid["output"], actual_centroid)
+    ):
+        sys.exit(
+            f"contract verification failed: centroid mismatch (tolerance {tolerance})\n"
+            f"  expected: {centroid['output']!r}\n"
+            f"  actual:   {actual_centroid!r}"
         )
 
 
@@ -566,13 +711,26 @@ def main():
     ap.add_argument(
         "--model", default="nomic-embed-text",
         help="Ollama embedding model id, e.g. 'nomic-embed-text' or 'snowflake-arctic-embed:s'. "
-             "Resolves this run's document prefix by family (everything before the first ':') "
-             "against ingest-contract.json.",
+             "Must already be pulled -- the dimension probe runs before --drop acts. Resolves "
+             "this run's document prefix by family (everything before the first ':') against "
+             "ingest-contract.json, so it changes every vector written. CHANGING THE MODEL "
+             "AGAINST AN EXISTING COLLECTION REQUIRES --drop: a different dimension is refused "
+             "outright, and a same-dimension model would otherwise overwrite only the points "
+             "that overlap, leaving the collection holding a mixture of two vector spaces.",
     )
     args = ap.parse_args()
 
     # Runs before --drop acts: dropping against a drifted contract is as damaging as ingesting
     # against one.
+    #
+    # Global Constraint 2, asserted on every run: every family the contract carries must survive a
+    # tag. require_known_family=True is otherwise unreachable code -- there is no Python test
+    # runner in this repository, so nothing else would ever run the strict form, and a family()
+    # that stopped stripping the tag would make BOTH the prefix lookup and the golden lookup fall
+    # back to "__default__" together, reducing the permissive check below to "" + text == text.
+    # Hardcodes no model id: it iterates whatever families the contract actually carries.
+    for fam in CONTRACT["embedding"]["documentPrefixes"]:
+        verify_contract(f"{fam}:probe-tag", require_known_family=True)
     verify_contract(args.model)
 
     if not args.drop and args.corpus is None:
@@ -580,6 +738,21 @@ def main():
 
     progress_path = f"{args.key_map_path}.progress"
     stats_path = f"{args.key_map_path}.stats.json"
+
+    # The contract carries distance but deliberately no dimension (modelId/dimension are owned
+    # by configuration and a startup probe, not this file) -- so ensure_collection's vector
+    # size comes from actually asking Ollama, not from a hard-coded constant.
+    #
+    # Runs BEFORE --drop acts, for the same reason verify_contract does: `--drop --model
+    # <not-pulled>` used to delete both collections and only then die on the probe, leaving
+    # nothing behind and nothing ingested. A failed probe must cost nothing.
+    #
+    # Probed with an EMPTY prefix, not this run's document prefix. The dimension is
+    # prefix-independent, so both work -- but C# probes unprefixed by design (spec §3/A12,
+    # EmbeddingService's initialization probe does not compose), and this is the one place the
+    # two paths could silently differ in what they send Ollama. They now do not.
+    dimension = len(embed("dimension probe", args.model, ""))
+    print(f"[ingest] probed embedding dimension {dimension} for model '{args.model}'")
 
     if args.drop:
         drop_collection(args.object_collection)
@@ -593,12 +766,7 @@ def main():
             return
 
     document_prefix = document_prefix_for(args.model)
-
-    # The contract carries distance but deliberately no dimension (modelId/dimension are owned
-    # by configuration and a startup probe, not this file) -- so ensure_collection's vector
-    # size comes from actually asking Ollama, not from a hard-coded constant.
-    dimension = len(embed("dimension probe", args.model, document_prefix))
-    print(f"[ingest] probed embedding dimension {dimension} for model '{args.model}' (document prefix {document_prefix!r})")
+    print(f"[ingest] document prefix for model '{args.model}': {document_prefix!r}")
 
     ensure_collection(
         args.object_collection,

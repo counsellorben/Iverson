@@ -321,6 +321,7 @@ public sealed class EmbeddingServiceTests
     [Theory]
     [InlineData("")]
     [InlineData("   ")]
+    [InlineData("\t\n")]
     public async Task EmbedQueryAsync_WithEmptyInput_ThrowsEvenWhenAPrefixWouldMakeItNonEmpty(string input)
     {
         var handler = new FakeHttpMessageHandler(SuccessResponse([1f, 0f, 0f]));
