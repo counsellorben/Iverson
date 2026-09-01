@@ -388,8 +388,14 @@ exists; the table is not designed to be exhaustive.
 
 - **Landing `embedding-prefixes-and-title` or `centroid-ablation`.** This spec re-derives against
   `main`; those branches remain unmerged and are not touched.
-- **Retiring the superseded spec's artifacts.** `2026-08-26-embedding-prefixes-and-title-design.md`
-  and its plan carry the supersession note added here; nothing is deleted.
+- **Retiring the superseded spec's artifacts.** Deleting them is out of scope; **marking them is
+  not**. This spec adds a one-line supersession header to
+  `docs/specs/2026-08-26-embedding-prefixes-and-title-design.md` and
+  `docs/plans/2026-08-26-embedding-prefixes-and-title-implementation-plan.md`, pointing at this
+  document. Neither carries such a note today — both still present the const-based design as
+  current, and an unmarked predecessor has already cost this repository one full
+  spec-to-implementation cycle on 2026-09-01, when `2026-08-29-empty-chunk-guard-design.md` and its
+  plan were found mid-review to cover the same defect with a conflicting contract.
 - **Measuring arctic on SciFact.** The mechanism makes it expressible; running it is a separate
   decision.
 - **Multi-property search and cross-vector fusion.** A separate project.
