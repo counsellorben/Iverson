@@ -76,7 +76,7 @@ absent — a `hasKey` guard, not a default:
 ```
 {{- $active := include "iverson.activeEmbeddingModel" . | fromYaml }}
 - name: Embeddings__ModelId
-  value: {{ $active.name | quote }}
+  value: {{ $active.name | default .Values.global.activeEmbeddingModel | quote }}
 {{- if hasKey $active "documentPrefix" }}
 - name: Embeddings__DocumentPrefix
   value: {{ $active.documentPrefix | quote }}
@@ -86,6 +86,13 @@ absent — a `hasKey` guard, not a default:
   value: {{ $active.queryPrefix | quote }}
 {{- end }}
 ```
+
+The `default` on `Embeddings__ModelId` is load-bearing, not defensive tidiness. With no render-time
+assertion, an `activeEmbeddingModel` naming no entry makes the helper return nothing, `fromYaml` yield
+an empty dict, and `$active.name` render as YAML null — emitting a bare `value:` with nothing after
+it. Falling back to the raw `activeEmbeddingModel` string instead renders the typo verbatim, so
+Ollama returns a 404 naming the model nobody pulled. That is the diagnosable failure; a null
+`value:` is not.
 
 The conditional-env pattern is already established in this chart (`charts/api/templates/deployment.yaml:130`,
 guarded on `global.tracingEnabled`).
@@ -144,8 +151,10 @@ the model name is dropped, since the chart no longer serves a fixed model.
 
 **No render-time assertion that `activeEmbeddingModel` appears in `embeddingModels`.** Ben's decision,
 2026-09-01, having seen the alternative: a `fail` in the helper would reject the mismatch at
-`helm upgrade`. As specified, a mismatch renders cleanly and surfaces as a 404 from Ollama on the
-first embed call — at first ingest or first query, not at deploy.
+`helm upgrade`. As specified, a mismatch renders cleanly and surfaces as a
+404 from Ollama naming the unpulled model, on the first embed call — at first ingest or first query,
+not at deploy. This holds only because of the `default` fallback described above; without it the
+same mismatch emits a null `value:` and the runtime error names nothing useful.
 
 **One failed `ollama pull` crashloops the init container, and N models means N chances of it.** Same
 failure mode as today, N times more likely. Carried forward, not designed around.
@@ -193,3 +202,4 @@ standalone console app.
 | A18 | All six profile values files were considered | enumerated and checked individually |
 | A19 | Nothing else consumes `Embeddings__ModelId` in a way this breaks | absent from the chart entirely (A17); `docker-compose.yml` sets it independently and is out of scope |
 | A20 | Local `helm` supports the templating used | `v3.16.4+g7877b45` |
+| A21 | A mismatched `activeEmbeddingModel` produces a diagnosable failure | prototype render with `--set global.activeEmbeddingModel=typo-model`. **Initially false:** it emitted a bare `value:` (YAML null). Design amended to add `| default .Values.global.activeEmbeddingModel`; re-rendered as `value: "typo-model"`, and the two real cases still render correctly |
