@@ -209,9 +209,13 @@ enable contextual chunking.
 ### 6. `ingest.py`
 
 Carried forward: delete the module-level constants (`MAX_CHARS` `:153`, `STEP` `:154`, the
-collection names, the `768`/`"Cosine"` literals at `:504` and `:509`) and load them from the
-contract; keep the Python implementations of `split_into_chunks`, `compute_centroid`, `key_to_ulong`
-and `chunk_point_id`, since the contract pins their behaviour rather than their code; run
+collection names, and the `"Cosine"` literals at `:504` and `:509`) and load those from the
+contract; **obtain the vector dimension from an Ollama probe against `--model`, not from the
+contract** — the contract excludes `modelId` and `dimension` deliberately, because configuration and
+a startup probe own them, so a `768` deleted without a probe to replace it leaves
+`ensure_collection` with no `size` to pass. Keep the Python implementations of `split_into_chunks`,
+`compute_centroid`, `key_to_ulong` and `chunk_point_id`, since the contract pins their behaviour
+rather than their code; run
 `verify_contract()` immediately after `parse_args()` and **before `--drop` acts** — dropping against
 a drifted contract is as damaging as ingesting against one.
 
@@ -347,7 +351,7 @@ acts, falling back to the `defaultDocumentPrefix` case for an unmatched family.
 | A17 | **Failed as listed** — `ingest.py` has no `--model` argument at all, and `embed()` hard-codes the model | `grep '--model' ingest.py` returns nothing; `ingest.py:309` posts `{"model": "nomic-embed-text"}`. §6 adds the argument rather than wiring an existing one |
 | A18 | The reuse gate compares raw text | `ingest.py:369` — `reuse = body == body.strip() and len(body) <= STEP` |
 | A19 | `4d835c0`'s filter applies to `main`'s shape | `ingest.py:362` — `chunks = list(split_into_chunks(body))`; `git branch --contains 4d835c0` returns only `centroid-ablation` |
-| A20 | The constants the contract replaces exist | `MAX_CHARS` `:153`, `STEP` `:154`, `OLLAMA_URL` `:116`, `768`/`"Cosine"` `:504`, `:509` |
+| A20 | The constants replaced by the contract **and by the probe** exist | `MAX_CHARS` `:153`, `STEP` `:154`, `OLLAMA_URL` `:116`, `768`/`"Cosine"` `:504`, `:509`; the contract carries `distance` but no dimension |
 | A21 | `sample_corpus.py` is the sole `corpus.jsonl` writer | `:225-232` |
 | A22 | The C# path reads `text` into `Body` | `BenchmarkIngestScenario.cs:204` |
 | A23 | **Failed as listed** — the premise "the title is never embedded" holds for `main`'s *code*, but the corpus artifact on disk is already composed, and composition strips the title | `scifact-run-2026-08-26/beir/corpus.jsonl` dated 2026-08-27, 197/200 sampled rows have `text` starting with `title`; row 1's title ends with a trailing space the composed text lacks. Drives §7's `.strip()` and §8's hazard note |
