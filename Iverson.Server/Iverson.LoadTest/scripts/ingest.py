@@ -341,7 +341,7 @@ def document_prefix_for(model_id):
         family(model_id), CONTRACT["embedding"]["defaultDocumentPrefix"])
 
 
-def verify_contract(model_id):
+def verify_contract(model_id, *, require_known_family=False):
     """Replays the contract's golden document-composition case for model_id's family by
     composing that case's own "text" through this script's own document_prefix_for and
     comparing against its "composed" -- the same rule Task 1 implements in C#, read from the
@@ -349,10 +349,28 @@ def verify_contract(model_id):
     recovering the input by stripping the prefix back off "composed") is what makes this a
     cross-language check instead of a tautology. Falls back to the "__default__" golden case
     for a family the contract doesn't carry, so an unrecognized --model still verifies (against
-    the empty-prefix default) instead of crashing. Exits non-zero on mismatch."""
+    the empty-prefix default) instead of crashing. Exits non-zero on mismatch.
+
+    require_known_family=False (main()'s default) is deliberately permissive: a real ingest
+    against an unrecognized model must still be able to run. But permissive alone makes this
+    unfalsifiable as a check on family() itself -- document_prefix_for(model_id) and this
+    function's own fam = family(model_id) call the SAME family() on the SAME input, so if
+    family() is broken (e.g. never strips the tag, or strips the wrong side), the wrong fam
+    string is simply absent from BOTH documentPrefixes and golden, and both sides fall back to
+    the same trivially-true "__default__" identity (composed == text, no prefix) for any
+    garbage family string -- a broken family() coasts through undetected. require_known_family
+    closes that: Step 7's harness passes True for tagged ids whose family IS a real contract
+    key, so a family() that stops stripping the tag (or strips the wrong side) produces a fam
+    string that is NOT a real key and this rejects it outright, before it ever reaches the
+    identity-masking fallback."""
     prefix = document_prefix_for(model_id)
     fam = family(model_id)
     golden = CONTRACT["golden"]["documentComposition"]
+    if require_known_family and fam not in golden:
+        sys.exit(
+            f"contract verification failed for model '{model_id}': family '{fam}' is not a "
+            f"known key in golden.documentComposition -- family() may be broken"
+        )
     case = golden.get(fam, golden["__default__"])
     composed = prefix + case["text"]
     if composed != case["composed"]:
