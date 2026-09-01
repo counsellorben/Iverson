@@ -78,6 +78,7 @@ Verified by `thorough-brainstorming` at spec-write time and reconfirmed by two d
 | P17 | Consumer impact | The new pre-flight refusal breaks no in-repo caller of `benchmark-query` | The only in-repo invocation is `Iverson.LoadTest/Program.cs:190`'s command dispatch; the sweeps are driven from scratchpad scripts outside the repo. Those WILL refuse at multiplier 5 on the three dense corpora — accepted, per the spec's Known issues |
 | P18 | Consumer impact | `--baseline` is optional, so existing `report.py` invocations are unaffected | argparse; the new section runs only when the flag is present |
 | P20 | Signature | `RunAsync`'s pre-flight block holds **four** `Console.Error.WriteLine` + `throw new InvalidOperationException` validations, not three | `BenchmarkQueryScenario.cs:44-62` — `--corpus-path`, `--key-map-path`, `--output-dir`, `--config-label`. The spec's inherited A19 says "three instances"; it understates by one. The plan's steps use the measured count |
+| P21 | Signature | A helper in `Iverson.LoadTest/Benchmark/` must be `public` to be testable from `Iverson.LoadTest.Tests` — that assembly has no `InternalsVisibleTo` | `grep InternalsVisibleTo Iverson.LoadTest.csproj` returns nothing. All four existing helpers are `public static`: `DocumentRanking.cs:13`, `KeyMap.cs:11`, `TrecRunWriter.cs:10`, `MaxPassageAggregator.cs:23` |
 | P19 | Sibling sweep | *(meta-class: every identifier the plan's code blocks name resolves at its point of use)* | Framework: `PEReader`, `MetadataReader`, `GetModuleDefinition`, `Mvid`, `GetGuid`, `AppContext.BaseDirectory`, `HttpClient`, `argparse`, `ttest_rel`, `norm.ppf` — all compiled or executed in probes. Repo: `AuthTestWebApplicationFactory`, `CreateClient`, `LoadTestConfig`, `Env`, `flags.KeyMapPath`, `flags.OutputDir`, `DocumentBudget`, `ChunkBudgetMultiplier`, `resolve_run_paths`, `iter_calc` — each read at its cited location |
 
 ## Tasks
@@ -238,16 +239,16 @@ namespace Iverson.LoadTest.Benchmark;
 /// reachable = topK / chunksPerDoc is a WORST case: it assumes a document's chunks are
 /// retrieved together. The true count lies between it and topK.
 /// </summary>
-internal static class ChunkBudgetGuard
+public static class ChunkBudgetGuard
 {
-    internal readonly record struct Result(
+    public readonly record struct Result(
         bool   Ok,
         double ChunksPerDocument,
         int    ChunkTopK,
         double ReachableDocuments,
         int    MinimumMultiplier);
 
-    internal static Result Evaluate(
+    public static Result Evaluate(
         int documents, int chunks, int documentBudget, int chunkBudgetMultiplier)
     {
         var chunksPerDoc = (double)chunks / documents;
@@ -263,6 +264,8 @@ internal static class ChunkBudgetGuard
     }
 }
 ```
+
+`public`, not `internal` plus an `InternalsVisibleTo`: `Iverson.LoadTest` has no such attribute, and all four existing helpers in this directory are `public static` — adding one would introduce a convention the assembly has never needed.
 
 `reachable >= documentBudget` is equivalent to `chunkBudgetMultiplier >= chunksPerDoc`, which is why `MinimumMultiplier` is `ceil(chunksPerDoc)`.
 
@@ -288,7 +291,9 @@ throw new InvalidOperationException("chunk budget cannot reach DocumentBudget di
 
 - [ ] **Step 4: Fetch `/build` and write the sidecar**
 
-Still in the pre-flight block, after the guard. `GET {config.HttpUrl}/build`; on any failure, refuse the same way — a run that cannot be attributed should not start, and an API that cannot answer a read-only GET will not serve the sweep either. Write the response through to `Path.Combine(flags.OutputDir, $"{flags.ConfigLabel}.meta.json")`:
+Still in the pre-flight block, after the guard. `GET {config.HttpUrl}/build`; on any failure, refuse the same way — a run that cannot be attributed should not start, and an API that cannot answer a read-only GET will not serve the sweep either. Write the response through to `Path.Combine(flags.OutputDir, $"{flags.ConfigLabel}.meta.json")`, calling `Directory.CreateDirectory(flags.OutputDir)` immediately before the write.
+
+That call is required, not defensive: the only `Directory.CreateDirectory` on this path today is inside `TrecRunWriter.WriteAsync` (`TrecRunWriter.cs:18-20`), which runs at the *end* of the scenario, so the harness's current contract is that `--output-dir` need not pre-exist. Without it the first run into a fresh directory throws `DirectoryNotFoundException` in pre-flight — and passes on the second run into the same directory, so the failure presents as intermittent.
 
 ```json
 {
@@ -350,13 +355,15 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 
 - [ ] **Step 1: Add `--baseline` and exclude it from run discovery**
 
-Optional argument, so existing invocations are unchanged. Exclude the baseline from the discovered run set by absolute path, exactly as `resolve_run_paths` already excludes the `--qrels` file, and report it the same way:
+Optional argument, so existing invocations are unchanged. **Leave `resolve_run_paths` untouched** — it feeds the structural-check loop (`report.py:332-333`) and the scoring loop (`:335-336`) as well as the new section, so excluding the baseline there would drop its own coverage check and its `nDCG@10`/`R@50`/`AP` line while every `[compare]` block still names it as the reference. The qrels precedent does not transfer: qrels is excluded because handing it to `ir_measures` as a run raises a `ValueError` on column count, whereas the baseline is a valid run that must simply not be compared with itself.
+
+Exclude it only where the comparison set is built — filter it from the runs the new section iterates, by absolute path, and report it there:
 
 ```
-[report] excluded <path> from run discovery (it is the --baseline file)
+[compare] excluded <path> (it is the --baseline file)
 ```
 
-Without this, the obvious invocation `--baseline runs/reference.chunks.trec --run runs/` compares the baseline against itself: `t = nan`, and — less visibly — the Holm family inflates by one and weakens every other comparison.
+Without that exclusion the obvious invocation `--baseline runs/reference.chunks.trec --run runs/` compares the baseline against itself: `t = nan`, and — less visibly — the Holm family inflates by one and weakens every other comparison. The Holm family size is the number of comparisons actually made, after this exclusion.
 
 - [ ] **Step 2: Locate and read each run's sidecar**
 
