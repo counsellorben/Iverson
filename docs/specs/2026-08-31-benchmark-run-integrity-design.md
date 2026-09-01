@@ -89,6 +89,12 @@ endpoints do not already carry. The harness reaches it on 8081 because that is t
 }
 ```
 
+**How a consumer finds the sidecar for a run file:** strip the trailing `.trec`, then strip a
+trailing `.similar` or `.chunks` if present, then append `.meta.json` — so `runs/reference.chunks.trec`
+and `runs/reference.similar.trec` both resolve to `runs/reference.meta.json`. The two endpoint
+suffixes are fixed constants at `BenchmarkQueryScenario.cs:39-40`, so the rule is closed. A run file
+whose name ends in neither suffix has no sidecar by construction and takes the `build: unknown` path.
+
 A sidecar, not the TREC run tag. Folding the identity into the tag would make every config label
 build-unique, which breaks exactly the cross-build comparison the tag exists for.
 
@@ -102,6 +108,14 @@ pattern at `Program.cs:26-33`. Port 8081 is published in `docker-compose.yml:367
 
 A fourth output section, after the existing structural checks, scores and ingest throughput, which
 are untouched. `--baseline <run>` turns it on: every `--run` is compared against the baseline.
+
+**The baseline is excluded from the comparison set by absolute path**, mirroring the qrels exclusion
+`resolve_run_paths` already performs, and reported the same way (`[report] excluded … from run
+discovery (it is the --baseline file)`). Without that exclusion the obvious invocation —
+`--baseline runs/reference.chunks.trec --run runs/` — compares the baseline against itself, which
+yields `t = nan` and, less visibly, inflates the Holm family so that every other comparison's
+corrected p-value is weakened. **The Holm family size is the number of comparisons actually made,
+after this exclusion.**
 
 The comparison runs for each of the three measures `report.py` already computes — **nDCG@10, R@50
 and AP** — because the failure that motivated this item was a *recall* claim, not an nDCG one.
