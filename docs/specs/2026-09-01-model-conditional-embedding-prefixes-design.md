@@ -196,11 +196,15 @@ C#/Python agreement, not model-appropriateness" — change the model and both si
 prefix. Here, changing `Embeddings__ModelId` changes what each side resolves, so a model change is
 visible.
 
-**One new golden case**: the composed document string for a plain chunk, obtained by reflectively
-calling `ComposeDocumentInput` **with the resolved prefix the emit already read from the table** —
-the `BindingFlags.NonPublic | BindingFlags.Static` convention the
-contract already uses for `ComputeChunkPointId` and `KeyToUlong`. The context-composed form is not
-goldened, because the benchmark entity does not enable contextual chunking.
+**One new golden case per family**: the composed document string for a plain chunk, obtained by
+reflectively calling `ComposeDocumentInput` with that family's prefix — the
+`BindingFlags.NonPublic | BindingFlags.Static` convention the contract already uses for
+`ComputeChunkPointId` and `KeyToUlong`. **The golden is keyed by family, exactly as
+`documentPrefixes` is**, plus one case for `defaultDocumentPrefix`. A single golden would pin
+whichever family the emit happened to compose with, and `verify_contract()` — which resolves for its
+own `--model` — would then fail for every other family, blocking the arctic ingest this mechanism
+exists to enable. The context-composed form is not goldened, because the benchmark entity does not
+enable contextual chunking.
 
 ### 6. `ingest.py`
 
@@ -304,8 +308,10 @@ source is intact at `/home/ben/iverson-benchmark-data/scifact-full`.
 **Unit, C#.** Both prefixes compose correctly for a known model; an unknown family resolves to the
 empty pair; an explicit `""` override is honoured and is distinguishable from unset; the dimension
 probe stays unprefixed; the empty-input guard throws **with a non-empty prefix configured** (§4).
-The C# and Python resolutions are asserted to agree **for a tagged model id**, not merely an
-untagged one — an untagged id passes against a Python side that never strips.
+`verify_contract()` under `--model <tagged id>` replays that family's golden and must match — this
+is what asserts the C# and Python resolutions agree, and it runs on the Python side against the
+contract the C# side emitted. A tagged id is required: an untagged one passes against a Python side
+that never strips.
 The four production call sites are asserted to use the correct method — a wrong choice raises no
 error and produces only a worse number.
 
@@ -314,8 +320,9 @@ error and produces only a worse number.
 a green suite. The guarded failure is specific and has happened in this repository: a re-pointed test
 keeps passing while silently losing the branch it existed to cover.
 
-**Contract drift gate.** The emit-and-compare test covers `documentPrefixes` and the new golden case;
-`verify_contract()` replays it in `ingest.py` before `--drop` acts.
+**Contract drift gate.** The emit-and-compare test covers `documentPrefixes` and the per-family
+golden cases; `verify_contract()` replays its resolved family's case in `ingest.py` before `--drop`
+acts, falling back to the `defaultDocumentPrefix` case for an unmatched family.
 
 ## Verified assumptions
 
