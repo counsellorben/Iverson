@@ -186,6 +186,9 @@ class RegModelInheritedChild(RegModelInheritedParent):
     inherited ones) because a decorated base already scrubs its own ``FieldMeta`` sentinels to
     ``None``, which is orthogonal to the model-inheritance behavior under test here."""
 
+    # A decorated base's field sentinels are scrubbed to `None` and do not inherit — without
+    # this redeclaration the child would register keyless.
+    id: str = iverson_key()
     title: str = iverson_embedding()
     body: str = iverson_chunk()
 
@@ -195,6 +198,9 @@ class RegModelOverrideChild(RegModelInheritedParent):
     """Declares its own model, distinct from the parent's ``nomic-embed-text`` — its own value
     must win, not the parent's."""
 
+    # A decorated base's field sentinels are scrubbed to `None` and do not inherit — without
+    # this redeclaration the child would register keyless.
+    id: str = iverson_key()
     title: str = iverson_embedding()
     body: str = iverson_chunk()
 
@@ -212,6 +218,9 @@ class RegModelChainChild(RegModelChainParent):
     base's model — ``RegModelChainParent``'s "snowflake-arctic-embed:s" — not
     ``RegModelInheritedParent``'s "nomic-embed-text"."""
 
+    # A decorated base's field sentinels are scrubbed to `None` and do not inherit — without
+    # this redeclaration the child would register keyless.
+    id: str = iverson_key()
     title: str = iverson_embedding()
     body: str = iverson_chunk()
 
@@ -673,6 +682,35 @@ class TestKeyFieldDeclarations:
         props = {p.name: p for p in request.root_type.properties}
         assert props["Id"].is_key is True
         assert props["Id"].description == "Stable identifier."
+
+    def test_inheriting_child_that_does_not_redeclare_the_key_raises(self):
+        """A decorated child of a fielded decorated parent inherits the parent's ``id``
+        *annotation* (the type hint) but not its ``FieldMeta`` sentinel, which is scrubbed to
+        ``None`` on the parent after decoration — so a child that relies on the parent's
+        ``iverson_key()`` rather than redeclaring it registers with ``key_field is None`` and
+        no client-side error, until this guard exists."""
+        @iverson_entity
+        class RegKeyedParent:
+            id: str = iverson_key()
+
+        @iverson_entity
+        class RegChildMissingKey(RegKeyedParent):
+            title: str = None
+
+        stub = make_stub()
+        registrar = SchemaRegistrar(stub, RegChildMissingKey)
+        with pytest.raises(ValueError, match="RegChildMissingKey"):
+            registrar.register_all()
+
+    def test_entity_with_no_key_at_all_raises(self):
+        @iverson_entity
+        class RegNeverKeyedArticle:
+            title: str = None
+
+        stub = make_stub()
+        registrar = SchemaRegistrar(stub, RegNeverKeyedArticle)
+        with pytest.raises(ValueError, match="RegNeverKeyedArticle"):
+            registrar.register_all()
 
 
 class TestArrayProperties:
