@@ -219,11 +219,21 @@ ENTITY_REGISTRY: dict[str, type] = {}
 # ── @iverson_entity decorator ──────────────────────────────────────────────────
 
 
-def iverson_entity(cls: type | None = None, *, description: str = ""):
+def iverson_entity(cls: type | None = None, *, description: str = "", embedding_model: str = ""):
     """Class decorator that collects ``FieldMeta`` annotations into metadata.
 
     Usable bare (``@iverson_entity``) or called
     (``@iverson_entity(description="...")`` to describe the type itself).
+
+    Args:
+        description: human-readable description of the type itself.
+        embedding_model: the Ollama model this type's embedding/chunk properties are
+            generated with. One model per TYPE, never per property — every
+            ``iverson_embedding()``/``iverson_chunk()`` field on this class is stamped with
+            the same value. ``""`` (the default) means "not declared"; the server then
+            resolves the deployment's configured default, exactly as it does for a client
+            that predates this parameter — so an un-updated caller keeps working with no
+            server-side special-casing.
 
     After decoration:
     - ``cls._iverson_meta`` is a dict with keys:
@@ -236,12 +246,15 @@ def iverson_entity(cls: type | None = None, *, description: str = ""):
         - ``metadata_fields`` (list[str]): field names marked as metadata signals
         - ``descriptions`` (dict[str, str]): field name → description text
         - ``description`` (str): description of the type itself
+        - ``embedding_model`` (str): the declared embedding model, or ``""`` if undeclared
     - Every ``FieldMeta`` class attribute is replaced with ``None`` so instances
       can set it normally.
     """
     if cls is None:
         def _decorate(inner_cls: type) -> type:
-            return iverson_entity(inner_cls, description=description)
+            return iverson_entity(
+                inner_cls, description=description, embedding_model=embedding_model,
+            )
         return _decorate
 
     annotations: dict[str, Any] = {}
@@ -327,6 +340,7 @@ def iverson_entity(cls: type | None = None, *, description: str = ""):
         "metadata_fields": metadata_fields,
         "descriptions": descriptions,
         "description": description,
+        "embedding_model": embedding_model,
         "summary_fields": summary_fields,
         "keywords_fields": keywords_fields,
         "extracted_fields": extracted_fields,

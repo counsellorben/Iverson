@@ -138,6 +138,40 @@ class RegUnsupportedElementArticle:
     widgets: list[_CustomElement] = None
 
 
+@iverson_entity(embedding_model="nomic-embed-text")
+class RegModelBothFlagsArticle:
+    """Declares a model and carries one property that is BOTH an embedding and a chunk
+    source, plus one property that is NEITHER — the neither-flags property is the guard-off
+    control that proves the stamp does not leak onto every property once a model is declared."""
+
+    id: str = iverson_key()
+    title: str = iverson_field(embedding=True, chunk=True)
+    category: str = iverson_metadata()
+
+
+@iverson_entity(embedding_model="nomic-embed-text")
+class RegModelAsymmetricArticle:
+    """Declares a model with an embedding-ONLY property and a chunk-ONLY property. This is the
+    shape that catches a guard swap (``is_chunk`` accidentally guarding ``model_id`` or vice
+    versa): with only a both-flags property and a neither-flags property, a swapped guard
+    produces identical output and goes undetected."""
+
+    id: str = iverson_key()
+    title: str = iverson_embedding()
+    body: str = iverson_chunk()
+
+
+@iverson_entity
+class RegModelUndeclaredArticle:
+    """No ``embedding_model`` declared. Carries both an embedding and a chunk property so the
+    undeclared arm is pinned on ``chunk_model_id`` as well as ``model_id`` — a fixture with only
+    an embedded property cannot catch a stamp that leaks onto the chunk field alone."""
+
+    id: str = iverson_key()
+    title: str = iverson_embedding()
+    body: str = iverson_chunk()
+
+
 # ── Fixtures ───────────────────────────────────────────────────────────────────
 
 def make_stub() -> MagicMock:
@@ -642,3 +676,41 @@ class TestAuthorizationRules:
         assert requests["RegArticle"].root_type.authorization.owner_field == "OwnerOne"
         assert requests["RegAuthor"].root_type.authorization.owner_field == "OwnerTwo"
         assert requests["RegDescribedKeyArticle"].root_type.HasField("authorization") is False
+
+
+class TestEmbeddingModelDeclaration:
+    """``@iverson_entity(embedding_model=...)`` is stamped onto ``model_id``/``chunk_model_id``
+    in place of the ``""`` literals in ``SchemaRegistrar._build_request``, guarded per property
+    on that property's own ``is_embedding``/``is_chunk`` values."""
+
+    def test_declared_model_stamped_on_both_flags_property(self):
+        request = register_request(RegModelBothFlagsArticle)
+        props = {p.name: p for p in request.root_type.properties}
+        assert props["Title"].model_id == "nomic-embed-text"
+        assert props["Title"].chunk_model_id == "nomic-embed-text"
+
+    def test_declared_model_not_stamped_on_neither_flag_property(self):
+        request = register_request(RegModelBothFlagsArticle)
+        props = {p.name: p for p in request.root_type.properties}
+        assert props["Category"].model_id == ""
+        assert props["Category"].chunk_model_id == ""
+
+    def test_declared_model_stamped_only_on_model_id_for_embedding_only_property(self):
+        request = register_request(RegModelAsymmetricArticle)
+        props = {p.name: p for p in request.root_type.properties}
+        assert props["Title"].model_id == "nomic-embed-text"
+        assert props["Title"].chunk_model_id == ""
+
+    def test_declared_model_stamped_only_on_chunk_model_id_for_chunk_only_property(self):
+        request = register_request(RegModelAsymmetricArticle)
+        props = {p.name: p for p in request.root_type.properties}
+        assert props["Body"].model_id == ""
+        assert props["Body"].chunk_model_id == "nomic-embed-text"
+
+    def test_undeclared_model_leaves_model_id_and_chunk_model_id_empty(self):
+        request = register_request(RegModelUndeclaredArticle)
+        props = {p.name: p for p in request.root_type.properties}
+        assert props["Title"].model_id == ""
+        assert props["Title"].chunk_model_id == ""
+        assert props["Body"].model_id == ""
+        assert props["Body"].chunk_model_id == ""

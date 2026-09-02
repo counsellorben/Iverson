@@ -40,7 +40,7 @@ from iverson_client.vector_search import chunks as chunks_builder, similar as si
 
 from conformance.models import (
     ErrorDoc, ErrorUnregisteredDoc, IdentityDoc, PyArticle, PyAuthor, PyBadArticle, PyTag,
-    QueryDoc, SharedArticle, SharedAuthor, VectorDoc,
+    QueryDoc, S11ModelPython, SharedArticle, SharedAuthor, VectorDoc,
 )
 
 LANGUAGE = "python"
@@ -52,9 +52,15 @@ LANGUAGE = "python"
 # vector-search (S7) is register-phase-NEVER for this driver: only .NET registers VectorDoc
 # (register-once rule). This driver seeds one row and then issues a SearchSimilar and a
 # SearchChunks through the client library's own vector-search builders.
+# model-rejected (S11): register only (register-once per scenario invocation — see
+# Iverson.Server/Iverson.ClientConformance/Scenarios/ModelRejectedScenario.cs). This driver
+# registers its OWN instance of S11ModelPython, carrying embedding_model="nomic-embed-text", and
+# reports the descriptor it sent so the orchestrator's Reregistrar has JSON to mutate. No
+# write/read phase: the orchestrator re-registers the reported descriptor itself, with a model
+# override, and grades the rejection directly.
 SCENARIOS = {
     "crud-roundtrip", "naming-rejected", "interop", "schema-catalog", "query", "vector-search",
-    "identity", "error-contract",
+    "identity", "error-contract", "model-rejected",
 }
 
 # S8 identity: the tenant value every driver stamps on the IdentityDoc row it creates —
@@ -877,6 +883,27 @@ def main(argv: List[str]) -> int:
             steps.append(StepResult("denied_update_wrong_acting_user", False, error=describe(exc)))
         finally:
             wrong_channel.close()
+
+    elif phase == "register" and scenario == "model-rejected":
+        # S11 model-rejected: registers ONLY S11ModelPython — this scenario's own fixture, never
+        # shared with the other four languages, since the subject is what happens to a type
+        # ALREADY registered by THIS client. No write/read phase: the orchestrator
+        # re-registers the reported descriptor itself, with a model override, and grades the
+        # rejection directly (Scenarios/ModelRejectedScenario.cs).
+        error: Optional[str] = None
+        try:
+            registrar = SchemaRegistrar(capture, S11ModelPython)
+            registrar.register_all()
+        except Exception as exc:  # noqa: BLE001 - reported as data, not raised
+            error = describe(exc)
+
+        descriptor_json = capture.select("S11ModelPython")
+        steps.append(StepResult(
+            name="register_model_doc",
+            ok=error is None,
+            error=error,
+            type_descriptor=json.loads(descriptor_json) if descriptor_json else None,
+        ))
 
     elif phase == "register":
         # SchemaRegistrar.register_all() issues one RegisterSchema call per type, sequentially,

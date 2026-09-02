@@ -226,6 +226,7 @@ class SchemaRegistrar:
         summary_fields_set = set(meta.get("summary_fields", []))
         keywords_fields_set = set(meta.get("keywords_fields", []))
         extracted_fields_by_name = meta.get("extracted_fields", {})
+        embedding_model = meta.get("embedding_model", "")
         self._validate_key_declarations(
             type_name,
             key_field,
@@ -272,11 +273,11 @@ class SchemaRegistrar:
                 is_large_field=(field_name in large_fields_set),
                 is_embedding=(field_name in embedding_fields_set),
                 vector_dim=0,
-                model_id="",
+                model_id=(embedding_model if field_name in embedding_fields_set else ""),
                 is_chunk=is_chunk,
                 chunk_max_tokens=chunk_max_tokens,
                 chunk_overlap=chunk_overlap,
-                chunk_model_id="",
+                chunk_model_id=(embedding_model if is_chunk else ""),
                 chunk_vector_dim=0,
                 chunk_contextual=chunk_contextual,
                 is_summary_target=(field_name in summary_fields_set),

@@ -197,3 +197,32 @@ class ErrorUnregisteredDoc:
     tenant_id: str = None
     owner_id: str = None
     label: str = None
+
+
+@iverson_entity(embedding_model="nomic-embed-text")
+class S11ModelPython:
+    """S11 ``model-rejected``'s Python fixture
+    (``Iverson.Server/Iverson.ClientConformance/Scenarios/ModelRejectedScenario.cs``). Unlike S1's
+    shared fixtures, each requested language registers its OWN instance of this scenario's type
+    rather than one type shared across all five — the subject is what happens to a type ALREADY
+    registered by THIS client, so five languages sharing one type would leave four of the five
+    columns grading a row a different client registered. Must be named exactly
+    ``S11ModelPython``: ``ModelRejectedScenario.TypeNameFor("python")`` derives and asserts this
+    name with ordinal comparison, and this client derives the registered type name from the class
+    name with no override, so the class itself must carry that exact name.
+
+    Declares the deployment's default model explicitly (``embedding_model="nomic-embed-text"``)
+    rather than a second one, on purpose: this exercises the whole declaration path while keeping
+    the conformance environment single-model, so no second model ever needs to be pulled. It also
+    means the harness alone cannot distinguish "the client stamped the declared model" from "the
+    client sent ``""`` and the server fell back to the same value" — that distinction is pinned by
+    a client-side unit test instead (``tests/test_schema_registrar.py``'s
+    ``TestEmbeddingModelDeclaration.test_declared_model_stamped_on_both_flags_property``).
+    """
+
+    id: uuid.UUID = iverson_key()
+    tenant_id: str = None
+    owner_id: str = None
+
+    title: str = iverson_embedding()
+    body: str = iverson_chunk()

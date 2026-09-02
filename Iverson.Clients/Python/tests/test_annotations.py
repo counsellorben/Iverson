@@ -145,3 +145,32 @@ class TestRelationKinds:
         rels = Profile._iverson_meta["relations"]
         assert len(rels) == 1
         assert rels[0]["kind"] == "one_to_one"
+
+
+class TestEmbeddingModelDeclaration:
+    """``@iverson_entity(embedding_model="...")`` is a class-level, keyword-only declaration —
+    never per-property — read once into ``cls._iverson_meta``. The stamping behavior onto
+    ``PropertyDescriptor.model_id``/``chunk_model_id`` is pinned separately in
+    ``tests/test_schema_registrar.py``; this only pins that the decorator itself carries the
+    value through."""
+
+    def test_undeclared_defaults_to_empty_string(self):
+        assert Article._iverson_meta["embedding_model"] == ""
+
+    def test_declared_value_stored_verbatim(self):
+        @iverson_entity(embedding_model="nomic-embed-text")
+        class ModelDeclaredEntity:
+            id: str = iverson_key()
+
+        assert ModelDeclaredEntity._iverson_meta["embedding_model"] == "nomic-embed-text"
+
+    def test_bare_decorator_form_still_defaults_to_empty_string(self):
+        """The bare (`@iverson_entity`, no parens) form must keep working for a class that never
+        adopts the new parameter — this is the "un-updated client" contract from the other side:
+        the class site, not the wire."""
+
+        @iverson_entity
+        class BareModelEntity:
+            id: str = iverson_key()
+
+        assert BareModelEntity._iverson_meta["embedding_model"] == ""
