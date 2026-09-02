@@ -339,7 +339,7 @@ Checked against the codebase at `68d68f6` before this spec was written.
 | A39 | No DECL coverage row would double-claim the new ID | `iverson-client-standard.md:112-118` |
 | A40 | A Go fixture's key needs **both** `iverson_key` and `iverson_guid`; the server rejects any key whose built `SqlType` is not `UUID` | `tags.go:96,100`; `SchemaRegistrationOrchestrator`'s key check, whose message names the Go tag |
 | A41 | `EmbeddingService.ModelId` returns the options value verbatim — no normalisation or trimming — so `resolver.Get(M).ModelId == M` for every non-empty M | `EmbeddingService.cs:30` |
-| A42 | `Get` cannot throw: beyond a dictionary lookup its only work is constructing an `EmbeddingService`, whose field initializers call `EmbeddingPrefixes.For`, which is total | `EmbeddingPrefixes.cs:44-45` |
+| A42 | `Get` cannot throw: beyond a dictionary lookup its only work is constructing an `EmbeddingService`, whose field initializers call `EmbeddingPrefixes.For`, which is total | `EmbeddingPrefixes.cs:42-43` |
 
 **Taken on faith, not individually verified:** `ConcurrentDictionary.Count` cost characteristics,
 `@Inherited`'s semantics on
