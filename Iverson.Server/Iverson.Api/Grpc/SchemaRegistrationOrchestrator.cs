@@ -29,12 +29,29 @@ public sealed class SchemaRegistrationOrchestrator(
     private static readonly Regex IdentifierPattern = new("^[A-Za-z][A-Za-z0-9]*$", RegexOptions.Compiled);
 
     // The declaration is class-level in every client, so every embedding/chunk property of a type
-    // carries the same value; taking the first is therefore taking the type's model, not one
-    // field's. Empty means "not declared" — four clients send "" and Go omits the fields.
-    private static string? DeclaredModel(TypeDescriptor typeDesc) =>
-        typeDesc.Properties
-            .Select(p => p.IsEmbedding ? p.ModelId : p.IsChunk ? p.ChunkModelId : null)
-            .FirstOrDefault(m => !string.IsNullOrEmpty(m));
+    // is expected to carry the same value — reading both flag-halves (ModelId AND ChunkModelId) so
+    // a dual-flag property's ChunkModelId is never dropped unnoticed. Empty means "not declared" —
+    // four clients send "" and Go omits the fields. More than one distinct non-empty value across
+    // the whole type is a malformed declaration, not a value to silently pick among.
+    private static string? DeclaredModel(TypeDescriptor typeDesc)
+    {
+        var declared = typeDesc.Properties
+            .SelectMany(p => new[] { p.IsEmbedding ? p.ModelId      : null,
+                                     p.IsChunk     ? p.ChunkModelId : null })
+            .Where(m => !string.IsNullOrEmpty(m))
+            .Distinct(StringComparer.Ordinal)
+            .ToList();
+
+        if (declared.Count > 1)
+        {
+            throw new RpcException(new Status(StatusCode.InvalidArgument,
+                $"Type '{typeDesc.TypeName}' declares more than one embedding model across its "
+                + $"properties: {string.Join(", ", declared.Select(m => $"'{m}'"))}. The declaration "
+                + $"is class-level — every embedding/chunk property on a type must name the same model."));
+        }
+
+        return declared.SingleOrDefault();
+    }
 
     public async Task<IReadOnlyList<string>> RegisterAsync(SchemaRequest request, CancellationToken ct)
     {
@@ -58,7 +75,18 @@ public sealed class SchemaRegistrationOrchestrator(
             foreach (var property in typeDesc.Properties)
                 ValidateIdentifier(property.Name, $"property name on type '{typeDesc.TypeName}'");
 
-            var service = resolver.Get(DeclaredModel(typeDesc));
+            var declared = DeclaredModel(typeDesc);
+
+            // Resolved once, and bound rather than re-derived. On the undeclared arm this is the loop's only
+            // Get call; re-deriving the default below the guard would make it two.
+            var defaultService = declared is null ? resolver.Get(null) : null;
+
+            // Null when this registration carries no embedded content at all — a type that has just lost its
+            // last embedding/chunk property is not changing its model, it is ceasing to have one, and the
+            // write path already supports that. Taking service.ModelId here instead would reject exactly that
+            // evolution whenever the deployment default has moved on.
+            var hasEmbedded = typeDesc.Properties.Any(p => p.IsEmbedding || p.IsChunk);
+            var nextModel   = hasEmbedded ? (declared ?? defaultService!.ModelId) : null;
 
             // batchDescriptors, not registry.Get alone: registry.RegisterAsync does not run until
             // phase 3, so if this SAME request names typeDesc.TypeName twice (a root colliding with a
@@ -73,13 +101,6 @@ public sealed class SchemaRegistrationOrchestrator(
                 ? inBatch
                 : registry.Get(typeDesc.TypeName);
             var priorModel = priorDescriptor is { } prior ? SchemaDescriptor.ModelOf(prior) : null;
-
-            // Null when this registration carries no embedded content at all — a type that has just lost its
-            // last embedding/chunk property is not changing its model, it is ceasing to have one, and the
-            // write path already supports that. Taking service.ModelId here instead would reject exactly that
-            // evolution whenever the deployment default has moved on.
-            var hasEmbedded = typeDesc.Properties.Any(p => p.IsEmbedding || p.IsChunk);
-            var nextModel   = hasEmbedded ? service.ModelId : null;
 
             if (priorModel is not null && nextModel is not null &&
                 !string.Equals(priorModel, nextModel, StringComparison.Ordinal))
@@ -107,6 +128,8 @@ public sealed class SchemaRegistrationOrchestrator(
                     + $"deployment's Ollama — every other type still registered under it needs it to "
                     + $"stay reachable."));
             }
+
+            var service = defaultService ?? resolver.Get(declared);
 
             try
             {
