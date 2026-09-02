@@ -216,6 +216,18 @@ class RegModelChainChild(RegModelChainParent):
     body: str = iverson_chunk()
 
 
+@iverson_entity(embedding_model="")
+class RegModelOptOutChild(RegModelInheritedParent):
+    """Passes an explicit ``embedding_model=\"\"`` under a declaring parent — this is a
+    deliberate OPT OUT of inheriting the parent's model, not "not declared". Redeclares its own
+    ``id`` (rather than relying on the parent's, which is scrubbed to ``None`` after decoration)
+    so this fixture still carries a real key field."""
+
+    id: str = iverson_key()
+    title: str = iverson_embedding()
+    body: str = iverson_chunk()
+
+
 # ── Fixtures ───────────────────────────────────────────────────────────────────
 
 def make_stub() -> MagicMock:
@@ -781,3 +793,16 @@ class TestEmbeddingModelDeclaration:
         props = {p.name: p for p in request.root_type.properties}
         assert props["Title"].model_id == "snowflake-arctic-embed:s"
         assert props["Body"].chunk_model_id == "snowflake-arctic-embed:s"
+
+    def test_subclass_passing_explicit_empty_model_opts_out_of_inheriting_the_parents(self):
+        """``embedding_model=""`` passed explicitly is a deliberate opt-out, not "not
+        declared" — unlike a bare ``@iverson_entity`` (which inherits), this must send ``""``
+        on both ``model_id`` and ``chunk_model_id`` even though a declaring parent is in the
+        MRO. This is the behavior that brings Python in line with the other four clients, where
+        a derived type can opt out of an inherited model by declaring the empty value."""
+        request = register_request(RegModelOptOutChild)
+        props = {p.name: p for p in request.root_type.properties}
+        assert props["Title"].model_id == ""
+        assert props["Title"].chunk_model_id == ""
+        assert props["Body"].model_id == ""
+        assert props["Body"].chunk_model_id == ""

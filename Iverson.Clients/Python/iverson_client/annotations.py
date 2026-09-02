@@ -219,7 +219,7 @@ ENTITY_REGISTRY: dict[str, type] = {}
 # ── @iverson_entity decorator ──────────────────────────────────────────────────
 
 
-def iverson_entity(cls: type | None = None, *, description: str = "", embedding_model: str = ""):
+def iverson_entity(cls: type | None = None, *, description: str = "", embedding_model: str | None = None):
     """Class decorator that collects ``FieldMeta`` annotations into metadata.
 
     Usable bare (``@iverson_entity``) or called
@@ -230,16 +230,20 @@ def iverson_entity(cls: type | None = None, *, description: str = "", embedding_
         embedding_model: the Ollama model this type's embedding/chunk properties are
             generated with. One model per TYPE, never per property — every
             ``iverson_embedding()``/``iverson_chunk()`` field on this class is stamped with
-            the same value. ``""`` (the default) means "not declared HERE" — if a decorated
-            base class in this class's MRO declares one, the nearest such declaration is
-            inherited; a subclass that passes its own value overrides any inherited one. If no
-            base declares one either, the server resolves the deployment's configured default,
-            exactly as it does for a client that predates this parameter — so an un-updated
-            caller keeps working with no server-side special-casing. Only ``embedding_model``
-            inherits this way from a decorated base — its ``FieldMeta`` sentinels (including
-            ``iverson_key()``) are replaced with ``None`` on the base (see "After decoration"
-            below) and do NOT carry into subclasses, so the declaring base must be field-less,
-            or the child must redeclare every field it needs.
+            the same value. Three cases: ``None`` (the default, i.e. the argument was not
+            supplied) means "not declared HERE" — if a decorated base class in this class's MRO
+            declares a non-empty model, the nearest such declaration is inherited. An explicit
+            ``""`` means "declared HERE as opted OUT" — no MRO walk happens, and this type's
+            properties are stamped with ``""`` even if a base declares a model, matching how the
+            other Iverson clients treat an explicit empty value. A non-empty value is used as-is
+            and overrides any inherited one. If resolution (supplied or inherited) ends in ``""``
+            or ``None`` with no declaring base, the server resolves the deployment's configured
+            default, exactly as it does for a client that predates this parameter — so an
+            un-updated caller keeps working with no server-side special-casing. Only
+            ``embedding_model`` inherits this way from a decorated base — its ``FieldMeta``
+            sentinels (including ``iverson_key()``) are replaced with ``None`` on the base (see
+            "After decoration" below) and do NOT carry into subclasses, so the declaring base
+            must be field-less, or the child must redeclare every field it needs.
 
     After decoration:
     - ``cls._iverson_meta`` is a dict with keys:
@@ -270,14 +274,15 @@ def iverson_entity(cls: type | None = None, *, description: str = "", embedding_
             continue
         annotations.update(getattr(base, "__annotations__", {}))
 
-    if not embedding_model:
-        # "" covers both "not supplied" and an explicit embedding_model="" — Python cannot
-        # tell them apart given the "" default, and inheriting on empty is the correct
-        # reading under Global Constraint 2. Unlike the annotation gather above (which walks
-        # farthest-first to accumulate every inherited field), this walks NEAREST-first —
-        # cls.__mro__[1:] is parent, then grandparent, ... — so a middle class's own
-        # declaration wins over an ancestor's. Skip object and any undecorated base (neither
-        # carries `_iverson_meta`).
+    if embedding_model is None:
+        # None (not supplied) means "inherit from the MRO"; an explicit "" is a deliberate
+        # opt-out and must NOT walk the MRO — see the docstring's three cases. Unlike the
+        # annotation gather above (which walks farthest-first to accumulate every inherited
+        # field), this walks NEAREST-first — cls.__mro__[1:] is parent, then grandparent, ... —
+        # so a middle class's own declaration wins over an ancestor's. Skip object and any
+        # undecorated base (neither carries `_iverson_meta`). If no declaring base is found,
+        # resolve to "" (the "undeclared" sentinel `_iverson_meta["embedding_model"]` carries).
+        embedding_model = ""
         for base in cls.__mro__[1:]:
             base_meta = getattr(base, "_iverson_meta", None)
             if base_meta and base_meta.get("embedding_model"):
