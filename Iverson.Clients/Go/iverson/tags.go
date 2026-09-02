@@ -50,6 +50,11 @@
 // A type-level description is supplied by implementing the optional interface:
 //
 //	interface{ IversonDescription() string }
+//
+// A type-level embedding model — one model per type, never per-property — is supplied
+// the same way:
+//
+//	interface{ IversonEmbeddingModel() string }
 package iverson
 
 import (

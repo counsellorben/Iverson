@@ -177,3 +177,32 @@ type ErrorUnregisteredDoc struct {
 	OwnerId  string
 	Label    string
 }
+
+// S11ModelGo is S11 model-rejected's Go fixture
+// (Iverson.Server/Iverson.ClientConformance/Scenarios/ModelRejectedScenario.cs). Unlike S1's
+// shared fixtures, each requested language registers its OWN instance of this scenario's type
+// rather than one type shared across all five — the subject is what happens to a type ALREADY
+// registered by THIS client, so five languages sharing one type would leave four of the five
+// columns grading a row a different client registered. Must be named exactly "S11ModelGo":
+// ModelRejectedScenario.TypeNameFor("go") derives and asserts this name with ordinal comparison,
+// and this client derives the registered type name from the struct name with no override, so the
+// struct itself must carry that exact name.
+//
+// Declares the deployment's default model explicitly (IversonEmbeddingModel() returning
+// "nomic-embed-text") rather than a second one, on purpose: this exercises the whole declaration
+// path while keeping the conformance environment single-model, so no second model ever needs to
+// be pulled. It also means the harness alone cannot distinguish "the client stamped the declared
+// model" from "the client sent "" and the server fell back to the same value" — that distinction
+// is pinned by a client-side unit test instead (iverson_test/registrar_test.go's
+// TestSchemaRegistrar_EmbeddingModel_StampedOnBothFlagsProperty).
+type S11ModelGo struct {
+	Id       string `iverson_key:"true" iverson_guid:"true"`
+	TenantId string
+	OwnerId  string
+
+	Title string `iverson_embedding:"true"`
+	Body  string `iverson_chunk:"true"`
+}
+
+// IversonEmbeddingModel declares S11ModelGo's per-type embedding model.
+func (S11ModelGo) IversonEmbeddingModel() string { return "nomic-embed-text" }

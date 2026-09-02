@@ -60,6 +60,13 @@ var supportedScenarios = map[string]bool{
 	// a key no row exists under, and attempts one mapped write against ErrorUnregisteredDoc — a
 	// type nothing ever registers — reporting the gRPC status code and detail each received.
 	"error-contract": true,
+	// model-rejected (S11): register only (register-once per scenario invocation — see
+	// Iverson.Server/Iverson.ClientConformance/Scenarios/ModelRejectedScenario.cs). This driver
+	// registers its OWN instance of S11ModelGo, carrying embedding model "nomic-embed-text", and
+	// reports the descriptor it sent so the orchestrator's Reregistrar has JSON to mutate. No
+	// write/read phase: the orchestrator re-registers the reported descriptor itself, with a
+	// model override, and grades the rejection directly.
+	"model-rejected": true,
 }
 
 // identityWrongTenant is the tenant value every driver stamps on the IdentityDoc row it creates:
@@ -1030,6 +1037,28 @@ func run(argv []string) int {
 			}
 		}
 		steps = append(steps, readStep)
+
+	case phase == "register" && sc == "model-rejected":
+		// S11 model-rejected: registers ONLY S11ModelGo — this scenario's own fixture, never
+		// shared with the other four languages, since the subject is what happens to a type
+		// ALREADY registered by THIS client. No write/read phase: the orchestrator re-registers
+		// the reported descriptor itself, with a model override, and grades the rejection
+		// directly (Scenarios/ModelRejectedScenario.cs). This case must stay ordered before the
+		// bare `phase == "register"` case below: Go's `switch { case ... }` takes the first
+		// matching case, so a scenario-gated case placed after the bare one would never run.
+		capture := &capturingMappingClient{real: client.MappingStub}
+		registrar := iverson.NewSchemaRegistrar(capture, S11ModelGo{})
+		regErr := registrar.RegisterAll(ctx, idPrefix, nil)
+		regStep := stepResult{
+			Name:           "register_model_doc",
+			Ok:             regErr == nil,
+			TypeDescriptor: capture.selectDescriptor("S11ModelGo"),
+		}
+		if regErr != nil {
+			msg := regErr.Error()
+			regStep.Error = &msg
+		}
+		steps = append(steps, regStep)
 
 	case phase == "register":
 		if sc == "naming-rejected" {
