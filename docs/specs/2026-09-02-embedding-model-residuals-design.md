@@ -45,22 +45,38 @@ that is then refused.
 The guard needs the resolved model id, not the service, so it is computed without touching the cache:
 
 ```csharp
-var declared  = DeclaredModel(typeDesc);
-var nextModel = hasEmbedded ? (declared ?? resolver.Get(null).ModelId) : null;
+var declared = DeclaredModel(typeDesc);
+
+// Resolved once, and bound rather than re-derived. On the undeclared arm this is the loop's only
+// Get call; re-deriving the default below the guard would make it two.
+var defaultService = declared is null ? resolver.Get(null) : null;
+var nextModel      = hasEmbedded ? (declared ?? defaultService!.ModelId) : null;
 ```
 
-`resolver.Get(null)` returns the already-registered default singleton and adds no entry. The
-expression is exactly equivalent to today's `service.ModelId` in all three cases: a declared model M
-resolves to options carrying `ModelId = M`; a declared model equal to the default returns the
-singleton whose `ModelId` is that same value; an absent declaration yields the default.
+and below the guard's throw, still above `EnsureInitializedAsync` (`:113`) and `BuildDescriptor`
+(`:126`), the only two consumers of the service:
 
-`resolver.Get(declared)` then moves below the guard's throw, remaining above `EnsureInitializedAsync`
-(`:113`) and `BuildDescriptor` (`:126`), the only two consumers of the service.
+```csharp
+var service = defaultService ?? resolver.Get(declared);
+```
+
+`resolver.Get(null)` returns the already-registered default singleton and writes no cache entry, so
+making that one call before the guard does not weaken the bound.
+
+**The equivalence is of the returned value, not of the call count** — which is why the undeclared arm
+binds the service instead of re-deriving it. The value holds in all three cases: a declared model M
+resolves to options carrying `ModelId = M`; a declared model equal to the default returns the
+singleton whose `ModelId` is that same value; an absent declaration yields the default. The count
+matters because `SchemaRegistrationOrchestratorTests.cs:661` asserts `Received(1).Get(null)` —
+exactly-once in NSubstitute — and that test exists specifically to observe which argument phase 1
+passes the resolver. Re-deriving would turn one call into two and redden it.
 
 **This ordering fix is the whole of the cache bound.** Once resolution happens after the guard, the
-reachable key set is the declared models of *accepted* registrations — bounded by the number of
-registered types, which is admin-controlled through a `SchemaAdmin`-gated RPC. `Get` stays total: it
-never throws, so the four non-registration callers (`IntelligenceStoreConsumer.cs:144,259` and
+reachable key set is the declared models of registrations that get **past the guard** — narrower than
+today, and bounded by a `SchemaAdmin`-gated RPC. It is not only *accepted* registrations: `Get` still
+precedes `BuildDescriptor` (`:126`), phase-2 cross-validation and the phase-3 writes, any of which can
+still reject a registration whose model is by then cached. `Get` stays total — it never throws — so
+the four non-registration callers (`IntelligenceStoreConsumer.cs:144,259` and
 `ObjectSearchGrpcService.cs:206,387`) are unaffected.
 
 **Rejected alternative, and why (Ben's call, revised):** an explicit `MaxCachedModels` cap was
@@ -101,6 +117,9 @@ hand-crafted gRPC request could take.
 - Two properties naming the **same** model → accepted (not a conflict).
 - After a guard rejection, `resolver.DidNotReceive().Get(<rejected model>)` — tests the ordering
   directly rather than by proxy, and is what pins the cache bound now that no cap enforces it.
+- The existing `SchemaRegistrationOrchestratorTests.cs:661` (`Received(1).Get(null)`) stays green
+  **unedited**. That is the point of binding the service rather than re-deriving it; if this test
+  needs touching, the implementation has diverged from §1a.
 
 ---
 
@@ -132,7 +151,10 @@ which flows into the schema and the table.
 This is a latent defect, not merely an obstacle: it means Go has no usable inheritance analogue today,
 and any struct embedding silently corrupts the registered schema. The fix is one line in the walk —
 skip `sf.Anonymous` — on the rationale that an embedded struct is a method-promotion mechanism, not a
-property. It cannot break existing users, because embedding today corrupts rather than works.
+property. It cannot break existing users, and the evidence for that is a scan rather than the
+semantics: a `go/ast` pass over all 33 `.go` files finds zero anonymous fields anywhere in the tree.
+The semantic argument would be too strong — an embedded struct whose fields are all untagged registers
+successfully today, producing a spurious always-null column rather than corruption.
 
 ### 2b. Python — follow the pattern already in the function
 
@@ -194,7 +216,11 @@ The declaring parent only has to exist; it is never registered.
 - `S12Declared<Lang>` — carries the declaration, **not** registered, field-less
 - `S12Inherited<Lang>` — registered, declares nothing, inherits
 
-Go's parent is a field-less embedded struct carrying only the method, which is inert once 2a lands:
+Go's parent is a field-less embedded struct carrying only the method. Once 2a lands it is *harmless*
+rather than inert: `InspectType` skips it, but `entityToStruct` (`coordinator.go:498`) and
+`fillEntityValue` (`coordinator.go:643`) do not, so a write would still serialize a null-valued key
+named after the embedded type. `json_populate_record` ignores keys with no matching column, and the
+S12 fixture is register-only regardless.
 
 ```go
 type S12DeclaredGo struct{}
@@ -262,8 +288,13 @@ A source-scanning test, following `RequirementsCoverageGateTests`' established a
 **The matching rule must strip whole-line comments and ignore string literals.** Verification found
 three files mentioning `Iverson.Api` and only one is a real dependency — the others are prose in a doc
 comment (`TenantRejectedScenarioTests.cs`) and a `Path.Combine` literal
-(`RequirementsCoverageGateTests.cs`). A substring match would fail on both. The existing citation gate
-already does this stripping.
+(`RequirementsCoverageGateTests.cs`). A substring match would fail on both.
+
+The existing citation gate covers only half of it. `StripCommentLines`
+(`RequirementsCoverageGateTests.cs:274-282`) drops whole-line comments, which handles the doc-comment
+case; nothing there knows about string literals, so the `Path.Combine` case needs new code. Reuse the
+comment stripper — do not assume the literal handling arrives with it, or the test fails on that gate's
+own file.
 
 The failure message carries the reason, not just the violation: a probe sharing the server's own
 constant cannot catch the server changing it.
@@ -307,6 +338,8 @@ Checked against the codebase at `68d68f6` before this spec was written.
 | A34 | The two env blocks are byte-identical | `diff` of the two extracted blocks returns empty |
 | A39 | No DECL coverage row would double-claim the new ID | `iverson-client-standard.md:112-118` |
 | A40 | A Go fixture's key needs **both** `iverson_key` and `iverson_guid`; the server rejects any key whose built `SqlType` is not `UUID` | `tags.go:96,100`; `SchemaRegistrationOrchestrator`'s key check, whose message names the Go tag |
+| A41 | `EmbeddingService.ModelId` returns the options value verbatim — no normalisation or trimming — so `resolver.Get(M).ModelId == M` for every non-empty M | `EmbeddingService.cs:30` |
+| A42 | `Get` cannot throw: beyond a dictionary lookup its only work is constructing an `EmbeddingService`, whose field initializers call `EmbeddingPrefixes.For`, which is total | `EmbeddingPrefixes.cs:44-45` |
 
 **Taken on faith, not individually verified:** `ConcurrentDictionary.Count` cost characteristics,
 `@Inherited`'s semantics on
@@ -317,8 +350,9 @@ existing helper.
 
 ## Out of scope
 
-- **Cross-language *field* inheritance.** .NET and Python both inherit a base class's fields as schema
-  properties (Python explicitly MRO-walks annotations); after 2a, Go's embedded fields will not. That
+- **Cross-language *field* inheritance.** Four of the five inherit a base class's fields as schema
+  properties — .NET, Python (an explicit MRO walk), Java (`getAllFields` walks `getSuperclass()`) and
+  TypeScript (the prototype chain) — while after 2a Go's embedded fields will not. That
   divergence concerns which *properties* a derived type registers, not which *model* embeds them, and
   is a separate pre-existing question. Not addressed here.
 - **The `IversonDescription` inheritance divergence**, which mirrors the model one and is equally
