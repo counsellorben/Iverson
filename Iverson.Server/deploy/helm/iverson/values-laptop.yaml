@@ -12,6 +12,10 @@
 global:
   engagementEnabled: false   # no StarRocks: vendor sizes FE at 8 CPU/16GB
   tracingEnabled: false      # no jaeger
+  # One model only: the PVC is 8Gi and ollama's CPU request is 250m, so a second buys nothing
+  # here. A profile list override REPLACES rather than merges, so one entry is sufficient.
+  embeddingModels:
+    - name: nomic-embed-text
 
 prometheus:
   enabled: false

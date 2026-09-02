@@ -26,6 +26,24 @@ global:
   # would let the pulled model and the requested model drift apart, which fails at runtime
   # with a 404 from Ollama on every generative call.
   generativeModel: "qwen2.5:3b"
+  # The embedding models Ollama pulls. Under `global` for the same reason generativeModel is:
+  # the ollama subchart PULLS these and the api/worker subcharts REQUEST one of them, so
+  # scoping them to one subchart would let the pulled and requested sets drift apart.
+  #
+  # The prefix keys are three-state and the distinction is load-bearing. Omitting a key leaves
+  # the C# property null, which means "derive from the model family"; setting it to "" means
+  # "deliberately no prefix". Arctic's document prefix IS the empty string, so "" cannot
+  # double as unset — which is why the templates use `hasKey`, not `default`.
+  embeddingModels:
+    - name: nomic-embed-text
+      # prefixes omitted -> EmbeddingPrefixes derives them from the model family
+    - name: snowflake-arctic-embed:s
+      documentPrefix: ""
+      queryPrefix: "Represent this sentence for searching relevant passages: "
+  # The default model api and worker request for any registered type that does not declare its
+  # own. Must name an entry above; a mismatch renders cleanly and surfaces as a 404 from Ollama
+  # naming the unpulled model on the first embed call, not at deploy.
+  activeEmbeddingModel: nomic-embed-text
   # Drives the starrocks subchart's condition AND the api/worker env guards AND
   # Engagement__Enabled. One flag, because two flags that must agree can disagree —
   # and the disagreeing state renders a secretKeyRef against a Secret that no longer

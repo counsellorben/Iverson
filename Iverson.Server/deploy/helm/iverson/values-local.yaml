@@ -7,6 +7,12 @@
 # because this profile never leaves localhost. Every cloud overlay in the
 # companion Terraform plan sets a real tlsSecretName.
 
+global:
+  # One model only: the PVC is 8Gi and ollama's CPU request is 250m, so a second buys nothing
+  # here. A profile list override REPLACES rather than merges, so one entry is sufficient.
+  embeddingModels:
+    - name: nomic-embed-text
+
 postgres:
   instances: 1
   storageSize: 2Gi
