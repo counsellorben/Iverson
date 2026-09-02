@@ -19,6 +19,7 @@ public interface IReregistrar
         JsonElement typeDescriptorJson,
         string actingToken,
         string ownerField = "OwnerId",
+        string? modelId = null,
         CancellationToken ct = default);
 }
 
@@ -40,15 +41,25 @@ public sealed class Reregistrar(ObjectMappingService.ObjectMappingServiceClient 
     /// Parses <paramref name="typeDescriptorJson"/> (the register-phase driver's reported
     /// <c>TypeDescriptor</c>, exactly as it appeared in the phase document), sets
     /// <see cref="TypeDescriptor.Authorization"/> to the fixed rules below, and re-registers it.
+    ///
+    /// <para><paramref name="modelId"/>, when non-null, is stamped onto <c>model_id</c> and
+    /// <c>chunk_model_id</c> of every embedding/chunk property before the descriptor is re-posted
+    /// — the one way the harness can make a re-registration resolve to a DIFFERENT embedding model
+    /// than the one the stored schema carries, which is what
+    /// <c>Scenarios.ModelRejectedScenario</c> exists to provoke. Both fields are rewritten because
+    /// the declaration is class-level in every client: a property carrying only the chunk half
+    /// would otherwise leave a type whose two fields name two models, which is not a shape any
+    /// client can produce. Null — the default — leaves every existing caller's behaviour
+    /// byte-identical, so the seven re-registrations the other scenarios make are unaffected.</para>
     /// </summary>
     public async Task ReregisterAsync(
         JsonElement typeDescriptorJson,
         string actingToken,
         string ownerField = "OwnerId",
+        string? modelId = null,
         CancellationToken ct = default)
     {
-        var descriptor = Parser.Parse<TypeDescriptor>(typeDescriptorJson.GetRawText());
-        descriptor.Authorization = Rules(ownerField);
+        var descriptor = BuildDescriptor(typeDescriptorJson, ownerField, modelId);
 
         // The acting-user token rides in `x-acting-user-authorization`, NOT in `authorization`:
         // the server reads `authorization` as the SERVICE identity and requires the
@@ -64,6 +75,32 @@ public sealed class Reregistrar(ObjectMappingService.ObjectMappingServiceClient 
             },
             headers,
             cancellationToken: ct);
+    }
+
+    /// <summary>
+    /// The descriptor actually posted, as a pure function of the driver's reported JSON and the
+    /// two overrides — extracted from <see cref="ReregisterAsync"/> so it is gradable without a
+    /// live channel. Everything below the RPC is what this method decides; a test that could only
+    /// observe the RPC could not see the model override silently stop being applied, which would
+    /// leave <c>ModelRejectedScenario</c> provoking no model change at all while every assertion it
+    /// drives from a scripted rejection stayed green.
+    /// </summary>
+    internal static TypeDescriptor BuildDescriptor(
+        JsonElement typeDescriptorJson, string ownerField, string? modelId)
+    {
+        var descriptor = Parser.Parse<TypeDescriptor>(typeDescriptorJson.GetRawText());
+        descriptor.Authorization = Rules(ownerField);
+
+        if (modelId is null)
+            return descriptor;
+
+        foreach (var property in descriptor.Properties)
+        {
+            if (property.IsEmbedding) property.ModelId = modelId;
+            if (property.IsChunk) property.ChunkModelId = modelId;
+        }
+
+        return descriptor;
     }
 
     private static AuthorizationRules Rules(string ownerField = "OwnerId") => new()

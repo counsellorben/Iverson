@@ -272,6 +272,47 @@ public static class Requirements
     /// </summary>
     public const string RegReservedTenantColumnNameRejected = "IVC-REG-005";
 
+    /// <summary>
+    /// The server rejects re-registration of a type whose resolved embedding model differs from the
+    /// model its registered schema carries. A type's vectors live in ONE Qdrant collection per
+    /// tenant, so accepting the change would leave that collection holding vectors from two
+    /// incompatible spaces — and no dimension check catches it when the two models share a
+    /// dimension, which is exactly the case a "just check the width" guard is blind to. The guard is
+    /// the model comparison in <c>SchemaRegistrationOrchestrator.RegisterAsync</c>'s phase-1 loop,
+    /// which throws <c>FailedPrecondition</c> before any DDL, any registry write, and before the
+    /// embedding service is contacted at all.
+    ///
+    /// <para>Discharged by <c>Scenarios.ModelRejectedScenario.JudgeRejection</c>, once per requested
+    /// language, over a re-registration of THAT language's own registered fixture with a model
+    /// override supplied by <c>Reregistrar</c>. Every one of its assertions cites this requirement
+    /// rather than only the first: the statement is that the server rejects THIS registration, and a
+    /// rejection carrying another guard's status code or another rule's message text is not evidence
+    /// of it — the same reasoning <see cref="RegReservedTenantColumnNameRejected"/>'s per-site labels
+    /// rest on. So the status code (<c>FailedPrecondition</c>), both model names, and both halves of
+    /// the message's remedy (the <c>_iverson_schema</c> row AND the two tenant-qualified Qdrant
+    /// collections) are each asserted separately. The status half has no <c>IVC-ERR-*</c>
+    /// requirement of its own — the ERR axis authors one per rejection family, and this is the
+    /// standard's only <c>FailedPrecondition</c> REGISTRATION refusal — so it is graded here rather
+    /// than by widening an ERR statement that does not cover it.</para>
+    ///
+    /// <para>Graded through the driver channel, unlike every other REG requirement, and for a
+    /// reason: the rule is about a type that a CLIENT has already registered, so the fixture has to
+    /// be one a client library actually produced. What the scenario provokes is orchestrator-side —
+    /// no client can be made to re-register itself under a second model — but the row it provokes
+    /// against is the client's own.</para>
+    ///
+    /// <para><b>The parity assertion beside it (<c>ModelRejectedScenario.JudgeParity</c>) also cites
+    /// this requirement, and its limit is stated rather than glossed.</b> It reads every fixture's
+    /// stored model out of <c>_iverson_schema</c> through <c>SchemaProbe</c> — the only observation
+    /// of "the model its registered schema carries" available to the harness, since that value is on
+    /// no wire — and asserts the five agree. It is the positive control for the four negative arms:
+    /// without it, a server that stored no model at all would satisfy every rejection assertion
+    /// vacuously. It CANNOT distinguish a client that stamped the declared model from one that sent
+    /// <c>""</c> and was defaulted to the same value; per-client stamping is pinned by a client-side
+    /// unit test in each language, not here.</para>
+    /// </summary>
+    public const string RegEmbeddingModelChangeRejected = "IVC-REG-006";
+
     // ── QRY — Query ─────────────────────────────────────────────────────────────────────────
 
     /// <summary>

@@ -194,6 +194,7 @@ implemented requirement.
 | IVC-REG-003 | Active | Behaviour | The server rejects registration of a `many_to_one`, `one_to_one` or `many_to_many` relation whose foreign key is not named `{RelatedTypeName}Id` (or `{RelatedTypeName}Ids` for `many_to_many`) |
 | IVC-REG-004 | Active | Behaviour | The server rejects registration of a descriptor that declares a tenant field |
 | IVC-REG-005 | Active | Behaviour | The server rejects registration of a descriptor that names the reserved server-owned tenant column in any name-bearing position |
+| IVC-REG-006 | Active | Behaviour | The server rejects re-registration of a type whose resolved embedding model differs from the model its registered schema carries |
 
 Both `IVC-REG-002` and `IVC-REG-003` are the server-side half of a pair whose client-side half is
 already normative elsewhere in this document: `IVC-REL-002` obliges a client to derive
@@ -279,6 +280,30 @@ grades exactly the same rule, and the six sites stay in one place where the enum
 is legible. If a future client is found to DERIVE the reserved name (rather than have a user type it
 literally), that is a client-side claim and belongs on `DECL`, not here.
 
+`IVC-REG-006` is the axis's one REREGISTRATION rule, and the only requirement here graded through
+the driver channel. A type's vectors live in one Qdrant collection per tenant, so a re-registration
+that resolves to a different embedding model would leave that collection holding vectors from two
+incompatible spaces — and a dimension check cannot see it whenever the two models share a width,
+which is the common case. The server therefore refuses the registration outright, with
+`FailedPrecondition` rather than `InvalidArgument`: the descriptor is not malformed, the deployment
+is in a state that has to be cleared first. Both halves of that remedy are part of what the
+`model-rejected` scenario asserts — the `_iverson_schema` row AND the tenant-qualified collections —
+because clearing either alone leaves the deployment stuck, and a message naming only one half is a
+message that will be followed only halfway.
+
+The driver channel is the right one here for the same reason it is the wrong one for `IVC-REG-004`
+and `IVC-REG-005`: the rule is about a type a CLIENT has already registered, so the row it fires
+against has to be one a client library actually produced. Each language registers its own
+vector-carrying fixture and the orchestrator re-registers that descriptor with a model override —
+no client can be made to re-register itself under a second model, and none needs to be. Beside the
+per-language rejection arms the scenario also reads every fixture's stored model out of
+`_iverson_schema` and asserts they agree. That read is the positive control (without it, a server
+storing no model at all would satisfy every rejection arm vacuously) and it is the harness's only
+observation of "the model its registered schema carries", which is on no wire. It CANNOT
+distinguish a client that stamped the declared model from one that sent `''` and was defaulted to
+the same value; per-client stamping is a client-side claim, pinned by a unit test in each of the
+five client libraries rather than by this axis.
+
 #### Coverage
 
 | Area | Status | Evidence |
@@ -287,8 +312,9 @@ literally), that is a client-side claim and belongs on `DECL`, not here.
 | Foreign-key naming enforced at registration | Covered | IVC-REG-003 |
 | Client-declared tenant field rejected at registration | Covered | IVC-REG-004 |
 | Reserved server-owned tenant column name rejected at registration | Covered | IVC-REG-005 |
+| Embedding-model change rejected at re-registration | Covered | IVC-REG-006 |
 | `one_to_many` foreign keys validated at registration | Deferred | `SchemaRegistrationOrchestrator.cs:103` filters the relation loop with `.Where(r => r.Kind != RelationKind.OneToMany)`, which excludes `one_to_many` from ALL THREE checks in that loop — not only the naming rule `IVC-REG-003` correctly exempts it from, but also foreign-key-is-a-declared-property and foreign-key SQL typing. So a `one_to_many`'s declared foreign key is validated by nothing: `Author` may declare `[OneToMany(typeof(Article), ForeignKey = "WriterId")]` while `Article` declares `AuthorId`, registration succeeds, and every depth-resolved read then queries a column that does not exist. This carve-out is one this axis itself created when it scoped `IVC-REG-003` to the three kinds the server enforces, so it is disclosed here rather than left silent. Closing it is a SERVER change, not a client one, and not a trivial one: the property and typing checks would have to run against the RELATED type's descriptor, which is not in hand when the declaring type registers — it needs either a deferred cross-type validation pass or a registration-order constraint. Its own initiative; no requirement here asserts against it. |
-| Reregistration | Deferred | `Reregistrar.cs` exercises reregistration (registering an already-registered type again) on every conformance run, but no assertion cites a requirement ID against that behaviour. Reregistration's correctness is exercised as test-harness plumbing, not verified as a normative claim. |
+| Reregistration beyond the embedding-model rule | Deferred | `Reregistrar.cs` exercises reregistration (registering an already-registered type again) on every conformance run. Exactly one of its outcomes is now a normative claim — the `Embedding-model change rejected at re-registration` row above, which the `model-rejected` scenario asserts against. Everything else about reregistration is still exercised as test-harness plumbing rather than verified: that a re-registration replaces the stored descriptor wholesale, what it does to rows and vectors already ingested under the previous shape, and whether a shape change other than the model is accepted at all, are asserted by nothing here. |
 | Authorization rules at registration time | Deferred | `SchemaRegistrationOrchestrator.cs:54,208` accepts and stores `AuthorizationRules` as part of the descriptor, but no requirement in this document constrains what the server does with them at registration time. |
 | Schema drift | Deferred | A `SchemaDriftException` (thrown by `IRecordStoreSchemaManager.ApplySchemaAsync` when a re-registration's shape conflicts with the stored schema) surfaces as `FailedPrecondition`, but no requirement asserts on that status code or the conditions that produce it. |
 
@@ -297,9 +323,12 @@ literally), that is a client-side claim and belongs on `DECL`, not here.
 `standard.md`'s own axis table defines REG as "Schema registration and reregistration behaviour."
 The rules authored above are the complete REG deliverable the design spec called for, so authoring
 only them is not a spec violation — but three things a literal reading of "registration ... and
-reregistration behaviour" could include are deliberately NOT authored as requirements here, and are
-recorded rather than left as a silent gap — reregistration, authorization rules at registration
-time, and schema drift; see the Coverage table above for each's reason.
+reregistration behaviour" could include are NOT (or not fully) authored as requirements here, and
+are recorded rather than left as a silent gap — reregistration, authorization rules at registration
+time, and schema drift; see the Coverage table above for each's reason. Reregistration is the one
+of the three that is now PARTLY authored: `IVC-REG-006` makes the embedding-model rule normative,
+and what is left deferred is everything else about re-registering a type. This paragraph said all
+three were wholly unauthored until `IVC-REG-006` landed.
 
 These three are deferred, not out of scope forever, and a future axis pass may author requirements
 for them. **Descriptor contents are explicitly NOT part of this deferral** — what a registered
@@ -311,10 +340,11 @@ field left to type, and what replaced it is `IVC-REG-004`'s outright rejection a
 
 #### Backstop assertion (non-normative)
 
-Unlike `REL`'s per-relation loop (see "Authoring notes" above), none of `REG`'s assertions can go
-vacuous, and that — and only that — is why `REG` declares no backstop assertion. The reason is not
-that they are outside a `foreach`: `IVC-REG-002`'s citations iterate
-`NavPropertyRejectedScenario.CollisionFixtures` and `IVC-REG-005`'s iterate
+Unlike `REL`'s per-relation loop (see "Authoring notes" above), four of `REG`'s five requirements
+cannot go vacuous at all, and the fifth (`IVC-REG-006`) can only go vacuous in a way machinery
+outside this axis already catches — that, and only that, is why `REG` declares no backstop
+assertion. For the four, the reason is not that they are outside a `foreach`: `IVC-REG-002`'s
+citations iterate `NavPropertyRejectedScenario.CollisionFixtures` and `IVC-REG-005`'s iterate
 `TenantRejectedScenario.ReservedNameFixtures`, so two of the four DO sit in a loop. (An earlier
 version of this paragraph asserted otherwise; it was already wrong about `IVC-REG-002` when it was
 written.) The reason is what those loops iterate. `REL`'s loop walks a DESCRIPTOR's relations — a
@@ -323,6 +353,16 @@ exactly the vacuity `REL`'s backstop exists to catch. `REG`'s loops walk `static
 lists authored in the assertion's own file, so emptying one is a source edit to the list three lines
 above the `foreach`, not a data condition arising elsewhere. `IVC-REG-003`'s and `IVC-REG-004`'s
 assertions are single-shot against one hand-built fixture apiece and are not in a loop at all.
+
+`IVC-REG-006` is the exception to that reasoning and is stated rather than folded in: its
+assertions DO iterate a runtime-supplied collection — the requested language set — so a run that
+requests no language, or whose every driver skips, grades it zero times. What stands in for a
+backstop assertion there is not this axis's structure but two mechanisms the harness already owns:
+`ScenarioCells.Cell` fails outright any cell that graded no assertion at all, so a language whose
+arm silently stopped firing goes red rather than green, and `Report.RunSucceeded` exits non-zero on
+a full-matrix run whose requirement tally leaves any ID untouched — which is exactly the condition
+"`IVC-REG-006` was graded zero times" produces. A narrowed run can still leave it ungraded, by
+construction, as it can for every other requirement in this document.
 
 That reasoning is specific to `REG` and must not be generalised to the other backstop-less axes.
 `DECL` in particular does have a loop-bodied citation: `IVC-DECL-006`'s only citation

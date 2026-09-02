@@ -68,7 +68,7 @@ try
         CrudRoundtripScenario.Name, NamingRejectedScenario.Name, NavPropertyRejectedScenario.Name,
         InteropScenario.Name, SchemaCatalogScenario.Name, QueryScenario.Name,
         VectorSearchScenario.Name, IdentityScenario.Name, ErrorContractScenario.Name,
-        TenantRejectedScenario.Name,
+        TenantRejectedScenario.Name, ModelRejectedScenario.Name,
     ];
     var scenarios = flags.Scenarios ?? recognizedScenarios;
 
@@ -122,6 +122,8 @@ try
         runner, new Reregistrar(mapping),
         new ObjectSearchService.ObjectSearchServiceClient(channel),
         log: Console.WriteLine);
+    var modelRejected = new ModelRejectedScenario(
+        runner, new Reregistrar(mapping), new SchemaProbe(postgresCs), log: Console.WriteLine);
 
     DriverContext BuildContext(string scenarioName) => new(
         Scenario: scenarioName,
@@ -225,6 +227,18 @@ try
     {
         Console.WriteLine($"Running scenario '{TenantRejectedScenario.Name}'...");
         foreach (var cell in await tenantRejected.RunAsync(languages, actingToken))
+        {
+            report.Add(cell);
+        }
+    }
+
+    // As with the blocks above, this dispatch — not `recognizedScenarios` — is what actually runs
+    // the scenario.
+    if (scenarios.Contains(ModelRejectedScenario.Name, StringComparer.OrdinalIgnoreCase))
+    {
+        Console.WriteLine($"Running scenario '{ModelRejectedScenario.Name}'...");
+        foreach (var cell in await modelRejected.RunAsync(
+                     languages, BuildContext(ModelRejectedScenario.Name), actingToken))
         {
             report.Add(cell);
         }

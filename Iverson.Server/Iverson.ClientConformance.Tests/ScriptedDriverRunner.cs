@@ -94,7 +94,14 @@ public sealed class ScriptedDriverRunner : IDriverRunner
 /// </summary>
 public sealed class RecordingReregistrar : IReregistrar
 {
-    public List<(string ActingToken, string OwnerField)> Calls { get; } = [];
+    /// <summary>
+    /// Every call, in order. <c>TypeName</c> and <c>ModelId</c> are recorded because
+    /// <c>ModelRejectedScenario</c>'s whole subject is WHICH type it re-registers and with WHICH
+    /// model override: a scenario that re-registered the right descriptor with no override at all
+    /// would provoke no rejection live, while every assertion driven from a scripted throw stayed
+    /// green.
+    /// </summary>
+    public List<(string ActingToken, string OwnerField, string? ModelId, string TypeName)> Calls { get; } = [];
 
     /// <summary>Set to have the next and every subsequent call throw, for the failure-path arms.</summary>
     public Exception? Throws { get; set; }
@@ -103,9 +110,15 @@ public sealed class RecordingReregistrar : IReregistrar
         JsonElement typeDescriptorJson,
         string actingToken,
         string ownerField = "OwnerId",
+        string? modelId = null,
         CancellationToken ct = default)
     {
-        Calls.Add((actingToken, ownerField));
+        var typeName = typeDescriptorJson.ValueKind == JsonValueKind.Object &&
+                       typeDescriptorJson.TryGetProperty("typeName", out var name)
+            ? name.GetString() ?? string.Empty
+            : string.Empty;
+
+        Calls.Add((actingToken, ownerField, modelId, typeName));
         return Throws is not null ? Task.FromException(Throws) : Task.CompletedTask;
     }
 }
