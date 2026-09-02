@@ -55,91 +55,184 @@ public class IversonApiDependencyGateTests
     private static readonly Regex IversonApiCodeReference =
         new(@"\bIverson\.Api\b", RegexOptions.Compiled);
 
-    private static string RepositoryRoot()
-    {
-        var dir = new DirectoryInfo(AppContext.BaseDirectory);
-        while (dir is not null && !File.Exists(Path.Combine(dir.FullName, "Iverson.slnx")))
-        {
-            dir = dir.Parent;
-        }
-
-        if (dir is null)
-        {
-            throw new InvalidOperationException(
-                $"Could not locate repository root (a directory containing Iverson.slnx) by walking up from {AppContext.BaseDirectory}.");
-        }
-
-        return dir.FullName;
-    }
-
     private static string TestProjectDir() =>
-        Path.Combine(RepositoryRoot(), "Iverson.Server", "Iverson.ClientConformance.Tests");
+        Path.Combine(
+            RequirementsCoverageGateTests.RepositoryRoot(), "Iverson.Server",
+            "Iverson.ClientConformance.Tests");
 
     private static string HarnessCsprojPath() =>
         Path.Combine(
-            RepositoryRoot(), "Iverson.Server", "Iverson.ClientConformance",
-            "Iverson.ClientConformance.csproj");
+            RequirementsCoverageGateTests.RepositoryRoot(), "Iverson.Server",
+            "Iverson.ClientConformance", "Iverson.ClientConformance.csproj");
 
     /// <summary>
-    /// Whether a real <c>Iverson.Api</c> code dependency survives in <paramref name="rawSource"/>
-    /// once whole-line comments are dropped and string literal contents are blanked. See the
-    /// class doc for why both steps are required.
+    /// One file's verdict: whether a real <c>Iverson.Api</c> code dependency survives comment
+    /// stripping and string-literal blanking, and — separately — whether the blanking scan itself
+    /// could not finish because a literal in the file never closed. The two are independent: an
+    /// unterminated scan must FAIL the gate on its own, not be silently read as "no dependency
+    /// found", which is exactly the false negative <see cref="BlankStringLiterals"/> used to
+    /// produce for any construct it did not understand (Ruling: reviewer finding 1).
     /// </summary>
-    private static bool ReferencesIversonApi(string rawSource)
+    private readonly record struct ScanResult(bool ReferencesIversonApi, int? UnterminatedLiteralLine);
+
+    /// <summary>
+    /// Scans one file's raw source. See the class doc for why comment-stripping runs before
+    /// literal-blanking: <see cref="RequirementsCoverageGateTests.StripCommentLines"/> removes
+    /// whole comment/doc lines — including ones whose PROSE contains unbalanced quote characters,
+    /// such as <c>&lt;c&gt;Path.Combine("Iverson.Server", "Iverson.Api")&lt;/c&gt;</c> — before
+    /// <see cref="BlankStringLiterals"/>'s quote-parity scanner ever has to make sense of them.
+    /// Running the two in the other order would reintroduce, from comment prose, exactly the kind
+    /// of quote-parity desync this gate exists to close in real code.
+    ///
+    /// <para><see cref="ScanResult.UnterminatedLiteralLine"/>, when set, counts lines of the
+    /// COMMENT-STRIPPED source, not the original file — removed comment lines shift what remains
+    /// upward, so the reported number is never greater than the true line and is always close
+    /// enough, combined with the file name, to find the literal by search.</para>
+    /// </summary>
+    private static ScanResult Scan(string rawSource)
     {
         var withoutCommentLines = RequirementsCoverageGateTests.StripCommentLines(rawSource);
-        var withoutStringLiterals = BlankStringLiterals(withoutCommentLines);
-        return IversonApiCodeReference.IsMatch(withoutStringLiterals);
+        var withoutStringLiterals =
+            BlankStringLiterals(withoutCommentLines, out var unterminatedLiteralLine);
+        var references = IversonApiCodeReference.IsMatch(withoutStringLiterals);
+        return new ScanResult(references, unterminatedLiteralLine);
     }
 
     /// <summary>
-    /// Blanks the CONTENTS of C# string literals — ordinary <c>"..."</c> literals (where
-    /// <c>\"</c> escapes a quote without ending the literal) and verbatim <c>@"..."</c> literals
-    /// (where <c>""</c> escapes a quote without ending the literal) — replacing each character
-    /// inside with a space so an identifier the literal spells out as DATA, such as
-    /// <c>Path.Combine("Iverson.Server", "Iverson.Api")</c>'s second argument, cannot be mistaken
-    /// for a reference in CODE. The opening and closing quote characters themselves, and any
-    /// leading <c>@</c>, are blanked too; every other character (including newlines, which a
-    /// verbatim literal may legitimately contain) is preserved so line numbers in the result line
-    /// up with <paramref name="source"/>.
+    /// Blanks the CONTENTS of C# string, raw-string and char literals, and drops trailing line
+    /// comments, so an identifier one of those spells out as DATA — or as prose after a
+    /// same-line <c>//</c> — cannot be mistaken for a reference in CODE. Recognises:
+    /// <list type="bullet">
+    /// <item><description>Ordinary/interpolated <c>"..."</c>, where <c>\x</c> escapes any
+    /// character without ending the literal.</description></item>
+    /// <item><description>Verbatim <c>@"..."</c>, where <c>""</c> escapes a quote without ending
+    /// the literal.</description></item>
+    /// <item><description>Raw string literals opened by a run of three or more <c>"</c>
+    /// characters, closed by the first later run of AT LEAST that many consecutive
+    /// <c>"</c> characters (only the matching count is consumed as the closer).</description></item>
+    /// <item><description>Char literals — <c>'x'</c>, <c>'\x'</c>, <c>'\uXXXX'</c>, <c>'\''</c>,
+    /// <c>'\\'</c> — recognised well enough that an embedded quote, as in <c>'"'</c>, cannot be
+    /// misread as opening an ordinary string literal and desynchronising every quote that follows
+    /// it in the file. A <c>'</c> that does not fit one of these shapes is left as an ordinary
+    /// character rather than guessed at.</description></item>
+    /// <item><description>A trailing <c>//</c> line comment reached OUTSIDE any literal — the
+    /// rest of that line is blanked, so a quote inside prose like <c>// it's "quoted</c> cannot
+    /// open a literal that swallows real code after it.</description></item>
+    /// </list>
     ///
-    /// <para>An interpolated string (<c>$"..."</c> or <c>$@"..."</c>) is treated as an ordinary
-    /// or verbatim literal respectively — its <c>{expression}</c> holes are blanked along with
-    /// everything else, which never produces a false negative here: this test only needs to
-    /// avoid mistaking literal DATA for a code reference, not to preserve code embedded inside an
-    /// interpolation hole.</para>
+    /// <para>An interpolated string (<c>$"..."</c>, <c>$@"..."</c> or a raw interpolated string)
+    /// is treated the same as its non-interpolated form — its <c>{expression}</c> holes are
+    /// blanked along with everything else. That can never produce a false NEGATIVE (code this
+    /// gate needs to see always sits outside a string literal, interpolation holes included, in
+    /// every construct in this codebase); it can only ever over-blank, which is the safe
+    /// direction for a gate whose failure mode to guard against is a missed dependency.</para>
     ///
-    /// <para>This is deliberately not a general C# lexer — it does not recognise character
-    /// literals, raw string literals (<c>"""..."""</c>), or comments (that is <see
-    /// cref="RequirementsCoverageGateTests.StripCommentLines"/>'s job, applied before this runs).
-    /// It exists to close exactly the false positive this gate would otherwise hit on its own
-    /// codebase: a string literal that spells out <c>Iverson.Api</c> as text.</para>
+    /// <para><b>Unterminated literals are not discarded.</b> If a literal opened by any of the
+    /// three quote-delimited forms above never finds its close before the source ends, the scan
+    /// stops there and <paramref name="unterminatedLiteralLine"/> is set to the (comment-stripped)
+    /// line the literal opened on — turning what used to be a silent false negative (Ruling:
+    /// reviewer finding 1) into a result the caller can, and must, fail loudly on.</para>
+    ///
+    /// <para>This is deliberately not a general C# lexer: no preprocessor directives, no verbatim
+    /// identifiers (<c>@class</c>), no numeric literal suffixes that happen to look like
+    /// identifiers. It exists to close the false positives and false negatives this specific gate
+    /// would otherwise hit on this specific codebase, not to parse arbitrary C#.</para>
     /// </summary>
-    internal static string BlankStringLiterals(string source)
+    internal static string BlankStringLiterals(string source, out int? unterminatedLiteralLine)
     {
-        // Quote characters below are spelled '"' rather than as a bare double-quote char
-        // literal deliberately: this file is itself graded by this gate, and a char literal like
-        // that would itself contain an un-paired double-quote character that this scanner — which
-        // knows nothing of char-literal syntax — would misread as opening a new ordinary string
-        // literal, desynchronising every quote that follows it in the file.
         var result = new StringBuilder(source.Length);
         var i = 0;
+        var line = 1;
+        unterminatedLiteralLine = null;
+
+        // Appends one content character from inside a literal, blanking it unless it is the
+        // newline a multi-line verbatim or raw literal may legitimately contain — which must
+        // survive so the line count stays correct for everything that follows.
+        void AppendContentChar(char ch)
+        {
+            if (ch == '\n')
+            {
+                line++;
+                result.Append('\n');
+            }
+            else
+            {
+                result.Append(' ');
+            }
+        }
 
         while (i < source.Length)
         {
             var c = source[i];
 
-            if (c == '@' && i + 1 < source.Length && source[i + 1] == '\u0022')
+            // A trailing line comment reached outside any literal: nothing in it, including a
+            // stray quote, can open one. Blank to (not including) the newline; the newline itself
+            // is handled by the ordinary path below so the line counter stays in step.
+            if (c == '/' && i + 1 < source.Length && source[i + 1] == '/')
             {
-                // Verbatim literal: @"...", where "" is an escaped quote that does not close it.
+                while (i < source.Length && source[i] != '\n')
+                {
+                    result.Append(' ');
+                    i++;
+                }
+
+                continue;
+            }
+
+            // Raw string literal: a run of 3+ '"'. Content runs until the first later run of at
+            // least as many consecutive '"'; only that many are consumed as the close.
+            if (c == '"' && CountConsecutiveQuotes(source, i) >= 3)
+            {
+                var openLength = CountConsecutiveQuotes(source, i);
+                var literalStartLine = line;
+                result.Append(' ', openLength);
+                i += openLength;
+
+                var closed = false;
+                while (i < source.Length)
+                {
+                    if (source[i] == '"')
+                    {
+                        var closeLength = CountConsecutiveQuotes(source, i);
+                        if (closeLength >= openLength)
+                        {
+                            result.Append(' ', openLength);
+                            i += openLength;
+                            closed = true;
+                            break;
+                        }
+
+                        result.Append(' ', closeLength);
+                        i += closeLength;
+                        continue;
+                    }
+
+                    AppendContentChar(source[i]);
+                    i++;
+                }
+
+                if (!closed)
+                {
+                    unterminatedLiteralLine ??= literalStartLine;
+                    break;
+                }
+
+                continue;
+            }
+
+            // Verbatim literal: @"...", where "" is an escaped quote that does not close it.
+            if (c == '@' && i + 1 < source.Length && source[i + 1] == '"')
+            {
+                var literalStartLine = line;
                 result.Append(' ', 2);
                 i += 2;
 
+                var closed = false;
                 while (i < source.Length)
                 {
-                    if (source[i] == '\u0022')
+                    if (source[i] == '"')
                     {
-                        if (i + 1 < source.Length && source[i + 1] == '\u0022')
+                        if (i + 1 < source.Length && source[i + 1] == '"')
                         {
                             result.Append(' ', 2);
                             i += 2;
@@ -148,23 +241,32 @@ public class IversonApiDependencyGateTests
 
                         result.Append(' ');
                         i++;
+                        closed = true;
                         break;
                     }
 
-                    result.Append(source[i] == '\n' ? '\n' : ' ');
+                    AppendContentChar(source[i]);
                     i++;
+                }
+
+                if (!closed)
+                {
+                    unterminatedLiteralLine ??= literalStartLine;
+                    break;
                 }
 
                 continue;
             }
 
-            if (c == '\u0022')
+            // Ordinary (or interpolated) literal: "...", where \x is an escaped character pair
+            // that does not close it, whatever x is.
+            if (c == '"')
             {
-                // Ordinary (or interpolated) literal: "...", where \x is an escaped character
-                // pair that does not close it, whatever x is.
+                var literalStartLine = line;
                 result.Append(' ');
                 i++;
 
+                var closed = false;
                 while (i < source.Length)
                 {
                     if (source[i] == '\\' && i + 1 < source.Length)
@@ -174,18 +276,45 @@ public class IversonApiDependencyGateTests
                         continue;
                     }
 
-                    if (source[i] == '\u0022')
+                    if (source[i] == '"')
                     {
                         result.Append(' ');
                         i++;
+                        closed = true;
                         break;
                     }
 
-                    result.Append(source[i] == '\n' ? '\n' : ' ');
+                    AppendContentChar(source[i]);
                     i++;
                 }
 
+                if (!closed)
+                {
+                    unterminatedLiteralLine ??= literalStartLine;
+                    break;
+                }
+
                 continue;
+            }
+
+            // Char literal: 'x', '\x', '\uXXXX', '\'', '\\'. Recognising this here is what stops
+            // an embedded quote, as in '"', from being misread two branches up as opening an
+            // ordinary string literal — which would desynchronise every quote for the rest of the
+            // file (the exact bug this method's own first draft hit on itself).
+            if (c == '\'')
+            {
+                var consumed = TryConsumeCharLiteral(source, i);
+                if (consumed > 0)
+                {
+                    result.Append(' ', consumed);
+                    i += consumed;
+                    continue;
+                }
+            }
+
+            if (c == '\n')
+            {
+                line++;
             }
 
             result.Append(c);
@@ -195,28 +324,104 @@ public class IversonApiDependencyGateTests
         return result.ToString();
     }
 
+    /// <summary>How many consecutive <c>"</c> characters start at <paramref name="index"/>.</summary>
+    private static int CountConsecutiveQuotes(string source, int index)
+    {
+        var count = 0;
+        while (index + count < source.Length && source[index + count] == '"')
+        {
+            count++;
+        }
+
+        return count;
+    }
+
+    /// <summary>
+    /// If a recognised char literal — <c>'x'</c>, <c>'\x'</c> for any escaped character,
+    /// <c>'\uXXXX'</c>, <c>'\''</c>, or <c>'\\'</c> — opens at <paramref name="index"/>, returns
+    /// its total length including both quotes; otherwise 0, so the caller treats the opening
+    /// <c>'</c> as an ordinary character rather than guessing at a shape this does not recognise.
+    /// </summary>
+    private static int TryConsumeCharLiteral(string source, int index)
+    {
+        var i = index + 1;
+        if (i >= source.Length)
+        {
+            return 0;
+        }
+
+        if (source[i] == '\\')
+        {
+            i++;
+            if (i >= source.Length)
+            {
+                return 0;
+            }
+
+            if (source[i] == 'u')
+            {
+                i++;
+                var hexDigits = 0;
+                while (i < source.Length && hexDigits < 4 && Uri.IsHexDigit(source[i]))
+                {
+                    i++;
+                    hexDigits++;
+                }
+            }
+            else
+            {
+                i++; // the single escaped character, e.g. \\, \', \n, \0, \t
+            }
+        }
+        else
+        {
+            i++; // the single literal character, e.g. x in 'x', or " in '"'
+        }
+
+        if (i < source.Length && source[i] == '\'')
+        {
+            return i + 1 - index;
+        }
+
+        return 0;
+    }
+
     private static bool IsBuildOutputPath(string filePath, string testProjectDir) =>
         filePath.StartsWith(Path.Combine(testProjectDir, "bin"), StringComparison.Ordinal)
         || filePath.StartsWith(Path.Combine(testProjectDir, "obj"), StringComparison.Ordinal);
 
     /// <summary>
-    /// Assertion 1: the set of test-project files with a real <c>Iverson.Api</c> code dependency
-    /// equals <see cref="AllowlistedFiles"/>, in both directions. Checked as two separate
-    /// collections rather than one set-equality assertion so each direction's failure carries its
-    /// own reason: an unlisted file explains why the dependency is a problem, and a stale
-    /// allowlist entry explains why leaving it would be dangerous even though nothing in it
-    /// currently fires.
+    /// Assertion 1, in three parts, each with its own reason: the set of test-project files with
+    /// a real <c>Iverson.Api</c> code dependency must equal <see cref="AllowlistedFiles"/> in both
+    /// directions, AND the scan must have been able to finish for every file — an unterminated
+    /// literal is graded as a failure of its own rather than folded into "no dependency found".
     /// </summary>
     [Fact]
     public void OnlyAllowlistedFiles_DependOnIversonApi()
     {
         var testProjectDir = TestProjectDir();
 
-        var dependentFiles = Directory
+        var results = Directory
             .EnumerateFiles(testProjectDir, "*.cs", SearchOption.AllDirectories)
             .Where(path => !IsBuildOutputPath(path, testProjectDir))
-            .Where(path => ReferencesIversonApi(File.ReadAllText(path)))
-            .Select(path => Path.GetFileName(path)!)
+            .Select(path => (FileName: Path.GetFileName(path)!, Scan: Scan(File.ReadAllText(path))))
+            .ToList();
+
+        var unterminated = results
+            .Where(r => r.Scan.UnterminatedLiteralLine is not null)
+            .Select(r => $"{r.FileName}:{r.Scan.UnterminatedLiteralLine}")
+            .OrderBy(s => s, StringComparer.Ordinal)
+            .ToList();
+
+        unterminated.Should().BeEmpty(
+            "each of these has a string, raw-string or verbatim literal that never closes, at "
+            + "the named (comment-stripped) line — BlankStringLiterals cannot judge whether the "
+            + "rest of the file references Iverson.Api, so this must fail loudly rather than "
+            + "silently reporting no dependency found");
+
+        var dependentFiles = results
+            .Where(r => r.Scan.ReferencesIversonApi)
+            .Select(r => r.FileName)
             .ToHashSet(StringComparer.Ordinal);
 
         var unlisted = dependentFiles.Except(AllowlistedFiles)
@@ -266,6 +471,14 @@ public class IversonApiDependencyGateTests
             + "the server's real SchemaDescriptor types to build fixtures.");
     }
 
+    private static string Blank(string source)
+    {
+        var blanked = BlankStringLiterals(source, out var unterminatedLiteralLine);
+        unterminatedLiteralLine.Should().BeNull(
+            "this fixture is meant to be a well-formed, fully-terminated source snippet");
+        return blanked;
+    }
+
     /// <summary>
     /// The identifier this whole gate exists to catch survives detection when it is CODE, and is
     /// erased when it is only DATA spelled out inside an ordinary string literal — the false
@@ -276,12 +489,33 @@ public class IversonApiDependencyGateTests
     {
         const string source = "var directive = \"using Iverson.Api;\";";
 
-        var blanked = BlankStringLiterals(source);
+        var blanked = Blank(source);
 
         blanked.Should().NotContain("Iverson.Api",
             "the identifier is DATA inside the literal, not a real using directive");
         blanked.Should().Contain("var directive =",
             "code outside the literal must survive untouched");
+    }
+
+    /// <summary>
+    /// The ordinary-literal branch's own escape handling (<c>\"</c> does not close the literal),
+    /// pinned directly — previously only the verbatim literal's <c>""</c> escape had a test, so
+    /// this branch could regress unnoticed (reviewer finding: this case was unpinned).
+    /// </summary>
+    [Fact]
+    public void BlankStringLiterals_DoesNotEndAnOrdinaryLiteralEarlyOnABackslashEscapedQuote()
+    {
+        const string source = "var s = \"a \\\"quoted\\\" word\"; var real = Iverson.Api.Foo;";
+
+        var blanked = Blank(source);
+
+        blanked.Should().NotContain("quoted",
+            "the \\\"-escaped quote does not close the literal, so its contents stay inside it "
+            + "and must be blanked along with the rest");
+        blanked.Should().Contain("Iverson.Api.Foo",
+            "code that follows the literal's real closing quote must be read as code, which only "
+            + "holds if the backslash-escaped quote inside the literal was not mistaken for its "
+            + "end");
     }
 
     /// <summary>
@@ -297,7 +531,7 @@ public class IversonApiDependencyGateTests
     {
         const string source = "var s = @\"a \"\"quoted\"\" word\"; var real = Iverson.Api.Foo;";
 
-        var blanked = BlankStringLiterals(source);
+        var blanked = Blank(source);
 
         blanked.Should().NotContain("quoted",
             "the escaped-quote pair does not close the literal, so its contents stay inside it "
@@ -305,5 +539,89 @@ public class IversonApiDependencyGateTests
         blanked.Should().Contain("Iverson.Api.Foo",
             "code that follows the literal's real closing quote must be read as code, which only "
             + "holds if the escaped-quote pair inside the literal was not mistaken for its end");
+    }
+
+    /// <summary>
+    /// A raw string literal (<c>"""..."""</c>) whose body contains a lone, unescaped <c>"</c>
+    /// must not desynchronise the scan: the body's quote does not by itself close a 3+-quote
+    /// delimiter, so a real <c>using Iverson.Api;</c> after the literal must still be readable as
+    /// code (reviewer finding 1, construct (a)).
+    /// </summary>
+    [Fact]
+    public void BlankStringLiterals_DoesNotDesyncOnALoneQuoteInsideARawStringLiteral()
+    {
+        const string source = """"
+            var s = """
+                a "quoted word inside a raw string
+                """;
+            using Iverson.Api;
+            """";
+
+        var blanked = Blank(source);
+
+        blanked.Should().NotContain("quoted",
+            "the raw string's body is DATA and must be blanked even though it contains a lone "
+            + "unescaped quote");
+        blanked.Should().Contain("using Iverson.Api;",
+            "real code after the raw string's actual close must still read as code — a lone "
+            + "quote inside the body must not be misread as the delimiter closing early");
+    }
+
+    /// <summary>
+    /// A char literal spelling out a double-quote character, <c>'"'</c>, must not be misread as
+    /// opening an ordinary string literal: doing so would consume everything up to the NEXT
+    /// unrelated quote in the file as blanked "literal content", hiding a real dependency behind
+    /// it (reviewer finding 1, construct (b) — the exact bug this gate's own first draft hit on
+    /// itself).
+    /// </summary>
+    [Fact]
+    public void BlankStringLiterals_DoesNotDesyncOnADoubleQuoteCharLiteral()
+    {
+        const string source = "var q = '\"'; using Iverson.Api;";
+
+        var blanked = Blank(source);
+
+        blanked.Should().Contain("using Iverson.Api;",
+            "the char literal must be recognised and skipped as a unit, not misread as opening "
+            + "a new ordinary string literal that swallows the real using directive after it");
+    }
+
+    /// <summary>
+    /// A trailing <c>//</c> comment containing an odd quote — prose like <c>it's "quoted</c> —
+    /// must not open a literal that swallows the rest of the file: StripCommentLines only removes
+    /// WHOLE comment lines, so a same-line trailing comment reaches this scanner as-is (reviewer
+    /// finding 1, construct (c)).
+    /// </summary>
+    [Fact]
+    public void BlankStringLiterals_DoesNotDesyncOnATrailingCommentContainingAnOddQuote()
+    {
+        const string source = "var x = 1; // it's \"quoted\nusing Iverson.Api;";
+
+        var blanked = Blank(source);
+
+        blanked.Should().NotContain("quoted",
+            "the trailing comment's prose is not code and must be blanked");
+        blanked.Should().Contain("using Iverson.Api;",
+            "code on the line after a trailing comment must still read as code — the odd quote "
+            + "in the comment must not be misread as opening a literal that runs into it");
+    }
+
+    /// <summary>
+    /// The loud-failure half of the fix: when a literal genuinely never closes, the scan must
+    /// stop and report where it started, rather than silently returning as if nothing had been
+    /// found. A real <c>using Iverson.Api;</c> placed after the unterminated literal is exactly
+    /// the false negative that used to be discarded, so it is deliberately included here and
+    /// must NOT be what the caller sees — only the unterminated report matters.
+    /// </summary>
+    [Fact]
+    public void BlankStringLiterals_ReportsAnUnterminatedLiteral_InsteadOfSilentlyFinishing()
+    {
+        const string source = "line one;\nvar s = \"never closes\nusing Iverson.Api;";
+
+        BlankStringLiterals(source, out var unterminatedLiteralLine);
+
+        unterminatedLiteralLine.Should().Be(2,
+            "the ordinary literal opens on line 2 of the source, and never finds a closing quote "
+            + "before the source ends");
     }
 }
