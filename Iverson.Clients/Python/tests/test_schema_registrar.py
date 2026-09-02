@@ -172,6 +172,50 @@ class RegModelUndeclaredArticle:
     body: str = iverson_chunk()
 
 
+@iverson_entity(embedding_model="nomic-embed-text")
+class RegModelInheritedParent:
+    """Declares the model that ``RegModelInheritedChild`` below must inherit."""
+
+    id: str = iverson_key()
+
+
+@iverson_entity
+class RegModelInheritedChild(RegModelInheritedParent):
+    """No ``embedding_model`` of its own — must inherit the parent's declared model onto its own
+    embedding/chunk properties. Declares its own embedding/chunk fields (rather than relying on
+    inherited ones) because a decorated base already scrubs its own ``FieldMeta`` sentinels to
+    ``None``, which is orthogonal to the model-inheritance behavior under test here."""
+
+    title: str = iverson_embedding()
+    body: str = iverson_chunk()
+
+
+@iverson_entity(embedding_model="snowflake-arctic-embed:s")
+class RegModelOverrideChild(RegModelInheritedParent):
+    """Declares its own model, distinct from the parent's ``nomic-embed-text`` — its own value
+    must win, not the parent's."""
+
+    title: str = iverson_embedding()
+    body: str = iverson_chunk()
+
+
+@iverson_entity(embedding_model="snowflake-arctic-embed:s")
+class RegModelChainParent(RegModelInheritedParent):
+    """Sits between ``RegModelInheritedParent`` (model "nomic-embed-text") and
+    ``RegModelChainChild`` below, declaring a DIFFERENT model. This is the fixture that
+    distinguishes "nearest declaring base" from "farthest" (root)."""
+
+
+@iverson_entity
+class RegModelChainChild(RegModelChainParent):
+    """No ``embedding_model`` of its own, three levels down. Must inherit the NEAREST declaring
+    base's model — ``RegModelChainParent``'s "snowflake-arctic-embed:s" — not
+    ``RegModelInheritedParent``'s "nomic-embed-text"."""
+
+    title: str = iverson_embedding()
+    body: str = iverson_chunk()
+
+
 # ── Fixtures ───────────────────────────────────────────────────────────────────
 
 def make_stub() -> MagicMock:
@@ -714,3 +758,26 @@ class TestEmbeddingModelDeclaration:
         assert props["Title"].chunk_model_id == ""
         assert props["Body"].model_id == ""
         assert props["Body"].chunk_model_id == ""
+
+    def test_subclass_with_no_model_of_its_own_inherits_the_parents(self):
+        """A decorated subclass declaring no ``embedding_model`` of its own inherits the
+        nearest declaring base's, stamped on both ``model_id`` and ``chunk_model_id``."""
+        request = register_request(RegModelInheritedChild)
+        props = {p.name: p for p in request.root_type.properties}
+        assert props["Title"].model_id == "nomic-embed-text"
+        assert props["Body"].chunk_model_id == "nomic-embed-text"
+
+    def test_subclass_passing_its_own_model_wins_over_the_parents(self):
+        request = register_request(RegModelOverrideChild)
+        props = {p.name: p for p in request.root_type.properties}
+        assert props["Title"].model_id == "snowflake-arctic-embed:s"
+        assert props["Body"].chunk_model_id == "snowflake-arctic-embed:s"
+
+    def test_three_level_chain_inherits_the_nearest_base_not_the_farthest(self):
+        """Grandparent declares "nomic-embed-text", parent declares "snowflake-arctic-embed:s",
+        child declares nothing. The child must inherit the parent's (nearest), not the
+        grandparent's (farthest) — the one case that distinguishes the two directions."""
+        request = register_request(RegModelChainChild)
+        props = {p.name: p for p in request.root_type.properties}
+        assert props["Title"].model_id == "snowflake-arctic-embed:s"
+        assert props["Body"].chunk_model_id == "snowflake-arctic-embed:s"

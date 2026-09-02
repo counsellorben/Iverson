@@ -230,10 +230,12 @@ def iverson_entity(cls: type | None = None, *, description: str = "", embedding_
         embedding_model: the Ollama model this type's embedding/chunk properties are
             generated with. One model per TYPE, never per property — every
             ``iverson_embedding()``/``iverson_chunk()`` field on this class is stamped with
-            the same value. ``""`` (the default) means "not declared"; the server then
-            resolves the deployment's configured default, exactly as it does for a client
-            that predates this parameter — so an un-updated caller keeps working with no
-            server-side special-casing.
+            the same value. ``""`` (the default) means "not declared HERE" — if a decorated
+            base class in this class's MRO declares one, the nearest such declaration is
+            inherited; a subclass that passes its own value overrides any inherited one. If no
+            base declares one either, the server resolves the deployment's configured default,
+            exactly as it does for a client that predates this parameter — so an un-updated
+            caller keeps working with no server-side special-casing.
 
     After decoration:
     - ``cls._iverson_meta`` is a dict with keys:
@@ -263,6 +265,20 @@ def iverson_entity(cls: type | None = None, *, description: str = "", embedding_
         if base is object:
             continue
         annotations.update(getattr(base, "__annotations__", {}))
+
+    if not embedding_model:
+        # "" covers both "not supplied" and an explicit embedding_model="" — Python cannot
+        # tell them apart given the "" default, and inheriting on empty is the correct
+        # reading under Global Constraint 2. Unlike the annotation gather above (which walks
+        # farthest-first to accumulate every inherited field), this walks NEAREST-first —
+        # cls.__mro__[1:] is parent, then grandparent, ... — so a middle class's own
+        # declaration wins over an ancestor's. Skip object and any undecorated base (neither
+        # carries `_iverson_meta`).
+        for base in cls.__mro__[1:]:
+            base_meta = getattr(base, "_iverson_meta", None)
+            if base_meta and base_meta.get("embedding_model"):
+                embedding_model = base_meta["embedding_model"]
+                break
 
     key_field: str | None = None
     search_keys: list[tuple[str, int]] = []
