@@ -722,13 +722,16 @@ public class SchemaRegistrationOrchestratorTests
 
         var ex = await act.Should().ThrowAsync<RpcException>();
         ex.Which.StatusCode.Should().Be(StatusCode.FailedPrecondition);
-        // The message must name BOTH models, AND both the DELETE statement and the collection —
-        // an operator following only one half of the remedy is left with the row or the collection
-        // still present, and the brief calls out that a partial cleanup is rejected identically.
+        // The message must name BOTH models, the DELETE statement, AND the actual tenant-scoped
+        // collection pattern — NOT the bare base name "docs", which is never a real Qdrant
+        // collection (IntelligenceTenantScope.ResolveCollectionName always qualifies by tenant).
+        // An operator following only one half of the remedy, or searching for the bare base name,
+        // is left with the row or a real per-tenant collection still present.
         ex.Which.Status.Detail.Should().Contain("nomic-embed-text");
         ex.Which.Status.Detail.Should().Contain("snowflake-arctic-embed:s");
         ex.Which.Status.Detail.Should().Contain("DELETE FROM _iverson_schema WHERE type_name = 'Doc'");
-        ex.Which.Status.Detail.Should().Contain("Qdrant collection 'docs'");
+        ex.Which.Status.Detail.Should().Contain("'docs_<tenantId>' (vectors)");
+        ex.Which.Status.Detail.Should().Contain("'docs_chunks_<tenantId>' (chunks)");
     }
 
     [Fact]
@@ -824,6 +827,46 @@ public class SchemaRegistrationOrchestratorTests
 
         await act.Should().NotThrowAsync();
         _registry.Get("Doc")!.VectorFields.Should().BeEmpty();
+    }
+
+    // Fix B (review round 1): registry.Get alone is STALE for the whole of phase 1 -- registry.RegisterAsync
+    // does not run until phase 3 -- so a type appearing twice in the SAME request (a dependent sharing the
+    // root's name, or two dependents sharing a name; nothing above rejects that) would have both occurrences
+    // see the identical, unregistered-so-null priorModel and both pass, even when they resolve to two
+    // different incompatible models. Phase 3 would then register them in sequence, the second silently
+    // overwriting the first -- exactly the outcome this guard exists to prevent, reached through one request
+    // instead of two. The guard now checks batchDescriptors (populated after BuildDescriptor, below) before
+    // falling back to registry.Get, mirroring phase 2's effectiveDescriptors move.
+    [Fact]
+    public async Task RegisterAsync_SameTypeNameTwiceInOneRequestWithDifferentModels_ThrowsFailedPrecondition()
+    {
+        var arctic = Substitute.For<IEmbeddingService>();
+        arctic.Dimension.Returns(768);
+        arctic.ModelId.Returns("snowflake-arctic-embed:s");
+        _resolver.Get("snowflake-arctic-embed:s").Returns(arctic);
+
+        var root = SimpleType("Doc", "Name");
+        root.Properties.Add(new PropertyDescriptor
+            { Name = "Content", ClrType = ClrType.ClrString, IsEmbedding = true, ModelId = string.Empty });
+
+        // A dependent sharing the ROOT's type name -- nothing upstream of the guard rejects this.
+        var dependent = SimpleType("Doc", "Name");
+        dependent.Properties.Add(new PropertyDescriptor
+        {
+            Name = "Content", ClrType = ClrType.ClrString, IsEmbedding = true,
+            ModelId = "snowflake-arctic-embed:s"
+        });
+
+        var request = new SchemaRequest { RootType = root, Dependents = { dependent } };
+
+        var act = () => _sut.RegisterAsync(request, CancellationToken.None);
+
+        var ex = await act.Should().ThrowAsync<RpcException>();
+        ex.Which.StatusCode.Should().Be(StatusCode.FailedPrecondition);
+        ex.Which.Status.Detail.Should().Contain("nomic-embed-text");
+        ex.Which.Status.Detail.Should().Contain("snowflake-arctic-embed:s");
+        // Phase 1 validates every type before any registry write, so neither occurrence registers.
+        _registry.Get("Doc").Should().BeNull();
     }
 
     [Fact]

@@ -60,7 +60,19 @@ public sealed class SchemaRegistrationOrchestrator(
 
             var service = resolver.Get(DeclaredModel(typeDesc));
 
-            var priorModel = registry.Get(typeDesc.TypeName) is { } prior ? SchemaDescriptor.ModelOf(prior) : null;
+            // batchDescriptors, not registry.Get alone: registry.RegisterAsync does not run until
+            // phase 3, so if this SAME request names typeDesc.TypeName twice (a root colliding with a
+            // dependent, or two dependents sharing a name — nothing above rejects that), the registry
+            // is unchanged between the two occurrences and would report the SAME stale priorModel for
+            // both, letting two different resolved models both slip past a null-vs-null or
+            // null-vs-same comparison. batchDescriptors already holds the first occurrence's built
+            // descriptor by the time a second is reached (populated below, after BuildDescriptor), so
+            // checking it first mirrors the phase-2 cross-validation's effectiveDescriptors move: the
+            // registry alone is stale during a batch.
+            var priorDescriptor = batchDescriptors.TryGetValue(typeDesc.TypeName, out var inBatch)
+                ? inBatch
+                : registry.Get(typeDesc.TypeName);
+            var priorModel = priorDescriptor is { } prior ? SchemaDescriptor.ModelOf(prior) : null;
 
             // Null when this registration carries no embedded content at all — a type that has just lost its
             // last embedding/chunk property is not changing its model, it is ceasing to have one, and the
@@ -72,15 +84,25 @@ public sealed class SchemaRegistrationOrchestrator(
             if (priorModel is not null && nextModel is not null &&
                 !string.Equals(priorModel, nextModel, StringComparison.Ordinal))
             {
+                // The base name alone (SchemaBuilder.ToTableName, e.g. "docs") is never a real Qdrant
+                // collection: IntelligenceTenantScope.ResolveCollectionName qualifies every collection
+                // by tenant — "{base}_{tenantId}" for vectors, "{base}_chunks_{tenantId}" for chunks —
+                // and there is one such pair per tenant that has ingested this type. Naming the bare
+                // base here would send an operator searching for a collection that never existed, who
+                // then concludes cleanup is already done and leaves every real per-tenant collection
+                // holding the mixed vectors.
+                var collectionBase = SchemaBuilder.ToTableName(typeDesc.TypeName);
                 throw new RpcException(new Status(StatusCode.FailedPrecondition,
                     $"Type '{typeDesc.TypeName}' is registered with embedding model '{priorModel}', but this "
                     + $"registration resolves to '{nextModel}'. Changing a type's model would leave one "
                     + $"collection holding vectors from two incompatible spaces, which no dimension check "
                     + $"catches when the two models share a dimension. To change it, BOTH clear the schema "
-                    + $"row and drop the collection: "
+                    + $"row and drop the collections: "
                     + $"DELETE FROM _iverson_schema WHERE type_name = '{typeDesc.TypeName}'; "
-                    + $"then drop Qdrant collection '{SchemaBuilder.ToTableName(typeDesc.TypeName)}'. "
-                    + $"Dropping the collection alone leaves this row, and the next registration is "
+                    + $"then, for every tenant that has ingested '{typeDesc.TypeName}', drop Qdrant "
+                    + $"collections '{collectionBase}_<tenantId>' (vectors) and "
+                    + $"'{collectionBase}_chunks_<tenantId>' (chunks). "
+                    + $"Dropping the collections alone leaves this row, and the next registration is "
                     + $"rejected identically."));
             }
 
