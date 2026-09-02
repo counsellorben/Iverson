@@ -34,6 +34,14 @@ global:
   # the C# property null, which means "derive from the model family"; setting it to "" means
   # "deliberately no prefix". Arctic's document prefix IS the empty string, so "" cannot
   # double as unset — which is why the templates use `hasKey`, not `default`.
+  #
+  # This list must contain every model any REGISTERED type's stored `_iverson_schema` row
+  # names, not merely the currently-active one. A type registered under a model keeps that
+  # model pinned in its stored descriptor indefinitely — re-registering it under a different
+  # model is refused by the SchemaRegistrationOrchestrator guard. Removing an entry a
+  # registered type still carries takes ingest and search for that type down (Unavailable
+  # from the probe, then 404s from Ollama) until either the model is restored here, or that
+  # type's schema row and Qdrant collections are cleared out from under it.
   embeddingModels:
     - name: nomic-embed-text
       # prefixes omitted -> EmbeddingPrefixes derives them from the model family

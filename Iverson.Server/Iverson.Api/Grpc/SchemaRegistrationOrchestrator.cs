@@ -103,7 +103,9 @@ public sealed class SchemaRegistrationOrchestrator(
                     + $"collections '{collectionBase}_<tenantId>' (vectors) and "
                     + $"'{collectionBase}_chunks_<tenantId>' (chunks). "
                     + $"Dropping the collections alone leaves this row, and the next registration is "
-                    + $"rejected identically."));
+                    + $"rejected identically. Until then, '{priorModel}' must remain pulled in this "
+                    + $"deployment's Ollama — every other type still registered under it needs it to "
+                    + $"stay reachable."));
             }
 
             try
