@@ -80,6 +80,11 @@ Newly introduced by this plan and verified at plan-write time against `2291d0d`.
 | P45 | Signature | `model_id` and `chunk_model_id` are `PropertyDescriptor` fields, each stamped only under that property's own flag; `TypeDescriptor` carries no type-level model field | `object_mapping.proto:52,56`; `SchemaRegistrar.cs:97-100`, `SchemaRegistrar.java:148-150`, `core.py:276,280`, `registrar.go:137+`, `core.ts:251-255` |
 | P46 | Command | `helm dependency build` is required **after** a subchart edit, not only before it: the `.tgz` archives win outright over the live `charts/<name>/` directories | Verified by execution — with the archives as they stand `helm template` emits no `Embeddings__ModelId` at all, despite `charts/api/templates/deployment.yaml:126-128` emitting it; it appears only after a rebuild |
 | P47 | Ordering | Each command block starts at the repository root, and a `cd` persists for the remainder of that block | Reproduced: from `Iverson.Clients/Python`, `git add Iverson.Clients/Python/` returns `fatal: pathspec … did not match any files` |
+| P48 | Consumer impact | Each of the five drivers has a single recognised-scenario set a new name can join, so T7 Step 2's driver-side addition has one place to go per language | Verified in-round across all five drivers; A24/A28 covers only the harness's own `recognizedScenarios` |
+| P49 | Consumer impact | `Reregistrar`'s `modelId` override stamps **both** `model_id` and `chunk_model_id`. T1's new multi-valued rejection makes this load-bearing for the **existing** S11 scenario: were only one half stamped, S11's `FailedPrecondition` would become `InvalidArgument` and four of its assertions would fail | `Reregistrar.cs:97-101`, whose doc comment records why both halves are written |
+| P50 | Consumer impact | No existing server-side test builds one descriptor carrying two distinct non-empty models, so T1's new throw breaks no current fixture | Verified in-round — none exists |
+| P51 | Command | `Iverson.slnx` contains both `Iverson.ClientConformance.Tests` and `Iverson.Client.Core.Tests`, so T8's and T9's `dotnet test Iverson.slnx` actually reaches them | Both listed in `Iverson.slnx`; P19 asserts the command, not its reach |
+| P52 | Command | `helm dependency build` leaves the tracked `Chart.lock` unchanged, so T10 Step 4's wholesale `git add` of the chart tree stages no incidental file | Verified in-round — unchanged; `charts/*.tgz` is ignored at `.gitignore:74` |
 
 ---
 
@@ -369,10 +374,18 @@ git commit -m "enforce that only the schema-probe test depends on iverson.api"
 ```bash
 (cd Iverson.Server/deploy/helm/iverson \
   && helm dependency build \
-  && helm template iverson . > /tmp/before-default.yaml \
-  && helm template iverson . -f values-local.yaml > /tmp/before-local.yaml \
-  && helm template iverson . --set global.activeEmbeddingModel=snowflake-arctic-embed:s > /tmp/before-arctic.yaml \
-  && helm template iverson . --set global.activeEmbeddingModel=typo > /tmp/before-typo.yaml)
+  && helm template iverson . \
+       --show-only charts/api/templates/deployment.yaml \
+       --show-only charts/worker/templates/deployment.yaml > /tmp/before-default.yaml \
+  && helm template iverson . -f values-local.yaml \
+       --show-only charts/api/templates/deployment.yaml \
+       --show-only charts/worker/templates/deployment.yaml > /tmp/before-local.yaml \
+  && helm template iverson . --set global.activeEmbeddingModel=snowflake-arctic-embed:s \
+       --show-only charts/api/templates/deployment.yaml \
+       --show-only charts/worker/templates/deployment.yaml > /tmp/before-arctic.yaml \
+  && helm template iverson . --set global.activeEmbeddingModel=typo \
+       --show-only charts/api/templates/deployment.yaml \
+       --show-only charts/worker/templates/deployment.yaml > /tmp/before-typo.yaml)
 ```
 
 - [ ] **Step 2: Extract the emission** into a second named template beside `iverson.activeEmbeddingModel`, and replace both deployments' eleven-line blocks with `{{- include "iverson.embeddingEnv" . | nindent 12 }}`. Both render at twelve spaces, so one `nindent` serves both, and parent-chart template reach from a subchart is already exercised by the existing helper.
@@ -384,10 +397,18 @@ The `helm dependency build` here is what makes the assertion mean anything. Step
 ```bash
 (cd Iverson.Server/deploy/helm/iverson \
   && helm dependency build \
-  && helm template iverson . > /tmp/after-default.yaml \
-  && helm template iverson . -f values-local.yaml > /tmp/after-local.yaml \
-  && helm template iverson . --set global.activeEmbeddingModel=snowflake-arctic-embed:s > /tmp/after-arctic.yaml \
-  && helm template iverson . --set global.activeEmbeddingModel=typo > /tmp/after-typo.yaml)
+  && helm template iverson . \
+       --show-only charts/api/templates/deployment.yaml \
+       --show-only charts/worker/templates/deployment.yaml > /tmp/after-default.yaml \
+  && helm template iverson . -f values-local.yaml \
+       --show-only charts/api/templates/deployment.yaml \
+       --show-only charts/worker/templates/deployment.yaml > /tmp/after-local.yaml \
+  && helm template iverson . --set global.activeEmbeddingModel=snowflake-arctic-embed:s \
+       --show-only charts/api/templates/deployment.yaml \
+       --show-only charts/worker/templates/deployment.yaml > /tmp/after-arctic.yaml \
+  && helm template iverson . --set global.activeEmbeddingModel=typo \
+       --show-only charts/api/templates/deployment.yaml \
+       --show-only charts/worker/templates/deployment.yaml > /tmp/after-typo.yaml)
 for c in default local arctic typo; do diff /tmp/before-$c.yaml /tmp/after-$c.yaml && echo "$c identical"; done
 ```
 An extraction that alters one character of emitted YAML has failed regardless of how the result reads.
