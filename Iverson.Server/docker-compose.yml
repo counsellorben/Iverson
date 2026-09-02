@@ -369,6 +369,13 @@ services:
       - ASPNETCORE_ENVIRONMENT=Production
       - Otel__Endpoint=http://jaeger:4317
       - Embeddings__BaseUrl=http://ollama:11434
+      # Must agree with ollama-init's pulled model (line ~147) and with the five conformance
+      # fixtures' "nomic-embed-text" literals — this is the deployment default the client
+      # conformance harness's ModelRejectedScenario (S11 model-rejected) registers types against
+      # before re-registering with an override model it expects to be refused. A mismatch here
+      # doesn't fail loudly: the rejection scenario still passes (it never contacts Ollama with
+      # the wrong model), but every OTHER embedding-dependent scenario goes red with
+      # Unavailable/404 because the resolved model was never pulled.
       - Embeddings__ModelId=nomic-embed-text
       - Enrichment__BaseUrl=http://ollama:11434
       - Enrichment__ModelId=qwen2.5:3b
