@@ -24,6 +24,7 @@ import { ClrType } from '../generated/object_mapping.js';
 // ── Metadata symbol keys ───────────────────────────────────────────────────────
 
 const IVERSON_ENTITY_KEY   = Symbol('iverson:entity');
+const IVERSON_EMBEDDING_MODEL_KEY = Symbol('iverson:embedding_model');
 const IVERSON_KEY_KEY      = Symbol('iverson:key');
 const IVERSON_SEARCH_KEYS  = Symbol('iverson:search_keys');
 const IVERSON_LARGE_FIELDS = Symbol('iverson:large_fields');
@@ -62,6 +63,29 @@ export function IversonEntity(): ClassDecorator {
 
 export function isIversonEntity(target: Function): boolean {
     return Reflect.getMetadata(IVERSON_ENTITY_KEY, target) === true;
+}
+
+// ── @IversonEmbeddingModel(modelId) ────────────────────────────────────────────
+
+/**
+ * Declares the Ollama model this type's embedding/chunk properties are generated with. Class-
+ * level only, never per-property — one model applies to every `@IversonEmbedding()`/
+ * `@IversonChunk()` field on the class, which `describeEntity` stamps onto each such property's
+ * `modelId`/`chunkModelId` guarded on that property's own embedding/chunk flags. A relation
+ * foreign-key property is neither, so it never carries a model regardless of this declaration.
+ *
+ * Undeclared (the decorator absent) means every affected property keeps its `''` default, which
+ * the server reads as "not declared" and resolves to the deployment's configured default — so an
+ * un-updated class keeps working with no server-side special-casing.
+ */
+export function IversonEmbeddingModel(modelId: string): ClassDecorator {
+    return (target) => {
+        Reflect.defineMetadata(IVERSON_EMBEDDING_MODEL_KEY, modelId, target);
+    };
+}
+
+export function getEmbeddingModel(target: Function): string {
+    return Reflect.getMetadata(IVERSON_EMBEDDING_MODEL_KEY, target) ?? '';
 }
 
 // ── @IversonKey() ──────────────────────────────────────────────────────────────

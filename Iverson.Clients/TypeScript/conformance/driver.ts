@@ -27,7 +27,7 @@ import {
     TypeDescriptor,
 } from '../generated/object_mapping.js';
 
-import { ErrorDoc, ErrorUnregisteredDoc, IdentityDoc, QueryDoc, SharedArticle, SharedAuthor, TsArticle, TsAuthor, TsBadArticle, TsTag, VectorDoc } from './models.js';
+import { ErrorDoc, ErrorUnregisteredDoc, IdentityDoc, QueryDoc, S11ModelTypescript, SharedArticle, SharedAuthor, TsArticle, TsAuthor, TsBadArticle, TsTag, VectorDoc } from './models.js';
 import { QueryBuilder, SearchOperator } from '../src/search.js';
 import { aggregate } from '../src/aggregate.js';
 import { chunks as chunksBuilder, similar as similarBuilder } from '../src/vector-search.js';
@@ -44,9 +44,15 @@ const LANGUAGE = 'typescript';
 // vector-search (S7): register (dotnet-only, register-once), write and read — this driver seeds
 // one VectorDoc row and then issues a SearchSimilar and a SearchChunks through the client library's
 // own vector-search builders.
+// model-rejected (S11): register only (register-once per scenario invocation — see
+// Iverson.Server/Iverson.ClientConformance/Scenarios/ModelRejectedScenario.cs). This driver
+// registers its OWN instance of S11ModelTypescript, carrying @IversonEmbeddingModel('nomic-embed-text'),
+// and reports the descriptor it sent so the orchestrator's Reregistrar has JSON to mutate. No
+// write/read phase: the orchestrator re-registers the reported descriptor itself, with a model
+// override, and grades the rejection directly.
 const SCENARIOS = new Set([
     'crud-roundtrip', 'naming-rejected', 'interop', 'schema-catalog', 'query', 'vector-search',
-    'identity', 'error-contract',
+    'identity', 'error-contract', 'model-rejected',
 ]);
 
 /** S8 identity: the tenant value every driver stamps on the IdentityDoc row it creates —
@@ -410,37 +416,6 @@ async function main(argv: string[]): Promise<number> {
         } catch (err) {
             steps.push(step('get_schema', false, { error: describe(err) }));
         }
-    } else if (phase === 'register') {
-        // SchemaRegistrar.registerAll() issues one RegisterSchema call per type, sequentially, and
-        // throws on the first failure (an `Error` on `!response.success`, or the underlying
-        // `ServiceError` on a transport failure) — so the sequence aborts at the first failing
-        // type. All three steps share that aborted sequence's outcome; `typeDescriptor` presence
-        // (recorded by `CapturingMappingClient` before each call is sent) is what tells the
-        // orchestrator which types were actually sent.
-        let error: string | null = null;
-        try {
-            const registrar = new SchemaRegistrar(
-                capture as unknown as ObjectMappingServiceClient,
-                // Author, then tag, then article — the same order in all five drivers, so the
-                // types the article's relations reference already exist when the article is
-                // sent. Registration aborts at the first failure, so the order is observable.
-                [TsAuthor, TsTag, TsArticle],
-                callCredentials,
-            );
-            await registrar.registerAll();
-        } catch (err) {
-            error = describe(err);
-        }
-
-        const addRegisterStep = (name: string, ...preferred: Array<string | undefined>) => {
-            steps.push(
-                step(name, error === null, { error, typeDescriptor: capture.select(...preferred) ?? null }),
-            );
-        };
-
-        addRegisterStep('register', typeHint, 'TsArticle');
-        addRegisterStep('register_author', 'TsAuthor');
-        addRegisterStep('register_tag', 'TsTag');
     } else if (phase === 'write' && scenario === 'interop') {
         // S4 interop: writes SharedAuthor then SharedArticle, reporting keys "shared_author" and
         // "shared_article".
@@ -516,6 +491,24 @@ async function main(argv: string[]): Promise<number> {
         steps.push(step('register_error_doc', error === null, {
             error,
             typeDescriptor: capture.select('ErrorDoc') ?? null,
+        }));
+    } else if (phase === 'register' && scenario === 'model-rejected') {
+        // S11 model-rejected: registers ONLY S11ModelTypescript — this scenario's own fixture,
+        // never shared with the other four languages, since the subject is what happens to a
+        // type ALREADY registered by THIS client. No write/read phase: the orchestrator
+        // re-registers the reported descriptor itself, with a model override, and grades the
+        // rejection directly (Scenarios/ModelRejectedScenario.cs).
+        let error: string | null = null;
+        try {
+            const registrar = new SchemaRegistrar(
+                capture as unknown as ObjectMappingServiceClient, [S11ModelTypescript], callCredentials);
+            await registrar.registerAll();
+        } catch (err) {
+            error = describe(err);
+        }
+        steps.push(step('register_model_doc', error === null, {
+            error,
+            typeDescriptor: capture.select('S11ModelTypescript') ?? null,
         }));
     } else if (phase === 'write' && scenario === 'error-contract') {
         // One row, seeded so the read phase's positive control has something real to find.
@@ -608,6 +601,43 @@ async function main(argv: string[]): Promise<number> {
             error,
             typeDescriptor: capture.select('IdentityDoc') ?? null,
         }));
+    } else if (phase === 'register') {
+        // SchemaRegistrar.registerAll() issues one RegisterSchema call per type, sequentially, and
+        // throws on the first failure (an `Error` on `!response.success`, or the underlying
+        // `ServiceError` on a transport failure) — so the sequence aborts at the first failing
+        // type. All three steps share that aborted sequence's outcome; `typeDescriptor` presence
+        // (recorded by `CapturingMappingClient` before each call is sent) is what tells the
+        // orchestrator which types were actually sent.
+        //
+        // This bare, scenario-unconstrained branch must stay LAST among the `phase === 'register'`
+        // checks in this chain: it matches any scenario, so a scenario-specific register branch
+        // placed after it would be unreachable dead code, shadowed by this one. (Discovered while
+        // adding the model-rejected branch above: it and the error-contract/identity branches were
+        // previously ordered after this one and never actually ran.)
+        let error: string | null = null;
+        try {
+            const registrar = new SchemaRegistrar(
+                capture as unknown as ObjectMappingServiceClient,
+                // Author, then tag, then article — the same order in all five drivers, so the
+                // types the article's relations reference already exist when the article is
+                // sent. Registration aborts at the first failure, so the order is observable.
+                [TsAuthor, TsTag, TsArticle],
+                callCredentials,
+            );
+            await registrar.registerAll();
+        } catch (err) {
+            error = describe(err);
+        }
+
+        const addRegisterStep = (name: string, ...preferred: Array<string | undefined>) => {
+            steps.push(
+                step(name, error === null, { error, typeDescriptor: capture.select(...preferred) ?? null }),
+            );
+        };
+
+        addRegisterStep('register', typeHint, 'TsArticle');
+        addRegisterStep('register_author', 'TsAuthor');
+        addRegisterStep('register_tag', 'TsTag');
     } else if (phase === 'write' && scenario === 'identity') {
         // One row, created under this driver's OWN acting user and carrying a deliberately wrong
         // tenant value (see IDENTITY_WRONG_TENANT). The key is reported whenever persist() resolved

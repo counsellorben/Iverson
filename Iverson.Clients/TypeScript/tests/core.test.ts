@@ -13,6 +13,7 @@ import {
     IversonChunk,
     IversonDescription,
     IversonEmbedding,
+    IversonEmbeddingModel,
     IversonEntity,
     IversonExtracted,
     IversonKey,
@@ -566,6 +567,121 @@ describe('describeEntity — many-to-one/one-to-one FK naming enforcement', () =
         }
         expect(message).toContain('WriterId');
         expect(message).toContain('FkAuthorId');
+    });
+});
+
+// ── @IversonEmbeddingModel — stamping onto modelId/chunkModelId ────────────────
+//
+// describeEntity stamps a class-level @IversonEmbeddingModel() onto exactly two of the four
+// sites that write modelId/chunkModelId: the non-relation property loop, guarded on that
+// property's own isEmbedding/chunkMeta values. The relation foreign-key loop's literal hardcodes
+// isEmbedding: false / isChunk: false and is left untouched — a model there is something the
+// spec's transport rule excludes and no other client sends.
+
+@IversonEntity()
+class ModelDeclaredAuthor {
+    @IversonKey()
+    id: string = '';
+}
+
+/** Shape 1: a declared type whose one property is BOTH embedded and chunked. */
+@IversonEntity()
+@IversonEmbeddingModel('nomic-embed-text')
+class ModelBothFlagsArticle {
+    @IversonKey()
+    id: string = '';
+
+    @IversonEmbedding()
+    @IversonChunk()
+    title: string = '';
+}
+
+/**
+ * Shape 2: a declared type with ASYMMETRIC properties — one embedding-only, one chunk-only.
+ * Without this shape a swapped guard (isEmbedding accidentally gating chunkModelId, or vice
+ * versa) produces identical output against a both/neither pair and goes undetected.
+ */
+@IversonEntity()
+@IversonEmbeddingModel('nomic-embed-text')
+class ModelAsymmetricArticle {
+    @IversonKey()
+    id: string = '';
+
+    @IversonEmbedding()
+    title: string = '';
+
+    @IversonChunk()
+    body: string = '';
+}
+
+/**
+ * Shape 3: a declared type whose relation foreign-key property must NOT receive the model —
+ * the TypeScript-specific exclusion. `modelDeclaredAuthorId` PascalCases to
+ * `ModelDeclaredAuthorId`, satisfying the many_to_one naming check.
+ */
+@IversonEntity()
+@IversonEmbeddingModel('nomic-embed-text')
+class ModelRelationArticle {
+    @IversonKey()
+    id: string = '';
+
+    @ManyToOne(() => ModelDeclaredAuthor)
+    modelDeclaredAuthorId: string = '';
+}
+
+/** Shape 4: undeclared, but carrying both an embedded and a chunked property, so the undeclared
+ * arm is pinned on chunkModelId as well as modelId — a fixture with only an embedded property
+ * cannot catch a stamp that leaks onto the chunk field alone. */
+@IversonEntity()
+class ModelUndeclaredArticle {
+    @IversonKey()
+    id: string = '';
+
+    @IversonEmbedding()
+    title: string = '';
+
+    @IversonChunk()
+    body: string = '';
+}
+
+describe('describeEntity — embedding model declaration', () => {
+    it('stamps the declared model onto both modelId and chunkModelId for a both-flags property', () => {
+        const descriptor = describeEntity(ModelBothFlagsArticle);
+        const title = descriptor.properties.find(p => p.name === 'Title')!;
+        expect(title.modelId).toBe('nomic-embed-text');
+        expect(title.chunkModelId).toBe('nomic-embed-text');
+    });
+
+    it('stamps modelId only, not chunkModelId, for an embedding-only property', () => {
+        const descriptor = describeEntity(ModelAsymmetricArticle);
+        const title = descriptor.properties.find(p => p.name === 'Title')!;
+        expect(title.modelId).toBe('nomic-embed-text');
+        expect(title.chunkModelId).toBe('');
+    });
+
+    it('stamps chunkModelId only, not modelId, for a chunk-only property', () => {
+        const descriptor = describeEntity(ModelAsymmetricArticle);
+        const body = descriptor.properties.find(p => p.name === 'Body')!;
+        expect(body.modelId).toBe('');
+        expect(body.chunkModelId).toBe('nomic-embed-text');
+    });
+
+    it('leaves the relation foreign-key property at empty string on both fields despite a declared model', () => {
+        const descriptor = describeEntity(ModelRelationArticle);
+        const fk = descriptor.properties.find(p => p.name === 'ModelDeclaredAuthorId')!;
+        expect(fk).toBeDefined();
+        expect(fk.modelId).toBe('');
+        expect(fk.chunkModelId).toBe('');
+    });
+
+    it('leaves modelId and chunkModelId at empty string on both an embedded and a chunked property when undeclared', () => {
+        const descriptor = describeEntity(ModelUndeclaredArticle);
+        const title = descriptor.properties.find(p => p.name === 'Title')!;
+        const body = descriptor.properties.find(p => p.name === 'Body')!;
+        expect(title.modelId).toBe('');
+        expect(title.chunkModelId).toBe('');
+        expect(body.modelId).toBe('');
+        expect(body.chunkModelId).toBe('');
     });
 });
 

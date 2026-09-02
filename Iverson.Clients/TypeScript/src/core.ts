@@ -55,6 +55,7 @@ import {
     getGuidFields,
     getChunkFields,
     getEmbeddingFields,
+    getEmbeddingModel,
     getExtractedFields,
     getKeyField,
     getKeywordsFields,
@@ -247,6 +248,11 @@ export function describeEntity(cls: Function): TypeDescriptor {
     const extractedByField = new Map(getExtractedFields(cls).map(e => [e.field, e]));
     const arrayFields = getArrayFields(cls);
     const guidFields = getGuidFields(cls);
+    // Class-level, never per-property: read once and stamped onto each affected property's
+    // modelId/chunkModelId below, guarded on that property's own isEmbedding/chunkMeta values.
+    // Undeclared classes keep getEmbeddingModel's '' default, which is what the two literals
+    // below already sent, so an un-updated class is unaffected.
+    const embeddingModel = getEmbeddingModel(cls);
     if (keyField !== undefined) {
         // The server builds every per-property declaration from non-key properties only, so
         // anything but a description on the key is accepted and silently dropped.
@@ -358,11 +364,11 @@ export function describeEntity(cls: Function): TypeDescriptor {
             isArray,
             isEmbedding,
             vectorDim: 0,
-            modelId: '',
+            modelId: isEmbedding ? embeddingModel : '',
             isChunk: chunkMeta !== undefined,
             chunkMaxTokens: chunkMeta?.maxTokens ?? 0,
             chunkOverlap: chunkMeta?.overlap ?? 0,
-            chunkModelId: '',
+            chunkModelId: chunkMeta !== undefined ? embeddingModel : '',
             chunkVectorDim: 0,
             isSearchKey,
             searchKeyOrder: searchKeysByField.get(fieldName) ?? 0,

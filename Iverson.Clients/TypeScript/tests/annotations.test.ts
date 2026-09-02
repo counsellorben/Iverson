@@ -11,6 +11,7 @@ import {
     IversonLargeField,
     IversonMetadata,
     IversonDescription,
+    IversonEmbeddingModel,
     ManyToOne,
     ManyToMany,
     OneToMany,
@@ -24,6 +25,7 @@ import {
     getPropertyDescriptions,
     getRelations,
     getRelationsWithFactory,
+    getEmbeddingModel,
 } from '../src/annotations.js';
 
 // ── Test entities ─────────────────────────────────────────────────────────────
@@ -339,5 +341,28 @@ describe('@IversonDescription', () => {
     it('returns empty defaults when absent', () => {
         expect(getTypeDescription(UndescribedProduct)).toBe('');
         expect(getPropertyDescriptions(UndescribedProduct)).toEqual({});
+    });
+});
+
+// ── @IversonEmbeddingModel(modelId) ────────────────────────────────────────────
+//
+// Class-level, never per-property; the stamping onto modelId/chunkModelId is pinned separately
+// in tests/core.test.ts's `describeEntity — embedding model declaration` block. This only pins
+// that the decorator itself carries the value through Reflect.defineMetadata.
+
+@IversonEntity()
+@IversonEmbeddingModel('nomic-embed-text')
+class ModelDeclaredProduct {
+    @IversonKey()
+    id: string = '';
+}
+
+describe('@IversonEmbeddingModel', () => {
+    it('stores the declared model, readable via getEmbeddingModel', () => {
+        expect(getEmbeddingModel(ModelDeclaredProduct)).toBe('nomic-embed-text');
+    });
+
+    it('defaults to empty string when never declared', () => {
+        expect(getEmbeddingModel(UndescribedProduct)).toBe('');
     });
 });

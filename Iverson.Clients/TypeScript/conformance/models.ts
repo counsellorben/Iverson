@@ -11,6 +11,7 @@ import 'reflect-metadata';
 import {
     IversonChunk,
     IversonEmbedding,
+    IversonEmbeddingModel,
     IversonEntity,
     IversonGuid,
     IversonKey,
@@ -278,4 +279,40 @@ export class ErrorUnregisteredDoc {
     ownerId: string = '';
 
     label: string = '';
+}
+
+/**
+ * S11 `model-rejected`'s TypeScript fixture
+ * (`Iverson.Server/Iverson.ClientConformance/Scenarios/ModelRejectedScenario.cs`). Unlike S1's
+ * shared fixtures, each requested language registers its OWN instance of this scenario's type
+ * rather than one type shared across all five — the subject is what happens to a type ALREADY
+ * registered by THIS client, so five languages sharing one type would leave four of the five
+ * columns grading a row a different client registered. Must be named exactly
+ * `S11ModelTypescript`: `ModelRejectedScenario.TypeNameFor("typescript")` derives and asserts
+ * this name with ordinal comparison, and this client derives the registered type name from the
+ * class name with no override, so the class itself must carry that exact name.
+ *
+ * Declares the deployment's default model explicitly (`nomic-embed-text`) rather than a second
+ * one, on purpose: this exercises the whole declaration path while keeping the conformance
+ * environment single-model, so no second model ever needs to be pulled. It also means the
+ * harness alone cannot distinguish "the client stamped the declared model" from "the client sent
+ * `''` and the server fell back to the same value" — that distinction is pinned by a client-side
+ * unit test instead (`tests/core.test.ts`'s `describeEntity — embedding model declaration` block).
+ */
+@IversonEntity()
+@IversonEmbeddingModel('nomic-embed-text')
+export class S11ModelTypescript {
+    @IversonKey()
+    @IversonGuid()
+    id: string = '';
+
+    tenantId: string = '';
+
+    ownerId: string = '';
+
+    @IversonEmbedding()
+    title: string = '';
+
+    @IversonChunk()
+    body: string = '';
 }
