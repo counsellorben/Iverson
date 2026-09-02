@@ -316,3 +316,37 @@ export class S11ModelTypescript {
     @IversonChunk()
     body: string = '';
 }
+
+/**
+ * S12 `model-inherited`'s TypeScript declaring parent. Field-less and never registered (no
+ * `@IversonEntity()`) — it exists only to carry `@IversonEmbeddingModel('nomic-embed-text')` for
+ * `S12InheritedTypescript` to inherit. `getEmbeddingModel` reads this via `Reflect.getMetadata`,
+ * which walks the prototype chain, so a subclass with no decorator of its own inherits this
+ * class's declaration.
+ */
+@IversonEmbeddingModel('nomic-embed-text')
+export class S12DeclaredTypescript {
+}
+
+/**
+ * S12 `model-inherited`'s TypeScript fixture (`register_inherited_doc` driver step). Declares no
+ * `@IversonEmbeddingModel` of its own — it inherits `'nomic-embed-text'` from its field-less
+ * parent `S12DeclaredTypescript` through the prototype chain. Must be named exactly
+ * `S12InheritedTypescript`: T8 derives and asserts this name with ordinal comparison.
+ */
+@IversonEntity()
+export class S12InheritedTypescript extends S12DeclaredTypescript {
+    @IversonKey()
+    @IversonGuid()
+    id: string = '';
+
+    tenantId: string = '';
+
+    ownerId: string = '';
+
+    @IversonEmbedding()
+    title: string = '';
+
+    @IversonChunk()
+    body: string = '';
+}

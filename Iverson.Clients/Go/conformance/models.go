@@ -206,3 +206,27 @@ type S11ModelGo struct {
 
 // IversonEmbeddingModel declares S11ModelGo's per-type embedding model.
 func (S11ModelGo) IversonEmbeddingModel() string { return "nomic-embed-text" }
+
+// S12DeclaredGo is S12 model-inherited's Go declaring parent: field-less, carrying only the
+// IversonEmbeddingModel method, and never registered. Embedded anonymously into S12InheritedGo,
+// which inherits the method (and so the declared model) but contributes no field of its own —
+// the registrar's struct walk skips an embedded field-less struct's own (nonexistent) fields.
+type S12DeclaredGo struct{}
+
+// IversonEmbeddingModel declares S12DeclaredGo's per-type embedding model, inherited by any
+// struct that embeds S12DeclaredGo anonymously and does not declare its own.
+func (S12DeclaredGo) IversonEmbeddingModel() string { return "nomic-embed-text" }
+
+// S12InheritedGo is S12 model-inherited's Go fixture (register_inherited_doc driver step).
+// Declares no IversonEmbeddingModel method of its own — it inherits S12DeclaredGo's via the
+// anonymous embed. Must be named exactly "S12InheritedGo": T8 derives and asserts this name with
+// ordinal comparison.
+type S12InheritedGo struct {
+	S12DeclaredGo
+	Id       string `iverson_key:"true" iverson_guid:"true"`
+	TenantId string
+	OwnerId  string
+
+	Title string `iverson_embedding:"true"`
+	Body  string `iverson_chunk:"true"`
+}

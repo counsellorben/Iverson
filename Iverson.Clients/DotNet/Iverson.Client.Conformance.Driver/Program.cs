@@ -56,6 +56,13 @@ const string ErrorContractScenario = "error-contract";
 // orchestrator re-registers the reported descriptor itself, with a model override, and grades the
 // rejection directly.
 const string ModelRejectedScenario = "model-rejected";
+// model-inherited (S12): register only (this driver only, register-once per scenario
+// invocation). Every requested language registers its OWN instance of S12InheritedDotnet, which
+// declares no [IversonEmbeddingModel] of its own and instead inherits
+// "nomic-embed-text" from its field-less parent S12DeclaredDotnet — and reports the descriptor it
+// sent so the orchestrator can assert the inherited model landed on the embedding/chunk
+// properties. No write/read phase.
+const string ModelInheritedScenario = "model-inherited";
 // The Label every VectorDoc row this driver writes carries, and the value the orchestrator's
 // similarity comparison grades on — SearchSimilar streams the Qdrant payload, whose row key lives
 // under a reserved "key" entry the typed projection does not bind to Id. Must stay in step with
@@ -69,7 +76,7 @@ const string VectorQueryText = "a short note about vector search conformance";
 const uint VectorTopK = 50;
 var supportedScenarios = new[]
     { CrudRoundtripScenario, InteropScenario, SchemaCatalogScenario, QueryScenario, VectorSearchScenario,
-      IdentityScenario, ErrorContractScenario, ModelRejectedScenario };
+      IdentityScenario, ErrorContractScenario, ModelRejectedScenario, ModelInheritedScenario };
 
 var args_ = Args.Parse(args);
 
@@ -156,6 +163,10 @@ else if (scenario == IdentityScenario)
 else if (scenario == ModelRejectedScenario)
 {
     await RunModelRejectedAsync();
+}
+else if (scenario == ModelInheritedScenario)
+{
+    await RunModelInheritedAsync();
 }
 else
 {
@@ -870,6 +881,40 @@ async Task RunModelRejectedAsync()
                 Ok: registerOutcome is null,
                 Error: registerOutcome,
                 TypeDescriptor: Json.Element(capture.Select(nameof(S11ModelDotnet)))));
+            break;
+        }
+
+        default:
+            await Console.Error.WriteLineAsync($"unknown phase '{phase}' for scenario '{scenario}'");
+            Environment.Exit(2);
+            break;
+    }
+}
+
+// ── S12 model-inherited ──────────────────────────────────────────────────────────────────────
+async Task RunModelInheritedAsync()
+{
+    switch (phase)
+    {
+        case "register":
+        {
+            // Registers ONLY S12InheritedDotnet. S12DeclaredDotnet is the field-less parent that
+            // carries [IversonEmbeddingModel("nomic-embed-text")] and is never itself registered
+            // (no [IversonEntity]) — OnlySendTypeName here suppresses this assembly's other
+            // fixture types from RegisterAllAsync's walk over EntityRegistry.All.
+            capture.OnlySendTypeName = nameof(S12InheritedDotnet);
+            var registerOutcome = await Run(async () =>
+            {
+                var registrar = new SchemaRegistrar(registry, mappingForRegistration, NullLogger<SchemaRegistrar>.Instance);
+                await registrar.RegisterAllAsync();
+            });
+            capture.OnlySendTypeName = null;
+
+            steps.Add(new StepResult(
+                "register_inherited_doc",
+                Ok: registerOutcome is null,
+                Error: registerOutcome,
+                TypeDescriptor: Json.Element(capture.Select(nameof(S12InheritedDotnet)))));
             break;
         }
 

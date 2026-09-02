@@ -226,3 +226,32 @@ class S11ModelPython:
 
     title: str = iverson_embedding()
     body: str = iverson_chunk()
+
+
+@iverson_entity(embedding_model="nomic-embed-text")
+class S12DeclaredPython:
+    """S12 ``model-inherited``'s Python declaring parent. Field-less and never registered — it
+    exists only to carry ``embedding_model="nomic-embed-text"`` for ``S12InheritedPython`` to
+    inherit through ``_iverson_meta``. Must stay field-less: a decorated parent's field
+    sentinels are replaced with ``None`` on the class itself, so a same-named field on a child
+    would not correctly re-carry the ``FieldMeta`` descriptor — this parent declares no fields to
+    keep that non-issue moot.
+    """
+
+
+@iverson_entity
+class S12InheritedPython(S12DeclaredPython):
+    """S12 ``model-inherited``'s Python fixture (``register_inherited_doc`` driver step).
+    Declares no ``embedding_model`` of its own — ``@iverson_entity``'s inheritance walk
+    (nearest-first over ``cls.__mro__[1:]``) picks up ``"nomic-embed-text"`` from
+    ``S12DeclaredPython``. Must be named exactly ``S12InheritedPython``: T8 derives and asserts
+    this name with ordinal comparison. Declares all its own fields (the parent contributes
+    none).
+    """
+
+    id: uuid.UUID = iverson_key()
+    tenant_id: str = None
+    owner_id: str = None
+
+    title: str = iverson_embedding()
+    body: str = iverson_chunk()

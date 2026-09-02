@@ -40,7 +40,7 @@ from iverson_client.vector_search import chunks as chunks_builder, similar as si
 
 from conformance.models import (
     ErrorDoc, ErrorUnregisteredDoc, IdentityDoc, PyArticle, PyAuthor, PyBadArticle, PyTag,
-    QueryDoc, S11ModelPython, SharedArticle, SharedAuthor, VectorDoc,
+    QueryDoc, S11ModelPython, S12InheritedPython, SharedArticle, SharedAuthor, VectorDoc,
 )
 
 LANGUAGE = "python"
@@ -58,9 +58,14 @@ LANGUAGE = "python"
 # reports the descriptor it sent so the orchestrator's Reregistrar has JSON to mutate. No
 # write/read phase: the orchestrator re-registers the reported descriptor itself, with a model
 # override, and grades the rejection directly.
+# model-inherited (S12): register only (register-once per scenario invocation). This driver
+# registers its OWN instance of S12InheritedPython, which declares no embedding_model of its own
+# and instead inherits "nomic-embed-text" from its field-less parent S12DeclaredPython, and
+# reports the descriptor it sent so the orchestrator can assert the inherited model landed on the
+# embedding/chunk properties. No write/read phase.
 SCENARIOS = {
     "crud-roundtrip", "naming-rejected", "interop", "schema-catalog", "query", "vector-search",
-    "identity", "error-contract", "model-rejected",
+    "identity", "error-contract", "model-rejected", "model-inherited",
 }
 
 # S8 identity: the tenant value every driver stamps on the IdentityDoc row it creates —
@@ -900,6 +905,25 @@ def main(argv: List[str]) -> int:
         descriptor_json = capture.select("S11ModelPython")
         steps.append(StepResult(
             name="register_model_doc",
+            ok=error is None,
+            error=error,
+            type_descriptor=json.loads(descriptor_json) if descriptor_json else None,
+        ))
+
+    elif phase == "register" and scenario == "model-inherited":
+        # S12 model-inherited: registers ONLY S12InheritedPython. S12DeclaredPython is the
+        # field-less parent that carries embedding_model="nomic-embed-text" and is never itself
+        # registered.
+        error: Optional[str] = None
+        try:
+            registrar = SchemaRegistrar(capture, S12InheritedPython)
+            registrar.register_all()
+        except Exception as exc:  # noqa: BLE001 - reported as data, not raised
+            error = describe(exc)
+
+        descriptor_json = capture.select("S12InheritedPython")
+        steps.append(StepResult(
+            name="register_inherited_doc",
             ok=error is None,
             error=error,
             type_descriptor=json.loads(descriptor_json) if descriptor_json else None,

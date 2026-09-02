@@ -27,7 +27,7 @@ import {
     TypeDescriptor,
 } from '../generated/object_mapping.js';
 
-import { ErrorDoc, ErrorUnregisteredDoc, IdentityDoc, QueryDoc, S11ModelTypescript, SharedArticle, SharedAuthor, TsArticle, TsAuthor, TsBadArticle, TsTag, VectorDoc } from './models.js';
+import { ErrorDoc, ErrorUnregisteredDoc, IdentityDoc, QueryDoc, S11ModelTypescript, S12InheritedTypescript, SharedArticle, SharedAuthor, TsArticle, TsAuthor, TsBadArticle, TsTag, VectorDoc } from './models.js';
 import { QueryBuilder, SearchOperator } from '../src/search.js';
 import { aggregate } from '../src/aggregate.js';
 import { chunks as chunksBuilder, similar as similarBuilder } from '../src/vector-search.js';
@@ -50,9 +50,14 @@ const LANGUAGE = 'typescript';
 // and reports the descriptor it sent so the orchestrator's Reregistrar has JSON to mutate. No
 // write/read phase: the orchestrator re-registers the reported descriptor itself, with a model
 // override, and grades the rejection directly.
+// model-inherited (S12): register only (register-once per scenario invocation). This driver
+// registers its OWN instance of S12InheritedTypescript, which declares no
+// @IversonEmbeddingModel of its own and instead inherits 'nomic-embed-text' from its field-less
+// parent S12DeclaredTypescript, and reports the descriptor it sent so the orchestrator can assert
+// the inherited model landed on the embedding/chunk properties. No write/read phase.
 const SCENARIOS = new Set([
     'crud-roundtrip', 'naming-rejected', 'interop', 'schema-catalog', 'query', 'vector-search',
-    'identity', 'error-contract', 'model-rejected',
+    'identity', 'error-contract', 'model-rejected', 'model-inherited',
 ]);
 
 /** S8 identity: the tenant value every driver stamps on the IdentityDoc row it creates —
@@ -509,6 +514,22 @@ async function main(argv: string[]): Promise<number> {
         steps.push(step('register_model_doc', error === null, {
             error,
             typeDescriptor: capture.select('S11ModelTypescript') ?? null,
+        }));
+    } else if (phase === 'register' && scenario === 'model-inherited') {
+        // S12 model-inherited: registers ONLY S12InheritedTypescript. S12DeclaredTypescript is
+        // the field-less parent that carries @IversonEmbeddingModel('nomic-embed-text') and is
+        // never itself registered (no @IversonEntity()).
+        let error: string | null = null;
+        try {
+            const registrar = new SchemaRegistrar(
+                capture as unknown as ObjectMappingServiceClient, [S12InheritedTypescript], callCredentials);
+            await registrar.registerAll();
+        } catch (err) {
+            error = describe(err);
+        }
+        steps.push(step('register_inherited_doc', error === null, {
+            error,
+            typeDescriptor: capture.select('S12InheritedTypescript') ?? null,
         }));
     } else if (phase === 'write' && scenario === 'error-contract') {
         // One row, seeded so the read phase's positive control has something real to find.
