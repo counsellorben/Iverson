@@ -87,6 +87,19 @@ public sealed class SchemaRegistrar(
                 });
         }
 
+        // A class-level declaration is stamped in one pass after the properties are built, rather
+        // than threaded through AddAnnotations, because one model applies to every vector and
+        // chunk field of the type — never per-property. Undeclared types keep sending "" from
+        // AddAnnotations above, which is what makes this backward compatible with no server-side
+        // special-casing.
+        var model = descriptor.EntityType.GetCustomAttribute<IversonEmbeddingModelAttribute>()?.ModelId;
+        if (model is not null)
+            foreach (var p in typeDesc.Properties)
+            {
+                if (p.IsEmbedding) p.ModelId      = model;
+                if (p.IsChunk)     p.ChunkModelId = model;
+            }
+
         return typeDesc;
     }
 

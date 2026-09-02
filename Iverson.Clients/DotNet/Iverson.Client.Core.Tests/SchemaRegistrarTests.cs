@@ -63,6 +63,18 @@ internal sealed class EnrichmentAnnotationTestEntity
 }
 
 [IversonEntity]
+[IversonEmbeddingModel("snowflake-arctic-embed:s")]
+internal sealed class ModelAnnotationTestEntity
+{
+    [IversonKey]
+    public Guid Id { get; set; }
+
+    [IversonEmbedding]
+    [IversonChunk]
+    public string Body { get; set; } = "";
+}
+
+[IversonEntity]
 internal sealed class SchemaTestAuthor
 {
     [IversonKey]
@@ -613,6 +625,39 @@ public class SchemaRegistrarTests
         plain.IsKeywordsTarget.Should().BeFalse();
         plain.ExtractHint.Should().BeEmpty();
         plain.ChunkContextual.Should().BeFalse();
+    }
+
+    // This is where stamping is falsifiable — ModelRejectedScenario's harness cannot distinguish
+    // a stamped default from a server-side fallback, because its fixture declares the deployment
+    // default on purpose (single-model conformance environment).
+    [Fact]
+    public async Task RegisterAllAsync_StampsDeclaredEmbeddingModel_OnEmbeddingAndChunkProperties()
+    {
+        SchemaRequest? req = null;
+        _mappingClient
+            .RegisterSchemaAsync(
+                Arg.Do<SchemaRequest>(r =>
+                {
+                    if (r.RootType?.TypeName == "ModelAnnotationTestEntity") req = r;
+                }),
+                Arg.Any<Metadata>(),
+                Arg.Any<DateTime?>(),
+                Arg.Any<CancellationToken>())
+            .Returns(new AsyncUnaryCall<SchemaResponse>(
+                Task.FromResult(new SchemaResponse { Success = true }),
+                Task.FromResult(new Metadata()),
+                () => Status.DefaultSuccess,
+                () => new Metadata(),
+                () => { }));
+
+        await _sut.RegisterAllAsync();
+
+        req.Should().NotBeNull();
+        var body = req!.RootType!.Properties.Single(p => p.Name == "Body");
+        body.IsEmbedding.Should().BeTrue();
+        body.IsChunk.Should().BeTrue();
+        body.ModelId.Should().Be("snowflake-arctic-embed:s");
+        body.ChunkModelId.Should().Be("snowflake-arctic-embed:s");
     }
 
     [Theory]
