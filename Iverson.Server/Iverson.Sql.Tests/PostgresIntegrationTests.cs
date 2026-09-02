@@ -34,6 +34,7 @@ public sealed class PostgresContainerFixture : IAsyncLifetime
     public async Task DisposeAsync() => await _container.DisposeAsync();
 }
 
+[Collection(ContainerCollection.Name)]
 public sealed class PostgresIntegrationTests(PostgresContainerFixture fixture)
     : IClassFixture<PostgresContainerFixture>
 {
