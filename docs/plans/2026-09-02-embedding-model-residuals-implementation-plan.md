@@ -76,6 +76,10 @@ Newly introduced by this plan and verified at plan-write time against `2291d0d`.
 | P31 | Code validity | `sf.Anonymous` is a real `reflect.StructField` field, but has **no existing usage in this Go tree** — new usage, not a copied pattern | `grep -rn "\.Anonymous" Iverson.Clients/Go/` → no hits |
 | P40 | Consumer impact | `InspectType` has six consumers, all of which see T6's changed field list | `sample/main.go:18`, `conformance/main.go:345`, `registrar.go:81`, `coordinator.go:138,164,701`. No-op for every existing entity: the spec's `go/ast` scan found zero anonymous fields tree-wide |
 | P43 | Consumer impact | The five GUID-key declaration forms, one per language | .NET `[IversonKey] public Guid Id` (`S11ModelDotnet.cs:27`); Java `@IversonKey private UUID id` (`S11ModelJava.java:33-34`); Python `id: uuid.UUID = iverson_key()` (`models.py:224`); TypeScript `@IversonGuid()` (`models.ts:32`); Go `iverson_key:"true" iverson_guid:"true"` on a `string` (`models.go`) |
+| P44 | Consumer impact | Running a scenario needs **three** `Program.cs` edits, not one. The `recognizedScenarios` append governs only the default run set and the unknown-name warning; the dispatch block is what runs it | `Program.cs:180-182` states this about itself, repeated at `:191,200,213,224,235`; every existing scenario has all three (e.g. `:71`, `:126-127`, `:237-245`) |
+| P45 | Signature | `model_id` and `chunk_model_id` are `PropertyDescriptor` fields, each stamped only under that property's own flag; `TypeDescriptor` carries no type-level model field | `object_mapping.proto:52,56`; `SchemaRegistrar.cs:97-100`, `SchemaRegistrar.java:148-150`, `core.py:276,280`, `registrar.go:137+`, `core.ts:251-255` |
+| P46 | Command | `helm dependency build` is required **after** a subchart edit, not only before it: the `.tgz` archives win outright over the live `charts/<name>/` directories | Verified by execution — with the archives as they stand `helm template` emits no `Embeddings__ModelId` at all, despite `charts/api/templates/deployment.yaml:126-128` emitting it; it appears only after a rebuild |
+| P47 | Ordering | Each command block starts at the repository root, and a `cd` persists for the remainder of that block | Reproduced: from `Iverson.Clients/Python`, `git add Iverson.Clients/Python/` returns `fatal: pathspec … did not match any files` |
 
 ---
 
@@ -189,7 +193,7 @@ git commit -m "inherit a declared embedding model from a superclass in the java 
 
 - [ ] **Step 3: Run and commit.**
 ```bash
-cd Iverson.Clients/Python && pytest
+(cd Iverson.Clients/Python && pytest)
 git add Iverson.Clients/Python/
 git commit -m "inherit a declared embedding model through the mro in the python client"
 ```
@@ -207,7 +211,7 @@ git commit -m "inherit a declared embedding model through the mro in the python 
 
 - [ ] **Step 2: Run and commit.**
 ```bash
-cd Iverson.Clients/TypeScript && npm test
+(cd Iverson.Clients/TypeScript && npm test)
 git add Iverson.Clients/TypeScript/
 git commit -m "pin inherited and overridden embedding-model declarations in the typescript client"
 ```
@@ -230,7 +234,7 @@ This fixes a latent defect, not merely an obstacle: `ParseTag` returns a plain f
 
 - [ ] **Step 3: Run and commit.**
 ```bash
-cd Iverson.Clients/Go && go test ./... && go vet ./...
+(cd Iverson.Clients/Go && go test ./... && go vet ./...)
 git add Iverson.Clients/Go/
 git commit -m "skip embedded fields in the go field walk and inherit a promoted model declaration"
 ```
@@ -273,9 +277,9 @@ type S12InheritedGo struct {
 ```bash
 dotnet build Iverson.Clients/DotNet/Iverson.Client.Conformance.Driver/Iverson.Client.Conformance.Driver.csproj
 mvn -B -f Iverson.Clients/Java/pom.xml -pl conformance -am -DskipTests package
-cd Iverson.Clients/Python && python3 -m py_compile conformance/driver.py conformance/models.py
-cd Iverson.Clients/TypeScript && npx tsc -p tsconfig.conformance.json
-cd Iverson.Clients/Go && go build -o bin/conformance ./conformance
+(cd Iverson.Clients/Python && python3 -m py_compile conformance/driver.py conformance/models.py)
+(cd Iverson.Clients/TypeScript && npx tsc -p tsconfig.conformance.json)
+(cd Iverson.Clients/Go && go build -o /tmp/s12-conformance ./conformance)
 ```
 
 - [ ] **Step 4: Commit.**
@@ -298,7 +302,9 @@ Depends on T7.
 **Interfaces:**
 - Consumes: T7's scenario name, step name and the five type names.
 
-- [ ] **Step 1: The scenario.** Mirror `ModelRejectedScenario` in shape: run the register phase across all requested languages, capture each driver's reported descriptor, and assert `model_id` and `chunk_model_id` **equal** the parent's declared value.
+- [ ] **Step 1: The scenario.** Mirror `ModelRejectedScenario` in shape: run the register phase across all requested languages, capture each driver's reported descriptor, and assert the inherited model **flag-guarded per property**, mirroring the stamping it grades.
+
+`model_id` and `chunk_model_id` are fields of `PropertyDescriptor` (`object_mapping.proto:52,56`), and every client stamps each one only under that property's own flag. T7's fixtures follow `S11Model<Lang>`'s shape — one embedding-only property and one chunk-only property — so asserting both fields on every property would fail every language on a **correctly** inheriting client. Over each parsed property: `IsEmbedding ⇒ ModelId == expected` and `IsChunk ⇒ ChunkModelId == expected`, and require at least one property of each kind so neither half can pass vacuously.
 
 Two constraints are load-bearing and neither is optional:
 
@@ -311,7 +317,12 @@ Two constraints are load-bearing and neither is optional:
   3. **The citation** — the const's identifier referenced from the scenario's assertions, outside `Requirements.cs`, build output and the test project.
   4. **The coverage row** — one new Covered area in DECL's ledger. The existing rows claim `IVC-DECL-001/003/004` and `IVC-DECL-006`, so there is no second claimant.
 
-- [ ] **Step 3: Register the scenario** in `Program.cs`'s `recognizedScenarios`, a flat array append of `InheritedModelScenario.Name`.
+- [ ] **Step 3: Wire the scenario into `Program.cs` — three edits, not one.** The `recognizedScenarios` append governs only the default run set and the unknown-name warning; **the dispatch block is what actually runs the scenario**, and the file says so about itself at `:180-182` and five times more.
+  1. Append `InheritedModelScenario.Name` to `recognizedScenarios`.
+  2. Construct the scenario alongside the other eleven — it needs `runner` and `log` only, no `IReregistrar` and no `SchemaProbe`.
+  3. Add the dispatch block: `if (scenarios.Contains(InheritedModelScenario.Name))`, awaiting `RunAsync(languages, BuildContext(InheritedModelScenario.Name), actingToken)` and feeding `report.Add`.
+
+Omitting edit 3 leaves `IVC-DECL-007` a registered const that no cell cites, and `Program.cs:264-273` fails a full-matrix run for exactly that — while this task's own `dotnet test` stays green.
 
 - [ ] **Step 4: Tests** in `Iverson.ClientConformance.Tests`, driving the scenario through `ScriptedDriverRunner` as the existing scenario tests do. Include a test that the assertion fails when a driver reports an empty model — the regression the two constraints in Step 1 exist to catch.
 
@@ -356,19 +367,30 @@ git commit -m "enforce that only the schema-probe test depends on iverson.api"
 
 - [ ] **Step 1: Capture the four renders before changing anything.** `helm dependency build` first — stale `charts/*.tgz` silently shadow live subchart edits.
 ```bash
-cd Iverson.Server/deploy/helm/iverson && helm dependency build
-helm template iverson . > /tmp/before-default.yaml
-helm template iverson . -f values-local.yaml > /tmp/before-local.yaml
-helm template iverson . --set global.activeEmbeddingModel=snowflake-arctic-embed:s > /tmp/before-arctic.yaml
-helm template iverson . --set global.activeEmbeddingModel=typo > /tmp/before-typo.yaml
+(cd Iverson.Server/deploy/helm/iverson \
+  && helm dependency build \
+  && helm template iverson . > /tmp/before-default.yaml \
+  && helm template iverson . -f values-local.yaml > /tmp/before-local.yaml \
+  && helm template iverson . --set global.activeEmbeddingModel=snowflake-arctic-embed:s > /tmp/before-arctic.yaml \
+  && helm template iverson . --set global.activeEmbeddingModel=typo > /tmp/before-typo.yaml)
 ```
 
 - [ ] **Step 2: Extract the emission** into a second named template beside `iverson.activeEmbeddingModel`, and replace both deployments' eleven-line blocks with `{{- include "iverson.embeddingEnv" . | nindent 12 }}`. Both render at twelve spaces, so one `nindent` serves both, and parent-chart template reach from a subchart is already exercised by the existing helper.
 
-- [ ] **Step 3: Re-render and assert byte-identical output.** An extraction that alters one character of emitted YAML has failed regardless of how the result reads.
+- [ ] **Step 3: Rebuild dependencies, re-render, and assert byte-identical output.**
+
+The `helm dependency build` here is what makes the assertion mean anything. Step 2 edits files *inside* the subchart directories, and the `.tgz` archives win outright over the live `charts/<name>/` directories — so without a rebuild the re-render reads Step 1's archives and every diff passes regardless of what Step 2 did, including if the extraction is entirely broken.
+
 ```bash
+(cd Iverson.Server/deploy/helm/iverson \
+  && helm dependency build \
+  && helm template iverson . > /tmp/after-default.yaml \
+  && helm template iverson . -f values-local.yaml > /tmp/after-local.yaml \
+  && helm template iverson . --set global.activeEmbeddingModel=snowflake-arctic-embed:s > /tmp/after-arctic.yaml \
+  && helm template iverson . --set global.activeEmbeddingModel=typo > /tmp/after-typo.yaml)
 for c in default local arctic typo; do diff /tmp/before-$c.yaml /tmp/after-$c.yaml && echo "$c identical"; done
 ```
+An extraction that alters one character of emitted YAML has failed regardless of how the result reads.
 
 - [ ] **Step 4: Commit.**
 ```bash
