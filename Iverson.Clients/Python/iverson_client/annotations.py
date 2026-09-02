@@ -235,7 +235,11 @@ def iverson_entity(cls: type | None = None, *, description: str = "", embedding_
             inherited; a subclass that passes its own value overrides any inherited one. If no
             base declares one either, the server resolves the deployment's configured default,
             exactly as it does for a client that predates this parameter — so an un-updated
-            caller keeps working with no server-side special-casing.
+            caller keeps working with no server-side special-casing. Only ``embedding_model``
+            inherits this way from a decorated base — its ``FieldMeta`` sentinels (including
+            ``iverson_key()``) are replaced with ``None`` on the base (see "After decoration"
+            below) and do NOT carry into subclasses, so the declaring base must be field-less,
+            or the child must redeclare every field it needs.
 
     After decoration:
     - ``cls._iverson_meta`` is a dict with keys:

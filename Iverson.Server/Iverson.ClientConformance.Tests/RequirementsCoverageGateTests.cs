@@ -1317,7 +1317,7 @@ public class RequirementsCoverageGateTests
         var testProjectDir = Path.Combine(RepositoryRoot(), "Iverson.Server", "Iverson.ClientConformance.Tests");
 
         IsGradableSourceFile(Path.Combine(root, "Requirements.cs")).Should().BeFalse(
-            "Requirements.cs DECLARES every const, so reading it back reports all 43 cited by "
+            "Requirements.cs DECLARES every const, so reading it back reports all 45 cited by "
             + "their own declaration lines and Check2 grades nothing whatsoever (mutant B1)");
         IsGradableSourceFile(Path.Combine(root, "Scenarios", "Requirements.cs")).Should().BeFalse(
             "the exclusion is by file NAME at any depth, not by one hard-coded path");
@@ -1332,7 +1332,7 @@ public class RequirementsCoverageGateTests
 
         IsGradableSourceFile(Path.Combine(root, "Scenarios", "IdentityScenario.cs")).Should().BeTrue(
             "a real orchestrator source must still be READ — without this control every assertion "
-            + "above is satisfied by a selection that excludes everything and reports all 43 uncited");
+            + "above is satisfied by a selection that excludes everything and reports all 45 uncited");
         IsGradableSourceFile(Path.Combine(root, "Verifier.cs")).Should().BeTrue();
 
         var live = Check2Inputs().Files;

@@ -458,9 +458,7 @@ public class IversonApiDependencyGateTests
 
         var csprojContent = File.ReadAllText(csprojPath);
 
-        var offendingReferences = Regex
-            .Matches(csprojContent, @"<ProjectReference\s+Include\s*=\s*""([^""]*)""")
-            .Select(m => m.Groups[1].Value)
+        var offendingReferences = ExtractProjectReferenceIncludes(csprojContent)
             .Where(include => IversonApiCodeReference.IsMatch(include.Replace('\\', '/')))
             .ToList();
 
@@ -470,6 +468,20 @@ public class IversonApiDependencyGateTests
             + "project (via SchemaProbeTests) is allowed that exception, and only because it needs "
             + "the server's real SchemaDescriptor types to build fixtures.");
     }
+
+    /// <summary>
+    /// Extracts every <c>Include</c> value from a <c>&lt;ProjectReference&gt;</c> element in a
+    /// csproj file's raw text. <c>Include</c> is not required to be the element's first attribute
+    /// — MSBuild allows e.g. <c>&lt;ProjectReference Condition="..." Include="..." /&gt;</c> — and
+    /// its value may be single- or double-quoted, so the pattern anchors only on the element name
+    /// and the <c>Include=</c> token, not on attribute order or quote style (reviewer finding:
+    /// the prior <c>Include</c>-must-be-first, double-quote-only pattern let a
+    /// <c>Condition</c>-first or single-quoted reference slip past the gate undetected).
+    /// </summary>
+    internal static IEnumerable<string> ExtractProjectReferenceIncludes(string csprojContent) =>
+        Regex
+            .Matches(csprojContent, @"<ProjectReference[^>]*Include\s*=\s*[""']([^""']*)[""']")
+            .Select(m => m.Groups[1].Value);
 
     private static string Blank(string source)
     {
@@ -623,5 +635,28 @@ public class IversonApiDependencyGateTests
         unterminatedLiteralLine.Should().Be(2,
             "the ordinary literal opens on line 2 of the source, and never finds a closing quote "
             + "before the source ends");
+    }
+
+    /// <summary>
+    /// Pins the fix for assertion 2's false-negative shape (reviewer finding): a
+    /// <c>&lt;ProjectReference&gt;</c> whose <c>Include</c> attribute is neither first nor
+    /// double-quoted — here, <c>Condition</c> comes first and <c>Include</c> is single-quoted —
+    /// must still be detected as referencing <c>Iverson.Api</c>. The prior pattern anchored on
+    /// <c>Include</c> being the first attribute and double-quoted, so this exact shape slipped
+    /// through and the gate passed green on an undetected dependency.
+    /// </summary>
+    [Fact]
+    public void ExtractProjectReferenceIncludes_MatchesAConditionFirstSingleQuotedInclude()
+    {
+        const string source =
+            "<ProjectReference Condition=\"'$(Configuration)'=='Debug'\" "
+            + "Include='../Iverson.Api/Iverson.Api.csproj' />";
+
+        var includes = ExtractProjectReferenceIncludes(source).ToList();
+
+        includes.Should().ContainSingle()
+            .Which.Should().Be("../Iverson.Api/Iverson.Api.csproj",
+                "the Include value must be captured even though Condition precedes it and the "
+                + "quotes are single, not double — the shape the prior regex missed");
     }
 }
