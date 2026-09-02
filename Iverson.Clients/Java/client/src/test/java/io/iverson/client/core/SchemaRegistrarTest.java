@@ -96,6 +96,32 @@ class SchemaRegistrarTest {
         private String body;
     }
 
+    // Deliberately NOT @IversonEntity: SchemaRegistrar#registerAll only registers types passed
+    // to it directly, so this base carries the @IversonEmbeddingModel declaration but is never
+    // itself registered as an entity. Only the two derived types below are.
+    @IversonEmbeddingModel("snowflake-arctic-embed:s")
+    static class ModelInheritedBaseEntity {
+        @IversonKey
+        private UUID id;
+    }
+
+    @IversonEntity
+    static class ModelInheritedAnnotationTestEntity extends ModelInheritedBaseEntity {
+        @IversonEmbedding
+        @IversonChunk
+        private String body;
+    }
+
+    // Declares its own model, which must win over ModelInheritedBaseEntity's — the case that
+    // keeps "inherits" from becoming "cannot override".
+    @IversonEntity
+    @IversonEmbeddingModel("nomic-embed-text")
+    static class ModelOverriddenAnnotationTestEntity extends ModelInheritedBaseEntity {
+        @IversonEmbedding
+        @IversonChunk
+        private String body;
+    }
+
     @IversonEntity
     static class EnrichmentAnnotationTestEntity {
         @IversonKey
@@ -524,6 +550,42 @@ class SchemaRegistrarTest {
         assertAll(
             () -> assertEquals("", title.getModelId()),
             () -> assertEquals("", summary.getChunkModelId()));
+    }
+
+    // A subclass with no @IversonEmbeddingModel of its own must inherit its declaring
+    // superclass's model on both fields — this is what @Inherited on the annotation buys, since
+    // registerAll's cls.getAnnotation(...) call already honours that marker unmodified.
+    @Test
+    void registerAll_stampsInheritedEmbeddingModel_onDerivedTypeWithNoOwnDeclaration() {
+        ArgumentCaptor<SchemaRequest> captor = ArgumentCaptor.forClass(SchemaRequest.class);
+
+        sut.registerAll(ModelInheritedAnnotationTestEntity.class);
+
+        verify(mockStub).registerSchema(captor.capture());
+        TypeDescriptor typeDesc = captor.getValue().getRootType();
+
+        PropertyDescriptor body = prop(typeDesc, "Body");
+        assertAll(
+            () -> assertEquals("snowflake-arctic-embed:s", body.getModelId()),
+            () -> assertEquals("snowflake-arctic-embed:s", body.getChunkModelId()));
+    }
+
+    // The type declares its own model despite deriving from ModelInheritedBaseEntity; its own
+    // declaration must win rather than the base's, otherwise "inherits" would mean "cannot
+    // override".
+    @Test
+    void registerAll_stampsOwnEmbeddingModel_onDerivedTypeThatOverridesTheBaseDeclaration() {
+        ArgumentCaptor<SchemaRequest> captor = ArgumentCaptor.forClass(SchemaRequest.class);
+
+        sut.registerAll(ModelOverriddenAnnotationTestEntity.class);
+
+        verify(mockStub).registerSchema(captor.capture());
+        TypeDescriptor typeDesc = captor.getValue().getRootType();
+
+        PropertyDescriptor body = prop(typeDesc, "Body");
+        assertAll(
+            () -> assertEquals("nomic-embed-text", body.getModelId()),
+            () -> assertEquals("nomic-embed-text", body.getChunkModelId()));
     }
 
     // ── registerAll: @IversonSummary / @IversonKeywords / @IversonExtracted / contextual chunk ──
