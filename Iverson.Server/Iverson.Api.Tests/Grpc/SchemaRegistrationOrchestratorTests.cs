@@ -7,6 +7,7 @@ using Iverson.Embeddings;
 using Iverson.Sql;
 using Microsoft.Extensions.Logging.Abstractions;
 using NSubstitute;
+using NSubstitute.ExceptionExtensions;
 using Xunit;
 
 namespace Iverson.Api.Tests.Grpc;
@@ -732,6 +733,75 @@ public class SchemaRegistrationOrchestratorTests
         ex.Which.Status.Detail.Should().Contain("DELETE FROM _iverson_schema WHERE type_name = 'Doc'");
         ex.Which.Status.Detail.Should().Contain("'docs_<tenantId>' (vectors)");
         ex.Which.Status.Detail.Should().Contain("'docs_chunks_<tenantId>' (chunks)");
+    }
+
+    // Pins the guard's ORDERING, not just its outcome. The guard sits BEFORE
+    // EnsureInitializedAsync so that re-registering with a model the deployment never pulled is
+    // rejected with FailedPrecondition rather than failing with Unavailable from the probe — an
+    // operator misreading FailedPrecondition-from-the-model-guard as an Ollama outage would go
+    // looking in the wrong place. Every OTHER guard test stubs a resolver whose
+    // EnsureInitializedAsync completes instantly, so none of them can tell the guard runs before
+    // the probe from the guard running after it and short-circuiting on the same exception type.
+    // This test uses a service whose EnsureInitializedAsync THROWS, and asserts both that the
+    // guard's own FailedPrecondition surfaces (not Unavailable) and that the throwing service was
+    // never even called — the only way to fail this test is to move the guard below the probe.
+    [Fact]
+    public async Task RegisterAsync_ReRegisteringWithAModelWhoseServiceCannotInitialize_ThrowsFailedPrecondition_WithoutProbingIt()
+    {
+        var td = SimpleType("Doc", "Name");
+        td.Properties.Add(new PropertyDescriptor
+            { Name = "Content", ClrType = ClrType.ClrString, IsEmbedding = true, ModelId = string.Empty });
+        await _sut.RegisterAsync(new SchemaRequest { RootType = td }, CancellationToken.None);
+
+        var unreachable = Substitute.For<IEmbeddingService>();
+        unreachable.Dimension.Returns(768);
+        unreachable.ModelId.Returns("snowflake-arctic-embed:s");
+        unreachable.EnsureInitializedAsync(Arg.Any<CancellationToken>())
+            .Throws(new InvalidOperationException("connection refused"));
+        _resolver.Get("snowflake-arctic-embed:s").Returns(unreachable);
+
+        var td2 = SimpleType("Doc", "Name");
+        td2.Properties.Add(new PropertyDescriptor
+        {
+            Name = "Content", ClrType = ClrType.ClrString, IsEmbedding = true,
+            ModelId = "snowflake-arctic-embed:s"
+        });
+
+        var act = () => _sut.RegisterAsync(new SchemaRequest { RootType = td2 }, CancellationToken.None);
+
+        var ex = await act.Should().ThrowAsync<RpcException>();
+        ex.Which.StatusCode.Should().Be(StatusCode.FailedPrecondition);
+        await unreachable.DidNotReceive().EnsureInitializedAsync(Arg.Any<CancellationToken>());
+    }
+
+    // Optional coverage (not required by Fix 2, added alongside it): this branch changed the
+    // Unavailable message to name the resolved model and point at "confirm it has been pulled",
+    // with no prior test covering the new text. A first-time registration (no priorModel, so the
+    // guard's AND is false and EnsureInitializedAsync is actually reached) is the only way to
+    // exercise this branch at all.
+    [Fact]
+    public async Task RegisterAsync_EmbeddingServiceFailsToInitialize_ThrowsUnavailable_NamingTheResolvedModel()
+    {
+        var unreachable = Substitute.For<IEmbeddingService>();
+        unreachable.Dimension.Returns(768);
+        unreachable.ModelId.Returns("snowflake-arctic-embed:s");
+        unreachable.EnsureInitializedAsync(Arg.Any<CancellationToken>())
+            .Throws(new InvalidOperationException("connection refused"));
+        _resolver.Get("snowflake-arctic-embed:s").Returns(unreachable);
+
+        var td = SimpleType("Doc", "Name");
+        td.Properties.Add(new PropertyDescriptor
+        {
+            Name = "Content", ClrType = ClrType.ClrString, IsEmbedding = true,
+            ModelId = "snowflake-arctic-embed:s"
+        });
+
+        var act = () => _sut.RegisterAsync(new SchemaRequest { RootType = td }, CancellationToken.None);
+
+        var ex = await act.Should().ThrowAsync<RpcException>();
+        ex.Which.StatusCode.Should().Be(StatusCode.Unavailable);
+        ex.Which.Status.Detail.Should().Contain("'Doc': 'snowflake-arctic-embed:s'");
+        ex.Which.Status.Detail.Should().Contain("confirm it has been pulled");
     }
 
     [Fact]
