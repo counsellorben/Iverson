@@ -5,7 +5,7 @@ namespace Iverson.Client.Attributes;
 /// omitted means the deployment's default model. Class-level, not per-property: one model per
 /// type is what keeps a query from fusing across two incompatible vector spaces.
 /// </summary>
-[AttributeUsage(AttributeTargets.Class, Inherited = false)]
+[AttributeUsage(AttributeTargets.Class, Inherited = true)]
 public sealed class IversonEmbeddingModelAttribute(string modelId) : Attribute
 {
     public string ModelId { get; } = modelId;

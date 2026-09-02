@@ -94,6 +94,36 @@ internal sealed class ModelAsymmetricAnnotationTestEntity
     public string Body { get; set; } = "";
 }
 
+// Deliberately NOT [IversonEntity]: same isolation rationale as UnregisteredFkCollisionEntity
+// below — EntityRegistry only scans types that carry the attribute directly, so this base
+// carries the [IversonEmbeddingModel] declaration but is never itself registered as an entity.
+// Only the two derived types below are.
+[IversonEmbeddingModel("snowflake-arctic-embed:s")]
+internal class ModelInheritedBaseEntity
+{
+    [IversonKey]
+    public Guid Id { get; set; }
+}
+
+[IversonEntity]
+internal sealed class ModelInheritedAnnotationTestEntity : ModelInheritedBaseEntity
+{
+    [IversonEmbedding]
+    [IversonChunk]
+    public string Body { get; set; } = "";
+}
+
+// Declares its own model, which must win over ModelInheritedBaseEntity's — the case that keeps
+// "inherits" from becoming "cannot override".
+[IversonEntity]
+[IversonEmbeddingModel("nomic-embed-text")]
+internal sealed class ModelOverriddenAnnotationTestEntity : ModelInheritedBaseEntity
+{
+    [IversonEmbedding]
+    [IversonChunk]
+    public string Body { get; set; } = "";
+}
+
 [IversonEntity]
 internal sealed class SchemaTestAuthor
 {
@@ -724,6 +754,65 @@ public class SchemaRegistrarTests
         body.IsChunk.Should().BeTrue();
         body.ChunkModelId.Should().Be("snowflake-arctic-embed:s");
         body.ModelId.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task RegisterAllAsync_StampsInheritedEmbeddingModel_OnDerivedTypeWithNoOwnDeclaration()
+    {
+        SchemaRequest? req = null;
+        _mappingClient
+            .RegisterSchemaAsync(
+                Arg.Do<SchemaRequest>(r =>
+                {
+                    if (r.RootType?.TypeName == "ModelInheritedAnnotationTestEntity") req = r;
+                }),
+                Arg.Any<Metadata>(),
+                Arg.Any<DateTime?>(),
+                Arg.Any<CancellationToken>())
+            .Returns(new AsyncUnaryCall<SchemaResponse>(
+                Task.FromResult(new SchemaResponse { Success = true }),
+                Task.FromResult(new Metadata()),
+                () => Status.DefaultSuccess,
+                () => new Metadata(),
+                () => { }));
+
+        await _sut.RegisterAllAsync();
+
+        req.Should().NotBeNull();
+        var body = req!.RootType!.Properties.Single(p => p.Name == "Body");
+        body.ModelId.Should().Be("snowflake-arctic-embed:s");
+        body.ChunkModelId.Should().Be("snowflake-arctic-embed:s");
+    }
+
+    // The type declares its own model despite deriving from ModelInheritedBaseEntity; its own
+    // declaration must win rather than the base's, otherwise "inherits" would mean "cannot
+    // override".
+    [Fact]
+    public async Task RegisterAllAsync_StampsOwnEmbeddingModel_OnDerivedTypeThatOverridesTheBaseDeclaration()
+    {
+        SchemaRequest? req = null;
+        _mappingClient
+            .RegisterSchemaAsync(
+                Arg.Do<SchemaRequest>(r =>
+                {
+                    if (r.RootType?.TypeName == "ModelOverriddenAnnotationTestEntity") req = r;
+                }),
+                Arg.Any<Metadata>(),
+                Arg.Any<DateTime?>(),
+                Arg.Any<CancellationToken>())
+            .Returns(new AsyncUnaryCall<SchemaResponse>(
+                Task.FromResult(new SchemaResponse { Success = true }),
+                Task.FromResult(new Metadata()),
+                () => Status.DefaultSuccess,
+                () => new Metadata(),
+                () => { }));
+
+        await _sut.RegisterAllAsync();
+
+        req.Should().NotBeNull();
+        var body = req!.RootType!.Properties.Single(p => p.Name == "Body");
+        body.ModelId.Should().Be("nomic-embed-text");
+        body.ChunkModelId.Should().Be("nomic-embed-text");
     }
 
     [Theory]
