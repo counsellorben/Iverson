@@ -21,6 +21,7 @@ public class DocumentTemplateValidationTests
     private readonly IRecordStoreQueryExecutor _sql = Substitute.For<IRecordStoreQueryExecutor>();
     private readonly IRecordStoreSchemaManager _schemaManager = Substitute.For<IRecordStoreSchemaManager>();
     private readonly IEmbeddingService _embedding = Substitute.For<IEmbeddingService>();
+    private readonly IEmbeddingServiceResolver _resolver = Substitute.For<IEmbeddingServiceResolver>();
     private readonly IDocumentRerenderQueueRepository _rerenderQueue = Substitute.For<IDocumentRerenderQueueRepository>();
     private readonly SchemaRegistry _registry;
     private readonly SchemaRegistrationOrchestrator _sut;
@@ -29,12 +30,13 @@ public class DocumentTemplateValidationTests
     {
         _embedding.Dimension.Returns(768);
         _embedding.ModelId.Returns("nomic-embed-text");
+        _resolver.Get(Arg.Any<string?>()).Returns(_embedding);
         _registry = new SchemaRegistry(
             new SchemaRegistryRepository(_sql),
             NullLogger<SchemaRegistry>.Instance);
         _sut = new SchemaRegistrationOrchestrator(
             _schemaManager,
-            _embedding,
+            _resolver,
             _registry,
             _rerenderQueue,
             NullLogger<SchemaRegistrationOrchestrator>.Instance);

@@ -14,7 +14,7 @@ public interface ISchemaRegistrationOrchestrator
 
 public sealed class SchemaRegistrationOrchestrator(
     IRecordStoreSchemaManager schemaManager,
-    IEmbeddingService embedding,
+    IEmbeddingServiceResolver resolver,
     SchemaRegistry registry,
     IDocumentRerenderQueueRepository rerenderQueue,
     ILogger<SchemaRegistrationOrchestrator> logger)
@@ -27,6 +27,14 @@ public sealed class SchemaRegistrationOrchestrator(
     // a safe DDL identifier. No underscores are permitted in the input because ToSnakeCase
     // inserts its own; this pattern also naturally rejects an empty string.
     private static readonly Regex IdentifierPattern = new("^[A-Za-z][A-Za-z0-9]*$", RegexOptions.Compiled);
+
+    // The declaration is class-level in every client, so every embedding/chunk property of a type
+    // carries the same value; taking the first is therefore taking the type's model, not one
+    // field's. Empty means "not declared" — four clients send "" and Go omits the fields.
+    private static string? DeclaredModel(TypeDescriptor typeDesc) =>
+        typeDesc.Properties
+            .Select(p => p.IsEmbedding ? p.ModelId : p.IsChunk ? p.ChunkModelId : null)
+            .FirstOrDefault(m => !string.IsNullOrEmpty(m));
 
     public async Task<IReadOnlyList<string>> RegisterAsync(SchemaRequest request, CancellationToken ct)
     {
@@ -50,9 +58,10 @@ public sealed class SchemaRegistrationOrchestrator(
             foreach (var property in typeDesc.Properties)
                 ValidateIdentifier(property.Name, $"property name on type '{typeDesc.TypeName}'");
 
+            var service = resolver.Get(DeclaredModel(typeDesc));
             try
             {
-                await embedding.EnsureInitializedAsync(ct);
+                await service.EnsureInitializedAsync(ct);
             }
             catch (Exception ex)
             {
@@ -64,7 +73,7 @@ public sealed class SchemaRegistrationOrchestrator(
             SchemaDescriptor descriptor;
             try
             {
-                descriptor = SchemaBuilder.BuildDescriptor(typeDesc, embedding);
+                descriptor = SchemaBuilder.BuildDescriptor(typeDesc, service);
             }
             catch (DocumentTemplateParseException ex)
             {

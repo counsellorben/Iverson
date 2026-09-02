@@ -19,6 +19,7 @@ public static class ServiceCollectionExtensions
             });
 
         services.AddSingleton<IEmbeddingService, EmbeddingService>();
+        services.AddSingleton<IEmbeddingServiceResolver, EmbeddingServiceResolver>();
         return services;
     }
 

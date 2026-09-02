@@ -16,6 +16,7 @@ public class SchemaRegistrationOrchestratorTests
     private readonly IRecordStoreQueryExecutor _sql = Substitute.For<IRecordStoreQueryExecutor>();
     private readonly IRecordStoreSchemaManager _schemaManager = Substitute.For<IRecordStoreSchemaManager>();
     private readonly IEmbeddingService _embedding = Substitute.For<IEmbeddingService>();
+    private readonly IEmbeddingServiceResolver _resolver = Substitute.For<IEmbeddingServiceResolver>();
     private readonly SchemaRegistry _registry;
     private readonly SchemaRegistrationOrchestrator _sut;
 
@@ -23,12 +24,17 @@ public class SchemaRegistrationOrchestratorTests
     {
         _embedding.Dimension.Returns(768);
         _embedding.ModelId.Returns("nomic-embed-text");
+        // Every existing test in this file registers a type against a single embedding service,
+        // regardless of what model (if any) it declares — mirroring the pre-resolver singleton
+        // behavior. Tests that care which model id the resolver was asked for verify that via
+        // _resolver.Received().Get(...) rather than by varying this stub's return value.
+        _resolver.Get(Arg.Any<string?>()).Returns(_embedding);
         _registry = new SchemaRegistry(
             new SchemaRegistryRepository(_sql),
             NullLogger<SchemaRegistry>.Instance);
         _sut = new SchemaRegistrationOrchestrator(
             _schemaManager,
-            _embedding,
+            _resolver,
             _registry,
             Substitute.For<IDocumentRerenderQueueRepository>(),
             NullLogger<SchemaRegistrationOrchestrator>.Instance);
@@ -630,6 +636,43 @@ public class SchemaRegistrationOrchestratorTests
         schema.VectorFields.Should().ContainSingle();
         schema.VectorFields[0].Dimension.Should().Be(768);
         schema.VectorFields[0].ModelId.Should().Be("nomic-embed-text");
+    }
+
+    // DeclaredModel is private on the orchestrator, so its behavior is observed the same way
+    // production observes it: through which argument RegisterAsync's phase-1 loop passed to
+    // IEmbeddingServiceResolver.Get.
+    [Fact]
+    public async Task RegisterAsync_WithAllPropertiesSendingEmptyModel_ResolvesTheDefaultService()
+    {
+        var typeDesc = SimpleType("EmptyModelDoc", "Name");
+        typeDesc.Properties.Add(new PropertyDescriptor
+        {
+            Name = "Content", ClrType = ClrType.ClrString, IsEmbedding = true, ModelId = string.Empty
+        });
+        typeDesc.Properties.Add(new PropertyDescriptor
+        {
+            Name = "Body", ClrType = ClrType.ClrString, IsChunk = true,
+            ChunkMaxTokens = 512, ChunkOverlap = 64, ChunkModelId = string.Empty
+        });
+
+        await _sut.RegisterAsync(new SchemaRequest { RootType = typeDesc }, CancellationToken.None);
+
+        _resolver.Received(1).Get(null);
+    }
+
+    [Fact]
+    public async Task RegisterAsync_WithADeclaredModel_ResolvesThatModel()
+    {
+        var typeDesc = SimpleType("ArcticDoc", "Name");
+        typeDesc.Properties.Add(new PropertyDescriptor
+        {
+            Name = "Body", ClrType = ClrType.ClrString, IsChunk = true,
+            ChunkMaxTokens = 512, ChunkOverlap = 64, ChunkModelId = "snowflake-arctic-embed:s"
+        });
+
+        await _sut.RegisterAsync(new SchemaRequest { RootType = typeDesc }, CancellationToken.None);
+
+        _resolver.Received(1).Get("snowflake-arctic-embed:s");
     }
 
     [Fact]
