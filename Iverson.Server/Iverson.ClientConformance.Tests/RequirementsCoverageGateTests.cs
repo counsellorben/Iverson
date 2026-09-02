@@ -271,7 +271,7 @@ public class RequirementsCoverageGateTests
     /// Closing (a)–(d) mechanically needs a Roslyn syntax walk, which is larger than this gate
     /// should carry for the residual risk.</para>
     /// </summary>
-    private static string StripCommentLines(string source) =>
+    internal static string StripCommentLines(string source) =>
         string.Join('\n', source
             .Split('\n')
             .Where(line =>
