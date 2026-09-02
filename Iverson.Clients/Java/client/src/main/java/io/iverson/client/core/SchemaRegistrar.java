@@ -130,6 +130,27 @@ public final class SchemaRegistrar {
             if (rd != null) builder.addRelations(rd);
         }
 
+        // A class-level [IversonEmbeddingModel] declaration is stamped in one pass over the
+        // already-built property builders, rather than threaded through applyAnnotations, because
+        // one model applies to every vector and chunk field of the type — never per-property.
+        // Undeclared types keep sending "" from applyAnnotations above, which is what makes this
+        // backward compatible with no server-side special-casing.
+        //
+        // protoc's generated PropertyDescriptor is immutable once built, so this cannot mutate the
+        // already-built messages the loops above added via builder.addProperties(pd). Instead it
+        // reaches into TypeDescriptor.Builder's repeated-field machinery: getPropertiesBuilderList()
+        // returns the live PropertyDescriptor.Builder instances backing this builder's "properties"
+        // field, so a mutation here is reflected in the properties this method's own builder.build()
+        // returns below.
+        IversonEmbeddingModel modelAnnotation = cls.getAnnotation(IversonEmbeddingModel.class);
+        if (modelAnnotation != null) {
+            String model = modelAnnotation.value();
+            for (PropertyDescriptor.Builder p : builder.getPropertiesBuilderList()) {
+                if (p.getIsEmbedding()) p.setModelId(model);
+                if (p.getIsChunk())     p.setChunkModelId(model);
+            }
+        }
+
         return builder.build();
     }
 

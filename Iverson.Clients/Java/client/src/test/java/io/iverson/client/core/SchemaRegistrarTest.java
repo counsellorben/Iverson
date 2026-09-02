@@ -67,6 +67,17 @@ class SchemaRegistrarTest {
     }
 
     @IversonEntity
+    @IversonEmbeddingModel("snowflake-arctic-embed:s")
+    static class ModelAnnotationTestEntity {
+        @IversonKey
+        private UUID id;
+
+        @IversonEmbedding
+        @IversonChunk
+        private String body;
+    }
+
+    @IversonEntity
     static class EnrichmentAnnotationTestEntity {
         @IversonKey
         private UUID id;
@@ -408,6 +419,65 @@ class SchemaRegistrarTest {
         assertTrue(summary.getIsChunk());
         assertEquals(256, summary.getChunkMaxTokens());
         assertEquals(32, summary.getChunkOverlap());
+    }
+
+    // ── registerAll: @IversonEmbeddingModel ───────────────────────────────────
+
+    // This is where stamping is falsifiable — the conformance harness's server-side parity check
+    // cannot distinguish "the client stamped the declared model" from "the client sent \"\" and
+    // the server fell back to the same value", because its fixture declares the deployment default
+    // on purpose (single-model conformance environment).
+    @Test
+    void registerAll_stampsDeclaredEmbeddingModel_onEmbeddingAndChunkProperties() {
+        ArgumentCaptor<SchemaRequest> captor = ArgumentCaptor.forClass(SchemaRequest.class);
+
+        sut.registerAll(ModelAnnotationTestEntity.class);
+
+        verify(mockStub).registerSchema(captor.capture());
+        TypeDescriptor typeDesc = captor.getValue().getRootType();
+
+        PropertyDescriptor body = prop(typeDesc, "Body");
+        PropertyDescriptor key = prop(typeDesc, "Id");
+        assertTrue(body.getIsEmbedding());
+        assertTrue(body.getIsChunk());
+
+        // Neither field of the key property — which is never embedding nor chunk — may pick up
+        // the declared model. This is what the per-property getIsEmbedding()/getIsChunk() guards
+        // inside the post-pass exist to prevent; without them every property, key included, would
+        // be stamped. assertAll so a dropped guard reddens its own assertion here without a prior
+        // one hiding it behind a fail-fast stop.
+        assertAll(
+            () -> assertEquals("snowflake-arctic-embed:s", body.getModelId()),
+            () -> assertEquals("snowflake-arctic-embed:s", body.getChunkModelId()),
+            () -> assertEquals("", key.getModelId()),
+            () -> assertEquals("", key.getChunkModelId()));
+    }
+
+    // Undeclared types must keep sending "" on BOTH fields. SearchAnnotationTestEntity carries no
+    // [IversonEmbeddingModel] and has an [IversonEmbedding] property (title) AND a separate
+    // [IversonChunk] property (summary), so this pins ModelId's undeclared arm and ChunkModelId's
+    // undeclared arm together — a fixture with only an embedding property would leave
+    // ChunkModelId's undeclared default unpinned.
+    @Test
+    void registerAll_undeclaredType_sendsEmptyModelId_onEmbeddingAndChunkProperties() {
+        ArgumentCaptor<SchemaRequest> captor = ArgumentCaptor.forClass(SchemaRequest.class);
+
+        sut.registerAll(SearchAnnotationTestEntity.class);
+
+        verify(mockStub).registerSchema(captor.capture());
+        TypeDescriptor typeDesc = captor.getValue().getRootType();
+
+        PropertyDescriptor title = prop(typeDesc, "Title");
+        PropertyDescriptor summary = prop(typeDesc, "Summary");
+        assertTrue(title.getIsEmbedding());
+        assertTrue(summary.getIsChunk());
+
+        // assertAll: both must be evaluated and reported even when one already failed, so a guard
+        // that skips undeclared types entirely reddens both together rather than hiding the second
+        // behind the first's fail-fast.
+        assertAll(
+            () -> assertEquals("", title.getModelId()),
+            () -> assertEquals("", summary.getChunkModelId()));
     }
 
     // ── registerAll: @IversonSummary / @IversonKeywords / @IversonExtracted / contextual chunk ──
