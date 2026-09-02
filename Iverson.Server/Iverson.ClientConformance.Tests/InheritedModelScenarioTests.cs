@@ -75,6 +75,21 @@ public class InheritedModelScenarioTests
         Named(assertions, "chunk property 'Body'").Passed.Should().BeTrue();
     }
 
+    /// <summary>
+    /// Pins the equality constraint itself, not just the empty/omitted-vs-present distinction: a
+    /// WRONG but non-empty model id must fail too. Without this case, <c>== ExpectedModelId</c>
+    /// could regress to <c>!= string.Empty</c> and every other test in this file would stay green.
+    /// </summary>
+    [Fact]
+    public void JudgeInheritance_EmbeddingPropertyCarriesAWrongNonEmptyModelId_FailsOnlyThatArm()
+    {
+        var assertions = InheritedModelScenario.JudgeInheritance(
+            "dotnet", Descriptor(Key(), Embedding("all-minilm"), Chunk(Expected)));
+
+        Named(assertions, "embedding property 'Title'").Passed.Should().BeFalse();
+        Named(assertions, "chunk property 'Body'").Passed.Should().BeTrue();
+    }
+
     [Fact]
     public void JudgeInheritance_ChunkPropertyCarriesAnEmptyChunkModelId_FailsOnlyThatArm()
     {
@@ -220,6 +235,84 @@ public class InheritedModelScenarioTests
 
         cell.Status.Should().Be(CellStatus.Ok);
         cell.Scenario.Should().Be(InheritedModelScenario.Name);
+    }
+
+    /// <summary>
+    /// Pins the equality constraint at the wiring level (mirrors
+    /// <see cref="JudgeInheritance_EmbeddingPropertyCarriesAWrongNonEmptyModelId_FailsOnlyThatArm"/>
+    /// one layer up, through <c>RunAsync</c>): a driver reporting a WRONG but non-empty model id
+    /// must fail. This is the case that catches <c>== ExpectedModelId</c> regressing to
+    /// <c>!= string.Empty</c> — every empty-string and omitted-field test in this file would stay
+    /// green under that regression, since neither of them ever supplies a wrong NON-empty value.
+    /// </summary>
+    [Fact]
+    public async Task RunAsync_EmbeddingModelIdReportedAsAWrongNonEmptyModel_FailsTheAssertion()
+    {
+        var typeName = InheritedModelScenario.TypeNameFor("dotnet");
+        var descriptor = DescriptorJson(typeName, ModelIdField("all-minilm"), ChunkModelIdField(Expected));
+        var runner = new ScriptedDriverRunner().Script(Phase.Register, Registered("dotnet", descriptor));
+
+        var cell = (await new InheritedModelScenario(runner).RunAsync(["dotnet"], Context(), "acting-token"))
+            .Should().ContainSingle().Subject;
+
+        cell.Status.Should().Be(CellStatus.Fail);
+        var arm = Named(cell.Assertions, "embedding property 'Title'");
+        arm.Passed.Should().BeFalse();
+        arm.Detail.Should().Contain("all-minilm");
+    }
+
+    /// <summary>
+    /// Pins the OTHER load-bearing constraint at the wiring level: the descriptor is read through
+    /// <c>Verifier.ParseDescriptor</c>, protobuf's own JSON parser, which — per the proto3 JSON
+    /// spec — accepts EITHER the lowerCamelCase name or the original proto field name
+    /// (<c>object_mapping.proto</c> declares <c>type_name</c>, <c>clr_type</c>, <c>is_embedding</c>,
+    /// <c>model_id</c>, <c>is_chunk</c>, <c>chunk_model_id</c>). Every other test in this file
+    /// scripts camelCase JSON, which a hand-rolled <c>JsonElement</c> indexer keyed on camelCase
+    /// property names would also read correctly — so none of them can tell
+    /// <c>Verifier.ParseDescriptor</c> apart from such an indexer. This one can: a camelCase
+    /// indexer reads every flag on this descriptor as unset (missing `isEmbedding`/`isChunk`) and
+    /// fails the at-least-one-of-each-kind arms, while the real parser resolves the proto
+    /// field-name JSON to the same descriptor as the camelCase form and passes.
+    /// </summary>
+    [Fact]
+    public async Task RunAsync_DescriptorInProtoFieldNameForm_IsStillParsedCorrectly()
+    {
+        var typeName = InheritedModelScenario.TypeNameFor("dotnet");
+        var json = "{\"type_name\":\"" + typeName + "\",\"properties\":["
+            + "{\"name\":\"Id\",\"clr_type\":\"CLR_GUID\",\"is_key\":true},"
+            + "{\"name\":\"Title\",\"clr_type\":\"CLR_STRING\",\"is_embedding\":true,\"model_id\":\"" + Expected + "\"},"
+            + "{\"name\":\"Body\",\"clr_type\":\"CLR_STRING\",\"is_chunk\":true,\"chunk_model_id\":\"" + Expected + "\"}"
+            + "]}";
+        var descriptor = JsonDocument.Parse(json).RootElement.Clone();
+        var runner = new ScriptedDriverRunner().Script(Phase.Register, Registered("dotnet", descriptor));
+
+        var cell = (await new InheritedModelScenario(runner).RunAsync(["dotnet"], Context(), "acting-token"))
+            .Should().ContainSingle().Subject;
+
+        cell.Status.Should().Be(CellStatus.Ok);
+    }
+
+    /// <summary>
+    /// The fixture-type contract check: a driver that reports the CORRECT model id under this
+    /// scenario's step, but on some OTHER already-registered type (here <c>S11ModelDotnet</c>,
+    /// which carries the same <see cref="InheritedModelScenario.ExpectedModelId"/> via its own
+    /// direct <c>[IversonEmbeddingModel]</c> declaration rather than inheritance), must fail —
+    /// otherwise a driver could satisfy this scenario by replaying an S11 fixture without the
+    /// inheritance path ever running.
+    /// </summary>
+    [Fact]
+    public async Task RunAsync_TheDriverReportedADifferentType_FailsTheFixtureTypeAssertion()
+    {
+        var descriptor = DescriptorJson("S11ModelDotnet", ModelIdField(Expected), ChunkModelIdField(Expected));
+        var runner = new ScriptedDriverRunner().Script(Phase.Register, Registered("dotnet", descriptor));
+
+        var cell = (await new InheritedModelScenario(runner).RunAsync(["dotnet"], Context(), "acting-token"))
+            .Should().ContainSingle().Subject;
+
+        cell.Status.Should().Be(CellStatus.Fail);
+        var arm = Named(cell.Assertions, "registered this scenario's fixture type");
+        arm.Passed.Should().BeFalse();
+        arm.Detail.Should().Contain("S11ModelDotnet");
     }
 
     /// <summary>

@@ -96,6 +96,17 @@ public sealed class InheritedModelScenario(
                 continue;
             }
 
+            // Uncited harness-contract check, not a client-conformance claim — mirrors
+            // ModelRejectedScenario's own fixture-type check. Without it, a driver that reported
+            // SOME OTHER already-registered type's descriptor under this scenario's step name
+            // (e.g. S11ModelDotnet, which happens to carry the same ExpectedModelId via its own
+            // direct [IversonEmbeddingModel] declaration) would grade fully green without the
+            // inheritance path — the thing this scenario exists to exercise — ever running.
+            state.Assertions.Add(Assertion.From(
+                $"{language}: the driver registered this scenario's fixture type '{TypeNameFor(language)}'",
+                string.Equals(descriptor.TypeName, TypeNameFor(language), StringComparison.Ordinal),
+                $"the driver reported '{descriptor.TypeName}'"));
+
             state.Assertions.AddRange(JudgeInheritance(language, descriptor));
         }
 
