@@ -109,7 +109,7 @@ export function getKeyField(target: Function): string | undefined {
 export function IversonSearchKey(order: number): PropertyDecorator {
     return (target, propertyKey) => {
         const existing: SearchKeyMeta[] =
-            Reflect.getMetadata(IVERSON_SEARCH_KEYS, target.constructor) ?? [];
+            [...(Reflect.getMetadata(IVERSON_SEARCH_KEYS, target.constructor) ?? [])];
         existing.push({ field: String(propertyKey), order });
         Reflect.defineMetadata(IVERSON_SEARCH_KEYS, existing, target.constructor);
     };
@@ -125,7 +125,7 @@ export function getSearchKeys(target: Function): SearchKeyMeta[] {
 export function IversonLargeField(): PropertyDecorator {
     return (target, propertyKey) => {
         const existing: string[] =
-            Reflect.getMetadata(IVERSON_LARGE_FIELDS, target.constructor) ?? [];
+            [...(Reflect.getMetadata(IVERSON_LARGE_FIELDS, target.constructor) ?? [])];
         existing.push(String(propertyKey));
         Reflect.defineMetadata(IVERSON_LARGE_FIELDS, existing, target.constructor);
     };
@@ -140,7 +140,7 @@ export function getLargeFields(target: Function): string[] {
 export function IversonEmbedding(): PropertyDecorator {
     return (target, propertyKey) => {
         const existing: string[] =
-            Reflect.getMetadata(IVERSON_EMBEDDING_FIELDS, target.constructor) ?? [];
+            [...(Reflect.getMetadata(IVERSON_EMBEDDING_FIELDS, target.constructor) ?? [])];
         existing.push(String(propertyKey));
         Reflect.defineMetadata(IVERSON_EMBEDDING_FIELDS, existing, target.constructor);
     };
@@ -166,7 +166,7 @@ export interface ChunkOptions {
 export function IversonChunk(maxTokens: number = 512, overlap: number = 64, options: ChunkOptions = {}): PropertyDecorator {
     return (target, propertyKey) => {
         const existing: ChunkMeta[] =
-            Reflect.getMetadata(IVERSON_CHUNK_FIELDS, target.constructor) ?? [];
+            [...(Reflect.getMetadata(IVERSON_CHUNK_FIELDS, target.constructor) ?? [])];
         existing.push({ field: String(propertyKey), maxTokens, overlap, contextual: options.contextual ?? false });
         Reflect.defineMetadata(IVERSON_CHUNK_FIELDS, existing, target.constructor);
     };
@@ -182,7 +182,7 @@ export function getChunkFields(target: Function): ChunkMeta[] {
 export function IversonSummary(): PropertyDecorator {
     return (target, propertyKey) => {
         const existing: string[] =
-            Reflect.getMetadata(IVERSON_SUMMARY_FIELDS, target.constructor) ?? [];
+            [...(Reflect.getMetadata(IVERSON_SUMMARY_FIELDS, target.constructor) ?? [])];
         existing.push(String(propertyKey));
         Reflect.defineMetadata(IVERSON_SUMMARY_FIELDS, existing, target.constructor);
     };
@@ -198,7 +198,7 @@ export function getSummaryFields(target: Function): string[] {
 export function IversonKeywords(): PropertyDecorator {
     return (target, propertyKey) => {
         const existing: string[] =
-            Reflect.getMetadata(IVERSON_KEYWORDS_FIELDS, target.constructor) ?? [];
+            [...(Reflect.getMetadata(IVERSON_KEYWORDS_FIELDS, target.constructor) ?? [])];
         existing.push(String(propertyKey));
         Reflect.defineMetadata(IVERSON_KEYWORDS_FIELDS, existing, target.constructor);
     };
@@ -236,7 +236,7 @@ export function IversonExtracted(hint: string): PropertyDecorator {
             );
         }
         const existing: ExtractedMeta[] =
-            Reflect.getMetadata(IVERSON_EXTRACTED_FIELDS, target.constructor) ?? [];
+            [...(Reflect.getMetadata(IVERSON_EXTRACTED_FIELDS, target.constructor) ?? [])];
         existing.push({ field: String(propertyKey), hint });
         Reflect.defineMetadata(IVERSON_EXTRACTED_FIELDS, existing, target.constructor);
     };
@@ -252,7 +252,7 @@ export function getExtractedFields(target: Function): ExtractedMeta[] {
 export function IversonMetadata(): PropertyDecorator {
     return (target, propertyKey) => {
         const existing: string[] =
-            Reflect.getMetadata(IVERSON_METADATA_FIELDS, target.constructor) ?? [];
+            [...(Reflect.getMetadata(IVERSON_METADATA_FIELDS, target.constructor) ?? [])];
         existing.push(String(propertyKey));
         Reflect.defineMetadata(IVERSON_METADATA_FIELDS, existing, target.constructor);
     };
@@ -277,7 +277,7 @@ const IVERSON_ARRAY_KEY = Symbol('iverson:array');
 export function IversonArray(elementType: ClrType): PropertyDecorator {
     return (target, propertyKey) => {
         const existing: Map<string, ClrType> =
-            Reflect.getMetadata(IVERSON_ARRAY_KEY, target.constructor) ?? new Map();
+            new Map(Reflect.getMetadata(IVERSON_ARRAY_KEY, target.constructor) ?? []);
         existing.set(String(propertyKey), elementType);
         Reflect.defineMetadata(IVERSON_ARRAY_KEY, existing, target.constructor);
     };
@@ -299,7 +299,7 @@ const IVERSON_GUID_KEY = Symbol('iverson:guid');
 export function IversonGuid(): PropertyDecorator {
     return (target, propertyKey) => {
         const existing: Set<string> =
-            Reflect.getMetadata(IVERSON_GUID_KEY, target.constructor) ?? new Set();
+            new Set(Reflect.getMetadata(IVERSON_GUID_KEY, target.constructor) ?? []);
         existing.add(String(propertyKey));
         Reflect.defineMetadata(IVERSON_GUID_KEY, existing, target.constructor);
     };
@@ -325,7 +325,7 @@ export function IversonDescription(text: string): ClassDecorator & PropertyDecor
         }
         const ctor = target.constructor;
         const existing: Record<string, string> =
-            Reflect.getMetadata(IVERSON_PROPERTY_DESCRIPTIONS, ctor) ?? {};
+            { ...(Reflect.getMetadata(IVERSON_PROPERTY_DESCRIPTIONS, ctor) ?? {}) };
         existing[String(propertyKey)] = text;
         Reflect.defineMetadata(IVERSON_PROPERTY_DESCRIPTIONS, existing, ctor);
     }) as ClassDecorator & PropertyDecorator;
@@ -350,7 +350,7 @@ export interface PendingRelationMeta {
 function addRelation(target: object, propertyKey: string | symbol, kind: RelationKindString, typeFactory: () => Function): void {
     const ctor = (target as any).constructor;
     const existing: PendingRelationMeta[] =
-        Reflect.getMetadata(IVERSON_RELATIONS, ctor) ?? [];
+        [...(Reflect.getMetadata(IVERSON_RELATIONS, ctor) ?? [])];
     existing.push({ field: String(propertyKey), kind, typeFactory });
     Reflect.defineMetadata(IVERSON_RELATIONS, existing, ctor);
 }

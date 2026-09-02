@@ -366,3 +366,107 @@ describe('@IversonEmbeddingModel', () => {
         expect(getEmbeddingModel(UndescribedProduct)).toBe('');
     });
 });
+
+// ── Sibling subclasses do not leak accumulated decorator metadata ─────────────
+//
+// Every accumulate-style decorator (ManyToOne/ManyToMany/OneToMany/OneToOne, IversonMetadata,
+// and their siblings in src/annotations.ts) reads via `Reflect.getMetadata(KEY, ctor) ?? []`
+// then pushes and writes back. `Reflect.getMetadata` walks the prototype chain, so on a
+// SUBCLASS the first decorated field would read (and, pre-fix, mutate in place) the PARENT's
+// array before the subclass's own `defineMetadata` call ever runs — corrupting the parent's
+// list and leaking entries between unrelated sibling subclasses. This section pins that a
+// sibling's decoration cannot affect another sibling or the shared parent.
+
+@IversonEntity()
+class LeakParentAuthor {
+    @IversonKey()
+    id: string = '';
+}
+
+@IversonEntity()
+class LeakParent {
+    @IversonKey()
+    id: string = '';
+
+    @ManyToOne(() => LeakParentAuthor)
+    parentAuthorId: string = '';
+
+    @IversonMetadata()
+    parentRegion: string = '';
+}
+
+@IversonEntity()
+class LeakSiblingA extends LeakParent {
+    @ManyToOne(() => LeakParentAuthor)
+    siblingAAuthorId: string = '';
+
+    @IversonMetadata()
+    siblingAOnly: string = '';
+}
+
+@IversonEntity()
+class LeakSiblingB extends LeakParent {
+    @ManyToOne(() => LeakParentAuthor)
+    siblingBAuthorId: string = '';
+
+    @IversonMetadata()
+    siblingBOnly: string = '';
+}
+
+@IversonEntity()
+class LeakSiblingNoOwnDecorator extends LeakParent {
+    // Declares no relation/metadata decorator of its own — reading must still walk the
+    // prototype chain and see the parent's entries. Only mutation-on-read changes, not reading.
+}
+
+describe('Sibling subclasses do not leak accumulated decorator metadata', () => {
+    it("the parent's relation list still has exactly its own entry after both siblings are defined", () => {
+        const relations = getRelations(LeakParent);
+        expect(relations).toHaveLength(1);
+        expect(relations[0].field).toBe('parentAuthorId');
+    });
+
+    it("getRelations(SiblingA) does not contain SiblingB's relation", () => {
+        const fields = getRelations(LeakSiblingA).map(r => r.field);
+        expect(fields).toContain('parentAuthorId');
+        expect(fields).toContain('siblingAAuthorId');
+        expect(fields).not.toContain('siblingBAuthorId');
+    });
+
+    it("getRelations(SiblingB) does not contain SiblingA's relation", () => {
+        const fields = getRelations(LeakSiblingB).map(r => r.field);
+        expect(fields).toContain('parentAuthorId');
+        expect(fields).toContain('siblingBAuthorId');
+        expect(fields).not.toContain('siblingAAuthorId');
+    });
+
+    it('a subclass with no own relation decorator still inherits the parents', () => {
+        const fields = getRelations(LeakSiblingNoOwnDecorator).map(r => r.field);
+        expect(fields).toEqual(['parentAuthorId']);
+    });
+
+    // Pin the same guarantee on a second, non-relation accumulate list (IversonMetadata's
+    // string[]) so the copy-on-read fix is verified generally, not only for relations.
+
+    it("the parent's metadata-field list still has exactly its own entry after both siblings are defined", () => {
+        expect(getMetadataFields(LeakParent)).toEqual(['parentRegion']);
+    });
+
+    it("getMetadataFields(SiblingA) does not contain SiblingB's field", () => {
+        const fields = getMetadataFields(LeakSiblingA);
+        expect(fields).toContain('parentRegion');
+        expect(fields).toContain('siblingAOnly');
+        expect(fields).not.toContain('siblingBOnly');
+    });
+
+    it("getMetadataFields(SiblingB) does not contain SiblingA's field", () => {
+        const fields = getMetadataFields(LeakSiblingB);
+        expect(fields).toContain('parentRegion');
+        expect(fields).toContain('siblingBOnly');
+        expect(fields).not.toContain('siblingAOnly');
+    });
+
+    it('a subclass with no own metadata decorator still inherits the parents', () => {
+        expect(getMetadataFields(LeakSiblingNoOwnDecorator)).toEqual(['parentRegion']);
+    });
+});
