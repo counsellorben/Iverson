@@ -198,6 +198,11 @@ public sealed class ObjectSearchGrpcService(
         float[] queryVector;
         try
         {
+            // Resolved per TYPE, not per field (contrast IntelligenceStoreConsumer, which
+            // resolves per field): a query targets the type as a whole, not one property, so
+            // there is no single field's ModelId in scope here — but one-model-per-type means
+            // SchemaDescriptor.ModelOf(schema) always agrees with whatever any individual field
+            // on this schema would resolve to.
             queryVector = await resolver.Get(SchemaDescriptor.ModelOf(schema))
                 .EmbedQueryAsync(request.Query, context.CancellationToken);
         }
@@ -374,6 +379,11 @@ public sealed class ObjectSearchGrpcService(
         float[] queryVector;
         try
         {
+            // Resolved per TYPE, not per field (contrast IntelligenceStoreConsumer, which
+            // resolves per field): a query targets the type as a whole, not one property, so
+            // there is no single field's ModelId in scope here — but one-model-per-type means
+            // SchemaDescriptor.ModelOf(schema) always agrees with whatever any individual field
+            // on this schema would resolve to.
             queryVector = await resolver.Get(SchemaDescriptor.ModelOf(schema))
                 .EmbedQueryAsync(request.Query, context.CancellationToken);
         }

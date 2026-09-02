@@ -137,6 +137,10 @@ public sealed class IntelligenceStoreConsumer(
                 .Where(x => !string.IsNullOrWhiteSpace(x.text))
                 .Select(async x => (
                     vectorKey: $"{x.vf.PropertyName.ToSnakeCase()}_vector",
+                    // Resolved per FIELD, not per type (contrast ObjectSearchGrpcService, which
+                    // resolves per type): the write path already has each field's own ModelId in
+                    // scope here, and one-model-per-type means every field on this schema agrees
+                    // with what a type-level lookup would return anyway.
                     vector: await resolver.Get(x.vf.ModelId).EmbedDocumentAsync(x.text!, ct)
                 ))
                 .ToList();
@@ -249,6 +253,9 @@ public sealed class IntelligenceStoreConsumer(
                             ? await PrefixWithContextAsync(
                                   prefixGate, documentContext, chunkText, schema.TypeName, ev.Key, ct)
                             : chunkText;
+                        // Same per-FIELD resolution as the vector-field block above, and the same
+                        // reason: cf.ModelId is already in scope on the write path, and the
+                        // one-model-per-type invariant makes it identical to a per-type lookup.
                         var chunkVector = await resolver.Get(cf.ModelId).EmbedDocumentAsync(textToEmbed, ct);
                         var chunkId     = ComputeChunkPointId(pointId, cf.PropertyName, chunkIndex);
                         return (chunkVector, chunkId, chunkText, chunkIndex);
