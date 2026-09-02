@@ -56,6 +56,7 @@ public sealed class ObjectSearchVectorIntegrationTests : IClassFixture<QdrantGrp
     private readonly IntelligenceVectorService _vector;
     private readonly IntelligenceCollectionManager _mgr;
     private readonly IEmbeddingService _embedding = Substitute.For<IEmbeddingService>();
+    private readonly IEmbeddingServiceResolver _resolver = Substitute.For<IEmbeddingServiceResolver>();
     private readonly SchemaRegistry _registry;
     private readonly IntelligenceTenantScope _tenantScope = new("test-integration-signing-key-0123456789abcdef");
 
@@ -72,6 +73,7 @@ public sealed class ObjectSearchVectorIntegrationTests : IClassFixture<QdrantGrp
         var sql = Substitute.For<IRecordStoreQueryExecutor>();
         sql.ExecuteAsync(Arg.Any<string>(), Arg.Any<object?>()).Returns(0);
         _registry = new SchemaRegistry(new SchemaRegistryRepository(sql), NullLogger<SchemaRegistry>.Instance);
+        _resolver.Get(Arg.Any<string?>()).Returns(_embedding);
     }
 
     private static string UniqueName() => "art_" + Guid.NewGuid().ToString("N")[..8];
@@ -81,7 +83,7 @@ public sealed class ObjectSearchVectorIntegrationTests : IClassFixture<QdrantGrp
             _registry,
             Substitute.For<IEngagementStoreSearchService>(),
             _vector,
-            _embedding,
+            _resolver,
             NullLogger<ObjectSearchGrpcService>.Instance,
             new ActingUserAccessor { ActingUser = ActingUserFixtures.Principal("test-user", "test-bypass") },
             new RowFieldAuthorizationEvaluator(),
@@ -262,7 +264,7 @@ public sealed class ObjectSearchVectorIntegrationTests : IClassFixture<QdrantGrp
             Substitute.For<IEventConsumer>(),
             vectorSchema,
             vectorWrite,
-            _embedding,
+            _resolver,
             _registry,
             entities,
             new DocumentRenderer(_registry, entities),

@@ -321,6 +321,8 @@ public class DocumentTemplateValidationTests
         var vector = Substitute.For<IVectorQueryService>();
         var embedding = Substitute.For<IEmbeddingService>();
         embedding.EmbedQueryAsync(Arg.Any<string>(), Arg.Any<CancellationToken>()).Returns(new float[768]);
+        var searchResolver = Substitute.For<IEmbeddingServiceResolver>();
+        searchResolver.Get(Arg.Any<string?>()).Returns(embedding);
         vector.SearchNamedAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<float[]>(), Arg.Any<ulong>(), Arg.Any<Qdrant.Client.Grpc.Filter>())
               .Returns(new List<VectorSearchResult>().AsReadOnly());
         var search = Substitute.For<IEngagementStoreSearchService>();
@@ -328,7 +330,7 @@ public class DocumentTemplateValidationTests
             { ActingUser = ActingUserFixtures.Principal("test-user", "test-bypass") };
 
         var searchService = new ObjectSearchGrpcService(
-            _registry, search, vector, embedding,
+            _registry, search, vector, searchResolver,
             NullLogger<ObjectSearchGrpcService>.Instance,
             actingUserAccessor, new RowFieldAuthorizationEvaluator(),
             new IntelligenceTenantScope("test-signing-key-0123456789abcdef"),

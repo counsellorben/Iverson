@@ -32,7 +32,7 @@ public sealed class ObjectSearchGrpcService(
     SchemaRegistry registry,
     IEngagementStoreSearchService search,
     IVectorQueryService vector,
-    IEmbeddingService embedding,
+    IEmbeddingServiceResolver resolver,
     ILogger<ObjectSearchGrpcService> logger,
     IActingUserAccessor actingUserAccessor,
     IRowFieldAuthorizationEvaluator authEvaluator,
@@ -198,7 +198,8 @@ public sealed class ObjectSearchGrpcService(
         float[] queryVector;
         try
         {
-            queryVector = await embedding.EmbedQueryAsync(request.Query, context.CancellationToken);
+            queryVector = await resolver.Get(SchemaDescriptor.ModelOf(schema))
+                .EmbedQueryAsync(request.Query, context.CancellationToken);
         }
         catch (EmptyEmbeddingInputException ex)
         {
@@ -373,7 +374,8 @@ public sealed class ObjectSearchGrpcService(
         float[] queryVector;
         try
         {
-            queryVector = await embedding.EmbedQueryAsync(request.Query, context.CancellationToken);
+            queryVector = await resolver.Get(SchemaDescriptor.ModelOf(schema))
+                .EmbedQueryAsync(request.Query, context.CancellationToken);
         }
         catch (EmptyEmbeddingInputException ex)
         {

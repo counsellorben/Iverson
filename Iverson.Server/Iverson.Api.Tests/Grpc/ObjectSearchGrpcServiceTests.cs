@@ -27,6 +27,7 @@ public class ObjectSearchGrpcServiceTests
     private readonly IEngagementStoreSearchService _search;
     private readonly IVectorQueryService _vector;
     private readonly IEmbeddingService _embedding;
+    private readonly IEmbeddingServiceResolver _resolver;
     private readonly IActingUserAccessor _actingUserAccessor;
     private readonly IRowFieldAuthorizationEvaluator _authEvaluator = new RowFieldAuthorizationEvaluator();
     private readonly ObjectSearchGrpcService _sut;
@@ -39,6 +40,13 @@ public class ObjectSearchGrpcServiceTests
         _search    = Substitute.For<IEngagementStoreSearchService>();
         _vector    = Substitute.For<IVectorQueryService>();
         _embedding = Substitute.For<IEmbeddingService>();
+        _resolver  = Substitute.For<IEmbeddingServiceResolver>();
+        // Every existing test in this file drives a single embedding service regardless of what
+        // model (if any) the queried type declares — mirroring the pre-resolver singleton
+        // behavior. Tests that care which model id the resolver was asked for stub a distinct
+        // fake for that model id (see the non-default-model tests) or verify the argument via
+        // _resolver.Received().Get(...).
+        _resolver.Get(Arg.Any<string?>()).Returns(_embedding);
 
         _search.SearchAsync(
                 Arg.Any<EngagementQuerySchema>(), Arg.Any<SearchQuery?>(), Arg.Any<int>(), Arg.Any<int>(),
@@ -64,7 +72,7 @@ public class ObjectSearchGrpcServiceTests
         _actingUserAccessor = new ActingUserAccessor
             { ActingUser = ActingUserFixtures.Principal("test-user", "test-bypass") };
         _sut = new ObjectSearchGrpcService(
-            _registry, _search, _vector, _embedding,
+            _registry, _search, _vector, _resolver,
             NullLogger<ObjectSearchGrpcService>.Instance,
             _actingUserAccessor, _authEvaluator, new IntelligenceTenantScope("test-signing-key-0123456789abcdef"),
             new ResultReranker(Options.Create(new VectorRankingOptions())), new ResultDiversifier(Options.Create(new VectorRankingOptions())),
@@ -1091,6 +1099,60 @@ public class ObjectSearchGrpcServiceTests
         _ = _embedding.DidNotReceive().EmbedDocumentAsync(Arg.Any<string>(), Arg.Any<CancellationToken>());
     }
 
+    // Falsifiability (Task 4 brief): a fake resolver that returns the SAME service for every
+    // model id would make "the query got embedded" pass whether or not the query path honors
+    // SchemaDescriptor.ModelOf. This stubs a DISTINCT fake for the non-default model the type
+    // declares and asserts specifically THAT fake embedded the query — and that the default
+    // fake was never touched.
+    [Fact]
+    public async Task SearchSimilar_WithNonDefaultModelSchema_EmbedsQueryWithThatModel()
+    {
+        var arctic = Substitute.For<IEmbeddingService>();
+        var arcticVector = new float[1024];
+        arcticVector[0] = 1f;
+        arctic.EmbedQueryAsync(Arg.Any<string>(), Arg.Any<CancellationToken>()).Returns(arcticVector);
+        _resolver.Get("snowflake-arctic-embed:s").Returns(arctic);
+
+        var schema = SchemaFixtures.ArticleSchema() with
+        {
+            VectorFields = [new VectorDescriptor("Title", 1024, "snowflake-arctic-embed:s")],
+            ChunkFields  = [new ChunkDescriptor("Body", 512, 64, "snowflake-arctic-embed:s", 1024)]
+        };
+        await _registry.RegisterAsync(schema);
+
+        _vector.SearchNamedAsync("articles_test-tenant", "title_vector", arcticVector, Arg.Any<ulong>(), Arg.Any<Filter>())
+               .Returns(new List<VectorSearchResult>().AsReadOnly());
+
+        var (writer, _) = MakeStream<SearchResponse>();
+        await _sut.SearchSimilar(
+            new SearchSimilarRequest { TypeName = "Article", Property = "Title", Query = "q", TopK = 5 },
+            writer, TestServerCallContext.Create());
+
+        _ = arctic.Received(1).EmbedQueryAsync("q", Arg.Any<CancellationToken>());
+        _ = _embedding.DidNotReceive().EmbedQueryAsync(Arg.Any<string>(), Arg.Any<CancellationToken>());
+    }
+
+    // Companion to the non-default test above: a type carrying the deployment default model (as
+    // ArticleSchema does) still resolves it EXPLICITLY through SchemaDescriptor.ModelOf and the
+    // resolver, rather than happening to work because a fake resolver always returns the same
+    // fake regardless of the argument it was called with.
+    [Fact]
+    public async Task SearchSimilar_WithDefaultModelSchema_ResolvesDefaultModel()
+    {
+        await _registry.RegisterAsync(SchemaFixtures.ArticleSchema()); // Title -> "nomic-embed-text"
+
+        _embedding.EmbedQueryAsync("q", Arg.Any<CancellationToken>()).Returns(new float[768]);
+        _vector.SearchNamedAsync("articles_test-tenant", "title_vector", Arg.Any<float[]>(), Arg.Any<ulong>(), Arg.Any<Filter>())
+               .Returns(new List<VectorSearchResult>().AsReadOnly());
+
+        var (writer, _) = MakeStream<SearchResponse>();
+        await _sut.SearchSimilar(
+            new SearchSimilarRequest { TypeName = "Article", Property = "Title", Query = "q", TopK = 5 },
+            writer, TestServerCallContext.Create());
+
+        _resolver.Received(1).Get("nomic-embed-text");
+    }
+
     [Fact]
     public async Task SearchSimilar_WithEmptyQuery_ThrowsInvalidArgumentNotUnavailable()
     {
@@ -1401,6 +1463,60 @@ public class ObjectSearchGrpcServiceTests
         written.Should().HaveCount(1);
         _ = _embedding.Received(1).EmbedQueryAsync(Arg.Any<string>(), Arg.Any<CancellationToken>());
         _ = _embedding.DidNotReceive().EmbedDocumentAsync(Arg.Any<string>(), Arg.Any<CancellationToken>());
+    }
+
+    // Falsifiability (Task 4 brief): a fake resolver that returns the SAME service for every
+    // model id would make "the query got embedded" pass whether or not the query path honors
+    // SchemaDescriptor.ModelOf. This stubs a DISTINCT fake for the non-default model the type
+    // declares and asserts specifically THAT fake embedded the query — and that the default
+    // fake was never touched.
+    [Fact]
+    public async Task SearchChunks_WithNonDefaultModelSchema_EmbedsQueryWithThatModel()
+    {
+        var arctic = Substitute.For<IEmbeddingService>();
+        var arcticVector = new float[1024];
+        arcticVector[0] = 1f;
+        arctic.EmbedQueryAsync(Arg.Any<string>(), Arg.Any<CancellationToken>()).Returns(arcticVector);
+        _resolver.Get("snowflake-arctic-embed:s").Returns(arctic);
+
+        var schema = SchemaFixtures.ArticleSchema() with
+        {
+            VectorFields = [new VectorDescriptor("Title", 1024, "snowflake-arctic-embed:s")],
+            ChunkFields  = [new ChunkDescriptor("Body", 512, 64, "snowflake-arctic-embed:s", 1024)]
+        };
+        await _registry.RegisterAsync(schema);
+
+        _vector.SearchNamedAsync("articles_chunks_test-tenant", "body_vector", arcticVector, Arg.Any<ulong>(), Arg.Any<Filter>())
+               .Returns(new List<VectorSearchResult>().AsReadOnly());
+
+        var (writer, _) = MakeStream<ChunkSearchResponse>();
+        await _sut.SearchChunks(
+            new SearchChunksRequest { TypeName = "Article", Property = "Body", Query = "q", TopK = 5 },
+            writer, TestServerCallContext.Create());
+
+        _ = arctic.Received(1).EmbedQueryAsync("q", Arg.Any<CancellationToken>());
+        _ = _embedding.DidNotReceive().EmbedQueryAsync(Arg.Any<string>(), Arg.Any<CancellationToken>());
+    }
+
+    // Companion to the non-default test above: a type carrying the deployment default model (as
+    // ArticleSchema does) still resolves it EXPLICITLY through SchemaDescriptor.ModelOf and the
+    // resolver, rather than happening to work because a fake resolver always returns the same
+    // fake regardless of the argument it was called with.
+    [Fact]
+    public async Task SearchChunks_WithDefaultModelSchema_ResolvesDefaultModel()
+    {
+        await _registry.RegisterAsync(SchemaFixtures.ArticleSchema()); // Body -> "nomic-embed-text"
+
+        _embedding.EmbedQueryAsync("q", Arg.Any<CancellationToken>()).Returns(new float[768]);
+        _vector.SearchNamedAsync("articles_chunks_test-tenant", "body_vector", Arg.Any<float[]>(), Arg.Any<ulong>(), Arg.Any<Filter>())
+               .Returns(new List<VectorSearchResult>().AsReadOnly());
+
+        var (writer, _) = MakeStream<ChunkSearchResponse>();
+        await _sut.SearchChunks(
+            new SearchChunksRequest { TypeName = "Article", Property = "Body", Query = "q", TopK = 5 },
+            writer, TestServerCallContext.Create());
+
+        _resolver.Received(1).Get("nomic-embed-text");
     }
 
     [Fact]
@@ -2494,7 +2610,7 @@ public class ObjectSearchGrpcServiceTests
 
         const double halfLifeDays = 90.0;
         var sut = new ObjectSearchGrpcService(
-            _registry, _search, _vector, _embedding,
+            _registry, _search, _vector, _resolver,
             NullLogger<ObjectSearchGrpcService>.Instance,
             _actingUserAccessor, _authEvaluator, new IntelligenceTenantScope("test-signing-key-0123456789abcdef"),
             new ResultReranker(Options.Create(new VectorRankingOptions())),

@@ -24,6 +24,7 @@ public class IntelligenceStoreConsumerTests
     private readonly IVectorSchemaManager _vectorSchema;
     private readonly IVectorWriteService _vectorWrite;
     private readonly IEmbeddingService _embedding;
+    private readonly IEmbeddingServiceResolver _resolver;
     private readonly IRecordStoreQueryExecutor _sql;
     private readonly IEntityRepository _entities;
     private readonly SchemaRegistry _registry;
@@ -75,6 +76,14 @@ public class IntelligenceStoreConsumerTests
         _embedding.EmbedDocumentAsync(Arg.Any<string>(), Arg.Any<CancellationToken>())
                   .Returns(UnitVector());
 
+        // Every existing test in this file drives a single embedding service regardless of what
+        // model (if any) a field declares — mirroring the pre-resolver singleton behavior. Tests
+        // that care which model id the resolver was asked for stub a distinct fake for that model
+        // id (see the non-default-model tests below) or verify the argument via
+        // _resolver.Received().Get(...).
+        _resolver = Substitute.For<IEmbeddingServiceResolver>();
+        _resolver.Get(Arg.Any<string?>()).Returns(_embedding);
+
         _enrichment = Substitute.For<IEnrichmentService>();
         _enrichment.GenerateAsync(Arg.Any<string>(), Arg.Any<CancellationToken>())
                    .Returns("Situating sentence.");
@@ -99,7 +108,7 @@ public class IntelligenceStoreConsumerTests
             _consumer,
             _vectorSchema,
             _vectorWrite,
-            _embedding,
+            _resolver,
             _registry,
             _entities,
             new DocumentRenderer(_registry, _entities),
@@ -144,6 +153,73 @@ public class IntelligenceStoreConsumerTests
             Arg.Any<ulong>(),
             Arg.Any<IReadOnlyDictionary<string, float[]>>(),
             Arg.Any<IReadOnlyDictionary<string, object>?>());
+    }
+
+    // Falsifiability (Task 4 brief): a fake resolver that returns the SAME service for every
+    // model id would make an assertion like "embedding happened" pass whether or not the write
+    // path honors the per-field model. This stubs a DISTINCT fake for the non-default model and
+    // asserts specifically THAT fake was called for both the vector field and the chunk field —
+    // and that the default fake was never touched.
+    [Fact]
+    public async Task HandleCreated_WithNonDefaultModel_EmbedsVectorAndChunkFieldsWithThatModel()
+    {
+        var arctic = Substitute.For<IEmbeddingService>();
+        var arcticVector = new float[1024];
+        arcticVector[0] = 1f;
+        arctic.EmbedDocumentAsync(Arg.Any<string>(), Arg.Any<CancellationToken>()).Returns(arcticVector);
+        _resolver.Get("snowflake-arctic-embed:s").Returns(arctic);
+
+        var schema = SchemaFixtures.ArticleSchema() with
+        {
+            VectorFields = [new VectorDescriptor("Title", 1024, "snowflake-arctic-embed:s")],
+            ChunkFields  = [new ChunkDescriptor("Body", 512, 64, "snowflake-arctic-embed:s", 1024)]
+        };
+        await _registry.RegisterAsync(schema);
+
+        var payload = """{"Title":"Great Title","Body":"Some body text","AuthorId":"00000000-0000-0000-0000-000000000001"}""";
+        var ev = new EntityEvent(
+            EventType:     EntityEventType.Created,
+            TypeName:      "Article",
+            Key:           Guid.NewGuid().ToString(),
+            PayloadJson:   payload,
+            TraceId:       "trace-non-default-model",
+            SchemaVersion: "1",
+            OccurredAt:    DateTimeOffset.UtcNow,
+            TargetStores:  StoreTarget.Intelligence);
+
+        await BuildSut().HandleAsync(ev.Key, Serialize(ev), CancellationToken.None);
+
+        // One call for the Title vector field, one for the Body chunk field — both through the
+        // non-default fake, none through the default.
+        _ = arctic.Received(1).EmbedDocumentAsync("Great Title", Arg.Any<CancellationToken>());
+        _ = arctic.Received(2).EmbedDocumentAsync(Arg.Any<string>(), Arg.Any<CancellationToken>());
+        _ = _embedding.DidNotReceive().EmbedDocumentAsync(Arg.Any<string>(), Arg.Any<CancellationToken>());
+    }
+
+    // Companion to the non-default test above: a type carrying the deployment default model (as
+    // ArticleSchema does) still resolves it EXPLICITLY through the resolver, per field, rather
+    // than happening to work because a fake resolver always returns the same fake regardless of
+    // the argument it was called with.
+    [Fact]
+    public async Task HandleCreated_WithDefaultModel_ResolvesDefaultOnBothVectorAndChunkPaths()
+    {
+        await _registry.RegisterAsync(SchemaFixtures.ArticleSchema()); // Title + Body -> "nomic-embed-text"
+
+        var payload = """{"Title":"Great Title","Body":"Some body text","AuthorId":"00000000-0000-0000-0000-000000000001"}""";
+        var ev = new EntityEvent(
+            EventType:     EntityEventType.Created,
+            TypeName:      "Article",
+            Key:           Guid.NewGuid().ToString(),
+            PayloadJson:   payload,
+            TraceId:       "trace-default-model",
+            SchemaVersion: "1",
+            OccurredAt:    DateTimeOffset.UtcNow,
+            TargetStores:  StoreTarget.Intelligence);
+
+        await BuildSut().HandleAsync(ev.Key, Serialize(ev), CancellationToken.None);
+
+        // One call for the Title vector field, one for the Body chunk field.
+        _resolver.Received(2).Get("nomic-embed-text");
     }
 
     [Fact]
@@ -2201,7 +2277,7 @@ public class IntelligenceStoreConsumerTests
             _consumer,
             _vectorSchema,
             _vectorWrite,
-            _embedding,
+            _resolver,
             _registry,
             _entities,
             new DocumentRenderer(_registry, _entities),
