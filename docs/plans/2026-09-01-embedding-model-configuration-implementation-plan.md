@@ -109,6 +109,7 @@ Newly introduced by this plan and verified at plan-write time against `main@f213
 | P44 | Code validity | The write path needs no probed dimension, so the worker's unprobed per-model instances are safe | `_dimension` is read only by the `Dimension` getter (`EmbeddingService.cs:25-28`); `EmbedDocumentAsync`/`EmbedQueryAsync` route through `EmbedAsync` (`:54-95`), which never touches it |
 | P45 | Code validity | `Requirements.cs` is gated at build time against the standard, not a free-form list | `Requirements.cs:5-14` states the contract; `RequirementsCoverageGateTests.cs:211` (Check 1, bidirectional), `:368` (Check 2, citation), `:796` with `:1038`/`:1095` (Check 4, exactly one claimant); `:115` resolves `docs/standards/iverson-client-standard.md`, `:92-94` fixes the nine known axes |
 | P46 | Signature | Java's per-property stamp site cannot see the class-level annotation; the other three languages' can | `SchemaRegistrar.java:191` is `applyAnnotations(PropertyDescriptor.Builder b, Field field)`, with no class reference anywhere in the method; by contrast `core.py`'s builder loop holds the class `meta` dict at `:275`/`:279`, `core.ts:361,365,389,393` sit inside `describeEntity(cls: Function)` (`:232`), and `registrar.go:124` sits in `buildRequest`, whose `meta` is used at `:154`/`:176` |
+| P47 | Code validity | The client stamp sites are per-property, so the spec's `is_embedding`/`is_chunk` scope must be applied at each | `core.ts:352-368` computes `isEmbedding` and `chunkMeta` per field while `:379-398`'s relation-FK literal hardcodes both false; `core.py`'s `PropertyDescriptor(...)` carrying `:275`/`:279` sits inside `for field_name in meta["fields"]:`; `SchemaRegistrar.java:191`'s `applyAnnotations` writes `""` per field, so a post-pass over every builder is unscoped by default |
 
 ## Tasks
 
@@ -578,22 +579,22 @@ git commit -m "declare a per-type embedding model from the dotnet client"
 Repeats T6's six steps. Deltas only:
 
 - [ ] **Step 1:** `@IversonEmbeddingModel(String value())`, `@Target(ElementType.TYPE)`, `@Retention(RUNTIME)`, in `io/iverson/client/annotations/` beside `IversonEmbedding.java`.
-- [ ] **Step 2:** Read `cls.getAnnotation(IversonEmbeddingModel.class)` in `core/SchemaRegistrar.java` where `:87` already reads the class, then stamp in one pass over the built property builders after they are assembled — **not** at `:216`/`:224`. Those two lines sit inside `private void applyAnnotations(PropertyDescriptor.Builder b, Field field)` (`:191`), which receives the builder and the field and nothing else, so the class-level value cannot be read there. Leave `applyAnnotations`'s `b.setModelId("")` / `b.setChunkModelId("")` as the undeclared default, exactly as .NET leaves `AddAnnotations`'s `string.Empty`. This is T6 Step 2's post-pass, for the same reason. (Threading a `String modelId` parameter into `applyAnnotations` also compiles, but changes a shared private helper's signature for one caller's benefit and diverges from the canonical this task repeats.)
+- [ ] **Step 2:** Read `cls.getAnnotation(IversonEmbeddingModel.class)` in `core/SchemaRegistrar.java` where `:87` already reads the class, then stamp in one pass over the built property builders after they are assembled, **guarded per builder on `getIsEmbedding()` / `getIsChunk()`**, exactly as T6's post-pass guards on `p.IsEmbedding` / `p.IsChunk` — **not** at `:216`/`:224`. Those two lines sit inside `private void applyAnnotations(PropertyDescriptor.Builder b, Field field)` (`:191`), which receives the builder and the field and nothing else, so the class-level value cannot be read there. Leave `applyAnnotations`'s `b.setModelId("")` / `b.setChunkModelId("")` as the undeclared default, exactly as .NET leaves `AddAnnotations`'s `string.Empty`. This is T6 Step 2's post-pass, for the same reason. (Threading a `String modelId` parameter into `applyAnnotations` also compiles, but changes a shared private helper's signature for one caller's benefit and diverges from the canonical this task repeats.)
 - [ ] **Steps 3-5:** stamping test in `Iverson.Clients/Java/client/src/test/java/io/iverson/client/`; fixture `conformance/src/main/java/io/iverson/conformance/models/JavaModelDoc.java`; driver register-phase step in `conformance/.../ConformanceDriver.java`.
 - [ ] **Step 6:** `mvn -B -f Iverson.Clients/Java/pom.xml test`, then commit.
 
 ### Task 8: Python client
 
 - [ ] **Step 1:** `@iverson_entity(embedding_model="...")` — a new keyword-only parameter on the existing decorator at `annotations.py:222`, stored into `cls._iverson_meta`.
-- [ ] **Step 2:** Stamp in place of `model_id=""` at `core.py:275` and `chunk_model_id=""` at `:279`.
+- [ ] **Step 2:** Stamp in place of `model_id=""` at `core.py:275` and `chunk_model_id=""` at `:279`, **guarded on the `is_embedding` and `is_chunk` values computed for the same field** — the loop builds one `PropertyDescriptor` per field, including fields that are neither.
 - [ ] **Steps 3-5:** stamping test in `Iverson.Clients/Python/tests/`; fixture `PyModelDoc` in `conformance/models.py`; driver register-phase step in `conformance/driver.py`.
 - [ ] **Step 6:** `pytest` from `Iverson.Clients/Python/`, then commit.
 
 ### Task 9: TypeScript client
 
 - [ ] **Step 1:** `IversonEmbeddingModel(modelId: string): ClassDecorator` in `src/annotations.ts`, storing through `Reflect.defineMetadata` beside `IVERSON_ENTITY_KEY`.
-- [ ] **Step 2:** Stamp at **four** sites in `src/core.ts` — `modelId: ''` at `:361` and `:389`, `chunkModelId: ''` at `:365` and `:393`. Two code paths, both of which must carry the declared value; the second is the one a single-site edit would silently miss.
-- [ ] **Steps 3-5:** stamping test in `Iverson.Clients/TypeScript/tests/`; fixture `TsModelDoc` in `conformance/models.ts`; driver register-phase step in `conformance/driver.ts`.
+- [ ] **Step 2:** Stamp at **two** sites in `src/core.ts` — `modelId: ''` at `:361` and `chunkModelId: ''` at `:365` — **guarded on the same `isEmbedding` / `chunkMeta !== undefined` values the literal already computes**. Leave `:389` and `:393` alone: they are inside the relation foreign-key loop, whose literal hardcodes `isEmbedding: false` and `isChunk: false`, so a model there is one the spec's transport rule excludes and no other client sends.
+- [ ] **Steps 3-5:** stamping test in `Iverson.Clients/TypeScript/tests/`, asserting the exclusion as well as the inclusion — a declared type sends `""` on its relation foreign-key properties; fixture `TsModelDoc` in `conformance/models.ts`; driver register-phase step in `conformance/driver.ts`.
 - [ ] **Step 6:** `npm test` from `Iverson.Clients/TypeScript/` (typecheck + vitest), then commit.
 
 ### Task 10: Go client
