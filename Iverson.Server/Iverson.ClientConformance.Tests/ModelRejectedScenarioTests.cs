@@ -4,6 +4,7 @@ using Google.Protobuf;
 using Grpc.Core;
 using Iverson.Client.Contracts;
 using Iverson.ClientConformance.Scenarios;
+using Iverson.Embeddings;
 using Xunit;
 
 namespace Iverson.ClientConformance.Tests;
@@ -489,14 +490,34 @@ public class ModelRejectedScenarioTests
     }
 
     /// <summary>
-    /// The override must be a model no deployment can hold. If it ever coincided with the
-    /// configured default, the guard's two models would compare equal, nothing would be rejected,
-    /// and the scenario would report a real regression as five green cells.
+    /// The override must be a model no deployment can hold. If it ever coincided with the model the
+    /// server resolves for these fixtures, the guard's two models would compare equal, nothing
+    /// would be rejected, and the scenario would report a real regression as five green cells —
+    /// with the failure indistinguishable from a genuinely broken guard.
+    ///
+    /// <para>Graded against the two model names the SYSTEM knows, not against the constant's own
+    /// spelling: <c>EmbeddingServiceOptions.ModelId</c>'s default is what an unconfigured
+    /// deployment resolves to, and <c>EmbeddingPrefixes.Table</c> is the closed set of model
+    /// FAMILIES this build has shipped support for — the ones a deployment is actually likely to be
+    /// pointed at. Family, not full id, because Ollama ids carry tags
+    /// (<c>nomic-embed-text:latest</c>), so an equality check alone would pass for a real model
+    /// merely because it was tagged.</para>
+    ///
+    /// <para>An earlier version of this test asserted <c>NotBeEmpty()</c> and
+    /// <c>StartWith("iverson-conformance-")</c>, which restated the constant's own prefix and could
+    /// not fail for any value that kept it — including <c>iverson-conformance-nomic-embed-text</c>.
+    /// It read as coverage while grading nothing.</para>
     /// </summary>
     [Fact]
-    public void OverrideModelId_IsNotAModelAnyDeploymentCouldResolve()
+    public void OverrideModelId_IsNotAModelThisBuildCouldResolve()
     {
-        ModelRejectedScenario.OverrideModelId.Should().NotBeEmpty();
-        ModelRejectedScenario.OverrideModelId.Should().StartWith("iverson-conformance-");
+        var family = EmbeddingPrefixes.Family(ModelRejectedScenario.OverrideModelId);
+
+        family.Should().NotBe(EmbeddingPrefixes.Family(new EmbeddingServiceOptions().ModelId),
+            "an override equal to the deployment's default model makes the guard's two models "
+            + "compare equal, and nothing is rejected");
+        EmbeddingPrefixes.Table.Keys.Should().NotContain(family,
+            "every family in this table is one this build ships prefixes for, so it is a model a "
+            + "deployment could plausibly be configured with");
     }
 }

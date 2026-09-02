@@ -223,9 +223,10 @@ public sealed class ModelRejectedScenario(
     /// assertion cites the same requirement on purpose: the statement is that the server rejects
     /// THIS registration, and a rejection carrying another guard's status code or another rule's
     /// message text is not evidence of it. The status-code half has no <c>IVC-ERR-*</c> requirement
-    /// of its own — the ERR axis authors one per rejection FAMILY and this is the only
-    /// <c>FailedPrecondition</c> registration refusal in the standard — so it is graded here rather
-    /// than left ungraded, and no ERR requirement is widened to cover it.
+    /// of its own — the ERR axis authors one per rejection FAMILY, and this is the only
+    /// <c>FailedPrecondition</c> registration refusal the standard GRADES (REG's ledger records a
+    /// second that EXISTS, schema drift, as Deferred) — so it is graded here rather than left
+    /// ungraded, and no ERR requirement is widened to cover it.
     /// </summary>
     internal static IReadOnlyList<Assertion> JudgeRejection(
         string language, string typeName, string? priorModel, RpcException? caught)

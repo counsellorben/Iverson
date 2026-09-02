@@ -20,5 +20,21 @@
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="../Iverson.ClientConformance/Iverson.ClientConformance.csproj" />
+    <!--
+      ORACLE ONLY, and only for the TEST project. Iverson.ClientConformance itself must never
+      reference Iverson.Api: its independence is what lets its own copies of the table name, the
+      tenant column and the schema-row shape catch the server diverging from what the standard
+      publishes (PostgresProbe.cs:20-23, SchemaProbe.cs).
+
+      What this reference buys is the opposite direction. SchemaProbe.ModelIn parses the SERVER'S
+      OWN serialized SchemaDescriptor, so the only fixture that can falsify it is one the server's
+      real types produced — a hand-written JSON literal would re-encode the very assumptions the
+      test exists to check (which arrays exist, and that ChunkDescriptor's member is ModelId rather
+      than ChunkModelId). SchemaProbeTests builds real SchemaDescriptors for exactly that.
+
+      Do NOT use this to replace a harness copy with the server's constant: a probe that shared the
+      server's own value could not catch the server changing it.
+    -->
+    <ProjectReference Include="../Iverson.Api/Iverson.Api.csproj" />
   </ItemGroup>
 </Project>

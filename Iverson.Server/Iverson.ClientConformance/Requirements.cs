@@ -291,9 +291,14 @@ public static class Requirements
     /// rest on. So the status code (<c>FailedPrecondition</c>), both model names, and both halves of
     /// the message's remedy (the <c>_iverson_schema</c> row AND the two tenant-qualified Qdrant
     /// collections) are each asserted separately. The status half has no <c>IVC-ERR-*</c>
-    /// requirement of its own — the ERR axis authors one per rejection family, and this is the
-    /// standard's only <c>FailedPrecondition</c> REGISTRATION refusal — so it is graded here rather
-    /// than by widening an ERR statement that does not cover it.</para>
+    /// requirement of its own — the ERR axis authors one per rejection family, and this is the only
+    /// <c>FailedPrecondition</c> registration refusal this standard GRADES — so it is graded here
+    /// rather than by widening an ERR statement that does not cover it. Not the only one that
+    /// EXISTS: REG's own coverage ledger records a second, three rows below this one's, where a
+    /// <c>SchemaDriftException</c> from <c>IRecordStoreSchemaManager.ApplySchemaAsync</c> surfaces
+    /// as <c>FailedPrecondition</c> — that one is Deferred and no requirement asserts against it,
+    /// which is exactly why an <c>IVC-ERR-*</c> requirement over the family would have to cover
+    /// both.</para>
     ///
     /// <para>Graded through the driver channel, unlike every other REG requirement, and for a
     /// reason: the rule is about a type that a CLIENT has already registered, so the fixture has to
@@ -759,6 +764,19 @@ public static class Requirements
     /// navigation-property write and a relation-name collision alike: the code alone does not say
     /// which rule was broken, and only the detail text does. Every citing assertion matches the
     /// specific element its fixture made wrong, never merely that some text came back.</para>
+    ///
+    /// <para><b>"Every message-content assertion" above has ONE exception, and it is deliberate:
+    /// <see cref="RegEmbeddingModelChangeRejected"/>'s.</b> <c>ModelRejectedScenario.JudgeRejection</c>
+    /// makes four message-content assertions over a server rejection — both model names and both
+    /// halves of the remedy — and none of them cites this requirement. The reason is the paragraph
+    /// directly above: this requirement is scoped, by the enumeration it lists and by the
+    /// <c>InvalidArgument</c> reasoning behind it, to the rejection families the server answers with
+    /// <c>InvalidArgument</c>, where the status code cannot say which rule was broken. The
+    /// embedding-model guard throws <c>FailedPrecondition</c>, which is not shared with any other
+    /// registration rule in this standard, so its message assertions grade
+    /// <c>IVC-REG-006</c>'s own statement rather than this one. Citing both would make one
+    /// regression redden two requirements and would widen this statement past the families it
+    /// enumerates.</para>
     /// </summary>
     public const string ErrMessageNamesOffendingElement = "IVC-ERR-002";
 
