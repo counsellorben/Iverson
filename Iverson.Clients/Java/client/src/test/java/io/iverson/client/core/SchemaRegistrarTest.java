@@ -77,6 +77,25 @@ class SchemaRegistrarTest {
         private String body;
     }
 
+    // ModelAnnotationTestEntity's both-flags property cannot catch a swapped per-field guard:
+    // `if (p.getIsChunk()) p.setModelId(model); if (p.getIsEmbedding()) p.setChunkModelId(model);`
+    // stamps body's ModelId and ChunkModelId identically to the correct guards, because body is
+    // both flags at once either way. An embedding-ONLY property and a separate chunk-ONLY
+    // property are required to make a swap observable — mirrors Python's RegModelAsymmetricArticle
+    // and Go's regModelAsymmetricArticle.
+    @IversonEntity
+    @IversonEmbeddingModel("snowflake-arctic-embed:s")
+    static class ModelAsymmetricAnnotationTestEntity {
+        @IversonKey
+        private UUID id;
+
+        @IversonEmbedding
+        private String title;
+
+        @IversonChunk
+        private String body;
+    }
+
     @IversonEntity
     static class EnrichmentAnnotationTestEntity {
         @IversonKey
@@ -451,6 +470,33 @@ class SchemaRegistrarTest {
             () -> assertEquals("snowflake-arctic-embed:s", body.getChunkModelId()),
             () -> assertEquals("", key.getModelId()),
             () -> assertEquals("", key.getChunkModelId()));
+    }
+
+    // THE DISCRIMINATING CASE for a swapped per-field guard. The both-flags/neither-flags shape
+    // above passes even if `getIsChunk()`/`getIsEmbedding()` are swapped between setModelId and
+    // setChunkModelId, because body picks up both stamps under either ordering. Title
+    // (embedding-only) and body (chunk-only) on ModelAsymmetricAnnotationTestEntity are what makes
+    // a swap observable: under the correct guards title gets ModelId only and body gets
+    // ChunkModelId only; under the swap those flip.
+    @Test
+    void registerAll_stampsDeclaredEmbeddingModel_onlyOnTheMatchingFieldOfAnAsymmetricType() {
+        ArgumentCaptor<SchemaRequest> captor = ArgumentCaptor.forClass(SchemaRequest.class);
+
+        sut.registerAll(ModelAsymmetricAnnotationTestEntity.class);
+
+        verify(mockStub).registerSchema(captor.capture());
+        TypeDescriptor typeDesc = captor.getValue().getRootType();
+
+        PropertyDescriptor title = prop(typeDesc, "Title");
+        PropertyDescriptor body = prop(typeDesc, "Body");
+        assertTrue(title.getIsEmbedding());
+        assertTrue(body.getIsChunk());
+
+        assertAll(
+            () -> assertEquals("snowflake-arctic-embed:s", title.getModelId()),
+            () -> assertEquals("", title.getChunkModelId()),
+            () -> assertEquals("", body.getModelId()),
+            () -> assertEquals("snowflake-arctic-embed:s", body.getChunkModelId()));
     }
 
     // Undeclared types must keep sending "" on BOTH fields. SearchAnnotationTestEntity carries no

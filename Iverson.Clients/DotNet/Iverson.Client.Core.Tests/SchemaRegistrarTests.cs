@@ -74,6 +74,26 @@ internal sealed class ModelAnnotationTestEntity
     public string Body { get; set; } = "";
 }
 
+// A both-flags property plus a neither-flags property (ModelAnnotationTestEntity's shape) cannot
+// catch a swapped guard: `if (p.IsChunk) p.ModelId = model; if (p.IsEmbedding) p.ChunkModelId =
+// model;` produces IDENTICAL output on both, because the both-flags property gets both stamps
+// regardless of which guard controls which field. An embedding-ONLY property and a chunk-ONLY
+// property are required to make the two guards observably different — mirrors Python's
+// RegModelAsymmetricArticle and Go's regModelAsymmetricArticle.
+[IversonEntity]
+[IversonEmbeddingModel("snowflake-arctic-embed:s")]
+internal sealed class ModelAsymmetricAnnotationTestEntity
+{
+    [IversonKey]
+    public Guid Id { get; set; }
+
+    [IversonEmbedding]
+    public string Title { get; set; } = "";
+
+    [IversonChunk]
+    public string Body { get; set; } = "";
+}
+
 [IversonEntity]
 internal sealed class SchemaTestAuthor
 {
@@ -663,6 +683,47 @@ public class SchemaRegistrarTests
         body.IsChunk.Should().BeTrue();
         body.ModelId.Should().Be("snowflake-arctic-embed:s");
         body.ChunkModelId.Should().Be("snowflake-arctic-embed:s");
+    }
+
+    // THE DISCRIMINATING CASE for a swapped per-field guard. ModelAnnotationTestEntity's
+    // both-flags/neither-flags shape passes even if `if (p.IsChunk) p.ModelId = model;` and
+    // `if (p.IsEmbedding) p.ChunkModelId = model;` are swapped, because the both-flags property
+    // gets both stamps under either guard ordering. Title (embedding-only) and Body (chunk-only)
+    // on ModelAsymmetricAnnotationTestEntity are what makes a swap observable: under the correct
+    // guards Title gets ModelId only and Body gets ChunkModelId only; under the swap those flip.
+    [Fact]
+    public async Task RegisterAllAsync_StampsDeclaredEmbeddingModel_OnlyOnTheMatchingFieldOfAnAsymmetricType()
+    {
+        SchemaRequest? req = null;
+        _mappingClient
+            .RegisterSchemaAsync(
+                Arg.Do<SchemaRequest>(r =>
+                {
+                    if (r.RootType?.TypeName == "ModelAsymmetricAnnotationTestEntity") req = r;
+                }),
+                Arg.Any<Metadata>(),
+                Arg.Any<DateTime?>(),
+                Arg.Any<CancellationToken>())
+            .Returns(new AsyncUnaryCall<SchemaResponse>(
+                Task.FromResult(new SchemaResponse { Success = true }),
+                Task.FromResult(new Metadata()),
+                () => Status.DefaultSuccess,
+                () => new Metadata(),
+                () => { }));
+
+        await _sut.RegisterAllAsync();
+
+        req.Should().NotBeNull();
+        var title = req!.RootType!.Properties.Single(p => p.Name == "Title");
+        var body  = req.RootType.Properties.Single(p => p.Name == "Body");
+
+        title.IsEmbedding.Should().BeTrue();
+        title.ModelId.Should().Be("snowflake-arctic-embed:s");
+        title.ChunkModelId.Should().BeEmpty();
+
+        body.IsChunk.Should().BeTrue();
+        body.ChunkModelId.Should().Be("snowflake-arctic-embed:s");
+        body.ModelId.Should().BeEmpty();
     }
 
     [Theory]
