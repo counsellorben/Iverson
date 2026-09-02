@@ -232,18 +232,19 @@ def iverson_entity(cls: type | None = None, *, description: str = "", embedding_
             ``iverson_embedding()``/``iverson_chunk()`` field on this class is stamped with
             the same value. Three cases: ``None`` (the default, i.e. the argument was not
             supplied) means "not declared HERE" — if a decorated base class in this class's MRO
-            declares a non-empty model, the nearest such declaration is inherited. An explicit
-            ``""`` means "declared HERE as opted OUT" — no MRO walk happens, and this type's
-            properties are stamped with ``""`` even if a base declares a model, matching how the
-            other Iverson clients treat an explicit empty value. A non-empty value is used as-is
-            and overrides any inherited one. If resolution (supplied or inherited) ends in ``""``
-            or ``None`` with no declaring base, the server resolves the deployment's configured
-            default, exactly as it does for a client that predates this parameter — so an
-            un-updated caller keeps working with no server-side special-casing. Only
-            ``embedding_model`` inherits this way from a decorated base — its ``FieldMeta``
-            sentinels (including ``iverson_key()``) are replaced with ``None`` on the base (see
-            "After decoration" below) and do NOT carry into subclasses, so the declaring base
-            must be field-less, or the child must redeclare every field it needs.
+            declares a non-empty model, the nearest such declaration is inherited; if no base
+            declares one, resolution ends in ``""``. An explicit ``""`` means "declared HERE as
+            opted OUT" — no MRO walk happens, and this type's properties are stamped with ``""``
+            even if a base declares a model, matching how the other Iverson clients treat an
+            explicit empty value. A non-empty value is used as-is and overrides any inherited
+            one. Whenever resolution ends in ``""`` (undeclared throughout the MRO, or an
+            explicit opt-out), the server resolves the deployment's configured default, exactly
+            as it does for a client that predates this parameter — so an un-updated caller keeps
+            working with no server-side special-casing. Only ``embedding_model`` inherits this
+            way from a decorated base — its ``FieldMeta`` sentinels (including ``iverson_key()``)
+            are replaced with ``None`` on the base (see "After decoration" below) and do NOT
+            carry into subclasses, so the declaring base must be field-less, or the child must
+            redeclare every field it needs.
 
     After decoration:
     - ``cls._iverson_meta`` is a dict with keys:
