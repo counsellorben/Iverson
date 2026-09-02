@@ -59,6 +59,31 @@ public sealed class SchemaRegistrationOrchestrator(
                 ValidateIdentifier(property.Name, $"property name on type '{typeDesc.TypeName}'");
 
             var service = resolver.Get(DeclaredModel(typeDesc));
+
+            var priorModel = registry.Get(typeDesc.TypeName) is { } prior ? SchemaDescriptor.ModelOf(prior) : null;
+
+            // Null when this registration carries no embedded content at all — a type that has just lost its
+            // last embedding/chunk property is not changing its model, it is ceasing to have one, and the
+            // write path already supports that. Taking service.ModelId here instead would reject exactly that
+            // evolution whenever the deployment default has moved on.
+            var hasEmbedded = typeDesc.Properties.Any(p => p.IsEmbedding || p.IsChunk);
+            var nextModel   = hasEmbedded ? service.ModelId : null;
+
+            if (priorModel is not null && nextModel is not null &&
+                !string.Equals(priorModel, nextModel, StringComparison.Ordinal))
+            {
+                throw new RpcException(new Status(StatusCode.FailedPrecondition,
+                    $"Type '{typeDesc.TypeName}' is registered with embedding model '{priorModel}', but this "
+                    + $"registration resolves to '{nextModel}'. Changing a type's model would leave one "
+                    + $"collection holding vectors from two incompatible spaces, which no dimension check "
+                    + $"catches when the two models share a dimension. To change it, BOTH clear the schema "
+                    + $"row and drop the collection: "
+                    + $"DELETE FROM _iverson_schema WHERE type_name = '{typeDesc.TypeName}'; "
+                    + $"then drop Qdrant collection '{SchemaBuilder.ToTableName(typeDesc.TypeName)}'. "
+                    + $"Dropping the collection alone leaves this row, and the next registration is "
+                    + $"rejected identically."));
+            }
+
             try
             {
                 await service.EnsureInitializedAsync(ct);
@@ -67,7 +92,8 @@ public sealed class SchemaRegistrationOrchestrator(
             {
                 throw new RpcException(new Status(StatusCode.Unavailable,
                     $"Embedding service is unavailable, so schema registration cannot determine the vector "
-                    + $"dimension. Check that Ollama is reachable and retry. ({ex.Message})"));
+                    + $"dimension. Check that Ollama is reachable and retry. Resolved embedding model for "
+                    + $"'{typeDesc.TypeName}': '{service.ModelId}' — confirm it has been pulled. ({ex.Message})"));
             }
 
             SchemaDescriptor descriptor;

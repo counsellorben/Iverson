@@ -20,6 +20,13 @@ public sealed record SchemaDescriptor
     public static bool IsTenantColumn(string name) =>
         string.Equals(name, TenantColumnName, StringComparison.OrdinalIgnoreCase);
 
+    // A type's model lives on its vector and chunk fields, which exist only when it has embedding
+    // or chunk properties — so null here means "this type has no embedded content", not "unknown".
+    // Read by the re-registration guard and by the query path; one definition, because two copies
+    // that disagree would reject a legal registration or embed a query with the wrong model.
+    internal static string? ModelOf(SchemaDescriptor d) =>
+        d.VectorFields.FirstOrDefault()?.ModelId ?? d.ChunkFields.FirstOrDefault()?.ModelId;
+
     public required string TypeName       { get; init; }
     public required string TableName      { get; init; }
     public string?         CollectionName { get; init; }
