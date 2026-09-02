@@ -167,9 +167,22 @@ second test is what keeps "inherits" from quietly becoming "cannot override".
 
 The fixtures declare `nomic-embed-text`, the deployment default, so a subclass that inherited and one
 that fell back resolve to the same model server-side and are indistinguishable in `_iverson_schema`.
-The harness does not read the resolved value: `Capture` records the **outgoing**
-`SchemaRequest.RootType`, so the scenario sees what the client sent — `"nomic-embed-text"` versus
-`""`. That discriminates in a single-model environment and needs no second model pulled.
+The harness does not read the resolved value: each driver's capture records the **outgoing**
+`SchemaRequest.RootType`, so the scenario sees what the client sent. That discriminates in a
+single-model environment and needs no second model pulled.
+
+**Two constraints make that true, and both are load-bearing.** The five drivers do not serialize
+alike: .NET, Java and Python emit `"modelId": ""` for an undeclared model, while Go
+(`protojson.Marshal` with default options) and TypeScript (ts-proto `toJSON`) **omit the field
+entirely**. The discrimination is therefore `"nomic-embed-text"` versus *absent-or-empty*, not
+versus `""`.
+
+1. The scenario **must** read the captured descriptor through `Verifier.ParseDescriptor`, which runs
+   the driver's JSON through protobuf's own `JsonParser` and lands an omitted field on the same
+   default as an explicitly-default one. Never index the raw `JsonElement`.
+2. The assertion **must** be equality with the expected model id, never inequality with `""`. Read
+   against raw JSON, a "not `""`" assertion sees null for an absent field, `null != ""` passes, and
+   the Go and TypeScript columns go green on the exact regression the scenario exists to catch.
 
 Declaring a non-default model instead would require a second Ollama pull, which is why the source
 initiative's fixtures declare the default and why these do too.
@@ -189,16 +202,22 @@ func (S12DeclaredGo) IversonEmbeddingModel() string { return "nomic-embed-text" 
 
 type S12InheritedGo struct {
     S12DeclaredGo
-    Id uuid.UUID `iverson_key:"true"`
+    Id string `iverson_key:"true" iverson_guid:"true"`
     // tenant, owner, one embedding property, one chunk property
 }
 ```
+
+**Every S12 fixture needs its language's GUID-key declaration**, the same as the S11 fixtures they are
+modelled on: .NET `Guid`, Java `UUID`, Python `uuid.UUID`, TypeScript `@IversonGuid()`, and Go the
+`iverson_guid:"true"` tag *alongside* `iverson_key` — in Go the tag, not the field's type, drives the
+column's SQL type. The orchestrator rejects any key whose built `SqlType` is not `UUID`, so a fixture
+missing it fails registration and takes its language's column with it.
 
 ### Scenario
 
 `InheritedModelScenario`, mirroring `ModelRejectedScenario`: run the register phase across all
 requested languages, capture each driver's reported descriptor, assert `model_id` and
-`chunk_model_id` carry the parent's declared value rather than `""`. Type names derive mechanically as
+`chunk_model_id` **equal** the parent's declared value. Type names derive mechanically as
 `"S12Inherited" + Titlecase(language)`, matching the existing contract and satisfying the
 orchestrator's `^[A-Za-z][A-Za-z0-9]*$` identifier pattern. Registration into `recognizedScenarios`
 is a flat array append.
@@ -278,7 +297,7 @@ Checked against the codebase at `68d68f6` before this spec was written.
 | A18 | **FALSE** — an embedded struct is not inert; it registers as a phantom `CLR_STRING` property | `tags.go:233-241` (no anonymous skip), `ParseTag` `:186-188`, `registrar.go:306-307` |
 | A19 | Python's decorated subclass does not inherit the model | `annotations.py` — `embedding_model` is a defaulted parameter stored directly |
 | A20 | `__mro__` is already walked at decoration time | `annotations.py` — the annotations gather loop |
-| A23 | `Capture` records the **outgoing** request | `Capture.cs:11,62` |
+| A23 | The **.NET** driver's `Capture` records the outgoing request. Scoped deliberately: that file is the .NET interceptor only. Go (`protojson.Marshal`, default options) and TypeScript (ts-proto `toJSON`) **omit** proto3 defaults rather than emitting `""` | `Capture.cs:11,62`; `conformance/main.go:373`; `generated/object_mapping.ts:795-796,807-808` |
 | A24/A28 | `recognizedScenarios` is a flat array of `.Name` constants | `Program.cs:66-73` |
 | A25 | `Phase.Register` exists; no new enum value needed | `DriverProtocol.cs:10-12` |
 | A26 | `IVC-DECL-007` is unused | zero occurrences in the standard and `Requirements.cs` |
@@ -287,6 +306,7 @@ Checked against the codebase at `68d68f6` before this spec was written.
 | A33 | The production harness project has no `Iverson.Api` reference | `Iverson.ClientConformance.csproj:10-11` |
 | A34 | The two env blocks are byte-identical | `diff` of the two extracted blocks returns empty |
 | A39 | No DECL coverage row would double-claim the new ID | `iverson-client-standard.md:112-118` |
+| A40 | A Go fixture's key needs **both** `iverson_key` and `iverson_guid`; the server rejects any key whose built `SqlType` is not `UUID` | `tags.go:96,100`; `SchemaRegistrationOrchestrator`'s key check, whose message names the Go tag |
 
 **Taken on faith, not individually verified:** `ConcurrentDictionary.Count` cost characteristics,
 `@Inherited`'s semantics on
