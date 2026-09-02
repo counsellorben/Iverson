@@ -74,9 +74,13 @@ export function isIversonEntity(target: Function): boolean {
  * `modelId`/`chunkModelId` guarded on that property's own embedding/chunk flags. A relation
  * foreign-key property is neither, so it never carries a model regardless of this declaration.
  *
- * Undeclared (the decorator absent) means every affected property keeps its `''` default, which
- * the server reads as "not declared" and resolves to the deployment's configured default — so an
- * un-updated class keeps working with no server-side special-casing.
+ * Undeclared on a given class does not necessarily mean `''` reaches the server: `getEmbeddingModel`
+ * reads this via `Reflect.getMetadata`, which walks the prototype chain, so a subclass with no
+ * decorator of its own inherits the nearest decorated ancestor's model, and a subclass's own
+ * decorator overrides that inherited value. Only when no class in the chain declares does every
+ * affected property keep its `''` default, which the server reads as "not declared" and resolves
+ * to the deployment's configured default — so an un-updated class keeps working with no
+ * server-side special-casing.
  */
 export function IversonEmbeddingModel(modelId: string): ClassDecorator {
     return (target) => {

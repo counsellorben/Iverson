@@ -644,6 +644,33 @@ class ModelUndeclaredArticle {
     body: string = '';
 }
 
+/**
+ * Shape 5: a subclass of a declared type, carrying no @IversonEmbeddingModel() of its own — pins
+ * that getEmbeddingModel's Reflect.getMetadata call walks the prototype chain to inherit the
+ * nearest ancestor's declared model. Its own embedded-and-chunked property is distinct from the
+ * parent's `title`, so the stamp being asserted is produced by the subclass's own describeEntity
+ * pass, not by re-reading the parent's already-covered property.
+ */
+@IversonEntity()
+class ModelInheritedArticle extends ModelBothFlagsArticle {
+    @IversonEmbedding()
+    @IversonChunk()
+    summary: string = '';
+}
+
+/**
+ * Shape 6: a subclass of a declared type that carries its OWN @IversonEmbeddingModel() — pins
+ * that own metadata takes precedence over the inherited one, using a different model id than the
+ * parent's so a lookup that accidentally fell back to the ancestor would be caught.
+ */
+@IversonEntity()
+@IversonEmbeddingModel('snowflake-arctic-embed:s')
+class ModelOverriddenArticle extends ModelBothFlagsArticle {
+    @IversonEmbedding()
+    @IversonChunk()
+    summary: string = '';
+}
+
 describe('describeEntity — embedding model declaration', () => {
     it('stamps the declared model onto both modelId and chunkModelId for a both-flags property', () => {
         const descriptor = describeEntity(ModelBothFlagsArticle);
@@ -682,6 +709,20 @@ describe('describeEntity — embedding model declaration', () => {
         expect(title.chunkModelId).toBe('');
         expect(body.modelId).toBe('');
         expect(body.chunkModelId).toBe('');
+    });
+
+    it('inherits the parent declared model onto both modelId and chunkModelId for a subclass with no decorator of its own', () => {
+        const descriptor = describeEntity(ModelInheritedArticle);
+        const summary = descriptor.properties.find(p => p.name === 'Summary')!;
+        expect(summary.modelId).toBe('nomic-embed-text');
+        expect(summary.chunkModelId).toBe('nomic-embed-text');
+    });
+
+    it('sends the subclass own declared model, not the inherited one, onto both modelId and chunkModelId when a subclass carries its own decorator', () => {
+        const descriptor = describeEntity(ModelOverriddenArticle);
+        const summary = descriptor.properties.find(p => p.name === 'Summary')!;
+        expect(summary.modelId).toBe('snowflake-arctic-embed:s');
+        expect(summary.chunkModelId).toBe('snowflake-arctic-embed:s');
     });
 });
 
