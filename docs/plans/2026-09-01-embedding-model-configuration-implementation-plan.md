@@ -108,6 +108,7 @@ Newly introduced by this plan and verified at plan-write time against `main@f213
 | P43 | Code validity | A `jsonb` column reads back as `string`, so T5's `ExecuteScalarAsync(...) is not string json` holds | `SchemaRegistryRepository.LoadAllAsync:17-18` maps `schema_json` into a `string` tuple element in production today |
 | P44 | Code validity | The write path needs no probed dimension, so the worker's unprobed per-model instances are safe | `_dimension` is read only by the `Dimension` getter (`EmbeddingService.cs:25-28`); `EmbedDocumentAsync`/`EmbedQueryAsync` route through `EmbedAsync` (`:54-95`), which never touches it |
 | P45 | Code validity | `Requirements.cs` is gated at build time against the standard, not a free-form list | `Requirements.cs:5-14` states the contract; `RequirementsCoverageGateTests.cs:211` (Check 1, bidirectional), `:368` (Check 2, citation), `:796` with `:1038`/`:1095` (Check 4, exactly one claimant); `:115` resolves `docs/standards/iverson-client-standard.md`, `:92-94` fixes the nine known axes |
+| P46 | Signature | Java's per-property stamp site cannot see the class-level annotation; the other three languages' can | `SchemaRegistrar.java:191` is `applyAnnotations(PropertyDescriptor.Builder b, Field field)`, with no class reference anywhere in the method; by contrast `core.py`'s builder loop holds the class `meta` dict at `:275`/`:279`, `core.ts:361,365,389,393` sit inside `describeEntity(cls: Function)` (`:232`), and `registrar.go:124` sits in `buildRequest`, whose `meta` is used at `:154`/`:176` |
 
 ## Tasks
 
@@ -577,7 +578,7 @@ git commit -m "declare a per-type embedding model from the dotnet client"
 Repeats T6's six steps. Deltas only:
 
 - [ ] **Step 1:** `@IversonEmbeddingModel(String value())`, `@Target(ElementType.TYPE)`, `@Retention(RUNTIME)`, in `io/iverson/client/annotations/` beside `IversonEmbedding.java`.
-- [ ] **Step 2:** Read `cls.getAnnotation(IversonEmbeddingModel.class)` in `core/SchemaRegistrar.java` near the `.setTypeName(cls.getSimpleName())` at `:87`, and stamp in place of the `b.setModelId("")` at `:216` and `b.setChunkModelId("")` at `:224`.
+- [ ] **Step 2:** Read `cls.getAnnotation(IversonEmbeddingModel.class)` in `core/SchemaRegistrar.java` where `:87` already reads the class, then stamp in one pass over the built property builders after they are assembled — **not** at `:216`/`:224`. Those two lines sit inside `private void applyAnnotations(PropertyDescriptor.Builder b, Field field)` (`:191`), which receives the builder and the field and nothing else, so the class-level value cannot be read there. Leave `applyAnnotations`'s `b.setModelId("")` / `b.setChunkModelId("")` as the undeclared default, exactly as .NET leaves `AddAnnotations`'s `string.Empty`. This is T6 Step 2's post-pass, for the same reason. (Threading a `String modelId` parameter into `applyAnnotations` also compiles, but changes a shared private helper's signature for one caller's benefit and diverges from the canonical this task repeats.)
 - [ ] **Steps 3-5:** stamping test in `Iverson.Clients/Java/client/src/test/java/io/iverson/client/`; fixture `conformance/src/main/java/io/iverson/conformance/models/JavaModelDoc.java`; driver register-phase step in `conformance/.../ConformanceDriver.java`.
 - [ ] **Step 6:** `mvn -B -f Iverson.Clients/Java/pom.xml test`, then commit.
 
