@@ -57,37 +57,21 @@ singleton whose `ModelId` is that same value; an absent declaration yields the d
 `resolver.Get(declared)` then moves below the guard's throw, remaining above `EnsureInitializedAsync`
 (`:113`) and `BuildDescriptor` (`:126`), the only two consumers of the service.
 
-### 1b. A hard cap on the resolver cache
+**This ordering fix is the whole of the cache bound.** Once resolution happens after the guard, the
+reachable key set is the declared models of *accepted* registrations — bounded by the number of
+registered types, which is admin-controlled through a `SchemaAdmin`-gated RPC. `Get` stays total: it
+never throws, so the four non-registration callers (`IntelligenceStoreConsumer.cs:144,259` and
+`ObjectSearchGrpcService.cs:206,387`) are unaffected.
 
-The ordering fix alone bounds the reachable key set to the declared models of *accepted*
-registrations. The cap covers the case where that stops holding.
+**Rejected alternative, and why (Ben's call, revised):** an explicit `MaxCachedModels` cap was
+designed and then dropped. It read as a deployment-wide ceiling — "the 33rd registration fails" — but
+`_byModel` is instance state on a per-process DI singleton, so the cap is per-process, per-replica and
+order-dependent: with api running multiple replicas behind an HPA, one replica could refuse a
+registration its sibling accepts, and a worker could hit the cap during ingest and dead-letter
+documents. A bound that cannot be reasoned about deployment-wide is worse than the ordering fix it
+was meant to reinforce.
 
-```csharp
-// A backstop, not a tuning knob: a deployment's curated embeddingModels list is a handful of
-// entries, so this is unreachable in practice. Deliberately NOT configurable.
-private const int MaxCachedModels = 32;
-
-if (_byModel.TryGetValue(modelId, out var cached)) return cached;   // never rejected
-if (_byModel.Count >= MaxCachedModels) throw new EmbeddingModelCacheFullException(modelId, MaxCachedModels);
-return _byModel.GetOrAdd(modelId, Create);
-```
-
-The `TryGetValue` short-circuit is load-bearing: without it, reaching the cap would break every
-already-resolved model, turning a memory backstop into a total outage.
-
-`Iverson.Embeddings` has no Grpc.Core reference, so the resolver throws a typed domain exception and
-the caller maps it — the pattern `EmptyEmbeddingInputException` already establishes in this assembly.
-The orchestrator maps it to **`ResourceExhausted`**, the standard gRPC code for a per-server resource
-limit, with a message naming both the model and the cap. Without that mapping the failure would reach
-the client as an opaque `Unknown`.
-
-**Accepted trade-off (Ben's call):** this is a hard ceiling. A deployment declaring more than 32
-distinct models across all registered types fails the 33rd registration outright rather than
-resolving it uncached. The alternative considered was degrading to uncached construction, which never
-fails but makes overflow silent. Ben chose the loud failure. Raising the limit is a one-line const
-change.
-
-### 1c. Reject a multi-valued declaration
+### 1b. Reject a multi-valued declaration
 
 `DeclaredModel` currently takes the first non-empty model and discards the rest. It also reads only
 `ModelId` on a property carrying **both** flags, so that property's `ChunkModelId` is dropped
@@ -116,9 +100,7 @@ hand-crafted gRPC request could take.
 - A dual-flag property whose `ModelId` and `ChunkModelId` disagree → `InvalidArgument`.
 - Two properties naming the **same** model → accepted (not a conflict).
 - After a guard rejection, `resolver.DidNotReceive().Get(<rejected model>)` — tests the ordering
-  directly rather than by proxy.
-- Resolving past the cap throws and surfaces as `ResourceExhausted`.
-- **A model cached before the cap was reached still resolves afterwards.**
+  directly rather than by proxy, and is what pins the cache bound now that no cap enforces it.
 
 ---
 
@@ -289,8 +271,7 @@ Checked against the codebase at `68d68f6` before this spec was written.
 | # | Assumption | Evidence |
 |---|---|---|
 | A3–A6 | `DeclaredModel` has one caller at `:61`, outside every `try`; `EnsureInitializedAsync` `:113` and `BuildDescriptor` `:126` are the only service consumers | `SchemaRegistrationOrchestrator.cs:34,61,113,126` |
-| A7 | `Iverson.Embeddings` has no Grpc.Core reference | `Iverson.Embeddings.csproj` — no Grpc entry |
-| A8 | A typed-exception precedent exists in that assembly | `Iverson.Embeddings/EmptyEmbeddingInputException.cs` |
+| A7 | `Iverson.Embeddings` has no Grpc.Core reference — verified while the cap was still in scope; retained because it is why `Get` must stay free of transport concerns | `Iverson.Embeddings.csproj` — no Grpc entry |
 | A13 | .NET's lookup passes no `inherit:` argument, so it defaults to walking the chain | `SchemaRegistrar.cs:95` |
 | A15 | Java uses `getAnnotation`, which honours `@Inherited` | `SchemaRegistrar.java:145` |
 | A17 | TypeScript reads through `Reflect.getMetadata`, which walks the prototype chain | `annotations.ts:87-88` |
@@ -308,7 +289,7 @@ Checked against the codebase at `68d68f6` before this spec was written.
 | A39 | No DECL coverage row would double-claim the new ID | `iverson-client-standard.md:112-118` |
 
 **Taken on faith, not individually verified:** `ConcurrentDictionary.Count` cost characteristics,
-`StatusCode.ResourceExhausted`'s presence in the pinned Grpc version, `@Inherited`'s semantics on
+`@Inherited`'s semantics on
 `@Target(TYPE)` annotations, and `nindent`/parent-template reach — the last already exercised by the
 existing helper.
 
@@ -322,4 +303,5 @@ existing helper.
   is a separate pre-existing question. Not addressed here.
 - **The `IversonDescription` inheritance divergence**, which mirrors the model one and is equally
   untested. Left alone; only the model declaration is in scope.
-- **Making `MaxCachedModels` configurable.** A const with a comment; no configuration surface.
+- **Any explicit cap on the resolver cache.** Considered, designed, and dropped — see §1a's rejected
+  alternative. The ordering fix is the bound.
