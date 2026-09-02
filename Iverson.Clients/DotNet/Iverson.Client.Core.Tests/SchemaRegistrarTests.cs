@@ -620,6 +620,11 @@ public class SchemaRegistrarTests
 
         chunk.IsChunk.Should().BeTrue();
         chunk.ChunkContextual.Should().BeTrue();
+        // EnrichmentAnnotationTestEntity carries no [IversonEmbeddingModel]; the undeclared arm
+        // must send "" on ChunkModelId same as ModelId (SchemaRegistrarTests.cs's
+        // RegisterAllAsync_AppliesEmbeddingAnnotation_OnMarkedProperty pins ModelId's undeclared
+        // arm but has no [IversonChunk] property to pin ChunkModelId's).
+        chunk.ChunkModelId.Should().BeEmpty();
 
         plain.IsSummaryTarget.Should().BeFalse();
         plain.IsKeywordsTarget.Should().BeFalse();
