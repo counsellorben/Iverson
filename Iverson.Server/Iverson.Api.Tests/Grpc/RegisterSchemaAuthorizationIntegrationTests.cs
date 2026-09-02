@@ -196,6 +196,7 @@ public sealed class AllStoresContainerFixture : IAsyncLifetime
 /// so RegisterSchema itself no longer eagerly provisions StarRocks or Qdrant.)
 /// </summary>
 [Trait("Category", "Integration")]
+[Collection(ContainerCollection.Name)]
 public sealed class RegisterSchemaAuthorizationIntegrationTests(AllStoresContainerFixture fixture)
     : IClassFixture<AllStoresContainerFixture>
 {

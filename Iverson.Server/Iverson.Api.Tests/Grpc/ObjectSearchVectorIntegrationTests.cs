@@ -51,6 +51,7 @@ public sealed class QdrantGrpcContainerFixture : IAsyncLifetime
 }
 
 [Trait("Category", "Integration")]
+[Collection(ContainerCollection.Name)]
 public sealed class ObjectSearchVectorIntegrationTests : IClassFixture<QdrantGrpcContainerFixture>
 {
     private readonly IntelligenceVectorService _vector;
