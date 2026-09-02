@@ -75,7 +75,7 @@ Each requirement is one row in an axis's table:
 A requirement's rationale and evidence pointer (which orchestrator assertion(s) cite it) are not
 columns in the summary table; they are recorded as prose immediately below the table, or deferred
 to the `Requirements.cs` const's doc comment once the requirement is implemented. This document
-declares 42 `Active` requirements across nine axes; each takes a const in `Requirements.cs` and is
+declares 45 `Active` requirements across nine axes; each takes a const in `Requirements.cs` and is
 cited by at least one orchestrator assertion. An axis whose table is still empty remains legal, and
 the coverage gate must stay green in that state: an empty set of that axis's `Active` IDs compared
 against an empty set of its consts is a match, not a gap. What the gate rejects is a MISMATCH —
@@ -97,6 +97,7 @@ implemented requirement.
 | IVC-DECL-004 | Active | Behaviour | A key value is a well-formed UUID on every leg — driver, the orchestrator's own gRPC read, and Postgres |
 | IVC-DECL-005 | Retired | Behaviour | A client's declared tenant field is typed as a scalar string, never `UUID` and never array-typed |
 | IVC-DECL-006 | Active | Behaviour | A property declared array-typed never declares its CLR type as a delimited string |
+| IVC-DECL-007 | Active | Behaviour | A type that does not declare an embedding model inherits its parent's declaration |
 
 `IVC-DECL-002` and `IVC-DECL-005` are retired — the declaration they graded no longer exists. A
 row's tenant is server-owned: the server stamps the `__TenantId` column from the acting user's
@@ -115,6 +116,7 @@ client's declaration of it.
 | --- | --- | --- |
 | Key property declaration | Covered | IVC-DECL-001, IVC-DECL-003, IVC-DECL-004 |
 | Array-typed property CLR typing | Covered | IVC-DECL-006 |
+| Embedding-model inheritance | Covered | IVC-DECL-007 |
 
 ### REL — Relations
 

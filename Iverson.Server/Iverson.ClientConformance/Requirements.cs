@@ -53,6 +53,21 @@ public static class Requirements
     /// </summary>
     public const string DeclArrayNotDelimitedString = "IVC-DECL-006";
 
+    /// <summary>
+    /// A type that does not declare an embedding model inherits its parent's declaration.
+    /// Discharged by <c>InheritedModelScenario.JudgeInheritance</c>'s per-property assertions:
+    /// every embedding-flagged property's <c>model_id</c>, and every chunk-flagged property's
+    /// <c>chunk_model_id</c>, must equal the parent's declared model — scoped to that property's
+    /// own flag because a client legitimately leaves the other field at its default, and with an
+    /// at-least-one-of-each-kind check alongside so neither half can pass over a descriptor
+    /// missing that kind. Reads the descriptor through <c>Verifier.ParseDescriptor</c> rather than
+    /// the raw JSON: the five drivers do not serialize an undeclared model alike (.NET/Java/Python
+    /// emit <c>"modelId": ""</c>; Go/TypeScript omit the field), and the parser is what lands both
+    /// on the same default — an inequality-with-<c>""</c> assertion against raw JSON would instead
+    /// read a missing field as <c>null</c> and pass it.
+    /// </summary>
+    public const string DeclEmbeddingModelInherited = "IVC-DECL-007";
+
     // ── LIFE — Lifecycle ────────────────────────────────────────────────────────────────────
 
     /// <summary>
