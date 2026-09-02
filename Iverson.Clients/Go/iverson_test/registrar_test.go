@@ -1002,3 +1002,97 @@ func TestSchemaRegistrar_EmbeddingModel_PointerReceiverHonoured(t *testing.T) {
 		t.Errorf("Title.ChunkModelId via pointer receiver fallback: got %q, want %q", title.ChunkModelId, "nomic-embed-text")
 	}
 }
+
+// regModelDeclaringBase is a field-less struct that carries only the
+// IversonEmbeddingModel method. Embedding it (anonymously) in another struct
+// declares that outer type's embedding model by promotion — Go's method-set
+// promotion rule, not a copied pattern from this codebase — without
+// contributing a property of its own: InspectType's field walk skips
+// anonymous fields precisely so this struct never shows up as a phantom
+// string property named after itself.
+type regModelDeclaringBase struct{}
+
+func (regModelDeclaringBase) IversonEmbeddingModel() string { return "nomic-embed-text" }
+
+// regModelInheritedArticle embeds regModelDeclaringBase and declares no
+// IversonEmbeddingModel of its own: its model is inherited entirely through
+// method promotion. Title carries BOTH flags so the inherited model is
+// pinned on both ModelId and ChunkModelId; Category carries neither, mirroring
+// regModelBothFlagsArticle's neither-flags guard-off control.
+type regModelInheritedArticle struct {
+	regModelDeclaringBase
+	Id       string `iverson_key:"true" iverson_guid:"true"`
+	Title    string `iverson_embedding:"true" iverson_chunk:"256:32"`
+	Category string
+}
+
+// regModelShadowedArticle also embeds regModelDeclaringBase but defines its
+// own IversonEmbeddingModel, which shadows the promoted method (a method
+// defined directly on a type takes priority over one promoted from an
+// embedded field). Title/Body split embedding vs chunk like
+// regModelAsymmetricArticle so the shadowing outer model is pinned on
+// ModelId and ChunkModelId independently. It returns a DISTINCT model id
+// from regModelDeclaringBase's so this test cannot pass by accidentally
+// reading the embedded struct's model instead of the outer type's own.
+type regModelShadowedArticle struct {
+	regModelDeclaringBase
+	Id    string `iverson_key:"true" iverson_guid:"true"`
+	Title string `iverson_embedding:"true"`
+	Body  string `iverson_chunk:"true"`
+}
+
+func (regModelShadowedArticle) IversonEmbeddingModel() string { return "snowflake-arctic-embed:s" }
+
+func TestSchemaRegistrar_EmbeddingModel_InheritedViaEmbeddedStruct(t *testing.T) {
+	mock := &mockMappingClient{response: &pb.SchemaResponse{Success: true}}
+	registrar := iverson.NewSchemaRegistrar(mock, regModelInheritedArticle{})
+	if err := registrar.RegisterAll(context.Background(), "", nil); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	title := propByName(t, mock.capturedReq, "Title")
+	if title.ModelId != "nomic-embed-text" {
+		t.Errorf("Title.ModelId: got %q, want %q (inherited via embedded regModelDeclaringBase)", title.ModelId, "nomic-embed-text")
+	}
+	if title.ChunkModelId != "nomic-embed-text" {
+		t.Errorf("Title.ChunkModelId: got %q, want %q (inherited via embedded regModelDeclaringBase)", title.ChunkModelId, "nomic-embed-text")
+	}
+}
+
+// TestSchemaRegistrar_EmbeddingModel_EmbeddedStructContributesNoProperty pins the
+// sf.Anonymous skip in InspectType directly. Without it, the model assertion above
+// could pass while the embedded struct ALSO silently registers as a phantom string
+// property named "regModelDeclaringBase" (ParseTag returns a plain field for its empty
+// tag, and goTypeToClr discards the "unsupported" flag on the non-array path) — so this
+// test must check the property list itself, not just the model fields.
+func TestSchemaRegistrar_EmbeddingModel_EmbeddedStructContributesNoProperty(t *testing.T) {
+	mock := &mockMappingClient{response: &pb.SchemaResponse{Success: true}}
+	registrar := iverson.NewSchemaRegistrar(mock, regModelInheritedArticle{})
+	if err := registrar.RegisterAll(context.Background(), "", nil); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	props := mock.capturedReq.RootType.Properties
+	if len(props) != 3 {
+		t.Errorf("property count: got %d, want 3 (Id, Title, Category only); embedded struct must not register as its own property: %+v", len(props), props)
+	}
+	for _, p := range props {
+		if p.Name == "regModelDeclaringBase" {
+			t.Fatalf("embedded struct regModelDeclaringBase was registered as a phantom property: %+v", p)
+		}
+	}
+}
+
+func TestSchemaRegistrar_EmbeddingModel_OwnMethodShadowsPromoted(t *testing.T) {
+	mock := &mockMappingClient{response: &pb.SchemaResponse{Success: true}}
+	registrar := iverson.NewSchemaRegistrar(mock, regModelShadowedArticle{})
+	if err := registrar.RegisterAll(context.Background(), "", nil); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	title := propByName(t, mock.capturedReq, "Title")
+	if title.ModelId != "snowflake-arctic-embed:s" {
+		t.Errorf("Title.ModelId: got %q, want %q (the outer type's own IversonEmbeddingModel must shadow the promoted one)", title.ModelId, "snowflake-arctic-embed:s")
+	}
+	body := propByName(t, mock.capturedReq, "Body")
+	if body.ChunkModelId != "snowflake-arctic-embed:s" {
+		t.Errorf("Body.ChunkModelId: got %q, want %q (the outer type's own IversonEmbeddingModel must shadow the promoted one)", body.ChunkModelId, "snowflake-arctic-embed:s")
+	}
+}

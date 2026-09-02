@@ -55,6 +55,12 @@
 // the same way:
 //
 //	interface{ IversonEmbeddingModel() string }
+//
+// A field-less struct carrying only this method, embedded (anonymously) in another
+// struct, declares the outer type's embedding model by promotion — standard Go
+// method-set promotion, not a mechanism specific to this package. A method defined
+// directly on the outer type shadows the promoted one. Embedded structs are skipped by
+// the field walk (InspectType) and never contribute a property of their own.
 package iverson
 
 import (
@@ -232,6 +238,16 @@ func InspectType(v interface{}) (EntityMeta, error) {
 
 	for i := 0; i < t.NumField(); i++ {
 		sf := t.Field(i)
+		if sf.Anonymous {
+			// An embedded (anonymous) field is a method-promotion mechanism, not a
+			// property — e.g. a field-less struct carrying only IversonEmbeddingModel,
+			// embedded so the outer type inherits its declaration by promotion.
+			// Without this skip it would register as a phantom string property named
+			// after the embedded type, because ParseTag returns a plain field for its
+			// empty tag and goTypeToClr discards the "unsupported" flag on the
+			// non-array path.
+			continue
+		}
 		if sf.Name == HydratedFieldName {
 			// The read-path carrier for hydrated relation children (map[string]any)
 			// isn't schema metadata at all — goTypeToClr has no mapping for a map
