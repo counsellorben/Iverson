@@ -80,7 +80,10 @@ and because a chunk
 inherits its *parent object's* centroid (`ObjectSearchGrpcService.cs:275-277`), the centroid term is
 constant across all chunks of one document. Removing MMR therefore lets one strong document crowd
 the pool, and the reranker can only reorder what it is given. P4's evidence does not transfer to this
-role, so λ is an open sweep parameter (§7.3), not a settled λ=1.0.
+role, so λ is an open sweep parameter (§7.3), not a settled λ=1.0. This role requires the fetch to
+exceed the pool: `Diversify` selects until it has taken `Math.Min(topK, ranked.Count)` candidates, so
+at fetch = pool it selects every candidate and MMR composes nothing (§3.5). The two numbers cannot be
+collapsed.
 
 ### 3.2 The centroid's role
 
@@ -145,14 +148,15 @@ is the 512-char chunking configuration, **not** main's 2048-char default; every 
 computed on comparable runs, and restoring avoids a ~2 hour re-ingest.
 
 **Phase 1 deliverables:** the rescore step (including retaining `chunk_text`, surfacing the
-winning chunk per document, and the re-sort by the new score), the differs-from-control assertion,
-a TEI compose service, and a reusable stats module (§7.5).
+winning chunk per document, and the re-sort by the new score), the differs-from-control assertion
+(the one statistic `report.py` does not already compute, §7.5), and a TEI compose service.
 
 ### 3.4 Gate
 
 Phase 2 proceeds only if Phase 1 shows reranking beating the unreranked control on SciFact `chunks`
 nDCG@10 by an effect clearing §7's bar: paired *t* **and** sign-flip permutation, Holm-corrected
-across the declared arm family. P7 puts MDE at ≈0.019 and predicts 0.06–0.10 — a 3–5× MDE effect. If
+across the declared arm family — as computed by `scripts/report.py` (§7.5), so one seed and one Holm
+construction back the number. P7 puts MDE at ≈0.019 and predicts 0.06–0.10 — a 3–5× MDE effect. If
 the result lands inside noise, **Phase 2 does not happen.**
 
 ### 3.5 Phase 2 — server-side stage
@@ -183,11 +187,26 @@ different operand. The enabled path therefore calls
 `Diversify(diversityCandidates, Math.Max(topK, CandidateCount × 5))` — 5 being
 `ChunkBudgetMultiplier`, the factor that makes 250 chunks reach ~65 parents today — and raises
 `fetchLimit` (`ObjectSearchGrpcService.cs:408`, `topK × OverFetchFactor` with `OverFetchFactor = 4`
-at `:747`) so that many chunks are actually fetched. It then groups that pool by `parent_id`, keeps
+at `:747`) to `pool × OverFetchFactor` — 1,000 at `CandidateCount = 50` — **not** to the pool size.
+`Diversify` selects until it has taken `Math.Min(topK, ranked.Count)` candidates
+(`ResultDiversifier.cs:19`, `:37`, `:68`), so at fetch = pool it selects every candidate and MMR
+degenerates to a permutation of the fused order; the 250 chunks that reach ~65 parents today are
+`Diversify`'s output from a 1,000-chunk fetch. 1,000 is exactly what A0 fetches at `top_k = 250`, so
+`Diversify(1000, 250)` performs the same MMR selection in both arms. It then groups that pool by
+`parent_id`, keeps
 each parent's highest-fused-score chunk, takes the top `CandidateCount` parents, and hands their
 winning chunks to the scorer. `chunk_text` and `parent_id` are on the result payload (`:492-493`),
 and `IntelligenceStoreConsumer.KeyToUlong` (`:701-712`, already used at `:469`) maps `parent_id` to
 the `ulong` the scorer contract wants.
+
+The diversity-vector retrieval guard (`ObjectSearchGrpcService.cs:452`,
+`results.Count > 1 && topK > 1`) is keyed on the value actually passed to `Diversify` —
+`Math.Max(topK, CandidateCount × 5)` on the enabled path, `topK` on the disabled one — and the
+invariant its comment states (`:447-450`, `Math.Min(topK, pool) >= 2`) is updated to match. Left
+keyed on the caller's `topK`, a `top_k = 1` request with reranking enabled runs the selection loop
+over the whole 250-chunk pool with no vectors, and MMR silently reduces to fused order
+(`ResultDiversifier.cs:78`). The disabled path's condition is unchanged, as the bit-exact no-op (§4)
+requires.
 
 **What a caller receives when reranking is enabled:** `SearchChunks` streams **only the
 `CandidateCount` rescored winners** — one row per parent, in cross-encoder order, with `Score` =
@@ -203,8 +222,9 @@ enabled-only validation.
 **What the arms request.** In Phase 2 the control arm **A0** keeps the harness's existing request,
 `top_k = DocumentBudget × ChunkBudgetMultiplier` = 250 chunks, aggregated to 50 documents as today.
 The reranked arms request `top_k = CandidateCount` = 50 and receive the 50 rescored winners, so
-their aggregation is the identity and both arms' run files hold the same 50 documents per query —
-the §7.1.2 invariance control holds by construction. This is the Phase 1 shape.
+their aggregation is the identity; because both arms fetch 1,000 chunks and diversify to 250, both
+run files hold the same 50 documents per query — the §7.1.2 invariance control holds by
+construction. This is the Phase 1 shape.
 
 **Call-site change:** `ObjectSearchGrpcService.cs:488` (on `main`) currently calls
 `diversifier.Diversify(...)` inline in a `foreach` header, with streaming beginning in the loop body.
@@ -284,7 +304,12 @@ comparison that failed *open* on `+Infinity`.
 2. **R@50 is a negative control, not an outcome.** Reranking rescores the 50 *documents* the
    max-passage aggregation already selected (§3.1); it cannot change which 50 documents are in the
    pool, so R@50 must be invariant and the run file must hold the same 50 rows per query as the
-   control. If either moves, the pool changed and the arm is invalid.
+   control. If either moves, the pool changed and the arm is invalid. The rule polices only what
+   reranking can change, so it applies to each arm against the unreranked control **at the same
+   λ**: A1 and A2 against A0, A3 against A0′ (§7.2). λ enters MMR's selection directly
+   (`ResultDiversifier.cs:75-78`), so a λ change moves the pool for reasons unrelated to the
+   cross-encoder — the recorded λ = 1.00 and λ = 0.70 runs share 0 of 300 SciFact document sets
+   and 17 of 323 NFCorpus ones.
 3. **The oracle ceiling is a hard upper bound.** SciFact oracle@50 = 0.911. Any result above it means
    qrels leakage or a scoring bug, not a good reranker.
 4. **Statistics:** paired *t* **and** sign-flip permutation p, both always — the t-test alone is what
@@ -305,9 +330,14 @@ comparison that failed *open* on `+Infinity`.
 | **A1** primary | ms-marco-MiniLM-L-6-v2 | 0.70 | 1.0 |
 | A2 | bge-reranker-base | 0.70 | 1.0 |
 | A3 | ms-marco | **1.00** | 1.0 |
+| A0′ control for A3 — no reranking | — | **1.00** | — |
 
 Primary comparison: **A1 vs A0**. A3 tests whether P4's "MMR off" transfers to MMR's new
-pool-composition role (§3.1). β is fixed at 1.0 — the final score is the cross-encoder's alone — and
+pool-composition role (§3.1); its control is **A0′**, the unreranked run at λ = 1.00, so §7.1.2 still
+holds for it. That costs one more unreranked run; the Holm family is unchanged at three
+comparisons (A1–A0, A2–A0, A3–A0′). A3 is a live arm only while the enabled path fetches more
+chunks than it diversifies to (§3.5): at fetch = pool λ selects nothing, and A1 and A3 would
+produce identical run files. β is fixed at 1.0 — the final score is the cross-encoder's alone — and
 is not a configuration value; whether the fused score still earns weight in the final order is
 folded into the `w` re-sweep family (§7.4). K = 50 is `DocumentBudget`, and because the unit
 reranked is the **document** (§3.1), that is exactly 50 pairs per query — P2's cost model as stated.
@@ -329,10 +359,17 @@ ordering-optimal at 0.167 and **recall-optimal at 0.333**, and SciFact peaked at
 
 ### 7.5 Statistical tooling
 
-`scratchpad/stats.py`, cited by P7, **no longer exists**. Phase 1 rebuilds it as a committed module
-on `scipy 1.18.1` (`ttest_rel`, `permutation_test`) plus `ir_measures 0.4.3`, both verified importable
-from `~/repositories/iverson-benchmark-corpora/python-libs`. Committing it prevents a third
-disappearance.
+The statistics §7.1.4 requires are already implemented as a committed module:
+`Iverson.Server/Iverson.LoadTest/scripts/report.py` (step 4, `--baseline`, `:403-482`) computes the
+paired delta, `scipy.stats.ttest_rel`, a seeded sign-flip `permutation_test`
+(`PERMUTATION_SEED = 20260831`, 10,000 resamples), a 95 % CI, Cohen's *d_z*, the MDE at 80 % power,
+the changed-query count, and a Holm-corrected p across the family (`holm_adjust`, `:375-390`), on
+`scipy 1.18.1` and `ir_measures 0.4.3` reached via `PYTHONPATH` from
+`~/repositories/iverson-benchmark-corpora/python-libs`. `scratchpad/stats.py`, cited by P7, is a dead
+reference, not missing machinery. §3.4's gate is evaluated with `report.py`, so one seed and one Holm
+family construction back the number. Phase 1's only new statistical deliverable is the
+differs-from-control assertion (§3.3): `report.py` counts changed *measure values*, not ranked doc-id
+sequences, and has no ≥ 25 %-of-queries gate.
 
 ### 7.6 Throughput measurement
 
@@ -411,7 +448,7 @@ Checked against the codebase on 2026-09-03. Evidence is path:line or command out
 | A15 | Nothing depends on `Diversify` being the last ranking step | **Confirmed** — no `WithStrictOrdering` / `ContainInOrder` assertions on chunk results; the bit-exact disabled path (§4) protects the rest, and the enabled path streams only the `CandidateCount` rescored winners, one per parent (§3.5) — a documented contract change, not a silent one |
 | A16 | Options validation generalises across all members | **REFINED** — validation must run only when `Enabled`, and is per-type; with `Blend` removed (§7.2) no `double` remains, so no finiteness check applies |
 | A17 | SciFact artifacts present and reusable | **Confirmed** — `corpus.jsonl`, `queries.jsonl`, `qrels.trec` (339 rows, matching the published split) |
-| A18 | `scratchpad/stats.py` exists | **FAILED** — does not exist; rebuilt in Phase 1 on scipy 1.18.1 + ir_measures 0.4.3 (§7.5) |
+| A18 | `scratchpad/stats.py` exists | **FAILED as a filename; the capability exists (CDR round 3)** — the file is gone, but `Iverson.LoadTest/scripts/report.py:403-482` (tracked) already implements every statistic §7.1.4 names, on scipy 1.18.1 + ir_measures 0.4.3; nothing is rebuilt (§7.5) |
 | A19 | A collection can be restored without re-ingest | **Confirmed with caveat** — `scifact-512-qdrant-snapshots/` exists with `RESTORE.md`, but it is the **chunked-512** config, not main's 2048 default |
 | A20 | Chunks per document on the Phase 1 baseline | **Confirmed (CDR round 1)** — 19,967 chunks / 5,183 documents = 3.85, from `scifact-run-2026-08-26/keymap.json.stats.json`; this is why the unit reranked must be the document (§3.1) |
 | A21 | `MaxPassageAggregator`'s aggregation ranks by score, not input order; the run-file writer does NOT sort | **Corrected (CDR round 2)** — `DocumentRanking.cs:27-31` `OrderByDescending(kv => kv.Value).Take(limit)` is reached only inside `MaxPassageAggregator.Aggregate` (`:48`), upstream of the rescore; `TrecRunWriter.cs:23-31` iterates positionally with `rank = i + 1` and sorts nothing — which is why §3.3 re-sorts after the rescore |
@@ -421,7 +458,12 @@ Checked against the codebase on 2026-09-03. Evidence is path:line or command out
 | A25 | The run-file writer does not sort | **Confirmed (CDR round 2)** — `TrecRunWriter.cs:23-31` writes rows positionally with `rank = i + 1`; this is why §3.3 re-sorts after the rescore |
 | A26 | The winning chunk does not survive max-passage aggregation | **Confirmed (CDR round 2)** — `ChunkAggregation.Ranked` is `(string DocId, double Score)` (`MaxPassageAggregator.cs:12-14`) and `DocumentRanking.cs:19-25` reduces through a `Dictionary<string,double>`; Phase 1 extends it (§3.3). The max-tracking lives in `CollapseByDocId`, which `RunSimilarAsync` (`BenchmarkQueryScenario.cs:292`) also calls |
 | A27 | A `parent_id` string can be mapped to the `ulong` the scorer contract wants | **Confirmed (CDR round 2)** — `IntelligenceStoreConsumer.KeyToUlong` (`:701-712`) is `internal`, in the same assembly as the call site, and already used for this at `ObjectSearchGrpcService.cs:469` |
-| A28 | How many chunks the server fetches before ranking | **Confirmed (CDR round 2)** — `fetchLimit = topK * OverFetchFactor` at `ObjectSearchGrpcService.cs:408`, `OverFetchFactor = 4` at `:747`; at `top_k = 50` that is 200 chunks ≈ 52 parents, which is why §3.5 raises it |
+| A28 | How many chunks the server fetches before ranking | **Confirmed (CDR round 2)** — `fetchLimit = topK * OverFetchFactor` at `ObjectSearchGrpcService.cs:408`, `OverFetchFactor = 4` at `:747`; at `top_k = 50` that is 200 chunks ≈ 52 parents, which is why §3.5 raises it — to `pool × OverFetchFactor` = 1,000, matching A0's fetch at `top_k = 250` (CDR round 3) |
+| A29 | What `fetchLimit` becomes on the enabled path, and whether A0's and A1's pools coincide | **Confirmed (CDR round 3)** — `Diversify` runs to exhaustion (`ResultDiversifier.cs:19`, `:37`, `:68`), so fetch = pool selects everything; an unselected top-250 is what λ = 1.00 produces, and `sweep-lambda1.chunks.trec` shares 0 of 300 SciFact document sets with the λ = 0.70 runs (R@50 0.9293 vs 0.9210). Parity requires fetch = 1,000 in both arms (§3.5) |
+| A30 | Whether an arm that changes λ can satisfy §7.1.2 | **Confirmed it cannot against A0 (CDR round 3)** — λ enters MMR's objective (`ResultDiversifier.cs:75-78`); λ = 1.00 vs 0.70 differ on 300/300 SciFact and 306/323 NFCorpus document sets, while `reference` vs `reference-repeat` are byte-identical, so it is λ, not noise. A3 is therefore controlled by A0′ at λ = 1.00 (§7.1.2, §7.2) |
+| A31 | The diversity-vector retrieval guard survives the change to `Diversify`'s second argument | **Confirmed it does not unchanged (CDR round 3)** — `ObjectSearchGrpcService.cs:452` gates on the caller's `topK > 1`, and `topK = Math.Max(1, request.TopK)` (`:404`), so `top_k = 1` runs MMR over the whole pool with no vectors; §3.5 keys the guard on the value passed to `Diversify` |
+| A32 | Phase 1's group-by-doc-id and Phase 2's group-by-`parent_id` partition the same way | **Confirmed (CDR round 3)** — the Phase 1 baseline's `keymap.json` maps 5,183 parent keys onto 5,183 distinct doc ids, zero duplicates |
+| A33 | Every chunk point carries a `parent_id` | **Confirmed (CDR round 3)** — the only chunk-payload constructor, `IntelligenceStoreConsumer.cs:310`, writes it unconditionally from `ev.Key` |
 
 ## 11. Known issues, accepted as out of scope
 
