@@ -108,33 +108,45 @@ SearchChunks (server unchanged) -> 250 fused+MMR'd chunks
   -> MaxPassageAggregator -> 50 documents, each with its winning chunk
   -> TEI /rerank  (query, winning chunk_text) x 50
   -> RESCORE: each document's Score := cross-encoder score
+  -> re-sort by the new Score (DocumentRanking.CollapseByDocId on the rescored tuples)
   -> TREC run file
 ```
 
-**The step is a rescore, not a reorder.** The run-file writer ranks by score and never reads input
-order (`DocumentRanking.cs:27-31`: `OrderByDescending(kv => kv.Value)`), so a reorder that leaves
-the fused score in place is erased and the run file comes out bit-identical to the control — a
-silent null result that every §7.7 structural check passes. (The same erasure already happens to
-MMR: `ResultDiversifier.cs:83` emits the *fused* score, so only MMR's selection, never its ordering,
-reaches any run file.) Phase 1 therefore asserts that the reranked run file differs from the
-control run file for at least one query before scoring it.
+**The step is a rescore, not a reorder — and it is followed by a re-sort.**
+`TrecRunWriter.WriteAsync` (`TrecRunWriter.cs:23-31`) iterates the list it is handed positionally
+and writes `rank = i + 1`; it sorts nothing. The only score-sort in the harness,
+`DocumentRanking.CollapseByDocId` (`:27-31`), runs inside `MaxPassageAggregator.Aggregate`,
+*upstream* of the rescore. So after `Score := cross-encoder score` the document list must be
+re-sorted by the new score before it is written — reusing `DocumentRanking.CollapseByDocId` on the
+rescored tuples, which also keeps the `Take(50)` semantics identical between arms. Without that
+step a correct rescore writes a run file whose `rank` column contradicts its `score` column. (A
+related erasure already affects MMR: `ResultDiversifier.cs:83` emits the *fused* score, so only
+MMR's selection, never its ordering, reaches any run file.)
+
+**Differs-from-control assertion.** Defined over the **per-query ranked doc-id sequence**: the
+reranked arm's sequence must differ from the control's for at least **25 % of queries** before the
+arm is scored — far below what any reranker that ran will produce (under MMR alone only 3 of 300
+SciFact queries kept an identical full ordering) and well above the one-query noise floor. It is
+deliberately not a run-file comparison — `TrecRunWriter.cs:31` writes the run tag into
+every row and `BenchmarkQueryScenario.cs:217-221` uses `ConfigLabel` as both tag and filename, so
+any two arms' files differ on every row by construction and a file comparison can never fail.
 
 `MaxPassageAggregator` today emits only `(DocId, Score)`, and the harness discards `chunk_text` at
 `BenchmarkQueryScenario.cs:309`; `parent_key`, `chunk_text` and `score` arrive together on each
 `ChunkSearchResponse`, so Phase 1 retains the text and surfaces each document's winning chunk.
 
-This is the same shape Phase 2 will have server-side — provided the harness then requests
-`top_k = CandidateCount` (§3.5) — so the spike measures the real design rather than an
-approximation, while risking nothing in the server.
+This is the same shape Phase 2 will have server-side (the reranked arms request
+`top_k = CandidateCount` and receive one rescored winner per document, §3.5), so the spike
+measures the real design rather than an approximation, while risking nothing in the server.
 
 **Baseline:** the **chunked-512** SciFact collection, restored from
 `~/repositories/iverson-benchmark-corpora/scifact-512-qdrant-snapshots/` per its `RESTORE.md`. This
 is the 512-char chunking configuration, **not** main's 2048-char default; every §1 number was
 computed on comparable runs, and restoring avoids a ~2 hour re-ingest.
 
-**Phase 1 deliverables:** the rescore step (including retaining `chunk_text` and surfacing the
-winning chunk per document), the differs-from-control assertion, a TEI compose service, and a
-reusable stats module (§7.5).
+**Phase 1 deliverables:** the rescore step (including retaining `chunk_text`, surfacing the
+winning chunk per document, and the re-sort by the new score), the differs-from-control assertion,
+a TEI compose service, and a reusable stats module (§7.5).
 
 ### 3.4 Gate
 
@@ -163,28 +175,36 @@ type is named `CrossEncoderScorer` to avoid two "rerankers"; `ResultReranker` is
 renaming it would touch the whole search path for no functional gain.
 
 **Server-side max-passage selection.** Phase 2 adds, inside the enabled branch only, the step the
-harness performs in Phase 1: group `Diversify`'s output by `parent_id`, keep each parent's
-highest-fused-score chunk, take the top `Math.Min(top_k, CandidateCount)` parents, and hand those
-winning chunks to the scorer. Their `chunk_text` and `parent_id` are already on the result payload
-(`ObjectSearchGrpcService.cs:492-493`).
+harness performs in Phase 1 — over a pool sized for it, not for the caller's `top_k`.
+`ResultDiversifier.Diversify` returns `Math.Min(topK, ranked.Count)` chunks
+(`ResultDiversifier.cs:19`), so grouping *that* by parent at a caller's `top_k` of 50 yields ~13
+parents at 3.85 chunks per document — the collapse §3.1 exists to avoid, re-entering through a
+different operand. The enabled path therefore calls
+`Diversify(diversityCandidates, Math.Max(topK, CandidateCount × 5))` — 5 being
+`ChunkBudgetMultiplier`, the factor that makes 250 chunks reach ~65 parents today — and raises
+`fetchLimit` (`ObjectSearchGrpcService.cs:408`, `topK × OverFetchFactor` with `OverFetchFactor = 4`
+at `:747`) so that many chunks are actually fetched. It then groups that pool by `parent_id`, keeps
+each parent's highest-fused-score chunk, takes the top `CandidateCount` parents, and hands their
+winning chunks to the scorer. `chunk_text` and `parent_id` are on the result payload (`:492-493`),
+and `IntelligenceStoreConsumer.KeyToUlong` (`:701-712`, already used at `:469`) maps `parent_id` to
+the `ulong` the scorer contract wants.
 
-**What a caller receives when reranking is enabled:** `SearchChunks` still honours `top_k`. The
-stream is the `Math.Min(top_k, CandidateCount)` rescored winning chunks first, in cross-encoder
-order with `Score` = cross-encoder score, followed — when `top_k` is larger — by the remaining
-chunks of `Diversify`'s output (non-winning chunks, and parents beyond `CandidateCount`) in their
-existing fused order with their fused `Score`, until `top_k` is reached. **The two blocks carry
-different score domains**: a cross-encoder score and a fused cosine mean are not comparable, so
-`Score` is ordered only within its block, and the `top_k` / `score` comments in
-`object_search.proto:111-118` are updated to say so. When reranking is disabled nothing above runs
-and the stream is exactly today's — `Math.Min(top_k, pool)` chunks in `Diversify`'s order — which is
-what the bit-exact no-op in §4 requires. `CandidateCount` is therefore only ever read on the enabled
-path, consistent with §5's enabled-only validation.
+**What a caller receives when reranking is enabled:** `SearchChunks` streams **only the
+`CandidateCount` rescored winners** — one row per parent, in cross-encoder order, with `Score` =
+cross-encoder score. On this path the response is a *document* ranking expressed as each
+document's winning chunk, and `top_k` no longer counts chunks: a caller receives
+`Math.Min(top_k, CandidateCount)` rows. This is a documented contract change, and the `top_k` /
+`score` comments in `object_search.proto:111-118` are updated to say so. There is never a second
+score domain in the stream. When reranking is disabled nothing above runs and the stream is exactly
+today's — `Math.Min(top_k, pool)` chunks in `Diversify`'s order — which is what the bit-exact no-op
+in §4 requires. `CandidateCount` is only ever read on the enabled path, consistent with §5's
+enabled-only validation.
 
-**Consequence for §3.3's "same shape" claim:** in Phase 2 the harness requests
-`top_k = CandidateCount` whenever reranking is enabled, so it receives exactly the 50 rescored
-winners and its aggregation is the identity — the Phase 1 shape. It must **not** request 250 with
-reranking on: `DocumentRanking` takes the maximum `Score` per document across the whole stream and
-would mix the two domains.
+**What the arms request.** In Phase 2 the control arm **A0** keeps the harness's existing request,
+`top_k = DocumentBudget × ChunkBudgetMultiplier` = 250 chunks, aggregated to 50 documents as today.
+The reranked arms request `top_k = CandidateCount` = 50 and receive the 50 rescored winners, so
+their aggregation is the identity and both arms' run files hold the same 50 documents per query —
+the §7.1.2 invariance control holds by construction. This is the Phase 1 shape.
 
 **Call-site change:** `ObjectSearchGrpcService.cs:488` (on `main`) currently calls
 `diversifier.Diversify(...)` inline in a `foreach` header, with streaming beginning in the loop body.
@@ -204,7 +224,8 @@ public interface ICrossEncoderScorer
 ```
 
 - **Candidates are documents.** `Id` is the parent document's point id and `Text` is that
-  document's winning (max-passage) chunk, so one call scores exactly `CandidateCount` pairs.
+  document's winning (max-passage) chunk, so one call scores exactly `CandidateCount` pairs —
+  which requires the pool the selection groups to hold at least that many distinct parents (§3.5).
 - **Batching** at `BatchSize` (default 8). Not a guess: TEI reports `max_batch_requests: 8`,
   `max_client_batch_size: 32`, `max_batch_tokens: 16384`, and 8 is the size the measurements in §9
   used.
@@ -387,15 +408,20 @@ Checked against the codebase on 2026-09-03. Evidence is path:line or command out
 | A12 | TEI `/rerank` returns index + score | **Confirmed empirically** — exercised during design |
 | A13 | TEI `/info` exposes `model_id` | **Confirmed empirically** — also reports `max_input_length`, `auto_truncate` |
 | A14 | A fake `HttpMessageHandler` pattern exists | **Confirmed** — `EmbeddingServiceTests.cs` and 3 other files |
-| A15 | Nothing depends on `Diversify` being the last ranking step | **Confirmed** — no `WithStrictOrdering` / `ContainInOrder` assertions on chunk results; the bit-exact disabled path (§4) protects the rest, and the enabled path preserves `top_k` while changing only the order and score domain of its first block (§3.5) — a documented contract change, not a silent one |
+| A15 | Nothing depends on `Diversify` being the last ranking step | **Confirmed** — no `WithStrictOrdering` / `ContainInOrder` assertions on chunk results; the bit-exact disabled path (§4) protects the rest, and the enabled path streams only the `CandidateCount` rescored winners, one per parent (§3.5) — a documented contract change, not a silent one |
 | A16 | Options validation generalises across all members | **REFINED** — validation must run only when `Enabled`, and is per-type; with `Blend` removed (§7.2) no `double` remains, so no finiteness check applies |
 | A17 | SciFact artifacts present and reusable | **Confirmed** — `corpus.jsonl`, `queries.jsonl`, `qrels.trec` (339 rows, matching the published split) |
 | A18 | `scratchpad/stats.py` exists | **FAILED** — does not exist; rebuilt in Phase 1 on scipy 1.18.1 + ir_measures 0.4.3 (§7.5) |
 | A19 | A collection can be restored without re-ingest | **Confirmed with caveat** — `scifact-512-qdrant-snapshots/` exists with `RESTORE.md`, but it is the **chunked-512** config, not main's 2048 default |
 | A20 | Chunks per document on the Phase 1 baseline | **Confirmed (CDR round 1)** — 19,967 chunks / 5,183 documents = 3.85, from `scifact-run-2026-08-26/keymap.json.stats.json`; this is why the unit reranked must be the document (§3.1) |
-| A21 | The run-file writer ranks by score, not input order | **Confirmed (CDR round 1)** — `DocumentRanking.cs:27-31` `OrderByDescending(kv => kv.Value).Take(limit)`; this is why §3.3 rescores rather than reorders |
+| A21 | `MaxPassageAggregator`'s aggregation ranks by score, not input order; the run-file writer does NOT sort | **Corrected (CDR round 2)** — `DocumentRanking.cs:27-31` `OrderByDescending(kv => kv.Value).Take(limit)` is reached only inside `MaxPassageAggregator.Aggregate` (`:48`), upstream of the rescore; `TrecRunWriter.cs:23-31` iterates positionally with `rank = i + 1` and sorts nothing — which is why §3.3 re-sorts after the rescore |
 | A22 | Chunk token size under `main`'s default chunking | **Confirmed (CDR round 1)** — `IversonChunkAttribute.cs:10` defaults `maxTokens = 512`; `IntelligenceStoreConsumer.cs:664-670` makes that 2,048 characters; 16.8 % of SciFact chunks then exceed 512 tokens with the query prepended (§2) |
 | A23 | The harness can recover each document's winning chunk text | **Confirmed (CDR round 1)** — `parent_key`, `chunk_text` and `score` arrive on the same `ChunkSearchResponse`; the harness currently discards `chunk_text` at `BenchmarkQueryScenario.cs:309` and Phase 1 retains it (§3.3) |
+| A24 | How many chunks `Diversify` emits | **Confirmed (CDR round 2)** — `ResultDiversifier.cs:19` `take = Math.Min(topK, ranked.Count)`, loop bounded at `:37`; this is why §3.5 sizes the reranker's pool independently of the caller's `top_k` |
+| A25 | The run-file writer does not sort | **Confirmed (CDR round 2)** — `TrecRunWriter.cs:23-31` writes rows positionally with `rank = i + 1`; this is why §3.3 re-sorts after the rescore |
+| A26 | The winning chunk does not survive max-passage aggregation | **Confirmed (CDR round 2)** — `ChunkAggregation.Ranked` is `(string DocId, double Score)` (`MaxPassageAggregator.cs:12-14`) and `DocumentRanking.cs:19-25` reduces through a `Dictionary<string,double>`; Phase 1 extends it (§3.3). The max-tracking lives in `CollapseByDocId`, which `RunSimilarAsync` (`BenchmarkQueryScenario.cs:292`) also calls |
+| A27 | A `parent_id` string can be mapped to the `ulong` the scorer contract wants | **Confirmed (CDR round 2)** — `IntelligenceStoreConsumer.KeyToUlong` (`:701-712`) is `internal`, in the same assembly as the call site, and already used for this at `ObjectSearchGrpcService.cs:469` |
+| A28 | How many chunks the server fetches before ranking | **Confirmed (CDR round 2)** — `fetchLimit = topK * OverFetchFactor` at `ObjectSearchGrpcService.cs:408`, `OverFetchFactor = 4` at `:747`; at `top_k = 50` that is 200 chunks ≈ 52 parents, which is why §3.5 raises it |
 
 ## 11. Known issues, accepted as out of scope
 
