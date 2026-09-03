@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Callable, Iterable
 
 from iverson_client import IversonClient
@@ -34,7 +34,7 @@ class SchemaCache:
     _entries: dict[str, tuple[datetime, list[mpb.SchemaType]]] = field(default_factory=dict)
 
     def get(self, user_key: str, end_user_token: str) -> list[mpb.SchemaType]:
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
         hit = self._entries.get(user_key)
         if hit and now - hit[0] < self.ttl:
             return hit[1]
