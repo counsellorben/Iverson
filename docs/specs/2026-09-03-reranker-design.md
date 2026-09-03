@@ -149,14 +149,16 @@ computed on comparable runs, and restoring avoids a ~2 hour re-ingest.
 
 **Phase 1 deliverables:** the rescore step (including retaining `chunk_text`, surfacing the
 winning chunk per document, and the re-sort by the new score), the differs-from-control assertion
-(the one statistic `report.py` does not already compute, §7.5), and a TEI compose service.
+(the one statistic `report.py` does not already compute, §7.5), two `report.py` changes — the
+baseline materialisation fix with its self-comparison test, and the `--pair` family construction
+(§7.5) — and a TEI compose service.
 
 ### 3.4 Gate
 
 Phase 2 proceeds only if Phase 1 shows reranking beating the unreranked control on SciFact `chunks`
 nDCG@10 by an effect clearing §7's bar: paired *t* **and** sign-flip permutation, Holm-corrected
-across the declared arm family — as computed by `scripts/report.py` (§7.5), so one seed and one Holm
-construction back the number. P7 puts MDE at ≈0.019 and predicts 0.06–0.10 — a 3–5× MDE effect. If
+across the declared arm family — as computed by one `scripts/report.py` invocation using its
+`--pair` family construction (§7.5), so one seed and one Holm construction at m = 3 back the number. P7 puts MDE at ≈0.019 and predicts 0.06–0.10 — a 3–5× MDE effect. If
 the result lands inside noise, **Phase 2 does not happen.**
 
 ### 3.5 Phase 2 — server-side stage
@@ -335,7 +337,7 @@ comparison that failed *open* on `+Infinity`.
 Primary comparison: **A1 vs A0**. A3 tests whether P4's "MMR off" transfers to MMR's new
 pool-composition role (§3.1); its control is **A0′**, the unreranked run at λ = 1.00, so §7.1.2 still
 holds for it. That costs one more unreranked run; the Holm family is unchanged at three
-comparisons (A1–A0, A2–A0, A3–A0′). A3 is a live arm only while the enabled path fetches more
+comparisons (A1–A0, A2–A0, A3–A0′), computed in one `report.py` invocation via `--pair` (§7.5). A3 is a live arm only while the enabled path fetches more
 chunks than it diversifies to (§3.5): at fetch = pool λ selects nothing, and A1 and A3 would
 produce identical run files. β is fixed at 1.0 — the final score is the cross-encoder's alone — and
 is not a configuration value; whether the fused score still earns weight in the final order is
@@ -367,9 +369,33 @@ the changed-query count, and a Holm-corrected p across the family (`holm_adjust`
 `scipy 1.18.1` and `ir_measures 0.4.3` reached via `PYTHONPATH` from
 `~/repositories/iverson-benchmark-corpora/python-libs`. `scratchpad/stats.py`, cited by P7, is a dead
 reference, not missing machinery. §3.4's gate is evaluated with `report.py`, so one seed and one Holm
-family construction back the number. Phase 1's only new statistical deliverable is the
-differs-from-control assertion (§3.3): `report.py` counts changed *measure values*, not ranked doc-id
-sequences, and has no ≥ 25 %-of-queries gate.
+family construction back the number — once Phase 1 has made two changes to it:
+
+1. **Baseline materialisation (a defect fix).** `report.py:552` binds
+   `ir_measures.read_trec_run(baseline_path)` — a generator — once, outside the per-measure loop,
+   and re-iterates it per measure (`:554-558`). The first measure consumes it; every later measure
+   scores the baseline as an empty run, which `ir_measures` values at 0.0 per query without error.
+   With `measures = [nDCG@10, R@50, AP]` (`:626`), nDCG@10 deltas are correct by list position and
+   **R@50 and AP deltas are each arm's own aggregate** (reproduced on `chunked-512.chunks.trec`: the
+   same generator gives R@50 mean 0.0, a materialised list 0.921). Fix:
+   `baseline_run = list(ir_measures.read_trec_run(baseline_path))`, accompanied by a test that fails
+   against the current code — a run compared to a byte-identical copy of itself must report
+   `delta 0.0000` on **all three** measures. Until the fix lands, no R@50 or AP figure from the
+   `--baseline` section may be used, which includes §7.1.2's invariance control and §7.4's R@K
+   comparisons.
+2. **Per-run baseline pairing (a family construction).** `report.py` takes one `--baseline`
+   (`:604-615`) and Holm-corrects across every other discovered run (`:542-573`), so the declared
+   family — A1–A0, A2–A0, A3–A0′ — cannot be built in one invocation, and two invocations give
+   families of m = 2 and m = 1, an anti-conservative correction relative to the declared m = 3.
+   Phase 1 adds a repeatable `--pair RUN=BASELINE` so one invocation holds all three declared
+   comparisons and `holm_adjust` runs once over exactly three permutation p-values. Family
+   discovery is restricted to the primary endpoint's `.chunks` suffix or an explicit list:
+   directory expansion (`:130-150`) takes every `*.trec`, and `BenchmarkQueryScenario.cs:217-221`
+   writes a `.similar` file beside every `.chunks` file, which would otherwise join the family.
+
+Beyond those, Phase 1's only new statistical deliverable is the differs-from-control assertion
+(§3.3): `report.py` counts changed *measure values*, not ranked doc-id sequences, and has no
+≥ 25 %-of-queries gate.
 
 ### 7.6 Throughput measurement
 
@@ -448,7 +474,7 @@ Checked against the codebase on 2026-09-03. Evidence is path:line or command out
 | A15 | Nothing depends on `Diversify` being the last ranking step | **Confirmed** — no `WithStrictOrdering` / `ContainInOrder` assertions on chunk results; the bit-exact disabled path (§4) protects the rest, and the enabled path streams only the `CandidateCount` rescored winners, one per parent (§3.5) — a documented contract change, not a silent one |
 | A16 | Options validation generalises across all members | **REFINED** — validation must run only when `Enabled`, and is per-type; with `Blend` removed (§7.2) no `double` remains, so no finiteness check applies |
 | A17 | SciFact artifacts present and reusable | **Confirmed** — `corpus.jsonl`, `queries.jsonl`, `qrels.trec` (339 rows, matching the published split) |
-| A18 | `scratchpad/stats.py` exists | **FAILED as a filename; the capability exists (CDR round 3)** — the file is gone, but `Iverson.LoadTest/scripts/report.py:403-482` (tracked) already implements every statistic §7.1.4 names, on scipy 1.18.1 + ir_measures 0.4.3; nothing is rebuilt (§7.5) |
+| A18 | `scratchpad/stats.py` exists | **FAILED as a filename; the capability exists (CDR round 3)** — the file is gone, but `Iverson.LoadTest/scripts/report.py:403-482` (tracked) already implements every statistic §7.1.4 names, on scipy 1.18.1 + ir_measures 0.4.3; nothing is rebuilt — one existing defect is fixed and one family construction is added (§7.5, CDR round 4) |
 | A19 | A collection can be restored without re-ingest | **Confirmed with caveat** — `scifact-512-qdrant-snapshots/` exists with `RESTORE.md`, but it is the **chunked-512** config, not main's 2048 default |
 | A20 | Chunks per document on the Phase 1 baseline | **Confirmed (CDR round 1)** — 19,967 chunks / 5,183 documents = 3.85, from `scifact-run-2026-08-26/keymap.json.stats.json`; this is why the unit reranked must be the document (§3.1) |
 | A21 | `MaxPassageAggregator`'s aggregation ranks by score, not input order; the run-file writer does NOT sort | **Corrected (CDR round 2)** — `DocumentRanking.cs:27-31` `OrderByDescending(kv => kv.Value).Take(limit)` is reached only inside `MaxPassageAggregator.Aggregate` (`:48`), upstream of the rescore; `TrecRunWriter.cs:23-31` iterates positionally with `rank = i + 1` and sorts nothing — which is why §3.3 re-sorts after the rescore |
@@ -464,6 +490,11 @@ Checked against the codebase on 2026-09-03. Evidence is path:line or command out
 | A31 | The diversity-vector retrieval guard survives the change to `Diversify`'s second argument | **Confirmed it does not unchanged (CDR round 3)** — `ObjectSearchGrpcService.cs:452` gates on the caller's `topK > 1`, and `topK = Math.Max(1, request.TopK)` (`:404`), so `top_k = 1` runs MMR over the whole pool with no vectors; §3.5 keys the guard on the value passed to `Diversify` |
 | A32 | Phase 1's group-by-doc-id and Phase 2's group-by-`parent_id` partition the same way | **Confirmed (CDR round 3)** — the Phase 1 baseline's `keymap.json` maps 5,183 parent keys onto 5,183 distinct doc ids, zero duplicates |
 | A33 | Every chunk point carries a `parent_id` | **Confirmed (CDR round 3)** — the only chunk-payload constructor, `IntelligenceStoreConsumer.cs:310`, writes it unconditionally from `ev.Key` |
+| A34 | `report.py`'s per-query baseline values are correct for every measure | **FAILED (CDR round 4)** — `report.py:552` binds the baseline generator once and re-iterates it per measure (`:554-558`); only nDCG@10 sees a real baseline, R@50 and AP see an all-zero one. Reproduced: same generator R@50 mean 0.0, materialised 0.921. Fixed in Phase 1 (§7.5) |
+| A35 | `report.py`'s `--baseline` semantics fit the declared three-comparison, two-control family | **FAILED (CDR round 4)** — one `--baseline` (`:604-615`), family = every other discovered run (`:542-573`), directory glob includes `.similar` files (`:130-150`); a run over five preserved files printed `Holm (4 tests)` with `.similar` runs in the family. Phase 1 adds `--pair` (§7.5) |
+| A36 | The oracle ceiling §7.1.3 states applies to the collection §3.3 restores | **Confirmed, conservative (CDR round 4)** — 0.911 was measured on `prefixed-titled` (0.9108); the reviewer computed 0.9216 on `chunked-512`, so the stated bound is below the true ceiling, not above it |
+| A37 | The enabled path's 1,000-id vector retrievals stay within Qdrant/gRPC limits | **Confirmed (CDR round 4)** — `IntelligenceVectorService.cs:154` batches at 512 ids (≈ 1.6 MB, under the 4 MB gRPC default), and `OverFetchFactor`'s docstring (`ObjectSearchGrpcService.cs:742-745`) makes the over-fetch deliberately uncapped; 1,000 ids is two round trips and no new ceiling |
+| A38 | `ChunkSearchResponse.ParentKey` remains fillable after the selection step converts `parent_id` to `ulong` | **Confirmed (CDR round 4)** — the `parent_id` string stays on the result payload reached through `byId` (`ObjectSearchGrpcService.cs:475`, `:493`), so no inverse of `KeyToUlong` is needed |
 
 ## 11. Known issues, accepted as out of scope
 
