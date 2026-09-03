@@ -669,7 +669,10 @@ public class IversonApiDependencyGateTests
     /// silently blanked the intervening <c>using Iverson.Api;</c> along with everything else. C#
     /// forbids a raw newline inside this literal form, so reaching one — as this source does,
     /// immediately after "never closes;" — must end the literal as UNTERMINATED right there,
-    /// before it ever reaches that unrelated closing quote.
+    /// before it ever reaches that unrelated closing quote. (The originating brief's own
+    /// example source, <c>var t = "x";</c>, was tried first and rejected: its quote count is
+    /// odd, so the pre-fix scan reports it unterminated at line 3 rather than finishing
+    /// silently, and it would not have pinned this case — see the batch report.)
     /// </summary>
     [Fact]
     public void BlankStringLiterals_EndsAnOrdinaryLiteralAtANewline_EvenWhenALaterQuoteWouldMakeParityEven()
