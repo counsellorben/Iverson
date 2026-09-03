@@ -15,7 +15,7 @@ def answer(text, keys, tool_calls=0, tokens=100):
 def test_metrics_over_items():
     session = MagicMock()
     session.run.side_effect = [answer("a [doc 1]", ["A"], 1, 200), answer("cannot answer", [], 0, 50)]
-    judge = MagicMock(return_value=(2, 2))
+    judge = MagicMock(side_effect=[(2, 2)])
     items = [EvalItem("q1", ["A", "B"], ["fact"]), EvalItem("q2", [], [])]
     report = evaluate(session, items, "tok", judge)
     assert report["citation_precision"] == 1.0
