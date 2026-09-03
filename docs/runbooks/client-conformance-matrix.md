@@ -86,9 +86,37 @@ A language whose toolchain is absent is reported as `skip`. Drivers need: .NET S
 
 ## After a run
 
-The matrix itself uses no Testcontainers, but every unit suite does, and on this dev box Ryuk —
-Testcontainers' own reaper — is disabled, so an interrupted or crashed suite leaves its containers
-running forever. That has wedged the machine once (load average 1329) and caused 61 spurious
-failures in an unrelated suite once. Run `scripts/reap-testcontainers.sh` after any interrupted run;
-`--dry-run` lists what it would remove first. Its header explains the root cause and the one-line
-fix, which is to stop disabling Ryuk.
+The matrix itself uses no Testcontainers, but every unit suite does. Ryuk — Testcontainers' own
+reaper, and the only thing that cleans up after a test process is KILLED rather than exiting — was
+disabled on this dev box for a long time, which let an interrupted or crashed suite leak its
+containers forever. That wedged the machine once (load average 1329, 15 leaked containers, 9 of
+them StarRocks clusters), caused 61 spurious failures in an unrelated suite once, and killed an
+SDD session mid-plan once (39 leaked containers; every "failure" was a fixture's `StartAsync`, not
+an assertion).
+
+**Ryuk was re-enabled on 2026-09-02** — `ryuk.disabled=false` in `~/.testcontainers.properties` and
+`TESTCONTAINERS_RYUK_DISABLED=false` in `~/.bashrc` — so a killed run now reaps itself within about
+20 seconds and leaks are no longer the default outcome.
+
+One trap survives that change. **The environment variable overrides the properties file**, and a
+shell or agent session started before the flip still carries the old `=true` in its own environment
+no matter what is on disk now. A long-lived session is therefore the one place leaks can still
+happen. Check before running any container-backed suite from an old session:
+
+```bash
+echo "${TESTCONTAINERS_RYUK_DISABLED:-<unset>}"    # want false or unset, NOT true
+```
+
+If it says `true`, prefix the run (`TESTCONTAINERS_RYUK_DISABLED=false dotnet test ...`) rather than
+trusting the file.
+
+`scripts/reap-testcontainers.sh` remains the cleanup for a run that leaked anyway, and for any
+machine where Ryuk genuinely cannot run; `--dry-run` lists what it would remove first. It touches
+only containers labelled `org.testcontainers=true` plus Ryuk itself, so the compose dev stack
+(`iverson-postgres`, `iverson-starrocks`, ...) is never at risk. Note that the script's own header
+still describes Ryuk as disabled and has not been updated.
+
+Container-backed test classes are also serialized into a single xunit collection per assembly
+(`ContainerCollection.cs` in `Iverson.Api.Tests`, `Iverson.Sql.Tests` and `Iverson.Vector.Tests`),
+which caps concurrent containers on this 4-core box — an `IClassFixture` is constructed once per
+test CLASS, so without that the assembly starts one container per class in parallel.
