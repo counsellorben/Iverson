@@ -59,8 +59,11 @@
 // A field-less struct carrying only this method, embedded (anonymously) in another
 // struct, declares the outer type's embedding model by promotion — standard Go
 // method-set promotion, not a mechanism specific to this package. A method defined
-// directly on the outer type shadows the promoted one. Embedded structs are skipped by
-// the field walk (InspectType) and never contribute a property of their own.
+// directly on the outer type shadows the promoted one. Embedded structs — by value
+// or by pointer — are skipped by the field walk (InspectType) and never contribute
+// a property of their own. An anonymously embedded type that is NOT a struct (e.g.
+// a named string type) remains a property, named after the type, because it carries
+// no method set to promote and is, structurally, just a field.
 package iverson
 
 import (
@@ -238,14 +241,21 @@ func InspectType(v interface{}) (EntityMeta, error) {
 
 	for i := 0; i < t.NumField(); i++ {
 		sf := t.Field(i)
-		if sf.Anonymous {
-			// An embedded (anonymous) field is a method-promotion mechanism, not a
-			// property — e.g. a field-less struct carrying only IversonEmbeddingModel,
-			// embedded so the outer type inherits its declaration by promotion.
-			// Without this skip it would register as a phantom string property named
-			// after the embedded type, because ParseTag returns a plain field for its
-			// empty tag and goTypeToClr discards the "unsupported" flag on the
-			// non-array path.
+		if sf.Anonymous && isEmbeddedStruct(sf.Type) {
+			// An embedded (anonymous) STRUCT — by value or by pointer — is a
+			// method-promotion mechanism, not a property — e.g. a field-less struct
+			// carrying only IversonEmbeddingModel, embedded so the outer type
+			// inherits its declaration by promotion. Without this skip it would
+			// register as a phantom string property named after the embedded type,
+			// because ParseTag returns a plain field for its empty tag and
+			// goTypeToClr discards the "unsupported" flag on the non-array path.
+			//
+			// This check is deliberately narrower than bare sf.Anonymous: an
+			// anonymously embedded NON-struct type (e.g. `type ID string; type Doc
+			// struct { ID }`) carries no method set to promote and is, structurally,
+			// just a field — skipping it on Anonymous alone would silently drop its
+			// own iverson tags (e.g. iverson_key/iverson_guid) from the registered
+			// schema (reviewer finding).
 			continue
 		}
 		if sf.Name == HydratedFieldName {
@@ -353,4 +363,17 @@ func InspectType(v interface{}) (EntityMeta, error) {
 	}
 
 	return meta, nil
+}
+
+// isEmbeddedStruct reports whether t is a struct type, or a pointer to one — the two
+// shapes an anonymously embedded field can take while still being a method-promotion
+// mechanism rather than a real property. Any other anonymously embedded type (a named
+// string, int, slice, etc.) returns false: it has no method set worth promoting and
+// must be walked as an ordinary field.
+func isEmbeddedStruct(t reflect.Type) bool {
+	if t.Kind() == reflect.Ptr {
+		t = t.Elem()
+	}
+
+	return t.Kind() == reflect.Struct
 }
