@@ -549,7 +549,12 @@ def run_paired_statistics(qrels, run_paths, baseline_path, measures):
         sys.exit("--baseline excludes every discovered run -- nothing left to compare")
 
     baseline_composite = load_build_composite(baseline_path)
-    baseline_run = ir_measures.read_trec_run(baseline_path)
+    # read_trec_run returns a GENERATOR. Bound once and re-iterated per measure below, the first
+    # measure consumed it and every later measure paired against an EMPTY baseline -- which
+    # ir_measures scores as 0.0 per query without error, so R@50 and AP deltas came back as each
+    # run's own aggregate (spec A34). Materialise it once; the compared runs are re-read per
+    # measure by per_query_values and were never affected.
+    baseline_run = list(ir_measures.read_trec_run(baseline_path))
 
     for measure in measures:
         baseline_values = {
