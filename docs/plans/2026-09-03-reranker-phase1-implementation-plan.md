@@ -121,11 +121,18 @@ Newly introduced by this plan and verified at plan-write time (2026-09-03, repo 
 | 24 | Command | Compose has a top-level `volumes:` block (`postgres_data`, `qdrant_data`, `ollama_data`, …) to add `reranker_models` to; `ollama` is the optional-service shape (image, container_name, ports, volumes) | `docker-compose.yml:124-136, 521-527` |
 | 25 | Command | Commit messages are lower-case imperative with no prefix | `git log --oneline -12` |
 | 26 | Ordering | Task 5 consumes Task 3's overloads and Task 4's client; Task 7 consumes Tasks 1–6; Tasks 1–2 (Python) are independent of 3–6; Task 6 is independent of 3–5; nothing consumes a later task's symbol | plan construction; Tasks 1 and 2 both edit `run_paired_statistics`, so 1 precedes 2 |
-| 27 | Consumer impact | `CollapseByDocId` callers: `MaxPassageAggregator.cs:48`, `BenchmarkQueryScenario.cs:292`, `DocumentRankingTests.cs` (7 tests); `MaxPassageAggregator.Aggregate` callers: `BenchmarkQueryScenario.cs:317`, `MaxPassageAggregatorTests.cs` (6 tests). Both existing signatures are kept; the 2-tuple `CollapseByDocId` delegates with `""` as text and projects it away, so max-and-tie behaviour is unchanged | `grep -rn "CollapseByDocId\|MaxPassageAggregator.Aggregate" Iverson.Server` |
+| 27 | Consumer impact | `CollapseByDocId` callers: `MaxPassageAggregator.cs:48`, `BenchmarkQueryScenario.cs:292`, `DocumentRankingTests.cs` (6 tests, call sites at `:17, :28, :38, :55, :69, :78`); `MaxPassageAggregator.Aggregate` callers: `BenchmarkQueryScenario.cs:317`, `MaxPassageAggregatorTests.cs` (6 tests). Both existing signatures are kept and the 2-tuple `CollapseByDocId` delegates with `""` as text, so max-and-tie behaviour is unchanged — but keeping the signatures is NOT sufficient: the `[]` collection expression at `DocumentRankingTests.cs:78` converts to both overloads and becomes `CS0121`-ambiguous, so Task 3 retypes that one argument. Every other caller passes a strongly-typed 2-tuple sequence | CIR round 1 reproduced `DocumentRankingTests.cs(78,25): error CS0121` by compiling Task 3's code beside a copy of the test file; `grep -c "\[Fact\]"` → 6 |
 | 28 | Consumer impact | `.meta.json` sidecar consumer `load_build_composite` reads only `composite`; adding a `reranker` object is safe | `report.py:173-191` |
 | 29 | Consumer impact | The unmerged branch `benchmark-exclude-self` also edits `Program.cs` (+13) and `BenchmarkQueryScenario.cs` (+31/−9); Task 5 will conflict with it on merge. Not a dependency of this plan | `git diff main...benchmark-exclude-self --stat` |
 | 30 | Command | `cross-encoder/ms-marco-MiniLM-L-6-v2` and `BAAI/bge-reranker-base` are NOT in the local TEI model cache; Task 7's first start of each downloads it (network required) | `ls ~/.cache/tei-bench-models` → embedding models only |
 | 31 | Code validity | Task 1's self-comparison test fails against the current script exactly as stated: identical 4-query run files paired via `run_paired_statistics` print one `delta +0.0000` (nDCG@10) and then `delta +1.0000` (R@50) and `delta +0.7500` (AP) — each the run's own aggregate; the regex `delta\s+\+0\.0000` matches once, so `assert 1 == 3` | run at plan-write time against `report.py` at `39610d4` with the plan's `write_run`/`write_qrels` fixtures |
+| 32 | Code validity | λ still moves the `chunks` pool at the harness's request, so A0′/A3 are not vacuous: `top_k = 250` fetches `250 × OverFetchFactor` = 1,000 and MMR selects 250 of them | `ObjectSearchGrpcService.cs:408` (`fetchLimit = topK * OverFetchFactor`), `:747` (`OverFetchFactor = 4`); CIR round 1 |
+| 33 | Code validity | `ir_measures.read_trec_run` yields rows in FILE order and does not collapse a doc id that appears twice in one query — the basis of `ranked_doc_ids` | CIR round 1: verified against a run file whose file order deliberately differs from score order |
+| 34 | Code validity | An uncaught `TaskCanceledException` (an `HttpClient` timeout) from the rescore escapes `Main` and exits non-zero — fail-loud on timeout holds without a stated timeout | `Program.cs:191-192` dispatches `benchmark-query` with no surrounding `try`/`catch` and no top-level `OperationCanceledException` handler; CIR round 1 |
+| 35 | Command | Disk headroom for the two first-start model downloads (ms-marco ≈ 90 MB, bge-reranker-base ≈ 1.1 GB) on a named volume, not the `/tmp` tmpfs | `df -h /` → 865 G available; CIR round 1 |
+| 36 | Command | Host port 8090 is published by no other compose service | every `ports:` entry in `docker-compose.yml`; CIR round 1 |
+| 37 | Command | `~/repositories/iverson-benchmark-corpora` is NOT a git repository — the gate verdict cannot be committed there | `git -C /home/ben/repositories/iverson-benchmark-corpora rev-parse --is-inside-work-tree` → `fatal: not a git repository`; Task 7 step 13 commits the verdict in this repo instead |
+| 38 | Command | SciFact and NFCorpus snapshots restore the SAME two Qdrant collections, so the two corpora cannot be resident together and their families run sequentially; NFCorpus is 3,633 / 14,729 points (4.05 chunks/doc, passes `ChunkBudgetGuard` at multiplier 5), keymap at `nfcorpus-run-2026-08-27/keymap.json`, qrels 12,334 rows | `scifact-512-qdrant-snapshots/RESTORE.md` ("taken immediately before the NFCorpus ingest dropped and replaced these collections"), `nfcorpus-qdrant-snapshots/RESTORE.md`; `ls nfcorpus-run-2026-08-27/` |
 
 ## Tasks
 
@@ -572,6 +579,15 @@ public static class DocumentRanking
 }
 ```
 
+Also edit the existing empty-input test at `DocumentRankingTests.cs:78`. An empty collection
+expression has no natural type, so once the 3-tuple overload exists `[]` converts to both parameter
+types and the call is ambiguous (`error CS0121`); the suite then does not compile. Give the argument
+the 2-tuple type — the test's meaning (the 2-tuple overload's empty-input guarantee) is unchanged:
+
+```csharp
+        DocumentRanking.CollapseByDocId(Array.Empty<(string DocId, double Score)>(), limit: 10).Should().BeEmpty();
+```
+
 `MaxPassageAggregator.cs`: add after `ChunkAggregation`:
 
 ```csharp
@@ -607,7 +623,7 @@ and inside the class, a second `Aggregate` with the same resolve loop over 3-tup
     }
 ```
 
-- [ ] **Step 4: Run the suite; expected `Passed: 37`** (34 + 3). The seven pre-existing `DocumentRankingTests` and six `MaxPassageAggregatorTests` must still pass unchanged — they are the control-path guarantee.
+- [ ] **Step 4: Run the suite; expected `Passed: 37`** (34 + 3). The six pre-existing `DocumentRankingTests` (one with its empty argument retyped in step 3) and six `MaxPassageAggregatorTests` must still pass — they are the control-path guarantee.
 
 - [ ] **Step 5: Mutations, run and recorded:** (a) `score > existing.Score` → `>=` fails the tie test; (b) drop `.OrderByDescending` in the 3-tuple overload → `CollapseByDocId_OrdersByScoreDescending` (existing, via delegation) fails; (c) `maxByDoc[docId] = (score, text)` → `(score, existing.Text)` fails the winning-chunk tests.
 
@@ -976,7 +992,8 @@ git commit -m "add a profile-gated TEI reranker service and a VectorRanking__Lam
 ### Task 7: Run the arm family and record the gate verdict
 
 **Files:**
-- Create (outside this repo): `~/repositories/iverson-benchmark-corpora/scifact-run-2026-08-26/runs/rerank-*.{chunks,similar}.trec`, `rerank-*.meta.json`, `GATE-2026-09.md`
+- Create (outside this repo, untracked — the corpora directory is not a git repository): `~/repositories/iverson-benchmark-corpora/scifact-run-2026-08-26/runs/rerank-*.{chunks,similar}.trec`, `rerank-*.meta.json`, `report-rerank-2026-09.txt`; the same under `~/repositories/iverson-benchmark-corpora/nfcorpus-run-2026-08-27/runs/`
+- Create: `docs/plans/2026-09-GATE-reranker-phase1.md` — the gate verdict, committed in this repo with `git add -f` (`docs/plans/` is gitignored, assumption 3)
 
 This task is operational: it needs the compose stack, network access for the first model pull, and
 several hours (§9's cold-box 10 min/arm for ms-marco and 78 min/arm for bge-reranker-base are
@@ -1039,9 +1056,56 @@ PYTHONPATH=/home/ben/repositories/iverson-benchmark-corpora/python-libs python3 
 The `[pool]` lines must show `set changed on 0` for all three pairs. Any `ARM INVALID` exit stops the
 gate: investigate, do not re-declare.
 
-- [ ] **Step 9: Record the verdict** in `$RUN/runs/GATE-2026-09.md`: for A1 vs A0 on nDCG@10, the delta, paired t, permutation p, Holm p_adj at m = 3, 95 % CI, d_z, MDE, queries changed; the same rows for A2 and A3; R@50 per arm (must match its control to 4 decimals); whether nDCG@10 exceeds the oracle ceiling 0.9216 (must not, §7.1.3 / A36); and one line: **GATE PASSED / GATE FAILED** per §3.4 (A1 vs A0 Holm p_adj < 0.05 with a positive delta). No Phase 2 plan is written on a failed gate.
+- [ ] **Step 9: NFCorpus counter-case (§7.1.6) — restore, sequentially.** NFCorpus cannot be
+interleaved with SciFact: both snapshot sets restore the SAME two Qdrant collections
+(`benchmark_documents_tenant_bypass`, `benchmark_documents_chunks_tenant_bypass`), so this family
+runs only after step 8 has completed and §7.6.4's interleaving cannot apply across corpora — the
+verdict says so. Make sure the API is back at λ = 0.70 (step 7's `docker compose up -d iverson-api`
+with `VECTOR_RANKING_LAMBDA` unset) and the reranker is up with the default ms-marco model. Restore per
+`~/repositories/iverson-benchmark-corpora/nfcorpus-qdrant-snapshots/RESTORE.md`; verify 3,633 object
+points and 14,729 chunk points; then `export RUN=~/repositories/iverson-benchmark-corpora/nfcorpus-run-2026-08-27`
+(it holds `beir/queries.jsonl`, `keymap.json`, `keymap.json.stats.json`, `qrels.trec`; 4.05 chunks/doc
+passes `ChunkBudgetGuard` at multiplier 5).
 
-- [ ] **Step 10: Commit nothing in this repo** for step 9 (the corpora directory is a separate repository); commit `GATE-2026-09.md` and `report-rerank-2026-09.txt` there with `git -C ~/repositories/iverson-benchmark-corpora add ...`.
+- [ ] **Step 10: NFCorpus A0 and A1 (A2 if time allows).** From `Iverson.Server/Iverson.LoadTest`:
+```bash
+dotnet run -c Release -- benchmark-query --corpus-path $RUN --key-map-path $RUN/keymap.json --output-dir $RUN/runs --config-label rerank-a0
+dotnet run -c Release -- benchmark-query --corpus-path $RUN --key-map-path $RUN/keymap.json --output-dir $RUN/runs --config-label rerank-a1 --rerank-url http://127.0.0.1:8090 --rerank-model cross-encoder/ms-marco-MiniLM-L-6-v2
+```
+A2 repeats step 5's reranker swap and command with `--config-label rerank-a2` against this `$RUN`.
+
+- [ ] **Step 11: Score the NFCorpus family and restore SciFact.**
+```bash
+cd $RUN/runs
+PYTHONPATH=/home/ben/repositories/iverson-benchmark-corpora/python-libs python3 \
+  /home/ben/repositories/Iverson/Iverson.Server/Iverson.LoadTest/scripts/report.py \
+  --qrels $RUN/qrels.trec --run rerank-a0.chunks.trec --run rerank-a1.chunks.trec \
+  --pair rerank-a1.chunks.trec=rerank-a0.chunks.trec | tee report-rerank-2026-09.txt
+```
+(add `--run rerank-a2.chunks.trec --pair rerank-a2.chunks.trec=rerank-a0.chunks.trec` if A2 ran; the
+family is then m = 2). The `[pool]` line must show `set changed on 0`. Afterwards restore the SciFact
+collection again per `scifact-512-qdrant-snapshots/RESTORE.md` and re-verify 5,183 / 19,967 points,
+so the box is left on the primary baseline.
+
+- [ ] **Step 12: Record the verdict** in `docs/plans/2026-09-GATE-reranker-phase1.md` in this repo.
+**SciFact (the gate):** for A1 vs A0 on nDCG@10, the delta, paired t, permutation p, Holm p_adj at
+m = 3, 95 % CI, d_z, MDE, queries changed; the same rows for A2 and A3; R@50 per arm (must match its
+control to 4 decimals); whether nDCG@10 exceeds the oracle ceiling 0.9216 (must not, §7.1.3 / A36);
+and one line: **GATE PASSED / GATE FAILED** per §3.4 (A1 vs A0 Holm p_adj < 0.05 with a positive
+delta). **NFCorpus (the §7.1.6 counter-case, secondary — not part of the gate):** A1 vs A0 nDCG@10
+delta, permutation p and Holm p_adj at the family size actually run, R@50 invariance, and whether P8's
+prediction (reranking underperforms on the recall-bound corpus) held. State that the two corpora ran
+as sequential families with a snapshot swap between them, not interleaved. No Phase 2 plan is
+written on a failed gate.
+
+- [ ] **Step 13: Commit the verdict in THIS repo.** The corpora directory is not a git repository
+(`git -C ~/repositories/iverson-benchmark-corpora rev-parse --is-inside-work-tree` → `fatal: not a
+git repository`), so the run files and both `report-rerank-2026-09.txt` captures stay there untracked,
+like every run file already in it. The verdict is the deliverable and is versioned here:
+```bash
+git add -f docs/plans/2026-09-GATE-reranker-phase1.md
+git commit -m "record the reranker phase 1 gate verdict" -- docs/plans/2026-09-GATE-reranker-phase1.md
+```
 
 ## Tasks NOT in this plan
 
