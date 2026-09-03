@@ -39,7 +39,9 @@ Four things, in order, per invocation:
        a paired t-test on a distribution that was 98.3% exact zeros -- only 5 of 300 queries
        had changed at all, which a sign-flip permutation test caught and the t-test's own
        assumptions did not protect against. Below 10% changed queries this section prints a
-       banner saying so and naming the permutation p as the one to trust.
+       banner saying so and naming the permutation p as the one to trust. With `--pair
+       RUN=BASELINE` (repeatable) the family is exactly the declared pairs, each checked for
+       pool invariance first; `--baseline` keeps the discover-everything behaviour.
 
 Build identity: BenchmarkQueryScenario writes one <config-label>.meta.json sidecar per
 invocation, alongside its two run files, carrying a "composite" key -- a hash over every
@@ -592,6 +594,120 @@ def run_paired_statistics(qrels, run_paths, baseline_path, measures):
             )
 
 
+# ── Step 4b: declared-pair statistics (--pair RUN=BASELINE) ────────────────────────────
+
+POOL_MIN_REORDERED_FRACTION = 0.25   # spec §3.3: differs-from-control, per-query ranked doc-id sequence
+
+
+def parse_pairs(values):
+    """Each --pair value is RUN=BASELINE (split on the FIRST '='; paths may not contain '=').
+    Both must exist and differ. Returns [(run_path, baseline_path)] in the order given, which
+    is also the order the family is printed in."""
+    pairs = []
+    for value in values:
+        if "=" not in value:
+            sys.exit(f"--pair {value}: expected RUN=BASELINE")
+        run_path, baseline_path = value.split("=", 1)
+        for p in (run_path, baseline_path):
+            if not os.path.isfile(p):
+                sys.exit(f"--pair {value}: {p} is not a file")
+        if os.path.abspath(run_path) == os.path.abspath(baseline_path):
+            sys.exit(f"--pair {value}: a run cannot be its own baseline")
+        pairs.append((run_path, baseline_path))
+    return pairs
+
+
+def ranked_doc_ids(run_path):
+    """{query_id: [doc_id, ...]} in FILE order -- TrecRunWriter writes rank order positionally
+    (spec A25), so file order is the ranked sequence. read_trec_run is a generator; consumed once here."""
+    import ir_measures
+
+    sequences = {}
+    for row in ir_measures.read_trec_run(run_path):
+        sequences.setdefault(row.query_id, []).append(row.doc_id)
+    return sequences
+
+
+def check_pool(run_path, baseline_path):
+    """Spec §7.1.2, both halves, per pair. Reranking rescores the documents the control already
+    selected, so (1) every query's doc-id SET must equal the control's -- if any differs the pool
+    changed and the arm is invalid -- and (2) the ranked SEQUENCE must differ for at least
+    POOL_MIN_REORDERED_FRACTION of the queries, or the reranker did not run (a silent fallback
+    would otherwise score as a null result and read as 'reranking does not help'). Both fail
+    loud via sys.exit; nothing downstream may run on an invalid arm. Prints one [pool] line."""
+    run_seq = ranked_doc_ids(run_path)
+    base_seq = ranked_doc_ids(baseline_path)
+    common = sorted(set(run_seq) & set(base_seq))
+    if not common:
+        sys.exit(f"[pool] {os.path.basename(run_path)} vs {os.path.basename(baseline_path)}: "
+                 "no overlapping queries")
+    set_changed = [q for q in common if set(run_seq[q]) != set(base_seq[q])]
+    reordered = [q for q in common if run_seq[q] != base_seq[q]]
+    fraction = len(reordered) / len(common)
+    print(
+        f"[pool] {os.path.basename(run_path)}  vs  {os.path.basename(baseline_path)}: "
+        f"{len(common):,} queries, set changed on {len(set_changed):,}, "
+        f"sequence differs on {len(reordered):,} ({fraction * 100:.1f}%)"
+    )
+    if set_changed:
+        sys.exit(
+            f"[pool] ARM INVALID: pool changed -- the document set differs from "
+            f"{os.path.basename(baseline_path)} on {len(set_changed)} of {len(common)} queries "
+            f"(first: {set_changed[0]}). Reranking cannot change which documents are in the pool "
+            "(spec §7.1.2); this arm was produced by a different pool and must not be scored."
+        )
+    if fraction < POOL_MIN_REORDERED_FRACTION:
+        sys.exit(
+            f"[pool] ARM INVALID: ranked sequence differs from {os.path.basename(baseline_path)} "
+            f"on only {len(reordered)} of {len(common)} queries ({fraction * 100:.1f}%); at least "
+            f"{POOL_MIN_REORDERED_FRACTION * 100:.0f}% is required (spec §3.3). The reranker "
+            "most likely did not run."
+        )
+
+
+def run_pair_statistics(qrels, pairs, measures):
+    """Like run_paired_statistics, but the family is EXACTLY the declared pairs -- each run
+    against its own baseline -- and Holm runs once per measure over those pairs and nothing
+    else (spec §7.2: A1-A0, A2-A0, A3-A0'; one construction at m = 3). Every pair passes
+    check_pool before any statistic is computed. Baseline per-query values are materialised
+    once per distinct baseline per measure (Task 1's fix applies here by construction)."""
+    import ir_measures
+
+    for run_path, baseline_path in pairs:
+        check_pool(run_path, baseline_path)
+
+    baseline_runs = {
+        p: list(ir_measures.read_trec_run(p)) for p in {b for _, b in pairs}
+    }
+    composites = {p: load_build_composite(p) for pair in pairs for p in pair}
+
+    for measure in measures:
+        baseline_values = {
+            p: {m.query_id: m.value for m in ir_measures.iter_calc([measure], qrels, run)}
+            for p, run in baseline_runs.items()
+        }
+        comparisons = [
+            (run_path, baseline_path,
+             paired_comparison(baseline_values[baseline_path], run_path, qrels, measure))
+            for run_path, baseline_path in pairs
+        ]
+        valid = [(r, b, c) for r, b, c in comparisons if c is not None]
+        holm_adjusted = holm_adjust([c["perm_p"] for _, _, c in valid])
+        holm_by_run = dict(zip((r for r, _, _ in valid), holm_adjusted))
+        family_size = len(valid)
+
+        for run_path, baseline_path, comp in comparisons:
+            if comp is None:
+                print(f"\n[compare] {os.path.basename(run_path)}  vs  "
+                      f"{os.path.basename(baseline_path)}        ({measure})")
+                print("  !! NO OVERLAPPING QUERIES -- cannot compute paired statistics")
+                continue
+            print_compare_block(
+                baseline_path, run_path, measure, comp, holm_by_run[run_path], family_size,
+                composites[baseline_path], composites[run_path],
+            )
+
+
 def main():
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
@@ -613,6 +729,16 @@ def main():
             "omit to skip the paired-statistics section. Excluded from the comparison set "
             "itself -- comparing it against itself is refused implicitly by omission, not by "
             "an error"
+        ),
+    )
+    ap.add_argument(
+        "--pair", action="append", default=None, metavar="RUN=BASELINE",
+        help=(
+            "a run and the baseline it is paired with; repeatable. The Holm family is exactly the "
+            "pairs given, so arms with different controls (A3 vs A0' at a different lambda) can share "
+            "one correction (spec 7.2). Each pair must pass the pool checks (identical per-query "
+            "document sets; ranked order differs on >= 25%% of queries) or the report exits non-zero. "
+            "Mutually exclusive with --baseline"
         ),
     )
     args = ap.parse_args()
@@ -637,6 +763,9 @@ def main():
     if args.baseline and not os.path.exists(args.baseline):
         sys.exit(f"--baseline {args.baseline}: not found")
 
+    if args.pair and args.baseline:
+        sys.exit("--pair and --baseline are mutually exclusive: --pair declares the family explicitly")
+
     run_paths = resolve_run_paths(args.run, args.qrels)
     if not run_paths:
         sys.exit("no run files resolved from --run (after excluding --qrels)")
@@ -660,6 +789,9 @@ def main():
 
     if args.baseline:
         run_paired_statistics(qrels, run_paths, args.baseline, measures)
+
+    if args.pair:
+        run_pair_statistics(qrels, parse_pairs(args.pair), measures)
 
 
 if __name__ == "__main__":
