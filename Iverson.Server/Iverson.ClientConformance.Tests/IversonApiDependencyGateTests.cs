@@ -39,6 +39,13 @@ public class IversonApiDependencyGateTests
     /// The one file sanctioned to depend on <c>Iverson.Api</c>. See the class doc and the
     /// comment in <c>Iverson.ClientConformance.Tests.csproj</c> on its <c>Iverson.Api</c>
     /// reference for why.
+    ///
+    /// <para>Keyed on the file's path RELATIVE to the test project directory, with <c>/</c> as
+    /// the separator regardless of platform — not the bare file name. Keying on the bare name
+    /// would let a second, unrelated <c>SchemaProbeTests.cs</c> dropped into any subdirectory of
+    /// the test project silently inherit this exception without ever earning it (Ruling: reviewer
+    /// finding 2). The real, sanctioned file lives at the test project's root, so its key is the
+    /// literal <c>"SchemaProbeTests.cs"</c> with no directory prefix.</para>
     /// </summary>
     private static readonly HashSet<string> AllowlistedFiles = new(StringComparer.Ordinal)
     {
@@ -413,6 +420,56 @@ public class IversonApiDependencyGateTests
         || filePath.StartsWith(Path.Combine(testProjectDir, "obj"), StringComparison.Ordinal);
 
     /// <summary>
+    /// The three ordered verdicts <see cref="OnlyAllowlistedFiles_DependOnIversonApi"/> asserts
+    /// on, exactly as that test computes them today: files whose scan never finished, files that
+    /// depend on <c>Iverson.Api</c> but are not allowlisted, and allowlisted files that no longer
+    /// depend on it.
+    /// </summary>
+    internal readonly record struct EvaluationResult(
+        IReadOnlyList<string> Unterminated,
+        IReadOnlyList<string> Unlisted,
+        IReadOnlyList<string> Stale);
+
+    /// <summary>
+    /// The pure decision logic behind <see cref="OnlyAllowlistedFiles_DependOnIversonApi"/>,
+    /// pulled out of that test's disk enumeration so a synthetic set of sources can drive it
+    /// directly. Every entry's <c>RelativePath</c> is the key both the unterminated report and
+    /// the allowlist comparison use — the caller is responsible for it being a path relative to
+    /// the test project directory with <c>/</c> separators, matching <see
+    /// cref="AllowlistedFiles"/>'s own keys, not a bare file name (Ruling: reviewer finding 2).
+    /// Same <see cref="Scan"/> call per entry, same set logic, same ordinal ordering as the
+    /// inline computation this replaces — no behaviour change.
+    /// </summary>
+    internal static EvaluationResult EvaluateSources(
+        IEnumerable<(string RelativePath, string Source)> entries)
+    {
+        var results = entries
+            .Select(e => (e.RelativePath, Scan: Scan(e.Source)))
+            .ToList();
+
+        var unterminated = results
+            .Where(r => r.Scan.UnterminatedLiteralLine is not null)
+            .Select(r => $"{r.RelativePath}:{r.Scan.UnterminatedLiteralLine}")
+            .OrderBy(s => s, StringComparer.Ordinal)
+            .ToList();
+
+        var dependentFiles = results
+            .Where(r => r.Scan.ReferencesIversonApi)
+            .Select(r => r.RelativePath)
+            .ToHashSet(StringComparer.Ordinal);
+
+        var unlisted = dependentFiles.Except(AllowlistedFiles)
+            .OrderBy(f => f, StringComparer.Ordinal)
+            .ToList();
+
+        var stale = AllowlistedFiles.Except(dependentFiles)
+            .OrderBy(f => f, StringComparer.Ordinal)
+            .ToList();
+
+        return new EvaluationResult(unterminated, unlisted, stale);
+    }
+
+    /// <summary>
     /// Assertion 1, in three parts, each with its own reason: the set of test-project files with
     /// a real <c>Iverson.Api</c> code dependency must equal <see cref="AllowlistedFiles"/> in both
     /// directions, AND the scan must have been able to finish for every file — an unterminated
@@ -423,43 +480,28 @@ public class IversonApiDependencyGateTests
     {
         var testProjectDir = TestProjectDir();
 
-        var results = Directory
+        var entries = Directory
             .EnumerateFiles(testProjectDir, "*.cs", SearchOption.AllDirectories)
             .Where(path => !IsBuildOutputPath(path, testProjectDir))
-            .Select(path => (FileName: Path.GetFileName(path)!, Scan: Scan(File.ReadAllText(path))))
-            .ToList();
+            .Select(path => (
+                RelativePath: Path.GetRelativePath(testProjectDir, path)
+                    .Replace(Path.DirectorySeparatorChar, '/'),
+                Source: File.ReadAllText(path)));
 
-        var unterminated = results
-            .Where(r => r.Scan.UnterminatedLiteralLine is not null)
-            .Select(r => $"{r.FileName}:{r.Scan.UnterminatedLiteralLine}")
-            .OrderBy(s => s, StringComparer.Ordinal)
-            .ToList();
+        var evaluation = EvaluateSources(entries);
 
-        unterminated.Should().BeEmpty(
+        evaluation.Unterminated.Should().BeEmpty(
             "each of these has a string, raw-string or verbatim literal that never closes, at "
             + "the named (comment-stripped) line — BlankStringLiterals cannot judge whether the "
             + "rest of the file references Iverson.Api, so this must fail loudly rather than "
             + "silently reporting no dependency found");
 
-        var dependentFiles = results
-            .Where(r => r.Scan.ReferencesIversonApi)
-            .Select(r => r.FileName)
-            .ToHashSet(StringComparer.Ordinal);
-
-        var unlisted = dependentFiles.Except(AllowlistedFiles)
-            .OrderBy(f => f, StringComparer.Ordinal)
-            .ToList();
-
-        unlisted.Should().BeEmpty(
+        evaluation.Unlisted.Should().BeEmpty(
             "each of these files depends on Iverson.Api. The conformance harness must not share "
             + "the server's own constants — a probe that does cannot catch the server changing "
             + "them. Only SchemaProbeTests.cs is sanctioned.");
 
-        var stale = AllowlistedFiles.Except(dependentFiles)
-            .OrderBy(f => f, StringComparer.Ordinal)
-            .ToList();
-
-        stale.Should().BeEmpty(
+        evaluation.Stale.Should().BeEmpty(
             "each of these files is allowlisted to depend on Iverson.Api but no longer does; a "
             + "stale entry could hide a future real dependency introduced somewhere else, since "
             + "the allowlist is meant to name exactly the files that need the exception, not a "
@@ -773,5 +815,135 @@ public class IversonApiDependencyGateTests
             .Which.Should().Be("../Iverson.Api/Iverson.Api.csproj",
                 "the Include value must be captured even though Condition precedes it and the "
                 + "quotes are single, not double — the shape the prior regex missed");
+    }
+
+    /// <summary>
+    /// Finding 1, the point of the exercise: <see cref="EvaluateSources"/> reports an
+    /// unterminated literal keyed on the entry's own RELATIVE path (not a bare file name), at the
+    /// line the literal opened on.
+    /// </summary>
+    [Fact]
+    public void EvaluateSources_ReportsAnUnterminatedLiteral_KeyedOnTheEntrysRelativePath()
+    {
+        var entries = new[]
+        {
+            ("Sub/Weird.cs", "var s = \"never closes\nvar x = 1;"),
+        };
+
+        var evaluation = EvaluateSources(entries);
+
+        evaluation.Unterminated.Should().ContainSingle()
+            .Which.Should().Be("Sub/Weird.cs:1",
+                "the entry's own relative path — not a bare file name — must key the "
+                + "unterminated report, and the ordinary literal opens on line 1 of this source "
+                + "and is never closed");
+    }
+
+    /// <summary>
+    /// Pins that <see cref="OnlyAllowlistedFiles_DependOnIversonApi"/>'s <c>Unterminated</c>
+    /// assertion asserts on a condition this method can actually produce: a file with no
+    /// <c>Iverson.Api</c> reference anywhere in its code, whose only defect is a literal that
+    /// never closes. If that assertion block were deleted from the <c>[Fact]</c>, nothing else in
+    /// it would fail on this input — <c>Unlisted</c> and <c>Stale</c> both stay empty — so this is
+    /// the test that would go red and catch the deletion (Ruling: reviewer finding 1).
+    /// </summary>
+    [Fact]
+    public void EvaluateSources_TheUnterminatedConditionIsReachable_ForAFileThatOtherwiseLooksClean()
+    {
+        var entries = new[]
+        {
+            ("SchemaProbeTests.cs", "using Iverson.Api;"),
+            ("Clean.cs", "var s = \"never closes\nvar x = 1;"),
+        };
+
+        var evaluation = EvaluateSources(entries);
+
+        evaluation.Unterminated.Should().NotBeEmpty(
+            "Clean.cs's only defect is an unterminated literal; a gate that only checked "
+            + "Unlisted and Stale would pass this input silently even though the scan never "
+            + "finished for it");
+        evaluation.Unlisted.Should().BeEmpty(
+            "the unterminated literal stops the scan before it could resolve a reference, so "
+            + "Clean.cs must not additionally show up as an unlisted dependency");
+        evaluation.Stale.Should().BeEmpty(
+            "SchemaProbeTests.cs still references Iverson.Api here, so its allowlist entry is "
+            + "not stale");
+    }
+
+    /// <summary>
+    /// Finding 2: a second, differently located file that happens to share the allowlisted root
+    /// file's bare name must NOT inherit its exception — it must show up in <c>Unlisted</c> like
+    /// any other unsanctioned dependent, because the allowlist is keyed on the project-relative
+    /// path, not <c>Path.GetFileName</c>.
+    /// </summary>
+    [Fact]
+    public void EvaluateSources_ASameNamedFileInASubdirectory_DoesNotInheritTheRootAllowlistException()
+    {
+        var entries = new[]
+        {
+            ("SchemaProbeTests.cs", "using Iverson.Api;"),
+            ("Sub/SchemaProbeTests.cs", "using Iverson.Api;"),
+        };
+
+        var evaluation = EvaluateSources(entries);
+
+        evaluation.Unlisted.Should().ContainSingle()
+            .Which.Should().Be("Sub/SchemaProbeTests.cs",
+                "the allowlist is keyed on the project-relative path, so a same-named file in a "
+                + "subdirectory must not inherit the root file's sanctioned exception");
+        evaluation.Stale.Should().BeEmpty(
+            "the root SchemaProbeTests.cs still references Iverson.Api, so its own allowlist "
+            + "entry is not stale");
+    }
+
+    /// <summary>
+    /// Finding 2, the other direction: a same-named subdirectory file that does NOT reference
+    /// <c>Iverson.Api</c> must not be read as satisfying — or un-satisfying — the root file's
+    /// allowlist entry. <c>Stale</c> stays empty because the root entry's own key still resolves
+    /// to a dependent; the subdirectory file was never allowlisted under its own key, so its
+    /// clean status is irrelevant to <c>Stale</c>.
+    /// </summary>
+    [Fact]
+    public void EvaluateSources_ASubdirectoryFileWithNoReference_LeavesStaleEmptyBecauseTheRootKeyStillResolves()
+    {
+        var entries = new[]
+        {
+            ("SchemaProbeTests.cs", "using Iverson.Api;"),
+            ("Sub/SchemaProbeTests.cs", "var x = 1;"),
+        };
+
+        var evaluation = EvaluateSources(entries);
+
+        evaluation.Unlisted.Should().BeEmpty(
+            "Sub/SchemaProbeTests.cs does not reference Iverson.Api at all, so it cannot be an "
+            + "unlisted dependency");
+        evaluation.Stale.Should().BeEmpty(
+            "the root SchemaProbeTests.cs — the only allowlisted key — still references "
+            + "Iverson.Api, so the allowlist is not stale");
+    }
+
+    /// <summary>
+    /// Control: entries mirroring today's real shape (the allowlisted root file referencing
+    /// <c>Iverson.Api</c>, everything else clean) yield all three lists empty — the steady state
+    /// the live gate depends on staying green.
+    /// </summary>
+    [Fact]
+    public void EvaluateSources_TodaysRealShape_YieldsAllThreeListsEmpty()
+    {
+        var entries = new[]
+        {
+            ("SchemaProbeTests.cs", "using Iverson.Api;"),
+            ("OtherTests.cs", "var x = 1;"),
+            ("Sub/HelperTests.cs", "var y = 2;"),
+        };
+
+        var evaluation = EvaluateSources(entries);
+
+        evaluation.Unterminated.Should().BeEmpty(
+            "none of these sources contain an unterminated literal");
+        evaluation.Unlisted.Should().BeEmpty(
+            "only the allowlisted root file references Iverson.Api");
+        evaluation.Stale.Should().BeEmpty(
+            "the allowlisted root file still references Iverson.Api");
     }
 }
