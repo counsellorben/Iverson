@@ -95,6 +95,55 @@ def test_pair_family_is_exactly_the_declared_pairs(tmp_path, qrels_path, capsys)
     assert "a3.chunks.trec  vs  a0.chunks.trec" not in out
 
 
+def test_holm_is_keyed_by_pair_not_run_alone(tmp_path, qrels_path, capsys):
+    """Spec M2/R12: a1 appears in two pairs, against two DIFFERENT baselines. Keyed by run path
+    alone, holm_by_run collapses to one dict entry per run path, so the LAST pair processed for that
+    run silently overwrites the earlier one's adjusted p -- both blocks then print the SAME value,
+    rather than each pair's own Holm-adjusted p.
+
+    This is NOT built from _three_arm_family: its a0/a1/a0prime differ only by whole-list reversal
+    or rotation, which (empirically) still yields the SAME sign-flip permutation p for both pairs,
+    so the bug is invisible in the printed output even though the dict has collapsed. Instead, each
+    query's target-relevant doc (qN's relevant doc is dN, per QRELS) is placed at a distinct rank
+    per run: last-of-3 in a1 for every query, first-of-3 in a0 for every query (so a1 is uniformly
+    worse -- perm_p = 0.1250, an extreme, all-same-sign pattern), but alternating first/last in
+    a0prime (so a1 is worse on only 2 of 4 queries -- perm_p = 0.5000, a middling pattern). Doc SETS
+    are identical across all three files per query (only rank order changes), so both pairs pass
+    check_pool. Verified empirically against both the unfixed and the fixed keying (see the
+    implementation report) before landing these two exact expected values."""
+    from ir_measures import AP, R, nDCG
+
+    a1_rows = [("q1", ["x", "y", "d1"]), ("q2", ["x", "y", "d2"]),
+               ("q3", ["x", "y", "d3"]), ("q4", ["x", "y", "d4"])]
+    a0_rows = [("q1", ["d1", "x", "y"]), ("q2", ["d2", "x", "y"]),
+               ("q3", ["d3", "x", "y"]), ("q4", ["d4", "x", "y"])]
+    a0prime_rows = [("q1", ["y", "x", "d1"]), ("q2", ["d2", "y", "x"]),
+                     ("q3", ["y", "x", "d3"]), ("q4", ["d4", "y", "x"])]
+
+    a1 = tmp_path / "a1.chunks.trec"
+    a0 = tmp_path / "a0.chunks.trec"
+    a0prime = tmp_path / "a0prime.chunks.trec"
+    write_run(a1, a1_rows, "a1")
+    write_run(a0, a0_rows, "a0")
+    write_run(a0prime, a0prime_rows, "a0prime")
+
+    pairs = report.parse_pairs([f"{a1}={a0}", f"{a1}={a0prime}"])
+    report.run_pair_statistics(load_qrels(qrels_path), pairs, [nDCG @ 10, R @ 50, AP])
+
+    out = capsys.readouterr().out
+    assert out.count("Holm (2 tests)") == 6, out            # 2 pairs x 3 measures
+    assert "a1.chunks.trec  vs  a0.chunks.trec" in out
+    assert "a1.chunks.trec  vs  a0prime.chunks.trec" in out
+
+    # The regression-catching assertion: each pair's OWN Holm-adjusted p, not the other pair's.
+    # Against the unfixed (run-path-only) keying both blocks print 0.5000 (a0prime's, processed
+    # last, silently overwrites a0's own 0.2500).
+    ndcg_block = re.search(
+        r"a1\.chunks\.trec  vs  a0\.chunks\.trec\s+\(nDCG@10\).*?Holm \(2 tests\)\s+p_adj = ([\d.]+)",
+        out, re.S)
+    assert ndcg_block and ndcg_block.group(1) == "0.2500", out
+
+
 def test_pool_check_rejects_a_changed_document_set(tmp_path, qrels_path):
     from ir_measures import AP, R, nDCG
     a0, a1, a2, a0p, a3 = _three_arm_family(tmp_path)

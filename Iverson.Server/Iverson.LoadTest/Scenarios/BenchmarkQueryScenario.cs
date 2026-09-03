@@ -42,6 +42,10 @@ public sealed class BenchmarkQueryScenario(
     private const string SimilarRunSuffix      = "similar";
     private const string ChunksRunSuffix       = "chunks";
 
+    // Per-batch ceiling; cold-box bge-reranker-base batch ~= 2.5s, x5 for sustained load ~= 12.5s,
+    // so 120s is ~10x margin. A hung reranker aborts the run after this (fail loud, spec §6).
+    private static readonly TimeSpan RerankBatchTimeout = TimeSpan.FromSeconds(120);
+
     // ingest.py writes documents/chunks in lowercase (plus embed_calls/embeds_saved/elapsed_seconds,
     // which this scenario has no use for and JsonSerializer silently ignores).
     private static readonly JsonSerializerOptions StatsJsonOptions =
@@ -130,7 +134,11 @@ public sealed class BenchmarkQueryScenario(
         TeiInfo?         rerankerInfo = null;
         if (!string.IsNullOrWhiteSpace(flags.RerankUrl))
         {
-            reranker = new TeiRerankClient(new HttpClient { BaseAddress = new Uri(flags.RerankUrl.TrimEnd('/') + "/") });
+            reranker = new TeiRerankClient(new HttpClient
+            {
+                BaseAddress = new Uri(flags.RerankUrl.TrimEnd('/') + "/"),
+                Timeout     = RerankBatchTimeout,
+            });
             rerankerInfo = await reranker.GetInfoAsync(ct);
             if (!string.IsNullOrWhiteSpace(flags.RerankModel) && rerankerInfo.ModelId != flags.RerankModel)
             {
@@ -358,6 +366,16 @@ public sealed class BenchmarkQueryScenario(
         // Spec §3.3: aggregate to DocumentBudget documents FIRST (the unit reranked is the document,
         // scored through its winning chunk), rescore, then re-sort -- TrecRunWriter sorts nothing.
         var winners  = MaxPassageAggregator.Aggregate(chunks, keyMap, DocumentBudget);
+
+        // Fail loud (spec §6) at query 1, not hour 3: an empty winning-chunk text would be scored by
+        // TEI as some arbitrary constant for every such document, which is silent corruption of that
+        // query's ranking, not a visible failure.
+        var emptyWinners = winners.Ranked.Where(w => string.IsNullOrWhiteSpace(w.Text)).ToList();
+        if (emptyWinners.Count > 0)
+            throw new InvalidOperationException(
+                $"QueryId={query.QueryId}: the winning chunk text for DocId={emptyWinners[0].DocId} " +
+                "is empty -- this arm must not be scored.");
+
         var scores   = await reranker.ScoreAsync(query.Text, winners.Ranked.Select(w => w.Text).ToList(), ct);
         var rescored = winners.Ranked.Select((w, i) => (w.DocId, scores[i]));
         return (DocumentRanking.CollapseByDocId(rescored, DocumentBudget), failed, winners.UnresolvedParentKeys);

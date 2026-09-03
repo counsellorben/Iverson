@@ -24,6 +24,17 @@ public class TeiRerankClientTests
         }
     }
 
+    // A second, slow handler for the timeout test: FakeHandler's respond delegate returns
+    // synchronously, so it cannot honour cancellation the way a real hung server would.
+    private sealed class SlowHandler(TimeSpan delay, Func<HttpResponseMessage> respond) : HttpMessageHandler
+    {
+        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
+        {
+            await Task.Delay(delay, ct);
+            return respond();
+        }
+    }
+
     private static HttpResponseMessage Json(string json, HttpStatusCode status = HttpStatusCode.OK) =>
         new(status) { Content = new StringContent(json, Encoding.UTF8, "application/json") };
 
@@ -53,7 +64,7 @@ public class TeiRerankClientTests
         JsonDocument.Parse(handler.Bodies[6]).RootElement.GetProperty("texts").GetArrayLength().Should().Be(2);
         scores.Should().Equal(texts.Select(t => double.Parse(t[1..])));         // position i <-> texts[i]
         JsonDocument.Parse(handler.Bodies[0]).RootElement.GetProperty("query").GetString().Should().Be("q");
-        JsonDocument.Parse(handler.Bodies[0]).RootElement.GetProperty("raw_scores").GetBoolean().Should().BeFalse();
+        JsonDocument.Parse(handler.Bodies[0]).RootElement.GetProperty("raw_scores").GetBoolean().Should().BeTrue();
     }
 
     [Fact]
@@ -74,6 +85,33 @@ public class TeiRerankClientTests
         var act = () => Client(handler).ScoreAsync("q", ["t1", "t2"], CancellationToken.None);
 
         await act.Should().ThrowAsync<InvalidOperationException>().WithMessage("*2 texts*1 score*");
+    }
+
+    [Fact]
+    public async Task ScoreAsync_TimesOut_Throws()
+    {
+        var handler = new SlowHandler(TimeSpan.FromSeconds(5), () => Json("[{\"index\":0,\"score\":1.0}]"));
+        var client  = new TeiRerankClient(new HttpClient(handler)
+        {
+            BaseAddress = new Uri("http://reranker.test/"),
+            Timeout     = TimeSpan.FromMilliseconds(50),
+        });
+
+        var act = () => client.ScoreAsync("q", ["t1"], CancellationToken.None);
+
+        // On .NET 10, HttpClient.Timeout expiry surfaces ScoreAsync's await as a TaskCanceledException
+        // (a subclass of OperationCanceledException), not TimeoutException.
+        await act.Should().ThrowAsync<TaskCanceledException>();
+    }
+
+    [Fact]
+    public async Task ScoreAsync_DuplicateIndexInResponse_Throws()
+    {
+        var handler = new FakeHandler((_, _) => Json("[{\"index\":0,\"score\":1.0},{\"index\":0,\"score\":0.5}]"));
+
+        var act = () => Client(handler).ScoreAsync("q", ["t1", "t2"], CancellationToken.None);
+
+        await act.Should().ThrowAsync<InvalidOperationException>().WithMessage("*2 texts*2 score*");
     }
 
     [Fact]

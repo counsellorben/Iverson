@@ -693,7 +693,11 @@ def run_pair_statistics(qrels, pairs, measures):
         ]
         valid = [(r, b, c) for r, b, c in comparisons if c is not None]
         holm_adjusted = holm_adjust([c["perm_p"] for _, _, c in valid])
-        holm_by_run = dict(zip((r for r, _, _ in valid), holm_adjusted))
+        # Keyed by (run_path, baseline_path), not run_path alone: a run can appear in more than one
+        # declared pair (same run, two different baselines), and a run-path-only key would collapse
+        # those to one dict entry -- the earlier pair's block would then print the later pair's
+        # adjusted p, silently (spec M2/R12).
+        holm_by_pair = dict(zip(((r, b) for r, b, _ in valid), holm_adjusted))
         family_size = len(valid)
 
         for run_path, baseline_path, comp in comparisons:
@@ -703,8 +707,8 @@ def run_pair_statistics(qrels, pairs, measures):
                 print("  !! NO OVERLAPPING QUERIES -- cannot compute paired statistics")
                 continue
             print_compare_block(
-                baseline_path, run_path, measure, comp, holm_by_run[run_path], family_size,
-                composites[baseline_path], composites[run_path],
+                baseline_path, run_path, measure, comp, holm_by_pair[(run_path, baseline_path)],
+                family_size, composites[baseline_path], composites[run_path],
             )
 
 
@@ -766,6 +770,10 @@ def main():
     if args.pair and args.baseline:
         sys.exit("--pair and --baseline are mutually exclusive: --pair declares the family explicitly")
 
+    # Validated up front, before the (potentially long) scoring section below: a typo'd --pair path
+    # then fails immediately rather than after a full re-score.
+    pairs = parse_pairs(args.pair) if args.pair else None
+
     run_paths = resolve_run_paths(args.run, args.qrels)
     if not run_paths:
         sys.exit("no run files resolved from --run (after excluding --qrels)")
@@ -790,8 +798,8 @@ def main():
     if args.baseline:
         run_paired_statistics(qrels, run_paths, args.baseline, measures)
 
-    if args.pair:
-        run_pair_statistics(qrels, parse_pairs(args.pair), measures)
+    if pairs:
+        run_pair_statistics(qrels, pairs, measures)
 
 
 if __name__ == "__main__":

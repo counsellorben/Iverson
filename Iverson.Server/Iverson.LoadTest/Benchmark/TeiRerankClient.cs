@@ -42,7 +42,13 @@ public sealed class TeiRerankClient(HttpClient http)
         for (var offset = 0; offset < texts.Count; offset += BatchSize)
         {
             var batch = texts.Skip(offset).Take(BatchSize).ToList();
-            using var response = await http.PostAsJsonAsync("rerank", new RerankRequest(query, batch, RawScores: false), SerializerOptions, ct);
+            // raw_scores: true asks TEI for the pre-sigmoid logit rather than the squashed [0,1]
+            // score. Sigmoid is monotonic, so ordering is unchanged either way -- but the squashed
+            // score saturates to 0/1 well before the logit does, and TrecRunWriter formats with F6,
+            // so any sigmoid score below ~1e-6 (a logit below about -13.8) formats as 0.000000 and
+            // collapses distinct documents into ties that trec_eval then orders by doc-id string.
+            // Logits have no such ceiling and survive F6.
+            using var response = await http.PostAsJsonAsync("rerank", new RerankRequest(query, batch, RawScores: true), SerializerOptions, ct);
             response.EnsureSuccessStatusCode();
 
             // TEI returns the batch sorted by score descending; `index` is the position within
