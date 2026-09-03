@@ -45,6 +45,7 @@ TOOLS = [
             },
             "required": ["query_text", "filters"], "additionalProperties": False,
         },
+        "strict": True,
     },
     {
         "name": "expand_document",
@@ -54,6 +55,7 @@ TOOLS = [
             "properties": {"doc_number": {"type": "integer"}, "query_text": {"type": "string"}},
             "required": ["doc_number", "query_text"], "additionalProperties": False,
         },
+        "strict": True,
     },
 ]
 
@@ -140,17 +142,21 @@ class AgentSession:
         while response.stop_reason == "tool_use":
             messages.append({"role": "assistant", "content": response.content})
             results = []
+            budget_exhausted_this_turn = False
             for block in (b for b in response.content if b.type == "tool_use"):
                 state.tool_calls += 1
                 if state.tool_calls > cfg.max_tool_calls or state.context_tokens > cfg.context_tokens:
                     results.append({"type": "tool_result", "tool_use_id": block.id,
                                     "is_error": True, "content": BUDGET_EXHAUSTED})
+                    budget_exhausted_this_turn = True
                     continue
                 content = self._run_tool(block.name, block.input, state, docs, schema_type, question, trace_id)
                 state.context_tokens += estimate_tokens(content)
                 results.append({"type": "tool_result", "tool_use_id": block.id, "content": content})
             messages.append({"role": "user", "content": results})
-            response = self._create(messages)
+            # Once any call this turn hit the budget guard, force the next response to be a final
+            # answer (tool_choice="none") — the model is not trusted to stop on its own (§4.5).
+            response = self._create(messages, force_answer=budget_exhausted_this_turn)
 
         # 4.6 output with enforced citations
         text = _text_of(response)
@@ -165,9 +171,11 @@ class AgentSession:
             text = _text_of(response)
             invalid = _invalid_citations(text, len(state.contexts))
             for n in invalid:
-                text = text.replace(f"[doc {n}]", "").replace("  ", " ")
+                text = _strip_citation(text, n).replace("  ", " ")
                 flags.append(f"stripped invalid citation [doc {n}]")
-        cited = sorted({int(n) for n in _CITATION.findall(text)})
+        # Bounded by construction: only numbers that index an actual shown document ever reach
+        # state.contexts, so an unstripped/leftover invalid citation can never raise IndexError.
+        cited = sorted({int(n) for n in _CITATION.findall(text) if 1 <= int(n) <= len(state.contexts)})
         citations = [Citation(n, state.contexts[n - 1].key, state.contexts[n - 1].title,
                               [t for _, t in state.contexts[n - 1].passages]) for n in cited]
         return AgentAnswer(text=text, citations=citations, tool_calls=state.tool_calls,
@@ -175,10 +183,12 @@ class AgentSession:
 
     # ── helpers ─────────────────────────────────────────────────────────────
 
-    def _create(self, messages):
-        response = self._anthropic.messages.create(
-            model=self._cfg.model, max_tokens=16000, system=REASONER_SYSTEM,
-            tools=TOOLS, messages=messages)
+    def _create(self, messages, force_answer: bool = False):
+        kwargs = dict(model=self._cfg.model, max_tokens=16000, system=REASONER_SYSTEM,
+                      tools=TOOLS, messages=messages)
+        if force_answer:
+            kwargs["tool_choice"] = {"type": "none"}
+        response = self._anthropic.messages.create(**kwargs)
         if response.stop_reason == "refusal":
             raise ModelRefused()
         return response
@@ -228,6 +238,8 @@ class AgentSession:
             if not new_passages:
                 return f"[doc {n}] has no further passages for that query."
             target.passages.extend(new_passages)
+            target.passages.sort(key=lambda c: c[0], reverse=True)   # keep best-first (same invariant as
+                                                                       # assemble's top-up merge, §4.3)
             return "\n".join(f"[doc {n}] passage: {t}" for _, t in new_passages)
         return f"Unknown tool {name}."
 
@@ -251,3 +263,9 @@ def _text_of(response) -> str:
 
 def _invalid_citations(text: str, shown: int) -> list[int]:
     return sorted({int(n) for n in _CITATION.findall(text) if not 1 <= int(n) <= shown})
+
+
+def _strip_citation(text: str, n: int) -> str:
+    """Remove every spelling of citation n (leading zeros included, e.g. "[doc 09]") so the
+    detector (which normalizes via int()) and the strip step agree on what "n" matched (Ruling 5)."""
+    return re.sub(rf"\[doc 0*{n}\]", "", text)

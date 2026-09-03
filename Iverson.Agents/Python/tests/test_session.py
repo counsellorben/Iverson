@@ -130,3 +130,44 @@ def test_empty_retrieval_tells_the_model_explicitly():
     ctx = anthropic.messages.create.call_args.kwargs["messages"][0]["content"]
     assert "No documents were found for: q" in ctx
     assert answer.citations == []
+
+
+def test_non_canonical_citation_is_stripped_without_indexerror():
+    # "[doc 09]" normalizes to 9 for detection (int("09") == 9), which is out of range for a
+    # single-document context. Before the fix, the strip loop's literal `text.replace("[doc 9]", "")`
+    # never matched the "09" spelling, so the un-stripped "[doc 09]" survived into the final
+    # `cited` computation and indexed state.contexts[8] on a 1-long list, raising IndexError.
+    session, _, _ = make_session([message(text("See [doc 09].")), message(text("Still [doc 09] and [doc 1]."))])
+    answer = session.run("q?", "tok", trace_id="t")
+    assert answer.text == "Still and [doc 1]." or answer.text == "Still  and [doc 1]."
+    assert [c.key for c in answer.citations] == ["A"]
+    assert any("doc 9" in f for f in answer.flags)
+
+
+def test_search_more_filters_are_validated_and_sent_canonically():
+    session, _, coord = make_session(
+        [message(tool_use("search_more", query_text="q2",
+                          filters=[{"field": "source", "value": "legal"},
+                                   {"field": "Title", "value": "no"}]),
+                stop_reason="tool_use"),
+         message(text("Done [doc 3]."))],
+        chunks=[[chunk("A", "a1", 0.9), chunk("B", "b1", 0.5)], [chunk("A", "a1", 0.9), chunk("C", "c1", 0.7)]],
+        entities=[[doc("A"), doc("B")], [doc("A"), doc("C")]],
+        cfg=AgentConfig(m=1))
+    session.run("q?", "tok", trace_id="t")
+    req = coord.search_chunks.call_args_list[1].args[0]
+    assert [(c.property, c.value.string_val) for c in req.filter] == [("Source", "legal")]
+
+
+def test_expand_document_keeps_passages_best_first_after_topup():
+    # target.passages starts as [(0.9, "a1")]; expand_document's top-up returns a *higher*-scored
+    # passage ("a-new", 0.99). A plain extend() would leave [(0.9, "a1"), (0.99, "a-new")] —
+    # out of best-first order, the same invariant Task 3 fixed for assemble's own top-up.
+    session, _, _ = make_session(
+        [message(tool_use("expand_document", doc_number=1, query_text="more"), stop_reason="tool_use"),
+         message(text("Done [doc 1]."))],
+        chunks=[[chunk("A", "a1", 0.9), chunk("B", "b1", 0.5)], [chunk("A", "a-new", 0.99)]],
+        entities=[[doc("A"), doc("B")], [doc("A")]],
+        cfg=AgentConfig(m=1))
+    answer = session.run("q?", "tok", trace_id="t")
+    assert answer.citations[0].passages == ["a-new", "a1"]
