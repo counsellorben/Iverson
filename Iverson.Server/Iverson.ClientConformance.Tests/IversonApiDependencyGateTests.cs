@@ -104,7 +104,10 @@ public class IversonApiDependencyGateTests
     /// same-line <c>//</c> — cannot be mistaken for a reference in CODE. Recognises:
     /// <list type="bullet">
     /// <item><description>Ordinary/interpolated <c>"..."</c>, where <c>\x</c> escapes any
-    /// character without ending the literal.</description></item>
+    /// character without ending the literal — but a raw newline reached while still
+    /// inside one, which C# never permits in this form, ends the scan as UNTERMINATED
+    /// rather than being absorbed into the literal the way the multi-line forms below
+    /// legitimately absorb one.</description></item>
     /// <item><description>Verbatim <c>@"..."</c>, where <c>""</c> escapes a quote without ending
     /// the literal.</description></item>
     /// <item><description>Raw string literals opened by a run of three or more <c>"</c>
@@ -128,10 +131,16 @@ public class IversonApiDependencyGateTests
     /// direction for a gate whose failure mode to guard against is a missed dependency.</para>
     ///
     /// <para><b>Unterminated literals are not discarded.</b> If a literal opened by any of the
-    /// three quote-delimited forms above never finds its close before the source ends, the scan
-    /// stops there and <paramref name="unterminatedLiteralLine"/> is set to the (comment-stripped)
-    /// line the literal opened on — turning what used to be a silent false negative (Ruling:
-    /// reviewer finding 1) into a result the caller can, and must, fail loudly on.</para>
+    /// three quote-delimited forms above never finds its close before the source ends — or, for
+    /// an ordinary/interpolated literal specifically, reaches a newline first, which C# does not
+    /// allow inside one — the scan stops there and <paramref name="unterminatedLiteralLine"/> is
+    /// set to the (comment-stripped) line the literal opened on. Both are the same silent false
+    /// negative in different shapes: without the newline check, an ordinary literal that opens
+    /// mid-file and later finds an unrelated closing quote elsewhere in the file — even-parity
+    /// overall, but never actually terminated on its own line — would blank everything in between,
+    /// including a real <c>using Iverson.Api;</c>, and the scan would finish "successfully" having
+    /// silently swallowed it. Turning either shape into a result the caller can, and must, fail
+    /// loudly on is Ruling: reviewer finding 1's fix.</para>
     ///
     /// <para>This is deliberately not a general C# lexer: no preprocessor directives, no verbatim
     /// identifiers (<c>@class</c>), no numeric literal suffixes that happen to look like
@@ -281,6 +290,19 @@ public class IversonApiDependencyGateTests
                         result.Append(' ');
                         i++;
                         closed = true;
+                        break;
+                    }
+
+                    if (source[i] == '\n')
+                    {
+                        // C# does not permit a raw newline inside an ordinary or
+                        // interpolated "..." literal — reaching one while still inside
+                        // this literal means it never closed. Stop here, without
+                        // consuming the newline, so the outer handling below reports it
+                        // exactly like the end-of-input case: an unmatched quote later
+                        // in the file (even-parity overall) must not silently re-sync
+                        // and blank the intervening text, which could hide a real
+                        // dependency (reviewer finding).
                         break;
                     }
 
@@ -635,6 +657,96 @@ public class IversonApiDependencyGateTests
         unterminatedLiteralLine.Should().Be(2,
             "the ordinary literal opens on line 2 of the source, and never finds a closing quote "
             + "before the source ends");
+    }
+
+    /// <summary>
+    /// The remaining silent case (reviewer finding): an ordinary literal that opens mid-file and
+    /// is never closed on its OWN line can still, before this fix, re-sync on some unrelated later
+    /// quote that happens to make the file's total quote count even — closing over everything in
+    /// between, including a real <c>using Iverson.Api;</c>, and finishing with NO unterminated
+    /// report at all. Here quote 1 opens the literal on line 1; the only other quote in the source
+    /// closes on line 3, so the total is even (2) and the scan used to finish "successfully" having
+    /// silently blanked the intervening <c>using Iverson.Api;</c> along with everything else. C#
+    /// forbids a raw newline inside this literal form, so reaching one — as this source does,
+    /// immediately after "never closes;" — must end the literal as UNTERMINATED right there,
+    /// before it ever reaches that unrelated closing quote.
+    /// </summary>
+    [Fact]
+    public void BlankStringLiterals_EndsAnOrdinaryLiteralAtANewline_EvenWhenALaterQuoteWouldMakeParityEven()
+    {
+        const string source = "var s = \"never closes;\nusing Iverson.Api;\nvar t = x\";";
+
+        BlankStringLiterals(source, out var unterminatedLiteralLine);
+
+        unterminatedLiteralLine.Should().Be(1,
+            "the literal opened on line 1 is never closed on its own line; a later, unrelated "
+            + "closing quote on line 3 makes the file's total quote count even, but re-syncing on "
+            + "that parity — instead of failing where the newline was actually reached — is "
+            + "exactly the silent false negative this fix closes");
+    }
+
+    /// <summary>
+    /// A verbatim literal is one of the two forms legitimately allowed to span multiple lines: the
+    /// newline-terminates-the-literal fix added to the ordinary-literal branch above must not leak
+    /// into this branch. Regression guard for the fix landing in the wrong branch.
+    /// </summary>
+    [Fact]
+    public void BlankStringLiterals_AVerbatimLiteralSpanningMultipleLines_StillReportsNoUnterminatedLiteral()
+    {
+        const string source = "var s = @\"first line\nsecond line\"; using Iverson.Api;";
+
+        var blanked = Blank(source);
+
+        blanked.Should().NotContain("first line",
+            "the verbatim literal's multi-line body is DATA and must be blanked in full");
+        blanked.Should().NotContain("second line",
+            "the newline inside a verbatim literal is legitimate and must not end it early");
+        blanked.Should().Contain("using Iverson.Api;",
+            "code after a verbatim literal that legitimately spans lines must still read as code");
+    }
+
+    /// <summary>
+    /// A raw string literal is the other form legitimately allowed to span multiple lines: same
+    /// regression guard as the verbatim case above, for the other multi-line-legal branch.
+    /// </summary>
+    [Fact]
+    public void BlankStringLiterals_ARawStringLiteralSpanningMultipleLines_StillReportsNoUnterminatedLiteral()
+    {
+        const string source = """"
+            var s = """
+                first line
+                second line
+                """;
+            using Iverson.Api;
+            """";
+
+        var blanked = Blank(source);
+
+        blanked.Should().NotContain("first line",
+            "the raw string literal's multi-line body is DATA and must be blanked in full");
+        blanked.Should().NotContain("second line",
+            "the newline inside a raw string literal is legitimate and must not end it early");
+        blanked.Should().Contain("using Iverson.Api;",
+            "code after a raw string literal that legitimately spans lines must still read as code");
+    }
+
+    /// <summary>
+    /// An interpolated <c>$"..."</c> literal on a single line goes through the same ordinary-
+    /// literal branch as a plain <c>"..."</c> — the newline fix above must not disturb the case
+    /// that never reaches a newline at all.
+    /// </summary>
+    [Fact]
+    public void BlankStringLiterals_AnInterpolatedLiteralOnOneLine_StillBlanksAndReportsNoUnterminatedLiteral()
+    {
+        const string source = "var s = $\"value: {x}\"; using Iverson.Api;";
+
+        var blanked = Blank(source);
+
+        blanked.Should().NotContain("value:",
+            "the interpolated literal's text (and its {expression} hole) is DATA and must be "
+            + "blanked");
+        blanked.Should().Contain("using Iverson.Api;",
+            "code after a single-line interpolated literal must still read as code");
     }
 
     /// <summary>
