@@ -103,13 +103,20 @@ Newly introduced by this plan and verified at plan-write time (2026-09-03, `main
 | 20 | Signature | `object_search_pb2`: `SearchChunksRequest{type_name,property,query,top_k,trace_id,filter,filter_logic}`, `ChunkSearchResponse{parent_key,chunk_text,score,trace_id}`, module-level `EQUALS`, `FILTER`, `AND` | same |
 | 21 | Signature | `grpc.RpcError` raised by stubs (`_InactiveRpcError`) exposes `.code() -> grpc.StatusCode` and `.details()`; codes `INVALID_ARGUMENT`, `UNAVAILABLE`, `FAILED_PRECONDITION`, `NOT_FOUND`, `PERMISSION_DENIED` | `python3 -c` |
 | 22 | Signature | Hydrated values are `str \| float \| bool \| list \| None` — a datetime column arrives as `string_value` | `core.py:559-568` |
-| 23 | Code validity | anthropic SDK 1.x: `client.messages.parse(model=, max_tokens=, system=, messages=, output_format=Model).parsed_output`; `client.messages.create(..., tools=…)` → `.content` blocks (`.type` `"text"`/`"tool_use"`, `.text`, `.id`, `.name`, `.input`), `.stop_reason`; `tool_result` blocks `{type, tool_use_id, content, is_error?}` returned together in ONE user message | `claude-api` skill `python/claude-api/tool-use.md:168-230,498-527`; `README.md:53` (1.x on `httpx2`) |
+| 23 | Code validity | anthropic SDK 1.x: `client.messages.parse(model=, max_tokens=, system=, messages=, output_format=Model).parsed_output`; `client.messages.create(..., tools=…)` → `.content` blocks (`.type` `"text"`/`"tool_use"`, `.text`, `.id`, `.name`, `.input`), `.stop_reason`; `tool_result` blocks `{type, tool_use_id, content, is_error?}` returned together in ONE user message | `claude-api` skill `python/claude-api/tool-use.md:168-230,498-527`; `README.md:53` (1.x on `httpx2`); SDK source `src/anthropic/resources/messages/messages.py` `Messages.parse(*, max_tokens, messages, model, metadata, output_config, output_format, service_tier, stop_sequences, system, thinking, tool_choice, tools, …) -> ParsedMessage`, and `src/anthropic/types/parsed_message.py` `ParsedMessage.parsed_output` (fetched from `anthropics/anthropic-sdk-python@main`, 2026-09-03) |
 | 24 | Code validity | Test convention: plain `pytest` functions/classes with `unittest.mock.MagicMock` stubs; no fixture library | `Iverson.Clients/Python/tests/test_entity_coordinator.py:7,54,214` |
 | 25 | Code validity | Every import the plan's code uses resolves: `from iverson_client import IversonClient, IversonClientCredentials, EntityCoordinator`; `iverson_client.generated.{object_search_pb2, object_mapping_pb2}`; `iverson_client.core._to_pascal_case`; `iverson_client.search._to_search_value` | `iverson_client/__init__.py`; `generated/` listing |
 | 26 | Ordering | T2, T3, T4 depend on T1 only; T5 on T2–T4; T6 on T5; T7 on T1 (final config edit). No task imports a symbol a later task creates | by construction — see each task's Interfaces |
 | 27 | Consumer impact | The two constants are read at `BenchmarkQueryScenario.cs:94` (guard), `:255` (similar `TopK`), `:292` (similar collapse), `:300` (chunks `TopK`), `:317` (chunks collapse) — and nowhere else (not the `.meta.json` writer, which records the server `/build` composite). Setting both per arm changes exactly the request size and the collapse limit | `grep -n DocumentBudget\|ChunkBudgetMultiplier BenchmarkQueryScenario.cs` |
 | 28 | Consumer impact | `ChunkBudgetGuard` on SciFact (3.85 chunks/doc) at `DocumentBudget = 5` passes for multiplier ≥ 4 (`5×4/3.85 = 5.19 ≥ 5`) and refuses `×2`, `×3` (throws `InvalidOperationException`, `:117`) | `ChunkBudgetGuard.cs:36-45`; `keymap.json.stats.json` |
 | 29 | Consumer impact | Adding `Iverson.Agents/Python/.venv/` to `.gitignore` shadows nothing tracked | `git ls-files \| grep -ci venv` → 0 |
+| 30 | Code validity | The `.pth` path carries a second regular package named `tests` (`Iverson.Clients/Python/tests/__init__.py`); the agent's `tests` package wins because `python -m pytest` (cwd) and pytest's prepend import mode put `Iverson.Agents/Python` at `sys.path[0]`, ahead of site-packages `.pth` entries — so `from tests.test_schema import …` in `test_session.py` resolves to the agent's module | CIR round 1 §1 span check |
+| 31 | Code validity | The generated protos require protobuf ≥ 6.33.5 (`object_search_pb2.py:12-18`) and grpcio ≥ 1.81.1 (`object_search_pb2_grpc.py:8-14`); the plan's `protobuf>=5.29.0` pin is satisfied because unconstrained resolution selects the latest (6.33.6 published) | CIR round 1 §1 span check |
+| 32 | Code validity | `iverson_client`'s third-party imports are only `grpc` and `google.protobuf`, so Task 1's smoke import needs nothing beyond the five packages installed | CIR round 1 §1 span check |
+| 33 | Code validity | Bare `@iverson_entity`, non-`FieldMeta` defaults, and `object.__new__(Cls)` instances (as the tests build them) work | `annotations.py:222-226,307-311`; exercised in CIR round 1 |
+| 34 | Signature | `IversonClientCredentials(client_id, client_secret, token_endpoint, scope=None)` field names as `__main__.py` uses them | `auth.py:17-21` |
+| 35 | Command | Qdrant is at `localhost:6333` with api-key `dev-only-not-for-production-qdrant-key-0123456789` under compose, as Task 7 step 1 assumes | `Iverson.Server/docker-compose.yml:111-114` |
+| 36 | Command | `IVERSON_ACTING_USER_TOKEN` has no producer in `bench-env.sh` (`Iverson.LoadTest` mints its own, `Program.cs:35-41`); no plan step runs the agent CLI live (Task 6 step 5 runs `--help` only), so a live `ask` needs a token minted per `docs/user-management-and-security.md` | CIR round 1 §1 span check |
 
 ## Tasks
 
@@ -259,7 +266,7 @@ def test_render_schema_lists_only_metadata_fields_by_schema_name():
 
 
 def test_validate_filters_matches_case_insensitively_and_emits_canonical_spelling():
-    valid = validate_filters([("published_at", "2025-11-02"), ("SOURCE", "legal")],
+    valid = validate_filters([("PUBLISHEDAT", "2025-11-02"), ("SOURCE", "legal")],
                              policy_doc_type(), trace_id="t")
     assert valid == [ValidFilter("PublishedAt", "2025-11-02"), ValidFilter("Source", "legal")]
 
@@ -540,6 +547,7 @@ def test_render_context_numbers_documents_and_drops_lowest_passages_first():
     assert "[doc 1]" in full and "[doc 2]" in full and "Source=legal" in full and "y" * 400 in full
     tight = render_context(ctx, budget_tokens=260)
     assert "y" * 400 not in tight and "x" * 400 in tight          # lowest score dropped first
+    assert [t for _, t in ctx[0].passages] == ["x" * 400]         # pruned in place: citations see only the page
     tiny = render_context(ctx, budget_tokens=60)
     assert "sum-A" in tiny and "[doc 2]" in tiny                  # summary fallback; documents never dropped
 ```
@@ -699,19 +707,21 @@ def _render_one(n: int, c: DocumentContext, passages: list[tuple[float, str]]) -
 
 def render_context(contexts: list[DocumentContext], budget_tokens: int) -> str:
     """Numbered, citable blocks under a token ceiling: drop lowest-scored passages across all
-    documents first; a document with no passages left shows its summary. Documents are never dropped."""
-    kept = [list(c.passages) for c in contexts]
+    documents first; a document with no passages left shows its summary. Documents are never dropped.
+
+    Prunes each DocumentContext.passages IN PLACE to the rendered set, so the citations (§4.6),
+    the grounding judge (§7.2), and expand_document's "shown" set are exactly what was on the page."""
 
     def render() -> str:
-        return "\n\n".join(_render_one(i + 1, c, kept[i]) for i, c in enumerate(contexts))
+        return "\n\n".join(_render_one(i + 1, c, c.passages) for i, c in enumerate(contexts))
 
     text = render()
     while estimate_tokens(text) > budget_tokens:
-        candidates = [(p[-1][0], i) for i, p in enumerate(kept) if p]
+        candidates = [(c.passages[-1][0], i) for i, c in enumerate(contexts) if c.passages]
         if not candidates:
             break
         _, i = min(candidates)
-        kept[i].pop()
+        contexts[i].passages.pop()
         text = render()
     return text
 ```
@@ -1502,15 +1512,23 @@ PYTHONPATH=/home/ben/repositories/iverson-benchmark-corpora/python-libs python3 
   --qrels $RUN/qrels.trec \
   --run agent-k5-f5.chunks.trec --run agent-k5-f4.chunks.trec --run agent-k5-f6.chunks.trec --run agent-k5-f8.chunks.trec \
   --baseline agent-k5-f5.chunks.trec | tee report-agent-fanout-2026-09.txt
+PYTHONPATH=/home/ben/repositories/iverson-benchmark-corpora/python-libs python3 \
+  /home/ben/repositories/Iverson/Iverson.Server/Iverson.LoadTest/scripts/report.py \
+  --qrels $RUN/qrels.trec \
+  --run agent-k5-f8.chunks.trec --baseline agent-k5-f6.chunks.trec | tee -a report-agent-fanout-2026-09.txt
 ```
+The first invocation compares `×4`, `×6`, `×8` each against `×5`; the second produces the 8-vs-6
+comparison step 5 needs. Each invocation is its own Holm family.
 Per spec §7.1: unless the reranker phase-1 plan's Task 1 (`list(...)` at `report.py:552`) has
 landed — check `grep -n "list(ir_measures.read_trec_run(baseline_path))" …/report.py` — **only the
 nDCG@10 rows of the paired section are trustworthy**; the per-run R@50/AP absolute scores are fine.
 The ranking is 5 deep, so nDCG@10 is scored over a 5-deep list (ranks 6–10 contribute zero).
 
 - [ ] **Step 5: Record the verdict** in `docs/plans/2026-09-FANOUT-reasoning-agent.md`: the four
-arms' per-run nDCG@10 / R@50 / AP; for `×4`, `×6`, `×8` vs `×5` on nDCG@10 the delta, paired t,
-permutation p, Holm p_adj, 95 % CI, d_z, queries changed; whether the guard refused any arm; the
+arms' per-run nDCG@10 / R@50 / AP; for `×4`, `×6`, `×8` vs `×5` and for `×8` vs `×6` on nDCG@10 the
+delta, paired t, permutation p, Holm p_adj, 95 % CI, d_z, queries changed; the three next-smaller
+comparisons the plateau rule reads, named explicitly: 5-vs-4 (the `×5`-family's 4-vs-5 row with the
+sign flipped), 6-vs-5 (same family), 8-vs-6 (the second invocation); whether the guard refused any arm; the
 server build composite from the `.meta.json` sidecars (must be identical across arms — the harness
 edit does not change it); and one line: **fanout plateau = N** (the smallest multiplier at which
 nDCG@10 stops improving with Holm p_adj < 0.05 against the next-smaller arm; if no arm differs
