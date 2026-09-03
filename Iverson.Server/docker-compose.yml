@@ -148,6 +148,21 @@ services:
         curl -X POST http://ollama:11434/api/pull -d '{"name":"qwen2.5:3b"}'
     restart: "no"
 
+  # Cross-encoder reranker (spec docs/specs/2026-09-03-reranker-design.md §5). Behind a profile so
+  # nothing starts unless asked:   docker compose --profile reranker up -d reranker
+  # Switch model per arm with RERANKER_MODEL_ID (the container serves ONE model). The model cache is
+  # a named volume, never /tmp (a 4.9 GB tmpfs on the dev box, spec §7.6.3). --auto-truncate is the
+  # stated head-truncation policy (§3.5); the harness records /info in each run's sidecar.
+  reranker:
+    image: ghcr.io/huggingface/text-embeddings-inference:cpu-1.8
+    container_name: iverson-reranker
+    profiles: ["reranker"]
+    command: ["--model-id", "${RERANKER_MODEL_ID:-cross-encoder/ms-marco-MiniLM-L-6-v2}", "--auto-truncate"]
+    ports:
+      - "8090:80"
+    volumes:
+      - reranker_models:/data
+
   zookeeper:
     image: confluentinc/cp-zookeeper:7.6.0
     container_name: iverson-zookeeper
@@ -369,6 +384,9 @@ services:
       - ASPNETCORE_ENVIRONMENT=Production
       - Otel__Endpoint=http://jaeger:4317
       - Embeddings__BaseUrl=http://ollama:11434
+      # MMR lambda; 0.70 is VectorRankingOptions' default. The reranker evaluation's A0'/A3 arms run
+      # the API at 1.00 (spec §7.2):   VECTOR_RANKING_LAMBDA=1.00 docker compose up -d iverson-api
+      - VectorRanking__Lambda=${VECTOR_RANKING_LAMBDA:-0.70}
       # Must agree with ollama-init's pulled model (line ~147) and with the five conformance
       # fixtures' "nomic-embed-text" literals — this is the deployment default the client
       # conformance harness's ModelRejectedScenario (S11 model-rejected) registers types against
@@ -527,3 +545,4 @@ volumes:
   kafka_data:
   ollama_data:
   prometheus_data:
+  reranker_models:
