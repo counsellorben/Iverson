@@ -259,6 +259,11 @@ switch (command)
                                      benchmark-query reads it from
               --config-label <name> Label identifying one of the sweep's eight configurations,
                                      used by benchmark-query when naming its run file
+              --rerank-url <url>    benchmark-query only: rescore each query's 50 max-passage documents
+                                     with a TEI cross-encoder at this base URL (e.g. http://127.0.0.1:8090)
+                                     before writing the chunks run file. Omitted = today's control path.
+              --rerank-model <id>   Refuse to start unless the reranker's /info model_id equals this
+                                     (requires --rerank-url)
             """);
         break;
 }
@@ -389,6 +394,8 @@ public sealed class CommandFlags
     public string OutputDir   { get; init; } = "";
     public string KeyMapPath  { get; init; } = "";
     public string ConfigLabel { get; init; } = "";
+    public string RerankUrl   { get; init; } = "";
+    public string RerankModel { get; init; } = "";
 
     public static CommandFlags Parse(string[] args) => new()
     {
@@ -402,6 +409,8 @@ public sealed class CommandFlags
         OutputDir   = StrFlag(args, "--output-dir",   ""),
         KeyMapPath  = StrFlag(args, "--key-map-path", ""),
         ConfigLabel = StrFlag(args, "--config-label", ""),
+        RerankUrl   = StrFlag(args, "--rerank-url",   ""),
+        RerankModel = StrFlag(args, "--rerank-model", ""),
     };
 
     private static int    IntFlag(
