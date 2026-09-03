@@ -122,6 +122,7 @@ def assemble(coordinator, entity_cls: type, type_name: str, chunk_property: str,
                          trace_id, p.key)
             seen = {t for _, t in passages}
             passages += [(h.score, h.chunk_text) for h in more if h.chunk_text not in seen]
+            passages.sort(key=lambda c: c[0], reverse=True)   # keep best-first after the top-up merge
         contexts.append(DocumentContext(
             key=p.key,
             title=getattr(e, title_field, None) if title_field else None,

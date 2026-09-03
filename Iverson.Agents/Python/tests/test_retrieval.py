@@ -89,12 +89,15 @@ def entity(key, title="T", summary="S"):
 def test_assemble_hydrates_tops_up_thin_parents_and_keys_metadata_by_schema_name():
     coord = MagicMock()
     coord.get_many.return_value = [entity("A"), entity("B")]
-    coord.search_chunks.return_value = [chunk("A", "a-top1", 0.7), chunk("A", "a-top2", 0.6)]
+    # Scores deliberately out of order relative to the existing passage (a1, 0.9): a-top1 is
+    # lower and a-top2 is higher, so a naive append would leave the list unsorted and only the
+    # post-top-up sort in `assemble` produces the "best first" order asserted below.
+    coord.search_chunks.return_value = [chunk("A", "a-top1", 0.5), chunk("A", "a-top2", 0.95)]
     from iverson_agent.retrieval import RankedParent
     parents = [RankedParent("A", 0.9, [(0.9, "a1")]), RankedParent("B", 0.5, [(0.5, "b1"), (0.4, "b2"), (0.3, "b3")])]
     ctx = assemble(coord, Doc, "Doc", "Body", parents, "question", m=3, trace_id="t", title_field="title")
     assert [c.key for c in ctx] == ["A", "B"]
-    assert [t for _, t in ctx[0].passages] == ["a1", "a-top1", "a-top2"]     # topped up
+    assert [t for _, t in ctx[0].passages] == ["a-top2", "a1", "a-top1"]     # topped up, re-sorted best-first
     assert [t for _, t in ctx[1].passages] == ["b1", "b2", "b3"]             # already >= m: no call
     coord.search_chunks.assert_called_once()
     req = coord.search_chunks.call_args.args[0]
