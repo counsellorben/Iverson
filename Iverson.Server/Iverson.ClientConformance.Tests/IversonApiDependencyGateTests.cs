@@ -420,6 +420,34 @@ public class IversonApiDependencyGateTests
         || filePath.StartsWith(Path.Combine(testProjectDir, "obj"), StringComparison.Ordinal);
 
     /// <summary>
+    /// Reads a project-relative path (with <c>/</c> separators, matching <see
+    /// cref="AllowlistedFiles"/>'s keys) for every non-build-output <c>.cs</c> file directly under
+    /// <paramref name="testProjectDir"/>, pairing it with the file's source text — the same
+    /// projection <see cref="OnlyAllowlistedFiles_DependOnIversonApi"/> feeds into <see
+    /// cref="EvaluateSources"/>.
+    /// </summary>
+    private static IEnumerable<(string RelativePath, string Source)> ReadTestProjectSources(
+        string testProjectDir) =>
+        Directory
+            .EnumerateFiles(testProjectDir, "*.cs", SearchOption.AllDirectories)
+            .Where(path => !IsBuildOutputPath(path, testProjectDir))
+            .Select(path => (
+                RelativePath: Path.GetRelativePath(testProjectDir, path)
+                    .Replace(Path.DirectorySeparatorChar, '/'),
+                Source: File.ReadAllText(path)));
+
+    /// <summary>
+    /// The whole pipeline <see cref="OnlyAllowlistedFiles_DependOnIversonApi"/> runs against the
+    /// real test project, pulled out one seam further than <see cref="EvaluateSources"/> so it can
+    /// be pointed at a throwaway directory instead: disk enumeration, the
+    /// <see cref="IsBuildOutputPath"/> filter, the relative-path projection (with separators
+    /// normalized to <c>/</c>), reading each file's source, then <see cref="EvaluateSources"/>. No
+    /// behaviour change from what the <c>[Fact]</c> did inline before this method existed.
+    /// </summary>
+    internal static EvaluationResult EvaluateDirectory(string testProjectDir) =>
+        EvaluateSources(ReadTestProjectSources(testProjectDir));
+
+    /// <summary>
     /// The three ordered verdicts <see cref="OnlyAllowlistedFiles_DependOnIversonApi"/> asserts
     /// on, exactly as that test computes them today: files whose scan never finished, files that
     /// depend on <c>Iverson.Api</c> but are not allowlisted, and allowlisted files that no longer
@@ -474,21 +502,19 @@ public class IversonApiDependencyGateTests
     /// a real <c>Iverson.Api</c> code dependency must equal <see cref="AllowlistedFiles"/> in both
     /// directions, AND the scan must have been able to finish for every file — an unterminated
     /// literal is graded as a failure of its own rather than folded into "no dependency found".
+    ///
+    /// <para>The pipeline that produces <c>evaluation</c> — disk enumeration, the build-output
+    /// filter, the relative-path keying, and the set logic in <see cref="EvaluateSources"/> — is
+    /// exercised end to end against throwaway directories by the <c>EvaluateDirectory_*</c> tests
+    /// below; only the three <c>Should().BeEmpty()</c> calls immediately below this comment are
+    /// not independently exercised by a test (there is no way to make a real assertion-deletion
+    /// fail a test without literally parsing this method's own source), so they rest on code
+    /// review/inspection rather than a red-green guarantee.</para>
     /// </summary>
     [Fact]
     public void OnlyAllowlistedFiles_DependOnIversonApi()
     {
-        var testProjectDir = TestProjectDir();
-
-        var entries = Directory
-            .EnumerateFiles(testProjectDir, "*.cs", SearchOption.AllDirectories)
-            .Where(path => !IsBuildOutputPath(path, testProjectDir))
-            .Select(path => (
-                RelativePath: Path.GetRelativePath(testProjectDir, path)
-                    .Replace(Path.DirectorySeparatorChar, '/'),
-                Source: File.ReadAllText(path)));
-
-        var evaluation = EvaluateSources(entries);
+        var evaluation = EvaluateDirectory(TestProjectDir());
 
         evaluation.Unterminated.Should().BeEmpty(
             "each of these has a string, raw-string or verbatim literal that never closes, at "
@@ -945,5 +971,124 @@ public class IversonApiDependencyGateTests
             "only the allowlisted root file references Iverson.Api");
         evaluation.Stale.Should().BeEmpty(
             "the allowlisted root file still references Iverson.Api");
+    }
+
+    /// <summary>
+    /// Finding B (fix round 1): the <c>stale</c> list has the same unfalsifiable shape Finding 1
+    /// called out — no test, before this one, ever required it to be non-empty, so hardcoding it
+    /// to always-empty would have passed every other test in this file. An allowlisted entry
+    /// (<c>SchemaProbeTests.cs</c>) that no longer references <c>Iverson.Api</c> must appear in
+    /// <c>Stale</c>.
+    /// </summary>
+    [Fact]
+    public void EvaluateSources_AnAllowlistedEntryThatNoLongerReferencesIversonApi_AppearsInStale()
+    {
+        var entries = new[]
+        {
+            ("SchemaProbeTests.cs", "var x = 1;"),
+        };
+
+        var evaluation = EvaluateSources(entries);
+
+        evaluation.Stale.Should().ContainSingle()
+            .Which.Should().Be("SchemaProbeTests.cs",
+                "the allowlisted entry no longer references Iverson.Api, so it must be reported "
+                + "as a stale allowlist entry rather than silently accepted");
+        evaluation.Unlisted.Should().BeEmpty(
+            "the entry does not reference Iverson.Api, so it cannot be an unlisted dependency");
+    }
+
+    /// <summary>
+    /// A minimal throwaway test-project directory, created under <see cref="Path.GetTempPath"/>
+    /// and deleted on <see cref="Dispose"/>, so <see cref="EvaluateDirectory"/> — the whole
+    /// pipeline the real <c>[Fact]</c> runs, disk I/O included — can be driven end to end by a
+    /// test without touching the real test project or its real files.
+    /// </summary>
+    private sealed class TempTestProjectDirectory : IDisposable
+    {
+        public string RootPath { get; } =
+            Path.Combine(Path.GetTempPath(), $"IversonApiDependencyGateTests-{Guid.NewGuid():N}");
+
+        public TempTestProjectDirectory() => Directory.CreateDirectory(RootPath);
+
+        /// <summary>Writes one file's source, creating any subdirectories in <paramref
+        /// name="relativePath"/> (given with <c>/</c> separators) as needed.</summary>
+        public void WriteFile(string relativePath, string source)
+        {
+            var fullPath = Path.Combine(RootPath, relativePath.Replace('/', Path.DirectorySeparatorChar));
+            Directory.CreateDirectory(Path.GetDirectoryName(fullPath)!);
+            File.WriteAllText(fullPath, source);
+        }
+
+        public void Dispose()
+        {
+            if (Directory.Exists(RootPath))
+            {
+                Directory.Delete(RootPath, recursive: true);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Finding A (fix round 1): the <c>[Fact]</c>'s own end-to-end pipeline — disk enumeration
+    /// through <see cref="EvaluateDirectory"/> — must itself be exercised, not just the pure <see
+    /// cref="EvaluateSources"/> core one layer in. A real file on disk with an unterminated
+    /// ordinary literal must surface in <c>Unterminated</c>, keyed on its path relative to the
+    /// directory passed in.
+    /// </summary>
+    [Fact]
+    public void EvaluateDirectory_ReportsAnUnterminatedLiteral_ForARealFileOnDisk()
+    {
+        using var dir = new TempTestProjectDirectory();
+        dir.WriteFile("Weird.cs", "var s = \"never closes\nvar x = 1;");
+
+        var evaluation = EvaluateDirectory(dir.RootPath);
+
+        evaluation.Unterminated.Should().ContainSingle()
+            .Which.Should().Be("Weird.cs:1",
+                "the file on disk has an ordinary literal that opens on line 1 and is never "
+                + "closed, and EvaluateDirectory must key the report on its path relative to the "
+                + "directory passed in");
+    }
+
+    /// <summary>
+    /// Finding A, the other direction: a real file on disk at <c>sub/SchemaProbeTests.cs</c> that
+    /// references <c>Iverson.Api</c> must be reported as an unlisted dependency — confirming
+    /// <see cref="EvaluateDirectory"/>'s relative-path keying (not <c>Path.GetFileName</c>) is
+    /// wired all the way from disk enumeration through to the assertion the real <c>[Fact]</c>
+    /// makes.
+    /// </summary>
+    [Fact]
+    public void EvaluateDirectory_ASubdirectoryFileThatReferencesIversonApi_AppearsInUnlisted()
+    {
+        using var dir = new TempTestProjectDirectory();
+        dir.WriteFile("sub/SchemaProbeTests.cs", "using Iverson.Api;");
+
+        var evaluation = EvaluateDirectory(dir.RootPath);
+
+        evaluation.Unlisted.Should().ContainSingle()
+            .Which.Should().Be("sub/SchemaProbeTests.cs",
+                "a same-named file outside the test project's root must not inherit the root "
+                + "SchemaProbeTests.cs allowlist entry, all the way from real disk enumeration");
+    }
+
+    /// <summary>
+    /// Finding A: proves the <see cref="IsBuildOutputPath"/> filter is still wired all the way
+    /// through <see cref="EvaluateDirectory"/> — a file that references <c>Iverson.Api</c> but
+    /// sits under <c>bin/</c> or <c>obj/</c> must be excluded entirely, not reported as unlisted.
+    /// </summary>
+    [Fact]
+    public void EvaluateDirectory_ExcludesFilesUnderBinAndObj()
+    {
+        using var dir = new TempTestProjectDirectory();
+        dir.WriteFile("bin/Debug/Generated.cs", "using Iverson.Api;");
+        dir.WriteFile("obj/Debug/Generated2.cs", "using Iverson.Api;");
+
+        var evaluation = EvaluateDirectory(dir.RootPath);
+
+        evaluation.Unlisted.Should().BeEmpty(
+            "files under bin/ and obj/ are build output, not source under test, and must be "
+            + "filtered out before EvaluateSources ever sees them — if the filter were not wired "
+            + "through EvaluateDirectory, these Iverson.Api references would show up here");
     }
 }
