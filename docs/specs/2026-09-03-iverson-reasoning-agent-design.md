@@ -165,7 +165,10 @@ question ──► 4.1 plan ──► 4.2 locate ──► 4.3 assemble ──�
 
 One model call, no tools, structured output. Input: the question and a compact rendering of the
 schema — type name, type description, and for each field flagged `is_metadata` its name,
-description and CLR type. Output:
+description and CLR type. Field names are the `GetSchema` names: the PascalCase wire spelling
+the Python registrar sends (`PublishedAt`, not `published_at`). That is the **one canonical
+spelling** everywhere the model sees or emits a field name — this rendering, the `[doc n]`
+metadata render (§4.3), and the tool descriptions (§4.5). Output:
 
 ```python
 class Filter(BaseModel):
@@ -192,8 +195,10 @@ decompositions when the question spans distinct topics. It is told the filter ru
 the listed metadata fields, equality only, and "no filter" is the right answer when unsure.
 
 **Local validation before anything reaches the wire.** Each planned filter is checked against the
-schema the planner was shown: unknown field → dropped; field not `is_metadata` → dropped; value
-coerced to the field's CLR type, failure → dropped. Every drop is logged with the trace id. A
+schema the planner was shown: the field is matched case-insensitively against `SchemaField.name`,
+no match → dropped; field not `is_metadata` → dropped; value coerced to the field's CLR type,
+failure → dropped. A surviving clause is sent with the schema's spelling of the name, never the
+planner's. Every drop is logged with the trace id. A
 planner hallucination therefore never becomes an `InvalidArgument`, and the retry in §6 is the
 backstop, not the plan.
 
@@ -273,7 +278,8 @@ The output is `k` records:
 class DocumentContext:
     key: str
     title: str
-    metadata: dict[str, object]     # every is_metadata field
+    metadata: dict[str, object]     # every is_metadata field, keyed by its GetSchema name:
+                                    # the attribute whose _to_pascal_case(attr) == SchemaField.name
     summary: str | None
     passages: list[tuple[float, str]]   # (score, text), best first
     best_score: float
@@ -282,7 +288,7 @@ class DocumentContext:
 **Rendering under budget.** Each `DocumentContext` becomes one numbered block:
 
 ```
-[doc 3] key=… title="…" source=legal jurisdiction=GB published_at=2025-11-02
+[doc 3] key=… title="…" Source=legal Jurisdiction=GB PublishedAt=2025-11-02
   passage: …
   passage: …
 ```
@@ -315,7 +321,7 @@ Two tools, both thin wrappers over stages 4.2–4.3:
 
 | Tool | Input | What it does |
 |---|---|---|
-| `search_more` | `query_text`, `filters[]` | Validates filters as in §4.1, runs stage 1 + stage 2 on that one query, returns only documents **not already in context**, appended as `[doc k+1…]` |
+| `search_more` | `query_text`, `filters[]` | Validates filters as in §4.1 (the tool description names `filters[].field` in terms of the field names shown on the page, i.e. the `GetSchema` spelling), runs stage 1 + stage 2 on that one query, returns only documents **not already in context**, appended as `[doc k+1…]` |
 | `expand_document` | `doc_number`, `query_text` | Runs the PK-filtered `SearchChunks` of §4.3 for that document with a fresh query, returns the passages not already shown |
 
 The manual tool loop is the standard one — append the assistant content, execute each `tool_use`
@@ -393,19 +399,32 @@ layer is stabilised first.
 
 ### 7.1 Retrieval layer — offline, no LLM
 
-Stage 1 plus the group-by-parent step *is* a document ranker, and it is the same ranker the
-benchmark harness already runs: `BenchmarkQueryScenario` issues `SearchChunks` with
+Stage 1 plus the group-by-parent step *is* a document ranker, and the benchmark harness already
+runs the same shape: `BenchmarkQueryScenario` issues `SearchChunks` with
 `top_k = DocumentBudget × ChunkBudgetMultiplier` and collapses via `MaxPassageAggregator`. So the
-agent's retrieval layer is scored **with the existing harness and no new code**:
+agent's retrieval layer is scored with the existing harness and **no new ranking code** — but not
+at the harness's defaults. `DocumentBudget` (50) and `ChunkBudgetMultiplier` (5) are `private const`
+in `BenchmarkQueryScenario.cs`, so each arm is a source edit and rebuild that sets
+`DocumentBudget = k` and `ChunkBudgetMultiplier = fanout`. That makes the harness issue the agent's
+exact request and collapse to the agent's `k`. It matters because the server fetches `4 × top_k`
+candidates, fuses, and MMR-selects exactly `top_k`: a request for `50 × fanout` chunks and one for
+`5 × fanout` do not share a prefix, so a run at the defaults measures a different ranker than the
+agent's, and the `fanout` plateau it finds belongs to that other request.
 
 1. Use a corpus already ingested under `~/repositories/iverson-benchmark-corpora/<corpus>/`
    (each has `keymap.json`, `qrels.trec`, and `runs/`). Do not change the embedding model between
    arms — the standing rule from the reranker spec: an encoder change invalidates every number
    measured before it.
-2. Arm A (baseline): the existing "chunks" run at the current multiplier.
-3. Arm B: the same scenario at the agent's `fanout` (the multiplier is the only difference).
-4. Score: `scripts/report.py --run <runs dir> --qrels qrels.trec --baseline <arm A>.trec` for
-   nDCG@10, R@50, AP with paired t-test, sign-flip permutation, and Holm correction.
+2. Arm A (baseline): a **fresh** run at `DocumentBudget = k`, `ChunkBudgetMultiplier = 5` (the
+   current default). The existing `*.chunks.trec` runs were produced at `50 × 5` and are not this
+   arm.
+3. Arm B: the same build with `ChunkBudgetMultiplier = fanout` under test; nothing else changes.
+   Consequences to own: `ChunkBudgetGuard` re-evaluates at the new budget, and with `k = 5` the
+   ranking is 5 deep, so nDCG@10 is scored over a 5-deep list (ranks 6–10 contribute zero) — still
+   a valid paired comparison across `fanout` values.
+4. Score: `Iverson.Server/Iverson.LoadTest/scripts/report.py --run <runs dir> --qrels qrels.trec
+   --baseline <arm A>.trec` for nDCG@10, R@50, AP with paired t-test, sign-flip permutation, and
+   Holm correction.
 
 **Known harness defect.** At `main`, `report.py:552` binds the baseline run as a generator and
 re-iterates it per measure, so the R@50 and AP rows of the `--baseline` comparison are computed
@@ -476,7 +495,12 @@ Every claim above about Iverson's behaviour was checked against `main@7fb527b` o
 | 17 | No existing agent or RAG sample in the Python client to reuse | `sample/`, `conformance/` — only `driver.py:679-686` calls `search_chunks` |
 | 18 | `MaxPassageAggregator` = max chunk score per document, descending | `Iverson.LoadTest/Benchmark/{MaxPassageAggregator,DocumentRanking}.cs` |
 | 19 | The harness already runs chunks at `DocumentBudget × ChunkBudgetMultiplier` then collapses | `Iverson.LoadTest/Scenarios/BenchmarkQueryScenario.cs:300-317` |
-| 20 | `report.py --baseline` R@50/AP defect and its scheduled fix | `scripts/report.py:552-557`; `docs/plans/2026-09-03-reranker-phase1-implementation-plan.md:224-236` |
+| 20 | `report.py --baseline` R@50/AP defect and its scheduled fix | `Iverson.Server/Iverson.LoadTest/scripts/report.py:552-557`; `docs/plans/2026-09-03-reranker-phase1-implementation-plan.md:224-236` |
 | 21 | Corpora with `keymap.json` (`parent_key → doc id`) and `qrels.trec` exist | `~/repositories/iverson-benchmark-corpora/nfcorpus-arctic-2026-08-29/` et al. |
 | 22 | "Do not change the encoder and measure in the same run" | `docs/specs/2026-09-03-reranker-design.md` §2 |
-| 23 | Anthropic SDK shapes: manual tool loop, `tool_result` batching, `messages.parse(output_format=Model)`; forced `tool_choice` avoided (rejected on Fable 5.1) | `claude-api` skill, `python/claude-api/tool-use.md` §Manual Agentic Loop, §Structured Outputs |
+| 23 | Anthropic SDK shapes: manual tool loop, `tool_result` batching, `messages.parse(output_format=Model)`; forced `tool_choice` avoided (rejected on Fable 5.1) | `claude-api` skill, `python/claude-api/tool-use.md` §Manual Agentic Loop, §Structured Outputs; the Fable 5.1 `tool_choice` rejection at `shared/tool-use-concepts.md` §Tool choice |
+| 24 | `SearchChunksRequest.filter_logic` exists (set in §4.2) | `object_search.proto:123` |
+| 25 | Structured outputs accept `anyOf`, needed for `Filter.value: str \| float \| bool` | `claude-api` skill, `shared/tool-use-concepts.md:491` |
+| 26 | Omitting `thinking` on `claude-opus-5` runs adaptive thinking | `claude-api` skill, `python/claude-api/README.md:253` |
+| 27 | `DocumentBudget` and `ChunkBudgetMultiplier` are `private const` with no runtime binding — each §7.1 arm is a source edit | `Iverson.LoadTest/Scenarios/BenchmarkQueryScenario.cs:40-41`; only `ChunkBudgetGuard` reads them (`:94`) |
+| 28 | `GetSchema` field names are the PascalCase wire names; hydrated entities expose snake_case attributes | `core.py:96-98,273,555-566`; `ObjectMappingGrpcService.cs:208` |
