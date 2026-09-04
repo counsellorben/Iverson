@@ -97,7 +97,7 @@ Newly introduced by this plan and verified at plan-write time (2026-09-04, repo 
 |---|---|---|---|
 | P1 | File path | The seven modified source/test files and `IngestContractTests.cs`, `ingest.py`, `ingest-contract.json`, `report.py`, `stack.py`, `Iverson.LoadTest.csproj`, `Iverson.slnx` exist at the exact paths in File Structure | `ls` of all 13 paths succeeded |
 | P2 | File path | `docs/plans/2026-09-GATE-embedding-migration.md` and every `scifact-bge*` / `nfcorpus-bge*` directory under the corpora dir do not exist yet | `ls` → "No such file or directory" for all |
-| P3 | Signature | `VerifyServedModelAsync`, `EndpointUri`, `BaseUrlFor`, `ModelEndpoint`, `InfoCalls`, `LastRequestUri`, `CopyAsync`, `InfoResponse` collide with no existing symbol | `grep -rn` over `Iverson.Server/**/*.cs` (bin/obj excluded) → 0 hits |
+| P3 | Signature | `VerifyServedModelAsync`, `EndpointUri`, `BaseUrlFor`, `ModelEndpoint`, `InfoCalls`, `LastRequestUri`, `CopyAsync`, `InfoResponse` collide with no existing symbol | `grep -rn` over `Iverson.Server` `*.cs` (bin/obj excluded) → 2 hits, both the private nested `InfoResponse` record in `Iverson.LoadTest/Benchmark/TeiRerankClient.cs:26,33`, a different assembly — no collision (CIR-1) |
 | P4 | Signature | `IEmbeddingService` is `Dimension`, `ModelId`, `InitializeAsync`, `EnsureInitializedAsync`, `EmbedDocumentAsync`, `EmbedQueryAsync` — the plan adds no interface member | `IEmbeddingService.cs:3-11` |
 | P5 | Code validity | `new Uri(new Uri("http://tei-embed:8091"), "/v1/embeddings")` → `http://tei-embed:8091/v1/embeddings`; with base `http://tei-embed:80` → `http://tei-embed/info`; a trailing-slash base composes the same; `HttpRequestMessage.RequestUri.AbsolutePath` of the `/info` request is `/info` | scratch console (net10.0) printed `uri=http://tei-embed:8091/v1/embeddings path=/v1/embeddings`, `port80=http://tei-embed/info`, `trailing=http://localhost:11434/v1/embeddings`, `reqPath=/info` |
 | P6 | Code validity | A plain `ModelEndpoint { Name; BaseUrl }` class with settable properties and `List<ModelEndpoint> Models = []` binds from `Embeddings:Models:0:Name/BaseUrl`; an empty configuration leaves `Models` empty and `BaseUrlFor` returning `BaseUrl` | same scratch console with `Microsoft.Extensions.Configuration.Binder`: `models=1 name=BAAI/bge-base-en-v1.5 url=http://tei-embed:80 for=http://tei-embed:80 miss=http://localhost:11434`, `emptyModels=0 emptyFor=http://localhost:11434` |
@@ -123,6 +123,12 @@ Newly introduced by this plan and verified at plan-write time (2026-09-04, repo 
 | P26 | Command | Commit messages in this repo are lowercase imperative sentences with no type prefix | `git log --oneline -12` |
 | P27 | Ordering | `stack.py`'s out-of-tier stop halts every running `iverson-`-prefixed container not in the tier — including `iverson-tei-embed` if it were up — so the protocol never calls `stack.py` after TEI is started (and, per P17, never calls it at all) | `stack.py:124-131` |
 | P28 | Data | The baseline run files carry 15,000 rows over 300 queries (SciFact) and 16,150 rows over 323 queries (NFCorpus), the row counts Tasks 6–7 assert on the candidates; a 2,000-character text chunks to 2 at the 2,048/1,792 default and 5 at 512/448 (Task 4 step 5's expected output) | `wc -l` / `cut -f1 \| sort -u \| wc -l` on both `rerank-a0.chunks.trec`; `python3 -c` against `ingest.split_into_chunks` → `2000 2 5` |
+| P29 | Code validity | The plan's C# code blocks compile as written (with the `$$$` raw-string delimiter): applied verbatim to a scratch copy, `Iverson.Embeddings.Tests` builds and runs 39 pass / 2 resolver-fail after Task 1, 44/44 after Task 2, 46/46 after Task 3, and all five named mutations go red | CIR-1 scratch build of `Iverson.Embeddings` + `Iverson.Embeddings.Tests` |
+| P30 | Command | `docker compose config` renders a profile-gated service's `ports:`/`volumes:` as multi-line mappings (the port is line 14 of the block, the volume line 19) and prunes a top-level volume mounted only by a profiled service unless that `--profile` is given | verified against the structurally identical `reranker`: `grep -A 12` → 2, `grep -A 20` → 4; `config --volumes` → no `reranker_models`, `--profile reranker config --volumes` → 1 (CIR-1) |
+| P31 | Data | Today's chunker at 512/448 yields exactly 19,967 chunks from the SciFact corpus (5,183 docs) and 14,729 from NFCorpus (3,633 docs) — the sidecar totals Tasks 6–7 assert on, so the hard stops there test the window, not algorithm drift | `split_into_chunks` run over both `beir/corpus.jsonl` files in-round → `5183 → 19967`, `3633 → 14729` (CIR-1) |
+| P32 | Signature | `report.py --baseline` materialises the baseline run (`list(ir_measures.read_trec_run(baseline_path))`) before the per-measure loop, so the R@50 CI the gate reads is computed against the real baseline, not an exhausted generator | `report.py:557-560` (CIR-1) |
+| P33 | Command | `docker compose` resolves the `iversonserver` project from `Iverson.Server/Iverson.LoadTest/scripts` (Task 5 step 4's `stop` runs from that cwd) | `docker compose config --services` from that directory exits 0 and lists the services (CIR-1) |
+| P34 | Signature | `benchmark-query` writes `<label>.meta.json` unconditionally, reranked or not, so Task 6's composite grep and Task 8's `BUILD MISMATCH` prediction hold | `BenchmarkQueryScenario.cs:168-223` (CIR-1) |
 
 ## Tasks
 
@@ -180,7 +186,7 @@ Newly introduced by this plan and verified at plan-write time (2026-09-04, repo 
         new(HttpStatusCode.OK)
         {
             Content = new StringContent(
-                $$"""{"object":"list","data":[{"object":"embedding","index":0,"embedding":[{{string.Join(",", embedding)}}]}],"model":"x","usage":{"prompt_tokens":1,"total_tokens":1}}""",
+                $$$"""{"object":"list","data":[{"object":"embedding","index":0,"embedding":[{{{string.Join(",", embedding)}}}]}],"model":"x","usage":{"prompt_tokens":1,"total_tokens":1}}""",
                 Encoding.UTF8,
                 "application/json")
         };
@@ -419,7 +425,7 @@ git commit -m "embed through /v1/embeddings from the service's own base URL, and
         new(HttpStatusCode.OK)
         {
             Content = new StringContent(
-                $$"""{"object":"list","data":[{"object":"embedding","index":0,"embedding":[{{string.Join(",", embedding)}}]}],"model":"x","usage":{"prompt_tokens":1,"total_tokens":1}}""",
+                $$$"""{"object":"list","data":[{"object":"embedding","index":0,"embedding":[{{{string.Join(",", embedding)}}}]}],"model":"x","usage":{"prompt_tokens":1,"total_tokens":1}}""",
                 Encoding.UTF8,
                 "application/json")
         };
@@ -720,11 +726,12 @@ and change `- Embeddings__ModelId=nomic-embed-text` to `- Embeddings__ModelId=${
 cd /home/ben/repositories/Iverson/Iverson.Server
 docker compose config --services | grep -c '^tei-embed$'                                  # 0 — profile-gated
 docker compose --profile tei config --services | grep -c '^tei-embed$'                    # 1
-docker compose --profile tei config | grep -A 12 '^  tei-embed:' | grep -c 'BAAI/bge-base-en-v1.5\|--auto-truncate\|8091\|tei_models'   # 4
+docker compose --profile tei config | grep -A 20 '^  tei-embed:' | grep -c 'BAAI/bge-base-en-v1.5\|--auto-truncate\|8091\|tei_models'   # 4 (ports/volumes render as multi-line mappings: the port is line 14 of the block, the volume line 19)
 docker compose config | grep -cE 'Embeddings__ModelId: nomic-embed-text'                  # 2 (api + worker)
 docker compose config | grep -cE 'Embeddings__Models__0__Name: BAAI/bge-base-en-v1.5|Embeddings__Models__0__BaseUrl: http://tei-embed:80'   # 4
 BENCH_EMBED_MODEL=BAAI/bge-small-en-v1.5 EMBED_MODEL_ID=BAAI/bge-small-en-v1.5 docker compose config | grep -cE 'Embeddings__(ModelId|Models__0__Name): BAAI/bge-small-en-v1.5'   # 4
-docker compose config --volumes | grep -c '^tei_models$'                                  # 1
+docker compose config --volumes | grep -c '^tei_models$'                                  # 0 — pruned with the profiled service
+docker compose --profile tei config --volumes | grep -c '^tei_models$'                    # 1
 ```
 
 - [ ] **Step 4: The spec §9 smoke against a real TEI container** (first start downloads ~440 MB into the volume). Do not run `stack.py` (P17, P27).
