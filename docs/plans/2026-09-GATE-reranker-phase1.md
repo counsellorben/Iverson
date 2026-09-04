@@ -267,7 +267,17 @@ than feeding the winning chunk, and the difference is not distinguishable from n
   `Authentication flow did not complete` error — the `cf9cbb8` CSRF re-mint fix held (though at
   ~1h03m the run did not cross the 2 h token boundary).
 - **Provenance:** banner `input=document` printed once; sidecar `rerank-a4.meta.json` carries
-  `"input": "document"`. A4 wall time **~1 h 03 min** (12:32:05 → 13:35:28 local).
+  `"input": "document"`. A4 wall time **~1 h 03 min** (12:31:55 → 13:35:28 local; start from the
+  sidecar's `recordedAtUtc` 2026-09-04T16:31:55Z, end from the run file's mtime). The spec predicted
+  ≈ 3.5 h from a 3.3× per-batch cost ratio; the arm-duration record is too noisy to settle the point
+  either way (Phase 1's A1 took 72 min and A3 26 min for the same model on the same 15,000 chunk
+  inputs), so the arm's attribution rests on the banner, the sidecar, the code path, the
+  100 %-reordered pool checks against both A0 and A1, and A4's shifted score distribution — not on
+  wall time.
+- **Box state (§7.6.1):** before both runs, `iverson-worker` was confirmed absent and the
+  out-of-tier containers (`iverson-jaeger`, `iverson-kafka`, `iverson-starrocks`,
+  `iverson-zookeeper`) were stopped, leaving only the six-service query tier plus the reranker; no
+  `compose up` was run, so no tier container was recreated under the live API. **PASS.**
 
 ### TRIAL VERDICT: **TRIAL FAILED**
 
