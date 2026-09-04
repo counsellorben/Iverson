@@ -83,6 +83,16 @@ public sealed class BenchmarkQueryScenario(
             Console.Error.WriteLine("benchmark-query: --rerank-model requires --rerank-url.");
             throw new InvalidOperationException("--rerank-model was given without --rerank-url.");
         }
+        RerankInput rerankInput;
+        try
+        {
+            rerankInput = RerankInputs.Parse(flags.RerankInput, flags.RerankUrl);
+        }
+        catch (InvalidOperationException ex)
+        {
+            Console.Error.WriteLine($"benchmark-query: {ex.Message}");
+            throw;
+        }
 
         // Refuse a chunk budget that cannot reach DocumentBudget distinct documents (see
         // ChunkBudgetGuard's doc comment). ingest.py writes this sidecar; the C# ingest path does
@@ -149,7 +159,8 @@ public sealed class BenchmarkQueryScenario(
             }
             Console.WriteLine(
                 $"[benchmark-query] Reranking with {rerankerInfo.ModelId} at {flags.RerankUrl} " +
-                $"(max_input_length={rerankerInfo.MaxInputLength}, auto_truncate={rerankerInfo.AutoTruncate}).");
+                $"(max_input_length={rerankerInfo.MaxInputLength}, auto_truncate={rerankerInfo.AutoTruncate}, " +
+                $"input={flags.RerankInput}).");
         }
 
         // Record which build produced this run. A run that cannot be attributed to a build should
@@ -201,6 +212,7 @@ public sealed class BenchmarkQueryScenario(
                     ["modelId"]        = rerankerInfo.ModelId,
                     ["maxInputLength"] = rerankerInfo.MaxInputLength,
                     ["autoTruncate"]   = rerankerInfo.AutoTruncate,
+                    ["input"]          = flags.RerankInput,
                 },
             };
 
@@ -213,6 +225,20 @@ public sealed class BenchmarkQueryScenario(
 
         var keyMap = await KeyMap.LoadAsync(flags.KeyMapPath, ct);
         Console.WriteLine($"[benchmark-query] Loaded key map ({keyMap.Count:N0} entries) from {flags.KeyMapPath}");
+
+        // document mode scores each winner through its full corpus text (spec §3.2). Loaded once; a
+        // missing or unparsable corpus file aborts here, before the first query (fail loud, spec §4).
+        IReadOnlyDictionary<string, string>? corpusText = null;
+        if (rerankInput == RerankInput.Document)
+        {
+            var corpusFile = Path.Combine(flags.CorpusPath, "beir", "corpus.jsonl");
+            using var reader = new StreamReader(corpusFile);
+            corpusText = JsonlCorpusParser.ParseCorpus(reader)
+                .ToDictionary(d => d.DocId, d => d.Text, StringComparer.Ordinal);
+            Console.WriteLine(
+                $"[benchmark-query] Loaded corpus text ({corpusText.Count:N0} documents) from {corpusFile} " +
+                "for --rerank-input document.");
+        }
 
         var queries = LoadQueries(flags.CorpusPath);
         Console.WriteLine($"[benchmark-query] Loaded {queries.Count:N0} queries.");
@@ -242,7 +268,7 @@ public sealed class BenchmarkQueryScenario(
             var headers  = new Metadata().WithActingUser(await identity.GetTokenAsync(ct));
 
             var similar = await RunSimilarAsync(query, headers, ct);
-            var chunks  = await RunChunksAsync(query, headers, keyMap, reranker, ct);
+            var chunks  = await RunChunksAsync(query, headers, keyMap, reranker, rerankInput, corpusText, ct);
             failures += similar.Failed + chunks.Failed;
             foreach (var parentKey in chunks.Unresolved)
                 unresolvedParents.Add(parentKey);
@@ -335,7 +361,8 @@ public sealed class BenchmarkQueryScenario(
 
     private async Task<(IReadOnlyList<(string DocId, double Score)> Ranked, int Failed, IReadOnlyList<string> Unresolved)> RunChunksAsync(
         CorpusQuery query, Metadata headers, IReadOnlyDictionary<string, string> keyMap,
-        TeiRerankClient? reranker, CancellationToken ct)
+        TeiRerankClient? reranker, RerankInput rerankInput, IReadOnlyDictionary<string, string>? corpusText,
+        CancellationToken ct)
     {
         var request = Query.Chunks<BenchmarkDocument>(d => d.Body)
             .Text(query.Text)
@@ -367,16 +394,30 @@ public sealed class BenchmarkQueryScenario(
         // scored through its winning chunk), rescore, then re-sort -- TrecRunWriter sorts nothing.
         var winners  = MaxPassageAggregator.Aggregate(chunks, keyMap, DocumentBudget);
 
-        // Fail loud (spec §6) at query 1, not hour 3: an empty winning-chunk text would be scored by
-        // TEI as some arbitrary constant for every such document, which is silent corruption of that
-        // query's ranking, not a visible failure.
-        var emptyWinners = winners.Ranked.Where(w => string.IsNullOrWhiteSpace(w.Text)).ToList();
-        if (emptyWinners.Count > 0)
-            throw new InvalidOperationException(
-                $"QueryId={query.QueryId}: the winning chunk text for DocId={emptyWinners[0].DocId} " +
-                "is empty -- this arm must not be scored.");
+        // Which text each winner sends (spec §3.3). A winner absent from the corpus map throws here,
+        // naming the query as well as the document (spec §4).
+        IReadOnlyList<string> inputs;
+        try
+        {
+            inputs = RerankInputs.Select(rerankInput, winners.Ranked, corpusText);
+        }
+        catch (InvalidOperationException ex)
+        {
+            throw new InvalidOperationException($"QueryId={query.QueryId}: {ex.Message}", ex);
+        }
 
-        var scores   = await reranker.ScoreAsync(query.Text, winners.Ranked.Select(w => w.Text).ToList(), ct);
+        // Fail loud (spec §6) at query 1, not hour 3: an empty input text would be scored by TEI as
+        // some arbitrary constant for every such document, which is silent corruption of that query's
+        // ranking, not a visible failure. Runs over the selected inputs, so it covers both modes.
+        for (var i = 0; i < inputs.Count; i++)
+        {
+            if (string.IsNullOrWhiteSpace(inputs[i]))
+                throw new InvalidOperationException(
+                    $"QueryId={query.QueryId}: the rerank input text for DocId={winners.Ranked[i].DocId} " +
+                    "is empty -- this arm must not be scored.");
+        }
+
+        var scores   = await reranker.ScoreAsync(query.Text, inputs, ct);
         var rescored = winners.Ranked.Select((w, i) => (w.DocId, scores[i]));
         return (DocumentRanking.CollapseByDocId(rescored, DocumentBudget), failed, winners.UnresolvedParentKeys);
     }
