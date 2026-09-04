@@ -525,10 +525,10 @@ def _verify_algorithm_goldens():
         )
 
 
-# ── Ollama ──────────────────────────────────────────────────────────────────────────────
+# ── Embedding backend (Ollama or TEI, /v1/embeddings) ────────────────────────────────────
 
-def embed(text, model, document_prefix):
-    url = f"{OLLAMA_URL}/api/embed"
+def embed(text, model, document_prefix, embed_url):
+    url = f"{embed_url}/v1/embeddings"
     data = json.dumps({"model": model, "input": document_prefix + text}).encode()
     last_error = None
     for attempt in range(1, EMBED_RETRIES + 2):  # e.g. EMBED_RETRIES=2 -> 3 attempts total
@@ -549,10 +549,10 @@ def embed(text, model, document_prefix):
                 )
     else:
         sys.exit(f"embed request to {url} failed after {EMBED_RETRIES + 1} attempt(s): {last_error}")
-    embeddings = parsed.get("embeddings")
-    if not embeddings:
-        sys.exit(f"ollama /api/embed returned no embeddings (input length {len(text)}): {parsed}")
-    return embeddings[0]
+    data = parsed.get("data")
+    if not data or "embedding" not in data[0]:
+        sys.exit(f"{url} returned no embedding (input length {len(text)}): {parsed}")
+    return data[0]["embedding"]
 
 
 # ── Corpus ──────────────────────────────────────────────────────────────────────────────
@@ -580,9 +580,10 @@ def read_corpus(path):
 
 # ── Ingest one document ─────────────────────────────────────────────────────────────────
 
-def ingest_document(key, doc_id, title, body, object_collection, chunks_collection, model, document_prefix, stats):
+def ingest_document(key, doc_id, title, body, object_collection, chunks_collection, model, document_prefix, stats,
+                    embed_url, max_chars, step):
     parent_id = key_to_ulong(key)
-    chunks = list(split_into_chunks(body))
+    chunks = list(split_into_chunks(body, max_chars=max_chars, step=step))
     # An empty document prefix is reachable through configuration (Arctic's is ""), so this
     # is not dead code: without it, the first all-whitespace window would otherwise kill the
     # run below. Dropping the window rather than renumbering preserves every surviving chunk's
@@ -594,8 +595,11 @@ def ingest_document(key, doc_id, title, body, object_collection, chunks_collecti
     # chunk equal to body itself, one embed call fills both body_vector and that chunk's
     # vector -- otherwise the chunk text (stripped, windowed) is a different string from body
     # and needs its own embedding.
-    reuse = body == body.strip() and len(body) <= STEP
-    body_vector = embed(body, model, document_prefix)
+    # step is this run's effective step (the value the chunker was just given):
+    # split_into_chunks' defaults bind at def time, so the module global is not the window
+    # when --chunk-step is passed.
+    reuse = body == body.strip() and len(body) <= step
+    body_vector = embed(body, model, document_prefix, embed_url)
     stats["embed_calls"] += 1
 
     if reuse:
@@ -607,7 +611,7 @@ def ingest_document(key, doc_id, title, body, object_collection, chunks_collecti
     else:
         chunk_vectors = []
         for chunk_text, _ in chunks:
-            chunk_vectors.append(embed(chunk_text, model, document_prefix))
+            chunk_vectors.append(embed(chunk_text, model, document_prefix, embed_url))
             stats["embed_calls"] += 1
 
     centroid_input = [v for v in chunk_vectors if not is_zero_magnitude(v)]
@@ -653,7 +657,7 @@ def ingest_document(key, doc_id, title, body, object_collection, chunks_collecti
 
 # ── Stats sidecar ───────────────────────────────────────────────────────────────────────
 
-def update_stats_sidecar(path, run_stats, started_at_iso, finished_at_iso, elapsed_seconds, resume):
+def update_stats_sidecar(path, run_stats, started_at_iso, finished_at_iso, elapsed_seconds, resume, provenance):
     """Accumulates into whatever the sidecar already holds ONLY when resume is True -- a
     non-resumed invocation is measuring a whole corpus from zero, so any prior sidecar
     content (from an unrelated earlier invocation against the same --key-map-path) must not
@@ -675,6 +679,10 @@ def update_stats_sidecar(path, run_stats, started_at_iso, finished_at_iso, elaps
         "elapsed_seconds": existing.get("elapsed_seconds", 0) + elapsed_seconds,
         "started_at": existing.get("started_at", started_at_iso),
         "finished_at": finished_at_iso,
+        # Which model, backend and window produced the vectors (spec §3.5): every arm of the
+        # embedding-migration evaluation differs only in these. Written, not merged: a resumed
+        # run overwrites them with its own values.
+        **provenance,
     }
     with open(path, "w", encoding="utf-8") as f:
         json.dump(merged, f, indent=2)
@@ -716,9 +724,30 @@ def main():
              "ingest-contract.json, so it changes every vector written. CHANGING THE MODEL "
              "AGAINST AN EXISTING COLLECTION REQUIRES --drop: a different dimension is refused "
              "outright, and a same-dimension model would otherwise overwrite only the points "
-             "that overlap, leaving the collection holding a mixture of two vector spaces.",
+             "that overlap, leaving the collection holding a mixture of two vector spaces. "
+             "The id is sent as the request's model field; TEI ignores it and serves its "
+             "container's model, so for a TEI backend the sidecar's embed_url is the "
+             "attribution to trust.",
+    )
+    ap.add_argument(
+        "--embed-url", default=OLLAMA_URL,
+        help=f"embedding backend base URL, POSTed at /v1/embeddings (default {OLLAMA_URL}, Ollama; "
+             "a TEI container is e.g. http://localhost:8091)",
+    )
+    ap.add_argument(
+        "--chunk-max-chars", type=int, default=MAX_CHARS,
+        help=f"chunk window in characters (default: the contract's {MAX_CHARS}). Passed explicitly to "
+             "the chunker AND the embed-reuse gate; the contract's golden chunking cases still run at "
+             "the contract values, so an override cannot mask a chunker regression",
+    )
+    ap.add_argument(
+        "--chunk-step", type=int, default=STEP,
+        help=f"chunk step in characters (default: the contract's {STEP})",
     )
     args = ap.parse_args()
+    if not 0 < args.chunk_step <= args.chunk_max_chars:
+        ap.error(f"--chunk-step must be in 1..--chunk-max-chars (got step {args.chunk_step}, "
+                 f"max-chars {args.chunk_max_chars})")
 
     # Runs before --drop acts: dropping against a drifted contract is as damaging as ingesting
     # against one.
@@ -751,8 +780,10 @@ def main():
     # prefix-independent, so both work -- but C# probes unprefixed by design (spec §3/A12,
     # EmbeddingService's initialization probe does not compose), and this is the one place the
     # two paths could silently differ in what they send Ollama. They now do not.
-    dimension = len(embed("dimension probe", args.model, ""))
-    print(f"[ingest] probed embedding dimension {dimension} for model '{args.model}'")
+    dimension = len(embed("dimension probe", args.model, "", args.embed_url))
+    print(f"[ingest] probed embedding dimension {dimension} for model '{args.model}' at {args.embed_url}")
+    print(f"[ingest] chunk window max_chars={args.chunk_max_chars} step={args.chunk_step} "
+          f"(contract {MAX_CHARS}/{STEP}, word-boundary lookback {WORD_BOUNDARY_LOOKBACK})")
 
     if args.drop:
         drop_collection(args.object_collection)
@@ -822,6 +853,7 @@ def main():
                 ingest_document(
                     key, doc_id, title, body, args.object_collection, args.chunks_collection,
                     args.model, document_prefix, run_stats,
+                    args.embed_url, args.chunk_max_chars, args.chunk_step,
                 )
                 progress_f.write(doc_id + "\n")
                 progress_f.flush()
@@ -836,7 +868,9 @@ def main():
         finished_at = datetime.now(timezone.utc)
         elapsed_seconds = (finished_at - started_at).total_seconds()
         merged = update_stats_sidecar(
-            stats_path, run_stats, started_at.isoformat(), finished_at.isoformat(), elapsed_seconds, args.resume
+            stats_path, run_stats, started_at.isoformat(), finished_at.isoformat(), elapsed_seconds, args.resume,
+            {"model": args.model, "embed_url": args.embed_url,
+             "chunk_max_chars": args.chunk_max_chars, "chunk_step": args.chunk_step},
         )
         print(
             f"[ingest] this run: {run_stats['documents']:,} documents, {run_stats['chunks']:,} chunks, "
