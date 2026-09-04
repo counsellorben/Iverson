@@ -31,6 +31,11 @@ public static class EmbeddingPrefixes
         {
             ["nomic-embed-text"]        = ("search_document: ", "search_query: "),
             ["snowflake-arctic-embed"] = ("", "Represent this sentence for searching relevant passages: "),
+
+            // TEI-served candidates (spec 2026-09-04-embedding-migration-design §3.3): no document
+            // prefix, the bge query instruction. No ':' in the id, so each is its own family.
+            ["BAAI/bge-base-en-v1.5"]  = ("", "Represent this sentence for searching relevant passages: "),
+            ["BAAI/bge-small-en-v1.5"] = ("", "Represent this sentence for searching relevant passages: "),
         };
 
     public static string Family(string modelId)

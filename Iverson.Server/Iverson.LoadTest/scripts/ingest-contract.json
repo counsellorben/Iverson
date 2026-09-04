@@ -20,7 +20,9 @@
   "embedding": {
     "documentPrefixes": {
       "nomic-embed-text": "search_document: ",
-      "snowflake-arctic-embed": ""
+      "snowflake-arctic-embed": "",
+      "BAAI/bge-base-en-v1.5": "",
+      "BAAI/bge-small-en-v1.5": ""
     },
     "defaultDocumentPrefix": ""
   },
@@ -163,6 +165,14 @@
         "composed": "search_document: the quick brown fox"
       },
       "snowflake-arctic-embed": {
+        "text": "the quick brown fox",
+        "composed": "the quick brown fox"
+      },
+      "BAAI/bge-base-en-v1.5": {
+        "text": "the quick brown fox",
+        "composed": "the quick brown fox"
+      },
+      "BAAI/bge-small-en-v1.5": {
         "text": "the quick brown fox",
         "composed": "the quick brown fox"
       },

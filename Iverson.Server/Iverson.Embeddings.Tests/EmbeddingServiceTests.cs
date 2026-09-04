@@ -359,6 +359,8 @@ public sealed class EmbeddingServiceTests
     [InlineData("nomic-embed-text",          "search_document: ", "search_query: ")]
     [InlineData("nomic-embed-text:latest",   "search_document: ", "search_query: ")]
     [InlineData("snowflake-arctic-embed:s",  "",                  "Represent this sentence for searching relevant passages: ")]
+    [InlineData("BAAI/bge-base-en-v1.5",    "",                  "Represent this sentence for searching relevant passages: ")]
+    [InlineData("BAAI/bge-small-en-v1.5",   "",                  "Represent this sentence for searching relevant passages: ")]
     [InlineData("some-unknown-model",        "",                  "")]
     public void For_ResolvesByFamily_StrippingAnyTag(string modelId, string doc, string query)
     {
