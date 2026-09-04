@@ -92,7 +92,7 @@ Newly introduced by this plan and verified at plan-write time:
 | P17 | Sibling set (every referenced name resolves at its point of use) | scenario has `using Iverson.LoadTest.Benchmark;` and `using Iverson.LoadTest.Corpus;`; test files need `using Iverson.LoadTest.Benchmark;` (+ `FluentAssertions`, `Xunit`); `Program.cs` gets the Benchmark using in Task 2 | `BenchmarkQueryScenario.cs:8-9`; `MaxPassageAggregatorTests.cs:1-3`; P2 |
 | P18 | Behaviour | The help text is one raw string literal; a line can be inserted after the `--rerank-model` lines | `Program.cs:262-266` inside the literal that ends at `:267` |
 | P19 | Signature | `winners.Ranked[i].DocId` / `.Text` compile: `Ranked` is `IReadOnlyList<(string DocId, double Score, string Text)>` | `MaxPassageAggregator.cs:20-21` |
-| P20 | Environment | The `_iverson_schema` row for `BenchmarkDocument` present today is the one Phase 1's A3 ran against; `benchmark-query --help` is re-checked as Task 3's first step exactly as Phase 1 did | `psql` → one row `BenchmarkDocument`; Phase 1 report step 1 |
+| P20 | Environment | The `_iverson_schema` row for `BenchmarkDocument` present today is the one Phase 1's A3 ran against; Task 3 step 1 re-checks it by grepping `benchmark-query --help` output for `Schemas registered.` — with `bench-env.sh` sourced that line is the fifth printed (tenant-provisioning preamble first, `Program.cs:93`, `:107`, `:152`, `:163`), so the check is on content, not on a line prefix or exit status | `psql` → one row `BenchmarkDocument`; Phase 1 report step 1; CIR round 1 §2.2 |
 | P21 | Command | The Phase 1 score-collapse check is `awk '{print $1,$5}' <run>.chunks.trec \| sort \| uniq -d \| wc -l`, with the R16 acceptance rule (> 0.5 % rows, runs ≥ 3, or straddling rank 10 → stop) | `rerank-2026-09-task7-report.md:171-202` |
 
 ## Tasks
@@ -271,7 +271,7 @@ git commit -m "add RerankInputs: parse --rerank-input and select winning-chunk o
 
 **Files:**
 - Modify: `Iverson.Server/Iverson.LoadTest/Program.cs:1-9` (using), `:385-414` (`CommandFlags`), `:262-266` (help)
-- Modify: `Iverson.Server/Iverson.LoadTest/Scenarios/BenchmarkQueryScenario.cs:81-85` (guard), `:150-153` (banner), `:198-204` (sidecar), `:214-215` (corpus map), `:245` (call), `:336-382` (`RunChunksAsync`)
+- Modify: `Iverson.Server/Iverson.LoadTest/Scenarios/BenchmarkQueryScenario.cs:81-85` (guard), `:150-152` (banner), `:198-204` (sidecar), `:214-215` (corpus map), `:245` (call), `:336-382` (`RunChunksAsync`)
 - Test: `Iverson.Server/Iverson.LoadTest.Tests/Benchmark/CommandFlagsTests.cs`
 
 **Interfaces**
@@ -333,7 +333,7 @@ Help, inserted after the `--rerank-model` lines (`:265-266`), same indentation:
         }
 ```
 
-- [ ] **Step 4: Scenario — banner and sidecar.** Banner (`:150-153`) becomes:
+- [ ] **Step 4: Scenario — banner and sidecar.** The `Console.WriteLine` at `:150-152` becomes (the `}` at `:153` stays):
 ```csharp
             Console.WriteLine(
                 $"[benchmark-query] Reranking with {rerankerInfo.ModelId} at {flags.RerankUrl} " +
@@ -429,7 +429,12 @@ git commit -m "add --rerank-input to benchmark-query: score each document throug
 
 This task is operational: A0 ≈ 11 min, A4 ≈ 3.5 h (spec §5). One arm at a time; nothing else on the box. The run crosses Authentik's 2 h token validity; V15 (`cf9cbb8`) is what makes that survivable — if the harness dies with `Authentication flow did not complete`, that fix has regressed and the run must not be re-tried until it is found.
 
-- [ ] **Step 1: Environment.** From `Iverson.Server/`: `docker compose up -d` (no-op if already up). Verify the Phase 1 state the spec relies on, then the harness's schema path as Phase 1 did:
+- [ ] **Step 1: Environment.** Bring up the six-service query tier only, as Phase 1 did — `docker compose up -d` would also start `iverson-worker` (the Kafka→Qdrant consumer, which can rewrite the benchmark collections) and re-run `authentik-migrate`:
+```bash
+cd /home/ben/repositories/Iverson/Iverson.Server/Iverson.LoadTest && python3 scripts/stack.py query --timeout 300
+docker ps --format '{{.Names}}' | grep -q '^iverson-worker$' && echo WORKER-RUNNING-STOP   # must print nothing
+```
+Verify the Phase 1 state the spec relies on, then the harness's schema path as Phase 1 did:
 ```bash
 K=dev-only-not-for-production-qdrant-key-0123456789
 curl -s -H "api-key: $K" 127.0.0.1:6333/collections/benchmark_documents_chunks_tenant_bypass | grep -o '"points_count":[0-9]*'   # 19967
@@ -439,9 +444,9 @@ curl -s 127.0.0.1:8081/build | grep -o '"composite":"[^"]*"'                    
 export RUN=/home/ben/repositories/iverson-benchmark-corpora/scifact-run-2026-08-26
 source /home/ben/iverson-benchmark-data/bench-env.sh
 cd /home/ben/repositories/Iverson/Iverson.Server/Iverson.LoadTest
-dotnet run -c Release -- benchmark-query --help | head -3     # must print "Schemas registered." (P20)
+dotnet run -c Release -- benchmark-query --help 2>&1 | grep -q "Schemas registered." && echo SCHEMA-OK   # must print SCHEMA-OK (P20); the command's exit status is ignored -- it refuses on the missing --corpus-path after the banner
 ```
-Any mismatch stops the task: the spec's V5/V20 no longer hold and A1 cannot be reused.
+Any mismatch stops the task: the spec's V5/V20 no longer hold and A1 cannot be reused. The worker check is repeated before step 4.
 
 - [ ] **Step 2: Same-session control.**
 ```bash
@@ -464,9 +469,12 @@ Must be `cross-encoder/ms-marco-MiniLM-L-6-v2`, `512`, `true`.
 dotnet run -c Release -- benchmark-query --corpus-path $RUN --key-map-path $RUN/keymap.json --output-dir $RUN/runs --config-label rerank-a4 --rerank-url http://127.0.0.1:8090 --rerank-model cross-encoder/ms-marco-MiniLM-L-6-v2 --rerank-input document 2>&1 | tee $RUN/runs/rerank-a4.log
 grep -o '"input": "[a-z-]*"' $RUN/runs/rerank-a4.meta.json     # "document"
 grep -c "input=document" $RUN/runs/rerank-a4.log               # 1 (the banner)
-awk '{print $1,$5}' $RUN/runs/rerank-a4.chunks.trec | sort | uniq -d | wc -l   # score-collapse check (P21)
+# score-collapse check (P21): groups, rows / % of rows, and the ranks in each group -- the R16 rule's operands
+awk '{print $1,$5}' $RUN/runs/rerank-a4.chunks.trec | sort | uniq -cd | tee $RUN/runs/rerank-a4.dupes.txt | wc -l
+awk '{s+=$1} END {print s+0, (s+0)/15000*100 "%"}' $RUN/runs/rerank-a4.dupes.txt
+awk '{print $2,$3}' $RUN/runs/rerank-a4.dupes.txt | while read q sc; do awk -v q="$q" -v sc="$sc" '$1==q && $5==sc {print $4}' $RUN/runs/rerank-a4.chunks.trec | paste -sd,; done
 ```
-The banner must show `input=document`; the sidecar must carry it; the run must finish 300/300 with no `ARM INVALID`, no timeout, no `Authentication flow` error. Score-collapse rule from Phase 1 (R16): duplicates are acceptable unless they exceed 0.5 % of rows, form runs of ≥ 3, or straddle rank 10 — any of those stops the task. Afterwards `docker compose --profile reranker stop reranker`.
+The banner must show `input=document`; the sidecar must carry it; the run must finish 300/300 with no `ARM INVALID`, no timeout, no `Authentication flow` error. Score-collapse rule from Phase 1 (R16), read off the three outputs above: duplicates are acceptable unless the duplicated rows exceed 0.5 % of rows (second line), any group's count is ≥ 3 (first column of the dupes file), or any group's ranks straddle 10 (third output) — any of those stops the task. Afterwards `docker compose --profile reranker stop reranker`.
 
 - [ ] **Step 5: Score — two invocations, captured to one file.**
 ```bash
