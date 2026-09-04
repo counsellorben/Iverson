@@ -20,7 +20,8 @@ change the Phase 1 verdict? A pass reopens the parent spec's Phase 2 decision fo
 
 - One new run on SciFact `chunks`: **A4**, ms-marco MiniLM-L-6-v2, λ = 0.70, current chunked-512
   collection, `--rerank-input document`.
-- One same-session A0 control re-run, asserted byte-identical to the preserved `rerank-a0.chunks.trec`.
+- One same-session A0 control re-run, asserted identical on columns 1–5 to the preserved `rerank-a0.chunks.trec`
+  and `.similar.trec` (the sixth column is the run tag).
 - A1 (Phase 1, winning-chunk input) is **reused**, not re-run.
 - Harness-only. No server change, no NFCorpus, no bge-reranker-base, no second input variant, no λ
   recording in the sidecar.
@@ -87,26 +88,41 @@ sidecar's `composite` key (`report.py:193`), so the extra field breaks nothing.
 Run directory `~/repositories/iverson-benchmark-corpora/scifact-run-2026-08-26`, `$RUN`. Query tier up,
 `iverson-api` at `VectorRanking__Lambda=0.70`, Qdrant holding 5,183 documents / 19,967 chunks.
 
-1. **Control.** `benchmark-query --config-label rerank-a0-2026-09-04` with no reranker. Assert
-   `cmp runs/rerank-a0-2026-09-04.chunks.trec runs/rerank-a0.chunks.trec` is silent. A difference means the
-   index or server drifted since Phase 1 and A1 may not be reused; stop and report.
+1. **Control.** `benchmark-query --config-label rerank-a0-2026-09-04` with no reranker. `TrecRunWriter`
+   writes the config label as the run tag on every row (`TrecRunWriter.cs:29-30`), so whole-file
+   comparison fails by construction; compare columns 1–5, as Phase 1 did, on both files:
+   ```
+   diff <(cut -d' ' -f1-5 $RUN/runs/rerank-a0-2026-09-04.chunks.trec)  <(cut -d' ' -f1-5 $RUN/runs/rerank-a0.chunks.trec)
+   diff <(cut -d' ' -f1-5 $RUN/runs/rerank-a0-2026-09-04.similar.trec) <(cut -d' ' -f1-5 $RUN/runs/rerank-a0.similar.trec)
+   ```
+   Both must be empty. A difference means the index or server drifted since Phase 1 and A1 may not be
+   reused; stop and report.
 2. **Reranker.** `docker compose --profile reranker up -d reranker` (default model id is ms-marco;
    `/info` must report `cross-encoder/ms-marco-MiniLM-L-6-v2`, `max_input_length` 512, `auto_truncate` true).
 3. **A4.** `benchmark-query --config-label rerank-a4 --rerank-url http://127.0.0.1:8090 --rerank-model
    cross-encoder/ms-marco-MiniLM-L-6-v2 --rerank-input document`. Confirm the banner and
    `runs/rerank-a4.meta.json` say `document`.
-4. **Statistics.** One invocation:
+4. **Statistics.** Two invocations, one per pair, so the gate number cannot be lost to the format
+   result: `check_pool` runs over every declared pair before any statistic and exits the whole
+   invocation on failure, and its ≥ 25 %-reordered rule is a detector for a reranker that did not run —
+   applied to A4 vs A1, where both arms ran one, it would measure the format effect itself.
    ```
    PYTHONPATH=~/repositories/iverson-benchmark-corpora/python-libs python3 \
      Iverson.Server/Iverson.LoadTest/scripts/report.py --qrels $RUN/qrels.trec \
-     --run $RUN/runs/rerank-a0.chunks.trec --run $RUN/runs/rerank-a1.chunks.trec --run $RUN/runs/rerank-a4.chunks.trec \
-     --pair $RUN/runs/rerank-a4.chunks.trec=$RUN/runs/rerank-a0.chunks.trec \
+     --run $RUN/runs/rerank-a0.chunks.trec --run $RUN/runs/rerank-a4.chunks.trec \
+     --pair $RUN/runs/rerank-a4.chunks.trec=$RUN/runs/rerank-a0.chunks.trec
+   PYTHONPATH=~/repositories/iverson-benchmark-corpora/python-libs python3 \
+     Iverson.Server/Iverson.LoadTest/scripts/report.py --qrels $RUN/qrels.trec \
+     --run $RUN/runs/rerank-a1.chunks.trec --run $RUN/runs/rerank-a4.chunks.trec \
      --pair $RUN/runs/rerank-a4.chunks.trec=$RUN/runs/rerank-a1.chunks.trec
    ```
-   Holm m = 2. Each pair passes `check_pool` (identical per-query doc-id sets; ≥ 25 % sequences differ).
-5. **Verdict.** Parent spec §3.4 applied to **A4 vs A0**: positive nDCG@10 delta with Holm-adjusted
-   p < 0.05 on both paired *t* and sign-flip permutation. **A4 vs A1** is the format question and is
-   reported, not gated. Either outcome is appended to `docs/plans/2026-09-GATE-reranker-phase1.md` and to
+   Holm m = 1 in each (a single declared pair, so the adjusted p equals the raw permutation p). The
+   gate pair must pass `check_pool` (identical per-query doc-id sets; ≥ 25 % sequences differ). An
+   `ARM INVALID` exit on the A4 vs A1 invocation's ≥ 25 % half is a format finding (the input change
+   barely moved the ordering), not an invalid arm.
+5. **Verdict.** Parent spec §3.4 applied to **A4 vs A0**: positive nDCG@10 delta with p < 0.05 on
+   both paired *t* and sign-flip permutation (Holm at m = 1 leaves the permutation p unchanged).
+   **A4 vs A1** is the format question and is reported, not gated. Either outcome is appended to `docs/plans/2026-09-GATE-reranker-phase1.md` and to
    the parent spec's closing note under §3.4.
 
 **Expected wall time.** A0 ≈ 11 min. A batch of 8 abstracts costs 0.79 s idle against 0.24 s for 8
@@ -122,7 +138,7 @@ the re-mint. Score-collapse and timeout checks from Phase 1 apply unchanged.
   guard; `document` without `--rerank-url` is refused. (One test each; the guard test is the same shape
   as the existing model-without-url refusal.)
 - The existing 43 `Iverson.LoadTest.Tests` and 6 `test_report.py` tests keep passing. `report.py` needs
-  no change: `--pair` already accepts the same run on the left of two pairs (`report.py:602-628`, `:668`).
+  no change: each invocation declares a single `--pair` (`report.py:602-628`, `:668`).
 
 ## 7. Measurements taken during design
 
@@ -153,18 +169,22 @@ the re-mint. Score-collapse and timeout checks from Phase 1 apply unchanged.
 | V10 | The truncated fraction is small enough to leave the published setup intact | 10.9–17.1 % (§7) — larger than the 3 % estimated during design; recorded, no design change |
 | V11 | No client-side length or payload limit trips on abstracts | `TeiRerankClient.cs` has no per-text guard; `BatchSize` 8 < TEI's cap of 32; 55,193-char batch accepted |
 | V12 | Extracting the selection function breaks no existing test | `WinningChunkAggregation.Ranked` is `(DocId, Score, Text)` (`MaxPassageAggregator.cs:20-21`); `RunChunksAsync` is private; only `MaxPassageAggregatorTests.cs` mentions the scenario, in a comment |
-| V13 | Nothing constructs `CommandFlags` outside `Parse` | `grep "new CommandFlags"` → only `Parse` |
+| V13 | Nothing constructs `CommandFlags` outside `Parse` | `grep -rn "CommandFlags" --include=*.cs` → the declaration (`Program.cs:385`), `Parse` (`:400`, target-typed `new()`), its single call (`:18`), and seven `RunAsync(CommandFlags flags, …)` parameters; the test project never names it |
 | V14 | `--config-label L` yields `L.chunks.trec` / `L.similar.trec` / `L.meta.json` | `BenchmarkQueryScenario.cs:258-259` |
 | V15 | The CSRF re-mint fix is on `main` | `git branch --contains cf9cbb8` → `main` |
 | V16 | The compose reranker defaults to ms-marco and its model volume survives | `docker-compose.yml:160`; volume `iversonserver_reranker_models`; `/info` ready in < 60 s |
 | V17 | The gate doc and the parent spec's closing note exist to receive the result | both on `main` (`12571d3`) |
 | V18 | No title prepend is needed | 5,183 / 5,183 texts begin with the title |
 | V19 | The winners' `Text` has no consumer other than the guard and the rescore | `BenchmarkQueryScenario.cs:373`, `:379` |
+| V20 | The live server's build composite equals both preserved sidecars, so `report.py` prints no `BUILD MISMATCH` over the family | `curl 127.0.0.1:8081/build` → `31583db5aea49136` = `rerank-a0.meta.json` = `rerank-a1.meta.json` (CDR round 1) |
+| V21 | `corpus.jsonl` `_id` values are unique, so the doc id → text dictionary builds without collapsing documents | 5,183 lines, 5,183 distinct ids (CDR round 1) |
+| V22 | `RerankInput` / `RerankInputs` collide with no existing symbol | repo-wide grep over `.cs` and `.py` → zero hits (CDR round 1) |
+| V23 | Columns 1–5 are the drift test; the run-tag column differs between labels by construction | `TrecRunWriter.cs:29-30` appends `runTag`; `BenchmarkQueryScenario.cs:262` passes `flags.ConfigLabel`; `rerank-a0` vs `rerank-a0-preplan`: `cmp` differs at byte 34, columns 1–5 identical (CDR round 1) |
 
 ## 9. Known issues, accepted as out of scope
 
 - Abstracts over the window lose their tail to `--auto-truncate` (10.9–17.1 %). This is the published
   setup; a windowing or head+tail policy is not part of this trial.
-- A1 is reused rather than re-run. The byte-identical A0 check in §5 step 1 is the evidence that reuse
+- A1 is reused rather than re-run. The columns-1–5 A0 check in §5 step 1 is the evidence that reuse
   is sound; if it fails, A1 must be re-run before A4 is compared to it.
 - NFCorpus is not run. The trial answers the SciFact gate question only.
