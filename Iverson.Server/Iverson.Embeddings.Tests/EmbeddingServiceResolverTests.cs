@@ -13,11 +13,13 @@ public sealed class EmbeddingServiceResolverTests
     private sealed class RecordingHttpMessageHandler(HttpResponseMessage response) : HttpMessageHandler
     {
         public string? LastRequestBody { get; private set; }
+        public Uri?    LastRequestUri  { get; private set; }
 
         protected override async Task<HttpResponseMessage> SendAsync(
             HttpRequestMessage request,
             CancellationToken ct)
         {
+            LastRequestUri  = request.RequestUri;
             LastRequestBody = request.Content is not null
                 ? await request.Content.ReadAsStringAsync(ct)
                 : null;
@@ -29,7 +31,7 @@ public sealed class EmbeddingServiceResolverTests
         new(HttpStatusCode.OK)
         {
             Content = new StringContent(
-                $$"""{"embeddings":[[{{string.Join(",", embedding)}}]]}""",
+                $$$"""{"object":"list","data":[{"object":"embedding","index":0,"embedding":[{{{string.Join(",", embedding)}}}]}],"model":"x","usage":{"prompt_tokens":1,"total_tokens":1}}""",
                 Encoding.UTF8,
                 "application/json")
         };
@@ -132,5 +134,42 @@ public sealed class EmbeddingServiceResolverTests
         await arctic.EmbedDocumentAsync("hello");
 
         handler.LastRequestBody.Should().NotContain("CONFIGURED_OVERRIDE_DOC");
+    }
+
+    [Fact]
+    public async Task Get_ForAListedModel_SendsToThatModelsBaseUrl()
+    {
+        var handler = new RecordingHttpMessageHandler(SuccessResponse([1f, 0f, 0f]));
+        var options = Options.Create(new EmbeddingServiceOptions
+        {
+            BaseUrl = "http://localhost:11434",
+            ModelId = "nomic-embed-text",
+            Models  = [new ModelEndpoint { Name = "BAAI/bge-base-en-v1.5", BaseUrl = "http://tei-embed:8091" }]
+        });
+        var resolver = new EmbeddingServiceResolver(
+            FactoryFor(handler), options, Substitute.For<IEmbeddingService>(), NullLogger<EmbeddingService>.Instance);
+
+        await resolver.Get("BAAI/bge-base-en-v1.5").EmbedQueryAsync("hello");
+
+        // A resolver that ignores Models sends this to http://localhost:11434.
+        handler.LastRequestUri.Should().Be(new Uri("http://tei-embed:8091/v1/embeddings"));
+    }
+
+    [Fact]
+    public async Task Get_ForAnUnlistedModel_SendsToTheGlobalBaseUrl()
+    {
+        var handler = new RecordingHttpMessageHandler(SuccessResponse([1f, 0f, 0f]));
+        var options = Options.Create(new EmbeddingServiceOptions
+        {
+            BaseUrl = "http://localhost:11434",
+            ModelId = "nomic-embed-text",
+            Models  = [new ModelEndpoint { Name = "BAAI/bge-base-en-v1.5", BaseUrl = "http://tei-embed:8091" }]
+        });
+        var resolver = new EmbeddingServiceResolver(
+            FactoryFor(handler), options, Substitute.For<IEmbeddingService>(), NullLogger<EmbeddingService>.Instance);
+
+        await resolver.Get("snowflake-arctic-embed:s").EmbedQueryAsync("hello");
+
+        handler.LastRequestUri.Should().Be(new Uri("http://localhost:11434/v1/embeddings"));
     }
 }

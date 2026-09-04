@@ -444,4 +444,23 @@ public sealed class EmbeddingServiceTests
 
         handler.LastRequestBody.Should().NotContain("search_query: ");
     }
+
+    [Fact]
+    public async Task DefaultService_WhoseModelIsListedInModels_UsesTheListedBaseUrl()
+    {
+        // The DI-constructed default service is built from the global options with ModelId set to
+        // the TEI-only candidate (compose BENCH_EMBED_MODEL); the resolver short-circuits to it for
+        // that id, so this service must resolve its own base URL through Models (CDR-1 §2.1).
+        var handler = new FakeHttpMessageHandler(SuccessResponse([0.1f]));
+        var svc = CreateService(handler, new EmbeddingServiceOptions
+        {
+            BaseUrl = "http://ollama:11434",
+            ModelId = "BAAI/bge-base-en-v1.5",
+            Models  = [new ModelEndpoint { Name = "BAAI/bge-base-en-v1.5", BaseUrl = "http://tei-embed:8091" }]
+        });
+
+        await svc.EmbedDocumentAsync("hello");
+
+        handler.LastRequest!.RequestUri.Should().Be(new Uri("http://tei-embed:8091/v1/embeddings"));
+    }
 }

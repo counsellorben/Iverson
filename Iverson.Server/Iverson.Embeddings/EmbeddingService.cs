@@ -17,7 +17,10 @@ public sealed class EmbeddingService(
 
     private int _dimension;
     private readonly SemaphoreSlim _initLock = new(1, 1);
-    private readonly string _baseUrl = options.Value.BaseUrl;
+    // Resolved through Models so the DI-constructed default service reaches the backend that
+    // serves its model when that model is listed (a benchmark arm makes a TEI-only model the
+    // default; the resolver never consults the list for the default id).
+    private readonly string _baseUrl = options.Value.BaseUrlFor(options.Value.ModelId);
 
     private readonly string _documentPrefix =
         options.Value.DocumentPrefix ?? EmbeddingPrefixes.For(options.Value.ModelId).Document;
