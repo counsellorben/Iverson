@@ -168,6 +168,7 @@ the result lands inside noise, **Phase 2 does not happen.**
 > not reachable by the models trialled. Full verdict and run provenance: `docs/plans/2026-09-GATE-reranker-phase1.md`.
 > §3.5 and the §7.4 follow-ons are not pursued. The Phase 1 harness work (rescore path, `report.py` baseline fix and
 > `--pair`, the flow-executor CSRF fix) is merged to `main`.
+> Document-input trial (2026-09-04, spec 2026-09-04-reranker-document-input-trial-design.md): A4 vs A0 +0.0032 nDCG@10, p 0.8193 — TRIAL FAILED; see the gate doc.
 
 ### 3.5 Phase 2 — server-side stage
 

@@ -181,3 +181,100 @@ The two corpora ran as **sequential families with a snapshot swap between them, 
 (justification above). All box-idle (§7.6.1) and timing (§7.6.7) requirements were observed
 throughout — nothing but the query-tier compose stack and (during reranked arms) the reranker
 container ran concurrently with any benchmark-query process.
+
+## Document-input trial (A4, 2026-09-04)
+
+Follow-up trial from `docs/specs/2026-09-04-reranker-document-input-trial-design.md`: identical to A1
+except the cross-encoder scores each candidate's **full corpus document text** instead of its winning
+chunk (`benchmark-query --rerank-input document`). Same corpus, same retrieval config, same reranker
+(`cross-encoder/ms-marco-MiniLM-L-6-v2`, `max_input_length=512`, `auto_truncate=true`), same server
+build identity `31583db5aea49136`, 300 queries, 50 candidates/query, 15,000 rows. Full `report.py`
+output: `~/repositories/iverson-benchmark-corpora/scifact-run-2026-08-26/runs/report-rerank-a4-2026-09.txt`.
+
+**A1 reuse.** A1 was reused rather than re-run. A same-session A0 control (`rerank-a0-2026-09-04`) was
+run first and its columns 1–5 are byte-identical to the preserved Phase 1 `rerank-a0` for both
+`.chunks` and `.similar` (`CHUNKS-IDENTICAL` / `SIMILAR-IDENTICAL`), so neither the index nor the
+server drifted between the Phase 1 family and this trial, and the Phase 1 arms remain comparable.
+
+| Arm | Config | λ | Reranker | Input | Queries | Duration | Exit |
+|---|---|---|---|---|---|---|---|
+| A4 | rerank-a4 | 0.70 | ms-marco-MiniLM-L-6-v2 | full document | 300/300 | ~1h03m | clean |
+
+Macro scores: A0 nDCG@10 0.6960 / R@50 0.9227 / AP 0.6561; A1 0.7043 / 0.9227 / 0.6644;
+**A4 0.6993 / 0.9227 / 0.6584.**
+
+Pool checks (both invocations `exit=0`, neither `ARM INVALID`):
+
+```
+[pool] rerank-a4.chunks.trec  vs  rerank-a0.chunks.trec: 300 queries, set changed on 0, sequence differs on 300 (100.0%)
+[pool] rerank-a4.chunks.trec  vs  rerank-a1.chunks.trec: 300 queries, set changed on 0, sequence differs on 300 (100.0%)
+```
+
+`set changed on 0` on both (reranking never touched the candidate pool) and 100.0 % of sequences
+reordered on both, well above the 25 % floor.
+
+### The gate comparison: A4 vs A0 (nDCG@10)
+
+```
+[compare] rerank-a4.chunks.trec  vs  rerank-a0.chunks.trec        (nDCG@10)
+  delta            +0.0032
+  paired t         t = 0.23   p = 0.8214
+  permutation      p = 0.8193   (10,000 sign flips, seed 20260831)
+  95% CI           [-0.0251, +0.0316]
+  Cohen's d_z      0.013
+  MDE @ 80% power  0.0403
+  queries changed  118 / 300  (39.3%)
+  Holm (1 tests)   p_adj = 0.8193   not significant
+```
+
+| Pair | Metric | Delta | Paired t p | Permutation p (= Holm p_adj, m=1) | 95% CI | d_z | MDE@80% | Queries changed |
+|---|---|---|---|---|---|---|---|---|
+| A4 vs A0 | nDCG@10 | +0.0032 | 0.8214 | 0.8193 | [-0.0251, +0.0316] | 0.013 | 0.0403 | 118/300 (39.3%) |
+
+R@50 for A4 is **0.9227**, equal to A0's 0.9227 to 4 decimals (delta +0.0000, 0/300 queries changed,
+permutation p = 1.0000) — retrieval invariant, as required.
+
+### The format comparison: A4 vs A1 (nDCG@10)
+
+```
+[compare] rerank-a4.chunks.trec  vs  rerank-a1.chunks.trec        (nDCG@10)
+  delta            -0.0050
+  paired t         t = -0.41   p = 0.6821
+  permutation      p = 0.6947   (10,000 sign flips, seed 20260831)
+  95% CI           [-0.0289, +0.0189]
+  Cohen's d_z      -0.024
+  MDE @ 80% power  0.0341
+  queries changed  93 / 300  (31.0%)
+  Holm (1 tests)   p_adj = 0.6947   not significant
+```
+
+| Pair | Metric | Delta | Paired t p | Permutation p (= Holm p_adj, m=1) | 95% CI | d_z | MDE@80% | Queries changed |
+|---|---|---|---|---|---|---|---|---|
+| A4 vs A1 | nDCG@10 | -0.0050 | 0.6821 | 0.6947 | [-0.0289, +0.0189] | -0.024 | 0.0341 | 93/300 (31.0%) |
+
+This invocation did **not** exit `ARM INVALID`: `set changed on 0` held and 100.0 % of sequences
+differ. A4's AP is also lower than A1's (-0.0060, permutation p = 0.6725, n.s.), and R@50 is
+identical (+0.0000, p = 1.0000). Feeding the full document is, on point estimate, slightly *worse*
+than feeding the winning chunk, and the difference is not distinguishable from noise.
+
+### Checks
+
+- **Oracle ceiling (§7.1.3 / A36, 0.9216):** A4's nDCG@10 is 0.6993 — does **not** exceed the
+  ceiling. **PASS.**
+- **Score collapse (R16):** zero duplicate `(qid, score)` groups in `rerank-a4.chunks.trec`
+  (0 rows, 0.00 % of 15,000; no group of size ≥ 3; no group straddling rank 10). **PASS.**
+- **Run integrity:** 300/300 queries, exit 0, no `ARM INVALID`, no per-batch timeout, and no
+  `Authentication flow did not complete` error — the `cf9cbb8` CSRF re-mint fix held (though at
+  ~1h03m the run did not cross the 2 h token boundary).
+- **Provenance:** banner `input=document` printed once; sidecar `rerank-a4.meta.json` carries
+  `"input": "document"`. A4 wall time **~1 h 03 min** (12:32:05 → 13:35:28 local).
+
+### TRIAL VERDICT: **TRIAL FAILED**
+
+Per spec §5 step 5 the trial passes only on a positive A4-vs-A0 nDCG@10 delta with p < 0.05 on both
+the paired *t* and the permutation test. The delta is positive (+0.0032) but both p-values are far
+from significant (t p = 0.8214, permutation p = 0.8193 = Holm p_adj at m = 1), the 95 % CI
+[-0.0251, +0.0316] straddles zero, and the observed |delta| is an order of magnitude below the
+family's MDE@80% of 0.0403. **Document input does not rescue the failed Phase 1 gate.** It is also
+not better than chunk input: A4 trails A1 by -0.0050 nDCG@10 (n.s.). The GATE FAILED verdict above
+stands unchanged, and no Phase 2 plan follows from this trial either.
