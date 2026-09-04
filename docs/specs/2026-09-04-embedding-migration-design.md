@@ -64,9 +64,13 @@ fail at registration.
 TEI serves one model per container and **ignores the `model` field** — verified: a request naming
 `nomic-embed-text` against a bge-base container returned bge-base vectors. bge-base and nomic are both
 768-dim, so the existing dimension probe cannot catch a misrouted model. In `EnsureInitializedAsync`
-(`:37-52`), after the probe and inside the same lock, the service requests `GET {BaseUrl}/info`. If the
-answer is 200 and carries `model_id`, it must equal `ModelId` (ordinal) or initialisation throws naming
-both ids. Ollama answers 404 there (verified), so the guard is a no-op on Ollama. One request per
+(`:37-52`), inside the same lock, between the probe call and the `_dimension` assignment (`:43`), the
+service requests `GET {BaseUrl}/info`. If the answer is 200 and carries `model_id`, it must equal
+`ModelId` (ordinal) or initialisation throws naming both ids. The placement is load-bearing: a mismatch
+leaves the service uninitialised, so every later `EnsureInitializedAsync` re-throws rather than
+returning early at `:36` — the startup call's swallowed warning (`Program.cs:404-415`) becomes a
+registration-time `Unavailable` (`SchemaRegistrationOrchestrator.cs:133-142`) and blocks the arm
+automatically. Ollama answers 404 there (verified), so the guard is a no-op on Ollama. One request per
 service lifetime.
 
 ### 3.3 Prefix table
@@ -138,7 +142,7 @@ registration, following the `VectorRanking__Lambda=${VECTOR_RANKING_LAMBDA:-0.70
 
 | Component | Change |
 |---|---|
-| `Iverson.Embeddings/EmbeddingService.cs` | `/v1/embeddings` request + `data[0].embedding` parse; absolute URI from `BaseUrl`; `/info` identity guard after the probe |
+| `Iverson.Embeddings/EmbeddingService.cs` | `/v1/embeddings` request + `data[0].embedding` parse; absolute URI from `BaseUrl`; `/info` identity guard before the dimension is recorded |
 | `Iverson.Embeddings/EmbeddingServiceOptions.cs` | `+ List<ModelEndpoint> Models`; `ModelEndpoint(Name, BaseUrl)` |
 | `Iverson.Embeddings/EmbeddingServiceResolver.cs` | per-model `BaseUrl` lookup with global fallback |
 | `Iverson.Embeddings/ServiceCollectionExtensions.cs` | default service's `BaseUrl` resolved through `Models` |
@@ -262,11 +266,17 @@ quoted verbatim, the throughput rows, and the `.similar` deltas.
 
 - `EmbeddingServiceTests` (`FakeHttpMessageHandler`, `:14`): request path is `/v1/embeddings` on the
   configured base URL, body carries `model` and `input`, `data[0].embedding` is parsed; identity guard —
-  `/info` 200 with matching id initialises, mismatching id throws naming both, 404 initialises.
+  `/info` 200 with matching id initialises, mismatching id throws naming both, 404 initialises; a
+  mismatching `/info` makes a *second* `EnsureInitializedAsync` throw too, not just the first — the
+  assertion that separates guard-before-dimension from guard-after.
   `FakeHttpMessageHandler` returns one response for every request today; it gains a branch on
   `request.RequestUri.AbsolutePath` (`/v1/embeddings` vs `/info`) and builds a fresh `HttpResponseMessage`
-  per call, as `CountingHttpMessageHandler` already does (`:191-196`).
+  per call, as `CountingHttpMessageHandler` already does (`:191-196`). `CountingHttpMessageHandler` and
+  `FlakyThenSuccessHandler` count only `/v1/embeddings` (the same path branch), so the three `CallCount`
+  assertions at `:210`, `:222`, `:256` keep their values and keep meaning "probe once per lifetime";
+  raising the literals instead would stop `ProbesOnlyOnce` falsifying a double probe.
 - `EmbeddingServiceResolverTests`: a listed model gets its own base URL; an unlisted one gets the global.
+  Its `SuccessResponse` (`:27-34`) takes the `data[0].embedding` shape.
 - `IngestContractTests`: the regenerated contract carries the two bge rows (the test fails until the
   JSON is regenerated, by design).
 - `ingest.py`: a `--limit 5` smoke ingest into `--object-collection scratch_objects --chunks-collection
@@ -311,7 +321,7 @@ quoted verbatim, the throughput rows, and the `.similar` deltas.
 | S3 | The resolver is the only non-DI construction site of `EmbeddingService` | `grep "new EmbeddingService("` → `EmbeddingServiceResolver.cs:21` only |
 | S4 | The existing fakes (`FakeHttpMessageHandler`, `CountingHttpMessageHandler`, `RecordingHttpMessageHandler`) each return one response for every request and cannot route `/v1/embeddings` and `/info` separately; the §9 tests need a fake that branches on `request.RequestUri.AbsolutePath` and builds a fresh response per call | `EmbeddingServiceTests.cs:14-19,183-199`, `EmbeddingServiceResolverTests.cs:13-25` (CDR-1) |
 | S5 | Nothing else calls `/api/embed` or depends on Ollama's response shape | repo grep → `EmbeddingService.cs:66,77` and `ingest.py:531` only |
-| S6 | The probe runs inside `EnsureInitializedAsync`'s lock; the guard can follow it there | `EmbeddingService.cs:37-52` |
+| S6 | The probe runs inside `EnsureInitializedAsync`'s lock; the guard runs there before `_dimension` is assigned (`:43`) — the early return at `:36` is what makes the ordering load-bearing | `EmbeddingService.cs:36-52` (CDR-2) |
 | S7 | Family = id before the first `:`; ordinal keys | `EmbeddingPrefixes.cs:33-40` |
 | S8 | `IngestContractTests` writes/pins `ingest-contract.json`; `ingest.py` reads it | `IngestContractTests.cs:15,85-93`; `ingest.py:142-143,415-416` |
 | S9 | Model ids never become Qdrant collection/vector names | `SchemaBuilder.cs:341-351` (names from property names); `CollectionSchema.cs:8` |
@@ -321,6 +331,7 @@ quoted verbatim, the throughput rows, and the `.similar` deltas.
 | C1 | The reranker service is the compose template; worker env block accepts new entries | `docker-compose.yml:153-165,476-492` |
 | C2 | `${VAR:-default}` env templating is an existing pattern | `VectorRanking__Lambda=${VECTOR_RANKING_LAMBDA:-0.70}` |
 | C3 | Qdrant and Postgres data live in named volumes, surviving container recreation | `docker-compose.yml:539-548` |
+| C4 | The `--no-deps` recreate in §6.3 step 4 lands on the running dependencies' network: all six containers share project `iversonserver` and network `iversonserver_default`, because Compose derives the project name from the `Iverson.Server` directory | `docker inspect` labels (CDR-2) |
 | B1 | `ingest.py`: `OLLAMA_URL` + `embed()` are the only embed site; `--model`, `--drop`, sidecar writer exist; window constants come from the contract | `ingest.py:147,208-210,530-553,684-745` |
 | B2 | `ingest.py` resolves prefixes by family from the contract, same rule as C# | `ingest.py:406,415-416` |
 | B3 | The baseline collection's window is 512/448/50 from the experiment branch; main's script is 2,048/1,792 now and was at the baseline commit `de4b6bf`; the fusion weights changed 2026-08-31 | `git show chunk-size-512-experiment:…ingest-contract.json`; `git show de4b6bf:…ingest.py:153-154`; `git log` → `ce7bf12` |
@@ -333,7 +344,9 @@ quoted verbatim, the throughput rows, and the `.similar` deltas.
 | B10 | NFCorpus baseline run dir holds `beir/`, `qrels.trec`, `keymap.json*`, `ingest.log`, `runs/` | `ls nfcorpus-run-2026-08-27` |
 | B11 | `benchmark-query` reads only `documents`/`chunks` from the stats sidecar, case-insensitive, extras ignored | `BenchmarkQueryScenario.cs:51-53,91-100` |
 | B12 | `report.py` also reads the stats sidecar (`--stats-path`); every access is `stats.get(<key>)`, so the four added keys are inert there | `report.py:322-365` (CDR-1) |
+| B13 | `report.py` prints `!! BUILD MISMATCH` and continues; delta/CI/MDE/Holm are unaffected, and §5 leaves the scoring assemblies untouched | `report.py:486-497` (CDR-2) |
 | H1 | The ollama subchart + `condition:` pattern exists for Phase 2 | `Chart.yaml:27`; `charts/ollama/templates/{statefulset,service}.yaml` |
+| H2 | The Helm chart's default-deny egress does not reach a non-Ollama backend; Phase 2 must add TEI to it (Phase 2 only) | `networkpolicies.yaml:54-55,85-86,394-402` (CDR-2) |
 
 ## 12. Known issues, accepted as out of scope
 
