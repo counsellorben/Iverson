@@ -129,6 +129,14 @@ Newly introduced by this plan and verified at plan-write time (2026-09-04, repo 
 | P32 | Signature | `report.py --baseline` materialises the baseline run (`list(ir_measures.read_trec_run(baseline_path))`) before the per-measure loop, so the R@50 CI the gate reads is computed against the real baseline, not an exhausted generator | `report.py:557-560` (CIR-1) |
 | P33 | Command | `docker compose` resolves the `iversonserver` project from `Iverson.Server/Iverson.LoadTest/scripts` (Task 5 step 4's `stop` runs from that cwd) | `docker compose config --services` from that directory exits 0 and lists the services (CIR-1) |
 | P34 | Signature | `benchmark-query` writes `<label>.meta.json` unconditionally, reranked or not, so Task 6's composite grep and Task 8's `BUILD MISMATCH` prediction hold | `BenchmarkQueryScenario.cs:168-223` (CIR-1) |
+| P35 | Signature | `report.py`'s printed delta and CI are `run − baseline` (`diffs = run_arr - baseline_arr`), the sign the gate's −0.02 lower-bound threshold assumes | `report.py:427` (CIR-2) |
+| P36 | Signature | Holm's family size is recomputed per measure over the `--run` set only; the `--baseline` file never enters `run_paths` — so one SciFact invocation is m = 2 and the NFCorpus one m = 1, as the Global Constraints state | `report.py:576-579` (CIR-2) |
+| P37 | Consumer impact | Re-registering `BenchmarkDocument` under the candidate does not drop the collection ingest.py just filled: `IntelligenceCollectionManager` takes its up-to-date branch when every schema vector exists at the declared dimension, and migrates by copying only when a vector name is missing | `IntelligenceCollectionManager.cs:64-96` (CIR-2) |
+| P38 | Command | Qdrant's snapshot upload creates the collection when it does not exist, so Task 7 step 5's DELETE-then-upload restore is valid (RESTORE.md's proven loop uploads over live collections) | running server's `GET /dashboard/openapi.json`: "If collection does not exist - it will be created" (CIR-2) |
+| P39 | Data | The rebuilt API is expected to reproduce `rerank-a0`: no commit after the live image's build time touches `Iverson.Api`/`Iverson.Vector`/`Iverson.Embeddings`/`Iverson.Sql`/`Iverson.StarRocks`/`Iverson.Events`/`Iverson.Client.Contracts`, and `rerank-a0` ran at λ = 0.70, the compose default Task 6 step 2 restores | `git log` over those paths; `2026-09-GATE-reranker-phase1.md:42` (CIR-2) |
+| P40 | Data | The chunk-budget guard admits every arm: `ChunkBudgetGuard.Evaluate(documents, chunks, 50, 5)` sees 3.85 (SciFact) and 4.05 (NFCorpus) chunks per document, the baselines' own ratios | CIR-2 |
+| P41 | Command | `benchmark-query` registers the schema (and prints `Schemas registered.`) only when `IVERSON_CLIENT_ID`/`IVERSON_CLIENT_SECRET`/`IVERSON_TOKEN_ENDPOINT` are set; otherwise it prints "Client credentials not configured … skipping … schema registration"; `/home/ben/iverson-benchmark-data/bench-env.sh` is the only file exporting them — every task that runs the harness sources it first | `Program.cs:28-31,117-121,150-165` (CIR-2) |
+| P42 | Command | Qdrant refuses an unauthenticated request with 401 ("Must provide an API key or an Authorization bearer token"), so every `curl` against 6333 in Tasks 6–7 carries `-H "api-key: $K"` with `$K` set in that task | `curl` without the header → 401; with it → 200 (CIR-2) |
 
 ## Tasks
 
@@ -869,7 +877,11 @@ A `not initialized` warning or a `serves model` line in the API log is the ident
 
 ≈ 4.1 h ingest + ≈ 15 min query + restore. Same discipline as Task 6.
 
-- [ ] **Step 1: Gate** — Task 6 step 1's worker/health checks; then `docker inspect iverson-api | grep -o '"Embeddings__ModelId=[^"]*"'` (bge-small from Task 6, confirming the API is this branch's build).
+- [ ] **Step 1: Gate** — Task 6 step 1's worker/health checks; then `docker inspect iverson-api | grep -o '"Embeddings__ModelId=[^"]*"'` (bge-small from Task 6, confirming the API is this branch's build). Then establish this task's own shell state once, as Task 6 steps 1 and 3 did — a fresh subagent shell inherits nothing, and steps 3 and 4 below consume both:
+```bash
+K=dev-only-not-for-production-qdrant-key-0123456789
+source /home/ben/iverson-benchmark-data/bench-env.sh
+```
 
 - [ ] **Step 2: Ingest N1.**
 ```bash
