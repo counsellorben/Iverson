@@ -1,8 +1,9 @@
 # Reranker Phase 1 — Gate Verdict
 
 Recorded 2026-09-04, from `.worktrees/reranker-phase1` HEAD `cf9cbb8` (branch `reranker-phase1`).
-Corresponds to Task 7 of `2026-09-03-reranker-phase1-implementation-plan.md`. Full execution log
-in `.superpowers/sdd/2026-09-03-reranker-phase1-implementation-plan/task-7-report.md`.
+Corresponds to Task 7 of `2026-09-03-reranker-phase1-implementation-plan.md`. Full execution log, per-arm logs and the SDD ledger are preserved beside the run files:
+`~/repositories/iverson-benchmark-corpora/scifact-run-2026-08-26/rerank-2026-09-task7-report.md`,
+`rerank-2026-09-task7-logs/`, `rerank-2026-09-sdd-ledger.md`.
 
 ## Method
 
@@ -19,8 +20,8 @@ is bit-deterministic in this stack:
   -d' ' -f1-5 reference.similar.trec) <(cut -d' ' -f1-5 reference-repeat.similar.trec)` is empty).
   Independently re-verified in this session; also recorded as design assumption A30 in
   `docs/specs/2026-09-03-reranker-design.md`.
-- The two A0 controls in Step 2 of this task — one run from the plan's base commit (`39610d4`) in a
-  separate worktree, one from this branch's HEAD (`df4f635` at the time) — were byte-identical on
+- The two A0 controls in Step 2 of this task — one run from the main checkout at `ad6ba1c` (whose
+  `Iverson.LoadTest` is byte-identical to the plan's base commit `39610d4` — Ruling R5), one from this branch's HEAD (`df4f635` at the time) — were byte-identical on
   columns 1-5 of both `.chunks.trec` and `.similar.trec` (see Step 3 of the task-7 report).
 
 Given bit-determinism, running families sequentially with a data swap between them introduces no
