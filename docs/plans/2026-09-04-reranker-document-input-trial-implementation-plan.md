@@ -94,6 +94,10 @@ Newly introduced by this plan and verified at plan-write time:
 | P19 | Signature | `winners.Ranked[i].DocId` / `.Text` compile: `Ranked` is `IReadOnlyList<(string DocId, double Score, string Text)>` | `MaxPassageAggregator.cs:20-21` |
 | P20 | Environment | The `_iverson_schema` row for `BenchmarkDocument` present today is the one Phase 1's A3 ran against; Task 3 step 1 re-checks it by grepping `benchmark-query --help` output for `Schemas registered.` — with `bench-env.sh` sourced that line is the fifth printed (tenant-provisioning preamble first, `Program.cs:93`, `:107`, `:152`, `:163`), so the check is on content, not on a line prefix or exit status | `psql` → one row `BenchmarkDocument`; Phase 1 report step 1; CIR round 1 §2.2 |
 | P21 | Command | The Phase 1 score-collapse check is `awk '{print $1,$5}' <run>.chunks.trec \| sort \| uniq -d \| wc -l`, with the R16 acceptance rule (> 0.5 % rows, runs ≥ 3, or straddling rank 10 → stop) | `rerank-2026-09-task7-report.md:171-202` |
+| P22 | Environment | `stack.py query`'s six services are the spec's "query tier" | `stack.py:84` → `["qdrant", "ollama", "postgres", "redis", "authentik-server", "iverson-api"]`, the six Phase 1 recorded healthy (CIR round 2) |
+| P23 | Environment | Schema registration succeeds with StarRocks, Kafka, ZooKeeper and Jaeger stopped | Phase 1 ran `SchemaRegistrar` to `Schemas registered.` under exactly that tier (`rerank-2026-09-task7-report.md` step 2) (CIR round 2) |
+| P24 | Consumer | `report.py` ignores the non-`.trec` files step 4 drops into `$RUN/runs` (`rerank-a4.dupes.txt`, `rerank-a4.log`) | `resolve_run_paths` globs `*.trec` and only for directory-valued `--run` (`report.py:117-152`); the plan passes explicit files (CIR round 2) |
+| P25 | Command | The `15000` row denominator in step 4's collapse check is this arm's row count | `wc -l` on `rerank-a0/a1/a2.chunks.trec` = 15,000 each (300 queries × `DocumentBudget` 50) (CIR round 2) |
 
 ## Tasks
 
@@ -429,9 +433,17 @@ git commit -m "add --rerank-input to benchmark-query: score each document throug
 
 This task is operational: A0 ≈ 11 min, A4 ≈ 3.5 h (spec §5). One arm at a time; nothing else on the box. The run crosses Authentik's 2 h token validity; V15 (`cf9cbb8`) is what makes that survivable — if the harness dies with `Authentication flow did not complete`, that fix has regressed and the run must not be re-tried until it is found.
 
-- [ ] **Step 1: Environment.** Bring up the six-service query tier only, as Phase 1 did — `docker compose up -d` would also start `iverson-worker` (the Kafka→Qdrant consumer, which can rewrite the benchmark collections) and re-run `authentik-migrate`:
+- [ ] **Step 1: Environment.** The six-service query tier is what the spec assumes and what Phase 1 ran on — `docker compose up -d` would also start `iverson-worker` (the Kafka→Qdrant consumer, which can rewrite the benchmark collections) and re-run `authentik-migrate`. But the live containers were created from the since-removed `reranker-phase1` worktree, and `postgres` / `authentik-server` carry relative bind mounts, so even the tier-only `up` can recreate them under a running API. Ask Compose first, and change nothing in the step that proves nothing moved:
 ```bash
-cd /home/ben/repositories/Iverson/Iverson.Server/Iverson.LoadTest && python3 scripts/stack.py query --timeout 300
+cd /home/ben/repositories/Iverson/Iverson.Server
+docker compose --dry-run up -d --no-deps qdrant ollama postgres redis authentik-server iverson-api   # every line must read "Running"
+```
+If every line reads `Running`: `python3 Iverson.LoadTest/scripts/stack.py query --timeout 300` (a no-op `up` plus its out-of-tier stop). If any line reads `Recreate`: do NOT run `stack.py` or any `compose up` — the six are already up and healthy from Phase 1 — and only stop the out-of-tier containers:
+```bash
+docker stop iverson-worker iverson-starrocks iverson-kafka iverson-zookeeper iverson-jaeger 2>/dev/null   # absent names are fine
+```
+Either way:
+```bash
 docker ps --format '{{.Names}}' | grep -q '^iverson-worker$' && echo WORKER-RUNNING-STOP   # must print nothing
 ```
 Verify the Phase 1 state the spec relies on, then the harness's schema path as Phase 1 did:
@@ -446,7 +458,7 @@ source /home/ben/iverson-benchmark-data/bench-env.sh
 cd /home/ben/repositories/Iverson/Iverson.Server/Iverson.LoadTest
 dotnet run -c Release -- benchmark-query --help 2>&1 | grep -q "Schemas registered." && echo SCHEMA-OK   # must print SCHEMA-OK (P20); the command's exit status is ignored -- it refuses on the missing --corpus-path after the banner
 ```
-Any mismatch stops the task: the spec's V5/V20 no longer hold and A1 cannot be reused. The worker check is repeated before step 4.
+Any mismatch in the four state checks stops the task: the spec's V5/V20 no longer hold and A1 cannot be reused. A missing `SCHEMA-OK` is an auth or schema-registration problem to investigate (Phase 1 report step 2 is the precedent), not index drift. The worker check is repeated before step 4.
 
 - [ ] **Step 2: Same-session control.**
 ```bash
