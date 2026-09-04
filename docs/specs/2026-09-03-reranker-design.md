@@ -1,6 +1,6 @@
 # Cross-encoder reranking for vector search — design
 
-Status: design, verified against the codebase 2026-09-03.
+Status: closed 2026-09-04 — Phase 1 ran, the §3.4 gate failed, Phase 2 is not pursued (see the note under §3.4).
 Source proposal: `docs/2026-08-29-reranker-design-parameters.md` (parameters P1–P8).
 
 ## 1. Why
@@ -160,6 +160,14 @@ nDCG@10 by an effect clearing §7's bar: paired *t* **and** sign-flip permutatio
 across the declared arm family — as computed by one `scripts/report.py` invocation using its
 `--pair` family construction (§7.5), so one seed and one Holm construction at m = 3 back the number. P7 puts MDE at ≈0.019 and predicts 0.06–0.10 — a 3–5× MDE effect. If
 the result lands inside noise, **Phase 2 does not happen.**
+
+> **Outcome (2026-09-04): GATE FAILED.** Phase 1 ran on SciFact `chunks` at Holm m = 3: A1 (ms-marco MiniLM-L-6-v2)
+> +0.0082 nDCG@10, p_adj 1.000, 95 % CI [−0.0226, +0.0391], MDE 0.0439; A2 (bge-reranker-base) −0.1126, p_adj 0.0006,
+> significantly worse; A3 (ms-marco, λ = 1.00) +0.0057, n.s.; NFCorpus A1 vs A0 −0.0054, n.s. R@50 was invariant. The
+> control already sits at the published MiniLM cross-encoder ceiling on SciFact (≈0.69), so the +0.21 oracle headroom is
+> not reachable by the models trialled. Full verdict and run provenance: `docs/plans/2026-09-GATE-reranker-phase1.md`.
+> §3.5 and the §7.4 follow-ons are not pursued. The Phase 1 harness work (rescore path, `report.py` baseline fix and
+> `--pair`, the flow-executor CSRF fix) is merged to `main`.
 
 ### 3.5 Phase 2 — server-side stage
 
