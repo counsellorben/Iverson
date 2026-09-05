@@ -63,7 +63,7 @@ public sealed class EmbeddingService(
 
     // TEI serves one model per container and ignores the request's "model" field, so the dimension
     // probe cannot tell bge-base from nomic (both 768). TEI answers GET /info with the served
-    // model_id; Ollama answers 404 there, which makes this a no-op on Ollama.
+    // model_id; a backend without /info (Ollama answered 404) makes this a no-op.
     private async Task VerifyServedModelAsync(CancellationToken ct)
     {
         using var client   = httpClientFactory.CreateClient(Telemetry.HttpClientName);
@@ -109,7 +109,7 @@ public sealed class EmbeddingService(
             await using var responseStream = await response.Content.ReadAsStreamAsync(ct);
             using var doc                  = await JsonDocument.ParseAsync(responseStream, default, ct);
 
-            // /v1/embeddings returns { "data": [ { "embedding": [...] } ] } on both Ollama and TEI
+            // /v1/embeddings returns { "data": [ { "embedding": [...] } ] } on TEI (and on Ollama's OpenAI-compatible route)
             var embedding = doc.RootElement
                 .GetProperty("data")[0]
                 .GetProperty("embedding")

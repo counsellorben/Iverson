@@ -6,7 +6,7 @@ import java.lang.annotation.RetentionPolicy;
 import java.lang.annotation.Target;
 
 /**
- * Marks a string field as the target for Ollama-generated keywords during
+ * Marks a string field as the target for model-generated keywords during
  * ingest enrichment. The server writes the generated keywords into this field.
  */
 @Target(ElementType.FIELD)

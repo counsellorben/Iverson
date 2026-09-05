@@ -76,8 +76,8 @@ public sealed class ModelRejectedScenario(
     internal const string RegisterStepName = "register_model_doc";
 
     /// <summary>
-    /// The model the orchestrator's re-registration claims. Deliberately a name no Ollama
-    /// deployment can hold, so it can never coincide with the configured default and make the
+    /// The model the orchestrator's re-registration claims. Deliberately a name no embedding
+    /// backend serves, so it can never coincide with the configured default and make the
     /// guard's two models equal — which would leave every arm below passing over a registration
     /// that changed nothing.
     /// </summary>

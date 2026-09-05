@@ -237,7 +237,7 @@ public sealed class BenchmarkIngestScenario(
 
     /// <summary>
     /// Waits for consumer group "iverson.consumer.intelligence" to drain on <see cref="EntityTopics.Events"/>,
-    /// with no fixed deadline (on ~59K documents through CPU Ollama, draining may take hours — see Step 6).
+    /// with no fixed deadline (on ~59K documents through a CPU embedding backend, draining may take hours — see Step 6).
     /// Unlike <c>WritePathRunner.PrintKafkaLagAsync</c>, this returns success/failure to the caller instead
     /// of silently `break`-ing out, because a silent break here would reintroduce the false-completion
     /// signal this wait exists to prevent.
