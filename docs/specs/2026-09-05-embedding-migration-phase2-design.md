@@ -114,9 +114,10 @@ listed in the parent `Chart.yaml` with `condition: tei.enabled`. Each template r
   `GET /health` on 8080 (`periodSeconds 10`, `failureThreshold 30` — the first start downloads the weights) and
   a readinessProbe on the same path; the pod anti-affinity, `nodeSelector`, `tolerations` and `resources` blocks
   as ollama's;
-- a ClusterIP Service `<release>-tei-<slug>` with `port: 80`, `targetPort: 8080`, selector `app` — not headless
-  like ollama's: a headless Service does no port remapping (DNS returns pod IPs, kube-proxy is not involved), so
-  a `:80` URL would dial the pod's dead port 80; the StatefulSet's `serviceName` still names this Service;
+- a headless Service `<release>-tei-<slug>` with `port: 8080` and no `targetPort`, selector `app` — ollama's
+  exact shape (Service port equal to the container port). A headless Service does no port remapping (DNS returns
+  pod IPs, kube-proxy is not involved), and kube-score marks a StatefulSet governed by a non-headless Service
+  CRITICAL (§9 row 18), so clients dial `:8080` (§3.4); the StatefulSet's `serviceName` names this Service;
 - a PodDisruptionBudget as ollama's.
 
 `--auto-truncate` is mandatory (Phase 1 §3.4: 413 above 512 tokens without it).
@@ -139,7 +140,7 @@ its cwd and otherwise degrades to legacy tokenization), volumes: PVC `tgi-data` 
 `/tmp`, `emptyDir` (`medium: Memory`, `sizeLimit: 1Gi`) at `/dev/shm`; ollama's securityContext; a startupProbe
 `GET /health` on 8080 with `periodSeconds 15`, `failureThreshold 120` (the CPU warm-up measured ~10 minutes
 after a ~19 s shard load; the first start adds the download), then a readinessProbe on the same path; a
-ClusterIP Service `<release>-tgi` (`80 → 8080`; not headless, for §3.2's reason); a PDB.
+headless Service `<release>-tgi` on `port: 8080` (§3.2's shape); a PDB.
 
 The token limits are load-bearing: at the image defaults (`max_total_tokens` 32,768) warm-up took twenty
 minutes and pre-allocated for a 4,096-token prefill; 3,072 input tokens is above the 8,000-character source-text cap
@@ -151,13 +152,13 @@ in §3.5.
 
 - `iverson.activeEmbeddingModel` is unchanged (it resolves prefixes by name).
 - `iverson.embeddingEnv` additionally emits, for each entry at index `i` of `global.embeddingModels`,
-  `Embeddings__Models__<i>__Name: <name>` and `Embeddings__Models__<i>__BaseUrl: http://<release>-tei-<slug>:80`.
-- new `iverson.embeddingBaseUrl`: `http://<release>-tei-<slug of the first entry>:80` — the global fallback,
+  `Embeddings__Models__<i>__Name: <name>` and `Embeddings__Models__<i>__BaseUrl: http://<release>-tei-<slug>:8080`.
+- new `iverson.embeddingBaseUrl`: `http://<release>-tei-<slug of the first entry>:8080` — the global fallback,
   now a TEI service. A deployment with a single entry never consults `Models`.
 
 `charts/api/templates/deployment.yaml` and `charts/worker/templates/deployment.yaml` replace
 `Embeddings__BaseUrl: http://<release>-ollama:11434` with the helper, `Enrichment__BaseUrl` with
-`http://<release>-tgi:80`, and add `Enrichment__Enabled: {{ .Values.global.enrichmentEnabled }}`.
+`http://<release>-tgi:8080`, and add `Enrichment__Enabled: {{ .Values.global.enrichmentEnabled }}`.
 
 `templates/networkpolicies.yaml`: the `ollama-ingress`/`ollama-egress` policies are deleted; `tei-ingress`
 (from api and worker, TCP 8080, selector `iverson.io/component: tei`) and `tei-egress` (DNS + TCP 443 to any —
@@ -388,8 +389,9 @@ the design probes (§9), so criterion (1) is likely to fail on this box. That is
   `BenchmarkDocument` re-registers under bge-base against a bge-base index, with
   `scifact-bge-base-2026-09-04/keymap.json` as the harness's key map. Ollama is still present and still serves
   enrichment.
-- **Phase B — enrichment port and measurement:** `EnrichmentService` port (backend-neutral), compose `tgi`
-  service, `enrich_bench.py`, the measurement, the verdict.
+- **Phase B — enrichment port and measurement:** `EnrichmentService` port (backend-neutral),
+  `EnrichmentConsumer`'s `MaxSourceChars` cap with its `EnrichmentConsumerTests` case (backend-neutral for the
+  same reason), compose `tgi` service, `enrich_bench.py`, the measurement, the verdict.
 - **Phase C — on a pass:** the Ollama removal (§3.3 tgi subchart, §3.4 policies and env, §3.5 `Enrichment`
   defaults and wording, §3.6 Launcher's TGI wait and `up` list, §3.7 deletions and `tgi` dependencies, §3.9,
   kind notes) and the kind smoke.
@@ -445,6 +447,7 @@ the design probes (§9), so criterion (1) is likely to fail on this box. That is
 | 15 | Enrichment consumer | `Extracted` stores the generated text verbatim as the target column; `GenerateJsonAsync` has one caller | `EnrichmentConsumer.cs:258-284` |
 | 16 | Ollama truncation | a 40,625-character prompt whose only instruction is its last line → `prompt_eval_count 4096`, instruction obeyed: head-first truncation, 4,096-token context for `qwen2.5:3b` | live Ollama `/api/generate` (CDR-1) |
 | 17 | Ollama chat without a format directive, extraction prompt | a prose sentence, then a ```` ```json ```` block, then a trailing note; `usage.completion_tokens` 92 | live Ollama `/v1/chat/completions` (CDR-1) |
+| 18 | kube-score v1.19.0 with the workflow's three `--ignore-test` flags, A/B on manifests differing only in `clusterIP: None` | headless governing Service ✅ exit 0; ClusterIP governing Service 💥 `[CRITICAL] StatefulSet has ServiceName` exit 1 (`statefulset-has-servicename`) | CDR-2 |
 
 ## 10. Verified assumptions
 
@@ -460,7 +463,8 @@ the design probes (§9), so criterion (1) is likely to fail on this box. That is
 | K2 | TEI runs as uid 1000 read-only with `/data` + `/tmp` on port 8080; not on 80 | §9 row 6 |
 | K3 | TEI cache env `/data` | §9 row 5 |
 | K4 | bge-base 0.44 GB | §9 row 8 |
-| K5 | A headless Service does no port remapping: DNS returns pod IPs and kube-proxy is not involved, so a Service that must map 80→8080 has to be ClusterIP | kubernetes.io Service docs, "Headless Services" (CDR-1) |
+| K5 | A headless Service does no port remapping: DNS returns pod IPs and kube-proxy is not involved, so the Service port must equal the container port (8080) and clients dial `:8080` | kubernetes.io Service docs, "Headless Services" (CDR-1) |
+| K6 | kube-score (`statefulset-has-servicename`, CI-pinned v1.19.0) marks a StatefulSet governed by a non-headless Service CRITICAL; a headless governing Service passes | §9 row 18 (CDR-2) |
 | H1 | `Chart.lock` lists `ollama`; `charts/*.tgz` exist for every subchart (`ollama-0.1.0.tgz` included); `helm dependency build` is the workflow's first step | `Chart.lock:14-16`; `ls charts/*.tgz`; `deploy-validate.yml:25-26,52-53,80` |
 | H2 | api/worker templates carry `Embeddings__BaseUrl` (`:124-125` / `:119-120`), the helper include (`:126` / `:121`), `Enrichment__BaseUrl` (`:127-128` / `:122-123`), `Enrichment__ModelId` (`:129-130` / `:124-125`); no `Enrichment__Enabled` today | `grep` |
 | H3 | `global.embeddingModels` is read only by `_helpers.tpl:9` and the ollama statefulset pull loop; `generativeModel` by the two deployments and that loop | `grep` over `templates`, `charts` |
@@ -477,24 +481,28 @@ the design probes (§9), so criterion (1) is likely to fail on this box. That is
 | C3 | api/worker `depends_on` use `service_healthy`/`service_completed_successfully`; api does not depend on `ollama` itself | compose `:72-86`, `:473`, `:545` |
 | C4 | Launcher: `up` list `:20`, `WaitForOllamaAsync` `:28,72-` are its only Ollama references | `grep` |
 | C5 | The compose stack's Postgres holds 36 `_iverson_schema` rows, all pinned to `nomic-embed-text` (all `S11Model*`/`S12Inherited*` fixtures and `BenchmarkDocument` included); nothing in the conformance harness deletes them | `psql` read-only `SELECT` (CDR-1); `SchemaProbe.cs:17` |
+| C6 | The conformance fixtures own no Qdrant collections today (only `benchmark_documents*` and `vector_docs*` exist), so Phase A's collection drop is a no-op for them; `vector_docs*` is recreated by the harness and `benchmark_documents*` restored from the M1 snapshot | Qdrant `GET /collections` (CDR-2) |
 | S1 | `EnrichmentService`: `GenerateAsync`/`GenerateJsonAsync` → `GenerateInternalAsync(prompt, jsonFormat)` (`:19-53`), the only HTTP site; `format = "json"` only for `Extracted` (`EnrichmentConsumer.cs:274`); `IEnrichmentService` unchanged | read |
-| S2 | `EnrichmentServiceTests`: 7 facts; three pin Ollama specifics (`/api/generate` path `:85`, `response` field, `format: json`) | `grep` |
+| S2 | `EnrichmentServiceTests`: 6 facts; three pin Ollama specifics (`/api/generate` path `:85`, `response` field, `format: json`) | `grep` |
 | S3 | `Telemetry.HttpClientName`/`EnrichmentHttpClientName` are used only by `ServiceCollectionExtensions.cs:13,31`, `EmbeddingService.cs:69,97`, `EnrichmentService.cs:34`; no dashboard/alert names `iverson.ollama` | `grep` (prometheus chart: none) |
 | S4 | No test relies on the option defaults for a URL: Embeddings tests set `BaseUrl` where they assert one; `EnrichmentServiceTests` pass `modelId` explicitly; `ModelRejectedScenarioTests:518` compares the default family against a never-deployed id | `grep` |
 | S5 | Non-test Ollama-naming strings: `Program.cs:410-412`, `EnrichmentConsumer.cs:16`, `SchemaRegistrationOrchestrator.cs:128`, `EmbeddingPrefixes.cs:16`, `EnrichmentServiceOptions.cs:14`, `EmbeddingService.cs:66,112`, `Telemetry.cs:8-9`, `BenchmarkIngestScenario.cs:240`, `ModelRejectedScenario.cs:79`, `VectorSearchScenario.cs:124`, `Launcher/Program.cs:20,28,72-74` | `grep` |
 | S6 | Enrichment consumer is worker-only, gated on `Enrichment:Enabled` | `EnrichmentConsumer.cs:376` |
 | S7 | Without a format directive Ollama's `/v1/chat/completions` wraps the extraction JSON in prose on both sides, so a leading/trailing fence strip does not isolate it | §9 row 17 |
 | S8 | Ollama truncates prompts from the head with a 4,096-token context for `qwen2.5:3b`; the appended extraction hint survives today | §9 row 16 |
+| S9 | Cutting `BuildSourceText`'s result at `EnrichmentConsumer.cs:129` before `ComputeHash` (`:130`) and `GenerateAsync` (`:146`) keeps the loop-prevention hash consistent with what was sent | `EnrichmentConsumer.cs:129-146` (CDR-2) |
 | P1 | `stack.py` Ollama sites `:10,13,27,43,83-84,89,92,171`; `ingest.py` `:26,64,121-124,150,153,531,725,736-737`; `report.py` none | `grep` |
 | P2 | kind scripts mention ollama only in the storageSize note (`setup.sh:98`, `setup.ps1:95`); the install command is the `Next:` echo at `:97` | `grep` |
+| P3 | `benchmark-query` registers `BenchmarkDocument` itself on every run, so Phase A's schema-row clear is self-healing for the Phase 1 harness | `Iverson.LoadTest/Program.cs:89,151-171` (CDR-2) |
 | Q1 | Fixture sites as listed in §3.10; `Preflight.cs` and the harness `Program.cs` probe no Ollama endpoint | `grep` |
 | Q2 | SDK unit tests asserting `nomic-embed-text` are annotation tests with no backend | file reads |
 | M1 | `qwen2.5:3b` is pulled on the live Ollama | `/api/tags` |
 | M2 | SciFact corpus readable | Phase 1 |
 | M3 | cgroup v2; `docker stats` samples container memory (podman-backed `docker` here) | `cgroup.controllers`; `docker stats` |
+| M4 | `scifact-bge-base-2026-09-04/keymap.json` and `scifact-run-2026-08-26/keymap.json` are byte-identical (`corpus_name` and doc ids are the same), so restoring the M1 snapshot needs no key-map switch | `md5sum` (CDR-2) |
 | D1 | Nothing besides the Phase 1 harness docs reads `Embeddings__Models__*`; `EnrichmentConsumerTests:427` sets only `Enrichment:Enabled` in-memory; `StartupNoOpFakes.cs:11` is a comment | `grep` |
 | D2 | Prometheus chart and dashboards name no Ollama | `grep` |
-| D3 | 53 tracked files reference Ollama outside `docs/`; every one is in §3.5, §3.7, §3.8, §3.9, §3.10 or the deleted subchart, except `Iverson.Server/docs/security/tma.md` and `README.md` (documentation, left to a doc pass) | `git ls-files \| xargs grep -lil ollama` (corrected by CDR-1) |
+| D3 | 53 tracked files reference Ollama outside `docs/`; every one is in §3.5, §3.7, §3.8, §3.9, §3.10 or the deleted subchart, except `Iverson.Server/docs/security/tma.md` and `README.md` (documentation, left to a doc pass) and seven test files whose mentions are comments or fake-exception strings and stay as they are: `Iverson.Api.Tests/Consumers/EnrichmentConsumerTests.cs:380`, `IntelligenceStoreConsumerTests.cs:593,609,1428,1530`, `Grpc/SchemaRegistrationOrchestratorTests.cs:836`, `Helpers/StartupNoOpFakes.cs:11`, `Schema/IngestContractTests.cs:310`, `Iverson.ClientConformance.Tests/ModelRejectedScenarioTests.cs:58,504`, `Iverson.Embeddings.Tests/EmbeddingServiceTests.cs:32,85,244,248,265` | `git ls-files \| xargs grep -lil ollama` (corrected by CDR-1, CDR-2) |
 
 ## 11. Known issues, accepted as out of scope
 
