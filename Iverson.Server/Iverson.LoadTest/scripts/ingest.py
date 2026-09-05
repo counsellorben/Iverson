@@ -4,14 +4,14 @@
 existing gRPC search endpoints (SearchSimilar, SearchChunks) keep working against it unchanged.
 
 This bypasses the gRPC/Kafka write path entirely (no server, no Postgres row, no consumer
-drain to wait on): it embeds locally via Ollama and upserts to Qdrant over its REST API. That
-is the whole point — the normal path costs ~34s/document; this is the fast path a benchmark
-sweep needs.
+drain to wait on): it embeds via the embedding backend at --embed-url and upserts to Qdrant
+over its REST API. That is the whole point — the normal path costs ~34s/document; this is the
+fast path a benchmark sweep needs.
 
 The point contract (a divergence from any of this makes results incomparable with a C#-written
 corpus, and the search endpoints would silently return nothing for a wrong id). Its SHAPE is
-fixed; the vector DIMENSION is not -- it is probed from --model's Ollama embedding at startup
-(768 for nomic-embed-text, 384 for snowflake-arctic-embed:s), never hard-coded:
+fixed; the vector DIMENSION is not -- it is probed from the embedding backend at --embed-url
+at startup (768 for nomic-embed-text, 384 for snowflake-arctic-embed:s), never hard-coded:
 
     object collection   {object-collection}   default benchmark_documents_tenant_bypass
       vectors: body_vector, body_centroid -- both {probed dimension}-dim, Cosine
@@ -22,8 +22,9 @@ fixed; the vector DIMENSION is not -- it is probed from --model's Ollama embeddi
       payload: text, parent_id, field ("Body"), chunk_index (a STRING), ownerId
 
 A run's VECTORS are model- and prefix-dependent, even where the point ids are not: --model
-selects both the Ollama model and the document task prefix resolved from its family
-(ingest-contract.json's embedding.documentPrefixes). Two runs that differ in either produce
+selects the document task prefix resolved from its family (ingest-contract.json's
+embedding.documentPrefixes) and, against Ollama, which model actually runs -- a TEI container
+serves one model regardless of --model. Two runs that differ in either produce
 vectors that are not comparable with each other, while writing to the SAME deterministic point
 ids -- which is why changing --model against an existing collection requires --drop (see
 ensure_collection, which refuses the mismatched-dimension case outright).
@@ -59,8 +60,9 @@ Usage:
     python3 Iverson.Server/Iverson.LoadTest/scripts/ingest.py \\
         --corpus /path/to/corpus.jsonl --key-map-path /tmp/keymap.json --limit 20
 
-    # A different embedding model. --model selects the Ollama model AND the document task
-    # prefix resolved from its family, so it changes every vector written. --drop is REQUIRED
+    # A different embedding model. --model selects the document task prefix resolved from
+    # its family (and, against Ollama, which model runs), so it changes every vector written.
+    # --drop is REQUIRED
     # when an existing collection was written under a different model (a different dimension
     # is refused outright; a same-dimension model would otherwise silently leave the
     # collection holding a mixture of two vector spaces):
@@ -116,9 +118,10 @@ Writes, alongside --key-map-path:
                                means a document recorded in .progress but never counted in the
                                sidecar would otherwise vanish from the totals permanently.
 
-Requires Qdrant at http://localhost:6333 and Ollama at http://localhost:11434 with --model's
-model ALREADY PULLED (`ollama pull <model>`) -- the dimension probe runs before --drop acts,
-so an unpulled model fails the run rather than deleting collections it then cannot refill.
+Requires Qdrant at http://localhost:6333 and the embedding backend at --embed-url (Ollama at
+http://localhost:11434 by default, with the model pulled; or a TEI container, which serves
+one model regardless of --model) -- the dimension probe runs before --drop acts, so an
+unpulled Ollama model fails the run rather than deleting collections it then cannot refill.
 See scripts/stack.py's `ingest` tier.
 """
 
@@ -137,7 +140,7 @@ from datetime import datetime, timezone
 # sizing, collection naming, distance, and embedding document prefixes -- generated out of the
 # C# write path and gated by IngestContractTests, which is proven to fail on drift. A local
 # file read is import-safe offline (no network call), unlike everything below the "Qdrant REST"
-# and "Ollama" sections.
+# and "Embedding backend" sections.
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 with open(os.path.join(_SCRIPT_DIR, "ingest-contract.json"), encoding="utf-8") as _contract_f:
     CONTRACT = json.load(_contract_f)
@@ -525,10 +528,10 @@ def _verify_algorithm_goldens():
         )
 
 
-# ── Ollama ──────────────────────────────────────────────────────────────────────────────
+# ── Embedding backend (Ollama or TEI, /v1/embeddings) ────────────────────────────────────
 
-def embed(text, model, document_prefix):
-    url = f"{OLLAMA_URL}/api/embed"
+def embed(text, model, document_prefix, embed_url):
+    url = f"{embed_url}/v1/embeddings"
     data = json.dumps({"model": model, "input": document_prefix + text}).encode()
     last_error = None
     for attempt in range(1, EMBED_RETRIES + 2):  # e.g. EMBED_RETRIES=2 -> 3 attempts total
@@ -549,10 +552,10 @@ def embed(text, model, document_prefix):
                 )
     else:
         sys.exit(f"embed request to {url} failed after {EMBED_RETRIES + 1} attempt(s): {last_error}")
-    embeddings = parsed.get("embeddings")
-    if not embeddings:
-        sys.exit(f"ollama /api/embed returned no embeddings (input length {len(text)}): {parsed}")
-    return embeddings[0]
+    data = parsed.get("data")
+    if not data or "embedding" not in data[0]:
+        sys.exit(f"{url} returned no embedding (input length {len(text)}): {parsed}")
+    return data[0]["embedding"]
 
 
 # ── Corpus ──────────────────────────────────────────────────────────────────────────────
@@ -580,9 +583,10 @@ def read_corpus(path):
 
 # ── Ingest one document ─────────────────────────────────────────────────────────────────
 
-def ingest_document(key, doc_id, title, body, object_collection, chunks_collection, model, document_prefix, stats):
+def ingest_document(key, doc_id, title, body, object_collection, chunks_collection, model, document_prefix, stats,
+                    embed_url, max_chars, step):
     parent_id = key_to_ulong(key)
-    chunks = list(split_into_chunks(body))
+    chunks = list(split_into_chunks(body, max_chars=max_chars, step=step))
     # An empty document prefix is reachable through configuration (Arctic's is ""), so this
     # is not dead code: without it, the first all-whitespace window would otherwise kill the
     # run below. Dropping the window rather than renumbering preserves every surviving chunk's
@@ -594,8 +598,11 @@ def ingest_document(key, doc_id, title, body, object_collection, chunks_collecti
     # chunk equal to body itself, one embed call fills both body_vector and that chunk's
     # vector -- otherwise the chunk text (stripped, windowed) is a different string from body
     # and needs its own embedding.
-    reuse = body == body.strip() and len(body) <= STEP
-    body_vector = embed(body, model, document_prefix)
+    # step is this run's effective step (the value the chunker was just given):
+    # split_into_chunks' defaults bind at def time, so the module global is not the window
+    # when --chunk-step is passed.
+    reuse = body == body.strip() and len(body) <= step
+    body_vector = embed(body, model, document_prefix, embed_url)
     stats["embed_calls"] += 1
 
     if reuse:
@@ -607,7 +614,7 @@ def ingest_document(key, doc_id, title, body, object_collection, chunks_collecti
     else:
         chunk_vectors = []
         for chunk_text, _ in chunks:
-            chunk_vectors.append(embed(chunk_text, model, document_prefix))
+            chunk_vectors.append(embed(chunk_text, model, document_prefix, embed_url))
             stats["embed_calls"] += 1
 
     centroid_input = [v for v in chunk_vectors if not is_zero_magnitude(v)]
@@ -653,7 +660,7 @@ def ingest_document(key, doc_id, title, body, object_collection, chunks_collecti
 
 # ── Stats sidecar ───────────────────────────────────────────────────────────────────────
 
-def update_stats_sidecar(path, run_stats, started_at_iso, finished_at_iso, elapsed_seconds, resume):
+def update_stats_sidecar(path, run_stats, started_at_iso, finished_at_iso, elapsed_seconds, resume, provenance):
     """Accumulates into whatever the sidecar already holds ONLY when resume is True -- a
     non-resumed invocation is measuring a whole corpus from zero, so any prior sidecar
     content (from an unrelated earlier invocation against the same --key-map-path) must not
@@ -675,6 +682,10 @@ def update_stats_sidecar(path, run_stats, started_at_iso, finished_at_iso, elaps
         "elapsed_seconds": existing.get("elapsed_seconds", 0) + elapsed_seconds,
         "started_at": existing.get("started_at", started_at_iso),
         "finished_at": finished_at_iso,
+        # Which model, backend and window produced the vectors (spec §3.5): every arm of the
+        # embedding-migration evaluation differs only in these. Written, not merged: a resumed
+        # run overwrites them with its own values.
+        **provenance,
     }
     with open(path, "w", encoding="utf-8") as f:
         json.dump(merged, f, indent=2)
@@ -710,15 +721,36 @@ def main():
     ap.add_argument("--chunks-collection", default=DEFAULT_CHUNKS_COLLECTION)
     ap.add_argument(
         "--model", default="nomic-embed-text",
-        help="Ollama embedding model id, e.g. 'nomic-embed-text' or 'snowflake-arctic-embed:s'. "
-             "Must already be pulled -- the dimension probe runs before --drop acts. Resolves "
+        help="embedding model id, e.g. 'nomic-embed-text' or 'snowflake-arctic-embed:s'. Against "
+             "Ollama it must already be pulled -- the dimension probe runs before --drop acts. Resolves "
              "this run's document prefix by family (everything before the first ':') against "
              "ingest-contract.json, so it changes every vector written. CHANGING THE MODEL "
              "AGAINST AN EXISTING COLLECTION REQUIRES --drop: a different dimension is refused "
              "outright, and a same-dimension model would otherwise overwrite only the points "
-             "that overlap, leaving the collection holding a mixture of two vector spaces.",
+             "that overlap, leaving the collection holding a mixture of two vector spaces. "
+             "The id is sent as the request's model field; TEI ignores it and serves its "
+             "container's model, so for a TEI backend the sidecar's embed_url is the "
+             "attribution to trust.",
+    )
+    ap.add_argument(
+        "--embed-url", default=OLLAMA_URL,
+        help=f"embedding backend base URL, POSTed at /v1/embeddings (default {OLLAMA_URL}, Ollama; "
+             "a TEI container is e.g. http://localhost:8091)",
+    )
+    ap.add_argument(
+        "--chunk-max-chars", type=int, default=MAX_CHARS,
+        help=f"chunk window in characters (default: the contract's {MAX_CHARS}). Passed explicitly to "
+             "the chunker AND the embed-reuse gate; the contract's golden chunking cases still run at "
+             "the contract values, so an override cannot mask a chunker regression",
+    )
+    ap.add_argument(
+        "--chunk-step", type=int, default=STEP,
+        help=f"chunk step in characters (default: the contract's {STEP})",
     )
     args = ap.parse_args()
+    if not 0 < args.chunk_step <= args.chunk_max_chars:
+        ap.error(f"--chunk-step must be in 1..--chunk-max-chars (got step {args.chunk_step}, "
+                 f"max-chars {args.chunk_max_chars})")
 
     # Runs before --drop acts: dropping against a drifted contract is as damaging as ingesting
     # against one.
@@ -741,7 +773,7 @@ def main():
 
     # The contract carries distance but deliberately no dimension (modelId/dimension are owned
     # by configuration and a startup probe, not this file) -- so ensure_collection's vector
-    # size comes from actually asking Ollama, not from a hard-coded constant.
+    # size comes from actually asking the embedding backend, not from a hard-coded constant.
     #
     # Runs BEFORE --drop acts, for the same reason verify_contract does: `--drop --model
     # <not-pulled>` used to delete both collections and only then die on the probe, leaving
@@ -750,9 +782,11 @@ def main():
     # Probed with an EMPTY prefix, not this run's document prefix. The dimension is
     # prefix-independent, so both work -- but C# probes unprefixed by design (spec §3/A12,
     # EmbeddingService's initialization probe does not compose), and this is the one place the
-    # two paths could silently differ in what they send Ollama. They now do not.
-    dimension = len(embed("dimension probe", args.model, ""))
-    print(f"[ingest] probed embedding dimension {dimension} for model '{args.model}'")
+    # two paths could silently differ in what they send the embedding backend. They now do not.
+    dimension = len(embed("dimension probe", args.model, "", args.embed_url))
+    print(f"[ingest] probed embedding dimension {dimension} for model '{args.model}' at {args.embed_url}")
+    print(f"[ingest] chunk window max_chars={args.chunk_max_chars} step={args.chunk_step} "
+          f"(contract {MAX_CHARS}/{STEP}, word-boundary lookback {WORD_BOUNDARY_LOOKBACK})")
 
     if args.drop:
         drop_collection(args.object_collection)
@@ -822,6 +856,7 @@ def main():
                 ingest_document(
                     key, doc_id, title, body, args.object_collection, args.chunks_collection,
                     args.model, document_prefix, run_stats,
+                    args.embed_url, args.chunk_max_chars, args.chunk_step,
                 )
                 progress_f.write(doc_id + "\n")
                 progress_f.flush()
@@ -836,7 +871,9 @@ def main():
         finished_at = datetime.now(timezone.utc)
         elapsed_seconds = (finished_at - started_at).total_seconds()
         merged = update_stats_sidecar(
-            stats_path, run_stats, started_at.isoformat(), finished_at.isoformat(), elapsed_seconds, args.resume
+            stats_path, run_stats, started_at.isoformat(), finished_at.isoformat(), elapsed_seconds, args.resume,
+            {"model": args.model, "embed_url": args.embed_url,
+             "chunk_max_chars": args.chunk_max_chars, "chunk_step": args.chunk_step},
         )
         print(
             f"[ingest] this run: {run_stats['documents']:,} documents, {run_stats['chunks']:,} chunks, "
