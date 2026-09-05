@@ -144,7 +144,6 @@ services:
     entrypoint: ["sh", "-c"]
     command:
       - |
-        curl -X POST http://ollama:11434/api/pull -d '{"name":"nomic-embed-text"}' &&
         curl -X POST http://ollama:11434/api/pull -d '{"name":"qwen2.5:3b"}'
     restart: "no"
 
@@ -171,12 +170,17 @@ services:
   tei-embed:
     image: ghcr.io/huggingface/text-embeddings-inference:cpu-1.8
     container_name: iverson-tei-embed
-    profiles: ["tei"]
     command: ["--model-id", "${EMBED_MODEL_ID:-BAAI/bge-base-en-v1.5}", "--auto-truncate"]
     ports:
       - "8091:80"
     volumes:
       - tei_models:/data
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:80/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 20
+      start_period: 5m
 
   zookeeper:
     image: confluentinc/cp-zookeeper:7.6.0
@@ -398,23 +402,14 @@ services:
     environment:
       - ASPNETCORE_ENVIRONMENT=Production
       - Otel__Endpoint=http://jaeger:4317
-      - Embeddings__BaseUrl=http://ollama:11434
-      # Per-model backend for the TEI-served candidate (spec §3.1/§3.4): inert until a type resolves
-      # to that model. BENCH_EMBED_MODEL below makes it the deployment default for a benchmark arm:
-      #   BENCH_EMBED_MODEL=BAAI/bge-base-en-v1.5 EMBED_MODEL_ID=BAAI/bge-base-en-v1.5 docker compose up -d --no-deps iverson-api
-      - Embeddings__Models__0__Name=${EMBED_MODEL_ID:-BAAI/bge-base-en-v1.5}
-      - Embeddings__Models__0__BaseUrl=http://tei-embed:80
+      - Embeddings__BaseUrl=http://tei-embed:80
       # MMR lambda; 0.70 is VectorRankingOptions' default. The reranker evaluation's A0'/A3 arms run
       # the API at 1.00 (spec §7.2):   VECTOR_RANKING_LAMBDA=1.00 docker compose up -d iverson-api
       - VectorRanking__Lambda=${VECTOR_RANKING_LAMBDA:-0.70}
-      # Must agree with ollama-init's pulled model (line ~147) and with the five conformance
-      # fixtures' "nomic-embed-text" literals — this is the deployment default the client
-      # conformance harness's ModelRejectedScenario (S11 model-rejected) registers types against
-      # before re-registering with an override model it expects to be refused. A mismatch here
-      # doesn't fail loudly: the rejection scenario still passes (it never contacts Ollama with
-      # the wrong model), but every OTHER embedding-dependent scenario goes red with
-      # Unavailable/404 because the resolved model was never pulled.
-      - Embeddings__ModelId=${BENCH_EMBED_MODEL:-nomic-embed-text}
+      # Must agree with tei-embed's served model (its --model-id, EMBED_MODEL_ID) and with the five
+      # conformance fixtures' declared model: this is the deployment default types register under.
+      # A mismatch fails loudly at first initialisation — the API's /info identity guard.
+      - Embeddings__ModelId=${BENCH_EMBED_MODEL:-BAAI/bge-base-en-v1.5}
       - Enrichment__BaseUrl=http://ollama:11434
       - Enrichment__ModelId=qwen2.5:3b
       - Kafka__BootstrapServers=kafka:29092
@@ -470,8 +465,8 @@ services:
         condition: service_healthy
       authentik-server:
         condition: service_healthy
-      ollama-init:
-        condition: service_completed_successfully
+      tei-embed:
+        condition: service_healthy
 
   # The worker role. Every Kafka consumer and background reconciliation worker in Iverson.Api is
   # gated on `workloadRole == "worker"` (Iverson.Api/Program.cs) — IntelligenceStoreConsumer,
@@ -498,13 +493,11 @@ services:
       # IConfiguration under the literal key "WORKLOAD_ROLE" — the first key Program.cs checks.
       - WORKLOAD_ROLE=worker
       - Otel__Endpoint=http://jaeger:4317
-      - Embeddings__BaseUrl=http://ollama:11434
-      # Per-model backend for the TEI-served candidate (spec §3.1/§3.4): inert until a type resolves
-      # to that model. BENCH_EMBED_MODEL below makes it the deployment default for a benchmark arm:
-      #   BENCH_EMBED_MODEL=BAAI/bge-base-en-v1.5 EMBED_MODEL_ID=BAAI/bge-base-en-v1.5 docker compose up -d --no-deps iverson-worker
-      - Embeddings__Models__0__Name=${EMBED_MODEL_ID:-BAAI/bge-base-en-v1.5}
-      - Embeddings__Models__0__BaseUrl=http://tei-embed:80
-      - Embeddings__ModelId=${BENCH_EMBED_MODEL:-nomic-embed-text}
+      - Embeddings__BaseUrl=http://tei-embed:80
+      # Must agree with tei-embed's served model (its --model-id, EMBED_MODEL_ID) and with the five
+      # conformance fixtures' declared model: this is the deployment default types register under.
+      # A mismatch fails loudly at first initialisation — the API's /info identity guard.
+      - Embeddings__ModelId=${BENCH_EMBED_MODEL:-BAAI/bge-base-en-v1.5}
       - Enrichment__BaseUrl=http://ollama:11434
       - Enrichment__ModelId=qwen2.5:3b
       - Kafka__BootstrapServers=kafka:29092
@@ -544,6 +537,8 @@ services:
         condition: service_healthy
       ollama-init:
         condition: service_completed_successfully
+      tei-embed:
+        condition: service_healthy
       # ...plus one more: wait for iverson-api to finish its OWN bootstrap before starting this
       # one. Both roles run the identical startup block (it sits outside Program.cs's
       # `workloadRole == "api"` guard), and that block is genuinely concurrency-safe by design —
