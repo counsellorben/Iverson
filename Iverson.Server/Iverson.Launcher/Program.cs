@@ -120,6 +120,7 @@ static async Task WaitForHttp200Async(string url, string serviceName, TimeSpan c
         Console.Write(".");
         try { await Task.Delay(3000, ct); } catch (OperationCanceledException) { return; }
     }
+    if (ct.IsCancellationRequested) return;
     throw new TimeoutException($"{serviceName} at {url} did not answer 200 within {ceiling}.");
 }
 
