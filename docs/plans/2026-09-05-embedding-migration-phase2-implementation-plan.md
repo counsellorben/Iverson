@@ -73,7 +73,7 @@ Newly introduced by this plan and verified at plan-write time (2026-09-05, `main
 | P8 | Signature | `stack.py`: `TIERS` `:83-84`, `CONTAINER` `:91-97`, `READY_CHECKS` `:169-172`, `wait_http_200(url, timeout)`; `ingest.py`: `OLLAMA_URL` at `:150` and its only use at `:736-737` | `grep` |
 | P9 | Code validity | Helm globals reach subcharts (the ollama statefulset reads `.Values.global.embeddingModels`); `condition: global.<flag>` has the starrocks precedent (`Chart.yaml` `condition: global.engagementEnabled`); the ollama subchart's `values.yaml` carries exactly `replicas, storageSize, storageClassName, imageTag, resources, nodeSelector, tolerations`, the keys its templates read | `charts/ollama/templates/statefulset.yaml:56-62`; `Chart.yaml:17`; `charts/ollama/values.yaml` |
 | P10 | Command | Local `helm` 3.16.4, `kubeconform`, `kube-score` 1.19.0, `terraform` 1.9.8, `kind` 0.24, `kubectl` present; the workflow's exact invocations: `helm lint <chart> -f <profile>`; `helm template iverson <chart> -f <profile> \| kubeconform -kubernetes-version 1.30.0 -summary -ignore-missing-schemas`; `kube-score score --ignore-test pod-networkpolicy --ignore-test container-image-pull-policy --ignore-test container-security-context-user-group-id -`; `terraform -chdir=<cloud> fmt -check`, `init -backend=false`, `validate` | `deploy-validate.yml:28-33,55-62,80-96,110-126`; `command -v` |
-| P11 | Command | On a scratch copy of the current chart, `helm dependency build` succeeds, `helm lint -f values-laptop.yaml` passes, kubeconform reports 63 valid / 0 invalid, and kube-score **already exits 1** on pre-existing objects (e.g. `iverson-starrocks-create-user-egress`) while `iverson-ollama` passes — so this plan asserts kube-score cleanliness on the new `-tei-`/`-tgi` objects only, never exit 0 | scratch run 2026-09-05 |
+| P11 | Command | On a scratch copy of the current chart `helm lint -f values-laptop.yaml` passes, kubeconform reports 63 valid / 0 invalid, and kube-score **already exits 1** on pre-existing objects (e.g. `iverson-starrocks-create-user-egress`) while `iverson-ollama` passes — so this plan asserts kube-score cleanliness on the new `-tei-`/`-tgi` objects only, never exit 0. `helm dependency build` succeeds ONLY while `Chart.yaml`'s dependency list is unchanged; once a dependency is added or removed it exits 1 with `the lock file (Chart.lock) is out of sync with the dependencies file (Chart.yaml)`, whereas `helm dependency update` regenerates `Chart.lock`, packages the new subchart and prunes a removed one's tarball — so this plan runs `update`, commits the regenerated lock, and CI's `build` (`deploy-validate.yml:25,52,80`) stays in sync | scratch runs 2026-09-05 (plan-write, CIR-1) |
 | P12 | Command | `dotnet test Iverson.Server/Iverson.Embeddings.Tests/Iverson.Embeddings.Tests.csproj`; `dotnet test Iverson.Server/Iverson.Api.Tests/Iverson.Api.Tests.csproj --filter "FullyQualifiedName~Iverson.Api.Tests.Consumers.EnrichmentConsumerTests"` (substitutes only, no containers); `dotnet test Iverson.Server/Iverson.ClientConformance.Tests/Iverson.ClientConformance.Tests.csproj` | csproj paths; `EnrichmentConsumerTests.cs:17-34` |
 | P13 | Command | The conformance harness: `cd Iverson.Server/Iverson.ClientConformance && dotnet run` with `IVERSON_CLIENT_ID=dev-iverson-loadtest-client-id`, `IVERSON_CLIENT_SECRET=dev-only-not-for-production-loadtest-secret-0123456789`, `IVERSON_TOKEN_ENDPOINT=http://localhost:9000/application/o/token/`, `IVERSON_CLIENT_SCOPE="schema_admin tenant_id_loadtest"`; a full matrix's exit code is the coverage claim (`-- --languages dotnet,python` runs a subset, runbook `:44`); toolchains present: node 24, go 1.22, java 21 + maven 3.9, python 3.14, dotnet 10 | `docs/runbooks/client-conformance-matrix.md:14-46`; `command -v` |
 | P14 | Command | The compose stack today: 36 `_iverson_schema` rows; Qdrant collections `benchmark_documents_tenant_bypass`, `benchmark_documents_chunks_tenant_bypass`, `vector_docs_tenant_bypass`, `vector_docs_chunks_tenant_bypass`, `iverson-probe` (the API's own probe collection, left alone); ports 8091/8092 free, 11434 listening | `psql`, Qdrant `GET /collections`, `ss` |
@@ -86,6 +86,10 @@ Newly introduced by this plan and verified at plan-write time (2026-09-05, `main
 | P21 | Consumer impact | podman's `pids_limit = -1` is already set in `~/.config/containers/containers.conf`, the prerequisite `setup.sh` documents for kind under podman | `grep pids_limit` |
 | P22 | Ordering | Task 2 needs nothing from Task 1; Task 4 rebuilds the API image so Task 1's defaults ride along but the compose env overrides them; Task 5's harness needs Task 4's row clear; Task 6's `benchmark-query` needs Task 4's restored index; Task 7 is code-only; Task 8 needs Task 4's compose state and, for Phase C, Task 7; Task 9 needs Tasks 2–3; Task 10 needs Tasks 7–8; Task 11 needs Task 9 (pass) or Task 2 (fail) | task text |
 | P24 | Code validity | `Iverson.Embeddings` grants `InternalsVisibleTo` to nothing (`EmbeddingPrefixes.cs:9` says so; no attribute in the csproj), so `EnrichmentServiceTests` asserts the literal `256` and drives `ExtractJson` through `GenerateJsonAsync`; `Iverson.Api` grants it to `Iverson.Api.Tests` (`Iverson.Api.csproj:10-11`), so the consumer test reads `EnrichmentConsumer.MaxSourceChars` | csproj reads |
+| P25 | Command | The API runtime image (`Iverson.Api/Dockerfile:16`, `mcr.microsoft.com/dotnet/aspnet:10.0`) ships `bash` but neither `wget` nor `curl` (`docker exec iverson-api sh -c 'command -v wget; command -v curl; command -v bash'` prints only `/usr/bin/bash`; `docker-compose.yml:453-456` records the same for the healthcheck) — the kind smoke's in-cluster probe uses the bash `/dev/tcp` idiom | CIR-1 |
+| P26 | Consumer impact | No registerable type in the repo declares an enrichment target: `[IversonSummary]`/`[IversonKeywords]`/`[IversonExtracted]` appear in none of the five conformance drivers, the `Iverson.LoadTest` entities or any sample; `VectorDoc.cs:10-12` is deliberately annotation-free — an end-to-end enrichment check needs a throwaway type of its own | CIR-1 |
+| P27 | Ordering | Ollama keeps a model resident for 5 minutes after its last request by default (`keep_alive`), so a backend measured right after Ollama starts its window with Ollama's model still loaded — the measurement runs TGI first | CIR-1 |
+| P28 | Consumer impact | With the TEI pod added, the laptop profile's rendered container memory requests rise from ~4.4 Gi to ~5.44 Gi (plus ~1 Gi of CNPG/Strimzi-owned pods the chart does not render) on a 10.19 GB box — tight, not disqualifying; Task 11 records any Pending pod with its reason | CIR-1, rendered profile |
 | P23 | Sibling sweep | Every `.Values.tei.*` / `.Values.tgi.*` key the new templates read is defaulted in the subchart's `values.yaml` (the same seven keys as ollama's); every `$.Release.Name` inside a `range` uses the `$` root; the instance sizes `c7i.xlarge`, `c2-standard-4`, `Standard_F4s_v2` are one step below the ollama defaults in each cloud's catalogue | Task 2/9 templates; `variables.tf` |
 
 ## Tasks
@@ -408,7 +412,7 @@ In `charts/ollama/templates/statefulset.yaml:56-62` the init script becomes only
 - [ ] **Step 5: Rebuild the dependencies and run the three chart checks on all five profiles.**
 ```bash
 cd /home/ben/repositories/Iverson/Iverson.Server/deploy/helm/iverson
-helm dependency build .                                     # regenerates Chart.lock and charts/*.tgz (adds tei-0.1.0.tgz)
+helm dependency update .                                    # NOT build: build refuses once Chart.yaml's list changed (P11). Regenerates Chart.lock and charts/*.tgz (adds tei-0.1.0.tgz)
 for v in values-local values-laptop values-aws values-azure values-gcp; do
   helm lint . -f $v.yaml | tail -1
   helm template iverson . -f $v.yaml | kubeconform -kubernetes-version 1.30.0 -summary -ignore-missing-schemas | tail -1     # Invalid: 0, Errors: 0
@@ -421,7 +425,7 @@ grep -c 'ollama pull' /tmp/claude-1000/-home-ben-repositories-Iverson/690ec42d-1
 grep -c 'clusterIP: None' /tmp/claude-1000/-home-ben-repositories-Iverson/690ec42d-1faa-4cc8-9c9a-e8965b19eebe/scratchpad/render-local.yaml
 ```
 
-- [ ] **Step 6: Commit** (the tarballs and lock are tracked).
+- [ ] **Step 6: Commit** (the tarballs and the regenerated `Chart.lock` are tracked; CI runs `helm dependency build`, which only stays in sync because the lock is committed).
 ```bash
 cd /home/ben/repositories/Iverson
 git add Iverson.Server/deploy/helm/iverson
@@ -1239,18 +1243,18 @@ docker compose up -d --no-deps tgi                                    # first st
 until curl -sf http://127.0.0.1:8092/health >/dev/null; do sleep 30; done
 curl -s http://127.0.0.1:8092/info | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['model_id'], d['max_input_tokens'], d['max_total_tokens'])"   # Qwen/Qwen2.5-1.5B-Instruct 3072 3584
 curl -s http://127.0.0.1:11434/api/tags | grep -o '"qwen2.5:3b"'
-D=$(date +%F); OUT=/home/ben/repositories/iverson-benchmark-corpora/enrichment-bench-$D
+D=$(date +%F); OUT=/home/ben/repositories/iverson-benchmark-corpora/enrichment-bench-$D; mkdir -p "$OUT"    # tee opens $OUT/run.log before the script's makedirs runs
 cd Iverson.LoadTest/scripts
 python3 enrich_bench.py --corpus /home/ben/repositories/iverson-benchmark-corpora/scifact-run-2026-08-26/beir/corpus.jsonl --out $OUT \
-  --backend ollama=http://localhost:11434=qwen2.5:3b=iverson-ollama \
-  --backend tgi=http://localhost:8092=Qwen/Qwen2.5-1.5B-Instruct=iverson-tgi 2>&1 | tee $OUT/run.log | tail -40
+  --backend tgi=http://localhost:8092=Qwen/Qwen2.5-1.5B-Instruct=iverson-tgi \
+  --backend ollama=http://localhost:11434=qwen2.5:3b=iverson-ollama 2>&1 | tee $OUT/run.log | tail -40   # TGI FIRST: Ollama keeps its model resident 5 min after a request (P27), which would sit inside TGI's MemAvailable window
 docker inspect -f '{{.State.OOMKilled}}' iverson-tgi iverson-ollama iverson-api iverson-qdrant    # all false
 ```
 (Run the script in the background and poll `$OUT/run.log`; Ollama loads its model on the first prompt, so its first `ChunkContext` row carries ~10 s of load time — report it as measured.)
 
 - [ ] **Step 4: Apply the gate** from `results.json`, mechanically: (1) `tgi.by_kind.ChunkContext.mean_wall_s ≤ ollama.by_kind.ChunkContext.mean_wall_s`; (2) `tgi.p95_wall_s < 120`; (3) `tgi.failed == 0 and tgi.empty == 0`; (4) `tgi.extraction_parse_ok == 5`; (5) `tgi.min_mem_available_bytes > 500e6` and no OOM kill. All five → **PASS**; any miss → **FAIL**. Then `docker compose up -d` (restarts the worker and the stopped services; `tgi` stays up).
 
-- [ ] **Step 5: Write `docs/plans/2026-09-GATE-enrichment-backend.md`** in the shape of `docs/plans/2026-09-GATE-embedding-migration.md`: header (date, branch HEAD, this plan/task, where `run.log`, `results.json`, `side-by-side.md` live); Method (spec §6, the 1.5B-only ruling, the box, TGI's flags, Ollama's `/v1/chat/completions` route, worker stopped); a per-backend table (mean wall per kind, p95, tokens/s, failed, empty, extraction parses, peak RSS, min MemAvailable); the five criteria each with its measured value and PASS/FAIL; the overall verdict line **GATE PASSED — Phase C** or **GATE FAILED — Phase C′**; a note that the side-by-side table is Ben's quality read and can veto a numeric pass (record his reading if given); the spec §7 consequence for the branch taken. Do not choose the 3B candidate or a cloud run; note it as Ben's option.
+- [ ] **Step 5: Write `docs/plans/2026-09-GATE-enrichment-backend.md`** in the shape of `docs/plans/2026-09-GATE-embedding-migration.md`: header (date, branch HEAD, this plan/task, where `run.log`, `results.json`, `side-by-side.md` live); Method (spec §6, the 1.5B-only ruling, the box, TGI's flags, Ollama's `/v1/chat/completions` route, worker stopped); a per-backend table (mean wall per kind, p95, tokens/s, failed, empty, extraction parses, peak RSS, min MemAvailable); the five criteria each with its measured value and PASS/FAIL; the overall verdict line **GATE PASSED — Phase C** or **GATE FAILED — Phase C′**; a note that the side-by-side table is Ben's quality read and can veto a numeric pass (record his reading if given); the spec §7 consequence for the branch taken; the backend order (TGI measured first, so criterion 5's `MemAvailable` window is free of Ollama's model — P27); and, on a pass, the note that spec §8's Phase C kind assertion and spec §11's `Errno 30` check are not performed on this box (Task 11 names what performs them). Do not choose the 3B candidate or a cloud run; note it as Ben's option.
 
 - [ ] **Step 6: Commit.**
 ```bash
@@ -1267,7 +1271,7 @@ git commit -m "add the compose tgi service and enrich_bench.py, and record the e
 **Files:**
 - Create: `Iverson.Server/deploy/helm/iverson/charts/tgi/{Chart.yaml,values.yaml,templates/statefulset.yaml,templates/service.yaml,templates/pdb.yaml}`
 - Modify: `Chart.yaml` (drop `ollama`, add `tgi`), `Chart.lock`, `charts/*.tgz`, `values.yaml` (`global.enrichmentEnabled`, `tgi:` block, `ollama:` block removed, the `generativeModel` comment), the five profiles (`tgi:` blocks, `ollama:` blocks removed; laptop `global.enrichmentEnabled: false`), `charts/api/templates/deployment.yaml:127-130`, `charts/worker/templates/deployment.yaml:122-125`, `templates/networkpolicies.yaml` (ollama targets and policies out; tgi in); `deploy/terraform/modules/cluster-{aws,gcp,azure}/{main.tf,variables.tf}`, `modules/operators/{main.tf,outputs.tf}`, `values-{aws,azure,gcp}.yaml` (`tgi:` with `iverson-tgi` / pool `tgi`)
-- Delete: `charts/ollama/**`, `charts/ollama-0.1.0.tgz`
+- Delete: `charts/ollama/**` (`helm dependency update` prunes `charts/ollama-0.1.0.tgz`; `Chart.lock` is regenerated and committed)
 
 - [ ] **Step 1: The subchart.** Copy `charts/tei/` to `charts/tgi/` and change: `Chart.yaml` name/description; `values.yaml` = `replicas: 2`, `storageSize: 8Gi`, `storageClassName: ""`, `imageTag: "3.3.4-intel-cpu"`, `resources: {requests: {cpu: "8", memory: "16Gi", ephemeral-storage: "2Gi"}, limits: {cpu: "8", memory: "16Gi", ephemeral-storage: "4Gi"}}`, `nodeSelector: {}`, `tolerations: []`, plus `enabled: true`; the templates render one object set (no `range`) guarded by `{{- if and .Values.global.enrichmentEnabled .Values.enabled }}`, named `{{ .Release.Name }}-tgi`, labels `app: {{ .Release.Name }}-tgi` and `iverson.io/component: tgi`; the container:
 ```yaml
@@ -1312,16 +1316,16 @@ git commit -m "add the compose tgi service and enrich_bench.py, and record the e
 ```
 with `volumeClaimTemplates` for `tgi-data`; Service headless on 8080; PDB as tei's. Parent `Chart.yaml`: remove the `ollama` dependency, add `tgi` with `condition: global.enrichmentEnabled`.
 
-- [ ] **Step 2: Values.** `values.yaml`: add under `global:` after `generativeModel` (now `"Qwen/Qwen2.5-1.5B-Instruct"`, comment "the Hub id the tgi subchart serves and api/worker request through Enrichment__ModelId") `enrichmentEnabled: true` with the spec's comment; delete the `ollama:` block; add the `tgi:` block (values above). Profiles: delete each `ollama:` block; local: `tgi: {replicas: 1, storageSize: 8Gi, storageClassName: "standard", resources: {requests: {cpu: "2", memory: "6Gi"}, limits: {cpu: "4", memory: "8Gi"}}}`; laptop: `global.enrichmentEnabled: false` (comment: TGI needs 4–5 GB and 8 threads the laptop budget does not have) and no `tgi:` block; cloud files: `tgi: {storageClassName: "iverson-tgi", nodeSelector: {iverson.io/node-pool: tgi}, tolerations: [{key: "iverson.io/node-pool", operator: "Equal", value: "tgi", effect: "NoSchedule"}]}`.
+- [ ] **Step 2: Values.** `values.yaml`: add under `global:` after `generativeModel` (now `"Qwen/Qwen2.5-1.5B-Instruct"`, comment "the Hub id the tgi subchart serves and api/worker request through Enrichment__ModelId") `enrichmentEnabled: true` with the spec's comment; delete the `ollama:` block; add the `tgi:` block (values above). Wording the sweep in Task 10 would otherwise catch: `Chart.yaml:3`'s description `Ollama` → `TGI`; `values-laptop.yaml:6` `ollama 8` → `tgi 8`; the trailing comment in `values-aws.yaml:88`, `values-azure.yaml:81`, `values-gcp.yaml:82` `qdrant/ollama do` → `qdrant/tgi do`. Profiles: delete each `ollama:` block; local: `tgi: {replicas: 1, storageSize: 8Gi, storageClassName: "standard", resources: {requests: {cpu: "2", memory: "6Gi"}, limits: {cpu: "4", memory: "8Gi"}}}`; laptop: `global.enrichmentEnabled: false` (comment: TGI needs 4–5 GB and 8 threads the laptop budget does not have) and no `tgi:` block; cloud files: `tgi: {storageClassName: "iverson-tgi", nodeSelector: {iverson.io/node-pool: tgi}, tolerations: [{key: "iverson.io/node-pool", operator: "Equal", value: "tgi", effect: "NoSchedule"}]}`.
 
-- [ ] **Step 3: Deployments and policies.** api/worker: `Enrichment__BaseUrl` value → `"http://{{ .Release.Name }}-tgi:8080"`; add `- name: Enrichment__Enabled` / `value: {{ .Values.global.enrichmentEnabled | quote }}` after `Enrichment__ModelId`. `networkpolicies.yaml`: delete the two ollama targets in api/worker egress and the `ollama-ingress`/`ollama-egress` policies; add `tgi-ingress`/`tgi-egress` (tei's two policies with `tgi` and the Hub comment) and `- to: [{ podSelector: { matchLabels: { iverson.io/component: tgi } } }]` / `ports: [{ protocol: TCP, port: 8080 }]` in api-egress and worker-egress. Delete `charts/ollama/` and `charts/ollama-0.1.0.tgz`.
+- [ ] **Step 3: Deployments and policies.** api/worker: `Enrichment__BaseUrl` value → `"http://{{ .Release.Name }}-tgi:8080"`; add `- name: Enrichment__Enabled` / `value: {{ .Values.global.enrichmentEnabled | quote }}` after `Enrichment__ModelId`. `networkpolicies.yaml`: delete the two ollama targets in api/worker egress and the `ollama-ingress`/`ollama-egress` policies; add `tgi-ingress`/`tgi-egress` (tei's two policies with `tgi` and the Hub comment) and `- to: [{ podSelector: { matchLabels: { iverson.io/component: tgi } } }]` / `ports: [{ protocol: TCP, port: 8080 }]` in api-egress and worker-egress. Delete `charts/ollama/` (Step 5's `helm dependency update` removes the tarball).
 
-- [ ] **Step 4: Terraform rename.** In each cluster module rename the `ollama` map entry and variables to `tgi` (`tgi_instance_type` `"c7i.2xlarge"`, `tgi_machine_type` `"c2-standard-8"`, `tgi_vm_size` `"Standard_F8s_v2"`, `tgi_node_count` 2; Azure `label = "tgi"`); `operators/main.tf`: `kubernetes_storage_class.ollama` → `tgi`, name `iverson-tgi`; `outputs.tf`: `tgi = kubernetes_storage_class.tgi.metadata[0].name`. `grep -rn ollama Iverson.Server/deploy/terraform` → 0.
+- [ ] **Step 4: Terraform rename.** In each cluster module rename the `ollama` map entry and variables to `tgi` (`tgi_instance_type` `"c7i.2xlarge"`, `tgi_machine_type` `"c2-standard-8"`, `tgi_vm_size` `"Standard_F8s_v2"`, `tgi_node_count` 2; Azure `label = "tgi"`); `operators/main.tf`: `kubernetes_storage_class.ollama` → `tgi`, name `iverson-tgi`; `outputs.tf`: `tgi = kubernetes_storage_class.tgi.metadata[0].name`; the comment at `cluster-aws/main.tf:488` `StarRocks/Qdrant/Kafka/Ollama StorageClasses` → `…/TGI …`. `grep -rni ollama Iverson.Server/deploy/terraform` → 0 (case-insensitive, or the comment survives).
 
 - [ ] **Step 5: Checks.**
 ```bash
 cd /home/ben/repositories/Iverson/Iverson.Server/deploy/helm/iverson
-helm dependency build .
+helm dependency update .           # regenerates Chart.lock, packages tgi, prunes charts/ollama-0.1.0.tgz itself
 ls charts/*.tgz | grep -c ollama    # 0
 for v in values-local values-laptop values-aws values-azure values-gcp; do
   helm lint . -f $v.yaml | tail -1
@@ -1345,16 +1349,16 @@ git commit -m "helm and terraform: serve enrichment from a tgi subchart, delete 
 ### Task 10 (Phase C, on a pass): Ollama removed from compose, code, Launcher, scripts
 
 **Files:**
-- Modify: `Iverson.Server/docker-compose.yml` (`ollama`, `ollama-init`, `ollama_data` deleted; worker `depends_on tgi`; api/worker `Enrichment__*`); `Iverson.Server/Iverson.Embeddings/EnrichmentServiceOptions.cs:6-7,14`; `Iverson.Server/Iverson.Api/Consumers/EnrichmentConsumer.cs:16`; `Iverson.Server/Iverson.Launcher/Program.cs:20,28-29,72-103`; `Iverson.Server/Iverson.LoadTest/scripts/stack.py` (docstring); `Iverson.Server/deploy/kind/setup.sh:98`, `setup.ps1:95`
+- Modify: `Iverson.Server/docker-compose.yml` (`ollama`, `ollama-init`, `ollama_data` deleted; worker `depends_on tgi`; api/worker `Enrichment__*`; the `starrocks-init` comment at `:67` "Follows the `ollama-init` idiom already in this file" → "Follows the init-container idiom this file uses"); `Iverson.Server/Iverson.Embeddings/EnrichmentServiceOptions.cs:6-7,14`; `Iverson.Server/Iverson.Api/Consumers/EnrichmentConsumer.cs:16`; `Iverson.Server/Iverson.Launcher/Program.cs:20,28-29,72-103`; `Iverson.Server/Iverson.LoadTest/scripts/stack.py` (docstring); `Iverson.Server/deploy/kind/setup.sh:98`, `setup.ps1:95`
 
 - [ ] **Step 1: Compose.** Delete the `ollama` and `ollama-init` services and the `ollama_data` volume; api/worker env `- Enrichment__BaseUrl=http://tgi:80` and `- Enrichment__ModelId=${GEN_MODEL_ID:-Qwen/Qwen2.5-1.5B-Instruct}`; worker `depends_on` gains `tgi: condition: service_healthy`. `docker compose config | grep -ci ollama` → 0.
 
 - [ ] **Step 2: Code.** `EnrichmentServiceOptions`: `BaseUrl = "http://localhost:8092"`, `ModelId = "Qwen/Qwen2.5-1.5B-Instruct"`, the `:14` comment "hit Ollama simultaneously" → "hit the backend simultaneously"; `EnrichmentConsumer.cs:16` "from an Ollama generative model" → "from the generative backend". Launcher: `up` list without `ollama ollama-init`, `WaitForOllamaAsync` deleted, the TEI wait plus `await WaitForHttp200Async("http://localhost:8092/health", "TGI", TimeSpan.FromMinutes(30), cts.Token);`. `stack.py` docstring: the remaining `ollama-init` mention in the `--no-deps` note. kind notes: `tei.storageSize`/`tgi.storageSize`, `iverson-tei-bge-base`/`iverson-tgi`.
 ```bash
 cd /home/ben/repositories/Iverson
-grep -rli ollama --include=*.cs --include=*.yml --include=*.yaml --include=*.tf --include=*.sh --include=*.ps1 --include=*.py --include=*.tpl --include=*.ts --include=*.java --include=*.go . | grep -v '/bin/\|/obj/\|/.worktrees/\|/.claude/\|^./docs/\|node_modules\|README.md\|Iverson.Server/docs/security/tma.md\|Tests/\|_test.go\|tests/\|EmbeddingPrefixes.cs\|Iverson.Api.Tests'
+grep -rli ollama --include=*.cs --include=*.yml --include=*.yaml --include=*.tf --include=*.sh --include=*.ps1 --include=*.py --include=*.tpl --include=*.ts --include=*.java --include=*.go . | grep -v '/bin/\|/obj/\|/.worktrees/\|/.claude/\|^./docs/\|node_modules\|README.md\|Iverson.Server/docs/security/tma.md\|Tests/\|_test.go\|tests/\|EmbeddingPrefixes.cs\|Iverson.Api.Tests\|scripts/ingest.py\|scripts/enrich_bench.py'
 ```
-must print nothing (the exceptions are the spec's: docs, the two acknowledged documentation files, test comments, the prefix-table comment about id tags).
+must print nothing (the exceptions are the spec's: docs, the two acknowledged documentation files, test comments, the prefix-table comment about id tags — plus `ingest.py`, whose `--model`/`--embed-url` help deliberately names Ollama as the alternative backend (Task 6), and `enrich_bench.py`, whose docstring names Ollama as the measurement baseline (Task 8); both are legitimate mentions, exactly as spec §2 leaves the `EmbeddingPrefixes` nomic rows in place).
 
 - [ ] **Step 3: Run.** `dotnet build Iverson.slnx`; Embeddings, Api and ClientConformance.Tests suites; then on the stack:
 ```bash
@@ -1364,7 +1368,26 @@ docker compose up -d --remove-orphans 2>&1 | tail -3        # removes the now-un
 docker ps -a --format '{{.Names}}' | grep -c ollama          # 0
 docker logs iverson-worker 2>&1 | grep 'EmbeddingService initialized'
 ```
-Then one real enrichment through TGI: the .NET conformance driver's `VectorDoc` carries `[IversonSummary]`/`[IversonKeywords]`, so with Task 5's four `IVERSON_*` exports run `cd Iverson.Server/Iverson.ClientConformance && dotnet run -- --languages dotnet` (exit 0), then `docker logs iverson-worker 2>&1 | grep -c '\[Enrichment\] Enriched'` ≥ 1 and `docker logs iverson-tgi 2>&1 | grep -c 'chat_completions'` ≥ 1. Every generation is ~1 minute on this box; the harness's timeouts are on the API, not the worker, so the cell passes before enrichment lands — wait for the log line rather than failing the check at once.
+Then one real enrichment through TGI. No registerable type in the repo declares an enrichment target (P26: `VectorDoc` is deliberately annotation-free), so the trigger is a throwaway type in a scratch console: create `/tmp/claude-1000/-home-ben-repositories-Iverson/690ec42d-1faa-4cc8-9c9a-e8965b19eebe/scratchpad/enrich-smoke/` with a net10.0 console project referencing `Iverson.Clients/DotNet/Iverson.Client.Core`, `Iverson.Client.Contracts` and `Iverson.Client.Attributes` (the three `ProjectReference`s of `Iverson.Client.Conformance.Driver.csproj:12-14`) and a copy of the driver's `Auth.cs`; declare
+```csharp
+[IversonEntity]
+public sealed class EnrichSmoke
+{
+    [IversonKey] public Guid Id { get; set; }
+    [IversonEmbedding] public string Body { get; set; } = "";
+    [IversonSummary] public string? Summary { get; set; }
+    [IversonExtracted("the main finding")] public string? Finding { get; set; }
+}
+```
+register it with `new SchemaRegistrar(registry, mapping, NullLogger<SchemaRegistrar>.Instance).RegisterAllAsync()` and write one row (a ~500-character `Body`) with `Coordinator<EnrichSmoke>().PostMappedAsync(...)`, modelled on the driver's registration and `write` phase (`Program.cs:109-127, 470-480`) and authenticated the way the driver is (its invoker from `Auth.cs`, the client credentials from Task 5's four `IVERSON_*` exports, an acting-user token for tenant `loadtest`). Then:
+```bash
+until docker logs iverson-worker 2>&1 | grep -q '\[Enrichment\] Enriched'; do sleep 10; done   # ~1–2 min per generation on this box; two generations
+docker logs iverson-worker 2>&1 | grep -c '\[Enrichment\] Enriched'    # ≥ 1
+docker logs iverson-tgi 2>&1 | grep -c 'chat_completions'               # ≥ 1
+docker exec iverson-postgres psql -U iverson -d iverson -c "DELETE FROM public._iverson_schema WHERE type_name = 'EnrichSmoke';"
+K=dev-only-not-for-production-qdrant-key-0123456789; for c in $(curl -s -H "api-key: $K" 127.0.0.1:6333/collections | grep -o '"name":"enrich_smoke[^"]*"' | cut -d'"' -f4); do curl -s -o /dev/null -w "$c %{http_code}\n" -X DELETE -H "api-key: $K" 127.0.0.1:6333/collections/$c; done
+```
+(clearing the type's schema row and collections afterwards, which Task 4 established is safe on this stack). The scratch project is never committed.
 
 - [ ] **Step 4: Commit.**
 ```bash
@@ -1380,8 +1403,10 @@ git commit -m "remove ollama from compose, the Launcher and the enrichment defau
 
 No chart, compose, Terraform or code deletion. What Tasks 2–8 landed is already the spec's Phase C′ shape: the ollama subchart pulls only `global.generativeModel` (`qwen2.5:3b`), compose keeps `ollama` with an `ollama-init` that pulls only `qwen2.5:3b`, `Enrichment__BaseUrl` points at ollama, `EnrichmentServiceOptions` defaults stay Ollama's, the `tgi` compose service and the Terraform `tei` pool exist, and the ported `EnrichmentService` works against Ollama (Task 8's Ollama rows are its evidence).
 
-- [ ] **Step 1:** Append to the gate document an "End state (Phase C′)" section listing exactly the above, plus what a future cloud measurement of the 3B candidate would need (the `tgi` compose service definition and `enrich_bench.py` are reusable as-is; `--backend tgi=…=Qwen/Qwen2.5-3B-Instruct=…` on an AMX node). Update the kind notes to name both `ollama.storageSize` and `tei.storageSize`.
-- [ ] **Step 2: Commit** (`git add -f docs/plans/2026-09-GATE-enrichment-backend.md`, the two kind scripts; message "record the Phase C′ end state: ollama stays for enrichment only").
+- [ ] **Step 1: The ported client against Ollama, for real.** Nothing on this branch has rebuilt the image since Task 7, so the compose worker still runs the pre-port `/api/generate` build. From `Iverson.Server`: `docker compose build iverson-api 2>&1 | tail -1 && docker compose up -d iverson-worker iverson-api`, then run Task 10 Step 3's `EnrichSmoke` scratch-console smoke unchanged except for the backend log check, which becomes `docker logs iverson-ollama 2>&1 | grep -c 'POST     "/v1/chat/completions"'` ≥ 1 (Ollama's GIN access log). Clean up the type's schema row and collections as there.
+
+- [ ] **Step 2:** Append to the gate document an "End state (Phase C′)" section listing exactly the above, plus what a future cloud measurement of the 3B candidate would need (the `tgi` compose service definition and `enrich_bench.py` are reusable as-is; `--backend tgi=…=Qwen/Qwen2.5-3B-Instruct=…` on an AMX node). Update the kind notes to name both `ollama.storageSize` and `tei.storageSize`.
+- [ ] **Step 3: Commit** (`git add -f docs/plans/2026-09-GATE-enrichment-backend.md`, the two kind scripts; message "record the Phase C′ end state: ollama stays for enrichment only").
 
 ### Task 11: kind smoke on the laptop profile
 
@@ -1399,7 +1424,7 @@ docker compose stop
 kind get clusters | grep -q '^iverson$' || kind create cluster --name iverson --config deploy/kind/kind-config.yaml
 bash deploy/kind/setup.sh 2>&1 | tail -5                     # operators + metrics-server; podman pids_limit is already -1 (P21)
 bash deploy/kind/build-and-load-image.sh 0.1.0 iverson 2>&1 | tail -2
-cd deploy/helm/iverson && helm dependency build . && helm upgrade --install iverson . -f values-laptop.yaml -n iverson --create-namespace --wait --timeout 30m 2>&1 | tail -3
+cd deploy/helm/iverson && helm dependency update . && helm upgrade --install iverson . -f values-laptop.yaml -n iverson --create-namespace --wait --timeout 30m 2>&1 | tail -3
 ```
 
 - [ ] **Step 2: Assert.**
@@ -1410,9 +1435,9 @@ kubectl -n iverson logs sts/iverson-tei-bge-base | grep -c 'Ready'              
 kubectl -n iverson logs deploy/iverson-api | grep 'EmbeddingService initialized'   # model=BAAI/bge-base-en-v1.5 dimension=768
 kubectl -n iverson logs deploy/iverson-worker | grep 'EmbeddingService initialized'
 kubectl -n iverson get pods                                                       # all Running/Completed; note any Pending with its reason
-kubectl -n iverson exec deploy/iverson-api -- sh -c 'wget -qO- http://iverson-tei-bge-base:8080/info' 2>/dev/null | grep -o '"model_id":"[^"]*"'   # from inside the policy boundary; use curl if wget is absent in the api image
+kubectl -n iverson exec deploy/iverson-api -- bash -c 'exec 3<>/dev/tcp/iverson-tei-bge-base/8080; printf "GET /info HTTP/1.1\r\nHost: tei\r\nConnection: close\r\n\r\n" >&3; cat <&3' | grep -o '"model_id":"[^"]*"'   # from inside the policy boundary. The aspnet image ships bash only — no wget, no curl (P25); this is the compose healthcheck's own idiom. A kubectl-run pod is no substitute: tei-ingress admits only app=iverson-api/worker pods, which is what this proves
 ```
-On a pass branch also `helm template` of the laptop profile must contain no `ollama` object (already asserted in Task 9); the `Errno 30` check applies only where a tgi pod runs, which the laptop profile does not — record that explicitly.
+On a pass branch also `helm template` of the laptop profile must contain no `ollama` object (already asserted in Task 9). **Not performed on this box, and the task report must say so:** spec §8's Phase C kind items "the tgi pod ready and one worker enrichment logged" and spec §11's `Errno 30` verification of `workingDir: /tmp`. The laptop profile runs with `global.enrichmentEnabled: false`, so the `tgi` subchart renders no pod, and `values-local.yaml`'s `tgi` sizing (2 CPU / 6 Gi requested, 4–5 GB resident) cannot run beside the rest of the stack on this 4-CPU / 10 GB host. They are performed by installing `values-local.yaml` on a ≥ 16 GB machine and asserting `kubectl -n iverson rollout status sts/iverson-tgi` and `kubectl -n iverson logs sts/iverson-tgi | grep -c 'Errno 30'` → 0 plus one `[Enrichment] Enriched` worker line. The `tgi` templates ship having passed `helm lint`, kubeconform and kube-score only.
 
 - [ ] **Step 3: Restore the box.** `helm uninstall iverson -n iverson` is optional (leave the cluster for reuse); `kind delete cluster --name iverson` only if RAM is needed; then `cd /home/ben/repositories/Iverson/Iverson.Server && docker compose up -d` and confirm the six-plus-tgi containers are healthy again.
 
