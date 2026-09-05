@@ -20,7 +20,10 @@ measured choice of model. Only `Qwen/Qwen2.5-1.5B-Instruct` can be measured on t
 waits for a cloud node. Because the measurement can fail, the removal is gated (§6.4) and the spec defines the
 end state for both outcomes (§7).
 
-There are no registered types on any deployment, so no migration procedure exists in this spec.
+No Helm or cloud deployment exists (none is running), so no migration procedure for a registered type exists in
+this spec. The compose dev stack does hold registered types — 36 `_iverson_schema` rows, every one pinned to
+`nomic-embed-text` (the conformance fixtures and `BenchmarkDocument` among them) — and §7 Phase A clears them
+before the default switches.
 
 ## 2. Scope
 
@@ -88,7 +91,10 @@ tgi:
 The `ollama:` block and the "must contain every model any registered type names" comment are deleted from all
 six values files. Profiles: `values-local.yaml` and `values-laptop.yaml` set `tei.replicas: 1`,
 `tgi.replicas: 1`, `storageClassName: standard`; laptop sets `global.enrichmentEnabled: false` (its 1.45-CPU
-budget cannot hold a 4–5 GB, 8-thread generative server) and smaller `tei.resources` (`500m`/`1Gi`).
+budget cannot hold a 4–5 GB, 8-thread generative server) and smaller `tei.resources` (`500m`/`1Gi`). Both files
+replace their `global.embeddingModels` override (today a single `nomic-embed-text` entry; a profile list override
+replaces, it does not merge) with the single `{name: BAAI/bge-base-en-v1.5, slug: bge-base}` entry; neither sets
+`activeEmbeddingModel`, which they inherit from `values.yaml`, so the list must agree with it.
 `values-{aws,azure,gcp}.yaml` replace their `ollama:` block with `tei:` (`storageClassName: iverson-tei`,
 `nodeSelector: {iverson.io/node-pool: tei}`, matching toleration) and `tgi:` (`iverson-tgi`, pool `tgi`).
 
@@ -108,7 +114,9 @@ listed in the parent `Chart.yaml` with `condition: tei.enabled`. Each template r
   `GET /health` on 8080 (`periodSeconds 10`, `failureThreshold 30` — the first start downloads the weights) and
   a readinessProbe on the same path; the pod anti-affinity, `nodeSelector`, `tolerations` and `resources` blocks
   as ollama's;
-- a headless Service `<release>-tei-<slug>` with `port: 80`, `targetPort: 8080`, selector `app`;
+- a ClusterIP Service `<release>-tei-<slug>` with `port: 80`, `targetPort: 8080`, selector `app` — not headless
+  like ollama's: a headless Service does no port remapping (DNS returns pod IPs, kube-proxy is not involved), so
+  a `:80` URL would dial the pod's dead port 80; the StatefulSet's `serviceName` still names this Service;
 - a PodDisruptionBudget as ollama's.
 
 `--auto-truncate` is mandatory (Phase 1 §3.4: 413 above 512 tokens without it).
@@ -131,10 +139,10 @@ its cwd and otherwise degrades to legacy tokenization), volumes: PVC `tgi-data` 
 `/tmp`, `emptyDir` (`medium: Memory`, `sizeLimit: 1Gi`) at `/dev/shm`; ollama's securityContext; a startupProbe
 `GET /health` on 8080 with `periodSeconds 15`, `failureThreshold 120` (the CPU warm-up measured ~10 minutes
 after a ~19 s shard load; the first start adds the download), then a readinessProbe on the same path; a
-headless Service `<release>-tgi` (`80 → 8080`); a PDB.
+ClusterIP Service `<release>-tgi` (`80 → 8080`; not headless, for §3.2's reason); a PDB.
 
 The token limits are load-bearing: at the image defaults (`max_total_tokens` 32,768) warm-up took twenty
-minutes and pre-allocated for a 4,096-token prefill; 3,072 input tokens is above the 8,000-character prompt cap
+minutes and pre-allocated for a 4,096-token prefill; 3,072 input tokens is above the 8,000-character source-text cap
 in §3.5.
 
 ### 3.4 Helpers, deployments, policies
@@ -176,20 +184,27 @@ otherwise keep rendering the old subchart, the trap recorded in memory `feedback
  "max_tokens": 256, "temperature": 0, "stream": false}
 ```
 
-and reads `choices[0].message.content`. Two constants replace behaviour Ollama gave for free:
+and reads `choices[0].message.content`. Two constants replace behaviour Ollama gave for free (the first lives in the consumer):
 
-- `MaxPromptChars = 8_000`: the prompt is cut to this length before sending. TGI rejects inputs above
-  `--max-input-tokens` with a 422 where Ollama silently truncated at its 2,048-token context; 8,000 characters
-  is ~2,000 tokens, under the 3,072 limit with room for the chat template. Parity, not a regression.
+- `MaxSourceChars = 8_000` in `EnrichmentConsumer`: `BuildSourceText`'s result is cut to this length **before**
+  it is interpolated into a prompt, so the leading instruction (`Summary`, `Keywords`, `Extraction`) and the
+  trailing extraction hint (`EnrichmentConsumer.cs:273-276`) always survive; `IntelligenceStoreConsumer`'s
+  chunk-context input is already bounded (`ParentTextContextChars = 2000` plus one chunk). TGI rejects inputs
+  above `--max-input-tokens` with a 422; 8,000 characters is ~2,000 tokens, under the 3,072 limit with room for
+  the instruction and the chat template. This is a deliberate reduction, not parity: Ollama's effective input
+  for `qwen2.5:3b` is 4,096 tokens and it truncates from the head, keeping the tail (§9 row 16).
 - `MaxGeneratedTokens = 256`: the chat API requires an explicit `max_tokens`; the enrichment prompts ask for
   2–3 sentences, 5–10 keywords, a 1–2 sentence description, or a JSON object.
 
 `GenerateJsonAsync` sends the same request with no grammar (ruled by Ben 2026-09-05, option (a) of §9 row 11:
 TGI grammars require a fixed `properties` set and a permissive schema constrains the model to `{ }`; the
-extraction target's hint is free text and its result is stored verbatim). It strips a leading ```` ``` ```` or
-```` ```json ```` fence and a trailing fence, validates the remainder with `JsonDocument.Parse`, and throws
-`InvalidOperationException` naming the first 200 characters when it does not parse. Ollama also serves
-`/v1/chat/completions` (§9 row 14), so this port is backend-neutral: the fail branch of §7 keeps it.
+extraction target's hint is free text and its result is stored verbatim). It extracts the JSON from the reply
+backend-neutrally: the first fenced code block (```` ``` ```` or ```` ```json ````) if one is present, else the
+first balanced `{ … }` span; validates it with `JsonDocument.Parse`; returns the extracted span; and throws
+`InvalidOperationException` naming the first 200 characters when nothing parses. A leading/trailing fence strip
+is not enough: without a format directive Ollama wraps the object in prose on both sides (§9 row 17), and the
+port lands in Phase B while Ollama still serves. Ollama also serves `/v1/chat/completions` (§9 row 14), so with
+this extraction the port is backend-neutral: the fail branch of §7 keeps it.
 
 **`Telemetry`**: `HttpClientName = "iverson.embeddings"`, `EnrichmentHttpClientName = "iverson.enrichment"`
 (named-client keys only; no dashboard or alert references them — §10 S3).
@@ -199,7 +214,9 @@ Ollama" → "must remain served by this deployment's embedding backend"; `Progra
 `EnrichmentConsumer.cs:16`; `EmbeddingService.cs:66,112`; `EnrichmentServiceOptions.cs:14`;
 `EmbeddingPrefixes.cs:16` ("Ollama ids carry tags" stays as a description of the id grammar);
 `BenchmarkIngestScenario.cs:240`; `ModelRejectedScenario.cs:79`; `VectorSearchScenario.cs:124`;
-`Iverson.Clients/Python/iverson_client/annotations.py:89-90,170-180,230` docstrings.
+`Iverson.Clients/Python/iverson_client/annotations.py:89-90,170-180,230` docstrings;
+`Iverson.Clients/Java/client/src/main/java/io/iverson/client/annotations/{IversonSummary,IversonKeywords,IversonExtracted}.java:9`
+and `Iverson.Clients/TypeScript/src/annotations.ts:71` doc comments.
 
 ### 3.6 Launcher
 
@@ -249,8 +266,11 @@ for TGI's first start.
 
 In `modules/cluster-{aws,gcp,azure}`: the `ollama` pool entry becomes `tgi` (variables `tgi_instance_type`/
 `tgi_machine_type`/`tgi_vm_size` and `tgi_node_count`, same defaults as the ollama ones) and a `tei` entry is
-added (`tei_*` variables; one size below: `c7i.xlarge`, `c2-standard-4`, `Standard_F4s_v2`; count 2). The pool
-key is the `iverson.io/node-pool` label the values files select on. In `modules/operators`:
+added (`tei_*` variables; one size below: `c7i.xlarge`, `c2-standard-4`, `Standard_F4s_v2`; count 2). On AWS
+and GCP the pool key is the `iverson.io/node-pool` label the values files select on (`cluster-aws/main.tf:572`,
+`cluster-gcp/main.tf:266`); on Azure the label and taint come from the pool map's `label` attribute
+(`cluster-azure/main.tf:221-226`), so the rename and the addition set it too: `tgi = {…, label = "tgi"}`,
+`tei = {…, label = "tei"}`. In `modules/operators`:
 `kubernetes_storage_class.ollama` (`iverson-ollama`) becomes `tgi` (`iverson-tgi`), `tei` (`iverson-tei`) is
 added, and `outputs.tf:7` follows. The root modules pass no ollama variable (§10 F4), so nothing else moves.
 Existing clusters: a pool rename is a replace; this spec does not plan the cut-over of a live cloud cluster
@@ -272,9 +292,10 @@ propagation and never contact a backend.
 - Embedding: unchanged from Phase 1 (probe failure → `Unavailable`; `/info` identity mismatch throws on every
   initialisation; a TEI 413 is a failed embed).
 - Enrichment backend unreachable or non-2xx: `HttpRequestException` from `EnsureSuccessStatusCode`, as today.
-- Enrichment JSON extraction that does not parse after fence stripping: `InvalidOperationException` naming the
-  head of the text; nothing is stored for that column.
-- A prompt over 8,000 characters is cut, never rejected; a generation over 256 tokens is cut by the server.
+- Enrichment JSON extraction for which neither a fenced block nor a `{ … }` span parses: `InvalidOperationException`
+  naming the head of the text; nothing is stored for that column.
+- Source text over 8,000 characters is cut before the prompt is built, never rejected; the instruction and the
+  hint always survive; a generation over 256 tokens is cut by the server.
 - `global.enrichmentEnabled: false` disables the consumer (`Enrichment__Enabled=false`) and renders no `tgi`
   objects; api/worker still render `Enrichment__BaseUrl`, which nothing calls.
 - TGI's first start is minutes long: compose `start_period` and the k8s startupProbe budgets are sized to it;
@@ -294,7 +315,8 @@ propagation and never contact a backend.
 | `deploy/terraform/modules/{cluster-aws,cluster-gcp,cluster-azure,operators}` | §3.9 |
 | `deploy/kind/setup.{sh,ps1}` | note text |
 | `Iverson.Embeddings/EmbeddingServiceOptions.cs`, `EnrichmentServiceOptions.cs` | defaults |
-| `Iverson.Embeddings/EnrichmentService.cs` | chat-completions port, prompt cap, JSON validation |
+| `Iverson.Embeddings/EnrichmentService.cs` | chat-completions port, JSON extraction + validation |
+| `Iverson.Api/Consumers/EnrichmentConsumer.cs` | `MaxSourceChars` cap on `BuildSourceText` before prompt assembly |
 | `Iverson.Embeddings/Telemetry.cs` | client names |
 | `Iverson.Embeddings.Tests/EnrichmentServiceTests.cs` | request/response shape, cap, fence, invalid-JSON tests |
 | `Iverson.Api/Grpc/SchemaRegistrationOrchestrator.cs`, `Iverson.Api/Program.cs`, `Iverson.Api/Consumers/EnrichmentConsumer.cs`, `EmbeddingService.cs`, `EmbeddingPrefixes.cs`, `BenchmarkIngestScenario.cs`, `ModelRejectedScenario.cs`, `VectorSearchScenario.cs`, `Python/iverson_client/annotations.py` | wording only |
@@ -317,7 +339,7 @@ the ingest contract, `report.py`.
 |---|---|---|---|
 | Ollama `qwen2.5:3b` (baseline, Q4 GGUF) | ~2 GB | — | yes (6.9 tok/s native) |
 | TGI `Qwen/Qwen2.5-1.5B-Instruct` bf16 | 3.09 GB | 4.2–5.3 GB | yes (~1.6 tok/s, 32 tokens in 19.5 s) |
-| TGI `Qwen/Qwen2.5-3B-Instruct` bf16 | ~6 GB | not measured | no — 9.9 GB RAM, 2 GB free with the stack up |
+| TGI `Qwen/Qwen2.5-3B-Instruct` bf16 | ~6 GB | not measured | no — ~6 GB of weights plus runtime against 7.2 GB available with the stack up |
 
 This box is an i7-7500U (AVX2, no AVX-512/AMX, 4 threads); TGI's Intel CPU image computes bf16 without the
 AMX fast path it is built for. Ben ruled 2026-09-05: measure the 1.5B candidate here; 3B is deferred to a
@@ -360,7 +382,12 @@ the design probes (§9), so criterion (1) is likely to fail on this box. That is
 - **Phase A — embedding switch (no gate):** §3.1–§3.2 minus the ollama deletion, §3.4's `Models__N` and
   `embeddingBaseUrl` helpers, `EmbeddingServiceOptions` defaults, compose `tei-embed` default + healthcheck +
   `Embeddings__*` env, `stack.py`, `ingest.py`, Launcher's TEI wait, the conformance fixtures, the Phase 1
-  `Embeddings__Models__0__*` removal. Ollama is still present and still serves enrichment.
+  `Embeddings__Models__0__*` removal. Before the compose env switches: `DELETE FROM public._iverson_schema` (all
+  36 rows are nomic-pinned) and drop those types' tenant-qualified Qdrant collections (`{base}_<tenantId>`,
+  `{base}_chunks_<tenantId>`), then restore Phase 1's `scifact-bge-base-qdrant-snapshots` (the M1 index) so
+  `BenchmarkDocument` re-registers under bge-base against a bge-base index, with
+  `scifact-bge-base-2026-09-04/keymap.json` as the harness's key map. Ollama is still present and still serves
+  enrichment.
 - **Phase B — enrichment port and measurement:** `EnrichmentService` port (backend-neutral), compose `tgi`
   service, `enrich_bench.py`, the measurement, the verdict.
 - **Phase C — on a pass:** the Ollama removal (§3.3 tgi subchart, §3.4 policies and env, §3.5 `Enrichment`
@@ -377,27 +404,31 @@ the design probes (§9), so criterion (1) is likely to fail on this box. That is
 
 - `Iverson.Embeddings.Tests`: `EnrichmentServiceTests` rewritten for the chat shape — path `/v1/chat/completions`
   on the configured base URL, body carries `model`, one user message, `max_tokens` 256, `temperature` 0,
-  `stream` false; `choices[0].message.content` returned; prompt longer than 8,000 characters is sent cut to
-  8,000; `GenerateJsonAsync` sends no `response_format`, strips a ```` ```json ```` fence, throws on non-JSON;
-  non-2xx throws `HttpRequestException`. Tests fail against named mutations (an `/api/generate` regression; a
-  `response_format` sent; no cap; no fence strip). `EmbeddingServiceTests` unchanged except defaults.
+  `stream` false; `choices[0].message.content` returned; `GenerateJsonAsync` sends no `response_format`,
+  extracts the first fenced block or `{ … }` span from a prose-wrapped reply, throws when nothing parses;
+  non-2xx throws `HttpRequestException`. `EnrichmentConsumerTests`: a 20,000-character source text is sent cut
+  to 8,000 with the instruction and the extraction hint intact. Tests fail against named mutations (an
+  `/api/generate` regression; a `response_format` sent; no cap or a cap on the assembled prompt; a strip-only
+  extraction). `EmbeddingServiceTests` unchanged except defaults.
 - `helm lint`, `helm template | kubeconform`, `kube-score` on all five profiles (the `deploy-validate` workflow's
   three jobs, run locally with `helm dependency build` first) — asserting one `tei` StatefulSet/Service per
   entry, the `tgi` StatefulSet present when `enrichmentEnabled`, absent on laptop, no object named `-ollama`,
   the api/worker env, the policies.
 - `terraform fmt -check` and `init -backend=false && validate` for the three cloud roots (the workflow's matrix).
-- `docker compose config` renders; the conformance harness (five drivers) against compose after Phase A; the
+- `docker compose config` renders; the conformance harness (five drivers) against compose after Phase A's
+  schema-row clear; the
   Embeddings, Api and LoadTest suites.
 - kind deployment on `values-local.yaml`: TEI pod ready, API log `EmbeddingService initialized:
   model=BAAI/bge-base-en-v1.5 dimension=768`, and (Phase C) the tgi pod ready and one worker enrichment logged.
-- The Phase 1 benchmark harness still runs: `stack.py query` then `benchmark-query` against the restored SciFact
-  index (now registered under bge-base by default) produces run files.
+- The Phase 1 benchmark harness still runs: `stack.py query` then `benchmark-query` against the restored bge-base
+  SciFact index (Phase 1's M1 snapshot, registered under bge-base by default after the row clear) produces run
+  files.
 
 ## 9. Measurements taken during design (2026-09-05, live)
 
 | # | What | Value | How |
 |---|---|---|---|
-| 1 | This box | i7-7500U, AVX2/FMA, no AVX-512/AMX, 4 threads, 9.9 GB RAM (2 GB available with the query tier up) | `lscpu`, `free` |
+| 1 | This box | i7-7500U, AVX2/FMA, no AVX-512/AMX, 4 threads, 9.9 GB RAM (7.2 GB available, 2.1 GB free, with the query tier up) | `lscpu`, `free` |
 | 2 | TGI image tags | `3.3.4-intel-cpu` exists (amd64), `3.3.5-intel-cpu` does not; 6.87 GB on disk | `docker manifest inspect`, `docker images` |
 | 3 | TGI image | `ubuntu:22.04`, PyTorch 2.7 CPU + IPEX, no AVX-512 check, `HUGGINGFACE_HUB_CACHE=/data`, `PORT=80`, entrypoint `text-generation-launcher`, root, has `curl`, `wget`, `python3` | `Dockerfile_intel`, image probe |
 | 4 | TGI API | paths incl. `/health` (200 / 503), `/info` (`model_id`, `max_input_tokens`, `max_total_tokens`, `version`), `/generate`, `/v1/chat/completions`; `ChatRequest.response_format` is `GrammarType` = `json` \| `regex` \| `json_schema`, each with `value` | OpenAPI document |
@@ -412,6 +443,8 @@ the design probes (§9), so criterion (1) is likely to fail on this box. That is
 | 13 | TGI as uid 1000, read-only, `--port 8080` | healthy; `ERROR Failed to import python tokenizer OSError: [Errno 30] Read-only file system: 'out'` then "falling back on legacy tokenization"; generation works | probe |
 | 14 | Ollama `/v1/chat/completions` with `qwen2.5:3b` | 31 tokens, `choices[0].message.content` present; native `eval` 6.94 tok/s | live Ollama |
 | 15 | Enrichment consumer | `Extracted` stores the generated text verbatim as the target column; `GenerateJsonAsync` has one caller | `EnrichmentConsumer.cs:258-284` |
+| 16 | Ollama truncation | a 40,625-character prompt whose only instruction is its last line → `prompt_eval_count 4096`, instruction obeyed: head-first truncation, 4,096-token context for `qwen2.5:3b` | live Ollama `/api/generate` (CDR-1) |
+| 17 | Ollama chat without a format directive, extraction prompt | a prose sentence, then a ```` ```json ```` block, then a trailing note; `usage.completion_tokens` 92 | live Ollama `/v1/chat/completions` (CDR-1) |
 
 ## 10. Verified assumptions
 
@@ -422,19 +455,20 @@ the design probes (§9), so criterion (1) is likely to fail on this box. That is
 | T3 | Cache at `/data`, port 80, anonymous Hub download; Xet path unreliable here, classic path works | §9 rows 3, 8, 9 |
 | T4 | No privileged caps needed on CPU; runs as uid 1000 read-only with `/tmp` tmpfs and `--port 8080`; cwd write of `out` under read-only root | §9 row 13 (probes ran with no `--privileged`/`--device`) |
 | T5 | Both Qwen repos are public safetensors; sizes | §9 row 8 |
-| T6 | 1.5B bf16 fits beside the query tier only barely | §9 rows 1, 10 (gate criterion 5 decides) |
+| T6 | 1.5B bf16 fits beside the query tier only barely | §9 rows 1 (7.2 GB available with the stack up — corrected by CDR-1), 10 (RSS 4.2–5.3 GB); gate criterion 5 decides |
 | K1 | TEI `/health` is 200/503; readiness-suitable | §9 row 5 |
 | K2 | TEI runs as uid 1000 read-only with `/data` + `/tmp` on port 8080; not on 80 | §9 row 6 |
 | K3 | TEI cache env `/data` | §9 row 5 |
 | K4 | bge-base 0.44 GB | §9 row 8 |
+| K5 | A headless Service does no port remapping: DNS returns pod IPs and kube-proxy is not involved, so a Service that must map 80→8080 has to be ClusterIP | kubernetes.io Service docs, "Headless Services" (CDR-1) |
 | H1 | `Chart.lock` lists `ollama`; `charts/*.tgz` exist for every subchart (`ollama-0.1.0.tgz` included); `helm dependency build` is the workflow's first step | `Chart.lock:14-16`; `ls charts/*.tgz`; `deploy-validate.yml:25-26,52-53,80` |
 | H2 | api/worker templates carry `Embeddings__BaseUrl` (`:124-125` / `:119-120`), the helper include (`:126` / `:121`), `Enrichment__BaseUrl` (`:127-128` / `:122-123`), `Enrichment__ModelId` (`:129-130` / `:124-125`); no `Enrichment__Enabled` today | `grep` |
 | H3 | `global.embeddingModels` is read only by `_helpers.tpl:9` and the ollama statefulset pull loop; `generativeModel` by the two deployments and that loop | `grep` over `templates`, `charts` |
 | H4 | Every `-ollama` reference in templates: the two deployment URLs, `networkpolicies.yaml:54,85` (api/worker egress) and `:393-418` (ollama ingress/egress) | `grep` |
 | H5 | Chart checks: `helm lint` ×5 overlays, `helm template \| kubeconform` ×5, `kube-score` ×5 with documented exemptions (uid 1000 convention), `tfsec`, `terraform fmt`/`init -backend=false`/`validate` per cloud | `.github/workflows/deploy-validate.yml` |
-| H6 | Six values files: all carry `ollama:`; `values.yaml`, `-local`, `-laptop` carry `embeddingModels`/`activeEmbeddingModel`; the three cloud files carry only `ollama:` (storage class + pool) | `grep -c` per file |
+| H6 | Six values files: all carry `ollama:`; `values.yaml` carries `embeddingModels` and `activeEmbeddingModel`; `-local` and `-laptop` carry `embeddingModels` only (a replacing override) and inherit `activeEmbeddingModel`; the three cloud files carry only `ollama:` (storage class + pool) | `grep -c` per file (corrected by CDR-1) |
 | H7 | Release name `iverson` (`kind/setup.sh:97`); `iverson-tei-bge-base` is 20 characters | `grep` |
-| F1 | Pool maps: `cluster-aws/main.tf:511`, `cluster-gcp/main.tf:239`, `cluster-azure/main.tf:208`; variables `ollama_instance_type`/`ollama_machine_type`/`ollama_vm_size` + `ollama_node_count` (`c7i.2xlarge`, `c2-standard-8`, `Standard_F8s_v2`, count 2); label `iverson.io/node-pool` = pool key (`aws:572`, `gcp:266`, `azure:221`) | `grep` |
+| F1 | Pool maps: `cluster-aws/main.tf:511`, `cluster-gcp/main.tf:239`, `cluster-azure/main.tf:208`; variables `ollama_instance_type`/`ollama_machine_type`/`ollama_vm_size` + `ollama_node_count` (`c7i.2xlarge`, `c2-standard-8`, `Standard_F8s_v2`, count 2); the `iverson.io/node-pool` label is the pool key on AWS (`:572`) and GCP (`:266`) but the map's `label` attribute on Azure (`:203-208,221-226`) | `grep` (corrected by CDR-1) |
 | F2 | `operators/main.tf:177` `iverson-ollama`; `outputs.tf:7` references `kubernetes_storage_class.ollama` | `grep` |
 | F3 | Terraform 1.9.8 installed; the workflow validates with `init -backend=false` | `terraform version`; workflow `:36-45` |
 | F4 | Root modules (`aws/`, `azure/`, `gcp/`, `bootstrap/`) reference no ollama variable | `grep -rln ollama` → none |
@@ -442,12 +476,15 @@ the design probes (§9), so criterion (1) is likely to fail on this box. That is
 | C2 | TEI and TGI images carry `curl` | §9 rows 3, 5 |
 | C3 | api/worker `depends_on` use `service_healthy`/`service_completed_successfully`; api does not depend on `ollama` itself | compose `:72-86`, `:473`, `:545` |
 | C4 | Launcher: `up` list `:20`, `WaitForOllamaAsync` `:28,72-` are its only Ollama references | `grep` |
+| C5 | The compose stack's Postgres holds 36 `_iverson_schema` rows, all pinned to `nomic-embed-text` (all `S11Model*`/`S12Inherited*` fixtures and `BenchmarkDocument` included); nothing in the conformance harness deletes them | `psql` read-only `SELECT` (CDR-1); `SchemaProbe.cs:17` |
 | S1 | `EnrichmentService`: `GenerateAsync`/`GenerateJsonAsync` → `GenerateInternalAsync(prompt, jsonFormat)` (`:19-53`), the only HTTP site; `format = "json"` only for `Extracted` (`EnrichmentConsumer.cs:274`); `IEnrichmentService` unchanged | read |
 | S2 | `EnrichmentServiceTests`: 7 facts; three pin Ollama specifics (`/api/generate` path `:85`, `response` field, `format: json`) | `grep` |
 | S3 | `Telemetry.HttpClientName`/`EnrichmentHttpClientName` are used only by `ServiceCollectionExtensions.cs:13,31`, `EmbeddingService.cs:69,97`, `EnrichmentService.cs:34`; no dashboard/alert names `iverson.ollama` | `grep` (prometheus chart: none) |
 | S4 | No test relies on the option defaults for a URL: Embeddings tests set `BaseUrl` where they assert one; `EnrichmentServiceTests` pass `modelId` explicitly; `ModelRejectedScenarioTests:518` compares the default family against a never-deployed id | `grep` |
 | S5 | Non-test Ollama-naming strings: `Program.cs:410-412`, `EnrichmentConsumer.cs:16`, `SchemaRegistrationOrchestrator.cs:128`, `EmbeddingPrefixes.cs:16`, `EnrichmentServiceOptions.cs:14`, `EmbeddingService.cs:66,112`, `Telemetry.cs:8-9`, `BenchmarkIngestScenario.cs:240`, `ModelRejectedScenario.cs:79`, `VectorSearchScenario.cs:124`, `Launcher/Program.cs:20,28,72-74` | `grep` |
 | S6 | Enrichment consumer is worker-only, gated on `Enrichment:Enabled` | `EnrichmentConsumer.cs:376` |
+| S7 | Without a format directive Ollama's `/v1/chat/completions` wraps the extraction JSON in prose on both sides, so a leading/trailing fence strip does not isolate it | §9 row 17 |
+| S8 | Ollama truncates prompts from the head with a 4,096-token context for `qwen2.5:3b`; the appended extraction hint survives today | §9 row 16 |
 | P1 | `stack.py` Ollama sites `:10,13,27,43,83-84,89,92,171`; `ingest.py` `:26,64,121-124,150,153,531,725,736-737`; `report.py` none | `grep` |
 | P2 | kind scripts mention ollama only in the storageSize note (`setup.sh:98`, `setup.ps1:95`); the install command is the `Next:` echo at `:97` | `grep` |
 | Q1 | Fixture sites as listed in §3.10; `Preflight.cs` and the harness `Program.cs` probe no Ollama endpoint | `grep` |
@@ -457,7 +494,7 @@ the design probes (§9), so criterion (1) is likely to fail on this box. That is
 | M3 | cgroup v2; `docker stats` samples container memory (podman-backed `docker` here) | `cgroup.controllers`; `docker stats` |
 | D1 | Nothing besides the Phase 1 harness docs reads `Embeddings__Models__*`; `EnrichmentConsumerTests:427` sets only `Enrichment:Enabled` in-memory; `StartupNoOpFakes.cs:11` is a comment | `grep` |
 | D2 | Prometheus chart and dashboards name no Ollama | `grep` |
-| D3 | 48 files reference Ollama outside `docs/`; every one is in §3.5, §3.7, §3.8, §3.9, §3.10 or the deleted subchart, except `Iverson.Server/docs/security/tma.md` and `README.md` (documentation, left to a doc pass) | `grep -rli` |
+| D3 | 53 tracked files reference Ollama outside `docs/`; every one is in §3.5, §3.7, §3.8, §3.9, §3.10 or the deleted subchart, except `Iverson.Server/docs/security/tma.md` and `README.md` (documentation, left to a doc pass) | `git ls-files \| xargs grep -lil ollama` (corrected by CDR-1) |
 
 ## 11. Known issues, accepted as out of scope
 
