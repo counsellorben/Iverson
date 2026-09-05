@@ -494,9 +494,6 @@ services:
       - WORKLOAD_ROLE=worker
       - Otel__Endpoint=http://jaeger:4317
       - Embeddings__BaseUrl=http://tei-embed:80
-      # Must agree with tei-embed's served model (its --model-id, EMBED_MODEL_ID) and with the five
-      # conformance fixtures' declared model: this is the deployment default types register under.
-      # A mismatch fails loudly at first initialisation — the API's /info identity guard.
       - Embeddings__ModelId=${BENCH_EMBED_MODEL:-BAAI/bge-base-en-v1.5}
       - Enrichment__BaseUrl=http://ollama:11434
       - Enrichment__ModelId=qwen2.5:3b
