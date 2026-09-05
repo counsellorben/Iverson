@@ -92,4 +92,4 @@ helm upgrade --install metrics-server metrics-server `
 
 Write-Host "All operators installed."
 Write-Host "Next: deploy/kind/build-and-load-image.ps1 to build+load the app image, then helm upgrade --install iverson . -f values-local.yaml -n iverson"
-Write-Host "Note: if you later raise ollama.storageSize on an existing cluster, 'helm upgrade' will fail (StatefulSet volumeClaimTemplates are immutable) - see the comment next to storageSize in values-local.yaml."
+Write-Host "Note: if you later raise tei.storageSize (or ollama.storageSize while ollama is deployed) on an existing cluster, 'helm upgrade' will fail (StatefulSet volumeClaimTemplates are immutable) for iverson-tei-bge-base (or iverson-ollama) - see the comment next to storageSize in values-local.yaml."

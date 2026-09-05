@@ -23,8 +23,8 @@ at startup (768 for nomic-embed-text, 384 for snowflake-arctic-embed:s), never h
 
 A run's VECTORS are model- and prefix-dependent, even where the point ids are not: --model
 selects the document task prefix resolved from its family (ingest-contract.json's
-embedding.documentPrefixes) and, against Ollama, which model actually runs -- a TEI container
-serves one model regardless of --model. Two runs that differ in either produce
+embedding.documentPrefixes) and, against the embedding backend, which model actually runs --
+a TEI container serves one model regardless of --model. Two runs that differ in either produce
 vectors that are not comparable with each other, while writing to the SAME deterministic point
 ids -- which is why changing --model against an existing collection requires --drop (see
 ensure_collection, which refuses the mismatched-dimension case outright).
@@ -61,7 +61,7 @@ Usage:
         --corpus /path/to/corpus.jsonl --key-map-path /tmp/keymap.json --limit 20
 
     # A different embedding model. --model selects the document task prefix resolved from
-    # its family (and, against Ollama, which model runs), so it changes every vector written.
+    # its family (and, against the embedding backend, which model runs), so it changes every vector written.
     # --drop is REQUIRED
     # when an existing collection was written under a different model (a different dimension
     # is refused outright; a same-dimension model would otherwise silently leave the
@@ -118,9 +118,9 @@ Writes, alongside --key-map-path:
                                means a document recorded in .progress but never counted in the
                                sidecar would otherwise vanish from the totals permanently.
 
-Requires Qdrant at http://localhost:6333 and the embedding backend at --embed-url (Ollama at
-http://localhost:11434 by default, with the model pulled; or a TEI container, which serves
-one model regardless of --model) -- the dimension probe runs before --drop acts, so an
+Requires Qdrant at http://localhost:6333 and the embedding backend at --embed-url (TEI at
+http://localhost:8091 by default, which serves one model regardless of --model; or Ollama,
+with the model pulled) -- the dimension probe runs before --drop acts, so an
 unpulled Ollama model fails the run rather than deleting collections it then cannot refill.
 See scripts/stack.py's `ingest` tier.
 """
@@ -147,10 +147,10 @@ with open(os.path.join(_SCRIPT_DIR, "ingest-contract.json"), encoding="utf-8") a
 
 QDRANT_URL = "http://localhost:6333"
 QDRANT_API_KEY = "dev-only-not-for-production-qdrant-key-0123456789"
-OLLAMA_URL = "http://localhost:11434"
+DEFAULT_EMBED_URL = "http://localhost:8091"
 
 # Generous rather than tight: per-embed latency runs 5-14s under load (see the plan's own
-# measurements), and this is a 4-6h unattended run -- a stalled Ollama/Qdrant with no timeout
+# measurements), and this is a 4-6h unattended run -- a stalled embedding backend/Qdrant with no timeout
 # hangs it forever instead of failing loudly. stack.py uses timeout=2 for its own readiness
 # probes, which is a different job (poll-until-ready, expected to fail fast and retry) --
 # this is "don't hang forever mid-ingest", not a readiness probe.
@@ -720,8 +720,8 @@ def main():
     ap.add_argument("--object-collection", default=DEFAULT_OBJECT_COLLECTION)
     ap.add_argument("--chunks-collection", default=DEFAULT_CHUNKS_COLLECTION)
     ap.add_argument(
-        "--model", default="nomic-embed-text",
-        help="embedding model id, e.g. 'nomic-embed-text' or 'snowflake-arctic-embed:s'. Against "
+        "--model", default="BAAI/bge-base-en-v1.5",
+        help="embedding model id, e.g. 'BAAI/bge-base-en-v1.5' (the deployment default). Against "
              "Ollama it must already be pulled -- the dimension probe runs before --drop acts. Resolves "
              "this run's document prefix by family (everything before the first ':') against "
              "ingest-contract.json, so it changes every vector written. CHANGING THE MODEL "
@@ -733,9 +733,9 @@ def main():
              "attribution to trust.",
     )
     ap.add_argument(
-        "--embed-url", default=OLLAMA_URL,
-        help=f"embedding backend base URL, POSTed at /v1/embeddings (default {OLLAMA_URL}, Ollama; "
-             "a TEI container is e.g. http://localhost:8091)",
+        "--embed-url", default=DEFAULT_EMBED_URL,
+        help=f"embedding backend base URL, POSTed at /v1/embeddings (default {DEFAULT_EMBED_URL}, "
+             "the compose tei-embed service; Ollama is http://localhost:11434)",
     )
     ap.add_argument(
         "--chunk-max-chars", type=int, default=MAX_CHARS,

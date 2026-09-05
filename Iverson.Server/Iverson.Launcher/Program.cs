@@ -17,7 +17,7 @@ Console.WriteLine("[Launcher] Starting Iverson infrastructure...");
 // Step 1: bring up Docker infrastructure (not iverson-api — that runs locally via dotnet run below)
 await RunCommandAsync(
     "docker",
-    "compose up -d postgres starrocks qdrant kafka zookeeper jaeger ollama ollama-init",
+    "compose up -d postgres starrocks qdrant kafka zookeeper jaeger ollama ollama-init tei-embed",
     solutionRoot,
     cts.Token);
 Console.WriteLine("[Launcher] Docker Compose up — waiting for services to be ready...");
@@ -25,7 +25,8 @@ Console.WriteLine("[Launcher] Docker Compose up — waiting for services to be r
 // Step 2: wait for each service port
 await WaitForPortAsync("localhost", 5432, "PostgreSQL", cts.Token);
 await WaitForPortAsync("localhost", 6333, "Qdrant", cts.Token);
-await WaitForOllamaAsync("http://localhost:11434/api/tags", "nomic-embed-text", cts.Token);
+await WaitForHttp200Async("http://localhost:8091/health", "TEI", TimeSpan.FromMinutes(10), cts.Token);
+await WaitForOllamaAsync("http://localhost:11434/api/tags", "qwen2.5:3b", cts.Token);
 await WaitForPortAsync("localhost", 9092, "Kafka", cts.Token);
 await WaitForPortAsync("localhost", 4317, "Jaeger (OTLP)", cts.Token);
 await WaitForPortAsync("localhost", 9030, "StarRocks", cts.Token);
@@ -100,6 +101,26 @@ static async Task WaitForOllamaAsync(string url, string modelName, CancellationT
         try { await Task.Delay(3000, ct); }
         catch (OperationCanceledException) { return; }
     }
+}
+
+static async Task WaitForHttp200Async(string url, string serviceName, TimeSpan ceiling, CancellationToken ct)
+{
+    Console.Write($"[Launcher] Waiting for {serviceName} at {url}");
+    using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
+    var deadline = DateTime.UtcNow + ceiling;
+    while (!ct.IsCancellationRequested && DateTime.UtcNow < deadline)
+    {
+        try
+        {
+            var response = await client.GetAsync(url, ct);
+            if (response.IsSuccessStatusCode) { Console.WriteLine(" ready."); return; }
+        }
+        catch (OperationCanceledException) { return; }
+        catch { }
+        Console.Write(".");
+        try { await Task.Delay(3000, ct); } catch (OperationCanceledException) { return; }
+    }
+    throw new TimeoutException($"{serviceName} at {url} did not answer 200 within {ceiling}.");
 }
 
 static async Task WaitForPortAsync(

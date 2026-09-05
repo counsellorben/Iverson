@@ -7,10 +7,10 @@ is the other side of that comparison: it calls PersistAsync, the ~34s/document p
 project exists to avoid). The `ingest` tier here needs far fewer containers than a normal
 `docker compose up`. Two tiers:
 
-    ingest  qdrant, ollama
+    ingest  qdrant, tei-embed
             everything ingest.py touches: the vector store and the embedding model.
 
-    query   qdrant, ollama, postgres, redis, authentik-server, iverson-api
+    query   qdrant, tei-embed, postgres, redis, authentik-server, iverson-api
             adds what `dotnet run -- benchmark-query` needs to issue real SearchSimilar/
             SearchChunks calls through the gRPC read path -- report.py itself issues no
             RPCs and needs no containers; it only scores the *.trec run files that
@@ -24,10 +24,10 @@ Usage:
 
 `ingest`/`query` run `docker compose up -d --no-deps <tier services>`. --no-deps is load
 -bearing: iverson-api's compose entry declares `depends_on: starrocks (service_healthy),
-kafka (service_healthy), jaeger (service_healthy), ollama-init (service_completed
-_successfully)`, none of which the direct-Qdrant path touches. Without --no-deps, `query`
-would start and then wait out StarRocks's 60s+ cold-start gate for a dependency this
-benchmark never queries.
+kafka (service_healthy), jaeger (service_healthy), tei-embed (service_healthy)`; the
+`query` tier already includes tei-embed, so the other three are what --no-deps skips.
+Without --no-deps, `query` would start and then wait out StarRocks's 60s+ cold-start gate
+for a dependency this benchmark never queries.
 
 Any *running* container whose name starts with `iverson-` but is not part of the requested
 tier is then stopped, so a previous `query` run doesn't leave iverson-api and its
@@ -40,7 +40,7 @@ benchmark run. What was stopped and what was left alone are both printed.
 `down` stops every running `iverson-`-prefixed container. It starts nothing and waits for no
 readiness -- there is no tier left running afterward to wait on.
 
-`ingest`/`query` then poll for readiness: Qdrant's `GET /readyz`, Ollama's `GET /api/tags`,
+`ingest`/`query` then poll for readiness: Qdrant's `GET /readyz`, TEI's `GET /health`,
 and for iverson-api a raw TCP connect to 127.0.0.1:8080 -- port 8080 is h2c/gRPC-only
 (Kestrel configured Http2-only) and refuses HTTP/1.1, so an HTTP probe against it hangs or
 errors rather than reporting readiness. Postgres/redis/authentik-server have no readiness
@@ -80,16 +80,16 @@ DEFAULT_TIMEOUT = 180  # seconds; iverson-api's own compose healthcheck allows u
 
 # Tiers name docker-compose *service* names -- what `docker compose up` takes.
 TIERS = {
-    "ingest": ["qdrant", "ollama"],
-    "query": ["qdrant", "ollama", "postgres", "redis", "authentik-server", "iverson-api"],
+    "ingest": ["qdrant", "tei-embed"],
+    "query": ["qdrant", "tei-embed", "postgres", "redis", "authentik-server", "iverson-api"],
 }
 
 # Service name -> container_name, copied from docker-compose.yml. `docker stop`/`docker ps`
-# operate on container names, which differ from service names for every entry but qdrant,
-# ollama and iverson-api.
+# operate on container names, which differ from service names for every entry but qdrant
+# and iverson-api.
 CONTAINER = {
     "qdrant": "iverson-qdrant",
-    "ollama": "iverson-ollama",
+    "tei-embed": "iverson-tei-embed",
     "postgres": "iverson-postgres",
     "redis": "iverson-redis",
     "authentik-server": "iverson-authentik-server",
@@ -168,7 +168,7 @@ def wait_http_200(url, timeout):
 # not polled directly -- see the module docstring for why that is sound.
 READY_CHECKS = {
     "qdrant": lambda timeout: wait_http_200("http://127.0.0.1:6333/readyz", timeout),
-    "ollama": lambda timeout: wait_http_200("http://127.0.0.1:11434/api/tags", timeout),
+    "tei-embed": lambda timeout: wait_http_200("http://127.0.0.1:8091/health", timeout),
     "iverson-api": lambda timeout: wait_tcp("127.0.0.1", 8080, timeout),
 }
 
