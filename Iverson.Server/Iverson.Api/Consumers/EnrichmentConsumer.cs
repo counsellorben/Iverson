@@ -42,6 +42,14 @@ public sealed class EnrichmentConsumer(
 {
     private const string GroupId = "iverson.consumer.enrichment";
 
+    // Cut the source text, not the assembled prompt: three prompts lead with their instruction and
+    // the extraction prompt trails with its hint, so a cut on the prompt would drop one of them.
+    // 8,000 characters is ~2,000 tokens, under TGI's --max-input-tokens 3072 with room for the
+    // instruction and the chat template (spec §3.5). Ollama silently truncated from the head at
+    // 4,096 tokens; this is a deliberate reduction, not parity. Applied before ComputeHash so the
+    // loop-prevention hash covers what was actually sent.
+    internal const int MaxSourceChars = 8_000;
+
     protected override Task ExecuteAsync(CancellationToken ct) =>
         ConsumerResilience.RunWithRestartAsync(
             () => consumer.ConsumeAsync(EntityTopics.Events, GroupId, DispatchAsync, ct),
@@ -127,6 +135,7 @@ public sealed class EnrichmentConsumer(
 
         // ── Step 2: hash source text + enrichment specification, and compare ──────
         var sourceText = BuildSourceText(schema, row);
+        if (sourceText.Length > MaxSourceChars) sourceText = sourceText[..MaxSourceChars];
         var hash = ComputeHash(sourceText, schema.EnrichmentTargets);
 
         var storedHash = await state.GetHashAsync(tenantValue, schema.TypeName, ev.Key);
