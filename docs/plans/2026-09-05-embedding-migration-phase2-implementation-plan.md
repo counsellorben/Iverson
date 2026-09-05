@@ -90,6 +90,14 @@ Newly introduced by this plan and verified at plan-write time (2026-09-05, `main
 | P26 | Consumer impact | No registerable type in the repo declares an enrichment target: `[IversonSummary]`/`[IversonKeywords]`/`[IversonExtracted]` appear in none of the five conformance drivers, the `Iverson.LoadTest` entities or any sample; `VectorDoc.cs:10-12` is deliberately annotation-free — an end-to-end enrichment check needs a throwaway type of its own | CIR-1 |
 | P27 | Ordering | Ollama keeps a model resident for 5 minutes after its last request by default (`keep_alive`), so a backend measured right after Ollama starts its window with Ollama's model still loaded — the measurement runs TGI first | CIR-1 |
 | P28 | Consumer impact | With the TEI pod added, the laptop profile's rendered container memory requests rise from ~4.4 Gi to ~5.44 Gi (plus ~1 Gi of CNPG/Strimzi-owned pods the chart does not render) on a 10.19 GB box — tight, not disqualifying; Task 11 records any Pending pod with its reason | CIR-1, rendered profile |
+| P29 | Code validity | `charts/ollama/templates/statefulset.yaml:53-62` is one `sh -c` block scalar: `ollama serve &`, `sleep 5`, the `range .Values.global.embeddingModels` pull loop (`:59-61`), then the generative pull; `ollama pull` is a client command that fails without the background server, so only the loop is deleted | CIR-2 |
+| P30 | File path | `values-laptop.yaml:14` is `tracingEnabled: false      # no jaeger`; the `embeddingModels` comment + list the plan replaces starts at `:15` — a `:14-26` replacement would turn jaeger on at `values.yaml`'s production sizing | CIR-2 |
+| P31 | Command | kube-score 1.19.0's `networkpolicy-targets-pod` marks a NetworkPolicy whose `podSelector` matches no rendered pod CRITICAL — the parent chart's `tgi-*` policies must be guarded by the same `global.enrichmentEnabled` flag that gates the subchart | CIR-2, laptop render |
+| P32 | Sibling sweep | Per-file `grep -n -i ollama` inventory of the files Tasks 1 and 6 edit by line: `IversonExtracted.java:9,17`, `annotations.ts:71,181,197,219`, `stack.py:89` are the complete sets; `IversonSummary.java`/`IversonKeywords.java` have `:9` only; `annotations.py`'s five sites are all listed | CIR-2 |
+| P33 | Command | A double-quoted `python3 -c "…"` argument containing backticks is command-substituted by bash; the plan's verification one-liners use single quotes around the Python | CIR-2, executed |
+| P34 | Code validity | The named mutation "no parse check" is falsified only by a reply whose first fenced block / balanced span does not parse; a reply with no `{` at all throws on the null-candidate path with or without `JsonDocument.Parse` | CIR-2, scratch suite |
+| P35 | File path | `.gitignore:47` ignores `docs/criticalreviews/` and `:49` ignores `docs/plans/`, so every commit of those files uses `git add -f` | CIR-2 |
+| P36 | Consumer impact | `ModelRejectedScenario.cs:263-297` asserts four other substrings of the orchestrator's guard message and never its Ollama tail, so Task 1's rewording cannot fail the live matrix | CIR-2 |
 | P23 | Sibling sweep | Every `.Values.tei.*` / `.Values.tgi.*` key the new templates read is defaulted in the subchart's `values.yaml` (the same seven keys as ollama's); every `$.Release.Name` inside a `range` uses the `$` root; the instance sizes `c7i.xlarge`, `c2-standard-4`, `Standard_F4s_v2` are one step below the ollama defaults in each cloud's catalogue | Task 2/9 templates; `variables.tf` |
 
 ## Tasks
@@ -117,7 +125,7 @@ Newly introduced by this plan and verified at plan-write time (2026-09-05, `main
   - `EmbeddingPrefixes.cs:16`: keep "Ollama ids carry tags" (it describes the id grammar) — no change.
   - `BenchmarkIngestScenario.cs:240`: `through CPU Ollama` → `through a CPU embedding backend`.
   - `ModelRejectedScenario.cs:79`: `a name no Ollama…` → `a name no embedding backend serves`; `VectorSearchScenario.cs:124`: `the same Ollama instance` → `the same embedding backend`.
-  - `annotations.py:89-90,170,175,180,230` and the three Java annotation Javadocs at `:9` and `annotations.ts:71`: `Ollama enrichment targets` → `enrichment targets`; `Ollama-driven`/`Ollama-generated` → `model-generated`; `the Ollama model this type's …` → `the embedding model this type's …`.
+  - `annotations.py:89-90,170,175,180,230`, the three Java annotation Javadocs at `:9` plus `IversonExtracted.java:17` ("the Ollama prompt" → "the extraction prompt"), and `annotations.ts:71,181,197,219`: `Ollama enrichment targets` → `enrichment targets`; `Ollama-driven`/`Ollama-generated` → `model-generated`; `the Ollama model this type's …` → `the embedding model this type's …`.
 
 - [ ] **Step 3: Build and test.**
 ```bash
@@ -126,6 +134,7 @@ dotnet build Iverson.slnx 2>&1 | grep -E 'error|Build succeeded'
 dotnet test Iverson.Server/Iverson.Embeddings.Tests/Iverson.Embeddings.Tests.csproj 2>&1 | grep -E 'Passed!|Failed!'          # 48/48
 dotnet test Iverson.Server/Iverson.ClientConformance.Tests/Iverson.ClientConformance.Tests.csproj 2>&1 | grep -E 'Passed!|Failed!'
 grep -rn 'iverson\.ollama' --include=*.cs Iverson.Server | grep -v '/bin/\|/obj/' | wc -l    # 0
+grep -li ollama Iverson.Clients/Python/iverson_client/annotations.py Iverson.Clients/Java/client/src/main/java/io/iverson/client/annotations/Iverson{Summary,Keywords,Extracted}.java Iverson.Clients/TypeScript/src/annotations.ts    # prints nothing (P32)
 ```
 (The ClientConformance.Tests suite pins the scenario messages; it is the guard for the wording edits.)
 
@@ -139,7 +148,7 @@ git commit -m "default the embedding client to bge-base on TEI, rename the embed
 
 **Files:**
 - Create: `Iverson.Server/deploy/helm/iverson/charts/tei/Chart.yaml`, `charts/tei/values.yaml`, `charts/tei/templates/statefulset.yaml`, `charts/tei/templates/service.yaml`, `charts/tei/templates/pdb.yaml`
-- Modify: `Chart.yaml:24-27` (+ dependency), `Chart.lock`, `charts/*.tgz` (rebuilt), `values.yaml:29-54,118-129`, `values-local.yaml:10-22,67-77`, `values-laptop.yaml:14-26,57-68`, `values-aws.yaml:59-67`, `values-azure.yaml:59-67`, `values-gcp.yaml:60-68`, `templates/_helpers.tpl:22-34`, `charts/api/templates/deployment.yaml:124-126`, `charts/worker/templates/deployment.yaml:119-121`, `templates/networkpolicies.yaml:54-55,85-86` (+ two policies), `charts/ollama/templates/statefulset.yaml:56-62`
+- Modify: `Chart.yaml:24-27` (+ dependency), `Chart.lock`, `charts/*.tgz` (rebuilt), `values.yaml:29-54,118-129`, `values-local.yaml:10-22,67-77`, `values-laptop.yaml:15-26,57-68`, `values-aws.yaml:59-67`, `values-azure.yaml:59-67`, `values-gcp.yaml:60-68`, `templates/_helpers.tpl:22-34`, `charts/api/templates/deployment.yaml:124-126`, `charts/worker/templates/deployment.yaml:119-121`, `templates/networkpolicies.yaml:54-55,85-86` (+ two policies), `charts/ollama/templates/statefulset.yaml:59-61`
 
 **Interfaces**
 - Produces: the `tei` subchart, `iverson.embeddingBaseUrl`, `Embeddings__Models__N__*` rendering, the values shape Tasks 9/11 build on.
@@ -326,7 +335,7 @@ tei:
   nodeSelector: {}
   tolerations: []
 ```
-`values-local.yaml:10-22` and `values-laptop.yaml:14-26`: replace the comment + list with
+`values-local.yaml:10-22` and `values-laptop.yaml:15-26` (NOT `:14`, which is `tracingEnabled: false`): replace the comment + list with
 ```yaml
   # One entry, served by the tei subchart. A profile list override REPLACES rather than merges, and
   # activeEmbeddingModel (inherited from values.yaml) must name an entry here.
@@ -407,7 +416,7 @@ spec:
       ports: [{ protocol: TCP, port: 443 }]
 ---
 ```
-In `charts/ollama/templates/statefulset.yaml:56-62` the init script becomes only `ollama pull {{ .Values.global.generativeModel }}` (an `ollama pull` of a Hub id fails the init container; embeddings are no longer Ollama's job); the `ollama-egress` policy's registry comment says `the generative model` where it says `nomic-embed-text`.
+In `charts/ollama/templates/statefulset.yaml` delete ONLY the three-line embedding pull loop at `:59-61` (`{{- range .Values.global.embeddingModels }}` / `ollama pull {{ .name }}` / `{{- end }}`), leaving `ollama serve &`, `sleep 5` and `ollama pull {{ .Values.global.generativeModel }}` intact — `ollama pull` is a client command that needs the background server, and an `ollama pull` of a Hub id would fail the init container; embeddings are no longer Ollama's job; the `ollama-egress` policy's registry comment says `the generative model` where it says `nomic-embed-text`.
 
 - [ ] **Step 5: Rebuild the dependencies and run the three chart checks on all five profiles.**
 ```bash
@@ -422,6 +431,8 @@ helm template iverson . -f values-local.yaml > /tmp/claude-1000/-home-ben-reposi
 grep -c '^  name: iverson-tei-bge-base$' /tmp/claude-1000/-home-ben-repositories-Iverson/690ec42d-1faa-4cc8-9c9a-e8965b19eebe/scratchpad/render-local.yaml    # 3 metadata names (ServiceAccount, StatefulSet, Service; no PDB at 1 replica) — anchored so serviceAccountName: does not count
 grep -A1 'Embeddings__Models__0__BaseUrl\|Embeddings__BaseUrl' /tmp/claude-1000/-home-ben-repositories-Iverson/690ec42d-1faa-4cc8-9c9a-e8965b19eebe/scratchpad/render-local.yaml | grep -c 'http://iverson-tei-bge-base:8080'   # 4 (api + worker, both keys)
 grep -c 'ollama pull' /tmp/claude-1000/-home-ben-repositories-Iverson/690ec42d-1faa-4cc8-9c9a-e8965b19eebe/scratchpad/render-local.yaml    # 1 (the generative model only)
+grep -c 'ollama serve' /tmp/claude-1000/-home-ben-repositories-Iverson/690ec42d-1faa-4cc8-9c9a-e8965b19eebe/scratchpad/render-local.yaml   # 1 — the server the pull needs survived the edit
+helm template iverson . -f values-laptop.yaml | grep -c 'iverson-jaeger'    # 0 — tracingEnabled: false at values-laptop.yaml:14 survived the list replacement
 grep -c 'clusterIP: None' /tmp/claude-1000/-home-ben-repositories-Iverson/690ec42d-1faa-4cc8-9c9a-e8965b19eebe/scratchpad/render-local.yaml
 ```
 
@@ -572,12 +583,13 @@ TIERS = {
     "query": ["qdrant", "tei-embed", "postgres", "redis", "authentik-server", "iverson-api"],
 }
 ```
-`CONTAINER` gains `"tei-embed": "iverson-tei-embed"` and loses `"ollama"`; `READY_CHECKS` gains `"tei-embed": lambda timeout: wait_http_200("http://127.0.0.1:8091/health", timeout)` and loses `"ollama"`; the docstring's tier lists (`:10-13`), the `--no-deps` note (`:26-30`: its quoted `depends_on` list swaps `ollama-init (service_completed_successfully)` for `tei-embed (service_healthy)`, which the tiers DO include, so the sentence becomes: the other three are what --no-deps skips) and the readiness sentence (`:43`, "Ollama's `GET /api/tags`" → "TEI's `GET /health`") follow.
+`CONTAINER` gains `"tei-embed": "iverson-tei-embed"` and loses `"ollama"`; `READY_CHECKS` gains `"tei-embed": lambda timeout: wait_http_200("http://127.0.0.1:8091/health", timeout)` and loses `"ollama"`; the docstring's tier lists (`:10-13`), the `--no-deps` note (`:26-30`: its quoted `depends_on` list swaps `ollama-init (service_completed_successfully)` for `tei-embed (service_healthy)`, which the tiers DO include, so the sentence becomes: the other three are what --no-deps skips) the readiness sentence (`:43`, "Ollama's `GET /api/tags`" → "TEI's `GET /health`"), and the `CONTAINER` comment at `:89` ("… ollama and iverson-api." → "… for every entry but qdrant and iverson-api.") follow.
 
 - [ ] **Step 2: `ingest.py`.** `OLLAMA_URL = "http://localhost:11434"` → `DEFAULT_EMBED_URL = "http://localhost:8091"` (both uses); `--model` default `"BAAI/bge-base-en-v1.5"` and its help's first sentence → `"embedding model id, e.g. 'BAAI/bge-base-en-v1.5' (the deployment default). Against Ollama it must already be pulled -- the dimension probe runs before --drop acts."` (keep the rest); `--embed-url` help → `f"embedding backend base URL, POSTed at /v1/embeddings (default {DEFAULT_EMBED_URL}, the compose tei-embed service; Ollama is http://localhost:11434)"`; the docstring lines `:26,64,121-124` and the comment at `:153` say "the embedding backend" where they say Ollama, keeping the TEI-ignores-`--model` warning.
 ```bash
 cd /home/ben/repositories/Iverson/Iverson.Server/Iverson.LoadTest/scripts
 python3 -m py_compile ingest.py stack.py && echo compiled
+grep -li ollama stack.py    # prints nothing (P32); ingest.py keeps its two deliberate mentions
 SCR=$(mktemp -d); python3 ingest.py --corpus /home/ben/repositories/iverson-benchmark-corpora/scifact-run-2026-08-26/beir/corpus.jsonl --key-map-path $SCR/keymap.json --drop --limit 5 --object-collection scratch_objects --chunks-collection scratch_chunks 2>&1 | grep 'probed embedding dimension'   # 768 for model 'BAAI/bge-base-en-v1.5' at http://localhost:8091
 grep -o '"model": "[^"]*"\|"embed_url": "[^"]*"' $SCR/keymap.json.stats.json
 K=dev-only-not-for-production-qdrant-key-0123456789; for c in scratch_objects scratch_chunks; do curl -s -o /dev/null -w "$c del=%{http_code}\n" -X DELETE -H "api-key: $K" 127.0.0.1:6333/collections/$c; done; rm -rf $SCR
@@ -639,7 +651,7 @@ git commit -m "scripts and Launcher: tei-embed joins the tiers and the wait list
 **Interfaces**
 - Produces: the backend-neutral client Tasks 8 and 10 rely on; `EnrichmentConsumer.MaxSourceChars` (internal, visible to Api.Tests). `EnrichmentService`'s constants and `ExtractJson` stay internal and are exercised only through the public methods: Iverson.Embeddings grants InternalsVisibleTo to nothing (P24).
 
-- [ ] **Step 1: Rewrite `EnrichmentServiceTests.cs`** (tests first; the suite is red until step 3):
+- [ ] **Step 1: Rewrite `EnrichmentServiceTests.cs`** (ten facts; tests first; the suite is red until step 3):
 ```csharp
 using System.Net;
 using System.Text;
@@ -791,6 +803,18 @@ public sealed class EnrichmentServiceTests
     }
 
     [Fact]
+    public async Task GenerateJsonAsync_Throws_WhenTheOnlyObjectDoesNotParse()
+    {
+        // The balanced span is found but JsonDocument.Parse rejects it (trailing comma); without the
+        // parse guard this malformed text would be stored verbatim in the target column (spec §4).
+        var svc = CreateService(new FakeHttpMessageHandler(ChatResponse("Result: {\"a\": 1,} — that's all")));
+
+        await svc.Invoking(s => s.GenerateJsonAsync("extract this"))
+                 .Should().ThrowAsync<InvalidOperationException>()
+                 .WithMessage("*Result: {*");
+    }
+
+    [Fact]
     public async Task GenerateAsync_ThrowsHttpRequestException_OnNonSuccessStatusCode()
     {
         var svc = CreateService(new FakeHttpMessageHandler(new HttpResponseMessage(HttpStatusCode.InternalServerError)));
@@ -813,7 +837,7 @@ public sealed class EnrichmentServiceTests
     }
 }
 ```
-Named mutations: an `/api/generate` regression (test 1 and 2); a `response_format` sent (test 4); reading `response` instead of `choices[0].message.content` (test 3); a leading/trailing strip instead of extraction (tests 5, 6); no parse check (test 7).
+Named mutations: an `/api/generate` regression (test 1 and 2); a `response_format` sent (test 4); reading `response` instead of `choices[0].message.content` (test 3); a leading/trailing strip instead of extraction (tests 5, 6); no parse check (test 8, the malformed-object reply — test 7 has no `{` and throws on the null-candidate path with or without the guard, P34).
 
 - [ ] **Step 2: The consumer cap test.** In `EnrichmentConsumerTests.cs`, after `HandleUpdated_PublishesPostCommitRefetch_NotThePreGenerationSnapshot`:
 ```csharp
@@ -1000,7 +1024,7 @@ and at `:129`:
 - [ ] **Step 5: Run.**
 ```bash
 cd /home/ben/repositories/Iverson
-dotnet test Iverson.Server/Iverson.Embeddings.Tests/Iverson.Embeddings.Tests.csproj 2>&1 | grep -E 'Passed!|Failed!'     # 51/51 (48 + 9 − 6)
+dotnet test Iverson.Server/Iverson.Embeddings.Tests/Iverson.Embeddings.Tests.csproj 2>&1 | grep -E 'Passed!|Failed!'     # 52/52 (48 + 10 − 6)
 dotnet test Iverson.Server/Iverson.Api.Tests/Iverson.Api.Tests.csproj --filter "FullyQualifiedName~Iverson.Api.Tests.Consumers.EnrichmentConsumerTests" 2>&1 | grep -E 'Passed!|Failed!'
 dotnet build Iverson.slnx 2>&1 | grep -E 'error|Build succeeded'
 ```
@@ -1233,7 +1257,7 @@ def main():
 if __name__ == "__main__":
     main()
 ```
-`python3 -m py_compile enrich_bench.py`; `python3 -c "import enrich_bench as b; print(len(b.build_prompts('/home/ben/repositories/iverson-benchmark-corpora/scifact-run-2026-08-26/beir/corpus.jsonl')))"` → 75; `python3 -c "import enrich_bench as b; print(b.extract_json('x ```json\n{\"a\":1}\n``` y'), b.extract_json('no'))"` → `True False`.
+`python3 -m py_compile enrich_bench.py`; `python3 -c "import enrich_bench as b; print(len(b.build_prompts('/home/ben/repositories/iverson-benchmark-corpora/scifact-run-2026-08-26/beir/corpus.jsonl')))"` → 75; `python3 -c 'import enrich_bench as b; print(b.extract_json("x ```json\n{\"a\":1}\n``` y"), b.extract_json("no"))'` → `True False` (single quotes around the Python: inside double quotes bash would command-substitute the backticks, P33).
 
 - [ ] **Step 3: Measure.**
 ```bash
@@ -1318,7 +1342,7 @@ with `volumeClaimTemplates` for `tgi-data`; Service headless on 8080; PDB as tei
 
 - [ ] **Step 2: Values.** `values.yaml`: add under `global:` after `generativeModel` (now `"Qwen/Qwen2.5-1.5B-Instruct"`, comment "the Hub id the tgi subchart serves and api/worker request through Enrichment__ModelId") `enrichmentEnabled: true` with the spec's comment; delete the `ollama:` block; add the `tgi:` block (values above). Wording the sweep in Task 10 would otherwise catch: `Chart.yaml:3`'s description `Ollama` → `TGI`; `values-laptop.yaml:6` `ollama 8` → `tgi 8`; the trailing comment in `values-aws.yaml:88`, `values-azure.yaml:81`, `values-gcp.yaml:82` `qdrant/ollama do` → `qdrant/tgi do`. Profiles: delete each `ollama:` block; local: `tgi: {replicas: 1, storageSize: 8Gi, storageClassName: "standard", resources: {requests: {cpu: "2", memory: "6Gi"}, limits: {cpu: "4", memory: "8Gi"}}}`; laptop: `global.enrichmentEnabled: false` (comment: TGI needs 4–5 GB and 8 threads the laptop budget does not have) and no `tgi:` block; cloud files: `tgi: {storageClassName: "iverson-tgi", nodeSelector: {iverson.io/node-pool: tgi}, tolerations: [{key: "iverson.io/node-pool", operator: "Equal", value: "tgi", effect: "NoSchedule"}]}`.
 
-- [ ] **Step 3: Deployments and policies.** api/worker: `Enrichment__BaseUrl` value → `"http://{{ .Release.Name }}-tgi:8080"`; add `- name: Enrichment__Enabled` / `value: {{ .Values.global.enrichmentEnabled | quote }}` after `Enrichment__ModelId`. `networkpolicies.yaml`: delete the two ollama targets in api/worker egress and the `ollama-ingress`/`ollama-egress` policies; add `tgi-ingress`/`tgi-egress` (tei's two policies with `tgi` and the Hub comment) and `- to: [{ podSelector: { matchLabels: { iverson.io/component: tgi } } }]` / `ports: [{ protocol: TCP, port: 8080 }]` in api-egress and worker-egress. Delete `charts/ollama/` (Step 5's `helm dependency update` removes the tarball).
+- [ ] **Step 3: Deployments and policies.** api/worker: `Enrichment__BaseUrl` value → `"http://{{ .Release.Name }}-tgi:8080"`; add `- name: Enrichment__Enabled` / `value: {{ .Values.global.enrichmentEnabled | quote }}` after `Enrichment__ModelId`. `networkpolicies.yaml`: delete the two ollama targets in api/worker egress and the `ollama-ingress`/`ollama-egress` policies; add `tgi-ingress`/`tgi-egress` (tei's two policies with `tgi` and the Hub comment), both wrapped in `{{- if .Values.global.enrichmentEnabled }} … {{- end }}` — the parent chart's templates render unconditionally, the laptop profile renders no tgi pod, and kube-score marks a pod-less NetworkPolicy CRITICAL (P31) — and `- to: [{ podSelector: { matchLabels: { iverson.io/component: tgi } } }]` / `ports: [{ protocol: TCP, port: 8080 }]` in api-egress and worker-egress. Delete `charts/ollama/` (Step 5's `helm dependency update` removes the tarball).
 
 - [ ] **Step 4: Terraform rename.** In each cluster module rename the `ollama` map entry and variables to `tgi` (`tgi_instance_type` `"c7i.2xlarge"`, `tgi_machine_type` `"c2-standard-8"`, `tgi_vm_size` `"Standard_F8s_v2"`, `tgi_node_count` 2; Azure `label = "tgi"`); `operators/main.tf`: `kubernetes_storage_class.ollama` → `tgi`, name `iverson-tgi`; `outputs.tf`: `tgi = kubernetes_storage_class.tgi.metadata[0].name`; the comment at `cluster-aws/main.tf:488` `StarRocks/Qdrant/Kafka/Ollama StorageClasses` → `…/TGI …`. `grep -rni ollama Iverson.Server/deploy/terraform` → 0 (case-insensitive, or the comment survives).
 
