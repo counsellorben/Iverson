@@ -402,6 +402,16 @@ bound of its **R@50** delta is **> −0.02**. The margin is the size of the larg
 measured on this corpus (the +0.0134 prefix effect). Superiority and `.similar` are reported, not
 required.
 
+One property of the deciding statistic, stated so it is not discovered later: `report.py` builds the
+95 % CI **parametrically from the paired t distribution** (`st.t.ppf(0.975, df)` scaled by the standard
+error, `report.py:453-455`) — not from the permutation test. Both R@50 comparisons
+below therefore carry the tool's own `!! FEW QUERIES CHANGED` advisory ("The paired t-test's
+assumptions are likely violated") on the very bound the gate reads: M1's R@50 at 6.0 % of queries
+changed, M2's at 5.3 %. Both deciding R@50 bounds are close to the margin — M1's −0.0155 clears it by
+0.0045, M2's −0.0228 misses it by 0.0028 — so the advisory is not academic. This is recorded, not
+acted on: the gate rule names the 95 % CI and nothing else, and the verdicts below apply it as
+written.
+
 ### M1 (BAAI/bge-base-en-v1.5, 768 dims): **PASS**
 
 | Criterion | Delta | 95 % CI | CI lower bound | vs −0.02 | |
@@ -440,8 +450,8 @@ difference from nomic in either direction. The CI is simply 0.0028 too wide at t
 −0.02 non-inferiority margin at n = 300. Nothing here licenses overriding the rule — the margin was
 chosen before the numbers were seen, and a gate that bends when a candidate lands just outside it is
 not a gate. But if bge-small is ever revisited, the question to answer is whether a wider sample
-(or a wider corpus) narrows that bound, not whether the model damaged recall; the measurement says
-it did not. Its nDCG@10 is also not significantly different from nomic (+0.0070, p_adj = 0.5531).
+(or a wider corpus) narrows that bound, not whether the model damaged recall; the measurement did not
+detect harm. Its nDCG@10 is also not significantly different from nomic (+0.0070, p_adj = 0.5531).
 
 ### Reported, not gated
 
