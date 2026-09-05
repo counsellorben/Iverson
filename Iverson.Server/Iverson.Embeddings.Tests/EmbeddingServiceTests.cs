@@ -17,6 +17,7 @@ public sealed class EmbeddingServiceTests
     {
         public HttpRequestMessage? LastRequest     { get; private set; }   // /v1/embeddings requests only
         public string?             LastRequestBody { get; private set; }
+        public Uri?                LastInfoUri     { get; private set; }
         public int                 InfoCalls;
 
         protected override async Task<HttpResponseMessage> SendAsync(
@@ -25,6 +26,7 @@ public sealed class EmbeddingServiceTests
         {
             if (request.RequestUri!.AbsolutePath == "/info")
             {
+                LastInfoUri = request.RequestUri;
                 Interlocked.Increment(ref InfoCalls);
                 return infoResponse is null
                     ? new HttpResponseMessage(HttpStatusCode.NotFound)   // Ollama's answer
@@ -233,6 +235,44 @@ public sealed class EmbeddingServiceTests
         await svc.EnsureInitializedAsync();
 
         svc.Dimension.Should().Be(2);
+        handler.InfoCalls.Should().Be(1);
+    }
+
+    [Fact]
+    public async Task EnsureInitializedAsync_SendsInfoToTheServicesOwnBaseUrl_NotTheClientBaseAddress()
+    {
+        // CreateService gives the HttpClient BaseAddress http://localhost:11434 (Ollama); every
+        // other guard test's options.BaseUrl matches that address, so a relative "/info" request
+        // (resolved against the client's BaseAddress instead of the service's own _baseUrl) would
+        // stay green there. A per-model TEI service's BaseUrl differs from the client's
+        // BaseAddress, so only an assertion here catches a guard that silently asks Ollama's
+        // global URL instead — where it would 404 and no-op forever.
+        var handler = new FakeHttpMessageHandler(
+            SuccessResponse([0.1f, 0.2f]), InfoResponse("BAAI/bge-base-en-v1.5"));
+        var svc = CreateService(handler, new EmbeddingServiceOptions
+            { ModelId = "BAAI/bge-base-en-v1.5", BaseUrl = "http://tei-embed:8091" });
+
+        await svc.EnsureInitializedAsync();
+
+        handler.LastInfoUri.Should().Be(new Uri("http://tei-embed:8091/info"));
+        svc.Dimension.Should().Be(2);
+    }
+
+    [Fact]
+    public async Task EnsureInitializedAsync_Info200WithoutModelId_Initialises()
+    {
+        // spec §3.2: a 200 response that carries no model_id is a stated no-op, not a guard
+        // failure — distinct from the 404 (Ollama) no-op case already covered above.
+        var infoResponse = new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent("""{"version":"x"}""", Encoding.UTF8, "application/json")
+        };
+        var handler = new FakeHttpMessageHandler(SuccessResponse([0.1f, 0.2f, 0.3f]), infoResponse);
+        var svc = CreateService(handler);
+
+        await svc.EnsureInitializedAsync();
+
+        svc.Dimension.Should().Be(3);
         handler.InfoCalls.Should().Be(1);
     }
 
