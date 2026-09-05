@@ -162,11 +162,14 @@ services:
     volumes:
       - reranker_models:/data
 
-  # Embedding backend under evaluation (spec docs/specs/2026-09-04-embedding-migration-design.md §3.4).
-  # Behind a profile:   EMBED_MODEL_ID=BAAI/bge-small-en-v1.5 docker compose --profile tei up -d --no-deps tei-embed
-  # One model per container, and TEI ignores the request's "model" field — the API's /info identity
-  # guard is what catches a mismatch. --auto-truncate is required: SciFact abstracts exceed the
-  # 512-token window and TEI answers 413 without it. Model cache is a named volume, never /tmp.
+  # Default embedding backend (spec docs/specs/2026-09-04-embedding-migration-design.md §3.4):
+  # iverson-api and iverson-worker both depend_on this via `condition: service_healthy`, so it
+  # starts with the rest of the stack. EMBED_MODEL_ID still selects the served model, e.g.
+  # EMBED_MODEL_ID=BAAI/bge-small-en-v1.5 docker compose up -d --no-deps tei-embed
+  # — and must agree with the api/worker's Embeddings__ModelId (the API's /info identity guard
+  # catches a mismatch loudly; TEI itself ignores the request's "model" field, since one model is
+  # served per container). --auto-truncate is required: SciFact abstracts exceed the 512-token
+  # window and TEI answers 413 without it. Model cache is a named volume, never /tmp.
   tei-embed:
     image: ghcr.io/huggingface/text-embeddings-inference:cpu-1.8
     container_name: iverson-tei-embed
