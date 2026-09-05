@@ -189,7 +189,7 @@ type ErrorUnregisteredDoc struct {
 // struct itself must carry that exact name.
 //
 // Declares the deployment's default model explicitly (IversonEmbeddingModel() returning
-// "nomic-embed-text") rather than a second one, on purpose: this exercises the whole declaration
+// "BAAI/bge-base-en-v1.5") rather than a second one, on purpose: this exercises the whole declaration
 // path while keeping the conformance environment single-model, so no second model ever needs to
 // be pulled. It also means the harness alone cannot distinguish "the client stamped the declared
 // model" from "the client sent "" and the server fell back to the same value" — that distinction
@@ -205,7 +205,7 @@ type S11ModelGo struct {
 }
 
 // IversonEmbeddingModel declares S11ModelGo's per-type embedding model.
-func (S11ModelGo) IversonEmbeddingModel() string { return "nomic-embed-text" }
+func (S11ModelGo) IversonEmbeddingModel() string { return "BAAI/bge-base-en-v1.5" }
 
 // S12DeclaredGo is S12 model-inherited's Go declaring parent: field-less, carrying only the
 // IversonEmbeddingModel method, and never registered. Embedded anonymously into S12InheritedGo,
@@ -215,7 +215,7 @@ type S12DeclaredGo struct{}
 
 // IversonEmbeddingModel declares S12DeclaredGo's per-type embedding model, inherited by any
 // struct that embeds S12DeclaredGo anonymously and does not declare its own.
-func (S12DeclaredGo) IversonEmbeddingModel() string { return "nomic-embed-text" }
+func (S12DeclaredGo) IversonEmbeddingModel() string { return "BAAI/bge-base-en-v1.5" }
 
 // S12InheritedGo is S12 model-inherited's Go fixture (register_inherited_doc driver step).
 // Declares no IversonEmbeddingModel method of its own — it inherits S12DeclaredGo's via the

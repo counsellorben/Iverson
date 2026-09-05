@@ -199,7 +199,7 @@ class ErrorUnregisteredDoc:
     label: str = None
 
 
-@iverson_entity(embedding_model="nomic-embed-text")
+@iverson_entity(embedding_model="BAAI/bge-base-en-v1.5")
 class S11ModelPython:
     """S11 ``model-rejected``'s Python fixture
     (``Iverson.Server/Iverson.ClientConformance/Scenarios/ModelRejectedScenario.cs``). Unlike S1's
@@ -211,7 +211,7 @@ class S11ModelPython:
     name with ordinal comparison, and this client derives the registered type name from the class
     name with no override, so the class itself must carry that exact name.
 
-    Declares the deployment's default model explicitly (``embedding_model="nomic-embed-text"``)
+    Declares the deployment's default model explicitly (``embedding_model="BAAI/bge-base-en-v1.5"``)
     rather than a second one, on purpose: this exercises the whole declaration path while keeping
     the conformance environment single-model, so no second model ever needs to be pulled. It also
     means the harness alone cannot distinguish "the client stamped the declared model" from "the
@@ -228,10 +228,10 @@ class S11ModelPython:
     body: str = iverson_chunk()
 
 
-@iverson_entity(embedding_model="nomic-embed-text")
+@iverson_entity(embedding_model="BAAI/bge-base-en-v1.5")
 class S12DeclaredPython:
     """S12 ``model-inherited``'s Python declaring parent. Field-less and never registered — it
-    exists only to carry ``embedding_model="nomic-embed-text"`` for ``S12InheritedPython`` to
+    exists only to carry ``embedding_model="BAAI/bge-base-en-v1.5"`` for ``S12InheritedPython`` to
     inherit through ``_iverson_meta``. Must stay field-less: a decorated parent's field
     sentinels are replaced with ``None`` on the class itself, so a same-named field on a child
     would not correctly re-carry the ``FieldMeta`` descriptor — this parent declares no fields to
@@ -243,7 +243,7 @@ class S12DeclaredPython:
 class S12InheritedPython(S12DeclaredPython):
     """S12 ``model-inherited``'s Python fixture (``register_inherited_doc`` driver step).
     Declares no ``embedding_model`` of its own — ``@iverson_entity``'s inheritance walk
-    (nearest-first over ``cls.__mro__[1:]``) picks up ``"nomic-embed-text"`` from
+    (nearest-first over ``cls.__mro__[1:]``) picks up ``"BAAI/bge-base-en-v1.5"`` from
     ``S12DeclaredPython``. Must be named exactly ``S12InheritedPython``: T8 derives and asserts
     this name with ordinal comparison. Declares all its own fields (the parent contributes
     none).

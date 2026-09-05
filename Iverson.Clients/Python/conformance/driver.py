@@ -54,13 +54,13 @@ LANGUAGE = "python"
 # SearchChunks through the client library's own vector-search builders.
 # model-rejected (S11): register only (register-once per scenario invocation — see
 # Iverson.Server/Iverson.ClientConformance/Scenarios/ModelRejectedScenario.cs). This driver
-# registers its OWN instance of S11ModelPython, carrying embedding_model="nomic-embed-text", and
+# registers its OWN instance of S11ModelPython, carrying embedding_model="BAAI/bge-base-en-v1.5", and
 # reports the descriptor it sent so the orchestrator's Reregistrar has JSON to mutate. No
 # write/read phase: the orchestrator re-registers the reported descriptor itself, with a model
 # override, and grades the rejection directly.
 # model-inherited (S12): register only (register-once per scenario invocation). This driver
 # registers its OWN instance of S12InheritedPython, which declares no embedding_model of its own
-# and instead inherits "nomic-embed-text" from its field-less parent S12DeclaredPython, and
+# and instead inherits "BAAI/bge-base-en-v1.5" from its field-less parent S12DeclaredPython, and
 # reports the descriptor it sent so the orchestrator can assert the inherited model landed on the
 # embedding/chunk properties. No write/read phase.
 SCENARIOS = {
@@ -912,7 +912,7 @@ def main(argv: List[str]) -> int:
 
     elif phase == "register" and scenario == "model-inherited":
         # S12 model-inherited: registers ONLY S12InheritedPython. S12DeclaredPython is the
-        # field-less parent that carries embedding_model="nomic-embed-text" and is never itself
+        # field-less parent that carries embedding_model="BAAI/bge-base-en-v1.5" and is never itself
         # registered.
         error: Optional[str] = None
         try:

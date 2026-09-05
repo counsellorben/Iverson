@@ -62,14 +62,14 @@ var supportedScenarios = map[string]bool{
 	"error-contract": true,
 	// model-rejected (S11): register only (register-once per scenario invocation — see
 	// Iverson.Server/Iverson.ClientConformance/Scenarios/ModelRejectedScenario.cs). This driver
-	// registers its OWN instance of S11ModelGo, carrying embedding model "nomic-embed-text", and
+	// registers its OWN instance of S11ModelGo, carrying embedding model "BAAI/bge-base-en-v1.5", and
 	// reports the descriptor it sent so the orchestrator's Reregistrar has JSON to mutate. No
 	// write/read phase: the orchestrator re-registers the reported descriptor itself, with a
 	// model override, and grades the rejection directly.
 	"model-rejected": true,
 	// model-inherited (S12): register only (register-once per scenario invocation). This driver
 	// registers its OWN instance of S12InheritedGo, which declares no IversonEmbeddingModel
-	// method of its own and instead inherits "nomic-embed-text" from its field-less embedded
+	// method of its own and instead inherits "BAAI/bge-base-en-v1.5" from its field-less embedded
 	// parent S12DeclaredGo, and reports the descriptor it sent so the orchestrator can assert the
 	// inherited model landed on the embedding/chunk properties. No write/read phase.
 	"model-inherited": true,

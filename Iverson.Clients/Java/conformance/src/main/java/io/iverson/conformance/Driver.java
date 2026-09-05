@@ -86,14 +86,14 @@ public final class Driver {
     private static final String ERROR_CONTRACT_SCENARIO = "error-contract";
     // model-rejected (S11): register only (this driver only, register-once per scenario
     // invocation — see Scenarios/ModelRejectedScenario.cs). Every requested language registers
-    // its OWN instance of S11ModelJava, carrying @IversonEmbeddingModel("nomic-embed-text"), and
+    // its OWN instance of S11ModelJava, carrying @IversonEmbeddingModel("BAAI/bge-base-en-v1.5"), and
     // reports the descriptor it sent so the orchestrator's Reregistrar has JSON to mutate. No
     // write/read phase: the orchestrator re-registers the reported descriptor itself, with a
     // model override, and grades the rejection directly.
     private static final String MODEL_REJECTED_SCENARIO = "model-rejected";
     // model-inherited (S12): register only (this driver only, register-once per scenario
     // invocation). Every requested language registers its OWN instance of S12InheritedJava, which
-    // declares no @IversonEmbeddingModel of its own and instead inherits "nomic-embed-text" from
+    // declares no @IversonEmbeddingModel of its own and instead inherits "BAAI/bge-base-en-v1.5" from
     // its field-less parent S12DeclaredJava — and reports the descriptor it sent so the
     // orchestrator can assert the inherited model landed on the embedding/chunk properties. No
     // write/read phase.
@@ -391,7 +391,7 @@ public final class Driver {
 
     /**
      * Registers ONLY {@code S12InheritedJava}. {@code S12DeclaredJava} is the field-less parent
-     * that carries {@code @IversonEmbeddingModel("nomic-embed-text")} and is never itself
+     * that carries {@code @IversonEmbeddingModel("BAAI/bge-base-en-v1.5")} and is never itself
      * registered (no {@code @IversonEntity}).
      */
     private static void doModelInheritedRegister(

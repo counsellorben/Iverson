@@ -18,7 +18,7 @@ import java.util.UUID;
  * this name with ordinal comparison.
  *
  * <p>Declares the deployment's default model explicitly ({@code @IversonEmbeddingModel
- * ("nomic-embed-text")}) rather than a second one, on purpose: this exercises the whole
+ * ("BAAI/bge-base-en-v1.5")}) rather than a second one, on purpose: this exercises the whole
  * declaration path while keeping the conformance environment single-model, so no second model
  * ever needs to be pulled. It also means the harness alone cannot distinguish "the client
  * stamped the declared model" from "the client sent {@code ""} and the server fell back to the
@@ -27,7 +27,7 @@ import java.util.UUID;
  * {@code registerAll_stampsDeclaredEmbeddingModel_onEmbeddingAndChunkProperties}).
  */
 @IversonEntity
-@IversonEmbeddingModel("nomic-embed-text")
+@IversonEmbeddingModel("BAAI/bge-base-en-v1.5")
 public class S11ModelJava {
 
     @IversonKey

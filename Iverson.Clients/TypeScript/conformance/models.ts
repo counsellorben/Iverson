@@ -292,7 +292,7 @@ export class ErrorUnregisteredDoc {
  * this name with ordinal comparison, and this client derives the registered type name from the
  * class name with no override, so the class itself must carry that exact name.
  *
- * Declares the deployment's default model explicitly (`nomic-embed-text`) rather than a second
+ * Declares the deployment's default model explicitly (`BAAI/bge-base-en-v1.5`) rather than a second
  * one, on purpose: this exercises the whole declaration path while keeping the conformance
  * environment single-model, so no second model ever needs to be pulled. It also means the
  * harness alone cannot distinguish "the client stamped the declared model" from "the client sent
@@ -300,7 +300,7 @@ export class ErrorUnregisteredDoc {
  * unit test instead (`tests/core.test.ts`'s `describeEntity — embedding model declaration` block).
  */
 @IversonEntity()
-@IversonEmbeddingModel('nomic-embed-text')
+@IversonEmbeddingModel('BAAI/bge-base-en-v1.5')
 export class S11ModelTypescript {
     @IversonKey()
     @IversonGuid()
@@ -319,18 +319,18 @@ export class S11ModelTypescript {
 
 /**
  * S12 `model-inherited`'s TypeScript declaring parent. Field-less and never registered (no
- * `@IversonEntity()`) — it exists only to carry `@IversonEmbeddingModel('nomic-embed-text')` for
+ * `@IversonEntity()`) — it exists only to carry `@IversonEmbeddingModel('BAAI/bge-base-en-v1.5')` for
  * `S12InheritedTypescript` to inherit. `getEmbeddingModel` reads this via `Reflect.getMetadata`,
  * which walks the prototype chain, so a subclass with no decorator of its own inherits this
  * class's declaration.
  */
-@IversonEmbeddingModel('nomic-embed-text')
+@IversonEmbeddingModel('BAAI/bge-base-en-v1.5')
 export class S12DeclaredTypescript {
 }
 
 /**
  * S12 `model-inherited`'s TypeScript fixture (`register_inherited_doc` driver step). Declares no
- * `@IversonEmbeddingModel` of its own — it inherits `'nomic-embed-text'` from its field-less
+ * `@IversonEmbeddingModel` of its own — it inherits `'BAAI/bge-base-en-v1.5'` from its field-less
  * parent `S12DeclaredTypescript` through the prototype chain. Must be named exactly
  * `S12InheritedTypescript`: T8 derives and asserts this name with ordinal comparison.
  */
