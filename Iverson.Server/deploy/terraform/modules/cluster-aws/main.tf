@@ -509,6 +509,7 @@ locals {
     qdrant       = { instance_type = var.qdrant_instance_type, count = var.qdrant_node_count }
     kafka        = { instance_type = var.kafka_instance_type, count = var.kafka_node_count }
     ollama       = { instance_type = var.ollama_instance_type, count = var.ollama_node_count }
+    tei          = { instance_type = var.tei_instance_type, count = var.tei_node_count }
     general      = { instance_type = var.general_instance_type, count = var.general_min_size }
   }
 }
