@@ -32,11 +32,12 @@ scored in **one** invocation carrying both candidates, so Holm corrects at **m =
 The baseline is `scifact-run-2026-08-26/runs/rerank-a0.*` (nomic-embed-text via Ollama, 300 queries),
 which was ingested with a **512-character** chunk window (`maxChars 512, step 448,
 wordBoundaryLookback 50`) from the unmerged `chunk-size-512-experiment` contract — not main's 2,048.
-The candidates therefore ingested with `--chunk-max-chars 512 --chunk-step 448`, and reproduced the
-baseline chunking exactly: **19,967 chunks** and **25,128 embed calls (22 saved)** on both SciFact
-arms, matching the nomic sidecar's 19,967 / 25,128 / 22; and **14,729 chunks** with **18,327 embed
-calls (35 saved)** on NFCorpus, matching N0's sidecar exactly — so the chunk *boundaries*, not merely
-the count, reproduced.
+The candidates therefore ingested with `--chunk-max-chars 512 --chunk-step 448`. The chunker is
+deterministic in `(max_chars, step, lookback)`, the corpus file is the same `corpus.jsonl`, and every
+arm passed the same 512 / 448 / 50, so the chunk boundaries are identical by construction; the
+matching totals are corroboration, not the proof: **19,967 chunks** and **25,128 embed calls
+(22 saved)** on both SciFact arms, matching the nomic sidecar's 19,967 / 25,128 / 22; and
+**14,729 chunks** with **18,327 embed calls (35 saved)** on NFCorpus, matching N0's sidecar exactly.
 
 The older 2,048-window nomic run (`prefixed-titled`, 2026-08-27) is **not** a valid baseline: the
 fusion weights changed on 2026-08-31 (`ce7bf12`, triple B) after it was produced, so it was generated
@@ -50,7 +51,7 @@ TEI's `/info` reported `max_input_length: 512` and `auto_truncate: true` for bot
 **512 tokens**, while `--chunk-max-chars 512` is **512 characters**. A 512-character chunk is well
 under 512 tokens, so `auto_truncate` **never engaged on any chunk embed**. The only embeds that can
 have been truncated are the whole-document ones behind the `.similar` runs. This is why `.similar` is
-reported and not gated (spec §11): nomic's whole-document coverage (2,048-token context) and TEI's
+reported and not gated (spec §7; the coverage caveat is §12): nomic's whole-document coverage (2,048-token context) and TEI's
 (512 tokens with truncation) genuinely differ, so a `.similar` delta mixes model quality with document
 coverage. The gate reads `.chunks` only, where coverage is identical by construction.
 
@@ -70,8 +71,8 @@ whether the difference touched ranking, so it warns unconditionally.
 
 Task 6 step 3 measured the answer directly. Before any TEI arm ran, the **new** build was pointed at
 the **unchanged** nomic index and re-run as `m0-control-2026-09-04`. Its output is byte-identical to
-`rerank-a0` on the retrieval-identifying columns (fields 1–5: query id, doc id, rank) for both run
-files:
+`rerank-a0` on the retrieval-identifying columns (fields 1–5: query id, Q0, doc id, rank and score —
+everything but the run label) for both run files:
 
 ```
 === CHUNKS DIFF ===
@@ -428,11 +429,11 @@ effect. AP is likewise superior (+0.0457, p_adj = 0.0008). R@50 is not significa
 p_adj = 0.9007), which is expected: only 6.0 % of queries changed on that measure, and `report.py`
 flags the paired-t assumption as violated there — the permutation p (0.4504) is the one to read.
 
-This is the first time in this project's benchmark history that a published quality delta has
-transferred to this stack. The gate existed precisely because it had not before
-(`project-nomic-embedding-task-prefixes`: a predicted +2.3 points measured +0.0134, n.s.). Here the
-published gap (bge-base 0.743 vs nomic 0.705, i.e. +0.038) transferred as +0.0492 — the same
-direction and a slightly larger magnitude.
+Among the published quality deltas this project has tried to transfer to this stack, this is the
+first to actually transfer: the prefix trial's predicted +2.3 points measured +0.0134, n.s.
+(`project-nomic-embedding-task-prefixes`), and the reranker gate failed outright
+(`project-reranker-design-parameters`). Here the published gap (bge-base 0.743 vs nomic 0.705, i.e.
++0.038) transferred as +0.0492 — the same direction and a slightly larger magnitude.
 
 ### M2 (BAAI/bge-small-en-v1.5, 384 dims): **FAIL**
 
