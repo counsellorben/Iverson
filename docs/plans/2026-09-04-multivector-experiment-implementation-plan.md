@@ -80,7 +80,11 @@ Verified 2026-09-04/05 against the `embedding-migration` worktree at `f2706a4` (
 | P22 | Code validity | `ir_measures.read_trec_run` parses `1 Q0 15830352 1 0.812345 gte-multivector-raw` → `ScoredDoc('1','15830352',0.812345)` | ran with `PYTHONPATH=…/python-libs` |
 | P23 | File path | `docs/plans/2026-09-GATE-multivector.md` does not exist; `**/docs/plans/` is gitignored (`.gitignore:49`) while 45 files under it are tracked → `git add -f` | `ls`; `git check-ignore -v`; `git ls-files` |
 | P24 | Command | Commit convention: lowercase imperative subject, optional `area:` prefix only for compose, no Conventional-Commits type | `git log --oneline -8` |
-| P26 | Sibling sweep | Every Qdrant response field the script reads: scroll `result.points[].{id, vector, payload}` + `result.next_page_offset`; search `result[].{id, score, payload}`; query `result.points[].{id, score, payload}`; info `result.{points_count, indexed_vectors_count, segments_count, config.params.vectors.body_vector.size}` | spec §10 rows 3–5, 10 + P9 |
+| P26 | Sibling sweep | Every Qdrant response field the script reads: scroll `result.points[].{id, vector, payload}` + `result.next_page_offset`; search `result[].{id, score, payload}`; query `result.points[].{id, score, payload}`; info `result.{status, points_count, indexed_vectors_count, segments_count, config.params.vectors.body_vector.size}` | spec §10 rows 3–5, 10 + P9; `status` green/yellow seen live (CIR-1 §2.2) |
+| P28 | Code validity | `points_count` is exact, so `build`'s row reconciliation and point-count check compare against a true count | CIR-1 span (b): equals `POST /points/count {"exact": true}` on both live collections |
+| P29 | Command | TEI `/info` exposes `max_batch_tokens` (Task 4 step 2 greps for it) | CIR-1 span (d): verified live on the running `iverson-tei-embed` |
+| P30 | Command | The compose project is `iversonserver` whether invoked from the migration worktree (where the live containers were created) or from main's `Iverson.Server` after the merge, so single-service `up` adopts the existing containers | CIR-1 span (e): name derives from the directory basename; containers carry the `com.docker.compose.project=iversonserver` label |
+| P31 | File path | Task 5 step 5's template `2026-09-GATE-embedding-migration.md` does not exist yet (the migration's Task 8 output); `2026-09-GATE-reranker-phase1.md` exists, so the shape is available either way | CIR-1 span (f): `ls docs/plans/` |
 
 ## Tasks
 
@@ -105,9 +109,9 @@ with
 - [ ] **Step 2: Verify the render, default and override.**
 ```bash
 cd Iverson.Server
-docker compose --profile tei config | grep -A 6 '^  tei-embed:' | grep -A 5 'command:'
+docker compose --profile tei config | grep -A 9 '^  tei-embed:' | grep -A 5 'command:'
 # expect the five items ending: - --max-batch-tokens / - "16384"
-TEI_MAX_BATCH_TOKENS=4096 docker compose --profile tei config | grep -A 6 '^  tei-embed:' | grep -c '"4096"\|^      - 4096$'   # 1
+TEI_MAX_BATCH_TOKENS=4096 docker compose --profile tei config | grep -A 9 '^  tei-embed:' | grep -c '"4096"\|^      - 4096$'   # 1
 docker compose config --services | grep -c '^tei-embed$'   # 0 — still profile-gated
 ```
 
@@ -355,6 +359,28 @@ def require_collection(name):
     return info
 
 
+INDEX_WAIT_SECONDS = 600
+
+
+def wait_for_index(name):
+    """Qdrant's wait=true covers the write, not the optimizer: HNSW is built asynchronously once a
+    segment passes indexing_threshold, with status yellow meanwhile. A latency measured before that
+    is exact search under an index build, not the layout under test (CIR-1 §2.2). Green with zero
+    indexed vectors past the deadline means the collection was never indexed -- refuse."""
+    deadline = time.monotonic() + INDEX_WAIT_SECONDS
+    while True:
+        info = require_collection(name)
+        status, indexed = info["status"], info["indexed_vectors_count"]
+        if status == "green" and indexed > 0:
+            print(f"[multivector] '{name}' green, indexed_vectors_count {indexed:,}")
+            return info
+        if time.monotonic() > deadline:
+            sys.exit(f"'{name}' is {status} with indexed_vectors_count {indexed} after {INDEX_WAIT_SECONDS}s "
+                     "-- not HNSW-indexed; the arm would be brute force")
+        print(f"[multivector] '{name}' {status}, indexed {indexed:,} -- waiting for the index")
+        time.sleep(5)
+
+
 # ── build ───────────────────────────────────────────────────────────────────────────────
 
 def cmd_build(args):
@@ -403,6 +429,7 @@ def cmd_build(args):
     target_points = require_collection(target)["points_count"]
     if target_points != len(points):
         sys.exit(f"'{target}' reports {target_points} points, expected {len(points)}")
+    wait_for_index(target)
     print(f"[multivector] {len(points)} points, {written} rows == {expected_rows} chunk points")
 
 
@@ -537,8 +564,14 @@ def rank_chunk_hits(hits, key_to_doc, limit):
 # ── query ───────────────────────────────────────────────────────────────────────────────
 
 def cmd_query(args):
-    require_collection(args.chunks_collection)
-    require_collection(args.multivector_collection)
+    # Both layouts must be HNSW-indexed and idle before a latency is taken (CIR-1 §2.2); the
+    # state measured under is written into the sidecar so the gate document reports it.
+    index_state = {}
+    for name in (args.chunks_collection, args.multivector_collection):
+        info = require_collection(name)
+        if info["status"] != "green":
+            sys.exit(f"'{name}' is {info['status']}: wait for indexing to finish before measuring")
+        index_state[name] = {k: info[k] for k in ("status", "points_count", "indexed_vectors_count", "segments_count")}
     queries_path = os.path.join(args.run_dir, "beir", "queries.jsonl")
     with open(queries_path, encoding="utf-8") as f:
         queries = [json.loads(line) for line in f if line.strip()]
@@ -565,6 +598,7 @@ def cmd_query(args):
             "multivector_collection": args.multivector_collection,
             "chunk_top_k": CHUNK_TOP_K, "document_budget": DOCUMENT_BUDGET,
             "queries": len(queries),
+            "index_state": index_state,
         }
         for mode, samples in latency.items():
             sidecar[mode] = summarize_latency(samples) if samples else None
@@ -751,8 +785,10 @@ No commit: everything this task produces lives outside the repo.
 
 - [ ] **Step 1: Build, query, stats** (TEI still up on gte; the API may stay up, it is not used).
 ```bash
+export MV=$(ls -d /home/ben/repositories/iverson-benchmark-corpora/scifact-gte-* | tail -1); ls $MV/runs/gte-chunks-api.meta.json   # Task 4's run dir, proven by the API run's sidecar
+K=dev-only-not-for-production-qdrant-key-0123456789
 cd /home/ben/repositories/Iverson/Iverson.Server/Iverson.LoadTest/scripts
-python3 multivector.py build 2>&1 | tee $MV/multivector-build.log      # 5183 points, 19967 rows == 19967 chunk points
+python3 multivector.py build 2>&1 | tee $MV/multivector-build.log      # … green, indexed_vectors_count > 0; 5183 points, 19967 rows == 19967 chunk points
 python3 multivector.py query --run-dir $MV --model Alibaba-NLP/gte-modernbert-base --embed-url http://localhost:8091 2>&1 | tee $MV/multivector-query.log   # ≈ 5 min (300 embeds)
 wc -l $MV/runs/gte-chunks-raw.chunks.trec $MV/runs/gte-multivector-raw.chunks.trec   # 15000 each
 cat $MV/runs/raw-latency.json
