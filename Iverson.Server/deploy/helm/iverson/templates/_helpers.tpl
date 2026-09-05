@@ -31,4 +31,18 @@ body carries no leading indentation of its own.
 - name: Embeddings__QueryPrefix
   value: {{ $active.queryPrefix | quote }}
 {{- end }}
+{{- range $i, $m := .Values.global.embeddingModels }}
+- name: Embeddings__Models__{{ $i }}__Name
+  value: {{ $m.name | quote }}
+- name: Embeddings__Models__{{ $i }}__BaseUrl
+  value: "http://{{ $.Release.Name }}-tei-{{ $m.slug }}:8080"
+{{- end }}
+{{- end -}}
+
+{{/*
+The global embedding fallback: the first tei entry's headless Service, on the container port.
+*/}}
+{{- define "iverson.embeddingBaseUrl" -}}
+{{- $first := index .Values.global.embeddingModels 0 -}}
+http://{{ .Release.Name }}-tei-{{ $first.slug }}:8080
 {{- end -}}

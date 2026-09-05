@@ -122,7 +122,7 @@ spec:
             - name: Kafka__SslCaLocation
               value: "/etc/kafka-ca/ca.crt"
             - name: Embeddings__BaseUrl
-              value: "http://{{ .Release.Name }}-ollama:11434"
+              value: {{ include "iverson.embeddingBaseUrl" . | quote }}
             {{- include "iverson.embeddingEnv" . | nindent 12 }}
             - name: Enrichment__BaseUrl
               value: "http://{{ .Release.Name }}-ollama:11434"

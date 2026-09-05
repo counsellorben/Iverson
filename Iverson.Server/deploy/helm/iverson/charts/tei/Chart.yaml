@@ -1,0 +1,6 @@
+apiVersion: v2
+name: tei
+description: Text Embeddings Inference — one server per global.embeddingModels entry
+type: application
+version: 0.1.0
+appVersion: "1.0.0"

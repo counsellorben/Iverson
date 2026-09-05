@@ -8,18 +8,11 @@
 # companion Terraform plan sets a real tlsSecretName.
 
 global:
-  # One model only: the PVC is 8Gi and ollama's CPU request is 250m, so a second buys nothing
-  # here. A profile list override REPLACES rather than merges, so one entry is sufficient —
-  # PROVIDED no registered type's stored schema names a model outside this list. This list
-  # must contain every model any registered type's `_iverson_schema` row names, not merely
-  # the active one: switching this entry (and activeEmbeddingModel to match) after types are
-  # already registered under the old model does not migrate those types — it strands them.
-  # Their descriptors still name the old model, Ollama no longer has it pulled, and every
-  # embed call against them returns Unavailable/404 until the old model is restored or those
-  # types' schema rows and collections are cleared. See the `embeddingModels` comment in the
-  # parent chart's values.yaml for the full invariant.
+  # One entry, served by the tei subchart. A profile list override REPLACES rather than merges, and
+  # activeEmbeddingModel (inherited from values.yaml) must name an entry here.
   embeddingModels:
-    - name: nomic-embed-text
+    - name: BAAI/bge-base-en-v1.5
+      slug: bge-base
 
 postgres:
   instances: 1
@@ -75,6 +68,14 @@ ollama:
   resources:
     requests: { cpu: "250m", memory: "1Gi" }
     limits: { cpu: "500m", memory: "2Gi" }
+
+tei:
+  replicas: 1
+  storageSize: 2Gi
+  storageClassName: "standard"
+  resources:
+    requests: { cpu: "250m", memory: "1Gi" }
+    limits: { cpu: "1", memory: "2Gi" }
 
 api:
   replicas: 1

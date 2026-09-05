@@ -1,0 +1,13 @@
+{{- range .Values.global.embeddingModels }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $.Release.Name }}-tei-{{ .slug }}
+spec:
+  clusterIP: None
+  selector:
+    app: {{ $.Release.Name }}-tei-{{ .slug }}
+  ports:
+    - port: 8080
+---
+{{- end }}

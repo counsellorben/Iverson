@@ -1,0 +1,94 @@
+{{- range .Values.global.embeddingModels }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ $.Release.Name }}-tei-{{ .slug }}
+automountServiceAccountToken: false
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ $.Release.Name }}-tei-{{ .slug }}
+spec:
+  serviceName: {{ $.Release.Name }}-tei-{{ .slug }}
+  replicas: {{ $.Values.replicas }}
+  selector:
+    matchLabels:
+      app: {{ $.Release.Name }}-tei-{{ .slug }}
+  template:
+    metadata:
+      labels:
+        app: {{ $.Release.Name }}-tei-{{ .slug }}
+        iverson.io/component: tei
+    spec:
+      serviceAccountName: {{ $.Release.Name }}-tei-{{ .slug }}
+      automountServiceAccountToken: false
+      nodeSelector:
+        {{- toYaml $.Values.nodeSelector | nindent 8 }}
+      tolerations:
+        {{- toYaml $.Values.tolerations | nindent 8 }}
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    app: {{ $.Release.Name }}-tei-{{ .slug }}
+                topologyKey: kubernetes.io/hostname
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: tei
+          image: "ghcr.io/huggingface/text-embeddings-inference:{{ $.Values.imageTag }}"
+          imagePullPolicy: IfNotPresent
+          # --port 8080: the image listens on 80, which uid 1000 cannot bind. --auto-truncate: without it
+          # TEI answers 413 above 512 tokens (Phase 1 spec §3.4).
+          args: ["--model-id", {{ .name | quote }}, "--auto-truncate", "--port", "8080"]
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
+          ports:
+            - containerPort: 8080
+          resources:
+            requests:
+              cpu: {{ $.Values.resources.requests.cpu | quote }}
+              memory: {{ $.Values.resources.requests.memory | quote }}
+              ephemeral-storage: {{ index $.Values.resources.requests "ephemeral-storage" | quote }}
+            limits:
+              cpu: {{ $.Values.resources.limits.cpu | quote }}
+              memory: {{ $.Values.resources.limits.memory | quote }}
+              ephemeral-storage: {{ index $.Values.resources.limits "ephemeral-storage" | quote }}
+          # The first start downloads the weights from the Hub into /data; every later start loads
+          # them from the PVC in under a minute.
+          startupProbe:
+            httpGet: { path: /health, port: 8080 }
+            periodSeconds: 10
+            failureThreshold: 30
+          readinessProbe:
+            httpGet: { path: /health, port: 8080 }
+            periodSeconds: 10
+          volumeMounts:
+            - name: tei-data
+              mountPath: /data
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}
+  volumeClaimTemplates:
+    - metadata:
+        name: tei-data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        storageClassName: {{ $.Values.storageClassName | quote }}
+        resources:
+          requests:
+            storage: {{ $.Values.storageSize }}
+---
+{{- end }}
