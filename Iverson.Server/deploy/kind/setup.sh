@@ -31,6 +31,13 @@ helm upgrade --install calico tigera-operator \
   --set goldmane.enabled=false \
   --set whisker.enabled=false \
   --wait
+# The operator registers this CRD a few seconds after its pod is Ready, and `kubectl wait`
+# fails immediately with NotFound on a resource that does not exist yet (under `set -e` that
+# ended the first pass of this script on every fresh cluster). Poll for existence first.
+for _ in $(seq 1 30); do
+  kubectl get crd installations.operator.tigera.io >/dev/null 2>&1 && break
+  sleep 2
+done
 kubectl wait --for=condition=Established crd/installations.operator.tigera.io --timeout=60s
 helm upgrade --install calico tigera-operator \
   --repo https://docs.tigera.io/calico/charts \
