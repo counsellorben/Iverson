@@ -79,3 +79,6 @@ Iverson.Server/deploy/helm/**/charts/*.tgz
 # Python
 __pycache__/
 *.pyc
+
+# Reasoning-agent virtualenv (created by the implementation plan, Task 1)
+Iverson.Agents/Python/.venv/

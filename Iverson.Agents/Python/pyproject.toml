@@ -1,0 +1,19 @@
+[project]
+name = "iverson-agent"
+version = "0.1.0"
+description = "A reasoning agent that gathers top-k documents from Iverson per reasoning turn"
+requires-python = ">=3.11"
+# iverson_client is imported by path (see the .pth line in the implementation plan, Task 1 step 1),
+# matching how the repo consumes it everywhere else — it is deliberately not listed here.
+dependencies = [
+    "anthropic>=1.0,<2",
+    "pydantic>=2,<3",
+    "grpcio>=1.81.1",
+    "protobuf>=5.29.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
