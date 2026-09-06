@@ -79,9 +79,10 @@ class Citation:
 class AgentAnswer:
     text: str
     citations: list[Citation]
-    tool_calls: int
+    tool_calls: int                       # tool calls actually executed (§7.2)
     context_tokens: int
     flags: list[str] = field(default_factory=list)
+    context_keys: list[str] = field(default_factory=list)   # keys of every document on the page
 
 
 def _user_key(token: str) -> str:
@@ -144,13 +145,13 @@ class AgentSession:
             results = []
             budget_exhausted_this_turn = False
             for block in (b for b in response.content if b.type == "tool_use"):
-                state.tool_calls += 1
-                if state.tool_calls > cfg.max_tool_calls or state.context_tokens > cfg.context_tokens:
+                if state.tool_calls >= cfg.max_tool_calls or state.context_tokens > cfg.context_tokens:
                     results.append({"type": "tool_result", "tool_use_id": block.id,
                                     "is_error": True, "content": BUDGET_EXHAUSTED})
                     budget_exhausted_this_turn = True
                     continue
-                content = self._run_tool(block.name, block.input, state, docs, schema_type, question, trace_id)
+                state.tool_calls += 1                       # executed calls only (§7.2)
+                content = self._run_tool(block.name, block.input, state, docs, schema_type, trace_id)
                 state.context_tokens += estimate_tokens(content)
                 results.append({"type": "tool_result", "tool_use_id": block.id, "content": content})
             messages.append({"role": "user", "content": results})
@@ -167,7 +168,7 @@ class AgentSession:
             messages.append({"role": "user", "content":
                              f"Your answer cites {', '.join(f'[doc {n}]' for n in invalid)}, which "
                              "was not among the documents shown. Answer again citing only shown documents."})
-            response = self._create(messages)
+            response = self._create(messages, force_answer=True)
             text = _text_of(response)
             invalid = _invalid_citations(text, len(state.contexts))
             for n in invalid:
@@ -179,12 +180,15 @@ class AgentSession:
         citations = [Citation(n, state.contexts[n - 1].key, state.contexts[n - 1].title,
                               [t for _, t in state.contexts[n - 1].passages]) for n in cited]
         return AgentAnswer(text=text, citations=citations, tool_calls=state.tool_calls,
-                           context_tokens=state.context_tokens, flags=flags)
+                           context_tokens=state.context_tokens, flags=flags,
+                           context_keys=[c.key for c in state.contexts])
 
     # ── helpers ─────────────────────────────────────────────────────────────
 
     def _create(self, messages, force_answer: bool = False):
-        kwargs = dict(model=self._cfg.model, max_tokens=16000, system=REASONER_SYSTEM,
+        kwargs = dict(model=self._cfg.model, max_tokens=16000,
+                      system=[{"type": "text", "text": REASONER_SYSTEM,
+                               "cache_control": {"type": "ephemeral"}}],
                       tools=TOOLS, messages=messages)
         if force_answer:
             kwargs["tool_choice"] = {"type": "none"}
@@ -211,12 +215,12 @@ class AgentSession:
         parts.append(f"Question: {question}")
         return "\n\n".join(parts)
 
-    def _run_tool(self, name, inp, state, docs, schema_type, question, trace_id) -> str:
+    def _run_tool(self, name, inp, state, docs, schema_type, trace_id) -> str:
         if name == "search_more":
             filters = validate_filters([(f["field"], f["value"]) for f in inp.get("filters", [])],
                                        schema_type, trace_id)
-            new_contexts, empty = self._retrieve(docs, [(inp["query_text"], filters)],
-                                                 inp["query_text"], trace_id)
+            new_contexts = self._retrieve(docs, [(inp["query_text"], filters)],
+                                          inp["query_text"], trace_id)[0]
             known = {c.key for c in state.contexts}
             fresh = [c for c in new_contexts if c.key not in known]
             if not fresh:
@@ -248,7 +252,7 @@ class AgentSession:
 class _State:
     contexts: list[DocumentContext]
     empty_queries: list[str]
-    tool_calls: int = 0
+    tool_calls: int = 0          # EXECUTED tool calls; a budget-refused block is not counted (§7.2)
     context_tokens: int = 0
 
 

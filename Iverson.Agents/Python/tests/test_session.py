@@ -104,9 +104,15 @@ def test_tool_budget_exhausted_returns_error_result_and_forces_answer():
         + [message(text("Final [doc 1]."))]
     session, anthropic, _ = make_session(responses, cfg=AgentConfig(max_tool_calls=3))
     answer = session.run("q?", "tok", trace_id="t")
-    fourth = anthropic.messages.create.call_args_list[4].kwargs["messages"][-1]["content"][0]
+    calls = anthropic.messages.create.call_args_list
+    fourth = calls[4].kwargs["messages"][-1]["content"][0]
     assert fourth.get("is_error") is True and "budget" in fourth["content"].lower()
-    assert answer.tool_calls == 4 and answer.text == "Final [doc 1]."
+    # Only the call that follows the budget-exhausted turn is forced to a final answer; the three
+    # tool-executing turns before it keep the tools selectable.
+    assert [c.kwargs.get("tool_choice") for c in calls[:4]] == [None] * 4
+    assert calls[4].kwargs.get("tool_choice") == {"type": "none"}
+    # tool_calls counts EXECUTED calls: the fourth block was refused by the budget guard.
+    assert answer.tool_calls == 3 and answer.text == "Final [doc 1]."
 
 
 def test_invalid_citation_is_rerequested_then_stripped_and_flagged():
@@ -115,6 +121,25 @@ def test_invalid_citation_is_rerequested_then_stripped_and_flagged():
     assert answer.text == "Still and [doc 1]." or answer.text == "Still  and [doc 1]."
     assert [c.key for c in answer.citations] == ["A"]
     assert any("doc 9" in f for f in answer.flags)
+
+
+def test_citation_rerequest_forces_a_final_answer():
+    # Without tool_choice="none" the model may answer the re-request with a tool_use block: the
+    # tool loop has already exited, so _text_of() would be empty and run() would return an empty
+    # answer with no error (§4.6).
+    session, anthropic, _ = make_session([message(text("See [doc 9].")), message(text("Fine [doc 1]."))])
+    answer = session.run("q?", "tok", trace_id="t")
+    assert answer.text == "Fine [doc 1]." and [c.key for c in answer.citations] == ["A"]
+    calls = anthropic.messages.create.call_args_list
+    assert calls[0].kwargs.get("tool_choice") is None
+    assert calls[1].kwargs.get("tool_choice") == {"type": "none"}
+
+
+def test_system_prompt_is_a_cacheable_block():
+    session, anthropic, _ = make_session([message(text("Leave is 20 days [doc 1]."))])
+    session.run("q?", "tok", trace_id="t")
+    system = anthropic.messages.create.call_args.kwargs["system"]
+    assert system[0]["type"] == "text" and system[0]["cache_control"] == {"type": "ephemeral"}
 
 
 def test_refusal_raises():

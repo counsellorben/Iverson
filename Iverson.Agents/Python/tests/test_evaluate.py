@@ -4,12 +4,12 @@ from unittest.mock import MagicMock
 import pytest
 
 from iverson_agent.session import AgentAnswer, Citation
-from iverson_agent.evaluate import EvalItem, evaluate, judge_grounding
+from iverson_agent.evaluate import CitationOutsideContext, EvalItem, evaluate, judge_grounding
 
 
 def answer(text, keys, tool_calls=0, tokens=100):
     return AgentAnswer(text=text, citations=[Citation(i + 1, k, None, ["p"]) for i, k in enumerate(keys)],
-                       tool_calls=tool_calls, context_tokens=tokens)
+                       tool_calls=tool_calls, context_tokens=tokens, context_keys=list(keys))
 
 
 def test_metrics_over_items():
@@ -23,6 +23,16 @@ def test_metrics_over_items():
     assert report["grounding"] == pytest.approx(1.0)
     assert report["insufficiency_honesty"] == 1.0                   # "cannot" appears, no citations
     assert report["tool_calls"] == [1, 0] and report["context_tokens"] == [200, 50]
+
+
+def test_citation_outside_the_context_is_a_hard_error():
+    # §7.2: citation precision is 1.0 by construction, so a cited key that was never on the page
+    # is a bug in §4.6 and must surface as a raised error, not a stripped assert.
+    session = MagicMock()
+    session.run.return_value = AgentAnswer(text="x [doc 1]", citations=[Citation(1, "Z", None, ["p"])],
+                                           tool_calls=0, context_tokens=10, context_keys=["A"])
+    with pytest.raises(CitationOutsideContext):
+        evaluate(session, [EvalItem("q", ["A"], [])], "tok", MagicMock(return_value=(1, 1)))
 
 
 def test_judge_parses_structured_output():

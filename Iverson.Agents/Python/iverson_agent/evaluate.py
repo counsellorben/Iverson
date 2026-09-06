@@ -12,6 +12,10 @@ from pydantic import BaseModel
 INSUFFICIENT_MARKERS = ("cannot", "can't", "not contain", "no information", "unable")
 
 
+class CitationOutsideContext(Exception):
+    """A cited key was not among the documents on the page — §4.6 was violated (§7.2)."""
+
+
 @dataclass(frozen=True)
 class EvalItem:
     question: str
@@ -53,8 +57,12 @@ def evaluate(session, items: list[EvalItem], end_user_token: str,
     for i, item in enumerate(items):
         a = session.run(item.question, end_user_token, trace_id=f"eval-{i}")
         cited = {c.key for c in a.citations}
-        # Citation precision is enforced by construction (§4.6): assert, don't measure.
-        assert all(c.doc_number >= 1 for c in a.citations), "citation outside context"
+        # Citation precision is enforced by construction (§4.6), so §7.2 checks it rather than
+        # measuring it — a real check, not an assert, because any violation is a bug.
+        outside = sorted(cited - set(a.context_keys))
+        if outside:
+            raise CitationOutsideContext(
+                f"item {i}: cited {outside} which are not among the documents shown")
         if item.expected_keys:
             recall_hits.append(len(cited & set(item.expected_keys)) / len(item.expected_keys))
         else:
