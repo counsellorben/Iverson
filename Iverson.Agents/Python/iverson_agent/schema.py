@@ -36,7 +36,10 @@ class SchemaCache:
     def get(self, user_key: str, end_user_token: str) -> list[mpb.SchemaType]:
         now = datetime.now(timezone.utc)
         hit = self._entries.get(user_key)
-        if hit and now - hit[0] < self.ttl:
+        if hit is not None and now - hit[0] >= self.ttl:
+            del self._entries[user_key]                 # expired: never serve or keep it
+            hit = None
+        if hit is not None:
             return hit[1]
         with self.client_factory(end_user_token) as per_user:
             types = per_user.get_schema()

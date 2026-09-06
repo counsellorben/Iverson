@@ -1,4 +1,4 @@
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock
 
 import pytest
@@ -57,6 +57,27 @@ def test_schema_cache_uses_factory_once_per_user_within_ttl():
     second = cache.get("user-a", "token-a")
     assert first is second
     factory.assert_called_once_with("token-a")
+
+
+def test_schema_cache_refetches_once_the_ttl_has_expired():
+    client = MagicMock()
+    client.__enter__.return_value = client
+    client.get_schema.return_value = [policy_doc_type()]
+    factory = MagicMock(return_value=client)
+    cache = SchemaCache(ttl=timedelta(0), client_factory=factory)
+    cache.get("user-a", "token-a")
+    cache.get("user-a", "token-a")
+    assert factory.call_count == 2
+
+
+def test_schema_cache_drops_the_expired_entry_before_refetching():
+    def boom(token):
+        raise RuntimeError("factory called")
+    cache = SchemaCache(ttl=timedelta(minutes=10), client_factory=boom)
+    cache._entries["user-a"] = (datetime.now(timezone.utc) - timedelta(hours=1), [policy_doc_type()])
+    with pytest.raises(RuntimeError):
+        cache.get("user-a", "token-a")
+    assert "user-a" not in cache._entries        # stale schema is never left behind
 
 
 def test_schema_cache_is_per_user():
